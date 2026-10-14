@@ -275,3 +275,28 @@ def test_a_later_clip_after_the_marker_cleared_counts_from_its_own_rise(qapp):
     assert meter.full_scale_samples_within(8.0) == 40  # still inside the longer Health window
     _clip(meter, CLIP_FLAT_TOP_SAMPLES)
     assert meter.full_scale_samples_within(8.0) == CLIP_FLAT_TOP_SAMPLES
+
+
+def test_a_muted_meter_labels_itself_and_says_its_level_is_from_before_the_mute(qapp):
+    def label_strip(meter: LevelMeter) -> QImage:
+        image = QImage(60, 160, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.black)
+        painter = QPainter(image)
+        meter.paint_meter(painter, 60, 160)
+        painter.end()
+        return image.copy(0, 140, 60, 20)
+
+    meter = _meter(_Clock(), "OUT")
+    changes: list[None] = []
+    meter.changed.connect(lambda: changes.append(None))
+    unmuted = label_strip(meter)
+    assert meter.property("description") == ""
+
+    meter.set_muted(True)
+    meter.set_muted(True)
+    assert len(changes) == 1
+    assert "before the mute" in meter.property("description")
+    assert label_strip(meter) == label_strip(_meter(_Clock(), "MUTE"))
+
+    meter.set_muted(False)
+    assert meter.property("description") == "" and label_strip(meter) == unmuted

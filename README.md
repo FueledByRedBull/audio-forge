@@ -116,7 +116,8 @@ location. See the
   microphone.
 - Watch the meters to see where the signal stops. If AudioForge's input meter
   stays still, check the microphone. If AudioForge's output moves but your
-  app's meter doesn't, check the cable selection in your app.
+  app's meter doesn't, check the cable selection in your app. While the output
+  is muted, its meter is labelled **MUTE** and shows the level before the mute.
 - Still stuck? [Open an issue](https://github.com/FueledByRedBull/audio-forge/issues/new/choose)
   and attach the file from **Settings > Help > Export Diagnostics**. The export
   excludes audio and real device names; check it before you share it.

@@ -20,7 +20,7 @@ from PySide6.QtCore import (
     QTimer,
     qInstallMessageHandler,
 )
-from PySide6.QtGui import QFont, QGuiApplication, QImage, QKeyEvent, QMouseEvent, QPainter
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QKeyEvent, QMouseEvent, QPainter
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtQml import QQmlProperty
 from PySide6.QtQuick import QSGRendererInterface
@@ -29,12 +29,14 @@ from PySide6.QtWidgets import QMessageBox
 
 from mic_eq.config import AppConfig, DeviceIdentity
 from mic_eq.config_parts.settings import q_from_bandwidth_octaves
+from mic_eq.ui import main_window
 from mic_eq.ui.main_window import PAGE_NAMES, MainWindow
 from mic_eq.ui.eq_quick_graph import EQGraphItem
 from mic_eq.ui.eq_graph import EQGraphGeometry
 from mic_eq.ui.level_meter import CLIP_FLAT_TOP_SAMPLES
 from mic_eq.ui.quick_meter import QuickMeterItem
 from mic_eq.ui.quick_shell import SettingControl
+from mic_eq.ui.theme import PALETTE
 
 
 @pytest.fixture
@@ -1532,3 +1534,192 @@ def test_a_held_return_toggles_the_health_page_once(quick_window, qapp) -> None:
     for _ in range(3):
         press(True)
     assert window.shell_page.currentIndex() == window.HEALTH_PAGE_INDEX
+
+
+class _Engine:
+    """The audio engine, faked: Start and Stop flip a flag and open no device."""
+
+    mute_error = False
+
+    def __init__(self, native) -> None:
+        self.native, self.running = native, False
+
+    def __getattr__(self, name):
+        return getattr(self.native, name)
+
+    def is_running(self) -> bool:
+        return self.running
+
+    def stop(self) -> None:
+        self.running = False
+
+    def set_output_mute(self, muted: bool) -> None:
+        if self.mute_error:
+            raise RuntimeError("unavailable")
+        self.native.set_output_mute(muted)
+
+
+@pytest.fixture
+def engine_window(quick_window, monkeypatch):
+    """The window with a faked engine and a route, driven by hand instead of by its timers."""
+    window = quick_window
+    window.meter_timer.stop()
+    window.diagnostics_timer.stop()
+    engine: Any = _Engine(window.processor)
+    window.processor = engine
+    window.input_choice.addItem("Microphone", DeviceIdentity(name="Microphone", direction="input"))
+    window.output_choice.addItem("Destination", DeviceIdentity(name="Destination", direction="output"))
+    monkeypatch.setattr(window, "_apply_input_preferences_for_current_route", lambda: None)
+
+    def start(processor: _Engine, *_devices: object) -> str:
+        processor.running = True
+        return "started"
+
+    monkeypatch.setattr("mic_eq.ui.main_window.start_processor_for_route", start)
+    return window, engine
+
+
+def _status_dot(window):
+    strip = window.centralWidget().rootObject().findChild(QObject, "statusStrip")
+    return next(child for child in strip.childItems() if child.width() == 8 and child.height() == 8)
+
+
+def _diagnostic_labels(window, **changes) -> None:
+    window._update_diagnostic_labels(**{
+        "diagnostics": {}, "latency_ms": 10.0, "dsp_time_ms": 0.2, "input_buf": 0, "output_buf": 0,
+        "rnnoise_buf": 0, "input_rms_db": -30.0, "output_rms_db": -30.0,
+        "input_callback_age_ms": 0, "output_callback_age_ms": 0, **changes,
+    })
+
+
+def test_the_status_dot_shows_sound_running_and_heard(engine_window, qapp) -> None:
+    window, engine = engine_window
+    dot = _status_dot(window)
+
+    def colour() -> str:
+        qapp.processEvents()
+        return dot.property("color").name()
+
+    def palette(name: str) -> str:
+        return QColor(getattr(PALETTE, name)).name()
+
+    assert colour() == palette("border_strong")
+    # Stop is offered while a login start waits for its devices, but nothing is running.
+    window._login_startup_deadline = time.monotonic() + 60
+    window._sync_processing_controls()
+    assert window.stop_btn_action.isEnabled()
+    assert window.shell_texts["transmission_status_label"].text.startswith("Transmission: Stopped")
+    assert colour() == palette("border_strong")
+    window._login_startup_deadline = None
+    window._sync_processing_controls()
+
+    window.start_btn_action.trigger()
+    assert colour() == palette("status_ok_text")
+    window.user_mute_checkbox_action.setChecked(True)
+    assert colour() == palette("status_warn_text")
+    window.user_mute_checkbox_action.setChecked(False)
+    assert colour() == palette("status_ok_text")
+    engine.mute_error = True
+    window.user_mute_checkbox_action.setChecked(True)
+    assert window.shell_texts["transmission_status_label"].text.endswith("Mute pending")
+    assert colour() == palette("status_warn_text")
+
+    window.stop_btn_action.trigger()
+    assert colour() == palette("border_strong")
+
+
+def test_the_message_says_so_when_the_engine_stops_by_itself(engine_window) -> None:
+    window, engine = engine_window
+    window.start_btn_action.trigger()
+    window._update_diagnostics()
+    assert window.status_message.text == "Processing: started"
+
+    engine.running = False
+    window._update_diagnostics()
+
+    assert "stopped" in window.status_message.text
+    assert window.start_btn_action.isEnabled() and not window.stop_btn_action.isEnabled()
+
+    # A stop the user asked for keeps its own message, and so does a start that never ran.
+    window.start_btn_action.trigger()
+    window.stop_btn_action.trigger()
+    window._update_diagnostics()
+    assert window.status_message.text == "Processing stopped"
+    window.status_message.showMessage("Login stopped: saved endpoints did not become available")
+    window.stop_btn_action.setEnabled(True)
+    window._update_diagnostics()
+    assert window.status_message.text.startswith("Login stopped")
+
+
+def test_the_device_grace_starts_over_after_stop_and_start(engine_window, monkeypatch) -> None:
+    window, _engine = engine_window
+    clock = [1000.0]
+    monkeypatch.setattr("mic_eq.ui.main_window.time.monotonic", lambda: clock[0])
+    never = 2**64 - 1  # what the engine reports before a device's first callback
+    row = window.shell_texts["callback_health_label"]
+
+    def tick() -> None:
+        _diagnostic_labels(window, input_callback_age_ms=never, output_callback_age_ms=never)
+
+    window.start_btn_action.trigger()
+    tick()
+    clock[0] += main_window.DEVICE_STARTUP_GRACE_SECONDS + 1
+    tick()
+    assert row.state == "warn"
+
+    window.stop_btn_action.trigger()
+    clock[0] += 1
+    window.start_btn_action.trigger()
+    tick()
+
+    assert row.state != "warn"
+
+
+def _meter_items(item):
+    for child in item.childItems():
+        if isinstance(child, QuickMeterItem):
+            yield child
+        yield from _meter_items(child)
+
+
+def test_a_muted_output_says_its_levels_are_from_before_the_mute(engine_window, qapp) -> None:
+    from PySide6.QtGui import QAccessible
+
+    window, _engine = engine_window
+    window.start_btn_action.trigger()
+    row = window.shell_texts["output_health_label"]
+    summary = window.shell_texts["health_summary_label"]
+    # With no limiter, full scale is a fault, unless nobody hears it.
+    loud = {
+        "diagnostics": {"output_true_peak_db": -30.4}, "output_rms_db": -36.0,
+        "output_at_full_scale": True, "limiter_enabled": False,
+    }
+    root = window.centralWidget().rootObject()
+    item = next(child for child in _meter_items(root) if child.property("source") is window.output_meter)
+
+    def description() -> str:
+        qapp.processEvents()
+        return QAccessible.queryAccessibleInterface(item).text(QAccessible.Text.Description)
+
+    was_active = QAccessible.isActive()
+    QAccessible.setActive(True)
+    try:
+        _diagnostic_labels(window, **loud)
+        assert row.state == "bad" and summary.state == "bad"
+        assert description() == ""
+
+        window.user_mute_checkbox_action.setChecked(True)
+        _diagnostic_labels(window, **loud)
+        assert (row.text, row.state) == (
+            "Output: Muted (before mute: -36 dB average, peaks -30.4 dB)", "info",
+        )
+        assert summary.state == "ok"
+        assert "before the mute" in description()
+
+        # The engine's own report counts as well.
+        window.user_mute_checkbox_action.setChecked(False)
+        assert description() == ""
+        _diagnostic_labels(window, **{**loud, "diagnostics": {**loud["diagnostics"], "output_muted": True}})
+        assert row.state == "info"
+    finally:
+        QAccessible.setActive(was_active)

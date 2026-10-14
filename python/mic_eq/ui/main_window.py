@@ -222,6 +222,13 @@ def _ago_text(age_ms: int | None, *, output: bool = False) -> str:
     return f"{age_ms} ms ago"
 
 
+def _output_muted(window) -> bool:
+    """Whether a mute the engine accepted is silencing the output (not one still pending)."""
+    return not window.__dict__.get("_output_mute_error") and bool(
+        window.__dict__.get("user_muted", False) or window.__dict__.get("_temporary_mute_reasons", set())
+    )
+
+
 def _level_reading(processor, name: str) -> float | None:
     """One finite number from the audio engine, or ``None`` when it cannot be read."""
     try:
@@ -573,11 +580,14 @@ class MainWindow(QMainWindow):
         self._set_health_chip(
             "health_summary_label",
             startup_message or TEXT_SPECS["health_summary_label"].text,
-            "warning" if startup_message else "idle",
+            "warn" if startup_message else "idle",
         )
         for key in HEALTH_DECISION_KEYS + HEALTH_LAYOUT_KEYS:
             self._set_health_chip(key, TEXT_SPECS[key].text, "idle")
-        self.shell_texts["dropped_label"].update(tip=DROPPED_DIAGNOSTICS_TOOLTIP)
+        # What the last reading explained must not outlive it.
+        self.shell_texts["health_advice_label"].update(text=TEXT_SPECS["health_advice_label"].text)
+        for key in ("health_summary_label", "recovery_diag_label", "dropped_label"):
+            self.shell_texts[key].update(tip=TEXT_SPECS[key].tip)
 
     @staticmethod
     def _diag_token(label: str, value) -> str | None:
@@ -771,13 +781,18 @@ class MainWindow(QMainWindow):
         mode = self._processing_mode()
         mode_label = next(label for label, value in PROCESSING_MODE_OPTIONS if value == mode)
         transmission = f"{'Running' if running else 'Stopped'} / {mode_label}"
-        if self.__dict__.get("_output_mute_error"):
+        muted = _output_muted(self)
+        pending = bool(self.__dict__.get("_output_mute_error"))
+        if pending:
             transmission += " / Mute pending"
-        elif self.__dict__.get("user_muted", False) or self.__dict__.get(
-            "_temporary_mute_reasons", set()
-        ):
+        elif muted:
             transmission += " / Muted"
-        self.shell_texts["transmission_status_label"].update(text=f"Transmission: {transmission}")
+        # The status dot follows this state: green while heard, amber while muted.
+        self.shell_texts["transmission_status_label"].update(
+            text=f"Transmission: {transmission}",
+            status="idle" if not running else "warn" if muted or pending else "ok",
+        )
+        self.output_meter.set_muted(muted)
         tray = self.__dict__.get("_tray_icon")
         if tray is not None:
             tray.setToolTip(build_tray_tooltip(
@@ -2712,6 +2727,7 @@ class MainWindow(QMainWindow):
             self.output_choice.setEnabled(True)
             self.refresh_btn_action.setEnabled(True)
             self._stream_recovery.mark_processing_stopped()
+            self._device_wait_since = None
             self._sync_meter_timer()
             self._update_session_summary()
             if DEBUG:
@@ -3278,7 +3294,13 @@ class MainWindow(QMainWindow):
         if callable(sync_meters):
             sync_meters()
         if not self.processor.is_running():
+            if self._stream_recovery.processing_started_at is not None and self.stop_btn_action.isEnabled():
+                # Stop was never pressed, so the engine stopped by itself.
+                self.status_message.showMessage(
+                    "Processing stopped unexpectedly. Check the audio devices, then press Start."
+                )
             self._stream_recovery.mark_processing_stopped()
+            self._device_wait_since = None
             self._last_backend_warning = None
             self._reset_health_labels()
             # A failed native restart intentionally leaves recovery pending
@@ -3514,6 +3536,7 @@ class MainWindow(QMainWindow):
         )
 
         output_health_text, output_health_state = build_output_health_state(
+            muted=bool(diagnostics.get("output_muted", False)) or _output_muted(self),
             rms_db=output_rms_db,
             at_full_scale=output_at_full_scale,
             limiter_enabled=limiter_enabled,
@@ -3771,7 +3794,10 @@ class MainWindow(QMainWindow):
         state = next((level for level in ("bad", "warn", "ok") if level in levels), "idle")
         if self.__dict__.get("_output_mute_error") and state in {"ok", "idle"}:
             state = "warn"
-        issues = [chip.text for chip in chips if chip.state in {"bad", "warn"}]
+        # The chip's colour is its worst row, so its text names that row's problem.
+        issues = [chip.text for chip in chips if chip.state == "bad"] or [
+            chip.text for chip in chips if chip.state == "warn"
+        ]
         text = issues[0] if issues else f"Health: {state.upper()}"
         self._set_health_chip("health_summary_label", text, state)
         advice = advice_for(issues[0]) if issues else ""

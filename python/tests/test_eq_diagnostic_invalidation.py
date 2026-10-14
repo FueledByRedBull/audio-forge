@@ -1,9 +1,12 @@
-# pyright: reportMissingImports=false
-# (the sibling test modules are found by pytest at run time)
-import test_eq_editing_state as eq_editing
-from test_eq_editing_state import SLOPES, TYPES, edit, eq_control
+from typing import Any
+from unittest.mock import Mock
 
-quick_window = eq_editing.quick_window
+from mic_eq.config import EQ_SLOPES_DB_PER_OCTAVE
+from mic_eq.ui.eq_controls import EQControl
+from mic_eq.ui.eq_state import EQ_FILTER_OPTIONS, EQState
+
+TYPES = [choice for _name, choice in EQ_FILTER_OPTIONS]
+SLOPES = sorted(EQ_SLOPES_DB_PER_OCTAVE)
 
 
 def _bands() -> list[tuple[float, float, float]]:
@@ -27,13 +30,17 @@ def _diagnostics() -> dict[str, float | str]:
     }
 
 
-def test_manual_eq_edits_invalidate_diagnostics_and_fresh_results_restore_them(
-    quick_window, qapp
-):
-    window = quick_window
-    state = window.eq_state
-    shown = eq_control(window, "diagnostics")
+def test_manual_eq_edits_invalidate_diagnostics_and_fresh_results_restore_them(qapp):
+    state = EQState(Mock())
+    shown: Any = EQControl(state, "diagnostics")
     diagnostics = _diagnostics()
+
+    def band(key: str) -> Any:
+        return EQControl(state, key, 4)
+
+    def edit(control: EQControl, value: float) -> None:
+        control.setValue(value)
+        control.released()
 
     def apply_candidate() -> None:
         state.apply_auto_eq_results(_bands(), diagnostics=diagnostics)
@@ -42,9 +49,6 @@ def test_manual_eq_edits_invalidate_diagnostics_and_fresh_results_restore_them(
     def assert_cleared() -> None:
         assert state.auto_eq_diagnostics is None
         assert shown.text == "Auto-EQ: no calibration diagnostics"
-
-    def band(key: str):
-        return eq_control(window, key, 4)
 
     def edit_gain() -> None:
         edit(band("gain"), band("gain").value + 1)
@@ -62,7 +66,7 @@ def test_manual_eq_edits_invalidate_diagnostics_and_fresh_results_restore_them(
         lambda: band("enabled").click(),
         lambda: edit(band("frequency"), 1100.0),
         lambda: (state.edit_curve_band(4, 2100.0, 2.0), state.flush()),
-        lambda: eq_control(window, "toggle").click(),
+        lambda: EQControl(state, "enabled").click(),
     )
 
     for change in edits:

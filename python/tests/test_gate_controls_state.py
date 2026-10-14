@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -28,7 +29,7 @@ def _control(state: GateState, key: str) -> SettingControl:
     return SettingControl(state, "gate", key, None)
 
 
-def window_gate_control(window, label: str) -> SettingControl:
+def window_gate_control(window, label: str) -> Any:
     """The control the scene's gate card binds for ``label``, for example "Threshold"."""
     card = window.quick_bridge.model["stages"][1]
     return next(row["proxy"] for row in card["rows"] + card["advanced"] if row["label"] == label)
@@ -61,14 +62,20 @@ def test_vad_threshold_control_matches_native_range_and_endpoint(qapp):
     assert native.settings["vad_threshold"] == pytest.approx(0.7)
     assert control.value == pytest.approx(0.7)
     # A drag or typed value past the end stops at the endpoint.
+    # The control only edits while a VAD mode is selected.
+    state.set_settings({"gate_mode": 1, "vad_threshold": 0.5})
+    assert control.enabled
+    assert control.value == pytest.approx(0.5)
     control.setValue(0.95)
     control.released()
     assert state.get_settings()["vad_threshold"] == pytest.approx(0.7)
 
 
-def test_bulk_gate_apply_propagates_vad_native_failure(qapp):
+def test_bulk_gate_apply_propagates_vad_native_failure(qapp, monkeypatch):
     native = RecordingProcessor()
-    native.set_vad_threshold = Mock(side_effect=RuntimeError("VAD write failed"))
+    monkeypatch.setattr(
+        native, "set_vad_threshold", Mock(side_effect=RuntimeError("VAD write failed")), raising=False
+    )
     state = GateState(native)
 
     with pytest.raises(RuntimeError, match="VAD write failed"):
@@ -143,6 +150,10 @@ def test_vad_only_displays_confidence_threshold_and_moves_marker(qapp):
     mode = _control(state, "gate_mode")
     state.set_settings({"gate_mode": 2, "vad_threshold": 0.35})
     state.update_vad_confidence(0.4)
+    # Telemetry reaches the meter the scene draws.
+    assert meters.confidence.measurement_available
+    assert meters.confidence.confidence == pytest.approx(0.4)
+    assert meters.confidence.threshold == pytest.approx(0.35)
     before = _render(meters.confidence)
 
     assert "VAD Threshold: 0.35" in str(status.text)
@@ -157,6 +168,11 @@ def test_vad_only_displays_confidence_threshold_and_moves_marker(qapp):
     assert before != after
     assert meters.confidence.threshold == 0.7
     assert "VAD Threshold: 0.70" in str(status.text)
+
+    state.update_vad_confidence(None)
+    assert not meters.confidence.measurement_available
+    state.update_vad_confidence(0.4)
+    assert meters.confidence.confidence == pytest.approx(0.4)
 
     mode.setIndex(1)
     assert state.presentation()["auto_threshold_text"] == "Auto Threshold"

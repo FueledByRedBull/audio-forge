@@ -255,7 +255,7 @@ def test_accepted_full_voice_setup_is_one_undo_transaction(
         assert accepted.count() == 1
         assert len(window.config.calibration_results) == 1
         accepted_message = information_messages[-1].casefold()
-        assert "accepted" in accepted_message
+        assert "passed" in accepted_message
         assert "listening comparison" not in accepted_message
         assert "was heard" not in accepted_message
         assert window.config.calibration_results[0].verified_stages == (
@@ -302,8 +302,8 @@ def test_voice_setup_rejects_a_different_route_before_applying(
         dialog._apply_setup()
         assert window._get_current_preset().to_dict() == before
         assert messages[-1] == (
-            "The audio route, input settings or processing mode changed after capture; "
-            "no changes were applied."
+            "The microphone or its settings changed after you recorded. "
+            "Record again so the settings match your microphone. Nothing was changed."
         )
     finally:
         dialog.reject()
@@ -408,12 +408,13 @@ def test_an_unreadable_verification_take_restores_and_offers_another_try(
         assert dialog.setup_state == "completed"
         assert window._get_current_preset().to_dict() == before
         assert dialog.warning_label.text() == (
-            "The recording could not be read. Record it again."
+            "The recording held invalid audio data, which usually means the audio "
+            "driver glitched. Restart processing and record again."
         )
         assert dialog.start_button.text() == "Apply & Verify Again"
         assert dialog.start_button.isEnabled()
         assert dialog.preview_verification_audio is None
-        assert dialog.phase_label.text() == "Verification recording failed; settings restored"
+        assert dialog.phase_label.text() == "Second recording failed; previous settings put back"
 
         dialog._on_start_clicked()
         assert dialog.setup_state == "verification_ready"
@@ -426,10 +427,18 @@ DULLING_SENTENCE = (
     "noise suppression is dulling consonants by about 8 dB; "
     "lower its strength or use DeepFilterNet LL"
 )
-ADVICE = f"Advice: {DULLING_SENTENCE}."
+ADVICE = (
+    "Noise suppression is dulling your S and T sounds by about 8 dB. "
+    "Lower its strength or try DeepFilterNet LL."
+)
 METRICS = (
-    "Target error 0.8→0.9 dB; compressor p95 6.0 dB; "
-    "true peak -120.0 dBTP; SNR change -5.0 dB."
+    "Tone: 0.8 dB from the preset before, 0.9 dB after. "
+    "The compressor evened out your voice by 6.0 dB. The loudest peak is -120.0 dB. "
+    "Your voice against the background noise changed by -5.0 dB."
+)
+OUT_OF_ADJUSTMENTS = (
+    "Setup could not make the settings safe on your recording after three adjustments. "
+    "Lower the microphone level and record again."
 )
 FIRST_REASON = {
     "accept": "repeatability and full-chain DSP constraints passed",
@@ -489,27 +498,28 @@ def _last_take(dialog, _speech, _monkeypatch) -> None:
 # decision, setup of the dialog's state, the text just before any advice, whether it is advised
 DULLING_MESSAGES = [
     pytest.param(
-        "accept", None, "closing the comparison restores the original settings.", True,
+        "accept", None, "closing the comparison puts your old settings back.", True,
         id="accept",
     ),
     pytest.param("rollback", None, METRICS, True, id="rollback"),
     pytest.param(
         "reduce", _reduce_out_of_adjustments,
-        "Verification made no safe progress after three automatic adjustments.", True,
+        OUT_OF_ADJUSTMENTS, True,
         id="reduce-out-of-adjustments",
     ),
     pytest.param(
         "reduce", _reduce_without_progress,
-        "Verification made no measurable progress after the previous adjustment.", True,
+        "The last adjustment did not help. Lower the microphone level and record again.", True,
         id="reduce-without-progress",
     ),
     pytest.param(
-        "reduce", _reduce_that_changes_nothing, "Verification stopped: no progress.", True,
+        "reduce", _reduce_that_changes_nothing, "Setup could not adjust the settings any further. Lower the microphone level and record again.", True,
         id="reduce-that-changes-nothing",
     ),
     pytest.param("retry", None, METRICS, False, id="retry"),
     pytest.param(
-        "retry", _last_take, "Maximum verification attempts reached.", False, id="last-retry"
+        "retry", _last_take, "Setup stopped after three tries.", False,
+        id="last-retry"
     ),
 ]
 
@@ -532,11 +542,11 @@ def test_the_dulling_advice_ends_the_message_as_its_own_sentence_or_is_left_out(
     assert ".;" not in text
     if advised and has_advice:
         assert text.endswith(f"{tail} {ADVICE}")
-        assert text.count(DULLING_SENTENCE) == 1
+        assert text.count(ADVICE) == 1
     else:
         assert text.endswith(tail)
         assert DULLING_SENTENCE not in text
-        assert "Advice" not in text
+        assert "dulling" not in text
 
 
 @pytest.mark.parametrize("has_advice", [True, False], ids=["advice-given", "no-advice"])
@@ -574,9 +584,9 @@ def test_the_verified_box_carries_the_dulling_advice_past_the_comparison(
 
     assert len(boxes) == 1
     if has_advice:
-        assert f"\n\n{ADVICE}\n\n" in boxes[0]
+        assert f"\n\n{ADVICE}" in boxes[0]
     else:
-        assert "Advice" not in boxes[0]
+        assert "dulling" not in boxes[0]
         assert DULLING_SENTENCE not in boxes[0]
 
 
@@ -768,8 +778,8 @@ def test_the_analysis_builds_the_typed_candidate_eq_from_what_the_dialog_sends(
 @pytest.mark.parametrize(
     ("apply_recommended", "text", "style"),
     [
-        (True, "High confidence in these settings (92%).", "ok"),
-        (False, "These settings are advisory only (analysis confidence 92%).", "warn"),
+        (True, "Good capture. All checks passed.", "ok"),
+        (False, "Good capture. These settings did not pass every check, so they are suggestions only.", "warn"),
     ],
     ids=["validated", "advisory"],
 )
@@ -789,7 +799,7 @@ def test_the_summary_row_does_not_call_advisory_settings_highly_confident(
         assert dialog.overall_label.text() == text
         assert dialog.overall_label.styleSheet() == status_chip_style(style)
         assert dialog.warning_label.text().startswith(
-            "Review the validated settings" if apply_recommended else "Advisory recommendations only:"
+            "All checks passed." if apply_recommended else "These settings did not pass every check"
         )
     finally:
         dialog.reject()
@@ -820,6 +830,17 @@ def test_the_review_page_keeps_the_proposal_after_the_verification_take(
         dialog.deleteLater()
 
 
+def _start_noise_take(dialog: VoiceSetupDialog) -> None:
+    """Pass the level check with a comfortable voice, then start the room-noise take."""
+    t = np.arange(3 * 48_000) / 48_000
+    dialog._on_start_clicked()
+    dialog._capture_start_timer.stop()
+    dialog._on_recording_complete((0.3 * np.sin(2 * np.pi * 180.0 * t)).astype(np.float32))
+    assert dialog.setup_state == "level_result"
+    dialog._on_start_clicked()
+    dialog._capture_start_timer.stop()
+
+
 @pytest.mark.parametrize("capture", ["noise", "voice"])
 def test_a_rejected_capture_gives_the_target_controls_back(real_main_window, monkeypatch, capture) -> None:
     window = real_main_window
@@ -829,8 +850,10 @@ def test_a_rejected_capture_gives_the_target_controls_back(real_main_window, mon
         if capture == "voice":
             dialog.noise_audio = np.zeros(4800, dtype=np.float32)
             dialog.setup_state = "noise_ready"
-        dialog._on_start_clicked()
-        dialog._capture_start_timer.stop()
+            dialog._on_start_clicked()
+            dialog._capture_start_timer.stop()
+        else:
+            _start_noise_take(dialog)
         assert dialog.setup_state == f"{capture}_recording"
         assert not dialog.dynamics_group.isEnabled()
         assert not dialog.target_lufs_spin.isEnabled()
@@ -850,8 +873,7 @@ def test_a_clipped_room_noise_take_leaves_the_target_page_usable(real_main_windo
     dialog = VoiceSetupDialog(parent=real_main_window)
     monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: True)
     try:
-        dialog._on_start_clicked()
-        dialog._capture_start_timer.stop()
+        _start_noise_take(dialog)
         dialog._on_recording_complete(np.ones(48_000, dtype=np.float32))
 
         assert dialog.setup_state == "idle"
@@ -904,7 +926,8 @@ def test_a_context_change_during_setup_names_everything_the_context_holds(
         dialog._begin_recording_capture()
 
         assert dialog.warning_label.text() == (
-            "The audio route, input settings or processing mode changed during setup."
+            "The audio route, input settings or processing mode changed during setup. "
+            "Start the setup again without changing them."
         )
         assert dialog.setup_state == "noise_ready"
     finally:
@@ -936,7 +959,7 @@ def test_declining_the_device_switch_keeps_the_state_the_dialog_had(real_main_wi
         assert dialog.start_button.isEnabled()
         assert dialog.curve_combo.isEnabled() == curve_enabled
         assert dialog.warning_label.text() == (
-            "Recording canceled; audio stays on the current devices."
+            "Setup canceled. The microphone and speakers that were already running were kept."
         )
     finally:
         dialog.reject()
@@ -1187,7 +1210,7 @@ def test_the_confidence_row_follows_the_verification_and_the_restore(
         QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes
     )
     _apply_complete_candidate(window, dialog, result)
-    advisory = "These settings are advisory only (analysis confidence 92%)."
+    advisory = "Good capture. These settings did not pass every check, so they are suggestions only."
     _comparison_dialog(monkeypatch, {})
     try:
         assert dialog.overall_label.text() == advisory
@@ -1196,7 +1219,7 @@ def test_the_confidence_row_follows_the_verification_and_the_restore(
 
         assert dialog.setup_state == "final_comparison_ready"
         assert dialog.overall_label.text() == (
-            "These settings passed verification (analysis confidence 92%)."
+            "These settings passed the check on your second recording."
         )
 
         dialog._compare_recording()
@@ -1242,7 +1265,7 @@ def test_a_failed_verification_take_clears_the_recording_status(
         dialog._on_recording_failed("The microphone stopped.")
 
         assert dialog.setup_state == "completed"
-        assert dialog.phase_label.text() == "Verification recording failed; settings restored"
+        assert dialog.phase_label.text() == "Second recording failed; previous settings put back"
         assert dialog.retake_btn.isVisibleTo(dialog)
         assert dialog.compare_button.isEnabled()
     finally:
@@ -1301,7 +1324,7 @@ def test_the_tone_line_and_confidence_row_follow_apply_and_restore(
     monkeypatch.setattr(
         QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes
     )
-    advisory = "These settings are advisory only (analysis confidence 92%)."
+    advisory = "Good capture. These settings did not pass every check, so they are suggestions only."
     tone = "Tone: max correction 1.0 dB\nBefore: max correction 0.0 dB"
     note = "\nThe EQ is off now; Apply will switch it on."
     try:
@@ -1410,19 +1433,52 @@ def test_a_stale_final_candidate_restores_the_review_and_ends_the_sentence(
     _apply_complete_candidate(window, dialog, result)
     try:
         dialog._on_verification_complete(_verdict_with_dulling_advisory("accept", advised=False))
-        assert "passed verification" in dialog.overall_label.text()
+        assert "passed the check" in dialog.overall_label.text()
         monkeypatch.setattr(window, "_calibration_context_key", lambda: "route-b")
 
         dialog._finalize_verified_setup()
 
         assert dialog.setup_state == "completed"
         assert dialog.overall_label.text() == (
-            "These settings are advisory only (analysis confidence 92%)."
+            "Good capture. These settings did not pass every check, so they are suggestions only."
         )
         assert dialog.warning_label.text() == (
-            "The audio route, input settings or processing mode changed after capture. "
-            "Previous processing was restored."
+            "The microphone or its settings changed after you recorded. "
+            "Record again so the settings match your microphone. "
+            "Your previous settings were put back."
         )
     finally:
         dialog.reject()
         dialog.deleteLater()
+
+
+@pytest.mark.parametrize("restored", [True, False], ids=["restored", "restore-failed"])
+@pytest.mark.parametrize("last_take", [False, True], ids=["rollback", "third-bad-take"])
+def test_every_rollback_text_follows_the_actual_restore_result(
+    real_main_window, monkeypatch, restored, last_take
+) -> None:
+    dialog, _speech = _verifying_dialog(real_main_window)
+    monkeypatch.setattr(dialog, "_restore_pre_setup_snapshot", lambda: restored)
+    try:
+        if last_take:
+            dialog._verification_bad_capture_count = 2
+        dialog._on_verification_complete(
+            _verdict_with_dulling_advisory("retry" if last_take else "rollback", advised=False)
+        )
+        phase, warning = dialog.phase_label.text(), dialog.warning_label.text()
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+    if restored:
+        assert phase.endswith("previous settings put back")
+        assert "could not" not in warning
+    else:
+        assert phase.endswith("previous settings not fully put back")
+        assert "Your previous settings could not be fully put back; press Retake to try again." in warning
+        assert "were put back" not in warning and "put your previous settings back" not in warning
+    if last_take:
+        assert "Setup stopped after three tries." in warning
+    else:
+        assert phase.startswith("The new settings did not pass the check;")
+        assert ("Your previous settings were put back." in warning) == restored

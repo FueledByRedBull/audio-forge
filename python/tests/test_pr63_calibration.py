@@ -544,12 +544,12 @@ def test_eq_apply_requires_snapshot_and_reports_restore_failure(qapp, monkeypatc
         monkeypatch.setattr(owner, "_get_current_preset", fail_apply_snapshot)
         dialog._apply_eq_settings()
         assert owner.eq_state.apply_calls == 0
-        assert "no changes were applied" in messages[-1]
+        assert "nothing was changed" in messages[-1]
 
         monkeypatch.setattr(owner, "_get_current_preset", get_current_preset)
         owner.eq_state.restore_error = True
         dialog._apply_eq_settings()
-        assert "EQ restoration failed" in messages[-1]
+        assert "could not be fully put back (restore unavailable)" in messages[-1]
     finally:
         dialog.reject()
         owner.close()
@@ -575,7 +575,7 @@ def test_voice_rollback_uses_shared_transaction_and_keeps_failed_snapshot(
         assert dialog._pre_setup_snapshot is snapshot
         assert len(owner.apply_calls) == 1
         dialog._on_verification_failed("verification failed")
-        assert "restore is incomplete" in dialog.phase_label.text()
+        assert "not fully put back" in dialog.phase_label.text()
 
         owner.fail_apply = False
         assert dialog._restore_pre_setup_snapshot() is True
@@ -679,7 +679,8 @@ def test_eq_candidate_rejects_changed_route_context(qapp, monkeypatch) -> None:
         dialog._apply_eq_settings()
         assert owner.eq_state.apply_calls == 0
         assert messages[-1] == (
-            "The audio route or input settings changed after capture; no changes were applied."
+            "The microphone or its settings changed after you recorded. "
+            "Record again so the settings match your microphone. Nothing was changed."
         )
     finally:
         dialog.reject()
@@ -757,7 +758,7 @@ def test_voice_close_and_reset_block_when_restore_owner_is_missing(qapp, monkeyp
     assert dialog._analysis_generation > generation
     assert not dialog._close_requested
     assert dialog._pre_setup_snapshot is not None
-    assert "could not be fully restored" in dialog.warning_label.text()
+    assert "could not be fully put back" in dialog.warning_label.text()
     dialog._reset_setup_ui()
     assert dialog._pre_setup_snapshot is not None
     dialog._pre_setup_snapshot = None

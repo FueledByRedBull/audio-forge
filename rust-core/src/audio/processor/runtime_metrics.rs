@@ -29,6 +29,37 @@ impl AudioProcessor {
         f32::from_bits(self.output_crest_factor_db.load(Ordering::Relaxed))
     }
 
+    // Peak "since last read" values are linear amplitudes. Each take swaps the
+    // atomic back to 0, so a peak the DSP thread publishes between the read
+    // and the reset lands in the next take. Only one caller may take them.
+
+    /// Largest absolute input sample since the previous take (0.0 = silence).
+    pub fn take_input_peak_since_read(&self) -> f32 {
+        f32::from_bits(self.input_peak_hold.swap(0, Ordering::Relaxed))
+    }
+
+    /// Largest absolute sample of the OUT meter tap (before the final
+    /// true-peak limiter and clamp) since the previous take.
+    pub fn take_output_pre_limiter_peak_since_read(&self) -> f32 {
+        f32::from_bits(self.output_pre_limiter_peak_hold.swap(0, Ordering::Relaxed))
+    }
+
+    /// Largest absolute sample queued for the output device (after the final
+    /// limiter, clamp and fade) since the previous take.
+    pub fn take_output_peak_since_read(&self) -> f32 {
+        f32::from_bits(self.output_final_peak_hold.swap(0, Ordering::Relaxed))
+    }
+
+    /// Input samples at or above full scale, cumulative since start.
+    pub fn get_input_full_scale_count(&self) -> u64 {
+        self.input_full_scale_count.load(Ordering::Relaxed)
+    }
+
+    /// Queued output samples at or above full scale, cumulative since start.
+    pub fn get_output_full_scale_count(&self) -> u64 {
+        self.output_full_scale_count.load(Ordering::Relaxed)
+    }
+
     pub fn get_output_short_term_lufs(&self) -> f32 {
         f32::from_bits(self.output_short_term_lufs.load(Ordering::Relaxed))
     }

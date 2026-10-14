@@ -4,7 +4,7 @@ De-esser control panel.
 Controls sibilance reduction stage placed between noise suppression and EQ.
 """
 
-from PySide6.QtCore import QSignalBlocker, Qt, Signal
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QGridLayout,
@@ -36,8 +36,6 @@ from .layout_constants import (
 
 class DeEsserPanel(QWidget):
     """De-esser parameter control panel."""
-
-    configurationEdited = Signal(str)
 
     def __init__(self, processor, deesser_state: DeEsserState | None = None, meters: ProcessingMeters | None = None):
         super().__init__()
@@ -300,7 +298,6 @@ class DeEsserPanel(QWidget):
                 )
                 slider.sliderReleased.connect(self.deesser_state.flush)
         self.deesser_state.changed.connect(self._render_settings)
-        self.deesser_state.configurationEdited.connect(self.configurationEdited.emit)
         self._render_settings()
 
     def _render_settings(self) -> None:

@@ -403,6 +403,12 @@ impl AudioProcessor {
             .store(0, Ordering::Relaxed);
         self.input_backlog_dropped_samples
             .store(0, Ordering::Relaxed);
+        self.input_peak_hold.store(0, Ordering::Relaxed);
+        self.input_full_scale_count.store(0, Ordering::Relaxed);
+        self.output_pre_limiter_peak_hold
+            .store(0, Ordering::Relaxed);
+        self.output_final_peak_hold.store(0, Ordering::Relaxed);
+        self.output_full_scale_count.store(0, Ordering::Relaxed);
         self.clip_event_count.store(0, Ordering::Relaxed);
         self.clip_peak_db
             .store((-120.0_f32).to_bits(), Ordering::Relaxed);
@@ -699,6 +705,11 @@ impl AudioProcessor {
         let input_rms = Arc::clone(&self.input_rms);
         let input_crest_factor_db = Arc::clone(&self.input_crest_factor_db);
         let output_peak = Arc::clone(&self.output_peak);
+        let input_peak_hold = Arc::clone(&self.input_peak_hold);
+        let input_full_scale_count = Arc::clone(&self.input_full_scale_count);
+        let output_pre_limiter_peak_hold = Arc::clone(&self.output_pre_limiter_peak_hold);
+        let output_final_peak_hold = Arc::clone(&self.output_final_peak_hold);
+        let output_full_scale_count = Arc::clone(&self.output_full_scale_count);
         let output_rms = Arc::clone(&self.output_rms);
         let output_crest_factor_db = Arc::clone(&self.output_crest_factor_db);
         let output_short_term_lufs = Arc::clone(&self.output_short_term_lufs);
@@ -936,8 +947,12 @@ impl AudioProcessor {
                                   peak_atomic: &AtomicU32,
                                   rms_atomic: &AtomicU32,
                                   crest_atomic: &AtomicU32,
-                                  short_term: Option<(&mut f32, &AtomicU32)>| {
+                                  short_term: Option<(&mut f32, &AtomicU32)>,
+                                  peak_hold: Option<&AtomicU32>| {
                 let stats = update_meter_block_stats(buffer, rms_acc, meter_coeff);
+                if let Some(peak_hold) = peak_hold {
+                    record_level_extremes(buffer, peak_hold, None);
+                }
                 peak_atomic.store(stats.peak_db.to_bits(), Ordering::Relaxed);
                 rms_atomic.store(stats.rms_db.to_bits(), Ordering::Relaxed);
                 crest_atomic.store(stats.crest_factor_db.to_bits(), Ordering::Relaxed);
@@ -1210,6 +1225,8 @@ impl AudioProcessor {
                     last_output_write_time: last_output_write_time.as_ref(),
                     output_clip_event_count: output_clip_event_count.as_ref(),
                     output_clip_peak_db: output_clip_peak_db.as_ref(),
+                    output_final_peak_hold: output_final_peak_hold.as_ref(),
+                    output_full_scale_count: output_full_scale_count.as_ref(),
                     output_true_peak_event_count: output_true_peak_event_count.as_ref(),
                     output_true_peak_db: output_true_peak_db.as_ref(),
                     output_true_peak_input_db: output_true_peak_input_db.as_ref(),
@@ -1495,6 +1512,14 @@ impl AudioProcessor {
                             consecutive_idle_wakeups = 0;
 
                             let buffer = temp_buffer.as_mut_slice();
+                            // Closest tap to the converter in every processing
+                            // path: after channel mix-down and any resampling,
+                            // before sanitizing, the pre-filter and cleanup.
+                            record_level_extremes(
+                                buffer,
+                                input_peak_hold.as_ref(),
+                                Some(input_full_scale_count.as_ref()),
+                            );
 
                             // Start DSP timing
                             let dsp_start = Instant::now();
@@ -1600,6 +1625,7 @@ impl AudioProcessor {
                                     &input_rms,
                                     input_crest_factor_db.as_ref(),
                                     None,
+                                    None,
                                 );
 
                                 if recording_active.load(Ordering::Relaxed) {
@@ -1623,6 +1649,7 @@ impl AudioProcessor {
                                         &mut output_short_term_power,
                                         output_short_term_lufs.as_ref(),
                                     )),
+                                    Some(&output_pre_limiter_peak_hold),
                                 );
                                 compressor_gain_reduction
                                     .store(0.0_f32.to_bits(), Ordering::Relaxed);
@@ -1749,6 +1776,7 @@ impl AudioProcessor {
                                 &input_rms,
                                 input_crest_factor_db.as_ref(),
                                 None,
+                                None,
                             );
 
                             if processing_path == ProcessingPath::Bypass {
@@ -1763,6 +1791,7 @@ impl AudioProcessor {
                                         &mut output_short_term_power,
                                         output_short_term_lufs.as_ref(),
                                     )),
+                                    Some(&output_pre_limiter_peak_hold),
                                 );
                                 compressor_gain_reduction
                                     .store(0.0_f32.to_bits(), Ordering::Relaxed);
@@ -2100,6 +2129,7 @@ impl AudioProcessor {
                                                     &mut output_short_term_power,
                                                     output_short_term_lufs.as_ref(),
                                                 )),
+                                                Some(&output_pre_limiter_peak_hold),
                                             );
 
                                             // Send processed samples to output
@@ -2162,6 +2192,7 @@ impl AudioProcessor {
                                             &mut output_short_term_power,
                                             output_short_term_lufs.as_ref(),
                                         )),
+                                        Some(&output_pre_limiter_peak_hold),
                                     );
 
                                     // Send to output

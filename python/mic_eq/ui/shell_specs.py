@@ -26,8 +26,8 @@ PROCESSING_MODE_OPTIONS = (
     ("Raw Monitor", "raw"),
 )
 DROPPED_DIAGNOSTICS_TOOLTIP = (
-    "Dropped samples and warning-signaling runtime counters.\n"
-    "Right-click to reset dropped samples."
+    "Audio that was dropped, with the engine's other warning counters.\n"
+    "Right-click to reset the dropped-sample count."
 )
 
 
@@ -77,43 +77,43 @@ TEXT_SPECS = {
     "input_health_label": _TextSpec(
         "Input: --",
         "Input health",
-        "Input level decision from the current meter and clipping counter.",
+        "How loud your microphone peaks over the last few seconds. Warns before it reaches full scale and clips.",
     ),
     "output_health_label": _TextSpec(
         "Output: --",
         "Output health",
-        "Final output protection state. Warns on recent output clipping.",
+        "Whether the sound leaving AudioForge is at risk of being cut off, and how hard the limiter is working.",
     ),
     "gate_health_label": _TextSpec(
         "Gate: --",
         "Gate health",
-        "Gate stability state. Warns when rapid open/close chatter is detected.",
+        "Warns when the noise gate opens and closes rapidly, which makes your voice stutter.",
     ),
     "backend_diag_label": _TextSpec(
         "Backend: --",
         "Noise suppression backend health",
-        "Active suppression backend state and fallback health.",
+        "Which noise-suppression model is running and whether it is working.",
     ),
     "callback_health_label": _TextSpec(
-        "Callbacks: --",
-        "Audio callback health",
-        "Input/output callback heartbeat age. Warns when callbacks look stale.",
+        "Device activity: --",
+        "Audio device activity",
+        "How long ago the input and output devices last sent or asked for sound. Warns when a device looks stuck.",
     ),
     "underrun_health_label": _TextSpec(
-        "Underruns: --",
-        "Output underrun health",
-        "Output underrun health. Warns on recent or consecutive underruns.",
+        "Dropouts: --",
+        "Output dropout health",
+        "Times the output ran out of audio and the sound gapped. Warns on recent or repeated dropouts.",
     ),
     "latency_label": _TextSpec(
         "Latency: --",
         "Processing latency",
-        "Total processing latency and smoothed DSP time per processing chunk.",
+        "The delay between your voice and the output, and how long processing takes for each small chunk of audio.",
     ),
     "buffer_label": _TextSpec(
         "Buffer: --",
         "Audio buffer health",
-        "Input plus suppression buffer health.\n"
-        "OK is healthy, WARN indicates buildup, BAD indicates heavy backlog.",
+        "Audio waiting to be processed.\n"
+        "OK is normal, FILLING UP means a build-up, BACKED UP means a large backlog.",
     ),
     "dropped_label": _TextSpec(
         "Drops: --", "Dropped audio samples", DROPPED_DIAGNOSTICS_TOOLTIP
@@ -121,8 +121,8 @@ TEXT_SPECS = {
     "recovery_diag_label": _TextSpec(
         "Recovery: --",
         "Stream recovery health",
-        "Stream restarts and true output recovery events.\n"
-        "Normal drift-retime adjustments are informational and do not warn.",
+        "Times the audio stream restarted, and output recoveries.\n"
+        "Small timing corrections are normal and do not warn.",
     ),
     # Only the widget view shows it, after the Qt Quick view could not take over.
     "interface_notice": _TextSpec("", "Interface notice", shown=False),

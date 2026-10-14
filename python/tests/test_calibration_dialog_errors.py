@@ -33,11 +33,13 @@ def test_recording_failure_remains_visible_after_reset():
         recording_timer=Mock(),
         warning_label=warning_label,
         _reset_recording_ui=reset_recording_ui,
+        _report=Mock(),
     )
 
     CalibrationDialog._on_recording_failed(cast(Any, dialog), "device disconnected")
 
-    assert warning_label.text == "Recording failed: device disconnected"
+    assert warning_label.text == "device disconnected"
+    dialog._report.assert_called_once_with("failed", ["recording_failed"], ["device disconnected"])
     assert warning_label.stylesheet
 
 
@@ -87,7 +89,7 @@ def test_stalled_capture_fails_and_releases_only_capture_owned_state(
 
         dialog._poll_recording_progress()
 
-        assert "No audio capture progress" in dialog.warning_label.text()
+        assert dialog.warning_label.text().startswith("The microphone stopped sending sound.")
         assert dialog.recording_timer.isActive() is False
         assert dialog._capture_session is None
         assert not muted_reasons

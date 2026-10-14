@@ -100,6 +100,7 @@ class ChoiceState(QObject):
     items = Property(list, lambda self: [label for label, _ in self._options], notify=changed)
     index = Property(int, lambda self: self._index, notify=changed)
     text = Property(str, lambda self: self.currentText(), notify=changed)
+    placeholder = Property(str, lambda self: self._placeholder, notify=changed)
 
     def count(self) -> int:
         return len(self._options)
@@ -173,8 +174,9 @@ class ChoiceState(QObject):
                 combo.setCurrentIndex(self._index)
                 combo.setEnabled(self._enabled)
                 combo.setPlaceholderText(self._placeholder)
+                # A name cut short by a narrow window stays readable.
+                combo.setToolTip(self._tip or self.currentText())
         combo.setAccessibleName(self._name)
-        combo.setToolTip(self._tip)
         self.changed.connect(render)
         combo.currentIndexChanged.connect(self.setIndex)
         render()

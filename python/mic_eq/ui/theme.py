@@ -254,16 +254,14 @@ SUBDUED_TEXT_STYLE = f"font-size: 9pt; color: {PALETTE.text_muted};"
 DESCRIPTION_LABEL_STYLE = f"color: {PALETTE.text_muted}; font-size: 9pt; padding: 5px;"
 PROGRESS_LABEL_STYLE = f"font-size: 12pt; color: {PALETTE.accent}; font-weight: bold;"
 
-def _button_style(
-    surface: str, text: str, border: str, hover: str, *, selector: str = "QPushButton"
-) -> str:
+def _button_style(surface: str, text: str, border: str, hover: str) -> str:
     return (
-        f"{selector} {{ background-color: {surface}; color: {text}; "
+        f"QPushButton {{ background-color: {surface}; color: {text}; "
         f"font-weight: 600; border: 1px solid {border}; "
         f"border-radius: {RADIUS_CONTROL}px; padding: 6px 10px; }} "
-        f"{selector}:hover {{ background-color: {hover}; }} "
-        f"{selector}:focus {{ border-color: {PALETTE.text_primary}; }} "
-        f"{selector}:disabled {{ background-color: {PALETTE.action_disabled_surface}; "
+        f"QPushButton:hover {{ background-color: {hover}; }} "
+        f"QPushButton:focus {{ border-color: {PALETTE.text_primary}; }} "
+        f"QPushButton:disabled {{ background-color: {PALETTE.action_disabled_surface}; "
         f"color: {PALETTE.action_disabled_text}; "
         f"border-color: {PALETTE.action_disabled_border}; }}"
     )
@@ -417,7 +415,7 @@ QComboBox QAbstractItemView {{ background-color: {p.control_surface};
     selection-background-color: {p.control_hover};
     selection-color: {p.text_primary}; outline: 0; }}
 
-QTextEdit, QPlainTextEdit {{ background-color: {p.data_surface};
+QTextEdit {{ background-color: {p.data_surface};
     color: {p.text_primary}; border: 1px solid {p.border}; {control}
     padding: 8px; }}
 
@@ -426,12 +424,6 @@ QSlider::groove:horizontal {{ height: 4px; border-radius: 2px;
 QSlider::sub-page:horizontal {{ border-radius: 2px;
     background-color: {p.accent}; }}
 QSlider::handle:horizontal {{ width: 14px; height: 14px; margin: -5px 0;
-    border-radius: 7px; background-color: {p.text_primary}; }}
-QSlider::groove:vertical {{ width: 4px; border-radius: 2px;
-    background-color: {p.border_strong}; }}
-QSlider::add-page:vertical {{ border-radius: 2px;
-    background-color: {p.accent}; }}
-QSlider::handle:vertical {{ width: 14px; height: 14px; margin: 0 -5px;
     border-radius: 7px; background-color: {p.text_primary}; }}
 QSlider::handle:hover, QSlider::handle:focus {{
     background-color: {p.accent_hover}; }}
@@ -450,18 +442,6 @@ QScrollBar::handle:hover {{ background-color: {p.text_muted}; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 
-QTabWidget::pane {{ border: none; }}
-QTabBar::tab {{ background: transparent; color: {p.text_muted}; border: none;
-    border-bottom: 2px solid transparent; padding: 8px 14px;
-    font-weight: 600; }}
-QTabBar::tab:hover {{ color: {p.text_primary}; }}
-QTabBar::tab:selected {{ color: {p.text_primary};
-    border-bottom-color: {p.accent}; }}
-
-QMenuBar {{ background-color: {p.app_surface}; color: {p.text_primary}; }}
-QMenuBar::item {{ background: transparent; padding: 6px 10px;
-    border-radius: 4px; }}
-QMenuBar::item:selected {{ background-color: {p.control_surface}; }}
 QMenu {{ background-color: {p.control_surface}; color: {p.text_primary};
     border: 1px solid {p.border_strong}; padding: 4px; }}
 QMenu::item {{ padding: 6px 24px 6px 28px; border-radius: 4px; }}

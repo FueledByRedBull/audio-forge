@@ -12,6 +12,7 @@ from mic_eq.ui.first_run_setup_dialog import route_health_reason
 from mic_eq.ui.health import RecentStreamHealth, advice_for
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.shell_state import TextState
+from mic_eq.ui.stream_recovery import StreamRecoveryManager
 
 
 def test_presentation_timer_pauses_without_stopping_diagnostics(qapp):
@@ -29,6 +30,7 @@ def test_presentation_timer_pauses_without_stopping_diagnostics(qapp):
         isMinimized=lambda: state["minimized"],
         meter_timer=meter_timer,
         _invalidate_live_meters=Mock(),
+        _note_meter_peaks=Mock(),
     )
     try:
         cases = (
@@ -49,6 +51,8 @@ def test_presentation_timer_pauses_without_stopping_diagnostics(qapp):
             assert bool(ticks) == should_tick
             assert meter_timer.isActive() == should_tick
             assert diagnostics_timer.isActive()
+        # Each restart first drops what piled up while the timer was stopped.
+        assert [call.kwargs for call in window._note_meter_peaks.call_args_list] == [{"resumed": True}] * 2
     finally:
         meter_timer.stop()
         diagnostics_timer.stop()
@@ -66,6 +70,7 @@ def test_window_state_change_pauses_and_restarts_fast_meter_timer(qapp):
     window.diagnostics_timer = QTimer(window)
     window.diagnostics_timer.start(250)
     window._invalidate_live_meters = Mock()
+    window._note_meter_peaks = Mock()
     window.isVisible = lambda: True
     window.isMinimized = lambda: state["minimized"]
     try:
@@ -78,10 +83,13 @@ def test_window_state_change_pauses_and_restarts_fast_meter_timer(qapp):
         assert not window.meter_timer.isActive()
         assert window.diagnostics_timer.isActive()
 
+        window._note_meter_peaks.reset_mock()
         state["minimized"] = False
         window.changeEvent(QEvent(QEvent.Type.WindowStateChange))
         assert window.meter_timer.isActive()
         assert window.diagnostics_timer.isActive()
+        window._note_meter_peaks.assert_called_once()
+        assert window._note_meter_peaks.call_args.kwargs == {"resumed": True}
     finally:
         window.meter_timer.stop()
         window.diagnostics_timer.stop()
@@ -136,6 +144,7 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
     state_owner = QObject()
     window: Any = SimpleNamespace(
         _stream_health=RecentStreamHealth(),
+        _stream_recovery=StreamRecoveryManager(),
         _last_backend_warning=None,
         processor=processor,
         _update_session_summary=Mock(),
@@ -190,7 +199,7 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
     MainWindow._update_diagnostic_labels(window, **args)
     assert window.health_summary_label.property("health_state") == "ok"
     assert window.recovery_diag_label.property("health_state") == "ok"
-    assert "R:1" in window.recovery_diag_label.text()
+    assert "1 restart" in window.recovery_diag_label.text()
     assert "ICE:1" in window.dropped_label.toolTip()
     assert route_health_reason(processor, health_window=window._stream_health)[0]
     assert diagnostics["input_callback_error_count"] == 1
@@ -210,7 +219,7 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
         ),
         # Informational chips do not count towards the summary.
         (
-            {"latency_label": ("Latency: ~10ms", "info")},
+            {"latency_label": ("Latency: about 10 ms (processing 0.2 ms)", "info")},
             False, "idle", "Health: IDLE", "Start processing to see audio health.",
         ),
         (
@@ -221,18 +230,20 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
         # (decision chips, then the stream chips) names the issue.
         (
             {
-                "recovery_diag_label": ("Recovery: R:2 RECENT", "warn"),
-                "buffer_label": ("Buffer: WARN (1200)", "warn"),
-                "input_health_label": ("Input: CLIPPING", "bad"),
+                "recovery_diag_label": ("Recovery: 2 restarts, 0 output recoveries, restarted just now", "warn"),
+                "buffer_label": ("Buffer: FILLING UP (1200 samples)", "warn"),
+                "input_health_label": ("Input: CLIPPED (peak 0.0 dB, full scale 8 times)", "bad"),
             },
-            False, "bad", "Input: CLIPPING", advice_for("Input: CLIPPING"),
+            False, "bad", "Input: CLIPPED (peak 0.0 dB, full scale 8 times)",
+            advice_for("Input: CLIPPED (peak 0.0 dB, full scale 8 times)"),
         ),
         (
             {
-                "recovery_diag_label": ("Recovery: R:2 RECENT", "warn"),
-                "buffer_label": ("Buffer: WARN (1200)", "warn"),
+                "recovery_diag_label": ("Recovery: 2 restarts, 0 output recoveries, restarted just now", "warn"),
+                "buffer_label": ("Buffer: FILLING UP (1200 samples)", "warn"),
             },
-            False, "warn", "Buffer: WARN (1200)", advice_for("Buffer:"),
+            False, "warn", "Buffer: FILLING UP (1200 samples)",
+            advice_for("Buffer: FILLING UP (1200 samples)"),
         ),
         (
             {"input_health_label": ("Input: STRANGE", "warn")},
@@ -348,6 +359,7 @@ def test_main_window_invalidates_all_live_meters_on_stop_and_getter_failure(qapp
         isHidden=lambda: True,
     )
     window._invalidate_live_meters = lambda: MainWindow._invalidate_live_meters(window)
+    window._note_meter_peaks = lambda reading: MainWindow._note_meter_peaks(window, reading)
     try:
         MainWindow._update_meters(window)
         assert window.input_meter.measurement_available
@@ -389,11 +401,14 @@ def test_failed_diagnostics_still_service_recovery_when_presentation_is_hidden(q
         _reset_health_labels=Mock(),
         _set_health_chip=Mock(),
         _service_stream_recovery=Mock(),
+        shell_texts={"health_advice_label": Mock()},
     )
     MainWindow._update_diagnostics(window)
     window._reset_health_labels.assert_called_once()
     window._service_stream_recovery.assert_called_once()
     assert "unavailable" in window._set_health_chip.call_args.args[1]
+    advice = window.shell_texts["health_advice_label"].update.call_args.kwargs["text"]
+    assert "could not read" in advice and "Stop and start processing" in advice
 
 
 def test_panel_measurements_begin_unavailable_and_failed_noise_floor_does_not_invent_default(

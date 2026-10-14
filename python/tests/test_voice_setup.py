@@ -2112,8 +2112,8 @@ def test_incomplete_candidate_offers_retake_instead_of_apply(
         assert dialog.setup_state == "noise_ready"
         assert dialog.start_button.text() == "Record Voice Again"
         assert not dialog.retake_btn.isHidden()
-        assert dialog.warning_label.text().startswith("Recommendations are incomplete:")
-        assert reason in dialog.warning_label.text()
+        assert dialog.warning_label.text().startswith("The recommendations are incomplete.")
+        assert "Part of the result is missing." in dialog.warning_label.text()
         assert "Apply" not in dialog.start_button.text()
 
         show_error = Mock()
@@ -2175,10 +2175,12 @@ def test_complete_advisory_candidate_still_offers_apply(qapp, monkeypatch):
         dialog._analysis_generation = 1
         dialog._on_analysis_complete(result)
         assert dialog.setup_state == "completed"
-        assert dialog.start_button.text() == "Apply Voice Setup"
+        assert dialog.start_button.text() == "Apply Suggestions"
         assert not dialog.curve_combo.isEnabled()
         assert not dialog.dynamics_combo.isEnabled()
-        assert dialog.warning_label.text().startswith("Advisory recommendations only:")
+        assert dialog.warning_label.text().startswith(
+            "These settings did not pass every check, so treat them as suggestions."
+        )
     finally:
         dialog.reject()
         dialog.deleteLater()
@@ -2389,7 +2391,7 @@ def test_silent_room_noise_moves_on_and_a_silent_voice_is_the_fault(qapp, monkey
         dialog.setup_state = "noise_recording"
         dialog._on_recording_complete(leaky_gate)
         assert dialog.setup_state == "noise_ready"
-        assert dialog.warning_label.text().startswith("The room was not steady")
+        assert "Setup will play safe" in dialog.warning_label.text()
 
         # A capture the analysis cannot use at all still has to be retaken.
         dialog.setup_state = "noise_recording"
@@ -2404,16 +2406,16 @@ def test_silent_room_noise_moves_on_and_a_silent_voice_is_the_fault(qapp, monkey
         dialog.setup_state = "noise_recording"
         dialog._on_recording_complete(clipped)
         assert dialog.setup_state == "idle" and dialog.noise_audio is None
-        assert dialog.warning_label.text().startswith("The recording clipped.")
+        assert dialog.warning_label.text().startswith("A loud sound was picked up")
 
         dialog.setup_state = "noise_recording"
         dialog._on_recording_complete(np.zeros(96_000, dtype=np.float32))
         loud_voice = _make_voice(48_000)
-        loud_voice[1000] = 1.0
+        loud_voice[1000:1006] = 1.0
         dialog.setup_state = "voice_recording"
         dialog._on_recording_complete(loud_voice)
         assert dialog.setup_state == "noise_ready" and not analyses
-        assert dialog.warning_label.text().startswith("The recording clipped.")
+        assert dialog.warning_label.text().startswith("The recording clipped:")
         dialog.setup_state = "voice_recording"
         dialog._on_recording_complete(np.zeros(480_000, dtype=np.float32))
         assert dialog.setup_state == "noise_ready"
@@ -2470,8 +2472,18 @@ def _poked(audio, index, value):
     return audio
 
 
-_CLIPPED = "The recording clipped. Lower the microphone gain or "
-_UNREADABLE = "The recording could not be read. Record it again."
+_CLIPPED = (
+    "The recording clipped: its peaks were held at full scale. "
+    "Lower the microphone level by about 6 dB (in Windows or on the microphone) or "
+)
+_LOUD_ROOM = (
+    "A loud sound was picked up in the room-noise recording. "
+    "Record the room noise again while the room is quiet."
+)
+_UNREADABLE = (
+    "The recording held invalid audio data, which usually means the audio "
+    "driver glitched. Restart processing and record again."
+)
 _TOO_SHORT = "Record at least 1.5 seconds of room tone."
 
 
@@ -2480,7 +2492,7 @@ _TOO_SHORT = "Record at least 1.5 seconds of room tone."
     [
         (
             lambda: _poked(_make_noise(48_000), slice(None, None, 200), 1.0),
-            _CLIPPED + "keep loud sounds out of the room, then record again.",
+            _LOUD_ROOM,
         ),
         (lambda: _poked(_make_noise(48_000), 100, np.nan), _UNREADABLE),
         (lambda: _poked(_make_noise(48_000), 100, np.inf), _UNREADABLE),
@@ -2502,7 +2514,7 @@ def test_a_rejected_room_noise_take_asks_for_a_retake(voice_dialog, take, messag
     assert voice_dialog.noise_audio is None and voice_dialog.preview_noise_audio is None
     assert voice_dialog.phase_label.text() == "Room-noise capture rejected"
     assert voice_dialog.start_button.text() == "Retake Room Noise"
-    assert voice_dialog.time_label.text() == "Time remaining: 2s"
+    assert voice_dialog.time_label.text() == "Ready to record again"
     assert voice_dialog.progress_bar.value() == 0
 
 
@@ -2510,7 +2522,7 @@ def test_a_rejected_room_noise_take_asks_for_a_retake(voice_dialog, take, messag
     ("take", "message"),
     [
         (
-            lambda: _poked(_make_voice(48_000), 1000, 1.0),
+            lambda: _poked(_make_voice(48_000), slice(1000, 1006), 1.0),
             _CLIPPED + "move back a little, then record again.",
         ),
         (lambda: _poked(_make_voice(48_000), 1000, np.nan), _UNREADABLE),
@@ -2534,5 +2546,5 @@ def test_a_rejected_voice_take_asks_for_another_voice_take(voice_dialog, take, m
     assert voice_dialog.voice_audio is None and voice_dialog.preview_voice_audio is None
     assert voice_dialog.phase_label.text() == "Voice capture rejected"
     assert voice_dialog.start_button.text() == "Record Voice"
-    assert voice_dialog.time_label.text() == "Time remaining: 10s"
+    assert voice_dialog.time_label.text() == "Ready to record again"
     assert voice_dialog.progress_bar.value() == 0

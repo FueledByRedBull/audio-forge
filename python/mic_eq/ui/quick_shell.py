@@ -24,7 +24,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QPainter, QPen
 from PySide6.QtQml import qmlRegisterType
-from PySide6.QtQuick import QQuickPaintedItem
+from PySide6.QtQuick import QQuickPaintedItem, QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 
 from .components import Glyph, icon_font
@@ -173,9 +173,8 @@ class QuickBridge(QObject):
         def gate_text(key: str) -> dict:
             return {"kind": "text", "label": "", "proxy": GateText(w.gate_state, key, self)}
 
-        def health(title: str, name: str, *, coded: bool = False) -> dict:
-            # `coded` rows carry counter tokens rather than a readable value.
-            return {"title": title, "coded": coded, "proxy": text(name)}
+        def health(title: str, name: str) -> dict:
+            return {"title": title, "proxy": text(name)}
         meters = w.processing_meters
         eq = w.eq_presentation
 
@@ -384,13 +383,13 @@ class QuickBridge(QObject):
                     health("Gate", "gate_health_label"),
                 ],
                 "stream": [
-                    health("Backend", "backend_diag_label", coded=True),
-                    health("Callbacks", "callback_health_label"),
-                    health("Underruns", "underrun_health_label"),
+                    health("Backend", "backend_diag_label"),
+                    health("Device activity", "callback_health_label"),
+                    health("Dropouts", "underrun_health_label"),
                     health("Latency", "latency_label"),
                     health("Buffer", "buffer_label"),
-                    health("Drops", "dropped_label", coded=True),
-                    health("Recovery", "recovery_diag_label", coded=True),
+                    health("Drops", "dropped_label"),
+                    health("Recovery", "recovery_diag_label"),
                 ],
             },
             "settings": {
@@ -401,6 +400,23 @@ class QuickBridge(QObject):
                 "cards": settings_cards,
             },
         }
+
+
+_GRAPHICS_APIS = {
+    QSGRendererInterface.GraphicsApi.Software: "software",
+    QSGRendererInterface.GraphicsApi.OpenGL: "opengl",
+    QSGRendererInterface.GraphicsApi.Direct3D11: "direct3d11",
+    QSGRendererInterface.GraphicsApi.Vulkan: "vulkan",
+    QSGRendererInterface.GraphicsApi.Null: "null",
+}
+
+
+def graphics_api(window) -> str:
+    """The graphics backend of the window's live scene, as a fixed lowercase word."""
+
+    scene = window.centralWidget()
+    interface = scene.quickWindow().rendererInterface() if isinstance(scene, QQuickWidget) else None
+    return "unknown" if interface is None else _GRAPHICS_APIS.get(interface.graphicsApi(), "unknown")
 
 
 def install_quick_shell(window) -> bool:

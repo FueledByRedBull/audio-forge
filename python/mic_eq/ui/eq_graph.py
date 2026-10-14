@@ -5,17 +5,49 @@ from __future__ import annotations
 import math
 from bisect import bisect_left
 
-from PySide6.QtCore import QLineF, QObject, QPointF, QRect, QRectF, Qt, Signal
-from PySide6.QtGui import QPainter, QPen, QPolygonF
+from PySide6.QtCore import Property, QLineF, QObject, QPointF, QRect, QRectF, Qt, Signal
+from PySide6.QtGui import QFont, QFontMetricsF, QGuiApplication, QPainter, QPen, QPolygonF
 
 from mic_eq import eq_magnitude_response_v2, input_prefilter_response_db
 from mic_eq.analysis.eq_quality import EqInteractionWarning, evaluate_eq_quality
 from mic_eq.config import EQSettings
+from .eq_state import EQ_FILTER_OPTIONS
 from .theme import PALETTE, RADIUS_CONTROL, qcolor
 
 
 # A band that is off: the native response gives it exactly 0 dB.
 OFF_BAND: tuple[str, float, float, float, int, bool] = ("bell", 1000.0, 0.0, 1.0, 12, False)
+
+FILTER_NAMES = {filter_type: name for name, filter_type in EQ_FILTER_OPTIONS}
+# The processing modes in which the EQ does not run, as the graph names them.
+NOT_RUNNING_MODES = {"bypass": "Bypass", "raw": "Raw monitor"}
+GRAPH_HELP = (
+    "Click and drag a band handle. Left and right change frequency; "
+    "up and down change gain for bell and shelf filters. Use left bracket "
+    "and right bracket to select a band from the keyboard. Double-click a "
+    "handle, or press Delete or Backspace on the selected band, to reset it. "
+    "Moving the pointer over the graph reads out "
+    "the frequency and level of the thick curve. "
+    "The thick curve is what the signal really gets: the input filter "
+    "plus every EQ filter that is on, or the input filter alone when "
+    "the EQ switch is off. Thin colored curves are the bands, the "
+    "dashed curve is the Auto-EQ layer and the dotted curve is the "
+    "input filter. Adaptive input cleanup follows the signal and is not "
+    "drawn."
+)
+
+
+def format_frequency_hz(frequency_hz: float, *, exact: bool = False) -> str:
+    """Hz below a kilohertz, else kHz with three digits.
+
+    ``exact`` keeps whole hertz, as a band's frequency box shows them: kHz is
+    used only when it loses none.
+    """
+    hertz = round(frequency_hz)
+    khz = f"{frequency_hz / 1000.0:.3g}"
+    if frequency_hz >= 1000.0 and not (exact and round(float(khz) * 1000.0) != hertz):
+        return f"{khz} kHz"
+    return f"{hertz} Hz"
 
 
 class EQGraphGeometry:
@@ -44,6 +76,9 @@ class EQGraphGeometry:
     HANDLE_RADIUS = 6.0
     HIT_RADIUS = 11.0
     GAIN_FILTER_TYPES = frozenset({"bell", "low_shelf", "high_shelf"})
+    # A shelf's own curve is at half its gain at the corner, where its handle
+    # sits: the handle follows the pointer and the gain moves twice as far.
+    SHELF_HANDLE_RATIO = 0.5
 
     @classmethod
     def plot_size(cls, width: float, height: float) -> tuple[float, float]:
@@ -86,16 +121,19 @@ class EQGraphGeometry:
         return cls.MARGIN_TOP + normalized * plot_height
 
     @classmethod
-    def y_to_gain(cls, y: float, width: float, height: float) -> float:
+    def y_to_db(cls, y: float, width: float, height: float) -> float:
         _plot_width, plot_height = cls.plot_size(width, height)
         normalized = min(
             1.0,
             max(0.0, (float(y) - cls.MARGIN_TOP) / plot_height),
         )
-        display_gain = cls.DISPLAY_DB_MAX - normalized * (
+        return cls.DISPLAY_DB_MAX - normalized * (
             cls.DISPLAY_DB_MAX - cls.DISPLAY_DB_MIN
         )
-        clamped = min(cls.GAIN_MAX_DB, max(cls.GAIN_MIN_DB, display_gain))
+
+    @classmethod
+    def y_to_gain(cls, y: float, width: float, height: float) -> float:
+        clamped = min(cls.GAIN_MAX_DB, max(cls.GAIN_MIN_DB, cls.y_to_db(y, width, height)))
         return round(clamped * 10.0) / 10.0
 
     @classmethod
@@ -105,9 +143,19 @@ class EQGraphGeometry:
         band_index: int,
         width: float,
         height: float,
+        handle_db: list[float] | None = None,
     ) -> tuple[float, float]:
+        """Where a handle is drawn: on its band's own curve at its frequency.
+
+        ``handle_db`` is that curve's height per band, as ``EQGraphModel``
+        keeps it. Without it the handle sits at the band's gain, which is
+        where a bell's curve is.
+        """
         filter_type, frequency, gain, _q, _slope, _enabled = bands[band_index]
-        handle_gain = gain if filter_type in cls.GAIN_FILTER_TYPES else 0.0
+        if handle_db is not None:
+            handle_gain = handle_db[band_index]
+        else:
+            handle_gain = gain if filter_type in cls.GAIN_FILTER_TYPES else 0.0
         return (
             cls.frequency_to_x(frequency, width, height),
             cls.gain_to_y(handle_gain, width, height),
@@ -121,11 +169,12 @@ class EQGraphGeometry:
         y: float,
         width: float,
         height: float,
+        handle_db: list[float] | None = None,
     ) -> int | None:
         nearest: tuple[float, int] | None = None
         for index in range(len(bands)):
             handle_x, handle_y = cls.band_handle_position(
-                bands, index, width, height
+                bands, index, width, height, handle_db
             )
             distance = math.hypot(float(x) - handle_x, float(y) - handle_y)
             if distance > cls.HIT_RADIUS:
@@ -140,11 +189,18 @@ class EQGraphModel(QObject):
     """One EQ graph snapshot and interaction state shared by both views."""
 
     changed = Signal()
+    # The pointer moved over the graph; nothing else did, so no repaint of a
+    # recomputed response rides on it.
+    hoverChanged = Signal()
+    bandResetRequested = Signal(int)
     bandDragStarted = Signal(int)
     bandDragged = Signal(int, float, float)
     bandDragFinished = Signal(int, float, float)
     bandDragCancelled = Signal(int, float, float)
     bandSelected = Signal(int)
+    # The accessible description changed at rest: not on every step of a drag,
+    # which a screen reader would announce one by one.
+    accessibleDescriptionChanged = Signal()
 
     GEOMETRY = EQGraphGeometry
     GAIN_FILTER_TYPES = EQGraphGeometry.GAIN_FILTER_TYPES
@@ -170,12 +226,18 @@ class EQGraphModel(QObject):
         # The curves below are its parts; a band that is off has none, so it
         # cannot reach the total.
         self.band_curves_db: list[list[float]] = [[] for _ in self.bands]
+        # Where each band's handle rides: its own curve at its own frequency,
+        # whether or not the band is on, within the gain range.
+        self.handle_db: list[float] = [0.0] * len(self.bands)
         self.correction_response_db: list[float] = []
         # total_response_db is what the signal really gets: the fixed input
         # conditioning that comes before the EQ, plus the EQ unless its switch
         # is off. Only the part of the conditioning that does not follow the
         # signal can be drawn; see input_prefilter_response_db.
         self.eq_enabled = True
+        # What the processor runs: "bypass" skips the EQ, "raw" skips the input
+        # filter as well. The bands stay editable and drawn either way.
+        self.engine_mode = "normal"
         self.cleanup_mode = "off"
         self.input_filter_db: list[float] = []
         self.total_response_db: list[float] = []
@@ -185,10 +247,15 @@ class EQGraphModel(QObject):
         self._drag_origin: tuple[float, float] | None = None
         self._drag_press = (0.0, 0.0)
         self._drag_handle = (0.0, 0.0)
+        self.hover: tuple[int, int] | None = None
         self._base_freq_points = self.generate_log_frequencies(20, 20_000, 100)
+        self._drag_started = False
         self.freq_points = list(self._base_freq_points)
         self.response_db = [0.0] * len(self.freq_points)
         self._update_response()
+        self._description = self.accessible_description()
+        self.changed.connect(self._refresh_description)
+        self.bandDragFinished.connect(self._refresh_description)
 
     @staticmethod
     def generate_log_frequencies(
@@ -204,12 +271,18 @@ class EQGraphModel(QObject):
         return self._selected_band_index
 
     @property
-    def drag_origin(self) -> tuple[float, float] | None:
-        return self._drag_origin
+    def eq_running(self) -> bool:
+        return self.eq_enabled and self.engine_mode == "normal"
+
+    @property
+    def not_running_label(self) -> str:
+        mode = NOT_RUNNING_MODES.get(self.engine_mode)
+        return f"EQ not running: {mode}" if mode else ""
 
     @property
     def dragging_band_index(self) -> int | None:
-        return self._drag_band_index
+        """The band a drag is moving; a press that has not travelled yet is no drag."""
+        return self._drag_band_index if self._drag_started else None
 
     def select_band(self, band_index: int) -> None:
         if band_index == self._selected_band_index:
@@ -217,6 +290,108 @@ class EQGraphModel(QObject):
         self._selected_band_index = band_index
         self.changed.emit()
         self.bandSelected.emit(band_index)
+
+    def _band_numbers(self, index: int) -> list[str]:
+        """Frequency, then gain and Q for the filters that have them."""
+        filter_type, frequency, gain, q, _slope, _enabled = self.bands[index]
+        numbers = [format_frequency_hz(frequency, exact=True)]
+        if filter_type in self.GAIN_FILTER_TYPES:
+            numbers.append(f"{gain:+.1f} dB")
+        if not filter_type.endswith("_pass"):
+            numbers.append(f"Q {q:.2g}")
+        return numbers
+
+    def band_readout(self, index: int) -> str:
+        return "  ".join([f"Band {index + 1}", *self._band_numbers(index)])
+
+    def _selection_summary(self) -> str:
+        index = self._selected_band_index
+        if index is None:
+            return ""
+        band = self.bands[index]
+        parts = [FILTER_NAMES[band[0]], *self._band_numbers(index), "on" if band[5] else "off"]
+        return f"Band {index + 1} selected: {', '.join(parts)}."
+
+    def accessible_description(self) -> str:
+        not_running = self.not_running_label
+        if not_running:
+            skipped = "The EQ and the input filter are" if self.engine_mode == "raw" else "The EQ is"
+            thick = "flat" if self.engine_mode == "raw" else "the input filter alone"
+            not_running += (
+                f". {skipped} skipped in this mode; the thin band curves show what "
+                f"the EQ would do, and the thick curve is {thick}."
+            )
+        return " ".join(
+            part for part in (GRAPH_HELP, not_running, self._selection_summary()) if part
+        )
+
+    def _refresh_description(self, *_drag_end) -> None:
+        description = self.accessible_description()
+        if self.dragging_band_index is None and description != self._description:
+            self._description = description
+            self.accessibleDescriptionChanged.emit()
+
+    def _announced_description(self) -> str:
+        return self._description
+
+    accessibleDescription = Property(
+        str, _announced_description, notify=accessibleDescriptionChanged
+    )
+
+    def set_engine_mode(self, mode: str) -> None:
+        """Follow what the processor runs: normal, bypass or raw monitor."""
+        if mode not in ("normal", *NOT_RUNNING_MODES):
+            raise ValueError(f"unknown processing mode: {mode!r}")
+        if mode == self.engine_mode:
+            return
+        self.engine_mode = mode
+        self._update_response()
+        self.changed.emit()
+
+    def band_handle_position(
+        self, band_index: int, width: float, height: float
+    ) -> tuple[float, float]:
+        return self.GEOMETRY.band_handle_position(
+            self.bands, band_index, width, height, self.handle_db
+        )
+
+    def nearest_band_handle(
+        self, x: float, y: float, width: float, height: float
+    ) -> int | None:
+        return self.GEOMETRY.nearest_band_handle(
+            self.bands, x, y, width, height, self.handle_db
+        )
+
+    def response_at(self, frequency_hz: float) -> float:
+        """The total curve at one frequency, evaluated there and not read off the drawn points.
+
+        A narrow peak is off by up to a dB between two drawn points. This costs
+        about 0.01 ms, and it leaves the stored response alone.
+        """
+        frequencies = [frequency_hz]
+        eq = sum(
+            eq_magnitude_response_v2(frequencies, stage, self.sample_rate)[0]
+            for stage in (self.bands, self.correction_bands)
+            if stage
+        )
+        return self._input_filter(frequencies)[0] + (eq if self.eq_running else 0.0)
+
+    def set_hover(self, x: float, y: float, width: float, height: float) -> None:
+        geometry = self.GEOMETRY
+        plot_width, plot_height = geometry.plot_size(width, height)
+        inside = (
+            geometry.MARGIN_LEFT <= x <= geometry.MARGIN_LEFT + plot_width
+            and geometry.MARGIN_TOP <= y <= geometry.MARGIN_TOP + plot_height
+        )
+        self._set_hover((round(x), round(y)) if inside else None)
+
+    def clear_hover(self) -> None:
+        self._set_hover(None)
+
+    def _set_hover(self, hover: tuple[int, int] | None) -> None:
+        if hover != self.hover:
+            self.hover = hover
+            self.hoverChanged.emit()
 
     def set_all_params(self, bands, *, correction=(), enabled=True) -> None:
         """Accept native typed tuples or legacy (frequency, gain, Q) tuples."""
@@ -275,25 +450,50 @@ class EQGraphModel(QObject):
         self.changed.emit()
 
     def mouse_press(self, x: float, y: float, width: float, height: float) -> bool:
-        band_index = self.GEOMETRY.nearest_band_handle(
-            self.bands, x, y, width, height
-        )
+        """Take a handle; it drags once the pointer has travelled the platform's drag distance."""
+        band_index = self.nearest_band_handle(x, y, width, height)
         if band_index is None:
             return False
         self.select_band(band_index)
         self._drag_band_index = band_index
+        self._drag_started = False
         band = self.bands[band_index]
         self._drag_origin = (float(band[1]), float(band[2]))
         self._drag_press = (x, y)
-        self._drag_handle = self.GEOMETRY.band_handle_position(
-            self.bands, band_index, width, height
-        )
-        self.bandDragStarted.emit(band_index)
+        self._drag_handle = self.band_handle_position(band_index, width, height)
+        return True
+
+    def _request_reset(self, band_index: int) -> None:
+        self.cancel_drag()
+        self.select_band(band_index)
+        self.bandResetRequested.emit(band_index)
+
+    def request_band_reset(
+        self, x: float, y: float, width: float, height: float
+    ) -> bool:
+        """A double-click: ask for the band whose handle is under the pointer.
+
+        Qt Quick delivers a double-click's second press as a press first, so a
+        drag may be open; it ends unchanged, and its release then writes nothing.
+        """
+        band_index = self.nearest_band_handle(x, y, width, height)
+        if band_index is None:
+            return False
+        self._request_reset(band_index)
         return True
 
     def mouse_move(self, x: float, y: float, width: float, height: float) -> bool:
+        """Track the pointer for the readout; True while it drags a band."""
+        self.set_hover(x, y, width, height)
         if self._drag_band_index is None:
             return False
+        if not self._drag_started:
+            press_x, press_y = self._drag_press
+            distance = QGuiApplication.styleHints().startDragDistance()
+            if math.hypot(x - press_x, y - press_y) < distance:
+                return True
+            self._drag_started = True
+            self.bandDragStarted.emit(self._drag_band_index)
         frequency, gain = self._update_dragged_band(x, y, width, height)
         self.bandDragged.emit(self._drag_band_index, frequency, gain)
         return True
@@ -303,7 +503,8 @@ class EQGraphModel(QObject):
     ) -> bool:
         if self._drag_band_index is None:
             return False
-        self._update_dragged_band(x, y, width, height)
+        if self._drag_started:
+            self._update_dragged_band(x, y, width, height)
         return self.finish_drag()
 
     def finish_drag(self) -> bool:
@@ -312,9 +513,31 @@ class EQGraphModel(QObject):
         if band_index is None:
             return False
         _filter_type, frequency, gain, *_ = self.bands[band_index]
+        started, self._drag_started = self._drag_started, False
         self._drag_band_index = None
         self._drag_origin = None
-        self.bandDragFinished.emit(band_index, frequency, gain)
+        if started:
+            self.bandDragFinished.emit(band_index, frequency, gain)
+        return True
+
+    def cancel_drag(self) -> bool:
+        """End the active drag by putting the band back where it was pressed."""
+        band_index, origin = self._drag_band_index, self._drag_origin
+        if band_index is None or origin is None:
+            return False
+        if not self._drag_started:
+            self._drag_band_index = None
+            self._drag_origin = None
+            return True
+        frequency, gain = origin
+        filter_type, _frequency, _gain, q, slope, enabled = self.bands[band_index]
+        self.bands[band_index] = (filter_type, frequency, gain, q, slope, enabled)
+        self._drag_started = False
+        self._drag_band_index = None
+        self._drag_origin = None
+        self._update_response()
+        self.changed.emit()
+        self.bandDragCancelled.emit(band_index, frequency, gain)
         return True
 
     def key_press(self, key: int, modifiers: Qt.KeyboardModifier) -> bool:
@@ -327,23 +550,10 @@ class EQGraphModel(QObject):
             return True
         if self._selected_band_index is None:
             return False
-        if key == Qt.Key.Key_Escape and self._drag_origin is not None:
-            band_index = self._selected_band_index
-            frequency, gain = self._drag_origin
-            filter_type, _frequency, _gain, q, slope, enabled = self.bands[band_index]
-            self.bands[band_index] = (
-                filter_type,
-                frequency,
-                gain,
-                q,
-                slope,
-                enabled,
-            )
-            self._drag_band_index = None
-            self._drag_origin = None
-            self._update_response()
-            self.changed.emit()
-            self.bandDragCancelled.emit(band_index, frequency, gain)
+        if key == Qt.Key.Key_Escape and self.cancel_drag():
+            return True
+        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self._request_reset(self._selected_band_index)
             return True
         if key not in (
             Qt.Key.Key_Left,
@@ -393,23 +603,29 @@ class EQGraphModel(QObject):
     def _drag_parameters(
         self, x: float, y: float, width: float, height: float
     ) -> tuple[float, float]:
-        if self._drag_band_index is None:
+        origin = self._drag_origin
+        if self._drag_band_index is None or origin is None:
             raise RuntimeError("no EQ band drag is active")
         # The handle moves by the pointer's travel, so a press that was not
         # dead centre does not jump, and a click leaves the band as it was.
-        origin = self._drag_origin
-        if origin is not None and (x, y) == self._drag_press:
+        if (x, y) == self._drag_press:
             return origin
-        filter_type, _frequency, gain, _q, _slope, _enabled = self.bands[
-            self._drag_band_index
-        ]
+        geometry = self.GEOMETRY
+        filter_type = self.bands[self._drag_band_index][0]
         press_x, press_y = self._drag_press
         handle_x, handle_y = self._drag_handle
-        frequency = self.GEOMETRY.x_to_frequency(
-            handle_x + (x - press_x), width, height
-        )
+        frequency = geometry.x_to_frequency(handle_x + (x - press_x), width, height)
+        gain = origin[1]
         if filter_type in self.GAIN_FILTER_TYPES:
-            gain = self.GEOMETRY.y_to_gain(handle_y + (y - press_y), width, height)
+            travel_db = geometry.y_to_db(
+                handle_y + (y - press_y), width, height
+            ) - geometry.y_to_db(handle_y, width, height)
+            if filter_type.endswith("_shelf"):
+                travel_db /= geometry.SHELF_HANDLE_RATIO
+            gain = min(
+                geometry.GAIN_MAX_DB,
+                max(geometry.GAIN_MIN_DB, round((gain + travel_db) * 10.0) / 10.0),
+            )
         return frequency, float(gain)
 
     def _update_dragged_band(
@@ -462,13 +678,21 @@ class EQGraphModel(QObject):
             self._response(self._band_alone(index)) if band[5] else []
             for index, band in enumerate(self.bands)
         ]
-        self.input_filter_db = list(
-            input_prefilter_response_db(
-                self.freq_points, self.cleanup_mode, self.sample_rate
+        self.handle_db = [
+            min(
+                self.GEOMETRY.GAIN_MAX_DB,
+                max(
+                    self.GEOMETRY.GAIN_MIN_DB,
+                    eq_magnitude_response_v2(
+                        [band[1]], self._band_alone(index, enabled=True), self.sample_rate
+                    )[0],
+                ),
             )
-        )
+            for index, band in enumerate(self.bands)
+        ]
+        self.input_filter_db = self._input_filter(self.freq_points)
         self.total_response_db = [
-            conditioning + (tone if self.eq_enabled else 0.0)
+            conditioning + (tone if self.eq_running else 0.0)
             for conditioning, tone in zip(self.input_filter_db, self.response_db)
         ]
         warnings = []
@@ -502,15 +726,24 @@ class EQGraphModel(QObject):
         warnings.sort(key=lambda warning: warning.severity, reverse=True)
         self.interaction_warnings = warnings
 
+    def _input_filter(self, frequencies: list[float]) -> list[float]:
+        """The input conditioning as the engine applies it in the current mode."""
+        if self.engine_mode == "raw":
+            return [0.0] * len(frequencies)
+        # Adaptive cleanup runs on the full path only; bypass keeps the fixed high-pass.
+        cleanup = "off" if self.engine_mode == "bypass" else self.cleanup_mode
+        return list(input_prefilter_response_db(frequencies, cleanup, self.sample_rate))
+
     def _response(self, bands: list[tuple]) -> list[float]:
         return list(
             eq_magnitude_response_v2(self.freq_points, bands, self.sample_rate)
         )
 
-    def _band_alone(self, index: int) -> list[tuple]:
+    def _band_alone(self, index: int, *, enabled: bool | None = None) -> list[tuple]:
         """The tone stage with every other band off: one band's own response."""
         bands = [OFF_BAND] * len(self.bands)
-        bands[index] = self.bands[index]
+        band = self.bands[index]
+        bands[index] = band if enabled is None else (*band[:5], enabled)
         return bands
 
 
@@ -525,6 +758,10 @@ class EQGraphRenderer:
     AXIS_TOLERANCE_DB = 0.3
     CASING_WIDTH = 3.0
     MUTED_OPACITY = 0.4
+    LABEL_POINT_SIZE = 8
+    LABEL_PADDING = (6.0, 3.0)
+    READOUT_GAP = 14.0
+    CAPTION_INSET = 6.0
 
     @classmethod
     def paint(
@@ -611,6 +848,10 @@ class EQGraphRenderer:
 
         cls._paint_curves(painter, model, width, height)
 
+        caption = cls.caption_layout(painter.font(), model, width, height)
+        if caption is not None:
+            cls._paint_label(painter, *caption, PALETTE.data_text)
+
         if model.band_markers:
             marker_pen = QPen(
                 qcolor(PALETTE.data_marker, alpha=150),
@@ -651,7 +892,7 @@ class EQGraphRenderer:
         number_font.setPointSize(7)
         number_font.setBold(True)
         for index, band in enumerate(model.bands):
-            x, y = geometry.band_handle_position(model.bands, index, width, height)
+            x, y = model.band_handle_position(index, width, height)
             selected = index == model.selected_band_index
             enabled = bool(band[5])
             fill = qcolor(PALETTE.eq_band_colors[index % len(PALETTE.eq_band_colors)])
@@ -685,7 +926,139 @@ class EQGraphRenderer:
                 )
                 painter.drawText(box, Qt.AlignmentFlag.AlignCenter, str(index + 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
+        cls._paint_readout(painter, model, width, height)
         painter.restore()
+
+    @classmethod
+    def _plot_rect(cls, width: float, height: float) -> QRectF:
+        geometry = cls.GEOMETRY
+        return QRectF(
+            geometry.MARGIN_LEFT,
+            geometry.MARGIN_TOP,
+            *geometry.plot_size(width, height),
+        )
+
+    @classmethod
+    def _label_font(cls, font: QFont) -> QFont:
+        label = QFont(font)
+        label.setPointSize(cls.LABEL_POINT_SIZE)
+        label.setBold(True)
+        return label
+
+    @classmethod
+    def _label_size(cls, font: QFont, text: str) -> tuple[float, float]:
+        metrics = QFontMetricsF(cls._label_font(font))
+        pad_x, pad_y = cls.LABEL_PADDING
+        return metrics.horizontalAdvance(text) + 2 * pad_x, metrics.height() + 2 * pad_y
+
+    @classmethod
+    def readout_layout(
+        cls, font: QFont, model: EQGraphModel, width: float, height: float
+    ) -> tuple[str, QRectF] | None:
+        """The readout's text and box: a dragged band's numbers, else the total under the pointer.
+
+        The box sits a fixed gap from its anchor, above and to the right, on
+        the other side where that would leave the plot. Hover only reads the
+        values already computed.
+        """
+        geometry = cls.GEOMETRY
+        dragged = model.dragging_band_index
+        if dragged is not None:
+            text = model.band_readout(dragged)
+            anchor = QPointF(*model.band_handle_position(dragged, width, height))
+        elif model.hover is not None:
+            hover_x, hover_y = model.hover
+            frequency = geometry.x_to_frequency(hover_x, width, height)
+            level = round(model.response_at(frequency), 1)
+            shown = f"{level:+.1f}" if level else "0.0"
+            text = f"{format_frequency_hz(frequency, exact=True)}  {shown} dB"
+            anchor = QPointF(hover_x, hover_y)
+        else:
+            return None
+        box_width, box_height = cls._label_size(font, text)
+        plot = cls._plot_rect(width, height)
+        x = anchor.x() + cls.READOUT_GAP
+        if x + box_width > plot.right():
+            x = anchor.x() - cls.READOUT_GAP - box_width
+        y = anchor.y() - cls.READOUT_GAP - box_height
+        if y < plot.top():
+            y = anchor.y() + cls.READOUT_GAP
+        x = min(max(x, plot.left()), plot.right() - box_width)
+        y = min(max(y, plot.top()), plot.bottom() - box_height)
+        return text, QRectF(x, y, box_width, box_height)
+
+    @classmethod
+    def caption_layout(
+        cls, font: QFont, model: EQGraphModel, width: float, height: float
+    ) -> tuple[str, QRectF] | None:
+        """The "EQ not running" caption in the first plot corner no handle is near."""
+        text = model.not_running_label
+        if not text:
+            return None
+        box_width, box_height = cls._label_size(font, text)
+        plot = cls._plot_rect(width, height)
+        inset = cls.CAPTION_INSET
+        left, top = plot.left() + inset, plot.top() + inset
+        right, bottom = plot.right() - box_width - inset, plot.bottom() - box_height - inset
+        boxes = [
+            QRectF(x, y, box_width, box_height)
+            for x, y in ((right, top), (left, top), (right, bottom), (left, bottom))
+        ]
+        reach = cls.GEOMETRY.HANDLE_RADIUS + 2.0
+        handles = [
+            QPointF(*model.band_handle_position(index, width, height))
+            for index in range(len(model.bands))
+        ]
+        free = next(
+            (
+                box
+                for box in boxes
+                if not any(
+                    box.adjusted(-reach, -reach, reach, reach).contains(handle)
+                    for handle in handles
+                )
+            ),
+            boxes[0],
+        )
+        return text, free
+
+    @classmethod
+    def _paint_label(
+        cls, painter: QPainter, text: str, box: QRectF, color: str
+    ) -> None:
+        painter.save()
+        painter.setFont(cls._label_font(painter.font()))
+        painter.setPen(QPen(qcolor(PALETTE.border_strong), 1))
+        painter.setBrush(qcolor(PALETTE.data_surface_raised))
+        painter.drawRoundedRect(box, 3, 3)
+        painter.setPen(qcolor(color))
+        painter.drawText(box, Qt.AlignmentFlag.AlignCenter, text)
+        painter.restore()
+
+    @classmethod
+    def _paint_readout(
+        cls, painter: QPainter, model: EQGraphModel, width: int, height: int
+    ) -> None:
+        layout = cls.readout_layout(painter.font(), model, width, height)
+        if layout is None:
+            return
+        if model.dragging_band_index is None and model.hover is not None:
+            # A guide and a dot on the total, so the number has a place on the curve.
+            geometry = cls.GEOMETRY
+            x, _y = model.hover
+            plot = cls._plot_rect(width, height)
+            db = model.response_at(geometry.x_to_frequency(x, width, height))
+            curve_y = plot.top() + (geometry.DISPLAY_DB_MAX - db) * plot.height() / (
+                geometry.DISPLAY_DB_MAX - geometry.DISPLAY_DB_MIN
+            )
+            painter.setPen(QPen(qcolor(PALETTE.data_text_muted, alpha=120), 1))
+            painter.drawLine(QLineF(x, plot.top(), x, plot.bottom()))
+            painter.setPen(QPen(qcolor(PALETTE.data_curve), 2))
+            painter.setBrush(qcolor(PALETTE.data_surface))
+            painter.drawEllipse(
+                QPointF(x, min(max(curve_y, plot.top()), plot.bottom())), 3.5, 3.5
+            )
+        cls._paint_label(painter, *layout, PALETTE.data_text)
 
     @staticmethod
     def _active_runs(values: list[float]) -> list[range]:
@@ -759,7 +1132,7 @@ class EQGraphRenderer:
         )
         painter.setBrush(Qt.BrushStyle.NoBrush)
 
-        if not model.eq_enabled:
+        if not model.eq_running:
             painter.setOpacity(cls.MUTED_OPACITY)
         selected = model.selected_band_index
         # The selected band last, so it is on top of its neighbours.
@@ -789,7 +1162,7 @@ class EQGraphRenderer:
             # of stroking a dashed polyline. The dark casing keeps the dashes
             # visible on top of the total when the tone layer is flat and the
             # two coincide.
-            if not model.eq_enabled:
+            if not model.eq_running:
                 painter.setOpacity(cls.MUTED_OPACITY)
             correction = ys(model.correction_response_db)
             dashes = segments(correction, [i for i in range(len(xs) - 1) if i % 3 != 2])

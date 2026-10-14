@@ -9,6 +9,8 @@ struct OutputWriteCounters<'a> {
     last_output_write_time: &'a AtomicU64,
     output_clip_event_count: &'a AtomicU64,
     output_clip_peak_db: &'a AtomicU32,
+    output_final_peak_hold: &'a AtomicU32,
+    output_full_scale_count: &'a AtomicU64,
     output_true_peak_event_count: &'a AtomicU64,
     output_true_peak_db: &'a AtomicU32,
     output_true_peak_input_db: &'a AtomicU32,
@@ -326,6 +328,13 @@ impl<
 
         let written = output_producer.write(pending_slice);
         if written > 0 {
+            // What was queued is what leaves the app: after the final limiter,
+            // clamp and fade, and without samples a short write dropped.
+            record_level_extremes(
+                &pending_slice[..written],
+                counters.output_final_peak_hold,
+                Some(counters.output_full_scale_count),
+            );
             counters
                 .last_output_write_time
                 .store(now_micros(), Ordering::Relaxed);

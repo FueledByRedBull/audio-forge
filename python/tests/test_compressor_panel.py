@@ -46,7 +46,7 @@ def test_limiter_views_share_exact_state_without_rounding_unedited_fields(qapp):
     panel = CompressorPanel(native, state)
     other_panel = CompressorPanel(native, state)
     edits = []
-    panel.configurationEdited.connect(edits.append)
+    state.configurationEdited.connect(edits.append)
     try:
         panel.set_limiter_settings({
             "ceiling_db": -1.234567,

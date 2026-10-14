@@ -18,23 +18,27 @@ _KEPT_REDUCED_MESSAGE = "The correction was made gentler so it leaves no less ro
 _REASON_MESSAGES = {
     "insufficient repeatable voiced windows": (
         "insufficient_coverage",
-        "Not enough repeatable speech was captured to support correction.",
+        "Not enough repeatable speech was captured to support correction. "
+        "Record again and read the whole passage at a steady volume.",
     ),
     "capture quality score is too low": (
         "unusable_capture",
-        "The speech capture was too inconsistent or unclear to trust.",
+        "The recording was too inconsistent or unclear to base a correction on. "
+        "Record again in a quieter room, closer to the microphone.",
     ),
     "noise-referenced SNR is too low": (
         "unusable_capture",
-        "Speech was too close to the measured room-noise level.",
+        "Your voice was too close to the background noise in the recording. "
+        "Move closer to the microphone or record in a quieter room.",
     ),
     "room-noise reference is invalid": (
         "invalid_noise_reference",
-        "The room-noise reference did not match a usable quiet capture.",
+        "The room-noise reference did not match a usable quiet capture. "
+        "Record again while the room is quiet.",
     ),
     "overall confidence is below full-strength threshold": (
         "conservative_success",
-        "Measurement support was adequate, so a gentler correction was kept.",
+        "The recording was only fair, so a gentler correction was kept.",
     ),
     "validation reduced the fitted correction": (
         "conservative_success",
@@ -68,14 +72,44 @@ _REASON_MESSAGES = {
         "fit_failed",
         "The tone fit could not settle on a correction that stays within the safety limits.",
     ),
+    "nonlinear EQ solve used its bounded best estimate": (
+        "conservative_success",
+        "The tone fit settled on its closest safe result, so the correction is gentler than the preset asks for.",
+    ),
+    "constrained gain solve used its feasible projection": (
+        "conservative_success",
+        "The tone fit had to stay inside the safety limits, so the correction is gentler than the preset asks for.",
+    ),
+    "incumbent EQ is unavailable for full-chain validation": (
+        "headroom_unverified",
+        "AudioForge could not read your current EQ, so it could not confirm the correction is safe. "
+        "Close and reopen the window, then record again.",
+    ),
+    "complete-chain settings are unavailable": (
+        "headroom_unverified",
+        "AudioForge could not read your current output settings, so it could not confirm the "
+        "correction is safe. Close and reopen the window, then record again.",
+    ),
 }
 
-# The calibration dialog appends the specific cause after this prefix.
-_HEADROOM_FAILURE_PREFIX = "Full-chain headroom validation failed"
+# The calibration dialog appends the specific cause after the first prefix.
+_HEADROOM_FAILURE_PREFIXES = (
+    "Full-chain headroom validation failed",
+    "native full-chain headroom validation failed",
+)
 _HEADROOM_FAILURE_MESSAGE = (
     "headroom_unverified",
-    "AudioForge could not confirm the correction is safe for the output level.",
+    "AudioForge could not confirm the correction is safe for the output level. "
+    "Restart processing and record again.",
 )
+
+
+def reason_message(reason: str) -> tuple[str, str] | None:
+    """The (outcome code, sentence) for an analysis reason, or None when it has none."""
+    mapped = _REASON_MESSAGES.get(reason)
+    if mapped is None and reason.startswith(_HEADROOM_FAILURE_PREFIXES):
+        mapped = _HEADROOM_FAILURE_MESSAGE
+    return mapped
 
 
 # What the user reads for each stored ``target_mode`` value; the stored values stay as they are.
@@ -127,14 +161,15 @@ def explain_auto_eq(diagnostics: dict[str, Any] | None) -> AutoEqExplanation:
     mapped_codes: list[str] = []
     details: list[str] = []
     for reason in raw_reasons:
-        mapped = _REASON_MESSAGES.get(reason)
+        mapped = reason_message(reason)
         if reason == _REDUCED_REASON and kept_over_rule:
             mapped = ("conservative_success", _KEPT_REDUCED_MESSAGE)
-        if mapped is None and reason.startswith(_HEADROOM_FAILURE_PREFIX):
-            mapped = _HEADROOM_FAILURE_MESSAGE
-        if mapped is None:
+        # A reason with no sentence is shown as it was given, never dropped.
+        code, message = mapped if mapped is not None else (None, reason)
+        if code is None:
+            if message not in details:
+                details.append(message)
             continue
-        code, message = mapped
         if code not in mapped_codes:
             mapped_codes.append(code)
         if message not in details:
@@ -253,6 +288,7 @@ def headroom_advice(
 
 __all__ = [
     "AutoEqExplanation",
+    "reason_message",
     "TARGET_MODE_LABELS",
     "explain_auto_eq",
     "headroom_advice",

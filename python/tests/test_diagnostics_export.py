@@ -16,6 +16,7 @@ from mic_eq.diagnostics_export import (
     SCHEMA_VERSION,
     build_diagnostics_snapshot,
     diagnostics_filename,
+    sanitize_setup_result,
     serialize_diagnostics_snapshot,
     write_diagnostics_snapshot,
 )
@@ -67,7 +68,11 @@ def _runtime() -> dict[str, object]:
     }
 
 
-def _build(*, key: bytes = b"K" * 32, processing: dict[str, Any] | None = None) -> dict[str, Any]:
+def _build(
+    *, key: bytes = b"K" * 32, processing: dict[str, Any] | None = None,
+    setup_result: dict[str, Any] | None = None,
+    interface: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     processing = Preset().to_dict() if processing is None else processing
     processing["eq"]["bands"][0]["gain_db"] = float("inf")
     return build_diagnostics_snapshot(
@@ -86,6 +91,8 @@ def _build(*, key: bytes = b"K" * 32, processing: dict[str, Any] | None = None) 
         generated_at=FIXED_TIME,
         pseudonym_key=key,
         system_info=FIXED_SYSTEM,
+        setup_result=setup_result,
+        interface=interface,
     )
 
 
@@ -104,7 +111,10 @@ def test_snapshot_is_deterministic_finite_bounded_and_private() -> None:
         "raw_device_names_included": False,
         "secrets_included": False,
         "pseudonyms_are_report_local": True,
+        "setup_message_text_included": False,
     }
+    assert first["schema"]["version"] == 3
+    assert first["setup_result"] is None
     assert len(payload) < MAX_SERIALIZED_BYTES
     assert first["runtime"]["output_short_term_lufs"] is None
     assert first["runtime"]["backend_error_present"] is True
@@ -125,6 +135,28 @@ def test_snapshot_is_deterministic_finite_bounded_and_private() -> None:
     assert '"unknown_path":' not in text
     assert b"NaN" not in payload
     assert b"Infinity" not in payload
+
+
+def test_interface_is_exported_as_fixed_words_only() -> None:
+    quick = {"view": "quick", "classic_reason": "none", "graphics_api": "direct3d11"}
+    assert _build(interface=quick)["interface"] == quick
+    classic = {"view": "classic", "classic_reason": "qml_failed", "graphics_api": "not_applicable"}
+    assert _build(interface=classic)["interface"] == classic
+
+    # Anything outside the vocabulary, such as an error text or a path, never leaves the app.
+    leaky = {
+        "view": "C:/Users/private/Main.qml", "classic_reason": "failed: token=secret-value",
+        "graphics_api": "Radeon RX private", "extra": "dropped",
+    }
+    exported = _build(interface=leaky)["interface"]
+    assert exported == {"view": "other", "classic_reason": "other", "graphics_api": "other"}
+    payload = serialize_diagnostics_snapshot(_build(interface=leaky)).decode("utf-8")
+    assert "private" not in payload and "secret-value" not in payload
+
+    snapshot = _build(interface=quick)
+    snapshot["interface"]["renderer_name"] = "leak"
+    with pytest.raises(ValueError, match="interface"):
+        serialize_diagnostics_snapshot(snapshot)
 
 
 def test_report_local_key_changes_device_pseudonyms() -> None:
@@ -272,6 +304,7 @@ class _FakeStatusBar:
 class _FakeWindow:
     def __init__(self) -> None:
         self.processor = _FakeProcessor()
+        self.last_setup_result: Any = None
         self.config = _config()
         self.input_choice = object()
         self.output_choice = object()
@@ -284,6 +317,9 @@ class _FakeWindow:
 
     def _get_current_preset(self) -> Preset:
         return Preset()
+
+    def _interface_snapshot(self) -> dict[str, str]:
+        return {"view": "quick", "classic_reason": "none", "graphics_api": "software"}
 
 
 def test_main_window_export_uses_privacy_safe_builder(
@@ -319,6 +355,9 @@ def test_main_window_export_uses_privacy_safe_builder(
     assert "Private Virtual Cable" not in payload
     assert json.loads(payload)["privacy"]["raw_audio_included"] is False
     assert messages[0][0] == "Diagnostics Exported"
+    # No Voice Setup or Auto-EQ run has happened, so the dialog does not claim a file entry for one.
+    assert "last Voice Setup" not in messages[0][1] and "Auto-EQ" not in messages[0][1]
+    assert json.loads(payload)["interface"]["view"] == "quick"
     assert window.status_message.messages[-1][0] == "Privacy-safe diagnostics exported"
 
 
@@ -353,3 +392,152 @@ def test_main_window_export_survives_a_failed_level_read(tmp_path, monkeypatch) 
     runtime = json.loads(destination.read_text(encoding="utf-8"))["runtime"]
     assert (runtime["input_rms_db"], runtime["input_peak_db"]) == (None, -96.5)
     assert messages == ["Diagnostics Exported"]
+
+
+def _setup_result(**changes: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "kind": "voice_setup",
+        "outcome": "rolled_back",
+        "reason_codes": ["tonal_check_failed", "loudness_target_missed"],
+        "messages": [
+            "Your Private USB Microphone is too hot: lower it by about 6 dB.",
+            "Full-chain check failed: C:/Users/private/model.onnx not found",
+        ],
+        "numbers": {
+            "speech_peak_db": -0.4,
+            "setup_confidence": 0.62,
+            "noise_floor_db": -61,
+            "limiter_on": True,
+            "level_override": "too_hot",
+            "mic_label": "alice_laptop_mic",
+            "free_text": "Private USB Microphone",
+            "Bad Key!": 1,
+            "not_finite": float("nan"),
+        },
+        "recorded_at": "2026-10-14T09:30:00+02:00",
+    }
+    result.update(changes)
+    return result
+
+
+def test_setup_result_is_validated_bounded_and_never_raises() -> None:
+    clean = sanitize_setup_result(_setup_result(extra="dropped", reasons="dropped"))
+    assert clean is not None
+    assert set(clean) == {"kind", "outcome", "reason_codes", "messages", "numbers", "recorded_at"}
+    assert clean["recorded_at"] == "2026-10-14T07:30:00Z"
+    assert clean["numbers"]["speech_peak_db"] == -0.4
+    assert clean["numbers"]["noise_floor_db"] == -61
+    assert clean["numbers"]["limiter_on"] is True
+    assert "Bad Key!" not in clean["numbers"] and "not_finite" not in clean["numbers"]
+
+    for garbage in (None, 3, "text", [], object()):
+        assert sanitize_setup_result(garbage) is None
+
+    huge = sanitize_setup_result({
+        "kind": "voice_setup", "outcome": "applied",
+        "reason_codes": [f"code_{n}" for n in range(500)] + ["Not A Code", 7, "x" * 200],
+        "messages": ["m" * 5000] * 100,
+        "numbers": {f"n_{n}": n for n in range(500)},
+        "recorded_at": "yesterday-ish",
+    })
+    assert huge is not None
+    assert len(huge["reason_codes"]) <= 16 and all(code.startswith("code_") for code in huge["reason_codes"])
+    assert len(huge["messages"]) <= 8 and all(len(message) <= 240 for message in huge["messages"])
+    assert len(huge["numbers"]) <= 32
+    assert huge["recorded_at"].endswith("Z")
+
+    unknown = sanitize_setup_result({"kind": "other_tool", "outcome": "exploded"})
+    assert unknown is not None and (unknown["kind"], unknown["outcome"]) == ("other", "other")
+
+
+@pytest.mark.parametrize("code", ["good", "too_hot", "too_quiet", "silent", "unreadable"])
+def test_every_level_check_verdict_is_exported_and_nothing_else_is(code) -> None:
+    exported = _build(setup_result=_setup_result(numbers={"level_override": code}))["setup_result"]
+    assert exported["numbers"] == {"level_override": code}
+    exported = _build(setup_result=_setup_result(numbers={"level_override": f"{code}_x"}))["setup_result"]
+    assert exported["numbers"] == {}
+
+
+def test_setup_numbers_are_bounded_and_sequences_are_accepted() -> None:
+    limit = 2**53
+    clean = sanitize_setup_result({
+        "numbers": {"huge": 10**5000, "over": limit + 1, "under": -limit - 1,
+                    "edge": limit, "low_edge": -limit, "float_big": 1e300},
+        "reason_codes": ("tonal_check_failed", "Not A Code"),
+        "messages": ("first", "second"),
+    })
+    assert clean is not None
+    assert clean["numbers"] == {"edge": limit, "low_edge": -limit, "float_big": 1e300}
+    assert clean["reason_codes"] == ["tonal_check_failed"]
+    assert clean["messages"] == ["first", "second"]
+    # A huge integer used to be accepted and then break every later export.
+    snapshot = _build(setup_result=_setup_result(numbers={"x": 10**5000}))
+    assert snapshot["setup_result"]["numbers"] == {}
+    assert serialize_diagnostics_snapshot(snapshot)
+
+
+def test_snapshot_exports_the_setup_result_as_codes_and_numbers_only() -> None:
+    snapshot = _build(setup_result=_setup_result())
+    assert snapshot["setup_result"] == {
+        "kind": "voice_setup",
+        "outcome": "rolled_back",
+        "reason_codes": ["tonal_check_failed", "loudness_target_missed"],
+        "numbers": {
+            "level_override": "too_hot",
+            "limiter_on": True,
+            "noise_floor_db": -61,
+            "setup_confidence": 0.62,
+            "speech_peak_db": -0.4,
+        },
+        "message_count": 2,
+        "recorded_at": "2026-10-14T07:30:00Z",
+    }
+    payload = serialize_diagnostics_snapshot(snapshot).decode("utf-8")
+    # Messages can carry device names and exception text; only their count leaves the app.
+    assert "Private USB Microphone" not in payload
+    assert "model.onnx" not in payload and "Users" not in payload
+    # A lowercase string that is not a known code can still be private.
+    assert "alice_laptop_mic" not in payload and "mic_label" not in payload
+    assert len(payload) < MAX_SERIALIZED_BYTES
+    snapshot["setup_result"]["messages"] = ["leak"]
+    with pytest.raises(ValueError, match="setup_result"):
+        serialize_diagnostics_snapshot(snapshot)
+
+
+def test_main_window_keeps_the_most_recent_setup_result_and_exports_it(tmp_path, monkeypatch) -> None:
+    destination = tmp_path / "setup.json"
+    monkeypatch.setattr(
+        main_window.QFileDialog, "getSaveFileName",
+        lambda *_args, **_kwargs: (str(destination), "JSON Files (*.json)"),
+    )
+    dialogs: list[str] = []
+    monkeypatch.setattr(
+        main_window.QMessageBox, "information", lambda _parent, _title, text: dialogs.append(text)
+    )
+    monkeypatch.setattr(
+        main_window.QMessageBox, "critical",
+        lambda *_args, **_kwargs: pytest.fail("export unexpectedly failed"),
+    )
+    window = _FakeWindow()
+    main_window.MainWindow._export_diagnostics(cast(Any, window))
+    assert json.loads(destination.read_text(encoding="utf-8"))["setup_result"] is None
+    assert "last Voice Setup" not in dialogs[-1]
+
+    main_window.MainWindow.record_setup_result(cast(Any, window), _setup_result(outcome="refused"))
+    main_window.MainWindow.record_setup_result(cast(Any, window), _setup_result(kind="auto_eq", outcome="applied"))
+    assert (window.last_setup_result["kind"], window.last_setup_result["outcome"]) == ("auto_eq", "applied")
+    main_window.MainWindow._export_diagnostics(cast(Any, window))
+    exported = json.loads(destination.read_text(encoding="utf-8"))["setup_result"]
+    assert (exported["kind"], exported["outcome"]) == ("auto_eq", "applied")
+    assert "last Voice Setup or Auto-EQ run" in dialogs[-1]
+
+    # A malformed report from a dialog is ignored and cannot raise into it.
+    main_window.MainWindow.record_setup_result(cast(Any, window), cast(Any, "garbage"))
+    assert window.last_setup_result["kind"] == "auto_eq"
+
+
+def test_a_new_main_window_has_no_setup_result(isolated_main_window) -> None:
+    window: Any = isolated_main_window
+    assert window.last_setup_result is None
+    window.record_setup_result(_setup_result())
+    assert cast(Any, window.last_setup_result)["outcome"] == "rolled_back"

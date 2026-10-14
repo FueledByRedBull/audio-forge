@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QComboBox,
 )
-from PySide6.QtCore import QSignalBlocker, Qt, Signal
+from PySide6.QtCore import QSignalBlocker, Qt
 from .gate_state import GateState
 from .control_specs import (
     GATE_MODES,
@@ -41,8 +41,6 @@ logger = logging.getLogger(__name__)
 
 class GatePanel(QWidget):
     """Noise Gate parameter control panel."""
-
-    configurationEdited = Signal(str)
 
     def __init__(self, processor, gate_state: GateState | None = None, meters: ProcessingMeters | None = None):
         super().__init__()
@@ -302,7 +300,6 @@ class GatePanel(QWidget):
                 )
                 slider.sliderReleased.connect(self.gate_state.flush)
         self.gate_state.changed.connect(self._render_settings)
-        self.gate_state.configurationEdited.connect(self.configurationEdited.emit)
         self._render_settings()
 
     def _render_settings(self) -> None:
@@ -332,9 +329,6 @@ class GatePanel(QWidget):
         self.auto_threshold_checkbox.setText(text["auto_threshold_text"])
         self.auto_threshold_checkbox.setAccessibleName(text["auto_threshold_name"])
         self.auto_threshold_checkbox.setToolTip(text["auto_threshold_tooltip"])
-
-    def refresh_vad_status(self) -> None:
-        self.gate_state.refresh_vad_status()
 
     def update_vad_confidence(self, confidence: float | None):
         self.gate_state.update_vad_confidence(confidence)

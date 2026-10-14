@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QKeyEvent, QMouseEvent, QPainter
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QAccessible, QAccessibleEvent, QKeyEvent, QMouseEvent, QPainter
 from PySide6.QtWidgets import QWidget
 
 from .eq_graph import EQGraphGeometry, EQGraphModel, EQGraphRenderer
@@ -11,12 +11,6 @@ from .eq_graph import EQGraphGeometry, EQGraphModel, EQGraphRenderer
 
 class EQCurveWidget(QWidget):
     """Paint and route input for an :class:`EQGraphModel`."""
-
-    bandDragStarted = Signal(int)
-    bandDragged = Signal(int, float, float)
-    bandDragFinished = Signal(int, float, float)
-    bandDragCancelled = Signal(int, float, float)
-    bandSelected = Signal(int)
 
     REGION_STRIP_HEIGHT = EQGraphGeometry.REGION_STRIP_HEIGHT
     REGIONS = EQGraphGeometry.REGIONS
@@ -46,26 +40,17 @@ class EQCurveWidget(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self.setAccessibleName("Editable EQ response graph")
-        self.setAccessibleDescription(
-            "Click and drag a band handle. Left and right change frequency; "
-            "up and down change gain for bell and shelf filters. Use left "
-            "bracket and right bracket to select a band from the keyboard. "
-            "The thick curve is what the signal really gets: the input filter "
-            "plus every EQ filter that is on, or the input filter alone when "
-            "the EQ switch is off. Thin colored curves are the bands, the "
-            "dashed curve is the Auto-EQ layer and the dotted curve is the "
-            "input filter. Adaptive input cleanup follows the signal and is not "
-            "drawn."
-        )
-        self.graph_model.changed.connect(self._model_changed)
-        self.graph_model.bandDragStarted.connect(self.bandDragStarted.emit)
-        self.graph_model.bandDragged.connect(self.bandDragged.emit)
-        self.graph_model.bandDragFinished.connect(self.bandDragFinished.emit)
-        self.graph_model.bandDragCancelled.connect(self.bandDragCancelled.emit)
-        self.graph_model.bandSelected.connect(self.bandSelected.emit)
+        self.setAccessibleDescription(self.graph_model.property("accessibleDescription"))
+        self.graph_model.changed.connect(self.update)
+        self.graph_model.accessibleDescriptionChanged.connect(self._refresh_description)
+        self.graph_model.hoverChanged.connect(self.update)
 
-    def _model_changed(self) -> None:
-        self.update()
+    def _refresh_description(self) -> None:
+        self.setAccessibleDescription(self.graph_model.property("accessibleDescription"))
+        if QAccessible.isActive():
+            QAccessible.updateAccessibility(
+                QAccessibleEvent(self, QAccessible.Event.DescriptionChanged)
+            )
 
     @property
     def bands(self) -> list[tuple]:
@@ -139,14 +124,12 @@ class EQCurveWidget(QWidget):
         return EQGraphGeometry.y_to_gain(y, self.width(), self.height())
 
     def band_handle_position(self, band_index: int) -> tuple[float, float]:
-        return EQGraphGeometry.band_handle_position(
-            self.bands, band_index, self.width(), self.height()
+        return self.graph_model.band_handle_position(
+            band_index, self.width(), self.height()
         )
 
     def _nearest_band_handle(self, x: float, y: float) -> int | None:
-        return EQGraphGeometry.nearest_band_handle(
-            self.bands, x, y, self.width(), self.height()
-        )
+        return self.graph_model.nearest_band_handle(x, y, self.width(), self.height())
 
     def set_all_params(self, bands, *, correction=()) -> None:
         self.graph_model.set_all_params(bands, correction=correction)
@@ -170,6 +153,19 @@ class EQCurveWidget(QWidget):
             position.x(), position.y(), self.width(), self.height()
         )
         event.accept()
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        position = event.position()
+        if event.button() != Qt.MouseButton.LeftButton or not self.graph_model.request_band_reset(
+            position.x(), position.y(), self.width(), self.height()
+        ):
+            super().mouseDoubleClickEvent(event)
+            return
+        event.accept()
+
+    def leaveEvent(self, event: QEvent) -> None:
+        self.graph_model.clear_hover()
+        super().leaveEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         position = event.position()

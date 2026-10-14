@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QObject, Property, Qt, Signal, Slot
-from PySide6.QtGui import QKeyEvent, QMouseEvent, QPainter
+from PySide6.QtGui import QHoverEvent, QKeyEvent, QMouseEvent, QPainter
 from PySide6.QtQuick import QQuickPaintedItem
 
-from .eq_graph import EQGraphGeometry, EQGraphModel, EQGraphRenderer
+from .eq_graph import EQGraphModel, EQGraphRenderer
 
 
 class EQGraphItem(QQuickPaintedItem):
@@ -19,6 +19,7 @@ class EQGraphItem(QQuickPaintedItem):
         self._graph: EQGraphModel | None = None
         self.setAntialiasing(True)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+        self.setAcceptHoverEvents(True)
 
     def _get_graph(self) -> QObject | None:
         return self._graph
@@ -29,13 +30,15 @@ class EQGraphItem(QQuickPaintedItem):
         if value is not None and not isinstance(value, EQGraphModel):
             raise TypeError("EQGraphItem.graph must be an EQGraphModel")
         if self._graph is not None:
-            try:
-                self._graph.changed.disconnect(self._update_graph)
-            except (RuntimeError, TypeError):
-                pass
+            for signal in (self._graph.changed, self._graph.hoverChanged):
+                try:
+                    signal.disconnect(self._update_graph)
+                except (RuntimeError, TypeError):
+                    pass
         self._graph = value
         if self._graph is not None:
             self._graph.changed.connect(self._update_graph)
+            self._graph.hoverChanged.connect(self._update_graph)
         self.graphChanged.emit()
         self.update()
 
@@ -59,8 +62,7 @@ class EQGraphItem(QQuickPaintedItem):
         if (
             graph is None
             or event.button() != Qt.MouseButton.LeftButton
-            or EQGraphGeometry.nearest_band_handle(
-                graph.bands,
+            or graph.nearest_band_handle(
                 event.position().x(),
                 event.position().y(),
                 self.width(),
@@ -80,6 +82,32 @@ class EQGraphItem(QQuickPaintedItem):
         # Keeps the page's flick from taking the drag over, touch included.
         self.setKeepMouseGrab(True)
         event.accept()
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        graph = self._graph
+        if (
+            graph is None
+            or event.button() != Qt.MouseButton.LeftButton
+            or not graph.request_band_reset(
+                event.position().x(),
+                event.position().y(),
+                self.width(),
+                self.height(),
+            )
+        ):
+            event.ignore()
+            return
+        event.accept()
+
+    def hoverMoveEvent(self, event: QHoverEvent) -> None:
+        if self._graph is not None:
+            self._graph.set_hover(
+                event.position().x(), event.position().y(), self.width(), self.height()
+            )
+
+    def hoverLeaveEvent(self, event: QHoverEvent) -> None:
+        if self._graph is not None:
+            self._graph.clear_hover()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         graph = self._graph

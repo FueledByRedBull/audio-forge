@@ -5,6 +5,7 @@ PySide6's QTest stubs expose QWindow overloads but omit the runtime QWidget
 overloads exercised here.
 """
 
+from dataclasses import replace
 from typing import Any, cast
 
 import pytest
@@ -588,10 +589,10 @@ def test_eq_drag_coalesces_native_updates_and_curve_refreshes(qapp, monkeypatch)
     )
     panel._curve_rate_limiter._last_call_time = 0.0
     try:
-        panel._on_curve_band_dragged(4, 3200.0, 2.0)
-        panel._on_curve_band_dragged(4, 3300.0, 2.1)
-        panel._on_curve_band_dragged(4, 3400.0, 2.2)
-        panel._on_curve_drag_finished(4, 3400.0, 2.2)
+        panel.eq_state.edit_curve_band(4, 3200.0, 2.0)
+        panel.eq_state.edit_curve_band(4, 3300.0, 2.1)
+        panel.eq_state.edit_curve_band(4, 3400.0, 2.2)
+        panel.eq_state.finish_curve_edit(4, 3400.0, 2.2)
 
         assert counted.layer_calls == 2
         assert curve_calls == 2
@@ -685,3 +686,99 @@ def test_standalone_eq_band_keeps_its_parameter_write_contract(qapp):
     native.set_eq_band_q.assert_not_called()
     band.deleteLater()
     qapp.processEvents()
+
+
+def test_graph_follows_the_processing_mode_the_processor_runs(qapp):
+    processor = AudioProcessor()
+    state = EQState(processor)
+    presentation = EQPresentation(state)
+    model = presentation.graph_model
+
+    assert model.engine_mode == "normal"
+    processor.set_bypass(True)
+    QTest.qWait(450)
+    assert model.engine_mode == "bypass"
+    # Raw monitor wins over bypass, as the DSP loop decides it.
+    processor.set_raw_monitor_enabled(True)
+    presentation.sync_input_conditioning()
+    assert model.engine_mode == "raw"
+    processor.set_raw_monitor_enabled(False)
+    presentation.sync_input_conditioning()
+    assert model.engine_mode == "bypass"
+    processor.set_bypass(False)
+    presentation.sync_input_conditioning()
+    assert model.engine_mode == "normal"
+
+    presentation.deleteLater()
+    qapp.processEvents()
+    processor.stop()
+
+
+def test_graph_ignores_a_processor_that_does_not_report_a_mode(qapp):
+    from unittest.mock import Mock
+
+    presentation = EQPresentation(EQState(Mock()))
+
+    presentation.sync_input_conditioning()
+
+    assert presentation.graph_model.engine_mode == "normal"
+    presentation.deleteLater()
+    qapp.processEvents()
+
+
+def test_reset_band_restores_one_bands_defaults_and_keeps_it_on_or_off(qapp):
+    processor = AudioProcessor()
+    state = EQState(processor)
+    state.apply_auto_eq_results([(100.0 * (i + 1), 1.0, 1.0) for i in range(10)])
+    state.set_band_value(2, "gain_db", 4.0, edited=False)
+    state.set_band_value(4, "filter_type", "notch", edited=False)
+    state.set_band_value(4, "frequency_hz", 777.0, edited=False)
+    state.set_band_value(4, "q", 5.0, edited=False)
+    state.set_band_value(4, "enabled", False, edited=False)
+    events = []
+    state.configurationEditStarted.connect(lambda: events.append("start"))
+    state.configurationEditFinished.connect(events.append)
+    correction = state.get_eq_settings().correction_bands
+
+    state.reset_band(4)
+
+    assert state.get_band(4) == replace(EQSettings().bands[4], enabled=False)
+    assert state.get_band(2).gain_db == 4.0
+    assert state.get_eq_settings().correction_bands == correction
+    assert processor.get_eq_band_config(4) == ("bell", 1280.0, 0.0, 1.41, 12, False)
+    assert events == ["start", "Reset EQ band"]
+    state.set_band_value(2, "enabled", False, edited=False)
+    state.reset_band(2)
+    state.set_band_value(5, "gain_db", 2.0, edited=False)
+    state.reset_band(5)
+    assert not state.get_band(2).enabled and state.get_band(5).enabled
+    with pytest.raises(ValueError):
+        state.reset_band(10)
+    processor.stop()
+
+
+def test_resetting_a_band_is_one_undo_step_and_a_default_band_records_nothing(
+    isolated_main_window,
+):
+    window = isolated_main_window
+    state = window.eq_state
+    state.set_band_value(4, "gain_db", 3.0)
+    window._commit_pending_configuration_snapshot()
+    assert window.current_preset_modified is True
+    history = window._configuration_history
+    before = history.size
+    model = window.eq_presentation.graph_model
+    x, y = model.band_handle_position(4, 640, 260)
+    state.reset_band(2)
+    assert history.size == before
+
+    assert model.request_band_reset(x, y, 640, 260)
+
+    assert state.get_band(4) == EQSettings().bands[4]
+    assert history.size == before + 1
+    assert history.current is not None and history.current.label == "Reset EQ band"
+    # The only difference from the loaded sound is gone.
+    assert window.current_preset_modified is False
+    window.undo_configuration()
+    assert state.get_band(4).gain_db == 3.0
+    assert window.current_preset_modified is True

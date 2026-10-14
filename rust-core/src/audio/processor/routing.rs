@@ -880,6 +880,49 @@ fn update_meter_block_stats(
     }
 }
 
+/// Linear amplitude (-0.009 dBFS) at and above which a sample counts as full
+/// scale. A saturated converter delivers exactly 1.0 (or 32767/32768), which a
+/// strict `> 1.0` test misses. This is the same level as `CLIP_LEVEL` in
+/// `raw_capture_is_clipped`, but that check calls a capture clipped only when
+/// a run of samples holds it (a flat top) or many separate runs occur; one
+/// touch is not clipping. The count rises by one per sample and cannot tell
+/// a run from separate touches, so the meter shows a clip once the count has
+/// risen by a flat top's worth of samples within its hold window.
+const FULL_SCALE_LINEAR: f32 = 0.999;
+
+/// Folds one block into a "peak since last read" atomic (f32 bits of a linear
+/// amplitude, 0.0 = nothing seen) and, when given, a cumulative count of
+/// full-scale samples. Non-finite samples are skipped: the sanitizers replace
+/// them with silence, so they are neither a peak nor a clip. Non-negative f32
+/// bits order like the values, so `fetch_max` on the bits is a float max.
+#[inline]
+fn record_level_extremes(
+    buffer: &[f32],
+    peak_hold: &AtomicU32,
+    full_scale_count: Option<&AtomicU64>,
+) {
+    let mut peak = 0.0_f32;
+    let mut full_scale_samples = 0_u64;
+    for &sample in buffer.iter() {
+        let amplitude = sample.abs();
+        if !amplitude.is_finite() {
+            continue;
+        }
+        peak = peak.max(amplitude);
+        if amplitude >= FULL_SCALE_LINEAR {
+            full_scale_samples += 1;
+        }
+    }
+    if peak > 0.0 {
+        peak_hold.fetch_max(peak.to_bits(), Ordering::Relaxed);
+    }
+    if let Some(count) = full_scale_count {
+        if full_scale_samples > 0 {
+            count.fetch_add(full_scale_samples, Ordering::Relaxed);
+        }
+    }
+}
+
 #[inline]
 fn sanitize_and_clamp_output_inplace(buffer: &mut [f32], ceiling_linear: f32) {
     let ceiling = ceiling_linear.clamp(0.0, 1.0);

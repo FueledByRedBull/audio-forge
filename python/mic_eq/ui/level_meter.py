@@ -8,16 +8,37 @@ Color gradient: green → yellow → red
 """
 
 import math
+import time
+from collections import deque
+from collections.abc import Callable
 
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Property, QObject, Qt, QTimer, QRectF, Signal
 from PySide6.QtGui import QPainter, QLinearGradient, QPen, QFont
 
+from ..analysis.voice_setup import CLIP_FLAT_TOP_S
 from .theme import PALETTE, qcolor
 
 
 SCALE_TICK_LENGTH = 3
 SCALE_TEXT_GAP = 7
+# A clip lights the marker for this long; a later clip restarts the time.
+CLIP_HOLD_SECONDS = 3.0
+# The engine counts every sample at or above the level raw_capture_is_clipped
+# uses, at its fixed 48 kHz processing rate (devices are resampled to it first).
+# The CLIP tag lights when the count rises by the samples a flat top lasts there
+# (6). The count has no runs in it, so six separate touches also light the tag:
+# it says the signal reached full scale that many times, not that it was held.
+CLIP_FLAT_TOP_SAMPLES = round(48_000 * CLIP_FLAT_TOP_S)
+# How far back peaks are remembered for the health advice.
+RECENT_PEAK_SECONDS = 10.0
+
+
+def _linear_to_db(value: float | None) -> float | None:
+    """Convert a linear peak to dB; nothing usable gives ``None``."""
+    if value is None or not math.isfinite(value) or value <= 0.0:
+        return None
+    return 20.0 * math.log10(value)
 
 
 def _scale_mark_geometry(
@@ -51,6 +72,11 @@ class MeterModel(QObject):
     toolTip = Property(str, lambda self: self._tip, constant=True)
     enabled = Property(bool, lambda self: self._enabled, set_enabled, notify=changed)
     shown = Property(bool, lambda self: True, constant=True)
+    description = Property(str, lambda self: self._describe(), notify=changed)
+
+    def _describe(self) -> str:
+        """What assistive technology adds to the name right now."""
+        return ""
 
     def paint_meter(self, painter: QPainter, width: float, height: float) -> None:
         """Paint this meter into any Qt painter without changing its size."""
@@ -81,9 +107,10 @@ class LevelMeter(MeterModel):
 
     def __init__(
         self, label: str = "", show_scale: bool = True, name: str = "",
-        parent: QObject | None = None,
+        parent: QObject | None = None, clock: Callable[[], float] = time.monotonic,
     ):
         super().__init__(name, parent=parent)
+        self.clock = clock
         self.label_text = label
         self.show_scale = show_scale
         self.measurement_available = False
@@ -93,6 +120,15 @@ class LevelMeter(MeterModel):
         self.peak_hold_db = -120.0
         self.is_clipping = False
         self.clip_flash_counter = 0
+        self.clip_marker = False
+        self.clip_peak_db = self.DB_MIN
+        # How many times the signal reached full scale in the window that lit the marker.
+        self.clip_samples = 0
+        self._clip_until = 0.0
+        self._last_clip_at: float | None = None
+        self._last_full_scale_count: int | None = None
+        self._full_scale_rises: deque[tuple[float, int]] = deque()
+        self._recent_peaks: deque[tuple[float, float]] = deque()
 
         # Peak hold decay timer
         self.decay_timer = QTimer(self)
@@ -100,8 +136,10 @@ class LevelMeter(MeterModel):
         self.decay_timer.setInterval(50)  # Runs only while a measured peak has something to decay.
 
     def _sync_decay_timer(self) -> None:
-        active = (self.measurement_available and self.peak_available
-                  and (self.peak_hold_db > self.DB_MIN or self.clip_flash_counter > 0))
+        active = self.measurement_available and (
+            self.clip_marker or (self.peak_available and (
+                self.peak_hold_db > self.DB_MIN or self.clip_flash_counter > 0))
+        )
         if active and not self.decay_timer.isActive():
             self.decay_timer.start()
         elif not active:
@@ -128,6 +166,85 @@ class LevelMeter(MeterModel):
         if previous != (self.rms_db, self.peak_db, True, True):
             self.changed.emit()
 
+    def note_peak(
+        self,
+        peak: float | None,
+        clip_peak: float | None,
+        full_scale_count: int | None = None,
+    ) -> None:
+        """Fold the true peaks since the last read (linear) into the hold line and clip marker.
+
+        The hold line follows ``peak``. The marker needs the cumulative
+        full-scale sample count to rise by ``CLIP_FLAT_TOP_SAMPLES`` within
+        ``CLIP_HOLD_SECONDS``; the first count only sets the baseline. A peak
+        says nothing about how often full scale was reached, so it never lights
+        the marker. ``clip_peak``, the level at the point being judged (the same
+        value as ``peak`` for the input, what actually leaves the app for the
+        output), only labels the marker. It clears itself ``CLIP_HOLD_SECONDS``
+        after the last clip.
+        """
+        if not self.measurement_available:
+            return
+        now = self.clock()
+        previous = (self.peak_hold_db, self.clip_marker, self.clip_samples)
+        hold_db = _linear_to_db(peak)
+        final_db = _linear_to_db(clip_peak)
+        if hold_db is not None:
+            self.peak_hold_db = max(self.peak_hold_db, min(self.DB_MAX, hold_db))
+            self._recent_peaks.append((now, hold_db))
+        while self._recent_peaks and now - self._recent_peaks[0][0] >= RECENT_PEAK_SECONDS:
+            self._recent_peaks.popleft()
+        rise = 0
+        if full_scale_count is not None:
+            baseline = self._last_full_scale_count
+            if baseline is not None:
+                # A count below the baseline means a new stream started from zero.
+                rise = full_scale_count - baseline if full_scale_count >= baseline else full_scale_count
+            self._last_full_scale_count = full_scale_count
+        if rise:
+            self._full_scale_rises.append((now, rise))
+        while self._full_scale_rises and now - self._full_scale_rises[0][0] >= CLIP_HOLD_SECONDS:
+            self._full_scale_rises.popleft()
+        recent_samples = sum(count for _, count in self._full_scale_rises)
+        if rise and recent_samples >= CLIP_FLAT_TOP_SAMPLES:
+            if not self.clip_marker:
+                self.clip_peak_db = self.DB_MIN
+                self.clip_samples = 0
+            self.clip_samples = max(self.clip_samples, recent_samples)
+            self.clip_marker = True
+            self.clip_peak_db = max(self.clip_peak_db, final_db if final_db is not None else 0.0)
+            self._last_clip_at = now
+            self._clip_until = now + CLIP_HOLD_SECONDS
+        self._sync_decay_timer()
+        if previous != (self.peak_hold_db, self.clip_marker, self.clip_samples):
+            self.changed.emit()
+
+    def recent_peak_db(self, seconds: float) -> float | None:
+        """Loudest bar peak (dB, not clamped to the scale) of the last ``seconds``, or ``None``."""
+        now = self.clock()
+        return max((db for at, db in self._recent_peaks if now - at < seconds), default=None)
+
+    def clipped_within(self, seconds: float) -> bool:
+        """Whether the marker last lit less than ``seconds`` ago."""
+        return self._last_clip_at is not None and self.clock() - self._last_clip_at < seconds
+
+    def full_scale_samples_within(self, seconds: float) -> int:
+        """Times the signal reached full scale in the clip that lit the marker, if that was within ``seconds``."""
+        return self.clip_samples if self.clipped_within(seconds) else 0
+
+    def forget_full_scale_count(self) -> None:
+        """Make the next count a new baseline, so samples counted meanwhile are not new clips."""
+        self._last_full_scale_count = None
+        self._full_scale_rises.clear()
+
+    def _clear_clip(self) -> None:
+        self.clip_marker = False
+        self.clip_peak_db = self.DB_MIN
+        self.clip_samples = 0
+        self._last_clip_at = None
+        self.forget_full_scale_count()
+        self._recent_peaks.clear()
+
     def set_rms_level(self, rms_db: float) -> None:
         """Show RMS when no peak measurement is available."""
         if not math.isfinite(rms_db):
@@ -150,21 +267,33 @@ class LevelMeter(MeterModel):
         self.rms_db = self.peak_db = self.peak_hold_db = self.DB_MIN
         self.is_clipping = False
         self.clip_flash_counter = 0
+        self._clear_clip()
         self.decay_timer.stop()
         if changed:
             self.changed.emit()
 
     def _decay_peak_hold(self):
         """Decay measured peak hold; stop repainting once it reaches the floor."""
-        previous = (self.peak_hold_db, self.clip_flash_counter)
+        previous = (self.peak_hold_db, self.clip_flash_counter, self.clip_marker)
         self.peak_hold_db = max(self.DB_MIN, self.peak_hold_db - self.PEAK_DECAY_RATE * 0.05)
         if self.clip_flash_counter > 0:
             self.clip_flash_counter -= 1
             if self.clip_flash_counter == 0:
                 self.is_clipping = False
+        if self.clip_marker and self.clock() >= self._clip_until:
+            self.clip_marker = False
+            self.clip_peak_db = self.DB_MIN
         self._sync_decay_timer()
-        if previous != (self.peak_hold_db, self.clip_flash_counter):
+        if previous != (self.peak_hold_db, self.clip_flash_counter, self.clip_marker):
             self.changed.emit()
+
+    def _describe(self) -> str:
+        if not self.clip_marker:
+            return ""
+        return (
+            f"Clipping: the signal reached full scale {self.clip_samples} times "
+            f"(peak {self.clip_peak_db:.1f} dB) within the last {CLIP_HOLD_SECONDS:g} seconds."
+        )
 
     def _db_to_y(self, db: float, height: float) -> float:
         """Convert dB value to Y coordinate (0 = top, height = bottom)."""
@@ -253,9 +382,20 @@ class LevelMeter(MeterModel):
         if self.is_clipping and self.clip_flash_counter % 2 == 0:
             painter.fillRect(2, 0, meter_width - 2, 4, self.COLOR_CLIP)
 
-        # Draw label at bottom
+        # Draw label at bottom; while the clip marker is lit a "CLIP" tag replaces it,
+        # so the warning is a word on a shape and does not depend on colour.
         if self.label_text:
-            painter.setPen(QPen(qcolor(PALETTE.meter_scale)))
+            text = self.label_text
+            if self.clip_marker:
+                text = "CLIP"
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(self.COLOR_CLIP)
+                painter.drawRoundedRect(
+                    QRectF(2, height - label_height + 1, width - 4, label_height - 2), 3, 3
+                )
+                painter.setPen(QPen(qcolor(PALETTE.text_on_accent)))
+            else:
+                painter.setPen(QPen(qcolor(PALETTE.meter_scale)))
             font = QFont()
             font.setPointSize(9)
             font.setBold(True)
@@ -266,7 +406,7 @@ class LevelMeter(MeterModel):
                 width,
                 label_height,
                 Qt.AlignmentFlag.AlignCenter,
-                self.label_text,
+                text,
             )
 
 
@@ -378,6 +518,7 @@ class MeterWidget(QWidget):
         self.model = model
         self.setAccessibleName(model.property("name"))
         self.setToolTip(model.property("toolTip"))
+        self.setAccessibleDescription(model.property("description"))
         if isinstance(model, LevelMeter):
             # Wider minimum to accommodate the scale.
             self.setMinimumSize(50 if model.show_scale else 25, 120)
@@ -391,6 +532,9 @@ class MeterWidget(QWidget):
 
     def _model_changed(self) -> None:
         self.setEnabled(self.model.property("enabled"))
+        description = self.model.property("description")
+        if description != self.accessibleDescription():
+            self.setAccessibleDescription(description)
         self.update()
 
     def paintEvent(self, event):

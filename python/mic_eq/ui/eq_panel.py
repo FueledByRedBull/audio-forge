@@ -342,9 +342,6 @@ class EQBandSlider(QWidget):
     def slope_db_per_octave(self) -> int:
         return self.settings().slope_db_per_octave
 
-    def band_enabled(self) -> bool:
-        return self.settings().enabled
-
     @property
     def bandwidth_mode(self) -> str:
         return self.settings().bandwidth_mode
@@ -360,9 +357,6 @@ class EQBandSlider(QWidget):
     def set_filter_type(self, filter_type: str) -> None:
         self._set_parameter("filter_type", filter_type)
 
-    def set_band_enabled(self, enabled: bool) -> None:
-        self._set_parameter("enabled", enabled)
-
     def settings(self) -> EQBandSettings:
         if self.eq_state is not None:
             return self.eq_state.get_band(self.band_index)
@@ -374,25 +368,6 @@ class EQBandSlider(QWidget):
         else:
             self._standalone_band = settings
             self._render_settings()
-
-    def reset(self, frequency_hz: float):
-        self.set_settings(
-            EQBandSettings(
-                _default_filter_type(self.band_index), frequency_hz, 0.0, 1.41
-            )
-        )
-        if self.eq_state is not None:
-            self.eq_state.flush()
-        else:
-            for key, value in (
-                ("filter_type", self.filter_type()),
-                ("slope_db_per_octave", 12),
-                ("enabled", True),
-                ("gain_db", 0.0),
-                ("q", 1.41),
-                ("frequency_hz", frequency_hz),
-            ):
-                self._write_standalone_parameter(key, value)
 
 
 class EQPresentation(QObject):
@@ -455,6 +430,7 @@ class EQPresentation(QObject):
         self.options_actions = tuple(self.options_menu.actions())
 
         self.graph_model.bandSelected.connect(state.select_band)
+        self.graph_model.bandResetRequested.connect(state.reset_band)
         self.graph_model.bandDragStarted.connect(state.begin_curve_edit)
         self.graph_model.bandDragged.connect(state.edit_curve_band)
         self.graph_model.bandDragFinished.connect(state.finish_curve_edit)
@@ -520,8 +496,14 @@ class EQPresentation(QObject):
         self._render_presentation()
 
     def sync_input_conditioning(self) -> None:
-        """Draw the input filter for the cleanup mode and rate the processor runs."""
+        """Draw what the processor runs: its processing mode, input filter cleanup mode and rate."""
         processor = self.eq_state.processor
+        # Raw monitor wins over bypass, as the DSP loop selects its path.
+        raw = getattr(processor, "is_raw_monitor_enabled", lambda: False)()
+        bypass = getattr(processor, "is_bypass", lambda: False)()
+        self.graph_model.set_engine_mode(
+            "raw" if raw is True else "bypass" if bypass is True else "normal"
+        )
         mode = getattr(processor, "get_input_cleanup_mode", lambda: None)()
         rate = getattr(processor, "sample_rate", lambda: None)()
         if mode in INPUT_CLEANUP_MODES and isinstance(rate, int) and rate > 0:
@@ -543,7 +525,6 @@ class EQPanel(QWidget):
 
     configurationEditStarted = Signal()
     configurationEditFinished = Signal(str)
-    configurationEdited = Signal(str)
 
     def __init__(
         self,
@@ -571,7 +552,6 @@ class EQPanel(QWidget):
         self.eq_state.configurationEditFinished.connect(
             self.configurationEditFinished.emit
         )
-        self.eq_state.configurationEdited.connect(self.configurationEdited.emit)
         self._render_settings()
 
     def _setup_ui(self):
@@ -590,7 +570,8 @@ class EQPanel(QWidget):
                 "The curve shows correction (dashed) plus tone and the fixed input filter (dotted); "
                 "adaptive input cleanup follows the signal and is not drawn. Handles edit tone only. "
                 "Drag a handle to edit frequency and gain. Notch and pass filters "
-                "move horizontally only. Use [ and ] plus arrow keys for keyboard editing."
+                "move horizontally only. Use [ and ] plus arrow keys for keyboard editing; "
+                "Delete resets the selected band."
             ),
         )
 
@@ -687,16 +668,6 @@ class EQPanel(QWidget):
 
     def _on_enabled_toggled(self, checked):
         self.eq_state.set_enabled(checked)
-
-    def _on_curve_band_dragged(
-        self, band_index: int, frequency_hz: float, gain_db: float
-    ) -> None:
-        self.eq_state.edit_curve_band(band_index, frequency_hz, gain_db)
-
-    def _on_curve_drag_finished(
-        self, band_index: int, frequency_hz: float, gain_db: float
-    ) -> None:
-        self.eq_state.finish_curve_edit(band_index, frequency_hz, gain_db)
 
     def _preset_voice(self):
         """Apply voice clarity preset."""

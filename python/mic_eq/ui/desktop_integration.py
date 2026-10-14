@@ -10,6 +10,8 @@ import ctypes
 import getpass
 import logging
 import os
+import subprocess
+import sys
 import tempfile
 from collections.abc import Callable
 from ctypes import wintypes
@@ -18,6 +20,8 @@ from pathlib import Path
 from PySide6.QtCore import QAbstractNativeEventFilter, QCoreApplication, QLockFile, Qt, QTimer
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QMainWindow
+
+from .login_startup import LOGIN_STARTUP_ARGUMENT
 
 
 logger = logging.getLogger(__name__)
@@ -28,6 +32,8 @@ try:
 except Exception:
     _USER_SCOPE = "default"
 SINGLE_INSTANCE_SERVER = f"AudioForge.SingleInstance.v1.{_USER_SCOPE}"
+# Set in the environment of a copy started after the renderer failed.
+RENDERER_RELAUNCH_ENV = "AUDIOFORGE_RENDERER_RELAUNCH"
 MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
@@ -327,10 +333,38 @@ class SingleInstanceCoordinator:
             socket.disconnected.connect(socket.deleteLater)
             socket.disconnectFromServer()
 
+
+def relaunch_with_software_rendering(instance: SingleInstanceCoordinator | None) -> bool:
+    """Start this app again with software rendering; False if it could not be started.
+
+    The instance guard is released first, or the new copy would only activate this one.
+    """
+
+    # PyInstaller's argv already starts with the executable; a source run needs Python's own flags.
+    arguments = sys.argv if getattr(sys, "frozen", False) else sys.orig_argv
+    command = [sys.executable, *(arg for arg in arguments[1:] if arg != LOGIN_STARTUP_ARGUMENT)]
+    environment = {
+        **os.environ,
+        "QT_QUICK_BACKEND": "software",
+        RENDERER_RELAUNCH_ENV: "1",
+        # Without it a frozen copy takes itself for this one's child and reuses its bundle state.
+        "PYINSTALLER_RESET_ENVIRONMENT": "1",
+    }
+    if instance is not None:
+        instance.close()
+    try:
+        subprocess.Popen(command, env=environment)
+    except OSError:
+        logger.exception("Could not start AudioForge with software rendering")
+        return False
+    return True
+
+
 __all__ = [
     "GlobalMuteHotkey",
     "SingleInstanceCoordinator",
     "activate_window",
     "build_tray_tooltip",
     "parse_global_hotkey",
+    "relaunch_with_software_rendering",
 ]

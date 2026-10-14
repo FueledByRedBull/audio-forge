@@ -20,8 +20,8 @@ AudioForge remains unsigned. Virtual audio cable setup is described in the
   it gives the level it heard and the change to make. A good level continues
   with one click. A hot or quiet level can be checked again or continued
   anyway; silence can only be checked again.
-- The IN and OUT meters hold the highest sample value since the last read. A
-  CLIP tag shows once six samples at full scale arrive within three seconds,
+- The IN and OUT peak lines catch the highest sample between updates (OUT:
+  before the limiter), so a short transient still moves them. A CLIP tag shows once six samples at full scale arrive within three seconds,
   which is the flat top Voice Setup counts as clipping. One touch of full scale
   only warns that peaks are too high. The OUT tag stays dark while the limiter
   holds the output at its ceiling, and lights when the limiter is off or does
@@ -54,8 +54,8 @@ AudioForge remains unsigned. Virtual audio cable setup is described in the
   correction meets the headroom rule and the current EQ is already over it, the
   dialog offers the largest correction that is no worse than what you have. If
   none qualifies, it says the microphone level is too high and by about how much.
-  That amount counts only the excess in your recording, and the advice says when
-  the correction's own boost is the cause.
+  When the correction's own boost is most of the excess, that amount counts only
+  your recording's part, and the advice says the boost is the cause.
 - One stray full-scale sample no longer rejects a take. Clipping now needs a
   flat top of about 125 microseconds or more, or more than 20 separate hits.
 - Auto-EQ refuses clipped, silent and non-finite takes as soon as they finish.
@@ -87,7 +87,8 @@ AudioForge remains unsigned. Virtual audio cable setup is described in the
   (96.7 %). The largest difference was 2.30 dB, against 2.44 dB for SciPy against
   itself.
 - Auto-EQ can propose slightly different settings than 1.15.3. Of 2,071 fits,
-  34 differ by more than 0.25 dB, against 40 for SciPy compared with itself.
+  34 differ by more than 0.25 dB, against 40 for SciPy compared with itself, and
+  19 by more than 1 dB, as many as for SciPy against itself.
 - Release checks run as parallel jobs, and unused evaluator tools and code were
   removed. The release workflow no longer repeats the seeded contention stress
   test in debug mode; it still runs in release mode. None of this changes the
@@ -102,21 +103,17 @@ as before.
 The evidence archive records the exact candidate revision, hashes and automated
 qualification results, including portable startup and MSI lifecycle checks.
 
-The NumPy fit was compared with SciPy, with a control arm of SciPy against
-itself with moved start values. The rules were set before the run, then
-rewritten once before any case was judged: a study of 360 seeded fits had shown
-that SciPy is not stable against itself, so three of the four gates as first
-written would have measured SciPy's noise, not the port. The fourth gate,
-that any allowed status change stays within 1 dB, had nothing to measure because
-there were no such changes. All four gates passed. The port changed no failure or
-recommendation status; the control changed one
+The NumPy fit was compared with SciPy on 2,084 cases, with SciPy against
+itself as the yardstick, because SciPy is not stable against itself. The port
+changed no failure or recommendation status; the yardstick changed one. The
+check on allowed status changes had nothing to measure, as there were none
 (`auto-eq-solver-port-2026-10-report.json` in the
 [evaluation evidence](https://github.com/FueledByRedBull/audio-forge/blob/master/evaluation/README.md)).
 The product resampler was re-checked on the current source and all 11
 predefined checks pass (`resampler-quality-2026-10-report.json`).
 The clipping rule was tried on 12 VoiceBank takes hard-clipped digitally by 0 to
-6 dB. It refuses every take clipped by 1 dB or more and accepts takes clipped by
-0.25 or 0.5 dB. The CLIP tag lights for 16 of the 29 cases it accepts, because
+6 dB. It refuses every take clipped by 1 dB or more and accepts 17 of the 24
+takes clipped by 0.25 or 0.5 dB. The CLIP tag lights for 16 of the 29 cases it accepts, because
 the tag counts how often full scale was reached and the rule judges damage. No
 microphone captures of real clipping were tested.
 

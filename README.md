@@ -124,8 +124,8 @@ location. See the
 ## Everyday Controls
 
 - **Processing mode:** **Normal** runs the full chain. **Bypass** skips voice
-  effects but keeps input cleanup and output protection. **Raw** also skips
-  input cleanup, for troubleshooting.
+  effects, adaptive input cleanup and the limiter, and keeps the fixed 80 Hz
+  high-pass. **Raw** also skips the input filter, for troubleshooting.
 - **Compare Recording:** after calibration, hear the same passage as original,
   current, and proposed processing before you apply anything. The Review page
   also draws the proposed EQ over the current one.
@@ -169,8 +169,8 @@ location. See the
   was withheld and what to do. If a hot microphone leaves no full-size
   correction within the headroom rule, Auto-EQ offers the largest correction
   that is no worse than your current EQ, or says by about how much to lower the
-  microphone level. That amount counts only the excess in your recording, and
-  the advice says when the correction's own boost is the cause.
+  microphone level. When the correction's own boost is most of the excess, that
+  amount counts only your recording's part, and the advice says so.
 - **Suggestions have to earn a change.** Auto Voice Setup tries gate and noise
   suppression options before calibrating compression. It tests speech followed
   by noise without resetting the processing, so pause noise is checked too.
@@ -222,8 +222,8 @@ Sound processing:
 
 Reliability and diagnostics:
 
-- Input/output meters that hold the highest sample value since the last read
-  and show a CLIP tag once six samples at full scale arrive within three
+- Input/output peak lines that catch the highest sample between updates
+  (output: before the limiter) and show a CLIP tag once six samples at full scale arrive within three
   seconds. One touch of full scale only warns that peaks are too high. The
   output tag stays dark while the limiter holds the output at its ceiling and
   lights when it is off or not running (Bypass, Raw monitor).

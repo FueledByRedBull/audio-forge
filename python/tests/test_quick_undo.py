@@ -64,6 +64,7 @@ class Scene:
     def box(self, name: str):
         """The selected band's value box named ``name``: its proxy and the text it shows."""
         proxy, item = _band_box(self.window, name)
+        assert item is not None
         field = next(c for c in item.childItems() if c.metaObject().className().startswith("QQuickTextInput"))
         return proxy, item, field
 
@@ -287,6 +288,7 @@ def test_a_processing_mode_change_undoes_and_redoes(scene) -> None:
     window = scene.window
     mode = window.quick_bridge.model["top"]["mode"]
     picker = _find(scene.view.rootObject(), "Picker", mode)
+    assert picker is not None
     assert picker.property("displayText") == "Normal" and not window.processor.is_bypass()
     picker.forceActiveFocus(Qt.FocusReason.TabFocusReason)
     QTest.keyClick(scene.view, Qt.Key.Key_Down)

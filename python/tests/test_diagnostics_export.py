@@ -145,8 +145,10 @@ def test_snapshot_is_deterministic_finite_bounded_and_private() -> None:
 def test_interface_is_exported_as_fixed_words_only() -> None:
     quick = {"view": "quick", "classic_reason": "none", "graphics_api": "direct3d11"}
     assert _build(interface=quick)["interface"] == quick
-    classic = {"view": "classic", "classic_reason": "qml_failed", "graphics_api": "not_applicable"}
+    classic = {"view": "classic", "classic_reason": "disabled_by_env", "graphics_api": "not_applicable"}
     assert _build(interface=classic)["interface"] == classic
+    error = {"view": "error", "classic_reason": "scene_graph_error", "graphics_api": "not_applicable"}
+    assert _build(interface=error)["interface"] == error
 
     # Anything outside the vocabulary, such as an error text or a path, never leaves the app.
     leaky = {

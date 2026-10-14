@@ -412,8 +412,10 @@ class MainWindow(QMainWindow):
         self._last_output_true_peak_event_count = 0
         self._last_input_phase_warning_count = 0
         self._last_gate_chatter_event_count = 0
-        # Set when the Qt Quick view could not take over; the packaged smoke test reads it.
-        self.quick_view_failed = False
+        # Why the Qt Quick view could not run, while the error screen shows; the
+        # packaged smoke test and the diagnostics export read it.
+        self.quick_view_failure: str | None = None
+        self.quick_view_graphics_api = "not_applicable"
         self._classic_root: QWidget | None = None
         self._responsive_layout_compact: bool | None = None
         self._quitting = False
@@ -977,7 +979,7 @@ class MainWindow(QMainWindow):
         self.shell_page.selected.connect(self._on_page_changed)
 
     def _finish_shell(self) -> None:
-        """Do the widget-free work, then show the Qt Quick view or, failing that, the widget view."""
+        """Do the widget-free work, then show the Qt Quick view, the error screen or the widget view."""
 
         menubar = self.menuBar()
         for menu in menubar.findChildren(
@@ -995,13 +997,13 @@ class MainWindow(QMainWindow):
             self._settings_card("Help", self._help_menu),
         ]
 
-        # The Qt Quick view of the same controls. AUDIOFORGE_QML=0 keeps the
-        # widget view, which is also what remains if the scene cannot load.
+        # The Qt Quick view of the same controls, or the error screen if it cannot
+        # start. AUDIOFORGE_QML=0 keeps the widget view.
         if os.environ.get("AUDIOFORGE_QML", "1") != "0":
             from .quick_shell import install_quick_shell
 
-            if install_quick_shell(self):
-                return
+            install_quick_shell(self)
+            return
         self._show_classic_view()
 
     @staticmethod
@@ -1814,9 +1816,6 @@ class MainWindow(QMainWindow):
         self.health_details_button.setAccessibleName("Show audio health details")
         self.status_bar.addPermanentWidget(self.health_details_button)
         # A permanent label: transient status messages would replace a notice.
-        self.interface_notice = QLabel()
-        self.status_bar.addPermanentWidget(self.interface_notice)
-        self.shell_texts["interface_notice"].bind_label(self.interface_notice)
         self.status_message.bind_status_bar(self.status_bar)
 
     def _setup_options_menu(self):
@@ -2049,6 +2048,16 @@ class MainWindow(QMainWindow):
                 app = QGuiApplication.instance()
                 if app is not None:
                     app.exit(1)
+            return
+        if self.quick_view_failure is not None:
+            # Nobody can see or stop audio from a window that did not open.
+            self._cancel_login_startup("Login stopped: the main window could not open")
+            self._tray_icon.showMessage(
+                "AudioForge could not open its main window",
+                "Audio was not started. Choose Show AudioForge in the tray menu to see why.",
+                QSystemTrayIcon.MessageIcon.Critical,
+                10000,
+            )
             return
         if login_startup.registration_state(Path(sys.executable)) != "configured":
             self._cancel_login_startup("Login stopped: this copy's shortcut is no longer configured")
@@ -2306,6 +2315,8 @@ class MainWindow(QMainWindow):
             "AUDIOFORGE_SMOKE_TEST"
         ):
             return
+        if self.__dict__.get("quick_view_failure") is not None:
+            return  # the error screen is what to read now
         if self.config.first_run_setup_state in {"not_started", "in_progress"}:
             self._show_first_run_setup(restart_completed=False)
 
@@ -4601,9 +4612,15 @@ class MainWindow(QMainWindow):
             from .quick_shell import graphics_api
 
             return {"view": "quick", "classic_reason": "none", "graphics_api": graphics_api(self)}
+        if self.quick_view_failure is not None:
+            return {
+                "view": "error",
+                "classic_reason": self.quick_view_failure,
+                "graphics_api": self.quick_view_graphics_api,
+            }
         return {
             "view": "classic",
-            "classic_reason": "qml_failed" if self.quick_view_failed else "disabled_by_env",
+            "classic_reason": "disabled_by_env",
             "graphics_api": "not_applicable",
         }
 

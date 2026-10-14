@@ -460,6 +460,22 @@ mod tests {
         // point, so none of them can skip the periodic publish.
         let first_continue = region.find("continue;").expect("loop has early continues");
         assert!(publish < first_continue, "publish must precede every continue");
+        // Nothing but the 100 ms tick may gate the publish: not the path, the
+        // input queue, nor a constant condition.
+        let head: String = region[..publish]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .flat_map(|line| line.split_whitespace())
+            .collect();
+        assert_eq!(
+            head,
+            "whilerunning.load(Ordering::SeqCst){\
+             iflast_latency_update.elapsed()>=latency_update_interval{\
+             last_latency_update=Instant::now();\
+             letsuppressor_latency_samples=\
+             ifsuppressor_enabled.load(Ordering::Acquire){\
+             suppressor_latency_samples.load(Ordering::Relaxed)asu64}else{0};"
+        );
         let call = &region[publish..first_continue];
         assert!(
             call.contains("select_processing_path(")

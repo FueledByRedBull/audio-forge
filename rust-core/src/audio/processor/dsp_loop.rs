@@ -1361,6 +1361,15 @@ impl AudioProcessor {
                 raw_monitor_enabled.load(Ordering::Acquire),
                 bypass.load(Ordering::SeqCst),
             );
+            // Raw monitor and Bypass leave the suppressor latency at 0; the Full
+            // path would only store it after its first block, which the first
+            // latency tick can precede.
+            if previous_processing_path == ProcessingPath::Full
+                && suppressor_enabled.load(Ordering::Acquire)
+            {
+                suppressor_latency_samples
+                    .store(suppressor_rt.latency_samples() as u32, Ordering::Relaxed);
+            }
             macro_rules! reset_input_continuity {
                 () => {
                     resample_input.clear();

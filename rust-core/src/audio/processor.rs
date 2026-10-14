@@ -386,8 +386,10 @@ pub struct AudioProcessor {
     output_underrun_streak: Arc<AtomicU32>,
     /// Total output callback underruns since start
     output_underrun_total: Arc<AtomicU64>,
-    /// Output callbacks that found an empty queue before the first real audio was queued
+    /// Output callbacks that ran dry before the stream was primed
     output_priming_underrun_total: Arc<AtomicU64>,
+    /// Output callback has fully served a request after real audio was queued
+    output_primed: Arc<AtomicBool>,
     /// Samples dropped by DSP-side jitter buffer control
     jitter_dropped_samples: Arc<AtomicU64>,
     /// Number of normal DSP-side drift-retime length adjustments.
@@ -701,6 +703,7 @@ impl AudioProcessor {
             output_underrun_streak: Arc::new(AtomicU32::new(0)),
             output_underrun_total: Arc::new(AtomicU64::new(0)),
             output_priming_underrun_total: Arc::new(AtomicU64::new(0)),
+            output_primed: Arc::new(AtomicBool::new(false)),
             jitter_dropped_samples: Arc::new(AtomicU64::new(0)),
             output_retime_adjustment_count: Arc::new(AtomicU64::new(0)),
             output_recovery_event_count: Arc::new(AtomicU64::new(0)),

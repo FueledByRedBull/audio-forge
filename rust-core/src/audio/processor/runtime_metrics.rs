@@ -228,8 +228,9 @@ impl AudioProcessor {
         self.output_underrun_total.load(Ordering::Relaxed)
     }
 
-    /// Empty-queue output callbacks before the first real audio was queued.
-    /// Start-up priming, not counted as dropouts.
+    /// Output callbacks that ran dry before the stream was primed (before a
+    /// callback was fully served after real audio was queued). Start-up
+    /// priming, not counted as dropouts.
     pub fn get_output_priming_underrun_total(&self) -> u64 {
         self.output_priming_underrun_total.load(Ordering::Relaxed)
     }

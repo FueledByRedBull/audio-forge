@@ -31,10 +31,13 @@ pub(crate) struct OutputProbeControl {
 pub(crate) struct OutputUnderruns {
     pub(crate) streak: Arc<AtomicU32>,
     pub(crate) total: Arc<AtomicU64>,
-    /// Empty-queue callbacks before the DSP loop queued its first real audio.
+    /// Empty-queue callbacks before the stream is primed (see `primed`).
     pub(crate) priming_total: Arc<AtomicU64>,
     /// Time of the DSP loop's first queued write (0 until then); a start resets it.
     pub(crate) audio_queued_at_us: Arc<AtomicU64>,
+    /// Set by the callback once it fully serves a request after real audio was
+    /// queued, i.e. the queue has a cushion; a start resets it.
+    pub(crate) primed: Arc<AtomicBool>,
 }
 
 /// Audio output stream
@@ -235,6 +238,9 @@ impl AudioOutput {
     {
         let frames_needed = data.len() / num_channels;
         let mut copied_frames = 0usize;
+        // Sampled before reading, so a request served by the silent prime alone
+        // cannot count as served real audio.
+        let real_audio_queued = underruns.audio_queued_at_us.load(Ordering::Relaxed) != 0;
 
         while copied_frames < frames_needed {
             let batch = (frames_needed - copied_frames).min(scratch.len());
@@ -265,18 +271,21 @@ impl AudioOutput {
         }
 
         if copied_frames < frames_needed {
-            // Before the DSP loop's first write the queue only holds the silent
-            // prime, so running dry is start-up priming, not a dropout.
-            if underruns.audio_queued_at_us.load(Ordering::Relaxed) == 0 {
-                underruns.priming_total.fetch_add(1, Ordering::Relaxed);
-            } else {
+            // Until a callback is fully served after real audio was queued, the
+            // queue has no cushion: running dry is start-up priming, not a dropout.
+            if underruns.primed.load(Ordering::Relaxed) {
                 underruns.streak.fetch_add(1, Ordering::Relaxed);
                 underruns.total.fetch_add(1, Ordering::Relaxed);
+            } else {
+                underruns.priming_total.fetch_add(1, Ordering::Relaxed);
             }
             Self::fill_underrun_tail(data, copied_frames, num_channels, consumer.last_sample());
             consumer.set_last_sample(0.0);
         } else {
             underruns.streak.store(0, Ordering::Relaxed);
+            if real_audio_queued {
+                underruns.primed.store(true, Ordering::Relaxed);
+            }
         }
 
         copied_frames
@@ -712,7 +721,16 @@ mod tests {
             total: Arc::new(AtomicU64::new(total)),
             priming_total: Arc::new(AtomicU64::new(0)),
             audio_queued_at_us: Arc::new(AtomicU64::new(1)),
+            primed: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    /// State right after a start: nothing but the silent prime has been queued.
+    fn priming_underruns() -> OutputUnderruns {
+        let underruns = queued_underruns(0, 0);
+        underruns.audio_queued_at_us.store(0, Ordering::Relaxed);
+        underruns.primed.store(false, Ordering::Relaxed);
+        underruns
     }
 
     #[test]
@@ -849,40 +867,87 @@ mod tests {
         assert_eq!(output, [0.0; 4]);
     }
 
-    #[test]
-    fn test_render_output_empty_queue_before_first_real_audio_is_priming_not_dropout() {
-        let underruns = queued_underruns(0, 0);
-        underruns.audio_queued_at_us.store(0, Ordering::Relaxed);
+    fn render_samples(underruns: &OutputUnderruns, queued: usize) -> usize {
+        let rb = crate::audio::AudioRingBuffer::new(16);
+        let (mut producer, mut consumer) = rb.split();
+        producer.write(&[0.25_f32; 8][..queued]);
+        let mut output = [9.0_f32; 4];
+        let mut scratch = [0.0_f32; 2];
+        AudioOutput::render_output(&mut output, 2, &mut consumer, &mut scratch, underruns)
+    }
 
-        render_empty_queue(&underruns);
-        render_empty_queue(&underruns);
-        render_empty_queue(&underruns);
-
-        assert_eq!(underruns.priming_total.load(Ordering::Relaxed), 3);
-        assert_eq!(underruns.total.load(Ordering::Relaxed), 0);
-        assert_eq!(underruns.streak.load(Ordering::Relaxed), 0);
+    fn counts(underruns: &OutputUnderruns) -> (u64, u64, u32) {
+        (
+            underruns.priming_total.load(Ordering::Relaxed),
+            underruns.total.load(Ordering::Relaxed),
+            underruns.streak.load(Ordering::Relaxed),
+        )
     }
 
     #[test]
-    fn test_render_output_empty_queue_after_first_real_audio_is_a_dropout() {
-        let underruns = queued_underruns(0, 0);
-        underruns.audio_queued_at_us.store(0, Ordering::Relaxed);
+    fn test_render_output_empty_queue_before_first_real_audio_is_priming_not_dropout() {
+        let underruns = priming_underruns();
+
+        render_empty_queue(&underruns);
+        render_empty_queue(&underruns);
         render_empty_queue(&underruns);
 
-        // The DSP loop queues its first block; the next empty callback is a real underrun.
+        assert_eq!(counts(&underruns), (3, 0, 0));
+        assert!(!underruns.primed.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_prime_silence_alone_never_ends_priming() {
+        // The silent prime is written straight to the queue, so the marker stays 0.
+        let underruns = priming_underruns();
+
+        assert_eq!(render_samples(&underruns, 2), 2);
+        assert!(!underruns.primed.load(Ordering::Relaxed));
+        render_empty_queue(&underruns);
+
+        assert_eq!(counts(&underruns), (1, 0, 0));
+    }
+
+    #[test]
+    fn test_dry_callbacks_after_first_real_write_are_still_priming() {
+        let underruns = priming_underruns();
+        // The DSP loop has queued its first block, but the prime silence is gone
+        // and no callback has been fully served yet.
+        underruns.audio_queued_at_us.store(42, Ordering::Relaxed);
+
+        render_empty_queue(&underruns);
+        render_empty_queue(&underruns);
+
+        assert_eq!(counts(&underruns), (2, 0, 0));
+        assert!(!underruns.primed.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_underrun_after_a_fully_served_real_callback_is_a_dropout() {
+        let underruns = priming_underruns();
         underruns.audio_queued_at_us.store(42, Ordering::Relaxed);
         render_empty_queue(&underruns);
+
+        assert_eq!(render_samples(&underruns, 2), 2);
+        assert!(underruns.primed.load(Ordering::Relaxed));
+        render_empty_queue(&underruns);
         render_empty_queue(&underruns);
 
-        assert_eq!(underruns.priming_total.load(Ordering::Relaxed), 1);
-        assert_eq!(underruns.total.load(Ordering::Relaxed), 2);
-        assert_eq!(underruns.streak.load(Ordering::Relaxed), 2);
+        assert_eq!(counts(&underruns), (1, 2, 2));
+    }
 
-        // A restart clears the marker; the next start-up is priming again.
+    #[test]
+    fn test_restart_returns_to_priming() {
+        let underruns = queued_underruns(0, 0);
+        render_empty_queue(&underruns);
+        assert_eq!(counts(&underruns), (0, 1, 1));
+
+        // What a start does before it builds the stream.
         underruns.audio_queued_at_us.store(0, Ordering::Relaxed);
+        underruns.primed.store(false, Ordering::Relaxed);
         render_empty_queue(&underruns);
-        assert_eq!(underruns.priming_total.load(Ordering::Relaxed), 2);
-        assert_eq!(underruns.total.load(Ordering::Relaxed), 2);
+
+        assert_eq!(counts(&underruns), (1, 1, 1));
     }
 
     #[test]

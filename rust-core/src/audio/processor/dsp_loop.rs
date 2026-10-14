@@ -290,7 +290,17 @@ mod startup_tests {
         let reset = start
             .find("self.last_output_write_time.store(0, Ordering::Relaxed);")
             .unwrap();
-        assert!(reset < start.find("AudioOutput::from_setup(").unwrap());
+        let primed_reset = start
+            .find("self.output_primed.store(false, Ordering::Relaxed);")
+            .unwrap();
+        let build = start.find("AudioOutput::from_setup(").unwrap();
+        assert!(reset < build && primed_reset < build);
+        // The silent prime goes straight to the producer: it must neither mark
+        // real audio as queued nor prime the stream.
+        let prime = &start[start.find("let output_prime_samples").unwrap()
+            ..start.find("let output_producer = prod;").unwrap()];
+        assert!(prime.contains("prod.write(&silence)"));
+        assert!(!prime.contains("last_output_write_time") && !prime.contains("output_primed"));
         let recovery = include_str!("recovery.rs");
         assert!(recovery.contains("self.start_with_device_ordinals_and_ids("));
     }
@@ -506,6 +516,7 @@ impl AudioProcessor {
         self.last_output_callback_time_us
             .store(0, Ordering::Relaxed);
         self.last_output_write_time.store(0, Ordering::Relaxed);
+        self.output_primed.store(false, Ordering::Relaxed);
 
         // Start audio input
         let last_input_callback_time_us = Arc::clone(&self.last_input_callback_time_us);
@@ -601,6 +612,7 @@ impl AudioProcessor {
             total: Arc::clone(&self.output_underrun_total),
             priming_total: Arc::clone(&self.output_priming_underrun_total),
             audio_queued_at_us: Arc::clone(&self.last_output_write_time),
+            primed: Arc::clone(&self.output_primed),
         };
         let output_callback_error_count = Arc::clone(&self.output_callback_error_count);
         let rt_error_code_for_output = Arc::clone(&self.rt_error_code);

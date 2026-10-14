@@ -1,7 +1,8 @@
 """Newer control values must supersede queued writes even after a UI stall."""
 
 from mic_eq.ui import rate_limiter
-from mic_eq.ui.compressor_panel import CompressorPanel
+from mic_eq.ui.compressor_state import CompressorState
+from mic_eq.ui.processing_controls import SettingControl
 from mic_eq.mic_eq_core import AudioProcessor
 
 
@@ -9,21 +10,24 @@ def test_overdue_update_cannot_overwrite_new_native_setting(qapp, monkeypatch):
     now = [100.0]
     monkeypatch.setattr(rate_limiter.time, "monotonic", lambda: now[0])
     processor = AudioProcessor()
-    panel = CompressorPanel(processor)
-    panel.compressor_state._rate_limiter.flush()
+    state = CompressorState(processor)
+    release = SettingControl(state, "compressor", "release_ms", None)
+    # The applied write the window makes at start-up opens the throttle interval.
+    state.set_settings({})
+    state._rate_limiter.flush()
     try:
-        panel.release_spinbox.setValue(400)
-        assert panel.compressor_state._rate_limiter._pending_fn is not None
+        release.setValue(400.0)
+        assert state._rate_limiter._pending_fn is not None
         # The UI thread was busy beyond the throttle interval; the old timer
         # has not run when a newer value arrives.
         now[0] += 0.060
-        panel.release_spinbox.setValue(100)
-        panel.compressor_state._rate_limiter._execute_pending()
-        assert panel.release_spinbox.value() == 100
+        release.setValue(100.0)
+        state._rate_limiter._execute_pending()
+        assert release.value == 100
         assert processor.get_compressor_release() == 100
-        assert not panel.compressor_state._rate_limiter._timer.isActive()
+        assert not state._rate_limiter._timer.isActive()
     finally:
-        panel.deleteLater()
+        processor.stop()
 
 
 def test_burst_keeps_latest_value_and_flushes_once(qapp, monkeypatch):

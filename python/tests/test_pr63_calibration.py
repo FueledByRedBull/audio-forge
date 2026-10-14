@@ -25,7 +25,8 @@ from mic_eq.ui.calibration_dialog import (
     _set_temporary_mute,
 )
 from mic_eq.ui.calibration_support import AutoEqCandidate, chain_settings
-from mic_eq.ui.compressor_panel import CompressorPanel
+from mic_eq.ui.compressor_state import CompressorState
+from mic_eq.ui.processing_controls import SettingControl
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
 
@@ -605,38 +606,32 @@ def test_explicit_lufs_target_is_independent_of_tone_curve() -> None:
 
 
 def test_manual_compressor_change_is_marked_customized_after_calibration(qapp) -> None:
-    panel = CompressorPanel(Mock())
-    try:
-        panel.set_compressor_settings(
-            {"ratio": 3.0, "dynamics_profile": "gentle", "dynamics_customized": False}
-        )
-        panel.ratio_spinbox.setValue(3.5)
+    state = CompressorState(Mock())
+    ratio = SettingControl(state, "compressor", "ratio", None)
+    state.set_settings(
+        {"ratio": 3.0, "dynamics_profile": "gentle", "dynamics_customized": False}
+    )
+    ratio.setValue(3.5)
 
-        settings = panel.get_compressor_settings(include_calibration=True)
-        assert settings["dynamics_profile"] == "gentle"
-        assert settings["dynamics_customized"] is True
-        assert settings["dynamics_intensity"] == "customized"
-    finally:
-        panel.close()
-        panel.deleteLater()
-        qapp.processEvents()
+    settings = state.get_settings(include_calibration=True)
+    assert settings["dynamics_profile"] == "gentle"
+    assert settings["dynamics_customized"] is True
+    assert settings["dynamics_intensity"] == "customized"
 
 
 def test_lufs_target_change_keeps_compression_intensity_marker(qapp) -> None:
-    panel = CompressorPanel(Mock())
-    try:
-        panel.set_compressor_settings(
-            {"dynamics_profile": "gentle", "dynamics_customized": False}
-        )
-        panel.target_lufs_spinbox.setValue(-17.0)
-        settings = panel.get_compressor_settings(include_calibration=True)
-        assert settings["target_lufs"] == -17.0
-        assert settings["dynamics_profile"] == "gentle"
-        assert settings["dynamics_customized"] is False
-    finally:
-        panel.close()
-        panel.deleteLater()
-        qapp.processEvents()
+    state = CompressorState(Mock())
+    target = SettingControl(state, "compressor", "target_lufs", None)
+    # The target is only editable while automatic makeup gain is on.
+    state.set_settings(
+        {"dynamics_profile": "gentle", "dynamics_customized": False, "auto_makeup_enabled": True}
+    )
+    assert target.enabled
+    target.setValue(-17.0)
+    settings = state.get_settings(include_calibration=True)
+    assert settings["target_lufs"] == -17.0
+    assert settings["dynamics_profile"] == "gentle"
+    assert settings["dynamics_customized"] is False
 
 
 def test_eq_apply_reads_back_accepted_values(qapp, monkeypatch) -> None:
@@ -836,34 +831,23 @@ def test_numeric_compressor_preset_marks_intensity_custom_without_marker(qapp) -
         settings, _ = _recommend_compressor_settings(
             target_preset="broadcast", dynamics_intensity=intensity, **common
         )
-        source = CompressorPanel(Mock())
-        restored = CompressorPanel(Mock())
-        try:
-            source.set_compressor_settings(settings)
-            saved = source.get_compressor_settings()
-            restored.set_compressor_settings(saved)
-            assert restored.get_compressor_settings(include_calibration=True)[
-                "dynamics_profile"
-            ] == "custom"
-        finally:
-            source.close()
-            restored.close()
-            source.deleteLater()
-            restored.deleteLater()
-    custom = CompressorPanel(Mock())
-    try:
-        custom.set_compressor_settings(
-            {
-                "ratio": 4.0,
-                "attack_ms": 10.0,
-                "release_ms": 200.0,
-                "base_release_ms": 50.0,
-            }
-        )
-        assert custom.get_compressor_settings(include_calibration=True)[
+        source = CompressorState(Mock())
+        restored = CompressorState(Mock())
+        source.set_settings(settings)
+        saved = source.get_settings()
+        restored.set_settings(saved)
+        assert restored.get_settings(include_calibration=True)[
             "dynamics_profile"
         ] == "custom"
-    finally:
-        custom.close()
-        custom.deleteLater()
-    qapp.processEvents()
+    custom = CompressorState(Mock())
+    custom.set_settings(
+        {
+            "ratio": 4.0,
+            "attack_ms": 10.0,
+            "release_ms": 200.0,
+            "base_release_ms": 50.0,
+        }
+    )
+    assert custom.get_settings(include_calibration=True)[
+        "dynamics_profile"
+    ] == "custom"

@@ -1246,6 +1246,7 @@ Rectangle {
                 objectName: "statusMessage"
                 text: root.m.status.message.text
                 Layout.fillWidth: true
+                tip: truncated ? text : ""
             }
             Rectangle {
                 width: 8
@@ -1254,7 +1255,12 @@ Rectangle {
                 color: root.running ? root.t.status_ok_text : root.t.border_strong
             }
             Caption { objectName: "statusTransmission"; text: root.m.status.transmission.text; color: root.t.text_primary }
-            Caption { text: root.m.status.calibration.text; Layout.fillWidth: true }
+            Caption {
+                text: root.m.status.calibration.text
+                Layout.fillWidth: true
+                Layout.maximumWidth: implicitWidth
+                tip: truncated ? text : ""
+            }
             Chip {
                 proxy: root.m.status.health
                 implicitHeight: 28

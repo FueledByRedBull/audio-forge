@@ -25,7 +25,13 @@ SEGOE_UI = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "segoeui.ttf
 
 
 def build_minimum_window(
-    qapp, monkeypatch: pytest.MonkeyPatch, preset: str, status: str, *, modified: bool = False
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+    preset: str,
+    status: str,
+    *,
+    modified: bool = False,
+    width: int = MINIMUM_WINDOW_WIDTH,
 ) -> MainWindow:
     """The real window at its minimum size; only the device lists are faked."""
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
@@ -41,7 +47,7 @@ def build_minimum_window(
     window._update_session_summary()
     # The platform minimum is clamped to the offscreen screen; ask for the real one.
     window.setMinimumSize(MINIMUM_WINDOW_WIDTH, MINIMUM_WINDOW_HEIGHT)
-    window.resize(1, 1)
+    window.resize(width, MINIMUM_WINDOW_HEIGHT)
     window.show()
     window.status_message.showMessage(status)
     window.shell_texts["calibration_status_label"].update(text=STALE_CALIBRATION)
@@ -127,6 +133,43 @@ def test_a_long_preset_name_is_elided_and_whole_in_the_tooltip(minimum_window) -
     assert name.property("truncated") is long_name
     hint = next(child for child in name.children() if "Hint" in child.metaObject().className())
     assert hint.property("text") == (LONG_PRESET if long_name else "")
+
+
+def caption_tip(item: QQuickItem) -> str:
+    hint = next(child for child in item.children() if "Hint" in child.metaObject().className())
+    return hint.property("text")
+
+
+def status_caption(window: MainWindow, text: str) -> QQuickItem:
+    strip = named(window, "statusStrip")
+    return next(child for child in strip.childItems() if child.property("text") == text)
+
+
+def test_an_elided_status_caption_has_its_full_text_as_its_tip(minimum_window) -> None:
+    message = named(minimum_window, "statusMessage")
+    calibration = status_caption(minimum_window, STALE_CALIBRATION)
+    if minimum_window.current_preset_name == LONG_PRESET:
+        assert message.property("truncated") is True
+    for caption in (message, calibration):
+        assert caption_tip(caption) == (caption.property("text") if caption.property("truncated") else "")
+
+
+def test_the_calibration_text_keeps_its_natural_width_when_there_is_room(
+    qapp, monkeypatch, segoe_font
+) -> None:
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Loaded preset: DaBest", width=1600)
+    try:
+        assert window.centralWidget().width() == 1600
+        calibration = status_caption(window, STALE_CALIBRATION)
+        health = max(named(window, "statusStrip").childItems(), key=lambda child: scene_rect(child).left())
+        assert calibration.property("truncated") is False
+        # The message takes the spare width, so the text ends beside the Health chip.
+        text_end = scene_rect(calibration).left() + calibration.property("contentWidth")
+        assert scene_rect(health).left() - text_end == pytest.approx(14, abs=1)
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
 
 
 def test_the_status_strip_texts_do_not_overlap(minimum_window) -> None:

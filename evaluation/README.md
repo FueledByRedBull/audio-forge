@@ -24,6 +24,7 @@ or a CI artifact).
 | Voice preservation | All 78 held-out gate cases and all 60 current EQ cases pass; Natural stays neutral and adaptive tone stays bounded. Doesn't establish perceptual quality or reproduce the live post-yell issue. | `voice-preservation-report.json` (the change against its predecessor, 48 EQ cases); `voice-preservation-2026-09-report.json` (no change since v1.13.0) |
 | Warm target | All 60 dialog and 60 held-out EQ cases pass; Warm adds bounded low-mid body. | `warm-auto-eq-report.json` |
 | Auto-EQ confidence | Historical calibration of the former absolute-spectrum objective, not of today's bounded tonal adjustment. | `auto-eq-confidence-calibration.json` |
+| Auto-EQ cross-take confidence | Rejected. A candidate scored on repeated takes of the same voice failed its predefined gates on an independent lexical holdout, in both the validation and test splits (12 take pairs from 6 actors each): median held-out improvement −0.32 and −1.34 dB against a 0.0 dB floor, and lower decile −1.76 and −1.82 dB against −0.5 dB. The abstention, retry, headroom and runtime checks passed. The candidate stayed evaluation-only, no product call path accepts repeated-take input, and the incumbent remains. The actors read short fixed statements, so the corpus doesn't represent conversational delivery (September 2026). | `cross-take-auto-eq-report.json` |
 | Compressor | VAD/reliability-driven automatic makeup; all six real-speech gates and the −30 dB aliasing gate (worst −48.2 dB) pass. Calibration searches threshold only; the expanded search failed held-out qualification and stays disabled. | `auto-makeup-real-speech-2026-09-report.json`, `dynamics-aliasing-2026-09-report.json`, `compressor-expanded-search-2026-09-report.json`, `compressor-control-report.json`, `compressor-search-report.json` |
 | Voice Setup loudness | When a proposal's peaks leave less headroom than the final check requires, lower its loudness target by whole decibels until it passes; leave it as released when no allowed loudness does. Of 30 held-out simulated users 24 get a proposal to score: 16 pass the check against 13 as released, and the other 8 fail at every allowed loudness. Where the limiter is enabled, makeup is automatic and the voice is not too hot for it, the final check and verification let the limiter take up to 3 dB off the loudest peaks, so the target is lowered only as far as that requires. On 48 simulated EARS users (34 scored, from 21 of 24 speakers; the rest get no Auto-EQ settings), against the loudness fit alone, passing proposals rise from 24 to 31 (21 as released), recommended ones from 9 to 16 and verification accepts from 23 to 24 (22 as released), measured with the bypassed tonal check of the next row (15 to 16 with the earlier check); no ESTOI fell and the largest limiter gain reduction among passing proposals is 5.62 dB against the app's 6 dB warning. All seven predefined gates pass. A broader allowance applied to every proposal was rejected earlier: its rule failed on a too-hot input that it recommended and whose next take drove the limiter 7 dB. | `voice-setup-loudness-fit-2026-10-report.json`; `voice-setup-limiter-allowance-narrow-2026-10-report.json`; the rejected broader candidate and its results stay under ignored `models/evaluation-details/voice-setup-limiter-allowance-2026-10/` |
 | Voice Setup verification | Compute the tonal check with the noise suppressor bypassed; keep the 1.0 RNNoise default; advise when noise suppression is dulling consonants, which never changes a verification result. The tonal check ("target error") compares the voice's median spectrum before any processing with the one after the whole chain, so the noise suppressor trips it: on 48 simulated EARS users at four suppressor settings (34 scored each), it rolled back 31 of the 96 RNNoise 1.0, DeepFilterNet and DeepFilterNet LL pairs that pass once the suppressor is bypassed. When the proposal's suppressor is on, the check now reads a second render of the same recordings through the same chain with only the suppressor off; every other finding still comes from the real render. On 48 users of a second EARS cohort (36 scored, from 21 of 24 speakers; 108 pairs over RNNoise 1.0, DeepFilterNet 1.0 and DeepFilterNet LL 1.0), target-error rollbacks fall from 36 to 0; a 9 dB wrong EQ at 3 kHz is reported for 105 of 108 pairs (90 % required) and a 12 dB one for 108 of 108 (97 % required); no pair the released check accepts is rolled back; no other finding or advisory moved. All four predefined gates pass; the two extra renders add 2.2 s (31 %) to a verification. On the first cohort's 34 scored users at RNNoise 1.0 it rolls back 2 for target error instead of 16, but it is stricter than the released check for one user the released check accepts (test 0, p024); the second cohort's gate saw no such pair. The first design, measuring the check against the suppressor's own output, removed all 31 false alarms and was never stricter, but agreed with the tone stages within 0.75 dB for 93.1 % of pairs (95 % required) and caught a 9 dB wrong EQ at 3 kHz for 93.75 % (95 % required): rejected on the first cohort, which is why this second design was judged on new speakers. The advisory for the suppressor dulling sibilants fired for 8 of 8 dulled pairs and 1 of 113 intact ones and changed no decision; its rule made it conditional on the first design, and it was adopted on its own under the owner's exception of 2026-10-13: its own gates passed and the condition was waived. RNNoise default strength 0.7 against 1.0 left 0 of 34 users losing more than 6 dB of sibilant level (10 of 34 at 1.0) and raised median ESTOI by 0.06, but 25 of 28 users (89.3 %, 90 % required) kept at least 4 dB of deep-pause reduction and one more user ended in rollback or gave up (10 against 9); its median cost was a 9.3 dB higher deep-pause level: rejected. Known limit, unchanged: the tonal check is nearly blind to errors below 1 kHz; a 6 dB cut at 200 Hz is not reported by either check. | `voice-setup-verification-tonal-check-2026-10-report.json`; ignored `models/evaluation-details/voice-setup-tonal-check-followup-2026-10/`, `.../voice-setup-verification-fix-2026-10/` (first design, advisory, default strength) and `.../voice-setup-verification-target-error-2026-10/` (investigation) |
@@ -36,7 +37,7 @@ or a CI artifact).
 | Manual EQ types | Bell, notch, shelf and pass filters with selectable slopes. | `eq-filter-types-report.json` |
 | Auto-EQ candidate pool | Nested wider pools and sparse type selection rejected. | `eq-candidate-pool-report.json`, `sparse-auto-eq-filter-report.json` |
 | Auto-EQ fitter | Keep the dynamic band layout. A fixed-grid, gains-only fitter tracked the intended curve more closely on average (0.06 vs 0.13 dB RMS) but failed its rule on 56 of 2,084 cases: Warm with Broad smoothing fit worse, and 14 recommendations flipped between apply and reduced (October 2026). | `auto-eq-fixed-grid-2026-10-report.json` |
-| Auto-EQ solvers without SciPy | Use NumPy solvers for the Auto-EQ fit (bounded least squares, gain projection, constrained refinement) and drop SciPy from the runtime. On 2,084 held-out cases (the fixed-grid study's cases without its four development passages) all four predefined gates pass: no failure or recommendation status changed, the constraint and nonlinear solver verdicts never differed, and 1,992 of 2,071 fitted responses (96 %) are within 0.05 dB of SciPy's at every frequency, against 2,002 for the control arm. The control is SciPy with every start moved one unit in the last place; it changed one recommendation status, so SciPy is not stable against itself. The largest response difference is 2.30 dB for the port and 2.44 dB for the control; 34 and 40 cases are over 0.25 dB, and 19 and 19 over 1.0 dB. Against SciPy's own algorithm running on NumPy's SVD the port differs by at most 0.0003 dB. No case exercised the path where SciPy's constraint solve failed and the NumPy one succeeded, so that behaviour rests on a separate study of 360 seeded synthetic fits. The comparison ran twice, the second time after a finite-input check was added to the solver and the WAV reader was tightened; both runs gave the same gate numbers. Offline fits only; no audio was rendered. | `auto-eq-solver-port-2026-10-report.json`, from [`evaluate_auto_eq_solver_port.py`](../python/tools/evaluate_auto_eq_solver_port.py); ignored `models/evaluation-details/auto-eq-solver-port-2026-10/` (details, both runs, parity study) |
+| Auto-EQ solvers without SciPy | Use NumPy solvers for the Auto-EQ fit (bounded least squares, gain projection, constrained refinement) and drop SciPy from the runtime. On 2,084 held-out cases (the fixed-grid study's cases without its four development passages) all four predefined gates pass: no failure or recommendation status changed, the constraint and nonlinear solver verdicts never differed, and 1,992 of 2,071 fitted responses (96 %) are within 0.05 dB of SciPy's at every frequency, against 2,002 for the control arm. The control is SciPy with every start moved one unit in the last place; it changed one recommendation status, so SciPy is not stable against itself. The largest response difference is 2.30 dB for the port and 2.44 dB for the control; 34 and 40 cases are over 0.25 dB, and 19 and 19 over 1.0 dB. Against SciPy's own algorithm running on NumPy's SVD the port differs by at most 0.0003 dB. No case exercised the path where SciPy's constraint solve failed and the NumPy one succeeded, so that behaviour rests on a separate study of 360 seeded synthetic fits. The comparison ran twice, the second time after a finite-input check was added to the solver and the WAV reader was tightened; both runs gave the same gate numbers. Offline fits only; no audio was rendered. | `auto-eq-solver-port-2026-10-report.json`, from `evaluate_auto_eq_solver_port.py` (removed; see [Retired evaluators](#retired-evaluators)); ignored `models/evaluation-details/auto-eq-solver-port-2026-10/` (details, both runs, parity study) |
 | Auto-EQ Adaptive layer | Keep. Its voice-balance inputs saturate for 97–100% of real voices, so Adaptive is effectively a gentler fixed version of each preset and where it measures cannot matter; fixing the offsets explicitly failed its equivalence rule on noisy captures and was no closer to the clean-voice curve (October 2026). | `auto-eq-tone-layer-2026-10-report.json` |
 | Microphone correction | Not automated. Estimating a mic's coloration from 10 s of speech with a population prior made it worse (+0.18 dB RMS), because speaker, room and noise differences (2–9 dB per band) are as large as the colorations (October 2026). | `mic-coloration-prior-2026-10-report.json` |
 | EQ stages | Independent correction and tone stages (requested product change); 12 cases pass safety, cost, schema, and zero-added-latency gates. | `correction-tone-product-report.json` |
@@ -163,10 +164,8 @@ Evaluation corpora live under ignored `models/` and are never release assets.
 Each fetcher pins sources and hashes: `evaluate_gate_corpus.py fetch`
 (EARS/DEMAND), `evaluate_voice_setup.py fetch` (VoiceBank/DEMAND, CC BY 4.0;
 EARS is non-commercial, so nothing shipped is fitted on it),
-`fetch_dpdfnet_evaluation_assets.py` (DPDFNet EvalSet, also the speech corpus
-for the Auto-EQ, makeup, DeepFilter and RNNoise evaluations),
-`fetch_cross_take_corpus.py`, `fetch_deepfilter_fullband_corpus.py`, and
-`build_vad_evaluation_corpus.py`. The last two stay because evaluators that
+`fetch_deepfilter_fullband_corpus.py`, and `build_vad_evaluation_corpus.py`.
+The last two stay because evaluators that
 remain read their corpora: `evaluate_product_tuning.py` the full-band set,
 `evaluate_compressor_search.py` and `evaluate_voice_regressions.py` the VAD set.
 
@@ -175,24 +174,41 @@ questions after the tonal-check-by-band study.
 
 ## Retired evaluators
 
-The evaluators and fetcher below served decisions the Decisions table records as
-closed. They were removed after v1.15.3 with their tests; their reports stay,
-with their stated limitations, and the tools remain in the v1.15.3 source
-(`git show v1.15.3:python/tools/<name>`). Their measurements can no longer be
-reproduced from this checkout. Released reports are still checked at the tag
-that shipped them.
+The evaluators and fetchers below served decisions the Decisions table records as
+closed. They were removed with their tests; their reports stay, with their stated
+limitations, and each tool remains in the source of the release named in the last
+column (`git show <tag>:python/tools/<name>`). A recovered tool imports its
+siblings of that tag, so check the tag out to run it. Their measurements can no
+longer be reproduced from this checkout. Released reports are still checked at the
+tag that shipped them.
 
-| Removed tool | Report it produced |
-| --- | --- |
-| `evaluate_eq_filter_types.py` | `eq-filter-types-report.json` |
-| `evaluate_vad_models.py`, `evaluate_vad_model_selection.py`, `fetch_vad_child_validation_corpus.py` | `vad-model-selection-report.json`; `vad-v6.2.1-report.json` (records no command) |
-| `evaluate_onnxruntime_probe.py` | `onnxruntime-cpu-probe.json` |
-| `evaluate_deepfilter_hardening.py` | `deepfilter-hardening-report.json` |
-| `evaluate_deepfilter_fullband.py` | `deepfilter-fullband-report.json` |
-| `evaluate_limiter_lookahead.py` | `limiter-lookahead-2026-10-report.json` |
-| `evaluate_dynamics_aliasing.py` | `dynamics-aliasing-2026-09-report.json` |
-| `evaluate_processing_order.py` | `processing-order-2026-09-report.json` (de-esser/EQ order; gate order is `evaluate_gate_corpus.py order`) |
-| `evaluate_correction_tone_stages.py` | `correction-tone-product-report.json` |
+| Removed tool | Report it produced | Source |
+| --- | --- | --- |
+| `evaluate_eq_filter_types.py` | `eq-filter-types-report.json` | v1.15.3 |
+| `evaluate_vad_models.py`, `evaluate_vad_model_selection.py`, `fetch_vad_child_validation_corpus.py` | `vad-model-selection-report.json`; `vad-v6.2.1-report.json` (records no command) | v1.15.3 |
+| `evaluate_onnxruntime_probe.py` | `onnxruntime-cpu-probe.json` | v1.15.3 |
+| `evaluate_deepfilter_hardening.py` | `deepfilter-hardening-report.json` | v1.15.3 |
+| `evaluate_deepfilter_fullband.py` | `deepfilter-fullband-report.json` | v1.15.3 |
+| `evaluate_limiter_lookahead.py` | `limiter-lookahead-2026-10-report.json` | v1.15.3 |
+| `evaluate_dynamics_aliasing.py` | `dynamics-aliasing-2026-09-report.json` | v1.15.3 |
+| `evaluate_processing_order.py` | `processing-order-2026-09-report.json` (de-esser/EQ order; gate order is `evaluate_gate_corpus.py order`) | v1.15.3 |
+| `evaluate_correction_tone_stages.py` | `correction-tone-product-report.json` | v1.15.3 |
+| `evaluate_auto_eq_solver_port.py` | `auto-eq-solver-port-2026-10-report.json` | v1.16.0 |
+| `evaluate_auto_makeup_real_speech.py` | `auto-makeup-real-speech-2026-09-report.json` | v1.16.0 |
+| `evaluate_cross_take_auto_eq.py`, `fetch_cross_take_corpus.py` | `cross-take-auto-eq-report.json` | v1.16.0 |
+| `fetch_dpdfnet_evaluation_assets.py` | None; it fetched the DPDFNet EvalSet, also the speech corpus for the Auto-EQ, makeup, DeepFilter and RNNoise evaluations | v1.16.0 |
+| `capture_microphone_noise.py` | `deepfilter-fullband-report.json` (its noise capture) | v1.16.0 |
+
+A tool and its tests leave the tree once its decision row records a final outcome,
+every report it produced has shipped in a release tag unedited, nothing that
+stays imports or cites it, and no planned study reuses it. The reports, their
+manifests and the decision row stay unchanged. Never edit a report after its
+release, since the hygiene check reads it at that tag; a new measurement goes in a
+new report. Never retire `check_evaluation_hygiene.py`, a tool the release or CI
+workflows run, a helper or simulator the next study reuses (`_eval_common.py` and
+the gate, Voice Setup, loudness, verification and de-esser evaluators), a
+regression gate named in this file, or a corpus fetcher while an evaluator that
+reads its corpus remains.
 
 ## Provenance and hygiene
 

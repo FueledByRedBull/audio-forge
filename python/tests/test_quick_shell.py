@@ -22,6 +22,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QFont, QGuiApplication, QImage, QKeyEvent, QMouseEvent, QPainter
 from PySide6.QtTest import QSignalSpy, QTest
+from PySide6.QtQml import QQmlProperty
 from PySide6.QtQuick import QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
@@ -1624,3 +1625,193 @@ def test_quick_meters_describe_a_lit_clip_marker_to_assistive_technology(quick_w
         assert "Clipping" in description()
     finally:
         QAccessible.setActive(was_active)
+
+
+class _AccessibleScene:
+    """Qt's accessibility layer on, for reading the names assistive technology gets."""
+
+    def __enter__(self):
+        from PySide6.QtGui import QAccessible
+
+        self._accessible, self._was_active = QAccessible, QAccessible.isActive()
+        QAccessible.setActive(True)
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self._accessible.setActive(self._was_active)
+
+    def name(self, item) -> str:
+        return self._accessible.queryAccessibleInterface(item).text(self._accessible.Text.Name)
+
+    def description(self, item) -> str:
+        return self._accessible.queryAccessibleInterface(item).text(self._accessible.Text.Description)
+
+
+def _tab_stops(window, qapp, presses: int = 120) -> list:
+    """The items that real Tab presses focus in turn, wrapping around."""
+    window.resize(1400, 900)
+    window.activateWindow()
+    view = window.centralWidget()
+    view.setFocus()
+    qapp.processEvents()
+    stops = []
+    for _ in range(presses):
+        QTest.keyClick(view, Qt.Key.Key_Tab)
+        stops.append(view.quickWindow().activeFocusItem())
+    return stops
+
+
+def test_the_health_chip_is_a_toggle_the_keyboard_reaches_and_names(quick_window, qapp) -> None:
+    from PySide6.QtGui import QAccessible
+
+    window = quick_window
+    view = window.centralWidget()
+    with _AccessibleScene() as scene:
+        stops = _tab_stops(window, qapp)
+        named = [item for item in stops if item.objectName() == "healthToggle"]
+        assert named, "Tab never reaches the Health chip"
+        toggle = named[0]
+        # Voice control says what it sees: the visible text names the button.
+        chip = window.shell_texts["health_summary_label"]
+        assert chip.text and scene.name(toggle) == chip.text
+        assert scene.description(toggle) == "Show audio health details"
+        window._set_health_chip("health_summary_label", "Health: Check input", "warn")
+        qapp.processEvents()
+        assert scene.name(toggle) == "Health: Check input"
+        interface = QAccessible.queryAccessibleInterface(toggle)
+        assert interface.role() == QAccessible.Role.Button
+        assert not interface.state().checked
+
+        assert window.shell_page.currentIndex() == 0
+        # Focus the chip through Tab alone, then use the keys a button answers to.
+        while view.quickWindow().activeFocusItem().objectName() != toggle.objectName():
+            QTest.keyClick(view, Qt.Key.Key_Tab)
+        QTest.keyClick(view, Qt.Key.Key_Space)
+        assert window.shell_page.currentIndex() == window.HEALTH_PAGE_INDEX
+        assert QAccessible.queryAccessibleInterface(toggle).state().checked
+        QTest.keyClick(view, Qt.Key.Key_Return)
+        assert window.shell_page.currentIndex() == 0
+
+        centre = toggle.mapToScene(QPointF(toggle.width() / 2, toggle.height() / 2)).toPoint()
+        QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=centre)
+        assert window.shell_page.currentIndex() == window.HEALTH_PAGE_INDEX
+        QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=centre)
+        assert window.shell_page.currentIndex() == 0
+
+
+def test_the_equalizer_help_says_what_delete_does_and_delete_does_it(quick_window, qapp) -> None:
+    from mic_eq.config import EQSettings
+
+    window = quick_window
+    assert "Delete resets the selected band." in window.quick_bridge.model["eq"]["help"]
+
+    window.resize(1400, 900)
+    qapp.processEvents()
+    state = window.eq_state
+    state.set_band_value(4, "gain_db", 3.0, edited=False)
+    state.flush()
+    window.eq_presentation.graph_model.select_band(4)
+    graph = _graph_item(window.centralWidget().rootObject())
+    assert graph is not None
+    graph.forceActiveFocus()
+    QTest.keyClick(window.centralWidget(), Qt.Key.Key_Delete)
+    assert state.get_band(4) == EQSettings().bands[4]
+
+
+def test_the_preset_menu_button_name_contains_its_visible_label(quick_window, qapp) -> None:
+    # Voice control finds a control by what it reads, so the name must contain it.
+    menu = quick_window.quick_bridge.model["presets"]["menu"]
+    button = _find(quick_window.centralWidget().rootObject(), "Btn", menu)
+    assert button is not None
+    with _AccessibleScene() as scene:
+        qapp.processEvents()
+        assert button.property("text") in scene.name(button)
+
+
+def test_a_read_only_value_box_is_no_tab_stop_copies_and_shows_no_edit_border(
+    quick_window, wide_page, qapp
+) -> None:
+    window, page = quick_window, wide_page
+    view = window.centralWidget()
+    gain, readout = _band_box(window, "gain")
+    assert readout is not None
+
+    stops = _tab_stops(window, qapp)
+    assert not [item for item in stops if item.property("readOnly")]
+    assert any(item.metaObject().className().startswith("QQuickTextInput") for item in stops)
+
+    field = next(
+        child for child in readout.childItems() if child.metaObject().className().startswith("QQuickTextInput")
+    )
+    assert field.property("readOnly") and not field.property("activeFocusOnTab")
+    with _AccessibleScene() as scene:
+        assert scene.name(field) == gain.name
+
+    def border_colour(box):
+        return QQmlProperty.read(box, "border.color").name()
+
+    accent = window.quick_bridge.model["theme"]["accent"].lower()
+    QGuiApplication.clipboard().clear()
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=_reveal(page, readout))
+    QTest.keyClick(view, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+    QTest.keyClick(view, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+    assert QGuiApplication.clipboard().text() == field.property("text") != ""
+    assert border_colour(readout).lower() != accent
+
+    # An editable box still shows it has focus.
+    _frequency, editable = _band_box(window, "frequency")
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=_reveal(page, editable))
+    assert border_colour(editable).lower() == accent
+
+
+def test_the_drops_tooltip_does_not_promise_a_right_click_quick_lacks(quick_window) -> None:
+    drops = quick_window.shell_texts["dropped_label"]
+    assert "right-click" not in drops.toolTip.lower()
+    quick_window._update_diagnostic_labels(
+        diagnostics={}, latency_ms=10.0, dsp_time_ms=0.2, input_buf=0, output_buf=0, rnnoise_buf=0,
+    )
+    assert "Technical counters" in drops.toolTip
+    assert "right-click" not in drops.toolTip.lower()
+
+
+def test_the_health_text_is_exposed_once_as_the_buttons_name(quick_window, qapp) -> None:
+    from PySide6.QtGui import QAccessible
+
+    def texts(interface) -> list[str]:
+        found = [interface.text(QAccessible.Text.Name), interface.text(QAccessible.Text.Value)]
+        for index in range(interface.childCount()):
+            child = interface.child(index)
+            found += texts(child) if child is not None else []
+        return found
+
+    with _AccessibleScene():
+        view = quick_window.centralWidget()
+        qapp.processEvents()
+        health = quick_window.shell_texts["health_summary_label"].text
+        tree = texts(QAccessible.queryAccessibleInterface(view))
+        assert sum(health in text for text in tree) == 1
+
+
+def test_a_held_return_toggles_the_health_page_once(quick_window, qapp) -> None:
+    window = quick_window
+    view = window.centralWidget()
+    window.activateWindow()
+    view.setFocus()
+    toggle = view.rootObject().findChild(QObject, "healthToggle")
+    toggle.forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    qapp.processEvents()
+
+    def press(repeat: bool) -> None:
+        QCoreApplication.sendEvent(
+            view,
+            QKeyEvent(
+                QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier,
+                "\r", repeat, 1,
+            ),
+        )
+
+    press(False)
+    assert window.shell_page.currentIndex() == window.HEALTH_PAGE_INDEX
+    for _ in range(3):
+        press(True)
+    assert window.shell_page.currentIndex() == window.HEALTH_PAGE_INDEX

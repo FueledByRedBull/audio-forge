@@ -223,7 +223,7 @@ Rectangle {
         implicitHeight: 30
         radius: root.t.radiusControl
         color: root.t.control_surface
-        border.color: input.activeFocus ? root.t.accent : root.t.border
+        border.color: input.activeFocus && !input.readOnly ? root.t.accent : root.t.border
         Hint { text: box.proxy ? box.proxy.toolTip : "" }
         TextInput {
             id: input
@@ -233,6 +233,7 @@ Rectangle {
             verticalAlignment: TextInput.AlignVCenter
             text: box.source ? box.source.text : ""
             readOnly: box.display !== null
+            // A display is read, not edited: no Tab stop. A click still focuses it, so Ctrl+C copies.
             activeFocusOnTab: !readOnly
             enabled: box.proxy ? box.proxy.enabled : false
             color: root.t.text_primary
@@ -420,6 +421,8 @@ Rectangle {
     component Chip: Rectangle {
         id: chip
         property var proxy
+        // False when a button over the chip carries the text for assistive technology.
+        property bool announced: true
         readonly property string state_: proxy && proxy.state !== "" ? proxy.state : "idle"
         implicitHeight: chipText.implicitHeight + 12
         implicitWidth: chipText.implicitWidth + 24
@@ -435,6 +438,7 @@ Rectangle {
             color: root.t["status_" + chip.state_ + "_text"] ?? root.t.status_idle_text
             font.pixelSize: 13
             wrapMode: Text.Wrap
+            Accessible.ignored: !chip.announced
             Accessible.name: chip.proxy ? chip.proxy.name + ": " + text : text
         }
     }
@@ -1263,10 +1267,24 @@ Rectangle {
             }
             Chip {
                 proxy: root.m.status.health
+                announced: false
                 implicitHeight: 28
-                TapHandler {
-                    onTapped: root.m.page.setIndex(
+                AbstractButton {
+                    id: healthToggle
+                    objectName: "healthToggle"
+                    anchors.fill: parent
+                    onClicked: root.m.page.setIndex(
                         root.m.page.index === root.m.healthPage ? 0 : root.m.healthPage)
+                    // A held key must not keep toggling the page, as a held Space does not.
+                    Keys.onReturnPressed: event => { if (!event.isAutoRepeat) click() }
+                    Keys.onEnterPressed: event => { if (!event.isAutoRepeat) click() }
+                    Accessible.role: Accessible.Button
+                    // Named by what it shows; the action goes in the description.
+                    Accessible.name: root.m.status.health.text
+                    Accessible.description: "Show audio health details"
+                    Accessible.checkable: true
+                    Accessible.checked: root.m.page.index === root.m.healthPage
+                    background: Item { FocusRing { control: healthToggle } }
                 }
             }
         }

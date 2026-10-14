@@ -280,18 +280,22 @@ def test_full_scale_output_with_the_limiter_off_warns_and_with_it_on_does_not(ru
     assert "about 4 dB" in advice
 
 
-@pytest.mark.parametrize("mode", ["bypass", "raw"])
-def test_full_scale_output_lights_the_marker_where_the_limiter_does_not_run(running_window, mode):
+@pytest.mark.parametrize("mode", ["normal", "bypass", "raw"])
+@pytest.mark.parametrize("limiter", [True, False])
+def test_the_out_marker_and_health_follow_the_limiter_in_every_processing_mode(
+    running_window, mode, limiter
+):
+    # Bypass and Raw skip the lookahead limiter, but the final true-peak limiter
+    # and the ceiling still apply while the limiter is on.
     window, engine = running_window, running_window.engine
-    assert window.limiter_state.get_applied_settings()["enabled"]
+    window.limiter_state.set_value("enabled", limiter)
     window._set_processing_mode(mode)
-    engine.output_peak, engine.output_count = 1.0, CLIP_FLAT_TOP_SAMPLES
+    engine.pre_limiter_peak, engine.output_peak = 1.41, 1.0
+    engine.output_count += CLIP_FLAT_TOP_SAMPLES
     window._update_meters()
-    assert window.output_meter.clip_marker
-
-    window._set_processing_mode("normal")
-    window._update_meters()  # the limiter is back: the marker goes
-    assert not window.output_meter.clip_marker
+    _tick_diagnostics(window)
+    assert window.output_meter.clip_marker is (not limiter)
+    assert window.shell_texts["output_health_label"].state == ("ok" if limiter else "bad")
 
 
 def test_a_limiter_holding_the_output_at_a_ceiling_of_zero_is_neither_a_marker_nor_a_warning(running_window):

@@ -25,10 +25,7 @@ PROCESSING_MODE_OPTIONS = (
     ("Bypass", "bypass"),
     ("Raw Monitor", "raw"),
 )
-DROPPED_DIAGNOSTICS_TOOLTIP = (
-    "Audio that was dropped, with the engine's other warning counters.\n"
-    "Right-click to reset the dropped-sample count."
-)
+DROPPED_DIAGNOSTICS_TOOLTIP = "Audio that was dropped, with the engine's other warning counters."
 
 
 class _TextSpec(NamedTuple):

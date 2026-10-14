@@ -293,8 +293,9 @@ mod startup_tests {
         let primed_reset = start
             .find("self.output_primed.store(false, Ordering::Relaxed);")
             .unwrap();
+        let started_reset = start.find("self.output_priming_started_at_us").unwrap();
         let build = start.find("AudioOutput::from_setup(").unwrap();
-        assert!(reset < build && primed_reset < build);
+        assert!(reset < build && primed_reset < build && started_reset < build);
         // The silent prime goes straight to the producer: it must neither mark
         // real audio as queued nor prime the stream.
         let prime = &start[start.find("let output_prime_samples").unwrap()
@@ -517,6 +518,8 @@ impl AudioProcessor {
             .store(0, Ordering::Relaxed);
         self.last_output_write_time.store(0, Ordering::Relaxed);
         self.output_primed.store(false, Ordering::Relaxed);
+        self.output_priming_started_at_us
+            .store(0, Ordering::Relaxed);
 
         // Start audio input
         let last_input_callback_time_us = Arc::clone(&self.last_input_callback_time_us);
@@ -612,6 +615,7 @@ impl AudioProcessor {
             total: Arc::clone(&self.output_underrun_total),
             priming_total: Arc::clone(&self.output_priming_underrun_total),
             audio_queued_at_us: Arc::clone(&self.last_output_write_time),
+            priming_started_at_us: Arc::clone(&self.output_priming_started_at_us),
             primed: Arc::clone(&self.output_primed),
         };
         let output_callback_error_count = Arc::clone(&self.output_callback_error_count);

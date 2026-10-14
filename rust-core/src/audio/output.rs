@@ -27,11 +27,13 @@ pub(crate) struct OutputProbeControl {
     pub(crate) cancel_requested: Arc<AtomicBool>,
 }
 
-/// How long after the first real write an empty queue still counts as start-up
-/// priming when no callback has been fully served yet. The observed start-up gap
-/// is a few 10 ms callbacks; DeepFilter and resampler warm-up add well under
-/// 500 ms. 1 s clears that with margin and still surfaces a stream that never
-/// catches up (an oversized fixed buffer, a DSP slower than real time).
+/// How long an unprimed stream keeps hiding underruns as start-up priming,
+/// measured from the first underrun the output callback sees after real audio
+/// was queued (the writer restamps its marker on every write, so the marker
+/// cannot be the origin). The observed start-up gap is a few 10 ms callbacks;
+/// DeepFilter and resampler warm-up add well under 500 ms. 1 s clears that with
+/// margin and still surfaces a stream that never catches up (an oversized fixed
+/// buffer, a DSP slower than real time).
 pub(crate) const OUTPUT_PRIMING_MAX_US: u64 = 1_000_000;
 
 /// Output-callback underrun accounting shared with the processor.
@@ -42,6 +44,9 @@ pub(crate) struct OutputUnderruns {
     pub(crate) priming_total: Arc<AtomicU64>,
     /// Time of the DSP loop's first queued write (0 until then); a start resets it.
     pub(crate) audio_queued_at_us: Arc<AtomicU64>,
+    /// Callback time of the first underrun seen after real audio was queued
+    /// (0 until then); a start resets it. Bounds priming, see `OUTPUT_PRIMING_MAX_US`.
+    pub(crate) priming_started_at_us: Arc<AtomicU64>,
     /// Set by the callback once it fully serves a request after real audio was
     /// queued, i.e. the queue has a cushion; a start resets it.
     pub(crate) primed: Arc<AtomicBool>,
@@ -281,12 +286,24 @@ impl AudioOutput {
         if copied_frames < frames_needed {
             // Until a callback is fully served after real audio was queued, the
             // queue has no cushion: running dry is start-up priming, not a dropout.
-            // That ends OUTPUT_PRIMING_MAX_US after the first real write, so a
-            // stream that never catches up still reports its dropouts. Before the
-            // first write (marker 0) the supervisor's write-age check applies.
+            // That ends OUTPUT_PRIMING_MAX_US after the first underrun that follows
+            // real audio, so a stream that never catches up still reports its
+            // dropouts. The writer restamps the marker on every write, so the
+            // bound runs from its own start stamp. Before the first write (marker
+            // 0) the supervisor's write-age check applies.
             let priming = !underruns.primed.load(Ordering::Relaxed)
-                && (queued_at_us == 0
-                    || now_us.saturating_sub(queued_at_us) < OUTPUT_PRIMING_MAX_US);
+                && (queued_at_us == 0 || {
+                    let started_us = match underruns.priming_started_at_us.compare_exchange(
+                        0,
+                        now_us,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => now_us,
+                        Err(earlier_us) => earlier_us,
+                    };
+                    now_us.saturating_sub(started_us) < OUTPUT_PRIMING_MAX_US
+                });
             if priming {
                 underruns.priming_total.fetch_add(1, Ordering::Relaxed);
             } else {
@@ -737,6 +754,7 @@ mod tests {
             total: Arc::new(AtomicU64::new(total)),
             priming_total: Arc::new(AtomicU64::new(0)),
             audio_queued_at_us: Arc::new(AtomicU64::new(1)),
+            priming_started_at_us: Arc::new(AtomicU64::new(0)),
             primed: Arc::new(AtomicBool::new(true)),
         }
     }
@@ -977,17 +995,28 @@ mod tests {
     fn test_priming_is_bounded_when_no_callback_is_ever_fully_served() {
         let underruns = priming_underruns();
         let first_write_us = 5_000_000;
-        underruns
-            .audio_queued_at_us
-            .store(first_write_us, Ordering::Relaxed);
+        // The real writer restamps the marker on every successful write, so the
+        // bound must run from the first write of this start, not from the marker.
+        let callback = |now_us: u64| {
+            underruns
+                .audio_queued_at_us
+                .store(now_us, Ordering::Relaxed);
+            render_empty_queue_at(&underruns, now_us);
+        };
 
-        render_empty_queue_at(&underruns, first_write_us + OUTPUT_PRIMING_MAX_US - 1);
-        assert_eq!(counts(&underruns), (1, 0, 0));
+        let mut now_us = first_write_us;
+        while now_us < first_write_us + OUTPUT_PRIMING_MAX_US {
+            callback(now_us);
+            now_us += 10_000;
+        }
+        let priming_callbacks = counts(&underruns).0;
+        assert_eq!(priming_callbacks, OUTPUT_PRIMING_MAX_US / 10_000);
+        assert_eq!(counts(&underruns), (priming_callbacks, 0, 0));
 
-        // A stream that never catches up shows its dropouts again.
-        render_empty_queue_at(&underruns, first_write_us + OUTPUT_PRIMING_MAX_US);
-        render_empty_queue_at(&underruns, first_write_us + 2 * OUTPUT_PRIMING_MAX_US);
-        assert_eq!(counts(&underruns), (1, 2, 2));
+        // A stream that keeps writing but never catches up shows its dropouts again.
+        callback(first_write_us + OUTPUT_PRIMING_MAX_US);
+        callback(first_write_us + OUTPUT_PRIMING_MAX_US + 10_000);
+        assert_eq!(counts(&underruns), (priming_callbacks, 2, 2));
         assert!(!underruns.primed.load(Ordering::Relaxed));
     }
 
@@ -1013,6 +1042,7 @@ mod tests {
 
         // What a start does before it builds the stream.
         underruns.audio_queued_at_us.store(0, Ordering::Relaxed);
+        underruns.priming_started_at_us.store(0, Ordering::Relaxed);
         underruns.primed.store(false, Ordering::Relaxed);
         render_empty_queue(&underruns);
 

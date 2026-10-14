@@ -356,3 +356,86 @@ def test_batched_smoothing_does_not_depend_on_memory_layout():
         spectrum._smooth_perceptual_rows(freqs, np.asfortranarray(rows), "balanced"),
         spectrum._smooth_perceptual_rows(freqs, rows, "balanced"),
     )
+
+
+def _edge_rows(kind, size):
+    rng = np.random.default_rng(77)
+    rows = rng.normal(-40.0, 15.0, (6, size))
+    if kind == "nan":
+        rows[0, size // 3] = np.nan
+        rows[1, [0, size // 2, -1]] = np.nan
+        rows[2, :] = np.nan
+    elif kind == "inf":
+        rows[0, size // 3] = np.inf
+        rows[1, size // 2] = -np.inf
+        rows[2, [1, -2]] = [np.inf, -np.inf]
+        rows[3, size // 4] = np.nan
+        rows[3, size // 5] = np.inf
+    elif kind == "float32":
+        rows = rows.astype(np.float32)
+    elif kind == "all_equal":
+        rows[:] = np.array([-40.0, 0.0, 1.0, -300.0, 12.3456789, 1e-9]).reshape(-1, 1)
+    elif kind == "huge":
+        rows *= 1e12
+        rows[1] = 3000.0  # 10 ** (3000 / 10) overflows
+        rows[2] = np.where(np.arange(size) % 2, 2900.0, -2900.0)
+        rows[3] = 1e300
+    elif kind == "tiny":
+        rows *= 1e-12
+        rows[1] = 5e-324
+        rows[2] = -5e-324
+        rows[3] = 1e-300
+    return rows
+
+
+def _outcome(call):
+    """The result array, or the type of the exception that was raised."""
+    with np.errstate(all="ignore"):
+        try:
+            return call()
+        except Exception as exc:  # noqa: BLE001 - the type is the thing compared
+            return type(exc)
+
+
+def _same_outcome(a, b):
+    if isinstance(a, type) or isinstance(b, type):
+        return a is b
+    return a.dtype == b.dtype and np.array_equal(a, b, equal_nan=True)
+
+
+@pytest.mark.parametrize("strength", ["balanced", "conservative", "broad"])
+@pytest.mark.parametrize("kind", ["nan", "inf", "float32", "all_equal", "huge", "tiny"])
+def test_smoothing_matches_the_per_spectrum_recipe_on_edge_values(kind, strength, fresh_octave_plans):
+    for freqs in _smoothing_grids():
+        rows = _edge_rows(kind, freqs.size)
+        # The public function converts to float64 first, as the recipe it replaced did.
+        wide_rows = np.asarray(rows, dtype=float)
+        expected = [
+            _outcome(lambda row=row: _per_spectrum_perceptual(freqs, row, strength))
+            for row in wide_rows
+        ]
+        batch = _outcome(lambda: spectrum._smooth_perceptual_rows(freqs, wide_rows, strength))
+        for index, (row, want) in enumerate(zip(rows, expected)):
+            got = _outcome(lambda row=row: smooth_spectrum_perceptual(freqs, row, strength))
+            assert _same_outcome(got, want), (kind, strength, freqs.size, index)
+            if not isinstance(want, type) and not isinstance(batch, type):
+                assert np.array_equal(batch[index], want, equal_nan=True), (kind, index)
+
+
+@pytest.mark.parametrize(
+    "spectrum_db",
+    [np.zeros((5, 1)), np.zeros((1, 5)), np.zeros((5, 5)), np.float64(1.0), np.zeros(4), np.zeros(6)],
+    ids=["column", "row", "square", "scalar", "short", "long"],
+)
+def test_smoothing_rejects_wrongly_shaped_spectra_with_index_error(spectrum_db):
+    freqs = np.linspace(100.0, 5000.0, 5)
+    for strength in ("balanced", "conservative", "broad"):
+        with pytest.raises(IndexError, match="one-dimensional and the same length"):
+            smooth_spectrum_perceptual(freqs, spectrum_db, strength)
+
+
+def test_smoothing_rejects_scalar_and_two_dimensional_freqs_with_index_error():
+    with pytest.raises(IndexError, match="one-dimensional and the same length"):
+        smooth_spectrum_perceptual(np.float64(100.0), np.float64(1.0))
+    with pytest.raises(IndexError, match="one-dimensional and the same length"):
+        smooth_spectrum_perceptual(np.array([[100.0], [200.0]]), np.zeros((2, 1)))

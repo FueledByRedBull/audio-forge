@@ -68,6 +68,9 @@ def _download(destination: Path) -> None:
         headers={"User-Agent": "AudioForge evaluation corpus fetcher/1"},
     )
     with (
+        # _validated_archive_url allows only Zenodo over HTTPS for the request;
+        # the archive's MD5 is checked afterwards.
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         urllib.request.urlopen(request, timeout=60) as response,
         destination.open("wb") as output,
     ):

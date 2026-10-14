@@ -403,6 +403,41 @@ def test_a_route_change_does_not_cost_the_next_undo_press(routed) -> None:
     assert scene.history.size == start_size
 
 
+def test_routing_back_to_a_calibrated_route_costs_no_undo_press_and_keeps_its_calibration(
+    routed,
+) -> None:
+    scene = routed
+    window = scene.window
+    top = window.quick_bridge.model["top"]
+
+    def calibrate(reliability: float) -> None:
+        # What the calibration sync does on a route change, which the fake engine cannot see.
+        window.compressor_state.set_settings({"noise_reference_reliability": reliability})
+
+    def live() -> float:
+        return window.compressor_state.get_settings(include_calibration=True)[
+            "noise_reference_reliability"
+        ]
+
+    calibrate(0.7)
+    scene.commit()  # the calibration landing on the first route is an entry of its own
+    scene.drag_handle()
+    size = scene.history.size
+
+    top["input"].setIndex(1)
+    calibrate(0.0)
+    scene.commit()
+    top["input"].setIndex(0)
+    calibrate(0.7)
+    assert scene.history.size == size
+
+    scene.undo()
+
+    assert scene.band().gain_db == 0
+    assert scene.history.size == size
+    assert live() == pytest.approx(0.7)
+
+
 def test_ctrl_z_in_a_value_box_undoes_the_typing_not_the_configuration(scene) -> None:
     scene.window.eq_state.select_band(BAND)
     scene.drag_handle()  # a configuration edit that an app-level undo would take back
@@ -436,3 +471,25 @@ def test_ctrl_z_right_after_entering_a_value_takes_it_back(scene) -> None:
     scene.qapp.processEvents()
 
     assert scene.band().frequency_hz == start.frequency_hz
+
+
+def test_a_box_with_nothing_to_undo_forwards_exactly_the_windows_undo_and_redo_keys(scene) -> None:
+    scene.drag_handle()
+    scene.window.eq_state.select_band(BAND)
+    _proxy, box, _field = scene.box("frequency")
+    QTest.mouseClick(scene.view, Qt.MouseButton.LeftButton, pos=_reveal(scene.page, box))
+    scene.commit()
+    assert scene.band().gain_db > 0
+
+    QTest.keyClick(scene.view, Qt.Key.Key_Z, CTRL)
+    scene.qapp.processEvents()
+    assert scene.band().gain_db == 0
+
+    # Ctrl+Y is no window shortcut: outside a box it does nothing, so inside one it does nothing too.
+    QTest.keyClick(scene.view, Qt.Key.Key_Y, CTRL)
+    scene.qapp.processEvents()
+    assert scene.band().gain_db == 0
+
+    QTest.keyClick(scene.view, Qt.Key.Key_Z, CTRL_SHIFT)
+    scene.qapp.processEvents()
+    assert scene.band().gain_db > 0

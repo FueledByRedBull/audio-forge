@@ -195,7 +195,7 @@ Rectangle {
         Keys.onUpPressed: nudge(1)
         Keys.onDownPressed: nudge(-1)
         function nudge(direction) {
-            proxy.setValue(proxy.value + direction * (proxy.step > 0 ? proxy.step : (to - from) / 100))
+            proxy.setValue(proxy.value + direction * (proxy.step > 0 ? proxy.step : (to - from) / unit / 100))
             proxy.released()
         }
         Accessible.name: proxy ? proxy.name : ""
@@ -261,12 +261,14 @@ Rectangle {
             onEditingFinished: if (!readOnly && text !== box.source.text) box.proxy.setText(text)
             Keys.onUpPressed: step(1)
             Keys.onDownPressed: step(-1)
-            // The field keeps Ctrl+Z only while it has typing to take back (it claims the shortcut
-            // whatever its history holds, so the key arrives here). Otherwise the app's undo and
-            // redo take it, and "type a value, Enter, Ctrl+Z" takes the value back.
+            // The field claims Ctrl+Z and Ctrl+Shift+Z whatever its history holds, so the keys arrive
+            // here. With no typing to take back, forward exactly the window's own shortcuts
+            // (Edit > Undo, Edit > Redo in main_window.py), so a box behaves like the page around it.
             Keys.onPressed: event => {
-                const undo = event.matches(StandardKey.Undo) && !canUndo
-                const redo = event.matches(StandardKey.Redo) && !canRedo
+                if (event.key !== Qt.Key_Z)
+                    return
+                const undo = event.modifiers === Qt.ControlModifier && !canUndo
+                const redo = event.modifiers === (Qt.ControlModifier | Qt.ShiftModifier) && !canRedo
                 if (undo || redo) {
                     (undo ? root.m.presets.undo : root.m.presets.redo).click()
                     event.accepted = true

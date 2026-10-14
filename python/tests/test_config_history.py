@@ -105,6 +105,86 @@ def test_history_keeps_transient_calibration_outside_preset_payload():
         )
 
 
+def _on_route(threshold_db: float, route: str | None, reliability: float = 0.0, label: str = "edit"):
+    """A snapshot of the gate threshold as seen on ``route`` with the live ``reliability``."""
+    preset = Preset()
+    preset.gate.threshold_db = threshold_db
+    return ConfigurationSnapshot.from_preset(
+        preset, label=label, source="test",
+        noise_reference_reliability=reliability, calibration_context_key=route,
+    )
+
+
+def _restored_reliability(history: BoundedConfigurationHistory, route: str) -> float:
+    """What undo would put back live on ``route``, as the window restores it."""
+    seen: list[float] = []
+    history.undo(lambda target: seen.append(
+        target.noise_reference_reliability
+        if target.calibration_context_key == route else 0.0
+    ))
+    return seen[0]
+
+
+def test_a_route_change_alone_is_not_a_history_entry() -> None:
+    history = BoundedConfigurationHistory()
+    history.initialize(_on_route(-40.0, "K1", 0.7))
+    assert history.record(_on_route(-38.0, "K1", 0.7))
+    # The route changed and the live reliability fell to zero; the configuration did not.
+    assert not history.record(_on_route(-38.0, "K2", 0.0))
+    assert history.size == 2 and history.can_undo
+
+
+def test_routing_back_to_a_calibrated_route_is_not_an_entry_and_undo_restores_it() -> None:
+    history = BoundedConfigurationHistory()
+    history.initialize(_on_route(-40.0, "K1", 0.7))
+    assert history.record(_on_route(-38.0, "K1", 0.7, "E1"))
+    assert not history.record(_on_route(-38.0, "K2", 0.0))  # away, observed
+    assert history.record(_on_route(-36.0, "K2", 0.0, "E2"))
+    # Back on K1 the live reliability returns without any edit.
+    assert not history.record(_on_route(-36.0, "K1", 0.7))
+    assert history.size == 3
+
+    # One press reaches the earlier edit, with its calibration back on the route it belongs to.
+    assert _restored_reliability(history, "K1") == 0.7
+    assert history.size == 3 and history.current is not None
+    assert history.current.label == "E1"
+
+
+def test_a_calibration_landing_on_the_new_route_is_one_entry() -> None:
+    history = BoundedConfigurationHistory()
+    history.initialize(_on_route(-40.0, "K1", 0.7))
+    assert not history.record(_on_route(-40.0, "K2", 0.0))
+    assert history.record(_on_route(-40.0, "K2", 0.5))
+    assert history.size == 2
+
+
+def test_clearing_a_calibration_on_the_same_route_is_one_entry() -> None:
+    history = BoundedConfigurationHistory()
+    history.initialize(_on_route(-40.0, "K1", 0.7))
+    assert history.record(_on_route(-40.0, "K1", 0.0))
+    assert history.size == 2
+
+
+def test_a_recalibration_matching_the_old_routes_reliability_is_one_entry() -> None:
+    history = BoundedConfigurationHistory()
+    history.initialize(_on_route(-40.0, "K1", 0.7))
+    assert not history.record(_on_route(-40.0, "K2", 0.0))
+    assert history.record(_on_route(-40.0, "K2", 0.7))
+    assert history.size == 2
+
+
+def test_the_redo_branch_survives_a_route_change() -> None:
+    history = BoundedConfigurationHistory()
+    history.initialize(_on_route(-40.0, "K1"))
+    assert history.record(_on_route(-38.0, "K1"))
+    history.undo(lambda _target: None)
+    assert history.can_redo
+
+    assert not history.record(_on_route(-40.0, "K2"))
+
+    assert history.can_redo and history.size == 2
+
+
 def test_failed_restore_does_not_move_history_cursor() -> None:
     history = BoundedConfigurationHistory()
     history.initialize(_snapshot(-40.0, label="baseline"))

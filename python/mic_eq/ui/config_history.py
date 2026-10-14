@@ -86,6 +86,9 @@ class BoundedConfigurationHistory:
         self._limit = limit
         self._entries: list[ConfigurationSnapshot] = []
         self._cursor = -1
+        # The live (route key, noise-reference reliability) as of the last commit or restore.
+        # A route change moves it without being an edit, so it is kept apart from the entries.
+        self._observed: tuple[str | None, float] = (None, 0.0)
 
     @property
     def limit(self) -> int:
@@ -127,30 +130,32 @@ class BoundedConfigurationHistory:
         snapshot.to_preset()
         self._entries = [snapshot]
         self._cursor = 0
+        self._observe(snapshot)
 
     def record(self, snapshot: ConfigurationSnapshot) -> bool:
         snapshot.to_preset()
         current = self.current
-        # A device or input-mode change alters the context key and clears the live reliability
-        # without touching the configuration. It is not an edit: recording it would put a phantom
-        # entry on top of the history that every undo press then has to step over. The stale key
-        # on the kept entry is safe, since restore only trusts a reliability whose key matches.
+        # A route change is context, not an edit: it alters the key and clears or returns the live
+        # reliability with the configuration untouched, and recording it would put a phantom entry
+        # on top of the history for every undo press to step over. So the commit is judged against
+        # the last state observed, not the last entry. Restore trusts a reliability only under a
+        # matching key, so an entry kept under an old key never carries calibration to a new route.
         if current is not None and (
             current.payload_json == snapshot.payload_json
             and current.processing_mode == snapshot.processing_mode
-            and (
-                current.noise_reference_reliability == snapshot.noise_reference_reliability
-                or (
-                    current.calibration_context_key != snapshot.calibration_context_key
-                    and snapshot.noise_reference_reliability == 0.0
-                )
-            )
         ):
-            return False
+            key, reliability = self._observed
+            if key is not None and snapshot.calibration_context_key != key:
+                self._observe(snapshot)
+                return False
+            if snapshot.noise_reference_reliability == reliability:
+                self._observe(snapshot)
+                return False
         if self._cursor < len(self._entries) - 1:
             del self._entries[self._cursor + 1 :]
         self._entries.append(snapshot)
         self._cursor = len(self._entries) - 1
+        self._observe(snapshot)
         overflow = len(self._entries) - self._limit
         if overflow > 0:
             del self._entries[:overflow]
@@ -168,6 +173,7 @@ class BoundedConfigurationHistory:
         target.to_preset()
         restore(target)
         self._cursor = target_index
+        self._observe_restored(target)
         return target
 
     def redo(
@@ -181,7 +187,17 @@ class BoundedConfigurationHistory:
         target.to_preset()
         restore(target)
         self._cursor = target_index
+        self._observe_restored(target)
         return target
+
+    def _observe(self, snapshot: ConfigurationSnapshot) -> None:
+        self._observed = (snapshot.calibration_context_key, snapshot.noise_reference_reliability)
+
+    def _observe_restored(self, target: ConfigurationSnapshot) -> None:
+        """A restore leaves the route alone and brings back a reliability only on its own route."""
+        key = self._observed[0]
+        trusted = key is not None and target.calibration_context_key == key
+        self._observed = (key, target.noise_reference_reliability if trusted else 0.0)
 
 
 def changed_configuration_paths(

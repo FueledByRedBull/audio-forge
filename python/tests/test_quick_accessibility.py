@@ -711,6 +711,21 @@ def test_a_fader_moves_one_step_per_arrow_key(quick_window, qapp) -> None:
         assert window.eq_state.get_band(0).gain_db == pytest.approx(expected), key
 
 
+def test_a_fader_without_a_step_moves_a_hundredth_of_its_range_per_key(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    gain = window.quick_bridge.model["eq"]["bands"][0]["gain"]
+    gain._view["step"] = 0.0  # a proxy that names no step; the gain proxy counts tenths of a dB
+    gain.changed.emit()
+    fader = _with_proxy(window, "Fader", gain)
+    _focus(window, fader, qapp)
+
+    _press(window, Qt.Key.Key_Right, qapp)
+
+    # 1/100 of the 24 dB range is 0.24 dB, which the proxy rounds to its 0.1 dB grid.
+    assert window.eq_state.get_band(0).gain_db == pytest.approx(0.2)
+
+
 def test_a_value_box_steps_with_up_and_down(quick_window, qapp) -> None:
     window = quick_window
     _show(window, qapp)

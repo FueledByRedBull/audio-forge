@@ -159,6 +159,12 @@ class FirstRunSetupDialog(QDialog):
         self._progress_unsaved = False
         self.setWindowTitle("AudioForge Setup")
         self.setModal(True)
+        # A re-run must not reopen at launch if the user leaves it unfinished.
+        self._exit_state = (
+            self.config.first_run_setup_state
+            if self.config.first_run_setup_state in {"completed", "completed_with_skips"}
+            else "in_progress"
+        )
 
         if restart_completed and self.config.first_run_setup_state == "completed":
             self.config.first_run_setup_steps = {
@@ -719,6 +725,7 @@ class FirstRunSetupDialog(QDialog):
             for step in DEFAULT_SETUP_STEPS
         )
         if pending:
+            self.config.first_run_setup_state = self._exit_state
             if not self._save_progress():
                 self._render_step()
                 return False
@@ -761,7 +768,7 @@ class FirstRunSetupDialog(QDialog):
         self._route_check_pending = False
         self._set_route_feedback_active(False)
         if not self._finalized:
-            self.config.first_run_setup_state = "in_progress"
+            self.config.first_run_setup_state = self._exit_state
             if not self._save_progress():
                 self.owner.status_message.showMessage(
                     "Setup progress could not be saved; it may need to be repeated next launch",

@@ -685,3 +685,47 @@ def test_route_feedback_shows_idle_levels_when_processor_stops(qapp, monkeypatch
     assert not dialog.route_output_meter.measurement_available
     assert dialog.route_input_health_label.text() == "Input: --"
     assert dialog.route_output_health_label.text() == "Output: --"
+
+
+@pytest.mark.parametrize("entry_state", ["completed", "completed_with_skips"])
+@pytest.mark.parametrize("how", ["reject", "pause"])
+def test_closing_rerun_setup_restores_completed_state(
+    qapp, monkeypatch, entry_state, how
+):
+    saved_states = []
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config",
+        lambda config: saved_states.append(config.first_run_setup_state) or True,
+    )
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.QMessageBox.information",
+        lambda *_args: None,
+    )
+    steps = {"devices": "completed", "route": "completed", "latency": "pending",
+             "voice": "skipped" if entry_state == "completed_with_skips" else "completed"}
+    config = AppConfig(
+        first_run_setup_state=entry_state,
+        first_run_setup_step="voice",
+        first_run_setup_steps=steps,
+    )
+    dialog = FirstRunSetupDialog(_Owner(config, _Processor()), restart_completed=True)
+    assert config.first_run_setup_state == "in_progress"
+
+    if how == "reject":
+        dialog.reject()
+    else:
+        assert dialog._finish_setup() is True
+
+    assert config.first_run_setup_state == entry_state
+    assert saved_states[-1] == entry_state
+
+
+@pytest.mark.parametrize("entry_state", ["not_started", "in_progress"])
+def test_closing_first_run_setup_stays_in_progress(qapp, monkeypatch, entry_state):
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: True
+    )
+    config = AppConfig(first_run_setup_state=entry_state)
+    FirstRunSetupDialog(_Owner(config, _Processor())).reject()
+
+    assert config.first_run_setup_state == "in_progress"

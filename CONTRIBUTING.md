@@ -63,12 +63,29 @@ atomic snapshots or bounded queues, and model loading and suppressor constructio
 outside those regions. Changes within `RT_REGION_*` markers must pass the RT
 source-scan tests. Do not enable `extension-module` in Rust test builds.
 
-For changes affecting callback cost, run the focused release benchmarks:
+A preset schema change needs a migration and round-trip tests. Migrate a stored
+value only when its provenance is `migration_default`; a legacy value without
+provenance counts as explicit.
+
+Two benchmarks cover callback cost. They are ignored release-mode tests that
+nothing runs automatically. They are recommended, not required, for changes on
+the audio path:
 
 ```powershell
 cargo test --release --locked -p mic_eq_core audio::input::tests::benchmark_phase_safe_mono_callback_cost -- --ignored --nocapture
 cargo test --release --locked -p mic_eq_core dsp::biquad::tests::benchmark_biquad_morph_cost -- --ignored --nocapture
 ```
+
+A change to packaging, workflows, `AudioForge.spec` or `release-assets.json`
+needs `python/tools/package_smoke.py --source-only` and
+`python/tools/check_workflows.py`, then a full `package_smoke.py` run after
+building. That script never launches the app, so after a local bundle build also
+run `dist\AudioForge\AudioForge.exe --smoke-test` hidden, with a 60 second
+limit, and require exit code 0. Without that run, a startup failure shows only
+as a hidden dialog and a process that never exits.
+
+After a release is published, download the assets, recompute their SHA-256, and
+reconcile the README and notes in a later commit. Never move a tag.
 
 Do not commit environments, generated binaries, release archives, recordings,
 device identifiers, credentials, or local planning files. Dependency changes must
@@ -81,6 +98,21 @@ Bug reports should include the version, Windows version, reproduction steps, and
 expected/actual behavior. `Settings > Help > Export Diagnostics` produces a bounded,
 pseudonymized report; inspect it before sharing. Do not attach microphone audio
 or unredacted logs by default.
+
+## Adding a neural model
+
+A newer or higher published score is not a reason to bundle a model. Before one
+ships, record its license and redistribution terms, and put the SHA-256 of the
+exact file in `release-assets.json`. Document its sample rate, state tensors,
+pre- and post-processing, how it resets, and how it fails. Measure CPU, latency
+and memory, and run it for 30 minutes to check stability.
+
+Compare quality and clean-speech preservation against the current model on a
+held-out split, with the pass rule written before the run, as described in
+[evaluation/README.md](evaluation/README.md). State which hardware was covered
+and which was not. Remove a model that does not beat the current one on those
+gates. A model that ships also needs an entry in the explicit model list in
+`AudioForge.spec`.
 
 ## Runtime assets and configuration
 

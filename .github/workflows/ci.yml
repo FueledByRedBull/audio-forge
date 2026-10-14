@@ -268,9 +268,9 @@ jobs:
       # The seeded contention stress test runs in the rust-stress job, in
       # release mode; this debug run skips only that one test.
       - name: Rust tests
-        run: cargo test -p mic_eq_core -- --skip seeded_control_and_dsp_loops_remain_finite_under_contention --exact
+        run: cargo test --locked -p mic_eq_core -- --skip seeded_control_and_dsp_loops_remain_finite_under_contention --exact
       - name: Clippy
-        run: cargo clippy -p mic_eq_core --all-targets -- -D warnings
+        run: cargo clippy --locked -p mic_eq_core --all-targets -- -D warnings
 
   # The only run of the seeded control/DSP contention stress test.
   rust-stress:
@@ -296,4 +296,4 @@ jobs:
           python python/tools/fetch_release_assets.py --only-cpu-runtime --force
           if ($LASTEXITCODE -ne 0) { throw "CPU ONNX Runtime hydration failed with exit code $LASTEXITCODE." }
       - name: Release-mode control/DSP contention stress
-        run: cargo test --release -p mic_eq_core --test stress_tests seeded_control_and_dsp_loops_remain_finite_under_contention
+        run: cargo test --release --locked -p mic_eq_core --test stress_tests seeded_control_and_dsp_loops_remain_finite_under_contention

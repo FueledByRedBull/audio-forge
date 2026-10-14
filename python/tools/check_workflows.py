@@ -64,11 +64,12 @@ RELEASE_JOB_GATES = {
     ),
     "pytest": ("-m pytest",),
     "rust-tests": (
-        "cargo test -p mic_eq_core",
-        "cargo clippy -p mic_eq_core --all-targets -- -D warnings",
+        "cargo test --locked -p mic_eq_core",
+        "cargo clippy --locked -p mic_eq_core --all-targets -- -D warnings",
     ),
-    "rust-stress": ("cargo test --release -p mic_eq_core --test stress_tests",),
+    "rust-stress": ("cargo test --release --locked -p mic_eq_core --test stress_tests",),
 }
+CARGO_LOCKED_COMMANDS = ("build", "test", "clippy", "run")
 ACTION_REF = re.compile(
     r"^\s*(?:-\s*)?uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE
 )
@@ -304,6 +305,8 @@ def _check_required_gates(
             "actions/download-artifact@",
             "release_tag must be the canonical vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N tag",
             "git rev-list -n 1 $env:RELEASE_TAG --",
+            "git cat-file -t $tagRef",
+            '$run.event -ne "workflow_dispatch"',
             "release_provenance.py verify",
             "--expected-archive-sha256",
             "--expected-commit",
@@ -391,8 +394,8 @@ def _check_required_gates(
         "pip_audit --require-hashes -r requirements/runtime.txt",
         "pip_audit --require-hashes -r requirements/dev.txt",
         "run_semgrep.py",
-        "cargo test --release -p mic_eq_core --test stress_tests",
-        "cargo clippy -p mic_eq_core --all-targets -- -D warnings",
+        "cargo test --release --locked -p mic_eq_core --test stress_tests",
+        "cargo clippy --locked -p mic_eq_core --all-targets -- -D warnings",
         "cargo install cargo-audit --version 0.22.2 --locked --force",
         "cargo audit --deny warnings",
     )
@@ -401,7 +404,7 @@ def _check_required_gates(
         rust_test_steps = [
             step for step in _active_steps(document)
             if _active_run_has_marker(
-                str(step.get("run", "")).splitlines(), "cargo test -p mic_eq_core"
+                str(step.get("run", "")).splitlines(), "cargo test --locked -p mic_eq_core"
             )
         ]
         pythonpath = (
@@ -446,9 +449,9 @@ def _check_required_gates(
 
     # The release workflow's test jobs verify the runtime assets they download
     # instead (see _check_release_jobs).
-    if name != "release-package.yml" and "cargo test -p mic_eq_core" in source:
+    if name != "release-package.yml" and "cargo test --locked -p mic_eq_core" in source:
         model_step = source.find("silero_vad.onnx")
-        rust_tests = source.find("cargo test -p mic_eq_core")
+        rust_tests = source.find("cargo test --locked -p mic_eq_core")
         if model_step < 0 or model_step > rust_tests:
             errors.append(
                 f"{name}: pinned Silero model must be available before Rust tests"
@@ -456,6 +459,18 @@ def _check_required_gates(
     if name == "ci.yml":
         _check_ci_jobs(document, errors)
         _check_pytest_shards(document, errors)
+
+
+def _check_cargo_locked(
+    name: str, document: dict[str, Any], errors: list[str]
+) -> None:
+    """Cargo commands that resolve this repository's Cargo.lock must not update it."""
+    for line in _active_run_lines(document):
+        for command in CARGO_LOCKED_COMMANDS:
+            if _active_run_has_marker([line], f"cargo {command}") and (
+                "--locked" not in line.split()
+            ):
+                errors.append(f"{name}: 'cargo {command}' must pass --locked: {line.strip()}")
 
 
 def _is_always(value: Any) -> bool:
@@ -792,6 +807,7 @@ def check_workflows() -> list[str]:
         document = _mapping(document, path.name, errors)
         _check_permissions(path.name, document, errors)
         _check_required_gates(path.name, source, errors, document=document)
+        _check_cargo_locked(path.name, document, errors)
         _check_python_runtime(path.name, source, errors)
 
         action_refs = ACTION_REF.findall(source)

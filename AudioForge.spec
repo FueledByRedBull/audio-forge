@@ -113,17 +113,14 @@ a = Analysis(
         "PySide6.QtPdfWidgets",
         "PySide6.QtMultimediaWidgets",
         "PySide6.QtVirtualKeyboard",
-        # The app calls only scipy.optimize, which imports these lazily.
-        "scipy.integrate",
-        "scipy.interpolate",
-        "scipy.ndimage",
-        "scipy.stats",
         "ssl",
         "_ssl",
         "_hashlib",
         "pytest",
         "setuptools",
         "wheel",
+        # Development-only (requirements/dev.txt installs it in the build environment).
+        "scipy",
         # Optional scientific-library helpers installed by development tools.
         "cffi",
         "charset_normalizer",

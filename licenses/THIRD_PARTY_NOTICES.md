@@ -24,7 +24,8 @@ the wheel `.dist-info` notices and this inventory when redistributing.
 | CPython runtime and standard library | PSF license and bundled third-party notices |
 | PySide6-Essentials, PySide6-Addons and shiboken6 | LGPLv3 and included third-party notices in `QtForPython-6.11.1-NOTICES.txt` |
 | Bundled Qt6 modules and plugins | LGPLv3 and included third-party notices in the same collection; no GPL-only module is selected |
-| NumPy and SciPy, including their BLAS/native payloads | Their complete retained wheel license collections |
+| NumPy, including its BLAS/native payloads | Its complete retained wheel license collection |
+| Portions derived from SciPy | BSD-3-Clause; the notice is reproduced below and in `eq_fit.py` |
 | pywin32 | PSF license |
 | PyInstaller bootloader | GPLv2 with the upstream bootloader exception; retained upstream license |
 | Rust dependencies | Per-component Cargo license declarations and retained notice files |
@@ -52,6 +53,46 @@ DLLs. When those files are present in the bundle, retain the Microsoft Visual C+
 redistribution terms supplied by the originating runtime; they are not covered
 by AudioForge's MIT license. Windows system UCRT files are treated as operating
 system components and are not claimed as project source.
+
+## Portions derived from SciPy
+
+SciPy is not bundled. The Auto-EQ least-squares solver in
+`python/mic_eq/analysis/auto_eq_parts/eq_fit.py` is a NumPy port of SciPy's
+trust-region reflective algorithm (`scipy.optimize.least_squares`). SciPy is
+distributed under this license:
+
+```text
+Copyright (c) 2001-2002 Enthought, Inc. 2003, SciPy Developers.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above
+   copyright notice, this list of conditions and the following
+   disclaimer in the documentation and/or other materials provided
+   with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived
+   from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
 
 ## Corresponding source and release approval
 

@@ -54,7 +54,6 @@ TRUSTED_SOURCE_HOSTS = frozenset(
 EXPECTED_CPYTHON_VERSION = "3.13.15"
 PYPI_SDIST_PACKAGES = (
     ("numpy", "NumPy"),
-    ("scipy", "SciPy"),
     ("pyinstaller", "PyInstaller"),
 )
 
@@ -448,17 +447,6 @@ ONNXRUNTIME_CPU_SOURCES = (
 
 OPENBLAS_SOURCES = (
     {
-        "id": "openblas-recipe-scipy-0.3.31.22.0",
-        "name": "SciPy OpenBLAS build recipe",
-        "version": "0.3.31.22.0",
-        "filename": "openblas-libs-0.3.31.22.0.tar.gz",
-        "url": "https://github.com/MacPython/openblas-libs/archive/refs/tags/v0.3.31.22.0.tar.gz",
-        "sha256": "cc4b804fa064c543fd129a21ee8d7379447e18bb24c9a039005096e867187a51",
-        "source_of_truth": "https://github.com/MacPython/openblas-libs/tree/v0.3.31.22.0",
-        "build_role": "exact SciPy 1.18.0 Windows OpenBLAS source and patch recipe",
-        "license_paths": ["openblas-libs-0.3.31.22.0/LICENSE.txt"],
-    },
-    {
         "id": "openblas-upstream-9bdf051b",
         "name": "OpenBLAS upstream (NumPy ILP64)",
         "version": "9bdf051b96e956f848dfcef89c23e1993b0e1b3e",
@@ -479,17 +467,6 @@ OPENBLAS_SOURCES = (
         "source_of_truth": "https://github.com/MacPython/openblas-libs/tree/v0.3.33.112.0",
         "build_role": "exact NumPy 2.5.1 Windows OpenBLAS source and patch recipe",
         "license_paths": ["openblas-libs-0.3.33.112.0/LICENSE.txt"],
-    },
-    {
-        "id": "openblas-upstream-5ffbf38b",
-        "name": "OpenBLAS upstream (SciPy LP64)",
-        "version": "5ffbf38b41a1fe494d038efcb09cf22f4d527c22",
-        "filename": "OpenBLAS-5ffbf38b41a1fe494d038efcb09cf22f4d527c22.tar.gz",
-        "url": "https://github.com/OpenMathLib/OpenBLAS/archive/5ffbf38b41a1fe494d038efcb09cf22f4d527c22.tar.gz",
-        "sha256": "51257fb2f0aa7b4c23d9cf0302500b817dc82c0022ee681b24f9ab82dfd10312",
-        "source_of_truth": "https://github.com/OpenMathLib/OpenBLAS/commit/5ffbf38b41a1fe494d038efcb09cf22f4d527c22",
-        "build_role": "OpenBLAS source used by SciPy 1.18.0's scipy-openblas32 build",
-        "license_paths": ["OpenBLAS-5ffbf38b41a1fe494d038efcb09cf22f4d527c22/LICENSE"],
     },
 )
 
@@ -843,7 +820,6 @@ def build_manifest() -> dict[str, Any]:
     required = {
         **{name.casefold(): runtime.get(name.casefold()) for name in PYSIDE_PACKAGES},
         "numpy": runtime.get("numpy"),
-        "scipy": runtime.get("scipy"),
         "pywin32": runtime.get("pywin32"),
         "pyinstaller": dev.get("pyinstaller"),
     }
@@ -1368,7 +1344,6 @@ def _validate_manifest(manifest: dict[str, Any], *, release: bool = False) -> No
     expected = {
         **{name: runtime.get(name.casefold()) for name in PYSIDE_PACKAGES},
         "NumPy": runtime.get("numpy"),
-        "SciPy": runtime.get("scipy"),
         "pywin32": runtime.get("pywin32"),
         "PyInstaller": dev.get("pyinstaller"),
     }

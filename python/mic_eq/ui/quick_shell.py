@@ -95,7 +95,12 @@ class QuickBridge(QObject):
     def __init__(self, window):
         super().__init__(window)
         self._window = window
-        self._model = self._build_model(window)
+        try:
+            self._model = self._build_model(window)
+        except Exception:
+            # Its controls are wired to shared state; none may outlive the failure.
+            self.deleteLater()
+            raise
         self._levels: deque[list[float]] = deque(maxlen=TRACE_POINTS)
         self._trace_timer = QTimer(self)
         self._trace_timer.setInterval(TRACE_INTERVAL_MS)
@@ -465,5 +470,6 @@ def _scene_stopped(window, reason: str) -> None:
     if bridge is None:
         return
     _LOG.error("Qt Quick view stopped rendering: %s", reason)
-    show_quick_error(window, "scene_graph_error", reason)
+    # Read before the scene is replaced; the export names the backend that failed.
+    show_quick_error(window, "scene_graph_error", reason, graphics_api(window))
     bridge.release()

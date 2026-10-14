@@ -2,12 +2,16 @@
 
 Not collected by the normal run: ``test_quick_software_rendering.py`` runs this
 file in a child pytest with ``QT_QUICK_BACKEND=software``. The shared tests are
-repeated here; the checks below are the ones only this backend needs.
+repeated here; the checks below are the ones only this backend needs. The offscreen
+platform renders in software anyway, so these show the scene works there, not that the
+variable chose the backend.
 """
 # pyright: reportMissingImports=false
 # (the sibling test modules are found by pytest at run time)
 
 from __future__ import annotations
+
+import os
 
 from PySide6.QtCore import QObject, QPointF, Qt
 from PySide6.QtQuick import QQuickItem
@@ -26,6 +30,8 @@ from mic_eq.ui.quick_shell import graphics_api
 
 
 def test_the_scene_renders_with_the_software_adapter_and_without_shadows(quick_window) -> None:  # noqa: F811
+    # The request reached this process, and the live scene reports software.
+    assert os.environ["QT_QUICK_BACKEND"] == "software"
     root = quick_window.centralWidget().rootObject()
     assert graphics_api(quick_window) == "software"
     assert quick_window._interface_snapshot()["graphics_api"] == "software"

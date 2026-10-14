@@ -415,6 +415,7 @@ class MainWindow(QMainWindow):
         # Why the Qt Quick view could not run, while the error screen shows; the
         # packaged smoke test and the diagnostics export read it.
         self.quick_view_failure: str | None = None
+        self.quick_view_graphics_api = "not_applicable"
         self._classic_root: QWidget | None = None
         self._responsive_layout_compact: bool | None = None
         self._quitting = False
@@ -1815,9 +1816,6 @@ class MainWindow(QMainWindow):
         self.health_details_button.setAccessibleName("Show audio health details")
         self.status_bar.addPermanentWidget(self.health_details_button)
         # A permanent label: transient status messages would replace a notice.
-        self.interface_notice = QLabel()
-        self.status_bar.addPermanentWidget(self.interface_notice)
-        self.shell_texts["interface_notice"].bind_label(self.interface_notice)
         self.status_message.bind_status_bar(self.status_bar)
 
     def _setup_options_menu(self):
@@ -2050,6 +2048,16 @@ class MainWindow(QMainWindow):
                 app = QGuiApplication.instance()
                 if app is not None:
                     app.exit(1)
+            return
+        if self.quick_view_failure is not None:
+            # Nobody can see or stop audio from a window that did not open.
+            self._cancel_login_startup("Login stopped: the main window could not open")
+            self._tray_icon.showMessage(
+                "AudioForge could not open its main window",
+                "Audio was not started. Choose Show AudioForge in the tray menu to see why.",
+                QSystemTrayIcon.MessageIcon.Critical,
+                10000,
+            )
             return
         if login_startup.registration_state(Path(sys.executable)) != "configured":
             self._cancel_login_startup("Login stopped: this copy's shortcut is no longer configured")
@@ -2307,6 +2315,8 @@ class MainWindow(QMainWindow):
             "AUDIOFORGE_SMOKE_TEST"
         ):
             return
+        if self.__dict__.get("quick_view_failure") is not None:
+            return  # the error screen is what to read now
         if self.config.first_run_setup_state in {"not_started", "in_progress"}:
             self._show_first_run_setup(restart_completed=False)
 
@@ -4606,7 +4616,7 @@ class MainWindow(QMainWindow):
             return {
                 "view": "error",
                 "classic_reason": self.quick_view_failure,
-                "graphics_api": "not_applicable",
+                "graphics_api": self.quick_view_graphics_api,
             }
         return {
             "view": "classic",

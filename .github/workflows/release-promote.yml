@@ -59,6 +59,14 @@ jobs:
           if ($env:CANDIDATE_RUN_ID -notmatch '^\d+$') {
             throw "Workflow run IDs must contain only decimal digits."
           }
+          # RELEASING.md requires an annotated tag. Fetch the tag object itself,
+          # not only the commit it points at, so a lightweight tag is detectable.
+          $tagRef = "refs/tags/$($env:RELEASE_TAG)"
+          git fetch --no-tags origin "+$tagRef`:$tagRef"
+          if ($LASTEXITCODE -ne 0) { throw "Unable to fetch release tag '$env:RELEASE_TAG'." }
+          if ((git cat-file -t $tagRef).Trim() -ne "tag") {
+            throw "Release tag '$env:RELEASE_TAG' must be an annotated tag."
+          }
           $tagCommit = (git rev-list -n 1 $env:RELEASE_TAG --).Trim()
           if ($LASTEXITCODE -ne 0 -or $tagCommit -notmatch '^[0-9a-fA-F]{40}$') {
             throw "Unable to resolve release tag '$env:RELEASE_TAG'."
@@ -88,7 +96,7 @@ jobs:
                 $run.headSha.ToLowerInvariant() -ne $tagCommit.ToLowerInvariant()) {
               throw "Run $RunId did not build the release tag commit."
             }
-            if ($run.event -notin @("push", "workflow_dispatch")) {
+            if ($run.event -ne "workflow_dispatch") {
               throw "Run $RunId has unsupported event '$($run.event)'."
             }
             if ([string]$run.attempt -notmatch '^\d+$' -or [int]$run.attempt -lt 1) {

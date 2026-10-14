@@ -12,7 +12,8 @@ archive, and one `SHA256SUMS.txt`.
    Run `python/tools/check_versions.py`. Published notes live on
    [GitHub Releases](https://github.com/FueledByRedBull/audio-forge/releases)
    and in their tagged source, so only the upcoming notes stay in
-   `release-notes/`. Don't write archive sizes, hashes, or file counts into
+   `release-notes/`; `check_versions.py` fails if any other file is there.
+   Don't write archive sizes, hashes, or file counts into
    docs; the generated checksum and metadata sidecars own them.
 2. **Build a candidate.** Dispatch `Release package` on the branch with
    `release_tag` blank. It hydrates and verifies the runtime assets and
@@ -34,17 +35,19 @@ archive, and one `SHA256SUMS.txt`.
 
    Every job must pass: promotion refuses a run that is not successful. Fix
    failures on the branch without tagging or changing the version, and
-   dispatch again. Promotion also binds the run attempt, so re-running only
-   failed jobs doesn't produce a promotable candidate. Set `asset_source_tag`
+   dispatch again. A new dispatch cancels a candidate still running on the same
+   branch (`cancel-in-progress: true`), so let a run you want to keep finish
+   first. Promotion also binds the run attempt, so re-running only failed jobs
+   doesn't produce a promotable candidate. Set `asset_source_tag`
    only to override where model assets come from (see
    [Runtime assets](#runtime-assets)). Supply an existing tag in
    `release_tag` only when rebuilding that tag.
 3. **Record the candidate:** workflow run ID, source commit, and archive
    SHA-256. The candidate artifact expires after three days; an expired
    candidate must be rebuilt and revalidated.
-4. **Tag the candidate commit** with an annotated `v<version>` tag. A tag push
-   doesn't rebuild anything. Never move a released tag to fix documentation;
-   reconcile documentation in a later commit.
+4. **Tag the candidate commit** with an annotated `v<version>` tag; promotion
+   refuses a lightweight one. A tag push doesn't rebuild anything. Never move a
+   released tag to fix documentation; reconcile documentation in a later commit.
 5. **Review hardware evidence (optional).** Hardware qualification workflows
    can add measurements when a suitable runner exists; they don't block
    publication. Keep each measurement bound to its candidate revision and
@@ -171,9 +174,11 @@ cargo audit
   release from an environment resolved from open `pyproject.toml` ranges.
   Neither the runtime nor the development audit has ignores; Semgrep 1.179.0
   allows a patched PyJWT, so the former PyJWT exception is gone.
-- **Dependabot:** routine version PRs are off; security updates stay on.
-  Scope each dependency refresh on its own and pass the build, benchmark,
-  hardware, and package gates.
+- **Dependabot:** GitHub Actions version updates stay on, weekly and grouped
+  into one pull request, to keep the pinned actions current. Python and Cargo
+  version updates are off (`open-pull-requests-limit: 0`); security updates stay
+  on. Scope each dependency refresh on its own and pass the build and package
+  gates.
 
 ## Packaging invariants
 
@@ -256,42 +261,6 @@ Windows-disabled registration surviving upgrade, delayed endpoint enumeration,
 tray recovery/absence, ordinary uninstall cleanup, and preservation of a shortcut
 reassigned to a portable copy. Source tests do not establish those installer or
 Windows-shell lifecycle results.
-
-## MSIX and AppInstaller readiness
-
-MSIX delivery, AppInstaller updates, and packaged `StartupTask` are not implemented.
-The existing portable and per-user MSI channels remain the release path. The
-following external decisions are required before a package or updater can ship:
-
-| Decision | Required concrete input |
-|---|---|
-| Package identity | Stable package Name and Publisher, ownership, and coexistence policy with MSI/portable copies |
-| Signing | Certificate/provider, renewal and key custody, and supported trust distribution; the certificate subject must match Publisher |
-| Update channel | Stable HTTPS AppInstaller/package URLs, channel owner, retention, update cadence, offline behavior, and rollback policy |
-| Startup migration | Which package owns login startup and how users explicitly migrate a shortcut without undoing Windows disablement |
-
-Do not create a certificate, add a trust-store exception, invent hosting, or ship
-an unsigned update flow to fill these gaps. See Microsoft's
-[package signing requirements](https://learn.microsoft.com/windows/msix/package/create-certificate-package-signing),
-[AppInstaller update controls](https://learn.microsoft.com/windows/msix/app-installer/auto-update-and-repair--overview),
-and [StartupTask contract](https://learn.microsoft.com/uwp/api/windows.applicationmodel.startuptask?view=winrt-26100).
-A future packaged task must remain default off and respect user/policy-disabled
-states; the current shortcut cannot truthfully report those packaged states.
-
-The migration specification must account for `%APPDATA%/AudioForge/config.json`,
-presets, imports, and logs; user-chosen diagnostics exports; trusted native/model
-asset paths; Explorer folder opening; Start Menu and login entries; exact endpoint
-IDs; single-instance ownership; and stopping active audio before replacement.
-Preserve user data and explicit mute/startup choices across transitions, with no
-silent route fallback or automatic login opt-in.
-
-Acceptance requires evidence from the exact signed package for fresh install,
-upgrade, rejected downgrade, MSI coexistence/migration, uninstall/data retention,
-offline and disabled updates, and update attempts during active audio. Verify
-settings/presets/logs and endpoint identities before and after each transition,
-and record signature, package identity, version, source revision, artifact hashes,
-and update policy. Existing MSI sentinel tests and source tests are useful checks,
-not proof of this migration or of packaged `StartupTask` behavior.
 
 ## Local build cleanup
 

@@ -730,8 +730,10 @@ def test_the_capture_problem_lines_are_read_out_as_their_own_sentences(real_main
         dialog._show_summary(result)
 
         layout = dialog.capture_issues_layout
-        labels = [layout.itemAt(i).widget() for i in range(layout.count())]
-        assert labels
+        items = [layout.itemAt(i) for i in range(layout.count())]
+        labels = [item.widget() for item in items if item is not None]
+        labels = [label for label in labels if isinstance(label, QLabel)]
+        assert labels and len(labels) == layout.count()
         for label in labels:
             interface = QAccessible.queryAccessibleInterface(label)
             assert interface is not None

@@ -165,6 +165,7 @@ _RUNTIME_NUMBERS = frozenset(
         "output_clip_event_count",
         "output_clip_peak_db",
         "output_fixed_buffer_frames",
+        "output_priming_underrun_total",
         "output_recovery_count",
         "output_recovery_event_count",
         "output_resampler_delay_samples",

@@ -2555,6 +2555,10 @@ impl PyAudioProcessor {
             self.processor.get_output_underrun_total(),
         )?;
         diagnostics.set_item(
+            "output_priming_underrun_total",
+            self.processor.get_output_priming_underrun_total(),
+        )?;
+        diagnostics.set_item(
             "output_underrun_streak",
             self.processor.get_output_underrun_streak(),
         )?;

@@ -55,6 +55,8 @@ def _config() -> SimpleNamespace:
 def _runtime() -> dict[str, object]:
     return {
         "input_dropped_samples": 2,
+        "output_priming_underrun_total": 3,
+        "output_underrun_total": 0,
         "output_true_peak_db": -2.5,
         "output_short_term_lufs": float("nan"),
         "noise_backend_available": True,
@@ -117,6 +119,9 @@ def test_snapshot_is_deterministic_finite_bounded_and_private() -> None:
     assert first["setup_result"] is None
     assert len(payload) < MAX_SERIALIZED_BYTES
     assert first["runtime"]["output_short_term_lufs"] is None
+    # Start-up priming is kept apart from dropouts so a start stuck in priming shows.
+    assert first["runtime"]["output_priming_underrun_total"] == 3
+    assert first["runtime"]["output_underrun_total"] == 0
     assert first["runtime"]["backend_error_present"] is True
     assert first["runtime"]["stream_error_present"] is True
     assert first["runtime"]["restart_reason_present"] is True

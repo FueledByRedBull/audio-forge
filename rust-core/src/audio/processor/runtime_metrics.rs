@@ -228,6 +228,13 @@ impl AudioProcessor {
         self.output_underrun_total.load(Ordering::Relaxed)
     }
 
+    /// Output callbacks that ran dry before the stream was primed (before a
+    /// callback was fully served after real audio was queued). Start-up
+    /// priming, not counted as dropouts.
+    pub fn get_output_priming_underrun_total(&self) -> u64 {
+        self.output_priming_underrun_total.load(Ordering::Relaxed)
+    }
+
     /// Samples dropped by DSP-side jitter control.
     pub fn get_jitter_dropped_samples(&self) -> u64 {
         self.jitter_dropped_samples.load(Ordering::Relaxed)

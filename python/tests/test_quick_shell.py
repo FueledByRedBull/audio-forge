@@ -22,6 +22,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QFont, QGuiApplication, QImage, QKeyEvent, QMouseEvent, QPainter
 from PySide6.QtTest import QSignalSpy, QTest
+from PySide6.QtQml import QQmlProperty
 from PySide6.QtQuick import QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
@@ -1081,6 +1082,8 @@ def test_a_clicked_readout_lets_the_wheel_scroll_the_page(quick_window, wide_pag
 
     centre = _reveal(page, readout)
     QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=centre)
+    field = view.quickWindow().activeFocusItem()
+    assert field.property("readOnly") and field.hasActiveFocus()
     before = page.property("contentY")
     QTest.wheelEvent(view.quickWindow(), QPointF(centre), QPoint(0, -120))
 
@@ -1640,6 +1643,9 @@ class _AccessibleScene:
     def name(self, item) -> str:
         return self._accessible.queryAccessibleInterface(item).text(self._accessible.Text.Name)
 
+    def description(self, item) -> str:
+        return self._accessible.queryAccessibleInterface(item).text(self._accessible.Text.Description)
+
 
 def _tab_stops(window, qapp, presses: int = 120) -> list:
     """The items that real Tab presses focus in turn, wrapping around."""
@@ -1662,9 +1668,16 @@ def test_the_health_chip_is_a_toggle_the_keyboard_reaches_and_names(quick_window
     view = window.centralWidget()
     with _AccessibleScene() as scene:
         stops = _tab_stops(window, qapp)
-        named = [item for item in stops if scene.name(item) == "Show audio health details"]
+        named = [item for item in stops if item.objectName() == "healthToggle"]
         assert named, "Tab never reaches the Health chip"
         toggle = named[0]
+        # Voice control says what it sees: the visible text names the button.
+        chip = window.shell_texts["health_summary_label"]
+        assert chip.text and scene.name(toggle) == chip.text
+        assert scene.description(toggle) == "Show audio health details"
+        window._set_health_chip("health_summary_label", "Health: Check input", "warn")
+        qapp.processEvents()
+        assert scene.name(toggle) == "Health: Check input"
         interface = QAccessible.queryAccessibleInterface(toggle)
         assert interface.role() == QAccessible.Role.Button
         assert not interface.state().checked
@@ -1715,7 +1728,7 @@ def test_the_preset_menu_button_name_contains_its_visible_label(quick_window, qa
         assert button.property("text") in scene.name(button)
 
 
-def test_read_only_value_boxes_take_no_focus_but_keep_their_accessible_name(
+def test_a_read_only_value_box_is_no_tab_stop_copies_and_shows_no_edit_border(
     quick_window, wide_page, qapp
 ) -> None:
     window, page = quick_window, wide_page
@@ -1731,10 +1744,24 @@ def test_read_only_value_boxes_take_no_focus_but_keep_their_accessible_name(
         child for child in readout.childItems() if child.metaObject().className().startswith("QQuickTextInput")
     )
     assert field.property("readOnly") and not field.property("activeFocusOnTab")
-    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=_reveal(page, readout))
-    assert not field.hasActiveFocus()
     with _AccessibleScene() as scene:
         assert scene.name(field) == gain.name
+
+    def border_colour(box):
+        return QQmlProperty.read(box, "border.color").name()
+
+    accent = window.quick_bridge.model["theme"]["accent"].lower()
+    QGuiApplication.clipboard().clear()
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=_reveal(page, readout))
+    QTest.keyClick(view, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+    QTest.keyClick(view, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+    assert QGuiApplication.clipboard().text() == field.property("text") != ""
+    assert border_colour(readout).lower() != accent
+
+    # An editable box still shows it has focus.
+    _frequency, editable = _band_box(window, "frequency")
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=_reveal(page, editable))
+    assert border_colour(editable).lower() == accent
 
 
 def test_the_drops_tooltip_does_not_promise_a_right_click_quick_lacks(quick_window) -> None:

@@ -124,8 +124,9 @@ location. See the
 ## Everyday Controls
 
 - **Processing mode:** **Normal** runs the full chain. **Bypass** skips voice
-  effects, adaptive input cleanup and the limiter, and keeps the fixed 80 Hz
-  high-pass. **Raw** also skips the input filter, for troubleshooting.
+  effects, adaptive input cleanup and the lookahead limiter, and keeps the fixed
+  80 Hz high-pass and, while the limiter is on, the final true-peak limiter and
+  ceiling. **Raw** also skips the input filter, for troubleshooting.
 - **Compare Recording:** after calibration, hear the same passage as original,
   current, and proposed processing before you apply anything. The Review page
   also draws the proposed EQ over the current one.

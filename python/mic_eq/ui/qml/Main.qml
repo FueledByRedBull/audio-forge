@@ -223,7 +223,7 @@ Rectangle {
         implicitHeight: 30
         radius: root.t.radiusControl
         color: root.t.control_surface
-        border.color: input.activeFocus ? root.t.accent : root.t.border
+        border.color: input.activeFocus && !input.readOnly ? root.t.accent : root.t.border
         Hint { text: box.proxy ? box.proxy.toolTip : "" }
         TextInput {
             id: input
@@ -233,9 +233,8 @@ Rectangle {
             verticalAlignment: TextInput.AlignVCenter
             text: box.source ? box.source.text : ""
             readOnly: box.display !== null
-            // A display is read, not edited: no Tab stop, and a click does not focus it.
+            // A display is read, not edited: no Tab stop. A click still focuses it, so Ctrl+C copies.
             activeFocusOnTab: !readOnly
-            activeFocusOnPress: !readOnly
             enabled: box.proxy ? box.proxy.enabled : false
             color: root.t.text_primary
             selectionColor: root.t.accent
@@ -1275,7 +1274,9 @@ Rectangle {
                     Keys.onReturnPressed: click()
                     Keys.onEnterPressed: click()
                     Accessible.role: Accessible.Button
-                    Accessible.name: "Show audio health details"
+                    // Named by what it shows; the action goes in the description.
+                    Accessible.name: root.m.status.health.text
+                    Accessible.description: "Show audio health details"
                     Accessible.checkable: true
                     Accessible.checked: root.m.page.index === root.m.healthPage
                     background: Item { FocusRing { control: healthToggle } }

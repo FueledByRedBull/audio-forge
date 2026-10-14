@@ -2049,6 +2049,145 @@ mod tests {
         assert!(full_scale >= 40, "full_scale={full_scale}");
     }
 
+    /// Feeds `input` to the production output writer in 480-sample blocks the
+    /// way the DSP loop's Bypass (`clean_path` false) and Raw monitor (true)
+    /// branches do, draining the queue after every write. Returns everything
+    /// queued and the output full-scale count. The ceiling is set before the
+    /// first block, as the loop does at startup.
+    fn run_live_path_writer(
+        limiter_on: bool,
+        ceiling_db: f32,
+        clean_path: bool,
+        input: &[f32],
+    ) -> (Vec<f32>, u64) {
+        let rb = AudioRingBuffer::new(4096);
+        let (mut producer, mut consumer) = rb.split();
+        let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut true_peak_detector = TruePeakDetector::new();
+        let mut true_peak_limiter = TruePeakLimiter::default();
+        let mut drift_error_ema = 0.0_f32;
+        let mut drift_retimer = DriftRetimer::default();
+        let fade_remaining = Cell::new(0usize);
+        let limiter_enabled = AtomicBool::new(limiter_on);
+        let output_ceiling_linear = Cell::new(10.0_f32.powf(ceiling_db / 20.0));
+        let jitter_dropped_samples = AtomicU64::new(0);
+        let output_retime_adjustment_count = AtomicU64::new(0);
+        let output_recovery_event_count = AtomicU64::new(0);
+        let output_short_write_dropped_samples = AtomicU64::new(0);
+        let rt_buffer_overflow_count = AtomicU64::new(0);
+        let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+        let output_buffer_len = AtomicU32::new(0);
+        let last_output_write_time = AtomicU64::new(0);
+        let final_peak = AtomicU32::new(0);
+        let full_scale_count = AtomicU64::new(0);
+        let mut writer = OutputWriteContext {
+            output_producer: &mut producer,
+            output_queue_control_scratch: &mut control_scratch,
+            discontinuity_fade_scratch: &mut fade_scratch,
+            output_safety_scratch: &mut safety_scratch,
+            true_peak_detector: &mut true_peak_detector,
+            true_peak_limiter: &mut true_peak_limiter,
+            drift_error_ema: &mut drift_error_ema,
+            drift_retimer: &mut drift_retimer,
+            discontinuity_fade_remaining: &fade_remaining,
+            output_fade_remaining: 0,
+            limiter_enabled: &limiter_enabled,
+            output_ceiling_linear: &output_ceiling_linear,
+            counters: OutputWriteCounters {
+                output_final_peak_hold: &final_peak,
+                output_full_scale_count: &full_scale_count,
+                ..output_writer_counters(
+                    (
+                        &jitter_dropped_samples,
+                        &output_retime_adjustment_count,
+                        &output_recovery_event_count,
+                    ),
+                    &output_short_write_dropped_samples,
+                    &rt_buffer_overflow_count,
+                    &rt_error_code,
+                    &output_buffer_len,
+                    &last_output_write_time,
+                )
+            },
+            limits: test_output_writer_limits(4, 8, 4),
+        };
+        let mut queued = Vec::new();
+        let mut drained = [0.0_f32; 1024];
+        for block in input.chunks(480) {
+            assert!(writer.write_chunk(block, clean_path));
+            let read = consumer.read(&mut drained);
+            queued.extend_from_slice(&drained[..read]);
+        }
+        assert_eq!(output_short_write_dropped_samples.load(Ordering::Relaxed), 0);
+        assert_eq!(rt_buffer_overflow_count.load(Ordering::Relaxed), 0);
+        (queued, full_scale_count.load(Ordering::Relaxed))
+    }
+
+    /// Hot 1 kHz-ish signals that reach the writer well above any ceiling:
+    /// a sine at +6 dB over full scale and a full-scale square, each followed
+    /// by silence so the limiter's delayed tail is written too.
+    fn hot_live_path_signals() -> [(&'static str, Vec<f32>); 2] {
+        const TAIL: usize = 2048;
+        let sine = (0..9600)
+            .map(|i| 2.0 * (std::f64::consts::TAU * 997.0 * i as f64 / 48_000.0).sin() as f32)
+            .chain(std::iter::repeat_n(0.0, TAIL))
+            .collect();
+        let square = (0..9600)
+            .map(|i| if (i / 24) % 2 == 0 { 1.0 } else { -1.0 })
+            .chain(std::iter::repeat_n(0.0, TAIL))
+            .collect();
+        [("sine +6 dB", sine), ("square 0 dBFS", square)]
+    }
+
+    #[test]
+    fn test_bypass_and_raw_monitor_hold_the_output_ceiling_with_the_limiter_on() {
+        for (signal_name, signal) in hot_live_path_signals() {
+            for (mode, clean_path) in [("bypass", false), ("raw monitor", true)] {
+                for ceiling_db in [-1.0_f32, 0.0] {
+                    let label = format!("{signal_name}, {mode}, ceiling {ceiling_db} dB");
+                    let ceiling = 10.0_f32.powf(ceiling_db / 20.0);
+
+                    let (queued, full_scale) =
+                        run_live_path_writer(true, ceiling_db, clean_path, &signal);
+
+                    assert!(queued.len() >= signal.len(), "{label}: output too short");
+                    assert!(queued.iter().all(|s| s.is_finite()), "{label}: non-finite");
+                    let peak = queued.iter().fold(0.0_f32, |p, s| p.max(s.abs()));
+                    assert!(peak <= ceiling + 1e-6, "{label}: peak {peak} > {ceiling}");
+                    assert!(peak >= 0.5 * ceiling, "{label}: signal lost, peak {peak}");
+                    // The counter sees only what was queued, after the limiter.
+                    let queued_full_scale =
+                        queued.iter().filter(|s| s.abs() >= FULL_SCALE_LINEAR).count() as u64;
+                    assert_eq!(full_scale, queued_full_scale, "{label}");
+                    if ceiling < FULL_SCALE_LINEAR {
+                        assert_eq!(full_scale, 0, "{label}: full-scale above the ceiling");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Contrast for the test above: with the limiter off the same hot signals
+    /// pass the -1 dB ceiling and reach full scale, so that test can fail.
+    #[test]
+    fn test_bypass_and_raw_monitor_exceed_the_ceiling_with_the_limiter_off() {
+        let ceiling = 10.0_f32.powf(-1.0 / 20.0);
+        for (signal_name, signal) in hot_live_path_signals() {
+            for (mode, clean_path) in [("bypass", false), ("raw monitor", true)] {
+                let label = format!("{signal_name}, {mode}");
+
+                let (queued, full_scale) = run_live_path_writer(false, -1.0, clean_path, &signal);
+
+                assert!(queued.iter().all(|s| s.is_finite() && s.abs() <= 1.0), "{label}");
+                let peak = queued.iter().fold(0.0_f32, |p, s| p.max(s.abs()));
+                assert!(peak > ceiling + 0.05, "{label}: peak {peak} stayed under {ceiling}");
+                assert!(full_scale > 0, "{label}: no full-scale samples");
+            }
+        }
+    }
+
     #[test]
     fn test_dsp_loop_publishes_peak_holds_in_every_path() {
         let source = include_str!("dsp_loop.rs");

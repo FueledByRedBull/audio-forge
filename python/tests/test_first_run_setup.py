@@ -861,3 +861,16 @@ def test_launch_prompts_only_for_unfinished_first_run(
     MainWindow._maybe_show_first_run_setup(window)  # type: ignore[arg-type]
 
     assert shown == ([{"restart_completed": False}] if prompts else [])
+
+
+def test_rerun_failed_save_messages_do_not_promise_a_launch_prompt(qapp, monkeypatch):
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: False
+    )
+    config = AppConfig(first_run_setup_state="completed")
+    dialog = FirstRunSetupDialog(_Owner(config, _Processor()), restart_completed=True)
+
+    assert "launch" not in dialog.status_label.text()
+    dialog.reject()
+
+    assert "launch" not in dialog.owner.status_message.showMessage.call_args.args[0]

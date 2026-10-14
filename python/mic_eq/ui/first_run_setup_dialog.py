@@ -475,8 +475,8 @@ class FirstRunSetupDialog(QDialog):
         self._sync_mute_control()
         if self._progress_unsaved:
             self.status_label.setText(
-                "Progress is unsaved. You can continue, but setup may need to be "
-                "repeated next launch if settings cannot be saved."
+                "Progress is unsaved. You can continue, but some steps may need to be "
+                "repeated if settings cannot be saved."
             )
             self.status_label.setStyleSheet(message_text_style("warn"))
         else:
@@ -781,7 +781,7 @@ class FirstRunSetupDialog(QDialog):
             self.config.first_run_setup_state = self._exit_state
             if not self._save_progress():
                 self.owner.status_message.showMessage(
-                    "Setup progress could not be saved; it may need to be repeated next launch",
+                    "Setup progress could not be saved; some steps may need to be repeated",
                     6000,
                 )
         super().reject()

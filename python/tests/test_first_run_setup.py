@@ -701,15 +701,14 @@ def test_closing_rerun_setup_restores_completed_state(
         "mic_eq.ui.first_run_setup_dialog.QMessageBox.information",
         lambda *_args: None,
     )
-    steps = {"devices": "completed", "route": "completed", "latency": "pending",
-             "voice": "skipped" if entry_state == "completed_with_skips" else "completed"}
+    outcome = "skipped" if entry_state == "completed_with_skips" else "completed"
     config = AppConfig(
         first_run_setup_state=entry_state,
-        first_run_setup_step="voice",
-        first_run_setup_steps=steps,
+        first_run_setup_steps={"devices": outcome, "route": "completed",
+                               "latency": "pending", "voice": outcome},
     )
     dialog = FirstRunSetupDialog(_Owner(config, _Processor()), restart_completed=True)
-    assert config.first_run_setup_state == "in_progress"
+    dialog._skip_step()
 
     if how == "reject":
         dialog.reject()
@@ -717,7 +716,44 @@ def test_closing_rerun_setup_restores_completed_state(
         assert dialog._finish_setup() is True
 
     assert config.first_run_setup_state == entry_state
-    assert saved_states[-1] == entry_state
+    assert len(saved_states) >= 3
+    assert set(saved_states) == {entry_state}
+
+
+def test_finishing_rerun_setup_ends_completed(qapp, monkeypatch):
+    saved_states = []
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config",
+        lambda config: saved_states.append(config.first_run_setup_state) or True,
+    )
+    config = AppConfig(first_run_setup_state="completed")
+    dialog = FirstRunSetupDialog(_Owner(config, _Processor()), restart_completed=True)
+    for step in ("devices", "route", "voice"):
+        config.first_run_setup_steps[step] = "completed"
+
+    assert dialog._finish_setup() is True
+
+    assert config.first_run_setup_state == "completed"
+    assert dialog._finalized is True
+    assert set(saved_states) == {"completed"}
+
+
+def test_skipping_through_rerun_setup_ends_completed_with_skips(qapp, monkeypatch):
+    saved_states = []
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config",
+        lambda config: saved_states.append(config.first_run_setup_state) or True,
+    )
+    config = AppConfig(first_run_setup_state="completed")
+    dialog = FirstRunSetupDialog(_Owner(config, _Processor()), restart_completed=True)
+
+    for _step in range(3):
+        dialog._skip_step()
+
+    assert config.first_run_setup_state == "completed_with_skips"
+    assert dialog._finalized is True
+    assert set(saved_states) <= {"completed", "completed_with_skips"}
+    assert saved_states[0] == "completed"
 
 
 @pytest.mark.parametrize("entry_state", ["not_started", "in_progress"])

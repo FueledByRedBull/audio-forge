@@ -159,7 +159,7 @@ class FirstRunSetupDialog(QDialog):
         self._progress_unsaved = False
         self.setWindowTitle("AudioForge Setup")
         self.setModal(True)
-        # A re-run must not reopen at launch if the user leaves it unfinished.
+        # A re-run never writes "in_progress", so quitting mid-run cannot re-prompt at launch.
         self._exit_state = (
             self.config.first_run_setup_state
             if self.config.first_run_setup_state in {"completed", "completed_with_skips"}
@@ -183,7 +183,7 @@ class FirstRunSetupDialog(QDialog):
                 ),
                 "devices",
             )
-        self.config.first_run_setup_state = "in_progress"
+        self.config.first_run_setup_state = self._exit_state
         self._advanced_latency_mode = (
             self.config.first_run_setup_step == "latency"
             and self.config.first_run_setup_steps.get("latency") != "completed"
@@ -725,7 +725,6 @@ class FirstRunSetupDialog(QDialog):
             for step in DEFAULT_SETUP_STEPS
         )
         if pending:
-            self.config.first_run_setup_state = self._exit_state
             if not self._save_progress():
                 self._render_step()
                 return False

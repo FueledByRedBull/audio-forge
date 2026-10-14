@@ -408,36 +408,69 @@ mod tests {
     }
 
     #[test]
-    fn test_reported_latency_counts_lookahead_limiter_only_on_full_path() {
+    fn test_published_latency_counts_lookahead_limiter_only_on_full_path() {
         for sample_rate in [44_100_u32, 48_000, 96_000] {
             let lookahead = Limiter::default_settings(sample_rate as f64).lookahead_samples() as u64;
-            let true_peak = 20_u64;
-            let reported = |raw_monitor: bool, bypass: bool| {
-                let path = select_processing_path(raw_monitor, bypass);
-                total_reported_latency_us(
+            let true_peak =
+                TruePeakLimiter::default_settings(sample_rate as f32).lookahead_samples() as u64;
+            let compensation_us = 7_000;
+            let published = AtomicU64::new(0);
+            let publish = |raw_monitor: bool, bypass: bool| {
+                publish_reported_latency(
+                    &published,
                     LatencyComponents {
                         input_resampler_delay_samples: 0,
-                        output_buffer_samples: 0,
+                        output_buffer_samples: 480,
                         output_sample_rate: sample_rate,
                         output_resampler_delay_samples: 0,
                         suppressor_latency_samples: 0,
-                        limiter_lookahead_samples: limiter_lookahead_for_path(path, lookahead),
+                        limiter_lookahead_samples: lookahead,
                         true_peak_lookahead_samples: true_peak,
                         processing_sample_rate: sample_rate,
                     },
-                    0,
-                )
+                    select_processing_path(raw_monitor, bypass),
+                    compensation_us,
+                );
+                published.load(Ordering::Relaxed)
             };
-            let true_peak_us = samples_to_micros(true_peak, sample_rate);
-            let normal_us = true_peak_us + samples_to_micros(lookahead, sample_rate);
+            let without_limiter = samples_to_micros(480, sample_rate)
+                + samples_to_micros(true_peak, sample_rate)
+                + compensation_us;
+            let normal = without_limiter + samples_to_micros(lookahead, sample_rate);
 
-            // Switching modes while running moves the reported value both ways.
-            assert_eq!(reported(false, false), normal_us);
-            assert_eq!(reported(false, true), true_peak_us);
-            assert_eq!(reported(true, false), true_peak_us);
-            assert_eq!(reported(true, true), true_peak_us);
-            assert_eq!(reported(false, false), normal_us);
+            // A processor started in Raw publishes the true figure at once.
+            assert_eq!(publish(true, false), without_limiter);
+            // Switching modes while running moves the value both ways.
+            assert_eq!(publish(false, false), normal);
+            assert_eq!(publish(false, true), without_limiter);
+            assert_eq!(publish(false, false), normal);
+            assert_eq!(publish(true, true), without_limiter);
         }
+    }
+
+    #[test]
+    fn test_dsp_loop_publishes_latency_before_any_path_branch_or_continue() {
+        let region = marked_region(include_str!("dsp_loop.rs"), "dsp_processing_loop");
+        let publish = region
+            .find("publish_reported_latency(")
+            .expect("DSP loop must publish reported latency");
+        assert_eq!(region.matches("publish_reported_latency(").count(), 1);
+        assert_eq!(region.matches("latency_us.store(").count(), 0);
+        // Raw monitor, Bypass and the early `continue;`s all sit after this
+        // point, so none of them can skip the periodic publish.
+        let first_continue = region.find("continue;").expect("loop has early continues");
+        assert!(publish < first_continue, "publish must precede every continue");
+        let call = &region[publish..first_continue];
+        assert!(
+            call.contains("select_processing_path(")
+                && call.contains("raw_monitor_enabled.load(")
+                && call.contains("bypass.load("),
+            "publish must use the live Raw monitor and Bypass flags"
+        );
+        assert!(
+            publish < region.find("read_contiguous_input(").unwrap(),
+            "publish must precede the input read"
+        );
     }
 
     #[test]

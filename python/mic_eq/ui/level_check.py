@@ -58,6 +58,12 @@ class LevelVerdict:
         return self.code in ("too_hot", "too_quiet")
 
 
+def _db(value: float, digits: int = 1) -> str:
+    """A dB number for a message: a value that rounds to zero prints as 0, never -0."""
+    text = f"{value:.{digits}f}"
+    return text.removeprefix("-") if float(text) == 0 else text
+
+
 def _silent_message(again: str) -> str:
     return (
         "No sound came from the microphone. Check that it is not muted and "
@@ -75,9 +81,9 @@ def verdict_from_levels(
     if peak_db > TOO_LOUD_DB:
         lower = max(1, math.ceil(peak_db - TARGET_PEAK_DB - 0.05))
         what = (
-            f"Your voice is clipping (peaks reach {peak_db:.1f} dB)"
+            f"Your voice is clipping (peaks reach {_db(peak_db)} dB)"
             if clipped
-            else f"Your voice peaks at {peak_db:.1f} dB, close to the limit"
+            else f"Your voice peaks at {_db(peak_db)} dB, close to the limit"
         )
         return LevelVerdict(
             "too_hot",
@@ -135,7 +141,7 @@ def verdict_from_levels(
         )
     return LevelVerdict(
         "good",
-        f"The level is good: your voice peaks at {peak_db:.1f} dB.",
+        f"The level is good: your voice peaks at {_db(peak_db)} dB.",
         "ok",
         peak_db,
         speech_db,
@@ -179,15 +185,20 @@ def verdict_from_audio(
 
 
 def live_verdict(
-    recent_rms_db: Sequence[float], peak_db: float, *, again: str = "record again"
+    recent_rms_db: Sequence[float],
+    recent_peak_db: Sequence[float],
+    *,
+    again: str = "record again",
 ) -> LevelVerdict | None:
     """The verdict for the meter during a take; None until there is something to say.
 
-    A loud peak is said at once. A quiet voice needs a full window of recent blocks,
-    because the latest one dips on every pause between words.
+    The two windows hold the same recent blocks, so the peak named is the loudest one of
+    them, not the latest block's. A loud peak is said at once. A quiet voice needs a full
+    window of recent blocks, because the latest one dips on every pause between words.
     """
     full = len(recent_rms_db) >= LEVEL_HOLD_UPDATES
     loudest = max(recent_rms_db, default=-120.0)
+    peak_db = max(recent_peak_db, default=-120.0)
     if full and loudest < TOO_QUIET_DB:
         return verdict_from_levels(min(peak_db, TOO_LOUD_DB), loudest, again=again)
     if peak_db > TOO_LOUD_DB or full:
@@ -200,7 +211,7 @@ def room_noise_message(recent_rms_db: Sequence[float]) -> tuple[str, str]:
     loudest = max(recent_rms_db, default=-120.0)
     if loudest > ROOM_LOUD_DB:
         return (
-            f"The room is loud ({loudest:.0f} dB). Setup will play safe; a quieter "
+            f"The room is loud ({_db(loudest, 0)} dB). Setup will play safe; a quieter "
             "room gives better results.",
             "warn",
         )

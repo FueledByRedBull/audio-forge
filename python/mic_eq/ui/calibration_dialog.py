@@ -202,6 +202,7 @@ class CalibrationDialog(QDialog):
         self._analysis_headroom_chain: dict[str, Any] | None = None
         self._capture_context_key: str | None = None
         self._recent_rms_db: deque[float] = deque(maxlen=LEVEL_HOLD_UPDATES)
+        self._recent_peak_db: deque[float] = deque(maxlen=LEVEL_HOLD_UPDATES)
         # The last result: the code that explains it and whether there was one to discard.
         self._outcome_code = "unknown"
         self._had_result = False
@@ -888,6 +889,7 @@ class CalibrationDialog(QDialog):
             return
 
         self._recent_rms_db.clear()
+        self._recent_peak_db.clear()
         self._capture_session = CaptureSession(parent, _TEMPORARY_MUTE_REASON)
         try:
             self._capture_session.start(self._recording_duration, before_cleanup=True)
@@ -968,9 +970,10 @@ class CalibrationDialog(QDialog):
         # The latest block dips on every pause between words; judge the loudest of a full
         # window of recent ones, and say nothing about the level until there is one.
         self._recent_rms_db.append(rms_db)
+        self._recent_peak_db.append(peak_db)
         verdict = live_verdict(
             self._recent_rms_db,
-            peak_db,
+            self._recent_peak_db,
             again="check again" if self.recording_state == "level_check" else "record again",
         )
         if verdict is not None:

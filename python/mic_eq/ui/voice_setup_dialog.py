@@ -596,6 +596,7 @@ class VoiceSetupDialog(QDialog):
         self._verification_bad_capture_count = 0
         self._verification_last_reduction_metrics: dict[str, float] | None = None
         self._recent_rms_db: deque[float] = deque(maxlen=LEVEL_HOLD_UPDATES)
+        self._recent_peak_db: deque[float] = deque(maxlen=LEVEL_HOLD_UPDATES)
         # A result that did not pass every check: Apply is then the secondary action.
         self._advisory_only = False
         # The level check before the takes: its verdict and, if the user went on past it, which.
@@ -1122,6 +1123,7 @@ class VoiceSetupDialog(QDialog):
             return
 
         self._recent_rms_db.clear()
+        self._recent_peak_db.clear()
         try:
             get_input = getattr(parent.processor, "get_active_input_device", None)
             get_mode = getattr(parent.processor, "get_input_channel_mode", None)
@@ -1205,6 +1207,7 @@ class VoiceSetupDialog(QDialog):
     def _update_level(self, rms_db: float, peak_db: float) -> None:
         self.level_meter.set_levels(rms_db, peak_db)
         self._recent_rms_db.append(rms_db)
+        self._recent_peak_db.append(peak_db)
 
         if self.setup_state == "noise_recording":
             message, state = room_noise_message(self._recent_rms_db)
@@ -1215,7 +1218,7 @@ class VoiceSetupDialog(QDialog):
         # The loudest of a full window of blocks: the pauses between words are not "quiet".
         verdict = live_verdict(
             self._recent_rms_db,
-            peak_db,
+            self._recent_peak_db,
             again="check again" if self.setup_state == "level_check" else "record again",
         )
         if verdict is not None:

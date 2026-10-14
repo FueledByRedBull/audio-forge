@@ -205,6 +205,17 @@ def test_the_check_meter_speaks_the_same_words_as_the_verdict(voice) -> None:
     assert voice.warning_label.text() == HOT_MESSAGE
 
 
+def test_the_voice_setup_meter_names_the_window_peak_in_a_pause(voice) -> None:
+    voice._on_start_clicked()
+    voice._capture_start_timer.stop()
+
+    voice._update_level(-25.0, -7.0)  # a loud word
+    for _ in range(14):
+        voice._update_level(-70.0, -34.8)  # the pause after it
+
+    assert voice.warning_label.text() == "The level is good: your voice peaks at -7.0 dB."
+
+
 # --- Auto-EQ -----------------------------------------------------------------------------
 
 
@@ -302,6 +313,17 @@ def test_auto_eq_keeps_ownership_of_a_processor_it_started_for_the_check(auto_eq
     auto_eq._capture_start_timer.stop()
 
     assert auto_eq._started_processor is True
+
+
+def test_auto_eq_meter_names_the_window_peak_in_a_pause(auto_eq) -> None:
+    auto_eq._on_start_clicked()
+    auto_eq._capture_start_timer.stop()
+
+    auto_eq._on_level_update(-25.0, -7.0)  # a loud word
+    for _ in range(14):
+        auto_eq._on_level_update(-70.0, -34.8)  # the pause after it
+
+    assert auto_eq.warning_label.text() == "The level is good: your voice peaks at -7.0 dB."
 
 
 def test_auto_eq_closing_during_the_check_releases_the_capture(auto_eq) -> None:

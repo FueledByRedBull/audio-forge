@@ -174,6 +174,17 @@ def test_output_health_ok_includes_true_peak_and_loudness_detail():
     assert (text, state) == ("Output: OK (-18 dB average, peaks -3.2 dB, -20 LUFS)", "ok")
 
 
+def test_a_muted_output_reports_its_levels_as_before_the_mute_and_is_not_judged() -> None:
+    # The levels are measured before the mute, so they must not read as heard or as a fault.
+    assert output_health_state(muted=True, rms_db=-36.0, true_peak_db=-30.4) == (
+        "Output: Muted (before mute: -36 dB average, peaks -30.4 dB)", "info",
+    )
+    assert output_health_state(
+        muted=True, rms_db=-0.2, at_full_scale=True, limiter_enabled=False, limiter_history_db=9.0,
+    )[1] == "info"
+    assert output_health_state(muted=True, rms_db=None) == ("Output: Muted", "info")
+
+
 def test_every_warning_chip_has_plain_language_advice() -> None:
     low_text, _ = input_health_state(rms_db=-72.0)
     assert "very quiet (about -72 dB" in advice_for(low_text)

@@ -139,12 +139,14 @@ def output_health_state(
     short_term_lufs: Any = None,
     limiter_history_db: float = 0.0,
     true_peak_limiter_history_db: float = 0.0,
+    muted: bool = False,
 ) -> tuple[str, str]:
     """Return compact output health text/state.
 
     ``at_full_scale`` says the output reached full scale in the last few
     seconds and ``peak_db`` is the level the output stage was asked for. With
-    the limiter on, an output sitting at its ceiling is normal.
+    the limiter on, an output sitting at its ceiling is normal. The levels are
+    measured before the mute, so a muted output only reports them and is not judged.
     """
 
     rms_db = _float_or_none(rms_db)
@@ -152,6 +154,12 @@ def output_health_state(
     true_peak_headroom = _float_or_none(true_peak_headroom_db)
     limiter_history = _float_or_none(limiter_history_db)
     true_peak_limiter_history = _float_or_none(true_peak_limiter_history_db)
+    if muted:
+        if rms_db is None:
+            return "Output: Muted", "info"
+        true_peak = _float_or_none(true_peak_db)
+        peaks = f", peaks {_num(true_peak)} dB" if true_peak is not None else ""
+        return f"Output: Muted (before mute: {_num(rms_db, 0)} dB average{peaks})", "info"
     if at_full_scale and not limiter_enabled:
         number = f" (peak {_num(max(peak_db, 0.0))} dB)" if peak_db is not None else ""
         return f"Output: AT FULL SCALE{number}", "bad"

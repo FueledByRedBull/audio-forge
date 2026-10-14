@@ -118,7 +118,13 @@ Rectangle {
         }
     }
 
-    component Toggle: AbstractButton {
+    // Return and Enter press a button as Space does; a held key presses it once.
+    component KeyButton: AbstractButton {
+        Keys.onReturnPressed: event => { if (!event.isAutoRepeat) click() }
+        Keys.onEnterPressed: event => { if (!event.isAutoRepeat) click() }
+    }
+
+    component Toggle: KeyButton {
         id: toggle
         property var proxy
         readonly property bool on: proxy ? proxy.checked : false
@@ -128,10 +134,12 @@ Rectangle {
         implicitHeight: 22
         implicitWidth: track.width + (label.text === "" ? 0 : label.implicitWidth + 10)
         onClicked: proxy.click()
+        // The real check state, so assistive technology also hears it before the first change.
+        checkable: true
+        checked: on
+        onToggled: checked = Qt.binding(() => on)
         Accessible.role: Accessible.CheckBox
         Accessible.name: proxy && proxy.name !== "" ? proxy.name : text
-        Accessible.checkable: true
-        Accessible.checked: on
         Hint { text: toggle.proxy ? toggle.proxy.toolTip : "" }
         background: null
         contentItem: Item {
@@ -181,6 +189,8 @@ Rectangle {
         onPressedChanged: if (!pressed) proxy.released()
         Keys.onLeftPressed: nudge(-1)
         Keys.onRightPressed: nudge(1)
+        Keys.onUpPressed: nudge(1)
+        Keys.onDownPressed: nudge(-1)
         function nudge(direction) {
             proxy.setValue(proxy.value + direction * (proxy.step > 0 ? proxy.step : (to - from) / 100))
             proxy.released()
@@ -283,7 +293,9 @@ Rectangle {
         onActivated: index => proxy.setIndex(index)
         // Replacing the model resets the index; read it again afterwards.
         onModelChanged: currentIndex = Qt.binding(() => proxy ? proxy.index : -1)
-        Accessible.name: proxy ? proxy.name : ""
+        // A combo box has no value channel in QML, and a name change is spoken where a description
+        // change often is not: the label stays first, so the visible text is still in the name.
+        Accessible.name: proxy ? proxy.name + (contentItem.text !== "" ? ": " + contentItem.text : "") : ""
         // A name cut short by a narrow window is shown whole in the tooltip.
         Hint {
             text: {
@@ -349,7 +361,7 @@ Rectangle {
         }
     }
 
-    component Btn: AbstractButton {
+    component Btn: KeyButton {
         id: btn
         property var proxy
         // "plain", "primary", "danger" or "quiet"
@@ -389,7 +401,7 @@ Rectangle {
         }
     }
 
-    component IconBtn: AbstractButton {
+    component IconBtn: KeyButton {
         id: icon
         property var proxy: null
         property string glyph: ""
@@ -401,7 +413,8 @@ Rectangle {
         implicitHeight: 30
         onClicked: if (proxy) root.press(this, proxy)
         Accessible.role: Accessible.Button
-        Accessible.name: proxy && proxy.name !== "" ? proxy.name : hint
+        Accessible.name: proxy && proxy.name !== "" ? proxy.name : proxy && proxy.text !== "" ? proxy.text : hint
+        Accessible.description: proxy ? hint : ""
         Hint { text: icon.hint }
         background: Rectangle {
             radius: root.t.radiusControl
@@ -439,7 +452,7 @@ Rectangle {
             font.pixelSize: 13
             wrapMode: Text.Wrap
             Accessible.ignored: !chip.announced
-            Accessible.name: chip.proxy ? chip.proxy.name + ": " + text : text
+            Accessible.name: chip.proxy && chip.proxy.name !== "" ? chip.proxy.name + ": " + text : text
         }
     }
 
@@ -513,12 +526,14 @@ Rectangle {
             hint: header.card.help
             visible: hint !== "" && root.t.iconFont !== ""
             onClicked: root.showTip(this, hint)
+            Accessible.name: "Help for " + header.card.title.toLowerCase()
+            Accessible.description: hint
         }
         Item { Layout.fillWidth: true }
     }
 
     // A full-width row that opens the section under it.
-    component Disclosure: AbstractButton {
+    component Disclosure: KeyButton {
         id: disclosure
         property bool open: false
         property string subject: ""
@@ -631,7 +646,7 @@ Rectangle {
     }
 
     // One line of the Settings page: a switch, an action, or a menu.
-    component SettingRow: AbstractButton {
+    component SettingRow: KeyButton {
         id: setting
         property var row
         readonly property var p: row.proxy
@@ -640,10 +655,11 @@ Rectangle {
         enabled: p.enabled
         implicitHeight: 44
         onClicked: root.press(this, p)
+        checkable: isSwitch
+        checked: p.checked
+        onToggled: checked = Qt.binding(() => p.checked)
         Accessible.role: isSwitch ? Accessible.CheckBox : Accessible.Button
         Accessible.name: p.text
-        Accessible.checkable: isSwitch
-        Accessible.checked: p.checked
         Hint { text: setting.p.toolTip !== setting.p.text ? setting.p.toolTip : "" }
         background: Rectangle {
             radius: root.t.radiusControl
@@ -668,6 +684,7 @@ Rectangle {
                 enabled: false
                 live: setting.enabled
                 activeFocusOnTab: false
+                Accessible.ignored: true
                 Layout.rightMargin: 10
             }
             Text {
@@ -735,6 +752,7 @@ Rectangle {
         }
         ScrollBar.vertical: ScrollBar {
             id: bar
+            Accessible.name: "Page scroll bar"
             policy: page.contentHeight > page.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
             contentItem: Rectangle {
                 implicitWidth: 6
@@ -762,7 +780,7 @@ Rectangle {
             Repeater {
                 model: [[root.m.glyphs.mic, "Mic"], [root.m.glyphs.health, "Health"],
                         [root.m.glyphs.settings, "Settings"]]
-                delegate: AbstractButton {
+                delegate: KeyButton {
                     id: nav
                     required property var modelData
                     required property int index
@@ -772,6 +790,8 @@ Rectangle {
                     onClicked: root.m.page.setIndex(index)
                     Accessible.role: Accessible.PageTab
                     Accessible.name: modelData[1] + " page"
+                    Accessible.selectable: true
+                    Accessible.selected: current
                     background: Rectangle {
                         color: nav.current || nav.hovered || nav.visualFocus
                                ? root.t.card_surface : "transparent"
@@ -1022,8 +1042,10 @@ Rectangle {
                         Layout.fillWidth: true
                         implicitHeight: 300
                         activeFocusOnTab: true
+                        Accessible.role: Accessible.Graphic
                         Accessible.name: "Equalizer graph"
                         Accessible.description: graph ? graph.accessibleDescription : ""
+                        FocusRing { control: parent; visible: parent.activeFocus }
                     }
                     Caption {
                         text: eqCard.eq.layers.text
@@ -1269,21 +1291,19 @@ Rectangle {
                 proxy: root.m.status.health
                 announced: false
                 implicitHeight: 28
-                AbstractButton {
+                KeyButton {
                     id: healthToggle
                     objectName: "healthToggle"
                     anchors.fill: parent
                     onClicked: root.m.page.setIndex(
                         root.m.page.index === root.m.healthPage ? 0 : root.m.healthPage)
-                    // A held key must not keep toggling the page, as a held Space does not.
-                    Keys.onReturnPressed: event => { if (!event.isAutoRepeat) click() }
-                    Keys.onEnterPressed: event => { if (!event.isAutoRepeat) click() }
+                    checkable: true
+                    checked: root.m.page.index === root.m.healthPage
+                    onToggled: checked = Qt.binding(() => root.m.page.index === root.m.healthPage)
                     Accessible.role: Accessible.Button
                     // Named by what it shows; the action goes in the description.
                     Accessible.name: root.m.status.health.text
                     Accessible.description: "Show audio health details"
-                    Accessible.checkable: true
-                    Accessible.checked: root.m.page.index === root.m.healthPage
                     background: Item { FocusRing { control: healthToggle } }
                 }
             }

@@ -177,8 +177,8 @@ cargo audit
 - **Dependabot:** GitHub Actions version updates stay on, weekly and grouped
   into one pull request, to keep the pinned actions current. Python and Cargo
   version updates are off (`open-pull-requests-limit: 0`); security updates stay
-  on. Scope each dependency refresh on its own and pass the build, hardware,
-  and package gates.
+  on. Scope each dependency refresh on its own and pass the build and package
+  gates.
 
 ## Packaging invariants
 

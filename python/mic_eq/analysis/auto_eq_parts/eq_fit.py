@@ -544,12 +544,11 @@ def bounded_least_squares(
         return np.atleast_1d(fun(np.copy(x), *args))
 
     f0 = residuals(x0)
-    J0 = _two_point_jacobian(residuals, x0, f0, lb, ub)
-
     if f0.ndim != 1:
         raise ValueError(f"`fun` must return at most 1-d array_like. f0.shape: {f0.shape}")
     if not np.all(np.isfinite(f0)):
         raise ValueError("Residuals are not finite in the initial point.")
+    J0 = _two_point_jacobian(residuals, x0, f0, lb, ub)
 
     def jac(x, f):
         return _two_point_jacobian(residuals, x, f, lb, ub)

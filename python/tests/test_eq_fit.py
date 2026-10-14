@@ -196,6 +196,18 @@ def test_least_squares_rejects_bad_input(x0, lb, ub):
         bounded_least_squares(rosenbrock, x0, (lb, ub))
 
 
+def test_least_squares_rejects_a_non_finite_start_before_any_jacobian_evaluation():
+    calls = []
+
+    def residual(x):
+        calls.append(x.copy())
+        return np.array([np.nan if len(calls) == 1 else x[0] - 0.25])
+
+    with pytest.raises(ValueError, match="not finite"):
+        bounded_least_squares(residual, [0.5], ([0.0], [1.0]))
+    assert len(calls) == 1  # x0 only: a finite-difference Jacobian would probe more points
+
+
 def test_least_squares_rejects_non_finite_start_and_bad_options():
     with pytest.raises(ValueError, match="not finite"):
         bounded_least_squares(lambda x: np.array([np.nan]), [0.5], ([0.0], [1.0]))

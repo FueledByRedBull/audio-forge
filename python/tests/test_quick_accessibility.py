@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from PySide6.QtCore import QObject, Qt
+from PySide6.QtCore import QObject, Qt, qInstallMessageHandler
 from PySide6.QtGui import QAccessible
 from PySide6.QtQml import QQmlProperty
 from PySide6.QtTest import QTest
@@ -36,6 +36,21 @@ MIC, HEALTH, SETTINGS = 0, 1, 2
 PLAIN_BUTTONS = ("KeyButton", "AbstractButton")
 
 
+@pytest.fixture(autouse=True)
+def no_qml_warnings():
+    """Fail a test that makes the scene print a warning: a binding loop, a type error, a null read.
+
+    ``quick_window`` only watches the scene while it loads; this watches the whole interaction.
+    """
+    messages: list[str] = []
+    previous = qInstallMessageHandler(
+        lambda _mode, _context, message: messages.append(message) if "Main.qml" in message else None
+    )
+    yield messages
+    qInstallMessageHandler(previous)
+    assert messages == [], "the scene printed warnings: " + "; ".join(messages[:3])
+
+
 @pytest.fixture
 def quick_window(shell_window):  # noqa: F811
     """The real main window with its Qt Quick scene, as test_quick_shell builds it."""
@@ -43,7 +58,14 @@ def quick_window(shell_window):  # noqa: F811
 
 
 def _kind(item) -> str:
-    """The QML type of ``item``: ``Toggle`` for ``Toggle_QMLTYPE_12``."""
+    """The QML type of ``item``: ``Toggle`` for ``Toggle_QMLTYPE_12``.
+
+    Never asks an item the app defines in Python (the EQ graph, the meters) for its
+    ``metaObject()``: PySide hands back the class's own shared wrapper, which dies with
+    that item and then breaks ``Class.staticMetaObject`` for every later test.
+    """
+    if type(item).__module__.startswith("mic_eq"):
+        return type(item).__name__
     return item.metaObject().className().split("_")[0]
 
 
@@ -254,22 +276,19 @@ def test_a_picker_reports_combo_box_role_name_and_what_is_chosen(quick_window, q
     mode = _with_proxy(window, "Picker", model["top"]["mode"])
     band_type = _with_proxy(window, "Picker", model["eq"]["bands"][0]["type"])
     with _AccessibleScene() as scene:
-        for picker, name, shown in (
+        for picker, label, shown in (
             (mode, "Processing mode", "Normal"),
             (band_type, "EQ band 1 filter type", "Low shelf"),
         ):
-            interface = _iface(picker)
-            assert interface.role() == Role.ComboBox
-            assert interface.text(Text.Name) == name
-            # Assistive technology must be told the chosen entry, not just the control's name.
-            announced = " ".join(
-                interface.text(kind) for kind in (Text.Name, Text.Description, Text.Value)
-            )
-            assert shown in announced, f"{name} does not announce '{shown}'"
+            assert _iface(picker).role() == Role.ComboBox
+            # Screen readers speak a name change but often not a description change, and a
+            # combo box has no value channel in QML: the choice goes in the name, after the label.
+            assert scene.name(picker) == f"{label}: {shown}"
+            assert shown in picker.property("displayText")
 
         model["top"]["mode"].setIndex(1)
         qapp.processEvents()
-        assert "Bypass" in scene.description(mode) + _iface(mode).text(Text.Value) + scene.name(mode)
+        assert scene.name(mode) == "Processing mode: Bypass"
 
 
 def test_a_button_reports_button_role_its_visible_label_and_whether_it_is_enabled(
@@ -434,7 +453,7 @@ def _anonymous(window, qapp) -> list[str]:
                 continue
             if not interface.text(Text.Name).strip():
                 obj = interface.object()
-                found.append(f"page {page}: {interface.role().name} {obj.metaObject().className()}")
+                found.append(f"page {page}: {interface.role().name} {_kind(obj)}")
     return found
 
 
@@ -475,7 +494,7 @@ def test_the_eq_graph_is_named_described_and_follows_the_selected_band(quick_win
     with _AccessibleScene() as scene:
         interface = _iface(graph)
         assert scene.name(graph) == "Equalizer graph"
-        assert interface.role() not in (Role.Client, Role.NoRole), "the graph has no role of its own"
+        assert interface.role() == Role.Graphic
         assert interface.state().focusable
         description = scene.description(graph)
         for key_hint in ("Left and right change frequency", "left bracket", "Delete"):
@@ -555,7 +574,11 @@ def test_tab_visits_the_page_in_reading_order(either_window, qapp) -> None:
         "Enable EQ band 1", "EQ band 1 filter type", "EQ band 1 gain", "EQ band 1 center frequency",
         "Enable noise suppression", "Noise suppression backend", "Noise suppression strength",
     ]
-    positions = [names.index(name) for name in landmarks]
+    # A picker's name carries its choice after the label.
+    positions = [
+        next(i for i, name in enumerate(names) if name == landmark or name.startswith(landmark + ": "))
+        for landmark in landmarks
+    ]
     assert positions == sorted(positions), dict(zip(landmarks, positions))
     # Each card's own switch comes before its controls, and the Health chip closes the page.
     assert names.index("Enable noise gate") < names.index("Gate manual threshold")
@@ -661,6 +684,8 @@ def test_a_picker_chooses_by_keyboard_with_the_arrows_or_the_open_list(quick_win
     _press(window, Qt.Key.Key_Down, qapp)
     assert window.eq_state.get_band(0).filter_type == kinds[start + 1]
     assert picker.property("displayText") == proxy.items[start + 1]
+    with _AccessibleScene() as scene:  # what a screen reader hears for the new choice
+        assert scene.name(picker) == f"EQ band 1 filter type: {proxy.items[start + 1]}"
     _press(window, Qt.Key.Key_Up, qapp)
     assert window.eq_state.get_band(0).filter_type == kinds[start]
 

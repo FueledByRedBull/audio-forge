@@ -9,12 +9,9 @@ from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtTest import QTest
 
 from mic_eq.config import DeviceIdentity
-from mic_eq.config_parts.settings import q_from_bandwidth_octaves  # noqa: F401  (kept for parity with sibling tests)
 from test_quick_shell import (  # noqa: F401  (quick_window is a fixture)
-    _band_box,
     _drag_distance,
     _drag_up,
-    _find,
     _graph_item,
     _handle_point,
     _reveal,
@@ -23,6 +20,7 @@ from test_quick_shell import (  # noqa: F401  (quick_window is a fixture)
     quick_window,  # noqa: F401
     wide_page,  # noqa: F401
 )
+from test_quick_accessibility import _kind, _with_proxy, no_qml_warnings  # noqa: F401  (autouse)
 
 CTRL = Qt.KeyboardModifier.ControlModifier
 CTRL_SHIFT = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
@@ -63,9 +61,11 @@ class Scene:
 
     def box(self, name: str):
         """The selected band's value box named ``name``: its proxy and the text it shows."""
-        proxy, item = _band_box(self.window, name)
+        eq = self.window.quick_bridge.model["eq"]
+        proxy = eq["bands"][eq["band"].index][name]
+        item = _with_proxy(self.window, "ValueBox", proxy)
         assert item is not None
-        field = next(c for c in item.childItems() if c.metaObject().className().startswith("QQuickTextInput"))
+        field = next(c for c in item.childItems() if _kind(c) == "QQuickTextInput")
         return proxy, item, field
 
     def shown(self, name: str) -> str:
@@ -73,11 +73,11 @@ class Scene:
 
     def fader(self, index: int = BAND):
         eq = self.window.quick_bridge.model["eq"]
-        return _find(self.view.rootObject(), "Fader", eq["bands"][index]["gain"])
+        return _with_proxy(self.window, "Fader", eq["bands"][index]["gain"])
 
     def picker(self, key: str, index: int = BAND):
         eq = self.window.quick_bridge.model["eq"]
-        return _find(self.view.rootObject(), "Picker", eq["bands"][index][key])
+        return _with_proxy(self.window, "Picker", eq["bands"][index][key])
 
 
 @pytest.fixture
@@ -287,7 +287,7 @@ def test_a_picker_change_undoes_and_redoes(scene) -> None:
 def test_a_processing_mode_change_undoes_and_redoes(scene) -> None:
     window = scene.window
     mode = window.quick_bridge.model["top"]["mode"]
-    picker = _find(scene.view.rootObject(), "Picker", mode)
+    picker = _with_proxy(window, "Picker", mode)
     assert picker is not None
     assert picker.property("displayText") == "Normal" and not window.processor.is_bypass()
     picker.forceActiveFocus(Qt.FocusReason.TabFocusReason)

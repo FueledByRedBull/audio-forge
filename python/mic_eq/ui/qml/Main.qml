@@ -293,9 +293,9 @@ Rectangle {
         onActivated: index => proxy.setIndex(index)
         // Replacing the model resets the index; read it again afterwards.
         onModelChanged: currentIndex = Qt.binding(() => proxy ? proxy.index : -1)
-        Accessible.name: proxy ? proxy.name : ""
-        // The name says what the control is; this says what is chosen.
-        Accessible.description: contentItem.text
+        // A combo box has no value channel in QML, and a name change is spoken where a description
+        // change often is not: the label stays first, so the visible text is still in the name.
+        Accessible.name: proxy ? proxy.name + (contentItem.text !== "" ? ": " + contentItem.text : "") : ""
         // A name cut short by a narrow window is shown whole in the tooltip.
         Hint {
             text: {
@@ -1297,12 +1297,13 @@ Rectangle {
                     anchors.fill: parent
                     onClicked: root.m.page.setIndex(
                         root.m.page.index === root.m.healthPage ? 0 : root.m.healthPage)
+                    checkable: true
+                    checked: root.m.page.index === root.m.healthPage
+                    onToggled: checked = Qt.binding(() => root.m.page.index === root.m.healthPage)
                     Accessible.role: Accessible.Button
                     // Named by what it shows; the action goes in the description.
                     Accessible.name: root.m.status.health.text
                     Accessible.description: "Show audio health details"
-                    Accessible.checkable: true
-                    Accessible.checked: root.m.page.index === root.m.healthPage
                     background: Item { FocusRing { control: healthToggle } }
                 }
             }

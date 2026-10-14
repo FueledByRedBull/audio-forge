@@ -76,9 +76,11 @@ _DULLING_FRAME, _DULLING_HOP = 1024, 512
 # evaluation/voice-setup-verification-tonal-check-2026-10-report.json.
 TONAL_CHECK_BYPASSES_SUPPRESSOR = True
 # A raw capture is clipped when it holds full scale for CLIP_FLAT_TOP_S, or recurs
-# at it more than CLIP_MAX_EVENTS times. Real speech hard-clipped from +3 dB up held
-# 12 to 94 samples at 48 kHz; clicks and a peak normalised to 1.0 held 1 to 3, and
-# normalised speech touched full scale in up to 16 separate runs.
+# at it more than CLIP_MAX_EVENTS times. On 12 real-speech takes the takes it
+# accepts were hard-clipped by at most 0.5 dB, with a clipping error of -51.5 dB or
+# less of the take's energy. It refuses some milder cases too (all 12 takes at +1 dB).
+# It also accepts up to CLIP_MAX_EVENTS isolated clicks. Evidence and limits: ignored
+# models/evaluation-details/capture-clip-rule-2026-10/README.md.
 CLIP_LEVEL = 0.999
 CLIP_FLAT_TOP_S = 0.000125
 CLIP_MAX_EVENTS = 20

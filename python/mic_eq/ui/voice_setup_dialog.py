@@ -75,6 +75,8 @@ from .calibration_support import (
     filtered_capture_for_analysis as _filtered_capture_for_analysis,
     format_db as _format_db,
     format_percent as _format_percent,
+    on_analysis_thread_finished,
+    wait_for_analysis_workers,
 )
 from .components import StepHeader
 from .layout_constants import (
@@ -602,6 +604,9 @@ class VoiceSetupDialog(QDialog):
         self._failed_step: int | None = None
         # Whether this run has already told the main window how it ended.
         self._reported = False
+        # Whether this dialog has reported the outcome of an analysis, which a refused retake
+        # does not replace.
+        self._result_reported = False
 
         self._capture_start_timer = QTimer(self)
         self._capture_start_timer.setSingleShot(True)
@@ -1632,6 +1637,16 @@ class VoiceSetupDialog(QDialog):
         numbers: Mapping[str, Any] | None = None,
     ) -> None:
         """Tell the main window how this run ended, for the diagnostics export."""
+        # A refused verification take puts the previous settings back, which the earlier
+        # result no longer describes, so it is always reported.
+        refused_take = (
+            "recording_rejected" in reason_codes
+            and self.setup_state != "verification_recording"
+        )
+        if refused_take and self._result_reported:
+            return
+        if not refused_take and outcome != "failed":
+            self._result_reported = True
         diagnostics = (self.setup_result or {}).get("diagnostics") or {}
         measured: dict[str, Any] = numbers_from(
             diagnostics,
@@ -3139,16 +3154,8 @@ class VoiceSetupDialog(QDialog):
                 else "Check canceled; previous settings not fully put back"
             )
 
-    def _on_analysis_thread_finished(
-        self, worker: VoiceSetupWorker | VoiceSetupVerificationWorker
-    ) -> None:
-        if worker in self._analysis_workers:
-            self._analysis_workers.remove(worker)
-        if self.analysis_worker is worker:
-            self.analysis_worker = None
-        worker.deleteLater()
-        if self._close_requested:
-            self._finish_close()
+    def _on_analysis_thread_finished(self, worker) -> None:
+        on_analysis_thread_finished(self, worker)
 
     def _finish_close(self) -> None:
         if not self._close_requested or any(
@@ -3166,15 +3173,9 @@ class VoiceSetupDialog(QDialog):
         self.preview_verification_audio = None
         QDialog.done(self, int(QDialog.DialogCode.Accepted if self._close_result else QDialog.DialogCode.Rejected))
 
+    # A real method, so Qt drops the aboutToQuit connection when the dialog is destroyed.
     def _wait_for_analysis_workers(self) -> None:
-        """Keep application shutdown from destroying a running QThread."""
-        self._request_close(False)
-        for worker in tuple(self._analysis_workers):
-            if worker.isRunning():
-                worker.stop()
-                worker.wait()
-        self._analysis_workers.clear()
-        self.analysis_worker = None
+        wait_for_analysis_workers(self)
 
     def _request_close(self, accepted: bool) -> None:
         if self._close_requested:

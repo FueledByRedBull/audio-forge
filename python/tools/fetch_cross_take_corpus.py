@@ -40,11 +40,8 @@ EMOTIONS_AND_INTENSITIES = {
 
 
 def _hash(path: Path, algorithm: str) -> str:
-    digest = hashlib.new(algorithm)
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(handle, algorithm).hexdigest()
 
 
 def _sha256(payload: bytes) -> str:

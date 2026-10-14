@@ -1420,8 +1420,12 @@ mod tests {
         output
     }
 
-    /// Gain of the real input conditioning for one sine tone. The DSP thread
-    /// skips the fixed high-pass exactly when adaptive cleanup is on. The gain
+    /// Gain of the real input conditioning for one sine tone, run as the DSP
+    /// thread runs it: the DC blocker (with the fixed high-pass only when
+    /// adaptive cleanup is off), then `AdaptiveInputCleanupState::process_block`
+    /// when it is on. `analyze_input` is not called, so no hum or rumble is
+    /// detected and cleanup stays in its default state; fed a 60 Hz or 40 Hz
+    /// tone it would otherwise notch the hum or raise the high-pass. The gain
     /// is read by lock-in detection over the last second, a whole number of
     /// cycles for an integer frequency, so the settling transient is excluded.
     fn measured_input_conditioning_gain_db(
@@ -1437,6 +1441,8 @@ mod tests {
             .collect();
         let mut pre_filter_state = InputPreFilterState::default();
         let mut pre_filter = new_input_pre_filter(sample_rate);
+        let mut cleanup = AdaptiveInputCleanupState::new(sample_rate as f32);
+        cleanup.set_mode(mode);
         for block in audio.chunks_mut(480) {
             apply_input_pre_filter(
                 block,
@@ -1444,6 +1450,9 @@ mod tests {
                 &mut pre_filter,
                 !mode.is_enabled(),
             );
+            if mode.is_enabled() {
+                cleanup.process_block(block);
+            }
         }
         let window = total - sample_rate as usize..total;
         let (mut in_phase, mut quadrature) = (0.0_f64, 0.0_f64);
@@ -1457,7 +1466,7 @@ mod tests {
 
     #[test]
     fn test_input_prefilter_response_matches_the_real_conditioning() {
-        let frequencies = [20.0, 40.0, 80.0, 160.0, 1000.0];
+        let frequencies = [20.0, 40.0, 60.0, 80.0, 160.0, 1000.0];
         for sample_rate in [48_000.0, 44_100.0, 96_000.0] {
             for mode in [
                 InputCleanupMode::Off,
@@ -1479,7 +1488,7 @@ mod tests {
     }
 
     #[test]
-    fn test_input_prefilter_response_shapes_the_low_end_only_with_cleanup_off() {
+    fn test_input_prefilter_response_is_the_same_high_pass_in_every_cleanup_mode() {
         let frequencies = [0.0, 20.0, 80.0, 1000.0, 20_000.0];
         let off = static_input_pre_filter_response_db(&frequencies, InputCleanupMode::Off, 48_000.0);
         let gentle =
@@ -1489,12 +1498,15 @@ mod tests {
 
         assert!(off.iter().all(|value| value.is_finite()));
         assert!(off[0] < -100.0, "DC must be blocked, got {} dB", off[0]);
+        // Cleanup keeps an 80 Hz high-pass by default, so no mode differs.
+        assert_eq!(off, gentle);
         assert_eq!(gentle, strong);
-        // The fixed high-pass is the only difference, and it is -3 dB at its corner.
-        assert!(off[2] < gentle[2] - 2.9 && off[2] > gentle[2] - 3.1);
-        assert!(off[1] < gentle[1] - 10.0);
-        assert!((off[3] - gentle[3]).abs() < 0.05);
-        assert!(off[4].abs() < 0.05 && gentle[4].abs() < 0.05);
+        // The high-pass is -3 dB at its corner, on top of the DC blocker, and
+        // cuts the bass below it.
+        let corner_db = off[2] - dc_block_response_db(80.0, 48_000.0);
+        assert!(corner_db < -2.9 && corner_db > -3.1, "corner {corner_db} dB");
+        assert!(off[1] < -20.0);
+        assert!(off[3].abs() < 0.05 && off[4].abs() < 0.05);
     }
 
     fn process_adaptive_input_cleanup(

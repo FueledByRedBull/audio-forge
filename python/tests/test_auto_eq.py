@@ -1452,6 +1452,44 @@ def test_headroom_refusal_names_the_level_and_the_number(full_correction, advice
     )
 
 
+def test_headroom_records_the_excess_of_the_recording_alone_when_a_gentler_scale_was_needed(monkeypatch):
+    calls = _fake_chain(monkeypatch, headroom=3.0)
+
+    validation = _validate_typed(BOOST_HEAVY)["headroom_validation"]
+
+    # Safe at 0.25 after six renders; the recording with no correction is one more.
+    assert validation["status"] == "safe" and validation["gain_scale"] == 0.25
+    assert len(calls) == 7
+    assert validation["flat_excess_db"] == pytest.approx(-0.5)  # the true-peak term, 0.0 - 0.5
+    assert validation["flat_excess_db"] == pytest.approx(_excess(calls[-1]))
+
+
+def test_headroom_refusal_cuts_only_the_recordings_part_when_the_correction_adds_most():
+    spectrum_db, freqs = _harmonic_spectrum()
+
+    def refuse(flat_excess_db):
+        return validate_analysis(
+            {
+                "band_gains": [0.0] * 10,
+                "headroom_validation": {
+                    "safe": False,
+                    "authoritative": True,
+                    "status": "risk",
+                    "before": _render(-2.0),  # the full correction is 3.0 dB over
+                    "flat_excess_db": flat_excess_db,
+                },
+            },
+            spectrum_db,
+            freqs,
+        ).reason
+
+    prefix = "The microphone level is too high for a safe result. "
+    # 0.4 of the 3.0 dB is the recording's; the correction adds the other 2.6.
+    assert refuse(0.4) == prefix + "Lower the gain by about 1 dB, then record again."
+    # The recording is most of it: the figure that lets the full correction through stays.
+    assert refuse(2.5) == prefix + "Lower the gain by about 3 dB, then record again."
+
+
 @pytest.mark.parametrize("status", ["risk_not_worsened", "risk_worse"])
 def test_headroom_that_the_dialog_explains_is_not_a_refusal(status):
     spectrum_db, freqs = _harmonic_spectrum()
@@ -1742,10 +1780,15 @@ def _validate_typed(gains):
 
 
 @pytest.mark.parametrize(
-    ("gains", "scale", "renders"), [(BOOST_HEAVY, 0.55, 4), (CUT_HEAVY, 1.0, 1)]
+    ("gains", "scale", "renders", "keys"),
+    [
+        # A scale under 0.70 also renders the recording with no correction, for the advice.
+        (BOOST_HEAVY, 0.55, 5, _OLD_HEADROOM_KEYS | {"flat_excess_db"}),
+        (CUT_HEAVY, 1.0, 1, _OLD_HEADROOM_KEYS),
+    ],
 )
 def test_headroom_with_a_safe_reference_keeps_the_released_decision(
-    monkeypatch, gains, scale, renders
+    monkeypatch, gains, scale, renders, keys
 ):
     calls = _fake_chain(monkeypatch, headroom=4.0)
 
@@ -1755,10 +1798,33 @@ def test_headroom_with_a_safe_reference_keeps_the_released_decision(
     validation = result["headroom_validation"]
     assert validation["status"] == "safe"
     assert validation["safe"] is True
-    assert set(validation) == _OLD_HEADROOM_KEYS
+    assert set(validation) == keys
     assert validation["gain_scale"] == scale
     assert result["headroom_safe"] is True
     assert result["validated_candidate_eq"] is not None
+
+
+def test_a_failed_render_for_the_advice_only_leaves_out_the_split(monkeypatch):
+    calls = _fake_chain(monkeypatch, headroom=4.0)
+    expected = _validate_typed(BOOST_HEAVY)
+    assert expected["headroom_validation"]["flat_excess_db"] == pytest.approx(-0.5)
+    expected["headroom_validation"].pop("flat_excess_db")
+    render = headroom_module.simulate_candidate_chain
+
+    def simulate(audio, rate, eq, chain=None):
+        gains = [b["gain_db"] for b in (eq.get("layers") or {}).get("correction") or ()]
+        if not any(gains):  # only the render with no correction at all
+            raise RuntimeError("flat render failed")
+        return render(audio, rate, eq, chain)
+
+    monkeypatch.setattr(headroom_module, "simulate_candidate_chain", simulate)
+
+    result = _validate_typed(BOOST_HEAVY)
+
+    assert result == expected
+    assert result["validated_candidate_eq"] is not None
+    assert "flat_excess_db" not in result["headroom_validation"]
+    assert len(calls) == 5 + 4  # the second run renders the four scales only
 
 
 def test_headroom_over_the_rule_keeps_a_candidate_that_adds_no_excess(monkeypatch):

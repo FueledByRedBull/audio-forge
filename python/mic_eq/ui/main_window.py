@@ -3901,6 +3901,11 @@ class MainWindow(QMainWindow):
             self.output_meter.forget_full_scale_count()
         self.input_meter.note_peak(input_peak, input_peak, count("get_input_full_scale_count"))
         self.output_meter.note_peak(pre_limiter_peak, output_peak, count("get_output_full_scale_count"))
+        if self.limiter_state.get_applied_settings()["enabled"] and self._processing_mode() == "normal":
+            # Health calls a limiter holding the output at its ceiling normal, so the
+            # marker means a full-scale output only while the limiter is off. Bypass
+            # and Raw monitor skip the limiter, so there it stays lit.
+            self.output_meter.clear_clip_marker()
 
     def _update_diagnostics(self):
         """Update slower diagnostics and service recovery."""

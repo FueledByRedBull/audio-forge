@@ -95,6 +95,8 @@ from .calibration_support import (
     filtered_capture_for_analysis as _filtered_capture_for_analysis,
     format_db as _format_db,
     format_percent as _format_percent,
+    on_analysis_thread_finished,
+    wait_for_analysis_workers,
 )
 from .theme import (
     DESCRIPTION_LABEL_STYLE,
@@ -112,11 +114,6 @@ logger = logging.getLogger(__name__)
 _TEMPORARY_MUTE_REASON = "auto_eq_calibration"
 
 RECORDING_DURATION = 10.0  # Seconds
-
-def _selected_device_pair(owner: Any) -> tuple[str | None, str | None]:
-    selected_input, selected_output = _selected_device_identities(owner)
-    return _device_name(selected_input), _device_name(selected_output)
-
 
 def _eq_chain_settings(owner: Any, incumbent: Preset) -> dict[str, Any]:
     """The chain as the EQ will act in it.
@@ -210,6 +207,9 @@ class CalibrationDialog(QDialog):
         self._had_result = False
         # Whether this result was already reported to the main window.
         self._reported = False
+        # Whether this dialog has reported the outcome of an analysis, which a refused retake
+        # does not replace.
+        self._result_reported = False
         # The level check before the take: its verdict and, if the user went on past it, which.
         self._level_verdict: LevelVerdict | None = None
         self._level_override: str | None = None
@@ -1604,6 +1604,11 @@ class CalibrationDialog(QDialog):
         result: Mapping[str, Any] | None = None,
     ) -> None:
         """Tell the main window how this run ended, for the diagnostics export."""
+        refused_take = "recording_rejected" in reason_codes
+        if refused_take and self._result_reported:
+            return
+        if not refused_take and outcome != "failed":
+            self._result_reported = True
         measured: dict[str, Any] = numbers_from(
             result or self.eq_settings or {},
             (
@@ -1666,14 +1671,8 @@ class CalibrationDialog(QDialog):
                 worker.stop()
         self.analysis_worker = None
 
-    def _on_analysis_thread_finished(self, worker: AnalysisWorker) -> None:
-        if worker in self._analysis_workers:
-            self._analysis_workers.remove(worker)
-        if self.analysis_worker is worker:
-            self.analysis_worker = None
-        worker.deleteLater()
-        if self._close_requested:
-            self._finish_close()
+    def _on_analysis_thread_finished(self, worker) -> None:
+        on_analysis_thread_finished(self, worker)
 
     def _finish_close(self) -> None:
         if not self._close_requested or any(
@@ -1688,15 +1687,9 @@ class CalibrationDialog(QDialog):
         self.preview_audio_data = None
         QDialog.done(self, int(QDialog.DialogCode.Accepted if self._close_result else QDialog.DialogCode.Rejected))
 
+    # A real method, so Qt drops the aboutToQuit connection when the dialog is destroyed.
     def _wait_for_analysis_workers(self) -> None:
-        """Keep application shutdown from destroying a running QThread."""
-        self._request_close(False)
-        for worker in tuple(self._analysis_workers):
-            if worker.isRunning():
-                worker.stop()
-                worker.wait()
-        self._analysis_workers.clear()
-        self.analysis_worker = None
+        wait_for_analysis_workers(self)
 
     def _request_close(self, accepted: bool) -> None:
         if self._close_requested:

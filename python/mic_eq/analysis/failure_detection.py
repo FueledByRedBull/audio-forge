@@ -15,7 +15,7 @@ from mic_eq.config import (
     ANALYSIS_MIN_SNR,
     ANALYSIS_MAX_SPECTRAL_FLATNESS
 )
-from .auto_eq_parts.headroom import headroom_shortfall_db
+from .auto_eq_parts.headroom import headroom_excess_split_db, headroom_shortfall_db
 from .spectrum import find_octave_spaced_peaks
 
 DEBUG = os.environ.get("AUDIOFORGE_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -113,6 +113,10 @@ def calculate_spectral_contrast(freqs, spectrum_db):
 def _headroom_refusal(headroom):
     """Say what to change: no correction fits, so the microphone level is the cause."""
     shortfall = headroom_shortfall_db(headroom) if isinstance(headroom, dict) else None
+    # When the correction's own boost is most of that figure, the recording needs less.
+    recording, boost = (headroom_excess_split_db(headroom) if isinstance(headroom, dict) else None) or (0.0, 0.0)
+    if boost > recording > 0.0:
+        shortfall = int(np.ceil(recording))
     reason = "The microphone level is too high for a safe result. "
     if shortfall is not None:
         return reason + f"Lower the gain by about {shortfall} dB, then record again."

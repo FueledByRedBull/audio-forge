@@ -16,7 +16,7 @@ from PySide6.QtCore import QEventLoop, QThread, QTimer, Signal
 from PySide6.QtWidgets import QMessageBox
 
 from mic_eq.analysis.cancellation import AnalysisCancelled
-from mic_eq.ui.calibration_dialog import CalibrationDialog, _selected_device_pair
+from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.analysis_worker import AnalysisWorker
 from mic_eq.ui.latency_calibration_dialog import (
     LatencyCalibrationDialog,
@@ -1620,13 +1620,6 @@ def test_latency_profile_key_uses_structured_device_identity(window):
         DeviceIdentity(name="Out B", is_default=False),
     )
     assert key != legacy_latency_profile_key("Mic A", "Out B")
-
-
-def test_calibration_dialog_selected_device_pair_returns_names(window):
-    window.input_choice.addItem("Mic A", DeviceIdentity(name="Mic A", is_default=False))
-    window.output_choice.addItem("Out B", DeviceIdentity(name="Out B", is_default=True))
-
-    assert _selected_device_pair(window) == ("Mic A", "Out B")
 
 
 def test_latency_dialog_device_name_coerces_identity_to_name():

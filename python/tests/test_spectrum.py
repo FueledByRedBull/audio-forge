@@ -271,7 +271,14 @@ def test_perceptual_smoothing_off_is_exact_and_unknown_mode_fails():
         smooth_spectrum_perceptual(freqs, values, strength="typo")
 
 
-def test_octave_reconstruction_interpolates_on_log_frequency(monkeypatch):
+@pytest.fixture
+def fresh_octave_plans():
+    spectrum._octave_plan.cache_clear()
+    yield
+    spectrum._octave_plan.cache_clear()
+
+
+def test_octave_reconstruction_interpolates_on_log_frequency(monkeypatch, fresh_octave_plans):
     monkeypatch.setattr(
         spectrum,
         "get_octave_frequencies",
@@ -284,6 +291,68 @@ def test_octave_reconstruction_interpolates_on_log_frequency(monkeypatch):
     freqs = np.array([100.0, 200.0, 400.0])
     values = np.array([0.0, 99.0, 10.0])
 
-    result = smooth_spectrum_octave(freqs, values)
+    result = smooth_spectrum_perceptual(freqs, values)
 
     assert result[1] == pytest.approx(5.0)
+
+
+def _per_spectrum_perceptual(freqs, values, strength):
+    wide, medium, fine, very_wide = (
+        smooth_spectrum_octave(freqs, values, fraction=n) for n in (3, 6, 12, 2)
+    )
+    smoothed = medium.copy()
+    low = freqs < 180.0
+    mid = (freqs >= 180.0) & (freqs < 3500.0)
+    sibilance = (freqs >= 3500.0) & (freqs <= 9000.0)
+    high = freqs > 9000.0
+    smoothed[low] = wide[low]
+    smoothed[mid] = medium[mid]
+    smoothed[sibilance] = fine[sibilance]
+    smoothed[high] = wide[high]
+    if strength == "conservative":
+        smoothed[mid] = 0.65 * medium[mid] + 0.35 * wide[mid]
+        smoothed[sibilance] = 0.60 * fine[sibilance] + 0.40 * medium[sibilance]
+        smoothed = 0.85 * smoothed + 0.15 * very_wide
+    elif strength == "broad":
+        smoothed = 0.50 * smoothed + 0.50 * very_wide
+    return smoothed
+
+
+def _smoothing_grids():
+    fft_grid = np.fft.rfftfreq(4096, 1.0 / 48_000)
+    shuffled = np.random.default_rng(3).permutation(np.geomspace(30.0, 18_000.0, 300))
+    return [
+        fft_grid,
+        np.geomspace(20.0, 20_000.0, 257),
+        np.linspace(0.0, 24_000.0, 40),
+        shuffled,
+        np.array([500.0, 510.0, 520.0]),
+    ]
+
+
+@pytest.mark.parametrize("strength", ["balanced", "conservative", "broad"])
+def test_smoothing_equals_the_per_spectrum_recipe_exactly(strength, fresh_octave_plans):
+    rng = np.random.default_rng(1234)
+    for freqs in _smoothing_grids():
+        rows = rng.normal(-40.0, 15.0, (129, freqs.size))
+        expected = np.asarray(
+            [_per_spectrum_perceptual(freqs, row, strength) for row in rows]
+        )
+
+        assert np.array_equal(spectrum._smooth_perceptual_rows(freqs, rows, strength), expected)
+        assert np.array_equal(
+            spectrum._smooth_perceptual_rows(freqs, rows[:5], strength), expected[:5]
+        )
+        for row, want in zip(rows[:3], expected[:3]):
+            assert np.array_equal(smooth_spectrum_perceptual(freqs, row, strength), want)
+
+
+def test_batched_smoothing_does_not_depend_on_memory_layout():
+    rng = np.random.default_rng(55)
+    freqs = np.fft.rfftfreq(4096, 1.0 / 48_000)
+    rows = rng.normal(-40.0, 15.0, (7, freqs.size))
+
+    assert np.array_equal(
+        spectrum._smooth_perceptual_rows(freqs, np.asfortranarray(rows), "balanced"),
+        spectrum._smooth_perceptual_rows(freqs, rows, "balanced"),
+    )

@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QRect, Qt
+from PySide6.QtCore import QRect
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QScrollArea, QWidget
 
@@ -37,13 +37,6 @@ from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 UI_ROOT = Path(__file__).resolve().parents[1] / "mic_eq" / "ui"
 LITERAL_COLOR = re.compile(r"#[0-9A-Fa-f]{6,8}|QColor\s*\(")
 PIXEL_FONT = re.compile(r"font-size\s*:\s*[0-9.]+px")
-
-
-@pytest.fixture
-def widget_view(monkeypatch):
-    """Layout tests that measure the widget view, which remains the fallback."""
-
-    monkeypatch.setenv("AUDIOFORGE_QML", "0")
 
 
 @pytest.mark.parametrize("states, mute_error, expected", [
@@ -189,27 +182,21 @@ def test_accessible_name_rejects_empty_text(qapp) -> None:
     qapp.processEvents()
 
 
-def test_main_window_and_workflow_dialogs_have_named_controls(
-    widget_view,
+def test_workflow_dialogs_have_named_controls(
     isolated_main_window,
     qapp,
 ) -> None:
     window = isolated_main_window
-    # The Qt Quick view builds no widgets, so the audit needs the widget view
-    # to have something to walk.
-    audited = set(window.findChildren(QWidget))
-    assert {window.input_combo, window.start_btn, window.page_stack, window.status_bar} <= audited
     dialogs = (
         CalibrationDialog(window),
         VoiceSetupDialog(window),
         LatencyCalibrationDialog(window),
     )
-    roots = (window, *dialogs)
 
     problems = {
-        type(root).__name__: audit_widget_tree(root)
-        for root in roots
-        if audit_widget_tree(root)
+        type(dialog).__name__: audit_widget_tree(dialog)
+        for dialog in dialogs
+        if audit_widget_tree(dialog)
     }
     assert problems == {}
 
@@ -217,155 +204,6 @@ def test_main_window_and_workflow_dialogs_have_named_controls(
         dialog.close()
         dialog.deleteLater()
     qapp.processEvents()
-
-
-def test_main_keyboard_order_and_small_viewport_are_operable(
-    widget_view,
-    isolated_main_window,
-    qapp,
-) -> None:
-    window = isolated_main_window
-    expected_top_row = (
-        window.output_combo,
-        window.refresh_btn,
-        window.processing_mode_combo,
-        window.user_mute_checkbox,
-    )
-    current = window.input_combo
-    for expected in expected_top_row:
-        current = current.nextInFocusChain()
-        while not current.focusPolicy() & Qt.FocusPolicy.TabFocus:
-            current = current.nextInFocusChain()
-        assert current is expected
-
-    assert window.minimumWidth() <= 900
-    assert window.minimumHeight() <= 640
-    assert (
-        window.content_scroll_area.horizontalScrollBarPolicy()
-        == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-    )
-    assert (
-        window.content_scroll_area.verticalScrollBarPolicy()
-        == Qt.ScrollBarPolicy.ScrollBarAsNeeded
-    )
-
-    window.resize(900, 640)
-    window.show()
-    qapp.processEvents()
-    qapp.processEvents()
-    assert window.width() == 900
-    assert window.height() == 640
-    assert window._responsive_layout_compact is True
-    assert window.content_scroll_area.horizontalScrollBar().maximum() == 0
-    assert (
-        window.content_scroll_area.widget().width()
-        <= window.content_scroll_area.viewport().width()
-    )
-    # The transport control sits in the fixed top bar, never behind a scroll.
-    assert window.start_btn.isVisible()
-    assert window.stop_btn.isHidden()
-    assert window.rect().contains(
-        window.start_btn.mapTo(window, window.start_btn.rect().bottomRight())
-    )
-
-
-def test_default_window_opens_on_the_mic_page_and_reaches_health(
-    widget_view,
-    isolated_main_window,
-    qapp,
-) -> None:
-    window = isolated_main_window
-    window.resize(1280, 850)
-    window.show()
-    qapp.processEvents()
-    qapp.processEvents()
-
-    assert window._responsive_layout_compact is False
-    assert window.menuBar().isHidden()
-    assert window.content_scroll_area.horizontalScrollBar().maximum() == 0
-    assert window.page_stack.currentIndex() == 0
-    assert window.health_details.isHidden()
-    assert window.rect().contains(window.health_details_button.mapTo(
-        window, window.health_details_button.rect().bottomRight()
-    ))
-    window.health_details_button.click()
-    qapp.processEvents()
-    assert window.health_details.isVisible()
-    assert window.dropped_label.isVisible()
-    assert window.nav_group.checkedId() == window.HEALTH_PAGE_INDEX
-    window.health_details_button.click()
-    assert window.health_details.isHidden()
-    assert window.nav_group.checkedId() == 0
-
-
-@pytest.mark.parametrize(
-    ("width", "height", "compact"),
-    (
-        (900, 640, True),
-        (1024, 700, True),
-        (1199, 760, True),
-        (1280, 800, False),
-        (1600, 900, False),
-        (1920, 1040, False),
-    ),
-)
-def test_main_window_has_no_horizontal_overflow_across_breakpoints(
-    widget_view,
-    isolated_main_window,
-    qapp,
-    width: int,
-    height: int,
-    compact: bool,
-) -> None:
-    window = isolated_main_window
-    window.resize(width, height)
-    window.show()
-    qapp.processEvents()
-    qapp.processEvents()
-
-    assert window.width() == width
-    assert window._responsive_layout_compact is compact
-    for page_index in range(window.page_stack.count()):
-        window.page_stack.setCurrentIndex(page_index)
-        qapp.processEvents()
-        page = window.page_stack.currentWidget()
-        assert isinstance(page, QScrollArea)
-        body = page.widget()
-        assert body is not None
-        oversized = [
-            (
-                type(widget).__name__,
-                getattr(widget, "title", lambda: widget.objectName())(),
-                widget.minimumSizeHint().width(),
-            )
-            for widget in body.findChildren(QWidget)
-            if widget.minimumSizeHint().width() > page.viewport().width()
-        ]
-        assert page.horizontalScrollBar().maximum() == 0, (page_index, oversized)
-        assert body.width() <= page.viewport().width(), (page_index, oversized)
-
-
-@pytest.mark.parametrize("width", (1280, 1600))
-def test_health_page_wraps_long_chip_text_without_horizontal_overflow(
-    widget_view, isolated_main_window, qapp, width: int
-) -> None:
-    window = isolated_main_window
-    window.resize(width, 800)
-    window.show()
-    window.page_stack.setCurrentWidget(window.health_details)
-    for key, text in {
-        "input_health_label": "Input: peaks near full scale, turn the microphone down",
-        "callback_health_label": "Device activity: input 12 ms ago, output 14 ms ago",
-        "dropped_label": "Drops: nothing dropped, but the microphone channels cancel each other",
-    }.items():
-        window._set_health_chip(key, text, "warn")
-    qapp.processEvents()
-    qapp.processEvents()
-
-    page = window.health_details
-    assert window._responsive_layout_compact is False
-    assert page.horizontalScrollBar().maximum() == 0
-    assert page.widget().width() <= page.viewport().width()
 
 
 @pytest.mark.parametrize(

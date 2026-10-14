@@ -158,7 +158,6 @@ def test_vad_only_displays_confidence_threshold_and_moves_marker(qapp):
 
     assert "VAD Threshold: 0.35" in str(status.text)
     assert "Level fallback" in str(status.text)
-    assert state.presentation()["auto_threshold_text"] == "Track Noise Floor"
     assert auto.name == "Track noise floor"
     assert not margin.enabled
 
@@ -175,7 +174,6 @@ def test_vad_only_displays_confidence_threshold_and_moves_marker(qapp):
     assert meters.confidence.confidence == pytest.approx(0.4)
 
     mode.setIndex(1)
-    assert state.presentation()["auto_threshold_text"] == "Auto Threshold"
     assert auto.name == "Enable automatic gate threshold"
     assert margin.enabled
     assert "Effective Threshold:" in str(status.text)

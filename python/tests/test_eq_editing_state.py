@@ -25,7 +25,7 @@ from mic_eq.config import (
     q_from_bandwidth_octaves,
 )
 from mic_eq.ui.eq_graph import EQGraphGeometry
-from mic_eq.ui.eq_panel import EQPresentation
+from mic_eq.ui.eq_presentation import EQPresentation
 from mic_eq.ui.eq_state import EQ_FILTER_OPTIONS, EQState
 import test_quick_shell as quick_shell
 

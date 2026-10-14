@@ -1,4 +1,4 @@
-"""Exact EQ layers and edit transactions shared by both presentation layers."""
+"""Exact EQ layers and edit transactions behind the EQ view."""
 
 from __future__ import annotations
 
@@ -495,7 +495,7 @@ class EQState(QObject):
         bands = list(self._settings.bands)
         bands[index] = replace(band, **changes)
         # One queue composes graph and numeric edits in arrival order. The graph
-        # already follows the pointer itself, so repaint shared views on commit.
+        # already follows the pointer itself, so repaint the view on commit.
         self._request(self._with_bands(tuple(bands)), label=None, notify=False)
 
     def finish_curve_edit(

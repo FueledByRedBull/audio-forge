@@ -247,9 +247,6 @@ def prefers_reduced_motion() -> bool:
         return False
 
 
-PRIMARY_LABEL_STYLE = "font-size: 11pt;"
-METER_LABEL_STYLE = f"font-size: 10pt; font-weight: bold; color: {PALETTE.accent};"
-INFO_LABEL_STYLE = f"font-size: 9pt; color: {PALETTE.text_muted};"
 SUBDUED_TEXT_STYLE = f"font-size: 9pt; color: {PALETTE.text_muted};"
 DESCRIPTION_LABEL_STYLE = f"color: {PALETTE.text_muted}; font-size: 9pt; padding: 5px;"
 PROGRESS_LABEL_STYLE = f"font-size: 12pt; color: {PALETTE.accent}; font-weight: bold;"
@@ -280,13 +277,6 @@ PRIMARY_ACTION_BUTTON_STYLE = _button_style(
     PALETTE.accent_hover,
 )
 
-DESTRUCTIVE_ACTION_BUTTON_STYLE = _button_style(
-    PALETTE.action_destructive,
-    PALETTE.text_on_emphasis,
-    PALETTE.action_destructive,
-    PALETTE.action_destructive_border,
-)
-
 SECONDARY_ACTION_BUTTON_STYLE = _button_style(
     PALETTE.action_secondary,
     PALETTE.text_primary,
@@ -297,12 +287,6 @@ SECONDARY_ACTION_BUTTON_STYLE = _button_style(
 CARD_STYLE = (
     f"QFrame#card {{ background-color: {PALETTE.card_surface}; "
     f"border: 1px solid {PALETTE.border}; border-radius: {RADIUS_CARD}px; }}"
-)
-
-WARNING_BANNER_STYLE = (
-    f"QLabel {{ background-color: {PALETTE.warning_banner_surface}; "
-    f"color: {PALETTE.warning_banner_text}; padding: 10px 12px; "
-    f"font-weight: 600; border-radius: {RADIUS_CONTROL}px; }}"
 )
 
 PROGRESS_BAR_STYLE = (
@@ -455,8 +439,6 @@ QProgressBar {{ border: none; border-radius: 4px; text-align: center;
 QProgressBar::chunk {{ background-color: {p.accent}; border-radius: 4px; }}
 
 QSplitter::handle {{ background: transparent; }}
-QStatusBar {{ background-color: {p.rail_surface}; color: {p.text_muted}; }}
-QStatusBar::item {{ border: none; }}
 """
 
 

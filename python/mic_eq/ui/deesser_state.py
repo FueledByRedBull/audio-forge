@@ -1,4 +1,4 @@
-"""De-esser settings and native writes shared by the widget and Quick views."""
+"""De-esser settings and native writes, independent of the view."""
 
 from __future__ import annotations
 

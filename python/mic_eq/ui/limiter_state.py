@@ -1,4 +1,4 @@
-"""Limiter settings and native writes shared by the widget and Quick views."""
+"""Limiter settings and native writes, independent of the view."""
 
 from __future__ import annotations
 
@@ -19,11 +19,11 @@ LIMITER_RANGES = CONTROL_RANGES["limiter"]
 
 
 class LimiterState(QObject):
-    """Keep exact requested values independently of either view's formatting.
+    """Keep exact requested values independently of the view's formatting.
 
     Interactive changes are visible immediately and coalesced for native writes.
     Only successful writes produce history entries; a rejected write restores the
-    last applied values and reports its error to both the caller and the views.
+    last applied values and reports its error to both the caller and the view.
     """
 
     changed = Signal()

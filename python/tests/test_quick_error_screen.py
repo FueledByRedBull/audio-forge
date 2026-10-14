@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPlainTextEdit,
     QPushButton,
-    QStatusBar,
     QSystemTrayIcon,
     QWidget,
 )
@@ -92,15 +91,12 @@ def _button(window, text: str) -> QPushButton:
     return buttons[0]
 
 
-def test_the_window_shows_the_error_screen_not_the_classic_view(failed_window) -> None:
+def test_the_window_shows_the_error_screen(failed_window) -> None:
     window = failed_window
     screen = window.centralWidget()
     assert isinstance(screen, QWidget) and not isinstance(screen, QQuickWidget)
     assert window.quick_view_failure == window.code
     assert "quick_bridge" not in vars(window)
-    # The widget view is not built.
-    assert window._classic_root is None
-    assert window.findChildren(QStatusBar) == []
 
 
 def test_the_screen_says_what_happened_in_plain_words_and_gives_the_reason(failed_window) -> None:
@@ -261,14 +257,6 @@ def test_login_launch_without_a_window_does_not_start_audio_and_says_so_in_the_t
 def test_a_scene_that_loads_leaves_no_failure(quick_window) -> None:  # noqa: F811
     assert quick_window.quick_view_failure is None
     assert isinstance(quick_window.centralWidget(), QQuickWidget)
-
-
-def test_opting_out_of_qml_is_not_a_failure(qapp, monkeypatch) -> None:
-    monkeypatch.setenv("AUDIOFORGE_QML", "0")
-    _load_config_without_devices(monkeypatch)
-    window = MainWindow()
-    assert window.quick_view_failure is None
-    assert window._classic_root is not None and window.centralWidget() is window._classic_root
 
 
 @pytest.mark.parametrize("failure", ["bridge", "qml"])

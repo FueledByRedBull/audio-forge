@@ -9,7 +9,6 @@ from mic_eq import eq_magnitude_response, input_prefilter_response_db
 from mic_eq.analysis.auto_eq_parts.response import _predict_eq_response
 from mic_eq.analysis.eq_quality import evaluate_eq_quality
 from mic_eq.mic_eq_core import simulate_auto_eq_chain
-from mic_eq.ui.eq_curve import EQCurveWidget
 
 
 DEFAULT_BANDS = [
@@ -123,21 +122,6 @@ def test_native_full_chain_keeps_48khz_frontend_boundary():
             DEFAULT_BANDS,
             {"full_chain": True, "processing_mode": "normal"},
         )
-
-
-def test_eq_curve_widget_uses_native_target_response(qapp):
-    widget = EQCurveWidget()
-    bands = list(DEFAULT_BANDS)
-    bands[0] = (90.0, 4.0, 0.7)
-    bands[4] = (1100.0, -6.0, 3.0)
-    bands[9] = (15_000.0, 3.0, 0.9)
-
-    widget.set_all_params(bands)
-    direct = eq_magnitude_response(widget.freq_points, bands, widget.sample_rate)
-
-    np.testing.assert_allclose(widget.response_db, direct, rtol=0.0, atol=1.0e-12)
-    assert not hasattr(widget, "_calc_biquad_coefficients")
-    widget.close()
 
 
 def test_input_prefilter_response_has_the_80_hz_high_pass_in_every_mode_and_validates():

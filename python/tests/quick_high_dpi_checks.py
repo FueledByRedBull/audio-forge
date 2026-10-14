@@ -30,7 +30,7 @@ from test_quick_shell import (  # noqa: F401  (tests and fixtures repeated at th
     test_a_band_drag_is_not_taken_over_by_the_page,
     test_a_drag_moves_the_band_by_the_pointers_travel,
     test_live_data_changes_repaint_existing_qml_items,
-    test_scene_loads_without_a_widget_view,
+    test_scene_loads_cleanly,
 )
 
 EXPECTED = float(os.environ["AUDIOFORGE_EXPECT_SCALE"])

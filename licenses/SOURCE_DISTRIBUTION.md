@@ -78,7 +78,7 @@ those files.
 The manifest currently covers:
 
 * CPython 3.13.15 and the exact Windows source-deps selected by
-  `PCbuild/get_externals.bat`, plus Python package sources for NumPy 2.5.1, SciPy 1.18.0,
+  `PCbuild/get_externals.bat`, plus Python package sources for NumPy 2.5.1,
   PySide6-Essentials, PySide6-Addons and shiboken6 6.11.1, PyInstaller 6.21.0,
   and pywin32 311.
   The CPython source entry retains both its main license and `PC/crtlicense.txt`
@@ -96,7 +96,7 @@ The manifest currently covers:
   inputs are excluded because this release enables only the CPU provider.
 * The CPython external dependency archives retained by the official 3.13.15
   source graph, including the OpenSSL 3.0.21 source input, the pinned
-  NumPy/SciPy OpenBLAS recipes and upstream sources, and Mesa 11.2.2 for Qt's
+  NumPy OpenBLAS recipe and upstream source, and Mesa 11.2.2 for Qt's
   `opengl32sw.dll`. The portable package may exclude unused `libcrypto` and
   `libssl` payloads when the packaging rules prove they are not loaded.
 * The pinned DeepFilterNet source, its resolved Cargo graph, the recorded

@@ -405,25 +405,27 @@ raise SystemExit(status)
     assert observed["pipeline_cache"] is False
 
 
-def test_auto_eq_solver_check_runs_both_scipy_solvers(monkeypatch):
-    import scipy.optimize as optimize
+def test_auto_eq_solver_check_runs_all_eq_fit_solvers(monkeypatch):
+    from mic_eq.analysis.auto_eq_parts import optimizer
 
     calls = []
 
-    def recording(solver, name):
+    def recording(name):
+        real = getattr(optimizer, name)
+
         def wrapper(*args, **kwargs):
-            calls.append((name, kwargs.get("method")))
-            return solver(*args, **kwargs)
+            calls.append(name)
+            return real(*args, **kwargs)
 
         return wrapper
 
-    for name in ("least_squares", "minimize"):
-        monkeypatch.setattr(optimize, name, recording(getattr(optimize, name), name))
+    for name in ("bounded_least_squares", "project_gains", "refine_gains"):
+        monkeypatch.setattr(optimizer, name, recording(name))
 
     app_bootstrap._check_auto_eq_solvers()
 
-    assert ("least_squares", "trf") in calls
-    assert ("minimize", "SLSQP") in calls
+    assert calls.count("bounded_least_squares") == 2  # stage 1 and stage 2
+    assert "project_gains" in calls and "refine_gains" in calls
 
 
 def test_auto_eq_solver_check_rejects_a_fit_that_did_not_converge_or_correct(monkeypatch):
@@ -454,7 +456,7 @@ def test_auto_eq_solver_check_rejects_a_fit_that_did_not_converge_or_correct(mon
             app_bootstrap._check_auto_eq_solvers()
 
 
-def test_packaged_startup_smoke_fails_when_the_scipy_optimizer_cannot_load():
+def test_packaged_startup_smoke_fails_when_the_eq_solver_module_cannot_load():
     script = """
 import json
 import logging
@@ -478,7 +480,7 @@ class Capture(logging.Handler):
         messages.append(self.format(record))
 
 logging.getLogger().addHandler(Capture())
-sys.modules["scipy.optimize"] = None
+sys.modules["mic_eq.analysis.auto_eq_parts.eq_fit"] = None
 status = run_smoke_test(SmokeWindow)
 print(json.dumps({"status": status, "log": " ".join(messages)}))
 raise SystemExit(status)
@@ -498,4 +500,4 @@ raise SystemExit(status)
     assert result.returncode == 1, result.stderr or result.stdout
     log = json.loads(result.stdout)["log"]
     assert "startup smoke test failed" in log
-    assert "scipy.optimize" in log
+    assert "auto_eq_parts.eq_fit" in log

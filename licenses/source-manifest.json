@@ -4091,36 +4091,6 @@
       "version": "0.3.33.112.0"
     },
     {
-      "build_role": "exact SciPy 1.18.0 Windows OpenBLAS source and patch recipe",
-      "filename": "openblas-libs-0.3.31.22.0.tar.gz",
-      "id": "openblas-recipe-scipy-0.3.31.22.0",
-      "kind": "native-build-source",
-      "license": "BSD-3-Clause",
-      "license_paths": [
-        "openblas-libs-0.3.31.22.0/LICENSE.txt"
-      ],
-      "name": "SciPy OpenBLAS build recipe",
-      "sha256": "cc4b804fa064c543fd129a21ee8d7379447e18bb24c9a039005096e867187a51",
-      "source_of_truth": "https://github.com/MacPython/openblas-libs/tree/v0.3.31.22.0",
-      "url": "https://github.com/MacPython/openblas-libs/archive/refs/tags/v0.3.31.22.0.tar.gz",
-      "version": "0.3.31.22.0"
-    },
-    {
-      "build_role": "OpenBLAS source used by SciPy 1.18.0's scipy-openblas32 build",
-      "filename": "OpenBLAS-5ffbf38b41a1fe494d038efcb09cf22f4d527c22.tar.gz",
-      "id": "openblas-upstream-5ffbf38b",
-      "kind": "native-build-source",
-      "license": "BSD-3-Clause",
-      "license_paths": [
-        "OpenBLAS-5ffbf38b41a1fe494d038efcb09cf22f4d527c22/LICENSE"
-      ],
-      "name": "OpenBLAS upstream (SciPy LP64)",
-      "sha256": "51257fb2f0aa7b4c23d9cf0302500b817dc82c0022ee681b24f9ab82dfd10312",
-      "source_of_truth": "https://github.com/OpenMathLib/OpenBLAS/commit/5ffbf38b41a1fe494d038efcb09cf22f4d527c22",
-      "url": "https://github.com/OpenMathLib/OpenBLAS/archive/5ffbf38b41a1fe494d038efcb09cf22f4d527c22.tar.gz",
-      "version": "5ffbf38b41a1fe494d038efcb09cf22f4d527c22"
-    },
-    {
       "build_role": "OpenBLAS source used by NumPy 2.5.1's scipy-openblas64 build",
       "filename": "OpenBLAS-9bdf051b96e956f848dfcef89c23e1993b0e1b3e.tar.gz",
       "id": "openblas-upstream-9bdf051b",
@@ -4191,17 +4161,6 @@
       "source_of_truth": "https://github.com/mhammond/pywin32/tree/b311",
       "url": "https://github.com/mhammond/pywin32/archive/refs/tags/b311.tar.gz",
       "version": "311"
-    },
-    {
-      "build_role": "locked Python runtime or packaging tool",
-      "filename": "scipy-1.18.0.tar.gz",
-      "id": "python-scipy-1.18.0",
-      "kind": "python-sdist",
-      "name": "SciPy",
-      "sha256": "67b2ad2ad54c72ca6d04975a9b2df8c3638c34ddd5b28738e94fc2b57929d378",
-      "source_of_truth": "https://pypi.org/project/SciPy/1.18.0/#files",
-      "url": "https://files.pythonhosted.org/packages/a7/25/c2700dfaf6442b4effaa91af24ebce5dc9d31bb4a69706313aae70d72cd0/scipy-1.18.0.tar.gz",
-      "version": "1.18.0"
     },
     {
       "build_role": "Qt for Python runtime; PyPI publishes wheels only",

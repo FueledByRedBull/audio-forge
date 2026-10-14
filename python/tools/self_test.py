@@ -15,9 +15,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy.signal import resample_poly
 
 from mic_eq.analysis.latency_calibration import analyze_latency, generate_probe_signal
+from mic_eq.analysis.signal_processing import resample_poly
 
 
 def _resample_probe(

@@ -52,14 +52,9 @@ REQUIRED_BUNDLE_FILES = (
     "_internal/licenses/THIRD_PARTY_NOTICES.md",
     "_internal/licenses/QtForPython-6.11.1-NOTICES.txt",
 )
-# Reverses the old "never exclude" guard: the app no longer imports
-# scipy.signal, which pulled these in, so none of python/mic_eq may bring them back.
-EXCLUDED_SCIPY_MODULES = (
-    "scipy.integrate",
-    "scipy.interpolate",
-    "scipy.ndimage",
-    "scipy.stats",
-)
+# SciPy is a development-only dependency: nothing under python/mic_eq may import
+# it, and neither SciPy package directory may appear in the bundle.
+SCIPY_BUNDLE_DIRS = ("_internal/scipy", "_internal/scipy.libs")
 REQUIRED_MANIFEST_ASSETS = (
     "df.dll",
     "target/onnxruntime-cpu/lib/onnxruntime.dll",
@@ -106,11 +101,7 @@ def _spec_list(spec_text: str, keyword: str) -> list[str]:
 
 def _spec_module_errors(spec_text: str) -> list[str]:
     excludes = _spec_list(spec_text, "excludes")
-    errors = [
-        f"AudioForge.spec must exclude {module}"
-        for module in EXCLUDED_SCIPY_MODULES
-        if module not in excludes
-    ]
+    errors = [] if "scipy" in excludes else ["AudioForge.spec must exclude scipy"]
     if "PySide6.QtOpenGL" in excludes or "PySide6.QtOpenGL" not in _spec_list(
         spec_text, "hiddenimports"
     ):
@@ -121,8 +112,7 @@ def _spec_module_errors(spec_text: str) -> list[str]:
     return errors
 
 
-def _unpackaged_scipy_imports(repo_root: Path) -> list[str]:
-    banned = ("scipy.signal", *EXCLUDED_SCIPY_MODULES)
+def _scipy_imports(repo_root: Path) -> list[str]:
     found: list[str] = []
     for source in sorted((repo_root / "python" / "mic_eq").rglob("*.py")):
         for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
@@ -132,14 +122,11 @@ def _unpackaged_scipy_imports(repo_root: Path) -> list[str]:
                 names = [node.module, *(f"{node.module}.{a.name}" for a in node.names)]
             else:
                 continue
-            bad = next(
-                (n for n in names if any(n == m or n.startswith(f"{m}.") for m in banned)),
-                None,
-            )
+            bad = next((n for n in names if n == "scipy" or n.startswith("scipy.")), None)
             if bad:
                 found.append(
                     f"{source.relative_to(repo_root).as_posix()} imports {bad}, "
-                    "which is not packaged"
+                    "which is a development-only dependency"
                 )
     return found
 
@@ -149,7 +136,7 @@ def check_source_packaging() -> list[str]:
 
     spec_text = (REPO_ROOT / "AudioForge.spec").read_text(encoding="utf-8")
     errors.extend(_spec_module_errors(spec_text))
-    errors.extend(_unpackaged_scipy_imports(REPO_ROOT))
+    errors.extend(_scipy_imports(REPO_ROOT))
 
     spec_expectations = [
         ("AudioForge.spec", "onnxruntime.dll"),
@@ -441,7 +428,7 @@ def check_dist_bundle(
         relative_path
         for relative_path in (
             *(path.as_posix() for path in UNUSED_QT_PLUGIN_PATHS),
-            *(f"_internal/{module.replace('.', '/')}" for module in EXCLUDED_SCIPY_MODULES),
+            *SCIPY_BUNDLE_DIRS,
         )
         if (dist / relative_path).exists()
     )

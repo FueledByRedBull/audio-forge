@@ -43,7 +43,7 @@ UNUSED_QT_PLUGIN_FILES = (
     f"{QT_PLUGINS}/generic/qtuiotouchplugin.dll",
     f"{QT_PLUGINS}/networkinformation/qnetworklistmanager.dll",
 )
-# The Qt files and SciPy that the trimmed bundle must keep.
+# The Qt files and NumPy BLAS that the trimmed bundle must keep.
 KEPT_PAYLOAD_FILES = (
     "_internal/PySide6/Qt6OpenGL.dll",
     "_internal/PySide6/QtOpenGL.pyd",
@@ -53,14 +53,13 @@ KEPT_PAYLOAD_FILES = (
     f"{QT_PLUGINS}/imageformats/qico.dll",
     f"{QT_PLUGINS}/styles/qmodernwindowsstyle.dll",
     f"{QT_PLUGINS}/multimedia/windowsmediaplugin.dll",
-    "_internal/scipy/optimize/_slsqplib.cp313-win_amd64.pyd",
+    # NumPy ships its BLAS under a scipy-openblas name; it is not SciPy payload.
+    "_internal/numpy.libs/libscipy_openblas64_-b788215d9d47792bcba3a2e2a7114320.dll",
 )
 REMOVED_BUNDLE_FILES = (
     *UNUSED_QT_PLUGIN_FILES,
-    *(
-        f"_internal/scipy/{name}/_native.cp313-win_amd64.pyd"
-        for name in ("integrate", "interpolate", "ndimage", "stats")
-    ),
+    "_internal/scipy/optimize/_slsqplib.cp313-win_amd64.pyd",
+    "_internal/scipy.libs/libscipy_openblas-197ee2fc9b4d071f7e048078cac74115.dll",
 )
 
 
@@ -125,7 +124,7 @@ def test_bundle_path_baseline_omits_payload_removed_from_the_bundle():
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
     removed = (
         *(path.as_posix() for path in prune_bundle.UNUSED_QT_PLUGIN_PATHS),
-        *(f"_internal/{name.replace('.', '/')}" for name in package_smoke.EXCLUDED_SCIPY_MODULES),
+        *package_smoke.SCIPY_BUNDLE_DIRS,
     )
 
     assert not [
@@ -136,18 +135,17 @@ def test_bundle_path_baseline_omits_payload_removed_from_the_bundle():
     assert set(KEPT_PAYLOAD_FILES) <= set(baseline["paths"])
 
 
-def test_package_smoke_requires_spec_to_exclude_unpackaged_scipy():
+def test_package_smoke_requires_spec_to_exclude_scipy():
     spec = (TOOLS_DIR.parents[1] / "AudioForge.spec").read_text(encoding="utf-8")
     assert package_smoke._spec_module_errors(spec) == []
 
-    for module in package_smoke.EXCLUDED_SCIPY_MODULES:
-        without = spec.replace(f'        "{module}",\n', "", 1)
-        assert without != spec
-        expected = [f"AudioForge.spec must exclude {module}"]
-        assert package_smoke._spec_module_errors(without) == expected
-        # Listing it as a hidden import instead does not count as excluding it.
-        hidden = without.replace('"json",', f'"json", "{module}",', 1)
-        assert package_smoke._spec_module_errors(hidden) == expected
+    without = spec.replace('        "scipy",\n', "", 1)
+    assert without != spec
+    expected = ["AudioForge.spec must exclude scipy"]
+    assert package_smoke._spec_module_errors(without) == expected
+    # Listing it as a hidden import instead does not count as excluding it.
+    hidden = without.replace('"json",', '"json", "scipy",', 1)
+    assert package_smoke._spec_module_errors(hidden) == expected
 
 
 def test_package_smoke_rejects_spec_that_excludes_or_drops_the_qtopengl_binding():
@@ -167,31 +165,29 @@ def test_package_smoke_rejects_spec_that_excludes_or_drops_the_qtopengl_binding(
 @pytest.mark.parametrize(
     "statement",
     [
+        "import scipy",
         "import scipy.signal",
         "from scipy.signal import resample_poly",
         "from scipy import signal",
-        "from scipy import stats",
-        "import scipy.ndimage as ndi",
-        "from scipy.interpolate import interp1d",
-        "import scipy.integrate",
-        "from scipy.stats import qmc",
+        "from scipy.optimize import least_squares",
+        "import scipy.io as sio",
     ],
 )
-def test_package_smoke_rejects_app_imports_of_unpackaged_scipy(tmp_path, statement):
+def test_package_smoke_rejects_app_imports_of_scipy(tmp_path, statement):
     package = tmp_path / "python" / "mic_eq" / "analysis"
     package.mkdir(parents=True)
     (package / "fine.py").write_text(
-        "from scipy.optimize import minimize\nfrom scipy.io import wavfile\n",
+        "import numpy\nfrom mic_eq.analysis import signal_processing\n",
         encoding="utf-8",
     )
-    assert package_smoke._unpackaged_scipy_imports(tmp_path) == []
+    assert package_smoke._scipy_imports(tmp_path) == []
 
     (package / "bad.py").write_text(f"def fit():\n    {statement}\n", encoding="utf-8")
 
-    errors = package_smoke._unpackaged_scipy_imports(tmp_path)
+    errors = package_smoke._scipy_imports(tmp_path)
     assert len(errors) == 1
-    assert errors[0].startswith("python/mic_eq/analysis/bad.py imports scipy.")
-    assert errors[0].endswith("which is not packaged")
+    assert errors[0].startswith("python/mic_eq/analysis/bad.py imports scipy")
+    assert errors[0].endswith("which is a development-only dependency")
 
 
 def test_qml_hook_keeps_runtime_modules_without_editor_type_descriptions():
@@ -206,34 +202,28 @@ def test_qml_hook_keeps_runtime_modules_without_editor_type_descriptions():
         assert any(Path(source).parent == module_source for source, _ in hook["binaries"])
 
 
-def test_runtime_imports_defer_scipy_and_work_without_optional_development_packages():
+def test_runtime_imports_work_without_scipy_and_optional_development_packages():
     result = subprocess.run(
         [sys.executable, "-c", """
 import importlib.abc
 import sys
 
 class ExcludeOptional(importlib.abc.MetaPathFinder):
-    block_scipy = True
-
     def find_spec(self, fullname, path=None, target=None):
         package = fullname.split('.')[0]
-        if (self.block_scipy and package == 'scipy') or package in {
-            'cffi', 'pycparser', 'charset_normalizer', 'typing_extensions', 'yaml'
+        if package in {
+            'scipy', 'cffi', 'pycparser', 'charset_normalizer', 'typing_extensions', 'yaml'
         }:
             raise ModuleNotFoundError(fullname, name=fullname)
 
 sys.meta_path.insert(0, ExcludeOptional())
 from mic_eq.ui.main_window import MainWindow
-assert 'scipy' not in sys.modules
-ExcludeOptional.block_scipy = False
 import numpy as np
 from mic_eq.analysis.signal_processing import resample_poly
-from scipy.optimize import least_squares, minimize
 
 x = np.random.default_rng(42).normal(size=480)
 assert resample_poly(x, 1, 3).shape == (160,)
-assert least_squares(lambda p: p - 2, [0.0]).success
-assert minimize(lambda p: float((p[0] - 2) ** 2), [0.0]).success
+assert 'scipy' not in sys.modules
 assert MainWindow is not None
 """],
         cwd=TOOLS_DIR.parents[1],

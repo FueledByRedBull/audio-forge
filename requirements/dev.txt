@@ -1257,9 +1257,7 @@ scipy==1.18.0 \
     --hash=sha256:e40baea28ae7f5475c779741e2d90b1247c78531207b49c7030e698ff81cee3f \
     --hash=sha256:f2a6af57bd9e4a75d70e4117e78a1bbee84f79ae3fbb6d0111005d6ebcc4cb8d \
     --hash=sha256:f351e0dd702687d12a402b867a1b4146a256923e1c38317cbc472f6372b94707
-    # via
-    #   -c requirements/runtime.txt
-    #   mic_eq (pyproject.toml)
+    # via mic_eq (pyproject.toml)
 semantic-version==2.10.0 \
     --hash=sha256:bdabb6d336998cbb378d4b9db3a4b56a1e3235701dc05ea2690d9a997ed5041c \
     --hash=sha256:de78a3b8e0feda74cabc54aab2da702113e33ac9d9eb9d2389bcf1f58b7d9177

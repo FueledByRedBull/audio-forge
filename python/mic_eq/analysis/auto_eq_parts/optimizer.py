@@ -7,7 +7,6 @@ import numpy as np
 
 from .constants import (
     CROSS_TAKE_ABSTENTION_CONFIDENCE_THRESHOLD,
-    DEBUG,
     GAIN_MAX_DB,
     GAIN_MIN_DB,
     GLOBAL_CAPTURE_CONFIDENCE_THRESHOLD,
@@ -28,6 +27,7 @@ from .constants import (
     debug_log,
 )
 from ..cancellation import check_analysis_cancelled
+from .eq_fit import bounded_least_squares, project_gains, refine_gains
 from .dynamic_bands import (
     _build_dense_log_grid,
     _center_bounds,
@@ -245,8 +245,6 @@ def _constrained_gain_refinement(
     sample_rate: float = SAMPLE_RATE,
 ) -> tuple[np.ndarray, bool]:
     """Re-optimize gains symmetrically inside the final safety bounds."""
-    from scipy.optimize import minimize
-
     gains_arr = np.asarray(gains, dtype=float)
     adjacent_limits = _adjacent_gain_limits(centers_hz)
     constraint_margin = 1.0e-7
@@ -262,7 +260,13 @@ def _constrained_gain_refinement(
     )
     gains_arr = np.clip(gains_arr, lower, upper)
 
-    def objective(candidate: np.ndarray) -> float:
+    log_centers = np.log10(np.clip(centers_hz, 1e-6, None))
+    centered_log_centers = log_centers - float(np.mean(log_centers))
+    denominator = float(np.sum(centered_log_centers**2))
+    sqrt_weights = np.sqrt(weights)
+
+    def residuals(candidate: np.ndarray) -> np.ndarray:
+        """The objective is sum(residuals ** 2)."""
         response = _predict_eq_response(
             dense_freqs,
             candidate,
@@ -272,41 +276,27 @@ def _constrained_gain_refinement(
         )
         error = target_dense_db - (measured_dense_db + response)
         curvature = _log_frequency_gain_curvature(candidate, centers_hz)
-        log_centers = np.log10(np.clip(centers_hz, 1e-6, None))
-        centered_log_centers = log_centers - float(np.mean(log_centers))
-        denominator = float(np.sum(centered_log_centers**2))
         tilt = (
             float(np.dot(centered_log_centers, candidate) / denominator)
             if denominator > 0.0
             else 0.0
         )
-        return float(
-            np.sum(weights * error * error)
-            + LAMBDA_G * np.sum(curvature * curvature)
-            + LAMBDA_TILT * tilt * tilt
+        return np.concatenate(
+            [
+                sqrt_weights * error,
+                np.sqrt(LAMBDA_G) * curvature,
+                [np.sqrt(LAMBDA_TILT) * tilt],
+            ]
         )
 
-    def adjacency_slack(candidate: np.ndarray) -> np.ndarray:
-        return adjacent_limits - constraint_margin - np.abs(np.diff(candidate))
+    # Adjacent gains must differ by at most limit - margin.
+    adjacent_slack_limit = adjacent_limits - constraint_margin
 
-    solver_bounds: Any = list(zip(lower.tolist(), upper.tolist(), strict=True))
-    solver_constraints: Any = (
-        {
-            "type": "ineq",
-            "fun": adjacency_slack,
-        },
-    )
     def on_solver_iteration(_candidate: np.ndarray) -> None:
         check_analysis_cancelled(cancel_check)
 
-    projection = minimize(
-        lambda candidate: float(np.sum(np.square(candidate - gains_arr))),
-        gains_arr,
-        method="SLSQP",
-        bounds=solver_bounds,
-        constraints=solver_constraints,
-        callback=on_solver_iteration,
-        options={"ftol": 1e-9, "maxiter": 120, "disp": False},
+    projection = project_gains(
+        gains_arr, lower, upper, adjacent_slack_limit, on_solver_iteration
     )
     projected = (
         np.asarray(projection.x, dtype=float)
@@ -315,14 +305,8 @@ def _constrained_gain_refinement(
         and np.all(np.abs(np.diff(projection.x)) <= adjacent_limits + 1.0e-9)
         else np.zeros_like(gains_arr)
     )
-    result = minimize(
-        objective,
-        projected,
-        method="SLSQP",
-        bounds=solver_bounds,
-        constraints=solver_constraints,
-        callback=on_solver_iteration,
-        options={"ftol": 1e-7, "maxiter": 120, "disp": False},
+    result = refine_gains(
+        residuals, projected, lower, upper, adjacent_slack_limit, on_solver_iteration
     )
     if result.success and np.all(np.isfinite(result.x)):
         candidate = np.asarray(result.x, dtype=float)
@@ -675,7 +659,6 @@ def calculate_eq_bands(
     Returns:
         eq_settings: Dict with 'band_gains' and 'band_qs' (10-element lists)
     """
-    from scipy.optimize import least_squares
 
     check_analysis_cancelled(cancel_check)
     try:
@@ -964,8 +947,6 @@ def calculate_eq_bands(
     desired_gains = target_db_at_centers - measured_db_at_centers
     gains_initial = np.clip(desired_gains, dynamic_gain_lower, dynamic_gain_upper)
 
-    verbose_level = 2 if DEBUG else 0
-
     def cancellable_residual(residual):
         if cancel_check is None:
             return residual
@@ -977,7 +958,7 @@ def calculate_eq_bands(
         return wrapped
 
     # Stage 1: stable gain-only solve with fixed Q prior.
-    stage1 = least_squares(
+    stage1 = bounded_least_squares(
         cancellable_residual(_gain_only_residuals),
         gains_initial,
         args=(
@@ -990,12 +971,10 @@ def calculate_eq_bands(
             sample_rate,
         ),
         bounds=(dynamic_gain_lower, dynamic_gain_upper),
-        method="trf",
         ftol=1e-4,
         xtol=1e-4,
         gtol=1e-6,
         max_nfev=120,
-        verbose=verbose_level,
     )
     check_analysis_cancelled(cancel_check)
     gains_stage1 = stage1.x
@@ -1013,7 +992,7 @@ def calculate_eq_bands(
     params_initial = np.concatenate([gains_stage1, q_prior, base_centers_hz])
     params_lower = np.concatenate([dynamic_gain_lower, q_low, center_low])
     params_upper = np.concatenate([dynamic_gain_upper, q_high, center_high])
-    stage2 = least_squares(
+    stage2 = bounded_least_squares(
         cancellable_residual(_joint_gain_q_residuals),
         params_initial,
         args=(
@@ -1026,12 +1005,10 @@ def calculate_eq_bands(
             sample_rate,
         ),
         bounds=(params_lower, params_upper),
-        method="trf",
         ftol=1e-4,
         xtol=1e-4,
         gtol=1e-6,
         max_nfev=180,
-        verbose=verbose_level,
     )
     check_analysis_cancelled(cancel_check)
     optimal_gains = stage2.x[:NUM_EQ_BANDS]

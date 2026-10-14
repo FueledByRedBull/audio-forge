@@ -1,4 +1,4 @@
-"""Signal-driven EQ controls for QML, with no processing-panel dependency."""
+"""Signal-driven EQ controls for QML."""
 
 from __future__ import annotations
 

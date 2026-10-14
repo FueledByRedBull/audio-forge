@@ -9,7 +9,7 @@ from PySide6.QtCore import QLocale, QObject, Signal
 
 from ..config import GateSettings, PresetValidationError
 from ..config_parts.validation import _validate_bool, _validate_range
-from .control_specs import CONTROL_RANGES, control_spec, widget_control_label
+from .control_specs import CONTROL_RANGES, control_spec
 from .rate_limiter import RateLimiter
 
 
@@ -18,7 +18,7 @@ GATE_MODES = control_spec("gate", "gate_mode").choices
 
 
 class GateState(QObject):
-    """Own exact settings; views format them without becoming the stored values."""
+    """Own exact settings; the view formats them without becoming the stored values."""
 
     changed = Signal()
     configurationEdited = Signal(str)
@@ -73,7 +73,7 @@ class GateState(QObject):
             if candidate["gate_mode"] > 0 and not self.vad_available:
                 candidate["gate_mode"] = 0
         if candidate == self._settings:
-            # A widget may already show the requested mode before it was
+            # The view may already show the requested mode before it was
             # rejected; read back even when the corrected value is unchanged.
             self.changed.emit()
             return
@@ -192,15 +192,12 @@ class GateState(QObject):
         margin = float(QLocale.c().toString(settings["gate_margin_db"], "f", 2))
         vad_threshold = float(QLocale.c().toString(settings["vad_threshold"], "f", 2))
         automatic = mode == 1 and self.vad_available and settings["auto_threshold_enabled"]
-        label = "Manual Threshold:"
         if mode == 2:
-            label = "Level Fallback:"
             summary = (
                 f"VAD Threshold: {vad_threshold:.2f} | "
                 f"Level fallback when VAD is unavailable: {threshold:.1f} dB"
             )
         elif automatic:
-            label = "Manual Threshold (fallback):"
             if self.noise_floor_db is None:
                 summary = "Effective Threshold: -- (noise floor unavailable)"
             else:
@@ -222,17 +219,12 @@ class GateState(QObject):
         else:
             vad_info = "VAD: Active | Manual threshold"
         return {
-            "threshold_label": label,
             "threshold_status": summary,
             "noise_floor": (
                 f"Noise Floor: {self.noise_floor_db:.1f} dB"
                 if self.noise_floor_db is not None else "Noise Floor: --"
             ),
             "vad_info": vad_info,
-            "auto_threshold_text": (
-                "Track Noise Floor" if mode == 2
-                else widget_control_label("gate", "auto_threshold_enabled")
-            ),
             "auto_threshold_name": (
                 "Track noise floor" if mode == 2 else auto_threshold_spec.accessible_name
             ),

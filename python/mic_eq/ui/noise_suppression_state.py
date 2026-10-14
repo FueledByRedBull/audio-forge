@@ -1,4 +1,4 @@
-"""Noise suppression settings shared by the widget and Quick views."""
+"""Noise suppression settings, independent of the view."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from ..config_parts.validation import (
 
 
 class NoiseSuppressionState(QObject):
-    """Own exact settings and report rejected backend switches to both views."""
+    """Own exact settings and report rejected backend switches to the view."""
 
     changed = Signal()
     configurationEdited = Signal(str)

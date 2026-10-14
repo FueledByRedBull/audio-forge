@@ -10,11 +10,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QMenu,
-    QPushButton,
     QSizePolicy,
-    QToolButton,
-    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -23,7 +19,6 @@ from .layout_constants import MARGIN_PANEL, SPACING_SECTION
 from .theme import (
     CARD_STYLE,
     PALETTE,
-    RADIUS_CONTROL,
     STEP_CURRENT_STYLE,
     STEP_STYLE,
     prefers_reduced_motion,
@@ -48,16 +43,6 @@ class Glyph:
     REFRESH = ""
     UNDO = ""
     REDO = ""
-
-
-# Short stand-ins for machines without a system icon font.
-_GLYPH_TEXT = {
-    Glyph.MORE: "...",
-    Glyph.HELP: "?",
-    Glyph.PREVIOUS: "<",
-    Glyph.NEXT: ">",
-    Glyph.REFRESH: "Refresh",
-}
 
 
 def icon_font(point_size: int = 12) -> QFont | None:
@@ -203,40 +188,13 @@ class StepHeader(QWidget):
             label.setStyleSheet(STEP_CURRENT_STYLE if index == step else STEP_STYLE)
 
 
-class IconButton(QToolButton):
-    """A borderless glyph button that always carries an accessible name."""
-
-    def __init__(self, glyph: str, name: str, parent: QWidget | None = None):
-        super().__init__(parent)
-        font = icon_font()
-        if font is None:
-            self.setText(_GLYPH_TEXT.get(glyph, name))
-        else:
-            self.setFont(font)
-            self.setText(glyph)
-        self.setAccessibleName(name)
-        self.setToolTip(name)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setAutoRaise(True)
-        self.setStyleSheet(
-            f"QToolButton {{ border: none; border-radius: {RADIUS_CONTROL}px; "
-            f"padding: 6px; color: {PALETTE.text_muted}; }} "
-            f"QToolButton:hover {{ background-color: {PALETTE.control_hover}; "
-            f"color: {PALETTE.text_primary}; }} "
-            f"QToolButton:focus {{ border: 1px solid {PALETTE.text_primary}; }} "
-            "QToolButton::menu-indicator { image: none; }"
-        )
-
-
 class Card(QFrame):
-    """A titled surface: optional switch, help and menu in the header, then content."""
+    """A titled surface: a title in the header, then content."""
 
     def __init__(
         self,
         title: str,
         *,
-        switch: QCheckBox | None = None,
-        help_text: str = "",
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -248,9 +206,6 @@ class Card(QFrame):
 
         self.header = QHBoxLayout()
         self.header.setSpacing(10)
-        self.switch = switch
-        if switch is not None:
-            self.header.addWidget(switch)
         self.title_label = QLabel(title.upper())
         title_font = self.title_label.font()
         title_font.setPointSize(10)
@@ -258,97 +213,9 @@ class Card(QFrame):
         title_font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 106)
         self.title_label.setFont(title_font)
         self.header.addWidget(self.title_label)
-        self.help_button: IconButton | None = None
-        self.menu_button: IconButton | None = None
-        if help_text:
-            self.help_button = IconButton(Glyph.HELP, f"About {title}")
-            self.help_button.setToolTip(help_text)
-            self.help_button.clicked.connect(self._show_help)
-            self.header.addWidget(self.help_button)
         self.header.addStretch(1)
         outer.addLayout(self.header)
 
         self.body = QVBoxLayout()
         self.body.setSpacing(12)
         outer.addLayout(self.body)
-
-        self._advanced: QWidget | None = None
-        self.advanced_button: QPushButton | None = None
-        self._title = title
-
-    def _show_help(self) -> None:
-        button = self.help_button
-        assert button is not None
-        QToolTip.showText(button.mapToGlobal(button.rect().bottomLeft()), button.toolTip())
-
-    def add_header_widget(self, widget: QWidget) -> None:
-        self.header.addWidget(widget)
-
-    def set_menu(self, menu: QMenu) -> None:
-        """Attach an overflow menu to the right end of the header."""
-
-        button = IconButton(Glyph.MORE, f"{self._title} options")
-        button.setMenu(menu)
-        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.menu_button = button
-        self.header.addWidget(button)
-
-    def add_advanced(self, widget: QWidget, *, label: str = "Advanced") -> QPushButton:
-        """Put ``widget`` behind a disclosure row at the bottom of the card."""
-
-        button = QPushButton(label)
-        button.setCheckable(True)
-        button.setAccessibleName(f"Show {self._title} {label.lower()} settings")
-        button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        button.setStyleSheet(
-            f"QPushButton {{ border: none; background: transparent; padding: 4px 0; "
-            f"color: {PALETTE.text_muted}; }} "
-            f"QPushButton:hover, QPushButton:checked {{ color: {PALETTE.text_primary}; }} "
-            f"QPushButton:focus {{ color: {PALETTE.accent}; }}"
-        )
-        widget.setVisible(False)
-        button.toggled.connect(widget.setVisible)
-        self.body.addWidget(button)
-        self.body.addWidget(widget)
-        self._advanced = widget
-        self.advanced_button = button
-        return button
-
-
-class NavButton(QPushButton):
-    """A navigation rail entry: glyph above a short label."""
-
-    def __init__(self, glyph: str, label: str, parent: QWidget | None = None):
-        super().__init__(parent)
-        self._glyph = glyph
-        self._label = label
-        self.setCheckable(True)
-        self.setAccessibleName(f"{label} page")
-        self.setToolTip(label)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(76, 64)
-
-    def paintEvent(self, _event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        active = self.isChecked()
-        if active or self.underMouse() or self.hasFocus():
-            painter.fillRect(self.rect(), qcolor(PALETTE.card_surface))
-        if active:
-            painter.fillRect(0, 0, 3, self.height(), qcolor(PALETTE.accent))
-        painter.setPen(qcolor(PALETTE.text_primary if active else PALETTE.text_muted))
-        label_rect = self.rect().adjusted(0, 38, 0, -8)
-        glyph_font = icon_font(15)
-        if glyph_font is None:
-            label_rect = self.rect()
-        else:
-            painter.setFont(glyph_font)
-            painter.drawText(
-                self.rect().adjusted(0, 10, 0, -26),
-                Qt.AlignmentFlag.AlignCenter,
-                self._glyph,
-            )
-        label_font = self.font()
-        label_font.setPointSize(8)
-        painter.setFont(label_font)
-        painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, self._label)

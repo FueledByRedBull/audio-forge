@@ -292,9 +292,8 @@ def test_changed_paths_and_snapshot_schema_exclude_audio_and_runtime_state() -> 
 
 @pytest.fixture
 def window(quick_window):
-    """The real Quick window; none of these behaviours may need the widget view."""
-    yield quick_window
-    assert quick_window._classic_root is None
+    """The real Quick window."""
+    return quick_window
 
 
 def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(

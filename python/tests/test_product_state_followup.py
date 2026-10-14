@@ -59,7 +59,6 @@ def test_active_preset_identity_tracks_edit_history_and_restart(qapp, monkeypatc
         assert window.current_preset_modified is False
         window.redo_configuration()
         assert window.current_preset_modified is True
-        assert window._classic_root is None
     finally:
         window.close()
         window.deleteLater()

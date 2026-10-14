@@ -1,4 +1,4 @@
-"""Exact compressor settings and calibration metadata independent of either view."""
+"""Exact compressor settings and calibration metadata independent of the view."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ _INTENSITY_KEYS = _PARAMETER_KEYS - {"target_lufs"}
 
 
 class CompressorState(QObject):
-    """Own write ordering, coalescing and calibration provenance for both views."""
+    """Own write ordering, coalescing and calibration provenance."""
 
     changed = Signal()
     configurationEdited = Signal(str)
@@ -127,8 +127,8 @@ class CompressorState(QObject):
 
     def set_settings(self, settings: dict) -> None:
         """Apply a preset inline; omission invalidates transient noise evidence."""
-        # Recommendation dictionaries also contain analysis diagnostics; as in
-        # the panel API, only actual controls and supported metadata are applied.
+        # Recommendation dictionaries also contain analysis diagnostics; only
+        # actual controls and supported metadata are applied.
         candidate = self._validated({
             key: value for key, value in settings.items() if key in _PARAMETER_KEYS
         })

@@ -1,8 +1,4 @@
-"""What both views show before any live data arrives, as tables.
-
-The classic widgets and the Qt Quick scene render the states built from these.
-Neither view module owns them, so neither has to import the other.
-"""
+"""What the Qt Quick scene shows before any live data arrives, as tables."""
 
 from __future__ import annotations
 
@@ -49,7 +45,7 @@ class _ActionSpec(NamedTuple):
     checkable: bool = False
 
 
-# Keyed by the label attribute each text stands for in the classic view.
+# Keyed by the name the window's shell_texts exposes each text under.
 TEXT_SPECS = {
     "device_warning_banner": _TextSpec(
         "Warning: No audio devices detected. Check your audio drivers and connections.",
@@ -137,7 +133,7 @@ HEALTH_LAYOUT_KEYS = (
     "dropped_label",
     "recovery_diag_label",
 )
-# Keyed by the prefix of the combo attribute each choice stands for.
+# Keyed by the prefix of the window's <key>_choice attribute.
 CHOICE_SPECS = {
     "input": _ChoiceSpec("Input audio device"),
     "output": _ChoiceSpec("Output audio device"),
@@ -159,7 +155,7 @@ CHOICE_SPECS = {
         INPUT_CLEANUP_MODE_OPTIONS,
     ),
 }
-# Keyed by the button attribute each action stands for.
+# Keyed by the prefix of the window's <key>_action attribute.
 ACTION_SPECS = {
     "refresh_btn": _ActionSpec(
         "Refresh", "Refresh audio devices", "Refresh audio devices"

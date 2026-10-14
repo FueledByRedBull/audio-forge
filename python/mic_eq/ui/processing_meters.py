@@ -1,4 +1,4 @@
-"""Reusable meter models, independent of any view and of the processing control panels."""
+"""Reusable meter models, independent of any view."""
 
 from __future__ import annotations
 
@@ -29,10 +29,9 @@ READOUTS = {
 
 
 class ProcessingMeters(QObject):
-    """Meter models and readout texts shared by every view, with no widgets of their own.
+    """Meter models and readout texts, with no widgets of their own.
 
-    Without a gate state (a stand-alone compressor or de-esser panel) the
-    confidence meter stays unavailable.
+    Without a gate state the confidence meter stays unavailable.
     """
 
     def __init__(self, processor, gate_state: GateState | None, parent: QObject | None = None):

@@ -188,7 +188,7 @@ class EQGraphGeometry:
 
 
 class EQGraphModel(QObject):
-    """One EQ graph snapshot and interaction state shared by both views."""
+    """One EQ graph snapshot and interaction state."""
 
     changed = Signal()
     # The pointer moved over the graph; nothing else did, so no repaint of a
@@ -752,7 +752,7 @@ class EQGraphModel(QObject):
 
 
 class EQGraphRenderer:
-    """Paint one shared graph model into either Qt view's QPainter."""
+    """Paint one graph model into a QPainter."""
 
     GEOMETRY = EQGraphGeometry
     TOTAL_WIDTH = 2.0

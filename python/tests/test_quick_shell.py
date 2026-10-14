@@ -1,4 +1,4 @@
-"""Both frontends share settings; Quick builds no widget view."""
+"""The Qt Quick view renders and edits the shared settings."""
 
 from __future__ import annotations
 
@@ -25,30 +25,16 @@ from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtQml import QQmlProperty
 from PySide6.QtQuick import QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
-from PySide6.QtWidgets import (
-    QComboBox,
-    QMessageBox,
-    QStatusBar,
-)
+from PySide6.QtWidgets import QMessageBox
 
 from mic_eq.config import AppConfig, DeviceIdentity
 from mic_eq.config_parts.settings import q_from_bandwidth_octaves
-from mic_eq.ui.main_window import CLASSIC_ATTRIBUTES, MainWindow
+from mic_eq.ui.main_window import PAGE_NAMES, MainWindow
 from mic_eq.ui.eq_quick_graph import EQGraphItem
 from mic_eq.ui.eq_graph import EQGraphGeometry
 from mic_eq.ui.level_meter import CLIP_FLAT_TOP_SAMPLES
 from mic_eq.ui.quick_meter import QuickMeterItem
-from mic_eq.ui.shell_specs import ACTION_SPECS, CHOICE_SPECS
-from mic_eq.ui.shell_state import ChoiceState
 from mic_eq.ui.quick_shell import SettingControl
-
-
-def switch_to_classic(window) -> None:
-    """Put the widget view over a running scene, as the opt-out builds it over the same state."""
-
-    bridge = window.__dict__.pop("quick_bridge")
-    window._show_classic_view()
-    bridge.release()
 
 
 @pytest.fixture
@@ -152,8 +138,8 @@ def test_transport_follows_the_stop_action(quick_window) -> None:
     assert root.property("running") is False
 
 
-def test_a_quick_session_never_builds_the_widget_view(quick_window, monkeypatch) -> None:
-    """Start, run, change pages and close without one classic widget or status bar."""
+def test_a_quick_session_keeps_the_scene_from_start_to_close(quick_window, monkeypatch) -> None:
+    """Start, run, change pages and close with the scene as the window's content."""
 
     window = quick_window
     refreshes: list[int] = []
@@ -161,17 +147,14 @@ def test_a_quick_session_never_builds_the_widget_view(quick_window, monkeypatch)
         window, "_refresh_login_startup_action", lambda: refreshes.append(window.shell_page.currentIndex())
     )
 
-    def assert_no_widget_view() -> None:
-        assert window._classic_root is None
-        assert not vars(window).keys() & set(CLASSIC_ATTRIBUTES)
-        assert window.findChildren(QStatusBar) == []
+    def assert_scene_shown() -> None:
         assert isinstance(window.centralWidget(), QQuickWidget)
         assert window.quick_view_failure is None
 
     def text(key: str) -> str:
         return window.shell_texts[key].text
 
-    assert_no_widget_view()
+    assert_scene_shown()
     before = window._get_current_preset()
     window.apply_processing_configuration(before)
     window._commit_pending_configuration_snapshot()
@@ -261,37 +244,10 @@ def test_a_quick_session_never_builds_the_widget_view(quick_window, monkeypatch)
 
     assert refreshes == [window.SETTINGS_PAGE_INDEX]
     assert window._get_current_preset().eq.to_dict() == before.eq.to_dict()
-    assert_no_widget_view()
+    assert_scene_shown()
     window._quitting = True
     window.close()
-    assert_no_widget_view()
-
-
-def test_classic_fallback_only_attaches_views_without_native_writes(quick_window, monkeypatch) -> None:
-    window = quick_window
-    preset = window._get_current_preset()
-    preset.compressor.threshold_db = -23.257
-    preset.limiter.ceiling_db = -3.257
-    preset.rnnoise.strength = 0.6723
-    window.apply_processing_configuration(preset)
-    expected = window._get_current_preset()
-
-    def unexpected(*_args, **_kwargs):
-        pytest.fail("Attaching the classic view must not write DSP settings")
-
-    for state in (window.gate_state, window.eq_state, window.compressor_state,
-                  window.deesser_state, window.limiter_state, window.noise_suppression_state):
-        monkeypatch.setattr(state, "set_settings", unexpected)
-        if hasattr(state, "set_value"):
-            monkeypatch.setattr(state, "set_value", unexpected)
-    switch_to_classic(window)
-    assert window.compressor_panel.compressor_state is window.compressor_state
-    assert window.eq_panel.curve_widget is window.eq_presentation.curve_widget
-    assert window.gate_panel.confidence_meter is window.processing_meters.confidence
-    assert window._get_current_preset() == expected
-    for name in ("transmission_status_label", "calibration_status_label", "health_summary_label"):
-        assert window.shell_texts[name].shown
-        assert not getattr(window, name).isHidden()
+    assert_scene_shown()
 
 
 def test_failed_gate_initialization_retains_configuration_recovery_barrier(qapp, monkeypatch) -> None:
@@ -315,7 +271,7 @@ def test_deesser_controls_share_exact_settings_and_derived_availability(quick_wi
     state = quick_window.deesser_state
     state.set_settings({"auto_enabled": False, "attack_ms": 2.125})
     attack = rows["Attack"]["proxy"]
-    assert attack.value == quick_window.deesser_panel.attack_spinbox.value()
+    assert attack.value == 2.13
     rows["Auto"]["proxy"].click()
     rows["Auto"]["proxy"].released()
     assert not rows["Threshold"]["proxy"].enabled
@@ -327,70 +283,21 @@ def test_deesser_controls_share_exact_settings_and_derived_availability(quick_wi
     assert quick_window._get_current_preset().deesser.high_cut_hz == 12200
 
 
-def test_state_controls_preserve_widget_presentation_contract(quick_window) -> None:
-    gate = quick_window.gate_panel
-    deesser = quick_window.deesser_panel
-    limiter = quick_window.compressor_panel
-    for stage_index, bindings in (
-        (1, {
-            "Threshold": gate.threshold_spinbox, "Attack": gate.attack_spinbox,
-            "Release": gate.release_spinbox, "VAD threshold": gate.vad_threshold_spinbox,
-            "Hold time": gate.vad_hold_spinbox, "VAD pre-gain": gate.vad_pre_gain_spinbox,
-            "Margin": gate.margin_spinbox,
-        }),
-        (2, {
-            "Amount": deesser.auto_amount_spinbox,
-            "Low cut": deesser.low_cut_spinbox,
-            "High cut": deesser.high_cut_spinbox,
-            "Threshold": deesser.threshold_spinbox,
-            "Ratio": deesser.ratio_spinbox,
-            "Attack": deesser.attack_spinbox,
-            "Release": deesser.release_spinbox,
-            "Max reduction": deesser.max_reduction_spinbox,
-        }),
-        (3, {
-            "Threshold": limiter.threshold_spinbox, "Ratio": limiter.ratio_spinbox,
-            "Attack": limiter.attack_spinbox, "Release": limiter.release_spinbox,
-            "Makeup gain": limiter.makeup_spinbox, "Base release": limiter.base_release_spinbox,
-            "Target LUFS": limiter.target_lufs_spinbox,
-        }),
-        (4, {"Ceiling": limiter.ceiling_spinbox, "Release": limiter.limiter_release_spinbox}),
-    ):
-        rows = _rows(quick_window.quick_bridge.model["stages"][stage_index])
-        for label, widget in bindings.items():
-            control = rows[label]["proxy"]
-            assert control.name == widget.accessibleName()
-            assert control.minimum == widget.minimum()
-            assert control.maximum == widget.maximum()
-            assert control.step == widget.singleStep()
-            assert control.enabled == widget.isEnabled()
-            assert control.text == widget.text()
-            assert control.toolTip == widget.toolTip()
-
-
-def test_limiter_reads_shared_state_without_polling_widgets(quick_window) -> None:
+def test_limiter_reads_shared_state_without_polling(quick_window) -> None:
     bridge = quick_window.quick_bridge
     control = _rows(bridge.model["stages"][-1])["Ceiling"]["proxy"]
     assert isinstance(control, SettingControl)
-    widget = quick_window.compressor_panel.ceiling_spinbox
     assert not hasattr(bridge, "_timer")
     seen = []
     control.changed.connect(lambda: seen.append(control.value))
 
     quick_window.limiter_state.set_settings({"ceiling_db": -3.257})
     assert seen[-1] == -3.26
-    assert control.text == widget.text()
+    # The control shows a rounded value; the exact one stays the product state.
     assert quick_window._get_current_preset().limiter.ceiling_db == -3.257
-    # Formatting or a signal-blocked change in a view cannot become product state.
-    with QSignalBlocker(widget):
-        widget.setValue(-9.0)
-    assert control.value == -3.26
-    assert quick_window.compressor_panel.get_limiter_settings()["ceiling_db"] == -3.257
-    quick_window.limiter_state.changed.emit()
-    assert widget.value() == -3.26
 
 
-def test_limiter_quick_edits_preserve_exact_preset_undo_and_fallback(quick_window) -> None:
+def test_limiter_quick_edits_preserve_exact_preset_and_undo(quick_window) -> None:
     preset = quick_window._get_current_preset()
     preset.limiter.ceiling_db = -3.257
     quick_window.apply_processing_configuration(preset)
@@ -403,21 +310,16 @@ def test_limiter_quick_edits_preserve_exact_preset_undo_and_fallback(quick_windo
     assert control.value == -3.26
     quick_window.redo_configuration()
     assert control.value == -2.25
-    switch_to_classic(quick_window)
-    assert quick_window.compressor_panel.ceiling_spinbox.value() == -2.25
     assert quick_window._get_current_preset().limiter.ceiling_db == -2.25
 
 
-@pytest.mark.parametrize("value", [-1.125, -2.125, -2.005])
-def test_limiter_uses_qt_rounding_in_both_views(quick_window, value) -> None:
+@pytest.mark.parametrize(("value", "rounded"), [(-1.125, -1.13), (-2.125, -2.13), (-2.005, -2.0)])
+def test_limiter_uses_qt_rounding(quick_window, value, rounded) -> None:
     state = quick_window.limiter_state
     control = _rows(quick_window.quick_bridge.model["stages"][-1])["Ceiling"]["proxy"]
-    widget = quick_window.compressor_panel.ceiling_spinbox
     state.set_settings({"ceiling_db": value})
-    assert control.value == widget.value()
-    assert control.text == widget.text()
+    assert control.value == rounded
     assert state.get_settings()["ceiling_db"] == value
-    rounded = widget.value()
     control.setValue(value)
     control.released()
     assert state.get_settings()["ceiling_db"] == rounded
@@ -495,48 +397,61 @@ def test_failed_limiter_recovery_blocks_restart_until_configuration_reapplied(qu
     assert "configuration" not in quick_window._temporary_mute_reasons
 
 
-def test_scene_loads_without_a_widget_view(quick_window) -> None:
+def test_scene_loads_cleanly(quick_window) -> None:
     view = quick_window.centralWidget()
     assert isinstance(view, QQuickWidget)
     assert view.status() == QQuickWidget.Status.Ready
     assert view.errors() == []
     # Binding errors are only warnings to Qt; here they fail the test.
     assert vars(quick_window)["scene_messages"] == []
-    assert quick_window._classic_root is None
-    assert quick_window.findChildren(QStatusBar) == []
     # Meters age their own peak holds, so nothing needs a visible widget to run.
     meter = quick_window.input_meter
     meter.set_levels(-30.0, -0.2)
     assert meter.clip_flash_counter == 10 and meter.decay_timer.isActive()
 
 
-def test_field_proxy_writes_through_to_the_panel(quick_window) -> None:
+def test_the_menu_bar_stays_hidden_and_the_window_can_shrink_to_900_by_640(quick_window) -> None:
+    assert quick_window.menuBar().isHidden()
+    assert quick_window.minimumWidth() <= 900
+    assert quick_window.minimumHeight() <= 640
+
+
+def test_the_page_state_ignores_an_index_outside_the_pages(quick_window) -> None:
+    page = quick_window.shell_page
+    page.setIndex(len(PAGE_NAMES))
+    page.setIndex(-1)
+    assert page.currentIndex() == 0
+    page.setIndex(quick_window.HEALTH_PAGE_INDEX)
+    page.setIndex(len(PAGE_NAMES))
+    assert page.currentIndex() == quick_window.HEALTH_PAGE_INDEX
+
+
+def test_field_proxy_writes_through_to_the_gate_state(quick_window) -> None:
     gate = _rows(quick_window.quick_bridge.model["stages"][1])
     threshold = gate["Threshold"]["proxy"]
-    spinbox = quick_window.gate_panel.threshold_spinbox
+    state = quick_window.gate_state
 
     threshold.setValue(-33.0)
-    assert spinbox.value() == pytest.approx(-33.0)
+    assert state.get_settings()["threshold_db"] == pytest.approx(-33.0)
     assert threshold.value == pytest.approx(-33.0)
-    assert threshold.text == spinbox.text()
 
     threshold.setText("-28 dB")
-    assert spinbox.value() == pytest.approx(-28.0)
+    assert state.get_settings()["threshold_db"] == pytest.approx(-28.0)
     threshold.setText("not a number")
-    assert spinbox.value() == pytest.approx(-28.0)
+    assert state.get_settings()["threshold_db"] == pytest.approx(-28.0)
 
     threshold.setValue(1000.0)
-    assert spinbox.value() == spinbox.maximum()
+    assert state.get_settings()["threshold_db"] == threshold.maximum
 
 
 def test_toggle_combo_and_page_proxies(quick_window) -> None:
     model = quick_window.quick_bridge.model
     gate_card = model["stages"][1]
-    switch = quick_window.gate_panel.enabled_checkbox
-    before = switch.isChecked()
+    state = quick_window.gate_state
+    before = state.get_settings()["enabled"]
     gate_card["toggle"].click()
-    assert switch.isChecked() is not before
-    assert gate_card["toggle"].checked is switch.isChecked()
+    assert state.get_settings()["enabled"] is not before
+    assert gate_card["toggle"].checked is state.get_settings()["enabled"]
 
     mode = model["top"]["mode"]
     choice = quick_window.processing_mode_choice
@@ -1106,49 +1021,6 @@ def test_a_focused_editable_box_still_steps_with_the_wheel(quick_window, wide_pa
     assert page.property("contentY") == scrolled
 
 
-def _assert_widgets_show_the_state(window) -> None:
-    """The widget view is the window's content and every widget renders its state."""
-
-    root = window._classic_root
-    assert root is not None
-    assert window.centralWidget() is root
-    assert not root.isHidden() and not window.status_bar.isHidden()
-    assert window.status_bar.currentMessage() == window.status_message.text
-    for key, state in window.shell_texts.items():
-        label = getattr(window, key)
-        assert (label.text(), label.toolTip(), label.isHidden()) == (
-            state.text, state.toolTip, not state.shown
-        ), key
-    for key in CHOICE_SPECS:
-        combo, choice = getattr(window, f"{key}_combo"), getattr(window, f"{key}_choice")
-        assert combo.currentIndex() == choice.currentIndex(), key
-        assert [combo.itemText(i) for i in range(combo.count())] == choice.items, key
-    for key in ACTION_SPECS:
-        button, action = getattr(window, key), getattr(window, f"{key}_action")
-        assert (button.isEnabled(), button.isChecked()) == (action.isEnabled(), action.isChecked()), key
-        if key != "refresh_btn":  # An icon button keeps its glyph as its text.
-            assert button.text() == action.text(), key
-    assert window.page_stack.currentIndex() == window.shell_page.currentIndex()
-    assert window.nav_group.checkedId() == window.shell_page.currentIndex()
-    assert window.health_details_button.isChecked() == (
-        window.shell_page.currentIndex() == window.HEALTH_PAGE_INDEX
-    )
-    running = window.stop_btn_action.isEnabled()
-    assert window.stop_btn.isHidden() is not running
-    assert window.start_btn.isHidden() is running
-    assert window.gate_panel.confidence_meter is window.processing_meters.confidence
-    assert window._responsive_layout_compact is (window.width() < window.COMPACT_LAYOUT_BREAKPOINT)
-    # Later changes keep rendering into the same widgets.
-    window.status_message.showMessage("After the switch")
-    window._set_health_chip("input_health_label", "Input: ok", "ok")
-    assert window.status_bar.currentMessage() == "After the switch"
-    assert window.input_health_label.text() == "Input: ok"
-    assert window.input_health_label.property("health_state") == "ok"
-
-
-_CLASSIC = {"view": "classic", "graphics_api": "not_applicable"}
-
-
 def test_the_export_names_the_quick_view_and_the_graphics_backend_qt_chose(quick_window) -> None:
     snapshot = quick_window._interface_snapshot()
     assert snapshot["view"] == "quick" and snapshot["classic_reason"] == "none"
@@ -1171,21 +1043,6 @@ def _load_config_without_devices(monkeypatch) -> None:
     monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
-
-
-def test_opt_out_keeps_the_widget_view(qapp, monkeypatch) -> None:
-    monkeypatch.setenv("AUDIOFORGE_QML", "0")
-    _load_config_without_devices(monkeypatch)
-    window = MainWindow()
-    assert not isinstance(window.centralWidget(), QQuickWidget)
-    assert "quick_bridge" not in vars(window)
-    # Opting out is a choice, not a failure: no notice, and a smoke test passes.
-    assert window.quick_view_failure is None
-    assert window._interface_snapshot() == {**_CLASSIC, "classic_reason": "disabled_by_env"}
-    _assert_widgets_show_the_state(window)
-    window.show()
-    qapp.processEvents()
-    assert window.status_bar.isVisible() and window.page_stack.isVisible()
 
 
 def test_level_history_follows_the_meters_and_clears_when_they_stop(quick_window) -> None:
@@ -1299,22 +1156,6 @@ def test_keyboard_focus_scrolls_its_control_into_view(quick_window, qapp) -> Non
     assert page.property("contentY") > 0
 
 
-def test_quick_graph_does_not_construct_or_resize_classic_graph(quick_window) -> None:
-    presentation = quick_window.eq_presentation
-    item = EQGraphItem()
-    item.setWidth(640)
-    item.setHeight(200)
-    item.graph = presentation.graph_model
-    image = QImage(640, 200, QImage.Format.Format_ARGB32_Premultiplied)
-    painter = QPainter(image)
-    item.paint(painter)
-    painter.end()
-    assert presentation._curve_widget is None
-    switch_to_classic(quick_window)
-    curve = presentation.curve_widget
-    assert curve.minimumWidth() < 640 < curve.maximumWidth()
-
-
 def _queue_limiter_ceiling(window, *, reject: bool = False) -> list[float]:
     state = window.limiter_state
     native = state.processor
@@ -1407,25 +1248,6 @@ def _picker_text(picker) -> str:
     return picker.property("contentItem").property("text")
 
 
-def test_a_classic_device_combo_shows_the_whole_name_as_its_tooltip(qapp) -> None:
-    owner = QObject()
-    choice = ChoiceState(owner, name="Input audio device")
-    combo = QComboBox()
-    choice.bind_combo(combo)
-    assert combo.toolTip() == ""
-    choice.addItem("Studio Microphone (USB)")
-    choice.addItem("CABLE Output (VB-Audio Virtual Cable)")
-    assert combo.toolTip() == "Studio Microphone (USB)"
-    choice.setIndex(1)
-    assert combo.toolTip() == "CABLE Output (VB-Audio Virtual Cable)"
-    # A choice with help text of its own keeps it.
-    helped = ChoiceState(owner, name="Processing mode", tip="Normal applies the voice chain.")
-    other = QComboBox()
-    helped.bind_combo(other)
-    helped.addItem("Normal")
-    assert other.toolTip() == "Normal applies the voice chain."
-
-
 def test_health_rows_show_their_plain_text_without_opening_technical_details(quick_window) -> None:
     rows = quick_window.quick_bridge.model["health"]["stream"]
     assert all("coded" not in row for row in rows)
@@ -1433,7 +1255,7 @@ def test_health_rows_show_their_plain_text_without_opening_technical_details(qui
     assert "coded" not in qml and "technical" not in qml.split("component HealthRow")[1].split("component Page")[0]
 
 
-def test_choice_state_exposes_its_placeholder_to_both_views(quick_window) -> None:
+def test_choice_state_exposes_its_placeholder_to_the_scene(quick_window) -> None:
     choice = quick_window.output_choice
     assert choice.property("placeholder") == ""
     choice.setPlaceholderText("Select a replacement destination")

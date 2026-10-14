@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
-from PySide6.QtCore import QSignalBlocker, QSize, Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QComboBox,
@@ -12,7 +10,6 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFrame,
     QScrollArea,
-    QSlider,
     QSizePolicy,
     QSpinBox,
     QStyle,
@@ -22,41 +19,28 @@ from PySide6.QtWidgets import (
 )
 
 from .theme import (
-    DESTRUCTIVE_ACTION_BUTTON_STYLE,
-    INFO_LABEL_STYLE,
-    METER_LABEL_STYLE,
     PRIMARY_ACTION_BUTTON_STYLE,
-    PRIMARY_LABEL_STYLE,
     SECONDARY_ACTION_BUTTON_STYLE,
     SUBDUED_TEXT_STYLE,
-    WARNING_BANNER_STYLE,
     status_chip_style,
 )
 
 __all__ = [
-    "DESTRUCTIVE_ACTION_BUTTON_STYLE",
-    "INFO_LABEL_STYLE",
     "MARGIN_PANEL",
-    "METER_LABEL_STYLE",
     "PRIMARY_ACTION_BUTTON_STYLE",
-    "PRIMARY_LABEL_STYLE",
     "SECONDARY_ACTION_BUTTON_STYLE",
     "SPACING_NORMAL",
     "SPACING_SECTION",
-    "SPACING_TIGHT",
     "SUBDUED_TEXT_STYLE",
-    "WARNING_BANNER_STYLE",
     "configure_resizable_dialog",
     "configure_responsive_combo",
     "create_scrollable_dialog_body",
     "fit_spinbox_to_contents",
-    "bind_slider_spinbox",
     "status_chip_style",
 ]
 
 
 # Standard spacing constants for consistent UI design
-SPACING_TIGHT = 4  # Very related items (label + value)
 SPACING_NORMAL = 8  # Related controls in a group
 SPACING_SECTION = 16  # Between major sections
 MARGIN_PANEL = 12  # Panel content margins
@@ -96,34 +80,6 @@ def fit_spinbox_to_contents(spinbox: QDoubleSpinBox | QSpinBox) -> int:
     spinbox.setMinimumWidth(width)
     spinbox.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
     return width
-
-
-def bind_slider_spinbox(
-    slider: QSlider,
-    spinbox: QDoubleSpinBox | QSpinBox,
-    *,
-    slider_to_value: Callable[[int], float | int] = float,
-    value_to_slider: Callable[[float | int], int] = int,
-    on_change: Callable[[], None],
-) -> None:
-    """Keep a numeric slider and spinbox synchronized without feedback loops."""
-
-    def from_slider(value: int) -> None:
-        with QSignalBlocker(spinbox):
-            converted = slider_to_value(value)
-            if isinstance(spinbox, QDoubleSpinBox):
-                spinbox.setValue(float(converted))
-            else:
-                spinbox.setValue(int(converted))
-        on_change()
-
-    def from_spinbox(value: float | int) -> None:
-        with QSignalBlocker(slider):
-            slider.setValue(value_to_slider(value))
-        on_change()
-
-    slider.valueChanged.connect(from_slider)
-    spinbox.valueChanged.connect(from_spinbox)
 
 
 def configure_responsive_combo(combo: QComboBox, *, minimum_chars: int = 12) -> None:

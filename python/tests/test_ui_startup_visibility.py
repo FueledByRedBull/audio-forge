@@ -1,6 +1,5 @@
-"""Constructing either frontend must not flash unparented desktop controls."""
+"""Constructing the main window must not flash unparented desktop controls."""
 
-import pytest
 from PySide6.QtCore import QEvent, QObject
 from PySide6.QtWidgets import QWidget
 
@@ -8,9 +7,7 @@ from mic_eq.config import AppConfig
 from mic_eq.ui.main_window import MainWindow
 
 
-@pytest.mark.parametrize("quick", ["0", "1"], ids=["classic", "quick"])
-def test_startup_shows_only_the_completed_main_window(qapp, monkeypatch, quick):
-    monkeypatch.setenv("AUDIOFORGE_QML", quick)
+def test_startup_shows_only_the_completed_main_window(qapp, monkeypatch):
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
     monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     for name in ("list_presets", "list_input_devices", "list_output_devices"):

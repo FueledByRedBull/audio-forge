@@ -23,7 +23,7 @@ from test_quick_shell import (  # noqa: F401  (tests and fixtures repeated under
     test_a_drag_moves_the_band_by_the_pointers_travel,
     test_live_data_changes_repaint_existing_qml_items,
     test_scene_controls_drive_the_shared_state,
-    test_scene_loads_without_a_widget_view,
+    test_scene_loads_cleanly,
 )
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.quick_shell import graphics_api

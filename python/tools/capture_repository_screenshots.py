@@ -92,9 +92,8 @@ def _source_hashes() -> dict[str, str]:
         "python/mic_eq/ui/quick_shell.py",
         "python/mic_eq/ui/shell_specs.py",
         "python/mic_eq/ui/qml/Main.qml",
-        "python/mic_eq/ui/eq_panel.py",
+        "python/mic_eq/ui/eq_presentation.py",
         "python/mic_eq/ui/eq_graph.py",
-        "python/mic_eq/ui/eq_curve.py",
         "python/mic_eq/ui/voice_setup_dialog.py",
     )
     return {path: _sha256(REPO_ROOT / path) for path in paths}

@@ -6,7 +6,8 @@ from unittest.mock import Mock
 
 import pytest
 from PySide6.QtCore import QObject
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtTest import QSignalSpy
+from PySide6.QtWidgets import QWidget
 
 from mic_eq.ui.first_run_setup_dialog import route_health_reason
 from mic_eq.ui.health import RecentStreamHealth, advice_for
@@ -262,40 +263,15 @@ def test_health_summary_and_advice_come_from_chip_states_alone(
     assert ("Mute pending" in window.shell_texts["transmission_status_label"].text) is mute_error
 
 
-def test_unchanged_health_chip_does_not_reapply_qt_styles(qapp, monkeypatch):
-    label = QLabel()
-    state_owner = QObject()
-    state = TextState(state_owner, text=label.text(), name="health_summary_label")
-    state.bind_label(label)
-    calls = dict(text=0, style=0, property=0)
-    original_text, original_style, original_property = (
-        label.setText,
-        label.setStyleSheet,
-        label.setProperty,
-    )
-
-    def text(value):
-        calls["text"] += 1
-        original_text(value)
-
-    def style(value):
-        calls["style"] += 1
-        original_style(value)
-
-    def prop(name, value):
-        calls["property"] += 1
-        return original_property(name, value)
-
-    monkeypatch.setattr(label, "setText", text)
-    monkeypatch.setattr(label, "setStyleSheet", style)
-    monkeypatch.setattr(label, "setProperty", prop)
+def test_unchanged_health_chip_does_not_notify_the_view(qapp):
+    state = TextState(qapp, text="", name="health_summary_label")
+    notified = QSignalSpy(state.changed)
     window: Any = SimpleNamespace(shell_texts={"health_summary_label": state})
-    calls.update(text=0, style=0, property=0)
     for _ in range(30):
         MainWindow._set_health_chip(window, "health_summary_label", "Health: --", "idle")
-    assert calls == dict(text=1, style=1, property=1)
+    assert notified.count() == 1
     MainWindow._set_health_chip(window, "health_summary_label", "Input: -20dB", "idle")
-    assert calls == dict(text=2, style=1, property=1)
+    assert notified.count() == 2
 
 
 def test_main_window_invalidates_all_live_meters_on_stop_and_getter_failure(qapp):

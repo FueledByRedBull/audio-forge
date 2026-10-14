@@ -1,26 +1,25 @@
-"""Shared shell presentation; widgets and Quick consume the same notifications."""
+"""Shared shell presentation: the state the Qt Quick view renders."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import QObject, Property, QPoint, QSignalBlocker, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, Property, QPoint, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QCursor
-from PySide6.QtWidgets import QAbstractButton, QComboBox, QLabel, QMenu, QStatusBar
+from PySide6.QtWidgets import QMenu
 
-from .components import IconButton, plain_label
-from .theme import status_chip_style
+from .components import plain_label
 
 
 class TextState(QObject):
-    """Application-owned text, visibility and status, independent of its views."""
+    """Application-owned text, visibility and status, independent of its view."""
 
     changed = Signal()
 
     def __init__(self, parent: QObject, *, text: str = "", name: str = "", tip: str = "", shown: bool = True):
         super().__init__(parent)
         self._text, self._name, self._tip = text, name, tip
-        self._shown, self._status, self._description = shown, "", ""
+        self._shown, self._status = shown, ""
         self._data: dict[str, Any] = {}
 
     text = Property(str, lambda self: self._text, notify=changed)
@@ -33,32 +32,19 @@ class TextState(QObject):
 
     def update(self, *, text: str | None = None, tip: str | None = None,
                shown: bool | None = None, status: str | None = None,
-               description: str | None = None, data: dict | None = None) -> None:
+               data: dict | None = None) -> None:
         changed = False
         for key, value in (("_text", text), ("_tip", tip), ("_shown", shown),
-                           ("_status", status), ("_description", description), ("_data", data)):
+                           ("_status", status), ("_data", data)):
             if value is not None and getattr(self, key) != value:
                 setattr(self, key, value)
                 changed = True
         if changed:
             self.changed.emit()
 
-    def bind_label(self, label: QLabel) -> None:
-        def render() -> None:
-            label.setText(self._text)
-            label.setToolTip(self._tip)
-            label.setVisible(self._shown)
-            label.setAccessibleDescription(self._description)
-            if self._status and label.property("health_state") != self._status:
-                label.setStyleSheet(status_chip_style(self._status))
-                label.setProperty("health_state", self._status)
-        label.setAccessibleName(self._name)
-        self.changed.connect(render)
-        render()
-
 
 class StatusState(TextState):
-    """Transient status messages with one shared expiry for both views."""
+    """Transient status messages with one shared expiry."""
 
     def __init__(self, parent: QObject, text: str):
         super().__init__(parent, text=text)
@@ -76,13 +62,9 @@ class StatusState(TextState):
         self._expiry.stop()
         self.update(text="")
 
-    def bind_status_bar(self, bar: QStatusBar) -> None:
-        self.changed.connect(lambda: bar.showMessage(self._text))
-        bar.showMessage(self._text)
-
 
 class ChoiceState(QObject):
-    """Choice identities and selected index; a combo box is only a renderer."""
+    """Choice identities and selected index; the view is only a renderer."""
 
     changed = Signal()
     currentIndexChanged = Signal(int)
@@ -163,24 +145,6 @@ class ChoiceState(QObject):
             self.changed.emit()
         return previous
 
-    def bind_combo(self, combo: QComboBox) -> None:
-        def render() -> None:
-            with QSignalBlocker(combo):
-                items = [(combo.itemText(i), combo.itemData(i)) for i in range(combo.count())]
-                if items != self._options:
-                    combo.clear()
-                    for label, data in self._options:
-                        combo.addItem(label, data)
-                combo.setCurrentIndex(self._index)
-                combo.setEnabled(self._enabled)
-                combo.setPlaceholderText(self._placeholder)
-                # A name cut short by a narrow window stays readable.
-                combo.setToolTip(self._tip or self.currentText())
-        combo.setAccessibleName(self._name)
-        self.changed.connect(render)
-        combo.currentIndexChanged.connect(self.setIndex)
-        render()
-
 
 class ActionControl(QObject):
     """Expose Qt's shared command primitive to Quick, including anchored menus."""
@@ -216,22 +180,6 @@ class ActionControl(QObject):
             else:
                 self.action.trigger()
         self.changed.emit()
-
-
-def bind_button(button: QAbstractButton, action: QAction) -> None:
-    """Render an action on a button; clicking the button triggers the action."""
-
-    def render() -> None:
-        # Commands use clicked; toggled still drives the switch painting.
-        button.setEnabled(action.isEnabled())
-        button.setChecked(action.isChecked())
-        button.setToolTip(action.toolTip())
-        # An icon button keeps its glyph (or its stand-in word) as its text.
-        if not isinstance(button, IconButton):
-            button.setText(action.text())
-    button.clicked.connect(action.trigger)
-    action.changed.connect(render)
-    render()
 
 
 class PageState(QObject):

@@ -47,7 +47,6 @@ def test_saved_processing_settings_restore_on_next_launch(qapp, monkeypatch, tmp
         assert not restored.preset_modified
         assert eq_control(restored, "gain", 4).value == 23
         assert window_gate_control(restored, "Threshold").value == -33.0
-        assert restored._classic_root is None
     finally:
         restored.close()
         restored.deleteLater()
@@ -270,7 +269,6 @@ def test_preset_strength_round_trip_matches_live_processor(qapp, monkeypatch, tm
         assert window._get_current_preset().rnnoise.strength == pytest.approx(
             edited_value / 100.0
         )
-        assert window._classic_root is None
     finally:
         window.close()
         window.deleteLater()

@@ -14,7 +14,7 @@ from mic_eq.ui.auto_eq_explanation import (
     headroom_advice,
     target_profile_text,
 )
-from mic_eq.ui.eq_panel import _format_auto_eq_diagnostics
+from mic_eq.ui.eq_state import _format_auto_eq_diagnostics
 
 
 @pytest.mark.parametrize(
@@ -446,7 +446,7 @@ def test_the_readme_uses_the_names_the_dialog_shows() -> None:
     assert "Adapt to my voice" not in readme and "Exact tone preset" not in readme
 
 
-def test_the_eq_panel_tooltip_shows_the_strength_by_its_plain_name() -> None:
+def test_the_auto_eq_tooltip_shows_the_strength_by_its_plain_name() -> None:
     _text, _state, tooltip = _format_auto_eq_diagnostics(
         {"recommendation_status": "apply", "target_profile": "broadcast:adaptive"}
     )

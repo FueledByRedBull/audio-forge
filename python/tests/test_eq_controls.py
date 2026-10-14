@@ -1,53 +1,11 @@
-"""QML EQ controls preserve widget presentation without owning hidden panels."""
+"""QML EQ controls read and edit the shared EQ state."""
 
 from unittest.mock import Mock
 
-import pytest
-from PySide6.QtCore import QObject
 
 from mic_eq.config import EQBandSettings
 from mic_eq.ui.eq_controls import EQControl
-from mic_eq.ui.eq_panel import EQPanel
-from mic_eq.ui.eq_state import EQState, EQ_FILTER_OPTIONS
-
-
-@pytest.mark.parametrize("filter_type", [choice for _label, choice in EQ_FILTER_OPTIONS])
-def test_eq_control_presentation_matches_existing_widget_controls(qapp, filter_type):
-    state = EQState(Mock())
-    state.set_band(0, EQBandSettings(filter_type, 1234.567, 2.34567, 1.25))
-    state.flush()
-    owner = QObject()
-    controls = {
-        key: EQControl(state, key, 0, owner)
-        for key in ("frequencyLabel", "enabled", "type", "gain", "gainLabel", "frequency", "q", "slope")
-    }
-    panel = EQPanel(state.processor, state)
-    band = panel.band_sliders[0]
-    mapping = {
-        "frequencyLabel": band.freq_label, "enabled": band.band_enabled_checkbox,
-        "type": band.filter_type_combo, "gain": band.slider, "gainLabel": band.gain_label,
-        "frequency": band.frequency_spinbox, "q": band.q_spinbox, "slope": band.slope_combo,
-    }
-    for key, widget in mapping.items():
-        control = controls[key]
-        assert control.enabled == widget.isEnabled()
-        assert control.shown == (not widget.isHidden())
-        assert control.toolTip == widget.toolTip()
-        assert control.name == widget.accessibleName()
-        if key in {"frequencyLabel", "gainLabel", "frequency", "q", "enabled"}:
-            assert control.text == widget.text()
-        if key in {"frequency", "q", "gain"}:
-            assert control.value == widget.value()
-            assert control.minimum == widget.minimum()
-            assert control.maximum == widget.maximum()
-            assert control.step == widget.singleStep()
-        if key in {"type", "slope"}:
-            assert control.index == widget.currentIndex()
-            assert control.items == [widget.itemText(i) for i in range(widget.count())]
-            assert control.text == widget.currentText()
-    assert state.get_band(0).frequency_hz == 1234.567
-    assert state.get_band(0).gain_db == 2.34567
-    assert state.get_band(0).q == 1.25
+from mic_eq.ui.eq_state import EQState
 
 
 def test_eq_control_commands_round_only_edited_fields_and_notify_without_polling(qapp):

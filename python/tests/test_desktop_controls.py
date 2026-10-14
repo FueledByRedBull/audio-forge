@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 from PySide6.QtCore import QRect
-from PySide6.QtWidgets import QCheckBox, QComboBox, QLabel, QSlider, QWidget
+from PySide6.QtWidgets import QWidget
 
 from mic_eq.ui.desktop_integration import (
     MOD_ALT,
@@ -150,11 +150,8 @@ def test_failed_hotkey_registration_is_not_shown_or_saved_as_enabled(monkeypatch
     owner._mute_hotkey_action.setChecked.assert_called_once_with(False)
 
 
-def test_failed_model_switch_retains_previous_model_and_selection(qapp, monkeypatch):
+def test_failed_model_switch_retains_previous_model_and_strength(qapp, monkeypatch):
     host = QWidget()
-    combo = QComboBox(host)
-    for model in ("rnnoise", "deepfilter-ll", "deepfilter"):
-        combo.addItem(model, model)
     warning = Mock()
     monkeypatch.setattr("mic_eq.ui.main_window.QMessageBox.warning", warning)
     processor = SimpleNamespace(
@@ -168,23 +165,12 @@ def test_failed_model_switch_retains_previous_model_and_selection(qapp, monkeypa
     state = NoiseSuppressionState(processor, host)
     state.set_settings({"model": "deepfilter-ll", "strength": 0.123456789})
     processor.set_noise_model.reset_mock()
-    owner: Any = SimpleNamespace(
-        model_combo=combo, rnnoise_checkbox=QCheckBox(host),
-        strength_slider=QSlider(host), strength_label=QLabel(host),
-        rnnoise_latency_label=QLabel(host),
-        noise_suppression_state=state, status_message=Mock(),
-    )
-    owner.strength_slider.setRange(0, 100)
-    state.changed.connect(lambda: MainWindow._render_noise_suppression(owner))
-    MainWindow._render_noise_suppression(owner)
-    combo.setCurrentIndex(2)
+    owner: Any = SimpleNamespace(noise_suppression_state=state, status_message=Mock())
     try:
         MainWindow._on_model_changed(owner, 2)
-        assert combo.currentData() == "deepfilter-ll"
-        assert not combo.signalsBlocked()
         assert state.get_settings()["model"] == "deepfilter-ll"
         assert state.get_settings()["strength"] == 0.123456789
-        assert owner.rnnoise_latency_label.text() == "Latency: ~10ms (DeepFilterNet LL)"
+        assert state.latency_text == "Latency: ~10ms (DeepFilterNet LL)"
         assert [call.args[0] for call in processor.set_noise_model.call_args_list] == [
             "deepfilter", "deepfilter-ll",
         ]

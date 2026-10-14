@@ -1,4 +1,4 @@
-"""Noise suppression ownership and rejected writes without either view."""
+"""Noise suppression ownership and rejected writes without a view."""
 
 from dataclasses import asdict
 

@@ -1,0 +1,727 @@
+{
+ "schema_version": 2,
+ "audible_change": true,
+ "evaluation_contract": {
+  "configuration": {
+   "scope": "offline Auto-EQ fit (analyze_auto_eq), SciPy solvers against NumPy solvers, one native module",
+   "sample_rate": 48000,
+   "cases": 2084,
+   "targets": [
+    "broadcast",
+    "podcast",
+    "streaming",
+    "warm",
+    "flat"
+   ],
+   "modes": [
+    "adaptive",
+    "static"
+   ],
+   "smoothing": [
+    "conservative",
+    "balanced",
+    "broad",
+    "off"
+   ]
+  },
+  "asset_hashes": {
+   "native_module": {
+    "mic_eq_core.cp313-win_amd64.pyd": "f60611c60cc8682f3199dd352fff4dd36b1aa21993cb1687b37edd64d1337c16"
+   },
+   "corpora": {
+    "cross_take_manifest_sha256": "316d7014b392a648b91fa2731a793b59a5577165ac6d8f35e604f24eed51b5dc",
+    "harness_manifest_sha256": "569f3debce837922e9ea91f4487eb9bdd4cb5eca27c15d18a5e6174d800d7225"
+   },
+   "source": {
+    "python/mic_eq/analysis/auto_eq_parts/eq_fit.py": "f2a43660f5f1245ecbc928c0b55288351e4b42f90a937db4cc38e03bf75edd33",
+    "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "2a7c7ab9aef140f3e52e37b620168bdfc6835795b484f6bee699792538dc2e38",
+    "python/mic_eq/analysis/wav_io.py": "6fc417597da60f5455b7d947518b28f7d8857d30d11a0d977c20a4808ab57132",
+    "python/tools/evaluate_auto_eq_solver_port.py": "b8851851d992d7a0f8cdd5b9ce431423b0bc97f3cbfa36c30cbb620dd0151aef"
+   }
+  },
+  "runtime": {
+   "max_p99_frame_seconds": null,
+   "max_p99_frame_seconds_reason": "The fit is an offline whole-capture analysis, not a realtime callback; fit times per arm are in results.run_time."
+  },
+  "latency": {
+   "added_realtime_latency_samples": 0,
+   "reason": "Only the offline analysis changes; the audio path and its latency are untouched."
+  },
+  "clean_preservation": {
+   "audible_change_basis": "true when a case's recommendation status changes or its final response differs from the incumbent's by more than 0.05 dB at some frequency (the S2 tolerance)",
+   "port_status_changes": 0,
+   "port_cases_over_0.05_db": 79,
+   "port_max_difference_db": 2.29729,
+   "control_cases_over_0.05_db": 69,
+   "control_max_difference_db": 2.43541,
+   "note": "The control arm is the incumbent with every solver start moved one unit in the last place; its difference from the incumbent is the incumbent's own sensitivity. Whether the port stays within it is decided by gates S1 and S2, not by this field."
+  }
+ },
+ "source_sha256": {
+  "python/mic_eq/analysis/auto_eq_parts/eq_fit.py": "f2a43660f5f1245ecbc928c0b55288351e4b42f90a937db4cc38e03bf75edd33",
+  "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "2a7c7ab9aef140f3e52e37b620168bdfc6835795b484f6bee699792538dc2e38",
+  "python/mic_eq/analysis/wav_io.py": "6fc417597da60f5455b7d947518b28f7d8857d30d11a0d977c20a4808ab57132",
+  "python/tools/evaluate_auto_eq_solver_port.py": "b8851851d992d7a0f8cdd5b9ce431423b0bc97f3cbfa36c30cbb620dd0151aef"
+ },
+ "generated_at_utc": "2026-10-14T04:23:32.651746+00:00",
+ "scope": "judged",
+ "decision": "remove_scipy",
+ "summary": "Gates S1 to S4 all passed (port difference: 0 status changes (0 allowed exceptions), 0 failure changes; control difference: 1 status changes; cases over 0.25 dB: 34 port, 40 control; constraint verdict true to false: 0; nonlinear verdicts differing: 0 port, 0 control).",
+ "predefined_rules": {
+  "status": "The rule as amended by Amendment 1; gates S1 to S3 of the first version (fixed 2026-10-14 00:55 +0300) are superseded, S4 stands.",
+  "amendment_1": {
+   "number": 1,
+   "fixed_at": "2026-10-14 01:48 +0300",
+   "predates_any_judged_case": true,
+   "reason": "A parity study on 360 synthetic seeded fits showed the incumbent is not stable against itself: with every solver start value moved by one unit in the last place, SciPy's fitted gains move by up to 5.2 dB in the worst fit, constraint_solver_success flips in 20 of 360 fits, and SLSQP fails outright in 14 calls. Gates S1 to S3 as first written (rule fixed 2026-10-14 00:55 +0300) would measure SciPy's noise, not the port, so they are replaced; S4 stands."
+  },
+  "question": "Do the Auto-EQ fits computed with the NumPy solvers (bounded least squares, gain projection, constrained gain refinement) match the fits computed with SciPy's least_squares and SLSQP closely enough that removing SciPy from the runtime changes no recommendation and nothing audible?",
+  "control arm": "A third arm runs the incumbent source with SciPy, with the start vector of every least_squares and minimize call moved by one unit in the last place (numpy.nextafter toward +infinity, clipped into the bounds). \"Control difference\" means control arm versus incumbent arm; \"port difference\" means candidate arm versus incumbent arm.",
+  "S1 same_status": "Failure status is identical on every case in the port difference. A recommendation-status change in the port difference is an allowed exception when the case moves from \"reduced\" to \"apply\", its only recommendation reason in the incumbent is the constraint-solver one, the incumbent's constraint solve failed (iteration cap or solver exit failure) or its result was rejected by the feasibility check, and the candidate's result is feasible. Every exception is listed. The number of other recommendation-status changes in the port difference is at most the number of recommendation-status changes in the control difference.",
+  "S2 same_response": "On cases outside the S1 exceptions that produce an EQ in both arms compared: at least 90 % of cases in the port difference are within 0.05 dB at every frequency; and for each threshold T in {0.05, 0.25, 1.0} dB, the number of cases exceeding T in the port difference is at most twice the number exceeding T in the control difference plus 5.",
+  "S3 same_solver_verdicts": "constraint_solver_success never changes from true to false in the port difference; a change from false to true requires a feasible candidate result. The number of cases where nonlinear_solver_success differs in the port difference is at most twice the number in the control difference plus 2.",
+  "S4 exceptions_are_small": "For each S1 exception the new arm's final response is within 1.0 dB of the SciPy arm's response before SciPy's result was rejected... if that intermediate is not observable, within 1.0 dB of the SciPy arm's final (\"reduced\") response scaled back to full strength; if neither can be computed the case is reported and counts as a failure of this gate.",
+  "decision": "SciPy leaves the runtime only if S1 to S4 all pass. Otherwise SciPy stays for this release and the evidence is filed under models/evaluation-details/auto-eq-solver-port-2026-10/. A failed gate is not reinterpreted after the run; a solver bug found on the development passages may be fixed and the whole comparison rerun, and each rerun is recorded."
+ },
+ "cases": {
+  "total": 2084,
+  "passage_indices": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11,
+   12,
+   14,
+   15,
+   16,
+   17,
+   18,
+   19,
+   20,
+   21,
+   22,
+   23,
+   24,
+   25,
+   27,
+   28,
+   29,
+   30,
+   31,
+   32,
+   33,
+   34,
+   35,
+   36,
+   37,
+   38,
+   40,
+   41,
+   42,
+   43,
+   44,
+   45,
+   46,
+   47
+  ],
+  "development_passages_excluded": [
+   0,
+   13,
+   26,
+   39
+  ],
+  "composition": "44 cross-take passages x 5 targets x 2 modes x 4 smoothing; their -1 dBFS versions (5 targets, adaptive, conservative); 4 invalid captures; 20 fit-split harness captures x 5 targets"
+ },
+ "results": {
+  "gates": {
+   "S1": {
+    "passed": true,
+    "cases": 2084,
+    "port": {
+     "failure_changes": 0,
+     "status_changes": 0,
+     "allowed_exceptions": 0,
+     "other_status_changes": 0,
+     "response_cases": 2071,
+     "within_0.05_db": 1992,
+     "over_0.05_db": 79,
+     "over_0.25_db": 34,
+     "over_1.0_db": 19,
+     "max_difference_db": 2.29729,
+     "constraint_true_to_false": 0,
+     "constraint_false_to_true": 0,
+     "constraint_other_changes": 0,
+     "constraint_repairs_not_feasible": 0,
+     "nonlinear_differ": 0,
+     "nonlinear_true_to_false": 0,
+     "nonlinear_false_to_true": 0
+    },
+    "control": {
+     "failure_changes": 0,
+     "status_changes": 1,
+     "allowed_exceptions": 0,
+     "other_status_changes": 1,
+     "response_cases": 2071,
+     "within_0.05_db": 2002,
+     "over_0.05_db": 69,
+     "over_0.25_db": 40,
+     "over_1.0_db": 19,
+     "max_difference_db": 2.43541,
+     "constraint_true_to_false": 0,
+     "constraint_false_to_true": 0,
+     "constraint_other_changes": 0,
+     "constraint_repairs_not_feasible": 0,
+     "nonlinear_differ": 0,
+     "nonlinear_true_to_false": 0,
+     "nonlinear_false_to_true": 0
+    },
+    "other_status_changes_allowed": 1,
+    "rule": "S1 same_status"
+   },
+   "S2": {
+    "passed": true,
+    "port_cases": 2071,
+    "control_cases": 2071,
+    "port_within_0.05_db": 1992,
+    "port_within_0.05_db_percent": 96,
+    "control_within_0.05_db": 2002,
+    "control_within_0.05_db_percent": 96,
+    "port_max_difference_db": 2.29729,
+    "control_max_difference_db": 2.43541,
+    "exceeding": {
+     "0.05": {
+      "port": 79,
+      "control": 69,
+      "allowed": 143
+     },
+     "0.25": {
+      "port": 34,
+      "control": 40,
+      "allowed": 85
+     },
+     "1.0": {
+      "port": 19,
+      "control": 19,
+      "allowed": 43
+     }
+    },
+    "rule": "S2 same_response"
+   },
+   "S3": {
+    "passed": true,
+    "port_constraint_true_to_false": 0,
+    "port_constraint_false_to_true": 0,
+    "port_constraint_repairs_not_feasible": 0,
+    "control_constraint_true_to_false": 0,
+    "control_constraint_false_to_true": 0,
+    "port_nonlinear_differ": 0,
+    "port_nonlinear_true_to_false": 0,
+    "port_nonlinear_false_to_true": 0,
+    "control_nonlinear_differ": 0,
+    "nonlinear_differ_allowed": 2,
+    "rule": "S3 same_solver_verdicts"
+   },
+   "S4": {
+    "passed": true,
+    "exceptions": 0,
+    "measured_by_replay": 0,
+    "measured_scaled_back": 0,
+    "not_measurable": [],
+    "over_1.0_db": [],
+    "max_distance_db": null,
+    "rule": "S4 exceptions_are_small"
+   }
+  },
+  "s1_exceptions": {
+   "count": 0,
+   "listed": [],
+   "not_listed": 0
+  },
+  "port_difference": {
+   "failure_changes": {
+    "count": 0,
+    "listed": [],
+    "not_listed": 0
+   },
+   "other_status_changes": {
+    "count": 0,
+    "listed": [],
+    "not_listed": 0
+   },
+   "flag_changes": {
+    "count": 0,
+    "listed": [],
+    "not_listed": 0
+   },
+   "response_difference_db": {
+    "cases": 2071,
+    "max": 2.29729,
+    "median": 2.999999999997449e-05,
+    "p99": 0.5143800000000001,
+    "histogram": {
+     "<= 0.001": 1812,
+     "<= 0.01": 1959,
+     "<= 0.05": 1992,
+     "<= 0.1": 1999,
+     "<= 0.25": 2037,
+     "<= 1.0": 2052,
+     "> 1.0": 19
+    }
+   }
+  },
+  "control_difference": {
+   "failure_changes": {
+    "count": 0,
+    "listed": [],
+    "not_listed": 0
+   },
+   "status_changes": {
+    "count": 1,
+    "listed": [
+     "actor-02:02:hot|podcast|adaptive|conservative: reduced -> apply"
+    ],
+    "not_listed": 0
+   },
+   "allowed_exception_cases": 0,
+   "flag_changes": {
+    "count": 0,
+    "listed": [],
+    "not_listed": 0
+   },
+   "response_difference_db": {
+    "cases": 2071,
+    "max": 2.43541,
+    "median": 2.999999999997449e-05,
+    "p99": 0.9477800000000001,
+    "histogram": {
+     "<= 0.001": 1813,
+     "<= 0.01": 1965,
+     "<= 0.05": 2002,
+     "<= 0.1": 2010,
+     "<= 0.25": 2031,
+     "<= 1.0": 2052,
+     "> 1.0": 19
+    }
+   }
+  },
+  "control_arm": {
+   "solver_calls_with_moved_start": 11568,
+   "solver_calls": 12400
+  },
+  "reported": {
+   "note": "Reported only; not gated and not part of the decision.",
+   "inputs_identical": true,
+   "candidate_vs_scipy_numpy_svd": {
+    "cases": 2084,
+    "response_cases": 2071,
+    "status_changes": 0,
+    "within_0.05_db": 2071,
+    "over_0.05_db": 0,
+    "over_0.25_db": 0,
+    "over_1.0_db": 0,
+    "max_difference_db": 0.00029000000000001247,
+    "nfev_identical_stage1": 2084,
+    "nfev_identical_stage2": 2084,
+    "nfev_identical_all_stages": 2084,
+    "cases_over_0.05_db": {
+     "count": 0,
+     "listed": [],
+     "not_listed": 0
+    }
+   },
+   "scipy_numpy_svd_vs_incumbent": {
+    "cases": 2084,
+    "response_cases": 2071,
+    "status_changes": 0,
+    "within_0.05_db": 1992,
+    "over_0.05_db": 79,
+    "over_0.25_db": 34,
+    "over_1.0_db": 19,
+    "max_difference_db": 2.2973500000000002,
+    "nfev_identical_stage1": 1865,
+    "nfev_identical_stage2": 1870,
+    "nfev_identical_all_stages": 1744,
+    "cases_over_0.05_db": {
+     "count": 79,
+     "listed": [
+      "actor-08:02|streaming|static|off: 2.297 dB",
+      "actor-02:02|streaming|static|balanced: 2.099 dB",
+      "actor-22:01|streaming|static|balanced: 2.013 dB",
+      "actor-04:01|streaming|static|balanced: 1.871 dB",
+      "actor-06:01|streaming|static|balanced: 1.868 dB",
+      "actor-10:02|streaming|static|balanced: 1.828 dB",
+      "actor-12:02|streaming|static|balanced: 1.804 dB",
+      "actor-12:02|streaming|static|conservative: 1.442 dB",
+      "actor-04:02|streaming|static|conservative: 1.426 dB",
+      "actor-24:02|streaming|static|broad: 1.393 dB",
+      "actor-18:02|streaming|static|broad: 1.393 dB",
+      "actor-10:02|streaming|static|broad: 1.366 dB",
+      "actor-12:01|streaming|static|balanced: 1.335 dB",
+      "actor-20:01|streaming|static|conservative: 1.332 dB",
+      "actor-06:01|streaming|static|broad: 1.287 dB",
+      "actor-07:01|streaming|static|broad: 1.267 dB",
+      "actor-14:02|streaming|static|balanced: 1.265 dB",
+      "actor-03:01|streaming|static|conservative: 1.239 dB",
+      "actor-17:02|streaming|static|broad: 1.234 dB",
+      "actor-03:02|streaming|static|broad: 0.9455 dB",
+      "actor-10:02|broadcast|adaptive|off: 0.5144 dB",
+      "actor-23:02|broadcast|adaptive|off: 0.4938 dB",
+      "actor-02:01|podcast|adaptive|off: 0.465 dB",
+      "actor-21:01|streaming|static|conservative: 0.3824 dB",
+      "actor-18:01|streaming|static|broad: 0.382 dB",
+      "actor-04:02|streaming|adaptive|conservative: 0.3394 dB",
+      "actor-01:02|streaming|adaptive|conservative: 0.3382 dB",
+      "actor-09:02:hot|streaming|adaptive|conservative: 0.3382 dB",
+      "actor-14:02|streaming|adaptive|off: 0.3144 dB",
+      "actor-24:01|streaming|adaptive|off: 0.2972 dB",
+      "actor-03:01|streaming|adaptive|off: 0.2955 dB",
+      "actor-15:02|streaming|static|balanced: 0.2886 dB",
+      "actor-23:02|streaming|adaptive|off: 0.2852 dB",
+      "actor-17:02|streaming|adaptive|off: 0.2775 dB",
+      "actor-23:01|streaming|adaptive|off: 0.2201 dB",
+      "actor-17:01|podcast|adaptive|off: 0.2144 dB",
+      "actor-11:01|podcast|adaptive|off: 0.2124 dB",
+      "actor-13:02|streaming|static|off: 0.1816 dB",
+      "actor-17:02|podcast|static|conservative: 0.1493 dB",
+      "actor-12:02|podcast|adaptive|off: 0.1478 dB",
+      "actor-22:02|podcast|static|conservative: 0.1468 dB",
+      "actor-09:02|podcast|static|balanced: 0.1451 dB",
+      "actor-16:02|warm|static|off: 0.1445 dB",
+      "actor-01:02|podcast|static|off: 0.1413 dB",
+      "actor-22:01|podcast|static|off: 0.1405 dB",
+      "actor-23:01|podcast|static|balanced: 0.1402 dB",
+      "actor-01:02|podcast|static|balanced: 0.1397 dB",
+      "actor-13:02|podcast|static|off: 0.1363 dB",
+      "actor-19:02|podcast|static|balanced: 0.136 dB",
+      "actor-04:02|podcast|static|off: 0.1347 dB",
+      "actor-09:02|podcast|static|conservative: 0.1346 dB",
+      "actor-20:01|podcast|static|balanced: 0.133 dB",
+      "actor-09:01|podcast|static|broad: 0.1311 dB",
+      "actor-08:02|podcast|static|off: 0.1308 dB",
+      "actor-12:01|podcast|static|off: 0.1299 dB",
+      "actor-19:02|podcast|static|conservative: 0.1297 dB",
+      "actor-07:01|podcast|static|conservative: 0.1292 dB",
+      "actor-12:01|podcast|static|balanced: 0.1287 dB",
+      "actor-02:01|podcast|static|off: 0.1283 dB",
+      "actor-12:02|podcast|static|off: 0.1278 dB",
+      "actor-10:01|podcast|static|off: 0.1272 dB",
+      "actor-04:02|podcast|static|balanced: 0.1264 dB",
+      "actor-11:01|podcast|static|balanced: 0.1261 dB",
+      "actor-08:01|podcast|static|off: 0.1247 dB",
+      "actor-10:02|podcast|static|conservative: 0.1217 dB",
+      "actor-21:01|podcast|static|balanced: 0.1214 dB",
+      "actor-17:01|podcast|static|conservative: 0.1193 dB",
+      "actor-21:01|podcast|static|conservative: 0.118 dB",
+      "actor-16:01|podcast|static|conservative: 0.1108 dB",
+      "actor-04:02|podcast|static|conservative: 0.109 dB",
+      "actor-05:01|podcast|static|conservative: 0.1076 dB",
+      "actor-08:02|streaming|static|conservative: 0.1031 dB",
+      "actor-20:01|streaming|static|balanced: 0.09626 dB",
+      "actor-07:01|streaming|static|conservative: 0.08662 dB",
+      "actor-15:01|streaming|adaptive|off: 0.07661 dB",
+      "actor-24:01|streaming|static|off: 0.07043 dB",
+      "actor-23:01|streaming|static|broad: 0.06366 dB",
+      "actor-07:01|streaming|static|balanced: 0.0623 dB",
+      "actor-12:01|streaming|adaptive|off: 0.05025 dB"
+     ],
+     "not_listed": 0
+    }
+   },
+   "target_error_after_vs_incumbent": {
+    "candidate": {
+     "cases": 2071,
+     "mean_db": 0.12441593768191496,
+     "incumbent_mean_db": 0.12405202795273838,
+     "worse_by_over_0.05_db": 21,
+     "worse_by_over_0.25_db": 0,
+     "better_by_over_0.05_db": 10,
+     "better_by_over_0.25_db": 0
+    },
+    "control": {
+     "cases": 2071,
+     "mean_db": 0.12415923677538246,
+     "incumbent_mean_db": 0.12405202795273838,
+     "worse_by_over_0.05_db": 17,
+     "worse_by_over_0.25_db": 0,
+     "better_by_over_0.05_db": 15,
+     "better_by_over_0.25_db": 0
+    },
+    "scipy_numpy_svd": {
+     "cases": 2071,
+     "mean_db": 0.12441584794134185,
+     "incumbent_mean_db": 0.12405202795273838,
+     "worse_by_over_0.05_db": 21,
+     "worse_by_over_0.25_db": 0,
+     "better_by_over_0.05_db": 10,
+     "better_by_over_0.25_db": 0
+    }
+   }
+  },
+  "run_time": {
+   "incumbent": {
+    "fit_seconds": {
+     "n": 2084,
+     "mean": 1.6631037094052623,
+     "median": 1.6053433000051882,
+     "p95": 2.127875199992559,
+     "max": 7.211862399999518
+    },
+    "fit_cpu_seconds": {
+     "n": 2084,
+     "mean": 1.632535088771593,
+     "median": 1.578125,
+     "p95": 2.078125,
+     "max": 7.15625
+    },
+    "solver_seconds": {
+     "n": 2084,
+     "mean": 0.2284788817658081,
+     "median": 0.22808539999823552,
+     "p95": 0.457623300011619,
+     "max": 0.8001482999970904
+    }
+   },
+   "candidate": {
+    "fit_seconds": {
+     "n": 2084,
+     "mean": 1.7518099278310735,
+     "median": 1.7002917999925558,
+     "p95": 2.1228954999969574,
+     "max": 8.510677600002964
+    },
+    "fit_cpu_seconds": {
+     "n": 2084,
+     "mean": 1.7138090810940498,
+     "median": 1.671875,
+     "p95": 2.078125,
+     "max": 8.359375
+    },
+    "solver_seconds": {
+     "n": 2084,
+     "mean": 0.22630903790772358,
+     "median": 0.22384479999891482,
+     "p95": 0.435227499998291,
+     "max": 0.8000356999982614
+    }
+   },
+   "control": {
+    "fit_seconds": {
+     "n": 2084,
+     "mean": 2.0150299261994737,
+     "median": 1.9852735999884317,
+     "p95": 2.3988986000040313,
+     "max": 9.195556099992245
+    },
+    "fit_cpu_seconds": {
+     "n": 2084,
+     "mean": 1.9473818378119,
+     "median": 1.953125,
+     "p95": 2.265625,
+     "max": 8.9375
+    },
+    "solver_seconds": {
+     "n": 2084,
+     "mean": 0.29473717557581275,
+     "median": 0.2837456999986898,
+     "p95": 0.5512498000025516,
+     "max": 1.384281100006774
+    }
+   },
+   "scipy_numpy_svd": {
+    "fit_seconds": {
+     "n": 2084,
+     "mean": 1.86616333047035,
+     "median": 1.8831562000123085,
+     "p95": 2.268841400000383,
+     "max": 8.521342399995774
+    },
+    "fit_cpu_seconds": {
+     "n": 2084,
+     "mean": 1.844424784069098,
+     "median": 1.859375,
+     "p95": 2.25,
+     "max": 8.5
+    },
+    "solver_seconds": {
+     "n": 2084,
+     "mean": 0.2537054461132783,
+     "median": 0.2545371000014711,
+     "p95": 0.48641589999897406,
+     "max": 0.7632720000110567
+    }
+   }
+  },
+  "solver_effort": {
+   "incumbent": {
+    "residual_calls_stage1": {
+     "n": 2084,
+     "mean": 102.17658349328215,
+     "median": 110,
+     "p95": 209,
+     "max": 319
+    },
+    "residual_calls_stage2": {
+     "n": 2084,
+     "mean": 339.7024952015355,
+     "median": 341,
+     "p95": 713,
+     "max": 1302
+    },
+    "least_squares_nfev_stage1": {
+     "n": 2084,
+     "mean": 10.022072936660269,
+     "median": 11,
+     "p95": 20,
+     "max": 29
+    },
+    "least_squares_nfev_stage2": {
+     "n": 2084,
+     "mean": 10.983685220729367,
+     "median": 11,
+     "p95": 23,
+     "max": 42
+    },
+    "slsqp_results_rejected": 0
+   },
+   "candidate": {
+    "residual_calls_stage1": {
+     "n": 2084,
+     "mean": 101.84980806142035,
+     "median": 110,
+     "p95": 209,
+     "max": 352
+    },
+    "residual_calls_stage2": {
+     "n": 2084,
+     "mean": 337.11324376199616,
+     "median": 341,
+     "p95": 713,
+     "max": 1333
+    },
+    "least_squares_nfev_stage1": {
+     "n": 2084,
+     "mean": 9.988003838771593,
+     "median": 11,
+     "p95": 20,
+     "max": 32
+    },
+    "least_squares_nfev_stage2": {
+     "n": 2084,
+     "mean": 10.899232245681382,
+     "median": 11,
+     "p95": 23,
+     "max": 43
+    },
+    "slsqp_results_rejected": 0
+   },
+   "control": {
+    "residual_calls_stage1": {
+     "n": 2084,
+     "mean": 101.99232245681382,
+     "median": 110,
+     "p95": 209,
+     "max": 352
+    },
+    "residual_calls_stage2": {
+     "n": 2084,
+     "mean": 337.1765834932821,
+     "median": 341,
+     "p95": 713,
+     "max": 1457
+    },
+    "least_squares_nfev_stage1": {
+     "n": 2084,
+     "mean": 10.015355086372361,
+     "median": 11,
+     "p95": 20,
+     "max": 32
+    },
+    "least_squares_nfev_stage2": {
+     "n": 2084,
+     "mean": 10.904990403071018,
+     "median": 11,
+     "p95": 23,
+     "max": 47
+    },
+    "slsqp_results_rejected": 0
+   },
+   "scipy_numpy_svd": {
+    "residual_calls_stage1": {
+     "n": 2084,
+     "mean": 101.84980806142035,
+     "median": 110,
+     "p95": 209,
+     "max": 352
+    },
+    "residual_calls_stage2": {
+     "n": 2084,
+     "mean": 337.11324376199616,
+     "median": 341,
+     "p95": 713,
+     "max": 1333
+    },
+    "least_squares_nfev_stage1": {
+     "n": 2084,
+     "mean": 9.988003838771593,
+     "median": 11,
+     "p95": 20,
+     "max": 32
+    },
+    "least_squares_nfev_stage2": {
+     "n": 2084,
+     "mean": 10.899232245681382,
+     "median": 11,
+     "p95": 23,
+     "max": 43
+    },
+    "slsqp_results_rejected": 0
+   }
+  },
+  "elapsed_seconds": 5178.6126296
+ },
+ "measurement_identity": {
+  "evaluator_sha256": "b8851851d992d7a0f8cdd5b9ce431423b0bc97f3cbfa36c30cbb620dd0151aef",
+  "native_module": "mic_eq_core.cp313-win_amd64.pyd",
+  "native_module_sha256": "f60611c60cc8682f3199dd352fff4dd36b1aa21993cb1687b37edd64d1337c16",
+  "corpora": {
+   "cross_take_manifest_sha256": "316d7014b392a648b91fa2731a793b59a5577165ac6d8f35e604f24eed51b5dc",
+   "harness_manifest_sha256": "569f3debce837922e9ea91f4487eb9bdd4cb5eca27c15d18a5e6174d800d7225"
+  },
+  "response_grid": "257 log-spaced frequencies, 80 Hz to 16 kHz, _predict_eq_response",
+  "incumbent_source_tree_sha256": "8ba7a654fc7bee436ccd6a7f9fa8cd027faac7facfdcadc7723692e131feba6c",
+  "candidate_source_tree_sha256": "9db22a27d5f2cd24219aae4f377fcd3f2f804398ee2a7e491cfc86382b430559",
+  "control_arm": "incumbent source tree; every least_squares and minimize start moved by numpy.nextafter toward +infinity, clipped into the bounds, by an interposed wrapper",
+  "scipy_numpy_svd_arm": "reported only; incumbent source tree, no start nudge, with the svd that scipy.optimize._lsq.trf calls replaced by numpy.linalg.svd",
+  "files_that_differ_between_arms": {
+   "python/mic_eq/analysis/auto_eq_parts/eq_fit.py": {
+    "incumbent": null,
+    "candidate": "f2a43660f5f1245ecbc928c0b55288351e4b42f90a937db4cc38e03bf75edd33"
+   },
+   "python/mic_eq/analysis/auto_eq_parts/optimizer.py": {
+    "incumbent": "72cd6939d70770d8456d7b180a5d70c56b943a3b9ad770c5875e1e28b77a34a8",
+    "candidate": "2a7c7ab9aef140f3e52e37b620168bdfc6835795b484f6bee699792538dc2e38"
+   },
+   "python/mic_eq/analysis/wav_io.py": {
+    "incumbent": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
+    "candidate": "6fc417597da60f5455b7d947518b28f7d8857d30d11a0d977c20a4808ab57132"
+   }
+  },
+  "source_sha256_pins": "the candidate arm's files, each identical in the working tree; the incumbent arm's optimizer.py and its lack of eq_fit.py are in files_that_differ_between_arms",
+  "workers_per_arm": 3
+ },
+ "limitations": [
+  "The SciPy arm's rejected or failed SLSQP result is not in the fit diagnostics; it is read from an interposed scipy.optimize.minimize and replayed by accepting it, so S4 is measured on a replay of the SciPy arm.",
+  "An S1 exception needs 'reduced' to 'apply', the constraint solver as the only reason in the incumbent, a failed or rejected incumbent refinement, and a candidate result within 1e-9 of the bounds and adjacency limits. The existing feasibility check does not test bounds; bound excess is recorded.",
+  "The control difference is analysed with the same definitions as the port difference: its own exceptions are left out of its response counts, and the S1 allowance counts every recommendation-status change in it.",
+  "Solver effort of the NumPy arm is counted in residual evaluations; SciPy's own nfev is recorded for the SciPy arms only. Run times are wall and CPU seconds on a shared PC and not gated.",
+  "Responses are compared on the rounded stored values (5 decimals).",
+  "No case exercised the path where the SciPy arm's constraint solve failed or was rejected and the NumPy arm's succeeded (0 of 2084 cases are S1 exceptions). Gate S4 and the S1 exception rule therefore measured nothing in this run; that behaviour is covered only by the seeded parity study of 360 synthetic fits, which is not part of this report."
+ ]
+}

@@ -817,6 +817,17 @@ fn select_processing_path(raw_monitor_enabled: bool, bypass_enabled: bool) -> Pr
     }
 }
 
+/// Lookahead delay the normal limiter adds on `path`. Bypass and Raw monitor
+/// never run it, so only the full path counts its delay as latency.
+#[inline]
+fn limiter_lookahead_for_path(path: ProcessingPath, lookahead_samples: u64) -> u64 {
+    if path == ProcessingPath::Full {
+        lookahead_samples
+    } else {
+        0
+    }
+}
+
 #[inline]
 fn uses_clean_write_path(path: ProcessingPath) -> bool {
     matches!(path, ProcessingPath::RawMonitor)

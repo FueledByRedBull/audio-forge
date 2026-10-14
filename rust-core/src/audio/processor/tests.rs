@@ -408,6 +408,39 @@ mod tests {
     }
 
     #[test]
+    fn test_reported_latency_counts_lookahead_limiter_only_on_full_path() {
+        for sample_rate in [44_100_u32, 48_000, 96_000] {
+            let lookahead = Limiter::default_settings(sample_rate as f64).lookahead_samples() as u64;
+            let true_peak = 20_u64;
+            let reported = |raw_monitor: bool, bypass: bool| {
+                let path = select_processing_path(raw_monitor, bypass);
+                total_reported_latency_us(
+                    LatencyComponents {
+                        input_resampler_delay_samples: 0,
+                        output_buffer_samples: 0,
+                        output_sample_rate: sample_rate,
+                        output_resampler_delay_samples: 0,
+                        suppressor_latency_samples: 0,
+                        limiter_lookahead_samples: limiter_lookahead_for_path(path, lookahead),
+                        true_peak_lookahead_samples: true_peak,
+                        processing_sample_rate: sample_rate,
+                    },
+                    0,
+                )
+            };
+            let true_peak_us = samples_to_micros(true_peak, sample_rate);
+            let normal_us = true_peak_us + samples_to_micros(lookahead, sample_rate);
+
+            // Switching modes while running moves the reported value both ways.
+            assert_eq!(reported(false, false), normal_us);
+            assert_eq!(reported(false, true), true_peak_us);
+            assert_eq!(reported(true, false), true_peak_us);
+            assert_eq!(reported(true, true), true_peak_us);
+            assert_eq!(reported(false, false), normal_us);
+        }
+    }
+
+    #[test]
     fn test_limiter_control_updates_final_true_peak_release() {
         let mut control = LimiterControlState::new();
         control.release_ms = 10.0;

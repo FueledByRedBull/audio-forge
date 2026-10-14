@@ -2277,8 +2277,10 @@ impl AudioProcessor {
                                         output_resampler_delay_samples:
                                             output_resampler_delay_samples_for_latency,
                                         suppressor_latency_samples,
-                                        limiter_lookahead_samples: limiter_lookahead_samples
-                                            .load(Ordering::Relaxed),
+                                        limiter_lookahead_samples: limiter_lookahead_for_path(
+                                            processing_path,
+                                            limiter_lookahead_samples.load(Ordering::Relaxed),
+                                        ),
                                         true_peak_lookahead_samples,
                                         processing_sample_rate: sample_rate_for_latency,
                                     },

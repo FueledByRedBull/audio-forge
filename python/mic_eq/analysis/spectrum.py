@@ -3,6 +3,8 @@
 Uses Welch/Hamming spectra for voice measurements and smoothing.
 """
 from dataclasses import dataclass
+from functools import lru_cache
+from typing import NamedTuple
 
 import numpy as np
 
@@ -267,17 +269,24 @@ def _robust_median_spectrum(
     return robust_shape + robust_level, coverage
 
 
+@lru_cache(maxsize=8)
+def _hamming_window(size: int) -> tuple[np.ndarray, float]:
+    window = np.hamming(size)
+    window.flags.writeable = False
+    return window, max(float(np.sum(window * window)), 1e-12)
+
+
 def _window_spectrum_db(frame: np.ndarray, fs: int) -> tuple[np.ndarray, np.ndarray]:
     frame = np.asarray(frame, dtype=float)
     frame = frame - float(np.mean(frame))
-    window = np.hamming(frame.size)
+    window, window_energy = _hamming_window(frame.size)
     windowed = frame * window
-    psd = np.square(np.abs(np.fft.rfft(windowed))) / max(float(np.sum(window * window)), 1e-12)
+    psd = np.square(np.abs(np.fft.rfft(windowed))) / window_energy
     freqs = np.fft.rfftfreq(frame.size, d=1.0 / fs)
     return freqs, 10.0 * np.log10(psd + 1e-12)
 
 
-def _median_frame_spectrum_db(
+def _frame_spectra_db(
     frames: np.ndarray,
     fs: int,
 ) -> tuple[np.ndarray, np.ndarray] | None:
@@ -291,7 +300,18 @@ def _median_frame_spectrum_db(
             freqs = local_freqs
         spectra.append(spectrum_db)
     assert freqs is not None
-    return freqs, np.median(np.asarray(spectra, dtype=float), axis=0)
+    return freqs, np.asarray(spectra, dtype=float)
+
+
+def _median_frame_spectrum_db(
+    frames: np.ndarray,
+    fs: int,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    frame_spectra = _frame_spectra_db(frames, fs)
+    if frame_spectra is None:
+        return None
+    freqs, spectra = frame_spectra
+    return freqs, np.median(spectra, axis=0)
 
 
 def _audio_reference_spectrum_db(
@@ -408,9 +428,10 @@ def _measurement_reliability(
     frame_size: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
     """Return uncertainty-derived reliability without treating phonetics as noise."""
-    smoothed = np.asarray(
-        [smooth_spectrum_perceptual(freqs, spectrum) for spectrum in spectra_db],
-        dtype=float,
+    smoothed = _smooth_perceptual_rows(
+        np.asarray(freqs, dtype=float),
+        np.asarray(spectra_db, dtype=float),
+        "balanced",
     )
     voice_mask = (freqs >= 100.0) & (freqs <= 8000.0)
     if np.any(voice_mask):
@@ -525,7 +546,12 @@ def analyze_voice_spectrum(
         else 0.0
     )
     vad_used = frame_vad_probabilities is not None
-    speech_reference = _median_frame_spectrum_db(voiced_frames, fs)
+    voiced_spectra = _frame_spectra_db(voiced_frames, fs)
+    speech_reference = (
+        None
+        if voiced_spectra is None
+        else (voiced_spectra[0], np.median(voiced_spectra[1], axis=0))
+    )
     noise_reference: tuple[np.ndarray, np.ndarray] | None = None
     noise_reference_source = "unavailable"
     if noise_spectrum_override is not None:
@@ -624,16 +650,8 @@ def analyze_voice_spectrum(
             effective_measurement_blocks=0.0,
         )
 
-    spectra = []
-    freqs = None
-    for frame in voiced_frames:
-        local_freqs, spectrum_db = _window_spectrum_db(frame, fs)
-        if freqs is None:
-            freqs = local_freqs
-        spectra.append(spectrum_db)
-
-    assert freqs is not None
-    spectra_arr = np.asarray(spectra, dtype=float)
+    assert voiced_spectra is not None
+    freqs, spectra_arr = voiced_spectra
     (
         repeatability,
         smoothed_spectra,
@@ -853,6 +871,130 @@ def smooth_spectrum_octave(freqs, spectrum_db, fraction=6):
     return smoothed_db
 
 
+class _OctavePlan(NamedTuple):
+    """Everything ``smooth_spectrum_octave`` derives from the grid alone."""
+
+    centres: np.ndarray
+    band_positions: np.ndarray
+    band_selectors: tuple[slice | np.ndarray, ...]
+    band_bin_counts: np.ndarray
+    positive: np.ndarray
+    log_positive_freqs: np.ndarray
+
+
+@lru_cache(maxsize=16)
+def _octave_plan(grid: bytes, fraction: int) -> _OctavePlan:
+    """Band membership and interpolation grid for one frequency grid.
+
+    Keyed on the grid's float64 bytes, so a cached plan can never describe a
+    different grid. The plan is internal and never handed to callers.
+    """
+    freqs = np.frombuffer(grid, dtype=np.float64)
+    centres, lowers, uppers = get_octave_frequencies(fraction)
+    positions: list[int] = []
+    selectors: list[slice | np.ndarray] = []
+    counts: list[int] = []
+    for index, (lower, upper) in enumerate(zip(lowers, uppers)):
+        members = np.flatnonzero((freqs >= lower) & (freqs <= upper))
+        if members.size:
+            positions.append(index)
+            counts.append(members.size)
+            contiguous = members[-1] - members[0] + 1 == members.size
+            selectors.append(
+                slice(int(members[0]), int(members[-1]) + 1) if contiguous else members
+            )
+    positive = freqs > 0.0
+    return _OctavePlan(
+        centres=centres,
+        band_positions=np.asarray(positions, dtype=np.intp),
+        band_selectors=tuple(selectors),
+        band_bin_counts=np.asarray(counts, dtype=np.intp),
+        positive=positive,
+        log_positive_freqs=np.log(freqs[positive]),
+    )
+
+
+def _smooth_octave_rows(
+    freqs: np.ndarray,
+    spectra_db: np.ndarray,
+    power: np.ndarray,
+    fraction: int,
+) -> np.ndarray:
+    """``smooth_spectrum_octave`` for each row of float64 ``spectra_db``.
+
+    ``power`` is ``10 ** (spectra_db / 10)``, shared by every fraction. Each
+    band sum is a reduction over the contiguous bins of one row, so it adds in
+    the same order as the per-spectrum version.
+    """
+    plan = _octave_plan(freqs.tobytes(), fraction)
+    rows = spectra_db.shape[0]
+    band_sums = np.empty((rows, plan.band_positions.size))
+    for column, selector in enumerate(plan.band_selectors):
+        band = power[:, selector]
+        if not isinstance(selector, slice):
+            # Fancy indexing lays the result out transposed, which changes the summation order.
+            band = np.ascontiguousarray(band)
+        band_sums[:, column] = np.add.reduce(band, axis=1)
+    bands = np.full((rows, plan.centres.size), np.nan)
+    bands[:, plan.band_positions] = 10 * np.log10(band_sums / plan.band_bin_counts)
+
+    smoothed = np.empty_like(spectra_db)
+    for row in range(rows):
+        valid = ~np.isnan(bands[row])
+        if np.sum(valid) > 1:
+            valid_bands = bands[row][valid]
+            smoothed_db = np.full_like(freqs, valid_bands[0], dtype=float)
+            smoothed_db[plan.positive] = np.interp(
+                plan.log_positive_freqs,
+                np.log(plan.centres[valid]),
+                valid_bands,
+                left=valid_bands[0],
+                right=valid_bands[-1],
+            )
+        else:
+            # Fallback: return original spectrum if smoothing failed
+            smoothed_db = spectra_db[row]
+        smoothed[row] = smoothed_db
+    return smoothed
+
+
+def _smooth_perceptual_rows(
+    freqs: np.ndarray,
+    spectra_db: np.ndarray,
+    strength: str,
+) -> np.ndarray:
+    """``smooth_spectrum_perceptual`` for each row of ``spectra_db``.
+
+    ``strength`` is already validated and not "off".
+    """
+    # Reduction order follows memory layout, so rows must be C-contiguous.
+    spectra_db = np.ascontiguousarray(spectra_db)
+    power = 10 ** (spectra_db / 10)
+    wide = _smooth_octave_rows(freqs, spectra_db, power, 3)
+    medium = _smooth_octave_rows(freqs, spectra_db, power, 6)
+    fine = _smooth_octave_rows(freqs, spectra_db, power, 12)
+    very_wide = _smooth_octave_rows(freqs, spectra_db, power, 2)
+
+    smoothed = medium.copy()
+    low_mask = freqs < 180.0
+    mid_mask = (freqs >= 180.0) & (freqs < 3500.0)
+    sibilance_mask = (freqs >= 3500.0) & (freqs <= 9000.0)
+    high_mask = freqs > 9000.0
+    smoothed[:, low_mask] = wide[:, low_mask]
+    smoothed[:, mid_mask] = medium[:, mid_mask]
+    smoothed[:, sibilance_mask] = fine[:, sibilance_mask]
+    smoothed[:, high_mask] = wide[:, high_mask]
+    if strength == "conservative":
+        smoothed[:, mid_mask] = 0.65 * medium[:, mid_mask] + 0.35 * wide[:, mid_mask]
+        smoothed[:, sibilance_mask] = (
+            0.60 * fine[:, sibilance_mask] + 0.40 * medium[:, sibilance_mask]
+        )
+        smoothed = 0.85 * smoothed + 0.15 * very_wide
+    elif strength == "broad":
+        smoothed = 0.50 * smoothed + 0.50 * very_wide
+    return smoothed
+
+
 def smooth_spectrum_perceptual(freqs, spectrum_db, strength="balanced"):
     """Apply voice-aware smoothing that varies by frequency region."""
     freqs = np.asarray(freqs, dtype=float)
@@ -862,27 +1004,9 @@ def smooth_spectrum_perceptual(freqs, spectrum_db, strength="balanced"):
         return spectrum_db.copy()
     if strength not in {"balanced", "conservative", "broad"}:
         raise ValueError(f"Unknown spectrum smoothing strength: {strength}")
-    wide = smooth_spectrum_octave(freqs, spectrum_db, fraction=3)
-    medium = smooth_spectrum_octave(freqs, spectrum_db, fraction=6)
-    fine = smooth_spectrum_octave(freqs, spectrum_db, fraction=12)
-    very_wide = smooth_spectrum_octave(freqs, spectrum_db, fraction=2)
-
-    smoothed = medium.copy()
-    low_mask = freqs < 180.0
-    mid_mask = (freqs >= 180.0) & (freqs < 3500.0)
-    sibilance_mask = (freqs >= 3500.0) & (freqs <= 9000.0)
-    high_mask = freqs > 9000.0
-    smoothed[low_mask] = wide[low_mask]
-    smoothed[mid_mask] = medium[mid_mask]
-    smoothed[sibilance_mask] = fine[sibilance_mask]
-    smoothed[high_mask] = wide[high_mask]
-    if strength == "conservative":
-        smoothed[mid_mask] = 0.65 * medium[mid_mask] + 0.35 * wide[mid_mask]
-        smoothed[sibilance_mask] = 0.60 * fine[sibilance_mask] + 0.40 * medium[sibilance_mask]
-        smoothed = 0.85 * smoothed + 0.15 * very_wide
-    elif strength == "broad":
-        smoothed = 0.50 * smoothed + 0.50 * very_wide
-    return smoothed
+    if spectrum_db.shape != freqs.shape or freqs.ndim != 1:
+        raise IndexError("freqs and spectrum_db must be one-dimensional and the same length")
+    return _smooth_perceptual_rows(freqs, spectrum_db[np.newaxis], strength)[0]
 
 
 def find_octave_spaced_peaks(spectrum_db, freqs, octave_fraction=3):

@@ -1,4 +1,6 @@
 """Bounded processing-configuration undo/redo contracts."""
+# pyright: reportMissingImports=false
+# (the sibling test modules are found by pytest at run time)
 
 from __future__ import annotations
 
@@ -17,6 +19,11 @@ from mic_eq.ui.config_history import (
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.calibration_dialog import CalibrationDialog, _candidate_metadata
 from mic_eq.ui.calibration_support import chain_settings as _chain_settings
+import test_quick_shell as quick_shell
+from test_eq_editing_state import eq_control, tone_action
+from test_gate_controls_state import window_gate_control
+
+quick_window = quick_shell.quick_window
 
 
 def _snapshot(
@@ -186,39 +193,27 @@ def test_changed_paths_and_snapshot_schema_exclude_audio_and_runtime_state() -> 
     }
 
 
+@pytest.fixture
+def window(quick_window):
+    """The real Quick window; none of these behaviours may need the widget view."""
+    yield quick_window
+    assert quick_window._classic_root is None
+
+
 def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
+    window,
     qapp,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(
-        "mic_eq.ui.main_window.load_config",
-        AppConfig,
-    )
-    monkeypatch.setattr(
-        "mic_eq.ui.main_window.save_config",
-        lambda _config: True,
-    )
-    monkeypatch.setattr(
-        "mic_eq.ui.main_window.list_presets",
-        lambda: [],
-    )
-    monkeypatch.setattr(
-        "mic_eq.ui.main_window.list_input_devices",
-        lambda: [],
-    )
-    monkeypatch.setattr(
-        "mic_eq.ui.main_window.list_output_devices",
-        lambda: [],
-    )
-    window = MainWindow()
     window._prompt_save_current_preset = lambda **_kwargs: None
     monkeypatch.setattr(window, "_calibration_context_key", lambda: "test-route/48000/mono")
     monkeypatch.setattr("mic_eq.ui.calibration_history.save_config", lambda _config: True)
-    baseline = window.gate_panel.threshold_spinbox.value()
+    threshold = window_gate_control(window, "Threshold")
+    eq = window.eq_state
+    baseline = threshold.value
 
-    window.gate_panel.threshold_spinbox.setValue(baseline + 2.0)
+    threshold.setValue(baseline + 2.0)
     qapp.processEvents()
-
 
     assert window._commit_pending_configuration_snapshot()
     assert window._configuration_history.can_undo
@@ -227,9 +222,7 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
     preset.gate.threshold_db = baseline + 5.0
     preset.eq.enabled = False
     window._apply_preset(preset)
-    assert window.gate_panel.threshold_spinbox.value() == pytest.approx(
-        baseline + 5.0
-    )
+    assert threshold.value == pytest.approx(baseline + 5.0)
 
     auto_eq_bands = [
         (80.0 * (1.6**index), 1.0 if index == 4 else 0.0, 1.41)
@@ -288,106 +281,78 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
         },
     })
     dialog._on_start_clicked()
-    correction = window.eq_panel.get_eq_settings().correction_bands
+    correction = eq.get_eq_settings().correction_bands
     assert correction is not None and correction[4].gain_db == 1.0
-    assert window.eq_panel.band_sliders[4].slider.value() == 0
+    assert eq_control(window, "gain", 4).value == 0
     assert window.processor.is_eq_enabled()
-    assert window.eq_panel._auto_eq_diagnostics is not None
+    assert eq.auto_eq_diagnostics is not None
 
     window.undo_configuration()
-    assert window.eq_panel.band_sliders[4].slider.value() == 0
-    assert window.eq_panel.get_eq_settings().correction_bands is None
+    assert eq_control(window, "gain", 4).value == 0
+    assert eq.get_eq_settings().correction_bands is None
     assert not window.processor.is_eq_enabled()
-    assert window.gate_panel.threshold_spinbox.value() == pytest.approx(
-        baseline + 5.0
-    )
+    assert threshold.value == pytest.approx(baseline + 5.0)
     assert window.status_message.text == "Undid: Auto-EQ (Broadcast)"
     window.redo_configuration()
-    assert window.eq_panel.get_eq_settings().correction_bands == correction
-    assert window.eq_panel.band_sliders[4].slider.value() == 0
+    assert eq.get_eq_settings().correction_bands == correction
+    assert eq_control(window, "gain", 4).value == 0
     assert window.processor.is_eq_enabled()
     assert window.status_message.text == "Redid: Auto-EQ (Broadcast)"
 
     history_size = window._configuration_history.size
-    previous_frequency = window.eq_panel.band_sliders[4].frequency_hz()
-    window.eq_state.begin_curve_edit(4)
-    window.eq_state.edit_curve_band(4, 3000.0, 2.2)
-    window.eq_state.finish_curve_edit(4, 3000.0, 2.2)
+    previous_frequency = eq.get_band(4).frequency_hz
+    eq.begin_curve_edit(4)
+    eq.edit_curve_band(4, 3000.0, 2.2)
+    eq.finish_curve_edit(4, 3000.0, 2.2)
     assert window._configuration_history.size == history_size + 1
-    assert window.eq_panel.band_sliders[4].frequency_hz() == 3000.0
+    assert eq.get_band(4).frequency_hz == 3000.0
     window.undo_configuration()
-    assert window.eq_panel.band_sliders[4].frequency_hz() == previous_frequency
+    assert eq.get_band(4).frequency_hz == previous_frequency
 
     # A new edit must invalidate the redo branch even when its debounce timer
     # has not fired yet.
     assert window._configuration_history.can_redo
     fresh_threshold = baseline + 7.0
-    window.gate_panel.threshold_spinbox.setValue(fresh_threshold)
+    threshold.setValue(fresh_threshold)
     window.redo_configuration()
-    assert window.gate_panel.threshold_spinbox.value() == pytest.approx(
-        fresh_threshold
-    )
+    assert threshold.value == pytest.approx(fresh_threshold)
     assert not window._configuration_history.can_redo
 
-    window.meter_timer.stop()
-    window.diagnostics_timer.stop()
-    window.close()
-    window.deleteLater()
+
+def test_domain_edits_update_history_and_ignore_presentation_controls(window, qapp):
+    baseline = window._preset_payload(window._get_current_preset())
+
+    tone_action(window, "Voice").trigger()
+    assert window.current_preset_modified is True
+    window._commit_pending_configuration_snapshot()
+    assert window._configuration_history.can_undo
+    window.undo_configuration()
+    assert window._preset_payload(window._get_current_preset()) == baseline
+
+    window.processing_mode_choice.setCurrentIndex(
+        window.processing_mode_choice.findData("raw")
+    )
+    assert window.current_preset_modified is True
+    window._commit_pending_configuration_snapshot()
+    assert window._configuration_history.can_undo
+    assert window.current_preset_modified is True
+    window.undo_configuration()
+    assert window._processing_mode() == "normal"
+    assert window.current_preset_modified is False
+
+    history_size = window._configuration_history.size
+    window.shell_page.setIndex(window.HEALTH_PAGE_INDEX)
     qapp.processEvents()
-
-
-def test_domain_edits_update_history_and_ignore_presentation_controls(
-    qapp, monkeypatch
-):
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    for name in ("list_presets", "list_input_devices", "list_output_devices"):
-        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
-    window = MainWindow()
-    try:
-        baseline = window._preset_payload(window._get_current_preset())
-
-        window.eq_panel._preset_voice()
-        assert window.current_preset_modified is True
-        window._commit_pending_configuration_snapshot()
-        assert window._configuration_history.can_undo
-        window.undo_configuration()
-        assert window._preset_payload(window._get_current_preset()) == baseline
-
-        window.processing_mode_choice.setCurrentIndex(
-            window.processing_mode_choice.findData("raw")
-        )
-        assert window.current_preset_modified is True
-        window._commit_pending_configuration_snapshot()
-        assert window._configuration_history.can_undo
-        assert window.current_preset_modified is True
-        window.undo_configuration()
-        assert window._processing_mode() == "normal"
-        assert window.current_preset_modified is False
-
-        history_size = window._configuration_history.size
-        window.shell_page.setIndex(window.HEALTH_PAGE_INDEX)
-        qapp.processEvents()
-        assert not window._commit_pending_configuration_snapshot()
-        assert window._configuration_history.size == history_size
-    finally:
-        window.close()
-        window.deleteLater()
-        qapp.processEvents()
+    assert not window._commit_pending_configuration_snapshot()
+    assert window._configuration_history.size == history_size
 
 
 def test_main_window_failed_history_restore_rolls_back_partial_state(
-    qapp,
+    window,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
-    monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
-    monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
-    window = MainWindow()
-    window.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.7})
-    original_threshold = window.gate_panel.threshold_spinbox.value()
+    window.compressor_state.set_settings({"noise_reference_reliability": 0.7})
+    original_threshold = window.gate_state.get_settings()["threshold_db"]
     target = window._get_current_preset()
     target.gate.threshold_db = original_threshold + 6.0
     snapshot = ConfigurationSnapshot.from_preset(
@@ -402,9 +367,7 @@ def test_main_window_failed_history_restore_rolls_back_partial_state(
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            window.gate_panel.threshold_spinbox.setValue(
-                preset.gate.threshold_db
-            )
+            window.gate_state.set_value("threshold_db", preset.gate.threshold_db)
             raise RuntimeError("simulated native restore failure")
         real_apply(preset, *args, **kwargs)
 
@@ -413,38 +376,29 @@ def test_main_window_failed_history_restore_rolls_back_partial_state(
         window._restore_configuration_snapshot(snapshot)
 
     assert call_count == 2
-    assert window.gate_panel.threshold_spinbox.value() == pytest.approx(
-        original_threshold
-    )
+    assert window.gate_state.get_settings()["threshold_db"] == pytest.approx(original_threshold)
     assert window._history_replaying is False
-    assert window.compressor_panel.get_compressor_settings(include_calibration=True)[
+    assert window.compressor_state.get_settings(include_calibration=True)[
         "noise_reference_reliability"
     ] == pytest.approx(0.7)
 
-    window.meter_timer.stop()
-    window.diagnostics_timer.stop()
-    window.close()
-    window.deleteLater()
-    qapp.processEvents()
 
-
-def test_history_restores_calibration_only_in_the_same_capture_context(qapp, monkeypatch):
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    for name in ("list_presets", "list_input_devices", "list_output_devices"):
-        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
-    window = MainWindow()
+def test_history_restores_calibration_only_in_the_same_capture_context(window, monkeypatch):
     route = "route-a"
     monkeypatch.setattr(window, "_current_device_route_key", lambda: route)
-    window.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.7})
+
+    def reliability() -> float:
+        return window.compressor_state.get_settings(include_calibration=True)[
+            "noise_reference_reliability"
+        ]
+
+    window.compressor_state.set_settings({"noise_reference_reliability": 0.7})
     assert window._commit_pending_configuration_snapshot()
     snapshot = window._configuration_history.current
     assert snapshot is not None
-    window.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.2})
+    window.compressor_state.set_settings({"noise_reference_reliability": 0.2})
     window._restore_configuration_snapshot(snapshot)
-    assert window.compressor_panel.get_compressor_settings(include_calibration=True)[
-        "noise_reference_reliability"
-    ] == pytest.approx(0.7)
+    assert reliability() == pytest.approx(0.7)
     for change in ("channel", "cleanup", "route"):
         window.config.input_channel_mode = "phase_safe_mono"
         window.config.input_cleanup_mode = "off"
@@ -455,26 +409,16 @@ def test_history_restores_calibration_only_in_the_same_capture_context(qapp, mon
         else:
             route = "route-b"
         window._restore_configuration_snapshot(snapshot)
-        assert window.compressor_panel.get_compressor_settings(include_calibration=True)[
-            "noise_reference_reliability"
-        ] == 0.0
-    window.meter_timer.stop()
-    window.diagnostics_timer.stop()
-    window.close()
-    window.deleteLater()
-    qapp.processEvents()
+        assert reliability() == 0.0
 
 
-def test_history_restore_refuses_an_unavailable_noise_backend(
-    qapp,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
-    monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
-    monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
-    window = MainWindow()
+def _without_noise_backend(window, model: str) -> None:
+    """List the backends the processor offers without ``model``."""
+    state = window.noise_suppression_state
+    state.models = tuple(entry for entry in state.models if entry[0] != model)
+
+
+def test_history_restore_refuses_an_unavailable_noise_backend(window) -> None:
     previous = window._get_current_preset()
     target = window._get_current_preset()
     target.rnnoise.model = "deepfilter"
@@ -483,49 +427,30 @@ def test_history_restore_refuses_an_unavailable_noise_backend(
         label="DeepFilter target",
         source="test",
     )
-    while (model_index := window.model_combo.findData("deepfilter")) >= 0:
-        window.model_combo.removeItem(model_index)
+    _without_noise_backend(window, "deepfilter")
 
     with pytest.raises(RuntimeError, match="unavailable"):
         window._restore_configuration_snapshot(snapshot)
 
-    assert window.model_combo.currentData() == previous.rnnoise.model
+    assert window.noise_suppression_state.get_settings()["model"] == previous.rnnoise.model
     assert window._history_replaying is False
-    window.meter_timer.stop()
-    window.diagnostics_timer.stop()
-    window.close()
-    window.deleteLater()
-    qapp.processEvents()
 
 
-def test_normal_preset_load_retains_sound_when_noise_backend_is_absent(qapp, monkeypatch):
+def test_normal_preset_load_retains_sound_when_noise_backend_is_absent(window, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    for name in ("list_presets", "list_input_devices", "list_output_devices"):
-        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
+
     monkeypatch.setattr(QMessageBox, "critical", lambda *_: None)
-    window = MainWindow()
     previous = window._get_current_preset()
     preset = window._get_current_preset()
     preset.rnnoise.model = "deepfilter"
-    while (index := window.model_combo.findData("deepfilter")) >= 0:
-        window.model_combo.removeItem(index)
+    _without_noise_backend(window, "deepfilter")
     assert window._apply_preset(preset) is False
     assert window._preset_payload(window._get_current_preset()) == window._preset_payload(previous)
     assert window.current_preset_name == "Default"
-    window.close()
-    window.deleteLater()
-    qapp.processEvents()
 
 
 @pytest.mark.parametrize("rollback_fails", [False, True])
-def test_failed_configuration_restores_sound_or_stops_muted(qapp, monkeypatch, rollback_fails):
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    for name in ("list_presets", "list_input_devices", "list_output_devices"):
-        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
-    window = MainWindow()
+def test_failed_configuration_restores_sound_or_stops_muted(window, monkeypatch, rollback_fails):
     window.user_mute_checkbox_action.setChecked(True)
     window.apply_processing_configuration(
         window._get_current_preset(),
@@ -533,7 +458,7 @@ def test_failed_configuration_restores_sound_or_stops_muted(qapp, monkeypatch, r
         processing_mode="raw",
         compressor_metadata={"dynamics_profile": "dense"},
     )
-    metadata = window.compressor_panel.get_compressor_settings(include_calibration=True)
+    metadata = window.compressor_state.get_settings(include_calibration=True)
     assert metadata["noise_reference_reliability"] == 0.7
     assert metadata["dynamics_profile"] == "dense"
     before = window._preset_payload(window._get_current_preset())
@@ -552,25 +477,20 @@ def test_failed_configuration_restores_sound_or_stops_muted(qapp, monkeypatch, r
             raise RuntimeError("injected failure after EQ")
 
     monkeypatch.setattr(window.eq_state, "set_settings", fail_after_eq)
-    try:
-        with pytest.raises(RuntimeError, match="injected failure after EQ"):
-            window.apply_processing_configuration(target)
-        assert (window.current_preset_name, window.current_preset_path, window.config.last_preset) == identity
-        assert window._configuration_history.cursor == cursor
-        assert window.user_muted
-        if rollback_fails:
-            assert not window.processor.is_running()
-            assert "configuration" in window._temporary_mute_reasons
-            assert "restoration failed" in str(window.status_message.text)
-        else:
-            assert window._preset_payload(window._get_current_preset()) == before
-            assert "configuration" not in window._temporary_mute_reasons
-            assert window._processing_mode() == "raw"
-            assert window.compressor_panel.get_compressor_settings(include_calibration=True) == metadata
-    finally:
-        window.close()
-        window.deleteLater()
-        qapp.processEvents()
+    with pytest.raises(RuntimeError, match="injected failure after EQ"):
+        window.apply_processing_configuration(target)
+    assert (window.current_preset_name, window.current_preset_path, window.config.last_preset) == identity
+    assert window._configuration_history.cursor == cursor
+    assert window.user_muted
+    if rollback_fails:
+        assert not window.processor.is_running()
+        assert "configuration" in window._temporary_mute_reasons
+        assert "restoration failed" in str(window.status_message.text)
+    else:
+        assert window._preset_payload(window._get_current_preset()) == before
+        assert "configuration" not in window._temporary_mute_reasons
+        assert window._processing_mode() == "raw"
+        assert window.compressor_state.get_settings(include_calibration=True) == metadata
 
 
 def test_configuration_rollback_stop_failure_keeps_mute_and_reports_stop_failure(

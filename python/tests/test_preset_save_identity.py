@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false
+# (the sibling test modules are found by pytest at run time)
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,6 +15,8 @@ from mic_eq.config import AppConfig, DevicePresetBinding, Preset
 from mic_eq.ui import main_window
 from mic_eq.ui.config_history import BoundedConfigurationHistory, ConfigurationSnapshot
 from mic_eq.ui.main_window import MainWindow
+from test_eq_editing_state import eq_control
+from test_gate_controls_state import window_gate_control
 
 
 def test_saved_processing_settings_restore_on_next_launch(qapp, monkeypatch, tmp_path):
@@ -24,8 +28,8 @@ def test_saved_processing_settings_restore_on_next_launch(qapp, monkeypatch, tmp
 
     window = MainWindow()
     try:
-        window.eq_panel.band_sliders[4].slider.setValue(23)
-        window.gate_panel.threshold_spinbox.setValue(-33.0)
+        eq_control(window, "gain", 4).setValue(23.0)
+        window_gate_control(window, "Threshold").setValue(-33.0)
         preset = window._get_current_preset()
         preset.name = "Saved Calibration"
         filepath = window._save_preset_file(preset)
@@ -41,8 +45,9 @@ def test_saved_processing_settings_restore_on_next_launch(qapp, monkeypatch, tmp
         assert restored.config.last_preset == str(filepath)
         assert restored._processing_mode() == "normal"
         assert not restored.preset_modified
-        assert restored.eq_panel.band_sliders[4].slider.value() == 23
-        assert restored.gate_panel.threshold_spinbox.value() == -33.0
+        assert eq_control(restored, "gain", 4).value == 23
+        assert window_gate_control(restored, "Threshold").value == -33.0
+        assert restored._classic_root is None
     finally:
         restored.close()
         restored.deleteLater()
@@ -236,12 +241,16 @@ def test_preset_strength_round_trip_matches_live_processor(qapp, monkeypatch, tm
     monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
     monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
     window = MainWindow()
+    strength_control = next(
+        row["proxy"] for row in cast(Any, window).quick_bridge.model["stages"][0]["rows"]
+        if row["label"] == "Strength"
+    )
     try:
         preset = window._get_current_preset()
         preset.rnnoise.strength = strength
         window._apply_preset(preset)
         assert window.processor.get_rnnoise_strength() == pytest.approx(strength)
-        assert window.strength_label.text() == f"{window.strength_slider.value()}%"
+        assert strength_control.text == f"{int(strength_control.value)}%"
         saved = window._get_current_preset()
         assert saved.rnnoise.strength == pytest.approx(strength)
         saved.name = "Strength round trip"
@@ -253,14 +262,15 @@ def test_preset_strength_round_trip_matches_live_processor(qapp, monkeypatch, tm
         assert window.processor.get_rnnoise_strength() == pytest.approx(strength)
         assert window.current_preset_modified is False
 
-        edited_value = (window.strength_slider.value() + 1) % 101
-        window.strength_slider.setValue(edited_value)
+        edited_value = (int(strength_control.value) + 1) % 101
+        strength_control.setValue(float(edited_value))
         assert window.processor.get_rnnoise_strength() == pytest.approx(
             edited_value / 100.0
         )
         assert window._get_current_preset().rnnoise.strength == pytest.approx(
             edited_value / 100.0
         )
+        assert window._classic_root is None
     finally:
         window.close()
         window.deleteLater()

@@ -16,23 +16,30 @@ AudioForge remains unsigned. Virtual audio cable setup is described in the
 ## New
 
 - Voice Setup and Auto-EQ start with a three-second level check. It tells you
-  if the microphone is too hot, too quiet or silent, with the level it heard
-  and how much to change. A good level continues with one click.
-- The IN and OUT meters hold their peak. A CLIP tag shows once six samples at
-  full scale arrive within three seconds, which is the flat top Voice Setup
-  counts as clipping. One touch of full scale only warns that peaks are too
-  high.
-- Health gives the number and the action. For example: "Input peaks at -0.3 dB.
-  Lower the microphone level by about 6 dB in Windows or on the interface." The
-  device, dropout, buffer, backend and recovery lines carry their numbers too.
+  if the microphone is too hot, too quiet or silent. For a hot or quiet voice
+  it gives the level it heard and the change to make. A good level continues
+  with one click. A hot or quiet level can be checked again or continued
+  anyway; silence can only be checked again.
+- The IN and OUT meters hold the highest sample value since the last read. A
+  CLIP tag shows once six samples at full scale arrive within three seconds,
+  which is the flat top Voice Setup counts as clipping. One touch of full scale
+  only warns that peaks are too high. The OUT tag stays dark while the limiter
+  holds the output at its ceiling, and lights when the limiter is off or does
+  not run (Bypass, Raw monitor).
+- Health gives the number and the action. For example: "Input peaks at -0.3 dB,
+  close to the top of the microphone's range, so loud sounds can be cut off and
+  sound distorted. Lower the microphone level by about 6 dB in Windows or on the
+  interface." The device, dropout, buffer, backend and recovery lines carry
+  their numbers too.
 - Setup results are written in plain words. Each reason a recording was not
   used says what was withheld and what to do. The confidence percentage is gone
   from the headline; the capture-quality score is in a tooltip.
 - The Review page draws the proposed EQ over the current one.
 - The EQ graph reads out the frequency and gain under the pointer. Double-click
   a band handle, or press Delete on the selected band, to reset it as one undo
-  step. In Bypass and Raw monitor the graph says "EQ not running" and draws what
-  the signal really gets.
+  step. In Bypass and Raw monitor the graph says "EQ not running". In Bypass it
+  draws the fixed input filtering the signal still gets (adaptive cleanup is not
+  drawn); in Raw monitor the line is flat.
 - The diagnostics export (schema version 3) adds the last setup result and which
   view and graphics backend the app is using. It contains no message text.
 
@@ -47,6 +54,8 @@ AudioForge remains unsigned. Virtual audio cable setup is described in the
   correction meets the headroom rule and the current EQ is already over it, the
   dialog offers the largest correction that is no worse than what you have. If
   none qualifies, it says the microphone level is too high and by about how much.
+  That amount counts only the excess in your recording, and the advice says when
+  the correction's own boost is the cause.
 - One stray full-scale sample no longer rejects a take. Clipping now needs a
   flat top of about 125 microseconds or more, or more than 20 separate hits.
 - Auto-EQ refuses clipped, silent and non-finite takes as soon as they finish.
@@ -66,16 +75,23 @@ AudioForge remains unsigned. Virtual audio cable setup is described in the
 ## Changes
 
 - The EQ graph draws each enabled band's curve, the correction layer as a dashed
-  line, the fixed input filter as a dotted line, and their total as the thick
-  curve. Shelf and filter handles sit on their own curves.
-- Spectrum analysis is faster, with identical results. A Voice Setup run is
-  about 1.2 s shorter.
+  line, the fixed input filter (the DC blocker and an 80 Hz high-pass) as a
+  dotted line, and the thick curve for what the signal really gets: the input
+  filter plus the EQ. Adaptive cleanup, which can raise the high-pass to 100 or
+  120 Hz and notch hum, is not drawn. Shelf and filter handles sit on their own
+  curves.
+- Spectrum analysis is faster, with identical results.
 - SciPy is no longer part of the app. The Auto-EQ fit uses NumPy, and the
-  portable bundle is smaller. On 2,084 test cases, 96% of fitted responses are
-  within 0.05 dB of SciPy's, the same share as SciPy against itself. The largest
-  difference was 2.30 dB, against 2.44 dB for SciPy against itself.
+  portable bundle is smaller. On 2,084 test cases, 96.2 % of fitted responses
+  are within 0.05 dB of SciPy's, about the same share as SciPy against itself
+  (96.7 %). The largest difference was 2.30 dB, against 2.44 dB for SciPy against
+  itself.
+- Auto-EQ can propose slightly different settings than 1.15.3. Of 2,071 fits,
+  34 differ by more than 0.25 dB, against 40 for SciPy compared with itself.
 - Release checks run as parallel jobs, and unused evaluator tools and code were
-  removed. This does not change the app.
+  removed. The release workflow no longer repeats the seeded contention stress
+  test in debug mode; it still runs in release mode. None of this changes the
+  app.
 
 Live audio processing, sound defaults and the preset format are unchanged.
 Existing presets retain their settings, and settings from earlier versions load
@@ -86,13 +102,23 @@ as before.
 The evidence archive records the exact candidate revision, hashes and automated
 qualification results, including portable startup and MSI lifecycle checks.
 
-The NumPy fit was compared with SciPy against rules fixed beforehand, with a
-control arm of SciPy against itself with moved start values. All four gates
-passed; no failure or recommendation status changed
+The NumPy fit was compared with SciPy, with a control arm of SciPy against
+itself with moved start values. The rules were set before the run, then
+rewritten once before any case was judged: a study of 360 seeded fits had shown
+that SciPy is not stable against itself, so three of the four gates as first
+written would have measured SciPy's noise, not the port. The fourth gate,
+that any allowed status change stays within 1 dB, had nothing to measure because
+there were no such changes. All four gates passed. The port changed no failure or
+recommendation status; the control changed one
 (`auto-eq-solver-port-2026-10-report.json` in the
 [evaluation evidence](https://github.com/FueledByRedBull/audio-forge/blob/master/evaluation/README.md)).
 The product resampler was re-checked on the current source and all 11
 predefined checks pass (`resampler-quality-2026-10-report.json`).
+The clipping rule was tried on 12 VoiceBank takes hard-clipped digitally by 0 to
+6 dB. It refuses every take clipped by 1 dB or more and accepts takes clipped by
+0.25 or 0.5 dB. The CLIP tag lights for 16 of the 29 cases it accepts, because
+the tag counts how often full scale was reached and the rule judges damage. No
+microphone captures of real clipping were tested.
 
 The level check, clipping rules, Health advice and EQ graph changes have
 automated tests that use offscreen rendering and simulated recordings. They do

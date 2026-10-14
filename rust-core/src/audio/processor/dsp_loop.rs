@@ -10,6 +10,31 @@ fn publish_vad_processing_path_discontinuity(
     }
 }
 
+/// Consume a pending limiter change once per block, whatever the processing
+/// path. Bypass and Raw monitor never run the lookahead limiter, but they still
+/// write through the output stage, which reads the ceiling and release
+/// published here.
+fn apply_pending_limiter_control(
+    limiter_dirty: &AtomicBool,
+    limiter_rt_control: &AtomicLimiterControlState,
+    limiter_rt: &mut Limiter,
+    output_limiter_release_ms: &Cell<f32>,
+    output_ceiling_linear: &Cell<f32>,
+    limiter_lookahead_samples: &AtomicU64,
+) {
+    if limiter_dirty.swap(false, Ordering::AcqRel) {
+        if let Some(control) = limiter_rt_control.snapshot() {
+            apply_limiter_control(limiter_rt, &control);
+            output_limiter_release_ms.set(control.release_ms as f32);
+            output_ceiling_linear.set(10.0_f32.powf(limiter_rt.ceiling_db() as f32 / 20.0));
+            limiter_lookahead_samples
+                .store(limiter_rt.lookahead_samples() as u64, Ordering::Relaxed);
+        } else {
+            limiter_dirty.store(true, Ordering::Release);
+        }
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     static INPUT_DROP_AFTER_READ: Cell<bool> = const { Cell::new(false) };
@@ -872,7 +897,6 @@ impl AudioProcessor {
                 Cell::new(10.0_f32.powf(limiter_rt.ceiling_db() as f32 / 20.0));
             let limiter_lookahead_samples =
                 Arc::new(AtomicU64::new(limiter_rt.lookahead_samples() as u64));
-            let limiter_lookahead_samples_for_chain = Arc::clone(&limiter_lookahead_samples);
             let gate_snapshot = gate_rt_control
                 .snapshot()
                 .unwrap_or_else(GateControlState::new);
@@ -975,7 +999,7 @@ impl AudioProcessor {
             };
 
             macro_rules! apply_downstream_chain_rt {
-                ($buffer:expr, $output_limiter_release_ms:expr) => {{
+                ($buffer:expr) => {{
                     if deesser_dirty.swap(false, Ordering::AcqRel) {
                         if let Some(control) = deesser_rt_control.snapshot() {
                             apply_deesser_control(&mut deesser_rt, &control);
@@ -995,18 +1019,6 @@ impl AudioProcessor {
                             apply_compressor_control(&mut compressor_rt, &control);
                         } else {
                             compressor_dirty.store(true, Ordering::Release);
-                        }
-                    }
-                    if limiter_dirty.swap(false, Ordering::AcqRel) {
-                        if let Some(control) = limiter_rt_control.snapshot() {
-                            apply_limiter_control(&mut limiter_rt, &control);
-                            $output_limiter_release_ms.set(control.release_ms as f32);
-                            output_ceiling_linear
-                                .set(10.0_f32.powf(limiter_rt.ceiling_db() as f32 / 20.0));
-                            limiter_lookahead_samples_for_chain
-                                .store(limiter_rt.lookahead_samples() as u64, Ordering::Relaxed);
-                        } else {
-                            limiter_dirty.store(true, Ordering::Release);
                         }
                     }
 
@@ -1609,6 +1621,15 @@ impl AudioProcessor {
                                 previous_processing_path = processing_path;
                             }
 
+                            apply_pending_limiter_control(
+                                &limiter_dirty,
+                                &limiter_rt_control,
+                                &mut limiter_rt,
+                                &output_limiter_release_ms,
+                                &output_ceiling_linear,
+                                &limiter_lookahead_samples,
+                            );
+
                             if processing_path == ProcessingPath::RawMonitor {
                                 sanitize_non_finite_inplace(buffer);
                                 adaptive_cleanup_state.reset_dynamic_state();
@@ -2113,10 +2134,7 @@ impl AudioProcessor {
                                             }
 
                                             suppressor_recovery_fade.apply(output_slice);
-                                            apply_downstream_chain_rt!(
-                                                output_slice,
-                                                output_limiter_release_ms
-                                            );
+                                            apply_downstream_chain_rt!(output_slice);
 
                                             // Measure OUTPUT levels
                                             measure_levels(
@@ -2176,10 +2194,7 @@ impl AudioProcessor {
                                     }
                                     // Suppressor disabled: apply remaining stages directly
 
-                                    apply_downstream_chain_rt!(
-                                        buffer,
-                                        output_limiter_release_ms
-                                    );
+                                    apply_downstream_chain_rt!(buffer);
 
                                     // Measure OUTPUT levels
                                     measure_levels(

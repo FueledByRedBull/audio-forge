@@ -166,7 +166,9 @@ cargo audit
 
 - **Semgrep:** `run_semgrep.py` fails on any ERROR or WARNING that isn't
   suppressed in source with `nosemgrep` and a reason. Review the notes by
-  hand in the SARIF.
+  hand in the SARIF. The rule packs in `semgrep-rulesets.txt` aren't pinned,
+  so a new upstream rule can fail CI without a code change: fix the code or
+  suppress the finding with its reason.
 - **RustSec:** `cargo audit` must be clean for the application lockfile; never
   add an ignore just to release. The separate
   `build-support/deepfilter/Cargo.lock` graph ignores only three reviewed

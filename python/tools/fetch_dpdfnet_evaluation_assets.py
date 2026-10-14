@@ -59,7 +59,8 @@ def _download(url: str, destination: Path) -> None:
     )
     for attempt in range(8):
         try:
-            # _validated_hugging_face_url pins the request to Hugging Face over HTTPS.
+            # _validated_hugging_face_url allows only Hugging Face over HTTPS for
+            # the request.
             # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             with urllib.request.urlopen(request, timeout=120) as response:
                 with temporary.open("wb") as output:
@@ -89,7 +90,8 @@ def _load_metadata() -> tuple[str, list[dict[str, str]]]:
         _validated_hugging_face_url(url),
         headers={"User-Agent": "AudioForge-evaluation/1"},
     )
-    # _validated_hugging_face_url pins the request to Hugging Face over HTTPS.
+    # _validated_hugging_face_url allows only Hugging Face over HTTPS for the
+    # request.
     # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
     with urllib.request.urlopen(request, timeout=120) as response:
         payload = response.read().decode("utf-8")

@@ -2061,6 +2061,19 @@ mod tests {
         clean_path: bool,
         input: &[f32],
     ) -> (Vec<f32>, u64, u64) {
+        run_live_path_writer_with(limiter_on, ceiling_db, clean_path, input, |_, _, _, _| {})
+    }
+
+    /// `run_live_path_writer` with a hook that runs before every block, where
+    /// the loop consumes pending control changes. It gets the block index, the
+    /// number of samples queued so far, the limiter-enabled flag and the ceiling cell.
+    fn run_live_path_writer_with(
+        limiter_on: bool,
+        ceiling_db: f32,
+        clean_path: bool,
+        input: &[f32],
+        mut before_block: impl FnMut(usize, usize, &AtomicBool, &Cell<f32>),
+    ) -> (Vec<f32>, u64, u64) {
         let rb = AudioRingBuffer::new(4096);
         let (mut producer, mut consumer) = rb.split();
         let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
@@ -2118,7 +2131,8 @@ mod tests {
         };
         let mut queued = Vec::new();
         let mut drained = [0.0_f32; 1024];
-        for block in input.chunks(480) {
+        for (index, block) in input.chunks(480).enumerate() {
+            before_block(index, queued.len(), &limiter_enabled, &output_ceiling_linear);
             assert!(writer.write_chunk(block, clean_path));
             let read = consumer.read(&mut drained);
             queued.extend_from_slice(&drained[..read]);
@@ -2218,6 +2232,143 @@ mod tests {
                 assert!(peak > ceiling + 0.05, "{label}: peak {peak} stayed under {ceiling}");
                 assert!(full_scale > 0, "{label}: no full-scale samples");
             }
+        }
+    }
+
+    /// Runs a hot sine through the production writer while the control side
+    /// lowers the ceiling to -6 dB and the release to 120 ms at block 10. With
+    /// `consume` the per-block hook is the loop's own pending-change step;
+    /// without it, a path that never reaches that step. Returns the peak of
+    /// everything queued before the change, the peak of everything queued
+    /// from the change on, and the release published for the writer.
+    fn run_live_path_with_ceiling_change(clean_path: bool, consume: bool) -> (f32, f32, f32) {
+        const CHANGE_BLOCK: usize = 10;
+        let signal: Vec<f32> = (0..9600)
+            .map(|i| 2.0 * (std::f64::consts::TAU * 997.0 * i as f64 / 48_000.0).sin() as f32)
+            .chain(std::iter::repeat_n(0.0, 2048))
+            .collect();
+        let control = AtomicLimiterControlState::new();
+        control.set_careful_output_enabled(false);
+        control.set_ceiling_db(0.0);
+        let dirty = AtomicBool::new(false);
+        let mut limiter_rt = Limiter::default_settings(48_000.0);
+        let release_ms = Cell::new(50.0_f32);
+        let lookahead_samples = AtomicU64::new(0);
+        let mut changed_at = None;
+
+        let (queued, _, clip_events) = run_live_path_writer_with(
+            true,
+            0.0,
+            clean_path,
+            &signal,
+            |block, queued_len, _, ceiling| {
+                if block == CHANGE_BLOCK {
+                    control.set_ceiling_db(-6.0);
+                    control.set_release_ms(120.0);
+                    dirty.store(true, Ordering::Release);
+                    changed_at = Some(queued_len);
+                }
+                if consume {
+                    apply_pending_limiter_control(
+                        &dirty,
+                        &control,
+                        &mut limiter_rt,
+                        &release_ms,
+                        ceiling,
+                        &lookahead_samples,
+                    );
+                }
+            },
+        );
+        let changed_at = changed_at.expect("the change block must run");
+        let peak = |samples: &[f32]| samples.iter().fold(0.0_f32, |p, s| p.max(s.abs()));
+        if consume {
+            assert_eq!(clip_events, 0, "the limiter, not the clamp, must hold the new ceiling");
+            assert!(!dirty.load(Ordering::Acquire), "the change must be consumed");
+        }
+        (peak(&queued[..changed_at]), peak(&queued[changed_at..]), release_ms.get())
+    }
+
+    #[test]
+    fn test_bypass_and_raw_monitor_apply_a_limiter_change_made_while_they_run() {
+        let new_ceiling = 10.0_f32.powf(-6.0 / 20.0);
+        for (mode, clean_path) in [("bypass", false), ("raw monitor", true)] {
+            let (before, after, release) = run_live_path_with_ceiling_change(clean_path, true);
+            assert!(before > 0.9, "{mode}: the 0 dB ceiling must pass the hot sine, got {before}");
+            assert!(after <= new_ceiling + 1e-6, "{mode}: peak {after} > {new_ceiling}");
+            assert!(after >= 0.5 * new_ceiling, "{mode}: signal lost, peak {after}");
+            assert_eq!(release, 120.0, "{mode}: release was not published");
+
+            // Contrast: a path that never consumes the change keeps the old
+            // ceiling, which is what Bypass and Raw monitor did.
+            let (_, stale_after, stale_release) =
+                run_live_path_with_ceiling_change(clean_path, false);
+            assert!(stale_after > 0.9, "{mode}: stale ceiling should still pass, got {stale_after}");
+            assert_eq!(stale_release, 50.0, "{mode}");
+        }
+    }
+
+    #[test]
+    fn test_pending_limiter_change_is_rearmed_while_the_snapshot_is_unstable() {
+        let control = AtomicLimiterControlState::new();
+        let dirty = AtomicBool::new(true);
+        let mut limiter_rt = Limiter::default_settings(48_000.0);
+        let release_ms = Cell::new(50.0_f32);
+        let ceiling = Cell::new(1.0_f32);
+        let lookahead_samples = AtomicU64::new(0);
+        let consume = |limiter_rt: &mut Limiter| {
+            apply_pending_limiter_control(
+                &dirty,
+                &control,
+                limiter_rt,
+                &release_ms,
+                &ceiling,
+                &lookahead_samples,
+            )
+        };
+
+        control.seq.store(1, Ordering::Release);
+        consume(&mut limiter_rt);
+        assert!(dirty.load(Ordering::Acquire), "an unstable snapshot must re-arm");
+        assert_eq!(ceiling.get(), 1.0);
+
+        control.seq.store(2, Ordering::Release);
+        control.set_careful_output_enabled(false);
+        control.set_ceiling_db(-6.0);
+        consume(&mut limiter_rt);
+        assert!(!dirty.load(Ordering::Acquire));
+        assert!((ceiling.get() - 10.0_f32.powf(-6.0 / 20.0)).abs() < 1e-6);
+        assert!(lookahead_samples.load(Ordering::Relaxed) > 0);
+    }
+
+    /// The limiter-enabled flag is read from its own atomic on every write,
+    /// so toggling it needs no pending-change step in any path.
+    #[test]
+    fn test_bypass_and_raw_monitor_follow_the_limiter_enabled_flag_immediately() {
+        let signal: Vec<f32> = (0..9600)
+            .map(|i| 2.0 * (std::f64::consts::TAU * 997.0 * i as f64 / 48_000.0).sin() as f32)
+            .chain(std::iter::repeat_n(0.0, 2048))
+            .collect();
+        let ceiling = 10.0_f32.powf(-6.0 / 20.0);
+        for (mode, clean_path) in [("bypass", false), ("raw monitor", true)] {
+            let mut changed_at = None;
+            let (queued, _, _) = run_live_path_writer_with(
+                false,
+                -6.0,
+                clean_path,
+                &signal,
+                |block, queued_len, enabled, _| {
+                    if block == 10 {
+                        enabled.store(true, Ordering::Release);
+                        changed_at = Some(queued_len);
+                    }
+                },
+            );
+            let changed_at = changed_at.unwrap();
+            let before = queued[..changed_at].iter().fold(0.0_f32, |p, s| p.max(s.abs()));
+            let after = queued[changed_at..].iter().fold(0.0_f32, |p, s| p.max(s.abs()));
+            assert!(before > 0.9, "{mode}: limiter off must pass the hot sine, got {before}");
+            assert!(after <= ceiling + 1e-6, "{mode}: peak {after} > {ceiling}");
         }
     }
 
@@ -4512,6 +4663,38 @@ mod tests {
                 "{dirty_flag} must be re-armed when a control snapshot is unstable"
             );
         }
+    }
+
+    #[test]
+    fn test_dsp_loop_consumes_limiter_changes_before_the_processing_paths_split() {
+        let source = include_str!("dsp_loop.rs");
+        // The downstream macro runs only in the Full path, yet Bypass and Raw
+        // monitor write through the same output limiter and ceiling clamp.
+        let downstream = source_between(
+            source,
+            "macro_rules! apply_downstream_chain_rt",
+            "// Time-based EMA smoothing",
+        );
+        assert!(
+            !downstream.contains("limiter_dirty"),
+            "a limiter change must not wait for the Full path"
+        );
+
+        let region = marked_region(source, "dsp_processing_loop");
+        assert_eq!(region.matches("apply_pending_limiter_control(").count(), 1);
+        let consume = region.find("apply_pending_limiter_control(").unwrap();
+        let split = region
+            .find("if processing_path == ProcessingPath::RawMonitor")
+            .expect("the Raw monitor branch must exist");
+        assert!(
+            consume < split,
+            "limiter changes must be consumed before the Raw monitor, Bypass and Full paths split"
+        );
+
+        assert_no_forbidden_rt_patterns(
+            "processor/dsp_loop.rs:apply_pending_limiter_control",
+            source_between(source, "fn apply_pending_limiter_control(", "thread_local!"),
+        );
     }
 
     #[cfg(feature = "deepfilter")]

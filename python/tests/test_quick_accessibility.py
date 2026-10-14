@@ -22,6 +22,7 @@ from test_quick_layout import segoe_font  # noqa: F401  (a fixture)
 from test_quick_shell import (
     _AccessibleScene,
     _graph_item,
+    _tab_stops,
 )
 from test_quick_shell import quick_window as shell_window  # noqa: F401  (a fixture)
 
@@ -398,12 +399,42 @@ def test_the_navigation_tabs_expose_which_page_is_current(quick_window, qapp) ->
 def test_the_health_chip_exposes_whether_the_health_page_is_open(quick_window, qapp) -> None:
     window = quick_window
     _show(window, qapp)
-    with _AccessibleScene():
+    with _AccessibleScene() as scene:
         chip = window.centralWidget().rootObject().findChild(QObject, "healthToggle")
         assert not _iface(chip).state().checked
+        assert scene.description(chip) == "Show audio health details"
         window.shell_page.setIndex(HEALTH)
         qapp.processEvents()
         assert _iface(chip).state().checked
+        # A click now goes back, so the description says that.
+        assert scene.description(chip) == "Hide audio health details"
+
+
+def test_the_status_strip_texts_are_read_by_assistive_technology_without_being_tab_stops(
+    quick_window, qapp
+) -> None:
+    window = quick_window
+    _show(window, qapp)
+    root = window.centralWidget().rootObject()
+    shown = {
+        "statusMessage": window.status_message,
+        "statusTransmission": window.shell_texts["transmission_status_label"],
+        "statusCalibration": window.shell_texts["calibration_status_label"],
+    }
+    with _AccessibleScene() as scene:
+        items = {name: root.findChild(QObject, name) for name in shown}
+        for name, item in items.items():
+            assert _iface(item) is not None, f"{name} is not exposed"
+            assert _iface(item).role() == Role.StaticText
+            assert scene.name(item) == shown[name].text != ""
+        window.status_message.showMessage("Output muted")
+        window.shell_texts["transmission_status_label"].update(text="Transmission: Running / Normal / Muted")
+        qapp.processEvents()
+        assert scene.name(items["statusMessage"]) == "Output muted"
+        assert scene.name(items["statusTransmission"]) == "Transmission: Running / Normal / Muted"
+
+        stopped_on = {item.objectName() for item in _tab_stops(window, qapp)}
+        assert not stopped_on & set(shown)
 
 
 def test_settings_rows_are_switches_or_buttons_and_switches_say_if_they_are_on(

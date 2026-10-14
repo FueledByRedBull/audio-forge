@@ -217,7 +217,7 @@ def _check_windows_shortcut_roundtrip() -> None:
 
 
 def _check_auto_eq_solvers() -> None:
-    """Fit a synthetic bassy mic so the bundled SciPy solvers must load and converge."""
+    """Fit a synthetic bassy mic so the Auto-EQ solvers must load and converge."""
     import numpy as np
 
     from ..analysis.auto_eq import NUM_EQ_BANDS, calculate_eq_bands
@@ -226,8 +226,8 @@ def _check_auto_eq_solvers() -> None:
     measured_db = -70.0 + 10.0 / (1.0 + (freqs / 200.0) ** 2)
     fit = calculate_eq_bands(freqs, measured_db, np.zeros_like(freqs))
     gains = fit["band_gains"]
-    # least_squares (nonlinear) and SLSQP (constraint) both converged, and the
-    # low bands were cut as a bassy mic requires.
+    # Both the nonlinear and the constraint solve converged, and the low bands
+    # were cut as a bassy mic requires.
     if not (
         fit["nonlinear_solver_success"]
         and fit["constraint_solver_success"]
@@ -237,8 +237,8 @@ def _check_auto_eq_solvers() -> None:
     ):
         raise RuntimeError(
             "Auto-EQ solver check failed: "
-            f"least_squares={fit['nonlinear_solver_success']}, "
-            f"SLSQP={fit['constraint_solver_success']}, gains={gains}"
+            f"nonlinear={fit['nonlinear_solver_success']}, "
+            f"constraint={fit['constraint_solver_success']}, gains={gains}"
         )
 
 

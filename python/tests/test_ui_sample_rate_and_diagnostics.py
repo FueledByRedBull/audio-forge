@@ -110,13 +110,13 @@ def test_setup_level_warnings_use_actual_peak_not_rms_estimate(window):
     calibration = CalibrationDialog(parent=window)
     calibration._on_level_update(-20.0, -1.0)
     assert (calibration.level_meter.rms_db, calibration.level_meter.peak_db) == (-20.0, -1.0)
-    assert "Too loud" in calibration.warning_label.text()
+    assert "peaks at -1.0 dB" in calibration.warning_label.text()
 
     voice_setup = VoiceSetupDialog(parent=window)
     voice_setup.setup_state = "voice_recording"
     voice_setup._update_level(-20.0, -1.0)
     assert (voice_setup.level_meter.rms_db, voice_setup.level_meter.peak_db) == (-20.0, -1.0)
-    assert "Too loud" in voice_setup.warning_label.text()
+    assert "peaks at -1.0 dB" in voice_setup.warning_label.text()
 
 
 class _SignalStub:
@@ -354,6 +354,16 @@ class _MeterProcessor:
 
     def get_output_callback_age_ms(self) -> int:
         return 10
+
+    def take_input_peak_since_read(self) -> float:
+        return 0.0
+
+    take_output_peak_since_read = take_output_pre_limiter_peak_since_read = take_input_peak_since_read
+
+    def get_input_full_scale_count(self) -> int:
+        return 0
+
+    get_output_full_scale_count = get_input_full_scale_count
 
     def service_recovery(self):
         return None
@@ -633,18 +643,20 @@ def test_calibration_dialog_shows_auto_eq_diagnostics(window):
     assert not dialog.diagnostics_group.isHidden()
     assert (
         dialog.confidence_label.text()
-        == "High confidence in this measurement (76%)."
+        == "Good capture: clear and steady enough to base a correction on."
     )
     assert (
-        dialog.confidence_label.toolTip() == "EQ 74%; capture 81%; validation 78%"
+        "Capture quality score 81%." in dialog.confidence_label.toolTip()
     )
+    assert "Overall score: 76%." in dialog.confidence_label.toolTip()
     assert (
         dialog.error_label.text()
-        == "Distance from the tone preset: 5.0 dB before, 2.5 dB after."
+        == "Distance from the tone preset: 5.0 dB; no correction was applied."
     )
     assert (
         dialog.error_label.toolTip()
-        == "Gain scale 90%; correction 6.0 dB -> 4.0 dB; narrow 2.0 dB"
+        == "The correction is used at 90% of its fitted strength. "
+        "Smoothing took the largest change from 6.0 dB to 4.0 dB."
     )
     assert dialog.gain_scale_label.text() == "Headroom check: not available."
     assert (
@@ -652,7 +664,7 @@ def test_calibration_dialog_shows_auto_eq_diagnostics(window):
         == f"Tone preset: {dialog.curve_combo.currentText()}"
     )
     assert (
-        dialog.target_profile_label.toolTip() == "Target profile: broadcast, Subtle"
+        dialog.target_profile_label.toolTip() == "Tone preset and matching: broadcast, Subtle."
     )
 
     dialog.close()
@@ -691,7 +703,7 @@ def test_calibration_dialog_does_not_offer_abstained_eq(window):
     # Plain language up front; the raw reason stays available on hover.
     text = dialog.warning_label.text()
     assert text.startswith("No correction applied. ")
-    assert "Speech was too close to the measured room-noise level." in text
+    assert "Your voice was too close to the background noise in the recording." in text
     assert "noise-referenced SNR is too low" not in text
     assert "noise-referenced SNR is too low" in dialog.warning_label.toolTip()
     # Review step: the setup and recording widgets are out of the way.
@@ -823,7 +835,7 @@ def test_health_panel_reports_input_output_and_callback_states(window):
     assert window.shell_texts["input_health_label"].state == "warn"
     assert "Output: OK" in window.shell_texts["output_health_label"].text
     assert window.shell_texts["output_health_label"].state == "ok"
-    assert "Callbacks: I:12ms O:14ms" == window.shell_texts["callback_health_label"].text
+    assert "Device activity: input 12 ms ago, output 14 ms ago" == window.shell_texts["callback_health_label"].text
     assert window.shell_texts["callback_health_label"].state == "ok"
 
     window._update_diagnostic_labels(
@@ -840,13 +852,147 @@ def test_health_panel_reports_input_output_and_callback_states(window):
         output_rms_db=-0.5,
         input_callback_age_ms=300,
         output_callback_age_ms=20,
+        input_peak_db=0.0,
+        input_full_scale_samples=9,
+        output_peak_db=1.5,
+        output_at_full_scale=True,
+        limiter_enabled=False,
     )
 
-    assert "Input: CLIPPING" in window.shell_texts["input_health_label"].text
+    assert window.shell_texts["input_health_label"].text == "Input: CLIPPED (peak 0.0 dB, full scale 9 times)"
     assert window.shell_texts["input_health_label"].state == "bad"
-    assert "Output: CLIP" in window.shell_texts["output_health_label"].text
+    assert window.shell_texts["output_health_label"].text == "Output: AT FULL SCALE (peak 1.5 dB)"
     assert window.shell_texts["output_health_label"].state == "bad"
     assert window.shell_texts["callback_health_label"].state == "warn"
+
+
+def _labels(window, **changes):
+    args = dict(
+        diagnostics=_healthy_runtime_diagnostics(),
+        latency_ms=24.0, dsp_time_ms=0.5, input_buf=128, output_buf=256, rnnoise_buf=0,
+        input_rms_db=-18.0, output_rms_db=-18.0,
+        input_callback_age_ms=10, output_callback_age_ms=10,
+    )
+    args.update(changes)
+    window._update_diagnostic_labels(**args)
+
+
+NEVER = 2**64 - 1
+
+
+def test_a_device_that_has_not_called_back_yet_is_unknown_not_a_huge_number(window):
+    from mic_eq.ui.health import advice_for
+
+    _recovery_setup(window)
+    window._stream_recovery.processing_started_at = time.monotonic()  # still starting up
+    never = 2**64 - 1  # what the engine reports before a device's first callback
+    chip = window.shell_texts["callback_health_label"]
+
+    _labels(window, input_callback_age_ms=never, output_callback_age_ms=never)
+    assert chip.text == (
+        "Device activity: input has not started sending sound yet, "
+        "output has not started playing sound yet"
+    )
+    assert chip.state == "idle"
+
+    _labels(window, input_callback_age_ms=never, output_callback_age_ms=14)
+    assert chip.text == "Device activity: input has not started sending sound yet, output 14 ms ago"
+    assert chip.state == "ok"
+
+    _labels(window, input_callback_age_ms=never, output_callback_age_ms=1400)
+    assert chip.state == "bad"
+    advice = advice_for(chip.text)
+    assert "for 1400 ms" in advice and "1844" not in advice and "1844" not in chip.text
+
+
+@pytest.mark.parametrize(
+    ("input_age", "output_age", "text"),
+    [
+        (NEVER, 14, "Device activity: input has not started sending sound yet, output 14 ms ago"),
+        (12, NEVER, "Device activity: input 12 ms ago, output has not started playing sound yet"),
+        (
+            NEVER, NEVER,
+            "Device activity: input has not started sending sound yet, "
+            "output has not started playing sound yet",
+        ),
+    ],
+)
+def test_a_device_that_never_starts_is_a_warning_once_the_startup_grace_is_over(
+    window, monkeypatch, input_age, output_age, text
+):
+    clock = [1000.0]
+    monkeypatch.setattr("mic_eq.ui.main_window.time.monotonic", lambda: clock[0])
+    _recovery_setup(window)
+    chip = window.shell_texts["callback_health_label"]
+
+    _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age)
+    clock[0] += main_window.DEVICE_STARTUP_GRACE_SECONDS - 2
+    _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age)
+    assert chip.text == text and chip.state != "warn"
+
+    clock[0] += 3
+    _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age)
+    assert (chip.text, chip.state) == (text, "warn")
+    summary = window.shell_texts["health_summary_label"]
+    assert (summary.text, summary.state) == (text, "warn")
+    assert "has not started" in window.shell_texts["health_advice_label"].text
+    assert " ms" not in window.shell_texts["health_advice_label"].text
+
+    window._stream_recovery.processing_started_at = None  # not processing: nothing to warn about
+    _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age)
+    assert chip.state != "warn"
+
+
+def test_a_restart_long_after_processing_began_gets_the_startup_grace_again(window, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr("mic_eq.ui.main_window.time.monotonic", lambda: clock[0])
+    _recovery_setup(window)
+    window._stream_recovery.processing_started_at = clock[0] - 30  # the engine has run for a while
+    chip = window.shell_texts["callback_health_label"]
+
+    _labels(window)
+    assert chip.state == "ok"
+
+    # An engine restart that bypasses _start_processing: both ages are back to the sentinel.
+    _labels(window, input_callback_age_ms=NEVER, output_callback_age_ms=NEVER)
+    assert chip.state != "warn"
+    clock[0] += main_window.DEVICE_STARTUP_GRACE_SECONDS - 1
+    _labels(window, input_callback_age_ms=NEVER, output_callback_age_ms=NEVER)
+    assert chip.state != "warn"
+
+    clock[0] += 2
+    _labels(window, input_callback_age_ms=NEVER, output_callback_age_ms=NEVER)
+    assert chip.state == "warn"
+
+    # The device recovers, then a second restart waits out a fresh grace.
+    _labels(window)
+    _labels(window, input_callback_age_ms=NEVER, output_callback_age_ms=NEVER)
+    assert chip.state != "warn"
+
+
+def test_the_drops_row_never_claims_attention_for_zero_drops(window, monkeypatch):
+    from mic_eq.ui.health import advice_for
+
+    clock = [10.0]
+    monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
+    _recovery_setup(window)
+    chip = window.shell_texts["dropped_label"]
+    _labels(window, diagnostics=_healthy_runtime_diagnostics(rt_error_name="input_queue_full"))
+    assert chip.state == "warn"
+    assert chip.text == "Drops: nothing dropped, but the audio engine reported an error"
+    assert advice_for(chip.text) == ""
+    assert "0 samples" not in chip.text
+
+    # With real numbers the row keeps them and still says it needs attention.
+    _labels(window, diagnostics=_healthy_runtime_diagnostics(
+        input_dropped_samples=12, stream_restart_count=1, rt_error_name="input_queue_full",
+    ))
+    assert chip.text == "Drops: 12 samples dropped, 0 dropouts, 1 restart (needs attention)"
+    assert "12 samples so far" in advice_for(chip.text)
+
+    clock[0] += 5.1  # the drops are no longer recent
+    _labels(window, diagnostics=_healthy_runtime_diagnostics(input_dropped_samples=12, stream_restart_count=1))
+    assert (chip.text, chip.state) == ("Drops: 12 samples dropped, 0 dropouts, 1 restart", "ok")
 
 
 def test_health_panel_reports_gate_chatter_and_underruns(window):
@@ -870,7 +1016,7 @@ def test_health_panel_reports_gate_chatter_and_underruns(window):
 
     assert "Gate: CHATTER" in window.shell_texts["gate_health_label"].text
     assert window.shell_texts["gate_health_label"].state == "warn"
-    assert window.shell_texts["underrun_health_label"].text == "Underruns: 2"
+    assert window.shell_texts["underrun_health_label"].text == "Dropouts: 2"
     assert window.shell_texts["underrun_health_label"].state == "warn"
 
 
@@ -1008,7 +1154,10 @@ def test_input_phase_warning_marks_diagnostics_warn(window):
         rnnoise_buf=0,
     )
 
-    assert "WARN" in window.shell_texts["dropped_label"].text
+    # Nothing was dropped, so the row says what raised it instead of printing zeros.
+    assert window.shell_texts["dropped_label"].text == (
+        "Drops: nothing dropped, but the microphone channels cancel each other"
+    )
     assert "PH:1" in window.shell_texts["dropped_label"].toolTip
     assert "COR:-0.91" in window.shell_texts["dropped_label"].toolTip
     assert window.shell_texts["dropped_label"].state == "warn"
@@ -1495,9 +1644,9 @@ def test_update_diagnostics_surfaces_output_recovery_and_reuses_diagnostics(wind
     window._update_diagnostics()
 
     assert window.processor.diagnostics_calls == 1
-    assert "ORE:4" in window.shell_texts["recovery_diag_label"].text
-    assert "R:2" in window.shell_texts["recovery_diag_label"].text
-    assert "R:4" not in window.shell_texts["dropped_label"].text
+    assert "4 output recoveries" in window.shell_texts["recovery_diag_label"].text
+    assert "2 restarts" in window.shell_texts["recovery_diag_label"].text
+    assert "4 restarts" not in window.shell_texts["dropped_label"].text
     assert "RTO:8" in window.shell_texts["dropped_label"].toolTip
     assert "ICE:9" in window.shell_texts["dropped_label"].toolTip
     assert "OCE:10" in window.shell_texts["dropped_label"].toolTip
@@ -1568,8 +1717,8 @@ def test_stale_output_underrun_and_recovery_totals_do_not_warn(window, monkeypat
         rnnoise_buf=0,
     )
 
-    assert "U:4" in window.shell_texts["dropped_label"].text
-    assert "R:606" not in window.shell_texts["dropped_label"].text
+    assert "4 dropouts" in window.shell_texts["dropped_label"].text
+    assert "606" not in window.shell_texts["dropped_label"].text
     assert window.shell_texts["dropped_label"].state == "ok"
     assert window.shell_texts["recovery_diag_label"].state == "ok"
 
@@ -1626,7 +1775,7 @@ def test_new_output_underrun_total_warns_for_stability_window(window, monkeypatc
     assert window.shell_texts["dropped_label"].state == "ok"
 
 
-def test_new_output_clip_event_warns_once(window):
+def test_the_output_clip_counter_is_a_support_counter_and_does_not_warn(window):
     _recovery_setup(window)
     diagnostics = {
         "input_dropped_samples": 0,
@@ -1668,17 +1817,6 @@ def test_new_output_clip_event_warns_once(window):
     assert "OCL:1" in window.shell_texts["dropped_label"].toolTip
     assert "OPK:-0.2" in window.shell_texts["dropped_label"].toolTip
     assert "LIM:-1.5" in window.shell_texts["dropped_label"].toolTip
-    assert window.shell_texts["dropped_label"].state == "warn"
-
-    window._update_diagnostic_labels(
-        diagnostics=diagnostics,
-        latency_ms=32.0,
-        dsp_time_ms=0.4,
-        input_buf=256,
-        output_buf=256,
-        rnnoise_buf=0,
-    )
-
     assert window.shell_texts["dropped_label"].state == "ok"
 
 
@@ -1723,7 +1861,7 @@ def test_new_output_true_peak_event_warns_once(window):
         rnnoise_buf=0,
     )
 
-    assert "Output: TRUE PEAK" in window.shell_texts["output_health_label"].text
+    assert "Output: PEAK ABOVE CEILING" in window.shell_texts["output_health_label"].text
     assert window.shell_texts["output_health_label"].state == "warn"
     assert "OTP:1" in window.shell_texts["dropped_label"].toolTip
     assert "TPK:0.4" in window.shell_texts["dropped_label"].toolTip

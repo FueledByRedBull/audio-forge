@@ -786,12 +786,14 @@ def _clipped() -> np.ndarray:
     [
         (
             _clipped(),
-            "The recording clipped. Lower the microphone gain or move back a little, "
+            "The recording clipped: its peaks were held at full scale. Lower the "
+            "microphone level by about 6 dB (in Windows or on the microphone) or move back a little, "
             "then record again.",
         ),
         (
             np.full(480, np.nan, dtype=np.float32),
-            "The recording could not be read. Record it again.",
+            "The recording held invalid audio data, which usually means the audio "
+            "driver glitched. Restart processing and record again.",
         ),
         (
             np.zeros(480, dtype=np.float32),
@@ -969,13 +971,15 @@ def test_the_quiet_verdict_waits_out_the_pauses_between_words(qapp):
     try:
         for rms_db in [-25.0] * 3 + [-70.0] * 14:
             dialog._on_level_update(rms_db, -12.0)
-        assert dialog.warning_label.text() == "Level is good"
+        assert dialog.warning_label.text().startswith("The level is good")
 
         dialog._on_level_update(-70.0, -12.0)  # the last loud block has left the window
-        assert dialog.warning_label.text() == "Too quiet. Move closer to the mic."
+        assert dialog.warning_label.text().startswith(
+            "Little or no speech was heard: the loudest words were -70 dB"
+        )
 
         dialog._on_level_update(-25.0, -12.0)
-        assert dialog.warning_label.text() == "Level is good"
+        assert dialog.warning_label.text().startswith("The level is good")
     finally:
         dialog.reject()
         owner.close()
@@ -991,11 +995,14 @@ def test_the_level_verdict_waits_for_a_full_window_but_loudness_does_not(qapp):
         assert dialog.warning_label.text() == "Recording..."
 
         dialog._on_level_update(-70.0, -60.0)  # the 15th block makes a window
-        assert dialog.warning_label.text() == "Too quiet. Move closer to the mic."
+        assert dialog.warning_label.text().startswith("Your voice is quiet: -70 dB")
 
         dialog._recent_rms_db.clear()
         dialog._on_level_update(-20.0, -1.0)  # too loud is said at once
-        assert dialog.warning_label.text() == "Too loud. Risk of clipping."
+        assert dialog.warning_label.text().startswith(
+            "Your voice peaks at -1.0 dB, close to the limit: lower the microphone level by about 5 dB "
+            "(in Windows or on the microphone)"
+        )
     finally:
         dialog.reject()
         owner.close()

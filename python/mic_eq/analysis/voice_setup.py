@@ -75,6 +75,13 @@ _DULLING_FRAME, _DULLING_HOP = 1024, 512
 # Qualified on held-out simulated users in
 # evaluation/voice-setup-verification-tonal-check-2026-10-report.json.
 TONAL_CHECK_BYPASSES_SUPPRESSOR = True
+# A raw capture is clipped when it holds full scale for CLIP_FLAT_TOP_S, or recurs
+# at it more than CLIP_MAX_EVENTS times. Real speech hard-clipped from +3 dB up held
+# 12 to 94 samples at 48 kHz; clicks and a peak normalised to 1.0 held 1 to 3, and
+# normalised speech touched full scale in up to 16 separate runs.
+CLIP_LEVEL = 0.999
+CLIP_FLAT_TOP_S = 0.000125
+CLIP_MAX_EVENTS = 20
 
 GATE_MODE_LABELS = {
     0: "Threshold Only",
@@ -127,9 +134,21 @@ def _rms_db(audio: np.ndarray) -> float:
     return float(20.0 * np.log10(np.sqrt(np.mean(audio * audio)) + 1e-9))
 
 
-def raw_capture_is_clipped(audio: np.ndarray) -> bool:
-    """Whether a raw setup capture is non-finite or touches full scale."""
-    return not np.isfinite(audio).all() or float(np.max(np.abs(audio), initial=0.0)) >= 0.999
+def raw_capture_is_clipped(audio: np.ndarray, sample_rate: int = 48_000) -> bool:
+    """Whether a raw setup capture is non-finite or held at full scale.
+
+    A click or a loudest peak that merely touches full scale is not clipping. A
+    flat top is: a run of samples at or above CLIP_LEVEL lasting CLIP_FLAT_TOP_S
+    (the same time at any rate, 6 samples at 44.1 and 48 kHz), or more than
+    CLIP_MAX_EVENTS separate runs of any length.
+    """
+    samples = np.asarray(audio).reshape(-1)
+    if not np.isfinite(samples).all():
+        return True
+    edges = np.flatnonzero(np.diff(np.abs(samples) >= CLIP_LEVEL, prepend=False, append=False))
+    runs = edges[1::2] - edges[::2]
+    flat_top = max(2, round(sample_rate * CLIP_FLAT_TOP_S))
+    return runs.size > CLIP_MAX_EVENTS or bool(np.any(runs >= flat_top))
 
 
 def _peak_db(audio: np.ndarray) -> float:
@@ -927,7 +946,9 @@ def analyze_voice_setup(
             raise ValueError("raw and filtered setup captures must have matching lengths")
         if raw_noise_arr.size == 0 or raw_speech_arr.size == 0:
             raise ValueError("raw setup captures are empty")
-        if raw_capture_is_clipped(raw_noise_arr) or raw_capture_is_clipped(raw_speech_arr):
+        if raw_capture_is_clipped(raw_noise_arr, sample_rate) or raw_capture_is_clipped(
+            raw_speech_arr, sample_rate
+        ):
             raise ValueError("raw setup captures are non-finite or clipped")
 
     if noise_arr.size < int(sample_rate * NOISE_MIN_DURATION_S):
@@ -1675,7 +1696,7 @@ def validate_voice_setup_verification(
             ["verification passage was too short; repeat for at least 3 seconds"],
             ["verification_capture_too_short"],
         )
-    if not np.isfinite(verification).all() or float(np.max(np.abs(verification))) >= 0.999:
+    if raw_capture_is_clipped(verification, sample_rate):
         return _verification_outcome(
             "retry",
             [
@@ -1772,7 +1793,7 @@ def validate_voice_setup_verification(
             ("noise", render_noise),
             ("verification", render_verification),
         ):
-            if not np.isfinite(audio).all() or float(np.max(np.abs(audio))) >= 0.999:
+            if raw_capture_is_clipped(audio, sample_rate):
                 return _verification_outcome(
                     "retry",
                     [f"raw {name} capture was non-finite or clipped"],

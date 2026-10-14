@@ -277,15 +277,21 @@ Rectangle {
         opacity: enabled ? 1 : 0.45
         implicitHeight: 32
         implicitWidth: 170
-        leftPadding: 12
-        rightPadding: 30
+        leftPadding: 10
+        rightPadding: 26
         onActivated: index => proxy.setIndex(index)
         // Replacing the model resets the index; read it again afterwards.
         onModelChanged: currentIndex = Qt.binding(() => proxy ? proxy.index : -1)
         Accessible.name: proxy ? proxy.name : ""
-        Hint { text: picker.proxy ? picker.proxy.toolTip : "" }
+        // A name cut short by a narrow window is shown whole in the tooltip.
+        Hint {
+            text: {
+                const tip = picker.proxy ? picker.proxy.toolTip : ""
+                return picker.contentItem.truncated ? picker.contentItem.text + (tip !== "" ? "\n" + tip : "") : tip
+            }
+        }
         contentItem: Text {
-            text: picker.displayText
+            text: picker.currentIndex < 0 && picker.proxy ? picker.proxy.placeholder : picker.displayText
             color: root.t.text_primary
             font.pixelSize: 13
             elide: Text.ElideRight
@@ -675,13 +681,10 @@ Rectangle {
     component HealthRow: RowLayout {
         id: health
         property var row
-        property bool technical: false
         readonly property var proxy: row.proxy
         readonly property string value: proxy.text.startsWith(row.title + ":")
                                         ? proxy.text.slice(row.title.length + 1).trim() : proxy.text
         readonly property string state_: proxy.state !== "" ? proxy.state : "idle"
-        // Counter rows show a plain state until Technical details is open.
-        readonly property bool coded: row.coded
         spacing: 10
         Rectangle {
             width: 8
@@ -696,14 +699,9 @@ Rectangle {
             Layout.preferredWidth: 110
         }
         Text {
-            text: health.coded && !health.technical
-                  ? ({ok: "OK", warn: "Needs attention", bad: "Problem", info: "Info", idle: "Idle"})[health.state_] ?? "--"
-                  : health.coded ? health.value
-                  : health.value.charAt(0).toUpperCase() + health.value.slice(1)
-            color: health.coded && health.technical ? root.t.data_text_muted : root.t.text_primary
+            text: health.value.charAt(0).toUpperCase() + health.value.slice(1)
+            color: root.t.text_primary
             font.pixelSize: 13
-            font.family: health.coded && health.technical ? "Cascadia Mono"
-                                                          : Qt.application.font.family
             wrapMode: Text.Wrap
             Layout.fillWidth: true
             Accessible.name: health.proxy.name + ": " + text
@@ -837,6 +835,7 @@ Rectangle {
                     width: 50
                     height: meterRow.height
                     Accessible.name: modelData.name
+                    Accessible.description: modelData.description
                 }
             }
         }
@@ -904,7 +903,7 @@ Rectangle {
                     Layout.topMargin: 4
                     Layout.bottomMargin: 4
                 }
-                Picker { proxy: root.m.top.mode; implicitWidth: 140 }
+                Picker { proxy: root.m.top.mode; implicitWidth: 118 }
                 Toggle { proxy: root.m.top.mute; text: "Mute" }
                 Btn {
                     proxy: root.running ? root.m.top.stop : root.m.top.start
@@ -1003,7 +1002,7 @@ Rectangle {
                         implicitHeight: 300
                         activeFocusOnTab: true
                         Accessible.name: "Equalizer graph"
-                        Accessible.description: "The thick curve is what the signal really gets: the input filter plus every EQ filter that is on, or the input filter alone when the EQ switch is off. Thin colored curves are the bands, the dashed curve is the Auto-EQ layer and the dotted curve is the input filter. Adaptive input cleanup follows the signal and is not drawn."
+                        Accessible.description: graph ? graph.accessibleDescription : ""
                     }
                     Caption {
                         text: eqCard.eq.layers.text
@@ -1144,7 +1143,6 @@ Rectangle {
                             delegate: HealthRow {
                                 required property var modelData
                                 row: modelData
-                                technical: details.open
                                 Layout.fillWidth: true
                             }
                         }
@@ -1160,7 +1158,7 @@ Rectangle {
                     }
                     Caption {
                         visible: details.open
-                        text: "Raw counters are shown in the rows above. Hover a row for what its codes mean."
+                        text: "Hover Drops or Recovery for the engine's raw counters, which a support report can include."
                         wrapMode: Text.Wrap
                         Layout.fillWidth: true
                     }

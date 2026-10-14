@@ -62,7 +62,7 @@ def test_manual_eq_edits_invalidate_diagnostics_and_fresh_results_restore_them(
         band._frequency_rate_limiter.flush()
 
     def edit_graph() -> None:
-        panel._on_curve_band_dragged(4, 2100.0, 2.0)
+        panel.eq_state.edit_curve_band(4, 2100.0, 2.0)
         panel._curve_rate_limiter.flush()
 
     edits = (

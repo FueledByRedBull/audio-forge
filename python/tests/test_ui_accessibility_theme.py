@@ -345,6 +345,29 @@ def test_main_window_has_no_horizontal_overflow_across_breakpoints(
         assert body.width() <= page.viewport().width(), (page_index, oversized)
 
 
+@pytest.mark.parametrize("width", (1280, 1600))
+def test_health_page_wraps_long_chip_text_without_horizontal_overflow(
+    widget_view, isolated_main_window, qapp, width: int
+) -> None:
+    window = isolated_main_window
+    window.resize(width, 800)
+    window.show()
+    window.page_stack.setCurrentWidget(window.health_details)
+    for key, text in {
+        "input_health_label": "Input: peaks near full scale, turn the microphone down",
+        "callback_health_label": "Device activity: input 12 ms ago, output 14 ms ago",
+        "dropped_label": "Drops: nothing dropped, but the microphone channels cancel each other",
+    }.items():
+        window._set_health_chip(key, text, "warn")
+    qapp.processEvents()
+    qapp.processEvents()
+
+    page = window.health_details
+    assert window._responsive_layout_compact is False
+    assert page.horizontalScrollBar().maximum() == 0
+    assert page.widget().width() <= page.viewport().width()
+
+
 @pytest.mark.parametrize(
     ("dialog_type", "width", "height"),
     (

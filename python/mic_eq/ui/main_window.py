@@ -40,6 +40,7 @@ import logging
 import math
 import time
 from dataclasses import asdict
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -63,7 +64,14 @@ from .compressor_state import CompressorState
 from .gate_state import GateState
 from .deesser_panel import DeEsserPanel
 from .level_meter import LevelMeter, MeterWidget
-from .health import RecentStreamHealth, advice_for
+from .health import (
+    DEVICE_ACTIVITY_BAD_MS,
+    DEVICE_ACTIVITY_WARN_MS,
+    HEALTH_PEAK_WINDOW_SECONDS,
+    RecentStreamHealth,
+    advice_for,
+    plural,
+)
 from .health import input_health_state as build_input_health_state
 from .health import output_health_state as build_output_health_state
 from .calibration_dialog import CalibrationDialog
@@ -128,6 +136,7 @@ from .. import AudioProcessor, __version__, list_input_devices, list_output_devi
 from ..diagnostics_export import (
     build_diagnostics_snapshot,
     diagnostics_filename,
+    sanitize_setup_result,
     write_diagnostics_snapshot,
 )
 from ..config import (
@@ -209,6 +218,11 @@ DEBUG = False
 logger = logging.getLogger(__name__)
 
 INPUT_PHASE_WARNING_CORRELATION = -0.75
+PHASE_FIX_LABELS = {
+    "delay_left": "delaying the left channel",
+    "delay_right": "delaying the right channel",
+    "polarity_flip": "flipping one channel's polarity",
+}
 DEFAULT_MUTE_HOTKEY = "Ctrl+Alt+M"
 DEFAULT_WINDOW_WIDTH = 1440
 DEFAULT_WINDOW_HEIGHT = 960
@@ -216,6 +230,39 @@ MINIMUM_WINDOW_WIDTH = 900
 MINIMUM_WINDOW_HEIGHT = 640
 # The pages in navigation order; the shared page state and the page stack follow it.
 PAGE_NAMES = ("Mic", "Health", "Settings")
+
+
+# The engine reports this age until a device has made its first callback.
+NO_CALLBACK_YET = 2**64 - 1
+# A device that has made no callback this long after it was first seen waiting is a
+# warning. Any engine restart resets the callback ages, so the wait is timed from the
+# moment the not-started state appears, not from when processing began.
+DEVICE_STARTUP_GRACE_SECONDS = 5.0
+# The native getters the meters and Health read; an older extension module lacks them.
+METER_GETTERS = (
+    "take_input_peak_since_read",
+    "take_output_pre_limiter_peak_since_read",
+    "take_output_peak_since_read",
+    "get_input_full_scale_count",
+    "get_output_full_scale_count",
+)
+
+
+def _ago_text(age_ms: int | None, *, output: bool = False) -> str:
+    if age_ms is None:
+        return "--"
+    if age_ms == NO_CALLBACK_YET:
+        return "has not started playing sound yet" if output else "has not started sending sound yet"
+    return f"{age_ms} ms ago"
+
+
+def _level_reading(processor, name: str) -> float | None:
+    """One finite number from the audio engine, or ``None`` when it cannot be read."""
+    try:
+        value = float(getattr(processor, name)())
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError, OverflowError):
+        return None
+    return value if math.isfinite(value) else None
 
 
 def _fit_window_geometry_to_screens(
@@ -356,11 +403,12 @@ class MainWindow(QMainWindow):
         self._redo_action = None
         self._calibration_dialog_open = False
         self._stream_recovery = StreamRecoveryManager()
+        self._device_wait_since: float | None = None
         self._stream_health = RecentStreamHealth()
         self._last_backend_warning = None
+        # The latest Voice Setup or Auto-EQ outcome, kept for the diagnostics export.
+        self.last_setup_result: dict | None = None
         self._last_output_underrun_total = 0
-        self._last_input_clip_event_count = 0
-        self._last_output_clip_event_count = 0
         self._last_output_true_peak_event_count = 0
         self._last_input_phase_warning_count = 0
         self._last_gate_chatter_event_count = 0
@@ -991,7 +1039,7 @@ class MainWindow(QMainWindow):
         self._remove_grid_widgets(self.health_decision_layout, decision_widgets)
         decision_columns = 3 if compact else len(decision_widgets)
         for index, label in enumerate(decision_widgets):
-            label.setWordWrap(compact)
+            label.setWordWrap(True)
             label.setSizePolicy(
                 QSizePolicy.Policy.Expanding
                 if compact
@@ -1009,7 +1057,7 @@ class MainWindow(QMainWindow):
         self._remove_grid_widgets(self.health_layout, health_widgets)
         latency_label, buffer_label, dropped_label, recovery_label = health_widgets
         for label in health_widgets:
-            label.setWordWrap(compact)
+            label.setWordWrap(True)
             label.setSizePolicy(
                 QSizePolicy.Policy.Expanding
                 if compact
@@ -3257,7 +3305,7 @@ class MainWindow(QMainWindow):
                     "Error Starting Processing",
                     f"Failed to start audio processing:\n\n{e}\n\n{guidance}",
                 )
-            self.status_message.showMessage(f"Error: {e}")
+            self.status_message.showMessage(f"Could not start processing: {e}")
             self._sync_processing_controls()
             return False
 
@@ -3356,6 +3404,16 @@ class MainWindow(QMainWindow):
             self._calibration_dialog_open = False
         self._sync_calibration_evidence()
         return applied
+
+    def record_setup_result(self, result: dict) -> None:
+        """Keep the latest setup outcome for the diagnostics export; the setup dialogs call this."""
+        try:
+            clean = sanitize_setup_result(result)
+        except Exception:
+            logger.exception("Setup result could not be recorded")
+            return
+        if clean is not None:
+            self.last_setup_result = clean
 
     def capture_pre_auto_eq_state(self):
         """Commit pending edits before Auto-EQ starts its transaction."""
@@ -3768,6 +3826,9 @@ class MainWindow(QMainWindow):
             running = False
         if running and self.isVisible() and not self.isMinimized():
             if not timer.isActive():
+                # The getters kept collecting while the timer was stopped; the
+                # first tick must not report that whole gap as new clipping.
+                self._note_meter_peaks(partial(_level_reading, self.processor), resumed=True)
                 timer.start()
         else:
             timer.stop()
@@ -3801,15 +3862,10 @@ class MainWindow(QMainWindow):
             return
         self._live_meters_invalidated = False
 
-        def reading(name: str) -> float | None:
-            try:
-                value = float(getattr(self.processor, name)())
-            except (AttributeError, OSError, RuntimeError, TypeError, ValueError, OverflowError):
-                return None
-            return value if math.isfinite(value) else None
-
+        reading = partial(_level_reading, self.processor)
         self.input_meter.set_levels(reading("get_input_rms_db"), reading("get_input_peak_db"))
         self.output_meter.set_levels(reading("get_output_rms_db"), reading("get_output_peak_db"))
+        self._note_meter_peaks(reading)
         self.processing_meters.compressor_gr.set_gain_reduction(reading("get_compressor_gain_reduction_db"))
         self.processing_meters.deesser_gr.set_gain_reduction(reading("get_deesser_gain_reduction_db"))
         self.processing_meters.update_current_release()
@@ -3822,6 +3878,29 @@ class MainWindow(QMainWindow):
             reading("get_compressor_current_makeup_gain") if auto_makeup_enabled else None,
         )
         self.gate_state.update_vad_confidence(reading("get_vad_probability"))
+
+    def _note_meter_peaks(self, reading, *, resumed: bool = False) -> None:
+        """Take the held peaks and full-scale counts into the meter models.
+
+        The ``take_*`` getters reset what they return, so this is the only
+        caller in the app; dialogs and Health read the meter models. With
+        ``resumed`` the peaks are taken and dropped and the counts only set a
+        new baseline.
+        """
+
+        def count(name: str) -> int | None:
+            value = reading(name)
+            return None if value is None else int(value)
+
+        input_peak = reading("take_input_peak_since_read")
+        pre_limiter_peak = reading("take_output_pre_limiter_peak_since_read")
+        output_peak = reading("take_output_peak_since_read")
+        if resumed:
+            input_peak = pre_limiter_peak = output_peak = None
+            self.input_meter.forget_full_scale_count()
+            self.output_meter.forget_full_scale_count()
+        self.input_meter.note_peak(input_peak, input_peak, count("get_input_full_scale_count"))
+        self.output_meter.note_peak(pre_limiter_peak, output_peak, count("get_output_full_scale_count"))
 
     def _update_diagnostics(self):
         """Update slower diagnostics and service recovery."""
@@ -3854,6 +3933,8 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            for name in METER_GETTERS:
+                getattr(self.processor, name)
             diagnostics = self.processor.get_runtime_diagnostics()
             input_rms = self.processor.get_input_rms_db()
             output_rms = self.processor.get_output_rms_db()
@@ -3871,7 +3952,11 @@ class MainWindow(QMainWindow):
                 raise ValueError("Invalid live telemetry")
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError, OverflowError):
             self._reset_health_labels()
-            self._set_health_chip("health_summary_label", "Health: telemetry unavailable", "warn")
+            self._set_health_chip("health_summary_label", "Health: readings unavailable", "warn")
+            self.shell_texts["health_advice_label"].update(text=(
+                "AudioForge could not read the audio engine's status, so Health cannot be checked. "
+                "Stop and start processing; if this keeps happening, restart AudioForge."
+            ))
             # Missing presentation data must not suppress native recovery service.
             self._service_stream_recovery(
                 diagnostics={}, input_rms=float("nan"), output_rms=float("nan"), output_buf=0,
@@ -3889,6 +3974,11 @@ class MainWindow(QMainWindow):
             output_rms_db=output_rms,
             input_callback_age_ms=input_callback_age_ms,
             output_callback_age_ms=output_callback_age_ms,
+            input_peak_db=self.input_meter.recent_peak_db(HEALTH_PEAK_WINDOW_SECONDS),
+            input_full_scale_samples=self.input_meter.full_scale_samples_within(HEALTH_PEAK_WINDOW_SECONDS),
+            output_peak_db=self.output_meter.recent_peak_db(HEALTH_PEAK_WINDOW_SECONDS),
+            output_at_full_scale=self.output_meter.clipped_within(HEALTH_PEAK_WINDOW_SECONDS),
+            limiter_enabled=bool(self.limiter_state.get_settings()["enabled"]),
         )
         self._service_stream_recovery(
             diagnostics=diagnostics,
@@ -3910,15 +4000,25 @@ class MainWindow(QMainWindow):
         output_rms_db: float | None = None,
         input_callback_age_ms: int | None = None,
         output_callback_age_ms: int | None = None,
+        input_peak_db: float | None = None,
+        input_full_scale_samples: int = 0,
+        output_peak_db: float | None = None,
+        output_at_full_scale: bool = False,
+        limiter_enabled: bool = True,
     ) -> None:
-        """Update diagnostic status labels from a runtime diagnostic snapshot."""
+        """Update diagnostic status labels from a runtime diagnostic snapshot.
+
+        The peak and clip arguments come from the meters' held peaks, so a clip
+        stays visible for several seconds and the old per-tick clip counters
+        no longer decide the Input and Output lines.
+        """
         if not hasattr(self, "_stream_health"):
             self._stream_health = RecentStreamHealth()
         try:
             recent_events = self._stream_health.observe(diagnostics)
         except ValueError:
             self._reset_health_labels()
-            self._set_health_chip("recovery_diag_label", "Health data unavailable", "warn")
+            self._set_health_chip("recovery_diag_label", "Recovery: counters could not be read", "warn")
             return
         recovery_pending = False
         for name in ("is_recovering", "is_recovery_requested"):
@@ -3930,7 +4030,7 @@ class MainWindow(QMainWindow):
                     recovery_pending = True
         self._set_health_chip(
             "latency_label",
-            f"Latency: ~{latency_ms:.0f}ms | DSP {dsp_time_ms:.1f}ms",
+            f"Latency: about {latency_ms:.0f} ms (processing {dsp_time_ms:.1f} ms)",
             "info",
         )
 
@@ -3939,14 +4039,14 @@ class MainWindow(QMainWindow):
             buf_status = "OK"
             buf_state = "ok"
         elif pipeline_buf < 1920:
-            buf_status = "WARN"
+            buf_status = "FILLING UP"
             buf_state = "warn"
         else:
-            buf_status = "BAD"
+            buf_status = "BACKED UP"
             buf_state = "bad"
         self._set_health_chip(
             "buffer_label",
-            f"Buffer: {buf_status} ({pipeline_buf})",
+            f"Buffer: {buf_status} ({plural(pipeline_buf, 'sample')})",
             buf_state,
         )
 
@@ -3997,18 +4097,6 @@ class MainWindow(QMainWindow):
             )
             or 0
         )
-        input_clip_count = int(diagnostics.get("clip_event_count", 0) or 0)
-        previous_input_clip_count = int(
-            getattr(self, "_last_input_clip_event_count", input_clip_count) or 0
-        )
-        new_input_clip_observed = input_clip_count > previous_input_clip_count
-        self._last_input_clip_event_count = input_clip_count
-        output_clip_count = int(diagnostics.get("output_clip_event_count", 0) or 0)
-        previous_output_clip_count = int(
-            getattr(self, "_last_output_clip_event_count", output_clip_count) or 0
-        )
-        new_output_clip_observed = output_clip_count > previous_output_clip_count
-        self._last_output_clip_event_count = output_clip_count
         output_true_peak_count = int(
             diagnostics.get("output_true_peak_event_count", 0) or 0
         )
@@ -4046,7 +4134,8 @@ class MainWindow(QMainWindow):
 
         input_health_text, input_health_state = build_input_health_state(
             rms_db=input_rms_db,
-            clip_delta=new_input_clip_observed,
+            peak_db=input_peak_db,
+            full_scale_samples=input_full_scale_samples,
             phase_rescue_active=phase_rescue_active,
             cleanup_rumble_detected=cleanup_rumble_detected,
             cleanup_hum_detected=cleanup_hum_detected,
@@ -4056,8 +4145,8 @@ class MainWindow(QMainWindow):
             else None,
         )
         if phase_rescue_active:
-            strategy_label = phase_rescue_strategy.replace("_", " ").upper()
-            input_health_text = f"Input: PHASE {strategy_label}"
+            fix = PHASE_FIX_LABELS.get(phase_rescue_strategy, phase_rescue_strategy.replace("_", " "))
+            input_health_text = f"Input: PHASE FIX ACTIVE ({fix})"
         self._set_health_chip(
             "input_health_label",
             input_health_text,
@@ -4066,10 +4155,10 @@ class MainWindow(QMainWindow):
 
         output_health_text, output_health_state = build_output_health_state(
             rms_db=output_rms_db,
-            clip_delta=new_output_clip_observed,
+            at_full_scale=output_at_full_scale,
+            limiter_enabled=limiter_enabled,
+            peak_db=output_peak_db,
             true_peak_delta=new_output_true_peak_observed,
-            output_clip_count=output_clip_count,
-            true_peak_count=output_true_peak_count,
             true_peak_db=output_true_peak_db,
             true_peak_headroom_db=output_true_peak_headroom,
             short_term_lufs=output_lufs,
@@ -4083,10 +4172,10 @@ class MainWindow(QMainWindow):
         )
 
         if gate_auto_relax_active:
-            gate_health_text = f"Gate: RELAX (GCH:{gate_chatter_count})"
+            gate_health_text = f"Gate: EASED ({plural(gate_chatter_count, 'time')})"
             gate_health_state = "warn"
         elif new_gate_chatter_observed:
-            gate_health_text = f"Gate: CHATTER (GCH:{gate_chatter_count})"
+            gate_health_text = f"Gate: CHATTERING ({plural(gate_chatter_count, 'time')})"
             gate_health_state = "warn"
         else:
             gate_health_text = "Gate: OK"
@@ -4100,22 +4189,34 @@ class MainWindow(QMainWindow):
         callback_ages = [
             age
             for age in (input_callback_age_ms, output_callback_age_ms)
-            if age is not None and age >= 0
+            if age is not None and 0 <= age < NO_CALLBACK_YET
         ]
-        if callback_ages:
-            max_callback_age = max(callback_ages)
+        not_started = NO_CALLBACK_YET in (input_callback_age_ms, output_callback_age_ms)
+        if not_started and self._stream_recovery.processing_started_at is not None:
+            now = time.monotonic()
+            if self._device_wait_since is None:
+                self._device_wait_since = now
+            start_overdue = now - self._device_wait_since >= DEVICE_STARTUP_GRACE_SECONDS
+        else:
+            self._device_wait_since = None
+            start_overdue = False
+        if callback_ages or not_started:
+            max_callback_age = max(callback_ages, default=0)
             callback_state = (
                 "bad"
-                if max_callback_age > 1000
+                if max_callback_age > DEVICE_ACTIVITY_BAD_MS
                 else "warn"
-                if max_callback_age > 250
+                if max_callback_age > DEVICE_ACTIVITY_WARN_MS or start_overdue
                 else "ok"
+                if callback_ages
+                else "idle"
             )
             callback_health_text = (
-                f"Callbacks: I:{input_callback_age_ms}ms O:{output_callback_age_ms}ms"
+                f"Device activity: input {_ago_text(input_callback_age_ms)}, "
+                f"output {_ago_text(output_callback_age_ms, output=True)}"
             )
         else:
-            callback_health_text = "Callbacks: --"
+            callback_health_text = "Device activity: --"
             callback_state = "idle"
         self._set_health_chip(
             "callback_health_label",
@@ -4124,9 +4225,9 @@ class MainWindow(QMainWindow):
         )
 
         underrun_state = "warn" if underrun_streak or new_underruns_observed else "ok"
-        underrun_text = f"Underruns: {underruns}"
+        underrun_text = f"Dropouts: {underruns}"
         if underrun_streak:
-            underrun_text += f" streak:{underrun_streak}"
+            underrun_text += f" ({underrun_streak} in a row)"
         self._set_health_chip(
             "underrun_health_label",
             underrun_text,
@@ -4189,43 +4290,43 @@ class MainWindow(QMainWindow):
         )
         if rt_error_active:
             dropped_bits.append(f"RT:{rt_error_name}")
-        dropped_state = (
-            "ok"
-            if (
-                not recent_events
-                and not recovery_pending
-                and underrun_streak == 0
-                and not new_underruns_observed
-                and not rt_error_active
-                and not new_input_clip_observed
-                and not new_output_clip_observed
-                and not new_output_true_peak_observed
-                and not new_gate_chatter_observed
-                and not gate_auto_relax_active
-                and not phase_rescue_active
-                and not current_phase_warning
-                and not new_phase_warning_observed
-                and not cleanup_rumble_detected
-                and limiter_history_db < 6.0
-                and true_peak_limiter_history_db < 3.0
-                and (
-                    output_true_peak_headroom is None
-                    or output_true_peak_headroom >= 0.75
-                )
-            )
-            else "warn"
-        )
+        # Most of these also have a row of their own; this row adds them all up.
+        attention = [
+            (bool(recent_events), "the audio engine reported a fault"),
+            (recovery_pending, "a restart is pending"),
+            (underrun_streak > 0 or new_underruns_observed, "the output ran out of audio"),
+            (rt_error_active, "the audio engine reported an error"),
+            (new_output_true_peak_observed, "the output went above its ceiling"),
+            (new_gate_chatter_observed or gate_auto_relax_active, "the gate is chattering"),
+            (
+                phase_rescue_active or current_phase_warning or new_phase_warning_observed,
+                "the microphone channels cancel each other",
+            ),
+            (cleanup_rumble_detected, "low rumble was detected"),
+            (
+                limiter_history_db >= 6.0 or true_peak_limiter_history_db >= 3.0,
+                "the limiter is working hard",
+            ),
+            (
+                output_true_peak_headroom is not None and output_true_peak_headroom < 0.75,
+                "the output has little headroom",
+            ),
+        ]
+        causes = [cause for active, cause in attention if active]
+        dropped_state = "warn" if causes else "ok"
         dropped_detail = " | ".join(dropped_bits)
-        dropped_summary = dropped_bits[:5]
-        if dropped_state != "ok":
-            dropped_summary.append("WARN")
-        self._set_health_chip(
-            "dropped_label",
-            " | ".join(dropped_summary),
-            dropped_state,
-        )
+        if causes and not (dropped or underruns or restart_count):
+            dropped_summary = f"Drops: nothing dropped, but {causes[0]}"
+        else:
+            dropped_summary = (
+                f"Drops: {plural(dropped, 'sample')} dropped, {plural(underruns, 'dropout')}, "
+                f"{plural(restart_count, 'restart')}"
+            )
+            if causes:
+                dropped_summary += " (needs attention)"
+        self._set_health_chip("dropped_label", dropped_summary, dropped_state)
         self.shell_texts["dropped_label"].update(tip=
-            f"{DROPPED_DIAGNOSTICS_TOOLTIP}\n\nCurrent counters:\n{dropped_detail}"
+            f"{DROPPED_DIAGNOSTICS_TOOLTIP}\n\nTechnical counters (for support reports):\n{dropped_detail}"
         )
         self.shell_texts["dropped_label"].update(description=dropped_detail)
 
@@ -4235,8 +4336,11 @@ class MainWindow(QMainWindow):
         noise_model = diagnostics.get("noise_model", "rnnoise")
         if noise_model != "rnnoise" and (backend_failed or not backend_available):
             warning = (
-                backend_error or "Selected neural backend fell back to dry passthrough."
+                "Noise suppression stopped working, so your voice is passing through unprocessed. "
+                "Choose another model on the Noise Suppression card."
             )
+            if backend_error:
+                warning += f" Details: {backend_error}"
             if warning != self._last_backend_warning:
                 self.status_message.showMessage(warning, 6000)
                 self._last_backend_warning = warning
@@ -4253,47 +4357,43 @@ class MainWindow(QMainWindow):
             non_finite = diagnostics.get("suppressor_non_finite_count", 0)
             suppressed = diagnostics.get("recovery_suppressed", False)
 
-            backend_bits = [noise_model]
-            if backend_ok:
-                backend_bits.append("OK")
-            elif backend_failed:
-                backend_bits.append("FAILED")
-            else:
-                backend_bits.append("UNAVAILABLE")
+            backend_bits = [
+                str(noise_model),
+                "working" if backend_ok else "failed" if backend_failed else "not available",
+            ]
             if non_finite:
-                backend_bits.append(f"NF:{non_finite}")
+                backend_bits.append(f"{plural(non_finite, 'invalid sample')} replaced")
             if backend_error:
-                backend_bits.append("ERR")
-            self._extend_diag_tokens(
-                backend_bits,
-                diagnostics,
-                [
-                    ("input_resampler_active", "IR"),
-                    ("output_resampler_active", "OR"),
-                ],
-            )
+                backend_bits.append("reported an error")
+            for key, direction in (
+                ("input_resampler_active", "input"), ("output_resampler_active", "output"),
+            ):
+                if diagnostics.get(key):
+                    backend_bits.append(f"resampling {direction}")
             self._set_health_chip(
                 "backend_diag_label",
-                f"Backend: {' '.join(str(bit) for bit in backend_bits)}",
+                f"Backend: {', '.join(backend_bits)}",
                 "ok" if backend_ok else "warn",
             )
 
-            recovery_bits = [f"R:{restart_count}"]
-            recovery_bits.append(f"ORE:{output_recovery_count}")
+            recovery_bits = [
+                plural(restart_count, "restart"),
+                plural(output_recovery_count, "output recovery", "output recoveries"),
+            ]
             if suppressed:
-                recovery_bits.append("SUPP")
+                recovery_bits.append("paused while a setup records")
             reason = diagnostics.get("last_restart_reason")
             recent_recovery = bool(recent_events & {
                 "stream_restart_count", "output_recovery_count", "output_recovery_event_count",
                 "input_backlog_recovery_count",
             })
             if recovery_pending:
-                recovery_bits.append("PENDING")
+                recovery_bits.append("restart pending")
             elif recent_recovery:
-                recovery_bits.append("RECENT")
+                recovery_bits.append("restarted just now")
             self._set_health_chip(
                 "recovery_diag_label",
-                f"Recovery: {' '.join(recovery_bits)}",
+                f"Recovery: {', '.join(recovery_bits)}",
                 "warn"
                 if recovery_pending or recent_recovery
                 else ("info" if suppressed else "ok"),
@@ -4378,9 +4478,9 @@ class MainWindow(QMainWindow):
                         reason = self.processor.get_last_restart_reason() or ""
                     except Exception:
                         reason = ""
-                    suffix = f" ({reason})" if reason else ""
+                    suffix = f" after: {reason}" if reason else ""
                     self.status_message.showMessage(
-                        f"Recovered audio stream{suffix}",
+                        f"Audio restarted automatically{suffix}; you may have heard a short gap",
                         4000,
                     )
                 else:
@@ -4391,12 +4491,12 @@ class MainWindow(QMainWindow):
                         err_msg = ""
                     if err_msg:
                         self.status_message.showMessage(
-                            f"Selected route unavailable; retrying: {err_msg}",
+                            f"The selected devices are not available, so AudioForge keeps retrying: {err_msg}",
                             6000,
                         )
                     else:
                         self.status_message.showMessage(
-                            "Selected route unavailable; retrying recovery",
+                            "The selected devices are not available, so AudioForge keeps retrying",
                             6000,
                         )
                 self._sync_processing_controls()
@@ -4416,14 +4516,15 @@ class MainWindow(QMainWindow):
             self._apply_latency_compensation_for_current_devices()
             self._apply_output_mute()
             self.status_message.showMessage(
-                f"Recovered output path automatically: {result}",
+                f"The output stopped responding, so AudioForge restarted it ({result})",
                 4000,
             )
             self._sync_processing_controls()
         except Exception as e:
             logger.exception("Auto-recovery failed")
             self.status_message.showMessage(
-                f"Auto-recovery failed: {e}",
+                f"AudioForge could not restart the output automatically ({e}). "
+                "Check the device, then press Start Processing.",
                 5000,
             )
             self.start_btn_action.setEnabled(True)
@@ -4462,6 +4563,8 @@ class MainWindow(QMainWindow):
                 processing_sample_rate_hz=int(self.processor.sample_rate()),
                 output_sample_rate_hz=int(self.processor.output_sample_rate()),
                 running=bool(self.processor.is_running()),
+                setup_result=self.last_setup_result,
+                interface=self._interface_snapshot(),
             )
             write_diagnostics_snapshot(filepath, snapshot)
         except Exception:
@@ -4469,17 +4572,34 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self,
                 "Diagnostics Export Failed",
-                "AudioForge could not create the diagnostics snapshot.",
+                "AudioForge could not create the diagnostics file. Check that the folder "
+                "is writable and has free space, then try again.",
             )
             return
 
         self.status_message.showMessage("Privacy-safe diagnostics exported", 4000)
-        QMessageBox.information(
-            self,
-            "Diagnostics Exported",
+        text = (
             "The snapshot was saved without raw audio, device names, "
-            "environment variables, secrets, or arbitrary paths.",
+            "environment variables, secrets, or arbitrary paths."
         )
+        if snapshot["setup_result"] is not None:
+            text += (
+                " It lists the outcome, reason codes and numbers of your last Voice Setup or "
+                "Auto-EQ run, but not the messages shown to you."
+            )
+        QMessageBox.information(self, "Diagnostics Exported", text)
+
+    def _interface_snapshot(self) -> dict[str, str]:
+        """Which view is showing and why, as fixed words for the diagnostics export."""
+        if "quick_bridge" in self.__dict__:
+            from .quick_shell import graphics_api
+
+            return {"view": "quick", "classic_reason": "none", "graphics_api": graphics_api(self)}
+        return {
+            "view": "classic",
+            "classic_reason": "qml_failed" if self.quick_view_failed else "disabled_by_env",
+            "graphics_api": "not_applicable",
+        }
 
     def _show_licenses(self):
         """Open the notices shipped with this copy of AudioForge."""
@@ -4532,7 +4652,7 @@ class MainWindow(QMainWindow):
         """Reset the dropped samples counter."""
         if self.processor:
             self.processor.reset_dropped_samples()
-            self.status_message.showMessage("Dropped samples counter reset", 3000)
+            self.status_message.showMessage("Dropped-sample count reset to zero", 3000)
 
     def _get_current_preset(self) -> Preset:
         """Get current settings as a Preset object."""

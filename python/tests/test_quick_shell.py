@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 import time
 from typing import Any
 
@@ -10,6 +11,7 @@ import pytest
 from PySide6.QtCore import (
     QCoreApplication,
     QEvent,
+    QObject,
     QPoint,
     QPointF,
     QRectF,
@@ -18,10 +20,12 @@ from PySide6.QtCore import (
     QTimer,
     qInstallMessageHandler,
 )
-from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPainter
+from PySide6.QtGui import QFont, QGuiApplication, QImage, QKeyEvent, QMouseEvent, QPainter
 from PySide6.QtTest import QSignalSpy, QTest
+from PySide6.QtQuick import QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
+    QComboBox,
     QLabel,
     QMessageBox,
     QStatusBar,
@@ -33,8 +37,10 @@ from mic_eq.config_parts.settings import q_from_bandwidth_octaves
 from mic_eq.ui.main_window import CLASSIC_ATTRIBUTES, MainWindow
 from mic_eq.ui.eq_quick_graph import EQGraphItem
 from mic_eq.ui.eq_graph import EQGraphGeometry
+from mic_eq.ui.level_meter import CLIP_FLAT_TOP_SAMPLES
 from mic_eq.ui.quick_meter import QuickMeterItem
 from mic_eq.ui.shell_specs import ACTION_SPECS, CHOICE_SPECS
+from mic_eq.ui.shell_state import ChoiceState
 from mic_eq.ui.quick_shell import (
     SettingControl,
     QUICK_VIEW_UNAVAILABLE,
@@ -688,6 +694,10 @@ def _handle_point(window, item, band: int) -> QPoint:
     return item.mapToScene(QPointF(x, y)).toPoint()
 
 
+def _drag_distance() -> int:
+    return QGuiApplication.styleHints().startDragDistance()
+
+
 def _drag_up(view, start: QPoint, steps: int = 8, step: int = 8):
     """Press at ``start``, yield after each move up, release when exhausted."""
     QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=start)
@@ -738,7 +748,9 @@ def test_a_band_drag_is_not_taken_over_by_the_page(quick_window, mic_page) -> No
 
     gains = []
     for pos in _drag_up(
-        quick_window.centralWidget(), _handle_point(quick_window, item, band)
+        quick_window.centralWidget(),
+        _handle_point(quick_window, item, band),
+        step=_drag_distance() + 2,
     ):
         assert graph.dragging_band_index == band
         assert page.property("contentY") == 0
@@ -818,7 +830,9 @@ def test_a_touch_band_drag_is_not_taken_over_by_the_page(
     start = _handle_point(quick_window, item, band)
 
     gains = []
-    for _ in _touch_drag_up(quick_window.centralWidget(), start, steps=8, step=8):
+    for _ in _touch_drag_up(
+        quick_window.centralWidget(), start, steps=8, step=_drag_distance() + 2
+    ):
         assert graph.dragging_band_index == band
         assert page.property("contentY") == 0
         gains.append(graph.bands[band][2])
@@ -971,7 +985,8 @@ def test_a_drag_moves_the_band_by_the_pointers_travel(quick_window, mic_page) ->
     start = _handle_point(quick_window, item, band) + QPoint(7, 7)
 
     QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=start)
-    for dx, dy in ((1, 0), (30, -16)):
+    # The first move already passes the drag distance, and the band takes all of it.
+    for dx, dy in ((_drag_distance() + 2, 0), (30, -16)):
         QTest.mouseMove(view, start + QPoint(dx, dy), delay=5)
         assert page.property("contentY") == 0
         assert graph.bands[band][1] == pytest.approx(
@@ -1151,6 +1166,30 @@ def _assert_widgets_show_the_state(window) -> None:
     assert window.input_health_label.property("health_state") == "ok"
 
 
+_CLASSIC = {"view": "classic", "graphics_api": "not_applicable"}
+
+
+def test_the_export_names_the_quick_view_and_the_graphics_backend_qt_chose(quick_window) -> None:
+    snapshot = quick_window._interface_snapshot()
+    assert snapshot["view"] == "quick" and snapshot["classic_reason"] == "none"
+    interface = quick_window.centralWidget().quickWindow().rendererInterface()
+    expected = {
+        QSGRendererInterface.GraphicsApi.Software: "software",
+        QSGRendererInterface.GraphicsApi.OpenGL: "opengl",
+        QSGRendererInterface.GraphicsApi.Direct3D11: "direct3d11",
+        QSGRendererInterface.GraphicsApi.Vulkan: "vulkan",
+        QSGRendererInterface.GraphicsApi.Null: "null",
+    }
+    assert snapshot["graphics_api"] == (
+        "unknown" if interface is None else expected.get(interface.graphicsApi(), "unknown")
+    )
+
+
+def test_the_export_says_the_scene_stopped_rendering(quick_window) -> None:
+    restore_classic_view(quick_window, "no graphics adapter at C:/Users/private")
+    assert quick_window._interface_snapshot() == {**_CLASSIC, "classic_reason": "qml_failed"}
+
+
 def test_render_failure_falls_back_to_the_widget_view_and_says_so(quick_window, qapp) -> None:
     window = quick_window
     scene = window.centralWidget()
@@ -1214,6 +1253,7 @@ def test_scene_that_does_not_load_keeps_the_widget_view(qapp, monkeypatch, tmp_p
     _load_config_without_devices(monkeypatch)
     window = MainWindow()
     assert window.quick_view_failed is True
+    assert window._interface_snapshot() == {**_CLASSIC, "classic_reason": "qml_failed"}
     assert "quick_bridge" not in vars(window)
     assert not isinstance(window.centralWidget(), QQuickWidget)
     assert _fallback_notice(window)
@@ -1231,6 +1271,7 @@ def test_scene_that_cannot_be_prepared_keeps_the_widget_view(qapp, monkeypatch) 
     _load_config_without_devices(monkeypatch)
     window = MainWindow()
     assert window.quick_view_failed is True
+    assert window._interface_snapshot() == {**_CLASSIC, "classic_reason": "qml_failed"}
     assert _fallback_notice(window)
     _assert_widgets_show_the_state(window)
 
@@ -1243,6 +1284,7 @@ def test_opt_out_keeps_the_widget_view(qapp, monkeypatch) -> None:
     assert "quick_bridge" not in vars(window)
     # Opting out is a choice, not a failure: no notice, and a smoke test passes.
     assert not window.quick_view_failed
+    assert window._interface_snapshot() == {**_CLASSIC, "classic_reason": "disabled_by_env"}
     assert not _fallback_notice(window)
     _assert_widgets_show_the_state(window)
     window.show()
@@ -1282,11 +1324,6 @@ def test_scene_gets_structured_values_instead_of_parsing_labels(quick_window) ->
     noise, gate = model["stages"][:2]
     assert noise["trace"] and noise["alert"] is not None
     assert not gate["trace"] and gate["alert"] is None
-    assert [row["title"] for row in model["health"]["stream"] if row["coded"]] == [
-        "Backend",
-        "Drops",
-        "Recovery",
-    ]
 
 
 def _settings_row(window, text: str):
@@ -1468,3 +1505,122 @@ def test_save_entrypoints_capture_only_accepted_pending_settings(
     assert saved == ([] if reject else [-3.0])
     assert written == ([-1.0] if reject else [-3.0])
     assert window.limiter_state.get_settings()["ceiling_db"] == (-1.0 if reject else -3.0)
+
+
+def _picker_text(picker) -> str:
+    return picker.property("contentItem").property("text")
+
+
+def test_a_classic_device_combo_shows_the_whole_name_as_its_tooltip(qapp) -> None:
+    owner = QObject()
+    choice = ChoiceState(owner, name="Input audio device")
+    combo = QComboBox()
+    choice.bind_combo(combo)
+    assert combo.toolTip() == ""
+    choice.addItem("Studio Microphone (USB)")
+    choice.addItem("CABLE Output (VB-Audio Virtual Cable)")
+    assert combo.toolTip() == "Studio Microphone (USB)"
+    choice.setIndex(1)
+    assert combo.toolTip() == "CABLE Output (VB-Audio Virtual Cable)"
+    # A choice with help text of its own keeps it.
+    helped = ChoiceState(owner, name="Processing mode", tip="Normal applies the voice chain.")
+    other = QComboBox()
+    helped.bind_combo(other)
+    helped.addItem("Normal")
+    assert other.toolTip() == "Normal applies the voice chain."
+
+
+def test_health_rows_show_their_plain_text_without_opening_technical_details(quick_window) -> None:
+    rows = quick_window.quick_bridge.model["health"]["stream"]
+    assert all("coded" not in row for row in rows)
+    qml = (Path(__file__).parents[1] / "mic_eq" / "ui" / "qml" / "Main.qml").read_text(encoding="utf-8")
+    assert "coded" not in qml and "technical" not in qml.split("component HealthRow")[1].split("component Page")[0]
+
+
+def test_choice_state_exposes_its_placeholder_to_both_views(quick_window) -> None:
+    choice = quick_window.output_choice
+    assert choice.property("placeholder") == ""
+    choice.setPlaceholderText("Select a replacement destination")
+    assert choice.property("placeholder") == "Select a replacement destination"
+
+
+def test_quick_picker_shows_the_placeholder_while_nothing_is_selected(quick_window, qapp) -> None:
+    choice = quick_window.output_choice
+    choice.clear()
+    choice.setPlaceholderText("Select a replacement destination")
+    qapp.processEvents()
+    picker = _find(quick_window.centralWidget().rootObject(), "Picker", choice)
+    assert picker is not None
+    assert _picker_text(picker) == "Select a replacement destination"
+    choice.addItem("Cable Input", DeviceIdentity(name="Cable Input", direction="output"))
+    qapp.processEvents()
+    assert _picker_text(picker) == "Cable Input"
+
+
+def test_a_device_name_cut_short_at_the_minimum_window_size_is_whole_in_the_tooltip(
+    quick_window, qapp
+) -> None:
+    from pathlib import Path
+
+    from PySide6.QtGui import QFontDatabase
+
+    # Qt's offscreen platform has no fonts, which makes every name look short.
+    font = Path("C:/Windows/Fonts/segoeui.ttf")
+    if not font.is_file():
+        pytest.skip("The Windows UI font is not installed")
+    families = QFontDatabase.applicationFontFamilies(QFontDatabase.addApplicationFont(str(font)))
+    previous = qapp.font()
+    qapp.setFont(QFont(families[0], 9))
+    try:
+        quick_window.resize(900, 640)
+        names = {
+            quick_window.input_choice: "Studio Microphone (USB)",
+            quick_window.output_choice: "CABLE Input (VB-Audio Virtual Cable)",
+        }
+        for choice, name in names.items():
+            choice.addItem(name, DeviceIdentity(name=name, direction="input"))
+        for _ in range(3):
+            qapp.processEvents()
+        root = quick_window.centralWidget().rootObject()
+        for choice, name in names.items():
+            picker = _find(root, "Picker", choice)
+            assert picker is not None
+            assert picker.property("contentItem").property("truncated")
+            hint = next(c for c in picker.children() if "Hint" in c.metaObject().className())
+            assert hint.property("text") == name
+    finally:
+        qapp.setFont(previous)
+
+
+def test_quick_meters_describe_a_lit_clip_marker_to_assistive_technology(quick_window, qapp) -> None:
+    from PySide6.QtGui import QAccessible
+
+    meter = quick_window.input_meter
+    root = quick_window.centralWidget().rootObject()
+
+    def find_meter(item):
+        for child in item.childItems():
+            if isinstance(child, QuickMeterItem) and child.property("source") is meter:
+                return child
+            found = find_meter(child)
+            if found is not None:
+                return found
+        return None
+
+    item = find_meter(root)
+    assert item is not None
+    was_active = QAccessible.isActive()
+    QAccessible.setActive(True)
+
+    def description() -> str:
+        qapp.processEvents()
+        return QAccessible.queryAccessibleInterface(item).text(QAccessible.Text.Description)
+
+    try:
+        assert description() == ""
+        meter.set_levels(-20.0, -10.0)
+        meter.note_peak(None, None, full_scale_count=0)
+        meter.note_peak(1.0, 1.0, full_scale_count=CLIP_FLAT_TOP_SAMPLES)
+        assert "Clipping" in description()
+    finally:
+        QAccessible.setActive(was_active)

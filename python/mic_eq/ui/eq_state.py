@@ -401,6 +401,24 @@ class EQState(QObject):
     def reset_tone(self) -> None:
         self.apply_preset([0.0] * 10, label="Reset tone EQ")
 
+    def reset_band(self, index: int) -> None:
+        """Put one band back to its factory type, frequency, Q and 0 dB.
+
+        The band stays on or off as it was. One undo step, like a graph edit;
+        a band that is already at its defaults records nothing.
+        """
+        current = self.get_band(index)
+        self.configurationEditStarted.emit()
+        try:
+            self.set_band(
+                index,
+                replace(EQSettings().bands[index], enabled=current.enabled),
+                edited=False,
+            )
+            self.flush()
+        finally:
+            self.configurationEditFinished.emit("Reset EQ band")
+
     def clear_correction(self) -> None:
         if self._settings.correction_bands is None:
             return

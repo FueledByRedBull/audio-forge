@@ -12,14 +12,31 @@ import secrets
 import tempfile
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
 
 SCHEMA_NAME = "audioforge-support-snapshot"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MAX_SERIALIZED_BYTES = 128 * 1024
 MIN_PSEUDONYM_KEY_BYTES = 16
+
+_SETUP_KINDS = frozenset({"voice_setup", "auto_eq"})
+_SETUP_OUTCOMES = frozenset(
+    {"applied", "verified", "rolled_back", "refused", "advisory", "cancelled", "failed"}
+)
+_SETUP_EXPORT_FIELDS = frozenset(
+    {"kind", "outcome", "reason_codes", "numbers", "message_count", "recorded_at"}
+)
+_MAX_SETUP_CODES = 16
+_MAX_SETUP_MESSAGES = 8
+_MAX_SETUP_NUMBERS = 32
+_MAX_SETUP_TEXT = 240
+# Integers a float carries exactly; anything larger is not a measurement.
+_MAX_SETUP_INTEGER = 2**53
+# The only strings a setup number may export: the level check's verdicts.
+_SETUP_NUMBER_STRINGS = frozenset({"good", "too_hot", "too_quiet", "silent", "unreadable"})
 
 _CONFIG_ENUMS = {
     "input_channel_mode": frozenset(
@@ -220,9 +237,18 @@ _ROOT_FIELDS = frozenset(
         "configuration",
         "processing",
         "runtime",
+        "setup_result",
+        "interface",
         "privacy",
     }
 )
+_INTERFACE_ENUMS = {
+    "view": frozenset({"quick", "classic"}),
+    "classic_reason": frozenset({"none", "disabled_by_env", "qml_failed"}),
+    "graphics_api": frozenset(
+        {"software", "opengl", "direct3d11", "vulkan", "null", "unknown", "not_applicable"}
+    ),
+}
 _SYSTEM_FIELDS = frozenset(
     {
         "operating_system",
@@ -469,6 +495,91 @@ def _safe_system_text(value: object) -> str:
     return text
 
 
+def _is_code(value: object, limit: int, extra: str = "") -> bool:
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= limit
+        and value.isascii()
+        and all(c.islower() or c.isdigit() or c in "_" + extra for c in value)
+    )
+
+
+def _setup_number(value: object) -> bool | int | float | str | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, Integral):
+        number = int(value)
+        return number if abs(number) <= _MAX_SETUP_INTEGER else None
+    if isinstance(value, Real):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    if isinstance(value, str):
+        try:
+            number = float(value)
+        except ValueError:
+            return "".join(c for c in value[:32] if c.isprintable())
+        return number if math.isfinite(number) else None
+    return None
+
+
+def sanitize_setup_result(result: object) -> dict[str, Any] | None:
+    """Validate and bound one setup result; anything that is not a mapping gives ``None``.
+
+    Unknown keys are dropped, lists and strings are cut, numbers are coerced and
+    non-finite ones dropped. The messages are kept for the session but are free
+    text, so ``build_diagnostics_snapshot`` never exports them.
+    """
+    if not isinstance(result, Mapping):
+        return None
+    reason_codes = result.get("reason_codes")
+    messages = result.get("messages")
+    numbers = result.get("numbers")
+    clean_numbers: dict[str, bool | int | float | str] = {}
+    if isinstance(numbers, Mapping):
+        for name, value in numbers.items():
+            if len(clean_numbers) >= _MAX_SETUP_NUMBERS:
+                break
+            number = _setup_number(value)
+            if _is_code(name, 48) and number is not None:
+                clean_numbers[name] = number
+    recorded_at = result.get("recorded_at")
+    try:
+        parsed = datetime.fromisoformat(recorded_at) if isinstance(recorded_at, str) else None
+    except ValueError:
+        parsed = None
+    return {
+        "kind": _safe_enum(result.get("kind"), _SETUP_KINDS),
+        "outcome": _safe_enum(result.get("outcome"), _SETUP_OUTCOMES),
+        "reason_codes": [
+            code for code in (reason_codes if isinstance(reason_codes, (list, tuple)) else [])
+            if _is_code(code, 64)
+        ][:_MAX_SETUP_CODES],
+        "messages": [
+            " ".join(str(message).split())[:_MAX_SETUP_TEXT]
+            for message in (messages if isinstance(messages, (list, tuple)) else [])[:_MAX_SETUP_MESSAGES]
+        ],
+        "numbers": clean_numbers,
+        "recorded_at": _timestamp_utc(parsed if parsed and parsed.tzinfo else None),
+    }
+
+
+def _exported_setup_result(result: object) -> dict[str, Any] | None:
+    clean = sanitize_setup_result(result)
+    if clean is None:
+        return None
+    return {
+        "kind": clean["kind"],
+        "outcome": clean["outcome"],
+        "reason_codes": clean["reason_codes"],
+        "numbers": {
+            name: value for name, value in clean["numbers"].items()
+            if not isinstance(value, str) or value in _SETUP_NUMBER_STRINGS
+        },
+        "message_count": len(clean["messages"]),
+        "recorded_at": clean["recorded_at"],
+    }
+
+
 def _timestamp_utc(value: datetime | None) -> str:
     timestamp = value or datetime.now(timezone.utc)
     if timestamp.tzinfo is None:
@@ -487,6 +598,8 @@ def build_diagnostics_snapshot(
     processing_sample_rate_hz: int,
     output_sample_rate_hz: int,
     running: bool,
+    setup_result: Mapping[str, object] | None = None,
+    interface: Mapping[str, object] | None = None,
     generated_at: datetime | None = None,
     pseudonym_key: bytes | None = None,
     system_info: Mapping[str, str] | None = None,
@@ -525,6 +638,11 @@ def build_diagnostics_snapshot(
         "configuration": _sanitized_config(config),
         "processing": _sanitized_processing(processing_settings),
         "runtime": _sanitized_runtime(runtime_diagnostics),
+        "setup_result": _exported_setup_result(setup_result),
+        "interface": {
+            key: _safe_enum(_mapping_value(interface, key), allowed)
+            for key, allowed in _INTERFACE_ENUMS.items()
+        },
         "privacy": {
             "raw_audio_included": False,
             "environment_variables_included": False,
@@ -532,6 +650,7 @@ def build_diagnostics_snapshot(
             "raw_device_names_included": False,
             "secrets_included": False,
             "pseudonyms_are_report_local": True,
+            "setup_message_text_included": False,
         },
     }
     serialize_diagnostics_snapshot(snapshot)
@@ -564,6 +683,7 @@ def serialize_diagnostics_snapshot(snapshot: Mapping[str, object]) -> bytes:
         "configuration": _CONFIG_FIELDS,
         "processing": frozenset({*_PROCESSING_FIELDS, "bypass"}),
         "runtime": _RUNTIME_FIELDS,
+        "interface": frozenset(_INTERFACE_ENUMS),
         "privacy": frozenset(
             {
                 "raw_audio_included",
@@ -572,6 +692,7 @@ def serialize_diagnostics_snapshot(snapshot: Mapping[str, object]) -> bytes:
                 "raw_device_names_included",
                 "secrets_included",
                 "pseudonyms_are_report_local",
+                "setup_message_text_included",
             }
         ),
     }
@@ -581,6 +702,12 @@ def serialize_diagnostics_snapshot(snapshot: Mapping[str, object]) -> bytes:
             raise ValueError(
                 f"diagnostics snapshot contains unexpected {section_name} fields"
             )
+    setup_result = snapshot["setup_result"]
+    if setup_result is not None and (
+        not isinstance(setup_result, Mapping)
+        or not set(setup_result) <= _SETUP_EXPORT_FIELDS
+    ):
+        raise ValueError("diagnostics snapshot contains unexpected setup_result fields")
     processing = snapshot["processing"]
     assert isinstance(processing, Mapping)
     for section_name, allowed_fields in _PROCESSING_FIELDS.items():
@@ -674,6 +801,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "build_diagnostics_snapshot",
     "diagnostics_filename",
+    "sanitize_setup_result",
     "serialize_diagnostics_snapshot",
     "write_diagnostics_snapshot",
 ]

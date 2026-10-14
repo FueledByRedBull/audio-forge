@@ -358,8 +358,9 @@ def _run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool) -> int:
                     raise RuntimeError("AudioForge main window has no processor state")
                 if bool(is_running()):
                     raise RuntimeError("startup smoke test unexpectedly started audio")
-                if getattr(window, "quick_view_failed", False):
-                    raise RuntimeError("the Qt Quick view did not load")
+                failure = getattr(window, "quick_view_failure", None)
+                if failure is not None:
+                    raise RuntimeError(f"the Qt Quick view did not load ({failure})")
                 _check_windows_shortcut_roundtrip()
                 _check_auto_eq_solvers()
             except Exception:

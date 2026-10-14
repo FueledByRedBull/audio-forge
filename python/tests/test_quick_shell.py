@@ -27,11 +27,9 @@ from PySide6.QtQuick import QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
     QComboBox,
-    QLabel,
     QMessageBox,
     QStatusBar,
 )
-from shiboken6 import isValid
 
 from mic_eq.config import AppConfig, DeviceIdentity
 from mic_eq.config_parts.settings import q_from_bandwidth_octaves
@@ -42,11 +40,15 @@ from mic_eq.ui.level_meter import CLIP_FLAT_TOP_SAMPLES
 from mic_eq.ui.quick_meter import QuickMeterItem
 from mic_eq.ui.shell_specs import ACTION_SPECS, CHOICE_SPECS
 from mic_eq.ui.shell_state import ChoiceState
-from mic_eq.ui.quick_shell import (
-    SettingControl,
-    QUICK_VIEW_UNAVAILABLE,
-    restore_classic_view,
-)
+from mic_eq.ui.quick_shell import SettingControl
+
+
+def switch_to_classic(window) -> None:
+    """Put the widget view over a running scene, as the opt-out builds it over the same state."""
+
+    bridge = window.__dict__.pop("quick_bridge")
+    window._show_classic_view()
+    bridge.release()
 
 
 @pytest.fixture
@@ -164,7 +166,7 @@ def test_a_quick_session_never_builds_the_widget_view(quick_window, monkeypatch)
         assert not vars(window).keys() & set(CLASSIC_ATTRIBUTES)
         assert window.findChildren(QStatusBar) == []
         assert isinstance(window.centralWidget(), QQuickWidget)
-        assert not window.quick_view_failed
+        assert window.quick_view_failure is None
 
     def text(key: str) -> str:
         return window.shell_texts[key].text
@@ -282,7 +284,7 @@ def test_classic_fallback_only_attaches_views_without_native_writes(quick_window
         monkeypatch.setattr(state, "set_settings", unexpected)
         if hasattr(state, "set_value"):
             monkeypatch.setattr(state, "set_value", unexpected)
-    restore_classic_view(window, "test fallback")
+    switch_to_classic(window)
     assert window.compressor_panel.compressor_state is window.compressor_state
     assert window.eq_panel.curve_widget is window.eq_presentation.curve_widget
     assert window.gate_panel.confidence_meter is window.processing_meters.confidence
@@ -401,7 +403,7 @@ def test_limiter_quick_edits_preserve_exact_preset_undo_and_fallback(quick_windo
     assert control.value == -3.26
     quick_window.redo_configuration()
     assert control.value == -2.25
-    restore_classic_view(quick_window, "test rendering recovery")
+    switch_to_classic(quick_window)
     assert quick_window.compressor_panel.ceiling_spinbox.value() == -2.25
     assert quick_window._get_current_preset().limiter.ceiling_db == -2.25
 
@@ -1104,29 +1106,6 @@ def test_a_focused_editable_box_still_steps_with_the_wheel(quick_window, wide_pa
     assert page.property("contentY") == scrolled
 
 
-def _fallback_notice(window) -> bool:
-    return any(
-        label.text() == QUICK_VIEW_UNAVAILABLE and not label.isHidden()
-        for label in window.status_bar.findChildren(QLabel)
-    )
-
-
-def _change_shared_state(window) -> None:
-    """Move every kind of shared state away from its startup value."""
-
-    window.status_message.showMessage("Changed while the scene was active")
-    window._set_health_chip("input_health_label", "Input: hot", "warn")
-    window._set_health_chip("dropped_label", "Drops: 3", "bad")
-    window.shell_texts["config_warning_banner"].update(text="Settings were reset", shown=True)
-    window.shell_page.setIndex(window.HEALTH_PAGE_INDEX)
-    window.processing_mode_choice.setIndex(1)
-    window.input_cleanup_mode_choice.setIndex(2)
-    window.user_mute_checkbox_action.setChecked(True)
-    window.start_btn_action.setEnabled(False)
-    window.stop_btn_action.setEnabled(True)
-    window.input_meter.set_levels(-20.0, -10.0)
-
-
 def _assert_widgets_show_the_state(window) -> None:
     """The widget view is the window's content and every widget renders its state."""
 
@@ -1186,95 +1165,12 @@ def test_the_export_names_the_quick_view_and_the_graphics_backend_qt_chose(quick
     )
 
 
-def test_the_export_says_the_scene_stopped_rendering(quick_window) -> None:
-    restore_classic_view(quick_window, "no graphics adapter at C:/Users/private")
-    assert quick_window._interface_snapshot() == {**_CLASSIC, "classic_reason": "qml_failed"}
-
-
-def test_render_failure_falls_back_to_the_widget_view_and_says_so(quick_window, qapp) -> None:
-    window = quick_window
-    scene = window.centralWidget()
-    assert isinstance(scene, QQuickWidget)
-    _change_shared_state(window)
-    assert not window.quick_view_failed
-
-    restore_classic_view(window, "no graphics adapter")
-
-    assert window.quick_view_failed is True
-    assert "quick_bridge" not in vars(window)
-    assert _fallback_notice(window)
-    _assert_widgets_show_the_state(window)
-    # The window is on screen, so the new content is too.
-    qapp.processEvents()
-    assert window.status_bar.isVisible() and window.page_stack.isVisible()
-    # The repaint hook is gone with the scene, so the widgets draw as before.
-    assert "update" not in window.eq_panel.curve_widget.__dict__
-    # The scene is deleted, not left behind a second central widget.
-    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-    assert not isValid(scene)
-    # A second report from the dead scene changes nothing.
-    root = window._classic_root
-    restore_classic_view(window, "reported twice")
-    assert window._classic_root is root and window.centralWidget() is root
-
-
-def test_a_widget_view_built_while_the_scene_runs_is_the_one_a_failure_shows(quick_window) -> None:
-    window = quick_window
-    _change_shared_state(window)
-    # Reading a widget builds the view now, behind the scene.
-    label = window.dropped_label
-    root = window._classic_root
-    assert root is not None and root.isHidden() and window.status_bar.isHidden()
-    assert isinstance(window.centralWidget(), QQuickWidget)
-    assert label.text() == "Drops: 3"
-    states = [window.shell_texts[key] for key in ("dropped_label", "input_health_label")]
-    receivers = [state.receivers("2changed()") for state in states]
-    window._ensure_classic_view()
-    assert window._classic_root is root
-    assert [state.receivers("2changed()") for state in states] == receivers
-
-    restore_classic_view(window, "no graphics adapter")
-
-    assert window.dropped_label is label and window.centralWidget() is root
-    assert [state.receivers("2changed()") for state in states] == receivers
-    assert _fallback_notice(window)
-    _assert_widgets_show_the_state(window)
-
-
 def _load_config_without_devices(monkeypatch) -> None:
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
     monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
-
-
-def test_scene_that_does_not_load_keeps_the_widget_view(qapp, monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr("mic_eq.ui.quick_shell.QML_DIR", tmp_path)
-    _load_config_without_devices(monkeypatch)
-    window = MainWindow()
-    assert window.quick_view_failed is True
-    assert window._interface_snapshot() == {**_CLASSIC, "classic_reason": "qml_failed"}
-    assert "quick_bridge" not in vars(window)
-    assert not isinstance(window.centralWidget(), QQuickWidget)
-    assert _fallback_notice(window)
-    _assert_widgets_show_the_state(window)
-    window.show()
-    qapp.processEvents()
-    assert window.status_bar.isVisible() and window.page_stack.isVisible()
-
-
-def test_scene_that_cannot_be_prepared_keeps_the_widget_view(qapp, monkeypatch) -> None:
-    def refuse(_window):
-        raise RuntimeError("model could not be built")
-
-    monkeypatch.setattr("mic_eq.ui.quick_shell.QuickBridge._build_model", refuse)
-    _load_config_without_devices(monkeypatch)
-    window = MainWindow()
-    assert window.quick_view_failed is True
-    assert window._interface_snapshot() == {**_CLASSIC, "classic_reason": "qml_failed"}
-    assert _fallback_notice(window)
-    _assert_widgets_show_the_state(window)
 
 
 def test_opt_out_keeps_the_widget_view(qapp, monkeypatch) -> None:
@@ -1284,9 +1180,8 @@ def test_opt_out_keeps_the_widget_view(qapp, monkeypatch) -> None:
     assert not isinstance(window.centralWidget(), QQuickWidget)
     assert "quick_bridge" not in vars(window)
     # Opting out is a choice, not a failure: no notice, and a smoke test passes.
-    assert not window.quick_view_failed
+    assert window.quick_view_failure is None
     assert window._interface_snapshot() == {**_CLASSIC, "classic_reason": "disabled_by_env"}
-    assert not _fallback_notice(window)
     _assert_widgets_show_the_state(window)
     window.show()
     qapp.processEvents()
@@ -1415,7 +1310,7 @@ def test_quick_graph_does_not_construct_or_resize_classic_graph(quick_window) ->
     item.paint(painter)
     painter.end()
     assert presentation._curve_widget is None
-    restore_classic_view(quick_window, "no graphics adapter")
+    switch_to_classic(quick_window)
     curve = presentation.curve_widget
     assert curve.minimumWidth() < 640 < curve.maximumWidth()
 

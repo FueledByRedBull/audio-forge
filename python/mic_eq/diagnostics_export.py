@@ -244,8 +244,11 @@ _ROOT_FIELDS = frozenset(
     }
 )
 _INTERFACE_ENUMS = {
-    "view": frozenset({"quick", "classic"}),
-    "classic_reason": frozenset({"none", "disabled_by_env", "qml_failed"}),
+    "view": frozenset({"quick", "classic", "error"}),
+    # With view "error" this names the failure that put the error screen up.
+    "classic_reason": frozenset(
+        {"none", "disabled_by_env", "bridge_failed", "qml_not_ready", "scene_graph_error"}
+    ),
     "graphics_api": frozenset(
         {"software", "opengl", "direct3d11", "vulkan", "null", "unknown", "not_applicable"}
     ),

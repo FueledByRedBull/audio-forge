@@ -4328,7 +4328,7 @@ class MainWindow(QMainWindow):
                 f"{plural(restart_count, 'restart')}"
             )
             if causes:
-                dropped_summary += " (needs attention)"
+                dropped_summary += f" (needs attention: {causes[0]})"
         self._set_health_chip("dropped_label", dropped_summary, dropped_state)
         self.shell_texts["dropped_label"].update(tip=
             f"{DROPPED_DIAGNOSTICS_TOOLTIP}\n\nTechnical counters (for support reports):\n{dropped_detail}"

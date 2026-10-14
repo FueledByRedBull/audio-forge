@@ -983,11 +983,14 @@ def test_the_drops_row_never_claims_attention_for_zero_drops(window, monkeypatch
     assert advice_for(chip.text) == ""
     assert "0 samples" not in chip.text
 
-    # With real numbers the row keeps them and still says it needs attention.
+    # With real numbers the row keeps them and names the first cause.
     _labels(window, diagnostics=_healthy_runtime_diagnostics(
         input_dropped_samples=12, stream_restart_count=1, rt_error_name="input_queue_full",
     ))
-    assert chip.text == "Drops: 12 samples dropped, 0 dropouts, 1 restart (needs attention)"
+    assert chip.text == (
+        "Drops: 12 samples dropped, 0 dropouts, 1 restart "
+        "(needs attention: the audio engine reported a fault)"
+    )
     assert "12 samples so far" in advice_for(chip.text)
 
     clock[0] += 5.1  # the drops are no longer recent

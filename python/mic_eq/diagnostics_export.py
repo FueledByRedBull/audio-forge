@@ -54,7 +54,6 @@ _CONFIG_ENUMS = {
     ),
 }
 _CONFIG_NUMBERS = (
-    "main_control_tab_index",
     "voice_setup_custom_p95_db",
     "voice_setup_custom_peak_cap_db",
 )

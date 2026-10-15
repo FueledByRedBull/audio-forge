@@ -28,7 +28,6 @@ class SettingControl(QObject):
         super().__init__(parent)
         self._state = state
         self._key = key
-        self._section = section
         self._spec = control_spec(section, key)
         self._choices = self._spec.choices
         ranges = CONTROL_RANGES.get(section, {})

@@ -477,24 +477,6 @@ impl ParametricEQ {
         }
     }
 
-    /// Set the public filter type for a specific band.
-    pub fn set_band_filter_type(&mut self, band_index: usize, filter_type: EqFilterType) {
-        if band_index < NUM_BANDS {
-            let mut config = self.bands[band_index].config;
-            config.filter_type = filter_type;
-            self.bands[band_index].set_config(config);
-        }
-    }
-
-    /// Set an even-order Butterworth pass-filter slope for a specific band.
-    pub fn set_band_slope(&mut self, band_index: usize, slope_db_per_octave: u8) {
-        if band_index < NUM_BANDS {
-            let mut config = self.bands[band_index].config;
-            config.slope_db_per_octave = slope_db_per_octave;
-            self.bands[band_index].set_config(config);
-        }
-    }
-
     /// Apply one complete band configuration in one coefficient transition.
     pub fn set_band_config(&mut self, band_index: usize, config: EqBandConfig) {
         if band_index < NUM_BANDS {
@@ -525,16 +507,6 @@ impl ParametricEQ {
     /// Check if EQ is enabled
     pub fn is_enabled(&self) -> bool {
         self.enabled
-    }
-
-    /// Get band parameters (frequency, gain_db, q)
-    pub fn get_band_params(&self, band_index: usize) -> Option<(f64, f64, f64)> {
-        if band_index < NUM_BANDS {
-            let config = self.bands[band_index].config;
-            Some((config.frequency_hz, config.gain_db, config.q))
-        } else {
-            None
-        }
     }
 
     /// Get the complete configuration for one band.
@@ -746,10 +718,10 @@ mod tests {
         eq.set_band_gain(5, 6.0);
         eq.set_band_q(5, 2.0);
 
-        let params = eq.get_band_params(5).unwrap();
-        assert!((params.0 - 3000.0).abs() < 0.001);
-        assert!((params.1 - 6.0).abs() < 0.001);
-        assert!((params.2 - 2.0).abs() < 0.001);
+        let config = eq.get_band_config(5).unwrap();
+        assert!((config.frequency_hz - 3000.0).abs() < 0.001);
+        assert!((config.gain_db - 6.0).abs() < 0.001);
+        assert!((config.q - 2.0).abs() < 0.001);
     }
 
     #[test]

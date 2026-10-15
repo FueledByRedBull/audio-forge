@@ -461,42 +461,6 @@ impl EqControlState {
         });
     }
 
-    fn set_band_frequency(&self, band: usize, frequency: f64) {
-        self.update(|state| {
-            state.frequency_bits[band].store(frequency.to_bits(), Ordering::Relaxed);
-        });
-    }
-
-    fn set_band_gain(&self, band: usize, gain_db: f64) {
-        self.update(|state| {
-            state.gain_bits[band].store(gain_db.to_bits(), Ordering::Relaxed);
-        });
-    }
-
-    fn set_band_q(&self, band: usize, q: f64) {
-        self.update(|state| {
-            state.q_bits[band].store(q.to_bits(), Ordering::Relaxed);
-        });
-    }
-
-    fn set_band_filter_type(&self, band: usize, filter_type: EqFilterType) {
-        self.update(|state| {
-            state.filter_type[band].store(filter_type as u8, Ordering::Relaxed);
-        });
-    }
-
-    fn set_band_slope(&self, band: usize, slope_db_per_octave: u8) {
-        self.update(|state| {
-            state.slope_db_per_octave[band].store(slope_db_per_octave, Ordering::Relaxed);
-        });
-    }
-
-    fn set_band_enabled(&self, band: usize, enabled: bool) {
-        self.update(|state| {
-            state.band_enabled[band].store(enabled, Ordering::Relaxed);
-        });
-    }
-
     fn set_layers(
         &self,
         correction_bands: &[EqBandConfig; NUM_BANDS],

@@ -370,7 +370,6 @@ class MainWindow(QMainWindow):
         self._last_output_underrun_total = 0
         self._last_output_true_peak_event_count = 0
         self._last_input_phase_warning_count = 0
-        self._last_gate_chatter_event_count = 0
         # Why the Qt Quick view could not run, while the error screen shows; the
         # packaged smoke test and the diagnostics export read it.
         self.quick_view_failure: str | None = None
@@ -899,10 +898,6 @@ class MainWindow(QMainWindow):
         self.preset_modified = bool(modified)
         self._update_session_summary()
 
-    @property
-    def current_preset_modified(self) -> bool:
-        return bool(self.__dict__.get("preset_modified", False))
-
     def _save_config_safely(self) -> bool:
         """Persist config without letting a write failure disrupt the UI."""
         try:
@@ -1221,7 +1216,6 @@ class MainWindow(QMainWindow):
         last_used_action.setData("")
         last_used_action.triggered.connect(lambda: self._set_startup_preset(""))
         startup_menu.addAction(last_used_action)
-        self._last_used_action = last_used_action  # Store for updating checked state
 
         # Separator
         startup_menu.addSeparator()

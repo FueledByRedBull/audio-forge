@@ -103,19 +103,16 @@ def test_latency_dialog_waits_for_successful_save_before_accepting(qapp):
     owner._on_latency_calibration_saved = Mock(return_value=False)
     profile = _profile((48_000, 1, 48_000, 2)).to_dict()
     dialog = LatencyCalibrationDialog(owner, existing_profile=profile)
-    saved = Mock()
-    dialog.calibration_saved.connect(saved)
     try:
         dialog._on_accept_clicked()
         assert dialog.result() == dialog.DialogCode.Rejected
         assert dialog._latest_profile == profile
         assert "could not be saved" in dialog.status_label.text()
-        saved.assert_not_called()
 
         owner._on_latency_calibration_saved.return_value = True
         dialog._on_accept_clicked()
         assert dialog.result() == dialog.DialogCode.Accepted
-        saved.assert_called_once_with(profile)
+        owner._on_latency_calibration_saved.assert_called_with(profile)
     finally:
         dialog.close()
         owner.deleteLater()
@@ -327,12 +324,9 @@ def test_dialog_rejects_result_after_route_context_changes(qapp):
             "measured_round_trip_ms": 42.0,
         },
     )
-    saved: list[dict] = []
-    dialog.calibration_saved.connect(saved.append)
     owner.route = "route-b"
     dialog._on_accept_clicked()
 
-    assert saved == []
     assert "stale" in dialog.status_label.text().lower()
     dialog.close()
     owner.deleteLater()

@@ -2,6 +2,7 @@
 
 use mic_eq_core::audio::input::list_input_devices;
 use mic_eq_core::audio::processor::{run_seeded_control_dsp_stress, AudioProcessor};
+use mic_eq_core::dsp::eq::{EqBandConfig, NUM_BANDS};
 
 /// Exercise concurrent rapid controls and production DSP processing.
 ///
@@ -55,13 +56,18 @@ fn device_enumeration_and_lifecycle_smoke() {
     let processor = AudioProcessor::new();
     assert!(!processor.is_running());
     processor.set_gate_threshold(-60.0);
+    let mut bands: Vec<EqBandConfig> = (0..NUM_BANDS)
+        .map(EqBandConfig::default_for_index)
+        .collect();
+    bands[0].gain_db = 6.0;
     processor
-        .set_eq_band_gain(0, 6.0)
+        .apply_eq_settings_v2(bands)
         .expect("test gain should be valid");
     processor.set_compressor_threshold(-20.0);
-    let (_, gain, _) = processor
-        .get_eq_band_params(0)
-        .expect("EQ band parameters should remain available");
+    let gain = processor
+        .get_eq_band_config(0)
+        .expect("EQ band configuration should remain available")
+        .gain_db;
     assert_eq!(gain, 6.0);
     assert!(!processor.is_running());
 }

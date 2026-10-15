@@ -2090,51 +2090,6 @@ impl PyAudioProcessor {
         self.processor.is_eq_enabled()
     }
 
-    fn set_eq_band_gain(&self, band: usize, gain_db: f64) -> PyResult<()> {
-        self.processor
-            .set_eq_band_gain(band, gain_db)
-            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
-    }
-
-    fn set_eq_band_frequency(&self, band: usize, frequency: f64) -> PyResult<()> {
-        self.processor
-            .set_eq_band_frequency(band, frequency)
-            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
-    }
-
-    fn set_eq_band_q(&self, band: usize, q: f64) -> PyResult<()> {
-        self.processor
-            .set_eq_band_q(band, q)
-            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
-    }
-
-    fn set_eq_band_filter_type(&self, band: usize, filter_type: &str) -> PyResult<()> {
-        let parsed = EqFilterType::from_name(filter_type).ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "unsupported EQ filter type: {filter_type}"
-            ))
-        })?;
-        self.processor
-            .set_eq_band_filter_type(band, parsed)
-            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
-    }
-
-    fn set_eq_band_slope(&self, band: usize, slope_db_per_octave: u8) -> PyResult<()> {
-        self.processor
-            .set_eq_band_slope(band, slope_db_per_octave)
-            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
-    }
-
-    fn set_eq_band_enabled(&self, band: usize, enabled: bool) -> PyResult<()> {
-        self.processor
-            .set_eq_band_enabled(band, enabled)
-            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
-    }
-
-    fn get_eq_band_params(&self, band: usize) -> Option<(f64, f64, f64)> {
-        self.processor.get_eq_band_params(band)
-    }
-
     fn get_eq_band_config(&self, band: usize) -> Option<(String, f64, f64, f64, u8, bool)> {
         self.processor.get_eq_band_config(band).map(|config| {
             (
@@ -2146,17 +2101,6 @@ impl PyAudioProcessor {
                 config.enabled,
             )
         })
-    }
-
-    /// Apply EQ settings for all 10 bands in a single atomic call
-    ///
-    /// Args:
-    ///     bands: List of (frequency_hz, gain_db, q) tuples for each band (must be 10)
-    ///
-    /// Raises:
-    ///     ValueError: If band count is not 10 or parameters are out of range
-    fn apply_eq_settings(&self, bands: Vec<(f64, f64, f64)>) -> PyResult<()> {
-        self.processor.apply_eq_settings(bands)
     }
 
     /// Apply complete typed EQ settings for all 10 bands.

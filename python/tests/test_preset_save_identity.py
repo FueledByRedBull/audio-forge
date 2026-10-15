@@ -259,7 +259,7 @@ def test_preset_strength_round_trip_matches_live_processor(qapp, monkeypatch, tm
         assert restored.rnnoise.strength == pytest.approx(strength)
         window._apply_preset(restored)
         assert window.processor.get_rnnoise_strength() == pytest.approx(strength)
-        assert window.current_preset_modified is False
+        assert window.preset_modified is False
 
         edited_value = (int(strength_control.value) + 1) % 101
         strength_control.setValue(float(edited_value))

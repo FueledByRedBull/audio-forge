@@ -51,7 +51,7 @@ from mic_eq.config import (
     InputDevicePreference,
     LimiterSettings,
     Preset,
-    build_latency_profile_key,
+    build_device_route_key,
     legacy_latency_profile_key,
 )
 
@@ -1373,7 +1373,7 @@ def test_route_preset_binding_applies_only_to_exact_stable_route(window):
     )
     window.input_choice.addItem("Mic", input_identity)
     window.output_choice.addItem("Cable", output_identity)
-    route_key = build_latency_profile_key(input_identity, output_identity)
+    route_key = build_device_route_key(input_identity, output_identity)
     window.config = AppConfig(
         device_preset_bindings={route_key: DevicePresetBinding("builtin:broadcast")}
     )
@@ -1654,7 +1654,7 @@ def test_latency_profile_key_uses_structured_device_identity(window):
     window.output_choice.addItem("Out B", DeviceIdentity(name="Out B", is_default=False))
     key = window._latency_profile_key()
 
-    assert key == build_latency_profile_key(
+    assert key == build_device_route_key(
         DeviceIdentity(name="Mic A", is_default=True),
         DeviceIdentity(name="Out B", is_default=False),
     )

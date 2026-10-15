@@ -53,11 +53,6 @@ impl AudioProcessor {
         self.gate_dirty.store(true, Ordering::Release);
     }
 
-    /// Check if gate is enabled
-    pub fn is_gate_enabled(&self) -> bool {
-        self.gate_enabled.load(Ordering::Acquire)
-    }
-
     /// Number of rapid gate open/close chatter events since processing start.
     pub fn get_gate_chatter_event_count(&self) -> u64 {
         self.gate_chatter_event_count.load(Ordering::Relaxed)
@@ -187,15 +182,6 @@ impl AudioProcessor {
     /// Get current noise floor estimate (in dB)
     pub fn get_noise_floor(&self) -> f32 {
         f32::from_bits(self.gate_noise_floor_db.load(Ordering::Relaxed))
-    }
-
-    #[cfg(feature = "vad")]
-    /// Get current gate margin (in dB)
-    pub fn gate_margin(&self) -> f32 {
-        self.gate_control
-            .lock()
-            .map(|control| control.margin_db)
-            .unwrap_or(10.0)
     }
 
     #[cfg(feature = "vad")]

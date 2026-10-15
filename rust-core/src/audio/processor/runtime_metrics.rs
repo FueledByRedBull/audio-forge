@@ -100,24 +100,7 @@ impl AudioProcessor {
             .store(compensation_us, Ordering::Relaxed);
     }
 
-    /// Get configured latency compensation in milliseconds.
-    pub fn get_latency_compensation_ms(&self) -> f32 {
-        let compensation_us = self.latency_compensation_us.load(Ordering::Relaxed);
-        compensation_us as f32 / 1000.0
-    }
-
     // === DSP Performance Metrics ===
-
-    /// Get DSP processing time in milliseconds
-    pub fn get_dsp_time_ms(&self) -> f32 {
-        let us = self.dsp_time_us.load(Ordering::Relaxed);
-        us as f32 / 1000.0
-    }
-
-    /// Get input buffer fill level in samples
-    pub fn get_input_buffer_samples(&self) -> u32 {
-        self.input_buffer_len.load(Ordering::Relaxed)
-    }
 
     /// Get smoothed input buffer fill level in samples
     pub fn get_input_buffer_smoothed_samples(&self) -> u32 {
@@ -144,11 +127,6 @@ impl AudioProcessor {
         self.input_fixed_buffer_frames.load(Ordering::Relaxed)
     }
 
-    /// Get noise suppressor buffer fill level in samples
-    pub fn get_rnnoise_buffer_samples(&self) -> u32 {
-        self.suppressor_buffer_len.load(Ordering::Relaxed)
-    }
-
     // === Dropped Sample Tracking ===
 
     /// Get dropped sample count (samples lost due to buffer overflow)
@@ -167,11 +145,6 @@ impl AudioProcessor {
     /// Get total real-time lock contention events.
     pub fn get_lock_contention_count(&self) -> u64 {
         self.lock_contention_count.load(Ordering::Relaxed)
-    }
-
-    /// Reset lock contention counter.
-    pub fn reset_lock_contention_count(&self) {
-        self.lock_contention_count.store(0, Ordering::Relaxed);
     }
 
     pub fn get_suppressor_non_finite_count(&self) -> u64 {
@@ -248,11 +221,6 @@ impl AudioProcessor {
     /// Number of true output recovery events.
     pub fn get_output_recovery_event_count(&self) -> u64 {
         self.output_recovery_event_count.load(Ordering::Relaxed)
-    }
-
-    /// Backward-compatible alias for true output recovery events.
-    pub fn get_output_recovery_count(&self) -> u64 {
-        self.get_output_recovery_event_count()
     }
 
     pub fn get_dsp_idle_wakeup_count(&self) -> u64 {

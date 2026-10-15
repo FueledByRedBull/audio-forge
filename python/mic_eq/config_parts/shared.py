@@ -295,14 +295,6 @@ def build_device_route_key(
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
-def build_latency_profile_key(
-    input_device: DeviceIdentity | None,
-    output_device: DeviceIdentity | None,
-) -> str:
-    """Build a deterministic latency key without transient default-route state."""
-    return build_device_route_key(input_device, output_device)
-
-
 def parse_latency_profile_key(
     key: str,
 ) -> tuple[DeviceIdentity | None, DeviceIdentity | None] | None:
@@ -363,7 +355,6 @@ __all__ = [
     "PresetValidationError",
     "_reject_json_constant",
     "_version_tuple",
-    "build_latency_profile_key",
     "build_device_route_key",
     "coerce_device_identity",
     "get_config_file",

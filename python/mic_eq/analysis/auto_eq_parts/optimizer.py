@@ -6,7 +6,6 @@ from typing import Any, cast
 import numpy as np
 
 from .constants import (
-    CROSS_TAKE_ABSTENTION_CONFIDENCE_THRESHOLD,
     GAIN_MAX_DB,
     GAIN_MIN_DB,
     GLOBAL_CAPTURE_CONFIDENCE_THRESHOLD,
@@ -33,7 +32,6 @@ from .dynamic_bands import (
     _center_bounds,
     _estimate_band_snr_db,
     _q_bounds,
-    _remove_spectral_tilt,
     _select_dynamic_band_layout,
     _snr_aware_gain_upper_bounds,
     _snr_weight_scale_dense,
@@ -464,23 +462,16 @@ def _build_fit_context(
     voice_avg = _log_frequency_mean(freqs, measured)
     measured_normalized = measured - voice_avg
     policy = str(tilt_policy or "voice_safe").strip().lower()
-    if policy not in {"preserve", "detrend", "voice_safe"}:
+    if policy not in {"preserve", "voice_safe"}:
         raise ValueError(f"Unknown spectral tilt policy: {policy}")
 
     _tilt_component, tilt_slope, tilt_fit_r2 = _spectral_tilt_fit(
         freqs,
         measured_normalized,
     )
-    if policy == "detrend":
-        measured_for_fit, tilt_slope = _remove_spectral_tilt(
-            freqs,
-            measured_normalized,
-        )
-    else:
-        measured_for_fit = measured_normalized
 
     dense_freqs = _build_dense_log_grid(freqs)
-    measured_dense_db = np.interp(dense_freqs, freqs, measured_for_fit)
+    measured_dense_db = np.interp(dense_freqs, freqs, measured_normalized)
     target_dense_db = np.interp(dense_freqs, freqs, target)
     if policy == "voice_safe":
         # A speech recording is not an independent microphone transfer
@@ -624,7 +615,6 @@ def calculate_eq_bands(
     *,
     spectral_repeatability=None,
     spectral_uncertainty_db=None,
-    cross_take_confidence=None,
     phonetic_coverage=None,
     voiced_window_ratio=1.0,
     analysis_confidence=None,
@@ -652,9 +642,8 @@ def calculate_eq_bands(
         freqs: Frequency array (Hz)
         measured_db: Measured spectrum in dBFS (dB relative to full scale)
         target_db: Target curve in dB (relative adjustments)
-        tilt_policy: 'preserve' for explicit mic-shape correction,
-            'detrend' for the legacy broad-tilt experiment, or 'voice_safe'
-            for the reference-free production tone path.
+        tilt_policy: 'preserve' for explicit mic-shape correction, or
+            'voice_safe' for the reference-free production tone path.
 
     Returns:
         eq_settings: Dict with 'band_gains' and 'band_qs' (10-element lists)
@@ -802,20 +791,6 @@ def calculate_eq_bands(
             freqs,
             repeatability_arr,
         )
-    cross_take_dense = None
-    if cross_take_confidence is not None:
-        cross_take_arr = np.asarray(cross_take_confidence, dtype=float)
-        if cross_take_arr.shape != np.asarray(freqs).shape or not np.all(
-            np.isfinite(cross_take_arr)
-        ):
-            raise ValueError(
-                "cross-take confidence must be finite and match the frequency grid"
-            )
-        cross_take_dense = np.interp(
-            dense_freqs,
-            freqs,
-            np.clip(cross_take_arr, 0.0, 1.0),
-        )
     spectral_snr_dense = None
     if spectral_snr_db is not None:
         spectral_snr_arr = np.asarray(spectral_snr_db, dtype=float)
@@ -848,7 +823,6 @@ def calculate_eq_bands(
     measurement_metadata_available = bool(
         spectral_repeatability is not None
         or spectral_uncertainty_db is not None
-        or cross_take_dense is not None
         or analysis_confidence is not None
         or phonetic_coverage is not None
     )
@@ -905,32 +879,6 @@ def calculate_eq_bands(
         dynamic_gain_upper = np.minimum(
             dynamic_gain_upper,
             UNKNOWN_EVIDENCE_MAX_BOOST_DB,
-        )
-    band_cross_take_confidence: np.ndarray | None = None
-    cross_take_feasibility_scale: np.ndarray | None = None
-    if cross_take_dense is not None:
-        band_cross_take_confidence = np.interp(
-            base_centers_hz,
-            dense_freqs,
-            cross_take_dense,
-        )
-        # Cross-take evidence is applied exactly once: it defines symmetric
-        # feasible gain bounds before either solve. Confidence at or below the
-        # abstention threshold leaves less than 0.25 dB available, so the
-        # normal inactive-band projection subsequently fixes that band at zero.
-        cross_take_feasibility_scale = np.clip(
-            (band_cross_take_confidence - CROSS_TAKE_ABSTENTION_CONFIDENCE_THRESHOLD)
-            / (1.0 - CROSS_TAKE_ABSTENTION_CONFIDENCE_THRESHOLD),
-            0.02,
-            1.0,
-        )
-        dynamic_gain_upper = np.minimum(
-            dynamic_gain_upper,
-            GAIN_MAX_DB * cross_take_feasibility_scale,
-        )
-        dynamic_gain_lower = np.maximum(
-            dynamic_gain_lower,
-            GAIN_MIN_DB * cross_take_feasibility_scale,
         )
     weights = _voice_weights(dense_freqs)
     if snr_available:
@@ -1248,22 +1196,6 @@ def calculate_eq_bands(
         "q_upper_bounds": q_high.tolist(),
         "local_abstained_band_indices": np.flatnonzero(local_abstention_mask).tolist(),
         "spectral_uncertainty_available": bool(spectral_uncertainty_db is not None),
-        "cross_take_confidence_available": bool(band_cross_take_confidence is not None),
-        "cross_take_band_confidences": (
-            band_cross_take_confidence.tolist()
-            if band_cross_take_confidence is not None
-            else None
-        ),
-        "cross_take_gain_feasibility_scale": (
-            cross_take_feasibility_scale.tolist()
-            if cross_take_feasibility_scale is not None
-            else None
-        ),
-        "cross_take_abstention_threshold": (
-            CROSS_TAKE_ABSTENTION_CONFIDENCE_THRESHOLD
-            if band_cross_take_confidence is not None
-            else None
-        ),
         "phonetic_coverage": (
             float(np.clip(phonetic_coverage, 0.0, 1.0))
             if phonetic_coverage is not None

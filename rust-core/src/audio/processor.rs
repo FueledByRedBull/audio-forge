@@ -32,8 +32,8 @@ use super::rt::{store_rt_error, FixedAudioBuffer, RtCommandQueue, RtErrorCode};
 use super::scheduling::ProAudioThread;
 use crate::dsp::biquad::{Biquad, BiquadType};
 use crate::dsp::eq::{
-    validate_eq_frequency_hz, validate_eq_gain_db, validate_eq_q, validate_eq_slope, EqBandConfig,
-    EqFilterType, NUM_BANDS,
+    validate_eq_frequency_hz, validate_eq_gain_db, validate_eq_q, EqBandConfig, EqFilterType,
+    NUM_BANDS,
 };
 use crate::dsp::noise_suppressor::{
     new_controlled_noise_suppression_engine as new_noise_suppression_engine,
@@ -519,23 +519,6 @@ impl AudioProcessor {
             return Err(format!("Band {} out of range [0, {})", band, NUM_BANDS));
         }
         Ok(())
-    }
-
-    fn validate_eq_frequency(&self, band: usize, frequency: f64) -> Result<(), String> {
-        validate_eq_frequency_hz(frequency, self.sample_rate as f64)
-            .map_err(|message| format!("Band {band}: {message}"))
-    }
-
-    fn validate_eq_gain(&self, band: usize, gain_db: f64) -> Result<(), String> {
-        validate_eq_gain_db(gain_db).map_err(|message| format!("Band {band}: {message}"))
-    }
-
-    fn validate_eq_q(&self, band: usize, q: f64) -> Result<(), String> {
-        validate_eq_q(q).map_err(|message| format!("Band {band}: {message}"))
-    }
-
-    fn validate_eq_slope(&self, band: usize, slope_db_per_octave: u8) -> Result<(), String> {
-        validate_eq_slope(slope_db_per_octave).map_err(|message| format!("Band {band}: {message}"))
     }
 
     fn validate_eq_band_config(&self, band: usize, config: EqBandConfig) -> Result<(), String> {

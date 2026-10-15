@@ -101,6 +101,7 @@ from .level_check import (
 )
 from .level_meter import LevelMeter, MeterWidget
 from .setup_messages import (
+    capture_issue_codes,
     capture_issue_lines,
     numbers_from,
     other_reasons,
@@ -1592,7 +1593,10 @@ class VoiceSetupDialog(QDialog):
         elif advisory:
             self._report(
                 "advisory",
-                [reason_code(str(reason)) for reason in diagnostics.get("uncertainty_reasons") or ()]
+                [
+                    *(reason_code(str(reason)) for reason in diagnostics.get("uncertainty_reasons") or ()),
+                    *capture_issue_codes(diagnostics),
+                ]
                 or ["weak_capture"],
                 [self.warning_label.text()],
             )

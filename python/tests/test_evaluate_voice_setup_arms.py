@@ -21,6 +21,7 @@ from tools import evaluate_voice_setup_arms as ev
 
 refusals, loudness, gate_corpus = ev.refusals, ev.loudness, ev.gate_corpus
 RATE = ev.SAMPLE_RATE
+SIBILANT_FLAG = "current: a sibilant loss above 3 dB for a factory user"
 OK = {"estoi": 0.5, "tone_error_db": 2.0, "sibilant_loss_db": 1.0, "deep_pause_db": -10.0, "tail_db": -8.0,
       "onset_db": -1.0, "pause_db": -9.0, "clipped": False, "limiter_gain_reduction_db": 0.5,
       "true_peak_limiter_gain_reduction_db": 0.1}
@@ -437,6 +438,85 @@ def test_a_veto_asks_for_the_next_segment_and_three_failures_are_a_capture_refus
     assert np.array_equal(built["setup"], device[first * ev.FRAME : (first + 1000) * ev.FRAME].astype(np.float32))
 
 
+def _too_hot(seconds: float = 120.0):
+    """The synthetic pair with the device take normalised near full scale, as the DAPS device files are."""
+    clean, device = _signals(seconds=seconds)
+    return clean, device * (0.95 / np.max(np.abs(device)))
+
+
+def _first_take(device, readings):
+    start = readings["takes"][0]["setup"] * ev.FRAME
+    return device[start : start + 10 * RATE].astype(np.float32)
+
+
+def test_a_too_hot_recording_is_scaled_so_the_level_checks_peak_reading_is_minus_six_db():
+    from mic_eq.ui.level_check import TARGET_PEAK_DB, verdict_from_audio
+
+    clean, device = _too_hot()
+    built = ev.construct(clean, device, ev.speech_labels(clean), lambda noise, voice: (None, None))
+    level = built["readings"]["level"]
+    raw = verdict_from_audio(_first_take(device, built["readings"]), RATE)
+    assert raw.code == "too_hot" and level["before"] == "too_hot" and raw.peak_db is not None
+    assert level["gain_db"] < 0 and level["after"] == verdict_from_audio(built["setup"], RATE).code != "too_hot"
+    assert verdict_from_audio(built["setup"], RATE).peak_db == pytest.approx(TARGET_PEAK_DB, abs=1e-3)
+    assert raw.peak_db + level["gain_db"] == pytest.approx(TARGET_PEAK_DB, abs=1e-3)
+
+
+def test_the_rows_level_check_is_the_verdict_of_the_recording_before_scaling(monkeypatch, tmp_path):
+    (tmp_path / "MANIFEST.json").write_text("{}", encoding="utf-8")
+    clean, device = _too_hot()
+    monkeypatch.setattr(ev, "check_corpus", lambda *args: None)
+    monkeypatch.setattr(ev, "read_take", lambda root, speaker, version: clean if version == "clean" else device)
+    monkeypatch.setattr(ev, "build_id", lambda root: "test")
+    monkeypatch.setattr("mic_eq.ui.calibration_support.filtered_capture_for_analysis", lambda audio, sample_rate: audio)
+    row, env = ev.prepare((str(tmp_path), "main", 0, "ipadflat_confroom1"), development=True)
+    level = row["construction"]["level"]
+    assert env is not None and level["before"] == "too_hot" and level["after"] != "too_hot"
+    assert row["level_check"] == "too_hot"
+
+
+def test_a_recording_that_is_not_too_hot_is_used_as_recorded():
+    clean, device = _signals(seconds=120.0)
+    built = ev.construct(clean, device, ev.speech_labels(clean), lambda noise, voice: (None, None))
+    level = built["readings"]["level"]
+    assert level["before"] == level["after"] != "too_hot" and level["gain_db"] == 0
+    assert np.array_equal(built["setup"], _first_take(device, built["readings"]))
+
+
+def test_one_gain_scales_every_capture_of_the_user():
+    clean, device = _too_hot()
+    speech = ev.speech_labels(clean)
+    built = ev.construct(clean, device, speech, lambda noise, voice: (None, None))
+    readings = built["readings"]
+    gain = 10 ** (readings["level"]["gain_db"] / 20)
+    start = round(readings["evaluation_start_s"] * 100) * ev.FRAME
+    evaluation = device[start + readings["lag"] : start + readings["lag"] + built["evaluation"].size]
+    noise = ev.noise_audio(device, ev.noise_candidates(speech)[readings["takes"][0]["noise"]])
+    assert gain < 1
+    assert np.allclose(built["noise"], noise * gain, atol=1e-6)
+    assert np.allclose(built["setup"], _first_take(device, readings) * gain, atol=1e-6)
+    assert np.allclose(built["evaluation"], evaluation * gain, atol=1e-6)
+    assert np.array_equal(built["clean"], clean[start : start + built["clean"].size])  # the clean take is not scaled
+
+
+def test_a_too_hot_take_that_trips_only_the_clip_run_rule_is_not_refused_at_capture_after_scaling():
+    from mic_eq.analysis.voice_setup import raw_capture_is_clipped
+
+    clean, device = _too_hot()
+    speech = ev.speech_labels(clean)
+    first = ev.setup_starts(speech, ev.noise_candidates(speech)[0]["end"])[0] * ev.FRAME
+    device[first + 5 * RATE : first + 5 * RATE + 8] = 1.0  # a flat top of 8 samples at full scale
+    clipped = lambda noise, voice: (None, "voice_clipped" if raw_capture_is_clipped(voice, RATE) else None)  # noqa: E731
+    assert clipped(None, device[first : first + 10 * RATE].astype(np.float32))[1] == "voice_clipped"
+    built = ev.construct(clean, device, speech, clipped)
+    assert not built["A"] and [t["vetoes"] for t in built["readings"]["takes"]] == [[]]
+    assert built["readings"]["level"]["before"] == "too_hot" and built["readings"]["level"]["gain_db"] < 0
+
+
+def test_the_tuner_runtime_gate_is_lifted_in_every_arm():
+    assert ev.UNBOUNDED_TUNER_RUNTIME is True
+
+
 def test_a_recording_without_an_aligned_evaluation_window_is_excluded():
     clean, device = _signals(seconds=120.0)
     other = _signals(seconds=120.0, seed=9)[1]
@@ -615,8 +695,10 @@ def test_r_needs_the_deep_pause_share_thirty_users_and_fewer_sibilant_losses():
         assert _gate(inputs, "R", "BEN-R2", contrast)["pass"]
         inputs["sibilant"][on][0] = ev.SIBILANT_LOSS_DB + 0.01
         assert not _gate(inputs, "R", "BEN-R2", contrast)["pass"]  # equal is not fewer
-        inputs["sibilant"][on][0] = ev.SIBILANT_LOSS_DB  # exactly 6.0 dB is not more than 6.0 dB
+        inputs["sibilant"][on][0] = ev.SIBILANT_LOSS_DB  # exactly 3.0 dB is not more than 3.0 dB
         assert _gate(inputs, "R", "BEN-R2", contrast)["pass"]
+        inputs["sibilant"][on][0] = 4.0  # 4 dB is over the 3.0 dB tolerance (it was under the old 6.0)
+        assert not _gate(inputs, "R", "BEN-R2", contrast)["pass"]
 
 
 def test_the_decision_table_for_zero_one_and_two_failed_changes():
@@ -819,6 +901,7 @@ def test_defaults_are_the_new_files_never_a_historical_report():
 def test_the_tuner_runtime_gate_is_lifted_only_when_the_constant_says_so(monkeypatch):
     from mic_eq.analysis import joint_tuning
 
+    monkeypatch.setattr(ev, "UNBOUNDED_TUNER_RUNTIME", False)
     with ev.tuner_runtime():
         assert joint_tuning._MAX_RUNTIME_FACTOR == 1.0
     monkeypatch.setattr(ev, "UNBOUNDED_TUNER_RUNTIME", True)
@@ -830,8 +913,8 @@ def test_the_tuner_runtime_gate_is_lifted_only_when_the_constant_says_so(monkeyp
 def test_the_fabricated_world_reachability_and_probe_arithmetic():
     rows = ev.fabricated_rows()
     flags = ev.reachability(rows)
-    assert all(value for key, value in flags.items() if key != "current: a sibilant loss above 6 dB for a factory user")
-    assert not flags["current: a sibilant loss above 6 dB for a factory user"]
+    assert all(value for key, value in flags.items() if key != SIBILANT_FLAG)
+    assert not flags[SIBILANT_FLAG]
     assert ev.tuner_runtime_factors(rows) == []
 
 
@@ -853,7 +936,7 @@ def test_reachability_flags_guard_the_gates_they_stand_for():
             row["arms"]["current"]["metrics"]["E"] = {"whole": {**OK, "deep_pause_db": None}}
         assert ev.reachability(rows)[deep] is expected
     rows, factory = world()
-    sibilant = "current: a sibilant loss above 6 dB for a factory user"
+    sibilant = SIBILANT_FLAG
     existing = next(r for r in rows if r["condition"] == "existing")
     existing["arms"]["current"]["metrics"]["E"] = {"whole": {**OK, "sibilant_loss_db": 9.0}}
     assert not ev.reachability(rows)[sibilant]  # R2 counts factory users only

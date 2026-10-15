@@ -2744,7 +2744,7 @@ class VoiceSetupDialog(QDialog):
         advice = result.get("suppressor_dulling_advice")
         advice_suffix = f" {plain_advice(advice)}" if advice else ""
         metrics_text = verification_summary(result, tone_withheld=self._tone_withheld())
-        parent =_find_eq_state_owner(self.parent())
+        parent = _find_eq_state_owner(self.parent())
         if parent is None:
             self._on_verification_failed(plain_error("Could not find audio processor"))
             return

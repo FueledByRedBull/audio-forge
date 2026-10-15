@@ -1489,6 +1489,7 @@ def test_the_verified_message_does_not_claim_the_tone_changed(real_main_window, 
         dialog.reject()
         dialog.deleteLater()
 
+
 def test_a_verification_reduction_refreshes_the_compressor_line_and_keeps_its_before(
     real_main_window, monkeypatch
 ) -> None:

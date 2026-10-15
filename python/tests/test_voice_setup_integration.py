@@ -1284,7 +1284,7 @@ def test_the_comparison_and_tone_line_do_not_switch_the_eq_on_after_an_abstentio
         dialog._compare_recording()
 
         assert shown["proposed_settings"] == eq_before
-        assert "switch it on" not in dialog.eq_label.text()
+        assert dialog.eq_label.text() == "Tone: kept as it is"
     finally:
         dialog.reject()
         dialog.deleteLater()

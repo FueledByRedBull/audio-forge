@@ -1764,12 +1764,16 @@ class VoiceSetupDialog(QDialog):
             def describe_eq(settings: Mapping[str, Any]) -> str:
                 return f"max correction {_correction_depth_db(settings):.1f} dB"
 
-            tone_text = "Tone: " + self._review_text(
-                describe_eq(eq_settings),
-                eq_settings,
-                "eq_state",
-                describe_eq,
-                _correction_layer,
+            tone_text = "Tone: " + (
+                self._review_text(
+                    describe_eq(eq_settings),
+                    eq_settings,
+                    "eq_state",
+                    describe_eq,
+                    _correction_layer,
+                )
+                if eq_settings.get("apply_recommended", True)
+                else "kept as it is"
             )
             before_eq = self._review_current.get("eq_state", {})
             if (

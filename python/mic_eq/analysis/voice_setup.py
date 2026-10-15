@@ -75,6 +75,13 @@ _DULLING_FRAME, _DULLING_HOP = 1024, 512
 # Qualified on held-out simulated users in
 # evaluation/voice-setup-verification-tonal-check-2026-10-report.json.
 TONAL_CHECK_BYPASSES_SUPPRESSOR = True
+# The tonal check above weighs every bin of 80-12000 Hz alike, so the 79 bins below 1 kHz
+# carry under 8 % of it and a low-frequency error hardly moves it. With this on, verification
+# adds a second reading that weighs every third-octave band alike and rolls back for target
+# error by the same 1.0 dB margin; it can only add rollbacks. Off until a held-out
+# evaluation adopts it.
+TONAL_CHECK_COUNTS_EVERY_BAND = False
+_TONAL_BAND_EDGES_HZ = 80.0 * 2.0 ** (np.arange(23) / 3.0)
 # A raw capture is clipped when it holds full scale for CLIP_FLAT_TOP_S, or recurs
 # at it more than CLIP_MAX_EVENTS times. On 12 real-speech takes the takes it
 # accepts were hard-clipped by at most 0.5 dB, with a clipping error of -51.5 dB or
@@ -1580,8 +1587,12 @@ def _shape_error_db(
     target_preset: str,
     *,
     reference_db: np.ndarray | None = None,
+    by_band: bool = False,
 ) -> float:
-    """Return voice-band error for a house curve or a voice-safe tone delta."""
+    """Return voice-band error for a house curve or a voice-safe tone delta.
+
+    ``by_band`` takes the root of the mean square per third-octave band, not per bin.
+    """
     from .auto_eq_parts.target import get_target_curve
 
     mask = (measured_freqs >= 80.0) & (measured_freqs <= 12_000.0)
@@ -1605,12 +1616,22 @@ def _shape_error_db(
     if reference_db is None:
         measured -= float(np.median(measured))
         target -= float(np.median(target))
-        return float(np.sqrt(np.mean(np.square(measured - target))))
+        return _error_rms(measured - target, freqs, by_band)
 
     measured_delta = measured - reference
     measured_delta -= float(np.median(measured_delta))
     target -= float(np.median(target))
-    return float(np.sqrt(np.mean(np.square(measured_delta - target))))
+    return _error_rms(measured_delta - target, freqs, by_band)
+
+
+def _error_rms(error: np.ndarray, freqs: np.ndarray, by_band: bool) -> float:
+    square = np.square(error)
+    if not by_band:
+        return float(np.sqrt(np.mean(square)))
+    band = np.searchsorted(_TONAL_BAND_EDGES_HZ, freqs, side="right") - 1
+    counts = np.bincount(band, minlength=_TONAL_BAND_EDGES_HZ.size)
+    sums = np.bincount(band, weights=square, minlength=_TONAL_BAND_EDGES_HZ.size)
+    return float(np.sqrt(np.mean(sums[counts > 0] / counts[counts > 0])))
 
 
 def _verification_outcome(
@@ -1891,6 +1912,23 @@ def validate_voice_setup_verification(
         target_preset,
         reference_db=before_spectrum.median_spectrum_db,
     )
+    band_before = band_after = 0.0
+    band_details: dict[str, float] = {}
+    if TONAL_CHECK_COUNTS_EVERY_BAND:
+        band_before, band_after = (
+            _shape_error_db(
+                spectrum.freqs,
+                spectrum.median_spectrum_db,
+                target_preset,
+                reference_db=before_spectrum.median_spectrum_db,
+                by_band=True,
+            )
+            for spectrum in (before_spectrum, tone_spectrum)
+        )
+        band_details = {
+            "tone_band_error_before_db": band_before,
+            "tone_band_error_after_db": band_after,
+        }
     original_shape = np.interp(
         before_spectrum.freqs,
         original_spectrum.freqs,
@@ -2013,6 +2051,12 @@ def validate_voice_setup_verification(
             safety_codes.append("target_error")
             safety_reasons.append(
                 f"target error worsened from {before_error:.1f} to {after_error:.1f} dB"
+            )
+        elif TONAL_CHECK_COUNTS_EVERY_BAND and band_after > band_before + 1.0:
+            safety_codes.append("target_error")
+            safety_reasons.append(
+                "tone error per third-octave band worsened from "
+                f"{band_before:.1f} to {band_after:.1f} dB"
             )
         if relative_noise_change_db > 4.0:
             safety_codes.append("noise_safety_limit")
@@ -2161,6 +2205,7 @@ def validate_voice_setup_verification(
         "clipped": bool(np.max(np.abs(rendered)) >= 1.0),
         "simulation_backend": processed.get("simulation_backend"),
         **dulling_details,
+        **band_details,
     }
 
 

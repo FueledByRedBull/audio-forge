@@ -76,9 +76,9 @@ device audio.
   ``level_check.TARGET_PEAK_DB`` (-6 dB). The capture vetoes and retakes below run on the scaled recording, and every
   capture of the user (noise, voice, evaluation, verification takes) comes from it; the clean take is not scaled. A
   take that still trips the clip rule after scaling carries clipping no gain change undoes, and is refused at capture as
-  before. Any other verdict: levels as recorded. Each recording records the verdict of the first take before scaling,
-  the gain in dB (0 if none) and the verdict of the chosen voice capture after. The scaling is part of construction, so
-  it is identical in every arm.
+  before. Any other verdict: levels as recorded. Each recording records the verdict of the first take before scaling
+  (the row's ``level_check``), the gain in dB (0 if none) and the verdict of the chosen voice capture after. The
+  scaling is part of construction, so it is identical in every arm.
   Capture vetoes now reachable: before analysis the dialog's checks are emulated: ``raw_capture_is_clipped`` on the noise
   and voice takes, ``analyze_noise_reference(noise, None).must_recapture`` and ``capture_is_silent(voice)``. A veto asks
   for the next noise segment (after a noise veto) or the next setup window, up to 3 takes; if all fail the user is refused
@@ -791,7 +791,6 @@ def injected(key: str, product: dict[str, Any], env: dict[str, Any]) -> dict[str
 def prepare(job: tuple[str, str, int, str], *, development: bool) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """The row of a user-condition up to its construction, and what the analyses need (None when it is excluded)."""
     from mic_eq.ui.calibration_support import filtered_capture_for_analysis
-    from mic_eq.ui.level_check import verdict_from_audio
 
     root_text, condition, k, version = job
     root, speaker = Path(root_text), SPEAKERS[k]
@@ -816,7 +815,7 @@ def prepare(job: tuple[str, str, int, str], *, development: bool) -> tuple[dict[
                 "noisy": filtered(raw_evaluation).astype(np.float64), "noise": filtered(raw_noise).astype(np.float64)}}
     env["captures"] = {"noise": env["noise"], "setup": env["setup"], "raw_noise": raw_noise,
                        "takes": [(filtered(window), window) for window in refusals.take_windows(raw_evaluation, raw_setup.size)]}
-    row |= {"construction": built["readings"], "level_check": verdict_from_audio(raw_setup, SAMPLE_RATE).code,
+    row |= {"construction": built["readings"], "level_check": built["readings"]["level"]["before"],
             "tone_entry": (k + ALL_VERSIONS.index(version)) % len(TONE_LIBRARY) if existing else None}
     return row, env
 

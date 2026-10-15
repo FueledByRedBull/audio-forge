@@ -461,6 +461,19 @@ def test_a_too_hot_recording_is_scaled_so_the_level_checks_peak_reading_is_minus
     assert raw.peak_db + level["gain_db"] == pytest.approx(TARGET_PEAK_DB, abs=1e-3)
 
 
+def test_the_rows_level_check_is_the_verdict_of_the_recording_before_scaling(monkeypatch, tmp_path):
+    (tmp_path / "MANIFEST.json").write_text("{}", encoding="utf-8")
+    clean, device = _too_hot()
+    monkeypatch.setattr(ev, "check_corpus", lambda *args: None)
+    monkeypatch.setattr(ev, "read_take", lambda root, speaker, version: clean if version == "clean" else device)
+    monkeypatch.setattr(ev, "build_id", lambda root: "test")
+    monkeypatch.setattr("mic_eq.ui.calibration_support.filtered_capture_for_analysis", lambda audio, sample_rate: audio)
+    row, env = ev.prepare((str(tmp_path), "main", 0, "ipadflat_confroom1"), development=True)
+    level = row["construction"]["level"]
+    assert env is not None and level["before"] == "too_hot" and level["after"] != "too_hot"
+    assert row["level_check"] == "too_hot"
+
+
 def test_a_recording_that_is_not_too_hot_is_used_as_recorded():
     clean, device = _signals(seconds=120.0)
     built = ev.construct(clean, device, ev.speech_labels(clean), lambda noise, voice: (None, None))

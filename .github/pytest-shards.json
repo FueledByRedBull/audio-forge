@@ -1,25 +1,42 @@
 {
   "voice-setup": [
-    "python/tests/test_voice_setup.py"
+    "python/tests/test_voice_setup.py",
+    "python/tests/test_voice_setup_full_chain.py",
+    "python/tests/test_headroom_contract.py"
+  ],
+  "voice-capture": [
+    "python/tests/test_voice_setup_capture_analysis.py"
   ],
   "voice-flow": [
     "python/tests/test_voice_setup_integration.py",
-    "python/tests/test_voice_setup_full_chain.py",
     "python/tests/test_joint_tuning.py",
-    "python/tests/test_ui_sample_rate_and_diagnostics.py"
+    "python/tests/test_preset_save_identity.py"
   ],
   "auto-eq": [
     "python/tests/test_auto_eq.py",
+    "python/tests/test_eq_fit.py",
+    "python/tests/test_spectrum.py",
+    "python/tests/test_native_regressions.py",
+    "python/tests/test_input_level_first.py",
+    "python/tests/test_eq_editing_state.py"
+  ],
+  "refusals": [
     "python/tests/test_evaluate_voice_setup_refusals.py",
-    "python/tests/test_eq_fit.py"
+    "python/tests/test_setup_dialog_reports.py",
+    "python/tests/test_ui_sample_rate_and_diagnostics.py"
   ],
   "quick-ui": [
     "python/tests/test_quick_shell.py",
     "python/tests/test_quick_high_dpi.py",
     "python/tests/test_quick_accessibility.py",
     "python/tests/test_quick_layout.py",
-    "python/tests/test_quick_no_renderer.py",
-    "python/tests/test_quick_software_rendering.py",
+    "python/tests/test_quick_software_rendering.py"
+  ],
+  "evaluation": [
+    "python/tests/test_evaluate_voice_setup_arms.py",
+    "python/tests/test_evaluation_hygiene.py",
+    "python/tests/test_evaluation_hygiene_revision.py",
+    "python/tests/test_login_startup_ui.py",
     "python/tests/test_quick_error_screen.py",
     "python/tests/test_quick_undo.py"
   ],
@@ -27,10 +44,6 @@
     "python/tests/test_package_tools.py",
     "python/tests/test_dev_script.py",
     "python/tests/test_promotion_behavior.py",
-    "python/tests/test_source_distribution.py",
-    "python/tests/test_evaluation_hygiene.py",
-    "python/tests/test_evaluation_hygiene_revision.py",
-    "python/tests/test_deepfilter_build_paths.py",
-    "python/tests/test_release_provenance.py"
+    "python/tests/test_quick_no_renderer.py"
   ]
 }

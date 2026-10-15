@@ -24,7 +24,7 @@ archive, and one `SHA256SUMS.txt`.
      `cargo fmt`) needs no built file and runs beside the packaging job.
    - `package-windows` builds DeepFilter from the pinned source in every run,
      builds the app, and uploads the candidate.
-   - When it finishes, the three pytest shards (`.github/pytest-shards.json`),
+   - When it finishes, the pytest shards (`.github/pytest-shards.json`),
      the Rust tests with Clippy, and the release-mode stress test run on the
      files it produced: the packaged native module, `df.dll`, the models, and
      the CPU ONNX Runtime pass between jobs as a same-run artifact, never the

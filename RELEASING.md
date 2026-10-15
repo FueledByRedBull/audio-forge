@@ -170,10 +170,6 @@ cargo audit
   hand in the SARIF. The rule packs in `semgrep-rulesets.txt` aren't pinned,
   so a new upstream rule can fail CI without a code change: fix the code or
   suppress the finding with its reason.
-- **pip-audit:** the dev-lock audit ignores CVE-2026-59951 because semgrep
-  pins `mcp==1.29.0` and only its MCP server uses it. Remove the ignore when
-  semgrep allows `mcp>=1.30.0`; `check_workflows.py` rejects it once the lock
-  stops pinning 1.29.0.
 - **RustSec:** `cargo audit` must be clean for the application lockfile; never
   add an ignore just to release. The separate
   `build-support/deepfilter/Cargo.lock` graph ignores only three reviewed
@@ -182,8 +178,10 @@ cargo audit
   audit, so a new notice shows up on a pull request, not at release time.
 - **Python:** install `requirements/dev.txt` with `--require-hashes`; never
   release from an environment resolved from open `pyproject.toml` ranges.
-  Neither the runtime nor the development audit has ignores; Semgrep 1.179.0
-  allows a patched PyJWT, so the former PyJWT exception is gone.
+  The runtime audit has no ignores. The development audit ignores only
+  CVE-2026-59951: Semgrep pins `mcp==1.29.0` and only its MCP server uses it.
+  Remove the ignore when Semgrep allows `mcp>=1.30.0`; `check_workflows.py`
+  rejects it once the lock stops pinning 1.29.0.
 - **Dependabot:** GitHub Actions version updates stay on, weekly and grouped
   into one pull request, to keep the pinned actions current. Python and Cargo
   version updates are off (`open-pull-requests-limit: 0`); security updates stay

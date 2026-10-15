@@ -482,11 +482,19 @@ def _check_audit_ignores(
     name: str, document: dict[str, Any], errors: list[str]
 ) -> None:
     """Allow only the pip_audit ignores in AUDIT_IGNORES, and only on the dev lock."""
-    for line in _active_run_lines(document):
+    # PowerShell backtick continuations join into one command line.
+    joined = re.sub(r"`[ \t]*\n\s*", " ", "\n".join(_active_run_lines(document)))
+    for line in joined.splitlines():
         if not _active_run_has_marker([line], "pip_audit --require-hashes"):
             continue
-        ignored = re.findall(r"--ignore-vuln[ =](\S+)", line)
-        if ignored and "requirements/runtime.txt" in line:
+        tokens = [token.strip("\"'") for token in line.split()]
+        ignored = []
+        for position, token in enumerate(tokens):
+            # argparse accepts any prefix of --ignore-vuln from --ig up.
+            flag, equals, value = token.partition("=")
+            if len(flag) >= 4 and "--ignore-vuln".startswith(flag):
+                ignored.append(value if equals else "".join(tokens[position + 1:position + 2]))
+        if ignored and re.search(r"requirements[/\\]runtime\.txt", line):
             errors.append(f"{name}: the runtime lock audit must not ignore {ignored}")
             continue
         for vuln in ignored:

@@ -301,12 +301,10 @@ RUNTIME_AUDIT = "pip_audit --require-hashes -r requirements/runtime.txt --disabl
 MCP_IGNORE = "--ignore-vuln CVE-2026-59951"
 
 
-def _audit_ignore_errors(tmp_path, monkeypatch, audit, flags, dev_lock=None):
+def _audit_ignore_errors(tmp_path, monkeypatch, audit, replacement, dev_lock=None):
     source = (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
     assert audit in source
-    (tmp_path / "ci.yml").write_text(
-        source.replace(audit, f"{audit} {flags}"), encoding="utf-8"
-    )
+    (tmp_path / "ci.yml").write_text(source.replace(audit, replacement), encoding="utf-8")
     monkeypatch.setattr(check_workflows, "WORKFLOW_DIR", tmp_path)
     if dev_lock is not None:
         lock = tmp_path / "dev.txt"
@@ -315,15 +313,32 @@ def _audit_ignore_errors(tmp_path, monkeypatch, audit, flags, dev_lock=None):
     return "; ".join(check_workflows.check_workflows())
 
 
-def test_audit_ignore_outside_the_table_is_rejected(tmp_path, monkeypatch):
-    errors = _audit_ignore_errors(
-        tmp_path, monkeypatch, DEV_AUDIT, "--ignore-vuln CVE-2000-0001"
-    )
+# Spellings pip-audit accepts: extra whitespace, argparse prefixes of
+# --ignore-vuln (--ig and longer) and a PowerShell backtick continuation.
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "--ignore-vuln CVE-2000-0001",
+        "--ignore-vuln  CVE-2000-0001",
+        "--ignore-vuln\tCVE-2000-0001",
+        "--ignore CVE-2000-0001",
+        "--ignore-v CVE-2000-0001",
+        "--ig=CVE-2000-0001",
+        '--ignore-vuln "CVE-2000-0001"',
+        "`\n          --ignore-vuln CVE-2000-0001",
+    ],
+)
+def test_audit_ignore_outside_the_table_is_rejected(tmp_path, monkeypatch, flag):
+    errors = _audit_ignore_errors(tmp_path, monkeypatch, DEV_AUDIT, f"{DEV_AUDIT} {flag}")
     assert "CVE-2000-0001" in errors and "not an allowed audit ignore" in errors
 
 
-def test_runtime_audit_rejects_every_ignore(tmp_path, monkeypatch):
-    errors = _audit_ignore_errors(tmp_path, monkeypatch, RUNTIME_AUDIT, MCP_IGNORE)
+@pytest.mark.parametrize("path", ["requirements/runtime.txt", "requirements\\runtime.txt"])
+def test_runtime_audit_rejects_every_ignore(tmp_path, monkeypatch, path):
+    audit = RUNTIME_AUDIT.replace("requirements/runtime.txt", path)
+    errors = _audit_ignore_errors(
+        tmp_path, monkeypatch, RUNTIME_AUDIT, f"{audit} {MCP_IGNORE}"
+    )
     assert "runtime lock audit must not ignore" in errors
 
 
@@ -331,7 +346,11 @@ def test_audit_ignore_is_rejected_once_the_dev_lock_moves_past_its_package(
     tmp_path, monkeypatch
 ):
     errors = _audit_ignore_errors(
-        tmp_path, monkeypatch, DEV_AUDIT, MCP_IGNORE, dev_lock="mcp==1.30.0\n"
+        tmp_path,
+        monkeypatch,
+        DEV_AUDIT,
+        f"{DEV_AUDIT} {MCP_IGNORE}",
+        dev_lock="mcp==1.30.0\n",
     )
     assert "CVE-2026-59951" in errors and "mcp==1.29.0" in errors
 

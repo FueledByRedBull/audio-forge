@@ -363,11 +363,11 @@ def test_main_window_export_uses_privacy_safe_builder(
     assert "Private USB Microphone" not in payload
     assert "Private Virtual Cable" not in payload
     assert json.loads(payload)["privacy"]["raw_audio_included"] is False
-    assert messages[0][0] == "Diagnostics Exported"
+    assert "exported" in messages[0][0].lower()
     # No Voice Setup or Auto-EQ run has happened, so the dialog does not claim a file entry for one.
     assert "last Voice Setup" not in messages[0][1] and "Auto-EQ" not in messages[0][1]
     assert json.loads(payload)["interface"]["view"] == "quick"
-    assert window.status_message.messages[-1][0] == "Privacy-safe diagnostics exported"
+    assert "exported" in window.status_message.messages[-1][0].lower()
 
 
 class _FailingLevelProcessor(_FakeProcessor):

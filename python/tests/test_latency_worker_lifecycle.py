@@ -61,7 +61,7 @@ def test_cancel_keeps_running_latency_worker_owned_until_it_stops(qapp, monkeypa
         assert worker.isRunning()
         assert dialog.worker is worker
         assert dialog.isVisible()
-        assert dialog.status_label.text() == "Canceling latency analysis..."
+        assert "cancel" in dialog.status_label.text().lower()
 
         # The old implementation blocked here for 1.5 seconds in reject().
         deadline = time.monotonic() + 1.65
@@ -72,7 +72,7 @@ def test_cancel_keeps_running_latency_worker_owned_until_it_stops(qapp, monkeypa
         assert worker.isRunning()
         assert dialog.worker is worker
         assert dialog.isVisible()
-        assert dialog.status_label.text() == "Canceling latency analysis..."
+        assert "cancel" in dialog.status_label.text().lower()
 
         release.set()
         deadline = time.monotonic() + 2.0

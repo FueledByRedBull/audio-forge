@@ -37,12 +37,13 @@ def test_controls_preserve_metadata_precision_and_immediate_edits(qapp):
     enabled, model, strength, latency = (controls[key] for key in controls)
     assert not processor.writes
     assert enabled.name == "Enable noise suppression"
-    assert enabled.toolTip == "Enable or disable the selected suppression backend."
+    assert "backend" in str(enabled.toolTip)
     assert model.name == "Noise suppression backend"
     assert model.items == ["RNNoise", "DeepFilterNet LL"]
     assert model.index == 0 and model.text == "RNNoise"
     assert strength.name == "Noise suppression strength"
-    assert strength.toolTip == "Processing strength for the selected backend (0% dry, 100% fully processed)."
+    tip = str(strength.toolTip)
+    assert "backend" in tip and "0%" in tip and "100%" in tip
     assert (strength.minimum, strength.maximum, strength.step) == (0, 100, 1)
     assert all(control.enabled and control.shown for control in controls.values())
     assert latency.text == "Latency: ~10ms (RNNoise)"

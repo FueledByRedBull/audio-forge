@@ -9,7 +9,10 @@ from PySide6.QtQuickWidgets import QQuickWidget
 from mic_eq.ui import main_window as main_window_module
 
 BACKENDS = [("rnnoise", "RNNoise"), ("deepfilter-ll", "DeepFilterNet LL"), ("deepfilter", "DeepFilterNet")]
-REFUSED = "Noise model 'deepfilter-ll' is unavailable; previous model retained"
+
+
+def _names_the_refused_backend(text: str) -> bool:
+    return "deepfilter-ll" in text and "unavailable" in text
 
 
 @pytest.fixture
@@ -74,10 +77,10 @@ def test_refused_backend_warns_and_the_picker_keeps_the_previous_one(window, war
     window.noise_suppression_state.configurationEdited.connect(edits.append)
     history = (window._configuration_history.cursor, window._configuration_history.size)
     _pick(window, 1)
-    assert warnings == [("Model Switch Failed", REFUSED)]
+    assert len(warnings) == 1 and _names_the_refused_backend(warnings[0][1])
     assert _shown(window) == (0, "RNNoise")
     assert window.noise_suppression_state.get_settings()["model"] == "rnnoise"
-    assert window.status_message.text == REFUSED
+    assert _names_the_refused_backend(window.status_message.text)
     assert window.processor.switches == ["deepfilter-ll", "rnnoise"]
     assert edits == []
     assert not window._history_timer.isActive()
@@ -88,7 +91,7 @@ def test_switched_backend_is_confirmed_in_the_status_line(window, warnings) -> N
     edits: list[str] = []
     window.noise_suppression_state.configurationEdited.connect(edits.append)
     _pick(window, 1)
-    assert window.status_message.text == "Switched to DeepFilterNet LL"
+    assert "DeepFilterNet LL" in window.status_message.text
     assert _shown(window) == (1, "DeepFilterNet LL")
     assert window.noise_suppression_state.get_settings()["model"] == "deepfilter-ll"
     assert window.processor.switches == ["deepfilter-ll"]

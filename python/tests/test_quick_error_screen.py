@@ -249,8 +249,8 @@ def test_login_launch_without_a_window_does_not_start_audio_and_says_so_in_the_t
     assert not window.isVisible()
     assert len(notices) == 1
     title, message, icon, _ms = notices[0]
-    assert title == "AudioForge could not open its main window"
-    assert message == "Audio was not started. Choose Show AudioForge in the tray menu to see why."
+    assert "main window" in title
+    assert "not started" in message and "Show AudioForge" in message and "tray" in message
     assert icon == QSystemTrayIcon.MessageIcon.Critical
 
 

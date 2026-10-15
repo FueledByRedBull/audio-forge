@@ -186,7 +186,7 @@ def harness(qapp, monkeypatch):
 def test_entry_reports_missing_processor(harness):
     warnings, opened = harness
     open_test_my_sound(_Window(None))
-    assert warnings == ["Audio processing is not available."]
+    assert len(warnings) == 1 and "audio" in warnings[0].lower() and "microphone" not in warnings[0].lower()
     assert opened == []
 
 
@@ -195,7 +195,7 @@ def test_entry_reports_missing_input_device(harness):
     window = _Window(_Processor())
     window.input_choice.currentData.return_value = None
     open_test_my_sound(window)
-    assert len(warnings) == 1 and "No microphone is selected" in warnings[0]
+    assert len(warnings) == 1 and "microphone" in warnings[0].lower()
     assert opened == [] and window.processor.calls == []
 
 

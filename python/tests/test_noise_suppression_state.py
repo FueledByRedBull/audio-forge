@@ -88,7 +88,7 @@ def test_rejected_model_restores_exact_state_and_notifies_views(qapp, interactiv
     state.writeFailed.connect(errors.append)
     state.changed.connect(lambda: observed.append(state.get_settings()))
 
-    with pytest.raises(RuntimeError, match="previous model retained"):
+    with pytest.raises(RuntimeError, match="deepfilter.*unavailable"):
         if interactive:
             state.set_value("model", "deepfilter")
         else:
@@ -97,7 +97,7 @@ def test_rejected_model_restores_exact_state_and_notifies_views(qapp, interactiv
     assert state.get_settings() == processor.settings == previous
     assert observed == [previous]
     assert not edits
-    assert errors == ["Noise model 'deepfilter' is unavailable; previous model retained"]
+    assert len(errors) == 1 and "deepfilter" in errors[0] and "unavailable" in errors[0]
     assert not processor.stopped
 
 

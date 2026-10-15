@@ -1361,6 +1361,15 @@ impl AudioProcessor {
                 raw_monitor_enabled.load(Ordering::Acquire),
                 bypass.load(Ordering::SeqCst),
             );
+            // Raw monitor and Bypass leave the suppressor latency at 0; the Full
+            // path would only store it after its first block, which the first
+            // latency tick can precede.
+            if previous_processing_path == ProcessingPath::Full
+                && suppressor_enabled.load(Ordering::Acquire)
+            {
+                suppressor_latency_samples
+                    .store(suppressor_rt.latency_samples() as u32, Ordering::Relaxed);
+            }
             macro_rules! reset_input_continuity {
                 () => {
                     resample_input.clear();
@@ -1434,6 +1443,42 @@ impl AudioProcessor {
                 no_denormals::no_denormals(|| {
                     // RT_REGION_START: dsp_processing_loop
                     while running.load(Ordering::SeqCst) {
+                        // Publish latency on every pass, before any path branch or
+                        // early `continue`, so Raw monitor, Bypass and idle wakeups
+                        // all keep it current.
+                        if last_latency_update.elapsed() >= latency_update_interval {
+                            last_latency_update = Instant::now();
+                            let suppressor_latency_samples =
+                                if suppressor_enabled.load(Ordering::Acquire) {
+                                    suppressor_latency_samples.load(Ordering::Relaxed) as u64
+                                } else {
+                                    0
+                                };
+                            publish_reported_latency(
+                                &latency_us,
+                                LatencyComponents {
+                                    input_resampler_delay_samples:
+                                        input_resampler_delay_samples_for_latency,
+                                    output_buffer_samples: output_buffer_len
+                                        .load(Ordering::Relaxed)
+                                        as u64,
+                                    output_sample_rate: output_sample_rate_for_latency,
+                                    output_resampler_delay_samples:
+                                        output_resampler_delay_samples_for_latency,
+                                    suppressor_latency_samples,
+                                    limiter_lookahead_samples: limiter_lookahead_samples
+                                        .load(Ordering::Relaxed),
+                                    true_peak_lookahead_samples,
+                                    processing_sample_rate: sample_rate_for_latency,
+                                },
+                                select_processing_path(
+                                    raw_monitor_enabled.load(Ordering::Acquire),
+                                    bypass.load(Ordering::SeqCst),
+                                ),
+                                latency_compensation_us.load(Ordering::Relaxed),
+                            );
+                        }
+
                         // Record input buffer fill level (samples waiting to be processed)
                         let raw_input_len = consumer.len() as u32;
                         input_buffer_len.store(raw_input_len, Ordering::Relaxed);
@@ -2254,37 +2299,6 @@ impl AudioProcessor {
                                     dsp_time_us.store(raw_dsp_us, Ordering::Relaxed);
                                     dsp_time_smoothed_us.store(smoothed, Ordering::Relaxed);
                                 }
-                            }
-                            // Update latency periodically
-                            if last_latency_update.elapsed() >= latency_update_interval {
-                                last_latency_update = Instant::now();
-
-                                let output_buffer_samples =
-                                    output_buffer_len.load(Ordering::Relaxed) as u64;
-
-                                let suppressor_latency_samples =
-                                    if suppressor_enabled.load(Ordering::Acquire) {
-                                        suppressor_latency_samples.load(Ordering::Relaxed) as u64
-                                    } else {
-                                        0
-                                    };
-                                let total_latency = total_reported_latency_us(
-                                    LatencyComponents {
-                                        input_resampler_delay_samples:
-                                            input_resampler_delay_samples_for_latency,
-                                        output_buffer_samples,
-                                        output_sample_rate: output_sample_rate_for_latency,
-                                        output_resampler_delay_samples:
-                                            output_resampler_delay_samples_for_latency,
-                                        suppressor_latency_samples,
-                                        limiter_lookahead_samples: limiter_lookahead_samples
-                                            .load(Ordering::Relaxed),
-                                        true_peak_lookahead_samples,
-                                        processing_sample_rate: sample_rate_for_latency,
-                                    },
-                                    latency_compensation_us.load(Ordering::Relaxed),
-                                );
-                                latency_us.store(total_latency, Ordering::Relaxed);
                             }
                         } else {
                             // No data available, sleep briefly to avoid busy-wait

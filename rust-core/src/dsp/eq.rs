@@ -477,24 +477,6 @@ impl ParametricEQ {
         }
     }
 
-    /// Set the public filter type for a specific band.
-    pub fn set_band_filter_type(&mut self, band_index: usize, filter_type: EqFilterType) {
-        if band_index < NUM_BANDS {
-            let mut config = self.bands[band_index].config;
-            config.filter_type = filter_type;
-            self.bands[band_index].set_config(config);
-        }
-    }
-
-    /// Set an even-order Butterworth pass-filter slope for a specific band.
-    pub fn set_band_slope(&mut self, band_index: usize, slope_db_per_octave: u8) {
-        if band_index < NUM_BANDS {
-            let mut config = self.bands[band_index].config;
-            config.slope_db_per_octave = slope_db_per_octave;
-            self.bands[band_index].set_config(config);
-        }
-    }
-
     /// Apply one complete band configuration in one coefficient transition.
     pub fn set_band_config(&mut self, band_index: usize, config: EqBandConfig) {
         if band_index < NUM_BANDS {

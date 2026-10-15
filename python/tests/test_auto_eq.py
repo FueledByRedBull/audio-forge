@@ -647,6 +647,33 @@ def test_15d_tilt_removal_rejects_random_response_below_fit_threshold():
     assert np.allclose(detrended, measured_db)
 
 
+def test_15e_preserve_policy_keeps_broad_mic_response():
+    freqs = _default_freqs()
+    measured_db = -70.0 - 5.0 * np.log2(freqs / 1000.0)
+    target_db = get_target_curve(freqs, "flat", target_mode="static")
+
+    result = calculate_eq_bands(
+        freqs,
+        measured_db,
+        target_db,
+        tilt_policy="preserve",
+    )
+
+    assert result["spectral_tilt_policy"] == "preserve"
+    assert result["spectral_tilt_slope_db_per_decade"] < -10.0
+    assert np.max(np.abs(np.asarray(result["band_gains"], dtype=float))) >= 2.0
+
+
+@pytest.mark.parametrize("policy", ["detrend", "unknown"])
+def test_15e1_unknown_tilt_policy_is_rejected(policy):
+    freqs = _default_freqs()
+    measured_db = np.zeros_like(freqs)
+    target_db = get_target_curve(freqs, "flat", target_mode="static")
+
+    with pytest.raises(ValueError, match="Unknown spectral tilt policy"):
+        calculate_eq_bands(freqs, measured_db, target_db, tilt_policy=policy)
+
+
 def test_15f_log_frequency_curvature_is_zero_for_linear_tilt():
     centers = np.asarray(
         [80.0, 210.0, 330.0, 800.0, 1450.0, 2400.0, 3900.0, 6100.0, 8500.0, 15000.0],

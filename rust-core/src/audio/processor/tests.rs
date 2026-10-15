@@ -4172,6 +4172,14 @@ mod tests {
             .apply_eq_layers(correction.to_vec(), invalid_tone.to_vec())
             .is_err());
 
+        invalid_tone[4].q = 0.01;
+        assert!(processor
+            .apply_eq_layers(correction.to_vec(), invalid_tone.to_vec())
+            .is_err());
+        assert!(processor
+            .apply_eq_settings_v2(invalid_tone.to_vec())
+            .is_err());
+
         invalid_tone[4].q = tone[4].q;
         invalid_tone[4].gain_db = f64::NAN;
         assert!(processor

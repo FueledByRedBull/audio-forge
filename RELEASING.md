@@ -50,7 +50,8 @@ archive, and one `SHA256SUMS.txt`.
    released tag to fix documentation; reconcile documentation in a later commit.
 5. **Review hardware evidence (optional).** Hardware qualification workflows
    can add measurements when a suitable runner exists; they don't block
-   publication. `self_test.py` and `health_check.py` are the hardware checks
+   publication, unlike the required
+   [manual release checks](#manual-release-checks). `self_test.py` and `health_check.py` are the hardware checks
    that `release-hardware-qualify.yml` runs through
    `evaluate_hardware_validation.py`. They need a real audio route, so no
    hosted job can run them. Keep each measurement bound to its candidate
@@ -187,187 +188,181 @@ cargo audit
 
 ## Manual release checks
 
-The automated gates never run the packaged app against real audio hardware.
-These checks do, on the candidate from step 2 of the workflow: the extracted
-portable archive, and for the login-startup items the MSI as well. A result on
-source, on an older build, or on an earlier candidate doesn't count. Run them
-before step 4 (tagging); a failure means a new candidate. The criteria below
-are fixed before the run, so don't reinterpret one afterwards. Keep the record
-(candidate run ID and archive digest, date, machine, route, each reading, and
-what wasn't covered) with the other unpublished evidence, as in step 5.
+These checks run the packaged app on a real microphone, which no automated gate
+does. They are required before tagging (step 4); a failure means fixing the
+cause and building a new candidate. The hardware-qualification workflows in
+step 5 stay optional and don't replace them. Run them on the candidate from
+step 2 (the extracted portable archive, plus the MSI for item 13), not on source
+or an earlier candidate. The criteria are fixed before the run. Keep the record
+(candidate run ID and archive digest, date, machine, route, readings, what
+wasn't covered) with the other unpublished evidence, as in step 5.
 
 ### 60-minute soak
 
-The soak shows that a started AudioForge keeps its memory, threads and handles
-flat, and doesn't drop audio, restart a stream or recover an output, for an
-hour on a real microphone.
+The soak shows that a started AudioForge keeps memory, threads and handles flat
+and neither drops audio nor restarts or recovers a stream for an hour. Its
+criteria come from a one-hour pilot on 2026-10-15.
 
-1. Extract the candidate archive into a clean folder. For factory settings
-   without touching your own, start from a shell where `APPDATA` points at an
-   empty folder. Turn off sleep and screen lock for the hour.
-2. Launch `AudioForge.exe`. Choose the real microphone as input. Choose an
-   output endpoint nobody listens to and turn **Mute Output** on. Change
-   nothing else. The soak needs no test signal; leave the microphone in the
-   room as it normally is.
-3. Press **Start Processing** and note the time. This is minute 0.
-4. From a second PowerShell window, write one line a minute for 60 minutes
-   to a file outside the repository:
+1. From PowerShell in the extracted folder, with sleep and screen lock off,
+   start the app with factory settings in a scratch `APPDATA` that skips the
+   first-run Guided Setup dialog:
 
    ```powershell
-   $p = Get-Process AudioForge
+   $dir = "$env:USERPROFILE\soak"          # outside the repository
+   $env:APPDATA = "$dir\appdata"
+   New-Item -ItemType Directory -Force "$env:APPDATA\AudioForge" | Out-Null
+   '{"first_run_setup_state": "completed"}' |
+     Set-Content "$env:APPDATA\AudioForge\config.json"
+   Start-Process .\AudioForge.exe
+   ```
+
+2. Choose the real microphone as input and an output endpoint nobody listens
+   to, and turn the top-bar **Mute** toggle on. Change nothing else, and don't
+   press **Reset drop counter**. Press **Start Processing** (minute 0), then
+   run this in a second PowerShell window:
+
+   ```powershell
+   $dir = "$env:USERPROFILE\soak"
+   $p = Get-Process AudioForge | Sort-Object StartTime | Select-Object -Last 1
+   "time,private_bytes,cpu_seconds,threads,handles" | Set-Content "$dir\soak.csv"
    1..60 | ForEach-Object {
      Start-Sleep 60; $p.Refresh()
      "{0:s},{1},{2},{3},{4}" -f (Get-Date), $p.PrivateMemorySize64,
        $p.TotalProcessorTime.TotalSeconds, $p.Threads.Count, $p.HandleCount |
-       Add-Content soak.csv
+       Add-Content "$dir\soak.csv"
    }
    ```
 
-5. Each minute, also write down from the **Health** page the dropouts, samples
-   dropped, restarts and output recoveries (**Technical details**; hover
-   **Drops** and **Recovery** for the raw counters), and the Health verdict in
-   the status bar. The counters are cumulative since Start, so the minute
-   readings say when a count appeared and the 60-minute value decides.
-6. At minute 60, before stopping, export diagnostics from **Technical
-   details** and keep the file with the record.
+   Row 5 is the 5-minute baseline and row 60 the end.
+3. At minute 5 and minute 60, note the Health indicator and export diagnostics
+   (**Health > Technical details > Export diagnostics**) into the same folder.
 
-The soak passes only if all of these hold:
+It passes only if all of these hold:
 
-- Private memory at 60 minutes is within 5 % of its value at 5 minutes.
-- Dropouts, samples dropped, restarts and output recoveries are all zero.
-- Health reports no engine fault other than gate chatter. The factory gate can
-  chatter on room noise; that is reported as the gate, not as a fault.
-- Median CPU time is under 15 seconds a minute (a quarter of one core),
-  taken from the differences between consecutive readings.
+- Private memory in row 60 is within 5 % of row 5.
+- In the minute-60 export's `runtime` section, `output_underrun_total`,
+  `input_dropped_samples`, `input_backlog_dropped_samples`,
+  `jitter_dropped_samples`, `output_short_write_dropped_samples`,
+  `stream_restart_count`, `output_recovery_count` and
+  `output_recovery_event_count` are 0.
+- No engine fault: `input_callback_error_count`, `output_callback_error_count`,
+  `rt_buffer_overflow_count`, `lock_contention_count` and
+  `suppressor_non_finite_count` are 0, `noise_backend_failed` is false, and at
+  both readings the Health indicator names no fault other than gate chatter
+  (`gate_chatter_event_count` may be above 0).
+- Median CPU is under 15 seconds a minute (a quarter of one core), from the
+  differences between consecutive `cpu_seconds` values.
 
-Threads and handles are recorded, not gated; a steady climb across the hour is
-a finding to explain before tagging, so read the series, not the endpoints.
-For scale, the one-hour pilot on
-2026-10-15 read private memory 754 MB at start, 800 MB after 5 minutes and
-800-817 MB after that; median CPU 13.3 seconds a minute; 51-53 threads;
-2116-2140 handles; and no dropouts, restarts or recoveries.
-
-What the soak doesn't cover: one machine, one microphone route, factory
-settings only, a muted output (the muted Output row doesn't count toward the
-verdict, and nothing is heard on the output side), and no device changes,
-sleep or resume, or other audio applications. Name those limits in the record
-and the release notes.
+Threads and handles are recorded, not gated; a steady climb is a finding to
+explain before tagging. Not covered: other machines and microphone routes,
+non-factory settings, an audible output (a muted Output row doesn't count
+toward the verdict), device changes, sleep or resume, other audio applications.
+The fault criterion can fail: it would have failed 1.16.0, whose Drops row
+called gate chatter an engine fault (see CHANGELOG).
 
 ### Hands-on checklist
 
-Run it on the same extracted candidate, with a fresh `APPDATA`, the real
-microphone and a silent output endpoint, after `AudioForge.exe --smoke-test`
-(hidden, 60 second limit, exit code 0) has passed. An item passes only if
-every part of its criterion holds. Write the result of each item in the
-record, including "not run".
+Run it on the same extracted candidate, with the real microphone and a silent
+output endpoint, after `--smoke-test` passes (hidden, 60 second limit, exit code
+0, as [CONTRIBUTING](CONTRIBUTING.md) requires):
 
-1. **Pages.** Open **Mic**, **Health** and **Settings** from the rail. Pass:
-   the window draws with no error screen or blank area, every page shows all
-   its controls, nothing opens a dialog, processing is stopped on open, and
-   the About version is the candidate's.
-2. **Start and Stop.** Press **Start Processing**, speak, then press **Stop
-   Processing**, then Start again. Pass: the button toggles, the input meter
-   follows your voice, the status dot shows running, and the dropout count
-   stays at zero for 30 seconds after Start. After Stop the window stays open,
-   the meters fall to idle, the dot shows stopped, and the second Start works.
-3. **Mute.** While running, turn **Mute Output** on, then off. Pass: the OUT
-   meter reads MUTE, the Output row says it is muted, the status dot shows
+```powershell
+$p = Start-Process .\AudioForge.exe -ArgumentList '--smoke-test' -WindowStyle Hidden -PassThru
+if ($p.WaitForExit(60000)) { $p.ExitCode } else { $p.Kill(); 'timed out' }
+```
+
+Use a fresh `APPDATA` with no config so item 1 happens. An item passes only if
+every part of its criterion holds; record "not run" for any skipped.
+
+1. **First launch.** Start with no saved settings. Pass: the window draws with
+   no error screen and **Guided Setup** opens over it. Finish or close it; the
+   window then responds and no stream is running.
+2. **Pages.** Open **Mic**, **Health** and **Settings** from the rail. Pass:
+   each shows all its controls, no dialog opens, processing is stopped, and the
+   About version (**Settings > Help**) is the candidate's.
+3. **Start and Stop.** Press **Start Processing**, speak, press **Stop
+   Processing**, then Start again. Pass: the input meter follows your voice,
+   the status dot shows running, and the Health page's Drops row stays clear for
+   30 seconds after Start. After Stop the window stays open, the meters fall to
+   idle and the dot shows stopped.
+4. **Mute.** While running, turn the top-bar **Mute** toggle on, then off. Pass:
+   the OUT meter reads MUTE, the Output row says muted, the status dot shows
    muted, and the tray tooltip says "Running / Muted"; unmuting returns all
-   four.
-4. **Edit, Undo and Redo.** Drag one EQ band, then change the gate threshold.
-   Use the **Undo** button twice, then **Redo** twice, then repeat with
-   **Ctrl+Z** and **Ctrl+Shift+Z**. Pass: each press moves exactly one edit,
-   both values return exactly, and Redo disables once nothing is left to
-   redo. After item 8, the first **Ctrl+Z** undoes your last edit, not an
-   edit you never made.
-5. **Preset load.** While running, load a built-in preset from **Presets**,
-   then press Undo. Pass: the settings change without stopping audio or
-   adding a dropout, the loaded preset's name shows, and Undo returns the
+   three. The tray's **Mute Output** item follows the same state.
+5. **Edit, Undo and Redo.** Drag one EQ band, then change the gate threshold.
+   Press **Undo** twice and **Redo** twice, then repeat with **Ctrl+Z** and
+   **Ctrl+Shift+Z**. Pass: each press moves exactly one edit and both values
+   return exactly. After item 9, the first **Ctrl+Z** undoes your last edit, not
+   one you never made.
+6. **Preset load.** While running, load a built-in preset from the **Presets**
+   menu, then press **Undo**. Pass: the settings change without stopping audio
+   or flagging a dropout, the preset's name shows, and Undo restores the
    previous settings.
-6. **Health indicator and status bar.** While running, read the Health
-   indicator, then mute the microphone in Windows sound settings for ten
-   seconds. Pass: with the microphone muted the indicator names the quiet
-   input and Health gives advice for it; unmuting clears both. After **Stop Processing**, the advice and tooltips
-   are gone, the dot shows stopped, and the status message doesn't keep
-   describing a running stream.
-7. **Tray and quit.** In **Settings > Tray and background**, turn on
+7. **Health indicator and status bar.** While running, mute the microphone in
+   Windows sound settings for ten seconds. Pass: the indicator names the quiet
+   input and Health gives advice for it; unmuting clears both. After **Stop
+   Processing**, the advice and tooltips are gone and the dot shows stopped.
+8. **Tray and quit.** In **Settings > Tray and background**, turn on
    close-to-tray, start processing and close the window. Pass: audio keeps
-   running, the tray icon shows "AudioForge: Running", **Show AudioForge**
-   brings back the same window with its state, and the tray **Mute** toggles
-   the output. Starting a second copy shows the running window and doesn't
-   start another stream. **Ctrl+Q** and the tray **Quit AudioForge** each
-   leave no `AudioForge.exe` in Task Manager within five seconds and release
-   the audio devices. With close-to-tray off, closing the window stops audio
-   and quits; with unsaved changes, it asks Save, Discard or Cancel, and
-   Cancel keeps audio running.
-8. **Device change while running.** With processing started, pick another
-   input in the top bar, then disable that input in Windows sound settings,
-   then enable it again and use **Refresh**. Pass: the meter follows the new
-   input; when the device disappears the app stays responsive, says so, and
-   doesn't pick another device by itself; after Refresh the device is listed
-   and Start works.
-9. **Guided Setup.** Open **Run Guided Setup** from **Settings**, go to the
-   first step that lists devices, and close it. Open it again and close it
-   during a level check. Pass: it opens and closes cleanly both times, no
-   stream is left running, and the settings are as they were before.
-10. **Export diagnostics.** In **Health > Technical details**, press **Export
-    diagnostics**. Pass: a file is written with no error; it shows the
-    candidate's version and the counters used in the soak; and it contains
-    no Windows user name, device identifier or audio. Read it before it
-    leaves the machine.
-11. **Minimum size.** Drag the window to its smallest size (900 by 640). Open
-    each page, load a preset with a long name, and turn mute on and off.
-    Pass: the window can't be made smaller; no control overlaps another; no
-    text is cut off without a tooltip; and the Health indicator and the
-    status message are both readable in the status bar.
-12. **Login startup.** Run on the portable copy and on the MSI install, with
-    the previous release installed first for the upgrade step. Pass for each:
-    - Opting in creates one **AudioForge Login** shortcut in the Startup
-      folder and opting out removes it; nothing is created without the
-      switch.
+   running, the tray tooltip reads "AudioForge: Running", **Show AudioForge**
+   restores the same window, and a second launch shows that window instead of
+   starting another stream. **Ctrl+Q** and the tray **Quit AudioForge** each
+   leave no `AudioForge.exe` in Task Manager within five seconds. With
+   close-to-tray off, closing the window stops audio and quits; with unsaved
+   changes it asks Save, Discard or Cancel, and Cancel keeps audio running.
+9. **Device change while running.** Pick another input in the top bar, disable
+   that input in Windows sound settings, then enable it and use **Refresh**.
+   Pass: the meter follows the new input; when a device disappears the app
+   stays responsive, says so, and picks no other device; after Refresh the
+   device is listed and Start works.
+10. **Guided Setup.** Open **Run Guided Setup** (**Settings > Options**), go to
+    the first step that lists devices, and close it; open it again and close it
+    during a level check. Pass: it closes cleanly both times, no stream is left
+    running, and the settings are as before.
+11. **Export diagnostics.** In **Health > Technical details**, press **Export
+    diagnostics**. Pass: a file is written, shows the candidate's version and
+    the soak's counters, and contains no Windows user name, device identifier
+    or audio.
+12. **Minimum size.** Drag the window to its smallest size (900 by 640), open
+    each page, load a preset with a long name, and toggle **Mute**. Pass: no
+    control overlaps another, no text is cut off without a tooltip, and the
+    Health indicator and status message are both readable in the status bar.
+13. **Login startup.** On the portable copy and on the MSI install (with the
+    previous release installed first, for the upgrade step). Pass for each:
+    - **Configure login shortcut for this copy** creates one **AudioForge
+      Login** shortcut in the Startup folder, switching it off removes it, and
+      nothing is created without the switch.
     - Disable the shortcut in Windows Settings, then upgrade: the app reports
-      it as configured, and the shortcut is still disabled.
-    - Sign in with the saved input unplugged, then plug it in within 60
-      seconds: the app waits in the tray, starts with output mute as it was,
-      and uses no other device. If it stays unplugged, audio stays stopped
-      with the reason in the tray and the log.
-    - With no tray available, the process logs the failure and exits with no
-      dialog.
-    - An ordinary uninstall removes the shortcut; an upgrade doesn't. A
-      shortcut reassigned to a portable copy is still there after uninstalling
-      the MSI.
+      it as configured, and it is still disabled.
+    - Sign in with the saved input unplugged and plug it in within 60 seconds:
+      the app waits in the tray, starts with output mute as it was, and uses no
+      other device. If it stays unplugged, audio stays stopped with the reason
+      in the tray and the log. With no tray, the process logs the failure and
+      exits with no dialog.
+    - An ordinary uninstall removes the shortcut; an upgrade doesn't. A shortcut
+      reassigned to a portable copy survives uninstalling the MSI.
+
+The checklist can fail: item 3's Drops criterion fails 1.16.0, which counted
+three or four dropouts on every Start, and item 5's last sentence fails a
+build that records a phantom edit after a device change.
 
 ### What is automated
 
-Source tests and `--smoke-test` don't replace the items above. They run on
-source or on the bundle without audio, and say so in their record.
+Source tests run offscreen with no real device, so they don't show that the
+drawn window, the tray or Windows' Startup behavior work. They cover only the
+logic behind items 4-8, 11 and 13 (`test_quick_undo.py`, `test_quick_shell.py`,
+`test_runtime_health_ui.py`, `test_login_startup*.py`, `test_single_instance.py`,
+`test_desktop_controls.py`, `test_diagnostics_export.py`).
 
-- `--smoke-test` (the packaged exe, no audio) checks only that the window
-  becomes visible, processing is stopped, the Qt Quick view loaded, and the
-  Windows shortcut round trip and Auto-EQ solvers run. It covers the "open"
-  part of item 1 and nothing else. `package_smoke.py` checks the bundle's
-  contents and never launches it; `msi_smoke.py` checks extraction and
-  per-user install and uninstall, not the login shortcut's lifecycle.
-- Source tests (`test_quick_undo.py`, `test_quick_shell.py`,
-  `test_runtime_health_ui.py`, `test_login_startup.py`,
-  `test_login_startup_ui.py`, `test_single_instance.py`,
-  `test_desktop_controls.py`, `test_diagnostics_export.py`) cover the logic
-  behind items 3-7, 10 and 12: history, mute state, Health wording, tray and
-  close-to-tray state, shortcut ownership, retry and cancellation, single
-  instance, and the export. They run offscreen on source
-  with no real device, so they don't show that the drawn window, the tray or
-  Windows' Startup behavior work.
-- `health_check.py --duration 1800` is the engine-only counterpart of the
-  soak: it fails on the same kind of counters (dropped samples, restarts,
-  recoveries, callback errors), takes `--bundle-root` to load the native
-  module and models from an extracted bundle, and needs a real route. It
-  reads no memory, thread or handle figure and doesn't run the app, so it
-  doesn't replace the soak. `self_test.py` plays a probe through a route and
-  checks the correlation, also with `--bundle-root`.
-- Manual: the soak, items 1-12 apart from the points above, and the login
-  startup lifecycle on Windows. The soak's per-minute readings could be
-  scripted (the snippet reads the process; the counters are in the diagnostics
-  export), but no script does it yet.
+- `--smoke-test` (packaged exe, no audio) checks the window becomes visible with
+  processing stopped, the Qt Quick view loaded, and the shortcut round trip and
+  Auto-EQ solvers run: part of item 2 only. `package_smoke.py` never launches
+  the app.
+- `health_check.py --duration 1800` is the engine-only counterpart of the soak:
+  the same kinds of counters, `--bundle-root` to load an extracted bundle, a
+  real route. It reads no memory, thread or handle figure and doesn't run the
+  app. `self_test.py` (also `--bundle-root`) checks a probe through a route.
+- Everything else is manual.
 
 ## Packaging invariants
 

@@ -1,0 +1,1170 @@
+{
+  "asset_hashes": {
+    "corpus_manifest": "569f3debce837922e9ea91f4487eb9bdd4cb5eca27c15d18a5e6174d800d7225",
+    "df_dll": "8f6481e88e7a4b8a5bad665a80a7ca6042ff38fdd34c4158b554343cf1b2e268",
+    "models/DeepFilterNet3_ll_onnx.tar.gz": "5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a",
+    "models/DeepFilterNet3_onnx.tar.gz": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616",
+    "onnxruntime_dll": "dec964ab1ee36cc9b0ae247d13b376627992fc57dec0454354017ab8fd84f1ea",
+    "onnxruntime_providers_shared_dll": "a2b3a50956aa75a9879c8472bc7df4f7a8072bcd2db19a1b7d988e7688f293ef",
+    "vad_model": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+  },
+  "audible_change": false,
+  "build": "99db08e62df8d26f",
+  "experiment": "Voice Setup refusals: how often a withheld setup was no worse than the current settings",
+  "flattering": [
+    "No VoiceBank speaker is untouched. These speakers fed the tuner harness and all 30 fit-split speakers fit a shipped de-esser value, so the tuner (B6) and de-esser results are flattering."
+  ],
+  "frozen_sha256": {
+    "corpus_manifest": "569f3debce837922e9ea91f4487eb9bdd4cb5eca27c15d18a5e6174d800d7225",
+    "df.dll": "8f6481e88e7a4b8a5bad665a80a7ca6042ff38fdd34c4158b554343cf1b2e268",
+    "extension": "dfb31ca4bf395abc4362c2e719857e6f59856ef11b83994dc9e9a25888989db5",
+    "models/DeepFilterNet3_ll_onnx.tar.gz": "5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a",
+    "models/DeepFilterNet3_onnx.tar.gz": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616",
+    "onnxruntime.dll": "dec964ab1ee36cc9b0ae247d13b376627992fc57dec0454354017ab8fd84f1ea",
+    "onnxruntime_providers_shared.dll": "a2b3a50956aa75a9879c8472bc7df4f7a8072bcd2db19a1b7d988e7688f293ef",
+    "python/mic_eq/__init__.py": "5d394f0c209bce1ded19e9da6577a61f4f55b4a3fb5f031b73896bdda4badb1e",
+    "python/mic_eq/__main__.py": "13ac8c720d70e810aaef312a0f28c149d26be6b137c10a8db5ae7efc7f18a3d0",
+    "python/mic_eq/analysis/__init__.py": "5cacd82f6e290b4d56121f400509d63a70ab611ac42f46eed7a9cd432db19535",
+    "python/mic_eq/analysis/auto_eq.py": "edccec8f7a204d2a021a69d79c6b9443781f6b3d9de569fdd2bdffcfab553de7",
+    "python/mic_eq/analysis/auto_eq_parts/__init__.py": "7f3507a5c2f8732fae436872175efc6993aafd1a76b4f6aa72b3e6a03a749ad3",
+    "python/mic_eq/analysis/auto_eq_parts/constants.py": "50914f3f3827d83a73cfb344c4c8220870c8548a4035fd47369d5461da8df58b",
+    "python/mic_eq/analysis/auto_eq_parts/dynamic_bands.py": "98fc1c2bb29b1494a16d8b1b23b402ddaabb94016e05cdde11073da8c3d2128e",
+    "python/mic_eq/analysis/auto_eq_parts/eq_fit.py": "018734f95c798503942db88bd721fb8d59de3f71ab9750976f392785edaf7cb4",
+    "python/mic_eq/analysis/auto_eq_parts/headroom.py": "94b30fbe2c104fa53d335ee08238946365804bbad22b528cedd5754ffe58afa9",
+    "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "34e399affb12579680c54640267bcd9269ccb1d657dc471bc588daaa4bc8b058",
+    "python/mic_eq/analysis/auto_eq_parts/pipeline.py": "8229b8cf1f836996fe869a4b6c88fd8d431359a1cda66174bc5b4b2201b70e88",
+    "python/mic_eq/analysis/auto_eq_parts/response.py": "6f7106a7647c248e39ae6dd7c8dc97cfe10e31de8b773ec8919693d873b3ce55",
+    "python/mic_eq/analysis/auto_eq_parts/target.py": "30503139d67d2184a3a02a832f1478514b2ef63da1553a76f426cad6e1d7d7ff",
+    "python/mic_eq/analysis/cancellation.py": "9bac8c1f8da29ac6d6cda92133b9af61bf46c220ce409f934c4ba2665f312979",
+    "python/mic_eq/analysis/compressor_calibration.py": "59ebaa1270d9aa1bda94918864d2d532af59980d23f42202eec27dfa10af8c7b",
+    "python/mic_eq/analysis/deesser_corpus.py": "910b6b3610dbefe68e7002787dbb534e4d5f83f782facd924d3fc0ce62527a18",
+    "python/mic_eq/analysis/deesser_fusion.py": "bc1bad992c25f8fa8b24dcbfd4fa6ba28eda1719849057720082e354fbed18bd",
+    "python/mic_eq/analysis/eq_quality.py": "c6dd5a143594408f3bbc41db1ae92045ee84b2572305400a477dd732d55e4091",
+    "python/mic_eq/analysis/failure_detection.py": "305de919ab3e74e4db87d369f392c23125e393c0d9c527580239e793978267bf",
+    "python/mic_eq/analysis/joint_tuning.py": "dcc01e052f5831e772b56000735edca7284d543dff5c6286dcf46318b3b66ea5",
+    "python/mic_eq/analysis/latency_calibration.py": "46100c67b17c3bfad299049b5bbee73d0df55a8153cba296ec6ac0d8957de355",
+    "python/mic_eq/analysis/listening_comparison.py": "94a8f6740bed788a0a65a2c1c24a277ac1df27058cc9b974e7e4166a7c23b800",
+    "python/mic_eq/analysis/noise_reference.py": "e40b553371baac7e7ab3336cfd1f7b73446e903d8255be7d09e8a2de5697a849",
+    "python/mic_eq/analysis/signal_processing.py": "47916b8b339a080f0f3b3c6398afd3a9e7ca5615de9926d1c00e012b6a5831fb",
+    "python/mic_eq/analysis/spectrum.py": "0b19c2add7deb7aa7e7c8883834cd3a4d460a3c6fec7ee06ea8e907e227c04cf",
+    "python/mic_eq/analysis/vad.py": "6f7ccb6049f021d0fe6c74e3d9174c166f380cfa0cc8451e97c4418c25be2aa4",
+    "python/mic_eq/analysis/voice_setup.py": "f919c5af4831627271355a1469be32a36051fddf209d274eac419dfd87fffcff",
+    "python/mic_eq/analysis/wav_io.py": "2b301572028694e1974ee32e4e182cea8ff1fed5d42e2382a8e232beb6fffa49",
+    "python/mic_eq/app_logging.py": "166326a33e29f90228f6e5c4720525f30b0d39e63e5ed37090a8b8f0731b40b0",
+    "python/mic_eq/config.py": "bd6795687c6c9374c466fa72a3a69ae96c2cafbac0cdf824f3cf9d9aaf120470",
+    "python/mic_eq/config_parts/__init__.py": "201e6480d0790bbbd35d683a24d9845433a61b6c20a6fecd01d8271289a23a6a",
+    "python/mic_eq/config_parts/app_config.py": "d67a05c9cddb9ce075d2c15cb7f380c30af6e0df4d7b4e2ea4c1e7886d0d381e",
+    "python/mic_eq/config_parts/calibration.py": "b5eb9866763bfe1a4a6aff49bf0ed11dedd07dfc6ca9c5b8cee444ed34580497",
+    "python/mic_eq/config_parts/catalogs.py": "e7ba3d83049f8dde2e5ca473a299217407a02cee6a33924ba537c7e751893ad6",
+    "python/mic_eq/config_parts/presets.py": "8f2acf5fa23f052d1b8fddd9f8017344f2409988448f644e9a901090e636472e",
+    "python/mic_eq/config_parts/settings.py": "459425cf7f4c7b9939b6ad7c34d5f519e098ec4a67140f2af13f7c7c22ebc17e",
+    "python/mic_eq/config_parts/shared.py": "8a70cad4285f10b4203fb35b84514ef65a901559f25ef799858f5aff8a7ffe88",
+    "python/mic_eq/config_parts/validation.py": "79fac064c10b679f7d45e3ca42d37fafdd478da1ab8ea9188027c64bdc23f0eb",
+    "python/mic_eq/diagnostics_export.py": "e8959db5a57c6b7345ad8bb1bec6bbad7292ce68bd10eee3816818f85817bcdb",
+    "python/mic_eq/ui/__init__.py": "76f196e2002efa6828997d65f14d5794fd8b8208527c00e1742b64f027600722",
+    "python/mic_eq/ui/accessibility.py": "eb4761e9b42c3aebd0b539ba39eb57a0a76ccd0c42835f0f773ace9f12d3165a",
+    "python/mic_eq/ui/analysis_worker.py": "f7e46a6ea36ad7c7f8a42f8633d99deb17b5506aeb0af0ffde9a5978cfbccd75",
+    "python/mic_eq/ui/app_bootstrap.py": "94b44a5d588123e57a42106691a2edd12ae5c188189ba4f14042b63c74a0125a",
+    "python/mic_eq/ui/auto_eq_explanation.py": "e8726c550731aeaac53c1cf386c1ee581d61cc2b7ec645e9cbc666111b5eaa55",
+    "python/mic_eq/ui/calibration_dialog.py": "95b98bd3634273b1916daa37dbc91144442551c33e3cd3bd3292385385915bc9",
+    "python/mic_eq/ui/calibration_history.py": "e73df35eb9d92013297508bdc610d290394a8d6945ecac533c6144f74fc913bf",
+    "python/mic_eq/ui/calibration_support.py": "5df007b32b818f42b190d0e3de21dbff23aaab06c6718fb1976dbb8d9cbc323e",
+    "python/mic_eq/ui/capture_session.py": "1cf59644e542c38ea008c1dc65d43d54b7a60755dc2fa5c69126c3ea1ac9a6e7",
+    "python/mic_eq/ui/components.py": "542e0d06dfaf4be709ecb9e8ae9a6f28e92dd4cb01e3efe0dd6ecb6d112ed779",
+    "python/mic_eq/ui/compressor_state.py": "83593314d9e598ba606f2c36232da9e36abae1543c9cf4bce28ddf0384691b0d",
+    "python/mic_eq/ui/config_history.py": "bed9aa3e27a959bb2f03b9e39de102d135820042df1d5dd76f3e5ea5296ea2e0",
+    "python/mic_eq/ui/control_specs.py": "ea38e158cd7648d5dcdea6f48561806dd75c3a0badf479fc719e821a67fe571e",
+    "python/mic_eq/ui/deesser_state.py": "9f3292173a0b224d733046d7e818213ceea72d2a9697ce055eb54ecb9dbeaa9f",
+    "python/mic_eq/ui/desktop_integration.py": "a06f61c57bda8523f684feb16bfb72808ce68236958661e61d7b58d15143ee35",
+    "python/mic_eq/ui/device_selection.py": "e9b7963f22a30b5a75d153597bf089ef33a58bf63d9d16b9e0a4eddb182e35dc",
+    "python/mic_eq/ui/eq_compare.py": "610ed97d7cb2e3974735685533cc99748706bb60e16c381ddb675d7dcf59ea62",
+    "python/mic_eq/ui/eq_controls.py": "c555400058019a8f7a280cebaf5647981293c418896bf077f92915767b4f10c7",
+    "python/mic_eq/ui/eq_graph.py": "2a7570783315ecb161d7f630e7d3c8b520e1a02dcd320e3817ab1d4db7bf6ae9",
+    "python/mic_eq/ui/eq_presentation.py": "dfeb3c91b2d63fd0276a345a5f8eaee38b43af887a8e0b29dc13ad8123370b6e",
+    "python/mic_eq/ui/eq_quick_graph.py": "007e77175e80af3b53fd4fb3da8837c230cba5741afa5fa510b9077c256017d7",
+    "python/mic_eq/ui/eq_state.py": "ffc0edd78f53ea49961e6abcb47abe82a9d9bbce9efddca2c105f694cca708c9",
+    "python/mic_eq/ui/first_run_setup_dialog.py": "1e6ec57cf074dea226b6ef9956b35fbaff5216d38bb3fe87901a5fb6423b89ad",
+    "python/mic_eq/ui/gate_state.py": "c5276873185fc84e1a37f42d89478daf513ee1ae786b4232831eb96e3dbca559",
+    "python/mic_eq/ui/health.py": "27641707ac03e84e45735af417406e45f4245206d83fd92026926c211c587452",
+    "python/mic_eq/ui/latency_calibration_dialog.py": "2a613b321a7ace43b489354ce84570e4ad7642940824159c45becfc65fdcd5b9",
+    "python/mic_eq/ui/layout_constants.py": "6ecad0f1a8696db020c2cc00b2a6443ec5319379c24426881a3af2c479cedbcf",
+    "python/mic_eq/ui/level_check.py": "ddb74f3d76c40ff82e51743be83f3d77110464c0a184da77467ec23b6e772719",
+    "python/mic_eq/ui/level_meter.py": "d114d8c00d1c47789b09310c60d24d03b766c80aa22b2af2ac446dfc6cd9c744",
+    "python/mic_eq/ui/limiter_state.py": "2d2c78d2f4dab082dab49ac3ef5a695f3686a7cd711aff4792a1c85133285697",
+    "python/mic_eq/ui/listening_comparison_dialog.py": "1e1232cb78adb77419e0c58bd5e657959cb01fd4b8ed8382468e4643e565d2ad",
+    "python/mic_eq/ui/login_startup.py": "047a87357c0dea39d1c65f2b7ea17902b863612e02eaa6bc3b91a90db0b3808c",
+    "python/mic_eq/ui/main_window.py": "46814f893f76b8b28acb72491bf2f2e9f9882c787dbf54c0c18bff3b7e15a816",
+    "python/mic_eq/ui/noise_controls.py": "0a6c3b2352cfd374544039b2e00f322e27e7847656cc37a800500d3b1407b2ae",
+    "python/mic_eq/ui/noise_suppression_state.py": "a072b59325df8c506404f673c7ae6a67df4fa9087f3b14c1ff4f315403d5b6f8",
+    "python/mic_eq/ui/processing_controls.py": "a0c20c1c16fa9d1bc4bbb18765af4eb2d5664f08788690265449898f394a885d",
+    "python/mic_eq/ui/processing_meters.py": "09e4e6f5fc9d4bbeef04042757258c504f6dbb1a17d603376f3bc5c9539f2e37",
+    "python/mic_eq/ui/quick_error_screen.py": "4d753fe0f6c3324a515086bdf22b5ef522239f0fb0ab29767db622d20eeaec14",
+    "python/mic_eq/ui/quick_meter.py": "b74ba23dacf664e9caffeb8e711a20e1ee55b75427f034e9f10a7d7bbe557a58",
+    "python/mic_eq/ui/quick_shell.py": "38337676da2d2e35ff8ec13fa12db6bb6d07106887698acf333558ed901183a6",
+    "python/mic_eq/ui/rate_limiter.py": "6592bc3fa866445714daa3a5921565d374d8410e1ff1467e6d2a751bf62fe3d5",
+    "python/mic_eq/ui/setup_messages.py": "7d7bc597df16c7045ecdfdd8408b7d4f805b0cb269d3cccd713cb0b1f838630b",
+    "python/mic_eq/ui/shell_specs.py": "aecda4eb78357cbd22b5485c1c569a680da5d9971f7d08035f28b8565463132d",
+    "python/mic_eq/ui/shell_state.py": "2c3202b4afe6d3538bd333aaf6ebf56da55401676fef96e4d2cf14db4e457f0a",
+    "python/mic_eq/ui/startup_presets.py": "6931ddc003f28afcccd8008e1e759c2f6c8f19e391795df23acef076b60d96a1",
+    "python/mic_eq/ui/stream_recovery.py": "04fcd9df566acb111d010bb63302231d6f12a54d21e5e6be27bfc1b26f8437c8",
+    "python/mic_eq/ui/theme.py": "b3c069295f7127112e736c4bb7af5fc9fa4c0be1f72828c280f47534cdbc52fa",
+    "python/mic_eq/ui/voice_setup_dialog.py": "f199e61e1160d44cb10ef9493ef1f32cadb7eb3f3cce3738be94f04f2434dda9",
+    "python/tools/_eval_common.py": "f6bccabedc531161d1577b1e807c30391bdfe291faf1fd0eba438729b7e006e0",
+    "python/tools/check_evaluation_hygiene.py": "44d9355401925e471940c8ea2c3228bfaf873b038c14b88085f997ac45519b7a",
+    "python/tools/evaluate_gate_corpus.py": "fa0abb914e07b0aa94f2c3dc2b7d34a353da0fdf05ae4357bf4c7fccab3c1e54",
+    "python/tools/evaluate_voice_setup.py": "6cbe6fd752179577a37c3d597424c30a0927099d52abdd1d7d68b4350a66a769",
+    "python/tools/evaluate_voice_setup_loudness.py": "7cd5fe887a2c627bbf500f8d5a298497d4d7399f60ba7e686f05ac257990edbc",
+    "python/tools/evaluate_voice_setup_refusals.py": "dc34c017372ee7d68bb56ad0b2ac8f17907e3493d64eb72d9dafa78b43fb631e",
+    "release_assets:df.dll": "38605121768ed5c29fe933adf4edac2e2f4bbc98e53ead6838919cc7fd4ab027",
+    "release_assets:models/DeepFilterNet3_ll_onnx.tar.gz": "5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a",
+    "release_assets:models/DeepFilterNet3_onnx.tar.gz": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616",
+    "release_assets:onnxruntime.dll": "dec964ab1ee36cc9b0ae247d13b376627992fc57dec0454354017ab8fd84f1ea",
+    "release_assets:onnxruntime_providers_shared.dll": "a2b3a50956aa75a9879c8472bc7df4f7a8072bcd2db19a1b7d988e7688f293ef",
+    "release_assets:vad_model": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+    "rule": "12c1a3d864dbc9ef9d0a9aaa991e4e391c9f7b8961eff4de47310a12142aa1dd",
+    "runtime:numpy": "2.5.1",
+    "runtime:python": "3.13.15 (tags/v3.13.15:4061bc4, Aug  5 2026, 13:05:39) [MSC v.1944 64 bit (AMD64)]",
+    "runtime:scipy": "1.18.0",
+    "vad_model": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+  },
+  "generated_at_utc": "2026-10-15T15:18:09.605606+00:00",
+  "implementation_sha256": {
+    "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd": "dfb31ca4bf395abc4362c2e719857e6f59856ef11b83994dc9e9a25888989db5"
+  },
+  "limitations": [
+    "Simulated users: speech in synthetic rooms with DEMAND noise, not microphone captures. The simulator makes no clipped, silent or non-finite takes, so A1-A4 cannot fire, and no user has custom settings.",
+    "Current settings are always the factory Preset(); real users' current settings are unknown. This is the main limitation, and a false refusal here is a false refusal against defaults.",
+    "18 speakers (48 of 54 users male), so intervals are wide; more realizations per speaker do not narrow them.",
+    "Known limits unchanged: the tonal check is nearly blind below 1 kHz; Auto-EQ's Adaptive inputs saturate for real voices; in reverberant captures noise is judged by pauses of at least 600 ms from speech.",
+    "A clause that cannot be measured is reported as a lower and an upper bound; the headline treats it as worse.",
+    "Verification hears the first 10 s of the evaluation capture and the judge the whole 20 s, so for C1 and C2 the judge overlaps the evidence; the last 10 s is the sensitivity reading.",
+    "Sibilant loss is read against the noisy input as the product's own dulling advice reads it, so it includes what the whole chain does to consonants, not only the withheld step.",
+    "The tuner's upper bound renders the gate and suppressor stage alone and omits the tone, sibilant and overload clauses; it can only overstate.",
+    "The tone of a B5 step is the optimizer's validated fit before the abstention and the headroom scaling.",
+    "For B1 the judged object is the proposal had validation passed, a counterfactual the product discards; the B2-B6 flags of a B1 user come from that run.",
+    "The tuner's best non-incumbent candidate may be one the tuner scored worse than the incumbent; the cause 'margin' then means that the tuner kept the incumbent without a holdout, not that the candidate came close.",
+    "The tuner's runtime gate reads wall-clock time, so its candidates depend on the machine's load; each row records every candidate's failed gates and runtime factor.",
+    "A veto fired by fewer than 7 users is underpowered: with 54 users in 18 clusters of 3 the trigger cannot fire for it even if every firing were false and from a different speaker, so its silence says nothing.",
+    "df.dll is a local build whose SHA-256 differs from release-assets.json; both are recorded under release_assets."
+  ],
+  "metrics": {
+    "b1": "for B1 the judged object is the proposal had validation passed, a counterfactual the product discards; the B2-B6 flags of a B1 user come from that run",
+    "buckets": {
+      "B1": 12,
+      "B2": 17,
+      "B3": 1,
+      "B4": 1,
+      "C1": 2,
+      "C2": 3,
+      "none": 18
+    },
+    "candidates_for_loosening": [
+      "B5:step"
+    ],
+    "clause_coverage": {
+      "cases": 188,
+      "over_15_percent": [
+        "deep_pause_db"
+      ],
+      "unmeasurable": {
+        "deep_pause_db": 41,
+        "estoi": 0,
+        "onset_db": 0,
+        "overload": 0,
+        "sibilant_loss_db": 0,
+        "tail_db": 0,
+        "tone_error_db": 0
+      }
+    },
+    "firing_without_judgement": {
+      "E1_automatic_makeup_withheld": [
+        0.48148148148148145,
+        0.35185185185185186,
+        0.5925925925925926
+      ],
+      "E2_deesser_left_off_for_invalid_evidence": [
+        0.018518518518518517,
+        0.0,
+        0.05555555555555555
+      ]
+    },
+    "loaded": {
+      "rows_with_evidence": 54,
+      "rows_without": 0,
+      "tuner_candidates": {
+        "failed_the_runtime_gate": 0,
+        "tested": 1512
+      },
+      "tuner_models": {
+        "deepfilter": {
+          "available": 54
+        },
+        "deepfilter-ll": {
+          "available": 54
+        },
+        "rnnoise": {
+          "available": 54
+        }
+      },
+      "vad_backends": {
+        "joint_noise_vad_analysis_backend": {
+          "silero": 54
+        },
+        "joint_vad_analysis_backend": {
+          "silero": 54
+        },
+        "noise_vad_analysis_backend": {
+          "silero": 54
+        },
+        "vad_analysis_backend": {
+          "silero": 54
+        }
+      }
+    },
+    "per_step_breakdown": {
+      "no_single_step_worse": 5,
+      "refused_users": 29,
+      "steps": {
+        "compressor": {
+          "not_worse": 3,
+          "partial": 3,
+          "unjudgeable": 0,
+          "vacuous": 0,
+          "worse": 23,
+          "worse_by_clause": {
+            "deep_pause_db": 7,
+            "estoi": 1,
+            "onset_db": 13,
+            "tail_db": 8
+          }
+        },
+        "deesser": {
+          "not_worse": 8,
+          "partial": 3,
+          "unjudgeable": 0,
+          "vacuous": 16,
+          "worse": 2,
+          "worse_by_clause": {
+            "onset_db": 2
+          }
+        },
+        "gate_suppression": {
+          "not_worse": 0,
+          "partial": 0,
+          "unjudgeable": 0,
+          "vacuous": 29,
+          "worse": 0,
+          "worse_by_clause": {}
+        },
+        "tone": {
+          "not_worse": 11,
+          "partial": 4,
+          "unjudgeable": 0,
+          "vacuous": 11,
+          "worse": 3,
+          "worse_by_clause": {
+            "deep_pause_db": 2,
+            "tail_db": 1
+          }
+        }
+      }
+    },
+    "reading": {
+      "false_share_lower_bound": "[share, lower, upper] of all users, speaker-clustered 95 % bootstrap; an unmeasurable clause counts as worse (the headline)",
+      "false_share_upper_bound": "the same with an unmeasurable clause counted as not worse"
+    },
+    "retake_costs": {
+      "ended_without_a_verdict": 2,
+      "retakes": {
+        "D1": 8
+      },
+      "users_with_a_retake": 3
+    },
+    "sensitivity": {
+      "last_10_s_for_c1_c2": {
+        "C1": [
+          0,
+          1
+        ],
+        "C2": [
+          1,
+          1
+        ]
+      },
+      "sibilant_1_5_db": {
+        "B1": [
+          2,
+          3
+        ],
+        "B2": [
+          5,
+          8
+        ],
+        "B3": [
+          0,
+          0
+        ],
+        "B4": [
+          0,
+          0
+        ],
+        "B5": [
+          0,
+          0
+        ],
+        "C1": [
+          0,
+          0
+        ],
+        "C2": [
+          0,
+          0
+        ]
+      },
+      "sibilant_6_0_db": {
+        "B1": [
+          2,
+          3
+        ],
+        "B2": [
+          5,
+          8
+        ],
+        "B3": [
+          0,
+          0
+        ],
+        "B4": [
+          0,
+          0
+        ],
+        "B5": [
+          0,
+          0
+        ],
+        "C1": [
+          0,
+          0
+        ],
+        "C2": [
+          0,
+          0
+        ]
+      },
+      "strict_overload": {
+        "B1": [
+          2,
+          3
+        ],
+        "B2": [
+          5,
+          8
+        ],
+        "B3": [
+          0,
+          0
+        ],
+        "B4": [
+          0,
+          0
+        ],
+        "B5": [
+          0,
+          0
+        ],
+        "C1": [
+          0,
+          0
+        ],
+        "C2": [
+          0,
+          0
+        ]
+      }
+    },
+    "speakers": 18,
+    "strata": {
+      "gender": {
+        "female": {
+          "false_first": {
+            "B2": 2
+          },
+          "first": {
+            "B1": 1,
+            "B2": 3,
+            "none": 2
+          },
+          "users": 6
+        },
+        "male": {
+          "false_first": {
+            "B1": 2,
+            "B2": 3
+          },
+          "first": {
+            "B1": 11,
+            "B2": 14,
+            "B3": 1,
+            "B4": 1,
+            "C1": 2,
+            "C2": 3,
+            "none": 16
+          },
+          "users": 48
+        }
+      },
+      "level_check": {
+        "good": {
+          "false_first": {
+            "B1": 2,
+            "B2": 5
+          },
+          "first": {
+            "B1": 6,
+            "B2": 17,
+            "B3": 1,
+            "C1": 2,
+            "C2": 3,
+            "none": 17
+          },
+          "users": 46
+        },
+        "too_hot": {
+          "false_first": {},
+          "first": {
+            "B1": 6,
+            "B4": 1,
+            "none": 1
+          },
+          "users": 8
+        }
+      },
+      "rt60": {
+        "0.533 s and over": {
+          "false_first": {
+            "B1": 1,
+            "B2": 1
+          },
+          "first": {
+            "B1": 3,
+            "B2": 6,
+            "C1": 1,
+            "none": 7
+          },
+          "users": 17
+        },
+        "under 0.367 s": {
+          "false_first": {
+            "B1": 1,
+            "B2": 1
+          },
+          "first": {
+            "B1": 7,
+            "B2": 5,
+            "C1": 1,
+            "C2": 1,
+            "none": 4
+          },
+          "users": 18
+        },
+        "under 0.533 s": {
+          "false_first": {
+            "B2": 3
+          },
+          "first": {
+            "B1": 2,
+            "B2": 6,
+            "B3": 1,
+            "B4": 1,
+            "C2": 2,
+            "none": 7
+          },
+          "users": 19
+        }
+      },
+      "snr": {
+        "20 dB and over": {
+          "false_first": {
+            "B2": 2
+          },
+          "first": {
+            "B1": 1,
+            "B2": 5,
+            "B3": 1,
+            "B4": 1,
+            "C2": 2,
+            "none": 9
+          },
+          "users": 19
+        },
+        "under 10 dB": {
+          "false_first": {
+            "B1": 2,
+            "B2": 2
+          },
+          "first": {
+            "B1": 4,
+            "B2": 7,
+            "none": 2
+          },
+          "users": 13
+        },
+        "under 20 dB": {
+          "false_first": {
+            "B2": 1
+          },
+          "first": {
+            "B1": 7,
+            "B2": 5,
+            "C1": 2,
+            "C2": 1,
+            "none": 7
+          },
+          "users": 22
+        }
+      }
+    },
+    "trigger": "a veto is a candidate for a loosening study when the lower bound of its false-refusal share of all users exceeds 5%, counted first or in any; no veto is changed by this study. A veto fired by fewer than 7 users is underpowered: with 54 users in 18 clusters of 3 the trigger cannot fire for it, so its silence says nothing",
+    "tuner_step": {
+      "any_candidate_no_worse_upper_bound": 35,
+      "cause": {
+        "no_candidate_passed": 54
+      },
+      "fired": 54,
+      "no_candidate": 0
+    },
+    "underpowered": [
+      "B3:whole:any",
+      "B3:whole:first",
+      "B4:whole:any",
+      "B4:whole:first",
+      "B5:whole:first",
+      "C1:whole:any",
+      "C1:whole:first",
+      "C2:whole:any",
+      "C2:whole:first"
+    ],
+    "unreachable": {
+      "A1-A4": "the simulator makes no clipped, silent, short or non-finite takes",
+      "never_fired": []
+    },
+    "users": 54,
+    "users_with_a_false_first_veto": {
+      "any_track": [
+        0.25925925925925924,
+        0.12962962962962962,
+        0.3888888888888889
+      ],
+      "hard": [
+        0.037037037037037035,
+        0.0,
+        0.1111111111111111
+      ],
+      "soft": [
+        0.09259259259259259,
+        0.018518518518518517,
+        0.18518518518518517
+      ],
+      "whole": [
+        0.12962962962962962,
+        0.037037037037037035,
+        0.24074074074074073
+      ]
+    },
+    "verification_decisions": {
+      "accept": 33,
+      "gave_up": 5,
+      "retry": 2,
+      "rollback": 2
+    },
+    "vetoes": [
+      {
+        "candidate_for_loosening": false,
+        "correct": 9,
+        "correct_by_clause": {
+          "onset_db": 8,
+          "tail_db": 1
+        },
+        "counting": "first",
+        "definition": 0,
+        "false": 2,
+        "false_share_lower_bound": [
+          0.037037037037037035,
+          0.0,
+          0.1111111111111111
+        ],
+        "false_share_upper_bound": [
+          0.05555555555555555,
+          0.0,
+          0.14814814814814814
+        ],
+        "fired": 12,
+        "kind": "hard",
+        "partial": 1,
+        "track": "whole",
+        "underpowered": false,
+        "unjudgeable": 0,
+        "vacuous": 0,
+        "veto": "B1"
+      },
+      {
+        "candidate_for_loosening": false,
+        "correct": 9,
+        "correct_by_clause": {
+          "onset_db": 8,
+          "tail_db": 1
+        },
+        "counting": "any",
+        "definition": 0,
+        "false": 2,
+        "false_share_lower_bound": [
+          0.037037037037037035,
+          0.0,
+          0.1111111111111111
+        ],
+        "false_share_upper_bound": [
+          0.05555555555555555,
+          0.0,
+          0.14814814814814814
+        ],
+        "fired": 12,
+        "kind": "hard",
+        "partial": 1,
+        "track": "whole",
+        "underpowered": false,
+        "unjudgeable": 0,
+        "vacuous": 0,
+        "veto": "B1"
+      },
+      {
+        "candidate_for_loosening": false,
+        "correct": 9,
+        "correct_by_clause": {
+          "deep_pause_db": 6,
+          "onset_db": 3,
+          "tail_db": 2
+        },
+        "counting": "first",
+        "definition": 0,
+        "false": 5,
+        "false_share_lower_bound": [
+          0.09259259259259259,
+          0.018518518518518517,
+          0.18518518518518517
+        ],
+        "false_share_upper_bound": [
+          0.14814814814814814,
+          0.07407407407407407,
+          0.24074074074074073
+        ],
+        "fired": 17,
+        "kind": "soft",
+        "partial": 3,
+        "track": "whole",
+        "underpowered": false,
+        "unjudgeable": 0,
+        "vacuous": 0,
+        "veto": "B2"
+      },
+      {
+        "candidate_for_loosening": false,
+        "correct": 17,
+        "correct_by_clause": {
+          "deep_pause_db": 6,
+          "onset_db": 10,
+          "tail_db": 3
+        },
+        "counting": "any",
+        "definition": 0,
+        "false": 6,
+        "false_share_lower_bound": [
+          0.1111111111111111,
+          0.037037037037037035,
+          0.2037037037037037
+        ],
+        "false_share_upper_bound": [
+          0.18518518518518517,
+          0.09259259259259259,
+          0.2777777777777778
+        ],
+        "fired": 27,
+        "kind": "soft",
+        "partial": 4,
+        "track": "whole",
+        "underpowered": false,
+        "unjudgeable": 0,
+        "vacuous": 0,
+        "veto": "B2"
+      },
+      {
+        "candidate_for_loosening": false,
+        "correct": 1,
+        "correct_by_clause": {
+          "onset_db": 1,
+          "tail_db": 1
+        },
+        "counting": "first",
+        "definition": 0,
+        "false": 0,
+        "false_share_lower_bound": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "false_share_upper_bound": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fired": 1,
+        "kind": "soft",
+        "partial": 0,
+        "track": "whole",
+        "underpowered": true,
+        "unjudgeable": 0,
+        "vacuous": 0,
+        "veto": "B3"
+      },
+      {
+        "candidate_for_loosening": false,
+        "correct": 1,
+        "correct_by_clause": {
+          "onset_db": 1,
+          "tail_db": 1
+        },
+        "counting": "any",
+        "definition": 0,
+        "false": 2,
+        "false_share_lower_bound": [
+          0.037037037037037035,
+          0.0,
+          0.09259259259259259
+        ],
+        "false_share_upper_bound": [
+          0.037037037037037035,
+          0.0,
+          0.09259259259259259
+        ],
+        "fired": 3,
+        "kind": "soft",
+        "partial": 0,
+        "track": "whole",
+        "underpowered": true,
+        "unjudgeable": 0,
+        "vacuous": 0,
+        "veto": "B3"
+      },
+      {
+        "candidate_for_loosening": false,
+        "correct": 1,
+        "correct_by_clause": {
+          "deep_pause_db": 1
+        },
+        "counting": "first",
+        "definition": 0,
+        "false": 0,
+        "false_share_lower_bound": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "false_share_upper_bound": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fired": 1,
+        "kind": "soft",
+        "partial": 0,
+        "track": "whole",
+        "underpowered": true,
+        "unjudgeable": 0,
+        "vacuous": 0,
+        "veto": "B4"
+      },
+      {
+        "candidate_for_loosening": false,
+        "correct": 3,
+        "correct_by_clause": {
+          "deep_pause_db": 1,
+          "onset_db": 2
+        },
+        "counting": "any",
+        "definition": 0,
+        "false": 1,
+        "false_share_lower_bound": [
+          0.018518518518518517,
+          0.0,
+          0.05555555555555555
+        ],
+        "false_share_upper_bound": [
+          0.018518518518518517,
+          0.0,
+          0.05555555555555555
+        ],
+        "fired": 4,
+        "kind": "soft",
+        "partial": 0,
+        "track": "whole",
+        "underpowered": true,
+        "unjudgeable": 0,
+        "vacuous": 0,
+        "veto": "B4"
+      },
+      {
+        "candidate_for_loosening": false,
+        "correct": 0,
+        "correct_by_clause": {},
+        "counting": "first",
+        "definition": 0,
+        "false": 0,
+        "false_share_lower_bound": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "false_share_upper_bound": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fired": 0,
+        "kind": "soft",
+        "partial": 0,
+        "track": "whole",
+        "underpowered": true,
+        "unjudgeable": 0,
+        "vacuous": 0,
+        "veto": "B5"
+      },
+      {
+        "candidate_for_loosening": false,
+        "correct": 11,
+        "correct_by_clause": {
+          "onset_db": 9,
+          "tail_db": 2
+        },
+        "counting": "any",
+        "definition": 0,
+        "false": 2,
+        "false_share_lower_bound": [
+          0.037037037037037035,
+          0.0,
+          0.09259259259259259
+        ],
+        "false_share_upper_bound": [
+          0.037037037037037035,
+          0.0,
+          0.09259259259259259
+        ],
+        "fired": 13,
+        "kind": "soft",
+        "partial": 0,
+        "track": "whole",
+        "underpowered": false,
+        "unjudgeable": 0,
+        "vacuous": 0,
+        "veto": "B5"
+      },
+      {
+        "candidate_for_loosening": false,
+        "correct": 2,
+        "correct_by_clause": {
+          "deep_pause_db": 1,
+          "estoi": 1,
+          "tail_db": 2
+        },
+        "counting": "first",
+        "definition": 0,
+        "false": 0,
+        "false_share_lower_bound": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "false_share_upper_bound": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fired": 2,
+        "kind": "hard",
+        "partial": 0,
+        "track": "whole",
+        "underpowered": true,
+        "unjudgeable": 0,
+        "vacuous": 0,
+        "veto": "C1"
+      },
+      {
+        "candidate_for_loosening": false,
+        "correct": 2,
+        "correct_by_clause": {
+          "deep_pause_db": 1,
+          "estoi": 1,
+          "tail_db": 2
+        },
+        "counting": "any",
+        "definition": 0,
+        "false": 0,
+        "false_share_lower_bound": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "false_share_upper_bound": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fired": 2,
+        "kind": "hard",
+        "partial": 0,
+        "track": "whole",
+        "underpowered": true,
+        "unjudgeable": 0,
+        "vacuous": 0,
+        "veto": "C1"
+      },
+      {
+        "candidate_for_loosening": false,
+        "correct": 3,
+        "correct_by_clause": {
+          "deep_pause_db": 3,
+          "estoi": 1,
+          "onset_db": 1,
+          "tail_db": 1
+        },
+        "counting": "first",
+        "definition": 0,
+        "false": 0,
+        "false_share_lower_bound": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "false_share_upper_bound": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fired": 3,
+        "kind": "hard",
+        "partial": 0,
+        "track": "whole",
+        "underpowered": true,
+        "unjudgeable": 0,
+        "vacuous": 0,
+        "veto": "C2"
+      },
+      {
+        "candidate_for_loosening": false,
+        "correct": 5,
+        "correct_by_clause": {
+          "deep_pause_db": 5,
+          "estoi": 1,
+          "onset_db": 1,
+          "tail_db": 1
+        },
+        "counting": "any",
+        "definition": 0,
+        "false": 0,
+        "false_share_lower_bound": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "false_share_upper_bound": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "fired": 5,
+        "kind": "hard",
+        "partial": 0,
+        "track": "whole",
+        "underpowered": true,
+        "unjudgeable": 0,
+        "vacuous": 0,
+        "veto": "C2"
+      },
+      {
+        "candidate_for_loosening": true,
+        "correct": 4,
+        "correct_by_clause": {
+          "deep_pause_db": 2,
+          "tail_db": 2
+        },
+        "counting": "any",
+        "definition": 0,
+        "false": 8,
+        "false_share_lower_bound": [
+          0.14814814814814814,
+          0.05555555555555555,
+          0.24074074074074073
+        ],
+        "false_share_upper_bound": [
+          0.16666666666666666,
+          0.07407407407407407,
+          0.25925925925925924
+        ],
+        "fired": 13,
+        "kind": "step",
+        "partial": 1,
+        "track": "step",
+        "underpowered": false,
+        "unjudgeable": 0,
+        "vacuous": 0,
+        "veto": "B5"
+      },
+      {
+        "candidate_for_loosening": false,
+        "correct": 48,
+        "correct_by_clause": {
+          "deep_pause_db": 39,
+          "estoi": 1,
+          "onset_db": 4,
+          "tail_db": 24,
+          "tone_error_db": 6
+        },
+        "counting": "any",
+        "definition": 0,
+        "false": 0,
+        "false_share_lower_bound": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "false_share_upper_bound": [
+          0.1111111111111111,
+          0.037037037037037035,
+          0.2037037037037037
+        ],
+        "fired": 54,
+        "kind": "step",
+        "partial": 6,
+        "track": "step",
+        "underpowered": false,
+        "unjudgeable": 0,
+        "vacuous": 0,
+        "veto": "B6"
+      }
+    ]
+  },
+  "model": "rnnoise",
+  "predefined_rule": "The rule in the docstring of python/tools/evaluate_voice_setup_refusals.py.",
+  "release_assets": {
+    "df.dll": {
+      "declared": "38605121768ed5c29fe933adf4edac2e2f4bbc98e53ead6838919cc7fd4ab027",
+      "local": "8f6481e88e7a4b8a5bad665a80a7ca6042ff38fdd34c4158b554343cf1b2e268",
+      "same": false
+    },
+    "models/DeepFilterNet3_ll_onnx.tar.gz": {
+      "declared": "5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a",
+      "local": "5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a",
+      "same": true
+    },
+    "models/DeepFilterNet3_onnx.tar.gz": {
+      "declared": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616",
+      "local": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616",
+      "same": true
+    },
+    "onnxruntime.dll": {
+      "declared": "dec964ab1ee36cc9b0ae247d13b376627992fc57dec0454354017ab8fd84f1ea",
+      "local": "dec964ab1ee36cc9b0ae247d13b376627992fc57dec0454354017ab8fd84f1ea",
+      "same": true
+    },
+    "onnxruntime_providers_shared.dll": {
+      "declared": "a2b3a50956aa75a9879c8472bc7df4f7a8072bcd2db19a1b7d988e7688f293ef",
+      "local": "a2b3a50956aa75a9879c8472bc7df4f7a8072bcd2db19a1b7d988e7688f293ef",
+      "same": true
+    },
+    "vad_model": {
+      "declared": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+      "local": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+      "same": true
+    }
+  },
+  "rule_sha256": "12c1a3d864dbc9ef9d0a9aaa991e4e391c9f7b8961eff4de47310a12142aa1dd",
+  "schema_version": 2,
+  "source_sha256": {
+    "python/mic_eq/analysis/auto_eq.py": "edccec8f7a204d2a021a69d79c6b9443781f6b3d9de569fdd2bdffcfab553de7",
+    "python/mic_eq/analysis/auto_eq_parts/headroom.py": "94b30fbe2c104fa53d335ee08238946365804bbad22b528cedd5754ffe58afa9",
+    "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "34e399affb12579680c54640267bcd9269ccb1d657dc471bc588daaa4bc8b058",
+    "python/mic_eq/analysis/auto_eq_parts/pipeline.py": "8229b8cf1f836996fe869a4b6c88fd8d431359a1cda66174bc5b4b2201b70e88",
+    "python/mic_eq/analysis/compressor_calibration.py": "59ebaa1270d9aa1bda94918864d2d532af59980d23f42202eec27dfa10af8c7b",
+    "python/mic_eq/analysis/failure_detection.py": "305de919ab3e74e4db87d369f392c23125e393c0d9c527580239e793978267bf",
+    "python/mic_eq/analysis/joint_tuning.py": "dcc01e052f5831e772b56000735edca7284d543dff5c6286dcf46318b3b66ea5",
+    "python/mic_eq/analysis/listening_comparison.py": "94a8f6740bed788a0a65a2c1c24a277ac1df27058cc9b974e7e4166a7c23b800",
+    "python/mic_eq/analysis/noise_reference.py": "e40b553371baac7e7ab3336cfd1f7b73446e903d8255be7d09e8a2de5697a849",
+    "python/mic_eq/analysis/spectrum.py": "0b19c2add7deb7aa7e7c8883834cd3a4d460a3c6fec7ee06ea8e907e227c04cf",
+    "python/mic_eq/analysis/voice_setup.py": "f919c5af4831627271355a1469be32a36051fddf209d274eac419dfd87fffcff",
+    "python/mic_eq/ui/calibration_support.py": "5df007b32b818f42b190d0e3de21dbff23aaab06c6718fb1976dbb8d9cbc323e",
+    "python/mic_eq/ui/level_check.py": "ddb74f3d76c40ff82e51743be83f3d77110464c0a184da77467ec23b6e772719",
+    "python/tools/_eval_common.py": "f6bccabedc531161d1577b1e807c30391bdfe291faf1fd0eba438729b7e006e0",
+    "python/tools/check_evaluation_hygiene.py": "44d9355401925e471940c8ea2c3228bfaf873b038c14b88085f997ac45519b7a",
+    "python/tools/evaluate_gate_corpus.py": "fa0abb914e07b0aa94f2c3dc2b7d34a353da0fdf05ae4357bf4c7fccab3c1e54",
+    "python/tools/evaluate_voice_setup.py": "6cbe6fd752179577a37c3d597424c30a0927099d52abdd1d7d68b4350a66a769",
+    "python/tools/evaluate_voice_setup_loudness.py": "7cd5fe887a2c627bbf500f8d5a298497d4d7399f60ba7e686f05ac257990edbc",
+    "python/tools/evaluate_voice_setup_refusals.py": "dc34c017372ee7d68bb56ad0b2ac8f17907e3493d64eb72d9dafa78b43fb631e"
+  },
+  "split": "fit",
+  "user_indices": {
+    "fit": [
+      72,
+      73,
+      74,
+      75,
+      76,
+      77,
+      78,
+      79,
+      80,
+      81,
+      82,
+      83,
+      84,
+      85,
+      86,
+      87,
+      88,
+      89,
+      102,
+      103,
+      104,
+      105,
+      106,
+      107,
+      108,
+      109,
+      110,
+      111,
+      112,
+      113,
+      114,
+      115,
+      116,
+      117,
+      118,
+      119,
+      132,
+      133,
+      134,
+      135,
+      136,
+      137,
+      138,
+      139,
+      140,
+      141,
+      142,
+      143,
+      144,
+      145,
+      146,
+      147,
+      148,
+      149
+    ]
+  }
+}

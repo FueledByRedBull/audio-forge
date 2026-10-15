@@ -2,15 +2,35 @@
   "voice-setup": [
     "python/tests/test_voice_setup.py"
   ],
-  "slow": [
-    "python/tests/test_quick_shell.py",
+  "voice-flow": [
     "python/tests/test_voice_setup_integration.py",
-    "python/tests/test_ui_sample_rate_and_diagnostics.py",
-    "python/tests/test_auto_eq.py",
-    "python/tests/test_ui_accessibility_theme.py",
     "python/tests/test_voice_setup_full_chain.py",
-    "python/tests/test_preset_save_identity.py",
     "python/tests/test_joint_tuning.py",
-    "python/tests/test_source_distribution.py"
+    "python/tests/test_ui_sample_rate_and_diagnostics.py"
+  ],
+  "auto-eq": [
+    "python/tests/test_auto_eq.py",
+    "python/tests/test_evaluate_voice_setup_refusals.py",
+    "python/tests/test_eq_fit.py"
+  ],
+  "quick-ui": [
+    "python/tests/test_quick_shell.py",
+    "python/tests/test_quick_high_dpi.py",
+    "python/tests/test_quick_accessibility.py",
+    "python/tests/test_quick_layout.py",
+    "python/tests/test_quick_no_renderer.py",
+    "python/tests/test_quick_software_rendering.py",
+    "python/tests/test_quick_error_screen.py",
+    "python/tests/test_quick_undo.py"
+  ],
+  "tooling": [
+    "python/tests/test_package_tools.py",
+    "python/tests/test_dev_script.py",
+    "python/tests/test_promotion_behavior.py",
+    "python/tests/test_source_distribution.py",
+    "python/tests/test_evaluation_hygiene.py",
+    "python/tests/test_evaluation_hygiene_revision.py",
+    "python/tests/test_deepfilter_build_paths.py",
+    "python/tests/test_release_provenance.py"
   ]
 }

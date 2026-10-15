@@ -10,6 +10,13 @@ import pytest
 import evaluate_gate_corpus as gate_eval
 
 
+@pytest.fixture(autouse=True)
+def fast_bootstrap(monkeypatch):
+    # The mock builds differ by the same amount in every speaker, so the intervals
+    # are exact whatever the number of resamples.
+    monkeypatch.setattr(gate_eval, "BOOTSTRAP", 200)
+
+
 def _speech(seconds: float = 12.0) -> np.ndarray:
     rng = np.random.default_rng(1)
     time = np.arange(int(seconds * gate_eval.SAMPLE_RATE)) / gate_eval.SAMPLE_RATE

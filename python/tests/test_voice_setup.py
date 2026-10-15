@@ -140,6 +140,13 @@ def _make_voice(
     return (level * envelope * voiced + noise).astype(np.float32)
 
 
+# The native analysis costs about 3 s of test time per second of voice. Six
+# seconds is the shortest clip that reaches the same decisions as ten: the
+# room-noise and compressor-target reasons are unchanged, while a clip under
+# about 4.5 s leaves less than the 2 s of speech Voice Setup vetoes on.
+_FULL_ANALYSIS_VOICE_SECONDS = 6.0
+
+
 def _headroom_reading(headroom_db: float) -> dict:
     return {
         "pre_limiter_true_peak_headroom_db": headroom_db,
@@ -236,25 +243,16 @@ def test_loudness_fit_with_the_limiter_allowance_lowers_only_as_far_as_it_requir
 
 
 def test_requested_loudness_is_fitted_to_the_headroom_the_chain_reports(monkeypatch):
+    # The chain's reading is made up, so the slow native stages are stubbed.
+    # A real voice peaks far above its loudness: every decibel of makeup past
+    # 3.3 dB takes a decibel of headroom from the limiter.
     sample_rate = 48_000
-    real_chain = voice_setup_module.simulate_candidate_chain
-
-    def peaky_chain(audio, rate, eq_settings, settings):
-        # A real voice peaks far above its loudness: every decibel of makeup
-        # past 3.3 dB takes a decibel of headroom from the limiter.
-        result = real_chain(audio, rate, eq_settings, settings)
-        compressor = settings.get("compressor") or {}
-        if compressor.get("enabled", True) and (settings.get("limiter") or {}).get("enabled", True):
-            headroom = 3.3 - float(compressor["makeup_gain_db"])
-            result["pre_limiter_true_peak_headroom_db"] = headroom
-            result["limiter_gain_reduction_db"] = max(0.0, -headroom)
-        return result
-
-    monkeypatch.setattr(voice_setup_module, "simulate_candidate_chain", peaky_chain)
-    noise, voice = _make_noise(sample_rate), _make_voice(sample_rate)
-    result = analyze_voice_setup(
-        noise, voice, sample_rate, "broadcast", vad_available=False, target_lufs=-16.0,
-        raw_noise_audio=noise, raw_speech_audio=voice,
+    result = _analyze_clean_capture(
+        monkeypatch,
+        noise=_make_noise(sample_rate),
+        speech=_make_voice(sample_rate, seconds=_FULL_ANALYSIS_VOICE_SECONDS),
+        headroom_at=lambda compressor: 3.3 - float(compressor["makeup_gain_db"]),
+        target_lufs=-16.0,
     )
     diagnostics = result["diagnostics"]
     validation = diagnostics["offline_validation"]
@@ -272,7 +270,7 @@ def test_requested_loudness_is_fitted_to_the_headroom_the_chain_reports(monkeypa
 
 def test_a_request_that_already_fits_the_headroom_is_left_alone():
     sample_rate = 48_000
-    noise, voice = _make_noise(sample_rate), _make_voice(sample_rate)
+    noise, voice = _make_noise(sample_rate), _make_voice(sample_rate, seconds=_FULL_ANALYSIS_VOICE_SECONDS)
     result = analyze_voice_setup(
         noise, voice, sample_rate, "broadcast", vad_available=False, target_lufs=-20.0,
         raw_noise_audio=noise, raw_speech_audio=voice,
@@ -380,7 +378,7 @@ def test_voice_setup_uses_vad_assisted_when_available(monkeypatch):
     )
     result = analyze_voice_setup(
         _make_noise(sample_rate),
-        _make_voice(sample_rate),
+        _make_voice(sample_rate, seconds=_FULL_ANALYSIS_VOICE_SECONDS),
         sample_rate,
         "streaming",
         vad_available=True,
@@ -417,95 +415,99 @@ def test_gate_vad_threshold_stays_in_calibrated_narrow_snr_range():
     assert all(0.42 <= threshold <= 0.50 for threshold in thresholds)
 
 
-def test_labelled_fixture_recommendations_use_loudness_features_and_offline_dsp():
+LABELLED_FIXTURES = {
+    # label: (noise amplitude, voice options, expected apply_recommended)
+    "clean": (0.0025, {}, None),
+    "sibilant": (0.0025, {"sibilant": True}, None),
+    "weak_noisy": (0.012, {"level": 0.04, "noise_amplitude": 0.012}, False),
+}
+
+
+@pytest.fixture(scope="module")
+def labelled_analysis():
+    """The offline analysis of each labelled capture, run once for the module.
+
+    The tests below only read the results, so each capture is analysed the
+    first time a test asks for it.
+    """
     sample_rate = 48_000
-    fixtures = [
-        (
-            "clean",
-            _make_noise(sample_rate, amplitude=0.0025),
-            _make_voice(sample_rate, seconds=5.0),
-            None,
-        ),
-        (
-            "sibilant",
-            _make_noise(sample_rate, amplitude=0.0025),
-            _make_voice(sample_rate, seconds=5.0, sibilant=True),
-            None,
-        ),
-        (
-            "weak_noisy",
-            _make_noise(sample_rate, amplitude=0.012),
-            _make_voice(
+    results: dict[str, dict] = {}
+
+    def analyse(label: str) -> dict:
+        if label not in results:
+            noise_amplitude, voice_options, _expected_apply = LABELLED_FIXTURES[label]
+            results[label] = analyze_voice_setup(
+                _make_noise(sample_rate, amplitude=noise_amplitude),
+                _make_voice(sample_rate, seconds=5.0, **voice_options),
                 sample_rate,
-                seconds=5.0,
-                level=0.04,
-                noise_amplitude=0.012,
-            ),
-            False,
-        ),
-    ]
+                "broadcast",
+                vad_available=False,
+            )
+        return results[label]
 
-    fixture_results = {}
-    for label, noise, speech, expected_apply in fixtures:
-        result = analyze_voice_setup(
-            noise,
-            speech,
-            sample_rate,
-            "broadcast",
-            vad_available=False,
+    return analyse
+
+
+@pytest.mark.parametrize("label", LABELLED_FIXTURES)
+def test_labelled_fixture_recommendations_use_loudness_features_and_offline_dsp(
+    labelled_analysis, label
+):
+    expected_apply = LABELLED_FIXTURES[label][2]
+    result = labelled_analysis(label)
+    diagnostics = result["diagnostics"]
+
+    assert result["gate_settings"]["gate_mode"] == 0, label
+    assert result["gate_settings"]["auto_threshold_enabled"] is False, label
+    assert np.isfinite(diagnostics["short_term_lufs"]), label
+    assert diagnostics["loudness_range_db"] >= 0.0, label
+    assert diagnostics["vad_active_duration_s"] >= 0.0, label
+    assert set(diagnostics["robust_band_energy_db"]) == {
+        "low",
+        "body",
+        "presence",
+        "sibilance",
+    }
+    assert diagnostics["offline_validation"] is not None, label
+    assert isinstance(diagnostics["offline_validation_passed"], bool), label
+    calibration = diagnostics["compressor_calibration"]
+    if calibration["backend"] == "rust":
+        measured_p95 = calibration["measured_gain_reduction_db"]
+        target_p95 = calibration["target_gain_reduction_db"]
+        target_met = (
+            abs(measured_p95 - target_p95)
+            <= calibration["target_p95_tolerance_db"]
         )
-        fixture_results[label] = result
-        diagnostics = result["diagnostics"]
-
-        assert result["gate_settings"]["gate_mode"] == 0, label
-        assert result["gate_settings"]["auto_threshold_enabled"] is False, label
-        assert np.isfinite(diagnostics["short_term_lufs"]), label
-        assert diagnostics["loudness_range_db"] >= 0.0, label
-        assert diagnostics["vad_active_duration_s"] >= 0.0, label
-        assert set(diagnostics["robust_band_energy_db"]) == {
-            "low",
-            "body",
-            "presence",
-            "sibilance",
-        }
-        assert diagnostics["offline_validation"] is not None, label
-        assert isinstance(diagnostics["offline_validation_passed"], bool), label
-        calibration = diagnostics["compressor_calibration"]
-        if calibration["backend"] == "rust":
-            measured_p95 = calibration["measured_gain_reduction_db"]
-            target_p95 = calibration["target_gain_reduction_db"]
-            target_met = (
-                abs(measured_p95 - target_p95)
-                <= calibration["target_p95_tolerance_db"]
+        assert calibration["target_p95_met"] is target_met, label
+    else:
+        assert calibration["target_p95_met"] is False, label
+    if not calibration["target_p95_met"]:
+        assert any(
+            reason.startswith("compressor p95 gain reduction target")
+            for reason in diagnostics["uncertainty_reasons"]
+        ), label
+        assert diagnostics["apply_recommended"] is False, label
+    elif label != "weak_noisy":
+        assert (
+            abs(
+                calibration["measured_gain_reduction_db"]
+                - calibration["target_gain_reduction_db"]
             )
-            assert calibration["target_p95_met"] is target_met, label
-        else:
-            assert calibration["target_p95_met"] is False, label
-        if not calibration["target_p95_met"]:
-            assert any(
-                reason.startswith("compressor p95 gain reduction target")
-                for reason in diagnostics["uncertainty_reasons"]
-            ), label
-            assert diagnostics["apply_recommended"] is False, label
-        elif label != "weak_noisy":
-            assert (
-                abs(
-                    calibration["measured_gain_reduction_db"]
-                    - calibration["target_gain_reduction_db"]
-                )
-                <= 0.75
-            ), label
-        assert result["compressor_settings"]["measured_short_term_lufs"] == diagnostics[
-            "short_term_lufs"
-        ]
-        if expected_apply is not None:
-            assert diagnostics["apply_recommended"] is expected_apply, (
-                label,
-                diagnostics["uncertainty_reasons"],
-                diagnostics["setup_confidence"],
-            )
+            <= 0.75
+        ), label
+    assert result["compressor_settings"]["measured_short_term_lufs"] == diagnostics[
+        "short_term_lufs"
+    ]
+    if expected_apply is not None:
+        assert diagnostics["apply_recommended"] is expected_apply, (
+            label,
+            diagnostics["uncertainty_reasons"],
+            diagnostics["setup_confidence"],
+        )
 
-    sibilant = fixture_results["sibilant"]
+
+def test_the_sibilant_labelled_capture_gets_a_deesser(labelled_analysis):
+    sibilant = labelled_analysis("sibilant")
+
     assert sibilant["deesser_settings"]["enabled"] is True
     assert (
         sibilant["deesser_settings"]["high_cut_hz"]
@@ -513,25 +515,34 @@ def test_labelled_fixture_recommendations_use_loudness_features_and_offline_dsp(
     )
     assert sibilant["diagnostics"]["deesser_temporal_contrast_db"] > 0.75
     assert (
-        fixture_results["sibilant"]["diagnostics"]["offline_validation"][
-            "deesser_gain_reduction_db"
-        ]
+        sibilant["diagnostics"]["offline_validation"]["deesser_gain_reduction_db"]
         > 0.25
     )
-    assert fixture_results["weak_noisy"]["diagnostics"]["weak_capture"] is True
-    if not fixture_results["clean"]["eq_settings"]["apply_recommended"]:
-        assert fixture_results["clean"]["eq_settings"]["abstention_reasons"]
-    assert fixture_results["clean"]["diagnostics"]["noise_reference_source"] == (
-        "validated_conservative"
-    )
-    assert fixture_results["clean"]["eq_settings"]["snr_reference_available"] is True
 
+
+def test_the_weak_noisy_labelled_capture_is_a_weak_capture(labelled_analysis):
+    assert labelled_analysis("weak_noisy")["diagnostics"]["weak_capture"] is True
+
+
+def test_the_clean_labelled_capture_is_measured_against_the_validated_noise_reference(
+    labelled_analysis,
+):
+    clean = labelled_analysis("clean")
+
+    if not clean["eq_settings"]["apply_recommended"]:
+        assert clean["eq_settings"]["abstention_reasons"]
+    assert clean["diagnostics"]["noise_reference_source"] == "validated_conservative"
+    assert clean["eq_settings"]["snr_reference_available"] is True
+
+
+def test_verifying_a_sibilant_setup_against_an_identical_take_rolls_back(labelled_analysis):
+    sample_rate = 48_000
     verification = validate_voice_setup_verification(
         _make_noise(sample_rate, amplitude=0.0025),
         _make_voice(sample_rate, seconds=5.0, sibilant=True),
         _make_voice(sample_rate, seconds=5.0, sibilant=True),
         sample_rate,
-        fixture_results["sibilant"],
+        deepcopy(labelled_analysis("sibilant")),
         "broadcast",
     )
     assert verification["decision"] == "rollback"
@@ -546,7 +557,7 @@ def test_labelled_fixture_recommendations_use_loudness_features_and_offline_dsp(
     }
 
 
-def test_static_microphone_brightness_does_not_trigger_deesser():
+def test_static_microphone_brightness_does_not_trigger_deesser(monkeypatch):
     sample_rate = 48_000
     speech = _make_voice(sample_rate, seconds=5.0)
     t = np.arange(speech.size, dtype=float) / sample_rate
@@ -554,12 +565,10 @@ def test_static_microphone_brightness_does_not_trigger_deesser():
         0.025 * np.sin(2.0 * np.pi * 6500.0 * t)
     ).astype(np.float32)
 
-    result = analyze_voice_setup(
-        _make_noise(sample_rate),
-        static_brightness,
-        sample_rate,
-        "broadcast",
-        vad_available=False,
+    # The de-esser is chosen from the speech features before any chain is
+    # rendered, so the slow native stages are stubbed.
+    result = _analyze_clean_capture(
+        monkeypatch, noise=_make_noise(sample_rate), speech=static_brightness
     )
 
     assert result["deesser_settings"]["enabled"] is False

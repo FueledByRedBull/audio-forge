@@ -80,6 +80,12 @@ Rectangle {
         Hint { text: parent.tip }
     }
 
+    // A caption that screen readers read, for text that carries a state (not a label of a control).
+    component StatusText: Caption {
+        Accessible.role: Accessible.StaticText
+        Accessible.name: text
+    }
+
     component Title: Text {
         color: root.t.text_primary
         font.pixelSize: 13
@@ -452,13 +458,19 @@ Rectangle {
         property var proxy
         // False when a button over the chip carries the text for assistive technology.
         property bool announced: true
+        // One line, cut short with "..." when the chip is limited in width.
+        property bool single: false
         readonly property string state_: proxy && proxy.state !== "" ? proxy.state : "idle"
         implicitHeight: chipText.implicitHeight + 12
         implicitWidth: chipText.implicitWidth + 24
         radius: root.t.radiusControl
         color: root.t["status_" + state_ + "_surface"] ?? root.t.status_idle_surface
         border.color: root.t["status_" + state_ + "_border"] ?? root.t.status_idle_border
-        Hint { text: chip.proxy ? chip.proxy.toolTip : "" }
+        Hint {
+            text: chip.proxy
+                  ? [chipText.truncated ? chipText.text : "", chip.proxy.toolTip].filter(t => t !== "").join("\n\n")
+                  : ""
+        }
         Text {
             id: chipText
             anchors.centerIn: parent
@@ -466,7 +478,8 @@ Rectangle {
             text: chip.proxy ? chip.proxy.text : ""
             color: root.t["status_" + chip.state_ + "_text"] ?? root.t.status_idle_text
             font.pixelSize: 13
-            wrapMode: Text.Wrap
+            wrapMode: chip.single ? Text.NoWrap : Text.Wrap
+            elide: Text.ElideRight
             Accessible.ignored: !chip.announced
             Accessible.name: chip.proxy && chip.proxy.name !== "" ? chip.proxy.name + ": " + text : text
         }
@@ -883,6 +896,7 @@ Rectangle {
     }
 
     ColumnLayout {
+        id: content
         objectName: "contentColumn"
         anchors.left: rail.right
         anchors.right: meters.left
@@ -1280,24 +1294,38 @@ Rectangle {
         // Status strip
         RowLayout {
             objectName: "statusStrip"
+            // The room the texts share, read from the column: sizes taken from the strip's
+            // own width would feed back into its minimum width.
+            readonly property real room: content.width - 24
             Layout.fillWidth: true
             Layout.leftMargin: 8
             Layout.rightMargin: 16
             spacing: 14
-            Caption {
+            StatusText {
                 objectName: "statusMessage"
                 text: root.m.status.message.text
                 Layout.fillWidth: true
+                // The other texts give way before the message does.
+                Layout.minimumWidth: parent.room / 4
                 tip: truncated ? text : ""
             }
+            // Heard (green), muted or waiting for a mute (amber), or stopped.
             Rectangle {
                 width: 8
                 height: 8
                 radius: 4
-                color: root.running ? root.t.status_ok_text : root.t.border_strong
+                color: ({ ok: root.t.status_ok_text, warn: root.t.status_warn_text })[
+                    root.m.status.transmission.state] ?? root.t.border_strong
             }
-            Caption { objectName: "statusTransmission"; text: root.m.status.transmission.text; color: root.t.text_primary }
-            Caption {
+            StatusText {
+                objectName: "statusTransmission"
+                text: root.m.status.transmission.text
+                color: root.t.text_primary
+                Layout.maximumWidth: parent.room * 0.3
+                tip: truncated ? text : ""
+            }
+            StatusText {
+                objectName: "statusCalibration"
                 text: root.m.status.calibration.text
                 Layout.fillWidth: true
                 Layout.maximumWidth: implicitWidth
@@ -1306,7 +1334,10 @@ Rectangle {
             Chip {
                 proxy: root.m.status.health
                 announced: false
+                single: true
                 implicitHeight: 28
+                // A long reading must not push the other texts out of the strip.
+                Layout.maximumWidth: parent.room * 0.3
                 KeyButton {
                     id: healthToggle
                     objectName: "healthToggle"
@@ -1319,7 +1350,7 @@ Rectangle {
                     Accessible.role: Accessible.Button
                     // Named by what it shows; the action goes in the description.
                     Accessible.name: root.m.status.health.text
-                    Accessible.description: "Show audio health details"
+                    Accessible.description: checked ? "Hide audio health details" : "Show audio health details"
                     background: Item { FocusRing { control: healthToggle } }
                 }
             }

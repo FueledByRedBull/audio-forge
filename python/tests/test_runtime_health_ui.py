@@ -12,8 +12,10 @@ from PySide6.QtWidgets import QWidget
 from mic_eq.ui.first_run_setup_dialog import route_health_reason
 from mic_eq.ui.health import RecentStreamHealth, advice_for
 from mic_eq.ui.main_window import MainWindow
+from mic_eq.ui.shell_specs import TEXT_SPECS
 from mic_eq.ui.shell_state import TextState
 from mic_eq.ui.stream_recovery import StreamRecoveryManager
+from mic_eq.ui.theme import PALETTE
 
 
 def test_presentation_timer_pauses_without_stopping_diagnostics(qapp):
@@ -243,6 +245,16 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
             {"input_health_label": ("Input: STRANGE", "warn")},
             False, "warn", "Input: STRANGE", "Check the items marked below.",
         ),
+        # The chip is as red as its worst row, so it names that row and its advice,
+        # not an earlier row that only warns.
+        (
+            {
+                "input_health_label": ("Input: PEAKS TOO HIGH (-2.0 dB)", "warn"),
+                "output_health_label": ("Output: AT FULL SCALE (peak 1.5 dB)", "bad"),
+            },
+            False, "bad", "Output: AT FULL SCALE (peak 1.5 dB)",
+            advice_for("Output: AT FULL SCALE (peak 1.5 dB)"),
+        ),
     ],
 )
 def test_health_summary_and_advice_come_from_chip_states_alone(
@@ -261,6 +273,60 @@ def test_health_summary_and_advice_come_from_chip_states_alone(
     assert summary_state.toolTip == advice
     # The session summary was refreshed from the same call.
     assert ("Mute pending" in window.shell_texts["transmission_status_label"].text) is mute_error
+
+
+def test_a_reset_drops_the_advice_and_tooltips_of_the_last_reading(isolated_main_window):
+    window = isolated_main_window
+    texts = window.shell_texts
+    window._set_health_chip("input_health_label", "Input: CLIPPED (peak 0.0 dB, full scale 8 times)", "bad")
+    window._update_health_summary()
+    texts["recovery_diag_label"].update(tip="Last recovery: input callback error")
+    assert texts["health_advice_label"].text != TEXT_SPECS["health_advice_label"].text
+    assert texts["health_summary_label"].toolTip
+
+    window._reset_health_labels()
+
+    assert texts["health_advice_label"].text == TEXT_SPECS["health_advice_label"].text
+    for key in ("health_summary_label", "recovery_diag_label", "dropped_label"):
+        assert texts[key].toolTip == TEXT_SPECS[key].tip
+
+
+def test_unreadable_telemetry_does_not_keep_the_tooltip_of_the_last_reading(isolated_main_window):
+    window = isolated_main_window
+    native = window.processor
+
+    class Engine:
+        def __getattr__(self, name):
+            return getattr(native, name)
+
+        def is_running(self) -> bool:
+            return True
+
+        def get_runtime_diagnostics(self):
+            raise RuntimeError("no telemetry")
+
+    window._set_health_chip("gate_health_label", "Gate: OK", "ok")
+    window._update_health_summary()
+    assert window.shell_texts["health_summary_label"].toolTip == "Everything looks fine."
+    window.processor = cast(Any, Engine())
+
+    window._update_diagnostics()
+
+    chip = window.shell_texts["health_summary_label"]
+    assert (chip.text, chip.state) == ("Health: readings unavailable", "warn")
+    assert chip.toolTip == TEXT_SPECS["health_summary_label"].tip
+    assert "could not read" in window.shell_texts["health_advice_label"].text
+
+
+def test_the_login_start_up_message_uses_a_state_the_theme_knows(isolated_main_window):
+    window = isolated_main_window
+    window._login_startup_message = "Login waiting for saved audio endpoints"
+
+    window._reset_health_labels()
+
+    chip = window.shell_texts["health_summary_label"]
+    assert chip.text == "Login waiting for saved audio endpoints"
+    assert hasattr(PALETTE, f"status_{chip.state}_text")
 
 
 def test_unchanged_health_chip_does_not_notify_the_view(qapp):

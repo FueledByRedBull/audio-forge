@@ -121,6 +121,7 @@ class LevelMeter(MeterModel):
         self.is_clipping = False
         self.clip_flash_counter = 0
         self.clip_marker = False
+        self.muted = False
         self.clip_peak_db = self.DB_MIN
         # How many times the signal reached full scale in the window that lit the marker.
         self.clip_samples = 0
@@ -299,13 +300,20 @@ class LevelMeter(MeterModel):
         if previous != (self.peak_hold_db, self.clip_flash_counter, self.clip_marker):
             self.changed.emit()
 
+    def set_muted(self, muted: bool) -> None:
+        """Say that the bars show the level before a mute, which nobody hears."""
+        if muted != self.muted:
+            self.muted = muted
+            self.changed.emit()
+
     def _describe(self) -> str:
-        if not self.clip_marker:
-            return ""
-        return (
-            f"Clipping: the signal reached full scale {self.clip_samples} times "
-            f"(peak {self.clip_peak_db:.1f} dB) within the last {CLIP_HOLD_SECONDS:g} seconds."
-        )
+        notes = ["Muted: the level shown is the level before the mute."] if self.muted else []
+        if self.clip_marker:
+            notes.append(
+                f"Clipping: the signal reached full scale {self.clip_samples} times "
+                f"(peak {self.clip_peak_db:.1f} dB) within the last {CLIP_HOLD_SECONDS:g} seconds."
+            )
+        return " ".join(notes)
 
     def _db_to_y(self, db: float, height: float) -> float:
         """Convert dB value to Y coordinate (0 = top, height = bottom)."""
@@ -395,10 +403,11 @@ class LevelMeter(MeterModel):
             painter.fillRect(2, 0, meter_width - 2, 4, self.COLOR_CLIP)
 
         # Draw label at bottom; while the clip marker is lit a "CLIP" tag replaces it,
-        # so the warning is a word on a shape and does not depend on colour.
+        # so the warning is a word on a shape and does not depend on colour. A mute
+        # comes first: the output is silent, so a clip is not heard.
         if self.label_text:
-            text = self.label_text
-            if self.clip_marker:
+            text = "MUTE" if self.muted else self.label_text
+            if self.clip_marker and not self.muted:
                 text = "CLIP"
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(self.COLOR_CLIP)

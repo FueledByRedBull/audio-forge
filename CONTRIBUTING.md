@@ -99,6 +99,22 @@ expected/actual behavior. `Settings > Help > Export Diagnostics` produces a boun
 pseudonymized report; inspect it before sharing. Do not attach microphone audio
 or unredacted logs by default.
 
+## What makes a check valid
+
+A check that gates a release or a product decision, such as an evaluation gate,
+a qualification run, or a hardware or smoke check, counts only if it passes four
+tests:
+
+1. It runs on what ships: the packaged build or the exact artifact. If it runs
+   on something else, such as source or a simulator, its record says so.
+2. Its pass criterion is written down before it runs. Evaluation decisions
+   already work this way; see [evaluation/README.md](evaluation/README.md).
+3. It can fail. Before relying on a new check, run it once on a deliberately
+   broken input and see it fail.
+4. Its record says what it did not cover.
+
+Unit tests and linters are not held to these four.
+
 ## Adding a neural model
 
 A newer or higher published score is not a reason to bundle a model. Before one

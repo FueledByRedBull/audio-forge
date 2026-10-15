@@ -599,6 +599,25 @@ def test_dynamics_intensity_is_separate_from_target_loudness():
     assert gentle_diag["peak_reduction_cap_db"] < dense_diag["peak_reduction_cap_db"]
 
 
+def test_explicit_lufs_target_is_independent_of_tone_curve() -> None:
+    common = {
+        "speech_body_db": -22.0,
+        "speech_loudness_lufs": -20.0,
+        "loudness_range_db": 5.0,
+        "speech_snr_db": 20.0,
+        "capture_confidence": 0.8,
+        "dynamics_intensity": "balanced",
+        "custom_target_p95_db": 3.5,
+        "custom_peak_cap_db": 8.0,
+        "target_lufs": -19.0,
+    }
+    broadcast, _ = _recommend_compressor_settings(
+        target_preset="broadcast", **common
+    )
+    podcast, _ = _recommend_compressor_settings(target_preset="podcast", **common)
+    assert broadcast["target_lufs"] == podcast["target_lufs"] == -19.0
+
+
 def test_custom_dynamics_targets_are_bounded():
     settings, diagnostics = _recommend_compressor_settings(
         target_preset="flat",

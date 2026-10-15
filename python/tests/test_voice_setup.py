@@ -1115,6 +1115,33 @@ def test_a_withheld_tone_is_calibrated_and_checked_natively_on_the_users_eq(monk
     assert result["eq_settings"] == {**users_eq, "apply_recommended": False}
 
 
+def test_partial_results_are_on_by_default():
+    assert voice_setup_module.PARTIAL_RESULTS is True
+
+
+@pytest.mark.parametrize(
+    ("auto_eq", "complete"),
+    [
+        (_auto_eq_abstains("no validated correction improved the target safely"), True),
+        (_auto_eq_refuses(tone_only=True), False),
+    ],
+    ids=["abstention", "validation"],
+)
+def test_without_partial_results_a_tone_only_refusal_refuses_the_whole_setup(
+    monkeypatch, auto_eq, complete
+):
+    monkeypatch.setattr(voice_setup_module, "PARTIAL_RESULTS", False)
+
+    result = _analyze_clean_capture(monkeypatch, auto_eq)
+    diagnostics = result["diagnostics"]
+
+    assert diagnostics["tone_withheld"] is None
+    assert diagnostics["apply_recommended"] is False
+    assert "Auto-EQ abstained from this capture" in diagnostics["uncertainty_reasons"]
+    assert (result["eq_settings"] is not None) is complete
+    assert (result["eq_settings"] or {}).get("bands") is None
+
+
 def test_input_gain_advice_still_comes_with_a_withheld_tone(monkeypatch):
     result = _analyze_clean_capture(
         monkeypatch,

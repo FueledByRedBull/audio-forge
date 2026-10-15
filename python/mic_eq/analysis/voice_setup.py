@@ -86,6 +86,10 @@ CLIP_LEVEL = 0.999
 CLIP_FLAT_TOP_S = 0.000125
 CLIP_MAX_EVENTS = 20
 
+# The evaluation switch for withholding only the tone: False refuses the whole setup
+# for a tone-only reason, as before. Read at call time.
+PARTIAL_RESULTS = True
+
 # Auto-EQ abstentions that blame the tone fit alone. With only these, the recording
 # is fine and the tone is the one thing left out.
 _TONE_ONLY_ABSTENTIONS = frozenset(
@@ -1150,9 +1154,9 @@ def analyze_voice_setup(
         raise
     except Exception as exc:  # pragma: no cover - exercised through return shape
         eq_error = str(exc)
-        if isinstance(exc, AnalysisValidationError) and exc.tone_only:
+        if PARTIAL_RESULTS and isinstance(exc, AnalysisValidationError) and exc.tone_only:
             tone_withheld = exc.failures
-    if eq_settings is not None and not eq_settings.get("apply_recommended", True):
+    if PARTIAL_RESULTS and eq_settings is not None and not eq_settings.get("apply_recommended", True):
         reasons = list(eq_settings.get("abstention_reasons") or [])
         if reasons and set(reasons) <= _TONE_ONLY_ABSTENTIONS:
             tone_withheld = reasons

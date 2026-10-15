@@ -39,7 +39,6 @@ def _config() -> SimpleNamespace:
         input_channel_mode="average",
         input_cleanup_mode="gentle",
         use_measured_latency=True,
-        main_control_tab_index=2,
         voice_setup_dynamics_intensity="balanced",
         voice_setup_custom_p95_db=3.5,
         voice_setup_custom_peak_cap_db=8.0,

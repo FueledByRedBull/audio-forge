@@ -497,10 +497,6 @@ impl DeEsser {
         }
     }
 
-    pub fn is_auto_enabled(&self) -> bool {
-        self.auto_enabled
-    }
-
     /// Set auto mode amount [0.0, 1.0].
     pub fn set_auto_amount(&mut self, amount: f64) {
         self.auto_amount = amount.clamp(0.0, 1.0);

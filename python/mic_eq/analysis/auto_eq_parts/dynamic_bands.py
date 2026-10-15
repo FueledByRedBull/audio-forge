@@ -307,16 +307,6 @@ def _spectral_tilt_fit(
     return tilt_component, slope, float(np.clip(fit_r2, 0.0, 1.0))
 
 
-def _remove_spectral_tilt(freqs: np.ndarray, measured_db: np.ndarray) -> tuple[np.ndarray, float]:
-    """Explicitly remove a well-supported broad log-frequency trend.
-
-    Production Auto-EQ preserves this trend by default. This helper remains
-    available for experiments and the opt-in ``tilt_policy="detrend"`` mode.
-    """
-    tilt_component, slope, _fit_r2 = _spectral_tilt_fit(freqs, measured_db)
-    return measured_db - tilt_component, slope
-
-
 def _snr_reliability(snr_db: np.ndarray) -> np.ndarray:
     reliability = (snr_db - SNR_MIN_DB) / (SNR_FULL_DB - SNR_MIN_DB)
     return np.clip(reliability, 0.0, 1.0)

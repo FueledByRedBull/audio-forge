@@ -14,11 +14,6 @@ impl AudioProcessor {
         self.deesser_dirty.store(true, Ordering::Release);
     }
 
-    /// Check if de-esser is enabled.
-    pub fn is_deesser_enabled(&self) -> bool {
-        self.deesser_enabled.load(Ordering::Acquire)
-    }
-
     pub fn set_deesser_low_cut_hz(&self, hz: f64) {
         let Some(mut hz) = clamp_control_value(hz, DEESSER_LOW_CUT_MIN_HZ, DEESSER_LOW_CUT_MAX_HZ)
         else {
@@ -160,14 +155,6 @@ impl AudioProcessor {
         }
         self.deesser_rt_control.set_auto_enabled(auto_enabled);
         self.deesser_dirty.store(true, Ordering::Release);
-    }
-
-    pub fn is_deesser_auto_enabled(&self) -> bool {
-        if let Ok(d) = self.deesser.lock() {
-            d.is_auto_enabled()
-        } else {
-            true
-        }
     }
 
     pub fn set_deesser_auto_amount(&self, amount: f64) {
@@ -395,14 +382,6 @@ impl AudioProcessor {
         self.compressor_dirty.store(true, Ordering::Release);
     }
 
-    pub fn get_compressor_adaptive_release(&self) -> bool {
-        if let Ok(c) = self.compressor.lock() {
-            c.adaptive_release()
-        } else {
-            false
-        }
-    }
-
     pub fn set_compressor_base_release(&self, release_ms: f64) {
         let Some(release_ms) = clamp_control_value(
             release_ms,
@@ -419,14 +398,6 @@ impl AudioProcessor {
         }
         self.compressor_rt_control.set_base_release_ms(release_ms);
         self.compressor_dirty.store(true, Ordering::Release);
-    }
-
-    pub fn get_compressor_base_release(&self) -> f64 {
-        if let Ok(c) = self.compressor.lock() {
-            c.base_release_ms()
-        } else {
-            200.0
-        }
     }
 
     /// Enable or disable the detector sidechain high-pass.
@@ -580,15 +551,6 @@ impl AudioProcessor {
         }
         self.compressor_rt_control.set_target_lufs(target_lufs);
         self.compressor_dirty.store(true, Ordering::Release);
-    }
-
-    /// Get compressor target LUFS
-    pub fn get_compressor_target_lufs(&self) -> f64 {
-        if let Ok(c) = self.compressor.lock() {
-            c.target_lufs()
-        } else {
-            -18.0
-        }
     }
 
     /// Set confidence in the room-noise reference used by compressor auto makeup.

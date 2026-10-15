@@ -291,7 +291,6 @@ class ListeningComparisonWorker(QThread):
 class ListeningComparisonDialog(QDialog):
     """Play one capture as original, current, or proposed processing."""
 
-    comparison_decided = Signal(bool)
     _CLIPS: tuple[tuple[str, str], ...] = (
         ("original", "Original recording"),
         ("current", "Current settings"),
@@ -835,7 +834,6 @@ class ListeningComparisonDialog(QDialog):
         self._audio_data = np.empty(0, dtype=np.float32)
         self._result = None
         self._decision = self._close_result
-        self.comparison_decided.emit(self._close_result)
         self._close_requested = False
         QDialog.done(self, int(QDialog.DialogCode.Accepted if self._close_result else QDialog.DialogCode.Rejected))
 

@@ -44,17 +44,9 @@ class LatencyCalibrationResult:
 def generate_probe_signal(
     sample_rate: int = 48_000,
     duration_ms: float = 80.0,
-    start_freq_hz: float = 1_500.0,
-    end_freq_hz: float = 9_000.0,
     amplitude: float = 0.8,
 ) -> np.ndarray:
-    """Generate a deterministic repeated Barker-coded probe for latency measurement.
-
-    ``start_freq_hz`` and ``end_freq_hz`` are retained for API compatibility;
-    the current probe uses coded wideband bursts rather than a chirp sweep.
-    """
-    del start_freq_hz, end_freq_hz
-
+    """Generate a deterministic repeated Barker-coded probe for latency measurement."""
     total_samples = max(1, int(sample_rate * (duration_ms / 1000.0)))
     burst, offsets = _coded_probe_components(sample_rate, total_samples)
     probe = np.zeros(total_samples, dtype=np.float64)

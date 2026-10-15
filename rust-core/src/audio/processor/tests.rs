@@ -4083,70 +4083,19 @@ mod tests {
     }
 
     #[test]
-    fn test_eq_single_band_validation_rejects_invalid_values_and_preserves_state() {
-        let processor = AudioProcessor::new();
-        let original = processor.get_eq_band_params(0).unwrap();
-
-        assert!(processor.set_eq_band_gain(0, f64::NAN).is_err());
-        assert!(processor.set_eq_band_frequency(0, 50_000.0).is_err());
-        assert!(processor.set_eq_band_q(0, 0.01).is_err());
-        assert_eq!(processor.get_eq_band_params(0).unwrap(), original);
-    }
-
-    #[test]
-    fn test_typed_eq_controls_publish_one_stable_snapshot() {
-        let processor = AudioProcessor::new();
-        processor
-            .set_eq_band_filter_type(4, EqFilterType::HighPass)
-            .unwrap();
-        processor.set_eq_band_frequency(4, 1_200.0).unwrap();
-        processor.set_eq_band_slope(4, 48).unwrap();
-        processor.set_eq_band_enabled(4, false).unwrap();
-
-        let config = processor.get_eq_band_config(4).unwrap();
-        assert_eq!(config.filter_type, EqFilterType::HighPass);
-        assert_eq!(config.frequency_hz, 1_200.0);
-        assert_eq!(config.slope_db_per_octave, 48);
-        assert!(!config.enabled);
-
-        let snapshot = processor.eq_control.snapshot().expect("stable EQ state");
-        assert_eq!(snapshot.tone_bands[4], config);
-    }
-
-    #[test]
     fn test_typed_eq_rejects_odd_order_slope_without_mutating_state() {
         let processor = AudioProcessor::new();
         let original = processor.get_eq_band_config(4).unwrap();
-
-        let error = processor.set_eq_band_slope(4, 18).unwrap_err();
-
-        assert!(error.contains("expected one of"));
-        assert_eq!(processor.get_eq_band_config(4).unwrap(), original);
-    }
-
-    #[test]
-    fn test_legacy_batch_eq_api_restores_historical_filter_layout() {
-        let processor = AudioProcessor::new();
-        processor
-            .set_eq_band_filter_type(4, EqFilterType::Notch)
-            .unwrap();
-        processor.set_eq_band_enabled(4, false).unwrap();
-        let bands = (0..NUM_BANDS)
-            .map(|index| {
-                (
-                    crate::dsp::eq::DEFAULT_FREQUENCIES[index],
-                    0.0,
-                    crate::dsp::eq::DEFAULT_Q,
-                )
-            })
+        let mut bands: Vec<EqBandConfig> = (0..NUM_BANDS)
+            .map(EqBandConfig::default_for_index)
             .collect();
+        bands[4].slope_db_per_octave = 18;
 
-        processor.apply_eq_settings(bands).unwrap();
+        Python::initialize();
+        let error = processor.apply_eq_settings_v2(bands).unwrap_err();
 
-        assert_eq!(
-            processor.get_eq_band_config(4).unwrap(),
-            EqBandConfig::default_for_index(4)
-        );
+        assert!(error.to_string().contains("expected one of"));
+        assert_eq!(processor.get_eq_band_config(4).unwrap(), original);
     }
 
     #[test]
@@ -4219,6 +4168,20 @@ mod tests {
 
         let mut invalid_tone = tone;
         invalid_tone[4].q = 11.0;
+        assert!(processor
+            .apply_eq_layers(correction.to_vec(), invalid_tone.to_vec())
+            .is_err());
+
+        invalid_tone[4].q = 0.01;
+        assert!(processor
+            .apply_eq_layers(correction.to_vec(), invalid_tone.to_vec())
+            .is_err());
+        assert!(processor
+            .apply_eq_settings_v2(invalid_tone.to_vec())
+            .is_err());
+
+        invalid_tone[4].q = tone[4].q;
+        invalid_tone[4].gain_db = f64::NAN;
         assert!(processor
             .apply_eq_layers(correction.to_vec(), invalid_tone.to_vec())
             .is_err());
@@ -4339,17 +4302,16 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_eq_settings_rejects_above_nyquist() {
+    fn test_apply_eq_settings_v2_rejects_above_nyquist() {
         let processor = AudioProcessor::new();
-        let mut bands = vec![(100.0, 0.0, 1.0); NUM_BANDS];
-        bands[NUM_BANDS - 1] = (
-            crate::dsp::eq::eq_max_frequency_hz(processor.sample_rate as f64).unwrap() + 100.0,
-            0.0,
-            1.0,
-        );
+        let mut bands: Vec<EqBandConfig> = (0..NUM_BANDS)
+            .map(EqBandConfig::default_for_index)
+            .collect();
+        bands[NUM_BANDS - 1].frequency_hz =
+            crate::dsp::eq::eq_max_frequency_hz(processor.sample_rate as f64).unwrap() + 100.0;
 
         Python::initialize();
-        let err = processor.apply_eq_settings(bands).unwrap_err();
+        let err = processor.apply_eq_settings_v2(bands).unwrap_err();
         assert!(err.to_string().contains("out of range"));
     }
 

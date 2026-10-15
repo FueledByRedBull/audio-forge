@@ -94,9 +94,9 @@ def test_auto_eq_results_fill_the_correction_layer_and_a_manual_edit_moves_one_b
 
     # Existing getters expose the independently editable tone stage.
     for i in range(10):
-        params = processor.get_eq_band_params(i)
-        assert params is not None
-        freq, gain, q = params
+        config = processor.get_eq_band_config(i)
+        assert config is not None
+        _filter_type, freq, gain, q, _slope, _enabled = config
         assert abs(freq - AUTO_EQ_BANDS[i][0]) <= 0.1
         assert gain == 0.0
         assert abs(q - AUTO_EQ_BANDS[i][2]) <= 0.1
@@ -105,9 +105,9 @@ def test_auto_eq_results_fill_the_correction_layer_and_a_manual_edit_moves_one_b
     edit(eq_control(window, "frequency", 5), 2310.0)
     qapp.processEvents()
 
-    params = processor.get_eq_band_params(5)
-    assert params is not None
-    freq, gain, q = params
+    config = processor.get_eq_band_config(5)
+    assert config is not None
+    _filter_type, freq, gain, q, _slope, _enabled = config
     assert abs(freq - 2310.0) <= 0.1
     assert gain == 0.0
     assert abs(q - AUTO_EQ_BANDS[5][2]) <= 0.1
@@ -412,7 +412,7 @@ def test_auto_eq_explicitly_restores_historical_filter_layout(quick_window, qapp
 class CountingProcessor:
     def __init__(self, delegate):
         self.delegate = delegate
-        self.calls = {"layers": 0, "gain": 0, "q": 0, "frequency": 0}
+        self.calls = {"layers": 0}
 
     def __getattr__(self, name):
         return getattr(self.delegate, name)
@@ -420,18 +420,6 @@ class CountingProcessor:
     def apply_eq_layers(self, correction, tone):
         self.calls["layers"] += 1
         return self.delegate.apply_eq_layers(correction, tone)
-
-    def set_eq_band_gain(self, *args):
-        self.calls["gain"] += 1
-        return self.delegate.set_eq_band_gain(*args)
-
-    def set_eq_band_q(self, *args):
-        self.calls["q"] += 1
-        return self.delegate.set_eq_band_q(*args)
-
-    def set_eq_band_frequency(self, *args):
-        self.calls["frequency"] += 1
-        return self.delegate.set_eq_band_frequency(*args)
 
 
 def _count_curve_refreshes(graph, monkeypatch) -> list[int]:
@@ -455,22 +443,22 @@ def test_single_band_edits_make_one_layer_update_and_one_curve_refresh(
     curve_calls = _count_curve_refreshes(window.eq_presentation.graph_model, monkeypatch)
 
     def reset_counts():
-        counted.calls = {"layers": 0, "gain": 0, "q": 0, "frequency": 0}
+        counted.calls = {"layers": 0}
         curve_calls[0] = 0
 
     reset_counts()
     edit(eq_control(window, "gain", 4), 10.0)
-    assert counted.calls == {"layers": 1, "gain": 0, "q": 0, "frequency": 0}
+    assert counted.calls == {"layers": 1}
     assert curve_calls[0] == 1
 
     reset_counts()
     edit(eq_control(window, "q", 4), 2.1)
-    assert counted.calls == {"layers": 1, "gain": 0, "q": 0, "frequency": 0}
+    assert counted.calls == {"layers": 1}
     assert curve_calls[0] == 1
 
     reset_counts()
     edit(eq_control(window, "frequency", 4), 3000.0)
-    assert counted.calls == {"layers": 1, "gain": 0, "q": 0, "frequency": 0}
+    assert counted.calls == {"layers": 1}
     assert curve_calls[0] == 1
     band_config = window.processor.get_eq_band_config(4)
     assert band_config is not None
@@ -614,7 +602,7 @@ def test_resetting_a_band_is_one_undo_step_and_a_default_band_records_nothing(
     state = window.eq_state
     state.set_band_value(4, "gain_db", 3.0)
     window._commit_pending_configuration_snapshot()
-    assert window.current_preset_modified is True
+    assert window.preset_modified is True
     history = window._configuration_history
     before = history.size
     model = window.eq_presentation.graph_model
@@ -628,7 +616,7 @@ def test_resetting_a_band_is_one_undo_step_and_a_default_band_records_nothing(
     assert history.size == before + 1
     assert history.current is not None and history.current.label == "Reset EQ band"
     # The only difference from the loaded sound is gone.
-    assert window.current_preset_modified is False
+    assert window.preset_modified is False
     window.undo_configuration()
     assert state.get_band(4).gain_db == 3.0
-    assert window.current_preset_modified is True
+    assert window.preset_modified is True

@@ -161,9 +161,6 @@ class LatencyCalibrationWorker(QThread):
 class LatencyCalibrationDialog(QDialog):
     """Dialog that runs and applies latency calibration."""
 
-    calibration_saved = Signal(dict)
-    calibration_reset = Signal()
-
     def __init__(self, parent=None, existing_profile: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle("Latency Calibration")
@@ -614,7 +611,6 @@ class LatencyCalibrationDialog(QDialog):
                 "Calibration could not be saved. Check settings-folder access and retry."
             )
             return
-        self.calibration_saved.emit(self._latest_profile)
         self.accept()
 
     def _on_reset_clicked(self):
@@ -626,7 +622,6 @@ class LatencyCalibrationDialog(QDialog):
         self._apply_profile_to_labels(None)
         self.accept_button.setEnabled(False)
         self.status_label.setText("Calibration reset. Using estimated latency.")
-        self.calibration_reset.emit()
 
     def _on_close_clicked(self):
         self.reject()

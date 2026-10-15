@@ -394,14 +394,15 @@ def _patch_spectral_renderer(monkeypatch, *, suppressor_cut_db: float, damage: d
 
 
 def _verify_tonal(
-    monkeypatch, *, voice=None, wrong_eq_db=0.0, suppressor_cut_db=9.0, damage=None, suppressor_enabled=True
+    monkeypatch, *, voice=None, wrong_eq_db=0.0, suppressor_cut_db=9.0, damage=None, suppressor_enabled=True,
+    wrong_eq_hz=2_500.0,
 ) -> tuple[dict, list[dict]]:
-    """Verify a voice through a suppressor that reshapes it; ``wrong_eq_db`` is added at 2.5 kHz, the EQ band nearest 3 kHz."""
+    """Verify a voice through a suppressor that reshapes it; ``wrong_eq_db`` is added at the EQ band ``wrong_eq_hz`` (default 2.5 kHz, nearest 3 kHz)."""
     voice = _broadband_voice() if voice is None else voice
     take = voice * np.float32(0.05 / np.sqrt(np.mean(np.square(voice, dtype=np.float64))))
     calls = _patch_spectral_renderer(monkeypatch, suppressor_cut_db=suppressor_cut_db, damage=damage)
     setup = _setup_result(suppressor_enabled=suppressor_enabled)
-    next(band for band in setup["eq_settings"]["bands"] if band["frequency_hz"] == 2_500.0)["gain_db"] = wrong_eq_db
+    next(band for band in setup["eq_settings"]["bands"] if band["frequency_hz"] == wrong_eq_hz)["gain_db"] = wrong_eq_db
     noise = _room()
     result = voice_setup.validate_voice_setup_verification(
         noise, take, take, SAMPLE_RATE, setup, "flat", raw_noise_audio=noise, raw_verification_speech_audio=take
@@ -429,6 +430,28 @@ def test_the_suppressor_reshaping_the_spectrum_is_a_tonal_error_only_when_the_ch
         assert result["decision"] == "rollback"
         assert result["reason_codes"] == ["target_error"]
         assert suppressor_flags == [True, True, True]
+
+
+def test_a_low_band_error_the_by_band_reading_catches_passes_as_released(monkeypatch) -> None:
+    assert voice_setup.TONAL_CHECK_COUNTS_EVERY_BAND is False
+
+    result, _ = _verify_tonal(monkeypatch, wrong_eq_db=6.0, wrong_eq_hz=160.0)
+
+    assert result["decision"] == "accept"
+    assert result["reason_codes"] == ["accepted"]
+    assert not any(key.startswith("tone_band_error") for key in result)
+
+
+def test_counting_every_band_rolls_back_a_low_band_error_and_restores(monkeypatch) -> None:
+    with monkeypatch.context() as scope:
+        scope.setattr(voice_setup, "TONAL_CHECK_COUNTS_EVERY_BAND", True)
+        result, _ = _verify_tonal(monkeypatch, wrong_eq_db=6.0, wrong_eq_hz=160.0)
+
+    assert result["decision"] == "rollback"
+    assert result["reason_codes"] == ["target_error"]
+    assert result["tone_band_error_after_db"] > result["tone_band_error_before_db"] + 1.0
+    assert result["spectral_target_error_after_db"] <= result["spectral_target_error_before_db"] + 1.0
+    assert voice_setup.TONAL_CHECK_COUNTS_EVERY_BAND is False
 
 
 def test_a_wrong_eq_is_still_a_tonal_error_with_a_suppressor_that_reshapes_the_spectrum(monkeypatch) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Protocol
 
 
@@ -654,12 +654,16 @@ def _validated_legacy_array(
     ]
 
 
+# Strength of a new preset; stays 1.0 until a held-out evaluation adopts another value.
+DEFAULT_SUPPRESSOR_STRENGTH = 1.0
+
+
 @dataclass
 class RNNoiseSettings:
     """Noise suppression settings (RNNoise or DeepFilterNet)."""
 
     enabled: bool = True
-    strength: float = 1.0
+    strength: float = field(default_factory=lambda: DEFAULT_SUPPRESSOR_STRENGTH)
     model: str = "rnnoise"
 
 

@@ -8,8 +8,12 @@ filler) and one analysis failure.
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import math
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
@@ -46,9 +50,11 @@ def no_vad_model(monkeypatch, tmp_path):
 @pytest.fixture
 def frozen_tree(monkeypatch, tmp_path):
     """A freeze of the real code with stand-in assets (CI has none), written under a scratch directory."""
-    assets = {"extension": "1" * 64, "df.dll": "2" * 64, "vad_model": "3" * 64, "corpus_manifest": "4" * 64,
-              "models/DeepFilterNet3_onnx.tar.gz": "5" * 64}
+    assets = {"extension": "1" * 64, "df.dll": "2" * 64, "onnxruntime.dll": "6" * 64,
+              "onnxruntime_providers_shared.dll": "7" * 64, "vad_model": "3" * 64, "corpus_manifest": "4" * 64,
+              "models/DeepFilterNet3_ll_onnx.tar.gz": "8" * 64, "models/DeepFilterNet3_onnx.tar.gz": "5" * 64}
     monkeypatch.setattr(ev, "asset_hashes", lambda root=None: dict(assets))
+    monkeypatch.setattr(ev, "check_assets", lambda: None)  # CI has none of the assets; the real check is tested apart
     for name, value in (("FROZEN", "frozen-files.json"), ("RULES_FINAL", "rules-final.md"), ("DEFAULT_ROWS", "rows.json"),
                         ("DEFAULT_REPORT", "report.json")):
         monkeypatch.setattr(ev, name, tmp_path / "details" / value)
@@ -582,6 +588,9 @@ RETRY = {"decision": "retry", "reason_codes": ["verification_delivery_mismatch"]
     ([_reduce(5.0, ())], "gave_up", 0, "no_target", [0], []),
     ([{"decision": "rollback", "reason_codes": ["target_error"]}], "rollback", 0, None, [0], []),
     ([RETRY, ACCEPT], "accept", 0, None, [0, 1], ["D1"]),
+    ([{"decision": "retry", "reason_codes": ["verification_capture_invalid"]}, ACCEPT], "accept", 0, None, [0, 1], ["D2"]),
+    ([{"decision": "retry", "reason_codes": ["verification_capture_too_short"]}, ACCEPT], "accept", 0, None, [0, 1], ["D2"]),
+    ([{"decision": "retry", "reason_codes": ["no_such_code"]}, ACCEPT], "accept", 0, None, [0, 1], ["unknown"]),
     ([RETRY, RETRY, {"decision": "rollback", "reason_codes": ["target_error"]}], "rollback", 0, None, [0, 1, 2], ["D1", "D1"]),
     ([RETRY, _reduce(5.0), ACCEPT], "accept", 1, None, [0, 1, 1], ["D1"]),  # a reduction re-verifies the take it settled on
     ([RETRY, RETRY, RETRY], "retry", 0, "bad_takes", [0, 1, 2], ["D1", "D1", "D1"]),
@@ -777,29 +786,36 @@ def test_defaults_are_the_new_files_never_a_historical_report():
     assert details in ev.FROZEN.parents and details in ev.DEVELOPMENT_ROWS.parents
 
 
-def test_workers_are_at_most_four_and_a_partial_file_resumes_only_its_own_build(tmp_path):
+JOBS = [("root", "fit", 72, "rnnoise")]
+
+
+def test_workers_are_at_most_four_and_a_partial_file_resumes_only_its_own_build_and_users(tmp_path):
     assert [ev.worker_count(n) for n in (9, 4, 2, 0, -1)] == [4, 4, 2, 1, 1]
     partial = tmp_path / "rows.run.partial.jsonl"
-    ev.check_resume(partial, "build-a")  # nothing to resume
+    ev.check_resume(partial, "build-a", JOBS)  # nothing to resume
     partial.write_text(json.dumps({"split": "fit", "index": 72, "model": "rnnoise", "build": "build-a"}) + "\n", encoding="utf-8")
-    ev.check_resume(partial, "build-a")
+    ev.check_resume(partial, "build-a", JOBS)
     with pytest.raises(SystemExit, match="another build"):
-        ev.check_resume(partial, "build-b")
+        ev.check_resume(partial, "build-b", JOBS)
+    # Finishing a run unlinks the partial file, so it must not hold users that run does not return.
+    with pytest.raises(SystemExit, match="outside this run"):
+        ev.check_resume(partial, "build-a", [("root", "fit", 73, "rnnoise")])
+    assert partial.exists()
 
 
 def test_a_truncated_last_line_of_the_partial_file_is_dropped_with_a_message_not_a_traceback(tmp_path, capsys):
     good = json.dumps({"split": "fit", "index": 72, "model": "rnnoise", "build": "b"})
     partial = tmp_path / "rows.run.partial.jsonl"
     partial.write_text(good + "\n" + good + "\n" + good[:25], encoding="utf-8")
-    ev.check_resume(partial, "b")
+    ev.check_resume(partial, "b", JOBS)
     assert "truncated last line (3)" in capsys.readouterr().out
     assert partial.read_text(encoding="utf-8") == good + "\n" + good + "\n"
     partial.write_text(good, encoding="utf-8")  # complete, but the next row would be appended to it
-    ev.check_resume(partial, "b")
+    ev.check_resume(partial, "b", JOBS)
     assert partial.read_text(encoding="utf-8") == good + "\n"
     partial.write_text("{damaged\n" + good + "\n", encoding="utf-8")
     with pytest.raises(SystemExit, match="line 1 is not JSON"):
-        ev.check_resume(partial, "b")
+        ev.check_resume(partial, "b", JOBS)
 
 
 def test_the_freeze_covers_every_module_the_study_loads_and_notices_a_change(frozen_tree, tmp_path):
@@ -810,7 +826,9 @@ def test_the_freeze_covers_every_module_the_study_loads_and_notices_a_change(fro
                  "python/mic_eq/analysis/deesser_fusion.py", "python/mic_eq/analysis/eq_quality.py",
                  "python/tools/evaluate_voice_setup_refusals.py"):
         assert name in frozen_tree, name
-    assert {"rule", "extension", "df.dll", "vad_model", "corpus_manifest", "models/DeepFilterNet3_onnx.tar.gz",
+    assert {"rule", "extension", "df.dll", "onnxruntime.dll", "onnxruntime_providers_shared.dll", "vad_model",
+            "corpus_manifest", "models/DeepFilterNet3_onnx.tar.gz", "models/DeepFilterNet3_ll_onnx.tar.gz",
+            "release_assets:df.dll", "release_assets:onnxruntime.dll", "release_assets:vad_model",
             "runtime:python", "runtime:numpy", "runtime:scipy"} <= set(frozen_tree)
     assert ev.check_frozen(ev.FROZEN, tmp_path) == frozen_tree
     for name in ("python/mic_eq/config_parts/presets.py", "df.dll", "models/DeepFilterNet3_onnx.tar.gz", "rule", "runtime:numpy"):
@@ -825,6 +843,70 @@ def test_the_freeze_covers_every_module_the_study_loads_and_notices_a_change(fro
         ev.check_frozen(ev.FROZEN, tmp_path)
 
 
+def test_a_module_added_after_the_freeze_is_a_change(frozen_tree, monkeypatch, tmp_path):
+    real = ev.source_hashes
+    monkeypatch.setattr(ev, "source_hashes", lambda: {**real(), "python/mic_eq/added_later.py": "x"})
+    with pytest.raises(SystemExit, match=r"added_later\.py"):
+        ev.check_frozen(ev.FROZEN, tmp_path)
+
+
+def _tree(tmp_path):
+    """A stand-in repository holding every file the study loads, and the digest of each."""
+    repo = tmp_path / "repo"
+    contents = {"df.dll": b"df", "models/DeepFilterNet3_ll_onnx.tar.gz": b"ll", "models/DeepFilterNet3_onnx.tar.gz": b"std",
+                "models/silero_vad.onnx": b"vad", loudness.EXTENSION: b"pyd", "ort/onnxruntime.dll": b"ort",
+                "ort/onnxruntime_providers_shared.dll": b"providers", "corpus/manifest.json": b"{}"}
+    for name, data in contents.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_bytes(data)
+    digest = {name: hashlib.sha256(data).hexdigest() for name, data in contents.items()}
+    return repo, digest
+
+
+def test_the_assets_are_exactly_the_files_the_study_loads(monkeypatch, tmp_path):
+    repo, digest = _tree(tmp_path)
+    monkeypatch.setattr(ev, "REPO_ROOT", repo)
+    monkeypatch.setattr(ev, "ort_dll_root", lambda: repo / "ort")
+    monkeypatch.setenv("VAD_MODEL_PATH", str(repo / "models" / "silero_vad.onnx"))
+    assert ev.asset_hashes(repo / "corpus") == {
+        "extension": digest[loudness.EXTENSION], "df.dll": digest["df.dll"], "onnxruntime.dll": digest["ort/onnxruntime.dll"],
+        "onnxruntime_providers_shared.dll": digest["ort/onnxruntime_providers_shared.dll"],
+        "vad_model": digest["models/silero_vad.onnx"], "corpus_manifest": digest["corpus/manifest.json"],
+        "models/DeepFilterNet3_ll_onnx.tar.gz": digest["models/DeepFilterNet3_ll_onnx.tar.gz"],
+        "models/DeepFilterNet3_onnx.tar.gz": digest["models/DeepFilterNet3_onnx.tar.gz"]}
+    ev.check_assets()
+    # An absent DeepFilter archive stops the check, the hashing and the freeze: none leaves it out.
+    (repo / "models" / "DeepFilterNet3_ll_onnx.tar.gz").unlink()
+    with pytest.raises(FileNotFoundError, match="DeepFilterNet3_ll_onnx"):
+        ev.check_assets()
+    with pytest.raises(FileNotFoundError):
+        ev.asset_hashes(repo / "corpus")
+    with pytest.raises(FileNotFoundError, match="DeepFilterNet3_ll_onnx"):
+        ev.freeze(tmp_path / "frozen.json", tmp_path / "rules.md", tmp_path / "rows.json", repo / "corpus")
+    assert not (tmp_path / "frozen.json").exists()
+    (repo / "ort" / "onnxruntime.dll").unlink()
+    with pytest.raises(FileNotFoundError, match="onnxruntime.dll"):
+        ev.check_assets()
+
+
+def test_release_assets_declares_what_the_study_loads_and_the_report_records_both_hashes(frozen_tree):
+    listed = {a["path"]: a["sha256"] for a in json.loads((ev.REPO_ROOT / "release-assets.json").read_text(encoding="utf-8"))["assets"]}
+    declared = ev.declared_hashes()
+    assert set(declared) == {f"release_assets:{name}" for name in (
+        "df.dll", "onnxruntime.dll", "onnxruntime_providers_shared.dll", "vad_model",
+        "models/DeepFilterNet3_ll_onnx.tar.gz", "models/DeepFilterNet3_onnx.tar.gz")}
+    assert declared["release_assets:df.dll"] == listed["df.dll"] and declared["release_assets:vad_model"] == listed["models/silero_vad.onnx"]
+    assert all(frozen_tree[key] == value for key, value in declared.items())
+    source = {"rows": ev.fabricated_rows(), "identity": {"build": "b"}}
+    report = ev.build_report(source, frozen_tree)
+    assert report["release_assets"]["df.dll"] == {"local": "2" * 64, "declared": declared["release_assets:df.dll"], "same": False}
+    assert report["asset_hashes"]["onnxruntime_dll"] == "6" * 64 and report["asset_hashes"]["df_dll"] == "2" * 64
+    assert any(line.startswith("df.dll is a local build") for line in report["limitations"])
+    matching = {**frozen_tree, "df.dll": declared["release_assets:df.dll"]}
+    assert ev.build_report(source, matching)["release_assets"]["df.dll"]["same"] is True
+    assert not any(line.startswith("df.dll is a local build") for line in ev.build_report(source, matching)["limitations"])
+
+
 def test_a_freeze_stays_once_rows_exist(frozen_tree, tmp_path):
     ev.freeze(ev.FROZEN, ev.RULES_FINAL, ev.DEFAULT_ROWS, tmp_path)  # nothing was made under it yet
     assert ev.RULES_FINAL.read_text(encoding="utf-8") == ev.__doc__
@@ -837,10 +919,17 @@ def test_a_freeze_stays_once_rows_exist(frozen_tree, tmp_path):
         existing.unlink()
 
 
-def test_run_refuses_to_overwrite_a_finished_rows_file(frozen_tree, tmp_path):
+def test_run_refuses_to_overwrite_a_finished_rows_file_wherever_output_points(frozen_tree, tmp_path):
+    other = tmp_path / "elsewhere.json"
+    with pytest.raises(SystemExit, match="always"):
+        ev.main(["run", "--root", str(tmp_path), "--output", str(other)])
     ev.DEFAULT_ROWS.write_text("{}", encoding="utf-8")
     with pytest.raises(SystemExit, match="finished run"):
         ev.main(["run", "--root", str(tmp_path)])
+    with pytest.raises(SystemExit, match="always"):
+        ev.main(["run", "--root", str(tmp_path), "--output", str(other)])
+    with pytest.raises(SystemExit, match="stays"):  # the freeze lock follows the study's rows, not --rows
+        ev.main(["freeze", "--root", str(tmp_path), "--rows", str(other)])
     ev.check_not_finished(tmp_path / "none.json")
 
 
@@ -941,7 +1030,13 @@ def _stub_worker(monkeypatch, tmp_path, *, b1, heard=None, verdicts=None, vad="s
     rate = voice_setup_eval.SAMPLE_RATE
     case = _case(2)  # a 6 s evaluation capture; the setup passage is 3 s of other audio, so takes start at 0, 1.5, 3 s
     rng = np.random.default_rng(5)
-    (tmp_path / "manifest.json").write_text(json.dumps({"speakers": {"p001": {"gender": "male"}}}), encoding="utf-8")
+    (tmp_path / "speech").mkdir(exist_ok=True)
+    (tmp_path / "speech" / "a.wav").write_bytes(b"speech")
+    (tmp_path / "noise.wav").write_bytes(b"noise")
+    digest = lambda data: hashlib.sha256(data).hexdigest()  # noqa: E731
+    (tmp_path / "manifest.json").write_text(json.dumps({
+        "speakers": {"p001": {"gender": "male", "files": [{"path": "speech/a.wav", "sha256": digest(b"speech")}]}},
+        "noise": {"DKITCHEN": {"path": "noise.wav", "sha256": digest(b"noise")}}}), encoding="utf-8")
     simulated = {
         "split": "fit", "index": 72, "speaker": "p001", "environment": "DKITCHEN", "snr_db": 12.0, "level_dbfs": -28.0,
         "noise_capture": (0.01 * rng.standard_normal(2 * rate)).astype(np.float32),
@@ -1066,6 +1161,11 @@ def test_a_delivery_mismatch_asks_for_the_next_window_and_the_user_is_still_judg
     heard = {}
     row = ev.evaluate_user(_stub_worker(monkeypatch, tmp_path, b1=False, heard=heard, verdicts=[retry] * 3), development=False)
     assert row["verification"]["decision"] == "retry" and row["verification"]["retakes"] == ["D1"] * 3
+    # Three takes, the last at the end of the capture, none of them empty or short.
+    starts = (0, middle, evaluation.size - size)
+    assert len(heard["calls"]) == 3
+    assert [np.array_equal(call[2], evaluation[start : start + size]) and call[2].size == size
+            for call, start in zip(heard["calls"], starts, strict=True)] == [True, True, True]
     assert "C1" not in row["fired"] and "C2" not in row["fired"] and "final" not in row["objects"]
 
 
@@ -1084,8 +1184,14 @@ def test_a_user_whose_auto_eq_failed_before_validation_is_an_analysis_failure(mo
     monkeypatch.setattr(voice_setup, "analyze_voice_setup", lambda *a, **k: failing)
     row = ev.evaluate_user(job, development=False)
     assert row["analysis_failure"] == "boom" and row["fired"] == [] and ev.assess([row])[0]["bucket"] == "analysis_failure"
-    monkeypatch.setattr(voice_setup, "analyze_voice_setup", lambda *a, **k: (_ for _ in ()).throw(ValueError("too short")))
-    assert ev.evaluate_user(job, development=False)["analysis_failure"] == "too short"
+    assert set(row["vad_backends"].values()) == {"silero"} and row["tuner_models"]["deepfilter"] == "available"
+    refusal = ev.CAPTURE_REFUSALS[1]
+    monkeypatch.setattr(voice_setup, "analyze_voice_setup", lambda *a, **k: (_ for _ in ()).throw(ValueError(refusal)))
+    row = ev.evaluate_user(job, development=False)
+    assert row["analysis_failure"] == refusal and row["vad_backends"] is None and row["tuner_models"] is None
+    monkeypatch.setattr(voice_setup, "analyze_voice_setup", lambda *a, **k: (_ for _ in ()).throw(ValueError("a bug")))
+    with pytest.raises(ValueError, match="a bug"):
+        ev.evaluate_user(job, development=False)
 
 
 def test_a_row_made_without_silero_or_without_a_tuner_model_stops_the_run(monkeypatch, tmp_path):
@@ -1189,3 +1295,140 @@ def test_a_missing_model_or_a_current_render_that_fails_stops_the_run_instead_of
     monkeypatch.setattr(loudness, "_render", fail)
     with pytest.raises(RuntimeError, match="current settings do not render.*VAD model not found"):
         ev.evaluate_user(job, development=False)
+
+
+def test_a_corpus_file_that_is_not_the_manifests_stops_the_run(monkeypatch, tmp_path):
+    job = _stub_worker(monkeypatch, tmp_path, b1=False)
+    ev.check_corpus(tmp_path, json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8")), "p001", "DKITCHEN")
+    (tmp_path / "noise.wav").write_bytes(b"replaced")
+    with pytest.raises(RuntimeError, match=r"corpus files differ from the manifest: noise\.wav"):
+        ev.evaluate_user(job, development=False)
+
+
+def test_the_take_windows_lie_inside_the_capture():
+    capture = np.arange(100.0)
+    windows = ev.take_windows(capture, 30)
+    assert [window[0] for window in windows] == [0.0, 35.0, 70.0] and all(window.size == 30 for window in windows)
+    assert windows[2][-1] == 99.0
+    with pytest.raises(ValueError, match="shorter than the setup passage"):
+        ev.take_windows(capture, 101)
+
+
+def test_the_last_window_starts_at_the_middle_of_the_capture(monkeypatch):
+    case = _case(1)
+    ctx = {**case, "noise": case["noisy"][: 2 * voice_setup_eval.SAMPLE_RATE], "raw": case["noisy"].astype(np.float32)}
+    spike = {"at": 100}
+
+    def render(settings, capture):
+        output = np.asarray(capture, np.float32).copy()
+        output[spike["at"]] = 1.0
+        return {"output_audio": output, "limiter_gain_reduction_db": 0.0, "true_peak_limiter_gain_reduction_db": 0.0}
+
+    monkeypatch.setattr(loudness, "_render", render)
+    first_half = ev.measure_settings({}, ctx, ("whole", "last10"))
+    assert first_half["whole"]["clipped"] is True and first_half["last10"]["clipped"] is False
+    spike["at"] = ctx["raw"].size - 100
+    second_half = ev.measure_settings({}, ctx, ("whole", "last10"))
+    assert second_half["whole"]["clipped"] is True and second_half["last10"]["clipped"] is True
+
+
+def test_the_trigger_can_fire_from_the_first_count_that_is_not_underpowered(monkeypatch):
+    monkeypatch.setattr(gate_corpus, "BOOTSTRAP", 4000)  # the study's own bootstrap, not this file's quick one
+    speakers = np.array([f"p{i // 3}" for i in range(54)])
+
+    def lower_bound(firings):  # every firing false, each from another speaker: the most the clusters can give
+        flags = np.zeros(54)
+        flags[[3 * i for i in range(firings)]] = 1.0
+        return gate_corpus.cluster_ci(flags, speakers)[1]
+
+    assert ev.MIN_FIRED == 7
+    assert lower_bound(ev.MIN_FIRED - 1) <= ev.TRIGGER_SHARE < lower_bound(ev.MIN_FIRED)
+    def b3_row(rows):
+        report = ev.refusal_report(rows)
+        return next(r for r in report["vetoes"] if (r["veto"], r["track"], r["counting"]) == ("B3", "whole", "first")), report
+
+    def make_b3(row):
+        row.update(fired=["B3"], recommended=False, objects={"whole": {"vacuous": False}},
+                   metrics={"current": {"whole": OK}, "whole": {"whole": OK}})
+
+    rows = ev.fabricated_rows()  # B3 is first for two users already
+    for row in rows[23 : 23 + ev.MIN_FIRED - 3]:
+        make_b3(row)
+    row3, report = b3_row(rows)
+    assert row3["fired"] == ev.MIN_FIRED - 1 and row3["underpowered"] and "B3:whole:first" in report["underpowered"]
+    make_b3(rows[23 + ev.MIN_FIRED - 3])
+    row3, report = b3_row(rows)
+    assert row3["fired"] == ev.MIN_FIRED and not row3["underpowered"] and "B3:whole:first" not in report["underpowered"]
+    assert "fewer than 7" in report["trigger"]
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# 12. Running the jobs
+
+
+def _job(index):
+    return ("root", "fit", index, "rnnoise")
+
+
+def _row(index):
+    return {"split": "fit", "index": index, "model": "rnnoise", "build": "b"}
+
+
+def test_the_first_user_runs_here_and_a_failing_one_stops_the_run_before_the_pool_starts(monkeypatch, tmp_path):
+    monkeypatch.setattr(ev, "ProcessPoolExecutor", ThreadPoolExecutor)
+    calls = []
+
+    def work(job):
+        calls.append(job[2])
+        raise OSError("a model is missing")
+
+    partial = tmp_path / "rows.run.partial.jsonl"
+    with pytest.raises(RuntimeError, match=r"fit:72 failed: OSError: a model is missing"):
+        ev.run_jobs(work, [_job(72 + i) for i in range(8)], 4, partial)
+    assert calls == [72] and partial.read_text(encoding="utf-8") == ""
+
+
+def test_a_worker_that_fails_cancels_the_pending_users_keeps_the_finished_rows_and_names_the_user(monkeypatch, tmp_path):
+    monkeypatch.setattr(ev, "ProcessPoolExecutor", ThreadPoolExecutor)
+    here, calls = threading.get_ident(), []
+
+    def work(job):
+        calls.append((job[2], threading.get_ident()))
+        if job[2] == 74:
+            time.sleep(0.02)
+            raise ValueError("boom")
+        time.sleep(0.3)
+        return _row(job[2])
+
+    partial = tmp_path / "rows.run.partial.jsonl"
+    with pytest.raises(RuntimeError, match=r"fit:74 failed: ValueError: boom"):
+        ev.run_jobs(work, [_job(72 + i) for i in range(12)], 2, partial)
+    assert calls[0] == (72, here) and len(calls) < 12  # the pending users never started
+    kept = [json.loads(line)["index"] for line in partial.read_text(encoding="utf-8").splitlines()]
+    assert 72 in kept and 74 not in kept and set(kept) == {index for index, _ in calls} - {74}  # running ones kept theirs
+
+
+def test_a_run_resumes_from_its_partial_file_and_returns_the_rows_in_job_order(monkeypatch, tmp_path):
+    monkeypatch.setattr(ev, "ProcessPoolExecutor", ThreadPoolExecutor)
+    partial = tmp_path / "rows.run.partial.jsonl"
+    partial.write_text("".join(json.dumps(_row(index)) + "\n" for index in (74, 72)), encoding="utf-8")
+    calls = []
+
+    def work(job):
+        calls.append(job[2])
+        return _row(job[2])
+
+    rows = ev.run_jobs(work, [_job(72 + i) for i in range(5)], 2, partial)
+    assert [row["index"] for row in rows] == [72, 73, 74, 75, 76] and sorted(calls) == [73, 75, 76]
+    assert len(partial.read_text(encoding="utf-8").splitlines()) == 5
+
+
+def test_every_user_of_a_finished_run_is_in_its_rows_so_deleting_the_partial_file_loses_nothing(monkeypatch, tmp_path):
+    monkeypatch.setattr(ev, "ProcessPoolExecutor", ThreadPoolExecutor)
+    jobs = [_job(72), _job(73)]
+    partial = tmp_path / "rows.run.partial.jsonl"
+    partial.write_text(json.dumps(_row(72)) + "\n", encoding="utf-8")
+    ev.check_resume(partial, "b", jobs)
+    rows = ev.run_jobs(lambda job: _row(job[2]), jobs, 1, partial)
+    kept = {json.loads(line)["index"] for line in partial.read_text(encoding="utf-8").splitlines()}
+    assert kept == {row["index"] for row in rows}

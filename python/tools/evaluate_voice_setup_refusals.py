@@ -6,17 +6,22 @@ Subcommands:
            refusal throws away, and the tone fit an abstention zeroes. Emulate verification, then render the
            evaluation capture through the current settings, each withheld setup and, for a refused setup, each
            of its steps, and measure every clause below. Refuses a spent user or one outside the study, and a
-           finished rows file; starts only when the hashes written by ``freeze`` still match, and stops when a row
-           shows that the VAD did not run as Silero or that the tuner lacked a suppressor model.
+           finished rows file (the study's rows are always the default file; ``--output`` is for ``probe`` and
+           ``report``); starts only when the hashes written by ``freeze`` still match, and stops when a row shows
+           that the VAD did not run as Silero or that the tuner lacked a suppressor model. The first user runs in this
+           process before the pool starts, so a broken asset stops the run in one user's time; if a worker fails, the
+           pending users are cancelled, the running ones keep their rows in the partial file and the error names the
+           user. Every corpus file a user is built from is checked against the manifest's SHA-256.
   probe    ``probe --development``: the bookkeeping dry run on the 36 spent development users (fit, calibrate
            and test 0-11). It runs them with extra probes and writes reachability, clause coverage, probe and
            arithmetic checks as counts and flags. No rate and no interval is computed from spent users.
   report   Judge the rows written by ``run`` and write the tracked report, with the frozen hashes. Refuses
            development rows and a changed tree.
   freeze   Write ``rules-final.md`` (this text) and ``frozen-files.json`` (hashes of this rule, every
-           ``python/mic_eq`` module and the tools it imports, the native extension, df.dll, the DeepFilter and VAD
-           models and the corpus manifest, and the Python, NumPy and SciPy versions) beside the rows. It does not
-           replace a freeze once rows exist. ``run`` and ``report`` check the hashes, and a row's build is
+           ``python/mic_eq`` module and the tools it imports, the native extension, df.dll, ONNX Runtime and its providers
+           DLL as the extension loads them, the DeepFilter and VAD models, the corpus manifest, what
+           ``release-assets.json`` declares for each of those assets, and the Python, NumPy and SciPy versions) beside
+           the rows. It fails on an absent asset, and does not replace a freeze once rows exist. ``run`` and ``report`` check the hashes, and a row's build is
            derived from them, so a partial file written by other code is not resumed and a change during a run
            stops it.
 
@@ -106,8 +111,9 @@ by stratum (level-check verdict, RT60 band, SNR band, gender).
 
 Trigger (the only decision rule). A veto whose false-refusal share of all users, headline reading, has an interval
 whose lower bound is above 5 % in either counting becomes a candidate for a loosening study with its own predefined
-gates and fresh speakers. No veto is changed by this study. A veto fired by fewer than 8 users is marked
-underpowered: with 54 users in 18 clusters of 3 the trigger cannot fire for it, so its silence says nothing.
+gates and fresh speakers. No veto is changed by this study. A veto fired by fewer than 7 users is marked
+underpowered: with 54 users in 18 clusters of 3 the trigger cannot fire for it even if every firing were false and
+from a different speaker (6 firings give a lower bound of 3.7 %, 7 give 5.6 %), so its silence says nothing.
 
 Dry run. ``probe --development`` runs the 36 spent users (fit, calibrate and test 0-11) with seven known-bad probes
 (a +12 dB bell at 3 kHz and a -12 dB high shelf at 6.5 kHz, each on the EQ's nearest tone band; a compressor
@@ -122,7 +128,8 @@ Limits. The current settings are always the factory ones. For B1 the judged obje
 tuner's best non-incumbent candidate may be one the tuner scored worse than the incumbent; the label "margin" then
 means that the tuner kept the incumbent without a holdout, not that the candidate came close. The tuner's runtime
 gate reads wall-clock time, so its candidates depend on the machine's load; each row records every candidate's
-failed gates and runtime factor.
+failed gates and runtime factor. df.dll is a local build whose SHA-256 differs from the one release-assets.json
+declares; the report records both. The report summarises the loaded-model evidence (VAD backends, tuner models).
 """
 
 from __future__ import annotations
@@ -136,6 +143,7 @@ import os
 import sys
 from collections import Counter
 from collections.abc import Iterator
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict
@@ -192,7 +200,19 @@ VAD_BACKENDS = ("vad_analysis_backend", "noise_vad_analysis_backend", "joint_vad
 TUNER_MODELS = ("rnnoise", "deepfilter-ll", "deepfilter")
 MAX_BAD_TAKES = 3  # the dialog's _MAX_VERIFICATION_BAD_CAPTURES
 IDENTICAL_ATOL = 1e-6  # a render this close to the current one, sample for sample, is the same audio
-MIN_FIRED = 8  # below this a veto is underpowered: with 54 users in 18 clusters of 3 the 5 % trigger cannot fire
+# Below this a veto is underpowered: with 54 users in 18 clusters of 3, the 5 % trigger cannot fire even if every
+# firing were false and each came from another speaker (6 firings give a lower bound of 3.7 %, 7 give 5.6 %).
+MIN_FIRED = 7
+# The messages of the ValueErrors with which analyze_voice_setup refuses the captures themselves (A1, A3, A4).
+CAPTURE_REFUSALS = ("raw setup captures are non-finite or clipped", "Room-noise capture was too short for setup.",
+                    "Voice capture was too short for setup.")
+DEEPFILTER_MODELS = ("DeepFilterNet3_ll_onnx.tar.gz", "DeepFilterNet3_onnx.tar.gz")
+# What release-assets.json declares for each asset the study loads (by the name asset_paths gives it).
+RELEASE_ASSET_PATHS = {
+    "df.dll": "df.dll", "onnxruntime.dll": "target/onnxruntime-cpu/lib/onnxruntime.dll",
+    "onnxruntime_providers_shared.dll": "target/onnxruntime-cpu/lib/onnxruntime_providers_shared.dll",
+    "vad_model": "models/silero_vad.onnx",
+    **{f"models/{name}": f"models/{name}" for name in DEEPFILTER_MODELS}}
 RETRY_COSTS = {"verification_delivery_mismatch": "D1", "verification_capture_too_short": "D2",
                "verification_capture_invalid": "D2"}
 STATUSES = ("false", "correct", "partial", "definition", "vacuous", "unjudgeable")
@@ -255,8 +275,8 @@ LIMITATIONS = (
     "'margin' then means that the tuner kept the incumbent without a holdout, not that the candidate came close.",
     "The tuner's runtime gate reads wall-clock time, so its candidates depend on the machine's load; each row records "
     "every candidate's failed gates and runtime factor.",
-    "A veto fired by fewer than 8 users is underpowered: with 54 users in 18 clusters of 3 the trigger cannot fire "
-    "for it, so its silence says nothing.",
+    "A veto fired by fewer than 7 users is underpowered: with 54 users in 18 clusters of 3 the trigger cannot fire "
+    "for it even if every firing were false and from a different speaker, so its silence says nothing.",
 )
 FLATTERING = (
     "No VoiceBank speaker is untouched. These speakers fed the tuner harness and all 30 fit-split speakers fit a "
@@ -651,12 +671,30 @@ def vad_model_path() -> Path:
     return Path(os.environ.get("VAD_MODEL_PATH") or REPO_ROOT / "models" / "silero_vad.onnx")
 
 
+def ort_dll_root() -> Path:
+    """The directory the extension loads ONNX Runtime from."""
+    from mic_eq import _ort_dll_root
+
+    root = _ort_dll_root()
+    if root is None:
+        raise FileNotFoundError("the CPU ONNX Runtime DLLs are missing")
+    return root
+
+
+def asset_paths(root: Path = voice_setup_eval.DEFAULT_ROOT) -> dict[str, Path]:
+    """Every binary or model file the study loads, by name; one that is absent stops the run and the freeze."""
+    ort = ort_dll_root()
+    return {"extension": REPO_ROOT / loudness.EXTENSION, "df.dll": REPO_ROOT / "df.dll",
+            "onnxruntime.dll": ort / "onnxruntime.dll",
+            "onnxruntime_providers_shared.dll": ort / "onnxruntime_providers_shared.dll",
+            "vad_model": vad_model_path(), "corpus_manifest": root / "manifest.json",
+            **{f"models/{name}": REPO_ROOT / "models" / name for name in DEEPFILTER_MODELS}}
+
+
 def check_assets() -> None:
-    """DeepFilter and the VAD model must be there; a missing one would be skipped silently by the native code."""
+    """DeepFilter, ONNX Runtime and the VAD model must be there; the native code would skip a missing one silently."""
     os.environ.setdefault("VAD_MODEL_PATH", str(REPO_ROOT / "models" / "silero_vad.onnx"))
-    needed = [REPO_ROOT / "df.dll", REPO_ROOT / "models" / "DeepFilterNet3_ll_onnx.tar.gz",
-              REPO_ROOT / "models" / "DeepFilterNet3_onnx.tar.gz", vad_model_path()]
-    missing = [path.name for path in needed if not path.is_file()]
+    missing = [path.name for name, path in asset_paths().items() if name != "corpus_manifest" and not path.is_file()]
     if missing:
         raise FileNotFoundError(f"study assets are missing: {', '.join(missing)}")
 
@@ -690,11 +728,14 @@ def source_hashes() -> dict[str, str]:
 
 
 def asset_hashes(root: Path = voice_setup_eval.DEFAULT_ROOT) -> dict[str, str]:
-    """The native extension, df.dll, the DeepFilter and VAD models and the corpus manifest."""
-    assets = {"extension": REPO_ROOT / loudness.EXTENSION, "df.dll": REPO_ROOT / "df.dll", "vad_model": vad_model_path(),
-              "corpus_manifest": root / "manifest.json",
-              **{f"models/{path.name}": path for path in sorted((REPO_ROOT / "models").glob("DeepFilterNet3*_onnx.tar.gz"))}}
-    return {name: gate_corpus._sha256(path) for name, path in assets.items()}
+    return {name: gate_corpus._sha256(path) for name, path in asset_paths(root).items()}
+
+
+def declared_hashes() -> dict[str, str]:
+    """What release-assets.json declares for the assets the study loads."""
+    listed = json.loads((REPO_ROOT / "release-assets.json").read_text(encoding="utf-8"))["assets"]
+    declared = {item["path"]: item["sha256"] for item in listed}
+    return {f"release_assets:{name}": declared[path] for name, path in RELEASE_ASSET_PATHS.items()}
 
 
 def frozen_hashes(root: Path = voice_setup_eval.DEFAULT_ROOT) -> dict[str, str]:
@@ -702,7 +743,7 @@ def frozen_hashes(root: Path = voice_setup_eval.DEFAULT_ROOT) -> dict[str, str]:
     import scipy
 
     return {"rule": hashlib.sha256((__doc__ or "").encode()).hexdigest(), **source_hashes(), **asset_hashes(root),
-            "runtime:python": sys.version, "runtime:numpy": np.__version__, "runtime:scipy": scipy.__version__}
+            **declared_hashes(), "runtime:python": sys.version, "runtime:numpy": np.__version__, "runtime:scipy": scipy.__version__}
 
 
 def build_of(frozen: dict[str, str]) -> str:
@@ -718,6 +759,21 @@ def build_id(root: str) -> str:
 def rt60_s(split: str, index: int) -> float:
     """The first draw of the user's room generator (see ``evaluate_voice_setup.user``)."""
     return float(np.random.default_rng(1_000_000 * (voice_setup_eval.SPLITS.index(split) + 1) + index).uniform(0.2, 0.7))
+
+
+def take_windows(capture: np.ndarray, size: int) -> list[np.ndarray]:
+    """The second takes the user can record: windows as long as the setup passage, from the start to the end."""
+    if capture.size < size:
+        raise ValueError(f"the evaluation capture ({capture.size} samples) is shorter than the setup passage ({size})")
+    return [capture[start : start + size] for start in (0, (capture.size - size) // 2, capture.size - size)]
+
+
+def check_corpus(root: Path, manifest: dict[str, Any], speaker: str, environment: str) -> None:
+    """The corpus files this user is built from are the files the manifest names."""
+    entries = [*manifest["speakers"][speaker]["files"], manifest["noise"][environment]]
+    differ = [entry["path"] for entry in entries if gate_corpus._sha256(root / entry["path"]) != entry["sha256"]]
+    if differ:
+        raise RuntimeError(f"corpus files differ from the manifest: {', '.join(differ)}")
 
 
 def _verification_row(flow: dict[str, Any]) -> dict[str, Any]:
@@ -736,13 +792,11 @@ def evaluate_user(job: tuple[str, str, int, str], *, development: bool) -> dict[
     root = Path(root_text)
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     simulated = voice_setup_eval.user(root, manifest, split_name, index)
+    check_corpus(root, manifest, simulated["speaker"], simulated["environment"])
     raw_noise, raw_setup, raw_evaluation = (
         simulated[name] for name in ("noise_capture", "setup_capture", "evaluation_capture"))
     noise, setup = (filtered_capture_for_analysis(audio, SAMPLE_RATE) for audio in (raw_noise, raw_setup))
-    # The second takes the user can record: windows as long as the setup passage, from the start to the end.
-    size = raw_setup.size
-    second_windows = [raw_evaluation[start : start + size] for start in (0, (raw_evaluation.size - size) // 2, raw_evaluation.size - size)]
-    takes = [(filtered_capture_for_analysis(window, SAMPLE_RATE), window) for window in second_windows]
+    takes = [(filtered_capture_for_analysis(window, SAMPLE_RATE), window) for window in take_windows(raw_evaluation, raw_setup.size)]
     row: dict[str, Any] = {
         **{key: simulated[key] for key in ("split", "index", "speaker", "environment", "snr_db", "level_dbfs")},
         "model": model, "development": development, "build": build_id(root_text),
@@ -757,8 +811,11 @@ def evaluate_user(job: tuple[str, str, int, str], *, development: bool) -> dict[
                 incumbent_settings={"gate": asdict(preset.gate), "rnnoise": asdict(preset.rnnoise),
                                     "eq": EQSettings().to_dict()},
                 raw_noise_audio=raw_noise, raw_speech_audio=raw_setup)
-        except ValueError as error:  # an analysis failure (A1-A4 territory), not a refusal
-            return row | {"analysis_failure": str(error)}
+        except ValueError as error:
+            if str(error) not in CAPTURE_REFUSALS:  # anything else is a fault, and stops the run
+                raise
+            # A1-A4 territory, not a refusal; the analysis stopped before it could show what it loaded.
+            return row | {"analysis_failure": str(error), "vad_backends": None, "tuner_models": None}
     diagnostics = result["diagnostics"]
     tuning = diagnostics["joint_tuning"]
     row |= check_loaded(diagnostics, tuning)
@@ -1052,6 +1109,19 @@ def _step_breakdown(users: list[dict[str, Any]]) -> dict[str, Any]:
     return {"refused_users": len(refused), "no_single_step_worse": alone, "steps": steps}
 
 
+def _loaded(users: list[dict[str, Any]]) -> dict[str, Any]:
+    """What the analyses ran with, summarised (a row that shows anything else stopped the run)."""
+    rows = [user["row"] for user in users if user["row"].get("vad_backends")]
+    candidates = [c for user in users for c in (user["row"].get("tuner") or {}).get("candidates", ())]
+    return {
+        "rows_with_evidence": len(rows), "rows_without": len(users) - len(rows),
+        "vad_backends": {key: dict(Counter(row["vad_backends"][key] for row in rows)) for key in VAD_BACKENDS},
+        "tuner_models": {model: dict(Counter(row["tuner_models"].get(model) for row in rows)) for model in TUNER_MODELS},
+        "tuner_candidates": {"tested": len(candidates), "failed_the_runtime_gate": sum(
+            "runtime" in candidate["failed_gates"] for candidate in candidates)},
+    }
+
+
 def refusal_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
     _check(not any(row.get("development") for row in rows), "development rows are spent users and give no rates")
     _check({(row["split"], row["index"]) for row in rows} == {(SPLIT, index) for index in STUDY_INDICES},
@@ -1090,7 +1160,7 @@ def refusal_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
                        "cause": dict(Counter(t["withheld"]["cause"] for t in tuner if t["withheld"])),
                        "any_candidate_no_worse_upper_bound": sum(
                            (t.get("any_candidate_no_worse") or {}).get("no_worse", 0) > 0 for t in tuner)},
-        "per_step_breakdown": _step_breakdown(users), "sensitivity": sensitivity, "clause_coverage": clause_coverage(users),
+        "loaded": _loaded(users), "per_step_breakdown": _step_breakdown(users), "sensitivity": sensitivity, "clause_coverage": clause_coverage(users),
         "strata": _strata(users), "retake_costs": {
             "users_with_a_retake": sum(bool(v.get("retakes")) for v in verifications),
             "retakes": dict(Counter(code for v in verifications for code in v.get("retakes") or ())),
@@ -1177,13 +1247,15 @@ def fabricated_rows() -> list[dict[str, Any]]:
             "gender": "female" if i // 3 < 2 else "male", "rt60_s": 0.2 + 0.5 * (i % 7) / 6,
             "snr_db": 3.0 + 27.0 * (i % 5) / 4, "level_check": "too_hot" if i % 9 == 0 else "good",
             "fired": list(fired), "recommended": recommended, "short_speech": short, "e1": i % 4 == 0, "e2": i % 6 == 0,
+            "vad_backends": dict.fromkeys(VAD_BACKENDS, "silero"), "tuner_models": dict.fromkeys(TUNER_MODELS, "available"),
             "verification": None if decision is None else {"decision": decision, "retakes": list(retakes),
                                                            "takes": len(retakes) + 1, "adjustments": 0},
             "objects": {name: {"vacuous": kind == "vacuous"} for name, kind in objects.items()}, "metrics": metrics,
         }
         if "B6" in fired:
             row["tuner"] = {"decision": "retain_incumbent", "withheld": {"cause": cause} if cause else None,
-                            "any_candidate_no_worse": {"tested": 3, "no_worse": 1}}
+                            "any_candidate_no_worse": {"tested": 3, "no_worse": 1},
+                            "candidates": [{"failed_gates": ["runtime"]}, {"failed_gates": []}]}
         return row
 
     rows = [
@@ -1206,7 +1278,8 @@ def fabricated_rows() -> list[dict[str, Any]]:
         user(22, ("B3",), recommended=False, whole="error"), user(23, retakes=("D1",)),
     ]
     rows += [user(i) for i in range(len(rows), len(STUDY_INDICES) - 1)]
-    failure = {"analysis_failure": "Recording too unclear. Please try again.", "objects": {}, "metrics": {}}
+    failure = {"analysis_failure": CAPTURE_REFUSALS[1], "objects": {}, "metrics": {}, "vad_backends": None,
+               "tuner_models": None}
     rows.append(user(len(STUDY_INDICES) - 1, decision=None) | failure)
     for row in rows:
         first = first_whole(row["fired"], row["recommended"])
@@ -1248,9 +1321,10 @@ def worker_count(requested: int) -> int:
     return max(1, min(requested, MAX_WORKERS))
 
 
-def check_resume(partial: Path, build: str) -> None:
-    """A partial file resumes whatever code wrote it, so rows from another build are refused. A last line cut
-    short by an interrupted write is dropped; a damaged line elsewhere is not guessed at."""
+def check_resume(partial: Path, build: str, jobs: list[tuple[str, str, int, str]]) -> None:
+    """A partial file resumes whatever code wrote it, so rows from another build are refused, and so are rows of
+    users outside this run's jobs (finishing the run would drop them). A last line cut short by an interrupted write is
+    dropped; a damaged line elsewhere is not guessed at."""
     if not partial.exists():
         return
     text = partial.read_text(encoding="utf-8")
@@ -1265,8 +1339,56 @@ def check_resume(partial: Path, build: str) -> None:
             lines.pop()
     if any(row.get("build") != build for row in rows):
         raise SystemExit(f"{partial} holds rows from another build; delete it to start over")
+    wanted = {(job[1], job[2], job[3]) for job in jobs}
+    if any((row["split"], row["index"], row["model"]) not in wanted for row in rows):
+        raise SystemExit(f"{partial} holds rows of users outside this run; move it away or run those users")
     if len(lines) < len(text.splitlines()) or (lines and not text.endswith("\n")):
         partial.write_text("".join(line + "\n" for line in lines), encoding="utf-8", newline="\n")
+
+
+def _row_of(call: Any, job: tuple[str, str, int, str]) -> dict[str, Any]:
+    try:
+        return call()
+    except Exception as error:
+        raise RuntimeError(f"{job[1]}:{job[2]} failed: {type(error).__name__}: {error}") from error
+
+
+def run_jobs(function: Any, jobs: list[tuple[str, str, int, str]], workers: int, partial: Path) -> list[dict[str, Any]]:
+    """Run the jobs ``partial`` does not hold yet, appending each finished row to it.
+
+    The first user runs here, in this process, so that a missing model or a broken asset stops the run in one user's
+    time instead of after the pool has drained. If a worker fails the pending users are cancelled, the running ones
+    finish and keep their rows, and the error names the user.
+    """
+    rows = [json.loads(line) for line in partial.read_text(encoding="utf-8").splitlines()] if partial.exists() else []
+    done = {(row["split"], row["index"], row["model"]) for row in rows}
+    pending = [job for job in jobs if (job[1], job[2], job[3]) not in done]
+    with partial.open("a", encoding="utf-8", newline="\n") as log:
+        def keep(row: dict[str, Any]) -> None:
+            log.write(json.dumps(row, default=float) + "\n")
+            log.flush()
+            rows.append(row)
+
+        if pending:
+            keep(_row_of(lambda: function(pending[0]), pending[0]))
+        pool = ProcessPoolExecutor(max(workers, 1))
+        futures = {pool.submit(function, job): job for job in pending[1:]}
+        logged = set()
+        try:
+            for future in as_completed(futures):
+                keep(_row_of(future.result, futures[future]))
+                logged.add(future)
+        except BaseException:
+            pool.shutdown(wait=True, cancel_futures=True)
+            for future in futures:
+                if future not in logged and future.done() and not future.cancelled() and future.exception() is None:
+                    keep(future.result())
+            raise
+        finally:
+            pool.shutdown()
+    order = {(job[1], job[2], job[3]): position for position, job in enumerate(jobs)}
+    return sorted((row for row in rows if (row["split"], row["index"], row["model"]) in order),
+                  key=lambda row: order[(row["split"], row["index"], row["model"])])
 
 
 def check_not_finished(rows: Path) -> None:
@@ -1276,6 +1398,7 @@ def check_not_finished(rows: Path) -> None:
 
 def freeze(frozen: Path, rules: Path, rows: Path, root: Path) -> None:
     """Write the rule text and the hashes. Once rows exist the freeze they were made under stays."""
+    check_assets()
     if frozen.exists() and (rows.exists() or rows.with_suffix(".run.partial.jsonl").exists()):
         raise SystemExit(f"{rows} exists: the freeze it was made under stays")
     rules.parent.mkdir(parents=True, exist_ok=True)
@@ -1303,18 +1426,24 @@ def check_unchanged(root: Path, started: str, rows: list[dict[str, Any]]) -> Non
 def build_report(source: dict[str, Any], frozen: dict[str, str]) -> dict[str, Any]:
     """The tracked report. Its hashes are the frozen ones, read from the freeze and not computed again."""
     rows = source["rows"]
+    release = {name: {"local": frozen[name], "declared": frozen[f"release_assets:{name}"],
+                      "same": frozen[name] == frozen[f"release_assets:{name}"]} for name in RELEASE_ASSET_PATHS}
+    local_builds = [f"{name} is a local build whose SHA-256 differs from release-assets.json; both are recorded under "
+                    "release_assets." for name, entry in release.items() if not entry["same"]]
     return {
         "schema_version": 2, "audible_change": False, "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "experiment": "Voice Setup refusals: how often a withheld setup was no worse than the current settings",
         "predefined_rule": "The rule in the docstring of python/tools/evaluate_voice_setup_refusals.py.",
         "rule_sha256": frozen["rule"], "build": source["identity"]["build"],
         "split": SPLIT, "model": MODEL, "user_indices": {SPLIT: sorted(row["index"] for row in rows)},
-        "metrics": refusal_report(rows), "limitations": list(LIMITATIONS), "flattering": list(FLATTERING),
+        "metrics": refusal_report(rows), "limitations": [*LIMITATIONS, *local_builds], "flattering": list(FLATTERING),
         "source_sha256": {name: frozen[name] for name in SOURCES},
         "implementation_sha256": {loudness.EXTENSION: frozen["extension"]},
         "asset_hashes": {"corpus_manifest": frozen["corpus_manifest"], "vad_model": frozen["vad_model"],
-                         "df_dll": frozen["df.dll"],
+                         "df_dll": frozen["df.dll"], "onnxruntime_dll": frozen["onnxruntime.dll"],
+                         "onnxruntime_providers_shared_dll": frozen["onnxruntime_providers_shared.dll"],
                          **{name: digest for name, digest in frozen.items() if name.startswith("models/")}},
+        "release_assets": release,
         "frozen_sha256": frozen,
     }
 
@@ -1332,11 +1461,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--indices", default=DEFAULT_INDICES, help="run: split:ranges")
     parser.add_argument("--development", action="store_true", help="probe: confirm that the 36 spent users run again")
     parser.add_argument("--workers", type=int, default=MAX_WORKERS)
-    parser.add_argument("--rows", type=Path, default=DEFAULT_ROWS, help="freeze, report: the rows written by run")
-    parser.add_argument("--output", type=Path, help="run: rows; probe: bookkeeping; report: the tracked report")
+    parser.add_argument("--rows", type=Path, default=DEFAULT_ROWS, help="report: the rows to judge")
+    parser.add_argument("--output", type=Path, help="probe: the bookkeeping; report: the tracked report")
     args = parser.parse_args(argv)
     if args.command == "freeze":
-        freeze(FROZEN, RULES_FINAL, args.rows, args.root)
+        freeze(FROZEN, RULES_FINAL, DEFAULT_ROWS, args.root)  # the study's rows, wherever --rows points
         return 0
     if args.command == "report":
         frozen = check_frozen(FROZEN, args.root)
@@ -1357,16 +1486,17 @@ def main(argv: list[str] | None = None) -> int:
         split, indices = parse_indices(args.indices)
         check_indices(split, indices, False)
         check_frozen(FROZEN, args.root)
-        output = rows_path = args.output or DEFAULT_ROWS
+        if args.output not in (None, DEFAULT_ROWS):
+            raise SystemExit(f"the study's rows are always {DEFAULT_ROWS}; --output is for probe and report")
+        output = rows_path = DEFAULT_ROWS
         check_not_finished(rows_path)
         jobs = [(str(args.root), split, index, MODEL) for index in indices]
     partial = rows_path.with_suffix(".run.partial.jsonl")
     check_assets()
     started = build_id(str(args.root))
-    check_resume(partial, started)
+    check_resume(partial, started, jobs)
     print("build:", started, "| VAD_MODEL_PATH:", os.environ.get("VAD_MODEL_PATH"), flush=True)
-    rows = voice_setup_eval.run(functools.partial(evaluate_user, development=development), jobs,
-                                worker_count(args.workers), partial)
+    rows = run_jobs(functools.partial(evaluate_user, development=development), jobs, worker_count(args.workers), partial)
     check_unchanged(args.root, started, rows)
     source = {"schema_version": 1, "generated_at_utc": datetime.now(timezone.utc).isoformat(), "development": development,
               "identity": {"build": started}, "rows": rows}

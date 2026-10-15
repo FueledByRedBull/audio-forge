@@ -1,4 +1,6 @@
 """Small end-to-end checks for accepted voice setup state."""
+# pyright: reportMissingImports=false
+# (the sibling test modules are found by pytest at run time)
 
 from __future__ import annotations
 
@@ -7,6 +9,7 @@ from dataclasses import replace
 import time
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -19,9 +22,10 @@ from mic_eq.analysis.voice_setup import (
     analyze_voice_setup,
     validate_voice_setup_verification,
 )
-from mic_eq.config import EQSettings, build_eq_candidate_settings, load_preset
+from mic_eq.config import EQSettings, Preset, build_eq_candidate_settings, load_preset
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+from test_auto_eq_candidate_lifecycle import _CalibrationOwner
 
 
 @pytest.fixture
@@ -1660,3 +1664,255 @@ def test_every_rollback_text_follows_the_actual_restore_result(
     else:
         assert phase.startswith("The new settings did not pass the check;")
         assert ("Your previous settings were put back." in warning) == restored
+
+
+class _RestoreStage:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls = 0
+
+    def set_settings(self, _settings) -> None:
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("stage restore failed")
+
+
+class _RestoreOwner:
+    def __init__(self) -> None:
+        self.gate_state = _RestoreStage()
+        self.deesser_state = _RestoreStage()
+        self.compressor_state = _RestoreStage()
+        self.eq_state = _RestoreStage()
+        self.preset = Preset()
+        self.apply_calls: list[tuple[Preset, float | None, str | None]] = []
+        self.fail_apply = False
+
+    def _get_current_preset(self) -> Preset:
+        return self.preset
+
+    def apply_processing_configuration(
+        self,
+        preset: Preset,
+        *,
+        noise_reference_reliability: float | None = None,
+        processing_mode: str | None = None,
+        compressor_metadata: dict[str, object] | None = None,
+    ) -> None:
+        self.apply_calls.append(
+            (preset, noise_reference_reliability, processing_mode)
+        )
+        if self.fail_apply:
+            raise RuntimeError("transaction failed")
+        self.preset = preset
+        if compressor_metadata:
+            self.compressor_state.set_settings(compressor_metadata)
+
+
+class _ContextRestoreStage(_RestoreStage):
+    def __init__(self) -> None:
+        super().__init__()
+        self.last_settings: dict | None = None
+
+    def set_settings(self, settings) -> None:
+        self.last_settings = deepcopy(settings)
+        super().set_settings(settings)
+
+
+class _ContextRestoreOwner(_RestoreOwner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.context_key: str | None = "route-a"
+        self.compressor_state = _ContextRestoreStage()
+
+    def _calibration_context_key(self) -> str | None:
+        return self.context_key
+
+
+def _voice_candidate_metadata(context_key: str | None = None) -> dict:
+    return {
+        "scope": "full_voice_setup",
+        "allowed_scope": ["eq", "gate", "deesser", "compressor", "limiter"],
+        "target": {
+            "curve": "broadcast",
+            "target_lufs": -18.0,
+            "dynamics_intensity": "balanced",
+        },
+        "capture_identity": {
+            "generation": 1,
+            "sample_rate": 48_000,
+            "noise_samples": 16,
+            "voice_samples": 16,
+            "context_key": context_key,
+        },
+        "options": {
+            "vad_available": False,
+            "dynamics_intensity": "balanced",
+            "custom_target_p95_db": 3.5,
+            "custom_peak_cap_db": 8.0,
+        },
+        "verified_stages": [],
+    }
+
+
+def test_voice_rollback_uses_shared_transaction_and_keeps_failed_snapshot(
+    qapp, monkeypatch
+) -> None:
+    owner = _RestoreOwner()
+    dialog = VoiceSetupDialog()
+    snapshot = {
+        "preset": Preset().to_dict(),
+        "compressor": {},
+    }
+    dialog._pre_setup_snapshot = snapshot
+    owner.fail_apply = True
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog._find_eq_state_owner",
+        lambda _widget: owner,
+    )
+    try:
+        assert dialog._restore_pre_setup_snapshot() is False
+        assert dialog._pre_setup_snapshot is snapshot
+        assert len(owner.apply_calls) == 1
+        dialog._on_verification_failed("verification failed")
+        assert "not fully put back" in dialog.phase_label.text()
+
+        owner.fail_apply = False
+        assert dialog._restore_pre_setup_snapshot() is True
+        assert dialog._pre_setup_snapshot is None
+        assert len(owner.apply_calls) == 3
+    finally:
+        dialog.reject()
+
+
+def test_rollback_drops_stale_noise_reliability_but_restores_numeric_settings(
+    qapp, monkeypatch
+) -> None:
+    owner = _ContextRestoreOwner()
+    dialog = VoiceSetupDialog()
+    snapshot = {
+        "preset": Preset().to_dict(),
+        "compressor_metadata": {
+            "dynamics_profile": "balanced",
+            "dynamics_customized": False,
+        },
+        "noise_reference_reliability": 0.8,
+        "calibration_context_key": "route-a",
+    }
+    dialog._pre_setup_snapshot = snapshot
+    owner.context_key = "route-b"
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog._find_eq_state_owner", lambda _widget: owner
+    )
+    try:
+        assert dialog._restore_pre_setup_snapshot() is True
+        assert owner.compressor_state.last_settings == {
+            "dynamics_profile": "balanced",
+            "dynamics_customized": False,
+        }
+    finally:
+        dialog.reject()
+
+
+def test_rollback_drops_noise_reliability_when_context_is_unknown(qapp, monkeypatch) -> None:
+    owner = _ContextRestoreOwner()
+    owner.context_key = None
+    dialog = VoiceSetupDialog()
+    dialog._pre_setup_snapshot = {
+        "preset": Preset().to_dict(),
+        "compressor_metadata": {
+            "dynamics_profile": "balanced",
+            "dynamics_customized": False,
+        },
+        "noise_reference_reliability": 0.8,
+        "calibration_context_key": None,
+    }
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog._find_eq_state_owner", lambda _widget: owner
+    )
+    try:
+        assert dialog._restore_pre_setup_snapshot() is True
+        assert owner.compressor_state.last_settings == {
+            "dynamics_profile": "balanced",
+            "dynamics_customized": False,
+        }
+    finally:
+        dialog.reject()
+
+
+def test_voice_close_and_reset_block_when_restore_owner_is_missing(qapp, monkeypatch) -> None:
+    dialog = VoiceSetupDialog()
+    worker = Mock()
+    worker.isRunning.return_value = True
+    dialog._analysis_workers.append(worker)
+    dialog.setup_state = "verification_analyzing"
+    generation = dialog._analysis_generation
+    dialog._pre_setup_snapshot = {"gate": {}}
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog._find_eq_state_owner", lambda _widget: None
+    )
+    dialog.reject()
+    worker.stop.assert_called_once()
+    assert dialog._analysis_generation > generation
+    assert not dialog._close_requested
+    assert dialog._pre_setup_snapshot is not None
+    assert "could not be fully put back" in dialog.warning_label.text()
+    dialog._reset_setup_ui()
+    assert dialog._pre_setup_snapshot is not None
+    dialog._pre_setup_snapshot = None
+    worker.isRunning.return_value = False
+    dialog.reject()
+    dialog.deleteLater()
+    qapp.processEvents()
+
+
+def test_voice_verification_marks_only_accepted_stages(qapp, monkeypatch) -> None:
+    owner = _CalibrationOwner()
+    dialog = VoiceSetupDialog(owner)
+    candidate = _voice_candidate_metadata()
+    dialog.setup_result = {"_candidate": deepcopy(candidate)}
+    dialog._candidate_metadata = deepcopy(candidate)
+    dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
+    dialog._analysis_generation = 1
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args, **_kwargs: None)
+    try:
+        dialog._on_verification_complete({"decision": "retry"})
+        assert dialog.setup_result["_candidate"]["verified_stages"] == []
+        dialog._on_verification_complete({"decision": "accept"})
+        assert dialog.setup_result["_candidate"]["verified_stages"] == []
+        assert dialog.setup_state == "final_comparison_ready"
+        assert dialog._final_comparison_pending is True
+    finally:
+        dialog.reject()
+        owner.close()
+
+
+def test_verification_callback_uses_capture_generation_after_launch(qapp, monkeypatch) -> None:
+    owner = _CalibrationOwner()
+    dialog = VoiceSetupDialog(owner)
+    candidate = _voice_candidate_metadata()
+    dialog.setup_result = {"_candidate": deepcopy(candidate)}
+    dialog._candidate_metadata = deepcopy(candidate)
+    dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
+    dialog._analysis_generation = 1
+    applied: list[str] = []
+    dialog.setup_applied.connect(applied.append)
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog.VoiceSetupVerificationWorker.start",
+        lambda _worker: None,
+    )
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args, **_kwargs: None)
+    try:
+        dialog._complete_verification(np.zeros(16, dtype=np.float32))
+        worker = dialog.analysis_worker
+        assert worker is not None
+        verification_generation = dialog._analysis_generation
+        assert verification_generation != candidate["capture_identity"]["generation"]
+
+        worker.result_ready.emit({"decision": "accept"})
+
+        assert applied == []
+        assert dialog.setup_result["_candidate"]["verified_stages"] == []
+        assert dialog.setup_state == "final_comparison_ready"
+    finally:
+        dialog.reject()
+        owner.close()

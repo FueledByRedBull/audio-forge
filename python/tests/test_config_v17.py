@@ -21,7 +21,9 @@ AppConfig = config.AppConfig
 LatencyCalibrationProfile = config.LatencyCalibrationProfile
 DeviceIdentity = config.DeviceIdentity
 DevicePresetBinding = config.DevicePresetBinding
+InputDevicePreference = config.InputDevicePreference
 build_device_route_key = config.build_device_route_key
+build_input_device_preference_key = config.build_input_device_preference_key
 legacy_latency_profile_key = config.legacy_latency_profile_key
 
 
@@ -1020,3 +1022,47 @@ def test_saved_auto_eq_preset_round_trips_dynamic_band_frequencies():
                 os.environ.pop("APPDATA", None)
             else:
                 os.environ["APPDATA"] = old_appdata
+
+
+def test_legacy_input_modes_migrate_only_to_the_known_stable_device() -> None:
+    input_identity = DeviceIdentity(
+        name="Old mic",
+        endpoint_id="input-old",
+        host_api="WASAPI",
+        direction="input",
+    )
+    config = AppConfig.from_dict(
+        {
+            "last_input_device": input_identity.name,
+            "last_input_device_identity": input_identity.to_dict(),
+            "input_channel_mode": "left",
+            "input_cleanup_mode": "gentle",
+        }
+    )
+
+    key = build_input_device_preference_key(input_identity)
+    assert config.input_device_preferences[key] == InputDevicePreference(
+        "left", "gentle", "legacy_migration"
+    )
+    assert AppConfig.from_dict(config.to_dict()).input_device_preferences == config.input_device_preferences
+
+
+def test_route_input_preference_round_trip_keeps_exact_route_override() -> None:
+    input_identity = DeviceIdentity(name="Mic", endpoint_id="in", direction="input")
+    output_identity = DeviceIdentity(name="Cable", endpoint_id="out", direction="output")
+    route_key = build_device_route_key(input_identity, output_identity)
+    config = AppConfig(
+        input_device_preferences={
+            build_input_device_preference_key(input_identity): InputDevicePreference(
+                "left", "gentle"
+            )
+        },
+        route_input_preferences={
+            route_key: InputDevicePreference("right", "strong")
+        },
+    )
+
+    restored = AppConfig.from_dict(config.to_dict())
+    assert restored.route_input_preferences[route_key] == InputDevicePreference(
+        "right", "strong"
+    )

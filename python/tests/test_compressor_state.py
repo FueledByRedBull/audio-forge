@@ -1,9 +1,14 @@
 """Compressor state owns native ordering, precise controls and transient metadata."""
 
+from typing import Any
+from unittest.mock import Mock
+
 import pytest
 
+from mic_eq.analysis.voice_setup import _recommend_compressor_settings
 from mic_eq.config import CompressorSettings
 from mic_eq.ui.compressor_state import CompressorState
+from mic_eq.ui.processing_controls import SettingControl
 
 
 class RecordingProcessor:
@@ -183,3 +188,69 @@ def test_invalid_compressor_commands_do_not_change_either_side(qapp, key, value)
         state.set_settings({key: value})
     assert state.get_settings(include_calibration=True) == before
     assert not processor.calls
+
+
+def test_manual_compressor_change_is_marked_customized_after_calibration(qapp) -> None:
+    state = CompressorState(Mock())
+    ratio = SettingControl(state, "compressor", "ratio", None)
+    state.set_settings(
+        {"ratio": 3.0, "dynamics_profile": "gentle", "dynamics_customized": False}
+    )
+    ratio.setValue(3.5)
+
+    settings = state.get_settings(include_calibration=True)
+    assert settings["dynamics_profile"] == "gentle"
+    assert settings["dynamics_customized"] is True
+    assert settings["dynamics_intensity"] == "customized"
+
+
+def test_lufs_target_change_keeps_compression_intensity_marker(qapp) -> None:
+    state = CompressorState(Mock())
+    target = SettingControl(state, "compressor", "target_lufs", None)
+    # The target is only editable while automatic makeup gain is on.
+    state.set_settings(
+        {"dynamics_profile": "gentle", "dynamics_customized": False, "auto_makeup_enabled": True}
+    )
+    assert target.enabled
+    target.setValue(-17.0)
+    settings = state.get_settings(include_calibration=True)
+    assert settings["target_lufs"] == -17.0
+    assert settings["dynamics_profile"] == "gentle"
+    assert settings["dynamics_customized"] is False
+
+
+def test_numeric_compressor_preset_marks_intensity_custom_without_marker(qapp) -> None:
+    common: dict[str, Any] = {
+        "speech_body_db": -22.0,
+        "speech_loudness_lufs": -20.0,
+        "loudness_range_db": 5.0,
+        "speech_snr_db": 20.0,
+        "capture_confidence": 0.8,
+        "custom_target_p95_db": 3.5,
+        "custom_peak_cap_db": 8.0,
+        "target_lufs": -18.0,
+    }
+    for intensity in ("gentle", "balanced", "dense"):
+        settings, _ = _recommend_compressor_settings(
+            target_preset="broadcast", dynamics_intensity=intensity, **common
+        )
+        source = CompressorState(Mock())
+        restored = CompressorState(Mock())
+        source.set_settings(settings)
+        saved = source.get_settings()
+        restored.set_settings(saved)
+        assert restored.get_settings(include_calibration=True)[
+            "dynamics_profile"
+        ] == "custom"
+    custom = CompressorState(Mock())
+    custom.set_settings(
+        {
+            "ratio": 4.0,
+            "attack_ms": 10.0,
+            "release_ms": 200.0,
+            "base_release_ms": 50.0,
+        }
+    )
+    assert custom.get_settings(include_calibration=True)[
+        "dynamics_profile"
+    ] == "custom"

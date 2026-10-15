@@ -28,3 +28,21 @@ def test_builtin_presets_share_values_without_sharing_mutable_defaults() -> None
     presets["voice"].rnnoise.model = "deepfilter"
     assert presets["bass_cut"].gate.threshold_db == -40.0
     assert presets["bass_cut"].rnnoise.model == "rnnoise"
+
+
+def test_complete_catalogues_have_scope_descriptions_and_resolved_sections() -> None:
+    from mic_eq.config import BUILTIN_PRESETS, TARGET_CURVES
+
+    assert all(
+        preset.description.startswith("Complete sound preset:")
+        for preset in BUILTIN_PRESETS.values()
+    )
+    assert all(
+        curve.description.startswith("Tone preset")
+        for curve in TARGET_CURVES.values()
+    )
+    assert all(
+        set(preset.to_dict())
+        >= {"gate", "eq", "rnnoise", "deesser", "compressor", "limiter"}
+        for preset in BUILTIN_PRESETS.values()
+    )

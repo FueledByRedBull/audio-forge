@@ -795,3 +795,53 @@ def test_unsaved_decision_preserves_failed_or_cancelled_saves(monkeypatch, reply
     monkeypatch.setattr(main_window.QMessageBox, "question", lambda *_: reply)
     assert window._confirm_discard_changes() is expected
     assert window._save_preset.call_count == int(reply == QMessageBox.StandardButton.Save)
+
+
+def test_active_preset_identity_tracks_edit_history_and_restart(qapp, monkeypatch, tmp_path) -> None:
+    from mic_eq.config_parts import shared
+    from mic_eq.ui import main_window
+
+    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
+    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
+
+    window = MainWindow()
+    try:
+        preset = window._get_current_preset()
+        preset.name = "Lifecycle"
+        filepath = window._save_preset_file(preset)
+        assert filepath is not None and filepath.is_file()
+        assert window.current_preset_name == "Lifecycle"
+        assert window.current_preset_path == filepath
+        assert window.preset_modified is False
+
+        threshold = window_gate_control(window, "Threshold")
+        original_threshold = threshold.value
+        threshold.setValue(original_threshold + 1)
+        threshold.setValue(original_threshold)
+        assert window.preset_modified is True
+        assert not window._commit_pending_configuration_snapshot(source="ui")
+        assert window.preset_modified is False
+
+        threshold.setValue(-33.0)
+        assert window._commit_pending_configuration_snapshot(source="ui")
+        assert window.preset_modified is True
+
+        window.undo_configuration()
+        assert window.preset_modified is False
+        window.redo_configuration()
+        assert window.preset_modified is True
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+    restored = MainWindow()
+    try:
+        assert restored.current_preset_name == "Lifecycle"
+        assert restored.current_preset_path == filepath
+        assert restored.preset_modified is False
+    finally:
+        restored.close()
+        restored.deleteLater()
+        qapp.processEvents()

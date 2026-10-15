@@ -377,12 +377,6 @@ impl Biquad {
         self.set_coefficients_immediate(self.calculate_coefficients_values());
     }
 
-    /// Set filter Q factor and recalculate coefficients
-    pub fn set_q(&mut self, q: f64) {
-        self.q = q.max(MIN_BIQUAD_Q);
-        self.schedule_coefficients_crossfade(self.calculate_coefficients_values());
-    }
-
     /// Set every coefficient-driving parameter in one click-safe update.
     pub fn set_parameters(
         &mut self,

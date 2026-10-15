@@ -1073,7 +1073,7 @@ def test_scene_gets_structured_values_instead_of_parsing_labels(quick_window) ->
     status = model["presets"]["status"]
     assert status.data == {
         "name": quick_window.current_preset_name,
-        "modified": quick_window.current_preset_modified,
+        "modified": quick_window.preset_modified,
     }
     assert model["eq"]["diagnostics"].data == {"calibrated": False}
     noise, gate = model["stages"][:2]

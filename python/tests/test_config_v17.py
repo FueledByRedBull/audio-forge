@@ -21,7 +21,7 @@ AppConfig = config.AppConfig
 LatencyCalibrationProfile = config.LatencyCalibrationProfile
 DeviceIdentity = config.DeviceIdentity
 DevicePresetBinding = config.DevicePresetBinding
-build_latency_profile_key = config.build_latency_profile_key
+build_device_route_key = config.build_device_route_key
 legacy_latency_profile_key = config.legacy_latency_profile_key
 
 
@@ -301,7 +301,7 @@ def test_app_config_latency_profiles_round_trip():
     )
     input_identity = DeviceIdentity(name="Mic A", is_default=False)
     output_identity = DeviceIdentity(name="Out B", is_default=True)
-    key = build_latency_profile_key(input_identity, output_identity)
+    key = build_device_route_key(input_identity, output_identity)
 
     cfg = AppConfig(
         last_input_device="Mic A",
@@ -310,8 +310,6 @@ def test_app_config_latency_profiles_round_trip():
         last_input_device_identity=input_identity,
         last_output_device_identity=output_identity,
         input_channel_mode="phase_safe_mono",
-        main_splitter_sizes=[420, 680],
-        main_control_tab_index=1,
         use_measured_latency=True,
         latency_calibration_profiles={key: profile},
     )
@@ -321,8 +319,6 @@ def test_app_config_latency_profiles_round_trip():
     restored = AppConfig.from_dict(raw)
 
     assert restored.use_measured_latency is True
-    assert restored.main_splitter_sizes == [420, 680]
-    assert restored.main_control_tab_index == 1
     assert restored.input_channel_mode == "phase_safe_mono"
     assert key in restored.latency_calibration_profiles
     assert restored.last_input_device_identity == input_identity
@@ -340,7 +336,7 @@ def test_app_config_latency_profiles_round_trip():
 
 
 def test_invalid_latency_profile_is_dropped_without_discarding_other_config():
-    route_key = build_latency_profile_key(
+    route_key = build_device_route_key(
         DeviceIdentity(name="Mic"),
         DeviceIdentity(name="Output"),
     )
@@ -402,9 +398,9 @@ def test_device_route_keys_ignore_default_status_and_survive_endpoint_rename():
         direction="output",
     )
 
-    assert build_latency_profile_key(
+    assert build_device_route_key(
         original_input, output
-    ) == build_latency_profile_key(renamed_input, output)
+    ) == build_device_route_key(renamed_input, output)
 
 
 def test_fallback_route_keys_survive_windows_format_changes():
@@ -426,9 +422,9 @@ def test_fallback_route_keys_survive_windows_format_changes():
     )
     output = DeviceIdentity(name="Cable", direction="output", name_ordinal=0)
 
-    assert build_latency_profile_key(
+    assert build_device_route_key(
         original_input, output
-    ) == build_latency_profile_key(changed_input, output)
+    ) == build_device_route_key(changed_input, output)
 
 
 def test_device_identity_rejects_nonfinite_or_mistyped_persisted_fields():
@@ -462,7 +458,7 @@ def test_endpoint_route_keys_round_trip_through_app_config_without_collapsing():
         host_api="WASAPI",
         direction="output",
     )
-    route_key = build_latency_profile_key(input_device, output_device)
+    route_key = build_device_route_key(input_device, output_device)
     profile = LatencyCalibrationProfile(
         measured_round_trip_ms=12.0,
         estimated_one_way_ms=12.0,
@@ -489,7 +485,7 @@ def test_structured_route_keys_preserve_delimiters_in_device_names():
         direction="input",
     )
     output_device = DeviceIdentity(name="Speakers", direction="output")
-    route_key = build_latency_profile_key(input_device, output_device)
+    route_key = build_device_route_key(input_device, output_device)
     profile = LatencyCalibrationProfile(
         measured_round_trip_ms=12.0,
         estimated_one_way_ms=12.0,
@@ -550,7 +546,7 @@ def test_malformed_legacy_device_names_are_not_stringified():
 
 
 def test_device_preset_bindings_round_trip_with_provenance_and_legacy_migration():
-    route_key = build_latency_profile_key(
+    route_key = build_device_route_key(
         DeviceIdentity(name="Mic", is_default=True),
         DeviceIdentity(name="Cable", is_default=False),
     )
@@ -580,7 +576,7 @@ def test_device_preset_bindings_round_trip_with_provenance_and_legacy_migration(
     migrated = AppConfig.from_dict(
         {"device_preset_bindings": {"Mic||Cable": "custom:Voice.json"}}
     )
-    migrated_key = build_latency_profile_key(
+    migrated_key = build_device_route_key(
         DeviceIdentity(name="Mic"), DeviceIdentity(name="Cable")
     )
     assert migrated.device_preset_bindings[migrated_key] == DevicePresetBinding(
@@ -760,38 +756,19 @@ def test_app_config_normalizes_invalid_preset_ids_to_safe_strings(field, value):
     assert isinstance(getattr(restored, field), str)
 
 
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        ([420, 680], [420, 680]),
-        ([420.0, "680"], [420, 680]),
-        (None, None),
-        (123, None),
-        ([420], None),
-        ([420, math.inf], None),
-        ([420, -1], None),
-        ([420, 1_000_001], None),
-    ],
-)
-def test_app_config_validates_splitter_sizes_without_resetting_other_fields(
-    value, expected
-):
+def test_app_config_ignores_retired_window_layout_fields():
     restored = AppConfig.from_dict(
-        {"main_splitter_sizes": value, "last_preset": "builtin:voice"}
+        {
+            "main_splitter_sizes": [420, 680],
+            "main_control_tab_index": 1,
+            "last_preset": "builtin:voice",
+        }
     )
 
-    assert restored.main_splitter_sizes == expected
     assert restored.last_preset == "builtin:voice"
-
-
-@pytest.mark.parametrize("value", [math.inf, -1, 65, 1.5, "invalid", [], True])
-def test_app_config_invalid_tab_index_falls_back_without_resetting_other_fields(value):
-    restored = AppConfig.from_dict(
-        {"main_control_tab_index": value, "last_preset": "builtin:voice"}
-    )
-
-    assert restored.main_control_tab_index == 0
-    assert restored.last_preset == "builtin:voice"
+    saved = restored.to_dict()
+    assert "main_splitter_sizes" not in saved
+    assert "main_control_tab_index" not in saved
 
 
 def test_app_config_accepts_and_clamps_valid_window_geometry():
@@ -832,7 +809,7 @@ def test_app_config_migrates_legacy_device_names_and_profile_keys():
         }
     )
 
-    expected_key = build_latency_profile_key(
+    expected_key = build_device_route_key(
         DeviceIdentity(name="Mic A", is_default=False),
         DeviceIdentity(name="Out B", is_default=False),
     )

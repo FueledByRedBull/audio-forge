@@ -527,16 +527,6 @@ impl ParametricEQ {
         self.enabled
     }
 
-    /// Get band parameters (frequency, gain_db, q)
-    pub fn get_band_params(&self, band_index: usize) -> Option<(f64, f64, f64)> {
-        if band_index < NUM_BANDS {
-            let config = self.bands[band_index].config;
-            Some((config.frequency_hz, config.gain_db, config.q))
-        } else {
-            None
-        }
-    }
-
     /// Get the complete configuration for one band.
     pub fn get_band_config(&self, band_index: usize) -> Option<EqBandConfig> {
         self.bands.get(band_index).map(|band| band.config)
@@ -746,10 +736,10 @@ mod tests {
         eq.set_band_gain(5, 6.0);
         eq.set_band_q(5, 2.0);
 
-        let params = eq.get_band_params(5).unwrap();
-        assert!((params.0 - 3000.0).abs() < 0.001);
-        assert!((params.1 - 6.0).abs() < 0.001);
-        assert!((params.2 - 2.0).abs() < 0.001);
+        let config = eq.get_band_config(5).unwrap();
+        assert!((config.frequency_hz - 3000.0).abs() < 0.001);
+        assert!((config.gain_db - 6.0).abs() < 0.001);
+        assert!((config.q - 2.0).abs() < 0.001);
     }
 
     #[test]

@@ -62,8 +62,6 @@ class EQPresentation(QObject):
         reset_action.triggered.connect(state.reset_tone)
         options_menu.setToolTipsVisible(True)
         self.options_menu = options_menu
-        self.tone_actions = tuple(self.tone_menu.actions())
-        self.options_actions = tuple(self.options_menu.actions())
 
         self.graph_model.bandSelected.connect(state.select_band)
         self.graph_model.bandResetRequested.connect(state.reset_band)

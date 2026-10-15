@@ -419,7 +419,7 @@ def test_domain_edits_update_history_and_ignore_presentation_controls(window, qa
     baseline = window._preset_payload(window._get_current_preset())
 
     tone_action(window, "Voice").trigger()
-    assert window.current_preset_modified is True
+    assert window.preset_modified is True
     window._commit_pending_configuration_snapshot()
     assert window._configuration_history.can_undo
     window.undo_configuration()
@@ -428,13 +428,13 @@ def test_domain_edits_update_history_and_ignore_presentation_controls(window, qa
     window.processing_mode_choice.setCurrentIndex(
         window.processing_mode_choice.findData("raw")
     )
-    assert window.current_preset_modified is True
+    assert window.preset_modified is True
     window._commit_pending_configuration_snapshot()
     assert window._configuration_history.can_undo
-    assert window.current_preset_modified is True
+    assert window.preset_modified is True
     window.undo_configuration()
     assert window._processing_mode() == "normal"
-    assert window.current_preset_modified is False
+    assert window.preset_modified is False
 
     history_size = window._configuration_history.size
     window.shell_page.setIndex(window.HEALTH_PAGE_INDEX)

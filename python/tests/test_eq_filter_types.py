@@ -172,29 +172,6 @@ def test_disabled_typed_band_is_flat_and_finite() -> None:
     np.testing.assert_allclose(response, 0.0, rtol=0.0, atol=1e-12)
 
 
-def test_legacy_batch_api_restores_historical_filter_layout() -> None:
-    processor = AudioProcessor()
-    processor.set_eq_band_filter_type(4, "notch")
-    processor.set_eq_band_enabled(4, False)
-    legacy = [
-        (band.frequency_hz, band.gain_db, band.q)
-        for band in EQSettings().bands
-    ]
-
-    processor.apply_eq_settings(legacy)
-
-    low = processor.get_eq_band_config(0)
-    middle = processor.get_eq_band_config(4)
-    high = processor.get_eq_band_config(9)
-    assert low is not None
-    assert middle is not None
-    assert high is not None
-    assert low[0] == "low_shelf"
-    assert middle[0] == "bell"
-    assert middle[5] is True
-    assert high[0] == "high_shelf"
-
-
 def test_native_typed_eq_simulator_preserves_default_audio_exactly() -> None:
     phase = np.arange(48_000, dtype=np.float32)
     audio = (

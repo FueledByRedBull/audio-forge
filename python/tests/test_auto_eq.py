@@ -12,8 +12,8 @@ from mic_eq.analysis import auto_eq
 from mic_eq.analysis.auto_eq_parts import headroom as headroom_module
 from mic_eq.analysis.auto_eq_parts import optimizer as optimizer_module
 from mic_eq.analysis.auto_eq_parts.dynamic_bands import (
-    _remove_spectral_tilt,
     _snr_aware_gain_upper_bounds,
+    _spectral_tilt_fit,
 )
 from mic_eq.analysis.auto_eq_parts.optimizer import _log_frequency_gain_curvature
 from mic_eq.analysis.auto_eq_parts.response import _predict_eq_response
@@ -586,7 +586,8 @@ def test_15_tilt_removal_reduces_linear_log_slope():
     freqs = _default_freqs()
     x = np.log10(freqs)
     measured_db = 4.0 * (x - np.mean(x))
-    detrended, slope = _remove_spectral_tilt(freqs, measured_db)
+    tilt, slope, _fit_r2 = _spectral_tilt_fit(freqs, measured_db)
+    detrended = measured_db - tilt
 
     x_center = x - np.mean(x)
     residual_slope = float(np.dot(x_center, detrended) / np.dot(x_center, x_center))
@@ -598,7 +599,8 @@ def test_15a_tilt_removal_accepts_perfect_nonzero_intercept():
     freqs = _default_freqs()
     x = np.log10(freqs)
     measured_db = 4.0 * (x - np.mean(x)) + 10.0
-    detrended, slope = _remove_spectral_tilt(freqs, measured_db)
+    tilt, slope, _fit_r2 = _spectral_tilt_fit(freqs, measured_db)
+    detrended = measured_db - tilt
 
     x_center = x - np.mean(x)
     residual_slope = float(np.dot(x_center, detrended) / np.dot(x_center, x_center))
@@ -611,7 +613,8 @@ def test_15b_tilt_removal_rejects_flat_response():
     freqs = _default_freqs()
     measured_db = np.full_like(freqs, 6.0)
 
-    detrended, slope = _remove_spectral_tilt(freqs, measured_db)
+    tilt, slope, _fit_r2 = _spectral_tilt_fit(freqs, measured_db)
+    detrended = measured_db - tilt
 
     assert slope == 0.0
     assert np.allclose(detrended, measured_db)
@@ -624,7 +627,8 @@ def test_15c_tilt_removal_accepts_noisy_tilt_above_fit_threshold():
     rng = np.random.default_rng(1503)
     measured_db = 3.0 * x_center + 2.0 + rng.normal(0.0, 0.12, size=freqs.size)
 
-    detrended, slope = _remove_spectral_tilt(freqs, measured_db)
+    tilt, slope, _fit_r2 = _spectral_tilt_fit(freqs, measured_db)
+    detrended = measured_db - tilt
     residual_slope = float(np.dot(x_center, detrended) / np.dot(x_center, x_center))
 
     assert abs(slope) > 2.0
@@ -636,35 +640,11 @@ def test_15d_tilt_removal_rejects_random_response_below_fit_threshold():
     rng = np.random.default_rng(1504)
     measured_db = rng.normal(0.0, 4.0, size=freqs.size)
 
-    detrended, slope = _remove_spectral_tilt(freqs, measured_db)
+    tilt, slope, _fit_r2 = _spectral_tilt_fit(freqs, measured_db)
+    detrended = measured_db - tilt
 
     assert slope == 0.0
     assert np.allclose(detrended, measured_db)
-
-
-def test_15e_production_tilt_policy_preserves_broad_mic_response():
-    freqs = _default_freqs()
-    measured_db = -70.0 - 5.0 * np.log2(freqs / 1000.0)
-    target_db = get_target_curve(freqs, "flat", target_mode="static")
-
-    preserved = calculate_eq_bands(
-        freqs,
-        measured_db,
-        target_db,
-        tilt_policy="preserve",
-    )
-    detrended = calculate_eq_bands(
-        freqs,
-        measured_db,
-        target_db,
-        tilt_policy="detrend",
-    )
-
-    preserved_gains = np.asarray(preserved["band_gains"], dtype=float)
-    detrended_gains = np.asarray(detrended["band_gains"], dtype=float)
-    assert preserved["spectral_tilt_policy"] == "preserve"
-    assert detrended["spectral_tilt_policy"] == "detrend"
-    assert np.max(np.abs(preserved_gains)) > np.max(np.abs(detrended_gains)) + 2.0
 
 
 def test_15f_log_frequency_curvature_is_zero_for_linear_tilt():

@@ -18,7 +18,6 @@ from .shared import (
     PresetValidationError,
     _reject_json_constant,
     build_device_route_key,
-    build_latency_profile_key,
     coerce_device_identity,
     get_config_file,
     migration_pending,
@@ -56,8 +55,6 @@ _PRE_SETUP_CONFIG_FIELDS = frozenset(
         "last_preset",
         "startup_preset",
         "window_geometry",
-        "main_splitter_sizes",
-        "main_control_tab_index",
         "use_measured_latency",
         "voice_setup_dynamics_intensity",
         "voice_setup_custom_p95_db",
@@ -193,13 +190,6 @@ def _coerce_int(value: object, default: int, low: int, high: int) -> int:
     return parsed if low <= parsed <= high else default
 
 
-def _coerce_splitter_sizes(value: object) -> list[int] | None:
-    if not isinstance(value, (list, tuple)) or len(value) != 2:
-        return None
-    parsed = [_coerce_int(size, -1, 0, 1_000_000) for size in value]
-    return parsed if all(size >= 0 for size in parsed) else None
-
-
 def _coerce_dynamics_intensity(value: object) -> str:
     return value if isinstance(value, str) and value in DYNAMICS_INTENSITIES else "balanced"
 
@@ -242,8 +232,6 @@ class AppConfig:
     last_preset: str = ""
     startup_preset: str = ""
     window_geometry: dict | None = None
-    main_splitter_sizes: list[int] | None = None
-    main_control_tab_index: int = 0
     use_measured_latency: bool = True
     voice_setup_dynamics_intensity: str = "balanced"
     voice_setup_custom_p95_db: float = 3.5
@@ -295,8 +283,6 @@ class AppConfig:
             "last_preset": self.last_preset,
             "startup_preset": self.startup_preset,
             "window_geometry": self.window_geometry,
-            "main_splitter_sizes": self.main_splitter_sizes,
-            "main_control_tab_index": self.main_control_tab_index,
             "use_measured_latency": self.use_measured_latency,
             "voice_setup_dynamics_intensity": self.voice_setup_dynamics_intensity,
             "voice_setup_custom_p95_db": self.voice_setup_custom_p95_db,
@@ -361,7 +347,7 @@ class AppConfig:
                 parsed_devices = parse_latency_profile_key(parsed_key)
                 if parsed_devices is None:
                     continue
-                parsed_key = build_latency_profile_key(*parsed_devices)
+                parsed_key = build_device_route_key(*parsed_devices)
                 parsed_profiles[parsed_key] = profile
 
         raw_bindings = data.get("device_preset_bindings", {}) or {}
@@ -458,12 +444,6 @@ class AppConfig:
                 else ""
             ),
             window_geometry=_coerce_window_geometry(data.get("window_geometry")),
-            main_splitter_sizes=_coerce_splitter_sizes(
-                data.get("main_splitter_sizes")
-            ),
-            main_control_tab_index=_coerce_int(
-                data.get("main_control_tab_index", 0), 0, 0, 64
-            ),
             use_measured_latency=_coerce_config_bool(data.get("use_measured_latency", True), True),
             voice_setup_dynamics_intensity=_coerce_dynamics_intensity(
                 data.get("voice_setup_dynamics_intensity")

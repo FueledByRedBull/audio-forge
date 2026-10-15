@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from PySide6.QtQml import QQmlExpression
 from PySide6.QtQuickWidgets import QQuickWidget
@@ -12,7 +14,12 @@ BACKENDS = [("rnnoise", "RNNoise"), ("deepfilter-ll", "DeepFilterNet LL"), ("dee
 
 
 def _names_the_refused_backend(text: str) -> bool:
-    return "deepfilter-ll" in text and "unavailable" in text
+    """The model, why it was refused, and that the previous one is kept."""
+    return bool(
+        "deepfilter-ll" in text
+        and "unavailable" in text
+        and re.search(r"previous.*(retain|kept|keep)", text)
+    )
 
 
 @pytest.fixture
@@ -77,7 +84,9 @@ def test_refused_backend_warns_and_the_picker_keeps_the_previous_one(window, war
     window.noise_suppression_state.configurationEdited.connect(edits.append)
     history = (window._configuration_history.cursor, window._configuration_history.size)
     _pick(window, 1)
-    assert len(warnings) == 1 and _names_the_refused_backend(warnings[0][1])
+    assert len(warnings) == 1
+    title, body = warnings[0]
+    assert "switch" in title.lower() and "fail" in title.lower() and _names_the_refused_backend(body)
     assert _shown(window) == (0, "RNNoise")
     assert window.noise_suppression_state.get_settings()["model"] == "rnnoise"
     assert _names_the_refused_backend(window.status_message.text)

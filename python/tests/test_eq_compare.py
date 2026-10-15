@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 from PySide6.QtCore import QPoint, Qt
@@ -40,7 +42,7 @@ def test_the_largest_change_names_the_size_and_the_place(qapp) -> None:
     assert frequency == pytest.approx(3200.0, rel=0.05)
     description = widget.description()
     assert f"{change:+.1f} dB" in description and "3.2 kHz" in description
-    assert "solid" in description.lower() and "dashed" in description.lower()
+    assert re.search(r"solid[^.]*proposed", description, re.I) and re.search(r"dashed[^.]*(now|current)", description, re.I)
     assert widget.accessibleDescription() == widget.description()
 
 
@@ -52,7 +54,8 @@ def test_a_cut_is_signed_and_the_same_eq_says_so(qapp) -> None:
     assert cut.largest_change()[0] < -3.5 and "-4.0 dB at 250 Hz" in cut.description()
 
     same = _widget(flat, flat)
-    assert "same" in same.description() and " dB" not in same.description()
+    assert re.search(r"\bsame\b", same.description()) and "not the same" not in same.description()
+    assert " dB" not in same.description()
 
 
 def test_an_eq_that_is_switched_off_is_flat(qapp) -> None:

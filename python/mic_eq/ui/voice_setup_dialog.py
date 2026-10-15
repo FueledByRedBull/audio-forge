@@ -154,6 +154,15 @@ _TARGET_LUFS_MIN = -24.0
 _TARGET_LUFS_MAX = -12.0
 # Modes in which nothing is processed; setup analyses, applies and verifies as Normal.
 _UNPROCESSED_MODES = ("raw", "bypass")
+_VERIFIED_STAGES = (
+    "input_cleanup",
+    "gate",
+    "suppression",
+    "eq",
+    "deesser",
+    "compressor",
+    "limiter",
+)
 
 
 def _candidate_eq(base_eq: EQSettings, eq_candidate: Mapping[str, Any]) -> EQSettings:
@@ -1764,6 +1773,7 @@ class VoiceSetupDialog(QDialog):
             def describe_eq(settings: Mapping[str, Any]) -> str:
                 return f"max correction {_correction_depth_db(settings):.1f} dB"
 
+            withheld = bool(diagnostics.get("tone_withheld"))
             tone_text = "Tone: " + (
                 self._review_text(
                     describe_eq(eq_settings),
@@ -1775,6 +1785,8 @@ class VoiceSetupDialog(QDialog):
                 if eq_settings.get("apply_recommended", True)
                 else "kept as it is"
             )
+            if withheld:
+                tone_text += ". Everything else below still applies."
             before_eq = self._review_current.get("eq_state", {})
             if (
                 self._pre_setup_snapshot is None
@@ -1801,14 +1813,17 @@ class VoiceSetupDialog(QDialog):
                 )
             self.eq_label.setText(tone_text)
             self.eq_label.setToolTip(
-                "Quality score of the tone step "
+                ""
+                if withheld
+                else "Quality score of the tone step "
                 f"{_format_percent(eq_settings.get('analysis_confidence', 0.0))}: "
                 "how consistent your recording was across the voice range."
             )
             self.eq_label.setStyleSheet(
                 status_chip_style(
                     "ok"
-                    if diagnostics.get("apply_recommended", False) or self._final_comparison_pending
+                    if not withheld
+                    and (diagnostics.get("apply_recommended", False) or self._final_comparison_pending)
                     else "info"
                 )
             )
@@ -2619,6 +2634,11 @@ class VoiceSetupDialog(QDialog):
         )
         self._start_verification_worker(self._verification_audio)
 
+    def _verified_stages(self) -> tuple[str, ...]:
+        """The stages the second recording checked; a withheld tone left the EQ as it was."""
+        withheld = bool(((self.setup_result or {}).get("diagnostics") or {}).get("tone_withheld"))
+        return tuple(stage for stage in _VERIFIED_STAGES if not (withheld and stage == "eq"))
+
     def _finalize_verified_setup(self) -> None:
         """Persist and close after the verified candidate is accepted."""
         if self.setup_result is None:
@@ -2653,16 +2673,9 @@ class VoiceSetupDialog(QDialog):
         result = self.setup_result.get("verification") or {}
         advice = result.get("suppressor_dulling_advice")
         candidate = self.setup_result.get("_candidate")
+        stages = self._verified_stages()
         if isinstance(candidate, dict):
-            candidate["verified_stages"] = [
-                "input_cleanup",
-                "gate",
-                "suppression",
-                "eq",
-                "deesser",
-                "compressor",
-                "limiter",
-            ]
+            candidate["verified_stages"] = list(stages)
         if hasattr(parent, "status_message"):
             parent.status_message.showMessage("Verified voice setup applied", 5000)
         metrics_text = verification_summary(result)
@@ -2706,15 +2719,7 @@ class VoiceSetupDialog(QDialog):
             parent,
             "full_voice_setup",
             str(target_curve),
-            (
-                "input_cleanup",
-                "gate",
-                "suppression",
-                "eq",
-                "deesser",
-                "compressor",
-                "limiter",
-            ),
+            stages,
         )
         self.accept()
 

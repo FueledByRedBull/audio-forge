@@ -24,7 +24,7 @@ from mic_eq.analysis.voice_setup import (
 )
 from mic_eq.config import EQSettings, Preset, build_eq_candidate_settings, load_preset
 from mic_eq.ui.main_window import MainWindow
-from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog, _candidate_settings_error
 from test_auto_eq_candidate_lifecycle import _CalibrationOwner
 
 
@@ -1316,6 +1316,86 @@ def test_a_result_without_an_eq_says_nothing_still_applies(
         assert "still applies" not in dialog.eq_label.text()
         assert "Nothing was changed" in messages[-1]
         assert window._get_current_preset().to_dict() == before
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def _withheld_tone_result(window: MainWindow, dialog: VoiceSetupDialog) -> dict[str, Any]:
+    """What the analysis hands over when only the tone is withheld: the user's own EQ, not recommended."""
+    result = _voice_setup_result(window, dialog)
+    result["eq_settings"] = {**window.eq_state.get_eq_settings().to_dict(), "apply_recommended": False}
+    result["eq_error"] = "Recording too unclear. Please try again."
+    result["diagnostics"].update(
+        tone_withheld={"reason_code": "tone_withheld", "cause": ["clipped_gains (7 >= 6)"]},
+        vad_available=False,
+    )
+    result["gate_settings"]["threshold_db"] = -41.0
+    return result
+
+
+def test_a_withheld_tone_is_a_complete_result_that_says_the_tone_stays(real_main_window) -> None:
+    window = real_main_window
+    _set_live_eq(window, tone=[3.0] + [0.0] * 9, correction=[4.0] * 10)
+    dialog, _speech = _review_dialog(window)
+    result = _withheld_tone_result(window, dialog)
+    try:
+        assert _candidate_settings_error(result) is None
+
+        dialog._on_analysis_complete(result)
+
+        assert dialog.setup_state == "completed"
+        assert dialog.phase_label.text() == "Recommendations ready"
+        assert dialog.eq_label.text() == "Tone: kept as it is. Everything else below still applies."
+        assert dialog.eq_label.toolTip() == ""
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_applying_a_withheld_tone_keeps_the_users_eq_and_verification_renders_it(
+    real_main_window,
+) -> None:
+    window = real_main_window
+    _set_live_eq(window, tone=[3.0] + [0.0] * 9, correction=[4.0] * 10)
+    eq_before = window._get_current_preset().eq.to_dict()
+    dialog, speech = _review_dialog(window)
+    noise = dialog.noise_audio
+    assert noise is not None
+    try:
+        _apply_complete_candidate(window, dialog, _withheld_tone_result(window, dialog))
+
+        assert window._get_current_preset().eq.to_dict() == eq_before
+        assert window.gate_state.get_settings()["threshold_db"] == -41.0
+        assert dialog.setup_result is not None
+        applied = dialog.setup_result["eq_settings"]
+        assert applied["bands"] == eq_before["bands"] and applied["layers"] == eq_before["layers"]
+        outcome = validate_voice_setup_verification(
+            noise, speech, speech, int(window.processor.sample_rate()), dialog.setup_result, "broadcast"
+        )
+        assert outcome["decision"] != "rollback"
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+@pytest.mark.parametrize("withheld", [True, False], ids=["withheld", "fitted"])
+def test_a_verified_setup_lists_the_tone_only_when_it_was_changed(
+    real_main_window, monkeypatch, withheld
+) -> None:
+    window = real_main_window
+    dialog, _speech = _review_dialog(window)
+    result = _withheld_tone_result(window, dialog) if withheld else _voice_setup_result(window, dialog)
+    monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.QMessageBox.information", lambda *_a, **_k: None)
+    monkeypatch.setattr(window, "_prompt_save_current_preset", lambda **_kwargs: None)
+    try:
+        _apply_complete_candidate(window, dialog, result)
+        dialog._finalize_verified_setup()
+
+        stages = ("input_cleanup", "gate", "suppression", "eq", "deesser", "compressor", "limiter")
+        expected = tuple(stage for stage in stages if not (withheld and stage == "eq"))
+        assert window.config.calibration_results[0].verified_stages == expected
+        assert tuple(dialog.setup_result["_candidate"]["verified_stages"]) == expected
     finally:
         dialog.reject()
         dialog.deleteLater()

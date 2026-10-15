@@ -1363,6 +1363,7 @@ def run_jobs(function: Any, jobs: list[tuple[str, str, int, str]], workers: int,
     rows = [json.loads(line) for line in partial.read_text(encoding="utf-8").splitlines()] if partial.exists() else []
     done = {(row["split"], row["index"], row["model"]) for row in rows}
     pending = [job for job in jobs if (job[1], job[2], job[3]) not in done]
+    partial.parent.mkdir(parents=True, exist_ok=True)
     with partial.open("a", encoding="utf-8", newline="\n") as log:
         def keep(row: dict[str, Any]) -> None:
             log.write(json.dumps(row, default=float) + "\n")

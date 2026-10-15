@@ -1423,6 +1423,13 @@ def test_a_run_resumes_from_its_partial_file_and_returns_the_rows_in_job_order(m
     assert len(partial.read_text(encoding="utf-8").splitlines()) == 5
 
 
+def test_a_first_run_creates_the_folder_of_its_partial_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(ev, "ProcessPoolExecutor", ThreadPoolExecutor)
+    partial = tmp_path / "study" / "development" / "rows.run.partial.jsonl"
+    rows = ev.run_jobs(lambda job: _row(job[2]), [_job(72)], 1, partial)
+    assert [row["index"] for row in rows] == [72] and len(partial.read_text(encoding="utf-8").splitlines()) == 1
+
+
 def test_every_user_of_a_finished_run_is_in_its_rows_so_deleting_the_partial_file_loses_nothing(monkeypatch, tmp_path):
     monkeypatch.setattr(ev, "ProcessPoolExecutor", ThreadPoolExecutor)
     jobs = [_job(72), _job(73)]

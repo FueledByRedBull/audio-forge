@@ -263,6 +263,7 @@ class SingleInstanceCoordinator:
         self._lock_file = lock_file
 
         if self._listen_for_activation():
+            self._closed = False  # a closed coordinator can take the guard again
             return self.ACQUIRED
         lock_file = self._lock_file
         self._lock_file = None
@@ -337,7 +338,8 @@ class SingleInstanceCoordinator:
 def relaunch_with_software_rendering(instance: SingleInstanceCoordinator | None) -> bool:
     """Start this app again with software rendering; False if it could not be started.
 
-    The instance guard is released first, or the new copy would only activate this one.
+    The instance guard is released first, or the new copy would only activate this one;
+    if the copy cannot be started, the guard is taken back.
     """
 
     # PyInstaller's argv already starts with the executable; a source run needs Python's own flags.
@@ -356,6 +358,8 @@ def relaunch_with_software_rendering(instance: SingleInstanceCoordinator | None)
         subprocess.Popen(command, env=environment)
     except OSError:
         logger.exception("Could not start AudioForge with software rendering")
+        if instance is not None and instance.acquire(activate_existing=False) != instance.ACQUIRED:
+            logger.error("Could not take the single-instance guard back: %s", instance.last_error)
         return False
     return True
 

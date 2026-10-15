@@ -91,6 +91,24 @@ def test_a_relaunch_that_cannot_start_reports_it(monkeypatch) -> None:
     assert not relaunch_with_software_rendering(None)
 
 
+def test_a_relaunch_that_cannot_start_takes_the_single_instance_guard_back(qapp, monkeypatch, tmp_path) -> None:
+    def refuse(*_args, **_kwargs):
+        raise OSError("blocked")
+
+    monkeypatch.setattr(desktop_integration.subprocess, "Popen", refuse)
+    names = {"server_name": "AudioForge.test.relaunch.failed", "lock_path": tmp_path / "instance.lock"}
+    first = SingleInstanceCoordinator(**names)
+    assert first.acquire() == SingleInstanceCoordinator.ACQUIRED
+
+    assert not relaunch_with_software_rendering(first)
+
+    rival = SingleInstanceCoordinator(**names)
+    assert rival.acquire(activate_existing=False) == SingleInstanceCoordinator.ALREADY_RUNNING
+    first.close()  # a taken-back guard is released like any other
+    assert rival.acquire() == SingleInstanceCoordinator.ACQUIRED
+    rival.close()
+
+
 def test_a_working_renderer_is_left_alone(monkeypatch, quick_window) -> None:  # noqa: F811
     commands = _spawn_recorder(monkeypatch)
     QTest.qWait(300)

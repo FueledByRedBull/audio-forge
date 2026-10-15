@@ -5,14 +5,20 @@ Subcommands:
            does, with two taps that keep what a refusal would discard: the Auto-EQ proposal an unclear-recording
            refusal throws away, and the tone fit an abstention zeroes. Emulate verification, then render the
            evaluation capture through the current settings, each withheld setup and, for a refused setup, each
-           of its steps, and measure every clause below. Refuses a spent user, and starts only when the hashes
-           written by ``freeze`` still match.
+           of its steps, and measure every clause below. Refuses a spent user or one outside the study, and a
+           finished rows file; starts only when the hashes written by ``freeze`` still match, and stops when a row
+           shows that the VAD did not run as Silero or that the tuner lacked a suppressor model.
   probe    ``probe --development``: the bookkeeping dry run on the 36 spent development users (fit, calibrate
            and test 0-11). It runs them with extra probes and writes reachability, clause coverage, probe and
            arithmetic checks as counts and flags. No rate and no interval is computed from spent users.
-  report   Judge the rows written by ``run`` and write the tracked report. Refuses development rows.
-  freeze   Write ``rules-final.md`` (this text) and ``frozen-files.json`` (hashes of this rule, the sources, the
-           native extension, df.dll, the VAD model and the corpus manifest) beside the rows.
+  report   Judge the rows written by ``run`` and write the tracked report, with the frozen hashes. Refuses
+           development rows and a changed tree.
+  freeze   Write ``rules-final.md`` (this text) and ``frozen-files.json`` (hashes of this rule, every
+           ``python/mic_eq`` module and the tools it imports, the native extension, df.dll, the DeepFilter and VAD
+           models and the corpus manifest, and the Python, NumPy and SciPy versions) beside the rows. It does not
+           replace a freeze once rows exist. ``run`` and ``report`` check the hashes, and a row's build is
+           derived from them, so a partial file written by other code is not resumed and a change during a run
+           stops it.
 
 Rule (fixed before any study row existed)
 
@@ -27,7 +33,7 @@ df.dll; a missing df.dll, DeepFilter model or VAD model stops the run.
 Window. The 20 s evaluation capture, which the setup never heard, rendered whole through the full chain (pre-filter,
 gate, suppressor, de-esser, EQ, compressor, limiter) and compared with the pre-filtered reverberant clean speech.
 Every veto is judged on the whole 20 s. The last 10 s is a sensitivity reading for C1 and C2, whose verification
-take is the first 10 s.
+take is the first 10 s of the capture, or a later window after a retake.
 
 Clauses, each against the current settings. A difference exactly at a tolerance passes (slack 1e-9).
   estoi              ESTOI against the clean speech, not more than 0.01 lower.
@@ -61,17 +67,20 @@ least one measurable clause fails, ``partial`` when none fails and at least one 
 value, no deep pause, fewer than 8 sibilant frames). Headline reading, the lower bound on false refusals:
 unmeasurable counts as worse, so ``partial`` is a correct refusal. Beside it, the upper bound: unmeasurable counts
 as not worse, so ``partial`` is a false refusal. A withheld object that changes nothing the current settings do not
-(equal sections, an EQ whose bands all stay under 0.25 dB) is ``vacuous``; one that has no object or whose render
-failed is ``unjudgeable``; both are counted apart, listed, and are neither false nor correct. ``definition`` marks a
-refusal that is correct by definition (B2 with under 2 s of active speech; the clip rule cannot fire in the
-simulator). Soft outcomes (B2-B5) are refusals, labelled soft; hard (B1, C1, C2) and soft are reported apart.
+(equal sections, an EQ whose bands all stay under 0.25 dB, or a render within 1e-6 of the current one sample for
+sample, whatever its settings say) is ``vacuous``; one that has no object or whose render failed is
+``unjudgeable``; both are counted apart, listed, and are neither false nor correct. ``definition`` marks a refusal
+that is correct by definition (B2 with under 2 s of active speech; the clip rule cannot fire in the simulator). Soft
+outcomes (B2-B5) are refusals, labelled soft; hard (B1, C1, C2) and soft are reported apart.
 
 Vetoes (the numbering of the inventory): A1-A4 are capture vetoes the simulator cannot fire (unit-tested
 detectors, probed with constructed arrays); A5 is the level check; B1 the unclear-recording refusal (the
 proposal is recovered with a tap); B2 a weak capture; B3 a compressor target missed; B4 the final check; B5 the
 Auto-EQ abstention; B6 the tuner keeping the current gate and suppressor; C1 a verification rollback; C2 a
 verification that cannot settle after reductions (three adjustments, no help, or nothing left to change); D1 and D2
-are retakes, reported as costs, never judged and never counted as verified. E1 (automatic makeup withheld) and E2
+are retakes, reported as costs, never judged and never counted as verified. A delivery mismatch asks for the next
+window of the capture (start, middle, end), up to three takes as in the dialog; a user who verifies on a later take
+is judged on it and still counts as a retake. E1 (automatic makeup withheld) and E2
 (de-esser left off for invalid evidence, read from the diagnostics because the analysis does not export its flag)
 are firing rates only.
 
@@ -79,7 +88,9 @@ Two tracks. Whole setup: one bucket per user, the first of B1, B2, B3, B4, B5, C
 setup the analysis recommended; verification of a setup that was not recommended, as if the user applied it
 anyway, is emulated and reported as also fired); a user whose Auto-EQ stage failed before validation is an analysis
 failure, not a refusal. A setup that B1 ends never reaches verification and is not verified. Withheld object: the
-setup as proposed for B1-B5, the candidate as it ended verification for C1 and C2. Withheld step: the tone fit the
+setup as proposed for B1-B5, the candidate as it ended verification for C1 and C2. For B1 the judged object is the
+proposal had validation passed, a counterfactual the product discards, and the B2-B6 flags of a B1 user come from
+that run. Withheld step: the tone fit the
 abstention zeroed (B5, the validated gains of the tap) and the tuner's own best candidate (B6: the non-incumbent
 candidate with the lowest score among those that pass its gates, else the lowest overall), each applied alone to
 the current settings; its failed gates and whether the margin or the holdout vetoed it are recorded. That any
@@ -95,14 +106,23 @@ by stratum (level-check verdict, RT60 band, SNR band, gender).
 
 Trigger (the only decision rule). A veto whose false-refusal share of all users, headline reading, has an interval
 whose lower bound is above 5 % in either counting becomes a candidate for a loosening study with its own predefined
-gates and fresh speakers. No veto is changed by this study.
+gates and fresh speakers. No veto is changed by this study. A veto fired by fewer than 8 users is marked
+underpowered: with 54 users in 18 clusters of 3 the trigger cannot fire for it, so its silence says nothing.
 
-Dry run. ``probe --development`` runs the 36 spent users (fit, calibrate and test 0-11) with six known-bad probes
-(a +12 dB bell at 3 kHz and a -12 dB high shelf at 6.5 kHz, each on the EQ's nearest tone band; suppressor off;
-gate threshold -15 dB with a 10 ms release; gate release 1000 ms; manual makeup +24 dB) and two known-good ones
-(the current settings again, and without the limiter). A clause whose probe never trips it cannot say "worse"; a
-clause unmeasurable for more than 15 % of cases is flagged before the freeze. Spent after the study: fit 72-89,
-102-119 and 132-149.
+Dry run. ``probe --development`` runs the 36 spent users (fit, calibrate and test 0-11) with seven known-bad probes
+(a +12 dB bell at 3 kHz and a -12 dB high shelf at 6.5 kHz, each on the EQ's nearest tone band; a compressor
+squashing the dynamics, 20:1 from -60 dB with a 0.5 ms attack; suppressor off; gate threshold -15 dB with a 10 ms
+release; gate release 1000 ms; manual makeup +24 dB) and two checks (the current settings again, which must change
+nothing, and without the limiter, which may legitimately differ and is reported apart). A clause whose probe never
+trips it, or trips for the same settings again, cannot say "worse"; a clause unmeasurable for more than 15 % of
+cases is flagged before the freeze. Its output holds flags, and counts of probes, coverage and the level check,
+never a count of vetoes. Spent after the study: fit 72-89, 102-119 and 132-149.
+
+Limits. The current settings are always the factory ones. For B1 the judged object is a counterfactual (above). The
+tuner's best non-incumbent candidate may be one the tuner scored worse than the incumbent; the label "margin" then
+means that the tuner kept the incumbent without a holdout, not that the candidate came close. The tuner's runtime
+gate reads wall-clock time, so its candidates depend on the machine's load; each row records every candidate's
+failed gates and runtime factor.
 """
 
 from __future__ import annotations
@@ -156,6 +176,7 @@ SOURCES = (
     "python/mic_eq/analysis/auto_eq_parts/pipeline.py",
     "python/mic_eq/analysis/auto_eq_parts/optimizer.py",
     "python/mic_eq/ui/level_check.py",
+    "python/tools/check_evaluation_hygiene.py",
 )
 SECTIONS = loudness.SECTIONS
 STEPS = {"tone": ("eq_settings",), "gate_suppression": ("gate_settings", "suppressor_settings"),
@@ -166,6 +187,12 @@ VETOES = ("B1", "B2", "B3", "B4", "B5", "B6", "C1", "C2")
 HARD = ("B1", "C1", "C2")
 OBJECT = {"B1": "whole", "B2": "whole", "B3": "whole", "B4": "whole", "B5": "whole", "C1": "final", "C2": "final"}
 STEP_OBJECT = {"B5": "tone", "B6": "tuner"}
+VAD_BACKENDS = ("vad_analysis_backend", "noise_vad_analysis_backend", "joint_vad_analysis_backend",
+                "joint_noise_vad_analysis_backend")
+TUNER_MODELS = ("rnnoise", "deepfilter-ll", "deepfilter")
+MAX_BAD_TAKES = 3  # the dialog's _MAX_VERIFICATION_BAD_CAPTURES
+IDENTICAL_ATOL = 1e-6  # a render this close to the current one, sample for sample, is the same audio
+MIN_FIRED = 8  # below this a veto is underpowered: with 54 users in 18 clusters of 3 the 5 % trigger cannot fire
 RETRY_COSTS = {"verification_delivery_mismatch": "D1", "verification_capture_too_short": "D2",
                "verification_capture_invalid": "D2"}
 STATUSES = ("false", "correct", "partial", "definition", "vacuous", "unjudgeable")
@@ -222,6 +249,14 @@ LIMITATIONS = (
     "The tuner's upper bound renders the gate and suppressor stage alone and omits the tone, sibilant and overload "
     "clauses; it can only overstate.",
     "The tone of a B5 step is the optimizer's validated fit before the abstention and the headroom scaling.",
+    "For B1 the judged object is the proposal had validation passed, a counterfactual the product discards; the B2-B6 "
+    "flags of a B1 user come from that run.",
+    "The tuner's best non-incumbent candidate may be one the tuner scored worse than the incumbent; the cause "
+    "'margin' then means that the tuner kept the incumbent without a holdout, not that the candidate came close.",
+    "The tuner's runtime gate reads wall-clock time, so its candidates depend on the machine's load; each row records "
+    "every candidate's failed gates and runtime factor.",
+    "A veto fired by fewer than 8 users is underpowered: with 54 users in 18 clusters of 3 the trigger cannot fire "
+    "for it, so its silence says nothing.",
 )
 FLATTERING = (
     "No VoiceBank speaker is untouched. These speakers fed the tuner harness and all 30 fit-split speakers fit a "
@@ -415,6 +450,9 @@ def probe_settings(current: dict[str, Any]) -> dict[str, tuple[str, dict[str, An
         "gate_threshold_minus_15": ("onset_db", with_("gate_settings", auto_threshold_enabled=False,
                                                        threshold_db=-15.0, release_ms=10.0)),
         "gate_release_1000": ("tail_db", with_("gate_settings", release_ms=1000.0)),
+        # ESTOI ignores any per-band scaling, so no EQ moves it: squashing the dynamics does.
+        "compressor_squash": ("estoi", with_("compressor_settings", ratio=20.0, threshold_db=-60.0, attack_ms=0.5,
+                                             release_ms=20.0)),
         "makeup_plus_24": ("overload", with_("compressor_settings", makeup_gain_db=24.0)),
         "current_again": ("", deepcopy(current)),
         "limiter_off": ("", with_("limiter_settings", enabled=False)),
@@ -515,14 +553,26 @@ def measure(rendered: dict[str, Any], ctx: dict[str, Any], start: int = 0) -> di
     }
 
 
-def measure_settings(settings: dict[str, Any], ctx: dict[str, Any], windows: tuple[str, ...] = ("whole",)) -> dict[str, Any]:
-    """Render ``settings`` once and read each window; a render that fails is recorded, not hidden."""
+def measure_settings(settings: dict[str, Any], ctx: dict[str, Any], windows: tuple[str, ...] = ("whole",), *,
+                     as_reference: bool = False) -> dict[str, Any]:
+    """Render ``settings`` once and read each window; a render that fails is recorded, not hidden.
+
+    The first render, made with ``as_reference``, is the current settings'. Later ones whose audio is within float
+    noise of it are marked ``identical``: whatever their settings say, they change nothing.
+    """
     try:
         rendered = loudness._render(settings, ctx["raw"])
     except (RuntimeError, ValueError) as error:
         return {"error": f"{type(error).__name__}: {error}"}
     half = ctx["raw"].size // 2
-    return {window: measure(rendered, ctx, half if window == "last10" else 0) for window in windows}
+    metrics: dict[str, Any] = {window: measure(rendered, ctx, half if window == "last10" else 0) for window in windows}
+    output = np.asarray(rendered["output_audio"], np.float32)
+    if as_reference:
+        ctx["reference"] = output
+    elif ctx.get("reference") is not None:
+        metrics["identical"] = bool(output.shape == ctx["reference"].shape
+                                    and np.max(np.abs(output - ctx["reference"])) <= IDENTICAL_ATOL)
+    return metrics
 
 
 # ----------------------------------------------------------------------------------------------
@@ -540,23 +590,33 @@ def _reduction_metrics(outcome: dict[str, Any]) -> dict[str, float]:
     return values
 
 
-def verify_flow(result: dict[str, Any], captures: dict[str, np.ndarray]) -> dict[str, Any]:
+def verify_flow(result: dict[str, Any], captures: dict[str, Any]) -> dict[str, Any]:
     """The dialog's verification of a proposal with its automatic reductions, and the candidate as it ended.
 
-    ``gave_up`` is a reduction that cannot be settled: three adjustments used, an adjustment that did not help,
-    or nothing left to change. A ``retry`` is a retake and decides nothing.
+    ``captures["takes"]`` are the second takes the user can record, as (filtered, raw) pairs from successive windows
+    of the evaluation capture. A ``retry`` (the take differs too much from the setup passage) asks for the next
+    one, and the third bad take stops with no verdict, as in the dialog. ``gave_up`` is a reduction that cannot be
+    settled: three adjustments used, an adjustment that did not help, or nothing left to change.
     """
     from mic_eq.analysis.voice_setup import validate_voice_setup_verification
 
     state = deepcopy(result)
     state["eq_settings"] = loudness._applied_eq(state["eq_settings"])
-    adjustments, last, first, ended = 0, None, None, None
+    takes: list[tuple[np.ndarray, np.ndarray]] = captures["takes"]
+    take, retakes, adjustments, last, first, ended = 0, [], 0, None, None, None
     while True:
         state["verification_chain_settings"] = loudness._chain(state)
         outcome = validate_voice_setup_verification(
-            captures["noise"], captures["setup"], captures["second"], SAMPLE_RATE, state, "broadcast",
-            raw_noise_audio=captures["raw_noise"], raw_verification_speech_audio=captures["raw_second"])
+            captures["noise"], captures["setup"], takes[take][0], SAMPLE_RATE, state, "broadcast",
+            raw_noise_audio=captures["raw_noise"], raw_verification_speech_audio=takes[take][1])
         first = first or outcome["decision"]
+        if outcome["decision"] == "retry":
+            retakes.append(next((RETRY_COSTS[c] for c in outcome.get("reason_codes") or () if c in RETRY_COSTS), "unknown"))
+            if len(retakes) >= MAX_BAD_TAKES or take + 1 >= len(takes):
+                ended = "bad_takes"
+                break
+            take += 1
+            continue
         if outcome["decision"] != "reduce":
             break
         targets = [t for t in outcome.get("reduction_targets") or () if t in REDUCIBLE]
@@ -580,18 +640,22 @@ def verify_flow(result: dict[str, Any], captures: dict[str, np.ndarray]) -> dict
         adjustments += 1
     return {"decision": "gave_up" if outcome["decision"] == "reduce" else outcome["decision"], "first_decision": first,
             "adjustments": adjustments, "ended": ended, "reason_codes": list(outcome.get("reason_codes") or ()),
-            "state": state}
+            "takes": take + 1, "retakes": retakes, "state": state}
 
 
 # ----------------------------------------------------------------------------------------------
 # One user
 
 
+def vad_model_path() -> Path:
+    return Path(os.environ.get("VAD_MODEL_PATH") or REPO_ROOT / "models" / "silero_vad.onnx")
+
+
 def check_assets() -> None:
     """DeepFilter and the VAD model must be there; a missing one would be skipped silently by the native code."""
     os.environ.setdefault("VAD_MODEL_PATH", str(REPO_ROOT / "models" / "silero_vad.onnx"))
     needed = [REPO_ROOT / "df.dll", REPO_ROOT / "models" / "DeepFilterNet3_ll_onnx.tar.gz",
-              REPO_ROOT / "models" / "DeepFilterNet3_onnx.tar.gz", Path(os.environ["VAD_MODEL_PATH"])]
+              REPO_ROOT / "models" / "DeepFilterNet3_onnx.tar.gz", vad_model_path()]
     missing = [path.name for path in needed if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"study assets are missing: {', '.join(missing)}")
@@ -606,11 +670,49 @@ def configure_environment() -> None:
     os.environ["AUDIOFORGE_ENABLE_DEEPFILTER"] = "1"
 
 
-@functools.lru_cache(maxsize=1)
-def build_id() -> str:
-    """The evaluator and the extension; a partial file written by another build is not resumed."""
-    extension = REPO_ROOT / loudness.EXTENSION
-    return hashlib.sha256((loudness._sha256(Path(__file__)) + gate_corpus._sha256(extension)).encode()).hexdigest()[:16]
+def check_loaded(diagnostics: dict[str, Any], tuning: dict[str, Any]) -> dict[str, Any]:
+    """Present is not loaded: the VAD must have run as Silero in every analysis step, and the tuner must have had
+    every suppressor model, DeepFilter included. Otherwise the run stops; nothing is recorded as a refusal."""
+    backends = {key: diagnostics.get(key) for key in VAD_BACKENDS}
+    models = {str(item.get("model")): item.get("status") for item in tuning.get("model_evaluations") or ()}
+    silent = sorted(key for key, backend in backends.items() if backend != "silero")
+    unavailable = sorted(set(TUNER_MODELS) - {model for model, status in models.items() if status == "available"})
+    if silent or unavailable:
+        raise RuntimeError(f"the analysis did not run with its models: VAD not Silero in {silent}, "
+                           f"tuner models not available: {unavailable}")
+    return {"vad_backends": backends, "tuner_models": models}
+
+
+def source_hashes() -> dict[str, str]:
+    """Every product module the study loads, and the evaluators and tools it imports."""
+    product = {path.relative_to(REPO_ROOT).as_posix() for path in (REPO_ROOT / "python" / "mic_eq").rglob("*.py")}
+    return {name: loudness._sha256(REPO_ROOT / name) for name in sorted({*SOURCES, *product})}
+
+
+def asset_hashes(root: Path = voice_setup_eval.DEFAULT_ROOT) -> dict[str, str]:
+    """The native extension, df.dll, the DeepFilter and VAD models and the corpus manifest."""
+    assets = {"extension": REPO_ROOT / loudness.EXTENSION, "df.dll": REPO_ROOT / "df.dll", "vad_model": vad_model_path(),
+              "corpus_manifest": root / "manifest.json",
+              **{f"models/{path.name}": path for path in sorted((REPO_ROOT / "models").glob("DeepFilterNet3*_onnx.tar.gz"))}}
+    return {name: gate_corpus._sha256(path) for name, path in assets.items()}
+
+
+def frozen_hashes(root: Path = voice_setup_eval.DEFAULT_ROOT) -> dict[str, str]:
+    """What must not change between the freeze and the report: the rule, the code, the assets and the libraries."""
+    import scipy
+
+    return {"rule": hashlib.sha256((__doc__ or "").encode()).hexdigest(), **source_hashes(), **asset_hashes(root),
+            "runtime:python": sys.version, "runtime:numpy": np.__version__, "runtime:scipy": scipy.__version__}
+
+
+def build_of(frozen: dict[str, str]) -> str:
+    return hashlib.sha256(json.dumps(frozen, sort_keys=True).encode()).hexdigest()[:16]
+
+
+@functools.lru_cache(maxsize=4)
+def build_id(root: str) -> str:
+    """Derived from every frozen hash, so a partial file written by other code is not resumed."""
+    return build_of(frozen_hashes(Path(root)))
 
 
 def rt60_s(split: str, index: int) -> float:
@@ -619,10 +721,7 @@ def rt60_s(split: str, index: int) -> float:
 
 
 def _verification_row(flow: dict[str, Any]) -> dict[str, Any]:
-    row = {key: flow[key] for key in ("decision", "first_decision", "adjustments", "ended", "reason_codes")}
-    retry = next((RETRY_COSTS[code] for code in flow["reason_codes"] if code in RETRY_COSTS), None)
-    row["retry"] = retry if flow["decision"] == "retry" else None
-    return row
+    return {key: flow[key] for key in ("decision", "first_decision", "adjustments", "ended", "reason_codes", "takes", "retakes")}
 
 
 def evaluate_user(job: tuple[str, str, int, str], *, development: bool) -> dict[str, Any]:
@@ -639,12 +738,14 @@ def evaluate_user(job: tuple[str, str, int, str], *, development: bool) -> dict[
     simulated = voice_setup_eval.user(root, manifest, split_name, index)
     raw_noise, raw_setup, raw_evaluation = (
         simulated[name] for name in ("noise_capture", "setup_capture", "evaluation_capture"))
-    raw_second = raw_evaluation[: raw_setup.size]
-    noise, setup, second = (
-        filtered_capture_for_analysis(audio, SAMPLE_RATE) for audio in (raw_noise, raw_setup, raw_second))
+    noise, setup = (filtered_capture_for_analysis(audio, SAMPLE_RATE) for audio in (raw_noise, raw_setup))
+    # The second takes the user can record: windows as long as the setup passage, from the start to the end.
+    size = raw_setup.size
+    second_windows = [raw_evaluation[start : start + size] for start in (0, (raw_evaluation.size - size) // 2, raw_evaluation.size - size)]
+    takes = [(filtered_capture_for_analysis(window, SAMPLE_RATE), window) for window in second_windows]
     row: dict[str, Any] = {
         **{key: simulated[key] for key in ("split", "index", "speaker", "environment", "snr_db", "level_dbfs")},
-        "model": model, "development": development, "build": build_id(),
+        "model": model, "development": development, "build": build_id(root_text),
         "gender": manifest["speakers"][simulated["speaker"]]["gender"], "rt60_s": rt60_s(split_name, index),
         "level_check": verdict_from_audio(raw_setup, SAMPLE_RATE).code, "fired": [],
     }
@@ -658,10 +759,11 @@ def evaluate_user(job: tuple[str, str, int, str], *, development: bool) -> dict[
                 raw_noise_audio=raw_noise, raw_speech_audio=raw_setup)
         except ValueError as error:  # an analysis failure (A1-A4 territory), not a refusal
             return row | {"analysis_failure": str(error)}
-    if result["eq_settings"] is None:  # Auto-EQ raised before it could validate
-        return row | {"analysis_failure": str(result["eq_error"])}
     diagnostics = result["diagnostics"]
     tuning = diagnostics["joint_tuning"]
+    row |= check_loaded(diagnostics, tuning)
+    if result["eq_settings"] is None:  # Auto-EQ raised before it could validate
+        return row | {"analysis_failure": str(result["eq_error"])}
     b1 = next((entry for entry in tap["validation"] if not entry["passed"]), None)
     vad = bool(diagnostics["vad_available"])
     current = current_settings(vad)
@@ -669,36 +771,51 @@ def evaluate_user(job: tuple[str, str, int, str], *, development: bool) -> dict[
     if loudness._digest(proposal["limiter_settings"]) != loudness._digest(current["limiter_settings"]):
         raise RuntimeError("the proposal's limiter differs from the factory limiter; the limiter would be a step")
     # A setup the unclear-recording refusal ends never reaches verification.
-    flow = None if b1 else verify_flow(result, {"noise": noise, "setup": setup, "second": second,
-                                                "raw_noise": raw_noise, "raw_second": raw_second})
+    flow = None if b1 else verify_flow(result, {"noise": noise, "setup": setup, "raw_noise": raw_noise, "takes": takes})
     fired = fired_vetoes({"reasons": diagnostics["uncertainty_reasons"], "weak_capture": diagnostics["weak_capture"],
                           "b1": b1 is not None, "tuner_decision": tuning.get("decision"),
                           "verification": None if flow is None else flow["decision"]})
     recommended = bool(diagnostics["apply_recommended"])
+    candidates: list[dict[str, Any]] = list(tuning.get("candidates") or [])
     row |= {
         "fired": fired, "recommended": recommended, "reasons": list(diagnostics["uncertainty_reasons"]), "b1": b1,
         "short_speech": float(diagnostics["vad_active_duration_s"]) < 2.0,
         "verification": None if flow is None else _verification_row(flow),
         "taps": {"validation": len(tap["validation"]), "tone": len(tap["tone"])},
+        "tuner": {
+            "decision": tuning.get("decision"), "holdout_evaluated": bool(tuning.get("holdout_evaluated")),
+            "holdout_passed": bool(tuning.get("holdout_passed")), "withheld": None,
+            "candidates": [{
+                "noise_model": c["noise_model"], "strength": float(c["suppressor_strength"]), "score": float(c["score"]),
+                "passes": bool(c["passes"]), "failed_gates": sorted(name for name, ok in c["gates"].items() if not ok),
+                # The runtime gate reads wall-clock time, so it depends on the machine's load.
+                "runtime_factor": float(c.get("metrics", {}).get("runtime_factor", math.nan))} for c in candidates]},
         "e1": not bool(diagnostics["compressor_auto_makeup_enabled"]),
         "e2": bool(not diagnostics["deesser_enabled"] and (
             float(diagnostics["deesser_detection_probability"]) == 0.0
             or diagnostics["noise_reference_quality"].get("status") == "invalid")),
     }
-    ctx = {"raw": raw_evaluation, "noise": noise.astype(np.float64), "labels": simulated["labels"],
-           "clean": filtered_capture_for_analysis(simulated["evaluation_clean"], SAMPLE_RATE).astype(np.float64),
-           "noisy": filtered_capture_for_analysis(raw_evaluation, SAMPLE_RATE).astype(np.float64)}
+    ctx: dict[str, Any] = {
+        "raw": raw_evaluation, "noise": noise.astype(np.float64), "labels": simulated["labels"],
+        "clean": filtered_capture_for_analysis(simulated["evaluation_clean"], SAMPLE_RATE).astype(np.float64),
+        "noisy": filtered_capture_for_analysis(raw_evaluation, SAMPLE_RATE).astype(np.float64)}
     ended = flow is not None and flow["decision"] in ("rollback", "gave_up")
     objects: dict[str, dict[str, Any]] = {}
-    metrics: dict[str, Any] = {"current": measure_settings(current, ctx, ("whole", "last10") if ended else ("whole",))}
+    metrics: dict[str, Any] = {"current": measure_settings(
+        current, ctx, ("whole", "last10") if ended else ("whole",), as_reference=True)}
     if "error" in metrics["current"]:  # every verdict is read against this render: a failure here is the environment's
         raise RuntimeError(f"the current settings do not render: {metrics['current']['error']}")
 
     def add(name: str, settings: dict[str, Any], sections: tuple[str, ...], windows: tuple[str, ...] = ("whole",)) -> None:
+        """Judge one withheld object, unless it changes nothing: equal sections, or a render within float noise."""
         objects[name] = {"vacuous": is_vacuous(settings, current, sections),
                          "digests": {section: loudness._digest(settings[section]) for section in sections}}
-        if not objects[name]["vacuous"]:
-            metrics[name] = measure_settings(settings, ctx, windows)
+        if objects[name]["vacuous"]:
+            return
+        metrics[name] = measure_settings(settings, ctx, windows)
+        if metrics[name].pop("identical", False):
+            objects[name].update(vacuous=True, identical_render=True)
+            del metrics[name]
 
     add("whole", proposal, SECTIONS)
     final = None
@@ -711,15 +828,10 @@ def evaluate_user(job: tuple[str, str, int, str], *, development: bool) -> dict[
             add("tone", hybrid(current, tone, "tone"), STEPS["tone"])
         else:
             objects["tone"] = {"vacuous": False}
-    candidates: list[dict[str, Any]] = list(tuning.get("candidates") or [])
     current_key = voice_setup_eval._arm_key(model, 1.0, asdict(preset.gate))
     if "B6" in fired:
         best = tuner_withheld(candidates, current_key, tuning)
-        row["tuner"] = {
-            "decision": tuning.get("decision"), "holdout_evaluated": bool(tuning.get("holdout_evaluated")),
-            "holdout_passed": bool(tuning.get("holdout_passed")), "withheld": best,
-            "candidates": [{"noise_model": c["noise_model"], "strength": float(c["suppressor_strength"]),
-                            "score": float(c["score"]), "passes": bool(c["passes"])} for c in candidates]}
+        row["tuner"]["withheld"] = best
         if best is None:
             objects["tuner"] = {"vacuous": False}
         else:
@@ -873,7 +985,8 @@ def _table_row(users: list[dict[str, Any]], veto: str, track: str, counting: str
             "kind": "step" if track == "step" else "hard" if veto in HARD else "soft",
             "fired": len(found), **{status: counts[status] for status in STATUSES},
             "false_share_lower_bound": lower, "false_share_upper_bound": _share(upper, users),
-            "correct_by_clause": dict(sorted(clauses.items())), "candidate_for_loosening": bool(lower[1] > TRIGGER_SHARE)}
+            "correct_by_clause": dict(sorted(clauses.items())), "candidate_for_loosening": bool(lower[1] > TRIGGER_SHARE),
+            "underpowered": len(found) < MIN_FIRED}
 
 
 def _false_counts(users: list[dict[str, Any]], only: tuple[str, ...] | None = None, **reading: Any) -> dict[str, list[int]]:
@@ -960,11 +1073,12 @@ def refusal_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
     sensitivity: dict[str, Any] = {name: _false_counts(users, **reading) for name, reading in readings.items()}
     sensitivity["last_10_s_for_c1_c2"] = _false_counts(users, ("C1", "C2"), window="last10")
     verifications = [user["row"]["verification"] for user in users if user["row"].get("verification")]
-    tuner = [user["row"]["tuner"] for user in users if user["row"].get("tuner")]
+    tuner = [user["row"]["tuner"] for user in users if "B6" in user["fired"] and user["row"].get("tuner")]
     return {
         "users": len(users), "speakers": len({user["speaker"] for user in users}), "buckets": buckets,
         "vetoes": table,
         "candidates_for_loosening": sorted({f"{r['veto']}:{r['track']}" for r in table if r["candidate_for_loosening"]}),
+        "underpowered": sorted(f"{r['veto']}:{r['track']}:{r['counting']}" for r in table if r["underpowered"]),
         "reading": {"false_share_lower_bound": "[share, lower, upper] of all users, speaker-clustered 95 % bootstrap; an "
                                                "unmeasurable clause counts as worse (the headline)",
                     "false_share_upper_bound": "the same with an unmeasurable clause counted as not worse"},
@@ -977,12 +1091,19 @@ def refusal_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
                        "any_candidate_no_worse_upper_bound": sum(
                            (t.get("any_candidate_no_worse") or {}).get("no_worse", 0) > 0 for t in tuner)},
         "per_step_breakdown": _step_breakdown(users), "sensitivity": sensitivity, "clause_coverage": clause_coverage(users),
-        "strata": _strata(users), "retake_costs": dict(Counter(v["retry"] for v in verifications if v["retry"])),
+        "strata": _strata(users), "retake_costs": {
+            "users_with_a_retake": sum(bool(v.get("retakes")) for v in verifications),
+            "retakes": dict(Counter(code for v in verifications for code in v.get("retakes") or ())),
+            "ended_without_a_verdict": sum(v["decision"] == "retry" for v in verifications)},
         "verification_decisions": dict(Counter(v["decision"] for v in verifications)),
         "unreachable": {"A1-A4": "the simulator makes no clipped, silent, short or non-finite takes",
                         "never_fired": [veto for veto in VETOES if not any(veto in user["fired"] for user in users)]},
         "trigger": f"a veto is a candidate for a loosening study when the lower bound of its false-refusal share of all "
-                   f"users exceeds {TRIGGER_SHARE:.0%}, counted first or in any; no veto is changed by this study",
+                   f"users exceeds {TRIGGER_SHARE:.0%}, counted first or in any; no veto is changed by this study. A veto "
+                   f"fired by fewer than {MIN_FIRED} users is underpowered: with 54 users in 18 clusters of 3 the trigger "
+                   f"cannot fire for it, so its silence says nothing",
+        "b1": "for B1 the judged object is the proposal had validation passed, a counterfactual the product discards; the "
+              "B2-B6 flags of a B1 user come from that run",
     }
 
 
@@ -993,20 +1114,21 @@ def _same_reading(a: Any, b: Any) -> bool:
 def bookkeeping(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Reachability, clause coverage, probes and arithmetic of the development rows: counts and flags, no rates."""
     users = assess(rows)
-    buckets = population(users)
+    population(users)
     reachability = {}
     for veto in VETOES:
         for track, objects in (("whole", OBJECT), ("step", STEP_OBJECT)):
             if veto in objects:
-                found = [result["status"] for _, result in _outcomes(users, veto, track, "any")]
+                found = {result["status"] for _, result in _outcomes(users, veto, track, "any")}
                 reachability[veto if track == "whole" else f"{veto}_step"] = {
-                    "fired": len(found), **{status: found.count(status) for status in STATUSES}}
+                    "fired": bool(found), "judged": bool(found & {"false", "correct", "partial"}),
+                    "vacuous": "vacuous" in found, "unjudgeable": "unjudgeable" in found}
     targets = {name: target for name, (target, _) in probe_settings(current_settings(True)).items()}
     reference = [user["row"] for user in users if "whole" in user["row"].get("metrics", {}).get("current", {})]
     judged = {name: [(row, judge(row["probes"][name]["whole"], row["metrics"]["current"]["whole"]))
                      for row in reference if "whole" in row["probes"][name]] for name in targets}
-    good = Counter(clause for name, target in targets.items() if not target for _, result in judged[name]
-                   for clause in result["failed"])
+    # Only the same settings again must change nothing. Without the limiter can legitimately differ.
+    good = Counter(clause for _, result in judged["current_again"] for clause in result["failed"])
     probes: dict[str, Any] = {}
     for name, target in targets.items():
         results = [result for _, result in judged[name]]
@@ -1022,7 +1144,7 @@ def bookkeeping(rows: list[dict[str, Any]]) -> dict[str, Any]:
                             "clause_failures": dict(Counter(c for result in results for c in result["failed"]))}
     gaps = [row["tone_cross_check_gap_db"] for row in rows if "tone_cross_check_gap_db" in row]
     return {
-        "development_users": len(users), "buckets": buckets, "reachability": reachability,
+        "development_users": len(users), "reachability": reachability,
         "never_fired": [veto for veto in VETOES if not any(veto in user["fired"] for user in users)],
         "constructed_capture_probes": capture_vetoes_probe(), "clause_coverage": clause_coverage(users), "probes": probes,
         "tone_cross_check": {"users": len(gaps), "within_half_db": sum(gap <= 0.5 for gap in gaps)},
@@ -1043,7 +1165,7 @@ def fabricated_rows() -> list[dict[str, Any]]:
                 "unknown": {**ok, "deep_pause_db": None}, "clip": {**ok, "clipped": True}}
 
     def user(i: int, fired: tuple[str, ...] = (), *, recommended: bool = True, decision: str | None = "accept",
-             retry: str | None = None, cause: str | None = None, short: bool = False, **objects: str) -> dict[str, Any]:
+             retakes: tuple[str, ...] = (), cause: str | None = None, short: bool = False, **objects: str) -> dict[str, Any]:
         """``objects`` maps a withheld object to its kind: a reading above, ``vacuous`` or ``error``."""
         metrics: dict[str, Any] = {"current": {"whole": ok, "last10": ok}}
         for name, kind in objects.items():
@@ -1055,7 +1177,8 @@ def fabricated_rows() -> list[dict[str, Any]]:
             "gender": "female" if i // 3 < 2 else "male", "rt60_s": 0.2 + 0.5 * (i % 7) / 6,
             "snr_db": 3.0 + 27.0 * (i % 5) / 4, "level_check": "too_hot" if i % 9 == 0 else "good",
             "fired": list(fired), "recommended": recommended, "short_speech": short, "e1": i % 4 == 0, "e2": i % 6 == 0,
-            "verification": None if decision is None else {"decision": decision, "retry": retry, "adjustments": 0},
+            "verification": None if decision is None else {"decision": decision, "retakes": list(retakes),
+                                                           "takes": len(retakes) + 1, "adjustments": 0},
             "objects": {name: {"vacuous": kind == "vacuous"} for name, kind in objects.items()}, "metrics": metrics,
         }
         if "B6" in fired:
@@ -1079,8 +1202,8 @@ def fabricated_rows() -> list[dict[str, Any]]:
         user(16, ("C2",), decision="gave_up", whole="same", final="same"),
         user(17, ("B2", "C1"), recommended=False, decision="rollback", whole="same", final="worse"),
         user(18, ("B6",), cause="margin", tuner="same"), user(19, ("B6",), cause="holdout", tuner="worse"),
-        user(20, ("B6",)), user(21, (), decision="retry", retry="D1", whole="same"),
-        user(22, ("B3",), recommended=False, whole="error"),
+        user(20, ("B6",)), user(21, (), decision="retry", retakes=("D1", "D1", "D1"), whole="same"),
+        user(22, ("B3",), recommended=False, whole="error"), user(23, retakes=("D1",)),
     ]
     rows += [user(i) for i in range(len(rows), len(STUDY_INDICES) - 1)]
     failure = {"analysis_failure": "Recording too unclear. Please try again.", "objects": {}, "metrics": {}}
@@ -1099,13 +1222,17 @@ def fabricated_rows() -> list[dict[str, Any]]:
 
 
 def check_indices(split: str, indices: list[int], development: bool) -> None:
-    """A study run never reaches a spent user; the dry run reaches only the development ones."""
+    """A study run reaches only the study's users and the dry run only the 36 development ones; nothing else."""
     if split not in voice_setup_eval.SPLITS:
         raise SystemExit(f"unknown split {split!r}")
-    if development and any(not 0 <= index < DEVELOPMENT_COUNT for index in indices):
-        raise SystemExit(f"development users are indices 0-{DEVELOPMENT_COUNT - 1}")
-    if not development and any(index < SPENT_BELOW for index in indices):
+    if development:
+        if any(index not in range(DEVELOPMENT_COUNT) for index in indices):
+            raise SystemExit(f"development users are indices 0-{DEVELOPMENT_COUNT - 1}")
+        return
+    if any(index < SPENT_BELOW for index in indices):
         raise SystemExit(f"indices below {SPENT_BELOW} are spent users; only probe --development may run them")
+    if split != SPLIT or not set(indices) <= set(STUDY_INDICES):
+        raise SystemExit(f"only the study users run: {DEFAULT_INDICES}")
 
 
 def parse_indices(text: str) -> tuple[str, list[int]]:
@@ -1122,52 +1249,73 @@ def worker_count(requested: int) -> int:
 
 
 def check_resume(partial: Path, build: str) -> None:
-    """A partial file resumes whatever code wrote it, so rows from another build are refused."""
+    """A partial file resumes whatever code wrote it, so rows from another build are refused. A last line cut
+    short by an interrupted write is dropped; a damaged line elsewhere is not guessed at."""
     if not partial.exists():
         return
-    stale = [row for row in map(json.loads, partial.read_text(encoding="utf-8").splitlines()) if row.get("build") != build]
-    if stale:
-        raise SystemExit(f"{partial} holds {len(stale)} rows from another build; delete it to start over")
+    text = partial.read_text(encoding="utf-8")
+    lines, rows = text.splitlines(), []
+    for number, line in enumerate(lines, 1):
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            if number < len(lines):
+                raise SystemExit(f"{partial}: line {number} is not JSON; delete the file to start over") from None
+            print(f"{partial}: dropped the truncated last line ({number})", flush=True)
+            lines.pop()
+    if any(row.get("build") != build for row in rows):
+        raise SystemExit(f"{partial} holds rows from another build; delete it to start over")
+    if len(lines) < len(text.splitlines()) or (lines and not text.endswith("\n")):
+        partial.write_text("".join(line + "\n" for line in lines), encoding="utf-8", newline="\n")
 
 
-def frozen_hashes(root: Path = voice_setup_eval.DEFAULT_ROOT) -> dict[str, str]:
-    """What must not change between the freeze and the run."""
-    assets = {"extension": REPO_ROOT / loudness.EXTENSION, "df.dll": REPO_ROOT / "df.dll",
-              "vad_model": Path(os.environ.get("VAD_MODEL_PATH") or REPO_ROOT / "models" / "silero_vad.onnx"),
-              "corpus_manifest": root / "manifest.json"}
-    return {"rule": hashlib.sha256((__doc__ or "").encode()).hexdigest(),
-            **{name: loudness._sha256(REPO_ROOT / name) for name in SOURCES},
-            **{name: gate_corpus._sha256(path) for name, path in assets.items()}}
+def check_not_finished(rows: Path) -> None:
+    if rows.exists():
+        raise SystemExit(f"{rows} is a finished run; move it away to run again")
 
 
-def check_frozen(path: Path, root: Path = voice_setup_eval.DEFAULT_ROOT) -> None:
+def freeze(frozen: Path, rules: Path, rows: Path, root: Path) -> None:
+    """Write the rule text and the hashes. Once rows exist the freeze they were made under stays."""
+    if frozen.exists() and (rows.exists() or rows.with_suffix(".run.partial.jsonl").exists()):
+        raise SystemExit(f"{rows} exists: the freeze it was made under stays")
+    rules.parent.mkdir(parents=True, exist_ok=True)
+    rules.write_text(__doc__ or "", encoding="utf-8", newline="\n")
+    _write(frozen, frozen_hashes(root))
+
+
+def check_frozen(path: Path, root: Path = voice_setup_eval.DEFAULT_ROOT) -> dict[str, str]:
+    """The frozen hashes, once the code and the assets are shown to be what they were frozen as."""
     if not path.exists():
         raise SystemExit(f"{path} is missing; run probe --development, then freeze, before the study")
     frozen, now = json.loads(path.read_text(encoding="utf-8")), frozen_hashes(root)
-    changed = sorted(name for name in now if frozen.get(name) != now[name])
+    changed = sorted(name for name in {*frozen, *now} if frozen.get(name) != now.get(name))
     if changed:
         raise SystemExit(f"changed since the freeze: {', '.join(changed)}")
+    return frozen
 
 
-def identity(root: Path) -> dict[str, str]:
-    hashes = frozen_hashes(root)
-    return {"build": build_id(), "extension_sha256": hashes["extension"], "df_dll_sha256": hashes["df.dll"],
-            "vad_model_sha256": hashes["vad_model"], "manifest_sha256": hashes["corpus_manifest"]}
+def check_unchanged(root: Path, started: str, rows: list[dict[str, Any]]) -> None:
+    """A run is one build: nothing it loads changed between its start and its end."""
+    if build_of(frozen_hashes(root)) != started or any(row["build"] != started for row in rows):
+        raise SystemExit("the code or an asset changed during the run; its rows are not one build")
 
 
-def build_report(source: dict[str, Any]) -> dict[str, Any]:
-    rows, who = source["rows"], source["identity"]
+def build_report(source: dict[str, Any], frozen: dict[str, str]) -> dict[str, Any]:
+    """The tracked report. Its hashes are the frozen ones, read from the freeze and not computed again."""
+    rows = source["rows"]
     return {
         "schema_version": 2, "audible_change": False, "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "experiment": "Voice Setup refusals: how often a withheld setup was no worse than the current settings",
         "predefined_rule": "The rule in the docstring of python/tools/evaluate_voice_setup_refusals.py.",
-        "rule_sha256": hashlib.sha256((__doc__ or "").encode()).hexdigest(),
+        "rule_sha256": frozen["rule"], "build": source["identity"]["build"],
         "split": SPLIT, "model": MODEL, "user_indices": {SPLIT: sorted(row["index"] for row in rows)},
         "metrics": refusal_report(rows), "limitations": list(LIMITATIONS), "flattering": list(FLATTERING),
-        "source_sha256": {name: loudness._sha256(REPO_ROOT / name) for name in SOURCES},
-        "implementation_sha256": {loudness.EXTENSION: who["extension_sha256"]},
-        "asset_hashes": {"corpus_manifest": who["manifest_sha256"], "vad_model": who["vad_model_sha256"],
-                         "df_dll": who["df_dll_sha256"]},
+        "source_sha256": {name: frozen[name] for name in SOURCES},
+        "implementation_sha256": {loudness.EXTENSION: frozen["extension"]},
+        "asset_hashes": {"corpus_manifest": frozen["corpus_manifest"], "vad_model": frozen["vad_model"],
+                         "df_dll": frozen["df.dll"],
+                         **{name: digest for name, digest in frozen.items() if name.startswith("models/")}},
+        "frozen_sha256": frozen,
     }
 
 
@@ -1184,19 +1332,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--indices", default=DEFAULT_INDICES, help="run: split:ranges")
     parser.add_argument("--development", action="store_true", help="probe: confirm that the 36 spent users run again")
     parser.add_argument("--workers", type=int, default=MAX_WORKERS)
-    parser.add_argument("--rows", type=Path, default=DEFAULT_ROWS, help="report: rows written by run")
+    parser.add_argument("--rows", type=Path, default=DEFAULT_ROWS, help="freeze, report: the rows written by run")
     parser.add_argument("--output", type=Path, help="run: rows; probe: bookkeeping; report: the tracked report")
     args = parser.parse_args(argv)
     if args.command == "freeze":
-        RULES_FINAL.parent.mkdir(parents=True, exist_ok=True)
-        RULES_FINAL.write_text(__doc__ or "", encoding="utf-8", newline="\n")
-        _write(FROZEN, frozen_hashes(args.root))
+        freeze(FROZEN, RULES_FINAL, args.rows, args.root)
         return 0
     if args.command == "report":
+        frozen = check_frozen(FROZEN, args.root)
         source = json.loads(args.rows.read_text(encoding="utf-8"))
         if source.get("development"):
             raise SystemExit("the rows are development rows: spent users give no rates")
-        _write(args.output or DEFAULT_REPORT, build_report(source))
+        if source["identity"]["build"] != build_of(frozen):
+            raise SystemExit("the rows were made by another build than the one frozen")
+        _write(args.output or DEFAULT_REPORT, build_report(source, frozen))
         return 0
     development = args.command == "probe"
     if development and not args.development:
@@ -1208,23 +1357,26 @@ def main(argv: list[str] | None = None) -> int:
         split, indices = parse_indices(args.indices)
         check_indices(split, indices, False)
         check_frozen(FROZEN, args.root)
-        jobs = [(str(args.root), split, index, MODEL) for index in indices]
         output = rows_path = args.output or DEFAULT_ROWS
+        check_not_finished(rows_path)
+        jobs = [(str(args.root), split, index, MODEL) for index in indices]
     partial = rows_path.with_suffix(".run.partial.jsonl")
     check_assets()
-    check_resume(partial, build_id())
-    print("build:", build_id(), "| VAD_MODEL_PATH:", os.environ.get("VAD_MODEL_PATH"), flush=True)
+    started = build_id(str(args.root))
+    check_resume(partial, started)
+    print("build:", started, "| VAD_MODEL_PATH:", os.environ.get("VAD_MODEL_PATH"), flush=True)
     rows = voice_setup_eval.run(functools.partial(evaluate_user, development=development), jobs,
                                 worker_count(args.workers), partial)
+    check_unchanged(args.root, started, rows)
     source = {"schema_version": 1, "generated_at_utc": datetime.now(timezone.utc).isoformat(), "development": development,
-              "identity": identity(args.root), "rows": rows}
+              "identity": {"build": started}, "rows": rows}
     _write(rows_path, source)
     partial.unlink()
     if development:
         from check_evaluation_hygiene import validate_report
 
         fabricated = rows_path.parent / "fabricated-report.json"
-        _write(fabricated, build_report({"rows": fabricated_rows(), "identity": source["identity"]}))
+        _write(fabricated, build_report({"rows": fabricated_rows(), "identity": source["identity"]}, frozen_hashes(args.root)))
         _write(output, bookkeeping(rows) | {"fabricated_report_hygiene_errors": validate_report(fabricated)})
     sys.stdout.write(f"{len(rows)} rows\n")
     return 0

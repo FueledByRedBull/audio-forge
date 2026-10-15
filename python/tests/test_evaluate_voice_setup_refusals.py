@@ -43,6 +43,21 @@ def no_vad_model(monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
 
 
+@pytest.fixture
+def frozen_tree(monkeypatch, tmp_path):
+    """A freeze of the real code with stand-in assets (CI has none), written under a scratch directory."""
+    assets = {"extension": "1" * 64, "df.dll": "2" * 64, "vad_model": "3" * 64, "corpus_manifest": "4" * 64,
+              "models/DeepFilterNet3_onnx.tar.gz": "5" * 64}
+    monkeypatch.setattr(ev, "asset_hashes", lambda root=None: dict(assets))
+    for name, value in (("FROZEN", "frozen-files.json"), ("RULES_FINAL", "rules-final.md"), ("DEFAULT_ROWS", "rows.json"),
+                        ("DEFAULT_REPORT", "report.json")):
+        monkeypatch.setattr(ev, name, tmp_path / "details" / value)
+    ev.build_id.cache_clear()
+    ev.freeze(ev.FROZEN, ev.RULES_FINAL, ev.DEFAULT_ROWS, tmp_path)
+    yield json.loads(ev.FROZEN.read_text(encoding="utf-8"))
+    ev.build_id.cache_clear()
+
+
 def _with(**changes: Any) -> dict[str, Any]:
     return {**OK, **changes}
 
@@ -130,7 +145,15 @@ def _proposal() -> dict[str, Any]:
     return proposal
 
 
-@pytest.mark.parametrize("step, sections", list(ev.STEPS.items()))
+STEP_SECTIONS = {"tone": ("eq_settings",), "gate_suppression": ("gate_settings", "suppressor_settings"),
+                 "deesser": ("deesser_settings",), "compressor": ("compressor_settings",)}
+
+
+def test_the_steps_are_exactly_these_sections():
+    assert ev.STEPS == STEP_SECTIONS
+
+
+@pytest.mark.parametrize("step, sections", list(STEP_SECTIONS.items()))
 def test_a_step_changes_only_its_own_sections(step, sections):
     current, proposal = ev.current_settings(True), _proposal()
     mixed = ev.hybrid(current, proposal, step)
@@ -145,7 +168,6 @@ def test_the_analysis_limiter_is_the_factory_limiter_so_there_is_no_limiter_step
 
     factory = ev.current_settings(True)["limiter_settings"]
     assert loudness._digest(_normalise_limiter_settings(None)) == loudness._digest(factory)
-    assert set(ev.STEPS) == {"tone", "gate_suppression", "deesser", "compressor"}
 
 
 def test_vacuous_means_the_withheld_sections_change_nothing():
@@ -161,12 +183,17 @@ def test_vacuous_means_the_withheld_sections_change_nothing():
 # 3. Level matching and measurement
 
 
-def _case(cycles: int = 4) -> dict[str, Any]:
-    """Pauses of 1.5 s and speech-like noise of 1.5 s, ``cycles`` times."""
+def _case(cycles: int = 4, modulated: bool = False) -> dict[str, Any]:
+    """Pauses of 1.5 s and speech-like noise of 1.5 s, ``cycles`` times; ``modulated`` gives the noise a syllable-like
+    envelope that a compressor can flatten."""
     rng = np.random.default_rng(1)
     rate = voice_setup_eval.SAMPLE_RATE
-    clean = np.concatenate([np.concatenate([np.zeros(int(1.5 * rate)), 0.1 * rng.standard_normal(int(1.5 * rate))])
-                            for _ in range(cycles)])
+
+    def speech() -> np.ndarray:
+        noise = 0.1 * rng.standard_normal(int(1.5 * rate))
+        return noise * np.repeat(rng.uniform(0.3, 1.5, 30), int(0.05 * rate)) if modulated else noise
+
+    clean = np.concatenate([np.concatenate([np.zeros(int(1.5 * rate)), speech()]) for _ in range(cycles)])
     labels = np.concatenate([np.concatenate([np.zeros(int(1.5 * rate), bool), np.ones(int(1.5 * rate), bool)])
                              for _ in range(cycles)])
     return {"clean": clean, "noisy": clean + 0.01 * rng.standard_normal(clean.size), "labels": labels}
@@ -198,6 +225,48 @@ def test_measure_reads_every_clause_and_the_last_window():
     output[100] = 1.0
     assert ev.measure(rendered, ctx)["clipped"] is True
     assert ev.measure(rendered, ctx, start=output.size // 2)["clipped"] is False
+
+
+def _loud_in(signal: np.ndarray, frames: range, seed: int) -> np.ndarray:
+    """``signal`` with noise 14 dB above the pause floor added over the given 10 ms frames."""
+    louder = signal.copy()
+    start, stop = frames.start * gate_corpus.FRAME, frames.stop * gate_corpus.FRAME
+    louder[start:stop] += 0.05 * np.random.default_rng(seed).standard_normal(stop - start)
+    return louder
+
+
+def test_deep_pause_and_tail_are_read_from_their_own_frames():
+    case = _case()  # pauses are 150 frames; the second one starts at frame 300, after speech that ends at frame 299
+    base = ev.scored(case, case["noisy"])
+    deep = ev.scored(case, _loud_in(case["noisy"], range(365, 385), 1))  # 60 frames or more from speech on both sides
+    tail = ev.scored(case, _loud_in(case["noisy"], range(305, 325), 2))  # within 30 frames after speech
+    assert deep["deep_pause_db"] - base["deep_pause_db"] > 3.0 and abs(deep["tail_db"] - base["tail_db"]) < 0.5
+    assert tail["tail_db"] - base["tail_db"] > 3.0 and abs(tail["deep_pause_db"] - base["deep_pause_db"]) < 0.5
+
+
+def test_sibilant_loss_is_positive_when_the_render_takes_the_sibilants_off():
+    rate = voice_setup_eval.SAMPLE_RATE
+    case = _case(2)
+    noisy = case["noisy"]
+    ctx = {**case, "noise": noisy[: 2 * rate], "raw": noisy}
+    bins = np.fft.rfftfreq(noisy.size, 1.0 / rate)
+    dull = np.fft.irfft(np.fft.rfft(noisy) * (bins < 3_000.0), noisy.size)  # nothing above 3 kHz: the 5-9 kHz band is gone
+    rendered = {"output_audio": dull, "limiter_gain_reduction_db": 0.0, "true_peak_limiter_gain_reduction_db": 0.0}
+    assert ev.measure(rendered, ctx)["sibilant_loss_db"] > 10.0
+    untouched = {**rendered, "output_audio": noisy}
+    assert abs(ev.measure(untouched, ctx)["sibilant_loss_db"]) < 0.5
+
+
+def test_a_render_within_float_noise_of_the_current_one_is_marked_identical(monkeypatch):
+    case = _case(1)
+    rate = voice_setup_eval.SAMPLE_RATE
+    ctx = {**case, "noise": case["noisy"][: 2 * rate], "raw": case["noisy"].astype(np.float32)}
+    monkeypatch.setattr(loudness, "_render", lambda settings, capture: {
+        "output_audio": np.asarray(capture, np.float32) + np.float32(settings["offset"]),
+        "limiter_gain_reduction_db": 0.0, "true_peak_limiter_gain_reduction_db": 0.0})
+    assert "identical" not in ev.measure_settings({"offset": 0.0}, ctx, as_reference=True)
+    assert ev.measure_settings({"offset": 1e-8}, ctx)["identical"] is True
+    assert ev.measure_settings({"offset": 1e-3}, ctx)["identical"] is False
 
 
 def test_a_render_that_fails_is_recorded_not_hidden(monkeypatch):
@@ -418,7 +487,8 @@ def test_a_retry_decides_nothing_and_c_needs_a_decision():
     broken[21]["fired"] = ["C1"]
     with pytest.raises(AssertionError, match="never a retry"):
         ev.validate_rows(broken)
-    assert ev.refusal_report(rows)["retake_costs"] == {"D1": 1}
+    assert ev.refusal_report(rows)["retake_costs"] == {
+        "users_with_a_retake": 2, "retakes": {"D1": 4}, "ended_without_a_verdict": 1}
 
 
 def test_the_arithmetic_checks_raise_on_a_corrupted_row():
@@ -475,15 +545,23 @@ def test_the_tuner_step_is_its_own_best_non_incumbent_candidate():
 
 
 def _flow(monkeypatch, outcomes):
+    """Run ``verify_flow`` on scripted outcomes; return the flow and what the validator was given each time."""
     from mic_eq.config import EQ_FREQUENCIES
 
-    steps = iter(outcomes)
-    monkeypatch.setattr("mic_eq.analysis.voice_setup.validate_voice_setup_verification", lambda *a, **k: next(steps))
+    steps, heard = iter(outcomes), []
+
+    def validate(noise, original, verification, rate, state, preset, **kwargs):
+        heard.append((original, verification, kwargs["raw_verification_speech_audio"]))
+        return next(steps)
+
+    monkeypatch.setattr("mic_eq.analysis.voice_setup.validate_voice_setup_verification", validate)
     settings = ev.current_settings(True)
     result = {**{name: settings[name] for name in ev.SECTIONS}, "diagnostics": settings["diagnostics"],
               "eq_settings": {"band_freqs": list(EQ_FREQUENCIES), "band_gains": [0.0] * 10, "band_qs": [1.41] * 10}}
-    audio = np.zeros(10, np.float32)
-    return ev.verify_flow(result, {"noise": audio, "setup": audio, "second": audio, "raw_noise": audio, "raw_second": audio})
+    zero = np.zeros(10, np.float32)
+    takes = [(np.full(10, 1.0 + i, np.float32), np.full(10, 10.0 * (1 + i), np.float32)) for i in range(3)]
+    flow = ev.verify_flow(result, {"noise": zero, "setup": zero, "raw_noise": zero, "takes": takes})
+    return flow, heard, takes
 
 
 def _reduce(p95, targets=("compressor",)):
@@ -491,23 +569,35 @@ def _reduce(p95, targets=("compressor",)):
             "compressor_gain_reduction_p95_db": p95}
 
 
-@pytest.mark.parametrize("outcomes, decision, adjustments, ended", [
-    ([{"decision": "accept", "reason_codes": ["accepted"]}], "accept", 0, None),
-    ([_reduce(5.0), {"decision": "accept", "reason_codes": ["accepted"]}], "accept", 1, None),
-    ([_reduce(5.0), _reduce(4.0), _reduce(3.0), _reduce(2.0)], "gave_up", 3, "three_adjustments"),
-    ([_reduce(5.0), _reduce(5.0)], "gave_up", 1, "no_help"),
-    ([_reduce(5.0, ("limiter",))], "gave_up", 0, "no_change"),  # no automatic makeup to lower
-    ([_reduce(5.0, ())], "gave_up", 0, "no_target"),
-    ([{"decision": "rollback", "reason_codes": ["target_error"]}], "rollback", 0, None),
-    ([{"decision": "retry", "reason_codes": ["verification_delivery_mismatch"]}], "retry", 0, None),
+ACCEPT = {"decision": "accept", "reason_codes": ["accepted"]}
+RETRY = {"decision": "retry", "reason_codes": ["verification_delivery_mismatch"]}
+
+
+@pytest.mark.parametrize("outcomes, decision, adjustments, ended, takes_heard, retakes", [
+    ([ACCEPT], "accept", 0, None, [0], []),
+    ([_reduce(5.0), ACCEPT], "accept", 1, None, [0, 0], []),
+    ([_reduce(5.0), _reduce(4.0), _reduce(3.0), _reduce(2.0)], "gave_up", 3, "three_adjustments", [0] * 4, []),
+    ([_reduce(5.0), _reduce(5.0)], "gave_up", 1, "no_help", [0, 0], []),
+    ([_reduce(5.0, ("limiter",))], "gave_up", 0, "no_change", [0], []),  # no automatic makeup to lower
+    ([_reduce(5.0, ())], "gave_up", 0, "no_target", [0], []),
+    ([{"decision": "rollback", "reason_codes": ["target_error"]}], "rollback", 0, None, [0], []),
+    ([RETRY, ACCEPT], "accept", 0, None, [0, 1], ["D1"]),
+    ([RETRY, RETRY, {"decision": "rollback", "reason_codes": ["target_error"]}], "rollback", 0, None, [0, 1, 2], ["D1", "D1"]),
+    ([RETRY, _reduce(5.0), ACCEPT], "accept", 1, None, [0, 1, 1], ["D1"]),  # a reduction re-verifies the take it settled on
+    ([RETRY, RETRY, RETRY], "retry", 0, "bad_takes", [0, 1, 2], ["D1", "D1", "D1"]),
 ])
-def test_the_verification_flow_mirrors_the_dialog(monkeypatch, outcomes, decision, adjustments, ended):
-    flow = _flow(monkeypatch, outcomes)
+def test_the_verification_flow_mirrors_the_dialog(monkeypatch, outcomes, decision, adjustments, ended, takes_heard, retakes):
+    flow, heard, takes = _flow(monkeypatch, outcomes)
     assert (flow["decision"], flow["adjustments"], flow["ended"]) == (decision, adjustments, ended)
-    assert flow["first_decision"] == outcomes[0]["decision"]
+    assert flow["first_decision"] == outcomes[0]["decision"] and flow["retakes"] == retakes
+    assert flow["takes"] == takes_heard[-1] + 1
+    # Every call hears a recorded take (never the setup passage, which is all zeros here), the next one after a retake.
+    for call, index in zip(heard, takes_heard, strict=True):
+        assert np.array_equal(call[1], takes[index][0]) and np.array_equal(call[2], takes[index][1])
+        assert not np.array_equal(call[1], call[0])
     if adjustments:
         assert flow["state"]["compressor_settings"]["threshold_db"] == pytest.approx(-20.0 + 2.0 * adjustments)
-    assert ev._verification_row(flow)["retry"] == ("D1" if decision == "retry" else None)
+    assert ev._verification_row(flow)["retakes"] == retakes
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -538,6 +628,10 @@ def test_the_baseline_world_gives_exact_counts_and_finite_intervals():
     assert report["verification_decisions"] == {"accept": 44, "rollback": 3, "gave_up": 2, "retry": 1}
     assert report["sensitivity"]["last_10_s_for_c1_c2"] == {"C1": [1, 1], "C2": [1, 1]}
     assert report["candidates_for_loosening"] == []
+    assert report["retake_costs"] == {"users_with_a_retake": 2, "retakes": {"D1": 4}, "ended_without_a_verdict": 1}
+    # Nothing fires 8 users here, so every row is underpowered, and the report says so beside its trigger.
+    assert len(report["underpowered"]) == len(report["vetoes"]) == 16 and all(r["underpowered"] for r in report["vetoes"])
+    assert "underpowered" in report["trigger"] and "counterfactual" in report["b1"]
     for path, value in _walk_floats(report):
         assert math.isfinite(value), path
     for row in report["vetoes"]:
@@ -557,21 +651,37 @@ def test_the_trigger_is_a_lower_bound_above_five_percent():
     assert report["candidates_for_loosening"] == ["B3:whole"]
     b3 = next(r for r in report["vetoes"] if (r["veto"], r["counting"]) == ("B3", "first"))
     assert b3["false_share_lower_bound"][1] > 0.05 and b3["candidate_for_loosening"]
+    assert b3["fired"] >= ev.MIN_FIRED and not b3["underpowered"]
+    assert "B3:whole:first" not in report["underpowered"] and "B1:whole:first" in report["underpowered"]
 
 
-def test_the_report_is_clean_small_and_states_its_rule(tmp_path):
-    source = {"rows": ev.fabricated_rows(), "identity": IDENTITY}
+def test_the_report_is_clean_small_and_states_its_rule(frozen_tree, tmp_path):
+    source = {"rows": ev.fabricated_rows(), "identity": {"build": ev.build_of(frozen_tree)}}
     path = tmp_path / "report.json"
-    ev._write(path, ev.build_report(source))
+    ev._write(path, ev.build_report(source, frozen_tree))
     assert check_evaluation_hygiene.validate_report(path) == []
     assert path.stat().st_size < 100_000
     report = json.loads(path.read_text(encoding="utf-8"))
     assert report["audible_change"] is False and report["schema_version"] == 2
     assert report["user_indices"] == {"fit": sorted(ev.STUDY_INDICES)}
-    assert set(report["source_sha256"]) == set(ev.SOURCES)
+    assert report["source_sha256"] == {name: frozen_tree[name] for name in ev.SOURCES}
+    assert report["frozen_sha256"] == frozen_tree and report["rule_sha256"] == frozen_tree["rule"]
     assert "tuner" in " ".join(report["flattering"]) and len(report["limitations"]) >= 5
+    assert any("counterfactual" in line for line in report["limitations"]) and any("margin" in line for line in report["limitations"])
     assert report["predefined_rule"].endswith("evaluate_voice_setup_refusals.py.")
     assert "Rule (fixed before any study row existed)" in (ev.__doc__ or "")
+    assert "counterfactual" in (ev.__doc__ or "") and "underpowered" in (ev.__doc__ or "")
+
+
+def test_the_report_takes_its_hashes_from_the_freeze_and_hashes_nothing_itself(frozen_tree, monkeypatch):
+    def boom(*_args):
+        raise AssertionError("hashed at report time")
+
+    monkeypatch.setattr(loudness, "_sha256", boom)
+    monkeypatch.setattr(gate_corpus, "_sha256", boom)
+    report = ev.build_report({"rows": ev.fabricated_rows(), "identity": {"build": "b"}}, frozen_tree)
+    assert report["implementation_sha256"] == {loudness.EXTENSION: frozen_tree["extension"]}
+    assert report["asset_hashes"]["models/DeepFilterNet3_onnx.tar.gz"] == frozen_tree["models/DeepFilterNet3_onnx.tar.gz"]
 
 
 def test_the_unmeasurable_clauses_are_flagged_over_fifteen_percent():
@@ -588,7 +698,7 @@ def test_the_unmeasurable_clauses_are_flagged_over_fifteen_percent():
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# 9. Guards, the dry run and the commands
+# 9. Guards, the freeze, the dry run and the commands
 
 
 def test_the_study_indices_are_unspent_and_map_to_the_intended_18_speakers():
@@ -602,39 +712,62 @@ def test_the_study_indices_are_unspent_and_map_to_the_intended_18_speakers():
     assert ev.parse_indices(ev.DEFAULT_INDICES) == ("fit", list(ev.STUDY_INDICES))
 
 
-def test_run_refuses_a_spent_user_and_probe_only_the_development_ones():
-    ev.check_indices("fit", [60, 149], development=False)
-    with pytest.raises(SystemExit, match="spent"):
-        ev.check_indices("fit", [59], development=False)
-    with pytest.raises(SystemExit, match="spent"):
-        ev.check_indices("test", [0], development=False)
+def test_run_reaches_only_the_study_users_and_probe_only_the_development_ones():
+    ev.check_indices("fit", [72, 89, 102, 119, 132, 149], development=False)
+    for split, indices in (("fit", [59]), ("test", [0]), ("fit", [0])):
+        with pytest.raises(SystemExit, match="spent"):
+            ev.check_indices(split, indices, development=False)
+    for split, indices in (("fit", [60]), ("fit", [90]), ("fit", [101]), ("fit", [150]), ("test", [100]), ("calibrate", [72])):
+        with pytest.raises(SystemExit, match="only the study users"):
+            ev.check_indices(split, indices, development=False)
     ev.check_indices("calibrate", [0, 11], development=True)
-    with pytest.raises(SystemExit, match="development"):
-        ev.check_indices("fit", [12], development=True)
+    for split, indices in (("fit", [12]), ("fit", [72]), ("test", [-1])):
+        with pytest.raises(SystemExit, match="development users"):
+            ev.check_indices(split, indices, development=True)
+    with pytest.raises(SystemExit, match="unknown split"):
+        ev.check_indices("train", [0], development=True)
     with pytest.raises(SystemExit, match="spent"):
         ev.main(["run", "--indices", "fit:0-3"])
     with pytest.raises(SystemExit, match="--development"):
         ev.main(["probe"])
 
 
-def test_report_refuses_development_rows(tmp_path):
+def _rows_file(tmp_path, frozen, *, development=False, build=None):
+    path = tmp_path / "rows.json"
+    path.write_text(json.dumps({"development": development, "identity": {"build": build or ev.build_of(frozen)},
+                                "rows": ev.fabricated_rows()}), encoding="utf-8")
+    return path
+
+
+def test_report_writes_the_report_from_the_freeze(frozen_tree, tmp_path):
+    out = tmp_path / "out.json"
+    rows = _rows_file(tmp_path, frozen_tree)
+    assert ev.main(["report", "--rows", str(rows), "--output", str(out), "--root", str(tmp_path)]) == 0
+    report = json.loads(out.read_text(encoding="utf-8"))
+    assert report["metrics"]["users"] == 54 and report["frozen_sha256"] == frozen_tree
+    assert report["build"] == ev.build_of(frozen_tree)
+
+
+def test_report_refuses_development_rows_rows_of_another_build_and_a_changed_tree(frozen_tree, tmp_path):
     rows = ev.fabricated_rows()
     rows[0]["development"] = True
     with pytest.raises(AssertionError, match="spent users"):
         ev.refusal_report(rows)
-    path = tmp_path / "rows.json"
-    path.write_text(json.dumps({"development": True, "identity": IDENTITY, "rows": rows}), encoding="utf-8")
-    with pytest.raises(SystemExit, match="development"):
-        ev.main(["report", "--rows", str(path), "--output", str(tmp_path / "report.json")])
     with pytest.raises(AssertionError, match="54 study users"):
         ev.refusal_report(ev.fabricated_rows()[:53])
+    out = tmp_path / "out.json"
 
+    def report(path):
+        return ev.main(["report", "--rows", str(path), "--output", str(out), "--root", str(tmp_path)])
 
-def test_report_writes_the_report_where_it_is_told(tmp_path):
-    rows = tmp_path / "rows.json"
-    rows.write_text(json.dumps({"development": False, "identity": IDENTITY, "rows": ev.fabricated_rows()}), encoding="utf-8")
-    assert ev.main(["report", "--rows", str(rows), "--output", str(tmp_path / "out.json")]) == 0
-    assert json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))["metrics"]["users"] == 54
+    with pytest.raises(SystemExit, match="development"):
+        report(_rows_file(tmp_path, frozen_tree, development=True))
+    with pytest.raises(SystemExit, match="another build"):
+        report(_rows_file(tmp_path, frozen_tree, build="other"))
+    ev.FROZEN.write_text(json.dumps({**frozen_tree, "python/mic_eq/config_parts/presets.py": "0"}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="presets.py"):
+        report(_rows_file(tmp_path, frozen_tree))
+    assert not out.exists()
 
 
 def test_defaults_are_the_new_files_never_a_historical_report():
@@ -654,17 +787,78 @@ def test_workers_are_at_most_four_and_a_partial_file_resumes_only_its_own_build(
         ev.check_resume(partial, "build-b")
 
 
-def test_the_study_starts_only_when_the_frozen_hashes_still_match(tmp_path, monkeypatch):
-    frozen = {"rule": "a", "df.dll": "b"}
-    monkeypatch.setattr(ev, "frozen_hashes", lambda root=None: dict(frozen))
-    path = tmp_path / "frozen-files.json"
+def test_a_truncated_last_line_of_the_partial_file_is_dropped_with_a_message_not_a_traceback(tmp_path, capsys):
+    good = json.dumps({"split": "fit", "index": 72, "model": "rnnoise", "build": "b"})
+    partial = tmp_path / "rows.run.partial.jsonl"
+    partial.write_text(good + "\n" + good + "\n" + good[:25], encoding="utf-8")
+    ev.check_resume(partial, "b")
+    assert "truncated last line (3)" in capsys.readouterr().out
+    assert partial.read_text(encoding="utf-8") == good + "\n" + good + "\n"
+    partial.write_text(good, encoding="utf-8")  # complete, but the next row would be appended to it
+    ev.check_resume(partial, "b")
+    assert partial.read_text(encoding="utf-8") == good + "\n"
+    partial.write_text("{damaged\n" + good + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="line 1 is not JSON"):
+        ev.check_resume(partial, "b")
+
+
+def test_the_freeze_covers_every_module_the_study_loads_and_notices_a_change(frozen_tree, tmp_path):
+    product = {path.relative_to(ev.REPO_ROOT).as_posix() for path in (ev.REPO_ROOT / "python" / "mic_eq").rglob("*.py")}
+    assert len(product) > 50 and product <= set(frozen_tree) and set(ev.SOURCES) <= set(frozen_tree)
+    for name in ("python/mic_eq/config_parts/presets.py", "python/mic_eq/analysis/auto_eq_parts/eq_fit.py",
+                 "python/mic_eq/analysis/auto_eq_parts/target.py", "python/mic_eq/analysis/vad.py",
+                 "python/mic_eq/analysis/deesser_fusion.py", "python/mic_eq/analysis/eq_quality.py",
+                 "python/tools/evaluate_voice_setup_refusals.py"):
+        assert name in frozen_tree, name
+    assert {"rule", "extension", "df.dll", "vad_model", "corpus_manifest", "models/DeepFilterNet3_onnx.tar.gz",
+            "runtime:python", "runtime:numpy", "runtime:scipy"} <= set(frozen_tree)
+    assert ev.check_frozen(ev.FROZEN, tmp_path) == frozen_tree
+    for name in ("python/mic_eq/config_parts/presets.py", "df.dll", "models/DeepFilterNet3_onnx.tar.gz", "rule", "runtime:numpy"):
+        ev.FROZEN.write_text(json.dumps({**frozen_tree, name: "changed"}), encoding="utf-8")
+        with pytest.raises(SystemExit, match=name.replace(".", r"\.")):
+            ev.check_frozen(ev.FROZEN, tmp_path)
+    ev.FROZEN.write_text(json.dumps({**frozen_tree, "gone.py": "x"}), encoding="utf-8")
+    with pytest.raises(SystemExit, match=r"gone\.py"):
+        ev.check_frozen(ev.FROZEN, tmp_path)
+    ev.FROZEN.unlink()
     with pytest.raises(SystemExit, match="freeze"):
-        ev.check_frozen(path)
-    path.write_text(json.dumps(frozen), encoding="utf-8")
-    ev.check_frozen(path)
-    path.write_text(json.dumps({**frozen, "df.dll": "changed"}), encoding="utf-8")
-    with pytest.raises(SystemExit, match="df.dll"):
-        ev.check_frozen(path)
+        ev.check_frozen(ev.FROZEN, tmp_path)
+
+
+def test_a_freeze_stays_once_rows_exist(frozen_tree, tmp_path):
+    ev.freeze(ev.FROZEN, ev.RULES_FINAL, ev.DEFAULT_ROWS, tmp_path)  # nothing was made under it yet
+    assert ev.RULES_FINAL.read_text(encoding="utf-8") == ev.__doc__
+    for existing in (ev.DEFAULT_ROWS, ev.DEFAULT_ROWS.with_suffix(".run.partial.jsonl")):
+        existing.write_text("{}", encoding="utf-8")
+        with pytest.raises(SystemExit, match="stays"):
+            ev.freeze(ev.FROZEN, ev.RULES_FINAL, ev.DEFAULT_ROWS, tmp_path)
+        with pytest.raises(SystemExit, match="stays"):
+            ev.main(["freeze", "--root", str(tmp_path)])
+        existing.unlink()
+
+
+def test_run_refuses_to_overwrite_a_finished_rows_file(frozen_tree, tmp_path):
+    ev.DEFAULT_ROWS.write_text("{}", encoding="utf-8")
+    with pytest.raises(SystemExit, match="finished run"):
+        ev.main(["run", "--root", str(tmp_path)])
+    ev.check_not_finished(tmp_path / "none.json")
+
+
+def test_the_build_comes_from_every_frozen_hash_and_a_change_during_a_run_is_caught(monkeypatch, tmp_path):
+    frozen = {"rule": "1", "python/mic_eq/x.py": "2"}
+    monkeypatch.setattr(ev, "frozen_hashes", lambda root=None: dict(frozen))
+    ev.build_id.cache_clear()
+    started = ev.build_id("x")
+    assert started == ev.build_of(frozen)
+    ev.check_unchanged(tmp_path, started, [{"build": started}])
+    with pytest.raises(SystemExit, match="another build|not one build"):
+        ev.check_unchanged(tmp_path, started, [{"build": "other"}])
+    frozen["python/mic_eq/x.py"] = "3"
+    with pytest.raises(SystemExit, match="changed during the run"):
+        ev.check_unchanged(tmp_path, started, [{"build": started}])
+    ev.build_id.cache_clear()
+    assert ev.build_id("x") != started
+    ev.build_id.cache_clear()
 
 
 def test_the_capture_vetoes_a1_to_a4_fire_on_hand_made_arrays():
@@ -674,7 +868,7 @@ def test_the_capture_vetoes_a1_to_a4_fire_on_hand_made_arrays():
 def _development_rows() -> list[dict[str, Any]]:
     """The hand-made world as if it were development rows, each with the probes a real run would carry."""
     bad = {"tone_plus_12_db_3k": {"tone_error_db": 9.0}, "sibilance_minus_12_db_6k5": {"sibilant_loss_db": 12.0},
-           "suppressor_off": {"deep_pause_db": 0.0}, "gate_threshold_minus_15": {"onset_db": -9.0},
+           "compressor_squash": {"estoi": 0.3}, "suppressor_off": {"deep_pause_db": 0.0}, "gate_threshold_minus_15": {"onset_db": -9.0},
            "gate_release_1000": {"tail_db": 0.0}, "makeup_plus_24": {"clipped": True}}
     rows = ev.fabricated_rows()
     for row in rows:
@@ -690,31 +884,37 @@ def test_the_dry_run_output_has_counts_and_flags_but_no_rates():
     result = ev.bookkeeping(rows)
     assert _walk_floats(result) == []
     text = json.dumps(result).lower()
-    for word in ("rate", "share", "interval", "bootstrap", "ci\""):
+    for word in ("rate", "share", "interval", "bootstrap", "ci\"", "bucket"):
         assert word not in text
     assert result["development_users"] == 54 and result["arithmetic"] == "checked"
     assert result["constructed_capture_probes"] == {"A1": True, "A2": True, "A3": True, "A4": True}
-    assert result["reachability"]["B1"]["fired"] == 3 and result["never_fired"] == []
-    assert result["reachability"]["B5_step"]["vacuous"] == 1
+    # Reachability says whether a veto fired and what became of it, never how many users it fired for.
+    assert result["reachability"]["B1"] == {"fired": True, "judged": True, "vacuous": False, "unjudgeable": False}
+    assert result["reachability"]["B5_step"]["vacuous"] is True and result["reachability"]["B6_step"]["unjudgeable"] is True
+    assert all(isinstance(flag, bool) for entry in result["reachability"].values() for flag in entry.values())
+    assert result["never_fired"] == []
     assert result["tone_cross_check"] == {"users": 54, "within_half_db": 54}
+    assert set(result["probes"]) == set(ev.probe_settings(ev.current_settings(True)))
     for name, probe in result["probes"].items():
         if "clause" in probe:
             assert probe["tripped"] == probe["measurable"] == 53 and probe["trips_on_most"] and not probe["vacuous"], name
+    assert {probe["clause"] for probe in result["probes"].values() if "clause" in probe} >= {"estoi", "overload", "onset_db"}
     assert result["probes"]["current_again"] == {"users": 53, "identical_to_current": 53, "clause_failures": {}}
     with pytest.raises(AssertionError, match="spent users"):
         ev.refusal_report(rows)
 
 
-def test_a_probe_that_never_trips_or_that_trips_for_the_known_good_one_too_is_vacuous():
+def test_a_probe_that_never_trips_or_trips_for_the_same_settings_again_is_vacuous_and_limiter_off_is_not_the_judge():
     rows = _development_rows()
     for row in rows:
-        row["probes"]["suppressor_off"] = {"whole": dict(OK)}
-        row["probes"]["limiter_off"] = {"whole": _with(tail_db=0.0)}
+        row["probes"]["suppressor_off"] = {"whole": dict(OK)}  # never trips
+        row["probes"]["current_again"] = {"whole": _with(tail_db=0.0)}  # the same settings differ: tail cannot be trusted
+        row["probes"]["limiter_off"] = {"whole": _with(clipped=True)}  # without the limiter it may legitimately clip
     probes = ev.bookkeeping(rows)["probes"]
     assert probes["suppressor_off"]["tripped"] == 0 and probes["suppressor_off"]["vacuous"]
-    assert probes["tone_plus_12_db_3k"]["vacuous"] is False
-    assert probes["gate_release_1000"]["vacuous"] is True
-    assert probes["limiter_off"]["identical_to_current"] == 0
+    assert probes["gate_release_1000"]["vacuous"] is True and probes["tone_plus_12_db_3k"]["vacuous"] is False
+    assert probes["makeup_plus_24"]["vacuous"] is False  # limiter_off clipping must not make overload vacuous
+    assert probes["limiter_off"]["clause_failures"] == {"overload": 53}
 
 
 def test_the_fabricated_world_is_the_study_users_and_covers_every_veto():
@@ -728,31 +928,37 @@ def test_the_fabricated_world_is_the_study_users_and_covers_every_veto():
 # 10. One user through the worker, with the analysis and the renders stubbed
 
 
-def _stub_worker(monkeypatch, tmp_path, *, b1):
-    """Stub the analysis, the native renders and the corpus; return the job for ``evaluate_user``."""
+def _stub_worker(monkeypatch, tmp_path, *, b1, heard=None, verdicts=None, vad="silero", deepfilter="available"):
+    """Stub the analysis, the native renders and the corpus; return the job for ``evaluate_user``.
+
+    ``heard`` collects the simulated user and what the verification validator was given. ``verdicts`` are the
+    validator's decisions in turn (the last one repeats), a rollback by default.
+    """
     from mic_eq.analysis import failure_detection, voice_setup
     from mic_eq.analysis.auto_eq_parts import optimizer
     from mic_eq.config import EQ_FREQUENCIES, Preset
 
     rate = voice_setup_eval.SAMPLE_RATE
-    case = _case(2)
+    case = _case(2)  # a 6 s evaluation capture; the setup passage is 3 s of other audio, so takes start at 0, 1.5, 3 s
     rng = np.random.default_rng(5)
     (tmp_path / "manifest.json").write_text(json.dumps({"speakers": {"p001": {"gender": "male"}}}), encoding="utf-8")
     simulated = {
         "split": "fit", "index": 72, "speaker": "p001", "environment": "DKITCHEN", "snr_db": 12.0, "level_dbfs": -28.0,
         "noise_capture": (0.01 * rng.standard_normal(2 * rate)).astype(np.float32),
-        "setup_capture": case["noisy"].astype(np.float32),
+        "setup_capture": (0.05 * rng.standard_normal(3 * rate)).astype(np.float32),
         "evaluation_capture": case["noisy"].astype(np.float32), "evaluation_clean": case["clean"].astype(np.float32),
         "labels": case["labels"],
     }
     gate = asdict(Preset().gate)
     candidates = [
         {"noise_model": "rnnoise", "suppressor_strength": 1.0, "gate_settings": gate, "score": 0.1, "passes": True,
-         "gates": {"speech": True}},
+         "gates": {"speech": True, "runtime": True}, "metrics": {"runtime_factor": 0.4}},
         {"noise_model": "deepfilter-ll", "suppressor_strength": 0.8, "gate_settings": {**gate, "release_ms": 60.0},
-         "score": 0.05, "passes": False, "gates": {"speech": False}},
+         "score": 0.05, "passes": False, "gates": {"speech": False, "runtime": False}, "metrics": {"runtime_factor": 1.7}},
     ]
     current = ev.current_settings(True)
+    decisions = iter(verdicts or [])
+    last = {"decision": "rollback", "reason_codes": ["target_error"], "reasons": [], "reduction_targets": []}
 
     def analyze(*_args, **_kwargs):
         if b1:
@@ -761,53 +967,106 @@ def _stub_worker(monkeypatch, tmp_path, *, b1):
         return {
             **{name: deepcopy(current[name]) for name in ev.SECTIONS},
             "compressor_settings": {**current["compressor_settings"], "threshold_db": -25.0},
+            "deesser_settings": {**current["deesser_settings"], "auto_amount": 0.9},  # differs, but is off in both
             "eq_settings": {"band_freqs": list(EQ_FREQUENCIES), "band_gains": [0.0] * 10, "band_qs": [1.41] * 10,
                             "enabled": True}, "eq_error": None,
             "diagnostics": {
                 "vad_available": True, "weak_capture": False, "apply_recommended": False, "vad_active_duration_s": 5.0,
                 "uncertainty_reasons": ["Auto-EQ abstained from this capture"],
+                "vad_analysis_backend": "silero", "noise_vad_analysis_backend": "silero",
+                "joint_vad_analysis_backend": "silero", "joint_noise_vad_analysis_backend": vad,
                 "compressor_auto_makeup_enabled": False, "deesser_enabled": False, "deesser_detection_probability": 0.0,
                 "noise_reference_quality": {"status": "usable"},
-                "joint_tuning": {"decision": "retain_incumbent", "holdout_evaluated": False, "noise_floor_db": -60.0,
-                                 "candidates": candidates}},
+                "joint_tuning": {
+                    "decision": "retain_incumbent", "holdout_evaluated": False, "noise_floor_db": -60.0,
+                    "candidates": candidates,
+                    "model_evaluations": [{"model": model, "status": deepfilter if model == "deepfilter" else "available"}
+                                          for model in ev.TUNER_MODELS]}},
         }
 
     def render(settings, capture):
+        # The output depends on the settings the way a chain's would: the EQ gains and the suppressor model move the
+        # level, the proposed compressor clips. The de-esser changes nothing.
         output = np.asarray(capture, np.float64)
+        output = output * (1.0 + 0.01 * sum(settings["eq_settings"].get("band_gains", [])))
+        output = output * (0.99 if settings["suppressor_settings"]["model"] != "rnnoise" else 1.0)
         if settings["compressor_settings"]["threshold_db"] != -20.0:
-            output = np.clip(30.0 * output, -2.0, 2.0)  # the proposed compressor clips; nothing else does
+            output = np.clip(30.0 * output, -2.0, 2.0)
         return {"output_audio": output, "limiter_gain_reduction_db": 0.0, "true_peak_limiter_gain_reduction_db": 0.0}
 
+    def verify(noise, original, verification, sample_rate, state, preset, **kwargs):
+        if heard is not None:
+            heard["calls"].append((original, verification, kwargs["raw_verification_speech_audio"]))
+        return next(decisions, None) or last
+
+    if heard is not None:
+        heard.update(simulated=simulated, calls=[])
     monkeypatch.setattr(ev, "configure_environment", lambda: None)
-    monkeypatch.setattr(ev, "build_id", lambda: "test")
+    monkeypatch.setattr(ev, "build_id", lambda root: "test")
     monkeypatch.setattr(voice_setup_eval, "user", lambda *args: simulated)
     monkeypatch.setattr(voice_setup_eval, "render_arm", lambda capture, arm, floor: np.asarray(capture, np.float64))
     monkeypatch.setattr(voice_setup, "analyze_voice_setup", analyze)
     monkeypatch.setattr(optimizer, "_validate_and_attenuate_solution",
                         lambda *a, **k: (np.array([3.0, -2.0] + [0.0] * 8), 0.0, 0.0, 1.0, {}))
-    monkeypatch.setattr(voice_setup, "validate_voice_setup_verification", lambda *a, **k: {
-        "decision": "rollback", "reason_codes": ["target_error"], "reasons": [], "reduction_targets": []})
+    monkeypatch.setattr(voice_setup, "validate_voice_setup_verification", verify)
     monkeypatch.setattr(loudness, "_render", render)
     return str(tmp_path), "fit", 72, "rnnoise"
 
 
 def test_a_user_goes_through_the_worker_into_a_row_the_report_can_judge(monkeypatch, tmp_path):
-    row = ev.evaluate_user(_stub_worker(monkeypatch, tmp_path, b1=False), development=False)
+    heard: dict[str, Any] = {}
+    row = ev.evaluate_user(_stub_worker(monkeypatch, tmp_path, b1=False, heard=heard), development=False)
     json.dumps(row)  # plain JSON types only
     assert row["fired"] == ["B5", "B6", "C1"] and row["b1"] is None and row["recommended"] is False
-    assert row["verification"]["decision"] == "rollback"
+    assert row["verification"]["decision"] == "rollback" and row["verification"]["takes"] == 1
     assert set(row["objects"]) >= {"whole", "final", "tone", "tuner"} | {f"step:{s}" for s in ev.STEPS}
     assert set(row["metrics"]["current"]) == {"whole", "last10"} and set(row["metrics"]["final"]) == {"whole", "last10"}
     assert row["tuner"]["withheld"]["noise_model"] == "deepfilter-ll" and row["tuner"]["withheld"]["cause"] == "no_candidate_passed"
     assert row["tuner"]["any_candidate_no_worse"] == {"tested": 1, "no_worse": 1}
     assert 0.2 <= row["rt60_s"] <= 0.7 and row["gender"] == "male" and row["level_check"] in ("good", "too_hot", "too_quiet")
     assert row["taps"] == {"validation": 0, "tone": 1} and row["objects"]["tone"]["digests"].keys() == {"eq_settings"}
+    assert row["objects"]["tuner"]["digests"].keys() == {"gate_settings", "suppressor_settings"}
+    assert set(row["vad_backends"].values()) == {"silero"} and row["tuner_models"] == dict.fromkeys(ev.TUNER_MODELS, "available")
+    assert [c["failed_gates"] for c in row["tuner"]["candidates"]] == [[], ["runtime", "speech"]]
+    assert [c["runtime_factor"] for c in row["tuner"]["candidates"]] == [0.4, 1.7]
     status = {name: ev.outcome(row, name)["status"] for name in ("whole", "final", "tone", "tuner")}
     assert status == {"whole": "correct", "final": "correct", "tone": "false", "tuner": "false"}
     assert "overload" in ev.outcome(row, "whole")["failed"]
-    # The stub changed only the compressor; a step that changes nothing is vacuous.
+    # The stub changed the compressor, and the de-esser's settings without changing a sample. The tone and the
+    # gate/suppression steps have the current sections: a step that changes nothing is vacuous, by digest or by effect.
     assert [ev.outcome(row, f"step:{s}")["status"] for s in ev.STEPS] == ["vacuous", "vacuous", "vacuous", "correct"]
+    assert row["objects"]["step:deesser"]["identical_render"] is True and "step:deesser" not in row["metrics"]
+    assert "identical_render" not in row["objects"]["step:gate_suppression"]
     assert ev.assess([row])[0]["first"] == "B5"
+    # Verification heard a fresh recorded take, not the setup passage.
+    size = heard["simulated"]["setup_capture"].size
+    original, verification, raw = heard["calls"][0]
+    from mic_eq.ui.calibration_support import filtered_capture_for_analysis
+
+    rate = voice_setup_eval.SAMPLE_RATE
+    setup = filtered_capture_for_analysis(heard["simulated"]["setup_capture"], rate)
+    take = heard["simulated"]["evaluation_capture"][:size]
+    assert np.array_equal(original, setup) and not np.array_equal(verification, setup)
+    assert np.array_equal(verification, filtered_capture_for_analysis(take, rate)) and np.array_equal(raw, take)
+
+
+def test_a_delivery_mismatch_asks_for_the_next_window_and_the_user_is_still_judged(monkeypatch, tmp_path):
+    from mic_eq.ui.calibration_support import filtered_capture_for_analysis
+
+    heard: dict[str, Any] = {}
+    retry = {"decision": "retry", "reason_codes": ["verification_delivery_mismatch"], "reasons": [], "reduction_targets": []}
+    job = _stub_worker(monkeypatch, tmp_path, b1=False, heard=heard, verdicts=[retry])
+    row = ev.evaluate_user(job, development=False)
+    evaluation, size = heard["simulated"]["evaluation_capture"], heard["simulated"]["setup_capture"].size
+    middle = (evaluation.size - size) // 2
+    assert [np.array_equal(call[2], evaluation[start : start + size]) for call, start in zip(heard["calls"], (0, middle), strict=True)] == [True, True]
+    assert np.array_equal(heard["calls"][1][1], filtered_capture_for_analysis(evaluation[middle : middle + size], voice_setup_eval.SAMPLE_RATE))
+    assert row["verification"]["retakes"] == ["D1"] and row["verification"]["takes"] == 2
+    assert row["verification"]["decision"] == "rollback" and "C1" in row["fired"]  # not censored
+    heard = {}
+    row = ev.evaluate_user(_stub_worker(monkeypatch, tmp_path, b1=False, heard=heard, verdicts=[retry] * 3), development=False)
+    assert row["verification"]["decision"] == "retry" and row["verification"]["retakes"] == ["D1"] * 3
+    assert "C1" not in row["fired"] and "C2" not in row["fired"] and "final" not in row["objects"]
 
 
 def test_an_unclear_recording_refusal_keeps_its_proposal_and_never_reaches_verification(monkeypatch, tmp_path):
@@ -829,6 +1088,18 @@ def test_a_user_whose_auto_eq_failed_before_validation_is_an_analysis_failure(mo
     assert ev.evaluate_user(job, development=False)["analysis_failure"] == "too short"
 
 
+def test_a_row_made_without_silero_or_without_a_tuner_model_stops_the_run(monkeypatch, tmp_path):
+    with pytest.raises(RuntimeError, match=r"VAD not Silero in \['joint_noise_vad_analysis_backend'\]"):
+        ev.evaluate_user(_stub_worker(monkeypatch, tmp_path, b1=False, vad="energy_fallback"), development=False)
+    with pytest.raises(RuntimeError, match=r"tuner models not available: \['deepfilter'\]"):
+        ev.evaluate_user(_stub_worker(monkeypatch, tmp_path, b1=False, deepfilter="unavailable"), development=False)
+    diagnostics = {key: "silero" for key in ev.VAD_BACKENDS}
+    models = [{"model": model, "status": "available"} for model in ev.TUNER_MODELS]
+    assert ev.check_loaded(diagnostics, {"model_evaluations": models})["tuner_models"] == dict.fromkeys(ev.TUNER_MODELS, "available")
+    with pytest.raises(RuntimeError):
+        ev.check_loaded(diagnostics, {})  # a tuner that reports no models was unavailable
+
+
 # ---------------------------------------------------------------------------------------------------------------
 # 11. The native renders of the current settings and the probes, on a short synthetic signal
 
@@ -837,14 +1108,14 @@ def test_the_current_settings_and_every_probe_render_natively_and_the_known_good
     from mic_eq.ui.calibration_support import filtered_capture_for_analysis
 
     rate = voice_setup_eval.SAMPLE_RATE
-    case = _case(1)
+    case = _case(2, modulated=True)
     rng = np.random.default_rng(4)
     raw = case["noisy"].astype(np.float32)
     ctx = {"raw": raw, "labels": case["labels"], "clean": filtered_capture_for_analysis(case["clean"], rate).astype(np.float64),
            "noisy": filtered_capture_for_analysis(raw, rate).astype(np.float64),
            "noise": filtered_capture_for_analysis((0.01 * rng.standard_normal(2 * rate)).astype(np.float32), rate).astype(np.float64)}
     current = ev.current_settings(False)  # VAD explicitly unavailable: no model is needed
-    base = ev.measure_settings(current, ctx, ("whole", "last10"))
+    base = ev.measure_settings(current, ctx, ("whole", "last10"), as_reference=True)
     assert set(base) == {"whole", "last10"} and base["whole"]["clipped"] is False
     judged = {}
     for name, (target, settings) in ev.probe_settings(current).items():
@@ -853,7 +1124,10 @@ def test_the_current_settings_and_every_probe_render_natively_and_the_known_good
         judged[name] = ev.judge(reading["whole"], base["whole"])
         if not target:
             assert judged[name]["failed"] == [] and ev._same_reading(reading["whole"]["estoi"], base["whole"]["estoi"]), name
+        if name == "current_again":
+            assert reading["identical"] is True  # the same settings again render the same audio
     assert "tone_error_db" in judged["tone_plus_12_db_3k"]["failed"]
+    assert "estoi" in judged["compressor_squash"]["failed"]
     assert "overload" in judged["makeup_plus_24"]["failed"]
 
 
@@ -870,7 +1144,7 @@ def test_the_taps_keep_a_refused_proposal_on_the_real_auto_eq(no_vad_model):
     assert len(log["tone"]) == 1 and len(log["tone"][0]) == len(eq["band_gains"]) == 10
 
 
-def test_the_verification_flow_runs_against_the_real_validator(no_vad_model):
+def test_the_verification_flow_runs_against_the_real_validator_and_retakes_a_mismatched_take(no_vad_model):
     from mic_eq.config import EQ_FREQUENCIES
     from mic_eq.ui.calibration_support import filtered_capture_for_analysis
 
@@ -879,24 +1153,27 @@ def test_the_verification_flow_runs_against_the_real_validator(no_vad_model):
     speech = np.concatenate([np.concatenate([np.zeros(rate // 2), 0.1 * rng.standard_normal(rate)]) for _ in range(3)])
     noise = (0.01 * rng.standard_normal(2 * rate)).astype(np.float32)
     take = (speech + 0.01 * rng.standard_normal(speech.size)).astype(np.float32)
+    quiet = (0.05 * take).astype(np.float32)  # 26 dB under the setup passage: a delivery mismatch
     settings = ev.current_settings(False)
     result = {**{name: settings[name] for name in ev.SECTIONS}, "diagnostics": settings["diagnostics"],
               "eq_settings": {"band_freqs": list(EQ_FREQUENCIES), "band_gains": [0.0] * 10, "band_qs": [1.41] * 10}}
-    filtered = [filtered_capture_for_analysis(audio, rate) for audio in (noise, take)]
-    flow = ev.verify_flow(result, {"noise": filtered[0], "setup": filtered[1], "second": filtered[1],
-                                   "raw_noise": noise, "raw_second": take})
-    assert flow["decision"] in ("accept", "rollback", "gave_up", "retry") and flow["reason_codes"]
-    assert flow["first_decision"] and "bands" in flow["state"]["eq_settings"]
+    f = lambda audio: filtered_capture_for_analysis(audio, rate)  # noqa: E731
+    flow = ev.verify_flow(result, {"noise": f(noise), "setup": f(take), "raw_noise": noise,
+                                   "takes": [(f(quiet), quiet), (f(take), take), (f(take), take)]})
+    assert flow["retakes"] == ["D1"] and flow["takes"] == 2 and flow["first_decision"] == "retry"
+    assert flow["decision"] in ("accept", "rollback", "gave_up") and flow["reason_codes"]
+    assert "bands" in flow["state"]["eq_settings"]
 
 
 def test_a_development_user_carries_the_probes_and_the_cross_check_and_gives_counts_only(monkeypatch, tmp_path):
     row = ev.evaluate_user(_stub_worker(monkeypatch, tmp_path, b1=False), development=True)
     assert row["development"] is True
     assert set(row["probes"]) == set(ev.probe_settings(ev.current_settings(True)))
+    assert row["probes"]["current_again"]["identical"] is True and row["probes"]["limiter_off"]["identical"] is True
     assert math.isfinite(row["tone_cross_check_gap_db"]) and row["tone_cross_check_gap_db"] < 0.5
     result = ev.bookkeeping([row])
     assert _walk_floats(result) == [] and result["development_users"] == 1
-    assert result["reachability"]["B5"]["fired"] == 1 and result["tone_cross_check"] == {"users": 1, "within_half_db": 1}
+    assert result["reachability"]["B5"]["fired"] is True and result["tone_cross_check"] == {"users": 1, "within_half_db": 1}
     assert result["probes"]["current_again"]["identical_to_current"] == 1
 
 

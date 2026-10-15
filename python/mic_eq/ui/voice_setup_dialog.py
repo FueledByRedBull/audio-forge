@@ -158,6 +158,9 @@ _UNPROCESSED_MODES = ("raw", "bypass")
 
 def _candidate_eq(base_eq: EQSettings, eq_candidate: Mapping[str, Any]) -> EQSettings:
     """The EQ a setup result proposes: its correction over the tone the base keeps."""
+    if not eq_candidate.get("apply_recommended", True):
+        # Auto-EQ abstained: no tone change, so the user's own EQ stays as it is.
+        return base_eq
     if "bands" in eq_candidate:
         eq_payload: dict[str, Any] = {
             key: deepcopy(eq_candidate[key])
@@ -1761,17 +1764,22 @@ class VoiceSetupDialog(QDialog):
             def describe_eq(settings: Mapping[str, Any]) -> str:
                 return f"max correction {_correction_depth_db(settings):.1f} dB"
 
-            tone_text = "Tone: " + self._review_text(
-                describe_eq(eq_settings),
-                eq_settings,
-                "eq_state",
-                describe_eq,
-                _correction_layer,
+            tone_text = "Tone: " + (
+                self._review_text(
+                    describe_eq(eq_settings),
+                    eq_settings,
+                    "eq_state",
+                    describe_eq,
+                    _correction_layer,
+                )
+                if eq_settings.get("apply_recommended", True)
+                else "kept as it is"
             )
             before_eq = self._review_current.get("eq_state", {})
             if (
                 self._pre_setup_snapshot is None
                 and eq_settings.get("enabled", True)
+                and eq_settings.get("apply_recommended", True)
                 and before_eq.get("enabled", True) is False
             ):
                 tone_active = any(
@@ -1809,8 +1817,7 @@ class VoiceSetupDialog(QDialog):
             self._show_eq_comparison(None)
             self.eq_label.setText(
                 "Tone left unchanged. "
-                f"{plain_incomplete(str(setup_result.get('eq_error') or eq_error))} "
-                "Everything else below still applies."
+                f"{plain_incomplete(str(setup_result.get('eq_error') or eq_error))}"
             )
             self.eq_label.setToolTip("")
             self.eq_label.setStyleSheet(status_chip_style("warn"))

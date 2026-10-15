@@ -439,3 +439,51 @@ def test_running_stream_on_different_route_is_rejected(qapp, monkeypatch):
     dialog.close()
     owner.deleteLater()
     qapp.processEvents()
+
+
+def test_calibration_context_tracks_endpoint_format_without_changing_route_key(qapp) -> None:
+    owner = cast(Any, MainWindow.__new__(MainWindow))
+    owner.input_choice = QComboBox()
+    owner.output_choice = QComboBox()
+    owner.config = SimpleNamespace(
+        input_channel_mode="phase_safe_mono", input_cleanup_mode="off"
+    )
+    input_identity = DeviceIdentity(
+        name="Mic",
+        endpoint_id="input-route",
+        host_api="WASAPI",
+        direction="input",
+        sample_rate=48_000,
+        channels=1,
+    )
+    output_identity = DeviceIdentity(
+        name="Cable",
+        endpoint_id="output-route",
+        host_api="WASAPI",
+        direction="output",
+        sample_rate=48_000,
+        channels=2,
+    )
+    owner.input_choice.addItem("Mic", input_identity)
+    owner.output_choice.addItem("Cable", output_identity)
+    try:
+        route_key = MainWindow._current_device_route_key(owner)
+        context_before = MainWindow._calibration_context_key(owner)
+        owner.input_choice.setItemData(
+            0,
+            DeviceIdentity(
+                name="Mic",
+                endpoint_id="input-route",
+                host_api="WASAPI",
+                direction="input",
+                sample_rate=44_100,
+                channels=2,
+            ),
+        )
+
+        assert MainWindow._current_device_route_key(owner) == route_key
+        assert MainWindow._calibration_context_key(owner) != context_before
+    finally:
+        owner.input_choice.deleteLater()
+        owner.output_choice.deleteLater()
+        qapp.processEvents()

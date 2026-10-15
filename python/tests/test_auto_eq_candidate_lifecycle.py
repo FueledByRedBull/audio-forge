@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
 from typing import Any
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -11,12 +13,14 @@ from PySide6.QtWidgets import QMessageBox, QWidget
 
 from mic_eq.config import (
     CompressorSettings,
+    EQ_FREQUENCIES,
     EQSettings,
     LimiterSettings,
     Preset,
     build_eq_candidate_settings,
 )
 from mic_eq.ui.calibration_dialog import CalibrationDialog
+from mic_eq.ui.calibration_support import AutoEqCandidate, chain_settings
 
 
 class _SignalStub:
@@ -1055,4 +1059,310 @@ def test_failed_typed_apply_does_not_enable_eq(qapp, monkeypatch):
     finally:
         if not dialog._close_requested:
             dialog.reject()
+        owner.close()
+
+
+class _EqState:
+    def __init__(self) -> None:
+        self.restore_error = False
+        self.apply_calls = 0
+        self.typed_settings = EQSettings(
+            enabled=False,
+            band_freqs=list(EQ_FREQUENCIES),
+            band_gains=[0.0] * 10,
+            band_qs=[1.41] * 10,
+        )
+        self.state = {
+            "enabled": False,
+            "band_freqs": list(EQ_FREQUENCIES),
+            "band_gains": [0.0] * 10,
+            "band_qs": [1.41] * 10,
+        }
+
+    def get_settings(self) -> dict:
+        return deepcopy(self.state)
+
+    def get_eq_settings(self) -> EQSettings:
+        return self.typed_settings
+
+    def set_eq_settings(self, settings: EQSettings) -> None:
+        self.typed_settings = EQSettings.from_dict(settings.to_dict())
+
+    def apply_auto_eq_results(self, _bands, diagnostics=None) -> None:
+        self.apply_calls += 1
+        self.state = {
+            "enabled": True,
+            "band_freqs": [100.0] * 10,
+            "band_gains": [6.0] * 10,
+            "band_qs": [1.0] * 10,
+            "diagnostics": diagnostics,
+        }
+        raise RuntimeError("native apply failed after mutation")
+
+    def set_settings(self, settings: dict) -> None:
+        if self.restore_error:
+            raise RuntimeError("restore unavailable")
+        self.state.update(deepcopy(settings))
+        self.state.pop("diagnostics", None)
+
+    def set_auto_eq_diagnostics(self, _diagnostics) -> None:
+        return None
+
+
+class _CalibrationOwner(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self.processor = Mock()
+        self.processor.sample_rate.return_value = 48_000
+        self.processor.get_input_cleanup_mode.return_value = "off"
+        self.eq_state = _EqState()
+
+    def _get_current_preset(self) -> Preset:
+        return Preset(eq=self.eq_state.get_eq_settings())
+
+    def _processing_mode(self) -> str:
+        return "normal"
+
+    def apply_processing_configuration(
+        self,
+        preset: Preset,
+        *,
+        noise_reference_reliability: float | None = None,
+        processing_mode: str | None = None,
+        compressor_metadata: dict[str, object] | None = None,
+    ) -> None:
+        del noise_reference_reliability, processing_mode, compressor_metadata
+        correction = preset.eq.correction_bands
+        if correction is not None:
+            self.eq_state.apply_auto_eq_results(
+                [
+                    (band.frequency_hz, band.gain_db, band.q)
+                    for band in correction
+                ]
+            )
+            self.eq_state.set_settings({"enabled": preset.eq.enabled})
+            self.eq_state.set_eq_settings(preset.eq)
+            return
+        self.eq_state.set_settings(
+            {
+                "enabled": preset.eq.enabled,
+                "band_freqs": [band.frequency_hz for band in preset.eq.bands],
+                "band_gains": [band.gain_db for band in preset.eq.bands],
+                "band_qs": [band.q for band in preset.eq.bands],
+            }
+        )
+        self.eq_state.set_eq_settings(preset.eq)
+
+
+class _ContextCalibrationOwner(_CalibrationOwner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.context_key = "route-a"
+
+    def _calibration_context_key(self) -> str:
+        return self.context_key
+
+
+class _ReadbackEqState(_EqState):
+    def apply_auto_eq_results(self, _bands, diagnostics=None) -> None:
+        self.apply_calls += 1
+        self.state = {
+            "enabled": True,
+            "band_freqs": [100.0] * 10,
+            "band_gains": [6.0] * 10,
+            "band_qs": [1.0] * 10,
+            "diagnostics": diagnostics,
+        }
+
+    def set_settings(self, settings: dict) -> None:
+        self.state.update(deepcopy(settings))
+
+
+def _eq_candidate_metadata(context_key: str | None = None) -> dict:
+    return {
+        "scope": "eq_only",
+        "allowed_scope": ["eq"],
+        "target": {
+            "curve": "broadcast",
+            "mode": "adaptive",
+            "smoothing": "conservative",
+        },
+        "capture_identity": {
+            "generation": 1,
+            "sample_rate": 48_000,
+            "sample_count": 16,
+            "context_key": context_key,
+        },
+        "options": {
+            "target_mode": "adaptive",
+            "smoothing_strength": "conservative",
+        },
+        "verified_stages": [],
+    }
+
+
+def _eq_candidate(
+    *,
+    band_freqs: list[float] | None = None,
+    band_gains: list[float] | None = None,
+    band_qs: list[float] | None = None,
+) -> dict:
+    return {
+        "band_freqs": (
+            [80.0, 160.0, 320.0, 640.0, 1280.0, 2500.0, 5000.0, 8000.0, 12000.0, 16000.0]
+            if band_freqs is None
+            else band_freqs
+        ),
+        "band_gains": [1.0] * 10 if band_gains is None else band_gains,
+        "band_qs": [1.41] * 10 if band_qs is None else band_qs,
+        "apply_recommended": True,
+    }
+
+
+def _install_eq_candidate(
+    dialog: CalibrationDialog,
+    owner: _CalibrationOwner,
+    *,
+    band_freqs: list[float] | None = None,
+    band_gains: list[float] | None = None,
+    band_qs: list[float] | None = None,
+) -> None:
+    candidate = _eq_candidate(
+        band_freqs=band_freqs,
+        band_gains=band_gains,
+        band_qs=band_qs,
+    )
+    incumbent = owner._get_current_preset()
+    candidate_eq = build_eq_candidate_settings(
+        incumbent.eq,
+        candidate["band_freqs"],
+        candidate["band_gains"],
+        candidate["band_qs"],
+        layer="correction",
+        enabled=True,
+    )
+    chain = chain_settings(
+        owner,
+        full_chain=True,
+        input_pre_filtered=False,
+        preset=incumbent,
+    )
+    proposal = AutoEqCandidate.create(incumbent, candidate_eq, chain)
+    context_getter = getattr(owner, "_calibration_context_key", None)
+    context_value = context_getter() if callable(context_getter) else None
+    context_key = context_value if isinstance(context_value, str) else None
+    metadata = _eq_candidate_metadata(context_key)
+    metadata["incumbent_signature"] = proposal.incumbent_signature
+    metadata["configuration_signature"] = proposal.proposed_signature
+    candidate["validated_candidate_eq"] = candidate_eq.to_dict()
+    candidate["headroom_validation"] = {"safe": True, "authoritative": True}
+    candidate["_candidate"] = deepcopy(metadata)
+
+    dialog.recording_state = "ready"
+    dialog.audio_data = np.zeros(16, dtype=np.float32)
+    dialog._analysis_generation = 1
+    dialog.eq_settings = candidate
+    dialog._candidate_target_metadata = ("broadcast", "adaptive", "conservative")
+    dialog._candidate_metadata = deepcopy(metadata)
+    dialog._candidate_proposal = proposal
+
+
+def test_eq_apply_failure_restores_partial_native_mutation(qapp, monkeypatch) -> None:
+    owner = _CalibrationOwner()
+    dialog = CalibrationDialog(owner)
+    before = owner.eq_state.get_settings()
+    try:
+        _install_eq_candidate(dialog, owner)
+        monkeypatch.setattr(QMessageBox, "critical", lambda *_args, **_kwargs: None)
+
+        dialog._apply_eq_settings()
+
+        assert owner.eq_state.get_settings() == before
+        assert dialog.recording_state == "ready"
+    finally:
+        dialog.reject()
+        owner.close()
+
+
+def test_eq_apply_requires_snapshot_and_reports_restore_failure(qapp, monkeypatch) -> None:
+    owner = _CalibrationOwner()
+    dialog = CalibrationDialog(owner)
+    messages: list[str] = []
+    try:
+        _install_eq_candidate(dialog, owner)
+        monkeypatch.setattr(
+            QMessageBox,
+            "critical",
+            lambda _parent, _title, message: messages.append(str(message)),
+        )
+
+        get_current_preset = owner._get_current_preset
+        snapshot_calls = 0
+
+        def fail_apply_snapshot() -> Preset:
+            nonlocal snapshot_calls
+            snapshot_calls += 1
+            if snapshot_calls == 2:
+                raise RuntimeError("snapshot unavailable")
+            return get_current_preset()
+
+        monkeypatch.setattr(owner, "_get_current_preset", fail_apply_snapshot)
+        dialog._apply_eq_settings()
+        assert owner.eq_state.apply_calls == 0
+        assert "nothing was changed" in messages[-1]
+
+        monkeypatch.setattr(owner, "_get_current_preset", get_current_preset)
+        owner.eq_state.restore_error = True
+        dialog._apply_eq_settings()
+        assert "could not be fully put back (restore unavailable)" in messages[-1]
+    finally:
+        dialog.reject()
+        owner.close()
+
+
+def test_eq_apply_reads_back_accepted_values(qapp, monkeypatch) -> None:
+    owner = _CalibrationOwner()
+    owner.eq_state = _ReadbackEqState()
+    dialog = CalibrationDialog(owner)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *_args, **_kwargs: None)
+    try:
+        _install_eq_candidate(
+            dialog,
+            owner,
+            band_freqs=[100.0] * 10,
+            band_gains=[6.0] * 10,
+            band_qs=[1.0] * 10,
+        )
+        proposal = dialog._candidate_proposal
+        assert proposal is not None
+        expected_eq = proposal.proposed_preset.eq.to_dict()
+        dialog._apply_eq_settings()
+        assert owner.eq_state.get_settings()["band_gains"] == [6.0] * 10
+        assert owner.eq_state.get_settings()["enabled"] is True
+        assert owner.eq_state.get_eq_settings().to_dict() == expected_eq
+    finally:
+        dialog.reject()
+        owner.close()
+
+
+def test_eq_candidate_rejects_changed_route_context(qapp, monkeypatch) -> None:
+    owner = _ContextCalibrationOwner()
+    dialog = CalibrationDialog(owner)
+    messages: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda _parent, _title, message: messages.append(str(message)),
+    )
+    try:
+        _install_eq_candidate(dialog, owner)
+        owner.context_key = "route-b"
+        dialog._apply_eq_settings()
+        assert owner.eq_state.apply_calls == 0
+        assert messages[-1] == (
+            "The microphone or its settings changed after you recorded. "
+            "Record again so the settings match your microphone. Nothing was changed."
+        )
+    finally:
+        dialog.reject()
         owner.close()

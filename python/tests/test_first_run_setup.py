@@ -874,3 +874,49 @@ def test_rerun_failed_save_messages_do_not_promise_a_launch_prompt(qapp, monkeyp
     dialog.reject()
 
     assert "launch" not in dialog.owner.status_message.showMessage.call_args.args[0]
+
+
+def test_onboarding_route_check_stops_for_user_mute(qapp, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: True
+    )
+
+    class Owner(QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config = AppConfig(
+                first_run_setup_state="in_progress",
+                first_run_setup_step="route",
+                first_run_setup_steps={
+                    "devices": "completed",
+                    "route": "pending",
+                    "latency": "pending",
+                    "voice": "pending",
+                },
+            )
+            self.user_muted = True
+            self.start_calls = 0
+            self.input_choice = QComboBox()
+            self.input_choice.addItem(
+                "Mic", DeviceIdentity(name="Mic", endpoint_id="in", direction="input")
+            )
+            self.output_choice = QComboBox()
+            self.output_choice.addItem(
+                "Cable",
+                DeviceIdentity(name="Cable", endpoint_id="out", direction="output"),
+            )
+            self.processor = SimpleNamespace(is_running=lambda: False)
+
+        def _start_processing(self) -> None:
+            self.start_calls += 1
+
+    owner = Owner()
+    dialog = FirstRunSetupDialog(owner)
+    try:
+        dialog._run_current_step()
+        assert owner.start_calls == 0
+        assert "Output is muted" in dialog.status_label.text()
+    finally:
+        dialog.close()
+        owner.deleteLater()
+        qapp.processEvents()

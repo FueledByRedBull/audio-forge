@@ -5,11 +5,13 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+from typing import Any, cast
 
 import numpy as np
 import pytest
 
-from mic_eq.config import AppConfig, Preset, build_eq_candidate_settings
+from mic_eq.config import AppConfig, EQSettings, Preset, build_eq_candidate_settings
 from mic_eq.ui.config_history import (
     BoundedConfigurationHistory,
     ConfigurationSnapshot,
@@ -626,6 +628,102 @@ def test_configuration_rollback_stop_failure_keeps_mute_and_reports_stop_failure
         window.processor = original_processor
         window.meter_timer.stop()
         window.diagnostics_timer.stop()
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_device_and_mute_controls_do_not_create_processing_history_entries(
+    qapp, monkeypatch, tmp_path
+) -> None:
+    from mic_eq.config_parts import shared
+    from mic_eq.ui import main_window
+
+    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
+    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
+
+    window = MainWindow()
+    try:
+        window.preset_modified = False
+        mode_index = window.input_channel_mode_choice.findData("left")
+        window.input_channel_mode_choice.setCurrentIndex(mode_index)
+        qapp.processEvents()
+        assert window.preset_modified is False
+
+        window.user_mute_checkbox_action.setChecked(True)
+        qapp.processEvents()
+        assert window.preset_modified is False
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_eq_only_scope_preserves_the_rest_of_the_processing_chain() -> None:
+    owner = cast(Any, MainWindow.__new__(MainWindow))
+    applied_eq: dict[str, object] = {}
+    owner.eq_state = SimpleNamespace(
+        set_enabled=lambda value: applied_eq.update(enabled=value),
+        apply_typed_bands=lambda bands, **kwargs: applied_eq.update(bands=bands, **kwargs),
+    )
+    owner.status_message = SimpleNamespace(showMessage=lambda *args: None)
+    owner._history_ready = False
+    owner._history_replaying = False
+    owner.preset_modified = False
+    owner._update_session_summary = lambda: None
+    owner._set_preset_modified = lambda modified=None: setattr(owner, "preset_modified", modified)
+
+    before = {"threshold_db": -31.0, "model": "rnnoise"}
+    owner.gate_state = SimpleNamespace(get_settings=lambda: dict(before))
+    owner.noise_suppression_state = SimpleNamespace(get_settings=lambda: {
+        "enabled": True, "strength": 1.0, "model": "rnnoise",
+    })
+    owner.deesser_state = SimpleNamespace(get_settings=lambda: {})
+    owner.compressor_state = SimpleNamespace(get_settings=lambda: {})
+    owner.limiter_state = SimpleNamespace(get_settings=lambda: {})
+    owner.bypass_checkbox = SimpleNamespace(isChecked=lambda: False)
+
+    replacement = Preset()
+    replacement.eq.enabled = False
+    MainWindow._apply_preset(owner, replacement, scope="eq")
+
+    assert owner.gate_state.get_settings() == before
+    assert applied_eq == {"enabled": False, "bands": replacement.eq.bands, "layer": "tone"}
+    assert owner.preset_modified is True
+
+
+def test_real_eq_only_apply_changes_eq_and_preserves_other_sections(
+    qapp, monkeypatch, tmp_path
+) -> None:
+    from mic_eq.config_parts import shared
+    from mic_eq.ui import main_window
+
+    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
+    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
+
+    window = MainWindow()
+    try:
+        before = window._get_current_preset()
+        replacement = Preset()
+        eq_payload = replacement.eq.to_dict()
+        eq_payload["enabled"] = not before.eq.enabled
+        eq_payload["bands"][0]["gain_db"] = before.eq.bands[0].gain_db + 2.0
+        replacement.eq = EQSettings.from_dict(eq_payload)
+
+        MainWindow._apply_preset(window, replacement, scope="eq")
+
+        after = window._get_current_preset()
+        assert after.eq.enabled is replacement.eq.enabled
+        assert after.eq.bands[0].gain_db == replacement.eq.bands[0].gain_db
+        assert after.gate == before.gate
+        assert after.rnnoise == before.rnnoise
+        assert after.deesser == before.deesser
+        assert after.compressor == before.compressor
+        assert after.limiter == before.limiter
+        assert after.bypass == before.bypass
+    finally:
         window.close()
         window.deleteLater()
         qapp.processEvents()

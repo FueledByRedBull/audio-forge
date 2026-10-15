@@ -8,6 +8,7 @@ import threading
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import Mock, call
 
 import numpy as np
@@ -52,6 +53,7 @@ from mic_eq.config import (
     LimiterSettings,
     Preset,
     build_device_route_key,
+    build_input_device_preference_key,
     legacy_latency_profile_key,
 )
 
@@ -2242,3 +2244,324 @@ def test_voice_setup_dynamics_intensity_controls_custom_targets(qapp):
     assert dialog.custom_p95_spin.isEnabled() is True
     assert dialog.custom_peak_spin.isEnabled() is True
     dialog.close()
+
+
+def test_start_applies_persisted_mute_before_and_after_native_start(
+    qapp, monkeypatch, tmp_path
+) -> None:
+    from mic_eq.config_parts import shared
+    from mic_eq.ui import main_window
+
+    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
+    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
+
+    window = MainWindow()
+    events: list[tuple[str, bool | None]] = []
+
+    class Processor:
+        running = False
+
+        def is_running(self) -> bool:
+            return self.running
+
+        def set_output_mute(self, muted: bool) -> None:
+            events.append(("mute", muted))
+
+        def stop(self) -> None:
+            self.running = False
+
+    processor = Processor()
+    cast(Any, window).processor = processor
+    window.output_choice.addItem("Destination", DeviceIdentity(name="Destination", direction="output"))
+    window.user_muted = True
+    window._temporary_mute_reasons = set()
+    window._apply_input_preferences_for_current_route = lambda: None
+
+    def start(_processor: Processor, *_devices: object) -> str:
+        events.append(("start", None))
+        processor.running = True
+        return "started"
+
+    monkeypatch.setattr(main_window, "start_processor_for_route", start)
+    try:
+        window._start_processing()
+        assert events == [("mute", True), ("start", None), ("mute", True)]
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_start_refuses_retained_configuration_mute() -> None:
+    owner = cast(Any, MainWindow.__new__(MainWindow))
+    owner.processor = SimpleNamespace(is_running=lambda: False, start=Mock())
+    owner._temporary_mute_reasons = {"configuration"}
+    owner.status_message = Mock()
+    owner._sync_processing_controls = Mock()
+
+    MainWindow._start_processing(owner)
+
+    owner.processor.start.assert_not_called()
+    owner._sync_processing_controls.assert_called_once_with()
+    assert "reload the preset" in owner.status_message.showMessage.call_args.args[0]
+
+
+def test_user_mute_survives_temporary_owner_release() -> None:
+    calls: list[bool] = []
+    owner = cast(Any, MainWindow.__new__(MainWindow))
+    owner.processor = SimpleNamespace(set_output_mute=calls.append)
+    owner.user_muted = True
+    owner._temporary_mute_reasons = set()
+    owner._update_session_summary = lambda: None
+
+    MainWindow.set_temporary_output_mute(owner, True, "calibration")
+    MainWindow.set_temporary_output_mute(owner, False, "calibration")
+
+    assert calls == [True, True]
+
+
+@pytest.mark.parametrize("checked,temporary", [(True, False), (False, False), (False, True)])
+@pytest.mark.parametrize("write_error", [False, True])
+def test_user_mute_applies_before_failed_persistence(
+    monkeypatch, checked: bool, temporary: bool, write_error: bool
+) -> None:
+    calls: list[bool] = []
+    owner = cast(Any, MainWindow.__new__(MainWindow))
+    owner.processor = SimpleNamespace(set_output_mute=calls.append)
+    owner.config = SimpleNamespace(user_muted=not checked)
+    owner._temporary_mute_reasons = {"calibration"} if temporary else set()
+    owner._update_session_summary = lambda: None
+    owner.status_message = Mock()
+
+    def save(_config) -> bool:
+        assert calls == [checked or temporary]
+        if write_error:
+            raise OSError("config is not writable")
+        return False
+
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", save)
+    MainWindow._on_user_mute_toggled(owner, checked)
+
+    assert owner.user_muted is checked
+    assert owner.config.user_muted is checked
+    assert calls == [checked or temporary]
+    message = owner.status_message.showMessage.call_args.args[0]
+    assert "preference could not be saved" in message
+    assert ("Output muted" if checked or temporary else "Output unmuted") in message
+
+
+def test_user_mute_does_not_claim_native_failure_is_muted(monkeypatch) -> None:
+    owner = cast(Any, MainWindow.__new__(MainWindow))
+    owner.processor = SimpleNamespace(set_output_mute=Mock(side_effect=RuntimeError("unavailable")))
+    owner.config = SimpleNamespace(user_muted=False)
+    owner._temporary_mute_reasons = set()
+    owner._update_session_summary = lambda: None
+    owner.status_message = Mock()
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
+
+    MainWindow._on_user_mute_toggled(owner, True)
+
+    message = owner.status_message.showMessage.call_args.args[0]
+    assert "could not be applied" in message
+    assert "preference saved" in message
+
+
+def test_failed_mute_application_stays_pending() -> None:
+    owner = cast(Any, MainWindow.__new__(MainWindow))
+
+    def fail(_muted: bool) -> None:
+        raise RuntimeError("processor unavailable")
+
+    owner.processor = SimpleNamespace(set_output_mute=fail)
+    owner.user_muted = True
+    owner._temporary_mute_reasons = set()
+    owner._update_session_summary = lambda: None
+
+    MainWindow._apply_output_mute(owner)
+
+    assert owner._output_mute_error == "unavailable"
+
+
+def test_legacy_global_modes_without_stable_identity_use_safe_defaults() -> None:
+    config = AppConfig.from_dict(
+        {
+            "last_input_device": "Old mic",
+            "input_channel_mode": "left",
+            "input_cleanup_mode": "gentle",
+        }
+    )
+
+    assert config.input_device_preferences == {}
+    owner = cast(Any, MainWindow.__new__(MainWindow))
+    owner.config = config
+    owner._current_device_route_key = lambda: None
+    owner._current_input_preference_key = lambda: None
+    assert MainWindow._input_preference_for_current_route(owner) == InputDevicePreference()
+
+
+def test_missing_route_override_does_not_fall_back_to_global_modes() -> None:
+    owner = cast(Any, MainWindow.__new__(MainWindow))
+    owner.config = AppConfig(
+        input_channel_mode="left",
+        input_cleanup_mode="gentle",
+        route_input_preferences={"another-route": InputDevicePreference("right", "strong")},
+    )
+    owner._current_device_route_key = lambda: "missing-route"
+    owner._current_input_preference_key = lambda: None
+
+    assert MainWindow._input_preference_for_current_route(owner) == InputDevicePreference()
+
+
+def test_new_input_endpoint_does_not_inherit_another_device_preference() -> None:
+    old_identity = DeviceIdentity(
+        name="Mic",
+        endpoint_id="old-endpoint",
+        direction="input",
+    )
+    new_identity = DeviceIdentity(
+        name="Mic",
+        endpoint_id="new-endpoint",
+        direction="input",
+    )
+    owner = cast(Any, MainWindow.__new__(MainWindow))
+    owner.config = AppConfig(
+        input_device_preferences={
+            build_input_device_preference_key(old_identity): InputDevicePreference(
+                "left", "gentle"
+            )
+        }
+    )
+    owner._current_device_route_key = lambda: None
+    owner._current_input_preference_key = lambda: build_input_device_preference_key(
+        new_identity
+    )
+
+    assert MainWindow._input_preference_for_current_route(owner) == InputDevicePreference()
+
+
+def test_route_input_preference_action_saves_visible_controls_for_current_route(
+    qapp, monkeypatch, tmp_path
+) -> None:
+    from mic_eq.config_parts import shared
+    from mic_eq.ui import main_window
+
+    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: [
+        SimpleNamespace(
+            name="Mic",
+            is_default=True,
+            endpoint_id="input-route",
+            host_api="WASAPI",
+            sample_rate=48_000,
+            channels=1,
+            name_ordinal=0,
+        )
+    ])
+    monkeypatch.setattr(main_window, "list_output_devices", lambda: [
+        SimpleNamespace(
+            name="Cable",
+            is_default=True,
+            endpoint_id="output-route",
+            host_api="WASAPI",
+            sample_rate=48_000,
+            channels=2,
+            name_ordinal=0,
+        )
+    ])
+
+    window = MainWindow()
+    try:
+        window.input_channel_mode_choice.setCurrentIndex(
+            window.input_channel_mode_choice.findData("left")
+        )
+        window.input_cleanup_mode_choice.setCurrentIndex(
+            window.input_cleanup_mode_choice.findData("gentle")
+        )
+        window.save_route_input_preference_action.trigger()
+
+        route_key = window._current_device_route_key()
+        assert route_key is not None
+        assert window.config.route_input_preferences[route_key] == InputDevicePreference(
+            "left", "gentle", "explicit_user"
+        )
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def _fake_audio_device(name: str, endpoint_id: str, direction: str, **formats: int):
+    return SimpleNamespace(
+        name=name,
+        is_default=True,
+        endpoint_id=endpoint_id,
+        host_api="WASAPI",
+        sample_rate=formats.get("sample_rate", 48_000),
+        channels=formats.get("channels", 1 if direction == "input" else 2),
+        name_ordinal=0,
+    )
+
+
+def test_refresh_reapplies_latency_and_route_preset_after_reconnect(
+    qapp, monkeypatch, tmp_path
+) -> None:
+    from mic_eq.config_parts import shared
+    from mic_eq.ui import main_window
+
+    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
+    devices = {
+        "input": [_fake_audio_device("Mic A", "input-a", "input")],
+        "output": [_fake_audio_device("Cable A", "output-a", "output")],
+    }
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: devices["input"])
+    monkeypatch.setattr(main_window, "list_output_devices", lambda: devices["output"])
+
+    window = MainWindow()
+    try:
+        window._on_device_changed()
+        window._apply_latency_compensation_for_current_devices = Mock()
+        window._apply_bound_preset_for_current_route = Mock(return_value=False)
+        devices["input"] = [_fake_audio_device("Mic B", "input-b", "input")]
+        window._refresh_devices()
+
+        window._apply_latency_compensation_for_current_devices.assert_called_once()
+        window._apply_bound_preset_for_current_route.assert_called_once()
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_refresh_reapplies_latency_when_endpoint_format_changes(
+    qapp, monkeypatch, tmp_path
+) -> None:
+    from mic_eq.config_parts import shared
+    from mic_eq.ui import main_window
+
+    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
+    devices = {
+        "input": [_fake_audio_device("Mic", "input-route", "input")],
+        "output": [_fake_audio_device("Cable", "output-route", "output")],
+    }
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: devices["input"])
+    monkeypatch.setattr(main_window, "list_output_devices", lambda: devices["output"])
+
+    window = MainWindow()
+    try:
+        window._on_device_changed()
+        window._apply_latency_compensation_for_current_devices = Mock()
+        window._apply_bound_preset_for_current_route = Mock(return_value=False)
+        devices["input"] = [
+            _fake_audio_device(
+                "Mic", "input-route", "input", sample_rate=44_100, channels=2
+            )
+        ]
+        window._refresh_devices()
+
+        window._apply_latency_compensation_for_current_devices.assert_called_once()
+        window._apply_bound_preset_for_current_route.assert_not_called()
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()

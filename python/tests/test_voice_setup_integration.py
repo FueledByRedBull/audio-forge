@@ -1395,6 +1395,7 @@ def test_a_verified_setup_lists_the_tone_only_when_it_was_changed(
         stages = ("input_cleanup", "gate", "suppression", "eq", "deesser", "compressor", "limiter")
         expected = tuple(stage for stage in stages if not (withheld and stage == "eq"))
         assert window.config.calibration_results[0].verified_stages == expected
+        assert dialog.setup_result is not None
         assert tuple(dialog.setup_result["_candidate"]["verified_stages"]) == expected
     finally:
         dialog.reject()

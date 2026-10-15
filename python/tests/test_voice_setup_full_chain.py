@@ -722,6 +722,7 @@ def _assert_computed_on_the_current_eq(observed):
     ],
     ids=["validation", "solve", "validated", "headroom", "solve-and-validated"],
 )
+@pytest.mark.usefixtures("partial_results")
 def test_a_tone_only_refusal_withholds_the_tone_and_computes_the_rest_on_the_users_eq(monkeypatch, auto_eq):
     observed = _run_initial_analysis(monkeypatch, processing_mode="normal", auto_eq=auto_eq)
     diagnostics = observed["result"]["diagnostics"]
@@ -733,6 +734,7 @@ def test_a_tone_only_refusal_withholds_the_tone_and_computes_the_rest_on_the_use
     assert "Auto-EQ abstained from this capture" not in diagnostics["uncertainty_reasons"]
 
 
+@pytest.mark.usefixtures("partial_results")
 def test_a_withheld_tone_leaves_the_tone_out_of_the_setup_confidence(monkeypatch):
     diagnostics = _run_initial_analysis(
         monkeypatch, processing_mode="normal", auto_eq=_abstention(*_TONE_ONLY_ABSTENTIONS[0])
@@ -750,6 +752,7 @@ def test_a_withheld_tone_leaves_the_tone_out_of_the_setup_confidence(monkeypatch
     )
 
 
+@pytest.mark.usefixtures("partial_results")
 def test_a_withheld_tone_with_no_eq_in_the_incumbent_uses_the_default_eq(monkeypatch):
     observed = _run_initial_analysis(
         monkeypatch, processing_mode="normal", incumbent=False,
@@ -768,6 +771,7 @@ def test_a_withheld_tone_with_no_eq_in_the_incumbent_uses_the_default_eq(monkeyp
     ],
     ids=["unclear-capture", "headroom-risk"],
 )
+@pytest.mark.usefixtures("partial_results")
 def test_a_refusal_that_is_not_about_the_tone_still_refuses_the_whole_setup(monkeypatch, auto_eq):
     observed = _run_initial_analysis(monkeypatch, processing_mode="normal", auto_eq=auto_eq)
     result = observed["result"]
@@ -787,6 +791,7 @@ def test_a_refusal_that_is_not_about_the_tone_still_refuses_the_whole_setup(monk
         ["insufficient repeatable voiced windows"],
     ],
 )
+@pytest.mark.usefixtures("partial_results")
 def test_an_abstention_with_a_capture_reason_is_not_withheld(monkeypatch, reasons):
     observed = _run_initial_analysis(monkeypatch, processing_mode="normal", auto_eq=_abstention(*reasons))
     result = observed["result"]
@@ -797,6 +802,7 @@ def test_an_abstention_with_a_capture_reason_is_not_withheld(monkeypatch, reason
     assert result["eq_settings"]["abstention_reasons"] == reasons
 
 
+@pytest.mark.usefixtures("partial_results")
 def test_a_tone_refusal_stays_whole_when_the_incumbent_eq_cannot_be_read(monkeypatch):
     observed = _run_initial_analysis(
         monkeypatch, processing_mode="normal",

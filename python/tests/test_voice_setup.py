@@ -1034,6 +1034,7 @@ def _auto_eq_refuses(*, tone_only):
     ],
     ids=["abstention", "validation"],
 )
+@pytest.mark.usefixtures("partial_results")
 def test_a_withheld_tone_leaves_a_clean_setup_recommended(monkeypatch, auto_eq):
     result = _analyze_clean_capture(monkeypatch, auto_eq)
     diagnostics = result["diagnostics"]
@@ -1050,6 +1051,7 @@ def test_a_withheld_tone_leaves_a_clean_setup_recommended(monkeypatch, auto_eq):
     [_auto_eq_abstains("capture quality score is too low"), _auto_eq_refuses(tone_only=False)],
     ids=["abstention", "validation"],
 )
+@pytest.mark.usefixtures("partial_results")
 def test_a_refusal_the_tone_does_not_explain_still_blocks_the_recommendation(monkeypatch, auto_eq):
     result = _analyze_clean_capture(monkeypatch, auto_eq)
     diagnostics = result["diagnostics"]
@@ -1060,6 +1062,7 @@ def test_a_refusal_the_tone_does_not_explain_still_blocks_the_recommendation(mon
 
 
 @pytest.mark.skipif(not mic_eq.CORE_AVAILABLE, reason="native extension is not built")
+@pytest.mark.usefixtures("partial_results")
 def test_a_withheld_tone_is_calibrated_and_checked_natively_on_the_users_eq(monkeypatch):
     from mic_eq.analysis.failure_detection import AnalysisValidationError
     from mic_eq.config import EQSettings, Preset
@@ -1115,8 +1118,8 @@ def test_a_withheld_tone_is_calibrated_and_checked_natively_on_the_users_eq(monk
     assert result["eq_settings"] == {**users_eq, "apply_recommended": False}
 
 
-def test_partial_results_are_on_by_default():
-    assert voice_setup_module.PARTIAL_RESULTS is True
+def test_partial_results_are_off_by_default():
+    assert voice_setup_module.PARTIAL_RESULTS is False
 
 
 @pytest.mark.parametrize(
@@ -1127,11 +1130,7 @@ def test_partial_results_are_on_by_default():
     ],
     ids=["abstention", "validation"],
 )
-def test_without_partial_results_a_tone_only_refusal_refuses_the_whole_setup(
-    monkeypatch, auto_eq, complete
-):
-    monkeypatch.setattr(voice_setup_module, "PARTIAL_RESULTS", False)
-
+def test_by_default_a_tone_only_refusal_refuses_the_whole_setup(monkeypatch, auto_eq, complete):
     result = _analyze_clean_capture(monkeypatch, auto_eq)
     diagnostics = result["diagnostics"]
 
@@ -1142,6 +1141,7 @@ def test_without_partial_results_a_tone_only_refusal_refuses_the_whole_setup(
     assert (result["eq_settings"] or {}).get("bands") is None
 
 
+@pytest.mark.usefixtures("partial_results")
 def test_input_gain_advice_still_comes_with_a_withheld_tone(monkeypatch):
     result = _analyze_clean_capture(
         monkeypatch,

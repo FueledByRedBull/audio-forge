@@ -86,9 +86,9 @@ CLIP_LEVEL = 0.999
 CLIP_FLAT_TOP_S = 0.000125
 CLIP_MAX_EVENTS = 20
 
-# The evaluation switch for withholding only the tone: False refuses the whole setup
-# for a tone-only reason, as before. Read at call time.
-PARTIAL_RESULTS = True
+# The evaluation switch for withholding only the tone. It is off until a held-out
+# evaluation adopts it; off, a tone-only reason refuses the whole setup. Read at call time.
+PARTIAL_RESULTS = False
 
 # Auto-EQ abstentions that blame the tone fit alone. With only these, the recording
 # is fine and the tone is the one thing left out.

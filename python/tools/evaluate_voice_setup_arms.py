@@ -67,8 +67,18 @@ device audio.
   development speakers, and every clause reads 10 ms frames or longer), then the device window is shifted by their
   integer mean; otherwise the next candidate window, otherwise the user is excluded. Content: the Pearson
   correlation of 10 ms log-energy envelopes on speech frames must be at least ``MIN_CORRELATION`` (0.5 to start, set on
-  development). A gain drift above 3 dB between the setup and evaluation windows is flagged, not excluded. Levels are
-  used as recorded.
+  development). A gain drift above 3 dB between the setup and evaluation windows is flagged, not excluded.
+  Level: the DAPS device files are normalised near full scale, so the level check calls most takes too hot and a user
+  who follows its advice lowers the gain; in the dialog the level check comes before the setup recording. So, after the
+  file is resampled to 48 kHz and before any capture is cut or vetoed, the first voice (setup) take of the recording as
+  it is, is judged with ``mic_eq.ui.level_check.verdict_from_audio``. If its code is ``too_hot``, the whole device
+  recording is scaled by one gain that puts the peak reading of that function (its ignored-peak logic included) at
+  ``level_check.TARGET_PEAK_DB`` (-6 dB). The capture vetoes and retakes below run on the scaled recording, and every
+  capture of the user (noise, voice, evaluation, verification takes) comes from it; the clean take is not scaled. A
+  take that still trips the clip rule after scaling carries clipping no gain change undoes, and is refused at capture as
+  before. Any other verdict: levels as recorded. Each recording records the verdict of the first take before scaling,
+  the gain in dB (0 if none) and the verdict of the chosen voice capture after. The scaling is part of construction, so
+  it is identical in every arm.
   Capture vetoes now reachable: before analysis the dialog's checks are emulated: ``raw_capture_is_clipped`` on the noise
   and voice takes, ``analyze_noise_reference(noise, None).must_recapture`` and ``capture_is_silent(voice)``. A veto asks
   for the next noise segment (after a noise veto) or the next setup window, up to 3 takes; if all fail the user is refused
@@ -126,10 +136,10 @@ costs; the sensitivity readings of the refusal study; strata (device, room, cond
 drift); the balcony stratum.
 
 Dry run (``probe --development``). Construction readings per recording (lags, drift, envelope correlation, noise segment,
-deep-pause frames, speech fraction, peaks); parity of the current arm with the master code path on 4 users; T leaves the
+deep-pause frames, speech fraction, peaks, the level verdicts before and after scaling and the gain); parity of the current arm with the master code path on 4 users; T leaves the
 analysis digest identical, R arms equal their twins for existing users, P differs only where the tone is withheld, every
 constant restored; determinism on 4 users and the largest tuner runtime factor (``UNBOUNDED_TUNER_RUNTIME`` is decided
-before the freeze); the refusal study's seven known-bad probes plus "current again" and "limiter off", both conditions;
+before the freeze: the dry run's largest factor was 0.78, above 0.5, so the runtime gate is lifted in every arm); the refusal study's seven known-bad probes plus "current again" and "limiter off", both conditions;
 a gate self-test with fabricated worlds just inside and outside every threshold and the decision table for 0, 1 and 2
 failed changes; reachability flags (P's tone_withheld fires, the current arm has a whole-setup false refusal, for each T
 cell the tonal check ran on the injected candidate for at least half of the factory users, users refused before
@@ -192,7 +202,7 @@ SOURCES = (*refusals.SOURCES, "python/tools/evaluate_voice_setup_arms.py")
 MAX_WORKERS = refusals.MAX_WORKERS
 # Decided on the development recordings before the freeze (bookkeeping item 4): True lifts the tuner's runtime gate
 # in every arm, so that wall-clock load cannot change a candidate.
-UNBOUNDED_TUNER_RUNTIME = False
+UNBOUNDED_TUNER_RUNTIME = True
 
 # Arms and switches
 CHANGES = ("P", "T", "R")
@@ -446,12 +456,21 @@ def construct(clean: np.ndarray, device: np.ndarray, speech: np.ndarray,
     Positions come from the clean take's labels only. ``check`` emulates the dialog's capture vetoes; a veto asks for
     the next noise segment (after a noise veto) or the next setup window, up to three takes. If the last take still
     fails the user is refused at capture (``A``) and the analysis is judged on the first take, as a counterfactual.
+    The level gain is decided first, from the first voice take of the recording as it is, and the whole recording is
+    scaled before any capture is cut or vetoed, as in the dialog, where the level check precedes the setup recording.
     """
+    from mic_eq.ui.level_check import TARGET_PEAK_DB, verdict_from_audio
+
     candidates = noise_candidates(speech)
     options = [(i, start) for i, c in enumerate(candidates) for start in setup_starts(speech, c["end"])]
     if not options:
         return {"excluded": "noise_material" if not candidates else "no_setup_window"}
-    takes, position, setup_frames = [], 0, int(SETUP_S * 100)
+    setup_frames = int(SETUP_S * 100)
+    first_voice = device[options[0][1] * FRAME : (options[0][1] + setup_frames) * FRAME].astype(np.float32)
+    before = verdict_from_audio(first_voice, SAMPLE_RATE)
+    level_gain_db = TARGET_PEAK_DB - before.peak_db if before.peak_db is not None and before.code == "too_hot" else 0.0
+    device = device * 10 ** (level_gain_db / 20)  # one gain for the whole recording, before any capture is cut or vetoed
+    takes, position = [], 0
     while position is not None and len(takes) < MAX_ATTEMPTS:
         index, start = options[position]
         noise = noise_audio(device, candidates[index])
@@ -463,6 +482,7 @@ def construct(clean: np.ndarray, device: np.ndarray, speech: np.ndarray,
         position = next((p for p in range(position + 1, len(options)) if (options[p][0] != index) == bool(codes[0])), None)
     refused = bool(takes[-1]["vetoes"])
     used = takes[0] if refused else takes[-1]
+    noise, voice = used["captures"]
     size, setup_end = int(EVALUATION_S * SAMPLE_RATE), used["setup"] + setup_frames
     tried = 0
     for first in evaluation_starts(speech, setup_end):
@@ -478,7 +498,6 @@ def construct(clean: np.ndarray, device: np.ndarray, speech: np.ndarray,
             continue
         setup = slice(used["setup"] * FRAME, setup_end * FRAME)
         drift = gain_db(clean[setup], device[setup], speech[used["setup"] : setup_end]) - gain_db(clean[window], heard, labels)
-        noise, voice = used["captures"]
         return {
             "excluded": None, "A": refused, "noise": noise, "setup": voice, "evaluation": heard.astype(np.float32),
             "clean": clean[window].astype(np.float64), "labels": np.repeat(labels, FRAME),
@@ -486,6 +505,8 @@ def construct(clean: np.ndarray, device: np.ndarray, speech: np.ndarray,
                 "noise_kind": candidates[used["noise"]]["kind"], "noise_spliced": candidates[used["noise"]]["kind"] == "spliced",
                 "takes": [{key: take[key] for key in ("noise", "setup", "vetoes")} for take in takes], "A": refused,
                 "lags": alignment["lags"], "lag": alignment["lag"], "envelope_correlation": correlation,
+                "level": {"before": before.code, "gain_db": float(level_gain_db),
+                          "after": verdict_from_audio(voice, SAMPLE_RATE).code},
                 "gain_drift_db": float(drift), "drift_flag": bool(abs(drift) > MAX_DRIFT_DB), "windows_tried": tried,
                 "deep_pause_frames": deep_pause_frames(labels), "speech_fraction": float(speech.mean()),
                 "peaks": [float(np.max(np.abs(audio))) for audio in (noise, voice, heard)],

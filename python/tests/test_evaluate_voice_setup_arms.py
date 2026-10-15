@@ -437,6 +437,72 @@ def test_a_veto_asks_for_the_next_segment_and_three_failures_are_a_capture_refus
     assert np.array_equal(built["setup"], device[first * ev.FRAME : (first + 1000) * ev.FRAME].astype(np.float32))
 
 
+def _too_hot(seconds: float = 120.0):
+    """The synthetic pair with the device take normalised near full scale, as the DAPS device files are."""
+    clean, device = _signals(seconds=seconds)
+    return clean, device * (0.95 / np.max(np.abs(device)))
+
+
+def _first_take(device, readings):
+    start = readings["takes"][0]["setup"] * ev.FRAME
+    return device[start : start + 10 * RATE].astype(np.float32)
+
+
+def test_a_too_hot_recording_is_scaled_so_the_level_checks_peak_reading_is_minus_six_db():
+    from mic_eq.ui.level_check import TARGET_PEAK_DB, verdict_from_audio
+
+    clean, device = _too_hot()
+    built = ev.construct(clean, device, ev.speech_labels(clean), lambda noise, voice: (None, None))
+    level = built["readings"]["level"]
+    raw = verdict_from_audio(_first_take(device, built["readings"]), RATE)
+    assert raw.code == "too_hot" and level["before"] == "too_hot" and raw.peak_db is not None
+    assert level["gain_db"] < 0 and level["after"] == verdict_from_audio(built["setup"], RATE).code != "too_hot"
+    assert verdict_from_audio(built["setup"], RATE).peak_db == pytest.approx(TARGET_PEAK_DB, abs=1e-3)
+    assert raw.peak_db + level["gain_db"] == pytest.approx(TARGET_PEAK_DB, abs=1e-3)
+
+
+def test_a_recording_that_is_not_too_hot_is_used_as_recorded():
+    clean, device = _signals(seconds=120.0)
+    built = ev.construct(clean, device, ev.speech_labels(clean), lambda noise, voice: (None, None))
+    level = built["readings"]["level"]
+    assert level["before"] == level["after"] != "too_hot" and level["gain_db"] == 0
+    assert np.array_equal(built["setup"], _first_take(device, built["readings"]))
+
+
+def test_one_gain_scales_every_capture_of_the_user():
+    clean, device = _too_hot()
+    speech = ev.speech_labels(clean)
+    built = ev.construct(clean, device, speech, lambda noise, voice: (None, None))
+    readings = built["readings"]
+    gain = 10 ** (readings["level"]["gain_db"] / 20)
+    start = round(readings["evaluation_start_s"] * 100) * ev.FRAME
+    evaluation = device[start + readings["lag"] : start + readings["lag"] + built["evaluation"].size]
+    noise = ev.noise_audio(device, ev.noise_candidates(speech)[readings["takes"][0]["noise"]])
+    assert gain < 1
+    assert np.allclose(built["noise"], noise * gain, atol=1e-6)
+    assert np.allclose(built["setup"], _first_take(device, readings) * gain, atol=1e-6)
+    assert np.allclose(built["evaluation"], evaluation * gain, atol=1e-6)
+    assert np.array_equal(built["clean"], clean[start : start + built["clean"].size])  # the clean take is not scaled
+
+
+def test_a_too_hot_take_that_trips_only_the_clip_run_rule_is_not_refused_at_capture_after_scaling():
+    from mic_eq.analysis.voice_setup import raw_capture_is_clipped
+
+    clean, device = _too_hot()
+    speech = ev.speech_labels(clean)
+    first = ev.setup_starts(speech, ev.noise_candidates(speech)[0]["end"])[0] * ev.FRAME
+    device[first + 5 * RATE : first + 5 * RATE + 8] = 1.0  # a flat top of 8 samples at full scale
+    clipped = lambda noise, voice: (None, "voice_clipped" if raw_capture_is_clipped(voice, RATE) else None)  # noqa: E731
+    assert clipped(None, device[first : first + 10 * RATE].astype(np.float32))[1] == "voice_clipped"
+    built = ev.construct(clean, device, speech, clipped)
+    assert not built["A"] and [t["vetoes"] for t in built["readings"]["takes"]] == [[]]
+    assert built["readings"]["level"]["before"] == "too_hot" and built["readings"]["level"]["gain_db"] < 0
+
+
+def test_the_tuner_runtime_gate_is_lifted_in_every_arm():
+    assert ev.UNBOUNDED_TUNER_RUNTIME is True
+
+
 def test_a_recording_without_an_aligned_evaluation_window_is_excluded():
     clean, device = _signals(seconds=120.0)
     other = _signals(seconds=120.0, seed=9)[1]
@@ -819,6 +885,7 @@ def test_defaults_are_the_new_files_never_a_historical_report():
 def test_the_tuner_runtime_gate_is_lifted_only_when_the_constant_says_so(monkeypatch):
     from mic_eq.analysis import joint_tuning
 
+    monkeypatch.setattr(ev, "UNBOUNDED_TUNER_RUNTIME", False)
     with ev.tuner_runtime():
         assert joint_tuning._MAX_RUNTIME_FACTOR == 1.0
     monkeypatch.setattr(ev, "UNBOUNDED_TUNER_RUNTIME", True)

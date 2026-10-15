@@ -133,16 +133,26 @@ def _stub_env(**changes: Any) -> dict[str, Any]:
             "raw_setup": audio, **changes}
 
 
+CENTERS = [float(f) for f in range(100, 1100, 100)]
+
+
+def _optimize() -> None:
+    """The optimizer's validation call, as ``analyze_auto_eq`` makes it: the taps see its arguments."""
+    from mic_eq.analysis.auto_eq_parts import optimizer
+
+    cast(Any, optimizer)._validate_and_attenuate_solution(
+        None, None, None, np.zeros(10), np.full(10, 1.4), np.array(CENTERS), None)
+
+
 def _stub_analysis(calls: list[dict[str, Any]], *, withheld: Any = None, fail: bool = False):
     """A stand-in for ``analyze_voice_setup``: with ``fail`` it logs a failed validation and a tone fit through the taps."""
     from mic_eq.analysis import failure_detection
-    from mic_eq.analysis.auto_eq_parts import optimizer
 
     def analyze(noise, setup, rate, preset, **kwargs):
         calls.append(kwargs)
         if fail:
             failure_detection.validate_analysis({"band_gains": [0.0] * 10}, np.zeros(2049), np.linspace(0.0, 24_000.0, 2049))
-            cast(Any, optimizer)._validate_and_attenuate_solution()
+            _optimize()
         diagnostics = {"joint_tuning": {}, "tone_withheld": withheld if len(calls) > 1 else None}
         return {"eq_settings": {"band_freqs": [100.0] * 10, "band_gains": [1.0] * 10, "band_qs": [1.4] * 10, "enabled": True},
                 "eq_error": None, "diagnostics": diagnostics}
@@ -181,12 +191,34 @@ def test_p_runs_the_analysis_again_untapped_when_the_tap_hides_a_tone_only_failu
     product = ev.analyse("P", _stub_env())
     assert len(calls) == 2 and product["b1"] is None and product["result"]["diagnostics"]["tone_withheld"]
     assert product["fit"]["band_gains"][:2] == [3.0, -2.0]  # the withheld tone, as the step object
+    assert product["fit"]["band_freqs"] == CENTERS and product["fit"]["band_qs"] == [1.4] * 10  # the optimizer's bands
     calls.clear()
     other = ev.analyse("current", _stub_env())
     assert len(calls) == 1 and other["b1"]["passed"] is False and other["fit"] is not None  # B1, as in the refusal study
     calls.clear()
     monkeypatch.setattr(voice_setup, "analyze_voice_setup", _stub_analysis(calls, withheld=None, fail=True))
     assert ev.analyse("P", _stub_env())["b1"] is not None and len(calls) == 2  # run again; the product refuses too
+
+
+def test_a_withheld_tone_whose_result_is_the_typed_eq_still_yields_its_fit(monkeypatch):
+    """Auto-EQ abstains for a tone-only reason: the product returns the user's typed EQ, which has no band_freqs."""
+    from mic_eq.analysis import voice_setup
+    from mic_eq.analysis.auto_eq_parts import optimizer
+    from mic_eq.config import EQSettings
+
+    monkeypatch.setattr(optimizer, "_validate_and_attenuate_solution", lambda *a, **k: (np.array([3.0, -2.0] + [0.0] * 8), 0.0))
+    monkeypatch.setattr(refusals, "check_loaded", lambda diagnostics, tuning: {})
+
+    def analyze(noise, setup, rate, preset, **kwargs):
+        _optimize()
+        return {"eq_settings": {**EQSettings().to_dict(), "apply_recommended": False}, "eq_error": None,
+                "diagnostics": {"joint_tuning": {}, "tone_withheld": {"cause": ["headroom validation removed the usable correction"]}}}
+
+    monkeypatch.setattr(voice_setup, "analyze_voice_setup", analyze)
+    product = ev.analyse("P", _stub_env())
+    assert "band_freqs" not in product["result"]["eq_settings"] and product["b1"] is None
+    assert product["fit"] == {"band_freqs": CENTERS, "band_gains": [3.0, -2.0] + [0.0] * 8, "band_qs": [1.4] * 10, "enabled": True}
+    assert ev.stacked(product["fit"], ev.tone_eq(0, "ipad_office1"))["layers"]["correction"]  # the step object can be built
 
 
 def test_a_capture_refusal_runs_the_analysis_with_the_clip_check_off(monkeypatch):
@@ -676,6 +708,18 @@ def test_the_report_is_clean_small_and_states_its_rule(frozen_tree, tmp_path):
     for phrase in ("Rule (fixed before any study row existed)", "analysis_key", "equality passes", "within budget on this cohort",
                    "S1-S3", "SPEECH_WITHIN_DB"):
         assert phrase in (ev.__doc__ or ""), phrase
+    assert "40 dB" not in (ev.speech_labels.__doc__ or "")
+    for phrase in ("first whole-setup veto", "fixed whatever the number of\nexclusions", "ran on the injected candidate for at least half"):
+        assert phrase in (ev.__doc__ or ""), phrase
+    assert "180 analysed user-conditions in 18 speaker clusters" in text
+
+
+def test_the_report_counts_its_clusters_and_user_conditions_from_the_included_users(frozen_tree):
+    rows = [{**r, "excluded": "noise_material"} if r["index"] == 0 else r for r in ev.fabricated_rows()]
+    report = ev.build_report({"rows": rows, "identity": {"build": "b"}}, frozen_tree)
+    text = " ".join(report["limitations"])
+    assert "170 analysed user-conditions in 17 speaker clusters" in text and "18 speaker clusters" not in text
+    assert report["metrics"]["users"]["speakers"] == 17 and len(report["metrics"]["users"]["excluded"]) == 11
 
 
 def test_the_report_refuses_development_rows_and_missing_main_jobs():
@@ -786,9 +830,60 @@ def test_the_tuner_runtime_gate_is_lifted_only_when_the_constant_says_so(monkeyp
 def test_the_fabricated_world_reachability_and_probe_arithmetic():
     rows = ev.fabricated_rows()
     flags = ev.reachability(rows)
-    assert flags["P: tone_withheld fires"] and flags["current: a whole-setup false refusal"] and flags["R1: the denominator is not zero"]
-    assert not flags["current: a sibilant loss above 6 dB"]
+    assert all(value for key, value in flags.items() if key != "current: a sibilant loss above 6 dB for a factory user")
+    assert not flags["current: a sibilant loss above 6 dB for a factory user"]
     assert ev.tuner_runtime_factors(rows) == []
+
+
+def test_reachability_flags_guard_the_gates_they_stand_for():
+    def world():
+        rows = [r for r in ev.fabricated_rows() if r["condition"] != "balcony"]
+        return rows, [r for r in rows if r["condition"] == "factory"]
+
+    tonal = lambda flags: [v for k, v in flags.items() if k.startswith("T cell")]  # noqa: E731
+    deep = "R1: a measurable deep pause for half of the factory users"
+    for stripped, expected in ((45, True), (46, False)):  # users refused before verification stay in the denominator
+        rows, factory = world()
+        for row in factory[:stripped]:
+            row["injections"] = {}
+        assert len(tonal(ev.reachability(rows))) == 16 and all(v is expected for v in tonal(ev.reachability(rows)))
+    for lost, expected in ((45, True), (46, False)):
+        rows, factory = world()
+        for row in factory[:lost]:
+            row["arms"]["current"]["metrics"]["E"] = {"whole": {**OK, "deep_pause_db": None}}
+        assert ev.reachability(rows)[deep] is expected
+    rows, factory = world()
+    sibilant = "current: a sibilant loss above 6 dB for a factory user"
+    existing = next(r for r in rows if r["condition"] == "existing")
+    existing["arms"]["current"]["metrics"]["E"] = {"whole": {**OK, "sibilant_loss_db": 9.0}}
+    assert not ev.reachability(rows)[sibilant]  # R2 counts factory users only
+    factory[0]["arms"]["current"]["metrics"]["E"] = {"whole": {**OK, "sibilant_loss_db": 9.0}}
+    assert ev.reachability(rows)[sibilant]
+
+
+def test_a_failed_render_of_the_end_state_is_unjudgeable_and_counted_not_a_crash():
+    view = _view()
+    view["metrics"]["E"] = {"error": "RuntimeError: render failed"}
+    flags = ev.arm_flags(view)
+    assert flags["fa"] == flags["fa_upper"] == 0 and refusals.outcome(view, "E")["status"] == "unjudgeable"
+    assert np.isnan(ev._reading(view, "deep_pause_db"))
+    rows = ev.fabricated_rows()
+    rows[0]["arms"]["current"]["metrics"]["E"] = {"error": "RuntimeError: render failed"}
+    rows[0]["arms"]["current"]["objects"]["E"] = {"vacuous": False}
+    summary = ev.arm_summary(ev.main_rows(rows), "current")
+    assert summary["false_accepts"] == 0 and summary["buckets"]["none"] >= 1
+    ev.gate_inputs(rows)
+    ev.reachability(rows)
+
+
+def test_the_consistency_checks_skip_a_user_whose_current_analysis_failed(tmp_path):
+    row = ev.fabricated_rows()[0]
+    failed = {"A": False, "fired": [], "recommended": False, "short_speech": False, "tone_withheld": False, "verification": None,
+              "end_state": "current", "objects": {"E": {"vacuous": True}}, "analysis_failure": "Voice capture was too short for setup.",
+              "metrics": {"current": {"whole": OK}, "E": {"whole": OK}}}  # no "b1": the analysis never got that far
+    row = {**row, "arms": {arm: failed for arm in ev.ARMS}, "construction": {**row["construction"], "A": False}}
+    report = ev.consistency(tmp_path, [row])
+    assert report["parity"] == [] and report["p_differs_only_with_tone_withheld"] and report["switches_restored"]
 
 
 # ---------------------------------------------------------------------------------------------------------------

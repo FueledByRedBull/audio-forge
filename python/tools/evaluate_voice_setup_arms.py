@@ -94,7 +94,10 @@ counterfactual of the refusal study, unchanged.
   and on. A pair counts only if verification was not a retry.
 
 Budgets and margin rule (fixed; N = 180). Whole-setup veto 5 % (9 user-conditions); step veto 10 % (18); all whole-setup
-vetoes together 10 % (18). Every gate passes or fails on its observed count against its threshold; equality passes. The
+vetoes together 10 % (18). The budget gates (BUD, S2, S3) count each user-condition's first whole-setup veto when it is
+a false refusal in the headline reading (an unmeasurable clause counts as worse), each step veto when the step alone is
+no worse, and all first false refusals together; the budget counts 9, 18 and 18 stay fixed whatever the number of
+exclusions. Every gate passes or fails on its observed count against its threshold; equality passes. The
 speaker-clustered 95 % interval (``gate_corpus.cluster_ci``, 4000 resamples, seed 0) is reported and never decides. A pass
 whose interval reaches past the limit is labelled "within budget on this cohort, not confirmed at 95 %". A miss by one
 is a miss. A gate whose minimum denominator is not reached fails.
@@ -128,8 +131,10 @@ analysis digest identical, R arms equal their twins for existing users, P differ
 constant restored; determinism on 4 users and the largest tuner runtime factor (``UNBOUNDED_TUNER_RUNTIME`` is decided
 before the freeze); the refusal study's seven known-bad probes plus "current again" and "limiter off", both conditions;
 a gate self-test with fabricated worlds just inside and outside every threshold and the decision table for 0, 1 and 2
-failed changes; reachability flags (P's tone_withheld fires, the current arm has a whole-setup false refusal, each T
-cell reaches the tonal check on half of the injected pairs, a sibilant loss above 6 dB, R1's denominator); resume;
+failed changes; reachability flags (P's tone_withheld fires, the current arm has a whole-setup false refusal, for each T
+cell the tonal check ran on the injected candidate for at least half of the factory users, users refused before
+verification counting in the denominator; at least half of the factory users have a measurable deep pause, as R1 needs 30
+of about 85; a sibilant loss above 6 dB for a factory user, as R2 counts factory users only); resume;
 timing; and a fabricated report that passes ``check_evaluation_hygiene.validate_report``.
 
 The report states: loudspeaker playback of read speech, not a live talker; one script; the reference is the dry studio
@@ -304,7 +309,7 @@ def runs(mask: np.ndarray) -> list[tuple[int, int]]:
 
 
 def speech_labels(clean: np.ndarray) -> np.ndarray:
-    """10 ms frames within 40 dB of the clean take's active level; gaps under 250 ms closed, islands under 50 ms dropped."""
+    """10 ms frames within ``SPEECH_WITHIN_DB`` of the clean take's active level; gaps under 250 ms closed, islands under 50 ms dropped."""
     speech = gate_corpus._frame_rms_db(clean) >= gate_corpus._active_level_db(clean) - SPEECH_WITHIN_DB
     for start, stop in runs(~speech):
         if stop - start < CLOSE_GAP and start > 0 and stop < speech.size:
@@ -560,6 +565,25 @@ def tuner_runtime() -> Iterator[None]:
         joint_tuning._MAX_RUNTIME_FACTOR = saved
 
 
+@contextmanager
+def fit_layout() -> Iterator[list[tuple[list[float], list[float]]]]:
+    """The band centres and Qs of every fit the optimizer validates; ``refusals._taps`` logs only the gains."""
+    from mic_eq.analysis.auto_eq_parts import optimizer
+
+    seen: list[tuple[list[float], list[float]]] = []
+    wrapped = optimizer._validate_and_attenuate_solution
+
+    def watch(*args: Any, **kwargs: Any) -> Any:
+        seen.append(([float(c) for c in args[5]], [float(q) for q in args[4]]))
+        return wrapped(*args, **kwargs)
+
+    optimizer._validate_and_attenuate_solution = watch
+    try:
+        yield seen
+    finally:
+        optimizer._validate_and_attenuate_solution = wrapped
+
+
 def current_for(changes: set[str], env: dict[str, Any], vad: bool = True) -> dict[str, Any]:
     """The user's current settings under an arm's switches: ``Preset()`` is read now, so R's strength reaches it."""
     settings = refusals.current_settings(vad)
@@ -601,13 +625,13 @@ def analyse(key: str, env: dict[str, Any]) -> dict[str, Any]:
                 raw_noise_audio=env["raw_noise"], raw_speech_audio=env["raw_setup"])
 
         try:
-            with refusals._taps() as tap:
+            with refusals._taps() as tap, fit_layout() as layout:
                 result = call()
             b1 = next((entry for entry in tap["validation"] if not entry["passed"]), None)
             fit = None
-            if tap["tone"] and result["eq_settings"] is not None:
-                fit = {"band_freqs": result["eq_settings"]["band_freqs"], "band_gains": tap["tone"][-1],
-                       "band_qs": result["eq_settings"]["band_qs"], "enabled": True}
+            if tap["tone"] and layout:
+                # The product's result may be the user's typed EQ (a withheld tone), so the fit's bands come from the optimizer.
+                fit = {"band_freqs": layout[-1][0], "band_gains": tap["tone"][-1], "band_qs": layout[-1][1], "enabled": True}
             if "P" in changes and b1 and result["eq_settings"] is not None:
                 # The tap hides P's tone-only path: the product's own flow is the untapped run.
                 real = call()
@@ -845,7 +869,7 @@ def arm_flags(view: dict[str, Any]) -> dict[str, int]:
 
 
 def _reading(view: dict[str, Any], name: str) -> float:
-    value = view["metrics"]["E"]["whole"].get(name)
+    value = view["metrics"]["E"].get("whole", {}).get(name)  # a render that failed has no readings
     return float(value) if isinstance(value, (int, float)) and math.isfinite(value) else math.nan
 
 
@@ -978,8 +1002,9 @@ STATEMENTS = (
     "confroom1, iphone only in livingroom1 and bedroom1. Speech labels come from the clean take's energy.",
     "Users whose noise had to be spliced from several pauses are flagged and reported apart; users without 2.0 s of "
     "pause material, or without an aligned evaluation window, are excluded, counted and listed, never replaced.",
-    "18 speaker clusters, so the budgets are not confirmed at 95 %: a pass whose interval reaches past its limit is "
-    "labelled 'within budget on this cohort, not confirmed at 95 %', and a miss by one is a miss.",
+    "{users} analysed user-conditions in {clusters} speaker clusters, so the budgets (9, 18 and 18, fixed whatever the number "
+    "of exclusions) are not confirmed at 95 %: a pass whose interval reaches past its limit is labelled 'within budget on "
+    "this cohort, not confirmed at 95 %', and a miss by one is a miss.",
     "The current settings are the factory preset, or the factory preset plus one of three hand-set tone EQ library "
     "entries. The evidence for R comes from factory users only: an existing user's saved strength does not change.",
     "The tone clause is nearly blind below 1 kHz, so T's benefit rests on injected errors at 100 and 200 Hz, not on "
@@ -1060,7 +1085,7 @@ def arm_summary(rows: list[dict[str, Any]], arm: str) -> dict[str, Any]:
     table = [refusals._table_row(users, veto, "whole", "first") for veto in refusals.WHOLE_ORDER]
     table += [refusals._table_row(users, veto, "step", "any") for veto in refusals.STEP_OBJECT]
     estoi = [(user["row"]["metrics"]["E"]["whole"]["estoi"], user["row"]["metrics"]["current"]["whole"]["estoi"])
-            for user in users if "estoi" in user["row"]["metrics"]["E"]["whole"]]
+            for user in users if "estoi" in user["row"]["metrics"]["E"].get("whole", {})]
     return {
         "buckets": refusals.population(users), "false_refusals": sum(f["false_first"] for f in flags),
         "false_refusals_upper": sum(f["false_first_upper"] for f in flags), "false_accepts": sum(f["fa"] for f in flags),
@@ -1131,12 +1156,14 @@ def build_report(source: dict[str, Any], frozen: dict[str, str]) -> dict[str, An
     """The tracked report. Its hashes are the frozen ones, read from the freeze and not computed again."""
     release = {name: {"local": frozen[name], "declared": frozen[f"release_assets:{name}"],
                       "same": frozen[name] == frozen[f"release_assets:{name}"]} for name in refusals.RELEASE_ASSET_PATHS}
+    metrics = arms_report(source["rows"])
+    counts = {"users": metrics["users"]["analysed"], "clusters": metrics["users"]["speakers"]}
     return _round({
         "schema_version": 2, "audible_change": False, "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "experiment": "Voice Setup changes P, T and R compared as arms on DAPS script 1 recorded on consumer devices",
         "predefined_rule": "The rule in the docstring of python/tools/evaluate_voice_setup_arms.py.",
-        "rule_sha256": frozen["rule"], "build": source["identity"]["build"], "metrics": arms_report(source["rows"]),
-        "limitations": list(STATEMENTS), "source_sha256": {name: frozen[name] for name in SOURCES},
+        "rule_sha256": frozen["rule"], "build": source["identity"]["build"], "metrics": metrics,
+        "limitations": [text.format(**counts) for text in STATEMENTS], "source_sha256": {name: frozen[name] for name in SOURCES},
         "implementation_sha256": {loudness.EXTENSION: frozen["extension"]},
         "asset_hashes": {"daps_manifest": frozen["daps_manifest"], "vad_model": frozen["vad_model"], "df_dll": frozen["df.dll"],
                          "onnxruntime_dll": frozen["onnxruntime.dll"],
@@ -1374,15 +1401,16 @@ def reachability(rows: list[dict[str, Any]]) -> dict[str, bool]:
     factory = [r for r in analysed if r["condition"] == "factory"]
     reached = {}
     for key in ("current", "P+R"):
-        done = [r["injections"][key] for r in factory if r["injections"].get(key)]
-        for cell in INJECTIONS:
-            reached[f"T cell {key} {cell} reaches the tonal check on 50 %"] = bool(done) and sum(
-                i[cell]["on"]["ran"] for i in done) >= 0.5 * len(done)
+        for cell in INJECTIONS:  # users refused before verification get no injection: they stay in the denominator
+            ran = sum(bool((r["injections"].get(key) or {}).get(cell, {}).get("on", {}).get("ran")) for r in factory)
+            reached[f"T cell {key} {cell}: the tonal check ran for half of the factory users"] = bool(factory) and ran >= 0.5 * len(factory)
+    measurable = sum(math.isfinite(_reading(arm_user(r, "current"), "deep_pause_db")) for r in factory)
     return {
         "P: tone_withheld fires": any(r["arms"]["P"]["tone_withheld"] for r in analysed),
         "current: a whole-setup false refusal": any(arm_flags(arm_user(r, "current"))["false_first"] for r in analysed),
-        "current: a sibilant loss above 6 dB": any(_reading(arm_user(r, "current"), "sibilant_loss_db") > SIBILANT_LOSS_DB for r in analysed),
-        "R1: the denominator is not zero": any(math.isfinite(_reading(arm_user(r, "current"), "deep_pause_db")) for r in factory),
+        "current: a sibilant loss above 6 dB for a factory user": any(
+            _reading(arm_user(r, "current"), "sibilant_loss_db") > SIBILANT_LOSS_DB for r in factory),
+        "R1: a measurable deep pause for half of the factory users": bool(factory) and measurable >= 0.5 * len(factory),
         **reached}
 
 
@@ -1395,8 +1423,8 @@ def consistency(root: Path, rows: list[dict[str, Any]]) -> dict[str, Any]:
     from mic_eq.analysis.voice_setup import analyze_voice_setup
 
     start = _switch_values()
-    plain = [r for r in rows if not r["excluded"] and not r["construction"]["A"] and not r["arms"]["current"]["b1"]
-             and not r["arms"]["current"].get("analysis_failure")]
+    plain = [r for r in rows if not r["excluded"] and not r["construction"]["A"]
+             and not r["arms"]["current"].get("analysis_failure") and not r["arms"]["current"]["b1"]]
     factory = [r for r in plain if r["condition"] == "factory"][:4]
     existing = [r for r in rows if not r["excluded"] and r["condition"] == "existing"][:4]
     report: dict[str, Any] = {"parity": [], "t_leaves_analysis": [], "determinism": [], "r_exact_for_existing": []}

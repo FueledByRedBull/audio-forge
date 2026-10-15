@@ -34,6 +34,19 @@ class ValidationResult:
     details: dict         # Technical details for debugging (optional)
 
 
+class AnalysisValidationError(ValueError):
+    """Validation failed. ``tone_only`` is set when the capture passes without the tone fit."""
+
+    def __init__(self, reason: str, failures: list[str], tone_only: bool):
+        super().__init__(reason)
+        self.failures = failures
+        self.tone_only = tone_only
+
+
+# The failures that blame the size of the fitted correction, not the recording.
+_TONE_FAILURES = ("clipped_gains", "gain_rms")
+
+
 def calculate_spectral_flatness(spectrum_db):
     """
     Calculate spectral flatness (Wiener entropy).
@@ -265,6 +278,10 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
 
     # Build result
     if failures:
+        # Without the tone failures the capture passes: no other hard failure, and
+        # fewer than two other soft ones.
+        other_hard = [r for r in hard_fail_reasons if not r.startswith(_TONE_FAILURES)]
+        other_soft = [r for r in soft_failures if not r.startswith(_TONE_FAILURES)]
         reason = (
             _headroom_refusal(headroom)
             if failures == ["headroom risk after downstream simulation"]
@@ -283,7 +300,8 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
                 'clipped_gains': clipped_gains,
                 'gain_rms_db': gain_rms,
                 'headroom_safe': headroom_safe,
-                'failures': failures
+                'failures': failures,
+                'tone_only': not other_hard and len(other_soft) < 2,
             }
         )
     else:

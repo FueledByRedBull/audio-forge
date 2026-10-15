@@ -1008,6 +1008,155 @@ def test_a_low_score_alone_is_reported_as_low_overall_quality(monkeypatch):
     assert "spectral feature stability is weak" not in diagnostics["uncertainty_reasons"]
 
 
+def _auto_eq_abstains(*reasons):
+    return "analyze_auto_eq", lambda out: (
+        {**out[0], "apply_recommended": False, "abstention_reasons": list(reasons)},
+        out[1],
+    )
+
+
+def _auto_eq_refuses(*, tone_only):
+    def refuse(_out):
+        from mic_eq.analysis.failure_detection import AnalysisValidationError
+
+        raise AnalysisValidationError(
+            "Recording too unclear. Please try again.", ["clipped_gains (7 >= 6)"], tone_only
+        )
+
+    return "analyze_auto_eq", refuse
+
+
+@pytest.mark.parametrize(
+    "auto_eq",
+    [
+        _auto_eq_abstains("no validated correction improved the target safely"),
+        _auto_eq_refuses(tone_only=True),
+    ],
+    ids=["abstention", "validation"],
+)
+@pytest.mark.usefixtures("partial_results")
+def test_a_withheld_tone_leaves_a_clean_setup_recommended(monkeypatch, auto_eq):
+    result = _analyze_clean_capture(monkeypatch, auto_eq)
+    diagnostics = result["diagnostics"]
+
+    assert diagnostics["apply_recommended"] is True
+    assert diagnostics["uncertainty_reasons"] == []
+    assert diagnostics["tone_withheld"]["reason_code"] == "tone_withheld"
+    assert result["eq_settings"]["apply_recommended"] is False
+    assert _candidate_settings_error(result) is None
+
+
+@pytest.mark.parametrize(
+    "auto_eq",
+    [_auto_eq_abstains("capture quality score is too low"), _auto_eq_refuses(tone_only=False)],
+    ids=["abstention", "validation"],
+)
+@pytest.mark.usefixtures("partial_results")
+def test_a_refusal_the_tone_does_not_explain_still_blocks_the_recommendation(monkeypatch, auto_eq):
+    result = _analyze_clean_capture(monkeypatch, auto_eq)
+    diagnostics = result["diagnostics"]
+
+    assert diagnostics["apply_recommended"] is False
+    assert "Auto-EQ abstained from this capture" in diagnostics["uncertainty_reasons"]
+    assert diagnostics["tone_withheld"] is None
+
+
+@pytest.mark.skipif(not mic_eq.CORE_AVAILABLE, reason="native extension is not built")
+@pytest.mark.usefixtures("partial_results")
+def test_a_withheld_tone_is_calibrated_and_checked_natively_on_the_users_eq(monkeypatch):
+    from mic_eq.analysis.failure_detection import AnalysisValidationError
+    from mic_eq.config import EQSettings, Preset
+
+    def refuse(*_args, **_kwargs):
+        raise AnalysisValidationError(
+            "Recording too unclear. Please try again.", ["clipped_gains (7 >= 6)"], True
+        )
+
+    renders, calibrations = [], []
+    render, calibrate = (
+        voice_setup_module.simulate_candidate_chain,
+        voice_setup_module._calibrate_compressor_threshold,
+    )
+
+    def recording_render(audio, rate, eq, chain):
+        renders.append(eq)
+        return render(audio, rate, eq, chain)
+
+    def recording_calibration(**kwargs):
+        calibrations.append(kwargs["eq_settings"])
+        return calibrate(**kwargs)
+
+    monkeypatch.setattr(voice_setup_module, "analyze_auto_eq", refuse)
+    monkeypatch.setattr(voice_setup_module, "simulate_candidate_chain", recording_render)
+    monkeypatch.setattr(voice_setup_module, "_calibrate_compressor_threshold", recording_calibration)
+    current = Preset().eq.to_dict()
+    for band in current["bands"]:
+        band["gain_db"] = 9.0
+    users_eq = EQSettings.from_dict(current).to_dict()
+    sample_rate = 48_000
+    noise = _make_noise(sample_rate, amplitude=0.0025)
+    speech = _make_voice(sample_rate, seconds=5.0)
+
+    result = analyze_voice_setup(
+        noise,
+        speech,
+        sample_rate,
+        "broadcast",
+        vad_available=False,
+        raw_noise_audio=noise,
+        raw_speech_audio=speech,
+        incumbent_settings={"eq": current},
+    )
+    diagnostics = result["diagnostics"]
+
+    assert calibrations == [users_eq]
+    assert len(renders) >= 2
+    assert all(eq == {**users_eq, "enabled": eq["enabled"]} for eq in renders)
+    assert diagnostics["compressor_calibration"]["backend"] == "rust"
+    assert diagnostics["offline_validation"]["simulation_backend"] == "rust"
+    assert diagnostics["tone_withheld"]["reason_code"] == "tone_withheld"
+    assert result["eq_settings"] == {**users_eq, "apply_recommended": False}
+
+
+def test_partial_results_are_off_by_default():
+    assert voice_setup_module.PARTIAL_RESULTS is False
+
+
+@pytest.mark.parametrize(
+    ("auto_eq", "complete"),
+    [
+        (_auto_eq_abstains("no validated correction improved the target safely"), True),
+        (_auto_eq_refuses(tone_only=True), False),
+    ],
+    ids=["abstention", "validation"],
+)
+def test_by_default_a_tone_only_refusal_refuses_the_whole_setup(monkeypatch, auto_eq, complete):
+    result = _analyze_clean_capture(monkeypatch, auto_eq)
+    diagnostics = result["diagnostics"]
+
+    assert diagnostics["tone_withheld"] is None
+    assert diagnostics["apply_recommended"] is False
+    assert "Auto-EQ abstained from this capture" in diagnostics["uncertainty_reasons"]
+    assert (result["eq_settings"] is not None) is complete
+    assert (result["eq_settings"] or {}).get("bands") is None
+
+
+@pytest.mark.usefixtures("partial_results")
+def test_input_gain_advice_still_comes_with_a_withheld_tone(monkeypatch):
+    result = _analyze_clean_capture(
+        monkeypatch,
+        _auto_eq_abstains("headroom validation removed the usable correction"),
+        speech=_make_voice(48_000, seconds=5.0, level=1.34),
+        headroom_at=lambda compressor: -(compressor["target_lufs"] + 24.0),
+    )
+
+    assert result["diagnostics"]["apply_recommended"] is False
+    assert (
+        "the microphone level leaves too little headroom; lower the input gain by about 1 dB"
+        in result["diagnostics"]["uncertainty_reasons"]
+    )
+
+
 @pytest.mark.parametrize("auto_makeup", [True, False], ids=["automatic-makeup", "manual-makeup"])
 def test_input_gain_advice_is_the_shortfall_left_at_the_loudness_floor(monkeypatch, auto_makeup):
     def headroom_at(compressor):

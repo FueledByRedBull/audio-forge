@@ -38,6 +38,7 @@ from .deesser_fusion import (
     predict_clip_probability,
     predict_frame_probabilities,
 )
+from .failure_detection import AnalysisValidationError
 from .signal_processing import resample_poly
 from .noise_reference import (
     MIN_NOISE_DURATION_S,
@@ -91,6 +92,20 @@ _TONAL_BAND_EDGES_HZ = 80.0 * 2.0 ** (np.arange(23) / 3.0)
 CLIP_LEVEL = 0.999
 CLIP_FLAT_TOP_S = 0.000125
 CLIP_MAX_EVENTS = 20
+
+# The evaluation switch for withholding only the tone. It is off until a held-out
+# evaluation adopts it; off, a tone-only reason refuses the whole setup. Read at call time.
+PARTIAL_RESULTS = False
+
+# Auto-EQ abstentions that blame the tone fit alone. With only these, the recording
+# is fine and the tone is the one thing left out.
+_TONE_ONLY_ABSTENTIONS = frozenset(
+    {
+        "constrained gain solve produced no safe correction",
+        "no validated correction improved the target safely",
+        "headroom validation removed the usable correction",
+    }
+)
 
 GATE_MODE_LABELS = {
     0: "Threshold Only",
@@ -1119,6 +1134,8 @@ def analyze_voice_setup(
         progress_callback("Fitting voice EQ...", 20)
     eq_settings: dict[str, Any] | None = None
     eq_error: str | None = None
+    # Why only the tone is left out, when nothing else stopped Auto-EQ.
+    tone_withheld: list[str] = []
     try:
         eq_settings, _validation = analyze_auto_eq(
             speech_arr,
@@ -1144,8 +1161,30 @@ def analyze_voice_setup(
         raise
     except Exception as exc:  # pragma: no cover - exercised through return shape
         eq_error = str(exc)
+        if PARTIAL_RESULTS and isinstance(exc, AnalysisValidationError) and exc.tone_only:
+            tone_withheld = exc.failures
+    if PARTIAL_RESULTS and eq_settings is not None and not eq_settings.get("apply_recommended", True):
+        reasons = list(eq_settings.get("abstention_reasons") or [])
+        if reasons and set(reasons) <= _TONE_ONLY_ABSTENTIONS:
+            tone_withheld = reasons
 
-    simulation_eq_settings = eq_settings or {
+    incumbent_payload = dict(incumbent_settings or {})
+    incumbent_eq = incumbent_payload.get("eq")
+    withheld_eq: dict[str, Any] | None = None
+    if tone_withheld:
+        # The tone stays as the user has it, so everything after this is judged on that EQ.
+        try:
+            withheld_eq = (
+                EQSettings()
+                if incumbent_eq is None
+                else EQSettings.from_dict(_typed_eq_payload(incumbent_eq))
+            ).to_dict()
+        except (KeyError, TypeError, ValueError):
+            tone_withheld = []
+        else:
+            eq_settings = {**withheld_eq, "apply_recommended": False}
+
+    simulation_eq_settings = withheld_eq or eq_settings or {
         "band_freqs": list(EQ_FREQUENCIES),
         "band_gains": [0.0] * len(EQ_FREQUENCIES),
         "band_qs": [1.41] * len(EQ_FREQUENCIES),
@@ -1164,7 +1203,6 @@ def analyze_voice_setup(
     }
     check_analysis_cancelled(cancel_check)
 
-    incumbent_payload = dict(incumbent_settings or {})
     incumbent_gate = incumbent_payload.get("gate")
     incumbent_suppressor = incumbent_payload.get("suppressor") or incumbent_payload.get(
         "rnnoise"
@@ -1225,7 +1263,6 @@ def analyze_voice_setup(
     # simulation whenever the incumbent typed EQ is available.
     full_chain_eq_settings: dict[str, Any] | None = simulation_eq_settings
     full_chain_eq_error: str | None = None
-    incumbent_eq = incumbent_payload.get("eq")
     if eq_settings is not None and "bands" not in eq_settings:
         try:
             current_eq = (
@@ -1311,7 +1348,7 @@ def analyze_voice_setup(
     compressor_confidence = float(np.clip(0.55 * capture_confidence + 0.45 * dynamics_confidence, 0.0, 1.0))
     setup_confidence = _bounded_quality_score(
         [
-            (eq_confidence, 0.35),
+            *([] if tone_withheld else [(eq_confidence, 0.35)]),
             (gate_confidence, 0.25),
             (max(deesser_confidence, 0.50) if not deesser_diag["enabled"] else deesser_confidence, 0.15),
             (compressor_confidence, 0.15),
@@ -1468,11 +1505,13 @@ def analyze_voice_setup(
         eq_settings is not None
         and eq_settings.get("apply_recommended", True)
     )
-    if not eq_apply_recommended:
+    # A withheld tone is no failed check: the user's EQ stays and the rest stands on its own.
+    eq_blocks_apply = not eq_apply_recommended and not tone_withheld
+    if eq_blocks_apply:
         uncertainty_reasons.append("Auto-EQ abstained from this capture")
     apply_recommended = bool(
         not weak_capture
-        and eq_apply_recommended
+        and not eq_blocks_apply
         and offline_validation_passed
         and compressor_target_met
     )
@@ -1496,6 +1535,11 @@ def analyze_voice_setup(
             "uncertainty_reasons": uncertainty_reasons,
             "weak_capture": weak_capture,
             "apply_recommended": apply_recommended,
+            "tone_withheld": (
+                {"reason_code": "tone_withheld", "cause": tone_withheld}
+                if tone_withheld
+                else None
+            ),
             "capture_confidence": capture_confidence,
             "eq_confidence": eq_confidence,
             "gate_confidence": gate_confidence,

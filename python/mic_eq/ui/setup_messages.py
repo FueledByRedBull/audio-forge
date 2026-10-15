@@ -372,16 +372,21 @@ def other_reasons(diagnostics: Mapping[str, Any]) -> list[str]:
     return [str(reason) for reason in diagnostics.get("uncertainty_reasons") or () if reason not in told]
 
 
-def verification_summary(result: Mapping[str, Any]) -> str:
+def verification_summary(result: Mapping[str, Any], *, tone_withheld: bool = False) -> str:
     """The measured outcome of the second recording, in words."""
     def value(key: str, default: float) -> float:
         number = _number(result.get(key))
         return default if number is None else number
 
-    return (
-        f"Tone: {value('spectral_target_error_before_db', 0.0):.1f} dB from the preset before, "
+    tone = (
+        "Tone: kept as it is. "
+        if tone_withheld
+        else f"Tone: {value('spectral_target_error_before_db', 0.0):.1f} dB from the preset before, "
         f"{value('spectral_target_error_after_db', 0.0):.1f} dB after. "
-        f"The compressor evened out your voice by {value('compressor_gain_reduction_p95_db', 0.0):.1f} dB. "
+    )
+    return (
+        tone
+        + f"The compressor evened out your voice by {value('compressor_gain_reduction_p95_db', 0.0):.1f} dB. "
         f"The loudest peak is {value('output_true_peak_db', -120.0):.1f} dB. "
         f"Your voice against the background noise changed by {value('snr_change_db', 0.0):+.1f} dB."
     )

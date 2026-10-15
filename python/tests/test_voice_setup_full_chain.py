@@ -525,7 +525,9 @@ def _eq_state_payload(eq: dict) -> dict:
     return eq | {"band_freqs": settings.band_freqs, "band_gains": settings.band_gains, "band_qs": settings.band_qs}
 
 
-def _run_initial_analysis(monkeypatch, *, processing_mode: str, eq_payload=lambda eq: eq):
+def _run_initial_analysis(
+    monkeypatch, *, processing_mode: str, eq_payload=lambda eq: eq, auto_eq=None, incumbent: bool = True
+):
     sample_rate = 48_000
     noise = np.random.default_rng(42).normal(0, 0.001, sample_rate * 2).astype(np.float32)
     t = np.arange(sample_rate * 4) / sample_rate
@@ -544,6 +546,7 @@ def _run_initial_analysis(monkeypatch, *, processing_mode: str, eq_payload=lambd
     proposed_suppressor = {"enabled": True, "strength": 0.65, "model": "deepfilter"}
     calls = []
     calibration = {}
+    tuned = {}
     progress = []
     frontend_activity = [
         (0.85, 1.0, -46.0, 0.9)
@@ -572,17 +575,21 @@ def _run_initial_analysis(monkeypatch, *, processing_mode: str, eq_payload=lambd
         return kwargs["compressor_settings"], {"backend": "rust"}
 
     # Leave capture measurement real; stub only the searches and final renderer.
-    monkeypatch.setattr(voice_setup, "analyze_auto_eq", lambda *_a, **_k: (candidate_eq, {}))
+    def tune(*args, **_kwargs):
+        tuned["eq_settings"] = args[5]
+        return {
+            "apply_recommended": True, "gate_settings": proposed_gate,
+            "suppressor_settings": proposed_suppressor,
+        }
+
+    monkeypatch.setattr(voice_setup, "analyze_auto_eq", auto_eq or (lambda *_a, **_k: (candidate_eq, {})))
     monkeypatch.setattr(voice_setup, "_calibrate_compressor_threshold", calibrate)
-    monkeypatch.setattr(voice_setup, "tune_gate_suppression_dynamics", lambda *_a, **_k: {
-        "apply_recommended": True, "gate_settings": proposed_gate,
-        "suppressor_settings": proposed_suppressor,
-    })
+    monkeypatch.setattr(voice_setup, "tune_gate_suppression_dynamics", tune)
     monkeypatch.setattr(voice_setup, "simulate_candidate_chain", simulate)
     result = voice_setup.analyze_voice_setup(
         noise * 0.9, speech * 0.9, sample_rate, vad_available=False,
-        incumbent_settings={"eq": eq_payload(incumbent_eq), "gate": asdict(preset.gate),
-                            "rnnoise": asdict(preset.rnnoise)},
+        incumbent_settings={**({"eq": eq_payload(incumbent_eq)} if incumbent else {}),
+                            "gate": asdict(preset.gate), "rnnoise": asdict(preset.rnnoise)},
         raw_noise_audio=noise, raw_speech_audio=speech,
         input_cleanup_mode="gentle", processing_mode=processing_mode,
         progress_callback=lambda _text, value: progress.append(value),
@@ -591,6 +598,8 @@ def _run_initial_analysis(monkeypatch, *, processing_mode: str, eq_payload=lambd
         "result": result,
         "calls": calls,
         "calibration": calibration,
+        "tuned": tuned,
+        "current_eq": (EQSettings.from_dict(incumbent_eq) if incumbent else EQSettings()).to_dict(),
         "progress": progress,
         "speech": speech,
         "proposed_gate": proposed_gate,
@@ -682,3 +691,147 @@ def test_initial_analysis_raw_mode_keeps_full_chain_path_available(monkeypatch):
     assert len(observed["calls"]) == 2
     assert observed["calls"][0][2]["processing_mode"] == "raw"
     assert observed["result"]["diagnostics"]["offline_validation_full_chain"] is True
+
+
+def _abstention(*reasons):
+    def analyze(*_args, **_kwargs):
+        return {
+            "band_freqs": list(EQ_FREQUENCIES),
+            "band_gains": [0.0] * len(EQ_FREQUENCIES),
+            "band_qs": [1.41] * len(EQ_FREQUENCIES),
+            "analysis_confidence": 0.4,
+            "apply_recommended": False,
+            "recommendation_status": "abstain",
+            "abstention_reasons": list(reasons),
+        }, {}
+
+    return analyze
+
+
+def _failed_validation(*failures, tone_only):
+    def analyze(*_args, **_kwargs):
+        from mic_eq.analysis.failure_detection import AnalysisValidationError
+
+        raise AnalysisValidationError("Recording too unclear. Please try again.", list(failures), tone_only)
+
+    return analyze
+
+
+_TONE_ONLY_ABSTENTIONS = [
+    ["constrained gain solve produced no safe correction"],
+    ["no validated correction improved the target safely"],
+    ["headroom validation removed the usable correction"],
+    [
+        "constrained gain solve produced no safe correction",
+        "no validated correction improved the target safely",
+    ],
+]
+
+
+def _assert_computed_on_the_current_eq(observed):
+    current_eq = observed["current_eq"]
+    calls = observed["calls"]
+    assert observed["tuned"]["eq_settings"] == current_eq
+    assert observed["calibration"]["eq_settings"] == current_eq
+    assert [eq for _audio, eq, _chain in calls] == [{**current_eq, "enabled": False}, current_eq]
+    assert observed["result"]["eq_settings"] == {**current_eq, "apply_recommended": False}
+
+
+@pytest.mark.parametrize(
+    "auto_eq",
+    [
+        _failed_validation("clipped_gains (7 >= 6)", tone_only=True),
+        *(_abstention(*reasons) for reasons in _TONE_ONLY_ABSTENTIONS),
+    ],
+    ids=["validation", "solve", "validated", "headroom", "solve-and-validated"],
+)
+@pytest.mark.usefixtures("partial_results")
+def test_a_tone_only_refusal_withholds_the_tone_and_computes_the_rest_on_the_users_eq(monkeypatch, auto_eq):
+    observed = _run_initial_analysis(monkeypatch, processing_mode="normal", auto_eq=auto_eq)
+    diagnostics = observed["result"]["diagnostics"]
+
+    _assert_computed_on_the_current_eq(observed)
+    assert diagnostics["tone_withheld"]["reason_code"] == "tone_withheld"
+    assert diagnostics["tone_withheld"]["cause"]
+    assert diagnostics["offline_validation_passed"] is True
+    assert "Auto-EQ abstained from this capture" not in diagnostics["uncertainty_reasons"]
+
+
+@pytest.mark.usefixtures("partial_results")
+def test_a_withheld_tone_leaves_the_tone_out_of_the_setup_confidence(monkeypatch):
+    diagnostics = _run_initial_analysis(
+        monkeypatch, processing_mode="normal", auto_eq=_abstention(*_TONE_ONLY_ABSTENTIONS[0])
+    )["result"]["diagnostics"]
+
+    quiet_room = float(np.clip((-32.0 - diagnostics["conservative_noise_rms_db"]) / 18.0, 0.0, 1.0))
+    deesser = diagnostics["deesser_confidence"]
+    assert diagnostics["setup_confidence"] == pytest.approx(
+        voice_setup._bounded_quality_score([
+            (diagnostics["gate_confidence"], 0.25),
+            (deesser if diagnostics["deesser_enabled"] else max(deesser, 0.5), 0.15),
+            (diagnostics["compressor_confidence"], 0.15),
+            (quiet_room, 0.10),
+        ])
+    )
+
+
+@pytest.mark.usefixtures("partial_results")
+def test_a_withheld_tone_with_no_eq_in_the_incumbent_uses_the_default_eq(monkeypatch):
+    observed = _run_initial_analysis(
+        monkeypatch, processing_mode="normal", incumbent=False,
+        auto_eq=_failed_validation("gain_rms (11.0 > 10.0 dB)", tone_only=True),
+    )
+
+    assert observed["current_eq"] == EQSettings().to_dict()
+    _assert_computed_on_the_current_eq(observed)
+
+
+@pytest.mark.parametrize(
+    "auto_eq",
+    [
+        _failed_validation("peak_count (1 too low)", tone_only=False),
+        _failed_validation("headroom risk after downstream simulation", tone_only=False),
+    ],
+    ids=["unclear-capture", "headroom-risk"],
+)
+@pytest.mark.usefixtures("partial_results")
+def test_a_refusal_that_is_not_about_the_tone_still_refuses_the_whole_setup(monkeypatch, auto_eq):
+    observed = _run_initial_analysis(monkeypatch, processing_mode="normal", auto_eq=auto_eq)
+    result = observed["result"]
+
+    assert result["eq_settings"] is None
+    assert result["eq_error"] == "Recording too unclear. Please try again."
+    assert observed["calibration"] == {}
+    assert result["diagnostics"]["tone_withheld"] is None
+
+
+@pytest.mark.parametrize(
+    "reasons",
+    [
+        ["capture quality score is too low"],
+        ["noise-referenced SNR is too low", "no validated correction improved the target safely"],
+        ["room-noise reference is invalid"],
+        ["insufficient repeatable voiced windows"],
+    ],
+)
+@pytest.mark.usefixtures("partial_results")
+def test_an_abstention_with_a_capture_reason_is_not_withheld(monkeypatch, reasons):
+    observed = _run_initial_analysis(monkeypatch, processing_mode="normal", auto_eq=_abstention(*reasons))
+    result = observed["result"]
+
+    assert result["diagnostics"]["tone_withheld"] is None
+    assert result["diagnostics"]["apply_recommended"] is False
+    assert "Auto-EQ abstained from this capture" in result["diagnostics"]["uncertainty_reasons"]
+    assert result["eq_settings"]["abstention_reasons"] == reasons
+
+
+@pytest.mark.usefixtures("partial_results")
+def test_a_tone_refusal_stays_whole_when_the_incumbent_eq_cannot_be_read(monkeypatch):
+    observed = _run_initial_analysis(
+        monkeypatch, processing_mode="normal",
+        eq_payload=lambda eq: eq | {"bands": eq["bands"][:3]},
+        auto_eq=_failed_validation("clipped_gains (7 >= 6)", tone_only=True),
+    )
+
+    assert observed["result"]["eq_settings"] is None
+    assert observed["result"]["diagnostics"]["tone_withheld"] is None

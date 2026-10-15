@@ -58,7 +58,7 @@ def analyze_auto_eq(
         ValueError: If validation fails (with generic user message)
     """
     from ..spectrum import analyze_voice_spectrum, smooth_spectrum_perceptual
-    from ..failure_detection import validate_analysis
+    from ..failure_detection import AnalysisValidationError, validate_analysis
     from ..vad import analyze_offline_vad
 
     check_analysis_cancelled(cancel_check)
@@ -244,6 +244,10 @@ def analyze_auto_eq(
 
     if not validation.passed:
         # Raise with generic user message (not technical details)
-        raise ValueError(validation.reason)
+        raise AnalysisValidationError(
+            validation.reason,
+            validation.details["failures"],
+            validation.details["tone_only"],
+        )
 
     return eq_settings, validation

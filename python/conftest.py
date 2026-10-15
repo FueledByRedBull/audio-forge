@@ -32,6 +32,12 @@ def isolated_settings_directory(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture
+def partial_results(monkeypatch):
+    """Turn on withholding only the tone, which is off by default."""
+    monkeypatch.setattr("mic_eq.analysis.voice_setup.PARTIAL_RESULTS", True)
+
+
+@pytest.fixture
 def isolated_main_window(qapp, monkeypatch):
     """A real main window with default settings, no presets and no devices."""
     from mic_eq.config import AppConfig

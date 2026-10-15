@@ -15,7 +15,10 @@ from PySide6.QtCore import QElapsedTimer, QEventLoop, QThread, QTimer
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QDialog, QMessageBox
 
-from mic_eq.analysis.voice_setup import analyze_voice_setup
+from mic_eq.analysis.voice_setup import (
+    analyze_voice_setup,
+    validate_voice_setup_verification,
+)
 from mic_eq.config import EQSettings, build_eq_candidate_settings, load_preset
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
@@ -705,7 +708,10 @@ def test_voice_setup_tone_and_lufs_survive_apply_save_and_restart(real_main_wind
     )
     assert analysis["eq_settings"] is not None
     result = _voice_setup_result(window, dialog, analysis=analysis)
-    expected_gains = list(result["eq_settings"]["band_gains"])
+    # These captures make Auto-EQ abstain, so the EQ that must survive is the user's own.
+    assert result["eq_settings"]["apply_recommended"] is False
+    expected_gains = [1.5] * 10
+    _set_live_eq(window, correction=expected_gains)
     _apply_complete_candidate(window, dialog, result)
 
     candidate_target = result["_candidate"]["target"]
@@ -1208,6 +1214,104 @@ def test_the_tone_line_says_when_apply_switches_the_eq_on(
         assert dialog.eq_label.text() == (
             "Tone: max correction 1.0 dB\nBefore: max correction 0.0 dB" + note
         )
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def _abstained_result(window: MainWindow, dialog: VoiceSetupDialog) -> dict[str, Any]:
+    """A result whose Auto-EQ abstained: flat gains, other stages still suggested."""
+    result = _voice_setup_result(window, dialog)
+    result["eq_settings"] = {
+        **_legacy_eq(window, [0.0] * 10),
+        "apply_recommended": False,
+        "recommendation_status": "abstain",
+    }
+    result["diagnostics"].update(
+        apply_recommended=False,
+        uncertainty_reasons=["Auto-EQ abstained from this capture"],
+        vad_available=False,
+    )
+    result["gate_settings"]["threshold_db"] = -41.0
+    return result
+
+
+def test_applying_after_an_abstention_keeps_the_users_eq_and_still_verifies(
+    real_main_window, monkeypatch
+) -> None:
+    window = real_main_window
+    _set_live_eq(window, tone=[3.0] + [0.0] * 9, correction=[4.0] * 10)
+    eq_before = window._get_current_preset().eq.to_dict()
+    dialog, speech = _review_dialog(window)
+    noise = dialog.noise_audio
+    assert noise is not None
+    result = _abstained_result(window, dialog)
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
+    try:
+        _apply_complete_candidate(window, dialog, result)
+
+        assert window._get_current_preset().eq.to_dict() == eq_before
+        assert window.gate_state.get_settings()["threshold_db"] == -41.0
+        assert dialog.setup_result is not None
+        outcome = validate_voice_setup_verification(
+            noise,
+            speech,
+            speech,
+            int(window.processor.sample_rate()),
+            dialog.setup_result,
+            "broadcast",
+        )
+        assert outcome["decision"] != "rollback"
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_the_comparison_and_tone_line_do_not_switch_the_eq_on_after_an_abstention(
+    real_main_window, monkeypatch
+) -> None:
+    window = real_main_window
+    _set_live_eq(window, tone=[3.0] + [0.0] * 9, enabled=False)
+    eq_before = window._get_current_preset().eq.to_dict()
+    dialog, _speech = _review_dialog(window)
+    shown: dict[str, Any] = {}
+    _comparison_dialog(monkeypatch, shown)
+    try:
+        dialog._on_analysis_complete(_abstained_result(window, dialog))
+        dialog._compare_recording()
+
+        assert shown["proposed_settings"] == eq_before
+        assert "switch it on" not in dialog.eq_label.text()
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_a_result_without_an_eq_says_nothing_still_applies(
+    real_main_window, monkeypatch
+) -> None:
+    window = real_main_window
+    dialog, _speech = _review_dialog(window)
+    result = _voice_setup_result(window, dialog)
+    result["eq_settings"] = None
+    result["eq_error"] = "Auto-EQ validation failed"
+    messages: list[str] = []
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog.QMessageBox.critical",
+        lambda _parent, _title, message: messages.append(message),
+    )
+    before = window._get_current_preset().to_dict()
+    try:
+        dialog._on_analysis_complete(result)
+        dialog._apply_setup()
+
+        assert dialog.phase_label.text() == "Recommendations incomplete"
+        assert "still applies" not in dialog.eq_label.text()
+        assert "Nothing was changed" in messages[-1]
+        assert window._get_current_preset().to_dict() == before
     finally:
         dialog.reject()
         dialog.deleteLater()

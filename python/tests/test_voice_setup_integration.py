@@ -1402,6 +1402,93 @@ def test_a_verified_setup_lists_the_tone_only_when_it_was_changed(
         dialog.deleteLater()
 
 
+@pytest.mark.usefixtures("partial_results")
+@pytest.mark.parametrize(
+    ("recommended", "sentence"),
+    [(True, "Tone: kept as it is. Everything else below still applies."), (False, "Tone: kept as it is")],
+    ids=["recommended", "suggestions-only"],
+)
+def test_a_withheld_tone_says_the_rest_applies_only_when_the_rest_is_recommended(
+    real_main_window, recommended, sentence
+) -> None:
+    window = real_main_window
+    dialog, _speech = _review_dialog(window)
+    result = _withheld_tone_result(window, dialog)
+    result["diagnostics"]["apply_recommended"] = recommended
+    try:
+        dialog._on_analysis_complete(result)
+
+        assert dialog.eq_label.text() == sentence
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_a_withheld_tone_is_not_offered_as_a_tuned_preset(real_main_window, monkeypatch) -> None:
+    window = real_main_window
+    offered: list[dict[str, Any]] = []
+    monkeypatch.setattr(window, "_prompt_save_current_preset", lambda **kwargs: offered.append(kwargs))
+
+    window.on_voice_setup_applied("broadcast")
+    window.on_voice_setup_applied("broadcast", tone_withheld=True)
+
+    fitted, withheld = offered
+    assert fitted["preset_name"] == "Voice Setup Broadcast"
+    assert "tuned for the Broadcast target" in fitted["description"]
+    assert withheld["preset_name"] == "Voice Setup"
+    assert "Broadcast" not in withheld["question"] + withheld["description"]
+    assert "tuned" not in withheld["description"]
+    assert "EQ was kept" in withheld["description"]
+
+
+@pytest.mark.parametrize("withheld", [True, False], ids=["withheld", "fitted"])
+def test_the_dialog_tells_the_window_whether_the_tone_was_withheld(
+    real_main_window, monkeypatch, withheld
+) -> None:
+    from mic_eq.ui import main_window
+
+    window = real_main_window
+    seen: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(window, "on_voice_setup_applied", lambda *args: seen.append(args))
+    monkeypatch.setattr(window, "_prompt_save_current_preset", lambda **_kwargs: None)
+
+    class _Signal:
+        def connect(self, slot):
+            self.slot = slot
+
+    class _Dialog:
+        def __init__(self, _parent):
+            self.setup_applied = _Signal()
+            self.setup_result = {"diagnostics": {"tone_withheld": {"reason_code": "tone_withheld"} if withheld else None}}
+
+        def exec(self):
+            self.setup_applied.slot("broadcast")
+
+    monkeypatch.setattr(main_window, "VoiceSetupDialog", _Dialog)
+
+    assert window._on_auto_voice_setup_clicked() is True
+    assert seen == [("broadcast", withheld)]
+
+
+@pytest.mark.usefixtures("partial_results")
+def test_the_verified_message_does_not_claim_the_tone_changed(real_main_window, monkeypatch) -> None:
+    window = real_main_window
+    dialog, _speech = _review_dialog(window)
+    shown: list[str] = []
+    monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.QMessageBox.information", lambda *a, **_k: shown.append(str(a[-1])))
+    monkeypatch.setattr(window, "_prompt_save_current_preset", lambda **_kwargs: None)
+    try:
+        _apply_complete_candidate(window, dialog, _withheld_tone_result(window, dialog))
+        assert dialog.setup_result is not None
+        dialog.setup_result["verification"] = {"spectral_target_error_before_db": 0.8}
+        dialog._finalize_verified_setup()
+
+        assert "Tone: kept as it is." in shown[-1]
+        assert "from the preset before" not in shown[-1]
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
 def test_a_verification_reduction_refreshes_the_compressor_line_and_keeps_its_before(
     real_main_window, monkeypatch
 ) -> None:

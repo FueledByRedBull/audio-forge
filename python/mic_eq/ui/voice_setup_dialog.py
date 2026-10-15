@@ -1785,7 +1785,7 @@ class VoiceSetupDialog(QDialog):
                 if eq_settings.get("apply_recommended", True)
                 else "kept as it is"
             )
-            if withheld:
+            if withheld and diagnostics.get("apply_recommended", False):
                 tone_text += ". Everything else below still applies."
             before_eq = self._review_current.get("eq_state", {})
             if (
@@ -2634,9 +2634,12 @@ class VoiceSetupDialog(QDialog):
         )
         self._start_verification_worker(self._verification_audio)
 
+    def _tone_withheld(self) -> bool:
+        return bool(((self.setup_result or {}).get("diagnostics") or {}).get("tone_withheld"))
+
     def _verified_stages(self) -> tuple[str, ...]:
         """The stages the second recording checked; a withheld tone left the EQ as it was."""
-        withheld = bool(((self.setup_result or {}).get("diagnostics") or {}).get("tone_withheld"))
+        withheld = self._tone_withheld()
         return tuple(stage for stage in _VERIFIED_STAGES if not (withheld and stage == "eq"))
 
     def _finalize_verified_setup(self) -> None:
@@ -2678,7 +2681,7 @@ class VoiceSetupDialog(QDialog):
             candidate["verified_stages"] = list(stages)
         if hasattr(parent, "status_message"):
             parent.status_message.showMessage("Verified voice setup applied", 5000)
-        metrics_text = verification_summary(result)
+        metrics_text = verification_summary(result, tone_withheld=self._tone_withheld())
         mode_note = self._mode_switch_note()
         QMessageBox.information(
             self,
@@ -2740,8 +2743,8 @@ class VoiceSetupDialog(QDialog):
         reason = " ".join(plain_reasons(result.get("reasons") or ()))
         advice = result.get("suppressor_dulling_advice")
         advice_suffix = f" {plain_advice(advice)}" if advice else ""
-        metrics_text = verification_summary(result)
-        parent = _find_eq_state_owner(self.parent())
+        metrics_text = verification_summary(result, tone_withheld=self._tone_withheld())
+        parent =_find_eq_state_owner(self.parent())
         if parent is None:
             self._on_verification_failed(plain_error("Could not find audio processor"))
             return

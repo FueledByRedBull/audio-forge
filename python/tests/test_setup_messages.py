@@ -250,3 +250,18 @@ def test_a_tone_step_abstention_says_what_to_do(reason):
     sentence = plain_reason(reason)
 
     assert sentence.endswith(".") and ("Record again" in sentence or "Move closer" in sentence)
+
+
+def test_the_verification_summary_says_the_tone_was_kept_when_it_was_withheld():
+    from mic_eq.ui.setup_messages import verification_summary
+
+    result = {
+        "spectral_target_error_before_db": 0.8,
+        "spectral_target_error_after_db": 0.9,
+        "compressor_gain_reduction_p95_db": 3.0,
+    }
+
+    assert verification_summary(result).startswith("Tone: 0.8 dB from the preset before, 0.9 dB after. ")
+    kept = verification_summary(result, tone_withheld=True)
+    assert kept.startswith("Tone: kept as it is. The compressor evened out your voice by 3.0 dB. ")
+    assert "from the preset" not in kept

@@ -1,8 +1,9 @@
 AudioForge 1.17.0 removes the classic window view. If the main window cannot
 draw, AudioForge now restarts itself once with software rendering, and otherwise
 shows an error screen with Export diagnostics. The status bar now matches what
-the audio is doing, keyboard and screen reader use is much better, starting audio no longer counts dropouts that did not happen, and undo
-reaches past a device change.
+the audio is doing, keyboard and screen reader support is improved, starting
+audio no longer counts dropouts that did not happen, and undo reaches past a
+device change.
 
 ## Downloads
 
@@ -115,8 +116,8 @@ their settings, and settings from earlier versions load as before.
 The evidence archive records the exact candidate revision, hashes and automated
 qualification results, including portable startup and MSI lifecycle checks.
 
-The software restart was tried once on a packaged build with the Direct3D
-adapter forced to fail: the app quit, came back with software rendering and drew
+The software restart was tried once on a packaged development build (before
+the final fixes in this release) with the Direct3D adapter forced to fail: the app quit, came back with software rendering and drew
 the window. Started normally, it was left alone. The error screen and the
 software-rendering path are covered by automated tests that run offscreen; they
 show that the scene works under software rendering, not that every failing
@@ -124,14 +125,21 @@ driver is detected. A machine with no usable graphics adapter was not tested.
 
 The status bar, keyboard, screen reader and undo changes have automated tests
 that use offscreen rendering and Qt's accessibility interfaces. A real screen
-reader and voice control were not tested. The limiter and latency changes have Rust tests and source
-scans. A packaged build ran for an hour on one real USB microphone with the
-output muted on a silent endpoint: no dropouts, restarts or output recoveries,
-and memory stayed flat after the first five minutes. That is one machine and one
-route, with factory settings.
+reader and voice control were not tested. The limiter and latency changes have
+Rust tests and source scans.
+
+A packaged development build from before the last three fixes in this release
+(the reported latency, the status bar and the gate chatter label) ran for an
+hour on one real USB microphone, with factory settings and the output muted on
+a silent endpoint. It had no dropouts, restarts or output recoveries, and its
+memory stayed between 800 and 817 MB after the first five minutes. That run is
+where the gate chatter label was found. It is one machine and one route, and
+the release build itself was not run on audio hardware.
+
 The start-up change adds a few atomic loads and one store to the output
-callback and is covered by the allocation and realtime source-scan tests; no new
-timing measurement is claimed.
+callback, and the limiter change adds a flag check and a settings read to each
+processing block. Both are covered by the allocation and realtime source-scan
+tests; no new timing measurement is claimed.
 
 The v1.15.0 audio timing exception remains: one component-event statistic was
 1.2151 ms against a 0.5 ms limit; every complete processing kernel in that study

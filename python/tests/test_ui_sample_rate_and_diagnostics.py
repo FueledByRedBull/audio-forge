@@ -970,6 +970,42 @@ def test_a_restart_long_after_processing_began_gets_the_startup_grace_again(wind
     assert chip.state != "warn"
 
 
+def test_gate_chatter_alone_is_the_gate_not_an_engine_fault(window, monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
+    _recovery_setup(window)
+    chip = window.shell_texts["dropped_label"]
+    summary = window.shell_texts["health_summary_label"]
+    _labels(window, diagnostics=_healthy_runtime_diagnostics())
+    assert chip.state == "ok"
+
+    # Everything is zero except a gate-chatter counter that keeps rising.
+    for events in (1, 2, 3):
+        clock[0] += 1
+        _labels(window, diagnostics=_healthy_runtime_diagnostics(gate_chatter_event_count=events))
+        assert (chip.text, chip.state) == ("Drops: nothing dropped, but the gate is chattering", "warn")
+        assert "fault" not in chip.text
+    assert window.shell_texts["gate_health_label"].text.startswith("Gate: CHATTERING")
+    assert summary.state == "warn"
+
+
+def test_a_real_error_counter_still_reads_as_an_engine_fault(window, monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
+    _recovery_setup(window)
+    chip = window.shell_texts["dropped_label"]
+    _labels(window, diagnostics=_healthy_runtime_diagnostics())
+
+    clock[0] += 1
+    _labels(window, diagnostics=_healthy_runtime_diagnostics(
+        gate_chatter_event_count=1, input_callback_error_count=1,
+    ))
+
+    assert (chip.text, chip.state) == (
+        "Drops: nothing dropped, but the audio engine reported a fault", "warn",
+    )
+
+
 def test_the_drops_row_never_claims_attention_for_zero_drops(window, monkeypatch):
     from mic_eq.ui.health import advice_for
 

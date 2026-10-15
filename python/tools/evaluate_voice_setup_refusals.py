@@ -691,6 +691,8 @@ def evaluate_user(job: tuple[str, str, int, str], *, development: bool) -> dict[
     ended = flow is not None and flow["decision"] in ("rollback", "gave_up")
     objects: dict[str, dict[str, Any]] = {}
     metrics: dict[str, Any] = {"current": measure_settings(current, ctx, ("whole", "last10") if ended else ("whole",))}
+    if "error" in metrics["current"]:  # every verdict is read against this render: a failure here is the environment's
+        raise RuntimeError(f"the current settings do not render: {metrics['current']['error']}")
 
     def add(name: str, settings: dict[str, Any], sections: tuple[str, ...], windows: tuple[str, ...] = ("whole",)) -> None:
         objects[name] = {"vacuous": is_vacuous(settings, current, sections),

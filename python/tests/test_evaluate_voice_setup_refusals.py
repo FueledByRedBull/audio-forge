@@ -33,6 +33,16 @@ def fast_bootstrap(monkeypatch):
     monkeypatch.setattr(gate_corpus, "BOOTSTRAP", 200)
 
 
+@pytest.fixture
+def no_vad_model(monkeypatch, tmp_path):
+    """Hide the Silero model as CI's Python jobs lack it: the native lookup reads VAD_MODEL_PATH and ./models."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    monkeypatch.chdir(run_dir)
+    monkeypatch.setenv("VAD_MODEL_PATH", str(tmp_path / "missing" / "silero_vad.onnx"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+
+
 def _with(**changes: Any) -> dict[str, Any]:
     return {**OK, **changes}
 
@@ -823,7 +833,7 @@ def test_a_user_whose_auto_eq_failed_before_validation_is_an_analysis_failure(mo
 # 11. The native renders of the current settings and the probes, on a short synthetic signal
 
 
-def test_the_current_settings_and_every_probe_render_natively_and_the_known_good_ones_change_nothing():
+def test_the_current_settings_and_every_probe_render_natively_and_the_known_good_ones_change_nothing(no_vad_model):
     from mic_eq.ui.calibration_support import filtered_capture_for_analysis
 
     rate = voice_setup_eval.SAMPLE_RATE
@@ -833,7 +843,7 @@ def test_the_current_settings_and_every_probe_render_natively_and_the_known_good
     ctx = {"raw": raw, "labels": case["labels"], "clean": filtered_capture_for_analysis(case["clean"], rate).astype(np.float64),
            "noisy": filtered_capture_for_analysis(raw, rate).astype(np.float64),
            "noise": filtered_capture_for_analysis((0.01 * rng.standard_normal(2 * rate)).astype(np.float32), rate).astype(np.float64)}
-    current = ev.current_settings(True)
+    current = ev.current_settings(False)  # VAD explicitly unavailable: no model is needed
     base = ev.measure_settings(current, ctx, ("whole", "last10"))
     assert set(base) == {"whole", "last10"} and base["whole"]["clipped"] is False
     judged = {}
@@ -847,7 +857,7 @@ def test_the_current_settings_and_every_probe_render_natively_and_the_known_good
     assert "overload" in judged["makeup_plus_24"]["failed"]
 
 
-def test_the_taps_keep_a_refused_proposal_on_the_real_auto_eq():
+def test_the_taps_keep_a_refused_proposal_on_the_real_auto_eq(no_vad_model):
     from mic_eq.analysis.auto_eq import analyze_auto_eq
 
     rate = voice_setup_eval.SAMPLE_RATE
@@ -860,7 +870,7 @@ def test_the_taps_keep_a_refused_proposal_on_the_real_auto_eq():
     assert len(log["tone"]) == 1 and len(log["tone"][0]) == len(eq["band_gains"]) == 10
 
 
-def test_the_verification_flow_runs_against_the_real_validator():
+def test_the_verification_flow_runs_against_the_real_validator(no_vad_model):
     from mic_eq.config import EQ_FREQUENCIES
     from mic_eq.ui.calibration_support import filtered_capture_for_analysis
 
@@ -869,7 +879,7 @@ def test_the_verification_flow_runs_against_the_real_validator():
     speech = np.concatenate([np.concatenate([np.zeros(rate // 2), 0.1 * rng.standard_normal(rate)]) for _ in range(3)])
     noise = (0.01 * rng.standard_normal(2 * rate)).astype(np.float32)
     take = (speech + 0.01 * rng.standard_normal(speech.size)).astype(np.float32)
-    settings = ev.current_settings(True)
+    settings = ev.current_settings(False)
     result = {**{name: settings[name] for name in ev.SECTIONS}, "diagnostics": settings["diagnostics"],
               "eq_settings": {"band_freqs": list(EQ_FREQUENCIES), "band_gains": [0.0] * 10, "band_qs": [1.41] * 10}}
     filtered = [filtered_capture_for_analysis(audio, rate) for audio in (noise, take)]
@@ -888,3 +898,17 @@ def test_a_development_user_carries_the_probes_and_the_cross_check_and_gives_cou
     assert _walk_floats(result) == [] and result["development_users"] == 1
     assert result["reachability"]["B5"]["fired"] == 1 and result["tone_cross_check"] == {"users": 1, "within_half_db": 1}
     assert result["probes"]["current_again"]["identical_to_current"] == 1
+
+
+def test_a_missing_model_or_a_current_render_that_fails_stops_the_run_instead_of_filling_rows_with_errors(
+        monkeypatch, tmp_path, no_vad_model):
+    with pytest.raises(FileNotFoundError, match="silero_vad.onnx"):
+        ev.check_assets()
+    job = _stub_worker(monkeypatch, tmp_path, b1=False)
+
+    def fail(*_args):
+        raise RuntimeError("native simulator failed: full_chain VAD initialization failed: VAD model not found")
+
+    monkeypatch.setattr(loudness, "_render", fail)
+    with pytest.raises(RuntimeError, match="current settings do not render.*VAD model not found"):
+        ev.evaluate_user(job, development=False)

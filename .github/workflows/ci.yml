@@ -78,7 +78,10 @@ jobs:
         run: |
           python -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
           if ($LASTEXITCODE -ne 0) { throw "Runtime dependency audit failed with exit code $LASTEXITCODE." }
-          python -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip
+          # semgrep pins mcp==1.29.0 exactly, so the dev lock cannot move off
+          # CVE-2026-59951. Only semgrep's MCP server uses mcp and nothing here
+          # runs it. Remove the ignore when semgrep allows mcp>=1.30.0.
+          python -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951
           if ($LASTEXITCODE -ne 0) { throw "Development dependency audit failed with exit code $LASTEXITCODE." }
       - name: Ruff
         run: python -m ruff check python/mic_eq python/tests python/tools

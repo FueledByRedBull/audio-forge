@@ -156,7 +156,7 @@ stress test, then:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
-.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951
 .\.venv\Scripts\python.exe python\tools\run_semgrep.py --sarif semgrep-results.sarif
 .\.venv\Scripts\python.exe python\tools\check_versions.py
 .\.venv\Scripts\python.exe python\tools\check_workflows.py
@@ -178,8 +178,10 @@ cargo audit
   audit, so a new notice shows up on a pull request, not at release time.
 - **Python:** install `requirements/dev.txt` with `--require-hashes`; never
   release from an environment resolved from open `pyproject.toml` ranges.
-  Neither the runtime nor the development audit has ignores; Semgrep 1.179.0
-  allows a patched PyJWT, so the former PyJWT exception is gone.
+  The runtime audit has no ignores. The development audit ignores only
+  CVE-2026-59951: Semgrep pins `mcp==1.29.0` and only its MCP server uses it.
+  Remove the ignore when Semgrep allows `mcp>=1.30.0`; `check_workflows.py`
+  rejects it once the lock stops pinning 1.29.0.
 - **Dependabot:** GitHub Actions version updates stay on, weekly and grouped
   into one pull request, to keep the pinned actions current. Python and Cargo
   version updates are off (`open-pull-requests-limit: 0`); security updates stay

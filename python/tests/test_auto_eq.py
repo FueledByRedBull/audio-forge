@@ -1520,6 +1520,85 @@ def test_headroom_that_the_dialog_explains_is_not_a_refusal(status):
     assert validation.details["headroom_safe"] is False
 
 
+def _voice_spectrum():
+    """A capture that passes validation on its own."""
+    sample_rate = 48_000
+    time = np.arange(sample_rate * 3) / sample_rate
+    audio = np.asarray(
+        sum(0.1 / h * np.sin(2 * np.pi * 150 * h * time) for h in range(1, 26)), dtype=np.float32
+    )
+    spectrum = analyze_voice_spectrum(audio, sample_rate)
+    return spectrum.median_spectrum_db, spectrum.freqs
+
+
+@pytest.mark.parametrize(
+    ("gains", "headroom", "tone_only"),
+    [
+        ([12.0] * 6 + [0.0] * 4, {"safe": True}, True),  # clipped_gains >= 6
+        ([10.8] * 10, {"safe": True}, True),  # gain_rms > 10 dB
+        ([12.0] * 5 + [0.0] * 5, {"safe": True}, True),  # two soft tone failures together
+        ([12.0] * 6 + [0.0] * 4, {"safe": False, "authoritative": True, "status": "risk"}, False),
+        ([0.0] * 10, {"safe": False, "authoritative": True, "status": "risk"}, False),
+    ],
+    ids=["clipped", "rms", "soft-pair", "tone-and-headroom", "headroom-only"],
+)
+def test_validation_says_whether_only_the_tone_fit_failed(gains, headroom, tone_only):
+    spectrum_db, freqs = _voice_spectrum()
+
+    validation = validate_analysis(
+        {"band_gains": gains, "headroom_validation": headroom}, spectrum_db, freqs
+    )
+
+    assert not validation.passed
+    assert validation.details["tone_only"] is tone_only
+
+
+def test_an_unclear_capture_is_not_a_tone_only_failure():
+    freqs = np.linspace(0.0, 24_000.0, 4097)
+
+    validation = validate_analysis(
+        {"band_gains": [12.0] * 6 + [0.0] * 4}, np.zeros_like(freqs), freqs
+    )
+
+    assert not validation.passed
+    assert validation.details["tone_only"] is False
+
+
+@pytest.mark.parametrize(("gains", "tone_only"), [([12.0] * 6 + [0.0] * 4, True), ([0.0] * 10, False)])
+def test_the_pipeline_raises_a_value_error_that_carries_the_classification(
+    monkeypatch, gains, tone_only
+):
+    from mic_eq.analysis.auto_eq_parts import pipeline
+    from mic_eq.analysis.failure_detection import AnalysisValidationError
+
+    sample_rate = 48_000
+    time = np.arange(sample_rate * 3) / sample_rate
+    audio = np.asarray(
+        sum(0.1 / h * np.sin(2 * np.pi * 150 * h * time) for h in range(1, 26)), dtype=np.float32
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "apply_headroom_validation",
+        lambda _audio, _rate, eq, **_kwargs: {
+            **eq,
+            "band_gains": gains,
+            "headroom_validation": {"safe": True} if tone_only else {"safe": False, "status": "risk"},
+        },
+    )
+
+    with pytest.raises(ValueError, match="unclear|microphone level") as raised:
+        analyze_auto_eq(
+            audio, sample_rate, "flat",
+            chain_settings={"compressor_enabled": False, "limiter_enabled": False},
+        )
+
+    assert isinstance(raised.value, AnalysisValidationError)
+    assert raised.value.tone_only is tone_only
+    assert raised.value.failures == (
+        ["clipped_gains (6 >= 6)"] if tone_only else ["headroom risk after downstream simulation"]
+    )
+
+
 def test_unavailable_headroom_is_unknown_not_a_capture_quality_failure():
     sample_rate = 48_000
     time = np.arange(sample_rate * 3) / sample_rate

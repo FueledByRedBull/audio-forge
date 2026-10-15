@@ -1087,6 +1087,7 @@
   },
   "rule_sha256": "12c1a3d864dbc9ef9d0a9aaa991e4e391c9f7b8961eff4de47310a12142aa1dd",
   "schema_version": 2,
+  "source_revision": "e7b4c0dc8aa36bd14894b0dbb8b89653322b0915",
   "source_sha256": {
     "python/mic_eq/analysis/auto_eq.py": "edccec8f7a204d2a021a69d79c6b9443781f6b3d9de569fdd2bdffcfab553de7",
     "python/mic_eq/analysis/auto_eq_parts/headroom.py": "94b30fbe2c104fa53d335ee08238946365804bbad22b528cedd5754ffe58afa9",

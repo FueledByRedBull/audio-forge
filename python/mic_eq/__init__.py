@@ -49,7 +49,7 @@ def _configure_ort_dll_directory() -> None:
     _ORT_DLL_DIRECTORY_HANDLES.append(handle)
 
 
-__version__ = "1.16.0"
+__version__ = "1.17.0"
 
 try:
     _configure_ort_dll_directory()

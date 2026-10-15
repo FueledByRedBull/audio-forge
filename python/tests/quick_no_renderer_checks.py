@@ -12,15 +12,18 @@ The process spawn is recorded, not made.
 from __future__ import annotations
 
 import pytest
+from PySide6.QtCore import QTimer
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QPlainTextEdit, QSystemTrayIcon
 from PySide6.QtQuickWidgets import QQuickWidget
 
 from mic_eq.ui import desktop_integration, quick_shell
-from mic_eq.ui.desktop_integration import RENDERER_RELAUNCH_ENV
+from mic_eq.ui.desktop_integration import RENDERER_RELAUNCH_ENV, SingleInstanceCoordinator
 from mic_eq.ui.main_window import MainWindow
 from test_quick_shell import _load_config_without_devices
 
 SETTLE_MS = 500  # several checks at the interval below
+SURVIVED = 7  # the exit code of an event loop that was still running after SETTLE_MS
 
 
 @pytest.fixture
@@ -140,3 +143,108 @@ def test_the_smoke_test_never_relaunches(spawned, monkeypatch) -> None:
     QTest.qWait(SETTLE_MS)
 
     assert spawned == [] and window._interface_snapshot()["view"] == "quick"
+
+
+def _run_until_settled(qapp, window: MainWindow) -> tuple[int, dict]:
+    """Run the real event loop; a copy that is still up after SETTLE_MS exits with SURVIVED."""
+
+    state: dict = {}
+
+    def settled() -> None:
+        # Read here: aboutToQuit, emitted as the loop ends, marks every window as quitting.
+        state.update(
+            visible=window.isVisible(), quitting=window._quitting,
+            snapshot=window._interface_snapshot(),
+        )
+        qapp.exit(SURVIVED)
+
+    watchdog = QTimer()
+    watchdog.setSingleShot(True)
+    watchdog.timeout.connect(settled)
+    watchdog.start(SETTLE_MS)
+    try:
+        return qapp.exec(), state
+    finally:
+        watchdog.stop()
+
+
+def _record_save_and_spawn(window: MainWindow, monkeypatch, *, spawn_error: Exception | None) -> list[str]:
+    events: list[str] = []
+    monkeypatch.setattr(window, "_save_ui_state", lambda: events.append("closeEvent saved") or True)
+
+    def spawn(_command, env):
+        events.append("spawn")
+        if spawn_error is not None:
+            raise spawn_error
+
+    monkeypatch.setattr(desktop_integration.subprocess, "Popen", spawn)
+    return events
+
+
+def _guard(window: MainWindow, tmp_path) -> tuple[SingleInstanceCoordinator, dict]:
+    names = {"server_name": f"AudioForge.test.renderer.{id(window)}", "lock_path": tmp_path / "instance.lock"}
+    guard = SingleInstanceCoordinator(**names)
+    assert guard.acquire() == SingleInstanceCoordinator.ACQUIRED
+    setattr(window, "single_instance", guard)
+    return guard, names
+
+
+def _visible_tray(window: MainWindow, *, close_to_tray: bool) -> QSystemTrayIcon:
+    """A shown tray icon; with close_to_tray a plain close() only hides the window to it."""
+
+    tray = QSystemTrayIcon(window)
+    window._tray_icon = tray
+    tray.show()
+    assert window._close_to_tray_action is not None
+    window._close_to_tray_action.setChecked(close_to_tray)
+    return tray
+
+
+@pytest.mark.parametrize("close_to_tray", [False, True])
+def test_the_copy_quits_and_spawns_once_after_the_window_closed(
+    spawned, qapp, monkeypatch, tmp_path, close_to_tray
+) -> None:
+    window = _window()
+    events = _record_save_and_spawn(window, monkeypatch, spawn_error=None)
+    _visible_tray(window, close_to_tray=close_to_tray)
+    _, names = _guard(window, tmp_path)
+    window.show()
+
+    code, _state = _run_until_settled(qapp, window)
+
+    assert code == 0 and events == ["closeEvent saved", "spawn"]
+    successor = SingleInstanceCoordinator(**names)
+    assert successor.acquire() == SingleInstanceCoordinator.ACQUIRED  # the new copy can take the guard
+    successor.close()
+
+
+@pytest.mark.parametrize(
+    ("close_to_tray", "spawn_error"),
+    [(False, OSError("blocked")), (True, OSError("blocked")), (True, ValueError("embedded null"))],
+    ids=["os-error", "os-error-in-tray-mode", "other-error-in-tray-mode"],
+)
+def test_a_spawn_that_fails_keeps_the_app_and_its_guard_and_shows_the_error_screen(
+    spawned, qapp, monkeypatch, tmp_path, close_to_tray, spawn_error
+) -> None:
+    window = _window()
+    events = _record_save_and_spawn(window, monkeypatch, spawn_error=spawn_error)
+    guard, names = _guard(window, tmp_path)
+    tray = _visible_tray(window, close_to_tray=close_to_tray)
+    window.config.mute_hotkey = "Ctrl+Alt+M"
+    registered: list[str] = []
+    monkeypatch.setattr(window, "_unregister_mute_hotkey", lambda: None)
+    monkeypatch.setattr(window, "_register_mute_hotkey", lambda shortcut: registered.append(shortcut) or True)
+    window.show()
+
+    code, state = _run_until_settled(qapp, window)
+
+    assert code == SURVIVED  # nothing quit the app
+    assert events == ["closeEvent saved", "spawn"]
+    assert state["visible"] and not state["quitting"]
+    assert state["snapshot"]["view"] == "error" and state["snapshot"]["classic_reason"] == "no_renderer"
+    assert tray.isVisible() and registered == ["Ctrl+Alt+M"]
+    shown = window.centralWidget().findChild(QPlainTextEdit)
+    assert shown is not None and "could not restart itself with software rendering" in shown.toPlainText()
+    rival = SingleInstanceCoordinator(**names)
+    assert rival.acquire(activate_existing=False) == SingleInstanceCoordinator.ALREADY_RUNNING
+    guard.close()

@@ -523,13 +523,30 @@ def _renderer_missing(window) -> None:
     _LOG.error("Qt Quick view has no renderer (%s)", api)
     relaunched = os.environ.get(RENDERER_RELAUNCH_ENV)
     # Live audio stays; a login-started copy has it running while the window is hidden.
+    spawn_failed = False
     if api != "software" and not relaunched and not window.processor.is_running():
-        # The new copy starts only once this one is gone: closing can be cancelled.
-        window._quit_from_tray()
-        if window._quitting:
-            relaunch_with_software_rendering(getattr(window, "single_instance", None))
-            bridge.release()
-            return
-    reason = "The graphics renderer did not start" + (", even with software rendering" if relaunched else "")
+        # Order: close first (closeEvent saves, unregisters the hotkey, stops audio, and can be
+        # cancelled), then spawn (it frees the single-instance guard so the child can take it,
+        # and re-takes it on failure), and quit only if the spawn worked. All of it runs in one
+        # event-loop turn, so a failed spawn can show the window again before Qt acts on the
+        # last window having closed; the app then stays up with the error screen.
+        window._quitting = True
+        if window.close():
+            if relaunch_with_software_rendering(getattr(window, "single_instance", None)):
+                QCoreApplication.quit()
+                bridge.release()
+                return
+            spawn_failed = True
+            window._quitting = False
+            if window._tray_icon is not None:
+                window._tray_icon.show()
+            if window.config.mute_hotkey:
+                window._register_mute_hotkey(window.config.mute_hotkey)
+            window.show()
+    reason = "The graphics renderer did not start"
+    if relaunched:
+        reason += ", even with software rendering"
+    elif spawn_failed:
+        reason += ", and AudioForge could not restart itself with software rendering"
     show_quick_error(window, "no_renderer", reason, api)
     bridge.release()

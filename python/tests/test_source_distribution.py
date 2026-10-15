@@ -1,5 +1,6 @@
 """Offline checks for corresponding-source manifest hydration."""
 
+import functools
 import hashlib
 import io
 import json
@@ -23,6 +24,12 @@ from source_distribution import (
     download_sources,
     verify_sources,
 )
+
+
+@pytest.fixture(autouse=True)
+def parsed_cargo_locks(monkeypatch):
+    """Validating a manifest re-reads a Cargo.lock for every crate it lists; read each once."""
+    monkeypatch.setattr(source_tool, "_cargo_lock_hashes", functools.cache(source_tool._cargo_lock_hashes))
 
 
 def _entry(payload: bytes = b"source archive") -> dict[str, str]:

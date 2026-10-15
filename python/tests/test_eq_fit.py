@@ -365,7 +365,12 @@ def test_refinement_of_nonlinear_residual_matches_projected_gradient_optimum():
     x = np.zeros(n)
     for _ in range(20000):  # reference: projected gradient descent with the exact projection
         r = (x - target) + cubic * x**3
-        x = project_gains(x - 0.02 * 2.0 * r * (1.0 + 3.0 * cubic * x**2), lower, upper, limits).x
+        step = project_gains(x - 0.02 * 2.0 * r * (1.0 + 3.0 * cubic * x**2), lower, upper, limits).x
+        converged = np.max(np.abs(step - x)) < 1e-13
+        x = step
+        if converged:
+            break
+
     def cost(g):
         return float(np.sum(((g - target) + cubic * g**3) ** 2))
 

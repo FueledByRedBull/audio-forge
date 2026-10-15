@@ -37,6 +37,33 @@ def fast_bootstrap(monkeypatch):
     monkeypatch.setattr(gate_corpus, "BOOTSTRAP", 200)
 
 
+@pytest.fixture(scope="module")
+def prefiltered_captures():
+    """What the fixed pre-filter made of each capture, kept for the module.
+
+    The simulated users share their captures, and filtering one is a native render that
+    takes about 0.4 s. The cache holds results by content, so a capture is filtered natively
+    the first time any test needs it.
+    """
+    return {}
+
+
+@pytest.fixture(autouse=True)
+def cached_prefilter(monkeypatch, prefiltered_captures):
+    from mic_eq.ui import calibration_support
+
+    prefilter = calibration_support.filtered_capture_for_analysis
+
+    def cached(audio_data, sample_rate):
+        audio = np.ascontiguousarray(np.asarray(audio_data, dtype=np.float32).reshape(-1))
+        key = (hashlib.sha256(audio.tobytes()).digest(), audio.size, sample_rate)
+        if key not in prefiltered_captures:
+            prefiltered_captures[key] = prefilter(audio, sample_rate)
+        return prefiltered_captures[key].copy()
+
+    monkeypatch.setattr(calibration_support, "filtered_capture_for_analysis", cached)
+
+
 @pytest.fixture
 def no_vad_model(monkeypatch, tmp_path):
     """Hide the Silero model as CI's Python jobs lack it: the native lookup reads VAD_MODEL_PATH and ./models."""

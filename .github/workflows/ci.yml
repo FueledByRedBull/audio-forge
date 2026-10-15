@@ -118,7 +118,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [voice-setup, voice-flow, auto-eq, quick-ui, tooling, rest]
+        shard: [voice-setup, voice-capture, voice-flow, auto-eq, refusals, quick-ui, evaluation, tooling, rest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

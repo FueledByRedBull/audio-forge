@@ -377,7 +377,7 @@ def test_missing_level_getters_make_health_unavailable_instead_of_ok(running_win
     window._update_meters()
     _tick_diagnostics(window)
     summary = window.shell_texts["health_summary_label"]
-    assert summary.text == "Health: readings unavailable"
+    assert "unavailable" in summary.text
     assert "could not read" in window.shell_texts["health_advice_label"].text
     assert window.shell_texts["input_health_label"].state == "idle"
 

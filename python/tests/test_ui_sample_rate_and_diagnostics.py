@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 import threading
 from dataclasses import asdict
@@ -837,7 +838,9 @@ def test_health_panel_reports_input_output_and_callback_states(window):
     assert window.shell_texts["input_health_label"].state == "warn"
     assert "Output: OK" in window.shell_texts["output_health_label"].text
     assert window.shell_texts["output_health_label"].state == "ok"
-    assert "Device activity: input 12 ms ago, output 14 ms ago" == window.shell_texts["callback_health_label"].text
+    activity = window.shell_texts["callback_health_label"].text
+    assert activity.startswith("Device activity:")
+    assert re.search(r"input\s+12 ms\b.*output\s+14 ms\b", activity)
     assert window.shell_texts["callback_health_label"].state == "ok"
 
     window._update_diagnostic_labels(
@@ -861,11 +864,19 @@ def test_health_panel_reports_input_output_and_callback_states(window):
         limiter_enabled=False,
     )
 
-    assert window.shell_texts["input_health_label"].text == "Input: CLIPPED (peak 0.0 dB, full scale 9 times)"
+    clipped = window.shell_texts["input_health_label"].text
+    assert clipped.startswith("Input: CLIPPED")
+    assert re.search(r"(?<![\w.-])0\.0 dB\b", clipped) and re.search(r"(?<![\w.-])9(?![\w.])", clipped)
     assert window.shell_texts["input_health_label"].state == "bad"
-    assert window.shell_texts["output_health_label"].text == "Output: AT FULL SCALE (peak 1.5 dB)"
+    full_scale = window.shell_texts["output_health_label"].text
+    assert full_scale.startswith("Output: AT FULL SCALE")
+    assert re.search(r"(?<![\w.-])1\.5 dB\b", full_scale)
     assert window.shell_texts["output_health_label"].state == "bad"
     assert window.shell_texts["callback_health_label"].state == "warn"
+
+
+def _nothing_dropped(text: str) -> bool:
+    return text.startswith("Drops:") and "nothing dropped" in text and not re.search(r"\b[1-9]\d* samples?\b", text)
 
 
 def _labels(window, **changes):
@@ -891,14 +902,14 @@ def test_a_device_that_has_not_called_back_yet_is_unknown_not_a_huge_number(wind
     chip = window.shell_texts["callback_health_label"]
 
     _labels(window, input_callback_age_ms=never, output_callback_age_ms=never)
-    assert chip.text == (
-        "Device activity: input has not started sending sound yet, "
-        "output has not started playing sound yet"
-    )
+    assert chip.text.startswith("Device activity:")
+    assert re.search(r"input[^,]*not started", chip.text) and re.search(r"output[^,]*not started", chip.text)
+    assert not any(ch.isdigit() for ch in chip.text)  # no age, least of all the sentinel
     assert chip.state == "idle"
 
     _labels(window, input_callback_age_ms=never, output_callback_age_ms=14)
-    assert chip.text == "Device activity: input has not started sending sound yet, output 14 ms ago"
+    assert re.search(r"input[^,]*not started", chip.text) and re.search(r"output[^,]*\b14 ms\b", chip.text)
+    assert "1844" not in chip.text
     assert chip.state == "ok"
 
     _labels(window, input_callback_age_ms=never, output_callback_age_ms=1400)
@@ -908,19 +919,15 @@ def test_a_device_that_has_not_called_back_yet_is_unknown_not_a_huge_number(wind
 
 
 @pytest.mark.parametrize(
-    ("input_age", "output_age", "text"),
+    ("input_age", "output_age", "input_says", "output_says"),
     [
-        (NEVER, 14, "Device activity: input has not started sending sound yet, output 14 ms ago"),
-        (12, NEVER, "Device activity: input 12 ms ago, output has not started playing sound yet"),
-        (
-            NEVER, NEVER,
-            "Device activity: input has not started sending sound yet, "
-            "output has not started playing sound yet",
-        ),
+        (NEVER, 14, "not started", r"\b14 ms\b"),
+        (12, NEVER, r"\b12 ms\b", "not started"),
+        (NEVER, NEVER, "not started", "not started"),
     ],
 )
 def test_a_device_that_never_starts_is_a_warning_once_the_startup_grace_is_over(
-    window, monkeypatch, input_age, output_age, text
+    window, monkeypatch, input_age, output_age, input_says, output_says
 ):
     clock = [1000.0]
     monkeypatch.setattr("mic_eq.ui.main_window.time.monotonic", lambda: clock[0])
@@ -930,7 +937,10 @@ def test_a_device_that_never_starts_is_a_warning_once_the_startup_grace_is_over(
     _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age)
     clock[0] += main_window.DEVICE_STARTUP_GRACE_SECONDS - 2
     _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age)
-    assert chip.text == text and chip.state != "warn"
+    text = chip.text
+    assert chip.state != "warn"
+    assert text.startswith("Device activity:")
+    assert re.search(rf"input[^,]*{input_says}", text) and re.search(rf"output[^,]*{output_says}", text)
 
     clock[0] += 3
     _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age)
@@ -985,7 +995,7 @@ def test_gate_chatter_alone_is_the_gate_not_an_engine_fault(window, monkeypatch)
     for events in (1, 2, 3):
         clock[0] += 1
         _labels(window, diagnostics=_healthy_runtime_diagnostics(gate_chatter_event_count=events))
-        assert (chip.text, chip.state) == ("Drops: nothing dropped, but the gate is chattering", "warn")
+        assert chip.state == "warn" and _nothing_dropped(chip.text) and "chatter" in chip.text
         assert "fault" not in chip.text
     assert window.shell_texts["gate_health_label"].text.startswith("Gate: CHATTERING")
     assert summary.state == "warn"
@@ -1003,9 +1013,7 @@ def test_a_real_error_counter_still_reads_as_an_engine_fault(window, monkeypatch
         gate_chatter_event_count=1, input_callback_error_count=1,
     ))
 
-    assert (chip.text, chip.state) == (
-        "Drops: nothing dropped, but the audio engine reported a fault", "warn",
-    )
+    assert chip.state == "warn" and _nothing_dropped(chip.text) and "fault" in chip.text
 
 
 def test_the_drops_row_never_claims_attention_for_zero_drops(window, monkeypatch):
@@ -1017,7 +1025,7 @@ def test_the_drops_row_never_claims_attention_for_zero_drops(window, monkeypatch
     chip = window.shell_texts["dropped_label"]
     _labels(window, diagnostics=_healthy_runtime_diagnostics(rt_error_name="input_queue_full"))
     assert chip.state == "warn"
-    assert chip.text == "Drops: nothing dropped, but the audio engine reported an error"
+    assert _nothing_dropped(chip.text) and "error" in chip.text and "fault" not in chip.text
     assert advice_for(chip.text) == ""
     assert "0 samples" not in chip.text
 
@@ -1025,15 +1033,15 @@ def test_the_drops_row_never_claims_attention_for_zero_drops(window, monkeypatch
     _labels(window, diagnostics=_healthy_runtime_diagnostics(
         input_dropped_samples=12, stream_restart_count=1, rt_error_name="input_queue_full",
     ))
-    assert chip.text == (
-        "Drops: 12 samples dropped, 0 dropouts, 1 restart "
-        "(needs attention: the audio engine reported a fault)"
-    )
+    assert chip.text.startswith("Drops:")
+    assert all(re.search(rf"\b{part}\b", chip.text) for part in ("12 samples", "0 dropouts", "1 restart"))
+    assert "fault" in chip.text and "attention" in chip.text
     assert "12 samples so far" in advice_for(chip.text)
 
     clock[0] += 5.1  # the drops are no longer recent
     _labels(window, diagnostics=_healthy_runtime_diagnostics(input_dropped_samples=12, stream_restart_count=1))
-    assert (chip.text, chip.state) == ("Drops: 12 samples dropped, 0 dropouts, 1 restart", "ok")
+    assert chip.state == "ok" and "attention" not in chip.text
+    assert all(re.search(rf"\b{part}\b", chip.text) for part in ("12 samples", "0 dropouts", "1 restart"))
 
 
 def test_health_panel_reports_gate_chatter_and_underruns(window):

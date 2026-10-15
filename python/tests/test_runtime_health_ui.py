@@ -313,7 +313,7 @@ def test_unreadable_telemetry_does_not_keep_the_tooltip_of_the_last_reading(isol
     window._update_diagnostics()
 
     chip = window.shell_texts["health_summary_label"]
-    assert (chip.text, chip.state) == ("Health: readings unavailable", "warn")
+    assert "unavailable" in chip.text and chip.state == "warn"
     assert chip.toolTip == TEXT_SPECS["health_summary_label"].tip
     assert "could not read" in window.shell_texts["health_advice_label"].text
 

@@ -123,7 +123,7 @@ change); every gate must pass on both.
                   reported as target_error.
   BEN-R           factory users. R1: among users with a measurable deep pause (30 needed), the share whose E keeps
                   deep_pause_db at -4.0 or lower is at least min(0.90, the share without R). R2: users whose E loses
-                  more than 6.0 dB of sibilant level are fewer with R than without.
+                  more than 3.0 dB of sibilant level are fewer with R than without.
 Shipping gates (candidate against current): S1 false accepts no more than current's; S2 each veto no more than
 max(its budget, current's); S3 all whole-setup vetoes together no more than max(18, current's).
 
@@ -144,7 +144,7 @@ a gate self-test with fabricated worlds just inside and outside every threshold 
 failed changes; reachability flags (P's tone_withheld fires, the current arm has a whole-setup false refusal, for each T
 cell the tonal check ran on the injected candidate for at least half of the factory users, users refused before
 verification counting in the denominator; at least half of the factory users have a measurable deep pause, as R1 needs 30
-of about 85; a sibilant loss above 6 dB for a factory user, as R2 counts factory users only); resume;
+of about 85; a sibilant loss above 3 dB for a factory user, as R2 counts factory users only); resume;
 timing; and a fabricated report that passes ``check_evaluation_hygiene.validate_report``.
 
 The report states: loudspeaker playback of read speech, not a live talker; one script; the reference is the dry studio
@@ -247,7 +247,7 @@ WHOLE_BUDGET, STEP_BUDGET, COMBINED_BUDGET = 9, 18, 18
 INJECTIONS = {f"{freq}Hz{gain:+d}dB": (float(freq), float(gain)) for size in (12, 9) for freq in (100, 200)
               for gain in (size, -size)}
 MIN_PAIRS, MIN_REACHED, MIN_DEEP_USERS = 30, 0.80, 30
-KEEP_DEEP_DB, DEEP_SHARE, SIBILANT_LOSS_DB = -4.0, 0.90, 6.0
+KEEP_DEEP_DB, DEEP_SHARE, SIBILANT_LOSS_DB = -4.0, 0.90, 3.0
 FLAGS = ("fa", "fa_upper", "false_first", "false_first_upper", *(f"first:{v}" for v in WHOLE_VETOES),
          *(f"step:{v}" for v in STEP_OBJECTS))
 CONTRASTS = {change: (("K1", change, "current"), ("K2", "P+T+R", "+".join(c for c in CHANGES if c != change) or "current"))
@@ -1428,7 +1428,7 @@ def reachability(rows: list[dict[str, Any]]) -> dict[str, bool]:
     return {
         "P: tone_withheld fires": any(r["arms"]["P"]["tone_withheld"] for r in analysed),
         "current: a whole-setup false refusal": any(arm_flags(arm_user(r, "current"))["false_first"] for r in analysed),
-        "current: a sibilant loss above 6 dB for a factory user": any(
+        f"current: a sibilant loss above {SIBILANT_LOSS_DB:g} dB for a factory user": any(
             _reading(arm_user(r, "current"), "sibilant_loss_db") > SIBILANT_LOSS_DB for r in factory),
         "R1: a measurable deep pause for half of the factory users": bool(factory) and measurable >= 0.5 * len(factory),
         **reached}

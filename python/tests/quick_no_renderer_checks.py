@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 from PySide6.QtCore import QTimer
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QSystemTrayIcon
+from PySide6.QtWidgets import QPlainTextEdit, QSystemTrayIcon
 from PySide6.QtQuickWidgets import QQuickWidget
 
 from mic_eq.ui import desktop_integration, quick_shell
@@ -168,14 +168,14 @@ def _run_until_settled(qapp, window: MainWindow) -> tuple[int, dict]:
         watchdog.stop()
 
 
-def _record_save_and_spawn(window: MainWindow, monkeypatch, *, spawn_works: bool) -> list[str]:
+def _record_save_and_spawn(window: MainWindow, monkeypatch, *, spawn_error: Exception | None) -> list[str]:
     events: list[str] = []
     monkeypatch.setattr(window, "_save_ui_state", lambda: events.append("closeEvent saved") or True)
 
     def spawn(_command, env):
         events.append("spawn")
-        if not spawn_works:
-            raise OSError("blocked")
+        if spawn_error is not None:
+            raise spawn_error
 
     monkeypatch.setattr(desktop_integration.subprocess, "Popen", spawn)
     return events
@@ -189,9 +189,24 @@ def _guard(window: MainWindow, tmp_path) -> tuple[SingleInstanceCoordinator, dic
     return guard, names
 
 
-def test_the_copy_quits_and_spawns_once_after_the_window_closed(spawned, qapp, monkeypatch, tmp_path) -> None:
+def _visible_tray(window: MainWindow, *, close_to_tray: bool) -> QSystemTrayIcon:
+    """A shown tray icon; with close_to_tray a plain close() only hides the window to it."""
+
+    tray = QSystemTrayIcon(window)
+    window._tray_icon = tray
+    tray.show()
+    assert window._close_to_tray_action is not None
+    window._close_to_tray_action.setChecked(close_to_tray)
+    return tray
+
+
+@pytest.mark.parametrize("close_to_tray", [False, True])
+def test_the_copy_quits_and_spawns_once_after_the_window_closed(
+    spawned, qapp, monkeypatch, tmp_path, close_to_tray
+) -> None:
     window = _window()
-    events = _record_save_and_spawn(window, monkeypatch, spawn_works=True)
+    events = _record_save_and_spawn(window, monkeypatch, spawn_error=None)
+    _visible_tray(window, close_to_tray=close_to_tray)
     _, names = _guard(window, tmp_path)
     window.show()
 
@@ -203,15 +218,18 @@ def test_the_copy_quits_and_spawns_once_after_the_window_closed(spawned, qapp, m
     successor.close()
 
 
+@pytest.mark.parametrize(
+    ("close_to_tray", "spawn_error"),
+    [(False, OSError("blocked")), (True, OSError("blocked")), (True, ValueError("embedded null"))],
+    ids=["os-error", "os-error-in-tray-mode", "other-error-in-tray-mode"],
+)
 def test_a_spawn_that_fails_keeps_the_app_and_its_guard_and_shows_the_error_screen(
-    spawned, qapp, monkeypatch, tmp_path
+    spawned, qapp, monkeypatch, tmp_path, close_to_tray, spawn_error
 ) -> None:
     window = _window()
-    events = _record_save_and_spawn(window, monkeypatch, spawn_works=False)
+    events = _record_save_and_spawn(window, monkeypatch, spawn_error=spawn_error)
     guard, names = _guard(window, tmp_path)
-    tray = QSystemTrayIcon(window)
-    window._tray_icon = tray
-    tray.show()
+    tray = _visible_tray(window, close_to_tray=close_to_tray)
     window.config.mute_hotkey = "Ctrl+Alt+M"
     registered: list[str] = []
     monkeypatch.setattr(window, "_unregister_mute_hotkey", lambda: None)
@@ -225,6 +243,8 @@ def test_a_spawn_that_fails_keeps_the_app_and_its_guard_and_shows_the_error_scre
     assert state["visible"] and not state["quitting"]
     assert state["snapshot"]["view"] == "error" and state["snapshot"]["classic_reason"] == "no_renderer"
     assert tray.isVisible() and registered == ["Ctrl+Alt+M"]
+    shown = window.centralWidget().findChild(QPlainTextEdit)
+    assert shown is not None and "could not restart itself with software rendering" in shown.toPlainText()
     rival = SingleInstanceCoordinator(**names)
     assert rival.acquire(activate_existing=False) == SingleInstanceCoordinator.ALREADY_RUNNING
     guard.close()

@@ -356,10 +356,12 @@ def relaunch_with_software_rendering(instance: SingleInstanceCoordinator | None)
         instance.close()
     try:
         subprocess.Popen(command, env=environment)
-    except OSError:
+    except Exception:  # any failure must end on the error screen, not a silent exit
         logger.exception("Could not start AudioForge with software rendering")
-        if instance is not None and instance.acquire(activate_existing=False) != instance.ACQUIRED:
-            logger.error("Could not take the single-instance guard back: %s", instance.last_error)
+        if instance is not None:
+            status = instance.acquire(activate_existing=False)
+            if status != instance.ACQUIRED:
+                logger.error("Could not take the single-instance guard back: %s", status)
         return False
     return True
 

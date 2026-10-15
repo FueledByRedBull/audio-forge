@@ -156,7 +156,7 @@ stress test, then:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
-.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951
 .\.venv\Scripts\python.exe python\tools\run_semgrep.py --sarif semgrep-results.sarif
 .\.venv\Scripts\python.exe python\tools\check_versions.py
 .\.venv\Scripts\python.exe python\tools\check_workflows.py
@@ -170,6 +170,10 @@ cargo audit
   hand in the SARIF. The rule packs in `semgrep-rulesets.txt` aren't pinned,
   so a new upstream rule can fail CI without a code change: fix the code or
   suppress the finding with its reason.
+- **pip-audit:** the dev-lock audit ignores CVE-2026-59951 because semgrep
+  pins `mcp==1.29.0` and only its MCP server uses it. Remove the ignore when
+  semgrep allows `mcp>=1.30.0`; `check_workflows.py` rejects it once the lock
+  stops pinning 1.29.0.
 - **RustSec:** `cargo audit` must be clean for the application lockfile; never
   add an ignore just to release. The separate
   `build-support/deepfilter/Cargo.lock` graph ignores only three reviewed

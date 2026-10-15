@@ -69,6 +69,10 @@ RELEASE_JOB_GATES = {
     ),
     "rust-stress": ("cargo test --release --locked -p mic_eq_core --test stress_tests",),
 }
+DEV_LOCK_PATH = REPO_ROOT / "requirements" / "dev.txt"
+# Allowed pip_audit --ignore-vuln ids, each with the dev-lock pin that causes it.
+# The ignore stops being allowed once the lock moves off that pin.
+AUDIT_IGNORES = {"CVE-2026-59951": ("mcp", "1.29.0")}
 CARGO_LOCKED_COMMANDS = ("build", "test", "clippy", "run")
 ACTION_REF = re.compile(
     r"^\s*(?:-\s*)?uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE
@@ -474,6 +478,34 @@ def _check_cargo_locked(
                 errors.append(f"{name}: 'cargo {command}' must pass --locked: {line.strip()}")
 
 
+def _check_audit_ignores(
+    name: str, document: dict[str, Any], errors: list[str]
+) -> None:
+    """Allow only the pip_audit ignores in AUDIT_IGNORES, and only on the dev lock."""
+    for line in _active_run_lines(document):
+        if not _active_run_has_marker([line], "pip_audit --require-hashes"):
+            continue
+        ignored = re.findall(r"--ignore-vuln[ =](\S+)", line)
+        if ignored and "requirements/runtime.txt" in line:
+            errors.append(f"{name}: the runtime lock audit must not ignore {ignored}")
+            continue
+        for vuln in ignored:
+            if vuln not in AUDIT_IGNORES:
+                errors.append(f"{name}: {vuln} is not an allowed audit ignore")
+                continue
+            package, version = AUDIT_IGNORES[vuln]
+            try:
+                lock = DEV_LOCK_PATH.read_text(encoding="utf-8")
+            except OSError as error:
+                errors.append(f"{name}: cannot read {DEV_LOCK_PATH.name}: {error}")
+                continue
+            if re.search(rf"(?m)^{re.escape(package)}=={re.escape(version)}(?:\s|$)", lock) is None:
+                errors.append(
+                    f"{name}: audit ignore {vuln} needs {DEV_LOCK_PATH.name} to pin "
+                    f"{package}=={version}; remove the ignore"
+                )
+
+
 def _is_always(value: Any) -> bool:
     return isinstance(value, str) and re.fullmatch(
         r"(?:\$\{\{\s*)?always\(\)(?:\s*\}\})?", value.strip()
@@ -809,6 +841,7 @@ def check_workflows() -> list[str]:
         _check_permissions(path.name, document, errors)
         _check_required_gates(path.name, source, errors, document=document)
         _check_cargo_locked(path.name, document, errors)
+        _check_audit_ignores(path.name, document, errors)
         _check_python_runtime(path.name, source, errors)
 
         action_refs = ACTION_REF.findall(source)

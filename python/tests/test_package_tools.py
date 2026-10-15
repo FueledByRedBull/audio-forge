@@ -296,6 +296,46 @@ def test_repository_workflow_release_gates_are_current():
     assert check_workflows.check_workflows() == []
 
 
+DEV_AUDIT = "pip_audit --require-hashes -r requirements/dev.txt --disable-pip"
+RUNTIME_AUDIT = "pip_audit --require-hashes -r requirements/runtime.txt --disable-pip"
+MCP_IGNORE = "--ignore-vuln CVE-2026-59951"
+
+
+def _audit_ignore_errors(tmp_path, monkeypatch, audit, flags, dev_lock=None):
+    source = (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+    assert audit in source
+    (tmp_path / "ci.yml").write_text(
+        source.replace(audit, f"{audit} {flags}"), encoding="utf-8"
+    )
+    monkeypatch.setattr(check_workflows, "WORKFLOW_DIR", tmp_path)
+    if dev_lock is not None:
+        lock = tmp_path / "dev.txt"
+        lock.write_text(dev_lock, encoding="utf-8")
+        monkeypatch.setattr(check_workflows, "DEV_LOCK_PATH", lock)
+    return "; ".join(check_workflows.check_workflows())
+
+
+def test_audit_ignore_outside_the_table_is_rejected(tmp_path, monkeypatch):
+    errors = _audit_ignore_errors(
+        tmp_path, monkeypatch, DEV_AUDIT, "--ignore-vuln CVE-2000-0001"
+    )
+    assert "CVE-2000-0001" in errors and "not an allowed audit ignore" in errors
+
+
+def test_runtime_audit_rejects_every_ignore(tmp_path, monkeypatch):
+    errors = _audit_ignore_errors(tmp_path, monkeypatch, RUNTIME_AUDIT, MCP_IGNORE)
+    assert "runtime lock audit must not ignore" in errors
+
+
+def test_audit_ignore_is_rejected_once_the_dev_lock_moves_past_its_package(
+    tmp_path, monkeypatch
+):
+    errors = _audit_ignore_errors(
+        tmp_path, monkeypatch, DEV_AUDIT, MCP_IGNORE, dev_lock="mcp==1.30.0\n"
+    )
+    assert "CVE-2026-59951" in errors and "mcp==1.29.0" in errors
+
+
 def test_ci_uploads_semgrep_results_with_scoped_code_scanning_permission():
     workflow = check_workflows.yaml.safe_load(
         (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")

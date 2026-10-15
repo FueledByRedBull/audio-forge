@@ -378,6 +378,7 @@ class Preset:
                 "1.15.2",
                 "1.15.3",
                 "1.16.0",
+                "1.17.0",
             ):
                 if version_tuple < _version_tuple(version):
                     data["version"] = version

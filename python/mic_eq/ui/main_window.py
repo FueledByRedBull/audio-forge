@@ -3673,7 +3673,8 @@ class MainWindow(QMainWindow):
             dropped_bits.append(f"RT:{rt_error_name}")
         # Most of these also have a row of their own; this row adds them all up.
         attention = [
-            (bool(recent_events), "the audio engine reported a fault"),
+            # Gate chatter has its own entry below; it is a setting, not an engine fault.
+            (bool(recent_events - {"gate_chatter_event_count"}), "the audio engine reported a fault"),
             (recovery_pending, "a restart is pending"),
             (underrun_streak > 0 or new_underruns_observed, "the output ran out of audio"),
             (rt_error_active, "the audio engine reported an error"),

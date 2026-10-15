@@ -817,6 +817,25 @@ fn select_processing_path(raw_monitor_enabled: bool, bypass_enabled: bool) -> Pr
     }
 }
 
+/// Publish the reported latency. The DSP loop and the tests share this. Bypass
+/// and Raw monitor never run the lookahead limiter, so only the full path
+/// counts its delay.
+#[inline]
+fn publish_reported_latency(
+    latency_us: &AtomicU64,
+    mut components: LatencyComponents,
+    path: ProcessingPath,
+    compensation_us: u64,
+) {
+    if path != ProcessingPath::Full {
+        components.limiter_lookahead_samples = 0;
+    }
+    latency_us.store(
+        total_reported_latency_us(components, compensation_us),
+        Ordering::Relaxed,
+    );
+}
+
 #[inline]
 fn uses_clean_write_path(path: ProcessingPath) -> bool {
     matches!(path, ProcessingPath::RawMonitor)

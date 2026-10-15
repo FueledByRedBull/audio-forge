@@ -147,7 +147,7 @@ _REASON_RULES: tuple[tuple[str, str], ...] = (
     (r"target error worsened from (?P<a>[\d.]+) to (?P<b>[\d.]+) dB",
      "The tone got further from the preset: {a} dB away before, {b} dB after."),
     (r"tone error per third-octave band worsened from (?P<a>[\d.]+) to (?P<b>[\d.]+) dB",
-     "In some part of your voice the tone got further from the preset: {a} dB away before, {b} dB after."),
+     "Counting every part of your voice alike, the tone got further from the preset: {a} dB away before, {b} dB after."),
     (r"relative noise floor increased by (?P<db>[\d.]+) dB",
      "Background noise grew by {db} dB compared with your voice."),
     (r"candidate increased relative noise floor by (?P<db>[\d.]+) dB",

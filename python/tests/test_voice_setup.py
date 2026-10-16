@@ -823,6 +823,38 @@ def test_a_low_score_alone_is_reported_as_low_overall_quality(monkeypatch):
     assert "spectral feature stability is weak" not in diagnostics["uncertainty_reasons"]
 
 
+@pytest.mark.parametrize(
+    ("snr_db", "reliable", "weak"),
+    [(5.9, False, True), (6.0, True, True), (7.9, True, True), (8.0, True, False)],
+    ids=["under-6", "at-6", "under-8", "at-8"],
+)
+def test_the_noise_referenced_snr_sets_reliability_weakness_and_the_confidence_cap(
+    monkeypatch, snr_db, reliable, weak
+):
+    # Near 6 dB the SNR term drags the geometric-mean capture score under the 0.55
+    # makeup floor, so pin that score (the one weighted 0.30 on spectral confidence)
+    # and let the SNR alone decide reliability.
+    real_score = voice_setup_module._bounded_quality_score
+    monkeypatch.setattr(
+        voice_setup_module,
+        "_bounded_quality_score",
+        lambda parts: 0.9 if parts[0][1] == 0.30 else real_score(parts),
+    )
+    result = _analyze_clean_capture(
+        monkeypatch, ("analyze_voice_spectrum", lambda spectrum: replace(spectrum, snr_db=snr_db))
+    )
+    diagnostics = result["diagnostics"]
+
+    assert result["compressor_settings"]["auto_makeup_enabled"] is reliable
+    assert diagnostics["weak_capture"] is weak
+    assert ("speech-to-noise ratio is weak" in diagnostics["uncertainty_reasons"]) is weak
+    # A weak capture sits exactly on the cap; a strong one is free to score above it.
+    if weak:
+        assert diagnostics["setup_confidence"] == pytest.approx(0.49)
+    else:
+        assert diagnostics["setup_confidence"] > 0.49
+
+
 def _auto_eq_abstains(*reasons):
     return "analyze_auto_eq", lambda out: (
         {**out[0], "apply_recommended": False, "abstention_reasons": list(reasons)},

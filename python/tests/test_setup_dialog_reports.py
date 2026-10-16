@@ -107,6 +107,37 @@ def test_an_advisory_voice_result_is_reported_with_its_reasons(real_main_window)
         dialog.deleteLater()
 
 
+@pytest.mark.parametrize(
+    ("cause", "code"),
+    [
+        ({"noise_referenced_snr_db": 4.0}, "snr_under_6_db"),
+        ({"noise_referenced_snr_db": 7.0}, "snr_under_8_db"),
+        ({"vad_active_duration_s": 1.2}, "speech_under_2_s"),
+        (
+            {"noise_reference_quality": {"status": "questionable", "reasons": ["room-noise capture is not stationary"]}},
+            "noise_reference_not_usable",
+        ),
+        ({"capture_confidence": 0.3}, "capture_quality_low"),
+        ({"uncertainty_reasons": ["too few voiced frames for a stable spectrum"]}, "spectrum_fallback"),
+    ],
+    ids=["snr-under-6", "snr-under-8", "speech-under-2s", "room-noise-not-usable", "capture-quality", "single-spectrum"],
+)
+def test_a_weak_capture_reports_which_check_failed(real_main_window, cause, code) -> None:
+    records = _voice(real_main_window)
+    dialog, _speech = _review_dialog(real_main_window)
+    result = _voice_setup_result(real_main_window, dialog)
+    result["diagnostics"].update(
+        {"weak_capture": True, "apply_recommended": False, "noise_referenced_snr_db": 12.5, **cause}
+    )
+    try:
+        dialog._on_analysis_complete(result)
+
+        assert code in records[0]["reason_codes"]
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
 def test_a_verified_voice_setup_is_reported_with_the_checked_numbers(
     real_main_window, monkeypatch
 ) -> None:

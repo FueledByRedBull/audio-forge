@@ -8,7 +8,7 @@ from dataclasses import replace
 
 import pytest
 
-from mic_eq.ui.setup_messages import capture_issue_lines, quality_tooltip, quality_word
+from mic_eq.ui.setup_messages import capture_issue_codes, capture_issue_lines, quality_tooltip, quality_word
 from test_voice_setup import _analyze_clean_capture
 
 WITHHELD = "Automatic loudness was not switched on"
@@ -188,3 +188,30 @@ def test_a_silent_room_noise_take_is_not_told_to_stop_talking():
 @pytest.mark.parametrize("snr", [float("-inf"), float("inf"), float("nan")])
 def test_a_figure_that_is_not_a_number_never_breaks_the_lines(snr):
     assert capture_issue_lines({"weak_capture": True, "noise_referenced_snr_db": snr})
+
+
+@pytest.mark.parametrize(
+    ("diagnostics", "codes"),
+    [
+        ({"noise_referenced_snr_db": 4.0}, ["snr_under_6_db"]),
+        ({"noise_referenced_snr_db": 7.0}, ["snr_under_8_db"]),
+        ({"vad_active_duration_s": 1.2}, ["speech_under_2_s"]),
+        ({"uncertainty_reasons": ["too few voiced frames for a stable spectrum"]}, ["spectrum_fallback"]),
+        ({"noise_reference_quality": {"status": "questionable", "reasons": ["x"]}}, ["noise_reference_not_usable"]),
+        ({"capture_confidence": 0.3}, ["capture_quality_low"]),
+        (
+            {"noise_referenced_snr_db": 4.0, "vad_active_duration_s": 1.2, "capture_confidence": 0.3},
+            ["snr_under_6_db", "speech_under_2_s", "capture_quality_low"],
+        ),
+        ({}, ["weak_capture"]),
+    ],
+)
+def test_each_weak_capture_cause_has_a_stable_code(diagnostics, codes):
+    weak = {"weak_capture": True, **diagnostics}
+
+    assert capture_issue_codes(weak) == codes
+    assert len(capture_issue_codes(weak)) == len(capture_issue_lines(weak))
+
+
+def test_a_reliable_capture_has_no_codes():
+    assert capture_issue_codes({"noise_referenced_snr_db": 12.0, "vad_active_duration_s": 5.0}) == []

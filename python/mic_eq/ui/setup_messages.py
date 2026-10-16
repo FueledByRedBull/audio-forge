@@ -289,10 +289,10 @@ _WITHHELD = (
 )
 
 
-def capture_issue_lines(
+def _capture_issues(
     diagnostics: Mapping[str, Any], compressor: Mapping[str, Any] | None = None
-) -> list[str]:
-    """One plain line for each reason the capture was judged weak or unreliable.
+) -> list[tuple[str, str]]:
+    """A stable code and a plain line for each reason the capture was judged weak or unreliable.
 
     ``capture_reliable`` has four clauses in the analysis (voice against the room noise
     under 6 dB, under 2 s of speech, a single-spectrum fallback, a room-noise recording
@@ -303,31 +303,35 @@ def capture_issue_lines(
     """
     makeup = _number((compressor or {}).get("makeup_gain_db"))
     withheld = _WITHHELD.format(makeup=f" (makeup is fixed at {makeup:.1f} dB)" if makeup is not None else "")
-    lines: list[str] = []
+    lines: list[tuple[str, str]] = []
     snr = _number(diagnostics.get("noise_referenced_snr_db"))
     if snr is not None and snr < 6.0:
-        lines.append(
+        lines.append((
+            "snr_under_6_db",
             f"Your voice was only {_floor(snr, 1)} dB louder than the room noise; setup needs at least 6 dB. "
-            f"{withheld} Record again closer to the microphone, or in a quieter room."
-        )
+            f"{withheld} Record again closer to the microphone, or in a quieter room.",
+        ))
     elif snr is not None and snr < 8.0:
-        lines.append(
+        lines.append((
+            "snr_under_8_db",
             f"Your voice was {_floor(snr, 1)} dB louder than the room noise; setup is happiest with 8 dB or more. "
-            "The settings are suggestions only. Record again closer to the microphone, or in a quieter room."
-        )
+            "The settings are suggestions only. Record again closer to the microphone, or in a quieter room.",
+        ))
     active = _number(diagnostics.get("vad_active_duration_s"))
     if active is not None and active < 2.0:
-        lines.append(
+        lines.append((
+            "speech_under_2_s",
             f"Setup heard {_floor(active, 1)} seconds of speech; it needs at least 2. "
-            f"{withheld} Record again and speak for the whole take, without long pauses."
-        )
+            f"{withheld} Record again and speak for the whole take, without long pauses.",
+        ))
     reasons = [str(reason) for reason in diagnostics.get("uncertainty_reasons") or ()]
     fallback = "too few voiced frames for a stable spectrum" in reasons
     if fallback:
-        lines.append(
+        lines.append((
+            "spectrum_fallback",
             "There were too few clear voiced sounds to measure the shape of your voice. "
-            f"{withheld} Record again and speak for the whole take at a steady volume."
-        )
+            f"{withheld} Record again and speak for the whole take at a steady volume.",
+        ))
     quality = diagnostics.get("noise_reference_quality")
     if isinstance(quality, Mapping) and quality.get("status", "usable") != "usable":
         found = plain_reasons(quality.get("reasons") or ()) or [
@@ -338,20 +342,34 @@ def capture_issue_lines(
             if SILENT_REFERENCE_REASON in (quality.get("reasons") or ())
             else "Record the room noise again without talking."
         )
-        lines.append(f"{found[0]} {withheld} {again}")
+        lines.append(("noise_reference_not_usable", f"{found[0]} {withheld} {again}"))
     capture = _number(diagnostics.get("capture_confidence"))
     if capture is not None and capture < 0.50 and not fallback:
-        lines.append(
+        lines.append((
+            "capture_quality_low",
             f"The recording was unclear overall (capture quality "
             f"{_floor(Decimal(repr(capture)).scaleb(2), 0)}%). "
-            "The settings are suggestions only. Record again in a quieter room, closer to the microphone."
-        )
+            "The settings are suggestions only. Record again in a quieter room, closer to the microphone.",
+        ))
     if diagnostics.get("weak_capture") and not lines:
-        lines.append(
+        lines.append((
+            "weak_capture",
             "The recording did not pass setup's quality checks, so the settings are suggestions only. "
-            "Record again in a quiet room, closer to the microphone."
-        )
+            "Record again in a quiet room, closer to the microphone.",
+        ))
     return lines
+
+
+def capture_issue_lines(
+    diagnostics: Mapping[str, Any], compressor: Mapping[str, Any] | None = None
+) -> list[str]:
+    """One plain line for each reason the capture was judged weak or unreliable."""
+    return [line for _code, line in _capture_issues(diagnostics, compressor)]
+
+
+def capture_issue_codes(diagnostics: Mapping[str, Any]) -> list[str]:
+    """One stable code for each reason the capture was weak, for the diagnostics export."""
+    return [code for code, _line in _capture_issues(diagnostics)]
 
 
 # The reasons capture_issue_lines says in its own words.

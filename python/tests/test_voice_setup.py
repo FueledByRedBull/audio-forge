@@ -845,6 +845,7 @@ def test_the_noise_referenced_snr_sets_reliability_weakness_and_the_confidence_c
     )
     diagnostics = result["diagnostics"]
 
+    assert diagnostics["capture_confidence"] == pytest.approx(0.9)  # the pin above took effect
     assert result["compressor_settings"]["auto_makeup_enabled"] is reliable
     assert diagnostics["weak_capture"] is weak
     assert ("speech-to-noise ratio is weak" in diagnostics["uncertainty_reasons"]) is weak

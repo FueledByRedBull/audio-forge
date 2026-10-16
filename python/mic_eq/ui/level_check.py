@@ -130,7 +130,7 @@ def verdict_from_levels(
                 "too_quiet",
                 f"Your voice is quiet: {heard} dB when you speak, and setup needs "
                 f"{TOO_QUIET_DB:.0f} dB or louder to hear it above the room, but your loudest "
-                "moments are already close to the limit, so a higher level would clip them. "
+                "moments are already close to the limit, so a higher level would push them past it. "
                 f"Move closer to the microphone or speak more evenly, then {again}.",
                 "warn",
                 peak_db,
@@ -236,7 +236,7 @@ def room_noise_message(recent_rms_db: Sequence[float]) -> tuple[str, str]:
 def clipped_message(audio: np.ndarray, sample_rate: int) -> str:
     """Refuse a finished take whose loud parts were held at full scale, with the fix in decibels."""
     change = verdict_from_audio(audio, sample_rate).change_db
-    lower = -change if change < 0 else 6
+    lower = -change if change < 0 else round(-target_peak_db())
     return (
         "The recording clipped: its peaks were held at full scale. Lower the microphone "
         f"level by about {lower} dB (in Windows or on the microphone) or move back a "

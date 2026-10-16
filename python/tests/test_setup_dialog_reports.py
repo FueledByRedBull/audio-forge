@@ -32,6 +32,7 @@ from test_voice_setup_integration import (
     _verdict_with_dulling_advisory,
     _verifying_dialog,
     _voice_setup_result,
+    _withheld_compressor_result,
 )
 from test_voice_setup_integration import real_main_window as _real_main_window
 
@@ -133,6 +134,52 @@ def test_a_weak_capture_reports_which_check_failed(real_main_window, cause, code
         dialog._on_analysis_complete(result)
 
         assert code in records[0]["reason_codes"]
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_a_withheld_compressor_is_reported_with_the_weak_capture_causes(real_main_window) -> None:
+    records = _voice(real_main_window)
+    dialog, _speech = _review_dialog(real_main_window)
+    result = _withheld_compressor_result(real_main_window, dialog, "weak_capture", recommended=False)
+    result["diagnostics"].update(weak_capture=True, noise_referenced_snr_db=4.0)
+    try:
+        dialog._on_analysis_complete(result)
+
+        assert [r["outcome"] for r in records] == ["advisory"]
+        _check_record(records[0], "voice_setup")
+        assert records[0]["reason_codes"][0] == "compressor_withheld"
+        assert records[0]["reason_codes"].count("snr_under_6_db") == 1
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_a_verified_voice_setup_with_a_withheld_compressor_is_reported_as_such(
+    real_main_window, monkeypatch
+) -> None:
+    records = _voice(real_main_window)
+    dialog, _speech = _verifying_dialog(real_main_window)
+    assert dialog.setup_result is not None
+    dialog.setup_result["diagnostics"].update(
+        compressor_withheld={"reason_code": "compressor_withheld", "cause": ["weak_capture"]},
+        weak_capture=True,
+        noise_referenced_snr_db=4.0,
+    )
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog.QMessageBox.information", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(real_main_window, "_prompt_save_current_preset", lambda **_k: None)
+    _comparison_dialog(monkeypatch, {}, keep=True)
+    try:
+        dialog._on_verification_complete(_verdict_with_dulling_advisory("accept", advised=False))
+        dialog._on_start_clicked()
+
+        verified = [r for r in records if r["outcome"] == "verified"]
+        assert len(verified) == 1
+        _check_record(verified[0], "voice_setup")
+        assert verified[0]["reason_codes"][:2] == ["compressor_withheld", "snr_under_6_db"]
     finally:
         dialog.reject()
         dialog.deleteLater()
@@ -275,6 +322,23 @@ def test_the_review_shows_each_weak_capture_clause_as_its_own_line(real_main_win
         assert "too few clear voiced sounds" in lines[2]
         assert "not steady" in lines[3] and "without talking" in lines[3]
         assert all("suggestions only" in line for line in lines)
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_a_weak_capture_with_a_kept_compressor_is_not_called_suggestions_only(real_main_window) -> None:
+    dialog, _speech = _review_dialog(real_main_window)
+    result = _withheld_compressor_result(real_main_window, dialog, "weak_capture")
+    result["diagnostics"].update(weak_capture=True, noise_referenced_snr_db=4.0)
+    try:
+        dialog._on_analysis_complete(result)
+
+        (line,) = _issue_lines(dialog)
+        assert "4.0 dB louder" in line
+        assert "Your compressor stays as it is and the rest applies." in line
+        assert "suggestions only" not in line
+        assert dialog.warning_label.text() == "All checks passed. Review the settings below, then apply them."
     finally:
         dialog.reject()
         dialog.deleteLater()

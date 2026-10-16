@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, replace
 import threading
 import time
 from typing import Any
@@ -29,6 +29,7 @@ from mic_eq.analysis.voice_setup import (
 )
 from mic_eq.analysis.auto_eq import get_target_curve, simulate_candidate_chain
 from mic_eq.analysis.cancellation import AnalysisCancelled
+from mic_eq.config import Preset
 from mic_eq.ui.voice_setup_dialog import (
     VoiceSetupVerificationWorker,
     _candidate_settings_error,
@@ -1003,6 +1004,286 @@ def test_input_gain_advice_still_comes_with_a_withheld_tone(monkeypatch):
         "the microphone level leaves too little headroom; lower the input gain by about 1 dB"
         in result["diagnostics"]["uncertainty_reasons"]
     )
+
+
+# The user's compressor, told apart from any proposal by its threshold.
+_USERS_COMPRESSOR = {
+    **asdict(Preset().compressor),
+    "threshold_db": -17.25,
+    "auto_makeup_enabled": False,
+    "makeup_gain_db": 1.0,
+}
+_SILENT_ROOM = np.zeros(96_000, dtype=np.float32)
+
+
+def _is_users_compressor(compressor):
+    return compressor["threshold_db"] == _USERS_COMPRESSOR["threshold_db"]
+
+
+def _short_of_headroom_unless_users(compressor):
+    return 2.0 if _is_users_compressor(compressor) else -4.0
+
+
+def _analyze_with_fallback(monkeypatch, fallback, **kwargs):
+    monkeypatch.setattr(voice_setup_module, "COMPRESSOR_FALLBACK", fallback)
+    return _analyze_clean_capture(monkeypatch, **kwargs)
+
+
+def test_compressor_fallback_is_off_by_default():
+    assert voice_setup_module.COMPRESSOR_FALLBACK is False
+
+
+@pytest.mark.usefixtures("compressor_fallback")
+def test_a_headroom_only_failure_keeps_the_users_compressor_and_the_rest_applies(monkeypatch):
+    rendered = []
+
+    def headroom_at(compressor):
+        rendered.append(compressor["threshold_db"])
+        return _short_of_headroom_unless_users(compressor)
+
+    result = _analyze_clean_capture(
+        monkeypatch, headroom_at=headroom_at, incumbent_settings={"compressor": _USERS_COMPRESSOR}
+    )
+    diagnostics = result["diagnostics"]
+
+    assert diagnostics["compressor_withheld"] == {
+        "reason_code": "compressor_withheld",
+        "cause": ["headroom"],
+    }
+    assert rendered[-1] == _USERS_COMPRESSOR["threshold_db"]
+    assert result["compressor_settings"] == _USERS_COMPRESSOR
+    assert diagnostics["apply_recommended"] is True
+    assert diagnostics["offline_validation_passed"] is True
+    assert diagnostics["offline_headroom_safe"] is True
+    assert diagnostics["uncertainty_reasons"] == []
+    assert diagnostics["loudness_lowered_db"] == 0.0
+    assert diagnostics["compressor_calibration"]["measured_p95_gain_reduction_db"] is None
+    # Every other step stands as proposed.
+    assert result["eq_settings"]["apply_recommended"] is True
+    assert result["suppressor_settings"]["strength"] == 0.75
+    assert "output_audio" not in diagnostics["offline_validation"]
+
+
+@pytest.mark.usefixtures("compressor_fallback")
+def test_a_withheld_compressor_leaves_the_compressor_out_of_the_setup_confidence(monkeypatch):
+    diagnostics = _analyze_clean_capture(
+        monkeypatch,
+        headroom_at=_short_of_headroom_unless_users,
+        incumbent_settings={"compressor": _USERS_COMPRESSOR},
+    )["diagnostics"]
+
+    quiet_room = float(np.clip((-32.0 - diagnostics["conservative_noise_rms_db"]) / 18.0, 0.0, 1.0))
+    deesser = diagnostics["deesser_confidence"]
+    assert diagnostics["setup_confidence"] == pytest.approx(
+        voice_setup_module._bounded_quality_score([
+            (diagnostics["eq_confidence"], 0.35),
+            (diagnostics["gate_confidence"], 0.25),
+            (deesser if diagnostics["deesser_enabled"] else max(deesser, 0.5), 0.15),
+            (quiet_room, 0.10),
+        ])
+    )
+
+
+@pytest.mark.usefixtures("compressor_fallback")
+def test_no_input_gain_advice_comes_with_a_withheld_compressor(monkeypatch):
+    result = _analyze_clean_capture(
+        monkeypatch,
+        speech=_make_voice(48_000, seconds=5.0, level=1.34),
+        headroom_at=_short_of_headroom_unless_users,
+        incumbent_settings={"compressor": _USERS_COMPRESSOR},
+    )
+    diagnostics = result["diagnostics"]
+
+    assert diagnostics["compressor_withheld"]["cause"] == ["headroom"]
+    assert not [reason for reason in diagnostics["uncertainty_reasons"] if "input gain" in reason]
+
+
+@pytest.mark.usefixtures("compressor_fallback")
+def test_a_compressor_that_is_off_is_kept_off_and_checked_off(monkeypatch):
+    rendered = []
+
+    def headroom_at(compressor):
+        rendered.append(compressor["enabled"])
+        return _short_of_headroom_unless_users(compressor)
+
+    off = {**_USERS_COMPRESSOR, "enabled": False}
+    result = _analyze_clean_capture(monkeypatch, headroom_at=headroom_at, incumbent_settings={"compressor": off})
+
+    assert result["diagnostics"]["compressor_withheld"]["cause"] == ["headroom"]
+    assert rendered[-1] is False
+    assert result["compressor_settings"] == off
+
+
+@pytest.mark.usefixtures("compressor_fallback")
+def test_the_missed_compressor_target_of_a_withheld_proposal_does_not_block_the_setup(monkeypatch):
+    missed = (
+        "_calibrate_compressor_threshold",
+        lambda out: (
+            out[0],
+            {**out[1], "measured_p95_gain_reduction_db": 9.0, "measured_gain_reduction_db": 9.0},
+        ),
+    )
+    result = _analyze_clean_capture(
+        monkeypatch,
+        missed,
+        headroom_at=_short_of_headroom_unless_users,
+        incumbent_settings={"compressor": _USERS_COMPRESSOR},
+    )
+
+    assert result["diagnostics"]["apply_recommended"] is True
+    assert not [reason for reason in result["diagnostics"]["uncertainty_reasons"] if "compressor" in reason]
+
+
+@pytest.mark.usefixtures("compressor_fallback")
+def test_a_weak_capture_keeps_the_users_compressor_and_the_rest_applies(monkeypatch):
+    from mic_eq.analysis.noise_reference import SILENT_REFERENCE_REASON
+
+    result = _analyze_clean_capture(
+        monkeypatch, noise=_SILENT_ROOM, incumbent_settings={"compressor": _USERS_COMPRESSOR}
+    )
+    diagnostics = result["diagnostics"]
+
+    assert diagnostics["compressor_withheld"] == {
+        "reason_code": "compressor_withheld",
+        "cause": ["weak_capture"],
+    }
+    assert result["compressor_settings"] == _USERS_COMPRESSOR
+    assert diagnostics["apply_recommended"] is True
+    assert diagnostics["offline_validation_passed"] is True
+    # The weak capture is still reported, with its reason and its confidence cap.
+    assert diagnostics["weak_capture"] is True
+    assert SILENT_REFERENCE_REASON in diagnostics["uncertainty_reasons"]
+    assert diagnostics["setup_confidence"] <= 0.49
+    assert result["eq_settings"]["apply_recommended"] is True
+    assert result["suppressor_settings"]["strength"] == 0.75
+
+
+@pytest.mark.usefixtures("compressor_fallback")
+def test_a_weak_capture_with_a_headroom_failure_names_both_causes(monkeypatch):
+    result = _analyze_clean_capture(
+        monkeypatch,
+        noise=_SILENT_ROOM,
+        headroom_at=_short_of_headroom_unless_users,
+        incumbent_settings={"compressor": _USERS_COMPRESSOR},
+    )
+
+    assert result["diagnostics"]["compressor_withheld"]["cause"] == ["headroom", "weak_capture"]
+    assert result["diagnostics"]["apply_recommended"] is True
+
+
+@pytest.mark.usefixtures("compressor_fallback", "partial_results")
+def test_a_withheld_tone_and_a_withheld_compressor_leave_the_rest_recommended(monkeypatch):
+    result = _analyze_clean_capture(
+        monkeypatch,
+        _auto_eq_abstains("no validated correction improved the target safely"),
+        headroom_at=_short_of_headroom_unless_users,
+        incumbent_settings={"compressor": _USERS_COMPRESSOR},
+    )
+
+    assert result["diagnostics"]["tone_withheld"] is not None
+    assert result["diagnostics"]["compressor_withheld"] is not None
+    assert result["diagnostics"]["apply_recommended"] is True
+
+
+def _fails_beyond_headroom_unless_users(extra):
+    def reading(compressor):
+        return 2.0 if _is_users_compressor(compressor) else {**_headroom_reading(-4.0), **extra}
+
+    return reading
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"output_true_peak_db": 0.0}, {"compressor_gain_reduction_db": 20.0}, {"deesser_gain_reduction_db": 11.0}],
+    ids=["true-peak", "compressor-cap", "deesser"],
+)
+def test_a_final_check_failure_beyond_headroom_is_refused_as_before(monkeypatch, extra):
+    options = {
+        "headroom_at": _fails_beyond_headroom_unless_users(extra),
+        "incumbent_settings": {"compressor": _USERS_COMPRESSOR},
+    }
+    refused = _analyze_with_fallback(monkeypatch, True, **options)
+    as_before = _analyze_with_fallback(monkeypatch, False, **options)
+
+    assert refused["diagnostics"]["compressor_withheld"] is None
+    assert refused["diagnostics"]["apply_recommended"] is False
+    assert refused["diagnostics"]["offline_validation_passed"] is False
+    assert not _is_users_compressor(refused["compressor_settings"])
+    assert repr(refused) == repr(as_before)
+
+
+_WITH_USERS = {"compressor": _USERS_COMPRESSOR}
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"headroom_at": lambda compressor: -4.0, "incumbent_settings": _WITH_USERS},
+        {"noise": _SILENT_ROOM, "headroom_at": lambda compressor: -4.0, "incumbent_settings": _WITH_USERS},
+        {
+            "noise": _SILENT_ROOM,
+            "alter": _auto_eq_abstains("capture quality score is too low"),
+            "incumbent_settings": _WITH_USERS,
+        },
+        {"noise": _SILENT_ROOM, "incumbent_settings": {}},
+        {"headroom_at": _short_of_headroom_unless_users, "incumbent_settings": {}},
+    ],
+    ids=[
+        "headroom-fails-with-the-users-compressor-too",
+        "weak-capture-fails-with-the-users-compressor-too",
+        "weak-capture-and-the-tone-refused",
+        "weak-capture-no-compressor-known",
+        "headroom-no-compressor-known",
+    ],
+)
+def test_where_the_users_compressor_cannot_rescue_the_setup_it_is_refused_as_before(monkeypatch, options):
+    refused = _analyze_with_fallback(monkeypatch, True, **options)
+    as_before = _analyze_with_fallback(monkeypatch, False, **options)
+
+    assert refused["diagnostics"]["compressor_withheld"] is None
+    assert refused["diagnostics"]["apply_recommended"] is False
+    assert repr(refused) == repr(as_before)
+
+
+_SWITCH_OFF_CASES = {
+    "headroom-only": {"headroom_at": _short_of_headroom_unless_users},
+    "weak-capture": {"noise": _SILENT_ROOM},
+    "weak-and-headroom": {"noise": _SILENT_ROOM, "headroom_at": _short_of_headroom_unless_users},
+    "clean": {},
+}
+
+
+@pytest.mark.parametrize("case", list(_SWITCH_OFF_CASES.values()), ids=list(_SWITCH_OFF_CASES))
+def test_with_the_switch_off_the_users_compressor_changes_nothing(monkeypatch, case):
+    knowing = _analyze_with_fallback(monkeypatch, False, incumbent_settings=_WITH_USERS, **case)
+    ignorant = _analyze_with_fallback(monkeypatch, False, incumbent_settings={}, **case)
+
+    assert repr(knowing) == repr(ignorant)
+    assert knowing["diagnostics"]["compressor_withheld"] is None
+    assert not _is_users_compressor(knowing["compressor_settings"])
+    assert knowing["diagnostics"]["apply_recommended"] is (not case)
+
+
+def test_with_the_switch_off_the_two_refusals_read_as_they_always_did(monkeypatch):
+    headroom = _analyze_with_fallback(
+        monkeypatch, False, headroom_at=_short_of_headroom_unless_users, incumbent_settings=_WITH_USERS
+    )["diagnostics"]
+    weak = _analyze_with_fallback(
+        monkeypatch, False, noise=_SILENT_ROOM, incumbent_settings=_WITH_USERS
+    )["diagnostics"]
+
+    assert headroom["offline_validation_passed"] is False
+    assert "final full-chain headroom validation did not pass" in headroom["uncertainty_reasons"]
+    assert weak["weak_capture"] is True and weak["offline_validation_passed"] is True
+    assert weak["apply_recommended"] is False
+
+
+def test_with_the_switch_on_a_setup_that_passes_is_the_same_as_with_it_off(monkeypatch):
+    on = _analyze_with_fallback(monkeypatch, True, incumbent_settings=_WITH_USERS)
+    off = _analyze_with_fallback(monkeypatch, False, incumbent_settings=_WITH_USERS)
+
+    assert on["diagnostics"]["compressor_withheld"] is None
+    assert repr(on) == repr(off)
 
 
 @pytest.mark.parametrize("auto_makeup", [True, False], ids=["automatic-makeup", "manual-makeup"])

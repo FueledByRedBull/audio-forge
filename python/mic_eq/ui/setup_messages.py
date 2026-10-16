@@ -287,6 +287,16 @@ def _number(value: object) -> float | None:
 _WITHHELD = (
     "Automatic loudness was not switched on{makeup} and the settings are suggestions only."
 )
+_COMPRESSOR_KEPT = "Your compressor stays as it is"
+_COMPRESSOR_WHY = {
+    "headroom": "The proposed loudness would leave too little room before the limiter.",
+    "weak_capture": "The recording was too weak to set the dynamics safely.",
+}
+
+
+def compressor_withheld_note(withheld: Mapping[str, Any] | None) -> str:
+    """Why the compressor stays as the user has it, or nothing when setup set it."""
+    return " ".join(_COMPRESSOR_WHY[cause] for cause in (withheld or {}).get("cause") or ())
 
 
 def _capture_issues(
@@ -303,6 +313,13 @@ def _capture_issues(
     """
     makeup = _number((compressor or {}).get("makeup_gain_db"))
     withheld = _WITHHELD.format(makeup=f" (makeup is fixed at {makeup:.1f} dB)" if makeup is not None else "")
+    suggestions = "The settings are suggestions only."
+    kept = bool(diagnostics.get("compressor_withheld"))
+    if kept:
+        # The user's compressor stays, so nothing was held back from it; the rest may still apply.
+        withheld = suggestions = _COMPRESSOR_KEPT + (
+            " and the rest applies." if diagnostics.get("apply_recommended") else ", and the settings are suggestions only."
+        )
     lines: list[tuple[str, str]] = []
     snr = _number(diagnostics.get("noise_referenced_snr_db"))
     if snr is not None and snr < 6.0:
@@ -315,7 +332,7 @@ def _capture_issues(
         lines.append((
             "snr_under_8_db",
             f"Your voice was {_floor(snr, 1)} dB louder than the room noise; setup is happiest with 8 dB or more. "
-            "The settings are suggestions only. Record again closer to the microphone, or in a quieter room.",
+            f"{suggestions} Record again closer to the microphone, or in a quieter room.",
         ))
     active = _number(diagnostics.get("vad_active_duration_s"))
     if active is not None and active < 2.0:
@@ -349,13 +366,14 @@ def _capture_issues(
             "capture_quality_low",
             f"The recording was unclear overall (capture quality "
             f"{_floor(Decimal(repr(capture)).scaleb(2), 0)}%). "
-            "The settings are suggestions only. Record again in a quieter room, closer to the microphone.",
+            f"{suggestions} Record again in a quieter room, closer to the microphone.",
         ))
     if diagnostics.get("weak_capture") and not lines:
         lines.append((
             "weak_capture",
-            "The recording did not pass setup's quality checks, so the settings are suggestions only. "
-            "Record again in a quiet room, closer to the microphone.",
+            "The recording did not pass setup's quality checks"
+            + (f". {suggestions} " if kept else ", so the settings are suggestions only. ")
+            + "Record again in a quiet room, closer to the microphone.",
         ))
     return lines
 

@@ -265,3 +265,49 @@ def test_the_verification_summary_says_the_tone_was_kept_when_it_was_withheld():
     kept = verification_summary(result, tone_withheld=True)
     assert kept.startswith("Tone: kept as it is. The compressor evened out your voice by 3.0 dB. ")
     assert "from the preset" not in kept
+
+
+def test_a_kept_compressor_says_why_in_plain_words():
+    from mic_eq.ui.setup_messages import compressor_withheld_note
+
+    def withheld(*cause):
+        return {"reason_code": "compressor_withheld", "cause": list(cause)}
+
+    assert compressor_withheld_note(None) == ""
+    assert compressor_withheld_note(withheld("headroom")) == (
+        "The proposed loudness would leave too little room before the limiter."
+    )
+    assert compressor_withheld_note(withheld("weak_capture")) == (
+        "The recording was too weak to set the dynamics safely."
+    )
+    both = compressor_withheld_note(withheld("headroom", "weak_capture"))
+    assert both.startswith("The proposed loudness") and both.endswith("set the dynamics safely.")
+
+
+@pytest.mark.parametrize(
+    "found",
+    [
+        {"noise_referenced_snr_db": 4.0},
+        {"noise_referenced_snr_db": 7.0},
+        {"vad_active_duration_s": 1.2},
+        {"capture_confidence": 0.3},
+        {"uncertainty_reasons": ["too few voiced frames for a stable spectrum"]},
+        {"noise_reference_quality": {"status": "questionable", "reasons": ["room-noise capture is not stationary"]}},
+        {},
+    ],
+    ids=["snr-under-6", "snr-under-8", "speech-under-2s", "capture-quality", "single-spectrum", "room-noise", "unnamed"],
+)
+def test_the_weak_capture_lines_say_the_rest_applies_when_the_compressor_is_kept(found):
+    from mic_eq.ui.setup_messages import capture_issue_lines
+
+    diagnostics = {"weak_capture": True, **found}
+    as_before = capture_issue_lines(diagnostics, {"makeup_gain_db": 2.0})
+    withheld = {"reason_code": "compressor_withheld", "cause": ["weak_capture"]}
+    applies = capture_issue_lines({**diagnostics, "compressor_withheld": withheld, "apply_recommended": True})
+    advisory = capture_issue_lines({**diagnostics, "compressor_withheld": withheld, "apply_recommended": False})
+
+    assert all("suggestions only" in line for line in as_before)
+    assert len(applies) == len(advisory) == len(as_before)
+    assert all("Your compressor stays as it is and the rest applies." in line for line in applies)
+    assert not any("suggestions only" in line or "Automatic loudness" in line for line in applies)
+    assert all("Your compressor stays as it is, and the settings are suggestions only." in line for line in advisory)

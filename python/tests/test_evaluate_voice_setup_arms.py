@@ -449,17 +449,20 @@ def _first_take(device, readings):
     return device[start : start + 10 * RATE].astype(np.float32)
 
 
-def test_a_too_hot_recording_is_scaled_so_the_level_checks_peak_reading_is_minus_six_db():
-    from mic_eq.ui.level_check import TARGET_PEAK_DB, verdict_from_audio
+@pytest.mark.parametrize(("lower", "target"), [(False, -6.0), (True, -11.0)])
+def test_a_too_hot_recording_is_scaled_so_the_level_checks_peak_reading_lands_on_its_target(monkeypatch, lower, target):
+    from mic_eq.ui import level_check
+    from mic_eq.ui.level_check import verdict_from_audio
 
+    monkeypatch.setattr(level_check, "LOWER_LEVEL_TARGET", lower)
     clean, device = _too_hot()
     built = ev.construct(clean, device, ev.speech_labels(clean), lambda noise, voice: (None, None))
     level = built["readings"]["level"]
     raw = verdict_from_audio(_first_take(device, built["readings"]), RATE)
     assert raw.code == "too_hot" and level["before"] == "too_hot" and raw.peak_db is not None
     assert level["gain_db"] < 0 and level["after"] == verdict_from_audio(built["setup"], RATE).code != "too_hot"
-    assert verdict_from_audio(built["setup"], RATE).peak_db == pytest.approx(TARGET_PEAK_DB, abs=1e-3)
-    assert raw.peak_db + level["gain_db"] == pytest.approx(TARGET_PEAK_DB, abs=1e-3)
+    assert verdict_from_audio(built["setup"], RATE).peak_db == pytest.approx(target, abs=1e-3)
+    assert raw.peak_db + level["gain_db"] == pytest.approx(target, abs=1e-3)
 
 
 def test_the_rows_level_check_is_the_verdict_of_the_recording_before_scaling(monkeypatch, tmp_path):

@@ -88,9 +88,20 @@ The keyboard and screen reader support from 1.17.0 was checked with automated
 tests that use Qt's accessibility interfaces. A real screen reader and voice
 control were not tested.
 
-No audio-hardware run of this build is claimed. The hour-long run on a real USB
-microphone in the 1.17.0 notes was a 1.17.0 development build and is not
-attributed to this one.
+This build ran for an hour on Windows 11 with a real USB microphone and a silent
+output on a separate clock, output muted, factory settings. Memory stayed within
+1.5 % of its five-minute reading. There were no dropouts, restarts or output
+recoveries, and Health named no fault except gate chatter: the room noise sat
+near the default gate threshold. The hands-on checklist in RELEASING.md was also
+run on this build. These parts were driven through Windows UI Automation and
+passed: first launch, the three pages, Start and Stop (with room noise, not
+speech), Mute in the window, closing to the tray and launching again, quitting
+with the tray off, closing Guided Setup during the level check, the diagnostics
+export, and the pages at the minimum window size. The maintainer ran the rest
+(edits and undo, preset loads, a muted microphone, a device change, the tray
+menu and tooltip, Ctrl+Q and the unsaved-changes prompt, login startup) and
+reported no failure. That is one machine and one route. Audible output, sleep
+and resume, and other audio applications were not tested.
 
 Voice Setup can still refuse a setup that would have been no worse than the
 settings it would replace. In a held-out study (17 speakers, 170 cases at factory

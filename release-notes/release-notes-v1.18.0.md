@@ -93,13 +93,15 @@ output on a separate clock, output muted, factory settings. Memory stayed within
 1.5 % of its five-minute reading. There were no dropouts, restarts or output
 recoveries, and Health named no fault except gate chatter: the room noise sat
 near the default gate threshold. The hands-on checklist in RELEASING.md was also
-run on this build. First launch, the three pages, Start and Stop, Mute, closing
-Guided Setup during the level check, the diagnostics export and the minimum
-window size were driven through Windows UI Automation and passed. The maintainer
-ran the rest (edits and undo, a preset load, a muted microphone, a device change,
-the tray and quit, login startup) and reported no failure. That is one machine
-and one route. Audible output, sleep and resume, and other audio applications
-were not tested.
+run on this build. These parts were driven through Windows UI Automation and
+passed: first launch, the three pages, Start and Stop (with room noise, not
+speech), Mute in the window, closing to the tray and launching again, quitting
+with the tray off, closing Guided Setup during the level check, the diagnostics
+export, and the pages at the minimum window size. The maintainer ran the rest
+(edits and undo, preset loads, a muted microphone, a device change, the tray
+menu and tooltip, Ctrl+Q and the unsaved-changes prompt, login startup) and
+reported no failure. That is one machine and one route. Audible output, sleep
+and resume, and other audio applications were not tested.
 
 Voice Setup can still refuse a setup that would have been no worse than the
 settings it would replace. In a held-out study (17 speakers, 170 cases at factory

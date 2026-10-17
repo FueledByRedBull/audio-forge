@@ -287,3 +287,16 @@ def test_entry_opens_the_two_clip_dialog_with_the_raw_capture(harness):
     }
     # One mute for the capture, one while the preview dialog is open.
     assert window.mutes == [(True, "test_my_sound"), (False, "test_my_sound")] * 2
+
+
+def test_the_recording_window_says_the_live_output_is_muted(harness, monkeypatch):
+    shown: list[str] = []
+
+    def exec_and_note(dialog) -> int:
+        shown.extend(label.text() for label in dialog.findChildren(module.QLabel))
+        return int(module.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(module.QDialog, "exec", exec_and_note)
+    open_test_my_sound(_Window(_Processor()))
+
+    assert any("muted" in text.lower() and "call" in text.lower() for text in shown)

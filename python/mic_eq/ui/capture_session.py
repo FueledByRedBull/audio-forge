@@ -17,6 +17,11 @@ CAPTURE_NO_PROGRESS_TIMEOUT_S = 3.0
 CAPTURE_START_GRACE_S = 2.0
 CAPTURE_COMPLETION_GRACE_S = 5.0
 
+# Shown by every dialog that records through CaptureSession, which mutes the live output.
+LIVE_OUTPUT_MUTED_NOTICE = (
+    "Your live output is muted while this records, so others on a call won't hear you."
+)
+
 
 @dataclass
 class CaptureProgressDeadline:

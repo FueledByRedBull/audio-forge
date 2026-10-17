@@ -13,6 +13,7 @@
 ### Window and interface
 
 - When the renderer never starts and the software-rendering restart itself cannot start, AudioForge now stays open on the error screen, which says the restart failed. Before, it quit first and ignored whether the new copy started, leaving nothing running. The order is now: close the window (the close still saves, stops audio and can be cancelled), start the copy, and quit only if it started. If the copy cannot start, the single-instance guard is taken back, the tray icon and mute hotkey come back, and the window shows the error screen.
+- Closing Guided Setup during its level check left audio processing running. Closing it now stops processing if the check started it; processing that was already running keeps running.
 
 ### Diagnostics
 

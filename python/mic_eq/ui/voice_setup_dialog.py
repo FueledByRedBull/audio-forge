@@ -54,6 +54,7 @@ from ..config import (
 from .accessibility import bind_label, set_accessible_group
 from .capture_session import (
     CaptureSession,
+    LIVE_OUTPUT_MUTED_NOTICE,
     active_device_identities as _active_device_identities,
     device_label as _device_label,
     device_name as _device_name,
@@ -797,6 +798,11 @@ class VoiceSetupDialog(QDialog):
         )
         voice_layout.addWidget(passage_text)
         layout.addWidget(voice_group)
+
+        self.mute_notice = QLabel(LIVE_OUTPUT_MUTED_NOTICE)
+        self.mute_notice.setWordWrap(True)
+        self.mute_notice.setStyleSheet(SUBDUED_TEXT_STYLE)
+        layout.addWidget(self.mute_notice)
 
         self.recording_group = QGroupBox("Recording")
         recording_layout = QVBoxLayout(self.recording_group)

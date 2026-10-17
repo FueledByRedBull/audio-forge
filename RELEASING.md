@@ -258,9 +258,10 @@ Threads, handles, `jitter_dropped_samples` and `output_retime_adjustment_count`
 are recorded, not gated. A steady climb in threads or handles is a finding to
 explain before tagging. The jitter counter adds up the samples that output drift
 retiming trims. A route whose input and output run on separate clocks retimes
-all the time, and the Health page's Drops row leaves these samples out. Not covered: other machines and microphone routes,
-non-factory settings, an audible output (a muted Output row doesn't count
-toward the verdict), device changes, sleep or resume, other audio applications.
+all the time, and the Health page counts these samples neither as drops nor as
+an engine fault. Not covered: other machines and microphone routes, non-factory
+settings, an audible output (a muted Output row doesn't count toward the
+verdict), device changes, sleep or resume, other audio applications.
 The fault criterion can fail: it would have failed 1.16.0, whose Drops row
 called gate chatter an engine fault (see CHANGELOG).
 

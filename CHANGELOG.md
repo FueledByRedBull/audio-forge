@@ -23,7 +23,8 @@
 ### Diagnostics
 
 - The diagnostics export stays at schema version 3. `main_control_tab_index`, which has always been 0 since the classic view went, is no longer exported. A settings file that still has it, or `main_splitter_sizes`, loads as before.
-- In the packaged app, uncaught exceptions from any thread now go to `app.log`, hard crashes go to `crash.log` beside it (deleted when empty), and a failed start shows a dialog that points to the log. The smoke test and login starts never show the dialog. Before, these failures left no window and no log entry.
+- Uncaught Python exceptions from any thread now go to `app.log`, and hard crashes go to `crash.log` beside it (deleted when empty). In the packaged app, a main window that fails to open also shows a dialog that points to the log; the smoke test and login starts never show it. Before, the packaged app had no console, so these failures left no log entry, and a failed start left no window either.
+- The Health page no longer reports an engine fault when output drift retiming trims a few samples, and Guided Setup's route check no longer fails on it. A route whose input and output run on separate clocks retimes all the time, so its Drops row could say "needs attention" for five seconds at a time. The diagnostics export still carries `jitter_dropped_samples`.
 
 ### Internal
 

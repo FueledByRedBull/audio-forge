@@ -47,10 +47,14 @@ AudioForge remains unsigned. Virtual audio cable setup is described in the
   knowing why.
 - A preset with a number too large to read no longer stops AudioForge from
   opening; it is skipped like any other damaged preset. The same kind of value in
-  the settings file no longer resets all your settings, only that one.
-- If AudioForge fails to start or crashes, the reason now goes to its log
-  (`app.log`, or `crash.log` for a hard crash). A failed start also shows a
-  message with the log's location.
+  the settings file no longer resets all your other settings.
+- If AudioForge crashes or its window fails to open, the reason now goes to its
+  log (`app.log`, or `crash.log` for a hard crash). A window that fails to open
+  also shows a message with the log's location.
+- With a microphone and an output on separate clocks, such as two USB devices,
+  the Health page could flag an engine fault for a few seconds at a time, and
+  Guided Setup's route check could fail, while AudioForge was only keeping the
+  two in step. Neither happens now.
 
 ## Changes
 

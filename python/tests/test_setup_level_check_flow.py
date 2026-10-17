@@ -442,3 +442,27 @@ def test_the_start_button_is_named_by_what_it_says(voice, auto_eq) -> None:
         dialog._capture_start_timer.stop()
         dialog._on_recording_complete(take)
         assert accessible_name(dialog.start_button) == dialog.start_button.text()
+
+
+def _says_live_output_is_muted(label) -> bool:
+    text = label.text().lower()
+    # A screen reader reads the sentence itself, not a fixed name.
+    read_aloud = label.accessibleName() in ("", label.text())
+    return label.isVisibleTo(label.window()) and read_aloud and "muted" in text and "call" in text
+
+
+def test_voice_setup_says_the_live_output_is_muted_while_it_records(voice) -> None:
+    assert _says_live_output_is_muted(voice.mute_notice)
+
+    voice._on_start_clicked()
+
+    assert _says_live_output_is_muted(voice.mute_notice)
+
+
+def test_auto_eq_says_the_live_output_is_muted_while_it_records(auto_eq) -> None:
+    assert _says_live_output_is_muted(auto_eq.mute_notice)
+
+    auto_eq._on_start_clicked()
+    auto_eq._capture_start_timer.stop()
+
+    assert _says_live_output_is_muted(auto_eq.mute_notice)

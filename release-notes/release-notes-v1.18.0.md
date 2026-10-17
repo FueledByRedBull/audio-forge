@@ -1,6 +1,6 @@
 AudioForge 1.18.0 is a small release. Voice Setup no longer replaces your EQ
 with a flat one when Auto-EQ holds back its tone change, the diagnostics export
-says why a recording was judged weak, and a failed software-rendering restart
+gives each weak-capture cause a stable code, and a failed software-rendering restart
 now ends on the error screen. It changes no Voice Setup or Auto-EQ decision, and
 the audio engine is unchanged.
 
@@ -16,12 +16,13 @@ AudioForge remains unsigned. Virtual audio cable setup is described in the
 
 ## New
 
-- When Voice Setup judges a recording weak, the diagnostics export now names
-  each cause with its own code: `snr_under_6_db`, `snr_under_8_db`,
+- When Voice Setup judges a recording weak, the diagnostics export now also
+  gives each cause a short, stable code: `snr_under_6_db`, `snr_under_8_db`,
   `speech_under_2_s`, `spectrum_fallback`, `noise_reference_not_usable` or
-  `capture_quality_low` (`weak_capture` when none of them applies). Before, all of
-  them exported as `weak_capture`. The messages you read, the thresholds and the
-  analysis are unchanged.
+  `capture_quality_low` (`weak_capture` when none of them applies). The codes it
+  already derived from the reason text are still there; a voice under 6 dB over
+  the room had none of its own before. The messages you read, the thresholds and
+  the analysis are unchanged.
 
 ## Fixes
 
@@ -46,25 +47,26 @@ AudioForge remains unsigned. Virtual audio cable setup is described in the
 - Voice Setup and Auto-EQ decide as they did in 1.17.0. Three changes that were
   tried (keeping your EQ when only the tone change is refused, a by-band tonal
   check, and an RNNoise default strength of 0.7) each failed a predefined gate on
-  held-out recordings, so none was adopted.
+  held-out recordings, so none was adopted. Two more, built later, were not
+  evaluated and are off.
 
 Live audio processing, sound defaults and the preset format are unchanged, and
 settings from earlier versions load as before. The audio engine's code changes
-only by deleting methods nothing called.
+only by deleting methods no production code called.
 
 ## Validation and limits
 
 The evidence archive records the exact candidate revision, hashes and automated
 qualification results, including portable startup and MSI lifecycle checks.
 
-The path where the software-rendering copy cannot start is covered by automated
-tests: the app stays running, keeps the single-instance guard and shows the error
-screen. It was not tried on a machine where starting a process fails. The
-software restart itself was tried once on a packaged 1.17.0 development build
-with the Direct3D adapter forced to fail, and the error screen and the
-software-rendering path are covered by tests that run offscreen; they show that
-the scene works under software rendering, not that every failing driver is
-detected. A machine with no usable graphics adapter was not tested.
+This release changes the order of the software-rendering restart: close the
+window, start the copy, and quit only if it started. Both outcomes are covered by
+automated tests that run offscreen; on this build the restart was not tried on a
+packaged app or on a machine where starting a process fails. The 1.17.0 order was
+tried once on a packaged development build with the Direct3D adapter forced to
+fail. The tests show that the scene works under software rendering, not that
+every failing driver is detected. A machine with no usable graphics adapter was
+not tested.
 
 The keyboard and screen reader support from 1.17.0 was checked with automated
 tests that use Qt's accessibility interfaces. A real screen reader and voice
@@ -74,9 +76,10 @@ No audio-hardware run of this build is claimed. The hour-long run on a real USB
 microphone in the 1.17.0 notes was a 1.17.0 development build and is not
 attributed to this one.
 
-Voice Setup can still refuse a setup that would have been no worse than your
-current settings: in a held-out study of 170 recordings, that happened for 58,
-mostly through the weak-capture check and the final check.
+Voice Setup can still refuse a setup that would have been no worse than the
+settings it would replace. In a held-out study (17 speakers, 170 cases at factory
+settings or with a hand-set tone EQ, judged within the study's tolerances), that
+happened in 58 cases, mostly through the weak-capture check and the final check.
 
 The v1.15.0 audio timing exception remains: one component-event statistic was
 1.2151 ms against a 0.5 ms limit; every complete processing kernel in that study

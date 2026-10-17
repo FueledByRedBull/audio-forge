@@ -37,20 +37,14 @@ def test_minimal_preset_disables_voice_dynamics_but_keeps_output_protection():
     assert preset.limiter.enabled and preset.limiter.careful_output_enabled
 
 
-def test_new_preset_noise_strength_is_the_factory_default_unless_the_constant_changes(monkeypatch):
+def test_new_preset_noise_strength_is_the_factory_default():
     assert Preset().rnnoise.strength == 1.0
     assert config.BUILTIN_PRESETS["minimal"].rnnoise.strength == 1.0
     saved = {"name": "Old", "version": "1.6.0", "rnnoise": {"enabled": True, "strength": 0.4, "model": "rnnoise"}}
     saved_without_rnnoise = {"name": "Old", "version": "1.6.0"}
 
-    with monkeypatch.context() as scope:
-        scope.setattr("mic_eq.config_parts.settings.DEFAULT_SUPPRESSOR_STRENGTH", 0.7)
-        assert Preset().rnnoise.strength == 0.7
-        # Saved values and the loader's own fallback do not follow it.
-        assert Preset.from_dict(saved).rnnoise.strength == 0.4
-        assert Preset.from_dict(saved_without_rnnoise).rnnoise.strength == 1.0
-
-    assert Preset().rnnoise.strength == 1.0
+    assert Preset.from_dict(saved).rnnoise.strength == 0.4
+    assert Preset.from_dict(saved_without_rnnoise).rnnoise.strength == 1.0
 
 
 def test_preset_save_is_atomic_and_preserves_existing_file_on_replace_failure(

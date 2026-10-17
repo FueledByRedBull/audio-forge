@@ -253,7 +253,9 @@ def test_a_tone_step_abstention_says_what_to_do(reason):
     assert sentence.endswith(".") and ("Record again" in sentence or "Move closer" in sentence)
 
 
-def test_the_verification_summary_says_the_tone_was_kept_when_it_was_withheld():
+
+
+def test_the_verification_summary_reports_the_tone_error_before_and_after():
     from mic_eq.ui.setup_messages import verification_summary
 
     result = {
@@ -262,25 +264,9 @@ def test_the_verification_summary_says_the_tone_was_kept_when_it_was_withheld():
         "compressor_gain_reduction_p95_db": 3.0,
     }
 
-    assert verification_summary(result).startswith("Tone: 0.8 dB from the preset before, 0.9 dB after. ")
-    kept = verification_summary(result, tone_withheld=True)
-    assert kept.startswith("Tone: kept as it is. The compressor evened out your voice by 3.0 dB. ")
-    assert "from the preset" not in kept
-
-
-def test_a_kept_compressor_says_why_in_plain_words():
-    from mic_eq.ui.setup_messages import compressor_withheld_note
-
-    def withheld(*cause):
-        return {"reason_code": "compressor_withheld", "cause": list(cause)}
-
-    assert compressor_withheld_note(None) == ""
-    headroom = compressor_withheld_note(withheld("headroom"))
-    weak = compressor_withheld_note(withheld("weak_capture"))
-    assert "too little room before the limiter" in headroom and "recording" not in headroom
-    assert "recording was too weak" in weak and "limiter" not in weak
-    both = compressor_withheld_note(withheld("headroom", "weak_capture"))
-    assert headroom in both and weak in both
+    assert verification_summary(result).startswith(
+        "Tone: 0.8 dB from the preset before, 0.9 dB after. The compressor evened out your voice by 3.0 dB. "
+    )
 
 
 @pytest.mark.parametrize(
@@ -296,32 +282,10 @@ def test_a_kept_compressor_says_why_in_plain_words():
     ],
     ids=["snr-under-6", "snr-under-8", "speech-under-2s", "capture-quality", "single-spectrum", "room-noise", "unnamed"],
 )
-def test_the_weak_capture_lines_say_the_rest_applies_when_the_compressor_is_kept(found):
+def test_the_weak_capture_lines_say_the_settings_are_suggestions_only(found):
     from mic_eq.ui.setup_messages import capture_issue_lines
 
-    diagnostics = {"weak_capture": True, **found}
-    as_before = capture_issue_lines(diagnostics, {"makeup_gain_db": 2.0})
-    withheld = {"reason_code": "compressor_withheld", "cause": ["weak_capture"]}
-    applies = capture_issue_lines({**diagnostics, "compressor_withheld": withheld, "apply_recommended": True})
-    advisory = capture_issue_lines({**diagnostics, "compressor_withheld": withheld, "apply_recommended": False})
+    lines = capture_issue_lines({"weak_capture": True, **found}, {"makeup_gain_db": 2.0})
 
-    assert all("suggestions only" in line for line in as_before)
-    assert len(applies) == len(advisory) == len(as_before)
-    kept = "Your compressor stays as it is, and the other settings passed the final check."
-    assert all(kept in line for line in applies)
-    assert not any("suggestions only" in line or "Automatic loudness" in line for line in applies)
-    # Nothing says setup needs what the recording lacked and then that the rest applies anyway.
-    assert not any("needs at least" in line for line in applies if "louder" in line)
-    assert all("Your compressor stays as it is, and the settings are suggestions only." in line for line in advisory)
-
-
-def test_a_compressor_kept_for_headroom_alone_keeps_the_six_db_need_in_the_faint_voice_line():
-    from mic_eq.ui.setup_messages import capture_issue_lines
-
-    withheld = {"reason_code": "compressor_withheld", "cause": ["headroom"]}
-    (line,) = capture_issue_lines(
-        {"weak_capture": True, "noise_referenced_snr_db": 4.0, "compressor_withheld": withheld, "apply_recommended": False}
-    )
-
-    assert "setup needs at least 6 dB" in line
-    assert "too little for setup to set your compressor" not in line
+    assert lines
+    assert all("suggestions only" in line for line in lines)

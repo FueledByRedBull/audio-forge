@@ -244,10 +244,6 @@ def analyze_auto_eq(
 
     if not validation.passed:
         # Raise with generic user message (not technical details)
-        raise AnalysisValidationError(
-            validation.reason,
-            validation.details["failures"],
-            validation.details["tone_only"],
-        )
+        raise AnalysisValidationError(validation.reason, validation.details["failures"])
 
     return eq_settings, validation

@@ -1534,17 +1534,15 @@ def _voice_spectrum():
 
 
 @pytest.mark.parametrize(
-    ("gains", "headroom", "tone_only"),
+    ("gains", "headroom", "failed"),
     [
-        ([12.0] * 6 + [0.0] * 4, {"safe": True}, True),  # clipped_gains >= 6
-        ([10.8] * 10, {"safe": True}, True),  # gain_rms > 10 dB
-        ([12.0] * 5 + [0.0] * 5, {"safe": True}, True),  # two soft tone failures together
-        ([12.0] * 6 + [0.0] * 4, {"safe": False, "authoritative": True, "status": "risk"}, False),
-        ([0.0] * 10, {"safe": False, "authoritative": True, "status": "risk"}, False),
+        ([12.0] * 6 + [0.0] * 4, {"safe": True}, ("clipped_gains",)),
+        ([10.8] * 10, {"safe": True}, ("gain_rms",)),
+        ([0.0] * 10, {"safe": False, "authoritative": True, "status": "risk"}, ("headroom risk",)),
     ],
-    ids=["clipped", "rms", "soft-pair", "tone-and-headroom", "headroom-only"],
+    ids=["clipped", "rms", "headroom-only"],
 )
-def test_validation_says_whether_only_the_tone_fit_failed(gains, headroom, tone_only):
+def test_validation_names_the_failed_criterion(gains, headroom, failed):
     spectrum_db, freqs = _voice_spectrum()
 
     validation = validate_analysis(
@@ -1552,23 +1550,19 @@ def test_validation_says_whether_only_the_tone_fit_failed(gains, headroom, tone_
     )
 
     assert not validation.passed
-    assert validation.details["tone_only"] is tone_only
+    assert any(failure.startswith(failed) for failure in validation.details["failures"])
 
 
-def test_an_unclear_capture_is_not_a_tone_only_failure():
-    freqs = np.linspace(0.0, 24_000.0, 4097)
-
-    validation = validate_analysis(
-        {"band_gains": [12.0] * 6 + [0.0] * 4}, np.zeros_like(freqs), freqs
-    )
-
-    assert not validation.passed
-    assert validation.details["tone_only"] is False
-
-
-@pytest.mark.parametrize(("gains", "tone_only"), [([12.0] * 6 + [0.0] * 4, True), ([0.0] * 10, False)])
-def test_the_pipeline_raises_a_value_error_that_carries_the_classification(
-    monkeypatch, gains, tone_only
+@pytest.mark.parametrize(
+    ("gains", "headroom", "failures"),
+    [
+        ([12.0] * 6 + [0.0] * 4, {"safe": True}, ["clipped_gains (6 >= 6)"]),
+        ([0.0] * 10, {"safe": False, "status": "risk"}, ["headroom risk after downstream simulation"]),
+    ],
+    ids=["clipped-gains", "headroom-risk"],
+)
+def test_the_pipeline_raises_a_value_error_that_carries_the_failures(
+    monkeypatch, gains, headroom, failures
 ):
     from mic_eq.analysis.auto_eq_parts import pipeline
     from mic_eq.analysis.failure_detection import AnalysisValidationError
@@ -1584,7 +1578,7 @@ def test_the_pipeline_raises_a_value_error_that_carries_the_classification(
         lambda _audio, _rate, eq, **_kwargs: {
             **eq,
             "band_gains": gains,
-            "headroom_validation": {"safe": True} if tone_only else {"safe": False, "status": "risk"},
+            "headroom_validation": headroom,
         },
     )
 
@@ -1595,10 +1589,7 @@ def test_the_pipeline_raises_a_value_error_that_carries_the_classification(
         )
 
     assert isinstance(raised.value, AnalysisValidationError)
-    assert raised.value.tone_only is tone_only
-    assert raised.value.failures == (
-        ["clipped_gains (6 >= 6)"] if tone_only else ["headroom risk after downstream simulation"]
-    )
+    assert raised.value.failures == failures
 
 
 def test_unavailable_headroom_is_unknown_not_a_capture_quality_failure():

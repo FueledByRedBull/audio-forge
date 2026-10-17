@@ -146,8 +146,6 @@ _REASON_RULES: tuple[tuple[str, str], ...] = (
      "The tone of the second recording differed by {db} dB. Read the same passage again at the same distance and volume."),
     (r"target error worsened from (?P<a>[\d.]+) to (?P<b>[\d.]+) dB",
      "The tone got further from the preset: {a} dB away before, {b} dB after."),
-    (r"tone error per third-octave band worsened from (?P<a>[\d.]+) to (?P<b>[\d.]+) dB",
-     "Counting every part of your voice alike, the tone got further from the preset: {a} dB away before, {b} dB after."),
     (r"relative noise floor increased by (?P<db>[\d.]+) dB",
      "Background noise grew by {db} dB compared with your voice."),
     (r"candidate increased relative noise floor by (?P<db>[\d.]+) dB",
@@ -287,22 +285,6 @@ def _number(value: object) -> float | None:
 _WITHHELD = (
     "Automatic loudness was not switched on{makeup} and the settings are suggestions only."
 )
-_COMPRESSOR_KEPT = "Your compressor stays as it is"
-_COMPRESSOR_WHY = {
-    "headroom": "The proposed loudness would leave too little room before the limiter.",
-    "weak_capture": "The recording was too weak to set the dynamics safely.",
-}
-
-
-def kept_for_weak_capture(diagnostics: Mapping[str, Any]) -> bool:
-    """Whether the compressor stays as the user has it because the recording was weak."""
-    withheld = diagnostics.get("compressor_withheld")
-    return isinstance(withheld, Mapping) and "weak_capture" in (withheld.get("cause") or ())
-
-
-def compressor_withheld_note(withheld: Mapping[str, Any] | None) -> str:
-    """Why the compressor stays as the user has it, or nothing when setup set it."""
-    return " ".join(_COMPRESSOR_WHY[cause] for cause in (withheld or {}).get("cause") or ())
 
 
 def _capture_issues(
@@ -320,26 +302,13 @@ def _capture_issues(
     makeup = _number((compressor or {}).get("makeup_gain_db"))
     withheld = _WITHHELD.format(makeup=f" (makeup is fixed at {makeup:.1f} dB)" if makeup is not None else "")
     suggestions = "The settings are suggestions only."
-    kept = bool(diagnostics.get("compressor_withheld"))
-    if kept:
-        # The user's compressor stays, so nothing was held back from it; the rest may still apply.
-        withheld = suggestions = _COMPRESSOR_KEPT + (
-            ", and the other settings passed the final check."
-            if diagnostics.get("apply_recommended")
-            else ", and the settings are suggestions only."
-        )
     lines: list[tuple[str, str]] = []
     snr = _number(diagnostics.get("noise_referenced_snr_db"))
     if snr is not None and snr < 6.0:
         lines.append((
             "snr_under_6_db",
-            f"Your voice was only {_floor(snr, 1)} dB louder than the room noise"
-            + (
-                ", too little for setup to set your compressor. "
-                if kept_for_weak_capture(diagnostics)
-                else "; setup needs at least 6 dB. "
-            )
-            + f"{withheld} Record again closer to the microphone, or in a quieter room.",
+            f"Your voice was only {_floor(snr, 1)} dB louder than the room noise; "
+            f"setup needs at least 6 dB. {withheld} Record again closer to the microphone, or in a quieter room.",
         ))
     elif snr is not None and snr < 8.0:
         lines.append((
@@ -385,8 +354,8 @@ def _capture_issues(
         lines.append((
             "weak_capture",
             "The recording did not pass setup's quality checks"
-            + (f". {suggestions} " if kept else ", so the settings are suggestions only. ")
-            + "Record again in a quiet room, closer to the microphone.",
+            ", so the settings are suggestions only. "
+            "Record again in a quiet room, closer to the microphone.",
         ))
     return lines
 
@@ -421,21 +390,16 @@ def other_reasons(diagnostics: Mapping[str, Any]) -> list[str]:
     return [str(reason) for reason in diagnostics.get("uncertainty_reasons") or () if reason not in told]
 
 
-def verification_summary(result: Mapping[str, Any], *, tone_withheld: bool = False) -> str:
+def verification_summary(result: Mapping[str, Any]) -> str:
     """The measured outcome of the second recording, in words."""
     def value(key: str, default: float) -> float:
         number = _number(result.get(key))
         return default if number is None else number
 
-    tone = (
-        "Tone: kept as it is. "
-        if tone_withheld
-        else f"Tone: {value('spectral_target_error_before_db', 0.0):.1f} dB from the preset before, "
-        f"{value('spectral_target_error_after_db', 0.0):.1f} dB after. "
-    )
     return (
-        tone
-        + f"The compressor evened out your voice by {value('compressor_gain_reduction_p95_db', 0.0):.1f} dB. "
+        f"Tone: {value('spectral_target_error_before_db', 0.0):.1f} dB from the preset before, "
+        f"{value('spectral_target_error_after_db', 0.0):.1f} dB after. "
+        f"The compressor evened out your voice by {value('compressor_gain_reduction_p95_db', 0.0):.1f} dB. "
         f"The loudest peak is {value('output_true_peak_db', -120.0):.1f} dB. "
         f"Your voice against the background noise changed by {value('snr_change_db', 0.0):+.1f} dB."
     )

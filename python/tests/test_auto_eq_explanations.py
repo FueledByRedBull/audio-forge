@@ -164,9 +164,11 @@ def _advice_facts(text: str) -> dict[str, object]:
     figure = re.search(r"by about (\d+) dB", text)
     split = re.search(r"\((\d+\.\d) of (\d+\.\d) dB\)", text)
     lever = re.search(r"Lower the (compressor's target loudness|microphone gain)", text)
+    # The microphone lever must say where the level is turned down.
+    where = lever is None or lever[1] != "microphone gain" or "(in Windows or on the microphone)" in text
     return {
         "figure_db": int(figure[1]) if figure else None,
-        "lever": lever[1] if lever else None,
+        "lever": (lever[1] if where else "microphone gain, without where") if lever else None,
         "opener": "clips" if "clips" in text else "too little room" if "too little room" in text else None,
         "no_worse": "no worse than your current one" in text,
         "limiter_line": "Turning the limiter on" in text
@@ -510,7 +512,7 @@ def test_the_auto_eq_button_does_not_promise_a_fit_to_the_voice() -> None:
 
     tip = ACTION_SPECS["auto_eq_button"].tip.lower()
 
-    assert "tone preset" in tip
+    assert "set the eq toward a tone preset" in tip
     assert not any(claim in tip for claim in ("fit", "your voice", "adapt"))
 
 

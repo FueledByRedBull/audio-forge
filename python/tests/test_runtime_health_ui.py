@@ -208,7 +208,7 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
 @pytest.mark.parametrize(
     ("chips", "mute_error", "state", "summary", "advice"),
     [
-        ({}, False, "idle", "Health: IDLE", TEXT_SPECS["health_advice_label"].text),
+        ({}, False, "idle", "Health: IDLE", "Start processing to see audio health."),
         (
             {"gate_health_label": ("Gate: OK", "ok")},
             False, "ok", "Health: OK", "Everything looks fine.",
@@ -216,7 +216,7 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
         # Informational chips do not count towards the summary.
         (
             {"latency_label": ("Latency: about 10 ms (processing 0.2 ms)", "info")},
-            False, "idle", "Health: IDLE", TEXT_SPECS["health_advice_label"].text,
+            False, "idle", "Health: IDLE", "Start processing to see audio health.",
         ),
         (
             {"gate_health_label": ("Gate: OK", "ok")},

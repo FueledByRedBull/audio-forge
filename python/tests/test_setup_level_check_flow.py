@@ -376,8 +376,9 @@ def test_retake_room_noise_starts_the_room_noise_take_and_keeps_the_level_choice
     assert voice.setup_state == "idle"
     assert voice.start_button.text() == "Retake Room Noise"
     text = voice.warning_label.text()
-    assert "loud sound" in text
+    assert "A loud sound was picked up" in text
     assert "Record the room noise again" in text and "room is quiet" in text
+    assert "play safe" not in text
     assert voice.parent().last_setup_result["outcome"] == "refused"
 
     voice.start_button.click()
@@ -408,7 +409,7 @@ def test_a_click_in_the_room_noise_is_pointed_out_and_setup_can_go_on(voice) -> 
     assert voice.setup_state == "noise_ready"
     assert voice.start_button.isEnabled() and voice.start_button.text() == "Record Voice"
     text = voice.warning_label.text()
-    assert "click" in text and "Press Retake and record the room noise again" in text
+    assert "A click or bump was heard" in text and "Press Retake and record the room noise again" in text
     assert "read the passage aloud" in text and "10 seconds" in text
     assert voice.warning_label.styleSheet() == message_text_style("warn", strong=True)
 

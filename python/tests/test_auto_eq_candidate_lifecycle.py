@@ -531,6 +531,8 @@ def _advice(text: str) -> tuple[str | None, int | None, str | None]:
     lever = re.search(r"Lower the (compressor's target loudness|microphone gain)", text)
     figure = re.search(r"by about (\d+) dB", text)
     purpose = next((purpose for purpose in _PURPOSES if purpose in text), None)
+    if lever and lever[1] == "microphone gain" and "(in Windows or on the microphone)" not in text:
+        return ("microphone gain, without where", None, purpose)
     return (lever[1] if lever else None, int(figure[1]) if figure else None, purpose)
 
 

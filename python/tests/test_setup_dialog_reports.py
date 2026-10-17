@@ -408,7 +408,7 @@ def test_a_weak_capture_with_a_kept_compressor_is_not_called_suggestions_only(re
         for text in (line, warning, dialog.overall_label.text()):
             assert "suggestions only" not in text
             assert "compressor stays as it is" in text
-            assert "passed the final check" in text
+            assert "settings passed the final check" in text
     finally:
         dialog.reject()
         dialog.deleteLater()

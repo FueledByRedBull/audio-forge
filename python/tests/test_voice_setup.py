@@ -2900,7 +2900,8 @@ def test_silent_room_noise_moves_on_and_a_silent_voice_is_the_fault(qapp, monkey
         )
         assert unsteady.status == "invalid"
         assert plain_reasons(unsteady.reasons)[0] in dialog.warning_label.text()
-        assert "play safe" in dialog.warning_label.text()
+        assert "Setup will play safe" in dialog.warning_label.text()
+        assert "retake it" in dialog.warning_label.text()
         assert "retake" in dialog.warning_label.text()
         assert dialog.warning_label.styleSheet() == message_text_style("warn", strong=True)
 
@@ -2986,7 +2987,7 @@ def _poked(audio, index, value):
 
 # Each refusal is told apart by a token its message carries, and by its figure.
 _CLIPPED = ("clipped", "Lower the microphone level by about 6 dB")
-_LOUD_ROOM = ("loud sound", "Record the room noise again", "room is quiet")
+_LOUD_ROOM = ("A loud sound was picked up", "Record the room noise again", "room is quiet")
 _UNREADABLE = ("invalid audio", "Restart processing", "record again")
 _TOO_SHORT = ("Record at least 1.5 seconds",)
 _NO_SOUND = ("No sound", "not muted", "right input is selected", "record again")

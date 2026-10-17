@@ -108,6 +108,19 @@ def _write_valid_build_info(bundle: Path, *, version: str | None = None) -> None
     )
 
 
+OPENSSL_PAYLOAD_FILES = (
+    "_internal/_ssl.pyd",
+    "_internal/_hashlib.pyd",
+    "_internal/libssl-3.dll",
+    "_internal/libcrypto-3.dll",
+)
+
+
+def _assert_pruned(bundle: Path, removed, relative_paths) -> None:
+    assert sorted(path.as_posix() for path in removed) == sorted(relative_paths)
+    assert not any((bundle / relative_path).exists() for relative_path in relative_paths)
+
+
 def test_package_smoke_source_packaging_checks_pass():
     assert package_smoke.check_source_packaging() == []
 
@@ -1585,12 +1598,7 @@ def test_package_smoke_rejects_empty_models_directory(tmp_path):
 
 def test_package_smoke_accepts_required_assets_and_metadata(tmp_path):
     bundle = tmp_path / "AudioForge"
-    (bundle / "AudioForge.exe").parent.mkdir(parents=True)
-    (bundle / "AudioForge.exe").write_bytes(b"x")
-    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
-        _write_bundle_file(bundle, relative_path)
-    _write_valid_build_info(bundle)
-    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
+    _write_valid_bundle(bundle)
 
     assert package_smoke.check_dist_bundle(bundle) == []
 
@@ -1675,12 +1683,7 @@ def test_package_smoke_rejects_excluded_openssl_payload(tmp_path):
     for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
         _write_bundle_file(bundle, relative_path)
     _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
-    for relative_path in (
-        "_internal/_ssl.pyd",
-        "_internal/_hashlib.pyd",
-        "_internal/libssl-3.dll",
-        "_internal/libcrypto-3.dll",
-    ):
+    for relative_path in OPENSSL_PAYLOAD_FILES:
         _write_bundle_file(bundle, relative_path)
 
     errors = package_smoke.check_dist_bundle(bundle)
@@ -1752,19 +1755,12 @@ def test_prune_bundle_keeps_top_level_native_extension_without_packaged_copy(tmp
 
 def test_prune_bundle_removes_excluded_openssl_payload(tmp_path):
     bundle = tmp_path / "AudioForge"
-    relative_paths = (
-        "_internal/_ssl.pyd",
-        "_internal/_hashlib.pyd",
-        "_internal/libssl-3.dll",
-        "_internal/libcrypto-3.dll",
-    )
-    for relative_path in relative_paths:
+    for relative_path in OPENSSL_PAYLOAD_FILES:
         _write_bundle_file(bundle, relative_path)
 
     removed = prune_bundle.prune_bundle(bundle)
 
-    assert sorted(path.as_posix() for path in removed) == sorted(relative_paths)
-    assert not any((bundle / relative_path).exists() for relative_path in relative_paths)
+    _assert_pruned(bundle, removed, OPENSSL_PAYLOAD_FILES)
 
 
 def test_prune_bundle_removes_unused_qt_ffmpeg_payload_and_keeps_windows_backend(tmp_path):
@@ -1785,8 +1781,7 @@ def test_prune_bundle_removes_unused_qt_ffmpeg_payload_and_keeps_windows_backend
 
     removed = prune_bundle.prune_bundle(bundle)
 
-    assert sorted(path.as_posix() for path in removed) == sorted(relative_paths)
-    assert not any((bundle / relative_path).exists() for relative_path in relative_paths)
+    _assert_pruned(bundle, removed, relative_paths)
     assert windows_backend.is_file()
 
 

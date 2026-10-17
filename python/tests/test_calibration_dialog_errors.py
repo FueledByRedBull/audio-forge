@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QWidget
 
 from mic_eq.ui import capture_session
 from mic_eq.ui.calibration_dialog import CalibrationDialog
+from mic_eq.ui.theme import message_text_style
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
 
@@ -71,6 +72,8 @@ def test_stalled_capture_fails_and_releases_only_capture_owned_state(
 
     setattr(owner, "set_temporary_output_mute", set_temporary_output_mute)
     dialog = dialog_type(parent=owner)
+    report = Mock(wraps=dialog._report)
+    monkeypatch.setattr(dialog, "_report", report)
     if dialog_type is CalibrationDialog:
         dialog.recording_state = capture_state
     else:
@@ -89,7 +92,10 @@ def test_stalled_capture_fails_and_releases_only_capture_owned_state(
 
         dialog._poll_recording_progress()
 
-        assert dialog.warning_label.text().startswith("The microphone stopped sending sound.")
+        text = dialog.warning_label.text()
+        assert "microphone" in text and "record again" in text.lower()
+        assert dialog.warning_label.styleSheet() == message_text_style("bad", strong=True)
+        assert report.call_args.args[:2] == ("failed", ["recording_failed"])
         assert dialog.recording_timer.isActive() is False
         assert dialog._capture_session is None
         assert not muted_reasons

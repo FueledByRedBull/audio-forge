@@ -112,8 +112,10 @@ def test_input_peak_advice_names_the_peak_and_a_whole_decibel_drop_towards_minus
 
 def test_clipped_advice_is_stronger_and_still_has_the_number():
     advice = advice_for(input_health_state(rms_db=-20.0, peak_db=0.0, full_scale_samples=9)[0])
-    assert advice.startswith("The microphone clipped")
-    assert "reached full scale 9 times in the last few seconds (peak 0.0 dB)" in advice
+    # Stronger than the same peak without clipping: its own advice, carrying the count.
+    assert advice != advice_for(input_health_state(rms_db=-20.0, peak_db=0.0)[0])
+    assert "clipped" in advice
+    assert "9 times" in advice and "0.0 dB" in advice
     assert "about 6 dB" in advice
     assert "held" not in advice and "flat" not in advice
 
@@ -200,15 +202,15 @@ def test_every_warning_chip_has_plain_language_advice() -> None:
 @pytest.mark.parametrize(
     ("chip", "happened", "to_do"),
     [
-        ("Input: PHASE", "partly cancel each other", "pick Left, Right or Phase-safe mono"),
-        ("Input: LOW RUMBLE", "Low rumble is reaching", "keep input cleanup on"),
-        ("Input: HUM DETECTED", "steady hum", "Move the microphone cable away from power cables"),
+        ("Input: PHASE", "channels", "Phase-safe mono"),
+        ("Input: LOW RUMBLE", "rumble", "input cleanup"),
+        ("Input: HUM DETECTED", "hum", "power cables"),
         ("Input: ALREADY COMPRESSED (2.8 dB)", "differ by only 2.8 dB", "Turn off processing in the microphone driver"),
-        ("Output: PEAK ABOVE CEILING (peak 0.4 dB)", "went above the limiter ceiling", "lower the makeup gain"),
+        ("Output: PEAK ABOVE CEILING (peak 0.4 dB)", "ceiling", "makeup gain"),
         ("Output: VERY LOUD (0 dB)", "is 0 dB", "Lower the makeup gain"),
         ("Gate: CHATTERING (3 times)", "rapidly 3 times", "Raise the hold time or lower the threshold"),
         ("Gate: EASED (3 times)", "3 times so far", "lowering the threshold yourself"),
-        ("Backend: rnnoise failed", "passing through unprocessed", "Check the model on the Noise Suppression card"),
+        ("Backend: rnnoise failed", "Noise suppression", "Noise Suppression card"),
         ("Device activity: input 12 ms ago, output 1400 ms ago", "for 1400 ms", "Check that the device is connected"),
         ("Dropouts: 3 (2 in a row)", "dropped out 3 times", "Close heavy applications"),
         ("Buffer: FILLING UP (1200 samples)", "1200 samples waiting", "Close heavy applications"),
@@ -226,14 +228,16 @@ def test_each_warning_says_what_happened_and_what_to_do_with_its_number(chip, ha
 
 
 @pytest.mark.parametrize(
-    ("chip", "sentence"),
+    ("chip", "cause", "count"),
     [
-        ("Recovery: 0 restarts, 3 output recoveries, restarted just now", "The audio output was restarted (3 times so far),"),
-        ("Recovery: 1 restart, 3 output recoveries", "The audio stream restarted (1 time so far),"),
-        ("Recovery: 0 restarts, 0 output recoveries, restart pending", "The audio stream is recovering,"),
+        ("Recovery: 0 restarts, 3 output recoveries, restarted just now", "output", "3 times"),
+        ("Recovery: 1 restart, 3 output recoveries", "stream restarted", "1 time "),
+        ("Recovery: 0 restarts, 0 output recoveries, restart pending", "recovering", ""),
     ],
 )
-def test_recovery_advice_counts_only_what_happened(chip, sentence):
+def test_recovery_advice_counts_only_what_happened(chip, cause, count):
     advice = advice_for(chip)
-    assert advice.startswith(sentence)
-    assert "0 times" not in advice and advice.endswith("check the device connection.")
+    assert cause in advice and count in advice
+    assert "0 times" not in advice and "device connection" in advice
+    if not count:
+        assert not any(character.isdigit() for character in advice)

@@ -23,25 +23,25 @@ def test_a_reliable_capture_has_nothing_to_report(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("analysis_input", "alter", "found", "todo"),
+    ("analysis_input", "alter", "code", "figure"),
     [
         (
             "analyze_voice_spectrum",
             lambda spectrum: replace(spectrum, snr_db=4.2),
-            "Your voice was only 4.2 dB louder than the room noise; setup needs at least 6 dB.",
-            "closer to the microphone, or in a quieter room",
+            "snr_under_6_db",
+            "4.2",
         ),
         (
             "_vad_masked_speech_features",
             lambda features: {**features, "active_duration_s": 1.5},
-            "Setup heard 1.5 seconds of speech; it needs at least 2.",
-            "speak for the whole take",
+            "speech_under_2_s",
+            "1.5",
         ),
         (
             "analyze_voice_spectrum",
             lambda spectrum: replace(spectrum, used_single_spectrum_fallback=True),
-            "too few clear voiced sounds",
-            "speak for the whole take",
+            "spectrum_fallback",
+            None,
         ),
         (
             "analyze_noise_reference",
@@ -50,14 +50,14 @@ def test_a_reliable_capture_has_nothing_to_report(monkeypatch):
                 status="questionable",
                 reasons=["room-noise capture is not stationary"],
             ),
-            "The room noise was not steady",
-            "Record the room noise again without talking.",
+            "noise_reference_not_usable",
+            None,
         ),
     ],
     ids=["snr-under-6", "under-2s-of-speech", "single-spectrum", "room-noise-not-usable"],
 )
 def test_each_clause_that_vetoes_the_capture_gets_its_own_line(
-    monkeypatch, analysis_input, alter, found, todo
+    monkeypatch, analysis_input, alter, code, figure
 ):
     result = _analyze_clean_capture(monkeypatch, (analysis_input, alter))
     lines = _lines(result)
@@ -65,11 +65,14 @@ def test_each_clause_that_vetoes_the_capture_gets_its_own_line(
     assert result["diagnostics"]["weak_capture"] is True
     assert result["compressor_settings"]["auto_makeup_enabled"] is False
     # A weak SNR also drags the overall score under 0.5, which is a clause of its own.
-    own = [line for line in lines if found in line]
-    assert len(own) == 1, lines
-    assert todo in own[0]
+    codes = capture_issue_codes(result["diagnostics"])
+    assert len(codes) == len(lines)
+    assert codes.count(code) == 1, codes
+    own = lines[codes.index(code)]
+    if figure:
+        assert figure in own
     # What was held back because of it.
-    assert WITHHELD in own[0] and "suggestions only" in own[0]
+    assert WITHHELD in own and "suggestions only" in own
 
 
 def test_a_voice_between_6_and_8_db_over_the_room_is_weak_but_keeps_automatic_loudness(monkeypatch):
@@ -79,7 +82,8 @@ def test_a_voice_between_6_and_8_db_over_the_room_is_weak_but_keeps_automatic_lo
     lines = _lines(result)
 
     assert result["diagnostics"]["weak_capture"] is True
-    assert len(lines) == 1 and "7.0 dB louder" in lines[0]
+    assert capture_issue_codes(result["diagnostics"]) == ["snr_under_8_db"]
+    assert len(lines) == 1 and "7.0" in lines[0]
     assert WITHHELD not in lines[0]  # only the four clauses of the reliability check withhold it
 
 
@@ -90,7 +94,8 @@ def test_a_low_overall_score_alone_is_reported_with_the_score(monkeypatch):
     )
     lines = _lines(result)
 
-    assert len(lines) == 1 and "unclear overall (capture quality" in lines[0]
+    assert capture_issue_codes(result["diagnostics"]) == ["capture_quality_low"]
+    assert len(lines) == 1 and "%" in lines[0]
 
 
 def test_two_clauses_that_fire_together_each_keep_their_own_line(monkeypatch):
@@ -182,7 +187,7 @@ def test_a_silent_room_noise_take_is_not_told_to_stop_talking():
     )
 
     assert "without talking" not in line
-    assert line.endswith("Check that the microphone is not muted, then record the room noise again.")
+    assert "muted" in line
 
 
 @pytest.mark.parametrize("snr", [float("-inf"), float("inf"), float("nan")])

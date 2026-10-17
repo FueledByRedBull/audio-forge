@@ -32,15 +32,14 @@ def test_builtin_presets_share_values_without_sharing_mutable_defaults() -> None
 
 def test_complete_catalogues_have_scope_descriptions_and_resolved_sections() -> None:
     from mic_eq.config import BUILTIN_PRESETS, TARGET_CURVES
+    from mic_eq.config_parts.catalogs import COMPLETE_PRESET_SCOPE_LABEL, TONE_PRESET_SCOPE_LABEL
 
-    assert all(
-        preset.description.startswith("Complete sound preset:")
-        for preset in BUILTIN_PRESETS.values()
-    )
-    assert all(
-        curve.description.startswith("Tone preset")
-        for curve in TARGET_CURVES.values()
-    )
+    complete = [preset.description for preset in BUILTIN_PRESETS.values()]
+    tone = [curve.description for curve in TARGET_CURVES.values()]
+    assert all(text.startswith(COMPLETE_PRESET_SCOPE_LABEL) for text in complete)
+    assert all(text.startswith(TONE_PRESET_SCOPE_LABEL) for text in tone)
+    for descriptions in (complete, tone):
+        assert len(set(descriptions)) == len(descriptions)
     assert all(
         set(preset.to_dict())
         >= {"gate", "eq", "rnnoise", "deesser", "compressor", "limiter"}

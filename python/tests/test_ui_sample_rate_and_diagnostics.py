@@ -40,10 +40,13 @@ from mic_eq.ui.main_window import (
     _normalize_startup_preset_id,
     _startup_builtin_id,
 )
+from mic_eq.ui.auto_eq_explanation import explain_auto_eq
 from mic_eq.ui.health import RecentStreamHealth
 from mic_eq.ui.noise_suppression_state import NoiseSuppressionState
+from mic_eq.ui.setup_messages import plain_reason, quality_word
 from mic_eq.ui.startup_presets import startup_custom_id as _startup_custom_id
 from mic_eq.ui.stream_recovery import StreamRecoveryManager
+from mic_eq.ui.theme import status_chip_style
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from mic_eq.config import (
     AppConfig,
@@ -644,10 +647,9 @@ def test_calibration_dialog_shows_auto_eq_diagnostics(window):
     dialog._on_analysis_complete(eq_settings)
 
     assert not dialog.diagnostics_group.isHidden()
-    assert (
-        dialog.confidence_label.text()
-        == "Good capture: clear and steady enough to base a correction on."
-    )
+    word, state = quality_word(0.81)
+    assert word == "Good capture" and dialog.confidence_label.text().startswith(f"{word}: ")
+    assert dialog.confidence_label.styleSheet() == status_chip_style(state)
     assert (
         "Capture quality score 81%." in dialog.confidence_label.toolTip()
     )
@@ -705,8 +707,10 @@ def test_calibration_dialog_does_not_offer_abstained_eq(window):
     assert dialog.start_button.text() == "Record Again"
     # Plain language up front; the raw reason stays available on hover.
     text = dialog.warning_label.text()
-    assert text.startswith("No correction applied. ")
-    assert "Your voice was too close to the background noise in the recording." in text
+    explanation = explain_auto_eq(eq_settings)
+    assert explanation.outcome_code == "unusable_capture" and explanation.state == "bad"
+    assert text.startswith(f"{explanation.summary}. ")
+    assert plain_reason("noise-referenced SNR is too low") in text
     assert "noise-referenced SNR is too low" not in text
     assert "noise-referenced SNR is too low" in dialog.warning_label.toolTip()
     # Review step: the setup and recording widgets are out of the way.

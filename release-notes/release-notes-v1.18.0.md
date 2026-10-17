@@ -42,6 +42,19 @@ AudioForge remains unsigned. Virtual audio cable setup is described in the
 - Closing Guided Setup during the level check left audio running. Closing it now
   stops the audio if the check started it, and leaves it running if it was already
   on.
+- Test my sound, Auto-EQ and Auto Voice Setup mute your live output while they
+  record, and now say so. Before, someone on a call could go silent without
+  knowing why.
+- A preset with a number too large to read no longer stops AudioForge from
+  opening; it is skipped like any other damaged preset. The same kind of value in
+  the settings file no longer resets all your other settings.
+- If AudioForge crashes or its window fails to open, the reason now goes to its
+  log (`app.log`, or `crash.log` for a hard crash). A window that fails to open
+  also shows a message with the log's location.
+- With a microphone and an output on separate clocks, such as two USB devices,
+  the Health page could flag an engine fault for a few seconds at a time, and
+  Guided Setup's route check could fail, while AudioForge was only keeping the
+  two in step. Neither happens now.
 
 ## Changes
 

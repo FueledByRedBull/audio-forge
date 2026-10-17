@@ -9,15 +9,22 @@
 - The level check's too-quiet advice said a higher level would clip the loudest moments; it now says a higher level would push them past the limit, which is still -3 dB.
 - After an Auto-EQ error the dialog refuses the result as incomplete, but the tone line also said "Everything else below still applies." That sentence is gone.
 - When Voice Setup judges a capture weak, the diagnostics export now also carries a short, stable code for each cause, next to the codes it already derived from the reason text: `snr_under_6_db`, `snr_under_8_db`, `speech_under_2_s`, `spectrum_fallback`, `noise_reference_not_usable` and `capture_quality_low`, or `weak_capture` when none of them applies. A voice under 6 dB over the room had no code of its own before. The codes come from the same check that writes the lines the user reads; the text, the thresholds and the analysis are unchanged, and free-text messages still never leave the app.
+- Test my sound, Auto-EQ and Auto Voice Setup always muted the live output while recording, without saying so, so someone on a call went silent without knowing. Each now says it.
 
 ### Window and interface
 
 - When the renderer never starts and the software-rendering restart itself cannot start, AudioForge now stays open on the error screen, which says the restart failed. Before, it quit first and ignored whether the new copy started, leaving nothing running. The order is now: close the window (the close still saves, stops audio and can be cancelled), start the copy, and quit only if it started. If the copy cannot start, the single-instance guard is taken back, the tray icon and mute hotkey come back, and the window shows the error screen.
 - Closing Guided Setup during its level check left audio processing running. Closing it now stops processing if the check started it; processing that was already running keeps running.
 
+### Settings and presets
+
+- A preset holding an integer too large for a float no longer stops the main window from opening: `list_presets()` skips it like any other invalid preset. In `config.json` such a value no longer resets every setting. Only that value falls back: window geometry is ignored, the calibration entry is dropped, and a custom Voice Setup level uses its default.
+
 ### Diagnostics
 
 - The diagnostics export stays at schema version 3. `main_control_tab_index`, which has always been 0 since the classic view went, is no longer exported. A settings file that still has it, or `main_splitter_sizes`, loads as before.
+- Uncaught Python exceptions from any thread now go to `app.log`, and hard crashes go to `crash.log` beside it (deleted when empty). In the packaged app, a main window that fails to open also shows a dialog that points to the log; the smoke test and login starts never show it. Before, the packaged app had no console, so these failures left no log entry, and a failed start left no window either.
+- The Health page no longer reports an engine fault when output drift retiming trims a few samples, and Guided Setup's route check no longer fails on it. A route whose input and output run on separate clocks retimes all the time, so its Drops row could say "needs attention" for five seconds at a time. The diagnostics export still carries `jitter_dropped_samples`.
 
 ### Internal
 

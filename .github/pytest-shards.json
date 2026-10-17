@@ -21,7 +21,6 @@
     "python/tests/test_eq_editing_state.py"
   ],
   "refusals": [
-    "python/tests/test_evaluate_voice_setup_refusals.py",
     "python/tests/test_setup_dialog_reports.py",
     "python/tests/test_ui_sample_rate_and_diagnostics.py"
   ],
@@ -33,7 +32,6 @@
     "python/tests/test_quick_software_rendering.py"
   ],
   "evaluation": [
-    "python/tests/test_evaluate_voice_setup_arms.py",
     "python/tests/test_evaluation_hygiene.py",
     "python/tests/test_evaluation_hygiene_revision.py",
     "python/tests/test_login_startup_ui.py",

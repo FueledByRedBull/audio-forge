@@ -245,72 +245,17 @@ def test_the_advised_raise_crosses_the_threshold_without_making_the_peak_too_hot
     assert peak + verdict.change_db <= -3.0
 
 
-@pytest.fixture
-def lower_target(monkeypatch):
-    monkeypatch.setattr(level_check, "LOWER_LEVEL_TARGET", True)
-
-
-def test_the_lower_level_target_is_off_by_default():
-    assert level_check.LOWER_LEVEL_TARGET is False
-    assert (level_check.too_loud_db(), level_check.target_peak_db()) == (-3.0, -6.0)
-
-
 @pytest.mark.parametrize(
     ("peak", "code", "change"),
     [(-3.1, "good", 0), (-3.0, "good", 0), (-2.9, "too_hot", -4), (-5.9, "good", 0)],
 )
-def test_with_the_switch_off_the_old_boundaries_hold(peak, code, change):
+def test_the_hot_boundary_and_the_lowering_advice(peak, code, change):
     verdict = verdict_from_levels(peak, -20.0)
 
     assert (verdict.code, verdict.change_db) == (code, change)
-    assert level_check.target_peak_db() == -6.0
+    assert level_check.TARGET_PEAK_DB == -6.0
 
 
-def test_with_the_switch_on_the_limit_is_minus_eight(lower_target):
-    assert verdict_from_levels(-8.1, -20.0).code == "good"
-    assert verdict_from_levels(-8.0, -20.0).code == "good"
-    assert verdict_from_levels(-7.9, -20.0).code == "too_hot"
-    assert level_check.too_loud_db() == -8.0 and level_check.target_peak_db() == -11.0
-
-
-@pytest.mark.parametrize(("peak", "lower"), [(-7.9, 4), (-5.0, 6), (-0.4, 11)])
-def test_with_the_switch_on_the_lowering_advice_lands_at_minus_eleven(lower_target, peak, lower):
-    verdict = verdict_from_levels(peak, -20.0)
-
-    assert verdict.code == "too_hot" and verdict.change_db == -lower
-    assert f"by about {lower} dB" in verdict.message
-    assert -11.0 - 1.0 < peak - lower <= -11.0 + 0.05
-
-
-def test_with_the_switch_on_a_hot_take_from_audio_and_a_clipped_one_aim_at_minus_eleven(lower_target):
-    hot = verdict_from_audio(_voice(0.5), RATE)  # -6.0 dB
-    assert (hot.code, hot.change_db) == ("too_hot", -5)
-    assert verdict_from_audio(_voice(0.35), RATE).code == "good"  # -9.1 dB
-    assert "by about 11 dB" in clipped_message(_voice(0.95), RATE)
-
-
-def test_with_the_switch_on_a_quiet_voices_raise_stops_at_the_new_target(lower_target):
-    verdict = verdict_from_levels(-20.0, -45.0)  # the speech target asks for +20, the peak target for +9
-
-    assert verdict.code == "too_quiet" and verdict.change_db == 9
-    assert verdict.peak_db is not None and verdict.peak_db + verdict.change_db == -11.0
-
-
-def test_with_the_switch_on_a_quiet_peak_near_the_new_limit_is_not_told_to_raise(lower_target):
-    verdict = verdict_from_levels(-8.5, -41.0)  # +1 dB reaches -40 but the peak would pass -8
-
-    assert verdict.code == "too_quiet" and verdict.change_db == 0
-    assert "Move closer" in verdict.message
-
-
-def test_with_the_switch_on_the_live_verdict_uses_the_new_limit(lower_target):
-    hot = live_verdict([-20.0], [-7.0])
-    assert hot is not None and hot.code == "too_hot"
-    assert live_verdict([-20.0], [-9.0]) is None
-    quiet = live_verdict([-42.0] * LEVEL_HOLD_UPDATES, [-7.0] * LEVEL_HOLD_UPDATES)
-    assert quiet is not None and quiet.code == "too_quiet"
-
-
-def test_with_the_switch_off_the_live_verdict_and_raise_are_unchanged():
+def test_the_live_verdict_and_the_raise_follow_the_limit():
     assert live_verdict([-20.0], [-7.0]) is None
     assert verdict_from_levels(-20.0, -45.0).change_db == 14

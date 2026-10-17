@@ -289,20 +289,6 @@ def _fit_window_geometry_to_screens(
     return QRect(x, y, width, height)
 
 
-def _voice_setup_description(target_curve: str, tone_withheld: bool, compressor_kept: bool) -> str:
-    """Name what Voice Setup tuned and what it left as the user had it."""
-    stages = (("EQ", not tone_withheld), ("gate/VAD", True), ("de-esser", True), ("compressor", not compressor_kept))
-    tuned = [name for name, on in stages if on]
-    kept = [name for name, on in (("EQ", tone_withheld), ("compressor", compressor_kept)) if on]
-    text = "Auto-generated voice chain with " + ", ".join(tuned[:-1]) + ("," if len(tuned) > 2 else "") + " and " + tuned[-1]
-    # A withheld tone was not tuned for the target, so the target is not claimed.
-    if not tone_withheld:
-        text += f" tuned for the {target_curve.title()} target"
-    if kept:
-        text += f"; the {' and '.join(kept)} " + ("were kept as they were" if len(kept) > 1 else "was kept as it was")
-    return text
-
-
 class MainWindow(QMainWindow):
     """Main application window for AudioForge."""
 
@@ -2785,13 +2771,7 @@ class MainWindow(QMainWindow):
         def on_applied(target_curve: str) -> None:
             nonlocal applied
             applied = True
-            result = dialog.setup_result or {}
-            diagnostics = result.get("diagnostics") or {}
-            self.on_voice_setup_applied(
-                target_curve,
-                bool(diagnostics.get("tone_withheld")),
-                bool(diagnostics.get("compressor_withheld")),
-            )
+            self.on_voice_setup_applied(target_curve)
 
         dialog.setup_applied.connect(on_applied)
         self._calibration_dialog_open = True
@@ -3160,23 +3140,21 @@ class MainWindow(QMainWindow):
             ),
         )
 
-    def on_voice_setup_applied(
-        self, target_curve: str, tone_withheld: bool = False, compressor_kept: bool = False
-    ):
+    def on_voice_setup_applied(self, target_curve: str):
         """Offer to save the applied voice-setup chain as a preset."""
-        # A withheld tone was not tuned for the target, so the target is not claimed.
         self._commit_pending_configuration_snapshot(
-            label="Auto Voice Setup"
-            if tone_withheld
-            else f"Auto Voice Setup ({target_curve.title()})",
+            label=f"Auto Voice Setup ({target_curve.title()})",
             source="voice_setup",
         )
-        preset_name = "Voice Setup" if tone_withheld else f"Voice Setup {target_curve.title()}"
+        preset_name = f"Voice Setup {target_curve.title()}"
         self._prompt_save_current_preset(
             title="Save Voice Setup as Preset?",
             question=f"Save these calibrated voice-chain settings as preset '{preset_name}'?",
             preset_name=preset_name,
-            description=_voice_setup_description(target_curve, tone_withheld, compressor_kept),
+            description=(
+                "Auto-generated voice chain with EQ, gate/VAD, de-esser, and compressor "
+                f"tuned for the {target_curve.title()} target"
+            ),
         )
 
     def _on_model_changed(self, index: int):

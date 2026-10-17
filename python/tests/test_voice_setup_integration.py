@@ -24,7 +24,7 @@ from mic_eq.analysis.voice_setup import (
 )
 from mic_eq.config import EQSettings, Preset, build_eq_candidate_settings, load_preset
 from mic_eq.ui.main_window import MainWindow
-from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog, _candidate_settings_error
+from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from test_auto_eq_candidate_lifecycle import _CalibrationOwner
 
 
@@ -1320,249 +1320,6 @@ def test_a_result_without_an_eq_says_nothing_still_applies(
         dialog.deleteLater()
 
 
-def _withheld_tone_result(window: MainWindow, dialog: VoiceSetupDialog) -> dict[str, Any]:
-    """What the analysis hands over when only the tone is withheld: the user's own EQ, not recommended."""
-    result = _voice_setup_result(window, dialog)
-    result["eq_settings"] = {**window.eq_state.get_eq_settings().to_dict(), "apply_recommended": False}
-    result["eq_error"] = "Recording too unclear. Please try again."
-    result["diagnostics"].update(
-        tone_withheld={"reason_code": "tone_withheld", "cause": ["clipped_gains (7 >= 6)"]},
-        vad_available=False,
-    )
-    result["gate_settings"]["threshold_db"] = -41.0
-    return result
-
-
-def test_a_withheld_tone_is_a_complete_result_that_says_the_tone_stays(real_main_window) -> None:
-    window = real_main_window
-    _set_live_eq(window, tone=[3.0] + [0.0] * 9, correction=[4.0] * 10)
-    dialog, _speech = _review_dialog(window)
-    result = _withheld_tone_result(window, dialog)
-    try:
-        assert _candidate_settings_error(result) is None
-
-        dialog._on_analysis_complete(result)
-
-        assert dialog.setup_state == "completed"
-        assert dialog.phase_label.text() == "Recommendations ready"
-        assert dialog.setup_result is not None
-        assert dialog.setup_result["diagnostics"]["apply_recommended"] is True
-        assert "kept as it is" in dialog.eq_label.text()
-        assert "Everything else below still applies" in dialog.eq_label.text()
-        assert dialog.eq_label.toolTip() == ""
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
-
-
-def test_applying_a_withheld_tone_keeps_the_users_eq_and_verification_renders_it(
-    real_main_window,
-) -> None:
-    window = real_main_window
-    _set_live_eq(window, tone=[3.0] + [0.0] * 9, correction=[4.0] * 10)
-    eq_before = window._get_current_preset().eq.to_dict()
-    dialog, speech = _review_dialog(window)
-    noise = dialog.noise_audio
-    assert noise is not None
-    try:
-        _apply_complete_candidate(window, dialog, _withheld_tone_result(window, dialog))
-
-        assert window._get_current_preset().eq.to_dict() == eq_before
-        assert window.gate_state.get_settings()["threshold_db"] == -41.0
-        assert dialog.setup_result is not None
-        applied = dialog.setup_result["eq_settings"]
-        assert applied["bands"] == eq_before["bands"] and applied["layers"] == eq_before["layers"]
-        outcome = validate_voice_setup_verification(
-            noise, speech, speech, int(window.processor.sample_rate()), dialog.setup_result, "broadcast"
-        )
-        assert outcome["decision"] != "rollback"
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
-
-
-@pytest.mark.parametrize("withheld", [True, False], ids=["withheld", "fitted"])
-def test_a_verified_setup_lists_the_tone_only_when_it_was_changed(
-    real_main_window, monkeypatch, withheld
-) -> None:
-    window = real_main_window
-    dialog, _speech = _review_dialog(window)
-    result = _withheld_tone_result(window, dialog) if withheld else _voice_setup_result(window, dialog)
-    monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.QMessageBox.information", lambda *_a, **_k: None)
-    monkeypatch.setattr(window, "_prompt_save_current_preset", lambda **_kwargs: None)
-    try:
-        _apply_complete_candidate(window, dialog, result)
-        dialog._finalize_verified_setup()
-
-        stages = ("input_cleanup", "gate", "suppression", "eq", "deesser", "compressor", "limiter")
-        expected = tuple(stage for stage in stages if not (withheld and stage == "eq"))
-        assert window.config.calibration_results[0].verified_stages == expected
-        assert dialog.setup_result is not None
-        assert tuple(dialog.setup_result["_candidate"]["verified_stages"]) == expected
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
-
-
-@pytest.mark.usefixtures("partial_results")
-@pytest.mark.parametrize(
-    "recommended",
-    [True, False],
-    ids=["recommended", "suggestions-only"],
-)
-def test_a_withheld_tone_says_the_rest_applies_only_when_the_rest_is_recommended(
-    real_main_window, recommended
-) -> None:
-    window = real_main_window
-    dialog, _speech = _review_dialog(window)
-    result = _withheld_tone_result(window, dialog)
-    result["diagnostics"]["apply_recommended"] = recommended
-    try:
-        dialog._on_analysis_complete(result)
-
-        assert "Tone: kept as it is" in dialog.eq_label.text()
-        assert ("Everything else below still applies" in dialog.eq_label.text()) == recommended
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
-
-
-def test_a_withheld_tone_is_not_offered_as_a_tuned_preset(real_main_window, monkeypatch) -> None:
-    window = real_main_window
-    offered: list[dict[str, Any]] = []
-    monkeypatch.setattr(window, "_prompt_save_current_preset", lambda **kwargs: offered.append(kwargs))
-
-    window.on_voice_setup_applied("broadcast")
-    window.on_voice_setup_applied("broadcast", tone_withheld=True)
-    window.on_voice_setup_applied("broadcast", compressor_kept=True)
-    window.on_voice_setup_applied("broadcast", tone_withheld=True, compressor_kept=True)
-
-    fitted, withheld, kept, both = offered
-    assert fitted["preset_name"] == "Voice Setup Broadcast"
-    assert "tuned for the Broadcast target" in fitted["description"]
-    assert withheld["preset_name"] == "Voice Setup"
-    assert "Broadcast" not in withheld["question"] + withheld["description"]
-    assert "tuned" not in withheld["description"]
-    assert "EQ was kept" in withheld["description"]
-    tuned, kept_clause = kept["description"].split(";")
-    assert "tuned for the Broadcast target" in tuned
-    assert all(stage in tuned for stage in ("EQ", "gate", "de-esser")) and "compressor" not in tuned
-    assert "compressor was kept as it was" in kept_clause and "EQ" not in kept_clause
-    tuned, kept_clause = both["description"].split(";")
-    assert all(stage in tuned for stage in ("gate", "de-esser"))
-    assert "EQ" not in tuned and "compressor" not in tuned
-    assert "tuned" not in both["description"] and "Broadcast" not in both["description"]
-    assert "EQ and compressor were kept as they were" in kept_clause
-
-
-@pytest.mark.parametrize(
-    ("withheld", "kept"), [(True, False), (False, True), (False, False)], ids=["withheld", "kept", "fitted"]
-)
-def test_the_dialog_tells_the_window_whether_the_tone_or_compressor_was_withheld(
-    real_main_window, monkeypatch, withheld, kept
-) -> None:
-    from mic_eq.ui import main_window
-
-    window = real_main_window
-    seen: list[tuple[Any, ...]] = []
-    monkeypatch.setattr(window, "on_voice_setup_applied", lambda *args: seen.append(args))
-    monkeypatch.setattr(window, "_prompt_save_current_preset", lambda **_kwargs: None)
-
-    class _Signal:
-        def connect(self, slot):
-            self.slot = slot
-
-    class _Dialog:
-        def __init__(self, _parent):
-            self.setup_applied = _Signal()
-            self.setup_result = {
-                "diagnostics": {
-                    "tone_withheld": {"reason_code": "tone_withheld"} if withheld else None,
-                    "compressor_withheld": {"reason_code": "compressor_withheld"} if kept else None,
-                }
-            }
-
-        def exec(self):
-            self.setup_applied.slot("broadcast")
-
-    monkeypatch.setattr(main_window, "VoiceSetupDialog", _Dialog)
-
-    assert window._on_auto_voice_setup_clicked() is True
-    assert seen == [("broadcast", withheld, kept)]
-
-
-@pytest.mark.usefixtures("partial_results")
-def test_the_verified_message_does_not_claim_the_tone_changed(real_main_window, monkeypatch) -> None:
-    window = real_main_window
-    dialog, _speech = _review_dialog(window)
-    shown: list[str] = []
-    monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.QMessageBox.information", lambda *a, **_k: shown.append(str(a[-1])))
-    monkeypatch.setattr(window, "_prompt_save_current_preset", lambda **_kwargs: None)
-    try:
-        _apply_complete_candidate(window, dialog, _withheld_tone_result(window, dialog))
-        assert dialog.setup_result is not None
-        dialog.setup_result["verification"] = {"spectral_target_error_before_db": 0.8}
-        dialog._finalize_verified_setup()
-
-        assert "Tone: kept as it is." in shown[-1]
-        assert "from the preset before" not in shown[-1]
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
-
-
-def _withheld_compressor_result(
-    window: MainWindow, dialog: VoiceSetupDialog, *cause: str, recommended: bool = True
-) -> dict[str, Any]:
-    """What the analysis hands over when only the compressor is withheld: the user's own."""
-    result = _voice_setup_result(window, dialog)
-    result["compressor_settings"] = deepcopy(window.compressor_state.get_settings())
-    result["diagnostics"].update(
-        compressor_withheld={"reason_code": "compressor_withheld", "cause": list(cause)},
-        apply_recommended=recommended,
-        vad_available=False,
-    )
-    result["gate_settings"]["threshold_db"] = -41.0
-    return result
-
-
-@pytest.mark.parametrize(
-    ("cause", "recommended"),
-    [
-        (("headroom",), True),
-        (("weak_capture",), True),
-        (("headroom", "weak_capture"), True),
-        (("headroom",), False),
-    ],
-    ids=["headroom", "weak-capture", "both", "suggestions-only"],
-)
-def test_a_withheld_compressor_says_it_stays_why_and_that_the_rest_applies(
-    real_main_window, cause, recommended
-) -> None:
-    window = real_main_window
-    dialog, _speech = _review_dialog(window)
-    result = _withheld_compressor_result(window, dialog, *cause, recommended=recommended)
-    try:
-        assert _candidate_settings_error(result) is None
-
-        dialog._on_analysis_complete(result)
-
-        assert dialog.setup_state == "completed"
-        assert dialog.phase_label.text() == (
-            "Recommendations ready" if recommended else "Suggestions only: not every check passed"
-        )
-        text = dialog.compressor_label.text()
-        assert "Compressor: kept as it is" in text
-        # Each cause is named by what it is about: the limiter's room, or the weak recording.
-        assert ("too little room before the limiter" in text) == ("headroom" in cause)
-        assert ("too weak to set the dynamics" in text) == ("weak_capture" in cause)
-        assert ("Everything else below still applies" in text) == recommended
-        assert dialog.compressor_label.toolTip() == ""
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
-
-
 def test_a_compressor_set_by_the_analysis_is_described_as_before(real_main_window) -> None:
     window = real_main_window
     dialog, _speech = _review_dialog(window)
@@ -1576,86 +1333,16 @@ def test_a_compressor_set_by_the_analysis_is_described_as_before(real_main_windo
         dialog.deleteLater()
 
 
-def test_applying_a_withheld_compressor_keeps_the_users_compressor_and_applies_the_rest(
-    real_main_window,
-) -> None:
-    window = real_main_window
-    dialog, speech = _review_dialog(window)
-    # What is stored beside the user's compressor: a calibration, and a profile they changed by hand.
-    window.compressor_state.set_settings({
-        **window.compressor_state.get_settings(),
-        "dynamics_profile": "dense",
-        "dynamics_customized": True,
-        "noise_reference_reliability": 0.8,
-    })
-    window.compressor_state.flush()
-    before = window.compressor_state.get_settings(include_calibration=True)
-    assert before["noise_reference_reliability"] == 0.8
-    noise = dialog.noise_audio
-    assert noise is not None
-    try:
-        _apply_complete_candidate(
-            window, dialog, _withheld_compressor_result(window, dialog, "headroom")
-        )
-
-        assert window.compressor_state.get_settings(include_calibration=True) == before
-        assert window.compressor_state.get_applied_settings(include_calibration=True) == before
-        assert window.gate_state.get_settings()["threshold_db"] == -41.0
-        assert dialog.setup_result is not None
-        outcome = validate_voice_setup_verification(
-            noise, speech, speech, int(window.processor.sample_rate()),
-            dialog.setup_result, "broadcast",
-        )
-        assert outcome["decision"] != "rollback"
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
-
-
-def test_applying_a_withheld_compressor_ignores_the_values_the_result_carries(real_main_window) -> None:
+def test_a_verified_setup_lists_every_stage(real_main_window, monkeypatch) -> None:
     window = real_main_window
     dialog, _speech = _review_dialog(window)
-    result = _withheld_compressor_result(window, dialog, "headroom")
-    result["compressor_settings"]["threshold_db"] = -31.0
-    before = window.compressor_state.get_settings(include_calibration=True)
-    try:
-        _apply_complete_candidate(window, dialog, result)
-
-        assert window.compressor_state.get_settings(include_calibration=True) == before
-        assert window._get_current_preset().to_dict()["compressor"]["threshold_db"] == before["threshold_db"]
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
-
-
-@pytest.mark.parametrize(
-    ("compressor_withheld", "tone_withheld"),
-    [(False, False), (True, False), (False, True), (True, True)],
-    ids=["neither", "compressor", "tone", "both"],
-)
-def test_a_verified_setup_lists_a_stage_only_when_it_was_changed(
-    real_main_window, monkeypatch, compressor_withheld, tone_withheld
-) -> None:
-    window = real_main_window
-    dialog, _speech = _review_dialog(window)
-    result = _voice_setup_result(window, dialog)
-    if compressor_withheld:
-        result = _withheld_compressor_result(window, dialog, "headroom")
-    if tone_withheld:
-        result["eq_settings"] = {**window.eq_state.get_eq_settings().to_dict(), "apply_recommended": False}
-        result["diagnostics"]["tone_withheld"] = {"reason_code": "tone_withheld", "cause": ["x"]}
     monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.QMessageBox.information", lambda *_a, **_k: None)
     monkeypatch.setattr(window, "_prompt_save_current_preset", lambda **_kwargs: None)
     try:
-        _apply_complete_candidate(window, dialog, result)
+        _apply_complete_candidate(window, dialog, _voice_setup_result(window, dialog))
         dialog._finalize_verified_setup()
 
-        stages = ("input_cleanup", "gate", "suppression", "eq", "deesser", "compressor", "limiter")
-        expected = tuple(
-            stage
-            for stage in stages
-            if not (tone_withheld and stage == "eq") and not (compressor_withheld and stage == "compressor")
-        )
+        expected = ("input_cleanup", "gate", "suppression", "eq", "deesser", "compressor", "limiter")
         assert window.config.calibration_results[0].verified_stages == expected
         assert dialog.setup_result is not None
         assert tuple(dialog.setup_result["_candidate"]["verified_stages"]) == expected
@@ -1664,61 +1351,20 @@ def test_a_verified_setup_lists_a_stage_only_when_it_was_changed(
         dialog.deleteLater()
 
 
-def test_a_kept_compressor_under_limiter_pressure_rolls_back_and_says_why(real_main_window) -> None:
+def test_the_applied_voice_setup_is_offered_as_a_preset_tuned_for_its_target(
+    real_main_window, monkeypatch
+) -> None:
     window = real_main_window
-    dialog, speech = _review_dialog(window)
-    before = window._get_current_preset().to_dict()
-    _apply_complete_candidate(window, dialog, _withheld_compressor_result(window, dialog, "headroom"))
-    dialog._verification_audio = speech
-    verdict = {**_verdict_with_dulling_advisory("reduce", advised=False), "reduction_targets": ["limiter"]}
-    try:
-        dialog._on_verification_complete(verdict)
+    offered: list[dict[str, Any]] = []
+    monkeypatch.setattr(window, "_prompt_save_current_preset", lambda **kwargs: offered.append(kwargs))
 
-        text = dialog.warning_label.text()
-        assert "Your compressor stays as it is" in text
-        assert "could not lower the loudness" in text
-        assert "Lower the microphone level and record again" in text
-        assert "could not adjust the settings any further" not in text
-        assert dialog.phase_label.text() == "Check failed; previous settings put back"
-        assert window._get_current_preset().to_dict() == before
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
+    window.on_voice_setup_applied("broadcast")
 
-
-def test_a_verification_reduction_never_changes_a_withheld_compressor(real_main_window) -> None:
-    window = real_main_window
-    dialog, _speech = _review_dialog(window)
-    _apply_complete_candidate(window, dialog, _withheld_compressor_result(window, dialog, "headroom"))
-    before = window._get_current_preset().to_dict()
-    try:
-        changed, _reason = dialog._apply_verification_reduction(window, ["limiter"])
-
-        assert changed is False
-        assert window._get_current_preset().to_dict() == before
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
-
-
-def test_a_limiter_and_deesser_reduction_leaves_a_kept_auto_makeup_compressors_loudness(real_main_window) -> None:
-    window = real_main_window
-    dialog, _speech = _review_dialog(window)
-    window.compressor_state.set_settings({**window.compressor_state.get_settings(), "auto_makeup_enabled": True})
-    result = _withheld_compressor_result(window, dialog, "headroom")
-    kept = window.compressor_state.get_settings()
-    _apply_complete_candidate(window, dialog, result)
-    try:
-        dialog._apply_verification_reduction(window, ["limiter", "deesser"])
-
-        assert dialog.setup_result is not None
-        assert kept["auto_makeup_enabled"] is True
-        assert dialog.setup_result["compressor_settings"]["target_lufs"] == kept["target_lufs"]
-        assert window.compressor_state.get_settings() == kept
-        assert "verification_adjusted_target_lufs" not in dialog.setup_result
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
+    (preset,) = offered
+    assert preset["preset_name"] == "Voice Setup Broadcast"
+    assert preset["description"] == (
+        "Auto-generated voice chain with EQ, gate/VAD, de-esser, and compressor tuned for the Broadcast target"
+    )
 
 
 def test_a_verification_reduction_refreshes_the_compressor_line_and_keeps_its_before(

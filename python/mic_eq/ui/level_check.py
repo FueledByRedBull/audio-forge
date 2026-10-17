@@ -26,11 +26,6 @@ LEVEL_HOLD_UPDATES = 15
 # speech level is where the analysis has room above any ordinary room's noise.
 TARGET_PEAK_DB = -6.0
 TARGET_SPEECH_DB = -25.0
-# Takes peaking above -7.5 dBFS never failed the setup's headroom check, about 75 % near -6 did,
-# so with the switch on the check calls a take hot above -8 and aims corrections at -11.
-LOWER_LEVEL_TARGET = False
-_LOWER_TOO_LOUD_DB = -8.0
-_LOWER_TARGET_PEAK_DB = -11.0
 # The third loudest 100 ms frame stands for "how loud you talk": the pauses between words are
 # quiet by nature, and a bump of two frames does not count, but 0.3 s of speech does.
 _SPEECH_FRAME_RANK = 3
@@ -45,16 +40,6 @@ _MAX_RAISE_DB = 30
 # frames were mostly silence, so the speech level says nothing about the microphone setting.
 _MAX_PEAK_ABOVE_SPEECH_DB = 40
 ROOM_LOUD_DB = -35.0
-
-
-def too_loud_db() -> float:
-    """The peak above which the level check calls a take too hot."""
-    return _LOWER_TOO_LOUD_DB if LOWER_LEVEL_TARGET else TOO_LOUD_DB
-
-
-def target_peak_db() -> float:
-    """Where the level check aims a corrected peak."""
-    return _LOWER_TARGET_PEAK_DB if LOWER_LEVEL_TARGET else TARGET_PEAK_DB
 
 
 @dataclass(frozen=True)
@@ -93,8 +78,8 @@ def verdict_from_levels(
 
     The advice comes from the peak: a take can be hot without being clipped.
     """
-    if peak_db > too_loud_db():
-        lower = max(1, math.ceil(peak_db - target_peak_db() - 0.05))
+    if peak_db > TOO_LOUD_DB:
+        lower = max(1, math.ceil(peak_db - TARGET_PEAK_DB - 0.05))
         what = (
             f"Your voice is clipping (peaks reach {_db(peak_db)} dB)"
             if clipped
@@ -125,7 +110,7 @@ def verdict_from_levels(
         # The least whole-dB raise that reaches the speech threshold; if it would push the
         # peak over the too-hot limit, a level change cannot fix this voice.
         least = math.ceil(TOO_QUIET_DB - speech_db)
-        if peak_db + least > too_loud_db():
+        if peak_db + least > TOO_LOUD_DB:
             return LevelVerdict(
                 "too_quiet",
                 f"Your voice is quiet: {heard} dB when you speak, and setup needs "
@@ -136,7 +121,7 @@ def verdict_from_levels(
                 peak_db,
                 speech_db,
             )
-        needed = max(least, math.floor(min(TARGET_SPEECH_DB - speech_db, target_peak_db() - peak_db)))
+        needed = max(least, math.floor(min(TARGET_SPEECH_DB - speech_db, TARGET_PEAK_DB - peak_db)))
         raise_by = min(needed, _MAX_RAISE_DB)
         fix = (
             f"Raise the microphone level by about {raise_by} dB (in Windows or on the "
@@ -215,8 +200,8 @@ def live_verdict(
     loudest = max(recent_rms_db, default=-120.0)
     peak_db = max(recent_peak_db, default=-120.0)
     if full and loudest < TOO_QUIET_DB:
-        return verdict_from_levels(min(peak_db, too_loud_db()), loudest, again=again)
-    if peak_db > too_loud_db() or full:
+        return verdict_from_levels(min(peak_db, TOO_LOUD_DB), loudest, again=again)
+    if peak_db > TOO_LOUD_DB or full:
         return verdict_from_levels(peak_db, loudest, again=again)
     return None
 
@@ -236,7 +221,7 @@ def room_noise_message(recent_rms_db: Sequence[float]) -> tuple[str, str]:
 def clipped_message(audio: np.ndarray, sample_rate: int) -> str:
     """Refuse a finished take whose loud parts were held at full scale, with the fix in decibels."""
     change = verdict_from_audio(audio, sample_rate).change_db
-    lower = -change if change < 0 else round(-target_peak_db())
+    lower = -change if change < 0 else round(-TARGET_PEAK_DB)
     return (
         "The recording clipped: its peaks were held at full scale. Lower the microphone "
         f"level by about {lower} dB (in Windows or on the microphone) or move back a "

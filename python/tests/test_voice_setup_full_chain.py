@@ -432,28 +432,6 @@ def test_the_suppressor_reshaping_the_spectrum_is_a_tonal_error_only_when_the_ch
         assert suppressor_flags == [True, True, True]
 
 
-def test_a_low_band_error_the_by_band_reading_catches_passes_as_released(monkeypatch) -> None:
-    assert voice_setup.TONAL_CHECK_COUNTS_EVERY_BAND is False
-
-    result, _ = _verify_tonal(monkeypatch, wrong_eq_db=6.0, wrong_eq_hz=160.0)
-
-    assert result["decision"] == "accept"
-    assert result["reason_codes"] == ["accepted"]
-    assert not any(key.startswith("tone_band_error") for key in result)
-
-
-def test_counting_every_band_rolls_back_a_low_band_error_and_restores(monkeypatch) -> None:
-    with monkeypatch.context() as scope:
-        scope.setattr(voice_setup, "TONAL_CHECK_COUNTS_EVERY_BAND", True)
-        result, _ = _verify_tonal(monkeypatch, wrong_eq_db=6.0, wrong_eq_hz=160.0)
-
-    assert result["decision"] == "rollback"
-    assert result["reason_codes"] == ["target_error"]
-    assert result["tone_band_error_after_db"] > result["tone_band_error_before_db"] + 1.0
-    assert result["spectral_target_error_after_db"] <= result["spectral_target_error_before_db"] + 1.0
-    assert voice_setup.TONAL_CHECK_COUNTS_EVERY_BAND is False
-
-
 def test_a_wrong_eq_is_still_a_tonal_error_with_a_suppressor_that_reshapes_the_spectrum(monkeypatch) -> None:
     result, _ = _verify_tonal(monkeypatch, wrong_eq_db=9.0)
 
@@ -526,8 +504,7 @@ def _eq_state_payload(eq: dict) -> dict:
 
 
 def _run_initial_analysis(
-    monkeypatch, *, processing_mode: str, eq_payload=lambda eq: eq, auto_eq=None, incumbent: bool = True,
-    compressor: dict | None = None, reading=lambda chain: {},
+    monkeypatch, *, processing_mode: str, eq_payload=lambda eq: eq, auto_eq=None,
 ):
     sample_rate = 48_000
     noise = np.random.default_rng(42).normal(0, 0.001, sample_rate * 2).astype(np.float32)
@@ -547,7 +524,6 @@ def _run_initial_analysis(
     proposed_suppressor = {"enabled": True, "strength": 0.65, "model": "deepfilter"}
     calls = []
     calibration = {}
-    tuned = {}
     progress = []
     frontend_activity = [
         (0.85, 1.0, -46.0, 0.9)
@@ -567,7 +543,6 @@ def _run_initial_analysis(
             "compressor_gain_reduction_db": 0.0, "compressor_gain_reduction_p95_db": 0.0,
             "deesser_gain_reduction_db": 0.0, "pre_limiter_true_peak_headroom_db": 2.0,
             "limiter_gain_reduction_db": 0.0, "true_peak_limiter_gain_reduction_db": 0.0,
-            **reading(chain),
         }
 
     def calibrate(**kwargs):
@@ -577,8 +552,7 @@ def _run_initial_analysis(
         return kwargs["compressor_settings"], {"backend": "rust"}
 
     # Leave capture measurement real; stub only the searches and final renderer.
-    def tune(*args, **_kwargs):
-        tuned["eq_settings"] = args[5]
+    def tune(*_args, **_kwargs):
         return {
             "apply_recommended": True, "gate_settings": proposed_gate,
             "suppressor_settings": proposed_suppressor,
@@ -590,9 +564,8 @@ def _run_initial_analysis(
     monkeypatch.setattr(voice_setup, "simulate_candidate_chain", simulate)
     result = voice_setup.analyze_voice_setup(
         noise * 0.9, speech * 0.9, sample_rate, vad_available=False,
-        incumbent_settings={**({"eq": eq_payload(incumbent_eq)} if incumbent else {}),
-                            "gate": asdict(preset.gate), "rnnoise": asdict(preset.rnnoise),
-                            **({"compressor": compressor} if compressor is not None else {})},
+        incumbent_settings={"eq": eq_payload(incumbent_eq),
+                            "gate": asdict(preset.gate), "rnnoise": asdict(preset.rnnoise)},
         raw_noise_audio=noise, raw_speech_audio=speech,
         input_cleanup_mode="gentle", processing_mode=processing_mode,
         progress_callback=lambda _text, value: progress.append(value),
@@ -601,8 +574,6 @@ def _run_initial_analysis(
         "result": result,
         "calls": calls,
         "calibration": calibration,
-        "tuned": tuned,
-        "current_eq": (EQSettings.from_dict(incumbent_eq) if incumbent else EQSettings()).to_dict(),
         "progress": progress,
         "speech": speech,
         "proposed_gate": proposed_gate,
@@ -720,75 +691,6 @@ def _failed_validation(*failures, tone_only):
     return analyze
 
 
-_TONE_ONLY_ABSTENTIONS = [
-    ["constrained gain solve produced no safe correction"],
-    ["no validated correction improved the target safely"],
-    ["headroom validation removed the usable correction"],
-    [
-        "constrained gain solve produced no safe correction",
-        "no validated correction improved the target safely",
-    ],
-]
-
-
-def _assert_computed_on_the_current_eq(observed):
-    current_eq = observed["current_eq"]
-    calls = observed["calls"]
-    assert observed["tuned"]["eq_settings"] == current_eq
-    assert observed["calibration"]["eq_settings"] == current_eq
-    assert [eq for _audio, eq, _chain in calls] == [{**current_eq, "enabled": False}, current_eq]
-    assert observed["result"]["eq_settings"] == {**current_eq, "apply_recommended": False}
-
-
-@pytest.mark.parametrize(
-    "auto_eq",
-    [
-        _failed_validation("clipped_gains (7 >= 6)", tone_only=True),
-        *(_abstention(*reasons) for reasons in _TONE_ONLY_ABSTENTIONS),
-    ],
-    ids=["validation", "solve", "validated", "headroom", "solve-and-validated"],
-)
-@pytest.mark.usefixtures("partial_results")
-def test_a_tone_only_refusal_withholds_the_tone_and_computes_the_rest_on_the_users_eq(monkeypatch, auto_eq):
-    observed = _run_initial_analysis(monkeypatch, processing_mode="normal", auto_eq=auto_eq)
-    diagnostics = observed["result"]["diagnostics"]
-
-    _assert_computed_on_the_current_eq(observed)
-    assert diagnostics["tone_withheld"]["reason_code"] == "tone_withheld"
-    assert diagnostics["tone_withheld"]["cause"]
-    assert diagnostics["offline_validation_passed"] is True
-    assert "Auto-EQ abstained from this capture" not in diagnostics["uncertainty_reasons"]
-
-
-@pytest.mark.usefixtures("partial_results")
-def test_a_withheld_tone_leaves_the_tone_out_of_the_setup_confidence(monkeypatch):
-    diagnostics = _run_initial_analysis(
-        monkeypatch, processing_mode="normal", auto_eq=_abstention(*_TONE_ONLY_ABSTENTIONS[0])
-    )["result"]["diagnostics"]
-
-    quiet_room = float(np.clip((-32.0 - diagnostics["conservative_noise_rms_db"]) / 18.0, 0.0, 1.0))
-    deesser = diagnostics["deesser_confidence"]
-    assert diagnostics["setup_confidence"] == pytest.approx(
-        voice_setup._bounded_quality_score([
-            (diagnostics["gate_confidence"], 0.25),
-            (deesser if diagnostics["deesser_enabled"] else max(deesser, 0.5), 0.15),
-            (diagnostics["compressor_confidence"], 0.15),
-            (quiet_room, 0.10),
-        ])
-    )
-
-
-@pytest.mark.usefixtures("partial_results")
-def test_a_withheld_tone_with_no_eq_in_the_incumbent_uses_the_default_eq(monkeypatch):
-    observed = _run_initial_analysis(
-        monkeypatch, processing_mode="normal", incumbent=False,
-        auto_eq=_failed_validation("gain_rms (11.0 > 10.0 dB)", tone_only=True),
-    )
-
-    assert observed["current_eq"] == EQSettings().to_dict()
-    _assert_computed_on_the_current_eq(observed)
-
-
 @pytest.mark.parametrize(
     "auto_eq",
     [
@@ -797,15 +699,13 @@ def test_a_withheld_tone_with_no_eq_in_the_incumbent_uses_the_default_eq(monkeyp
     ],
     ids=["unclear-capture", "headroom-risk"],
 )
-@pytest.mark.usefixtures("partial_results")
-def test_a_refusal_that_is_not_about_the_tone_still_refuses_the_whole_setup(monkeypatch, auto_eq):
+def test_a_refusal_that_is_not_about_the_tone_refuses_the_whole_setup(monkeypatch, auto_eq):
     observed = _run_initial_analysis(monkeypatch, processing_mode="normal", auto_eq=auto_eq)
     result = observed["result"]
 
     assert result["eq_settings"] is None
     assert result["eq_error"] == "Recording too unclear. Please try again."
     assert observed["calibration"] == {}
-    assert result["diagnostics"]["tone_withheld"] is None
 
 
 @pytest.mark.parametrize(
@@ -817,101 +717,18 @@ def test_a_refusal_that_is_not_about_the_tone_still_refuses_the_whole_setup(monk
         ["insufficient repeatable voiced windows"],
     ],
 )
-@pytest.mark.usefixtures("partial_results")
-def test_an_abstention_with_a_capture_reason_is_not_withheld(monkeypatch, reasons):
+def test_an_abstention_with_a_capture_reason_blocks_the_recommendation(monkeypatch, reasons):
     observed = _run_initial_analysis(monkeypatch, processing_mode="normal", auto_eq=_abstention(*reasons))
     result = observed["result"]
 
-    assert result["diagnostics"]["tone_withheld"] is None
     assert result["diagnostics"]["apply_recommended"] is False
     assert "Auto-EQ abstained from this capture" in result["diagnostics"]["uncertainty_reasons"]
     assert result["eq_settings"]["abstention_reasons"] == reasons
 
 
-@pytest.mark.usefixtures("partial_results")
-def test_a_tone_refusal_stays_whole_when_the_incumbent_eq_cannot_be_read(monkeypatch):
-    observed = _run_initial_analysis(
-        monkeypatch, processing_mode="normal",
-        eq_payload=lambda eq: eq | {"bands": eq["bands"][:3]},
-        auto_eq=_failed_validation("clipped_gains (7 >= 6)", tone_only=True),
-    )
-
-    assert observed["result"]["eq_settings"] is None
-    assert observed["result"]["diagnostics"]["tone_withheld"] is None
-
-
-_USERS_COMPRESSOR = {
-    **asdict(Preset().compressor),
-    "threshold_db": -17.25,
-    "auto_makeup_enabled": False,
-    "makeup_gain_db": 1.0,
-}
-
-
-def _too_hot_unless_users(chain):
-    if chain["compressor"]["threshold_db"] == _USERS_COMPRESSOR["threshold_db"]:
-        return {}
-    return {"pre_limiter_true_peak_headroom_db": -4.0, "limiter_gain_reduction_db": 4.0}
-
-
-@pytest.mark.usefixtures("compressor_fallback")
-def test_a_withheld_compressor_is_checked_in_the_full_chain_as_the_user_has_it(monkeypatch):
-    observed = _run_initial_analysis(
-        monkeypatch, processing_mode="normal", compressor=_USERS_COMPRESSOR, reading=_too_hot_unless_users
-    )
-    result = observed["result"]
-    diagnostics = result["diagnostics"]
-    audio, eq, chain = observed["calls"][-1]
-
-    # The last render is the final check with the user's compressor, on the proposal's other steps.
-    np.testing.assert_array_equal(audio, observed["speech"])
-    assert eq == observed["expected_eq"]
-    assert chain["compressor"] == _USERS_COMPRESSOR
-    assert chain["gate"] == observed["proposed_gate"]
-    assert chain["rnnoise"] == observed["proposed_suppressor"]
-    assert chain["full_chain"] is True and chain["input_pre_filtered"] is False
-    assert chain["processing_mode"] == "normal" and chain["input_cleanup_mode"] == "gentle"
-    assert result["compressor_settings"] == _USERS_COMPRESSOR
-    assert result["gate_settings"] == observed["proposed_gate"]
-    assert result["suppressor_settings"] == observed["proposed_suppressor"]
-    # This synthetic capture is also a weak one, but its room-noise take is not usable, which is more
-    # than a faint voice: only the headroom cause keeps the compressor, and the setup stays suggestions only.
-    assert diagnostics["weak_capture"] is True
-    assert "room noise does not match conditions during the voice capture" in diagnostics["uncertainty_reasons"]
-    assert diagnostics["compressor_withheld"] == {
-        "reason_code": "compressor_withheld",
-        "cause": ["headroom"],
-    }
-    assert diagnostics["apply_recommended"] is False
-    assert diagnostics["offline_validation_passed"] is True
-    assert diagnostics["offline_validation_full_chain"] is True
-    assert "output_audio" not in diagnostics["offline_validation"]
-
-
-@pytest.mark.usefixtures("compressor_fallback")
-def test_a_headroom_failure_the_current_compressor_shares_is_still_refused(monkeypatch):
-    observed = _run_initial_analysis(
-        monkeypatch,
-        processing_mode="normal",
-        compressor=_USERS_COMPRESSOR,
-        reading=lambda chain: {"pre_limiter_true_peak_headroom_db": -4.0, "limiter_gain_reduction_db": 4.0},
-    )
-    result = observed["result"]
-
-    assert result["diagnostics"]["compressor_withheld"] is None
-    assert result["diagnostics"]["offline_validation_passed"] is False
-    assert result["compressor_settings"]["threshold_db"] != _USERS_COMPRESSOR["threshold_db"]
-    assert observed["calls"][-1][2]["compressor"]["threshold_db"] == _USERS_COMPRESSOR["threshold_db"]
-
-
-_WITHHELD_COMPRESSOR = {"reason_code": "compressor_withheld", "cause": ["headroom"]}
-
-
-def _verify_with_compressor_metrics(monkeypatch, metrics, *, withheld):
+def _verify_with_compressor_metrics(monkeypatch, metrics):
     _patch_measurements(monkeypatch, drop_voice=False, metrics=metrics)
     setup = _setup_result()
-    if withheld:
-        setup["diagnostics"] = {"compressor_withheld": _WITHHELD_COMPRESSOR}
     sample_rate = 48_000
     noise = np.full(sample_rate * 2, 0.001, dtype=np.float32)
     speech = np.full(sample_rate * 3, 0.04, dtype=np.float32)
@@ -929,19 +746,14 @@ def _verify_with_compressor_metrics(monkeypatch, metrics, *, withheld):
     ],
     ids=["p95-over-target", "peak-over-cap"],
 )
-def test_verification_leaves_the_compressor_targets_out_when_the_compressor_is_withheld(
-    monkeypatch, metrics, kept, code
-):
-    set_by_us = _verify_with_compressor_metrics(monkeypatch, metrics, withheld=False)
-    withheld = _verify_with_compressor_metrics(monkeypatch, metrics, withheld=True)
+def test_verification_holds_the_compressor_to_its_targets(monkeypatch, metrics, kept, code):
+    outcome = _verify_with_compressor_metrics(monkeypatch, metrics)
 
-    assert set_by_us["decision"] == kept and code in set_by_us["reason_codes"]
-    assert withheld["decision"] == "accept"
-    assert withheld["reduction_targets"] == [] and code not in withheld["reason_codes"]
+    assert outcome["decision"] == kept and code in outcome["reason_codes"]
 
 
-def test_verification_still_answers_limiter_pressure_when_the_compressor_is_withheld(monkeypatch):
-    outcome = _verify_with_compressor_metrics(monkeypatch, {"limiter_gain_reduction_db": 2.0}, withheld=True)
+def test_verification_answers_limiter_pressure(monkeypatch):
+    outcome = _verify_with_compressor_metrics(monkeypatch, {"limiter_gain_reduction_db": 2.0})
 
     assert outcome["decision"] == "reduce"
     assert outcome["reduction_targets"] == ["limiter"]

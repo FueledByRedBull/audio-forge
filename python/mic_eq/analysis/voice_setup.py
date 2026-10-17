@@ -9,7 +9,6 @@ before the UI offers to apply them.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from copy import deepcopy
 from typing import Any
 
 import numpy as np
@@ -39,7 +38,6 @@ from .deesser_fusion import (
     predict_clip_probability,
     predict_frame_probabilities,
 )
-from .failure_detection import AnalysisValidationError
 from .signal_processing import resample_poly
 from .noise_reference import (
     MIN_NOISE_DURATION_S,
@@ -77,13 +75,6 @@ _DULLING_FRAME, _DULLING_HOP = 1024, 512
 # Qualified on held-out simulated users in
 # evaluation/voice-setup-verification-tonal-check-2026-10-report.json.
 TONAL_CHECK_BYPASSES_SUPPRESSOR = True
-# The tonal check above weighs every bin of 80-12000 Hz alike, so the 79 bins below 1 kHz
-# carry under 8 % of it and a low-frequency error hardly moves it. With this on, verification
-# adds a second reading that weighs every third-octave band alike and rolls back for target
-# error by the same 1.0 dB margin; it can only add rollbacks. Off until a held-out
-# evaluation adopts it.
-TONAL_CHECK_COUNTS_EVERY_BAND = False
-_TONAL_BAND_EDGES_HZ = 80.0 * 2.0 ** (np.arange(23) / 3.0)
 # A raw capture is clipped when it holds full scale for CLIP_FLAT_TOP_S, or recurs
 # at it more than CLIP_MAX_EVENTS times. On 12 real-speech takes the takes it
 # accepts were hard-clipped by at most 0.5 dB, with a clipping error of -51.5 dB or
@@ -93,26 +84,6 @@ _TONAL_BAND_EDGES_HZ = 80.0 * 2.0 ** (np.arange(23) / 3.0)
 CLIP_LEVEL = 0.999
 CLIP_FLAT_TOP_S = 0.000125
 CLIP_MAX_EVENTS = 20
-
-# The evaluation switch for withholding only the tone. It is off until a held-out
-# evaluation adopts it; off, a tone-only reason refuses the whole setup. Read at call time.
-PARTIAL_RESULTS = False
-
-# The evaluation switch for keeping the user's compressor. It is off until a held-out
-# evaluation adopts it; off, a final check that fails only on headroom, or a weak
-# capture, refuses the whole setup. On, the user's compressor stays and the rest applies
-# when the final check passes with it. Read at call time.
-COMPRESSOR_FALLBACK = False
-
-# Auto-EQ abstentions that blame the tone fit alone. With only these, the recording
-# is fine and the tone is the one thing left out.
-_TONE_ONLY_ABSTENTIONS = frozenset(
-    {
-        "constrained gain solve produced no safe correction",
-        "no validated correction improved the target safely",
-        "headroom validation removed the usable correction",
-    }
-)
 
 GATE_MODE_LABELS = {
     0: "Threshold Only",
@@ -1168,8 +1139,6 @@ def analyze_voice_setup(
         progress_callback("Fitting voice EQ...", 20)
     eq_settings: dict[str, Any] | None = None
     eq_error: str | None = None
-    # Why only the tone is left out, when nothing else stopped Auto-EQ.
-    tone_withheld: list[str] = []
     try:
         eq_settings, _validation = analyze_auto_eq(
             speech_arr,
@@ -1195,30 +1164,11 @@ def analyze_voice_setup(
         raise
     except Exception as exc:  # pragma: no cover - exercised through return shape
         eq_error = str(exc)
-        if PARTIAL_RESULTS and isinstance(exc, AnalysisValidationError) and exc.tone_only:
-            tone_withheld = exc.failures
-    if PARTIAL_RESULTS and eq_settings is not None and not eq_settings.get("apply_recommended", True):
-        reasons = list(eq_settings.get("abstention_reasons") or [])
-        if reasons and set(reasons) <= _TONE_ONLY_ABSTENTIONS:
-            tone_withheld = reasons
 
     incumbent_payload = dict(incumbent_settings or {})
     incumbent_eq = incumbent_payload.get("eq")
-    withheld_eq: dict[str, Any] | None = None
-    if tone_withheld:
-        # The tone stays as the user has it, so everything after this is judged on that EQ.
-        try:
-            withheld_eq = (
-                EQSettings()
-                if incumbent_eq is None
-                else EQSettings.from_dict(_typed_eq_payload(incumbent_eq))
-            ).to_dict()
-        except (KeyError, TypeError, ValueError):
-            tone_withheld = []
-        else:
-            eq_settings = {**withheld_eq, "apply_recommended": False}
 
-    simulation_eq_settings = withheld_eq or eq_settings or {
+    simulation_eq_settings = eq_settings or {
         "band_freqs": list(EQ_FREQUENCIES),
         "band_gains": [0.0] * len(EQ_FREQUENCIES),
         "band_qs": [1.41] * len(EQ_FREQUENCIES),
@@ -1235,8 +1185,6 @@ def analyze_voice_setup(
         "target_p95_met": False,
         "iterations": 0,
     }
-    # What a compressor nobody calibrated reads as, if the user's own stays.
-    uncalibrated_compressor = dict(compressor_calibration)
     check_analysis_cancelled(cancel_check)
 
     incumbent_gate = incumbent_payload.get("gate")
@@ -1484,96 +1432,14 @@ def analyze_voice_setup(
         eq_settings is not None
         and eq_settings.get("apply_recommended", True)
     )
-    # A withheld tone is no failed check: the user's EQ stays and the rest stands on its own.
-    eq_blocks_apply = not eq_apply_recommended and not tone_withheld
+    eq_blocks_apply = not eq_apply_recommended
 
-    # The user's compressor stays when the proposal's loudness alone failed the final
-    # check on headroom, or the capture is too weak to trust the proposal's dynamics,
-    # and the final check passes with the compressor as the user has it. Gate,
-    # suppressor and the rest stand as proposed; the compressor figures are the user's.
-    # Only a voice that is too faint against the room (SNR under 8 dB or a low capture
-    # score) counts as weak here: too little speech, an unusable room take or a
-    # single-spectrum fallback leave nothing the rest of the setup can stand on.
-    weak_capture_is_faint_voice = bool(
-        float(features["active_duration_s"]) >= 2.0
-        and noise_reference.status == "usable"
-        and not spectrum_result.used_single_spectrum_fallback
-    )
-    compressor_withheld: list[str] = []
-    compressor_fallback_checked: dict[str, Any] | None = None
-    users_compressor = incumbent_payload.get("compressor")
-    if (
-        COMPRESSOR_FALLBACK
-        and isinstance(users_compressor, Mapping)
-        and full_chain_eq_settings is not None
-    ):
-        causes = [
-            *(["headroom"] if beyond_headroom_passed and not full_chain_headroom_safe else []),
-            *(
-                ["weak_capture"]
-                if weak_capture and weak_capture_is_faint_voice and not eq_blocks_apply
-                else []
-            ),
-        ]
-        if causes:
-            kept_compressor = deepcopy(dict(users_compressor))
-            kept_error: str | None = None
-            try:
-                check_analysis_cancelled(cancel_check)
-                kept_validation = simulate_candidate_chain(
-                    np.asarray(full_chain_speech, dtype=np.float32),
-                    sample_rate,
-                    full_chain_eq_settings,
-                    {**full_chain_settings, "compressor": kept_compressor},
-                )
-                kept_audio = np.asarray(kept_validation.pop("output_audio"), dtype=np.float32)
-                kept_dropout = (
-                    _active_speech_gain_db(features, _frame_rms_db(kept_audio, sample_rate)) < -12.0
-                )
-                kept_allowance_db = _limiter_allowance_db(
-                    effective_limiter_settings,
-                    kept_compressor,
-                    _input_too_hot(float(features["short_term_lufs"]), kept_compressor),
-                )
-                kept_passes = passes_beyond_headroom(
-                    kept_validation, kept_dropout
-                ) and _headroom_safe(kept_validation, kept_allowance_db)
-            except AnalysisCancelled:
-                raise
-            except Exception as exc:  # the proposal's refusal stands
-                kept_passes = False
-                kept_error = str(exc)
-            compressor_fallback_checked = {
-                "cause": list(causes),
-                "passed": kept_passes,
-                "error": kept_error,
-            }
-            if kept_passes:
-                compressor_withheld = causes
-                compressor_settings = kept_compressor
-                full_chain_settings["compressor"] = dict(kept_compressor)
-                offline_validation = kept_validation
-                offline_validation_passed = True
-                requested_loudness_headroom_safe = True
-                allowance_db = kept_allowance_db
-                full_chain_active_gain_db = _active_speech_gain_db(
-                    features, _frame_rms_db(kept_audio, sample_rate)
-                )
-                full_chain_voice_dropout = kept_dropout
-                compressor_calibration = dict(uncalibrated_compressor)
-                compressor_diag = {
-                    **compressor_diag,
-                    "auto_makeup_enabled": bool(kept_compressor.get("auto_makeup_enabled")),
-                    "target_lufs": float(kept_compressor.get("target_lufs", compressor_diag["target_lufs"])),
-                }
-
-    # Without the proposal's compressor there is no compressor confidence to score.
     setup_confidence = _bounded_quality_score(
         [
-            *([] if tone_withheld else [(eq_confidence, 0.35)]),
+            (eq_confidence, 0.35),
             (gate_confidence, 0.25),
             (max(deesser_confidence, 0.50) if not deesser_diag["enabled"] else deesser_confidence, 0.15),
-            *([] if compressor_withheld else [(compressor_confidence, 0.15)]),
+            (compressor_confidence, 0.15),
             (quiet_room_confidence, 0.10),
         ]
     )
@@ -1588,7 +1454,7 @@ def analyze_voice_setup(
     compressor_calibration[
         "target_p95_tolerance_db"
     ] = _COMPRESSOR_P95_TARGET_TOLERANCE_DB
-    if compressor_target_reason is not None and not compressor_withheld:
+    if compressor_target_reason is not None:
         uncertainty_reasons.append(compressor_target_reason)
     if float(features["active_duration_s"]) < 2.0:
         uncertainty_reasons.append("too little VAD-active speech")
@@ -1626,12 +1492,11 @@ def analyze_voice_setup(
         setup_confidence *= 0.90
     if eq_blocks_apply:
         uncertainty_reasons.append("Auto-EQ abstained from this capture")
-    # A withheld compressor is no failed check: the user's stays and the rest stands on its own.
     apply_recommended = bool(
-        (not weak_capture or "weak_capture" in compressor_withheld)
+        not weak_capture
         and not eq_blocks_apply
         and offline_validation_passed
-        and (compressor_target_met or compressor_withheld)
+        and compressor_target_met
     )
     if weak_capture:
         setup_confidence = min(setup_confidence, 0.49)
@@ -1653,22 +1518,6 @@ def analyze_voice_setup(
             "uncertainty_reasons": uncertainty_reasons,
             "weak_capture": weak_capture,
             "apply_recommended": apply_recommended,
-            "tone_withheld": (
-                {"reason_code": "tone_withheld", "cause": tone_withheld}
-                if tone_withheld
-                else None
-            ),
-            "compressor_withheld": (
-                {"reason_code": "compressor_withheld", "cause": compressor_withheld}
-                if compressor_withheld
-                else None
-            ),
-            # Absent with the switch off, so that output reads as it always did.
-            **(
-                {"compressor_fallback_checked": compressor_fallback_checked}
-                if COMPRESSOR_FALLBACK
-                else {}
-            ),
             "capture_confidence": capture_confidence,
             "eq_confidence": eq_confidence,
             "gate_confidence": gate_confidence,
@@ -1728,11 +1577,7 @@ def analyze_voice_setup(
             "dynamics_intensity": compressor_diag["dynamics_intensity"],
             "compressor_calibration": compressor_calibration,
             "requested_loudness_headroom_safe": requested_loudness_headroom_safe,
-            "loudness_lowered_db": (
-                0.0
-                if compressor_withheld
-                else requested_loudness - float(compressor_settings[loudness_key])
-            ),
+            "loudness_lowered_db": requested_loudness - float(compressor_settings[loudness_key]),
             "vad_available": bool(vad_available),
             "vad_analysis_backend": vad_analysis_backend,
             "noise_vad_analysis_backend": noise_vad_backend,
@@ -1764,12 +1609,8 @@ def _shape_error_db(
     target_preset: str,
     *,
     reference_db: np.ndarray | None = None,
-    by_band: bool = False,
 ) -> float:
-    """Return voice-band error for a house curve or a voice-safe tone delta.
-
-    ``by_band`` takes the root of the mean square per third-octave band, not per bin.
-    """
+    """Return voice-band error for a house curve or a voice-safe tone delta."""
     from .auto_eq_parts.target import get_target_curve
 
     mask = (measured_freqs >= 80.0) & (measured_freqs <= 12_000.0)
@@ -1793,22 +1634,12 @@ def _shape_error_db(
     if reference_db is None:
         measured -= float(np.median(measured))
         target -= float(np.median(target))
-        return _error_rms(measured - target, freqs, by_band)
+        return float(np.sqrt(np.mean(np.square(measured - target))))
 
     measured_delta = measured - reference
     measured_delta -= float(np.median(measured_delta))
     target -= float(np.median(target))
-    return _error_rms(measured_delta - target, freqs, by_band)
-
-
-def _error_rms(error: np.ndarray, freqs: np.ndarray, by_band: bool) -> float:
-    square = np.square(error)
-    if not by_band:
-        return float(np.sqrt(np.mean(square)))
-    band = np.searchsorted(_TONAL_BAND_EDGES_HZ, freqs, side="right") - 1
-    counts = np.bincount(band, minlength=_TONAL_BAND_EDGES_HZ.size)
-    sums = np.bincount(band, weights=square, minlength=_TONAL_BAND_EDGES_HZ.size)
-    return float(np.sqrt(np.mean(sums[counts > 0] / counts[counts > 0])))
+    return float(np.sqrt(np.mean(np.square(measured_delta - target))))
 
 
 def _verification_outcome(
@@ -2089,23 +1920,6 @@ def validate_voice_setup_verification(
         target_preset,
         reference_db=before_spectrum.median_spectrum_db,
     )
-    band_before = band_after = 0.0
-    band_details: dict[str, float] = {}
-    if TONAL_CHECK_COUNTS_EVERY_BAND:
-        band_before, band_after = (
-            _shape_error_db(
-                spectrum.freqs,
-                spectrum.median_spectrum_db,
-                target_preset,
-                reference_db=before_spectrum.median_spectrum_db,
-                by_band=True,
-            )
-            for spectrum in (before_spectrum, tone_spectrum)
-        )
-        band_details = {
-            "tone_band_error_before_db": band_before,
-            "tone_band_error_after_db": band_after,
-        }
     original_shape = np.interp(
         before_spectrum.freqs,
         original_spectrum.freqs,
@@ -2145,10 +1959,6 @@ def validate_voice_setup_verification(
         full_chain_voice_dropout = full_chain_active_gain_db < -12.0
     compressor = setup_result.get("compressor_settings") or {}
     setup_diagnostics = setup_result.get("diagnostics")
-    # A compressor the user kept was not set by this setup, so it has no targets to answer to.
-    compressor_kept = isinstance(setup_diagnostics, Mapping) and bool(
-        setup_diagnostics.get("compressor_withheld")
-    )
     target_p95 = float(compressor.get("target_p95_reduction_db", 3.5))
     peak_cap = float(compressor.get("peak_reduction_cap_db", 8.0))
     measured_p95 = float(
@@ -2168,7 +1978,7 @@ def validate_voice_setup_verification(
         processed.get("true_peak_limiter_gain_reduction_db", 0.0)
     )
     limiter_gain_reduction = max(main_limiter_gain_reduction, true_peak_limiter_gain_reduction)
-    compressor_p95_excess = not compressor_kept and measured_p95 > target_p95 + 0.75
+    compressor_p95_excess = measured_p95 > target_p95 + 0.75
     deesser_p95 = float(processed.get("deesser_gain_reduction_p95_db", 0.0))
     deesser_limit = float(
         (setup_result.get("deesser_settings") or {}).get("max_reduction_db", 6.0)
@@ -2233,12 +2043,6 @@ def validate_voice_setup_verification(
             safety_reasons.append(
                 f"target error worsened from {before_error:.1f} to {after_error:.1f} dB"
             )
-        elif TONAL_CHECK_COUNTS_EVERY_BAND and band_after > band_before + 1.0:
-            safety_codes.append("target_error")
-            safety_reasons.append(
-                "tone error per third-octave band worsened from "
-                f"{band_before:.1f} to {band_after:.1f} dB"
-            )
         if relative_noise_change_db > 4.0:
             safety_codes.append("noise_safety_limit")
             safety_reasons.append(
@@ -2247,7 +2051,7 @@ def validate_voice_setup_verification(
         if snr_change_db < -4.0:
             safety_codes.append("snr_safety_limit")
             safety_reasons.append(f"SNR fell by {-snr_change_db:.1f} dB")
-        if not compressor_kept and measured_peak > peak_cap + 0.25:
+        if measured_peak > peak_cap + 0.25:
             safety_codes.append("compressor_peak_cap")
             safety_reasons.append(
                 f"compressor peak reduction reached {measured_peak:.1f} dB "
@@ -2386,7 +2190,6 @@ def validate_voice_setup_verification(
         "clipped": bool(np.max(np.abs(rendered)) >= 1.0),
         "simulation_backend": processed.get("simulation_backend"),
         **dulling_details,
-        **band_details,
     }
 
 

@@ -38,6 +38,12 @@ def partial_results(monkeypatch):
 
 
 @pytest.fixture
+def compressor_fallback(monkeypatch):
+    """Turn on keeping the user's compressor, which is off by default."""
+    monkeypatch.setattr("mic_eq.analysis.voice_setup.COMPRESSOR_FALLBACK", True)
+
+
+@pytest.fixture
 def isolated_main_window(qapp, monkeypatch):
     """A real main window with default settings, no presets and no devices."""
     from mic_eq.config import AppConfig

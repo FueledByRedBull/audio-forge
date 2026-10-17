@@ -9,6 +9,7 @@ before the UI offers to apply them.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 from typing import Any
 
 import numpy as np
@@ -96,6 +97,12 @@ CLIP_MAX_EVENTS = 20
 # The evaluation switch for withholding only the tone. It is off until a held-out
 # evaluation adopts it; off, a tone-only reason refuses the whole setup. Read at call time.
 PARTIAL_RESULTS = False
+
+# The evaluation switch for keeping the user's compressor. It is off until a held-out
+# evaluation adopts it; off, a final check that fails only on headroom, or a weak
+# capture, refuses the whole setup. On, the user's compressor stays and the rest applies
+# when the final check passes with it. Read at call time.
+COMPRESSOR_FALLBACK = False
 
 # Auto-EQ abstentions that blame the tone fit alone. With only these, the recording
 # is fine and the tone is the one thing left out.
@@ -860,6 +867,33 @@ def _headroom_safe(simulation: dict[str, Any], allowance_db: float) -> bool:
     return _limiter_excess_db(simulation, allowance_db) <= 0.0
 
 
+def _input_too_hot(short_term_lufs: float, compressor: Mapping[str, Any]) -> bool:
+    """Whether the voice gets no makeup at all, so only less input gain can help.
+
+    A voice already louder than the lowest target gets none, nor does manual makeup.
+    """
+    return short_term_lufs >= -24.0 or not bool(compressor.get("auto_makeup_enabled"))
+
+
+def _limiter_allowance_db(
+    limiter: Mapping[str, Any], compressor: Mapping[str, Any], input_too_hot: bool
+) -> float:
+    """Return the limiter allowance the final check may lean on, or 0.0 for the released rule.
+
+    The limiter may catch the loudest peaks of a voice that automatic makeup
+    raises. Where makeup does not back off against it (a voice too hot for
+    makeup, manual makeup) or nothing catches the peaks, the released rule holds.
+    """
+    return (
+        LIMITER_ALLOWANCE_DB
+        if bool(limiter.get("enabled", True))
+        and bool(compressor.get("enabled", True))
+        and bool(compressor.get("auto_makeup_enabled"))
+        and not input_too_hot
+        else 0.0
+    )
+
+
 def _fit_loudness_to_headroom(
     compressor: Mapping[str, Any],
     simulation: dict[str, Any],
@@ -1201,6 +1235,8 @@ def analyze_voice_setup(
         "target_p95_met": False,
         "iterations": 0,
     }
+    # What a compressor nobody calibrated reads as, if the user's own stays.
+    uncalibrated_compressor = dict(compressor_calibration)
     check_analysis_cancelled(cancel_check)
 
     incumbent_gate = incumbent_payload.get("gate")
@@ -1346,15 +1382,6 @@ def analyze_voice_setup(
         ]
     )
     compressor_confidence = float(np.clip(0.55 * capture_confidence + 0.45 * dynamics_confidence, 0.0, 1.0))
-    setup_confidence = _bounded_quality_score(
-        [
-            *([] if tone_withheld else [(eq_confidence, 0.35)]),
-            (gate_confidence, 0.25),
-            (max(deesser_confidence, 0.50) if not deesser_diag["enabled"] else deesser_confidence, 0.15),
-            (compressor_confidence, 0.15),
-            (quiet_room_confidence, 0.10),
-        ]
-    )
 
     if progress_callback is not None:
         progress_callback("Checking final headroom and dynamics...", 95)
@@ -1363,24 +1390,42 @@ def analyze_voice_setup(
     requested_loudness_headroom_safe = False
     loudness_key, loudness_floor = _loudness_floor(compressor_settings)
     requested_loudness = float(compressor_settings[loudness_key])
-    # A voice already louder than the lowest target gets no makeup at all, so
-    # only less input gain can help.
-    input_too_hot = float(features["short_term_lufs"]) >= -24.0 or not bool(
-        compressor_settings.get("auto_makeup_enabled")
-    )
-    # The limiter may catch the loudest peaks of a voice that automatic makeup
-    # raises. Where makeup does not back off against it (a voice too hot for
-    # makeup, manual makeup) or nothing catches the peaks, the released rule holds.
-    allowance_db = (
-        LIMITER_ALLOWANCE_DB
-        if bool(effective_limiter_settings.get("enabled", True))
-        and bool(compressor_settings.get("auto_makeup_enabled"))
-        and not input_too_hot
-        else 0.0
+    input_too_hot = _input_too_hot(float(features["short_term_lufs"]), compressor_settings)
+    allowance_db = _limiter_allowance_db(
+        effective_limiter_settings, compressor_settings, input_too_hot
     )
     input_gain_shortfall_db = 0.0
     full_chain_active_gain_db = 0.0
     full_chain_voice_dropout = False
+    full_chain_headroom_safe = False
+    beyond_headroom_passed = False
+
+    def passes_beyond_headroom(validation: Mapping[str, Any], voice_dropout: bool) -> bool:
+        """The final check without its headroom rule."""
+        output_true_peak = float(validation.get("output_true_peak_db", 120.0))
+        ceiling = float(
+            validation.get(
+                "limiter_effective_ceiling_db",
+                effective_limiter_settings["ceiling_db"],
+            )
+        )
+        compressor_gr = float(validation.get("compressor_gain_reduction_db", 120.0))
+        compressor_p95 = float(
+            validation.get("compressor_gain_reduction_p95_db", compressor_gr)
+        )
+        deesser_gr = float(validation.get("deesser_gain_reduction_db", 120.0))
+        return bool(
+            np.isfinite([output_true_peak, compressor_gr, deesser_gr]).all()
+            and output_true_peak <= ceiling + 0.15
+            and compressor_gr
+            <= float(compressor_diag["peak_reduction_cap_db"]) + 0.25
+            and compressor_p95
+            <= float(compressor_diag["target_p95_reduction_db"]) + 1.25
+            and deesser_gr <= 10.0
+            and not voice_dropout
+            and full_chain_raw_available
+        )
+
     try:
         if full_chain_eq_settings is None:
             raise ValueError(
@@ -1420,35 +1465,118 @@ def analyze_voice_setup(
             features, _frame_rms_db(rendered_full_chain, sample_rate)
         )
         full_chain_voice_dropout = full_chain_active_gain_db < -12.0
-        output_true_peak = float(offline_validation.get("output_true_peak_db", 120.0))
-        ceiling = float(
-            offline_validation.get(
-                "limiter_effective_ceiling_db",
-                effective_limiter_settings["ceiling_db"],
-            )
+        beyond_headroom_passed = passes_beyond_headroom(
+            offline_validation, full_chain_voice_dropout
         )
-        compressor_gr = float(offline_validation.get("compressor_gain_reduction_db", 120.0))
-        compressor_p95 = float(
-            offline_validation.get("compressor_gain_reduction_p95_db", compressor_gr)
-        )
-        deesser_gr = float(offline_validation.get("deesser_gain_reduction_db", 120.0))
         full_chain_headroom_safe = _headroom_safe(offline_validation, allowance_db)
-        offline_validation_passed = bool(
-            np.isfinite([output_true_peak, compressor_gr, deesser_gr]).all()
-            and output_true_peak <= ceiling + 0.15
-            and compressor_gr
-            <= float(compressor_diag["peak_reduction_cap_db"]) + 0.25
-            and compressor_p95
-            <= float(compressor_diag["target_p95_reduction_db"]) + 1.25
-            and deesser_gr <= 10.0
-            and full_chain_headroom_safe
-            and not full_chain_voice_dropout
-            and full_chain_raw_available
-        )
+        offline_validation_passed = beyond_headroom_passed and full_chain_headroom_safe
     except AnalysisCancelled:
         raise
     except Exception as exc:  # pragma: no cover - defensive diagnostics
         offline_validation = {"error": str(exc), "simulation_backend": "unavailable"}
+
+    weak_capture = bool(
+        not capture_reliable
+        or noise_referenced_snr_db < 8.0
+        or capture_confidence < 0.50
+    )
+    eq_apply_recommended = bool(
+        eq_settings is not None
+        and eq_settings.get("apply_recommended", True)
+    )
+    # A withheld tone is no failed check: the user's EQ stays and the rest stands on its own.
+    eq_blocks_apply = not eq_apply_recommended and not tone_withheld
+
+    # The user's compressor stays when the proposal's loudness alone failed the final
+    # check on headroom, or the capture is too weak to trust the proposal's dynamics,
+    # and the final check passes with the compressor as the user has it. Gate,
+    # suppressor and the rest stand as proposed; the compressor figures are the user's.
+    # Only a voice that is too faint against the room (SNR under 8 dB or a low capture
+    # score) counts as weak here: too little speech, an unusable room take or a
+    # single-spectrum fallback leave nothing the rest of the setup can stand on.
+    weak_capture_is_faint_voice = bool(
+        float(features["active_duration_s"]) >= 2.0
+        and noise_reference.status == "usable"
+        and not spectrum_result.used_single_spectrum_fallback
+    )
+    compressor_withheld: list[str] = []
+    compressor_fallback_checked: dict[str, Any] | None = None
+    users_compressor = incumbent_payload.get("compressor")
+    if (
+        COMPRESSOR_FALLBACK
+        and isinstance(users_compressor, Mapping)
+        and full_chain_eq_settings is not None
+    ):
+        causes = [
+            *(["headroom"] if beyond_headroom_passed and not full_chain_headroom_safe else []),
+            *(
+                ["weak_capture"]
+                if weak_capture and weak_capture_is_faint_voice and not eq_blocks_apply
+                else []
+            ),
+        ]
+        if causes:
+            kept_compressor = deepcopy(dict(users_compressor))
+            kept_error: str | None = None
+            try:
+                check_analysis_cancelled(cancel_check)
+                kept_validation = simulate_candidate_chain(
+                    np.asarray(full_chain_speech, dtype=np.float32),
+                    sample_rate,
+                    full_chain_eq_settings,
+                    {**full_chain_settings, "compressor": kept_compressor},
+                )
+                kept_audio = np.asarray(kept_validation.pop("output_audio"), dtype=np.float32)
+                kept_dropout = (
+                    _active_speech_gain_db(features, _frame_rms_db(kept_audio, sample_rate)) < -12.0
+                )
+                kept_allowance_db = _limiter_allowance_db(
+                    effective_limiter_settings,
+                    kept_compressor,
+                    _input_too_hot(float(features["short_term_lufs"]), kept_compressor),
+                )
+                kept_passes = passes_beyond_headroom(
+                    kept_validation, kept_dropout
+                ) and _headroom_safe(kept_validation, kept_allowance_db)
+            except AnalysisCancelled:
+                raise
+            except Exception as exc:  # the proposal's refusal stands
+                kept_passes = False
+                kept_error = str(exc)
+            compressor_fallback_checked = {
+                "cause": list(causes),
+                "passed": kept_passes,
+                "error": kept_error,
+            }
+            if kept_passes:
+                compressor_withheld = causes
+                compressor_settings = kept_compressor
+                full_chain_settings["compressor"] = dict(kept_compressor)
+                offline_validation = kept_validation
+                offline_validation_passed = True
+                requested_loudness_headroom_safe = True
+                allowance_db = kept_allowance_db
+                full_chain_active_gain_db = _active_speech_gain_db(
+                    features, _frame_rms_db(kept_audio, sample_rate)
+                )
+                full_chain_voice_dropout = kept_dropout
+                compressor_calibration = dict(uncalibrated_compressor)
+                compressor_diag = {
+                    **compressor_diag,
+                    "auto_makeup_enabled": bool(kept_compressor.get("auto_makeup_enabled")),
+                    "target_lufs": float(kept_compressor.get("target_lufs", compressor_diag["target_lufs"])),
+                }
+
+    # Without the proposal's compressor there is no compressor confidence to score.
+    setup_confidence = _bounded_quality_score(
+        [
+            *([] if tone_withheld else [(eq_confidence, 0.35)]),
+            (gate_confidence, 0.25),
+            (max(deesser_confidence, 0.50) if not deesser_diag["enabled"] else deesser_confidence, 0.15),
+            *([] if compressor_withheld else [(compressor_confidence, 0.15)]),
+            (quiet_room_confidence, 0.10),
+        ]
+    )
 
     uncertainty_reasons: list[str] = []
     uncertainty_reasons.extend(noise_reference.reasons)
@@ -1460,7 +1588,7 @@ def analyze_voice_setup(
     compressor_calibration[
         "target_p95_tolerance_db"
     ] = _COMPRESSOR_P95_TARGET_TOLERANCE_DB
-    if compressor_target_reason is not None:
+    if compressor_target_reason is not None and not compressor_withheld:
         uncertainty_reasons.append(compressor_target_reason)
     if float(features["active_duration_s"]) < 2.0:
         uncertainty_reasons.append("too little VAD-active speech")
@@ -1496,24 +1624,14 @@ def analyze_voice_setup(
     if offline_validation and offline_validation.get("simulation_backend") != "rust":
         uncertainty_reasons.append("offline DSP validation could not run, so these settings are advisory")
         setup_confidence *= 0.90
-    weak_capture = bool(
-        not capture_reliable
-        or noise_referenced_snr_db < 8.0
-        or capture_confidence < 0.50
-    )
-    eq_apply_recommended = bool(
-        eq_settings is not None
-        and eq_settings.get("apply_recommended", True)
-    )
-    # A withheld tone is no failed check: the user's EQ stays and the rest stands on its own.
-    eq_blocks_apply = not eq_apply_recommended and not tone_withheld
     if eq_blocks_apply:
         uncertainty_reasons.append("Auto-EQ abstained from this capture")
+    # A withheld compressor is no failed check: the user's stays and the rest stands on its own.
     apply_recommended = bool(
-        not weak_capture
+        (not weak_capture or "weak_capture" in compressor_withheld)
         and not eq_blocks_apply
         and offline_validation_passed
-        and compressor_target_met
+        and (compressor_target_met or compressor_withheld)
     )
     if weak_capture:
         setup_confidence = min(setup_confidence, 0.49)
@@ -1539,6 +1657,17 @@ def analyze_voice_setup(
                 {"reason_code": "tone_withheld", "cause": tone_withheld}
                 if tone_withheld
                 else None
+            ),
+            "compressor_withheld": (
+                {"reason_code": "compressor_withheld", "cause": compressor_withheld}
+                if compressor_withheld
+                else None
+            ),
+            # Absent with the switch off, so that output reads as it always did.
+            **(
+                {"compressor_fallback_checked": compressor_fallback_checked}
+                if COMPRESSOR_FALLBACK
+                else {}
             ),
             "capture_confidence": capture_confidence,
             "eq_confidence": eq_confidence,
@@ -1599,7 +1728,11 @@ def analyze_voice_setup(
             "dynamics_intensity": compressor_diag["dynamics_intensity"],
             "compressor_calibration": compressor_calibration,
             "requested_loudness_headroom_safe": requested_loudness_headroom_safe,
-            "loudness_lowered_db": requested_loudness - float(compressor_settings[loudness_key]),
+            "loudness_lowered_db": (
+                0.0
+                if compressor_withheld
+                else requested_loudness - float(compressor_settings[loudness_key])
+            ),
             "vad_available": bool(vad_available),
             "vad_analysis_backend": vad_analysis_backend,
             "noise_vad_analysis_backend": noise_vad_backend,
@@ -2011,6 +2144,11 @@ def validate_voice_setup_verification(
         )
         full_chain_voice_dropout = full_chain_active_gain_db < -12.0
     compressor = setup_result.get("compressor_settings") or {}
+    setup_diagnostics = setup_result.get("diagnostics")
+    # A compressor the user kept was not set by this setup, so it has no targets to answer to.
+    compressor_kept = isinstance(setup_diagnostics, Mapping) and bool(
+        setup_diagnostics.get("compressor_withheld")
+    )
     target_p95 = float(compressor.get("target_p95_reduction_db", 3.5))
     peak_cap = float(compressor.get("peak_reduction_cap_db", 8.0))
     measured_p95 = float(
@@ -2030,7 +2168,7 @@ def validate_voice_setup_verification(
         processed.get("true_peak_limiter_gain_reduction_db", 0.0)
     )
     limiter_gain_reduction = max(main_limiter_gain_reduction, true_peak_limiter_gain_reduction)
-    compressor_p95_excess = measured_p95 > target_p95 + 0.75
+    compressor_p95_excess = not compressor_kept and measured_p95 > target_p95 + 0.75
     deesser_p95 = float(processed.get("deesser_gain_reduction_p95_db", 0.0))
     deesser_limit = float(
         (setup_result.get("deesser_settings") or {}).get("max_reduction_db", 6.0)
@@ -2038,7 +2176,6 @@ def validate_voice_setup_verification(
     deesser_excess = deesser_p95 > deesser_limit * 0.9
     # Only a setup that recorded the limiter allowance may lean on it; its final
     # true-peak stage keeps its limit. Anything else keeps the released rule.
-    setup_diagnostics = setup_result.get("diagnostics")
     allowance_db = (
         float(setup_diagnostics.get("limiter_allowance_db", 0.0))
         if isinstance(setup_diagnostics, Mapping)
@@ -2110,7 +2247,7 @@ def validate_voice_setup_verification(
         if snr_change_db < -4.0:
             safety_codes.append("snr_safety_limit")
             safety_reasons.append(f"SNR fell by {-snr_change_db:.1f} dB")
-        if measured_peak > peak_cap + 0.25:
+        if not compressor_kept and measured_peak > peak_cap + 0.25:
             safety_codes.append("compressor_peak_cap")
             safety_reasons.append(
                 f"compressor peak reduction reached {measured_peak:.1f} dB "

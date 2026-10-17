@@ -103,6 +103,8 @@ from .level_meter import LevelMeter, MeterWidget
 from .setup_messages import (
     capture_issue_codes,
     capture_issue_lines,
+    compressor_withheld_note,
+    kept_for_weak_capture,
     numbers_from,
     other_reasons,
     plain_advice,
@@ -212,7 +214,11 @@ def _candidate_preset(
         "limiter": setup_result.get("limiter_settings"),
         "rnnoise": setup_result.get("suppressor_settings"),
     }
+    compressor_kept = bool((setup_result.get("diagnostics") or {}).get("compressor_withheld"))
     for name, candidate in sections.items():
+        # The user's compressor is not rewritten, not even with the values it already has.
+        if name == "compressor" and compressor_kept:
+            candidate = {}
         if not isinstance(candidate, Mapping):
             if name == "rnnoise":
                 continue
@@ -1565,7 +1571,13 @@ class VoiceSetupDialog(QDialog):
             state = "warn"
         elif not advisory:
             self.warning_label.setText(
-                "All checks passed. Review the settings below, then apply them."
+                (
+                    "The recording was weak, so your compressor stays as it is. The other "
+                    "settings passed the final check."
+                    if kept_for_weak_capture(diagnostics)
+                    else "All checks passed."
+                )
+                + " Review the settings below, then apply them."
             )
             state = "ok"
         else:
@@ -1669,6 +1681,9 @@ class VoiceSetupDialog(QDialog):
         if not refused_take and outcome != "failed":
             self._result_reported = True
         diagnostics = (self.setup_result or {}).get("diagnostics") or {}
+        # The record keeps each code once.
+        if outcome != "refused" and diagnostics.get("compressor_withheld"):
+            reason_codes = ["compressor_withheld", *reason_codes]
         measured: dict[str, Any] = numbers_from(
             diagnostics,
             (
@@ -1746,7 +1761,11 @@ class VoiceSetupDialog(QDialog):
                 "These settings passed the check on your second recording."
             )
         elif diagnostics.get("apply_recommended", False):
-            self.overall_label.setText(f"{word}. All checks passed.")
+            self.overall_label.setText(
+                f"{word}. Your compressor stays as it is; the other settings passed the final check."
+                if kept_for_weak_capture(diagnostics)
+                else f"{word}. All checks passed."
+            )
         else:
             # Settings that did not pass the checks are never "Good", however good the capture.
             state = "bad" if state == "bad" else "warn"
@@ -1934,6 +1953,13 @@ class VoiceSetupDialog(QDialog):
             f"{'automatic loudness' if compressor['auto_makeup_enabled'] else makeup_text}; "
             f"on your recording it evens out your voice by {_format_db(measured_gr)}."
         )
+        why_kept = compressor_withheld_note(diagnostics.get("compressor_withheld"))
+        if why_kept:
+            self.compressor_label.setText(
+                f"Compressor: kept as it is. {why_kept}"
+                + (" Everything else below still applies." if diagnostics.get("apply_recommended", False) else "")
+            )
+            self.compressor_label.setToolTip("")
         self.compressor_label.setStyleSheet(status_chip_style("info"))
         self.summary_group.setVisible(True)
         self._summary_result = setup_result
@@ -2283,6 +2309,10 @@ class VoiceSetupDialog(QDialog):
             raise ValueError("current preset is unavailable")
         candidate_preset, reliability = candidate_info
         compressor_metadata = self.setup_result.get("compressor_settings")
+        if self._compressor_withheld():
+            # The apply below rewrites what is stored beside the compressor, so it gets the user's own values.
+            compressor_metadata = parent.compressor_state.get_settings(include_calibration=True)
+            reliability = compressor_metadata["noise_reference_reliability"]
         metadata: dict[str, Any] = {}
         if isinstance(compressor_metadata, Mapping):
             metadata = {
@@ -2430,7 +2460,8 @@ class VoiceSetupDialog(QDialog):
             compressor["ratio"] = max(1.0, ratio * 0.9)
             adjustment_notes.append("reduced compressor intensity")
 
-        if "limiter" in reduction_targets:
+        # The limiter's answer is lower loudness, which would change a compressor the user kept.
+        if "limiter" in reduction_targets and not self._compressor_withheld():
             if bool(compressor.get("auto_makeup_enabled", False)):
                 target_lufs = float(compressor.get("target_lufs", -18.0))
                 adjusted_target = max(
@@ -2641,10 +2672,22 @@ class VoiceSetupDialog(QDialog):
     def _tone_withheld(self) -> bool:
         return bool(((self.setup_result or {}).get("diagnostics") or {}).get("tone_withheld"))
 
+    def _compressor_withheld(self) -> bool:
+        return bool(((self.setup_result or {}).get("diagnostics") or {}).get("compressor_withheld"))
+
     def _verified_stages(self) -> tuple[str, ...]:
-        """The stages the second recording checked; a withheld tone left the EQ as it was."""
-        withheld = self._tone_withheld()
-        return tuple(stage for stage in _VERIFIED_STAGES if not (withheld and stage == "eq"))
+        """The stages the second recording checked; a withheld tone or compressor stayed as it was."""
+        left_out = {"eq"} if self._tone_withheld() else set()
+        if self._compressor_withheld():
+            left_out.add("compressor")
+        return tuple(stage for stage in _VERIFIED_STAGES if stage not in left_out)
+
+    def _withheld_codes(self) -> list[str]:
+        """The export's codes for a compressor that stayed, with the weak-capture causes beside it."""
+        diagnostics = (self.setup_result or {}).get("diagnostics") or {}
+        if not diagnostics.get("compressor_withheld"):
+            return []
+        return ["compressor_withheld", *capture_issue_codes(diagnostics)]
 
     def _finalize_verified_setup(self) -> None:
         """Persist and close after the verified candidate is accepted."""
@@ -2698,7 +2741,7 @@ class VoiceSetupDialog(QDialog):
         )
         self._report(
             "verified",
-            list(result.get("reason_codes") or ["accepted"]),
+            [*self._withheld_codes(), *(result.get("reason_codes") or ["accepted"])],
             [metrics_text],
             numbers_from(
                 result,
@@ -2869,8 +2912,13 @@ class VoiceSetupDialog(QDialog):
                 return
             if not changed:
                 self._on_verification_failed(
-                    f"{reason} Setup could not adjust the settings any further. Lower the "
-                    "microphone level and record again."
+                    f"{reason} "
+                    + (
+                        "Your compressor stays as it is, so setup could not lower the loudness."
+                        if self._compressor_withheld() and "limiter" in reduction_targets
+                        else "Setup could not adjust the settings any further."
+                    )
+                    + " Lower the microphone level and record again."
                     + advice_suffix,
                     generation,
                 )

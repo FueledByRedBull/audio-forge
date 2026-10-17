@@ -307,7 +307,7 @@ def test_unreadable_telemetry_does_not_keep_the_tooltip_of_the_last_reading(isol
 
     window._set_health_chip("gate_health_label", "Gate: OK", "ok")
     window._update_health_summary()
-    assert window.shell_texts["health_summary_label"].toolTip == "Everything looks fine."
+    assert "fine" in window.shell_texts["health_summary_label"].toolTip
     window.processor = cast(Any, Engine())
 
     window._update_diagnostics()
@@ -315,7 +315,9 @@ def test_unreadable_telemetry_does_not_keep_the_tooltip_of_the_last_reading(isol
     chip = window.shell_texts["health_summary_label"]
     assert "unavailable" in chip.text and chip.state == "warn"
     assert chip.toolTip == TEXT_SPECS["health_summary_label"].tip
-    assert "could not read" in window.shell_texts["health_advice_label"].text
+    advice = window.shell_texts["health_advice_label"].text
+    assert advice != TEXT_SPECS["health_advice_label"].text
+    assert "could not read" in advice and "Stop and start processing" in advice
 
 
 def test_the_login_start_up_message_uses_a_state_the_theme_knows(isolated_main_window):

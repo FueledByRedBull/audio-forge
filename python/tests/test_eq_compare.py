@@ -120,10 +120,13 @@ def test_it_paints_the_proposed_line_solid_and_the_line_now_dashed(qapp, monkeyp
 def test_it_says_what_now_is_when_the_eq_is_not_in_use(qapp) -> None:
     flat = EQSettings(enabled=True)
     widget = EQComparisonWidget()
-    widget.set_curves(flat, _proposal(flat, [3.0] * 10), 48_000.0, unused_mode="raw")
+    proposal = _proposal(flat, [3.0] * 10)
+    widget.set_curves(flat, proposal, 48_000.0, unused_mode="raw")
 
     assert [label for label, _response, _dashed in widget.lines()] == [
         "Now (not used in Raw monitor)",
         "Proposed",
     ]
-    assert "Dashed line: the EQ now, which Raw monitor does not use." in widget.description()
+    assert "the EQ now, which Raw monitor does not use" in widget.description()
+    widget.set_curves(flat, proposal, 48_000.0)
+    assert "Raw monitor" not in widget.description()

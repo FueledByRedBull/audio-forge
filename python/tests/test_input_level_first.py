@@ -215,7 +215,8 @@ def test_clipping_is_held_for_the_window_and_says_so_more_strongly(running_windo
     _tick_diagnostics(window)
     chip = window.shell_texts["input_health_label"]
     assert (chip.text, chip.state) == ("Input: CLIPPED (peak 0.0 dB, full scale 6 times)", "bad")
-    assert window.shell_texts["health_advice_label"].text.startswith("The microphone clipped")
+    advice = window.shell_texts["health_advice_label"].text
+    assert advice.startswith("The microphone clipped") and "full scale 6 times" in advice
     clock.now += 5
     window._update_meters()
     _tick_diagnostics(window)

@@ -9,6 +9,7 @@ import pytest
 
 from mic_eq.ui import calibration_dialog
 from mic_eq.ui.calibration_dialog import CalibrationDialog
+from mic_eq.ui.theme import message_text_style
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from test_auto_eq_candidate_lifecycle import _Owner
 from test_voice_setup_integration import real_main_window  # noqa: F401  (a fixture)
@@ -96,7 +97,9 @@ def test_a_good_level_goes_on_to_the_room_noise_with_one_click(voice) -> None:
     _check(voice, GOOD)
 
     assert voice.setup_state == "level_result"
-    assert voice.warning_label.text().startswith("The level is good")
+    assert voice._level_verdict.code == "good"
+    assert "good" in voice.warning_label.text()
+    assert f"{voice._level_verdict.peak_db:.1f} dB" in voice.warning_label.text()
     assert voice.start_button.text() == "Record Room Noise"
     assert voice.level_override_btn.isHidden()
 
@@ -289,15 +292,21 @@ def test_auto_eq_hot_level_blocks_the_take_until_named_override(auto_eq) -> None
 def test_auto_eq_quiet_level_continues_with_a_warning(auto_eq) -> None:
     _check_auto(auto_eq, QUIET)
 
-    assert auto_eq.warning_label.text().startswith("Your voice is quiet:")
-    assert "less reliable" in auto_eq.warning_label.text()
+    verdict = auto_eq._level_verdict
+    text = auto_eq.warning_label.text()
+    assert verdict.code == "too_quiet" and verdict.change_db > 0
+    assert "quiet" in text and "-40 dB or louder" in text
+    assert f"Raise the microphone level by about {verdict.change_db} dB" in text
+    assert "less reliable" in text
     assert auto_eq.level_override_btn.text() == "Continue Anyway"
 
 
 def test_auto_eq_nothing_heard_cannot_be_continued_past(auto_eq) -> None:
     _check_auto(auto_eq, SILENT)
 
-    assert auto_eq.warning_label.text().startswith("No sound came from the microphone.")
+    text = auto_eq.warning_label.text()
+    assert auto_eq._level_verdict.code == "silent"
+    assert "No sound" in text and "not muted" in text and "right input is selected" in text
     assert auto_eq.level_override_btn.isHidden()
 
 
@@ -366,10 +375,11 @@ def test_retake_room_noise_starts_the_room_noise_take_and_keeps_the_level_choice
 
     assert voice.setup_state == "idle"
     assert voice.start_button.text() == "Retake Room Noise"
-    assert voice.warning_label.text() == (
-        "A loud sound was picked up in the room-noise recording. "
-        "Record the room noise again while the room is quiet."
-    )
+    text = voice.warning_label.text()
+    assert "A loud sound was picked up" in text
+    assert "Record the room noise again" in text and "room is quiet" in text
+    assert "play safe" not in text
+    assert voice.parent().last_setup_result["outcome"] == "refused"
 
     voice.start_button.click()
     voice._capture_start_timer.stop()
@@ -398,10 +408,10 @@ def test_a_click_in_the_room_noise_is_pointed_out_and_setup_can_go_on(voice) -> 
 
     assert voice.setup_state == "noise_ready"
     assert voice.start_button.isEnabled() and voice.start_button.text() == "Record Voice"
-    assert voice.warning_label.text() == (
-        "A click or bump was heard in the room noise. Press Retake and record the room "
-        "noise again for a better result. Now read the passage aloud for the full 10 seconds."
-    )
+    text = voice.warning_label.text()
+    assert "A click or bump was heard" in text and "Press Retake and record the room noise again" in text
+    assert "read the passage aloud" in text and "10 seconds" in text
+    assert voice.warning_label.styleSheet() == message_text_style("warn", strong=True)
 
     voice.start_button.click()
     voice._capture_start_timer.stop()
@@ -412,7 +422,10 @@ def test_a_clean_room_noise_take_says_nothing_about_clicks(voice) -> None:
     _record_room_noise(voice, _room_noise())
 
     assert voice.setup_state == "noise_ready"
-    assert voice.warning_label.text() == "Now read the passage aloud for the full 10 seconds."
+    text = voice.warning_label.text()
+    assert "read the passage aloud" in text and "10 seconds" in text
+    assert "click" not in text
+    assert voice.warning_label.styleSheet() == message_text_style("ok", strong=True)
 
 
 def test_the_start_button_is_named_by_what_it_says(voice, auto_eq) -> None:

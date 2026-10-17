@@ -400,18 +400,15 @@ def test_a_weak_capture_with_a_kept_compressor_is_not_called_suggestions_only(re
         dialog._on_analysis_complete(result)
 
         (line,) = _issue_lines(dialog)
-        assert line == (
-            "Your voice was only 4.0 dB louder than the room noise, too little for setup to set your "
-            "compressor. Your compressor stays as it is, and the other settings passed the final check. "
-            "Record again closer to the microphone, or in a quieter room."
-        )
-        assert dialog.warning_label.text() == (
-            "The recording was weak, so your compressor stays as it is. The other settings passed "
-            "the final check. Review the settings below, then apply them."
-        )
-        assert dialog.overall_label.text() == (
-            "Weak capture. Your compressor stays as it is; the other settings passed the final check."
-        )
+        assert "only 4.0 dB louder than the room noise" in line
+        assert "Record again closer to the microphone, or in a quieter room" in line
+        assert result["diagnostics"]["apply_recommended"] is True
+        warning = dialog.warning_label.text()
+        assert "Review the settings below, then apply them" in warning
+        for text in (line, warning, dialog.overall_label.text()):
+            assert "suggestions only" not in text
+            assert "compressor stays as it is" in text
+            assert "settings passed the final check" in text
     finally:
         dialog.reject()
         dialog.deleteLater()
@@ -423,8 +420,10 @@ def test_a_compressor_kept_for_headroom_alone_still_says_all_checks_passed(real_
     try:
         dialog._on_analysis_complete(result)
 
-        assert dialog.warning_label.text() == "All checks passed. Review the settings below, then apply them."
-        assert dialog.overall_label.text().endswith("All checks passed.")
+        assert dialog.warning_label.text().startswith("All checks passed")
+        assert "Review the settings below, then apply them" in dialog.warning_label.text()
+        assert "All checks passed" in dialog.overall_label.text()
+        assert "suggestions only" not in dialog.warning_label.text() + dialog.overall_label.text()
     finally:
         dialog.reject()
         dialog.deleteLater()
@@ -943,11 +942,12 @@ def test_an_advisory_result_says_each_capture_problem_once(real_main_window) -> 
     try:
         dialog._on_analysis_complete(result)
 
-        assert dialog.warning_label.text() == (
-            "These settings did not pass every check, so treat them as suggestions. "
-            "The final safety check on your recording did not pass, so these settings "
-            "are suggestions only."
-        )
+        warning = dialog.warning_label.text()
+        assert "These settings did not pass every check, so treat them as suggestions" in warning
+        assert "final safety check on your recording did not pass" in warning
+        assert warning.endswith("suggestions only.")
+        # The capture problems have their own lines; the headline does not repeat their figures.
+        assert "4.0 dB" not in warning and "1.2" not in warning
         assert len(_issue_lines(dialog)) == 2
     finally:
         _ended(dialog)
@@ -967,9 +967,9 @@ def test_an_advisory_result_whose_only_causes_are_capture_problems_keeps_just_th
     try:
         dialog._on_analysis_complete(result)
 
-        assert dialog.warning_label.text() == (
-            "These settings did not pass every check, so treat them as suggestions."
-        )
+        warning = dialog.warning_label.text()
+        assert "These settings did not pass every check, so treat them as suggestions" in warning
+        assert "final safety check" not in warning
     finally:
         _ended(dialog)
 

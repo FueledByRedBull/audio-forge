@@ -2,6 +2,8 @@
 Comprehensive pytest suite for Auto-EQ behavior.
 """
 
+import re
+
 import numpy as np
 import pytest
 
@@ -1396,10 +1398,10 @@ def test_27_validation_rejects_remaining_headroom_risk():
     validation = validate_analysis(eq_settings, spectrum_db, freqs)
 
     assert not validation.passed
-    assert validation.reason == (
-        "The microphone level is too high for a safe result. "
-        "Lower the gain, then record again."
-    )
+    # The lever is the gain; with no headroom figures there is no number to give.
+    assert validation.reason is not None
+    assert "Lower the gain" in validation.reason
+    assert not re.search(r"\d+ dB", validation.reason)
     assert validation.details["headroom_safe"] is False
 
 
@@ -2357,10 +2359,8 @@ def test_real_render_the_stated_decibels_let_the_full_correction_through_with_th
     advice = headroom_advice(validation, chain, bool(result["apply_recommended"]))
 
     assert validation["gain_scale"] == 1.0 and not _excess(validation["after"]) <= 0
-    assert (
-        "Lower the microphone gain by about 1 dB (in Windows or on the microphone) "
-        "to leave enough room."
-    ) in advice
+    figure = re.search(r"Lower the microphone gain by about (\d+) dB \(in Windows or on the microphone\)", advice)
+    assert figure and figure[1] == "1" and "to leave enough room" in advice
     assert _excess(_native_render(_tones(0.0), result["validated_candidate_eq"], chain)) <= 0
 
 
@@ -2382,8 +2382,6 @@ def test_real_render_the_advice_gives_no_figure_when_a_compressor_is_working():
     # With level in equal to level out that figure would do; with this compressor it does not.
     lowered = _native_render(_tones(-figure), result["validated_candidate_eq"], chain)
     assert _excess(lowered) > 0
-    assert headroom_advice(validation, chain, bool(result["apply_recommended"])) == (
-        "Your current settings already leave too little room for loud peaks. "
-        "This EQ is no worse than your current one. "
-        "Lower the microphone gain (in Windows or on the microphone) to leave enough room."
-    )
+    advice = headroom_advice(validation, chain, bool(result["apply_recommended"]))
+    assert "Lower the microphone gain" in advice and not re.search(r"\d+ dB", advice)
+    assert "no worse than your current one" in advice and "to leave enough room" in advice

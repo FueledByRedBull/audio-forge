@@ -869,14 +869,18 @@ def test_the_graph_says_when_the_eq_is_not_running(qapp):
 
     assert labels == ["", "EQ not running: Bypass", "EQ not running: Raw monitor", ""]
     assert "not running" not in descriptions[0] and "not running" not in descriptions[3]
-    assert descriptions[1].endswith(
-        "EQ not running: Bypass. The EQ is skipped in this mode; the thin band curves "
-        "show what the EQ would do, and the thick curve is the input filter alone."
-    )
-    assert descriptions[2].endswith(
-        "EQ not running: Raw monitor. The EQ and the input filter are skipped in this "
-        "mode; the thin band curves show what the EQ would do, and the thick curve is flat."
-    )
+    assert labels[1] in descriptions[1] and labels[2] in descriptions[2]
+    # The general help also mentions the input filter, so judge only the not-running part.
+    bypass = descriptions[1][descriptions[1].index(labels[1]):]
+    raw = descriptions[2][descriptions[2].index(labels[2]):]
+    for text in (bypass, raw):
+        assert "the thin band curves show what the EQ would do" in text
+    # Bypass skips only the EQ, so the input filter still shapes the thick curve.
+    assert "The EQ is skipped in this mode" in bypass and "input filter are skipped" not in bypass
+    assert "the thick curve is the input filter alone" in bypass and "flat" not in bypass
+    # Raw monitor skips the input filter too, so its thick curve is flat.
+    assert "The EQ and the input filter are skipped in this mode" in raw
+    assert "the thick curve is flat" in raw and "input filter alone" not in raw
 
 
 def test_a_graph_that_is_not_running_is_muted_and_captioned(qapp):

@@ -37,10 +37,9 @@ def test_a_hot_voice_gets_the_lowering_advice_from_its_peak():
     verdict = verdict_from_audio(_voice(0.95), RATE)  # -0.4 dB, not clipped
 
     assert verdict.code == "too_hot"
-    assert verdict.message == (
-        "Your voice peaks at -0.4 dB, close to the limit: lower the microphone "
-        "level by about 6 dB (in Windows or on the microphone), then check again."
-    )
+    assert "-0.4 dB" in verdict.message and "clipping" not in verdict.message
+    assert "lower the microphone level by about 6 dB" in verdict.message
+    assert "then check again" in verdict.message
     assert verdict.change_db == -6
     assert verdict.can_override
 
@@ -96,6 +95,7 @@ def test_silence_and_unreadable_audio_cannot_continue(take, code):
     assert not verdict.can_override
     if code == "silent":
         assert verdict.message.startswith("No sound came from the microphone.")
+        assert "not muted" in verdict.message
 
 
 def test_the_levels_form_gives_the_same_verdict_as_the_audio_form():

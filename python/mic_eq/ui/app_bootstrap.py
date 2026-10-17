@@ -1,15 +1,18 @@
 """Application bootstrap helpers for the AudioForge UI."""
 
+import contextlib
 import ctypes
+import faulthandler
 import importlib
 import logging
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Callable, Type, cast
+from typing import Callable, Iterator, Type, cast
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
@@ -242,6 +245,59 @@ def _check_auto_eq_solvers() -> None:
         )
 
 
+@contextlib.contextmanager
+def _crash_diagnostics() -> Iterator[None]:
+    """Send uncaught exceptions and hard crashes to the app log, then restore."""
+    logger = logging.getLogger(__name__)
+    previous_excepthook = sys.excepthook
+    previous_thread_hook = threading.excepthook
+
+    def log_uncaught(exc_type, exc_value, exc_traceback) -> None:
+        logger.critical(
+            "Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback)
+        )
+        previous_excepthook(exc_type, exc_value, exc_traceback)
+
+    def log_thread_uncaught(args) -> None:
+        if args.exc_type is not SystemExit:
+            logger.critical(
+                "Uncaught exception in thread %s",
+                getattr(args.thread, "name", "?"),
+                exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+            )
+        previous_thread_hook(args)
+
+    # A sibling file: a second handle on app.log would block its rotation on Windows.
+    crash_file = None
+    try:
+        crash_file = open(
+            configure_app_logging().with_name("crash.log"), "a", encoding="utf-8"
+        )
+        faulthandler.enable(crash_file)
+    except OSError:
+        pass
+
+    sys.excepthook = log_uncaught
+    threading.excepthook = log_thread_uncaught
+    try:
+        yield
+    except Exception:
+        # The hooks are restored below, before any top-level handler could log this.
+        logger.critical("Uncaught exception", exc_info=True)
+        raise
+    finally:
+        sys.excepthook = previous_excepthook
+        threading.excepthook = previous_thread_hook
+        if crash_file is not None:
+            faulthandler.disable()
+            # Another instance can hold crash.log open, and Windows then refuses
+            # the delete; an empty leftover file is harmless.
+            with contextlib.suppress(OSError):
+                crash_file.close()
+                if not Path(crash_file.name).stat().st_size:
+                    Path(crash_file.name).unlink(missing_ok=True)
+
+
 def run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool = False) -> int:
     """Run the Qt application for the provided main window class."""
     isolated_config = tempfile.TemporaryDirectory(prefix="audioforge-smoke-") if smoke_test else None
@@ -261,7 +317,8 @@ def run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool = False) -> in
         os.environ["QT_DISABLE_SHADER_DISK_CACHE"] = "1"
 
     try:
-        return _run_qt_app(window_cls, smoke_test=smoke_test)
+        with _crash_diagnostics():
+            return _run_qt_app(window_cls, smoke_test=smoke_test)
     finally:
         if isolated_config is not None:
             log_file = get_log_file()
@@ -345,6 +402,14 @@ def _run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool) -> int:
         if login_startup:
             logging.getLogger(__name__).exception("AudioForge login startup failed")
             return 1
+        # The re-raise below is logged by _crash_diagnostics.
+        if getattr(sys, "frozen", False) and not smoke_test:
+            QMessageBox.critical(
+                None,
+                "AudioForge Could Not Start",
+                "AudioForge hit an error while starting and could not open. "
+                f"Details are in the log file:\n\n{get_log_file()}",
+            )
         raise
 
     if smoke_test:

@@ -5,6 +5,7 @@ import logging
 import runpy
 import subprocess
 import sys
+import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -501,3 +502,145 @@ raise SystemExit(status)
     log = json.loads(result.stdout)["log"]
     assert "startup smoke test failed" in log
     assert "auto_eq_parts.eq_fit" in log
+
+
+@pytest.fixture
+def crash_diagnostics(monkeypatch, caplog):
+    """Run `_crash_diagnostics` with faulthandler faked and the log handler removed after."""
+    import faulthandler
+
+    calls: list = []
+    monkeypatch.setattr(faulthandler, "enable", lambda file=None: calls.append(("enable", file)))
+    monkeypatch.setattr(faulthandler, "disable", lambda: calls.append(("disable", None)))
+    # monkeypatch restores both hooks even if a test fails inside the context.
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)
+    monkeypatch.setattr(threading, "excepthook", threading.excepthook)
+    caplog.set_level(logging.INFO)
+    yield calls
+    root_logger = logging.getLogger()
+    for handler in list(root_logger.handlers):
+        if isinstance(handler, RotatingFileHandler):
+            root_logger.removeHandler(handler)
+            handler.close()
+
+
+def test_uncaught_exception_is_logged_with_traceback_and_chained(crash_diagnostics, caplog):
+    seen = []
+    sys.excepthook = lambda *info: seen.append(info)
+    installed = sys.excepthook
+
+    with app_bootstrap._crash_diagnostics():
+        assert sys.excepthook is not installed
+        try:
+            raise ValueError("slot exploded")
+        except ValueError:
+            sys.excepthook(*sys.exc_info())
+
+    record = next(r for r in caplog.records if r.getMessage() == "Uncaught exception")
+    assert record.levelno == logging.CRITICAL
+    assert record.exc_info is not None and "slot exploded" in str(record.exc_info[1])
+    assert len(seen) == 1 and seen[0][0] is ValueError
+    assert sys.excepthook is installed
+
+
+def test_uncaught_thread_exception_is_logged_and_chained(crash_diagnostics, caplog):
+    seen = []
+    threading.excepthook = seen.append
+
+    with app_bootstrap._crash_diagnostics():
+        def fail():
+            raise ValueError("worker exploded")
+
+        worker = threading.Thread(target=fail, name="probe-worker")
+        worker.start()
+        worker.join()
+
+    record = next(r for r in caplog.records if "probe-worker" in r.getMessage())
+    assert record.exc_info is not None and "worker exploded" in str(record.exc_info[1])
+    assert len(seen) == 1
+
+
+def test_faulthandler_writes_next_to_the_app_log_and_leaves_no_empty_file(crash_diagnostics):
+    crash_file = get_log_file().with_name("crash.log")
+
+    with app_bootstrap._crash_diagnostics():
+        assert crash_diagnostics[0][0] == "enable"
+        assert Path(crash_diagnostics[0][1].name) == crash_file
+    assert crash_diagnostics[-1][0] == "disable"
+    assert not crash_file.exists()
+
+    with app_bootstrap._crash_diagnostics():
+        crash_diagnostics[-1][1].write("Fatal Python error\n")
+    assert crash_file.read_text(encoding="utf-8") == "Fatal Python error\n"
+
+
+def test_exception_leaving_the_context_is_logged_once_and_reraised(crash_diagnostics, caplog):
+    with pytest.raises(RuntimeError, match="exec failed"):
+        with app_bootstrap._crash_diagnostics():
+            raise RuntimeError("exec failed")
+
+    logged = [r for r in caplog.records if r.exc_info]
+    assert len(logged) == 1 and logged[0].levelno == logging.CRITICAL
+
+
+@pytest.mark.parametrize("exit_exception", [SystemExit(0), KeyboardInterrupt()])
+def test_exit_requests_leaving_the_context_are_not_logged(
+    crash_diagnostics, caplog, exit_exception
+):
+    with pytest.raises(type(exit_exception)):
+        with app_bootstrap._crash_diagnostics():
+            raise exit_exception
+
+    assert not [r for r in caplog.records if r.exc_info]
+
+
+def test_crash_file_cleanup_failure_does_not_change_the_run_result(
+    crash_diagnostics, monkeypatch
+):
+    # Another instance can hold crash.log open; Windows then refuses the delete.
+    def refuse(self, missing_ok=False):
+        raise PermissionError(32, "in use by another process")
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+    monkeypatch.setattr(app_bootstrap, "_run_qt_app", lambda *_args, **_kwargs: 0)
+
+    assert app_bootstrap.run_qt_app(app_bootstrap.QMainWindow) == 0
+
+
+@pytest.mark.parametrize(
+    ("frozen", "smoke_test", "dialog_expected"),
+    [(True, False, True), (True, True, False), (False, False, False)],
+)
+def test_startup_failure_is_logged_once_and_only_the_windowed_app_shows_a_dialog(
+    qapp, monkeypatch, caplog, crash_diagnostics, frozen, smoke_test, dialog_expected
+):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    instance = SimpleNamespace(
+        acquire=Mock(return_value="acquired"), close=Mock(), last_error=None,
+    )
+    factory = Mock(return_value=instance, ACQUIRED="acquired", FORWARDED="forwarded")
+    monkeypatch.setattr(app_bootstrap, "SingleInstanceCoordinator", factory)
+    monkeypatch.setattr(app_bootstrap, "QApplication", lambda _args: qapp)
+    for name in ("configure_windows_app_id", "configure_deepfilter_env", "configure_vad_env"):
+        monkeypatch.setattr(app_bootstrap, name, lambda *_: None)
+    monkeypatch.setattr(sys, "argv", ["AudioForge.exe"])
+    monkeypatch.setattr(sys, "frozen", frozen, raising=False)
+    dialog = Mock()
+    monkeypatch.setattr(app_bootstrap.QMessageBox, "critical", dialog)
+    caplog.set_level(logging.ERROR)
+
+    def broken_window():
+        raise RuntimeError("saved configuration failed")
+
+    with pytest.raises(RuntimeError, match="saved configuration failed"):
+        with app_bootstrap._crash_diagnostics():
+            app_bootstrap._run_qt_app(broken_window, smoke_test=smoke_test)  # type: ignore[arg-type]
+
+    logged = [r for r in caplog.records if r.exc_info]
+    assert len(logged) == 1
+    assert "saved configuration failed" in str(logged[0].exc_info[1])  # type: ignore[index]
+    assert dialog.called is dialog_expected
+    if dialog_expected:
+        assert str(get_log_file()) in dialog.call_args.args[2]

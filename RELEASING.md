@@ -244,9 +244,8 @@ It passes only if all of these hold:
 - Private memory in row 60 is within 5 % of row 5.
 - In the minute-60 export's `runtime` section, `output_underrun_total`,
   `input_dropped_samples`, `input_backlog_dropped_samples`,
-  `jitter_dropped_samples`, `output_short_write_dropped_samples`,
-  `stream_restart_count`, `output_recovery_count` and
-  `output_recovery_event_count` are 0.
+  `output_short_write_dropped_samples`, `stream_restart_count`,
+  `output_recovery_count` and `output_recovery_event_count` are 0.
 - No engine fault: `input_callback_error_count`, `output_callback_error_count`,
   `rt_buffer_overflow_count`, `lock_contention_count` and
   `suppressor_non_finite_count` are 0, `noise_backend_failed` is false, and at
@@ -255,8 +254,11 @@ It passes only if all of these hold:
 - Median CPU is under 15 seconds a minute (a quarter of one core), from the
   differences between consecutive `cpu_seconds` values.
 
-Threads and handles are recorded, not gated; a steady climb is a finding to
-explain before tagging. Not covered: other machines and microphone routes,
+Threads, handles, `jitter_dropped_samples` and `output_retime_adjustment_count`
+are recorded, not gated. A steady climb in threads or handles is a finding to
+explain before tagging. The jitter counter adds up the samples that output drift
+retiming trims. A route whose input and output run on separate clocks retimes
+all the time, and the Health page's Drops row leaves these samples out. Not covered: other machines and microphone routes,
 non-factory settings, an audible output (a muted Output row doesn't count
 toward the verdict), device changes, sleep or resume, other audio applications.
 The fault criterion can fail: it would have failed 1.16.0, whose Drops row

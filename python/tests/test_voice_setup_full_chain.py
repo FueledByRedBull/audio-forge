@@ -682,11 +682,11 @@ def _abstention(*reasons):
     return analyze
 
 
-def _failed_validation(*failures, tone_only):
+def _failed_validation(*failures):
     def analyze(*_args, **_kwargs):
         from mic_eq.analysis.failure_detection import AnalysisValidationError
 
-        raise AnalysisValidationError("Recording too unclear. Please try again.", list(failures), tone_only)
+        raise AnalysisValidationError("Recording too unclear. Please try again.", list(failures))
 
     return analyze
 
@@ -694,12 +694,12 @@ def _failed_validation(*failures, tone_only):
 @pytest.mark.parametrize(
     "auto_eq",
     [
-        _failed_validation("peak_count (1 too low)", tone_only=False),
-        _failed_validation("headroom risk after downstream simulation", tone_only=False),
+        _failed_validation("peak_count (1 too low)"),
+        _failed_validation("headroom risk after downstream simulation"),
     ],
     ids=["unclear-capture", "headroom-risk"],
 )
-def test_a_refusal_that_is_not_about_the_tone_refuses_the_whole_setup(monkeypatch, auto_eq):
+def test_a_failed_validation_refuses_the_whole_setup(monkeypatch, auto_eq):
     observed = _run_initial_analysis(monkeypatch, processing_mode="normal", auto_eq=auto_eq)
     result = observed["result"]
 

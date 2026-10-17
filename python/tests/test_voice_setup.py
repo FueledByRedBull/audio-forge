@@ -867,39 +867,27 @@ def _auto_eq_abstains(*reasons):
     )
 
 
-def _auto_eq_refuses(*, tone_only):
+def _auto_eq_refuses():
     def refuse(_out):
         from mic_eq.analysis.failure_detection import AnalysisValidationError
 
         raise AnalysisValidationError(
-            "Recording too unclear. Please try again.", ["clipped_gains (7 >= 6)"], tone_only
+            "Recording too unclear. Please try again.", ["clipped_gains (7 >= 6)"]
         )
 
     return "analyze_auto_eq", refuse
 
 
 @pytest.mark.parametrize(
-    "auto_eq",
-    [_auto_eq_abstains("capture quality score is too low"), _auto_eq_refuses(tone_only=False)],
-    ids=["abstention", "validation"],
-)
-def test_a_refusal_the_tone_does_not_explain_still_blocks_the_recommendation(monkeypatch, auto_eq):
-    result = _analyze_clean_capture(monkeypatch, auto_eq)
-    diagnostics = result["diagnostics"]
-
-    assert diagnostics["apply_recommended"] is False
-    assert "Auto-EQ abstained from this capture" in diagnostics["uncertainty_reasons"]
-
-
-@pytest.mark.parametrize(
     ("auto_eq", "complete"),
     [
+        (_auto_eq_abstains("capture quality score is too low"), True),
         (_auto_eq_abstains("no validated correction improved the target safely"), True),
-        (_auto_eq_refuses(tone_only=True), False),
+        (_auto_eq_refuses(), False),
     ],
-    ids=["abstention", "validation"],
+    ids=["low-quality-abstention", "unsafe-abstention", "validation"],
 )
-def test_a_tone_only_refusal_refuses_the_whole_setup(monkeypatch, auto_eq, complete):
+def test_an_auto_eq_refusal_refuses_the_whole_setup(monkeypatch, auto_eq, complete):
     result = _analyze_clean_capture(monkeypatch, auto_eq)
     diagnostics = result["diagnostics"]
 

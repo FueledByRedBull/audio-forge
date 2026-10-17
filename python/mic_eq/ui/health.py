@@ -24,7 +24,7 @@ OUTPUT_PEAK_TARGET_DB = -1.0
 STREAM_EVENT_COUNTERS = frozenset({
     "input_callback_error_count", "output_callback_error_count",
     "input_stream_error_count", "output_stream_error_count", "stream_restart_count",
-    "input_dropped_samples", "input_backlog_dropped_samples", "jitter_dropped_samples",
+    "input_dropped_samples", "input_backlog_dropped_samples",
     "output_short_write_dropped_samples", "output_underrun_total",
     "rt_buffer_overflow_count", "input_backlog_recovery_count",
     "output_recovery_count", "output_recovery_event_count", "gate_chatter_event_count",

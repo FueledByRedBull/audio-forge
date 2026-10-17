@@ -45,6 +45,7 @@ from .accessibility import bind_label, set_accessible_group
 from .calibration_support import chain_settings
 from .capture_session import (
     CaptureSession,
+    LIVE_OUTPUT_MUTED_NOTICE,
     active_device_identities,
     processor_sample_rate,
     route_identities_match,
@@ -961,6 +962,10 @@ def _record_test_clip(window: Any) -> np.ndarray | None:
     layout.addWidget(
         QLabel(f"Recording. Speak normally for {TEST_CAPTURE_SECONDS:.0f} seconds.")
     )
+    notice = QLabel(LIVE_OUTPUT_MUTED_NOTICE)
+    notice.setWordWrap(True)
+    notice.setStyleSheet(SUBDUED_TEXT_STYLE)
+    layout.addWidget(notice)
     bar = QProgressBar()
     bar.setRange(0, 100)
     bar.setTextVisible(False)

@@ -73,6 +73,7 @@ from .setup_messages import (
 )
 from .capture_session import (
     CaptureSession,
+    LIVE_OUTPUT_MUTED_NOTICE,
     active_device_identities as _active_device_identities,
     device_label as _device_label,
     device_name as _device_name,
@@ -326,6 +327,11 @@ class CalibrationDialog(QDialog):
         instructions_layout.addWidget(passage_text)
 
         layout.addWidget(instructions_group)
+
+        self.mute_notice = QLabel(LIVE_OUTPUT_MUTED_NOTICE)
+        self.mute_notice.setWordWrap(True)
+        self.mute_notice.setStyleSheet(SUBDUED_TEXT_STYLE)
+        layout.addWidget(self.mute_notice)
 
         # Recording UI group
         self.recording_group = QGroupBox("Recording")

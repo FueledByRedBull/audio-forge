@@ -1579,7 +1579,16 @@ def test_applying_a_withheld_compressor_keeps_the_users_compressor_and_applies_t
 ) -> None:
     window = real_main_window
     dialog, speech = _review_dialog(window)
-    before = window._get_current_preset().to_dict()["compressor"]
+    # What is stored beside the user's compressor: a calibration, and a profile they changed by hand.
+    window.compressor_state.set_settings({
+        **window.compressor_state.get_settings(),
+        "dynamics_profile": "dense",
+        "dynamics_customized": True,
+        "noise_reference_reliability": 0.8,
+    })
+    window.compressor_state.flush()
+    before = window.compressor_state.get_settings(include_calibration=True)
+    assert before["noise_reference_reliability"] == 0.8
     noise = dialog.noise_audio
     assert noise is not None
     try:
@@ -1587,7 +1596,8 @@ def test_applying_a_withheld_compressor_keeps_the_users_compressor_and_applies_t
             window, dialog, _withheld_compressor_result(window, dialog, "headroom")
         )
 
-        assert window._get_current_preset().to_dict()["compressor"] == before
+        assert window.compressor_state.get_settings(include_calibration=True) == before
+        assert window.compressor_state.get_applied_settings(include_calibration=True) == before
         assert window.gate_state.get_settings()["threshold_db"] == -41.0
         assert dialog.setup_result is not None
         outcome = validate_voice_setup_verification(
@@ -1595,6 +1605,22 @@ def test_applying_a_withheld_compressor_keeps_the_users_compressor_and_applies_t
             dialog.setup_result, "broadcast",
         )
         assert outcome["decision"] != "rollback"
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_applying_a_withheld_compressor_ignores_the_values_the_result_carries(real_main_window) -> None:
+    window = real_main_window
+    dialog, _speech = _review_dialog(window)
+    result = _withheld_compressor_result(window, dialog, "headroom")
+    result["compressor_settings"]["threshold_db"] = -31.0
+    before = window.compressor_state.get_settings(include_calibration=True)
+    try:
+        _apply_complete_candidate(window, dialog, result)
+
+        assert window.compressor_state.get_settings(include_calibration=True) == before
+        assert window._get_current_preset().to_dict()["compressor"]["threshold_db"] == before["threshold_db"]
     finally:
         dialog.reject()
         dialog.deleteLater()
@@ -1631,6 +1657,29 @@ def test_a_verified_setup_lists_a_stage_only_when_it_was_changed(
         assert window.config.calibration_results[0].verified_stages == expected
         assert dialog.setup_result is not None
         assert tuple(dialog.setup_result["_candidate"]["verified_stages"]) == expected
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_a_kept_compressor_under_limiter_pressure_rolls_back_and_says_why(real_main_window) -> None:
+    window = real_main_window
+    dialog, speech = _review_dialog(window)
+    before = window._get_current_preset().to_dict()
+    _apply_complete_candidate(window, dialog, _withheld_compressor_result(window, dialog, "headroom"))
+    dialog._verification_audio = speech
+    verdict = {**_verdict_with_dulling_advisory("reduce", advised=False), "reduction_targets": ["limiter"]}
+    try:
+        dialog._on_verification_complete(verdict)
+
+        text = dialog.warning_label.text()
+        assert text.endswith(
+            "Your compressor stays as it is, so setup could not lower the loudness. "
+            "Lower the microphone level and record again."
+        )
+        assert "could not adjust the settings any further" not in text
+        assert dialog.phase_label.text() == "Check failed; previous settings put back"
+        assert window._get_current_preset().to_dict() == before
     finally:
         dialog.reject()
         dialog.deleteLater()

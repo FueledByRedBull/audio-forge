@@ -185,6 +185,71 @@ def test_a_verified_voice_setup_with_a_withheld_compressor_is_reported_as_such(
         dialog.deleteLater()
 
 
+def _withhold_compressor(dialog: VoiceSetupDialog) -> None:
+    assert dialog.setup_result is not None
+    dialog.setup_result["diagnostics"]["compressor_withheld"] = {
+        "reason_code": "compressor_withheld",
+        "cause": ["headroom"],
+    }
+
+
+def _roll_back(dialog, _monkeypatch) -> None:
+    dialog._on_verification_complete(_verdict_with_dulling_advisory("rollback", advised=False))
+
+
+def _decline_the_comparison(dialog, monkeypatch) -> None:
+    _comparison_dialog(monkeypatch, {}, keep=False)
+    dialog._on_verification_complete(_verdict_with_dulling_advisory("accept", advised=False))
+    dialog._compare_recording()
+
+
+def _fail_the_check(dialog, _monkeypatch) -> None:
+    dialog._on_verification_failed("The second recording is gone.")
+
+
+@pytest.mark.parametrize(
+    ("act", "outcome", "codes"),
+    [
+        (_roll_back, "rolled_back", ["compressor_withheld", "rollback_reason"]),
+        (_decline_the_comparison, "rolled_back", ["compressor_withheld", "final_comparison_declined"]),
+        (_fail_the_check, "failed", ["compressor_withheld", "verification_failed"]),
+    ],
+    ids=["rollback", "declined-comparison", "failed-check"],
+)
+def test_a_rolled_back_or_failed_setup_names_the_compressor_it_kept(
+    real_main_window, monkeypatch, act, outcome, codes
+) -> None:
+    records = _voice(real_main_window)
+    dialog, _speech = _verifying_dialog(real_main_window)
+    _withhold_compressor(dialog)
+    try:
+        act(dialog, monkeypatch)
+
+        assert records[-1]["outcome"] == outcome
+        assert records[-1]["reason_codes"] == codes
+        _check_record(records[-1], "voice_setup")
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_the_compressor_code_is_said_once_and_never_on_a_refusal(real_main_window) -> None:
+    records = _voice(real_main_window)
+    dialog, _speech = _verifying_dialog(real_main_window)
+    _withhold_compressor(dialog)
+    try:
+        dialog._report("rolled_back", ["compressor_withheld", "other_reason"], ["message"])
+        dialog._report("refused", ["incomplete_result"], ["message"])
+
+        assert [r["reason_codes"] for r in records] == [
+            ["compressor_withheld", "other_reason"],
+            ["incomplete_result"],
+        ]
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
 def test_a_verified_voice_setup_is_reported_with_the_checked_numbers(
     real_main_window, monkeypatch
 ) -> None:
@@ -335,10 +400,31 @@ def test_a_weak_capture_with_a_kept_compressor_is_not_called_suggestions_only(re
         dialog._on_analysis_complete(result)
 
         (line,) = _issue_lines(dialog)
-        assert "4.0 dB louder" in line
-        assert "Your compressor stays as it is and the rest applies." in line
-        assert "suggestions only" not in line
+        assert line == (
+            "Your voice was only 4.0 dB louder than the room noise, too little for setup to set your "
+            "compressor. Your compressor stays as it is, and the other settings passed the final check. "
+            "Record again closer to the microphone, or in a quieter room."
+        )
+        assert dialog.warning_label.text() == (
+            "The recording was weak, so your compressor stays as it is. The other settings passed "
+            "the final check. Review the settings below, then apply them."
+        )
+        assert dialog.overall_label.text() == (
+            "Weak capture. Your compressor stays as it is; the other settings passed the final check."
+        )
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_a_compressor_kept_for_headroom_alone_still_says_all_checks_passed(real_main_window) -> None:
+    dialog, _speech = _review_dialog(real_main_window)
+    result = _withheld_compressor_result(real_main_window, dialog, "headroom")
+    try:
+        dialog._on_analysis_complete(result)
+
         assert dialog.warning_label.text() == "All checks passed. Review the settings below, then apply them."
+        assert dialog.overall_label.text().endswith("All checks passed.")
     finally:
         dialog.reject()
         dialog.deleteLater()

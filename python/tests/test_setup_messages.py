@@ -308,6 +308,9 @@ def test_the_weak_capture_lines_say_the_rest_applies_when_the_compressor_is_kept
 
     assert all("suggestions only" in line for line in as_before)
     assert len(applies) == len(advisory) == len(as_before)
-    assert all("Your compressor stays as it is and the rest applies." in line for line in applies)
+    kept = "Your compressor stays as it is, and the other settings passed the final check."
+    assert all(kept in line for line in applies)
     assert not any("suggestions only" in line or "Automatic loudness" in line for line in applies)
+    # Nothing says setup needs what the recording lacked and then that the rest applies anyway.
+    assert not any("needs at least" in line for line in applies if "louder" in line)
     assert all("Your compressor stays as it is, and the settings are suggestions only." in line for line in advisory)

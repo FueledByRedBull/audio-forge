@@ -1491,7 +1491,16 @@ def analyze_voice_setup(
     # check on headroom, or the capture is too weak to trust the proposal's dynamics,
     # and the final check passes with the compressor as the user has it. Gate,
     # suppressor and the rest stand as proposed; the compressor figures are the user's.
+    # Only a voice that is too faint against the room (SNR under 8 dB or a low capture
+    # score) counts as weak here: too little speech, an unusable room take or a
+    # single-spectrum fallback leave nothing the rest of the setup can stand on.
+    weak_capture_is_faint_voice = bool(
+        float(features["active_duration_s"]) >= 2.0
+        and noise_reference.status == "usable"
+        and not spectrum_result.used_single_spectrum_fallback
+    )
     compressor_withheld: list[str] = []
+    compressor_fallback_checked: dict[str, Any] | None = None
     users_compressor = incumbent_payload.get("compressor")
     if (
         COMPRESSOR_FALLBACK
@@ -1500,10 +1509,15 @@ def analyze_voice_setup(
     ):
         causes = [
             *(["headroom"] if beyond_headroom_passed and not full_chain_headroom_safe else []),
-            *(["weak_capture"] if weak_capture and not eq_blocks_apply else []),
+            *(
+                ["weak_capture"]
+                if weak_capture and weak_capture_is_faint_voice and not eq_blocks_apply
+                else []
+            ),
         ]
         if causes:
             kept_compressor = deepcopy(dict(users_compressor))
+            kept_error: str | None = None
             try:
                 check_analysis_cancelled(cancel_check)
                 kept_validation = simulate_candidate_chain(
@@ -1526,8 +1540,14 @@ def analyze_voice_setup(
                 ) and _headroom_safe(kept_validation, kept_allowance_db)
             except AnalysisCancelled:
                 raise
-            except Exception:  # the proposal's refusal stands
+            except Exception as exc:  # the proposal's refusal stands
                 kept_passes = False
+                kept_error = str(exc)
+            compressor_fallback_checked = {
+                "cause": list(causes),
+                "passed": kept_passes,
+                "error": kept_error,
+            }
             if kept_passes:
                 compressor_withheld = causes
                 compressor_settings = kept_compressor
@@ -1536,7 +1556,6 @@ def analyze_voice_setup(
                 offline_validation_passed = True
                 requested_loudness_headroom_safe = True
                 allowance_db = kept_allowance_db
-                input_gain_shortfall_db = 0.0
                 full_chain_active_gain_db = _active_speech_gain_db(
                     features, _frame_rms_db(kept_audio, sample_rate)
                 )
@@ -1609,7 +1628,7 @@ def analyze_voice_setup(
         uncertainty_reasons.append("Auto-EQ abstained from this capture")
     # A withheld compressor is no failed check: the user's stays and the rest stands on its own.
     apply_recommended = bool(
-        (not weak_capture or compressor_withheld)
+        (not weak_capture or "weak_capture" in compressor_withheld)
         and not eq_blocks_apply
         and offline_validation_passed
         and (compressor_target_met or compressor_withheld)
@@ -1643,6 +1662,12 @@ def analyze_voice_setup(
                 {"reason_code": "compressor_withheld", "cause": compressor_withheld}
                 if compressor_withheld
                 else None
+            ),
+            # Absent with the switch off, so that output reads as it always did.
+            **(
+                {"compressor_fallback_checked": compressor_fallback_checked}
+                if COMPRESSOR_FALLBACK
+                else {}
             ),
             "capture_confidence": capture_confidence,
             "eq_confidence": eq_confidence,

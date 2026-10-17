@@ -874,11 +874,15 @@ def test_a_withheld_compressor_is_checked_in_the_full_chain_as_the_user_has_it(m
     assert result["compressor_settings"] == _USERS_COMPRESSOR
     assert result["gate_settings"] == observed["proposed_gate"]
     assert result["suppressor_settings"] == observed["proposed_suppressor"]
-    # This synthetic capture is also a weak one, so the weak-capture cause comes with the headroom one.
+    # This synthetic capture is also a weak one, but its room-noise take is not usable, which is more
+    # than a faint voice: only the headroom cause keeps the compressor, and the setup stays suggestions only.
+    assert diagnostics["weak_capture"] is True
+    assert "room noise does not match conditions during the voice capture" in diagnostics["uncertainty_reasons"]
     assert diagnostics["compressor_withheld"] == {
         "reason_code": "compressor_withheld",
-        "cause": ["headroom", "weak_capture"],
+        "cause": ["headroom"],
     }
+    assert diagnostics["apply_recommended"] is False
     assert diagnostics["offline_validation_passed"] is True
     assert diagnostics["offline_validation_full_chain"] is True
     assert "output_audio" not in diagnostics["offline_validation"]

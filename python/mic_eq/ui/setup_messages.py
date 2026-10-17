@@ -294,6 +294,12 @@ _COMPRESSOR_WHY = {
 }
 
 
+def kept_for_weak_capture(diagnostics: Mapping[str, Any]) -> bool:
+    """Whether the compressor stays as the user has it because the recording was weak."""
+    withheld = diagnostics.get("compressor_withheld")
+    return isinstance(withheld, Mapping) and "weak_capture" in (withheld.get("cause") or ())
+
+
 def compressor_withheld_note(withheld: Mapping[str, Any] | None) -> str:
     """Why the compressor stays as the user has it, or nothing when setup set it."""
     return " ".join(_COMPRESSOR_WHY[cause] for cause in (withheld or {}).get("cause") or ())
@@ -318,15 +324,18 @@ def _capture_issues(
     if kept:
         # The user's compressor stays, so nothing was held back from it; the rest may still apply.
         withheld = suggestions = _COMPRESSOR_KEPT + (
-            " and the rest applies." if diagnostics.get("apply_recommended") else ", and the settings are suggestions only."
+            ", and the other settings passed the final check."
+            if diagnostics.get("apply_recommended")
+            else ", and the settings are suggestions only."
         )
     lines: list[tuple[str, str]] = []
     snr = _number(diagnostics.get("noise_referenced_snr_db"))
     if snr is not None and snr < 6.0:
         lines.append((
             "snr_under_6_db",
-            f"Your voice was only {_floor(snr, 1)} dB louder than the room noise; setup needs at least 6 dB. "
-            f"{withheld} Record again closer to the microphone, or in a quieter room.",
+            f"Your voice was only {_floor(snr, 1)} dB louder than the room noise"
+            + (", too little for setup to set your compressor. " if kept else "; setup needs at least 6 dB. ")
+            + f"{withheld} Record again closer to the microphone, or in a quieter room.",
         ))
     elif snr is not None and snr < 8.0:
         lines.append((

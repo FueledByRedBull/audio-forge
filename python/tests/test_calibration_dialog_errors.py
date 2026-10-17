@@ -93,7 +93,7 @@ def test_stalled_capture_fails_and_releases_only_capture_owned_state(
         dialog._poll_recording_progress()
 
         text = dialog.warning_label.text()
-        assert "microphone" in text and "record again" in text.lower()
+        assert "The microphone stopped sending sound" in text and "record again" in text
         assert dialog.warning_label.styleSheet() == message_text_style("bad", strong=True)
         assert report.call_args.args[:2] == ("failed", ["recording_failed"])
         assert dialog.recording_timer.isActive() is False

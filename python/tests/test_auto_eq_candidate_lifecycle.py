@@ -523,11 +523,15 @@ def _complete(dialog: CalibrationDialog, monkeypatch, result: dict) -> None:
     dialog._on_analysis_complete(result, generation=dialog._analysis_generation)
 
 
-def _advice(text: str) -> tuple[str | None, int | None]:
-    """The lever a warning tells the user to turn and the whole-decibel figure it gives."""
+_PURPOSES = ("allow the full correction", "leave enough room", "record again")
+
+
+def _advice(text: str) -> tuple[str | None, int | None, str | None]:
+    """The lever a warning tells the user to lower, the whole-decibel figure and the purpose."""
     lever = re.search(r"Lower the (compressor's target loudness|microphone gain)", text)
     figure = re.search(r"by about (\d+) dB", text)
-    return (lever[1] if lever else None, int(figure[1]) if figure else None)
+    purpose = next((purpose for purpose in _PURPOSES if purpose in text), None)
+    return (lever[1] if lever else None, int(figure[1]) if figure else None, purpose)
 
 
 def _warning_state(dialog: CalibrationDialog) -> str | None:
@@ -556,7 +560,7 @@ def test_proposal_kept_over_the_rule_is_offered_with_the_cause_and_the_fix(qapp,
         text = dialog.warning_label.text()
         _assert_ready(text)
         assert "no worse than your current one" in text
-        assert _advice(text) == ("microphone gain", 2)
+        assert _advice(text) == ("microphone gain", 2, "leave enough room")
         assert "limiter" not in text  # the limiter is on, so there is nothing to say about it
         assert dialog.gain_scale_label.text() == "Headroom check: not met even without the EQ."
         assert dialog._candidate_identity_error(dialog.eq_settings, owner) is None
@@ -585,8 +589,9 @@ def test_output_that_already_clips_with_the_limiter_off_gets_the_plain_warning(q
         text = dialog.warning_label.text()
         assert "already clips" in text
         assert "no worse than your current one" in text
-        assert _advice(text) == ("microphone gain", 2)
-        assert "limiter" in text  # turned off, and turning it on would not pass the check
+        assert _advice(text) == ("microphone gain", 2, "leave enough room")
+        # The limiter is off, and turning it on would not make this check pass.
+        assert "Turning the limiter on" in text and "would not make this check pass" in text
     finally:
         dialog.reject()
         owner.close()
@@ -604,7 +609,7 @@ def test_no_correction_over_the_rule_still_names_the_cause_and_the_fix(qapp, mon
         text = dialog.warning_label.text()
         assert text.startswith("No correction applied")
         assert "too little room" in text
-        assert _advice(text) == ("microphone gain", 2)
+        assert _advice(text) == ("microphone gain", 2, "record again")
         assert text.endswith("record again.")
     finally:
         dialog.reject()
@@ -617,7 +622,7 @@ def test_a_working_compressor_gets_the_remedy_without_a_figure(qapp, monkeypatch
     try:
         _complete(dialog, monkeypatch, _over_the_rule(owner.preset.eq))
 
-        assert _advice(dialog.warning_label.text()) == ("microphone gain", None)
+        assert _advice(dialog.warning_label.text()) == ("microphone gain", None, "leave enough room")
     finally:
         dialog.reject()
         owner.close()
@@ -629,7 +634,9 @@ def test_automatic_makeup_sends_the_user_to_the_target_loudness(qapp, monkeypatc
     try:
         _complete(dialog, monkeypatch, _no_correction(_over_the_rule(owner.preset.eq)))
 
-        assert _advice(dialog.warning_label.text()) == ("compressor's target loudness", None)
+        text = dialog.warning_label.text()
+        assert _advice(text) == ("compressor's target loudness", None, "record again")
+        assert "Automatic makeup would undo a lower microphone gain" in text
     finally:
         dialog.reject()
         owner.close()
@@ -643,7 +650,7 @@ def test_a_disabled_compressor_with_automatic_makeup_left_on_gets_the_gain_wordi
     try:
         _complete(dialog, monkeypatch, _no_correction(_over_the_rule(owner.preset.eq)))
 
-        assert _advice(dialog.warning_label.text()) == ("microphone gain", 2)
+        assert _advice(dialog.warning_label.text()) == ("microphone gain", 2, "record again")
     finally:
         dialog.reject()
         owner.close()
@@ -669,7 +676,7 @@ def test_a_correction_that_headroom_made_gentler_says_what_would_allow_the_full_
 
         text = dialog.warning_label.text()
         _assert_ready(text)
-        assert _advice(text) == ("microphone gain", 1)
+        assert _advice(text) == ("microphone gain", 1, "allow the full correction")
         assert "too little room" not in text  # the current EQ is fine; only the gain limits
         assert dialog.gain_scale_label.text() == "Headroom check: passed."
     finally:
@@ -695,7 +702,7 @@ def test_a_correction_over_the_rule_that_was_made_gentler_does_not_say_there_was
         assert "gentler so it leaves no less room than your current EQ" in text
         assert "leave enough headroom" not in text
         assert "too little room" in text
-        assert _advice(text) == ("microphone gain", 2)
+        assert _advice(text) == ("microphone gain", 2, "allow the full correction")
     finally:
         dialog.reject()
         owner.close()
@@ -714,7 +721,7 @@ def test_a_correction_left_out_for_leaving_less_room_says_so_and_offers_nothing(
         text = dialog.warning_label.text()
         assert text.startswith("No correction applied")
         assert "less room than your current EQ" in text
-        assert _advice(text) == ("microphone gain", 2)
+        assert _advice(text) == ("microphone gain", 2, "record again")
         assert text.endswith("record again.")
         assert "Full-chain headroom validation failed" not in dialog.warning_label.toolTip()
         assert dialog.gain_scale_label.styleSheet() == status_chip_style("warn")
@@ -785,9 +792,9 @@ def _clipped() -> np.ndarray:
 @pytest.mark.parametrize(
     ("take", "control", "figure_db"),
     [
-        (_clipped(), "microphone level", 6),
+        (_clipped(), "Lower the microphone level", 6),
         (np.full(480, np.nan, dtype=np.float32), "Restart processing", None),
-        (np.zeros(480, dtype=np.float32), "muted", None),
+        (np.zeros(480, dtype=np.float32), "is not muted", None),
     ],
 )
 def test_a_clipped_unreadable_or_silent_take_is_refused_before_any_analysis(
@@ -910,8 +917,10 @@ def test_the_tone_modes_are_named_for_what_they_do_and_keep_their_stored_values(
             ("Full strength", "static"),
         ]
         tip = combo.toolTip()
-        assert "Subtle" in tip and "Full strength" in tip
+        assert re.search(r"Subtle[^.]*never more than 2 dB", tip)  # a ceiling, for this mode
+        assert re.search(r"Full strength[^.]*up to 5 dB", tip)
         assert re.findall(r"(\d+) dB", tip) == ["2", "5"]
+        assert "recording decides" in tip and "headroom" in tip
         assert dialog.get_selected_target_mode() == "adaptive"
 
         for label, stored in (("Subtle", "adaptive"), ("Full strength", "static")):
@@ -964,8 +973,11 @@ def test_the_quiet_verdict_waits_out_the_pauses_between_words(qapp):
         assert _warning_state(dialog) == "ok"  # the level is good
 
         dialog._on_level_update(-70.0, -12.0)  # the last loud block has left the window
+        text = dialog.warning_label.text()
         assert _warning_state(dialog) == "warn"
-        assert "-70 dB" in dialog.warning_label.text()  # the loudest words it heard
+        assert "Little or no speech was heard" in text and "-70 dB" in text
+        assert "Speak for the whole check" in text  # not the "voice is quiet, raise it" advice
+        assert "Your voice is quiet" not in text
 
         dialog._on_level_update(-25.0, -12.0)
         assert _warning_state(dialog) == "ok"
@@ -1345,7 +1357,8 @@ def test_eq_candidate_rejects_changed_route_context(qapp, monkeypatch) -> None:
         dialog._apply_eq_settings()
         assert owner.eq_state.apply_calls == 0
         assert "microphone" in messages[-1]  # what changed
-        assert "record again" in messages[-1].lower()  # and what to do about it
+        assert "record again" in messages[-1].lower()  # what to do about it
+        assert "Nothing was changed" in messages[-1]
     finally:
         dialog.reject()
         owner.close()

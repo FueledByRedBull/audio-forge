@@ -116,7 +116,7 @@ def test_clipped_advice_is_stronger_and_still_has_the_number():
     assert advice != advice_for(input_health_state(rms_db=-20.0, peak_db=0.0)[0])
     assert "clipped" in advice
     assert "9 times" in advice and "0.0 dB" in advice
-    assert "about 6 dB" in advice
+    assert "Lower the microphone level by about 6 dB" in advice
     assert "held" not in advice and "flat" not in advice
 
 
@@ -202,15 +202,15 @@ def test_every_warning_chip_has_plain_language_advice() -> None:
 @pytest.mark.parametrize(
     ("chip", "happened", "to_do"),
     [
-        ("Input: PHASE", "channels", "Phase-safe mono"),
-        ("Input: LOW RUMBLE", "rumble", "input cleanup"),
-        ("Input: HUM DETECTED", "hum", "power cables"),
+        ("Input: PHASE", "partly cancel each other", "pick Left, Right or Phase-safe mono"),
+        ("Input: LOW RUMBLE", "Low rumble is reaching", "keep input cleanup on"),
+        ("Input: HUM DETECTED", "steady hum", "Move the microphone cable away from power cables"),
         ("Input: ALREADY COMPRESSED (2.8 dB)", "differ by only 2.8 dB", "Turn off processing in the microphone driver"),
-        ("Output: PEAK ABOVE CEILING (peak 0.4 dB)", "ceiling", "makeup gain"),
+        ("Output: PEAK ABOVE CEILING (peak 0.4 dB)", "went above the limiter ceiling", "lower the makeup gain"),
         ("Output: VERY LOUD (0 dB)", "is 0 dB", "Lower the makeup gain"),
         ("Gate: CHATTERING (3 times)", "rapidly 3 times", "Raise the hold time or lower the threshold"),
         ("Gate: EASED (3 times)", "3 times so far", "lowering the threshold yourself"),
-        ("Backend: rnnoise failed", "Noise suppression", "Noise Suppression card"),
+        ("Backend: rnnoise failed", "passing through unprocessed", "Check the model on the Noise Suppression card"),
         ("Device activity: input 12 ms ago, output 1400 ms ago", "for 1400 ms", "Check that the device is connected"),
         ("Dropouts: 3 (2 in a row)", "dropped out 3 times", "Close heavy applications"),
         ("Buffer: FILLING UP (1200 samples)", "1200 samples waiting", "Close heavy applications"),
@@ -238,6 +238,6 @@ def test_each_warning_says_what_happened_and_what_to_do_with_its_number(chip, ha
 def test_recovery_advice_counts_only_what_happened(chip, cause, count):
     advice = advice_for(chip)
     assert cause in advice and count in advice
-    assert "0 times" not in advice and "device connection" in advice
+    assert "0 times" not in advice and "check the device connection" in advice
     if not count:
         assert not any(character.isdigit() for character in advice)

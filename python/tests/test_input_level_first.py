@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from mic_eq.ui.health import HEALTH_PEAK_WINDOW_SECONDS, advice_for
+from mic_eq.ui.health import HEALTH_PEAK_WINDOW_SECONDS
 from mic_eq.ui.level_meter import CLIP_FLAT_TOP_SAMPLES
 
 
@@ -216,7 +216,7 @@ def test_clipping_is_held_for_the_window_and_says_so_more_strongly(running_windo
     chip = window.shell_texts["input_health_label"]
     assert (chip.text, chip.state) == ("Input: CLIPPED (peak 0.0 dB, full scale 6 times)", "bad")
     advice = window.shell_texts["health_advice_label"].text
-    assert advice == advice_for(chip.text) and "6 times" in advice
+    assert advice.startswith("The microphone clipped") and "full scale 6 times" in advice
     clock.now += 5
     window._update_meters()
     _tick_diagnostics(window)

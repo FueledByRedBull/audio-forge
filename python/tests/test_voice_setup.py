@@ -2169,6 +2169,8 @@ def test_verification_uses_candidate_limiter_and_retries_without_it(monkeypatch)
     )
     assert retry["decision"] == "rollback"
     assert retry["reason_codes"] == ["candidate_settings_incomplete"]
+    # The code is shared with the EQ case; only the reason names what is missing.
+    assert "limiter" in retry["reasons"][0] and "missing" in retry["reasons"][0]
 
 
 def _verify_with_limiter_reading(monkeypatch, diagnostics, limiter_db, true_peak_db):
@@ -2597,6 +2599,10 @@ def test_incomplete_candidate_offers_retake_instead_of_apply(
         assert dialog.setup_state == "noise_ready"
         assert dialog.start_button.text() == "Record Voice Again"
         assert not dialog.retake_btn.isHidden()
+        text = dialog.warning_label.text()
+        assert "incomplete" in text and "missing" in text
+        assert "Record the voice passage again" in text
+        assert "passed" not in text
         assert not dialog._advisory_only
         recorded = owner.last_setup_result
         assert recorded is not None
@@ -2666,6 +2672,9 @@ def test_complete_advisory_candidate_still_offers_apply(qapp, monkeypatch):
         assert dialog.start_button.text() == "Apply Suggestions"
         assert not dialog.curve_combo.isEnabled()
         assert not dialog.dynamics_combo.isEnabled()
+        text = dialog.warning_label.text()
+        assert "did not pass every check" in text and "suggestions" in text
+        assert "All checks passed" not in text
         assert dialog._advisory_only
         recorded = owner.last_setup_result
         assert recorded is not None
@@ -2891,6 +2900,8 @@ def test_silent_room_noise_moves_on_and_a_silent_voice_is_the_fault(qapp, monkey
         )
         assert unsteady.status == "invalid"
         assert plain_reasons(unsteady.reasons)[0] in dialog.warning_label.text()
+        assert "play safe" in dialog.warning_label.text()
+        assert "retake" in dialog.warning_label.text()
         assert dialog.warning_label.styleSheet() == message_text_style("warn", strong=True)
 
         # A capture the analysis cannot use at all still has to be retaken.
@@ -2906,7 +2917,7 @@ def test_silent_room_noise_moves_on_and_a_silent_voice_is_the_fault(qapp, monkey
         dialog.setup_state = "noise_recording"
         dialog._on_recording_complete(clipped)
         assert dialog.setup_state == "idle" and dialog.noise_audio is None
-        assert "loud sound" in dialog.warning_label.text()
+        assert all(token in dialog.warning_label.text() for token in _LOUD_ROOM)
 
         dialog.setup_state = "noise_recording"
         dialog._on_recording_complete(np.zeros(96_000, dtype=np.float32))
@@ -2915,13 +2926,13 @@ def test_silent_room_noise_moves_on_and_a_silent_voice_is_the_fault(qapp, monkey
         dialog.setup_state = "voice_recording"
         dialog._on_recording_complete(loud_voice)
         assert dialog.setup_state == "noise_ready" and not analyses
-        assert "clipped" in dialog.warning_label.text()
-        assert "6 dB" in dialog.warning_label.text()
+        assert all(token in dialog.warning_label.text() for token in _CLIPPED)
+        assert "move back" in dialog.warning_label.text()
         dialog.setup_state = "voice_recording"
         dialog._on_recording_complete(np.zeros(480_000, dtype=np.float32))
         assert dialog.setup_state == "noise_ready"
         assert dialog.voice_audio is None and not analyses
-        assert "No sound" in dialog.warning_label.text()
+        assert all(token in dialog.warning_label.text() for token in _NO_SOUND)
         assert dialog.start_button.text() == "Record Voice"
 
         dialog.setup_state = "voice_recording"
@@ -2974,10 +2985,11 @@ def _poked(audio, index, value):
 
 
 # Each refusal is told apart by a token its message carries, and by its figure.
-_CLIPPED = ("clipped", "6 dB")
-_LOUD_ROOM = ("loud sound",)
-_UNREADABLE = ("invalid audio",)
-_TOO_SHORT = ("1.5 seconds",)
+_CLIPPED = ("clipped", "Lower the microphone level by about 6 dB")
+_LOUD_ROOM = ("loud sound", "Record the room noise again", "room is quiet")
+_UNREADABLE = ("invalid audio", "Restart processing", "record again")
+_TOO_SHORT = ("Record at least 1.5 seconds",)
+_NO_SOUND = ("No sound", "not muted", "right input is selected", "record again")
 
 
 @pytest.mark.parametrize(
@@ -2992,7 +3004,7 @@ _TOO_SHORT = ("1.5 seconds",)
         (lambda: _make_noise(48_000, seconds=0.5), _TOO_SHORT),
         (
             lambda: np.zeros(0, dtype=np.float32),
-            (*_TOO_SHORT, "Restart the audio stream"),
+            (*_TOO_SHORT, "Restart the audio stream", "record the room tone again"),
         ),
         # Silence is no reason to read out the headset advice when the take is too short.
         (lambda: np.zeros(24_000, dtype=np.float32), _TOO_SHORT),
@@ -3007,6 +3019,8 @@ def test_a_rejected_room_noise_take_asks_for_a_retake(voice_dialog, take, tokens
     text = voice_dialog.warning_label.text()
     assert all(token in text for token in tokens)
     assert SILENT_REFERENCE_GUIDANCE not in text
+    if "Restart the audio stream" not in tokens:
+        assert "Restart the audio stream" not in text
     assert voice_dialog.setup_state == "idle"
     assert voice_dialog.noise_audio is None and voice_dialog.preview_noise_audio is None
     assert voice_dialog.phase_label.text() == "Room-noise capture rejected"
@@ -3018,9 +3032,12 @@ def test_a_rejected_room_noise_take_asks_for_a_retake(voice_dialog, take, tokens
 @pytest.mark.parametrize(
     ("take", "tokens"),
     [
-        (lambda: _poked(_make_voice(48_000), slice(1000, 1006), 1.0), _CLIPPED),
+        (
+            lambda: _poked(_make_voice(48_000), slice(1000, 1006), 1.0),
+            (*_CLIPPED, "move back"),
+        ),
         (lambda: _poked(_make_voice(48_000), 1000, np.nan), _UNREADABLE),
-        (lambda: np.zeros(480_000, dtype=np.float32), ("No sound", "muted")),
+        (lambda: np.zeros(480_000, dtype=np.float32), _NO_SOUND),
     ],
     ids=["clipped", "nan", "silent"],
 )

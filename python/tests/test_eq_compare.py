@@ -127,6 +127,6 @@ def test_it_says_what_now_is_when_the_eq_is_not_in_use(qapp) -> None:
         "Now (not used in Raw monitor)",
         "Proposed",
     ]
-    assert "Raw monitor" in widget.description()
+    assert "the EQ now, which Raw monitor does not use" in widget.description()
     widget.set_curves(flat, proposal, 48_000.0)
     assert "Raw monitor" not in widget.description()

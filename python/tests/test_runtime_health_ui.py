@@ -211,7 +211,7 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
         ({}, False, "idle", "Health: IDLE", TEXT_SPECS["health_advice_label"].text),
         (
             {"gate_health_label": ("Gate: OK", "ok")},
-            False, "ok", "Health: OK", "fine",
+            False, "ok", "Health: OK", "Everything looks fine.",
         ),
         # Informational chips do not count towards the summary.
         (
@@ -220,7 +220,7 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
         ),
         (
             {"gate_health_label": ("Gate: OK", "ok")},
-            True, "warn", "Health: WARN", "marked",
+            True, "warn", "Health: WARN", "Check the items marked below.",
         ),
         # The worst level wins, and the first chip in the reporting order
         # (decision chips, then the stream chips) names the issue.
@@ -243,7 +243,7 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
         ),
         (
             {"input_health_label": ("Input: STRANGE", "warn")},
-            False, "warn", "Input: STRANGE", "marked",
+            False, "warn", "Input: STRANGE", "Check the items marked below.",
         ),
         # The chip is as red as its worst row, so it names that row and its advice,
         # not an earlier row that only warns.
@@ -269,10 +269,8 @@ def test_health_summary_and_advice_come_from_chip_states_alone(
 
     summary_state = window.shell_texts["health_summary_label"]
     assert (summary_state.text, summary_state.state) == (summary, state)
-    # Chip-derived advice is exact; the fixed ones are a key word for the state.
-    shown = window.shell_texts["health_advice_label"].text
-    assert advice in shown
-    assert summary_state.toolTip == shown
+    assert window.shell_texts["health_advice_label"].text == advice
+    assert summary_state.toolTip == advice
     # The session summary was refreshed from the same call.
     assert ("Mute pending" in window.shell_texts["transmission_status_label"].text) is mute_error
 
@@ -319,7 +317,7 @@ def test_unreadable_telemetry_does_not_keep_the_tooltip_of_the_last_reading(isol
     assert chip.toolTip == TEXT_SPECS["health_summary_label"].tip
     advice = window.shell_texts["health_advice_label"].text
     assert advice != TEXT_SPECS["health_advice_label"].text
-    assert "Stop and start processing" in advice
+    assert "could not read" in advice and "Stop and start processing" in advice
 
 
 def test_the_login_start_up_message_uses_a_state_the_theme_knows(isolated_main_window):
@@ -449,7 +447,7 @@ def test_failed_diagnostics_still_service_recovery_when_presentation_is_hidden(q
     window._service_stream_recovery.assert_called_once()
     assert "unavailable" in window._set_health_chip.call_args.args[1]
     advice = window.shell_texts["health_advice_label"].update.call_args.kwargs["text"]
-    assert "Stop and start processing" in advice
+    assert "could not read" in advice and "Stop and start processing" in advice
 
 
 def test_measurements_begin_unavailable_and_failed_noise_floor_does_not_invent_default(

@@ -151,6 +151,14 @@ _OWNER_TAKE = _headroom(
 )
 
 
+_PURPOSES = (
+    "allow the full correction",
+    "leave enough room",
+    "give your own peaks enough room",
+    "record again",
+)
+
+
 def _advice_facts(text: str) -> dict[str, object]:
     """What a headroom sentence tells the user: the figure, the lever, the claims it makes."""
     figure = re.search(r"by about (\d+) dB", text)
@@ -161,9 +169,12 @@ def _advice_facts(text: str) -> dict[str, object]:
         "lever": lever[1] if lever else None,
         "opener": "clips" if "clips" in text else "too little room" if "too little room" in text else None,
         "no_worse": "no worse than your current one" in text,
-        "limiter_line": "limiter" in text,
+        "limiter_line": "Turning the limiter on" in text
+        and "would not make this check pass" in text,
         "split_db": (float(split[1]), float(split[2])) if split else None,
-        "record_again": "record again" in text,
+        "purpose": next((p for p in _PURPOSES if p in text), None),
+        "makeup_note": "Automatic makeup would undo a lower microphone gain" in text,
+        "mic_fine": "Your microphone level is fine" in text,
     }
 
 
@@ -175,7 +186,9 @@ def _assert_advice(text: str, **expected: object) -> None:
         "no_worse": False,
         "limiter_line": False,
         "split_db": None,
-        "record_again": False,
+        "purpose": None,
+        "makeup_note": False,
+        "mic_fine": False,
     } | expected
     assert _advice_facts(text) == wanted
 
@@ -187,6 +200,7 @@ def test_headroom_advice_for_the_owner_take_says_the_output_clips_and_lowers_two
         opener="clips",
         no_worse=True,
         limiter_line=True,
+        purpose="leave enough room",
     )
 
 
@@ -207,7 +221,7 @@ def test_headroom_advice_for_a_flat_current_eq_and_a_hot_microphone() -> None:
         figure_db=3,
         opener="too little room",
         limiter_line=True,
-        record_again=True,
+        purpose="record again",
     )
 
 
@@ -231,7 +245,8 @@ def test_headroom_advice_names_the_target_loudness_when_automatic_makeup_is_on()
         headroom_advice(_ON_THE_LIMITER, _MAKEUP_ON, proposed=False),
         lever="compressor's target loudness",
         opener="too little room",
-        record_again=True,
+        purpose="record again",
+        makeup_note=True,
     )
 
 
@@ -256,7 +271,7 @@ def test_headroom_advice_gives_a_figure_only_when_the_compressor_is_off(
         headroom_advice(_ON_THE_LIMITER, chain, proposed=False),
         figure_db=figure_db,
         opener="too little room",
-        record_again=True,
+        purpose="record again",
     )
 
 
@@ -264,7 +279,7 @@ def test_headroom_advice_without_a_chain_gives_no_figure() -> None:
     _assert_advice(
         headroom_advice(_ON_THE_LIMITER, None, proposed=False),
         opener="too little room",
-        record_again=True,
+        purpose="record again",
     )
 
 
@@ -292,7 +307,7 @@ def test_headroom_advice_does_not_call_a_current_eq_that_meets_the_rule_too_hot(
     )
 
     _assert_advice(
-        headroom_advice(headroom, _NO_DYNAMICS, proposed=False), figure_db=1, record_again=True
+        headroom_advice(headroom, _NO_DYNAMICS, proposed=False), figure_db=1, purpose="record again"
     )
 
 
@@ -312,7 +327,7 @@ def test_headroom_advice_for_a_correction_left_out_while_the_current_eq_is_over_
         figure_db=3,
         opener="too little room",
         limiter_line=True,
-        record_again=True,
+        purpose="record again",
     )
 
 
@@ -320,22 +335,28 @@ def test_headroom_advice_keeps_the_relation_sentence_for_a_nearly_full_correctio
     nearly_full = _headroom("risk_not_worsened", 0.85, _render(-0.283), incumbent_excess_db=1.348)
     reduced = _headroom("risk_not_worsened", 0.55, _render(-0.283), incumbent_excess_db=1.348)
 
-    assert _advice_facts(headroom_advice(nearly_full, _NO_DYNAMICS, proposed=True))["no_worse"]
+    nearly_full_facts = _advice_facts(headroom_advice(nearly_full, _NO_DYNAMICS, proposed=True))
+    assert nearly_full_facts["no_worse"] and nearly_full_facts["purpose"] == "allow the full correction"
     # Below 0.70 the explanation already says the correction was made gentler to that end.
     _assert_advice(
         headroom_advice(reduced, _NO_DYNAMICS, proposed=True),
         figure_db=2,
         opener="too little room",
         limiter_line=True,
+        purpose="allow the full correction",
     )
 
 
 def test_headroom_advice_for_a_safe_result_that_headroom_made_gentler() -> None:
     headroom = _headroom("safe", 0.55, _render(0.4))
 
-    _assert_advice(headroom_advice(headroom, _NO_DYNAMICS, proposed=True), figure_db=1)
     _assert_advice(
-        headroom_advice(headroom, _NO_DYNAMICS, proposed=False), figure_db=1, record_again=True
+        headroom_advice(headroom, _NO_DYNAMICS, proposed=True),
+        figure_db=1,
+        purpose="allow the full correction",
+    )
+    _assert_advice(
+        headroom_advice(headroom, _NO_DYNAMICS, proposed=False), figure_db=1, purpose="record again"
     )
 
 
@@ -369,12 +390,13 @@ def test_a_reduced_correction_over_the_rule_does_not_claim_there_was_room_to_spa
     plain = explain_auto_eq(reduced)
     assert plain.outcome_code == "conservative_success"
     assert len(plain.details) == 1
-    assert "gentler" in plain.details[0]
+    assert "gentler" in plain.details[0] and "enough headroom" in plain.details[0]
     assert "current EQ" not in plain.details[0] and "spare" not in plain.details[0]
     kept = explain_auto_eq({**reduced, "headroom_validation": {"status": "risk_not_worsened"}})
     assert kept.outcome_code == "conservative_success"
     assert len(kept.details) == 1
-    assert "gentler" in kept.details[0] and "than your current EQ" in kept.details[0]
+    assert "gentler" in kept.details[0]
+    assert "no less room than your current EQ" in kept.details[0]
     assert "spare" not in kept.details[0]
 
 
@@ -393,15 +415,27 @@ def test_a_correction_left_out_says_so_once() -> None:
 
 
 @pytest.mark.parametrize(
-    ("reason", "expected_code"),
+    ("reason", "expected_code", "tokens"),
     [
-        ("no validated correction improved the target safely", "no_safe_improvement"),
-        ("constrained gain solve produced no safe correction", "fit_failed"),
-        ("headroom validation removed the usable correction", "headroom_limited"),
+        (
+            "no validated correction improved the target safely",
+            "no_safe_improvement",
+            ("No correction", "closer to the tone preset"),
+        ),
+        (
+            "constrained gain solve produced no safe correction",
+            "fit_failed",
+            ("could not settle", "safety limits"),
+        ),
+        (
+            "headroom validation removed the usable correction",
+            "headroom_limited",
+            ("Not enough headroom",),
+        ),
     ],
 )
 def test_optimizer_abstentions_say_what_happened_not_to_record_again(
-    reason: str, expected_code: str
+    reason: str, expected_code: str, tokens: tuple[str, ...]
 ) -> None:
     explanation = explain_auto_eq(
         {"recommendation_status": "abstain", "abstention_reasons": [reason]}
@@ -410,6 +444,7 @@ def test_optimizer_abstentions_say_what_happened_not_to_record_again(
     assert explanation.outcome_code == expected_code
     assert len(explanation.details) == 1
     assert explanation.details[0] != reason  # the reason has its own sentence
+    assert all(token in explanation.details[0] for token in tokens)  # tells it from its siblings
     assert "record" not in explanation.details[0].lower()
 
 
@@ -429,7 +464,7 @@ def test_explanations_use_plain_words() -> None:
     text = " ".join(" ".join(result.details) for result in results)
     assert "gates" not in text and "existing" not in text and "diagnostic" not in text
     assert results[0].outcome_code == "correction_ready"
-    assert len(results[0].details) == 1
+    assert len(results[0].details) == 1 and "well supported" in results[0].details[0]
     assert results[1].outcome_code == "conservative_success"
     assert len(results[1].details) == 1 and "gentler" in results[1].details[0]
 
@@ -494,33 +529,47 @@ _BOOST_ONLY = _split("safe", 0.40, -0.5)
 
 def test_headroom_advice_cuts_the_microphone_only_by_the_recordings_part_when_the_boost_leads() -> None:
     _assert_advice(
-        headroom_advice(_BOOST_LEADS, _NO_DYNAMICS, proposed=True), figure_db=1, split_db=(2.8, 3.4)
+        headroom_advice(_BOOST_LEADS, _NO_DYNAMICS, proposed=True),
+        figure_db=1,
+        split_db=(2.8, 3.4),
+        purpose="give your own peaks enough room",
     )
     _assert_advice(
         headroom_advice(_BOOST_LEADS, _NO_DYNAMICS, proposed=False),
         figure_db=1,
         split_db=(2.8, 3.4),
-        record_again=True,
+        purpose="record again",
     )
 
 
 def test_headroom_advice_leaves_the_microphone_alone_when_only_the_boost_is_too_much() -> None:
-    # No lever and no figure: the text names nothing to lower.
+    # No lever, no figure, no purpose: nothing to lower, and it says the level is fine.
     _assert_advice(
-        headroom_advice(_BOOST_ONLY, _NO_DYNAMICS, proposed=True), lever=None, split_db=(3.4, 3.4)
+        headroom_advice(_BOOST_ONLY, _NO_DYNAMICS, proposed=True),
+        lever=None,
+        split_db=(3.4, 3.4),
+        mic_fine=True,
     )
 
 
 def test_headroom_advice_gives_no_microphone_figure_for_the_boost_when_a_compressor_works() -> None:
     chain = {"compressor": {"enabled": True}, "limiter": {"enabled": True}}
 
-    _assert_advice(headroom_advice(_BOOST_LEADS, chain, proposed=True), split_db=(2.8, 3.4))
+    _assert_advice(
+        headroom_advice(_BOOST_LEADS, chain, proposed=True),
+        split_db=(2.8, 3.4),
+        purpose="give your own peaks enough room",
+    )
 
 
 def test_headroom_advice_keeps_the_full_figure_when_the_recording_leads() -> None:
     headroom = _split("safe", 0.40, 3.0)
 
-    _assert_advice(headroom_advice(headroom, _NO_DYNAMICS, proposed=True), figure_db=4)
+    _assert_advice(
+        headroom_advice(headroom, _NO_DYNAMICS, proposed=True),
+        figure_db=4,
+        purpose="allow the full correction",
+    )
 
 
 def test_headroom_advice_does_not_split_when_the_current_eq_is_over_the_rule() -> None:
@@ -534,6 +583,7 @@ def test_headroom_advice_does_not_split_when_the_current_eq_is_over_the_rule() -
         opener="too little room",
         no_worse=True,
         limiter_line=True,
+        purpose="leave enough room",
     )
 
 
@@ -542,4 +592,6 @@ def test_headroom_advice_names_the_target_loudness_for_the_recordings_part_with_
         headroom_advice(_BOOST_LEADS, _MAKEUP_ON, proposed=True),
         lever="compressor's target loudness",
         split_db=(2.8, 3.4),
+        purpose="give your own peaks enough room",
+        makeup_note=True,
     )

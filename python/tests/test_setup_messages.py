@@ -147,7 +147,7 @@ def test_the_plain_sentences_are_plain_and_finished():
 def test_known_bad_wording_is_replaced_and_numbers_are_kept():
     raw = "compressor p95 gain reduction target is unavailable"
     assert plain_reason(raw) != raw and "p95" not in plain_reason(raw)
-    assert "compressor" in plain_reason(raw)
+    assert "compressor could not be tuned" in plain_reason(raw) and "rough guess" in plain_reason(raw)
     assert plain_reason(
         "compressor p95 gain reduction target missed: measured 2.70 dB, target 3.50 dB (±0.75 dB)"
     ).startswith("The compressor evens out your voice by 2.70 dB; the chosen style aims for 3.50 dB.")
@@ -156,7 +156,7 @@ def test_known_bad_wording_is_replaced_and_numbers_are_kept():
     )
     raw = "room-noise capture is not stationary"
     assert plain_reason(raw) != raw and "stationary" not in plain_reason(raw)
-    assert "room noise" in plain_reason(raw)
+    assert "room noise was not steady" in plain_reason(raw)
     assert "6 dB" in plain_reason(
         "the microphone level leaves too little headroom; lower the input gain by about 6 dB"
     )
@@ -182,19 +182,19 @@ def test_reasons_that_say_the_same_thing_are_said_once():
 
 
 @pytest.mark.parametrize(
-    ("raw", "noun"),
+    ("raw", "claim"),
     [
-        ("Audio capture exceeded its 15-second time limit.", "microphone"),
-        ("No audio capture progress was received.", "microphone"),
-        ("Recording failed - no audio data", "microphone"),
-        ("Room-noise capture was too short for setup.", "room-noise recording"),
-        ("Voice capture was too short for setup.", "voice recording"),
-        ("Audio too short for FFT: need 4096 samples, got 100", "recording"),
+        ("Audio capture exceeded its 15-second time limit.", "The microphone stopped sending sound."),
+        ("No audio capture progress was received.", "The microphone stopped sending sound."),
+        ("Recording failed - no audio data", "The microphone stopped sending sound."),
+        ("Room-noise capture was too short for setup.", "The room-noise recording was too short."),
+        ("Voice capture was too short for setup.", "The voice recording was too short."),
+        ("Audio too short for FFT: need 4096 samples, got 100", "The recording was too short"),
     ],
 )
-def test_known_errors_are_explained(raw, noun):
+def test_known_errors_are_explained(raw, claim):
     plain = plain_error(raw)
-    assert plain != raw and noun in plain
+    assert plain != raw and plain.startswith(claim)
 
 
 def test_an_unknown_error_keeps_its_text():
@@ -228,7 +228,8 @@ def test_every_rule_can_be_reached_by_some_reason():
 def test_a_changed_sample_rate_gets_its_own_restart_advice():
     raw = "sample rate changed between noise and voice captures"
     assert plain_reason(raw) != raw
-    assert "sample rate" in plain_reason(raw) and "Restart processing" in plain_reason(raw)
+    assert "The sample rate changed" in plain_reason(raw)
+    assert "Restart processing and record both again" in plain_reason(raw)
 
 
 def test_a_reason_never_says_what_became_of_the_previous_settings():
@@ -276,8 +277,8 @@ def test_a_kept_compressor_says_why_in_plain_words():
     assert compressor_withheld_note(None) == ""
     headroom = compressor_withheld_note(withheld("headroom"))
     weak = compressor_withheld_note(withheld("weak_capture"))
-    assert "limiter" in headroom and "recording" not in headroom
-    assert "recording" in weak and "limiter" not in weak
+    assert "too little room before the limiter" in headroom and "recording" not in headroom
+    assert "recording was too weak" in weak and "limiter" not in weak
     both = compressor_withheld_note(withheld("headroom", "weak_capture"))
     assert headroom in both and weak in both
 

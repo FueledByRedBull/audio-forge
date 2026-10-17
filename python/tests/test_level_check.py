@@ -37,8 +37,9 @@ def test_a_hot_voice_gets_the_lowering_advice_from_its_peak():
     verdict = verdict_from_audio(_voice(0.95), RATE)  # -0.4 dB, not clipped
 
     assert verdict.code == "too_hot"
-    assert "-0.4 dB" in verdict.message and "by about 6 dB" in verdict.message
-    assert "clipping" not in verdict.message
+    assert "-0.4 dB" in verdict.message and "clipping" not in verdict.message
+    assert "lower the microphone level by about 6 dB" in verdict.message
+    assert "then check again" in verdict.message
     assert verdict.change_db == -6
     assert verdict.can_override
 
@@ -50,7 +51,7 @@ def test_a_clipped_voice_is_hot_and_says_so():
     verdict = verdict_from_audio(take, RATE)
 
     assert verdict.code == "too_hot"
-    assert "clipping" in verdict.message
+    assert verdict.message.startswith("Your voice is clipping")
 
 
 def test_one_stray_sample_does_not_make_a_quiet_voice_hot():
@@ -93,7 +94,8 @@ def test_silence_and_unreadable_audio_cannot_continue(take, code):
     assert verdict.code == code
     assert not verdict.can_override
     if code == "silent":
-        assert "muted" in verdict.message
+        assert verdict.message.startswith("No sound came from the microphone.")
+        assert "not muted" in verdict.message
 
 
 def test_the_levels_form_gives_the_same_verdict_as_the_audio_form():
@@ -141,8 +143,7 @@ def test_the_room_noise_message_names_the_level_when_the_room_is_loud():
     message, state = room_noise_message([-50.0, -30.0])
 
     assert state == "warn" and "-30 dB" in message
-    quiet, quiet_state = room_noise_message([-50.0])
-    assert quiet_state == "ok" and quiet != message and "loud" not in quiet
+    assert room_noise_message([-50.0]) == ("The room is quiet enough.", "ok")
 
 
 def _clicked(width: int, level: float = 0.05) -> np.ndarray:
@@ -160,7 +161,7 @@ def test_a_click_is_judged_by_the_rule_that_refuses_a_take(width, code):
     assert verdict.code == code
     assert raw_capture_is_clipped(take, RATE) == (code == "too_hot")
     if code == "too_hot":
-        assert "clipping" in verdict.message
+        assert verdict.message.startswith("Your voice is clipping")
         assert verdict.peak_db is not None and verdict.peak_db > -0.1
 
 
@@ -215,7 +216,8 @@ def test_a_take_with_almost_no_speech_asks_for_speech_instead_of_a_raise():
     verdict = verdict_from_audio(take, RATE)
 
     assert verdict.code == "too_quiet" and verdict.can_override
-    assert "speech" in verdict.message and "Speak" in verdict.message
+    assert verdict.message.startswith("Little or no speech was heard")
+    assert "Speak for the whole check, then check again." in verdict.message
     assert "Raise" not in verdict.message and verdict.change_db == 0
     assert "-80 dB" in verdict_from_levels(-10.0, -80.0).message
 

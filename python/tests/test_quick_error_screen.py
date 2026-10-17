@@ -26,7 +26,6 @@ from PySide6.QtWidgets import (
 from shiboken6 import isValid
 
 from mic_eq.ui.main_window import MainWindow
-from mic_eq.ui.quick_error_screen import BODY, TITLE
 from mic_eq.ui.quick_shell import QuickBridge, graphics_api
 from test_login_startup_ui import startup_window  # noqa: F401  (a fixture)
 from test_quick_shell import _load_config_without_devices, quick_window  # noqa: F401  (a fixture)
@@ -97,11 +96,13 @@ def test_the_window_shows_the_error_screen(failed_window) -> None:
 
 def test_the_screen_says_what_happened_in_plain_words_and_gives_the_reason(failed_window) -> None:
     title, body = _label(failed_window, "errorTitle"), _label(failed_window, "errorBody")
-    assert (title.text(), body.text()) == (TITLE, BODY)
-    assert not title.isHidden() and not body.isHidden() and title.text() != body.text()
-    # The body points at a button the screen really has.
-    assert "Export diagnostics" in body.text()
+    assert not title.isHidden() and not body.isHidden()
+    assert "could not open its main window" in title.text()
+    # It says nothing is shown, points at a button the screen really has, and says what to do after.
+    assert "nothing to show" in body.text()
+    assert "Export diagnostics if you want to report this" in body.text()
     assert _button(failed_window, "Export diagnostics")
+    assert "quit and open AudioForge again" in body.text()
     assert _label(failed_window, "errorReasonCaption").text() == "Reason"
     assert failed_window.reason in _reason(failed_window).toPlainText()
 

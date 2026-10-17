@@ -684,7 +684,14 @@ class Preset:
                 bypass=_validate_bool(data.get("bypass", False), "bypass", "preset"),
                 value_provenance=provenance,
             )
-        except (KeyError, TypeError, ValueError, AttributeError, RecursionError) as exc:
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            OverflowError,
+            AttributeError,
+            RecursionError,
+        ) as exc:
             raise PresetValidationError(f"Preset data is invalid or corrupted: {exc}") from exc
 
 

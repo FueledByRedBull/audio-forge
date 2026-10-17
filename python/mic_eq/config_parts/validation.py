@@ -79,7 +79,10 @@ def _coerce_window_geometry(value: object) -> dict[str, int] | None:
         raw = value.get(key)
         if isinstance(raw, bool) or not isinstance(raw, (int, float)):
             return None
-        numeric = float(raw)
+        try:
+            numeric = float(raw)
+        except OverflowError:
+            return None
         if not math.isfinite(numeric):
             return None
         coerced[key] = int(round(numeric))
@@ -117,7 +120,7 @@ def _validate_range(value: object, *args: object, strict: bool = False) -> float
         )
     try:
         numeric_value = float(value)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise PresetValidationError(
             f"Invalid {param_name} in {section}: {value!r} "
             f"(must be a finite number between {min_val} and {max_val})"

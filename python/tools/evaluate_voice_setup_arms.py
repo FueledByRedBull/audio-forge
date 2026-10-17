@@ -73,7 +73,7 @@ device audio.
   file is resampled to 48 kHz and before any capture is cut or vetoed, the first voice (setup) take of the recording as
   it is, is judged with ``mic_eq.ui.level_check.verdict_from_audio``. If its code is ``too_hot``, the whole device
   recording is scaled by one gain that puts the peak reading of that function (its ignored-peak logic included) at
-  ``level_check.TARGET_PEAK_DB`` (-6 dB). The capture vetoes and retakes below run on the scaled recording, and every
+  ``level_check.target_peak_db()`` (-6 dB; -11 dB with ``LOWER_LEVEL_TARGET``). The capture vetoes and retakes below run on the scaled recording, and every
   capture of the user (noise, voice, evaluation, verification takes) comes from it; the clean take is not scaled. A
   take that still trips the clip rule after scaling carries clipping no gain change undoes, and is refused at capture as
   before. Any other verdict: levels as recorded. Each recording records the verdict of the first take before scaling
@@ -459,7 +459,7 @@ def construct(clean: np.ndarray, device: np.ndarray, speech: np.ndarray,
     The level gain is decided first, from the first voice take of the recording as it is, and the whole recording is
     scaled before any capture is cut or vetoed, as in the dialog, where the level check precedes the setup recording.
     """
-    from mic_eq.ui.level_check import TARGET_PEAK_DB, verdict_from_audio
+    from mic_eq.ui.level_check import target_peak_db, verdict_from_audio
 
     candidates = noise_candidates(speech)
     options = [(i, start) for i, c in enumerate(candidates) for start in setup_starts(speech, c["end"])]
@@ -468,7 +468,7 @@ def construct(clean: np.ndarray, device: np.ndarray, speech: np.ndarray,
     setup_frames = int(SETUP_S * 100)
     first_voice = device[options[0][1] * FRAME : (options[0][1] + setup_frames) * FRAME].astype(np.float32)
     before = verdict_from_audio(first_voice, SAMPLE_RATE)
-    level_gain_db = TARGET_PEAK_DB - before.peak_db if before.peak_db is not None and before.code == "too_hot" else 0.0
+    level_gain_db = target_peak_db() - before.peak_db if before.peak_db is not None and before.code == "too_hot" else 0.0
     device = device * 10 ** (level_gain_db / 20)  # one gain for the whole recording, before any capture is cut or vetoed
     takes, position = [], 0
     while position is not None and len(takes) < MAX_ATTEMPTS:

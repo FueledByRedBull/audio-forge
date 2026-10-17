@@ -36,6 +36,17 @@ def test_recent_health_recovers_without_erasing_cumulative_counts():
     assert not health.observe(diagnostics, now=11.0)
 
 
+def test_output_drift_retiming_is_not_a_recent_stream_event():
+    from mic_eq.ui.health import RecentStreamHealth
+
+    health = RecentStreamHealth()
+    assert not health.observe({"jitter_dropped_samples": 0}, now=0.0)
+    assert not health.observe({"jitter_dropped_samples": 3845}, now=1.0)
+    assert health.observe({"jitter_dropped_samples": 3845, "input_dropped_samples": 1}, now=2.0) == {
+        "input_dropped_samples"
+    }
+
+
 def test_recent_health_rejects_invalid_counter_evidence():
     from mic_eq.ui.health import RecentStreamHealth
 

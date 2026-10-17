@@ -128,17 +128,9 @@ def test_unavailable_vad_does_not_present_default_noise_floor(qapp):
         native.stop()
 
 
-def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
-    qapp, monkeypatch
-):
-    clock = [10.0]
-    monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
-    diagnostics = {
-        "input_callback_error_count": 1,
-        "stream_restart_count": 1,
-        "input_dropped_samples": 256,
-        "last_restart_reason": "input callback error",
-    }
+def _diagnostic_window(diagnostics: dict[str, Any]):
+    """A MainWindow stand-in that runs the real diagnostic-label code on ``diagnostics``."""
+
     processor = SimpleNamespace(
         is_running=lambda: True,
         get_runtime_diagnostics=lambda: diagnostics,
@@ -170,7 +162,6 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
     )
     for name in (*names, "health_advice_label"):
         window.shell_texts[name] = TextState(state_owner, name=name)
-    texts = window.shell_texts
     window._set_health_chip = lambda key, text, state: MainWindow._set_health_chip(
         window, key, text, state
     )
@@ -188,6 +179,22 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
         input_callback_age_ms=0,
         output_callback_age_ms=0,
     )
+    return window, processor, args
+
+
+def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
+    qapp, monkeypatch
+):
+    clock = [10.0]
+    monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
+    diagnostics = {
+        "input_callback_error_count": 1,
+        "stream_restart_count": 1,
+        "input_dropped_samples": 256,
+        "last_restart_reason": "input callback error",
+    }
+    window, processor, args = _diagnostic_window(diagnostics)
+    texts = window.shell_texts
     MainWindow._update_diagnostic_labels(window, **args)
     assert texts["health_summary_label"].state == "warn"
     assert not route_health_reason(processor, health_window=window._stream_health)[0]
@@ -203,6 +210,24 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
     diagnostics["input_callback_error_count"] += 1
     MainWindow._update_diagnostic_labels(window, **args)
     assert texts["health_summary_label"].state == "warn"
+
+
+def test_output_drift_retiming_is_not_an_engine_fault(qapp, monkeypatch):
+    # Two devices on separate clocks are kept in step by trimming samples; that is not a dropout.
+    clock = [10.0]
+    monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
+    diagnostics: dict[str, Any] = {"jitter_dropped_samples": 0}
+    window, processor, args = _diagnostic_window(diagnostics)
+    MainWindow._update_diagnostic_labels(window, **args)
+    diagnostics["jitter_dropped_samples"] = 3_845
+    MainWindow._update_diagnostic_labels(window, **args)
+    dropped = window.shell_texts["dropped_label"]
+    assert "reported a fault" not in dropped.text
+    assert dropped.state == "ok"
+    assert route_health_reason(processor, health_window=window._stream_health)[0]
+    diagnostics["input_dropped_samples"] = 256
+    MainWindow._update_diagnostic_labels(window, **args)
+    assert "reported a fault" in dropped.text
 
 
 @pytest.mark.parametrize(

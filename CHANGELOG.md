@@ -13,7 +13,7 @@
 
 ### Window and interface
 
-- If the renderer never starts and the software-rendering restart cannot start, AudioForge stays open on an error screen that says so instead of quitting.
+- If the renderer never starts and the software-rendering restart cannot start, AudioForge stays open on an error screen that says the restart failed, instead of quitting.
 - Closing Guided Setup during its level check stops audio processing if the check started it.
 
 ### Settings and presets
@@ -24,7 +24,7 @@
 
 - The export stays at schema version 3; `main_control_tab_index` is no longer exported, and settings files that still have it or `main_splitter_sizes` load as before.
 - Uncaught exceptions go to `app.log` and hard crashes to `crash.log`; in the packaged app a main window that fails to open shows a dialog pointing to the log.
-- Health and Guided Setup's route check no longer report a fault when output drift retiming trims samples; the export still carries `jitter_dropped_samples`.
+- Health and Guided Setup's route check no longer report a fault when output drift retiming trims a few samples; the export still carries `jitter_dropped_samples`.
 
 ### Internal
 
@@ -46,7 +46,7 @@
 
 ### Audio engine and Health
 
-- Start no longer counts three or four output dropouts that lost no samples; start-up underruns are counted separately as `output_priming_underrun_total`. A development build ran an hour on a real USB microphone without dropouts; the release build was not run on audio hardware.
+- Start no longer counts three or four output dropouts that lost no samples; start-up underruns are counted separately as `output_priming_underrun_total`. A packaged development build from before this release's last three fixes ran an hour on a real USB microphone, output muted, without dropouts; the release build was not run on audio hardware.
 - Changes to the limiter ceiling, release or careful-output mode now apply in Bypass and Raw monitor too, not only Normal. The bug predates 1.16.0.
 - The OUT meter's CLIP tag stays dark whenever the limiter is on, in every mode, and lights when it is off.
 - Reported latency in Bypass and Raw monitor no longer includes the lookahead limiter and no longer stays at an old value.
@@ -54,7 +54,7 @@
 
 ### Diagnostics and packaging
 
-- The export stays at schema version 3 with no renamed fields: `view` is `quick` or `error`, `classic_reason` is `none`, `bridge_failed`, `qml_not_ready`, `scene_graph_error` or `no_renderer`, `graphics_api` can be `software_after_failure`, and the runtime diagnostics gain `output_priming_underrun_total`.
+- The export stays at schema version 3 with no renamed fields: `view` is `quick` or `error`, `classic_reason` is `none`, `bridge_failed`, `qml_not_ready`, `scene_graph_error` or `no_renderer`, `graphics_api` can be `software_after_failure`, and the runtime diagnostics gain `output_priming_underrun_total`. Qt's message text is never exported.
 - Development: classic view code removed, tests moved to the Qt Quick view, and CI and release checks tightened.
 
 ## v1.16.0
@@ -62,16 +62,16 @@
 ### Voice Setup and Auto-EQ
 
 - Both dialogs start with a three-second input level check that says whether the microphone is too hot, too quiet or silent and what change to make; a hot or quiet level can be continued anyway, silence cannot.
-- One stray full-scale sample no longer rejects a take: clipping needs a flat top of about 125 microseconds or more, or over 20 separate hits, and takes clipped by 1 dB or more are still refused (`evaluation/README.md`, "Voice Setup capture clip rule").
+- One stray full-scale sample no longer rejects a take: clipping needs a flat top of about 125 microseconds or more, or over 20 separate hits, and in testing every take clipped by 1 dB or more was still refused (`evaluation/README.md`, "Voice Setup capture clip rule").
 - Setup results are in plain words, each capture veto says what was withheld and what to do, and the confidence percentage moved from the headline to a tooltip as a capture-quality score.
 - The Review page draws the proposed EQ over the current one, stays filled after verification, says when Apply will switch the EQ on, and shows makeup gain for manual-makeup compressors.
 - Both dialogs report how a run ended to the main window; a later Cancel or refused retake no longer overwrites a refused or advisory result.
 - Fixed: the final check and compressor calibration never ran inside the app, so every release from v1.13.0 showed "Advisory recommendations only".
 - Bypass is handled like Raw monitor: analysis and verification run the normal chain, where verification used to "accept" a render of nothing.
 - "Compare Recording" before Apply uses the EQ that Apply writes, including the tone layer.
-- Controls, Retake and Compare come back after a failed or rejected capture or verification take, and the stale-context and declined-switch messages say what happened.
+- Controls come back after a failed or rejected capture, Retake and Compare after a failed or rolled-back verification take, and the stale-context and declined-switch messages say what happened.
 - Consonant-dulling advice is computed only when the suppressor is on and suggests DeepFilterNet LL only to RNNoise users.
-- When a hot microphone leaves no correction within the headroom rule, Auto-EQ offers the largest scale no worse than the current EQ, and the refusal says by about how much the level is too high.
+- When no correction meets the headroom rule and the current EQ is itself over it, Auto-EQ offers the largest scale no worse than the current EQ (or nothing), and the refusal says by about how much the level is too high.
 - Auto-EQ refuses clipped, silent and non-finite takes at capture and checks the normal processing path even in Bypass or Raw monitor.
 - The tone modes are named "Subtle" and "Full strength" with stored values unchanged, and the help text no longer says the EQ is calibrated to your voice and microphone.
 - Spectrum analysis is several times faster with identical results.
@@ -81,7 +81,7 @@
 ### Meters, Health and clipping
 
 - Meters now see samples at exactly full scale, which the old input clip counter ignored; they read sample peaks, not true peaks.
-- The IN and OUT peak lines catch transients between updates (OUT before the limiter), and a CLIP tag shows once full scale is reached six times within three seconds; a single touch is a "peaks too high" warning.
+- The IN and OUT peak lines catch transients between updates (OUT before the limiter), and a CLIP tag shows once full scale is reached six times within three seconds; a single touch is a "peaks too high" warning. The tag counts reaches of full scale, so it can light on takes the clip rule accepts.
 - The OUT CLIP tag stays dark while the limiter runs and lights when it is off or does not run (Bypass, Raw monitor).
 - Health says what to do: input peaks near the top of the range advise lowering the microphone level, and output at full scale with the limiter off shows red and says how much to lower makeup gain.
 - The device activity, dropout, buffer, backend and recovery lines are reworded with their numbers, and Drops no longer says "needs attention" when nothing dropped.

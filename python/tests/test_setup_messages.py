@@ -314,3 +314,15 @@ def test_the_weak_capture_lines_say_the_rest_applies_when_the_compressor_is_kept
     # Nothing says setup needs what the recording lacked and then that the rest applies anyway.
     assert not any("needs at least" in line for line in applies if "louder" in line)
     assert all("Your compressor stays as it is, and the settings are suggestions only." in line for line in advisory)
+
+
+def test_a_compressor_kept_for_headroom_alone_keeps_the_six_db_need_in_the_faint_voice_line():
+    from mic_eq.ui.setup_messages import capture_issue_lines
+
+    withheld = {"reason_code": "compressor_withheld", "cause": ["headroom"]}
+    (line,) = capture_issue_lines(
+        {"weak_capture": True, "noise_referenced_snr_db": 4.0, "compressor_withheld": withheld, "apply_recommended": False}
+    )
+
+    assert "setup needs at least 6 dB" in line
+    assert "too little for setup to set your compressor" not in line

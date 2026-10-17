@@ -334,7 +334,11 @@ def _capture_issues(
         lines.append((
             "snr_under_6_db",
             f"Your voice was only {_floor(snr, 1)} dB louder than the room noise"
-            + (", too little for setup to set your compressor. " if kept else "; setup needs at least 6 dB. ")
+            + (
+                ", too little for setup to set your compressor. "
+                if kept_for_weak_capture(diagnostics)
+                else "; setup needs at least 6 dB. "
+            )
             + f"{withheld} Record again closer to the microphone, or in a quieter room.",
         ))
     elif snr is not None and snr < 8.0:

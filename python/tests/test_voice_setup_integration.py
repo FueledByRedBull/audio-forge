@@ -1700,6 +1700,26 @@ def test_a_verification_reduction_never_changes_a_withheld_compressor(real_main_
         dialog.deleteLater()
 
 
+def test_a_limiter_and_deesser_reduction_leaves_a_kept_auto_makeup_compressors_loudness(real_main_window) -> None:
+    window = real_main_window
+    dialog, _speech = _review_dialog(window)
+    window.compressor_state.set_settings({**window.compressor_state.get_settings(), "auto_makeup_enabled": True})
+    result = _withheld_compressor_result(window, dialog, "headroom")
+    kept = window.compressor_state.get_settings()
+    _apply_complete_candidate(window, dialog, result)
+    try:
+        dialog._apply_verification_reduction(window, ["limiter", "deesser"])
+
+        assert dialog.setup_result is not None
+        assert kept["auto_makeup_enabled"] is True
+        assert dialog.setup_result["compressor_settings"]["target_lufs"] == kept["target_lufs"]
+        assert window.compressor_state.get_settings() == kept
+        assert "verification_adjusted_target_lufs" not in dialog.setup_result
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
 def test_a_verification_reduction_refreshes_the_compressor_line_and_keeps_its_before(
     real_main_window, monkeypatch
 ) -> None:

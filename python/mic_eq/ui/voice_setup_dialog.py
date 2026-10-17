@@ -2310,7 +2310,7 @@ class VoiceSetupDialog(QDialog):
         candidate_preset, reliability = candidate_info
         compressor_metadata = self.setup_result.get("compressor_settings")
         if self._compressor_withheld():
-            # The write above resets what is stored beside the user's compressor, so it is put back as it was.
+            # The apply below rewrites what is stored beside the compressor, so it gets the user's own values.
             compressor_metadata = parent.compressor_state.get_settings(include_calibration=True)
             reliability = compressor_metadata["noise_reference_reliability"]
         metadata: dict[str, Any] = {}

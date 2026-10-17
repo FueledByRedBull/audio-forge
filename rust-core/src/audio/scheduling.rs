@@ -30,6 +30,7 @@ impl ProAudioThread {
         }
         let mut task_index = 0;
         // SAFETY: The task is NUL-terminated and both pointers remain valid for this call.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let handle = unsafe { AvSetMmThreadCharacteristicsW(task.as_ptr(), &mut task_index) };
         let handle = NonNull::new(handle).ok_or_else(io::Error::last_os_error)?;
         Ok(Self {
@@ -48,6 +49,7 @@ impl ProAudioThread {
         };
         // SAFETY: This uniquely owned handle cannot leave its registering thread.
         // Take it first so a reported failure cannot cause another attempt in Drop.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let success = unsafe { AvRevertMmThreadCharacteristics(handle.as_ptr()) };
         let result = if success == 0 {
             Err(io::Error::last_os_error())
@@ -85,6 +87,7 @@ mod tests {
         REVERT.with(|result| {
             let count = result.get().0;
             // SAFETY: This getter takes no arguments and only reads the calling thread ID.
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             result.set((count + 1, success, unsafe { GetCurrentThreadId() }));
         });
     }
@@ -93,6 +96,7 @@ mod tests {
     fn pro_audio_finish_reverts_once_on_the_registering_thread() {
         std::thread::spawn(|| {
             // SAFETY: This getter takes no arguments and only reads the calling thread ID.
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             let thread_id = unsafe { GetCurrentThreadId() };
             ProAudioThread::enter().unwrap().finish().unwrap();
             assert_eq!(REVERT.get(), (1, true, thread_id));
@@ -118,6 +122,7 @@ mod tests {
     fn pro_audio_drop_reverts_once_on_unwind() {
         std::thread::spawn(|| {
             // SAFETY: This getter takes no arguments and only reads the calling thread ID.
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             let thread_id = unsafe { GetCurrentThreadId() };
             assert!(std::panic::catch_unwind(|| {
                 let _guard = ProAudioThread::enter().unwrap();

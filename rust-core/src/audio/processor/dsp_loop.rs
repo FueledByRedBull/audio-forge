@@ -981,8 +981,8 @@ impl AudioProcessor {
                 AdaptiveInputCleanupState::new(sample_rate_for_latency as f32);
 
             // Metering state (IIR smoothing for RMS)
-            let mut input_rms_acc: f32 = 0.0;
-            let mut output_rms_acc: f32 = 0.0;
+            let mut input_meter = MeterState::default();
+            let mut output_meter = MeterState::default();
             let meter_coeff =
                 smoothing_coeff_for_time_constant(sample_rate_for_latency as f32, 100.0);
             let mut output_short_term_power: f32 = 0.0;
@@ -1001,13 +1001,13 @@ impl AudioProcessor {
 
             // Helper: compute peak and RMS from buffer, update atomics
             let measure_levels = |buffer: &[f32],
-                                  rms_acc: &mut f32,
+                                  meter: &mut MeterState,
                                   peak_atomic: &AtomicU32,
                                   rms_atomic: &AtomicU32,
                                   crest_atomic: &AtomicU32,
                                   short_term: Option<(&mut f32, &AtomicU32)>,
                                   peak_hold: Option<&AtomicU32>| {
-                let stats = update_meter_block_stats(buffer, rms_acc, meter_coeff);
+                let stats = update_meter_block_stats(buffer, meter, meter_coeff);
                 if let Some(peak_hold) = peak_hold {
                     record_level_extremes(buffer, peak_hold, None);
                 }
@@ -1634,8 +1634,8 @@ impl AudioProcessor {
                                     input_cleanup_rumble_detected.as_ref(),
                                     input_cleanup_high_pass_hz.as_ref(),
                                 );
-                                input_rms_acc = 0.0;
-                                output_rms_acc = 0.0;
+                                input_meter = MeterState::default();
+                                output_meter = MeterState::default();
                                 gate_gain_meter.store(1.0_f32.to_bits(), Ordering::Relaxed);
                                 gate_auto_relax_active.store(false, Ordering::Relaxed);
                                 compressor_gain_reduction
@@ -1720,7 +1720,7 @@ impl AudioProcessor {
 
                                 measure_levels(
                                     buffer,
-                                    &mut input_rms_acc,
+                                    &mut input_meter,
                                     &input_peak,
                                     &input_rms,
                                     input_crest_factor_db.as_ref(),
@@ -1741,7 +1741,7 @@ impl AudioProcessor {
 
                                 measure_levels(
                                     buffer,
-                                    &mut output_rms_acc,
+                                    &mut output_meter,
                                     &output_peak,
                                     &output_rms,
                                     output_crest_factor_db.as_ref(),
@@ -1871,7 +1871,7 @@ impl AudioProcessor {
                             // Measure INPUT levels after fixed pre-filter and optional adaptive cleanup.
                             measure_levels(
                                 buffer,
-                                &mut input_rms_acc,
+                                &mut input_meter,
                                 &input_peak,
                                 &input_rms,
                                 input_crest_factor_db.as_ref(),
@@ -1883,7 +1883,7 @@ impl AudioProcessor {
                                 // Bypass mode: measure output = input, send directly
                                 measure_levels(
                                     buffer,
-                                    &mut output_rms_acc,
+                                    &mut output_meter,
                                     &output_peak,
                                     &output_rms,
                                     output_crest_factor_db.as_ref(),
@@ -2218,7 +2218,7 @@ impl AudioProcessor {
                                             // Measure OUTPUT levels
                                             measure_levels(
                                                 output_slice,
-                                                &mut output_rms_acc,
+                                                &mut output_meter,
                                                 &output_peak,
                                                 &output_rms,
                                                 output_crest_factor_db.as_ref(),
@@ -2278,7 +2278,7 @@ impl AudioProcessor {
                                     // Measure OUTPUT levels
                                     measure_levels(
                                         buffer,
-                                        &mut output_rms_acc,
+                                        &mut output_meter,
                                         &output_peak,
                                         &output_rms,
                                         output_crest_factor_db.as_ref(),

@@ -39,6 +39,9 @@ AudioForge remains unsigned. Virtual audio cable setup is described in the
 - The level check's advice for a voice that is too quiet said a higher level would
   clip the loudest moments. It now says a higher level would push them past the
   limit.
+- Closing Guided Setup during the level check left audio running. Closing it now
+  stops the audio if the check started it, and leaves it running if it was already
+  on.
 
 ## Changes
 

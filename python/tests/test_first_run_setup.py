@@ -217,6 +217,38 @@ def test_setup_resumes_at_saved_step_and_delegates_route_check(qapp, monkeypatch
     assert dialog.current_step == "voice"
 
 
+@pytest.mark.parametrize(
+    ("running_before", "stop_calls"),
+    [(False, 1), (True, 0)],
+    ids=["started", "already_running"],
+)
+def test_closing_during_level_check_stops_only_processing_it_started(
+    qapp, monkeypatch, running_before, stop_calls
+):
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: True
+    )
+    config = AppConfig(
+        first_run_setup_state="in_progress",
+        first_run_setup_step="route",
+        first_run_setup_steps={
+            "devices": "completed",
+            "route": "pending",
+            "latency": "pending",
+            "voice": "pending",
+        },
+    )
+    owner = _Owner(config, _Processor(running=running_before))
+    dialog = FirstRunSetupDialog(owner)
+
+    dialog._run_current_step()
+    assert dialog._route_check_timer.isActive()
+    dialog.reject()
+
+    assert owner.stop_calls == stop_calls
+    assert owner.processor.running is running_before
+
+
 def test_setup_mute_control_tracks_external_owner_changes(qapp):
     owner = _Owner(AppConfig(), _Processor())
     dialog = FirstRunSetupDialog(owner)

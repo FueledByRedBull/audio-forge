@@ -170,7 +170,7 @@ def _coerce_float(value: object, default: float, low: float, high: float) -> flo
         return default
     try:
         parsed = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     if not low <= parsed <= high:
         return default
@@ -182,7 +182,7 @@ def _coerce_int(value: object, default: int, low: int, high: int) -> int:
         return default
     try:
         numeric = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     if not math.isfinite(numeric) or not numeric.is_integer():
         return default

@@ -201,6 +201,7 @@ class FirstRunSetupDialog(QDialog):
         )
         self._route_check_phase = "speech"
         self._route_check_pending = False
+        self._started_processing = False
         self._step_index = self._initial_step_index()
         self._save_progress()
         self._route_check_timer = QTimer(self)
@@ -452,6 +453,7 @@ class FirstRunSetupDialog(QDialog):
         if step != "route":
             self._route_check_timer.stop()
             self._route_check_pending = False
+            self._started_processing = False
             self._route_check_phase = "speech"
             self.action_button.setEnabled(True)
             self._set_route_feedback_active(False)
@@ -619,6 +621,7 @@ class FirstRunSetupDialog(QDialog):
                 return
             if not self.owner.processor.is_running():
                 self.owner._start_processing()
+                self._started_processing = self.owner.processor.is_running()
             self.action_button.setEnabled(False)
             self._route_check_pending = True
             self._set_status("Checking the audio stream...", "info")
@@ -777,6 +780,9 @@ class FirstRunSetupDialog(QDialog):
         self._route_check_timer.stop()
         self._route_check_pending = False
         self._set_route_feedback_active(False)
+        if self._started_processing and self.owner.processor.is_running():
+            self.owner._stop_processing()
+        self._started_processing = False
         if not self._finalized:
             self.config.first_run_setup_state = self._exit_state
             if not self._save_progress():

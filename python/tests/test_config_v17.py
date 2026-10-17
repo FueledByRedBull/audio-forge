@@ -12,6 +12,7 @@ import pytest
 from mic_eq import config
 from mic_eq.config_parts.presets import MAX_PRESET_FILE_BYTES
 from mic_eq.config_parts import app_config as app_config_module
+from mic_eq.config_parts.calibration import CalibrationResult
 from mic_eq.config_parts import presets as presets_module
 from mic_eq.config_parts import shared as shared_module
 
@@ -111,6 +112,54 @@ def test_load_preset_normalizes_deep_malformed_json(tmp_path, monkeypatch):
 
     with pytest.raises(config.PresetValidationError, match="invalid or corrupted"):
         config.load_preset(filepath)
+
+
+def _set_huge_integer(data: dict, target: str) -> None:
+    huge = int("9" * 400)
+    if target == "eq_gain":
+        data["eq"]["bands"][0]["gain_db"] = huge
+    else:
+        data["gate"][target] = huge
+
+
+@pytest.mark.parametrize("target", ["threshold_db", "gate_mode", "eq_gain"])
+def test_oversized_integer_in_preset_is_rejected_and_skipped(
+    tmp_path, monkeypatch, target
+):
+    presets_dir = tmp_path / "presets"
+    imports_dir = tmp_path / "imports"
+    presets_dir.mkdir()
+    imports_dir.mkdir()
+    monkeypatch.setattr(presets_module, "get_presets_dir", lambda: presets_dir)
+    monkeypatch.setattr(presets_module, "get_preset_imports_dir", lambda: imports_dir)
+    good_path = config.save_preset(Preset(name="Good"))
+    data = Preset(name="Huge").to_dict()
+    _set_huge_integer(data, target)
+    huge_path = presets_dir / "huge.json"
+    huge_path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(config.PresetValidationError):
+        Preset.from_dict(data)
+    with pytest.raises(config.PresetValidationError):
+        config.load_preset(huge_path)
+    assert config.list_presets() == [("Good", good_path)]
+
+
+def test_oversized_integer_is_rejected_by_legacy_range_validation():
+    data = Preset(name="Legacy").to_dict()
+    data["version"] = "1.0.0"
+    data["gate"]["threshold_db"] = int("9" * 400)
+
+    with pytest.raises(config.PresetValidationError, match="threshold_db"):
+        Preset.from_dict(data)
+
+
+def test_oversized_integer_is_a_value_error_in_eq_settings():
+    data = Preset(name="Huge").to_dict()["eq"]
+    data["bands"][0]["gain_db"] = int("9" * 400)
+
+    with pytest.raises(ValueError, match="gain_db must be a finite number"):
+        config.EQSettings.from_dict(data)
 
 
 def test_exclusive_preset_creation_wins_against_a_competing_writer(
@@ -739,10 +788,39 @@ def test_app_config_ignores_invalid_window_geometry_values():
         "invalid",
         {"x": 1, "y": 2},
         {"x": 1, "y": 2, "width": math.inf, "height": 700},
+        {"x": 1, "y": 2, "width": 10**400, "height": 700},
     ):
-        restored = AppConfig.from_dict({"window_geometry": value})
+        restored = AppConfig.from_dict(
+            {"window_geometry": value, "last_preset": "Keep"}
+        )
 
         assert restored.window_geometry is None
+        assert restored.last_preset == "Keep"
+
+
+@pytest.mark.parametrize("field", ["calibration_reliability", "custom_p95"])
+def test_oversized_integer_in_config_json_keeps_the_other_settings(
+    tmp_path, monkeypatch, field
+):
+    huge = 10**400
+    payload: dict = {"last_preset": "Keep"}
+    if field == "calibration_reliability":
+        entry = CalibrationResult.capture(
+            "eq_only", "route", {"eq": {}}, "flat", ("eq",), 0.5
+        ).to_dict()
+        entry["noise_reference_reliability"] = huge
+        payload["calibration_results"] = [entry]
+    else:
+        payload["voice_setup_custom_p95_db"] = huge
+    filepath = tmp_path / "config.json"
+    filepath.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(app_config_module, "get_config_file", lambda: filepath)
+
+    loaded = app_config_module.load_config()
+
+    assert loaded.last_preset == "Keep"
+    assert loaded.calibration_results == []
+    assert not filepath.with_name("config.json.corrupt").exists()
 
 
 @pytest.mark.parametrize(

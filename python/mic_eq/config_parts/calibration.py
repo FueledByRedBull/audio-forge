@@ -159,7 +159,7 @@ class CalibrationResult:
                 return None
             if not math.isfinite(reliability) or not 0.0 <= reliability <= 1.0:
                 return None
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             return None
         return cls(
             scope=value["scope"],

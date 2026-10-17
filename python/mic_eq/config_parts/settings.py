@@ -113,7 +113,10 @@ def _finite_float(
 ) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be a finite number")
-    parsed = float(value)
+    try:
+        parsed = float(value)
+    except OverflowError as exc:
+        raise ValueError(f"{name} must be a finite number") from exc
     if not math.isfinite(parsed):
         raise ValueError(f"{name} must be a finite number")
     if not low <= parsed <= high:

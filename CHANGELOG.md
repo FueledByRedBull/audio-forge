@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.18.0
+
+### Voice Setup and Auto-EQ
+
+- This release changes no Voice Setup or Auto-EQ decision. What setup proposes, refuses and withholds, and the EQ the Auto-EQ fit produces, are as in 1.17.0. Three changes built behind off-by-default switches (keeping the user's EQ when only the tone change is refused, a by-band tonal check, an RNNoise default strength of 0.7) each failed a predefined gate on held-out recordings, so the current behaviour stays and the switches stay off.
+- Apply Suggestions after Auto-EQ abstained no longer replaces your correction EQ with a flat one, and no longer switches a disabled EQ on. Apply rebuilt the correction layer from the zeroed fit; it now leaves your EQ as it is. The other suggested settings apply as before, verification still accepts, and the tone line says the tone is kept instead of comparing it with the old value.
+- The level check's too-quiet advice said a higher level would clip the loudest moments; it now says a higher level would push them past the limit, which is still -3 dB.
+- After an Auto-EQ error the dialog refuses the result as incomplete, but the tone line also said "Everything else below still applies." That sentence is gone.
+- When Voice Setup judges a capture weak, the diagnostics export now names each cause with its own reason code: `snr_under_6_db`, `snr_under_8_db`, `speech_under_2_s`, `spectrum_fallback`, `noise_reference_not_usable` and `capture_quality_low`, or `weak_capture` when none of them applies. Before, a room-noise recording that was not usable, low capture quality or a voice 6 to 8 dB over the room all exported as a bare `weak_capture`. The codes come from the same check that writes the lines the user reads; the text, the thresholds and the analysis are unchanged, and free-text messages still never leave the app.
+
+### Window and interface
+
+- When the renderer never starts and the software-rendering restart itself cannot start, AudioForge now stays open on the error screen, which says the restart failed. Before, it quit first and ignored whether the new copy started, leaving nothing running. The order is now: close the window (the close still saves, stops audio and can be cancelled), start the copy, and quit only if it started. If the copy cannot start, the single-instance guard is taken back, the tray icon and mute hotkey come back, and the window shows the error screen.
+
+### Diagnostics
+
+- The diagnostics export stays at schema version 3. `main_control_tab_index`, which has always been 0 since the classic view went, is no longer exported. A settings file that still has it, or `main_splitter_sizes`, loads as before.
+
+### Internal
+
+- Evaluators and the two Voice Setup studies, off-by-default switches that change nothing, about 1,080 lines of unused code removed, faster CI test shards, message tests that check meaning, the documented release soak, a dev-lock audit exception for CVE-2026-59951, and a GitHub Actions bump.
+
 ## v1.17.0
 
 ### Window and interface

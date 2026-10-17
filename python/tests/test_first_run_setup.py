@@ -187,6 +187,16 @@ def test_route_health_allows_stable_recovery_without_clearing_history():
     assert not route_health_reason(processor, health_window=window, now=6.0)[0]
 
 
+def test_route_health_ignores_output_drift_retiming():
+    from mic_eq.ui.health import RecentStreamHealth
+
+    processor = _Processor(running=True)
+    window = RecentStreamHealth()
+    assert route_health_reason(processor, health_window=window, now=0.0)[0]
+    processor.diagnostics["jitter_dropped_samples"] = 3_845
+    assert route_health_reason(processor, health_window=window, now=1.0)[0]
+
+
 def test_setup_resumes_at_saved_step_and_delegates_route_check(qapp, monkeypatch):
     monkeypatch.setattr(
         "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: True

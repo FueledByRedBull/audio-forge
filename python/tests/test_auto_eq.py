@@ -1534,6 +1534,26 @@ def _voice_spectrum():
 
 
 @pytest.mark.parametrize(
+    ("gains", "headroom", "failed"),
+    [
+        ([12.0] * 6 + [0.0] * 4, {"safe": True}, ("clipped_gains",)),
+        ([10.8] * 10, {"safe": True}, ("gain_rms",)),
+        ([0.0] * 10, {"safe": False, "authoritative": True, "status": "risk"}, ("headroom risk",)),
+    ],
+    ids=["clipped", "rms", "headroom-only"],
+)
+def test_validation_names_the_failed_criterion(gains, headroom, failed):
+    spectrum_db, freqs = _voice_spectrum()
+
+    validation = validate_analysis(
+        {"band_gains": gains, "headroom_validation": headroom}, spectrum_db, freqs
+    )
+
+    assert not validation.passed
+    assert any(failure.startswith(failed) for failure in validation.details["failures"])
+
+
+@pytest.mark.parametrize(
     ("gains", "headroom", "failures"),
     [
         ([12.0] * 6 + [0.0] * 4, {"safe": True}, ["clipped_gains (6 >= 6)"]),

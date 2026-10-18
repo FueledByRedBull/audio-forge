@@ -36,7 +36,11 @@
     "python/tests/test_evaluation_hygiene_revision.py",
     "python/tests/test_login_startup_ui.py",
     "python/tests/test_quick_error_screen.py",
-    "python/tests/test_quick_undo.py"
+    "python/tests/test_quick_undo.py",
+    "python/tests/test_bench_metrics.py",
+    "python/tests/test_bench_report.py",
+    "python/tests/test_bench_invariants.py",
+    "python/tests/test_golden_chain.py"
   ],
   "tooling": [
     "python/tests/test_package_tools.py",

@@ -1,14 +1,16 @@
 # Evaluation evidence
 
 This directory records why AudioForge's sound-processing defaults are what
-they are. Decisions use predefined pass/fail rules applied to held-out
-data. A candidate normally replaces the incumbent only when it passes, and an
-inconclusive result keeps the incumbent. The audio follow-up below has an
-explicit user-approved timing exception; its failed gate remains a failure.
-The JSON reports hold configuration, source and asset hashes, aggregate
-metrics, the rule, the decision, and its limitations. Per-case detail stays
-out of Git (`--details-output` under ignored `models/evaluation-details/`,
-or a CI artifact).
+they are. The decisions up to 2026-10-18 used predefined pass/fail rules
+applied to held-out data, and their rows below stay as history, unchanged. The
+audio follow-up below has an explicit user-approved timing exception; its
+failed gate remains a failure. Tuning decisions after 2026-10-18 follow
+[CONTRIBUTING.md](../CONTRIBUTING.md): the bench report on the fixed bench clip
+set goes in the pull request as information, the invariant tests are the gate,
+and the maintainer decides. The JSON reports hold configuration, source and
+asset hashes, aggregate metrics, the rule, the decision, and its limitations.
+Per-case detail stays out of Git (`--details-output` under ignored
+`models/evaluation-details/`, or a CI artifact).
 
 ## Decisions
 

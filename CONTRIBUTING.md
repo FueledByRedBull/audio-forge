@@ -54,8 +54,33 @@ cargo clippy --locked -p mic_eq_core --all-targets -- -D warnings
 
 Keep bug fixes, ownership refactors, and
 release preparation independently reviewable. Include a reproduction and a test
-that fails before a nontrivial fix. Changes to audible DSP behavior need the
-objective, held-out evidence described in [evaluation/README.md](evaluation/README.md).
+that fails before a nontrivial fix.
+
+Changes to audible DSP behavior come in three kinds. A transition fix removes an
+artifact at a change: a click, step or restart when a stage toggles, a filter
+retunes, a parameter changes or the output recovers from a dropout. It needs a
+deterministic test on a fixed input (synthetic or committed, with no open random
+seed) showing that steady-state output still matches the pre-fix output within a
+tolerance the test states, and that the artifact (peak step, click energy,
+restart gap) is measurably smaller. A bug fix that makes the output match its
+documented or tested intent, such as a wrong gain or a broken filter, names the
+document or test that states that intent and needs the failing-before test
+above. Any other change to steady-state sound is a tuning change, whatever its
+motive (a default, threshold, model or Voice Setup decision).
+
+A tuning pull request carries the bench report on the fixed bench clip set,
+before and after, in its description. The numbers are information, not a
+pass/fail gate. The invariant tests must be green: output finite and under the
+limiter ceiling, no new clipping, latency in budget, silent, clipped and
+too-short takes refused, and a refused Voice Setup leaving settings untouched.
+The maintainer decides, and may treat a claimed bug fix as tuning. A large
+change can ship behind a setting, or off by default, for one release first.
+Listening is never a gate.
+
+Change a test's expected output (a golden file or expected values in the test)
+only in a pull request meant to change that output, and say why. A transition
+fix leaves it unchanged.
+
 Preserve strict realtime constraints in CPAL callbacks and the DSP loop after
 startup: no allocation, vector growth or Vec-returning suppressor helpers,
 formatting/logging, I/O, blocking locks, or `try_lock`. Keep parameter updates in
@@ -101,19 +126,19 @@ or unredacted logs by default.
 
 ## What makes a check valid
 
-A check that gates a release or a product decision, such as an evaluation gate,
+A check that gates a release or a product decision, such as an invariant test,
 a qualification run, or a hardware or smoke check, counts only if it passes four
 tests:
 
 1. It runs on what ships: the packaged build or the exact artifact. If it runs
    on something else, such as source or a simulator, its record says so.
-2. Its pass criterion is written down before it runs. Evaluation decisions
-   already work this way; see [evaluation/README.md](evaluation/README.md).
+2. Its pass criterion is written down before it runs. An invariant test states
+   its own. A bench report has none, because it is information, not a gate.
 3. It can fail. Before relying on a new check, run it once on a deliberately
    broken input and see it fail.
 4. Its record says what it did not cover.
 
-Unit tests and linters are not held to these four.
+Other unit tests and linters are not held to these four.
 
 ## Adding a neural model
 
@@ -123,13 +148,12 @@ exact file in `release-assets.json`. Document its sample rate, state tensors,
 pre- and post-processing, how it resets, and how it fails. Measure CPU, latency
 and memory, and run it for 30 minutes to check stability.
 
-Compare quality and clean-speech preservation against the current model on a
-held-out split, with the pass rule written before the run, as described in
-[evaluation/README.md](evaluation/README.md). State which hardware was covered
-and which was not. Remove a model that does not beat the current one on those
-gates. A model that ships also needs an entry in the explicit model list in
-`AudioForge.spec`, in `package_smoke.py`'s required files, and in the reviewed
-bundle paths, `evaluation/release-bundle-path-baseline.json`.
+Swapping or adding a model is a tuning change. Put the bench report against the
+current model in the pull request, with the invariant tests green; the
+maintainer decides. State which hardware was covered and which was not. A model
+that ships also needs an entry in the explicit model list in `AudioForge.spec`,
+in `package_smoke.py`'s required files, and in the reviewed bundle paths,
+`evaluation/release-bundle-path-baseline.json`.
 
 ## Runtime assets and configuration
 

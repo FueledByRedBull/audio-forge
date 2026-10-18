@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import QObject, Property, QPoint, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QCursor
-from PySide6.QtWidgets import QMenu
+from PySide6.QtGui import QAccessible, QAccessibleAnnouncementEvent, QAction, QCursor
+from PySide6.QtWidgets import QMenu, QWidget
 
 from .components import plain_label
 
@@ -54,6 +55,10 @@ class StatusState(TextState):
 
     def showMessage(self, message: str, timeout: int = 0) -> None:
         self._expiry.stop()
+        # A status line changes without focus, so assistive technology is told about it.
+        window = self.parent()
+        if message and message != self._text and isinstance(window, QWidget) and QAccessible.isActive():
+            QAccessible.updateAccessibility(QAccessibleAnnouncementEvent(window, message))
         self.update(text=message)
         if timeout > 0:
             self._expiry.start(timeout)
@@ -69,14 +74,16 @@ class ChoiceState(QObject):
     changed = Signal()
     currentIndexChanged = Signal(int)
 
-    def __init__(self, parent: QObject, *, name: str = "", tip: str = ""):
+    def __init__(self, parent: QObject, *, name: str = "", tip: str = "", locked_tip: str = ""):
         super().__init__(parent)
-        self._name, self._tip = name, tip
+        self._name, self._tip, self._locked_tip = name, tip, locked_tip
         self._options: list[tuple[str, Any]] = []
         self._index, self._enabled, self._placeholder = -1, True, ""
 
     name = Property(str, lambda self: self._name, constant=True)
-    toolTip = Property(str, lambda self: self._tip, constant=True)
+    toolTip = Property(
+        str, lambda self: self._tip if self._enabled or not self._locked_tip else self._locked_tip, notify=changed
+    )
     enabled = Property(bool, lambda self: self._enabled, notify=changed)
     shown = Property(bool, lambda self: True, constant=True)
     items = Property(list, lambda self: [label for label, _ in self._options], notify=changed)
@@ -152,15 +159,25 @@ class ActionControl(QObject):
     changed = Signal()
 
     def __init__(self, action: QAction, parent: QObject, *, name: str = "", text: str | None = None,
-                 menu: QMenu | None = None):
+                 menu: QMenu | None = None, value: Callable[[], str] | None = None, locked_tip: str = ""):
         super().__init__(parent)
-        self.action, self._name, self.menu = action, name, menu
-        self._text = text
+        self.action, self._name, self.menu, self._locked_tip = action, name, menu, locked_tip
+        self._text, self._value = text, value
         action.changed.connect(self.changed)
 
-    text = Property(str, lambda self: self._text if self._text is not None else plain_label(self.action.text()), notify=changed)
+    def _label(self) -> str:
+        """The label, followed by the current choice for a row that opens a menu of choices."""
+        label = self._text if self._text is not None else plain_label(self.action.text())
+        current = self._value() if self._value is not None else ""
+        return f"{label}: {current}" if current else label
+
+    text = Property(str, _label, notify=changed)
     name = Property(str, lambda self: self._name, constant=True)
-    toolTip = Property(str, lambda self: self.action.toolTip(), notify=changed)
+    toolTip = Property(
+        str,
+        lambda self: self.action.toolTip() if self.action.isEnabled() or not self._locked_tip else self._locked_tip,
+        notify=changed,
+    )
     enabled = Property(bool, lambda self: self.action.isEnabled(), notify=changed)
     shown = Property(bool, lambda self: self.action.isVisible(), notify=changed)
     checked = Property(bool, lambda self: self.action.isChecked(), notify=changed)

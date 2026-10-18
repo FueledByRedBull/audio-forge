@@ -24,11 +24,13 @@ import json
 import logging
 import math
 import time
+from collections.abc import Callable
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
 from typing import Any
 
+from .components import plain_label
 from .eq_presentation import EQPresentation
 from .eq_state import EQState
 from .processing_meters import ProcessingMeters
@@ -96,7 +98,6 @@ from .startup_presets import (
     startup_custom_file_id as _startup_custom_file_id,
     startup_preset_display_name as _startup_preset_display_name,
 )
-from .theme import prefers_reduced_motion
 from .desktop_integration import GlobalMuteHotkey, activate_window, build_tray_tooltip
 from . import login_startup
 from .. import AudioProcessor, __version__, list_input_devices, list_output_devices
@@ -197,6 +198,7 @@ MINIMUM_WINDOW_WIDTH = 900
 MINIMUM_WINDOW_HEIGHT = 640
 # The pages in navigation order; the shared page state and the page stack follow it.
 PAGE_NAMES = ("Mic", "Health", "Settings")
+NO_DESTINATION_WARNING = "Warning: No output device is selected. Choose one in the Output list, then press Start."
 
 
 # The engine reports this age until a device has made its first callback.
@@ -447,7 +449,7 @@ class MainWindow(QMainWindow):
         # Meter update timer (60 FPS)
         self.meter_timer = QTimer(self)
         self.meter_timer.timeout.connect(self._update_meters)
-        self.meter_timer.setInterval(100 if prefers_reduced_motion() else 16)
+        self.meter_timer.setInterval(16)
         self._sync_meter_timer()
 
         # Slower diagnostics/recovery service timer.
@@ -500,6 +502,8 @@ class MainWindow(QMainWindow):
         # The shortcut can be removed or disabled outside the app.
         if index == self.SETTINGS_PAGE_INDEX and hasattr(self, "_login_startup_action"):
             self._refresh_login_startup_action()
+            for row in self._settings_value_rows:
+                row.changed.emit()
 
     def _settings_card(self, title: str, menu: QMenu, *, skip: QMenu | None = None) -> dict:
         """List a menu's entries as the rows the settings page shows: switches, actions and submenus."""
@@ -514,8 +518,13 @@ class MainWindow(QMainWindow):
             submenu = next((m for m in submenus if m.menuAction() is action), None)
             if action.isSeparator() or (skip is not None and submenu is skip):
                 continue
+            value = self._settings_choice_values.get(submenu) if submenu is not None else None
+            proxy = ActionControl(action, self, menu=submenu, value=value)
+            if value is not None and submenu is not None:
+                submenu.triggered.connect(proxy.changed)
+                self._settings_value_rows.append(proxy)
             rows.append({"kind": "menu" if submenu is not None else "toggle" if action.isCheckable() else "action",
-                         "label": "", "proxy": ActionControl(action, self, menu=submenu)})
+                         "label": "", "proxy": proxy})
         return {"title": title.upper(), "rows": rows}
 
     def _setup_shell_models(self) -> None:
@@ -534,7 +543,7 @@ class MainWindow(QMainWindow):
         self.eq_presentation = EQPresentation(self.eq_state, self)
 
         for key, choice_spec in CHOICE_SPECS.items():
-            state = ChoiceState(self, name=choice_spec.name, tip=choice_spec.tip)
+            state = ChoiceState(self, name=choice_spec.name, tip=choice_spec.tip, locked_tip=choice_spec.locked_tip)
             for label, data in choice_spec.options:
                 state.addItem(label, data)
             setattr(self, key + "_choice", state)
@@ -572,6 +581,19 @@ class MainWindow(QMainWindow):
             self.addActions(menu.actions())
         menubar.hide()
 
+        # Rows that open a menu of choices show the choice that is current.
+        def checked(menu: QMenu, *, skip: QAction | None = None) -> Callable[[], str]:
+            return lambda: next(
+                (plain_label(a.text()) for a in menu.actions() if a.isChecked() and a is not skip), ""
+            )
+
+        self._settings_choice_values = {
+            self._startup_preset_menu: checked(self._startup_preset_menu),
+            self._device_preset_menu: checked(
+                self._device_preset_menu, skip=self.auto_apply_device_presets_action
+            ),
+        }
+        self._settings_value_rows: list[ActionControl] = []
         # The tray submenu is mostly switches, so it gets a card of its own.
         self.shell_settings_cards = [
             self._settings_card("Options", self._options_menu, skip=self._tray_background_menu),
@@ -810,7 +832,7 @@ class MainWindow(QMainWindow):
                 processing=running,
                 muted=bool(self.user_muted or self._temporary_mute_reasons),
                 health=self.shell_texts["health_summary_label"].text.removeprefix("Health: "),
-                route=f"{input_name} -> {output_name}",
+                route=(input_name, output_name),
             )
             # This runs every diagnostics tick; each assignment is a shell notification.
             if tooltip != self.__dict__.get("_tray_tooltip"):
@@ -2163,6 +2185,7 @@ class MainWindow(QMainWindow):
             input_found = False
             output_found = False
             config_dirty = False
+            listing_errors: list[str] = []
 
             # Get input devices
             try:
@@ -2213,7 +2236,7 @@ class MainWindow(QMainWindow):
                     if fallback_index >= 0:
                         self.input_choice.setCurrentIndex(fallback_index)
             except (RuntimeError, OSError) as e:
-                self.input_choice.addItem(f"Error: {e}")
+                listing_errors.append(f"input devices ({e})")
                 logger.warning("Input device enumeration failed", exc_info=True)
 
             # Get output devices
@@ -2258,11 +2281,15 @@ class MainWindow(QMainWindow):
                         self.output_choice.setCurrentIndex(preferred_index)
 
             except (RuntimeError, OSError) as e:
-                self.output_choice.addItem(f"Error: {e}")
+                listing_errors.append(f"output devices ({e})")
                 logger.warning("Output device enumeration failed", exc_info=True)
 
             # Update warning banner visibility and text
-            if not input_found and not output_found:
+            if listing_errors:
+                self.shell_texts["device_warning_banner"].update(
+                    text="Warning: Could not list " + " or ".join(listing_errors) + ".", shown=True
+                )
+            elif not input_found and not output_found:
                 self.shell_texts["device_warning_banner"].update(text=
                     "Warning: No audio devices detected. Check your audio drivers and connections."
                 )
@@ -2555,6 +2582,9 @@ class MainWindow(QMainWindow):
         if self.__dict__.get("_login_startup_deadline") is not None:
             self._cancel_login_startup()
         self._login_startup = False
+        banner = self.shell_texts["device_warning_banner"]
+        if banner.text == NO_DESTINATION_WARNING:
+            banner.update(shown=False)
         if hasattr(self, "config"):  # Check config is initialized
             input_identity = self._combo_device_identity(self.input_choice)
             output_identity = self._combo_device_identity(self.output_choice)
@@ -2634,6 +2664,9 @@ class MainWindow(QMainWindow):
 
         if self._combo_device_identity(self.output_choice) is None:
             self.status_message.showMessage("Select an available destination before starting")
+            banner = self.shell_texts["device_warning_banner"]
+            if not banner.shown:
+                banner.update(text=NO_DESTINATION_WARNING, shown=True)
             return False
 
         input_device = self._device_selection_to_name(self.input_choice) or None
@@ -2689,7 +2722,7 @@ class MainWindow(QMainWindow):
             if "device" in error_msg.lower() or "audio" in error_msg.lower():
                 guidance = (
                     "Try these steps:\n"
-                    "1. Click 'Refresh' to update device list\n"
+                    "1. Press the refresh button (the circular arrow) next to the Output list\n"
                     "2. Ensure your microphone is connected\n"
                     "3. Check Windows audio settings\n"
                     "4. Try selecting a different device"

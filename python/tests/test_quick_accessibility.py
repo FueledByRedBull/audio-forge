@@ -184,7 +184,7 @@ def test_a_switch_that_cannot_be_used_is_reported_disabled(quick_window, qapp) -
     window = quick_window
     _open_every_disclosure(window, qapp)
     with _AccessibleScene():
-        auto = _named(window, "Enable automatic gate threshold", "Toggle")
+        auto = _named(window, "Auto threshold (gate)", "Toggle")
         assert _iface(auto).state().disabled
         assert not _iface(_named(window, "Enable noise gate", "Toggle")).state().disabled
 
@@ -924,3 +924,230 @@ def test_focus_rings_follow_keyboard_focus_not_the_mouse(quick_window, qapp) -> 
     _focus(window, _graph_item(view.rootObject()), qapp)  # focus leaves the toggle...
     _focus(window, toggle, qapp)  # ...and Tab brings it back
     assert len(_rings(window, toggle)) == 1
+
+
+# --- 7. Layout, labels, text size and help ------------------------------------------
+
+
+def _scene_y(item) -> float:
+    return item.mapToScene(item.boundingRect().topLeft()).y()
+
+
+def test_every_visible_label_is_part_of_the_control_name() -> None:
+    from mic_eq.ui.control_specs import CONTROL_SPECS
+
+    missing = [
+        f"{section}.{key}: {spec.label!r} is not in {spec.accessible_name!r}"
+        for section, specs in CONTROL_SPECS.items()
+        for key, spec in specs.items()
+        if spec.label and spec.label.lower() not in spec.accessible_name.lower()
+    ]
+    assert missing == []
+
+
+def test_no_text_in_the_scene_is_a_literal_pixel_size_or_smaller_than_twelve() -> None:
+    import re
+    from pathlib import Path
+
+    qml = (Path(__file__).parents[1] / "mic_eq" / "ui" / "qml" / "Main.qml").read_text(encoding="utf-8")
+    assert re.findall(r"pixelSize:\s*\d", qml) == []
+
+
+def test_text_sizes_follow_the_app_font_and_none_is_below_twelve(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    root = window.centralWidget().rootObject()
+    sizes = [root.property(name) for name in ("fsCaption", "fsBody", "fsLead", "fsHeading", "fsTitle")]
+    assert sizes == sorted(sizes) and sizes[0] >= 12
+    assert sizes[1] == round(13 * qapp.font().pointSizeF() / 9)
+
+
+def test_the_route_stays_readable_and_sits_above_the_transport_in_a_narrow_window(
+    quick_window, qapp
+) -> None:
+    window = quick_window
+    top = window.quick_bridge.model["top"]
+    window.resize(1400, 900)
+    qapp.processEvents()
+    pickers = [_with_proxy(window, "Picker", top[name]) for name in ("input", "output")]
+    start = _with_proxy(window, "Btn", top["start"])
+    assert abs(_scene_y(start) - _scene_y(pickers[0])) < 10, "one row when there is room"
+
+    window.resize(900, 800)
+    qapp.processEvents()
+    assert _scene_y(start) > _scene_y(pickers[0]) + pickers[0].height()
+    assert all(picker.width() >= 140 for picker in pickers)
+    captions = {
+        item.property("text") for item in _of_kind(window, "Caption") if item.isVisible()
+    }
+    assert {"In", "Out"} <= captions
+
+
+def test_an_opened_advanced_section_stays_open_when_the_window_crosses_the_wide_breakpoint(
+    quick_window, qapp
+) -> None:
+    window = quick_window
+    window.resize(1400, 900)
+    qapp.processEvents()
+    opened = [d for d in _of_kind(window, "Disclosure") if d.property("subject") == "COMPRESSOR"]
+    opened[0].setProperty("open", True)
+    qapp.processEvents()
+    window.resize(1000, 900)
+    qapp.processEvents()
+    again = [d for d in _of_kind(window, "Disclosure") if d.property("subject") == "COMPRESSOR"]
+    assert again and again[0].property("open") is True
+    assert again[0] is not opened[0], "the card was rebuilt"
+
+
+def test_a_stage_that_is_off_says_so_and_keeps_its_controls_at_full_strength(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    model = window.quick_bridge.model
+    gate = model["stages"][1]
+    assert gate["toggle"].checked
+    badges = lambda: [  # noqa: E731
+        c for c in _of_kind(window, "Caption") if c.property("text") == "Off" and c.isVisible()
+    ]
+    already_off = len(badges())
+    gate["toggle"].click()
+    qapp.processEvents()
+    assert len(badges()) == already_off + 1
+    threshold = gate["rows"][0]["proxy"]
+    row = next(
+        r for r in _of_kind(window, "ControlRow") if r.property("p") is threshold
+    )
+    assert row.opacity() == 1 and all(c.opacity() == 1 for c in row.childItems())
+
+
+@pytest.fixture
+def no_icon_font_window(request, monkeypatch):
+    monkeypatch.setattr("mic_eq.ui.quick_shell.icon_font", lambda: None)
+    return request.getfixturevalue("quick_window")
+
+
+def test_icon_buttons_are_still_there_without_the_icon_font(no_icon_font_window, qapp) -> None:
+    window = no_icon_font_window
+    _show(window, qapp)
+    assert window.quick_bridge.model["theme"]["iconFont"] == ""
+    faces = {
+        button.property("label"): button.isVisible()
+        for button in _of_kind(window, "IconBtn")
+        if button.property("label")
+    }
+    assert faces and all(faces.values())
+    assert {"Refresh", "More", "Prev", "Next", "?"} <= set(faces)
+
+
+def test_a_warning_banner_sits_under_the_top_bar_and_is_an_alert(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    window.shell_texts["config_warning_banner"].update(text="Settings were reset", shown=True)
+    QTest.qWait(50)
+    start = _with_proxy(window, "Btn", window.quick_bridge.model["top"]["start"])
+    before = _scene_y(start)
+    banner = next(
+        item for item in _of_kind(window, "QQuickText")
+        if item.property("text") == "Settings were reset"
+    )
+    assert _scene_y(banner) > before, "the transport row does not move down"
+    with _AccessibleScene():
+        assert _iface(banner).role() == Role.AlertMessage
+
+
+def test_the_navigation_rail_is_a_tab_list_and_the_meters_have_roles(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    with _AccessibleScene():
+        roles = [interface.role() for interface in _accessible_tree(window)]
+        assert Role.PageTabList in roles
+        assert Role.ProgressBar in roles
+
+
+def test_a_help_tip_opened_by_the_keyboard_goes_when_focus_moves_on(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    root = window.centralWidget().rootObject()
+    tip = root.findChild(QObject, "tooltip")
+    help_text = window.quick_bridge.model["stages"][1]["help"]
+    button = next(b for b in _of_kind(window, "IconBtn") if b.property("hint") == help_text)
+    _focus(window, button, qapp)
+    _press(window, Qt.Key.Key_Space, qapp)
+    assert tip.property("visible") is True and tip.property("text") == help_text
+    _press(window, Qt.Key.Key_Escape, qapp)
+    assert tip.property("visible") is False
+    _press(window, Qt.Key.Key_Space, qapp)
+    assert tip.property("visible") is True
+    _press(window, Qt.Key.Key_Tab, qapp)
+    assert tip.property("visible") is False
+
+
+@pytest.fixture
+def reduced_motion_window(request, monkeypatch):
+    monkeypatch.setenv("AUDIOFORGE_REDUCED_MOTION", "1")
+    return request.getfixturevalue("quick_window")
+
+
+def test_reduced_motion_keeps_the_level_trace_running(reduced_motion_window) -> None:
+    bridge = reduced_motion_window.quick_bridge
+    assert bridge.model["theme"]["motion"] == 0
+    assert bridge._trace_timer.isActive()
+
+
+@pytest.mark.parametrize("width", [900, 1000, 1199, 1200, 1399, 1400])
+@pytest.mark.parametrize("kind", ["low_shelf", "high_pass", "notch"])
+def test_the_gain_fader_keeps_room_beside_the_band_fields(quick_window, qapp, width, kind) -> None:
+    window = quick_window
+    window.eq_state.set_band_value(0, "filter_type", kind)
+    window.eq_state.flush()
+    window.resize(width, 900)
+    QTest.qWait(50)
+    gain = window.quick_bridge.model["eq"]["bands"][0]["gain"]
+    fader = _with_proxy(window, "Fader", gain)
+    assert fader.width() >= 100
+
+
+def test_q_and_slope_show_only_for_the_filters_that_use_them(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    bands = window.quick_bridge.model["eq"]["bands"]
+    for kind, q_shown, slope_shown in (("bell", True, False), ("notch", True, False), ("high_pass", False, True)):
+        window.eq_state.set_band_value(0, "filter_type", kind)
+        window.eq_state.flush()
+        qapp.processEvents()
+        assert (bands[0]["q"].shown, bands[0]["slope"].shown) == (q_shown, slope_shown), kind
+        assert _with_proxy(window, "ValueBox", bands[0]["q"]).isVisible() is q_shown
+        assert _with_proxy(window, "Picker", bands[0]["slope"]).isVisible() is slope_shown
+
+
+def test_the_meters_tell_assistive_technology_their_reading(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    model = window.quick_bridge.model
+    reduction = model["stages"][3]["rows"][2]["proxy"]
+    side = _with_source(window, window.input_meter)
+    card = _with_source(window, reduction)
+    with _AccessibleScene() as scene:
+        assert scene.description(side).startswith("no signal")
+        window.input_meter.set_levels(-20.4, -12.0)
+        reduction.set_gain_reduction(3.2)
+        qapp.processEvents()
+        assert scene.description(side).startswith("-20 dB")
+        assert scene.description(card) == "3 dB"
+        window.input_meter.set_muted(True)
+        qapp.processEvents()
+        assert scene.description(side).startswith("-20 dB. Muted")
+
+
+def _with_source(window, source):
+    return next(
+        item for item in _of_kind(window, "QuickMeterItem") if item.property("source") is source
+    )
+
+
+def test_refresh_gives_its_reason_only_while_it_is_disabled(quick_window, qapp) -> None:
+    window = quick_window
+    refresh = window.quick_bridge.model["top"]["refresh"]
+    window.refresh_btn_action.setEnabled(True)
+    assert refresh.toolTip == "Refresh audio devices"
+    window.refresh_btn_action.setEnabled(False)
+    assert "not available while processing" in refresh.toolTip

@@ -20,7 +20,7 @@ def test_tray_tooltip_reflects_processing_mute_health_and_route():
         processing=True,
         muted=True,
         health="Healthy",
-        route="Mic -> Cable",
+        route=("Mic", "Cable"),
     )
 
     assert tooltip == "AudioForge: Running / Muted | Health: Healthy | Mic -> Cable"

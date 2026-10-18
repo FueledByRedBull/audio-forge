@@ -10,7 +10,7 @@ from math import gcd
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import QThread, QTimer, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QProgressBar,
     QVBoxLayout,
+    QWidget,
 )
 from ..analysis.latency_calibration import (
     analyze_latency,
@@ -236,29 +237,40 @@ class LatencyCalibrationDialog(QDialog):
         status_layout.setHorizontalSpacing(SPACING_SECTION)
         status_group.body.addLayout(status_layout)
 
-        self.round_trip_label = QLabel("-- ms")
-        status_layout.addRow("Measured route", self.round_trip_label)
-
-        self.one_way_label = QLabel("-- ms")
-        status_layout.addRow("Directional estimate", self.one_way_label)
-
-        self.comp_label = QLabel("-- ms")
-        status_layout.addRow("Route delay for reporting", self.comp_label)
+        self.total_label = QLabel("-- ms")
+        status_layout.addRow("Total latency", self.total_label)
 
         self.confidence_label = QLabel("--")
         status_layout.addRow("Confidence", self.confidence_label)
 
+        # The other readings are for checking a result; they stay out of the way until asked for.
+        self.details_button = QPushButton("Show details")
+        self.details_button.setCheckable(True)
+        self.details_panel = QWidget()
+        details_layout = form_layout(self.details_panel)
+        details_layout.setHorizontalSpacing(SPACING_SECTION)
+        self.details_panel.setVisible(False)
+        self.details_button.toggled.connect(self._on_details_toggled)
+        status_group.body.addWidget(self.details_button, alignment=Qt.AlignmentFlag.AlignLeft)
+        status_group.body.addWidget(self.details_panel)
+
+        self.round_trip_label = QLabel("-- ms")
+        details_layout.addRow("Measured route", self.round_trip_label)
+
+        self.one_way_label = QLabel("-- ms")
+        details_layout.addRow("Directional estimate", self.one_way_label)
+
+        self.comp_label = QLabel("-- ms")
+        details_layout.addRow("Route delay for reporting", self.comp_label)
+
         self.agreement_label = QLabel("--")
-        status_layout.addRow("Probe agreement", self.agreement_label)
+        details_layout.addRow("Probe agreement", self.agreement_label)
 
         self.ambiguity_label = QLabel("--")
-        status_layout.addRow("Echo ambiguity", self.ambiguity_label)
+        details_layout.addRow("Echo ambiguity", self.ambiguity_label)
 
         self.engine_label = QLabel("-- ms")
-        status_layout.addRow("Engine latency", self.engine_label)
-
-        self.total_label = QLabel("-- ms")
-        status_layout.addRow("Total latency", self.total_label)
+        details_layout.addRow("Engine latency", self.engine_label)
 
         layout.addWidget(status_group)
 
@@ -284,7 +296,7 @@ class LatencyCalibrationDialog(QDialog):
 
         self.accept_button = QPushButton("Accept")
         self.accept_button.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
-        self.accept_button.setEnabled(existing_profile is not None)
+        self._set_accept_enabled(existing_profile is not None)
         self.accept_button.clicked.connect(self._on_accept_clicked)
 
         self.reset_button = QPushButton("Reset")
@@ -320,6 +332,15 @@ class LatencyCalibrationDialog(QDialog):
         if existing_profile:
             self._apply_profile_to_labels(existing_profile)
 
+    def _on_details_toggled(self, shown: bool) -> None:
+        self.details_panel.setVisible(shown)
+        self.details_button.setText("Hide details" if shown else "Show details")
+
+    def _set_accept_enabled(self, enabled: bool) -> None:
+        """Accept is the main action once there is a result; until then it is Run."""
+        self.accept_button.setEnabled(enabled)
+        self.run_button.setStyleSheet("" if enabled else PRIMARY_ACTION_BUTTON_STYLE)
+
     def _get_processor_owner(self) -> Any | None:
         parent: Any = self.parent()
         while parent and not hasattr(parent, "processor"):
@@ -346,7 +367,7 @@ class LatencyCalibrationDialog(QDialog):
         self._measurement_format_context = None
         self._measurement_context_key = None
         self._apply_profile_to_labels(None)
-        self.accept_button.setEnabled(False)
+        self._set_accept_enabled(False)
 
         if owner.processor.is_running():
             selected_identities = _selected_device_identities(owner)
@@ -383,7 +404,7 @@ class LatencyCalibrationDialog(QDialog):
             return
 
         self.run_button.setEnabled(False)
-        self.accept_button.setEnabled(False)
+        self._set_accept_enabled(False)
         self.progress.setValue(0)
         self.status_label.setText("Preparing probe...")
 
@@ -531,7 +552,7 @@ class LatencyCalibrationDialog(QDialog):
                 "Calibration succeeded. Review the values, then select Accept."
             )
         self.run_button.setEnabled(True)
-        self.accept_button.setEnabled(True)
+        self._set_accept_enabled(True)
 
         if analysis is not None and DEBUG:
             logger.debug(
@@ -547,7 +568,7 @@ class LatencyCalibrationDialog(QDialog):
             return
         self.status_label.setText(message)
         self.run_button.setEnabled(True)
-        self.accept_button.setEnabled(self._latest_profile is not None)
+        self._set_accept_enabled(self._latest_profile is not None)
 
         self._teardown_worker()
         self._stop_owned_processor()
@@ -626,7 +647,7 @@ class LatencyCalibrationDialog(QDialog):
             return
         self._latest_profile = None
         self._apply_profile_to_labels(None)
-        self.accept_button.setEnabled(False)
+        self._set_accept_enabled(False)
         self.status_label.setText("Calibration reset. Using estimated latency.")
 
     def _on_close_clicked(self):
@@ -698,7 +719,7 @@ class LatencyCalibrationDialog(QDialog):
         self._stop_owned_processor()
         if self.worker is not None:
             self.run_button.setEnabled(False)
-            self.accept_button.setEnabled(False)
+            self._set_accept_enabled(False)
             self.status_label.setText("Canceling latency analysis...")
             return
         self._finish_close()

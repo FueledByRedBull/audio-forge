@@ -51,7 +51,6 @@ QML_DIR = Path(__file__).parent / "qml"
 # Level history behind the noise suppression trace: 6 seconds at 20 Hz.
 TRACE_INTERVAL_MS = 50
 TRACE_POINTS = 120
-MINIMUM_SCENE_SIZE = (900, 600)
 # A shown window with no scene graph after this many checks has no renderer.
 RENDERER_CHECK_MS = 1000
 RENDERER_CHECKS = 3
@@ -110,8 +109,8 @@ class QuickBridge(QObject):
         self._trace_timer = QTimer(self)
         self._trace_timer.setInterval(TRACE_INTERVAL_MS)
         self._trace_timer.timeout.connect(self._sample_levels)
-        if not prefers_reduced_motion():
-            self._trace_timer.start()
+        # A readout, not an animation: reduced motion keeps it.
+        self._trace_timer.start()
 
     model = Property(dict, lambda self: self._model, constant=True)
 
@@ -162,7 +161,8 @@ class QuickBridge(QObject):
             return w.shell_texts[name]
 
         def action(name: str):
-            return ActionControl(getattr(w, name + "_action"), self, name=ACTION_SPECS[name].name)
+            spec = ACTION_SPECS[name]
+            return ActionControl(getattr(w, name + "_action"), self, name=spec.name, locked_tip=spec.locked_tip)
 
         def menu(target, label: str):
             # QMenu/QAction are the shared native command owners.
@@ -445,7 +445,6 @@ def install_quick_shell(window) -> None:
         return
     view = QQuickWidget(window)
     view.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-    view.setMinimumSize(*MINIMUM_SCENE_SIZE)
     view.setClearColor(qcolor(PALETTE.app_surface))
     view.rootContext().setContextProperty("ui", bridge)
     view.setSource(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))

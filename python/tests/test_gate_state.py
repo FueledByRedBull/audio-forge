@@ -67,7 +67,7 @@ def test_saved_vad_mode_survives_missing_backend_but_interactive_selection_falls
     state = GateState(native)
     state.set_settings({"gate_mode": 2})
     assert native.settings["gate_mode"] == 2
-    assert state.presentation()["vad_info"] == "VAD: Unavailable"
+    assert state.presentation()["vad_info"] == "Voice detection: unavailable"
     assert not state.control_enabled("vad_threshold")
     state.set_value("gate_mode", 1)
     state.flush()
@@ -76,7 +76,7 @@ def test_saved_vad_mode_survives_missing_backend_but_interactive_selection_falls
     native.vad_available = True
     state.update_vad_confidence(0.75)
     assert state.get_settings()["gate_mode"] == 2
-    assert state.presentation()["vad_info"] == "VAD: Active | Speech confidence only"
+    assert state.presentation()["vad_info"] == "Voice detection: on | Speech confidence only"
     assert state.control_enabled("vad_threshold")
     assert not state.control_enabled("threshold_db")
 

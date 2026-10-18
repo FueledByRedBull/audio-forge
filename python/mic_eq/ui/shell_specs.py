@@ -21,6 +21,7 @@ PROCESSING_MODE_OPTIONS = (
     ("Bypass", "bypass"),
     ("Raw Monitor", "raw"),
 )
+DEVICES_LOCKED_TIP = "Stop processing to change devices."
 DROPPED_DIAGNOSTICS_TOOLTIP = "Audio that was dropped, with the engine's other warning counters."
 
 
@@ -35,6 +36,7 @@ class _ChoiceSpec(NamedTuple):
     name: str
     tip: str = ""
     options: tuple[tuple[str, str], ...] = ()
+    locked_tip: str = ""  # shown instead of ``tip`` while the choice is disabled
 
 
 class _ActionSpec(NamedTuple):
@@ -43,6 +45,7 @@ class _ActionSpec(NamedTuple):
     name: str = ""
     enabled: bool = True
     checkable: bool = False
+    locked_tip: str = ""  # shown instead of ``tip`` while the action is disabled
 
 
 # Keyed by the name the window's shell_texts exposes each text under.
@@ -135,8 +138,8 @@ HEALTH_LAYOUT_KEYS = (
 )
 # Keyed by the prefix of the window's <key>_choice attribute.
 CHOICE_SPECS = {
-    "input": _ChoiceSpec("Input audio device"),
-    "output": _ChoiceSpec("Output audio device"),
+    "input": _ChoiceSpec("Input audio device", locked_tip=DEVICES_LOCKED_TIP),
+    "output": _ChoiceSpec("Output audio device", locked_tip=DEVICES_LOCKED_TIP),
     "processing_mode": _ChoiceSpec(
         "Processing mode",
         "Normal applies the voice chain. Bypass keeps input conditioning and output protection. "
@@ -158,7 +161,8 @@ CHOICE_SPECS = {
 # Keyed by the prefix of the window's <key>_action attribute.
 ACTION_SPECS = {
     "refresh_btn": _ActionSpec(
-        "Refresh", "Refresh audio devices", "Refresh audio devices"
+        "Refresh", "Refresh audio devices", "Refresh audio devices",
+        locked_tip="Refresh audio devices (not available while processing)",
     ),
     "start_btn": _ActionSpec("Start Processing"),
     "stop_btn": _ActionSpec("Stop Processing", enabled=False),
@@ -178,12 +182,13 @@ ACTION_SPECS = {
     "auto_eq_button": _ActionSpec(
         "Auto-EQ",
         "Record a short passage and set the EQ toward a tone preset\n"
-        "Choose a tone preset, read a short passage, then review the result",
+        "Choose a tone preset, read a short passage, then review the result. "
+        "Your live output is muted while it records.",
     ),
     "auto_voice_setup_button": _ActionSpec(
         "Auto Voice Setup",
         "Record room noise and speech, then calibrate EQ, gate/VAD,\n"
-        "de-esser, and compressor in one pass",
+        "de-esser, and compressor in one pass. Your live output is muted while it records.",
     ),
     "user_mute_checkbox": _ActionSpec(
         "Mute",

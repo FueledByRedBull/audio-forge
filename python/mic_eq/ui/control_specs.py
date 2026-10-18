@@ -77,7 +77,7 @@ CONTROL_SPECS = {
         "attack_ms": ControlSpec("De-esser attack time", "", 0.1, " ms", label="Attack"),
         "release_ms": ControlSpec("De-esser release time", "", 5.0, " ms", label="Release"),
         "max_reduction_db": ControlSpec(
-            "De-esser maximum reduction", "", 0.5, " dB",
+            "Max reduction (de-esser)", "", 0.5, " dB",
             label="Max reduction",
         ),
     },
@@ -125,14 +125,14 @@ CONTROL_SPECS = {
             label="Sidechain high-pass",
         ),
         "auto_makeup_enabled": ControlSpec(
-            "Enable automatic makeup gain",
+            "Auto makeup gain (compressor)",
             "Automatically adjust makeup gain from post-compression EBU R128 loudness measurement.\n"
             "Maintains post-compressor output level relative to target LUFS.\n"
             "Uses the selected Target LUFS value.",
             label="Auto makeup gain",
         ),
         "target_lufs": ControlSpec(
-            "Automatic makeup target loudness", "Target loudness level (-24 to -12 LUFS)", 1.0, " LUFS",
+            "Target LUFS (automatic makeup)", "Target loudness level (-24 to -12 LUFS)", 1.0, " LUFS",
             label="Target LUFS",
         ),
     },
@@ -155,14 +155,14 @@ CONTROL_SPECS = {
             label="Release",
         ),
         "gate_mode": ControlSpec(
-            "Gate operating mode",
+            "Gate mode",
             "Threshold Only: Traditional gate using level threshold\n"
             "VAD Assisted: Gate opens when level exceeded OR speech detected\n"
             "VAD Only: Gate opens solely based on speech probability",
             choices=GATE_MODES, label="Gate mode",
         ),
         "vad_threshold": ControlSpec(
-            "Voice activity threshold", "Speech probability threshold (0.3-0.7)", 0.01,
+            "VAD threshold (voice activity)", "Speech probability threshold (0.3-0.7)", 0.01,
             label="VAD threshold",
         ),
         "vad_hold_time_ms": ControlSpec(
@@ -170,11 +170,11 @@ CONTROL_SPECS = {
             label="Hold time",
         ),
         "vad_pre_gain": ControlSpec(
-            "Voice activity pre-gain", "Pre-gain to boost weak signals for better VAD detection",
+            "VAD pre-gain (voice activity)", "Pre-gain to boost weak signals for better VAD detection",
             0.5, decimals=1, label="VAD pre-gain",
         ),
         "auto_threshold_enabled": ControlSpec(
-            "Enable automatic gate threshold",
+            "Auto threshold (gate)",
             "Automatically set the gate level threshold to noise floor + margin.",
             label="Auto threshold",
         ),

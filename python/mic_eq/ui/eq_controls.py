@@ -88,6 +88,7 @@ class EQControl(QObject):
                 minimum=20.0 if frequency else 0.1, maximum=20000.0 if frequency else 10.0,
                 step=10.0 if frequency else 0.1,
                 enabled=frequency or band.filter_type in Q_FILTER_TYPES,
+                shown=frequency or band.filter_type in Q_FILTER_TYPES,
             )
         elif key == "type":
             choices = [choice for _name, choice in EQ_FILTER_OPTIONS]
@@ -108,6 +109,7 @@ class EQControl(QObject):
                 items=[f"{slope} dB/oct" for slope in choices],
                 text=f"{band.slope_db_per_octave} dB/oct", toolTip="Pass-filter slope in dB per octave",
                 enabled=band.filter_type in PASS_FILTER_TYPES,
+                shown=band.filter_type in PASS_FILTER_TYPES,
             )
         return view
 

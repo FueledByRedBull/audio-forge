@@ -249,7 +249,7 @@ def prefers_reduced_motion() -> bool:
 
 SUBDUED_TEXT_STYLE = f"font-size: 9pt; color: {PALETTE.text_muted};"
 DESCRIPTION_LABEL_STYLE = f"color: {PALETTE.text_muted}; font-size: 9pt; padding: 5px;"
-PROGRESS_LABEL_STYLE = f"font-size: 12pt; color: {PALETTE.accent}; font-weight: bold;"
+PROGRESS_LABEL_STYLE = f"font-size: 12pt; color: {PALETTE.text_primary}; font-weight: bold;"
 
 def _button_style(surface: str, text: str, border: str, hover: str) -> str:
     return (

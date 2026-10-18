@@ -286,7 +286,7 @@ def test_first_run_setup_buttons_fit_the_minimum_dialog(
     qapp.processEvents()
 
 
-def test_reduced_motion_lowers_nonessential_meter_refresh(
+def test_reduced_motion_keeps_the_meters_at_their_normal_refresh(
     qapp,
     monkeypatch,
 ) -> None:
@@ -297,7 +297,7 @@ def test_reduced_motion_lowers_nonessential_meter_refresh(
     monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
     window = MainWindow()
-    assert window.meter_timer.interval() == 100
+    assert window.meter_timer.interval() == 16
     window.processor.stop()
     window.close()
     window.deleteLater()

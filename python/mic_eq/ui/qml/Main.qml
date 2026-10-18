@@ -1,5 +1,6 @@
 // Main window scene. Controls consume shared state from quick_shell.py;
 // values, control metadata and commands live in the Python presentation models.
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Effects
@@ -13,20 +14,40 @@ Rectangle {
     readonly property var t: m.theme
     readonly property bool effects: GraphicsInfo.api !== GraphicsInfo.Software
     readonly property bool wide: width >= 1200
+    // The band editor needs more room than the rest of the page for two columns.
+    readonly property bool roomy: width >= 1400
     readonly property bool running: m.top.stop.enabled
     readonly property bool pressing: pointer.active
+    // The sizes of text, in pixels, follow the app font (9 pt is 12 px); nothing is smaller than 12.
+    readonly property real zoom: Application.font.pointSize > 0 ? Application.font.pointSize / 9 : 1
+    readonly property int fsCaption: Math.round(12 * zoom)
+    readonly property int fsBody: Math.round(13 * zoom)
+    readonly property int fsLead: Math.round(15 * zoom)
+    readonly property int fsHeading: Math.round(18 * zoom)
+    readonly property int fsTitle: Math.round(20 * zoom)
+    // When the last tooltip closed; the next one opens at once if it follows closely.
+    property double tipClosedAt: 0
+    // Which sections the user opened, so a rebuilt card opens them again.
+    property var opened: ({})
 
     color: t.app_surface
+
+    onPressingChanged: if (pressing) tip.close()
 
     // One shared tooltip, so long help text wraps and matches the theme.
     ToolTip {
         id: tip
+        objectName: "tooltip"
         delay: 500
         padding: 10
+        // Hover help is not animated, and the ToolTip style's own fade is not either.
+        enter: null
+        exit: null
+        onClosed: root.tipClosedAt = Date.now()
         contentItem: Text {
             text: tip.text
             color: root.t.text_primary
-            font.pixelSize: 12
+            font.pixelSize: root.fsCaption
             wrapMode: Text.Wrap
             width: Math.min(implicitWidth, 360)
         }
@@ -37,11 +58,14 @@ Rectangle {
         }
     }
 
-    function showTip(item, text) {
-        if (text === "")
+    // A tip asked for by a click or key opens at once and goes away by itself.
+    function showTip(item, text, asked) {
+        if (text === "" || (pressing && !asked))
             return
         tip.parent = item
         tip.text = text
+        tip.delay = asked || Date.now() - tipClosedAt < 600 ? 0 : 500
+        tip.timeout = asked ? 10000 : -1
         tip.open()
     }
 
@@ -62,7 +86,7 @@ Rectangle {
     }
 
     component FocusRing: Rectangle {
-        property Item control: parent
+        property var control: parent
         anchors.fill: parent
         anchors.margins: -3
         radius: height / 2 < 9 ? height / 2 : 9
@@ -75,7 +99,7 @@ Rectangle {
     component Caption: Text {
         property string tip: ""
         color: root.t.text_muted
-        font.pixelSize: 13
+        font.pixelSize: root.fsBody
         elide: Text.ElideRight
         Hint { text: parent.tip }
     }
@@ -88,7 +112,7 @@ Rectangle {
 
     component Title: Text {
         color: root.t.text_primary
-        font.pixelSize: 13
+        font.pixelSize: root.fsBody
         font.weight: Font.DemiBold
         font.letterSpacing: 1.1
         font.capitalization: Font.AllUppercase
@@ -177,7 +201,7 @@ Rectangle {
                 anchors.verticalCenter: track.verticalCenter
                 text: toggle.text
                 color: toggle.enabled ? root.t.text_primary : root.t.action_disabled_text
-                font.pixelSize: 13
+                font.pixelSize: root.fsBody
             }
         }
     }
@@ -260,7 +284,7 @@ Rectangle {
             selectedTextColor: root.t.text_on_accent
             selectByMouse: true
             clip: true
-            font.pixelSize: 13
+            font.pixelSize: root.fsBody
             font.features: { "tnum": 1 }
             Accessible.role: Accessible.EditableText
             Accessible.name: box.proxy ? box.proxy.name : ""
@@ -317,18 +341,22 @@ Rectangle {
         onModelChanged: currentIndex = Qt.binding(() => proxy ? proxy.index : -1)
         // A combo box has no value channel in QML, and a name change is spoken where a description
         // change often is not: the label stays first, so the visible text is still in the name.
-        Accessible.name: proxy ? proxy.name + (contentItem.text !== "" ? ": " + contentItem.text : "") : ""
+        Accessible.name: proxy ? proxy.name + (shown.text !== "" ? ": " + shown.text : "") : ""
         // A name cut short by a narrow window is shown whole in the tooltip.
         Hint {
             text: {
                 const tip = picker.proxy ? picker.proxy.toolTip : ""
-                return picker.contentItem.truncated ? picker.contentItem.text + (tip !== "" ? "\n" + tip : "") : tip
+                return shown.truncated ? shown.text + (tip !== "" ? "\n" + tip : "") : tip
             }
         }
+        // With nothing chosen the box shows its prompt, set apart from a real choice.
+        readonly property bool prompting: currentIndex < 0 && !!proxy
         contentItem: Text {
-            text: picker.currentIndex < 0 && picker.proxy ? picker.proxy.placeholder : picker.displayText
-            color: root.t.text_primary
-            font.pixelSize: 13
+            id: shown
+            text: picker.prompting ? (picker.proxy.placeholder ?? "") : picker.displayText
+            color: picker.prompting ? root.t.text_muted : root.t.text_primary
+            font.pixelSize: root.fsBody
+            font.italic: picker.prompting
             elide: Text.ElideRight
             verticalAlignment: Text.AlignVCenter
         }
@@ -337,13 +365,14 @@ Rectangle {
             y: (picker.height - height) / 2
             text: root.m.glyphs.expand
             font.family: root.t.iconFont
-            font.pixelSize: 10
+            font.pixelSize: root.fsCaption
             color: root.t.text_muted
         }
         background: Rectangle {
             radius: root.t.radiusControl
             color: picker.hovered || picker.down ? root.t.control_hover : root.t.control_surface
-            border.color: picker.visualFocus ? root.t.accent : root.t.border
+            border.color: picker.visualFocus ? root.t.accent
+                        : picker.prompting ? root.t.status_warn_border : root.t.border
         }
         delegate: ItemDelegate {
             id: option
@@ -355,7 +384,7 @@ Rectangle {
             contentItem: Text {
                 text: option.modelData
                 color: root.t.text_primary
-                font.pixelSize: 13
+                font.pixelSize: root.fsBody
                 elide: Text.ElideRight
                 verticalAlignment: Text.AlignVCenter
             }
@@ -368,12 +397,25 @@ Rectangle {
             y: picker.height + 4
             width: Math.max(picker.width, 240)
             padding: 4
-            implicitHeight: Math.min(contentItem.implicitHeight + 8, 320)
+            // Kept inside the window, as the stock combo box does.
+            topMargin: 6
+            bottomMargin: 6
+            implicitHeight: Math.min(contentItem.implicitHeight + 8, 320, root.height - 12)
             contentItem: ListView {
                 clip: true
                 implicitHeight: contentHeight
                 model: picker.delegateModel
                 currentIndex: picker.highlightedIndex
+                footer: Text {
+                    width: ListView.view ? ListView.view.width : 0
+                    height: picker.count === 0 ? 30 : 0
+                    visible: picker.count === 0
+                    text: "No choices available"
+                    color: root.t.text_muted
+                    font.pixelSize: root.fsBody
+                    leftPadding: 8
+                    verticalAlignment: Text.AlignVCenter
+                }
             }
             background: Rectangle {
                 color: root.t.control_surface
@@ -386,20 +428,19 @@ Rectangle {
     component Btn: KeyButton {
         id: btn
         property var proxy
-        // "plain", "primary", "danger" or "quiet"
+        // "plain", "primary" or "danger"
         property string look: "plain"
         text: proxy ? proxy.text : ""
         enabled: proxy ? proxy.enabled : false
         opacity: enabled ? 1 : 0.45
         implicitHeight: 32
-        implicitWidth: caption.implicitWidth + (look === "quiet" ? 0 : 28)
+        implicitWidth: caption.implicitWidth + 28
         onClicked: if (proxy) root.press(this, proxy)
         Accessible.role: Accessible.Button
         Accessible.name: proxy && proxy.name !== "" ? proxy.name : text
         Hint { text: btn.proxy ? btn.proxy.toolTip : "" }
         background: Rectangle {
             radius: root.t.radiusControl
-            visible: btn.look !== "quiet"
             color: btn.look === "primary" ? (btn.hovered ? root.t.accent_hover : root.t.accent)
                  : btn.look === "danger" ? root.t.action_destructive
                  : btn.hovered ? root.t.control_hover : root.t.control_surface
@@ -413,10 +454,9 @@ Rectangle {
             text: btn.text
             color: btn.look === "primary" ? root.t.text_on_accent
                  : btn.look === "danger" ? root.t.text_on_emphasis
-                 : btn.look === "quiet" && !btn.hovered && !btn.visualFocus ? root.t.text_muted
                  : root.t.text_primary
-            font.pixelSize: 13
-            font.weight: btn.look === "plain" || btn.look === "quiet" ? Font.Normal : Font.DemiBold
+            font.pixelSize: root.fsBody
+            font.weight: btn.look === "plain" ? Font.Normal : Font.DemiBold
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
@@ -424,30 +464,33 @@ Rectangle {
     }
 
     component IconBtn: KeyButton {
-        id: icon
+        id: iconBtn
         property var proxy: null
         property string glyph: ""
+        // Shown in place of the glyph when the system has no icon font.
+        property string label: ""
         property string hint: proxy ? proxy.toolTip : ""
-        visible: root.t.iconFont !== ""
         enabled: proxy ? proxy.enabled : true
         opacity: enabled ? 1 : 0.4
-        implicitWidth: 30
+        implicitWidth: Math.max(30, face.implicitWidth + 16)
         implicitHeight: 30
         onClicked: if (proxy) root.press(this, proxy)
         Accessible.role: Accessible.Button
         Accessible.name: proxy && proxy.name !== "" ? proxy.name : proxy && proxy.text !== "" ? proxy.text : hint
         Accessible.description: proxy ? hint : ""
-        Hint { text: icon.hint }
+        Hint { text: iconBtn.hint }
         background: Rectangle {
             radius: root.t.radiusControl
-            color: icon.hovered ? root.t.control_hover : "transparent"
-            FocusRing { control: icon }
+            color: iconBtn.hovered ? root.t.control_hover : "transparent"
+            FocusRing { control: iconBtn }
         }
         contentItem: Text {
-            text: icon.glyph
-            font.family: root.t.iconFont
-            font.pixelSize: 15
-            color: icon.hovered ? root.t.text_primary : root.t.text_muted
+            id: face
+            readonly property bool glyphs: root.t.iconFont !== ""
+            text: glyphs ? iconBtn.glyph : iconBtn.label
+            font.family: glyphs ? root.t.iconFont : Application.font.family
+            font.pixelSize: glyphs ? root.fsLead : root.fsBody
+            color: iconBtn.hovered ? root.t.text_primary : root.t.text_muted
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
         }
@@ -477,7 +520,7 @@ Rectangle {
             width: Math.min(implicitWidth, chip.width - 24)
             text: chip.proxy ? chip.proxy.text : ""
             color: root.t["status_" + chip.state_ + "_text"] ?? root.t.status_idle_text
-            font.pixelSize: 13
+            font.pixelSize: root.fsBody
             wrapMode: chip.single ? Text.NoWrap : Text.Wrap
             elide: Text.ElideRight
             Accessible.ignored: !chip.announced
@@ -502,7 +545,7 @@ Rectangle {
             Layout.fillWidth: true
             sourceComponent: ({
                 field: fieldRow, number: numberRow, combo: comboRow, toggle: toggleRow,
-                text: textRow, meter: meterRow
+                text: textRow, meter: meterBar
             })[line.row.kind]
         }
         Component {
@@ -535,13 +578,22 @@ Rectangle {
             Text {
                 text: line.p.text
                 color: line.row.label !== "" ? root.t.text_primary : root.t.text_muted
-                font.pixelSize: 13
+                font.pixelSize: root.fsBody
                 wrapMode: Text.Wrap
                 horizontalAlignment: line.row.label !== "" ? Text.AlignRight : Text.AlignLeft
                 Accessible.name: line.p.name !== "" ? line.p.name + ": " + text : text
             }
         }
-        Component { id: meterRow; QuickMeterItem { source: line.p; implicitHeight: 18 } }
+        Component {
+            id: meterBar
+            QuickMeterItem {
+                source: line.p
+                implicitHeight: 18
+                Accessible.role: Accessible.ProgressBar
+                Accessible.name: line.row.label
+                Accessible.description: line.p.valueText
+            }
+        }
     }
 
     component CardHeader: RowLayout {
@@ -550,11 +602,19 @@ Rectangle {
         spacing: 12
         Toggle { proxy: header.card.toggle; visible: header.card.toggle !== null }
         Title { text: header.card.title }
+        // A stage that is off keeps its controls at full strength; this says why nothing happens.
+        Caption {
+            text: "Off"
+            visible: header.card.toggle !== null && !header.card.toggle.checked
+        }
         IconBtn {
             glyph: root.m.glyphs.help
             hint: header.card.help
-            visible: hint !== "" && root.t.iconFont !== ""
-            onClicked: root.showTip(this, hint)
+            label: "?"
+            visible: hint !== ""
+            onClicked: root.showTip(this, hint, true)
+            onActiveFocusChanged: if (!activeFocus) root.hideTip(this)
+            Keys.onEscapePressed: root.hideTip(this)
             Accessible.name: "Help for " + header.card.title.toLowerCase()
             Accessible.description: hint
         }
@@ -564,10 +624,12 @@ Rectangle {
     // A full-width row that opens the section under it.
     component Disclosure: KeyButton {
         id: disclosure
-        property bool open: false
+        // Read when created, so a rebuilt section opens as the user left it.
+        property bool open: root.opened[subject] === true
         property string subject: ""
         implicitHeight: 38
         onClicked: open = !open
+        onOpenChanged: root.opened[subject] = open
         Accessible.role: Accessible.Button
         Accessible.name: (open ? "Hide " : "Show ") + subject + " " + text.toLowerCase()
         background: Rectangle {
@@ -582,7 +644,7 @@ Rectangle {
             Text {
                 text: disclosure.text
                 color: root.t.text_primary
-                font.pixelSize: 13
+                font.pixelSize: root.fsBody
                 font.weight: Font.Medium
                 leftPadding: 12
                 Layout.fillWidth: true
@@ -590,13 +652,13 @@ Rectangle {
             Text {
                 text: disclosure.open ? "Hide" : "Show"
                 color: root.t.text_muted
-                font.pixelSize: 12
+                font.pixelSize: root.fsCaption
             }
             Text {
                 text: root.m.glyphs.expand
                 visible: root.t.iconFont !== ""
                 font.family: root.t.iconFont
-                font.pixelSize: 10
+                font.pixelSize: root.fsCaption
                 color: root.t.text_primary
                 Layout.rightMargin: 14
                 rotation: disclosure.open ? 180 : 0
@@ -608,7 +670,6 @@ Rectangle {
     component StageCard: Surface {
         id: stage
         property var card
-        readonly property bool on: card.toggle === null || card.toggle.checked
         CardHeader { card: stage.card; Layout.fillWidth: true }
         Chip {
             proxy: stage.card.alert
@@ -620,7 +681,6 @@ Rectangle {
             delegate: ControlRow {
                 required property var modelData
                 row: modelData
-                opacity: stage.on ? 1 : 0.5
                 Layout.fillWidth: true
             }
         }
@@ -632,6 +692,7 @@ Rectangle {
                 points: ui.levels
                 Layout.fillWidth: true
                 implicitHeight: 52
+                Accessible.role: Accessible.Graphic
                 Accessible.name: "Input and output level history"
             }
             Row {
@@ -650,7 +711,7 @@ Rectangle {
                         Text {
                             text: parent.modelData[0]
                             color: root.t.text_muted
-                            font.pixelSize: 11
+                            font.pixelSize: root.fsCaption
                         }
                     }
                 }
@@ -668,8 +729,8 @@ Rectangle {
             delegate: ControlRow {
                 required property var modelData
                 row: modelData
-                opacity: stage.on ? 1 : 0.5
                 Layout.fillWidth: true
+                NumberAnimation on opacity { from: 0; to: 1; duration: root.t.motion; easing.type: Easing.OutCubic }
             }
         }
     }
@@ -701,7 +762,7 @@ Rectangle {
             Text {
                 text: setting.p.text
                 color: setting.enabled ? root.t.text_primary : root.t.action_disabled_text
-                font.pixelSize: 13
+                font.pixelSize: root.fsBody
                 elide: Text.ElideRight
                 leftPadding: 10
                 Layout.fillWidth: true
@@ -721,7 +782,7 @@ Rectangle {
                 text: setting.row.kind === "menu" ? root.m.glyphs.expand : root.m.glyphs.next
                 Layout.rightMargin: 14
                 font.family: root.t.iconFont
-                font.pixelSize: 10
+                font.pixelSize: root.fsCaption
                 color: root.t.text_muted
             }
         }
@@ -737,8 +798,8 @@ Rectangle {
         readonly property string state_: proxy.state !== "" ? proxy.state : "idle"
         spacing: 10
         Rectangle {
-            width: 8
-            height: 8
+            implicitWidth: 8
+            implicitHeight: 8
             radius: 4
             color: root.t["status_" + health.state_ + "_text"] ?? root.t.status_idle_text
         }
@@ -751,7 +812,7 @@ Rectangle {
         Text {
             text: health.value.charAt(0).toUpperCase() + health.value.slice(1)
             color: root.t.text_primary
-            font.pixelSize: 13
+            font.pixelSize: root.fsBody
             wrapMode: Text.Wrap
             Layout.fillWidth: true
             Accessible.name: health.proxy.name + ": " + text
@@ -806,6 +867,7 @@ Rectangle {
         color: root.t.rail_surface
         Column {
             y: 14
+            Accessible.role: Accessible.PageTabList
             Repeater {
                 model: [[root.m.glyphs.mic, "Mic"], [root.m.glyphs.health, "Health"],
                         [root.m.glyphs.settings, "Settings"]]
@@ -846,13 +908,13 @@ Rectangle {
                             color: nav.current ? root.t.accent
                                  : nav.hovered ? root.t.text_primary : root.t.text_muted
                             font.family: root.t.iconFont
-                            font.pixelSize: 20
+                            font.pixelSize: root.fsTitle
                         }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: nav.modelData[1]
                             color: nav.current || nav.hovered ? root.t.text_primary : root.t.text_muted
-                            font.pixelSize: 11
+                            font.pixelSize: root.fsCaption
                             font.weight: nav.current ? Font.DemiBold : Font.Normal
                         }
                     }
@@ -888,8 +950,12 @@ Rectangle {
                     source: modelData
                     width: 50
                     height: meterRow.height
+                    Accessible.role: Accessible.ProgressBar
                     Accessible.name: modelData.name
-                    Accessible.description: modelData.description
+                    // The reading first; it changes only when the whole-dB value does.
+                    Accessible.description: modelData.description !== ""
+                                            ? modelData.valueText + ". " + modelData.description
+                                            : modelData.valueText
                 }
             }
         }
@@ -908,9 +974,73 @@ Rectangle {
         anchors.bottomMargin: 10
         spacing: 12
 
+        // Top bar: route and transport
+        Surface {
+            Layout.fillWidth: true
+            Layout.leftMargin: 8
+            Layout.rightMargin: 16
+            pad: 14
+            // The route and the transport share a row when there is room, else the route is on top.
+            GridLayout {
+                columns: root.wide ? 2 : 1
+                columnSpacing: 12
+                rowSpacing: 10
+                RowLayout {
+                    spacing: 12
+                    Layout.fillWidth: true
+                    Caption { text: root.wide ? "Input" : "In" }
+                    Picker {
+                        proxy: root.m.top.input
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 200
+                        Layout.minimumWidth: 140
+                    }
+                    Text {
+                        text: root.m.glyphs.next
+                        visible: root.t.iconFont !== ""
+                        font.family: root.t.iconFont
+                        font.pixelSize: root.fsCaption
+                        color: root.t.text_muted
+                    }
+                    Caption { text: root.wide ? "Output" : "Out" }
+                    Picker {
+                        proxy: root.m.top.output
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 200
+                        Layout.minimumWidth: 140
+                    }
+                    IconBtn { proxy: root.m.top.refresh; glyph: root.m.glyphs.refresh; label: "Refresh" }
+                }
+                RowLayout {
+                    spacing: 12
+                    Layout.alignment: Qt.AlignRight
+                    Rectangle {
+                        implicitWidth: 1
+                        visible: root.wide
+                        color: root.t.border
+                        Layout.fillHeight: true
+                        Layout.topMargin: 4
+                        Layout.bottomMargin: 4
+                    }
+                    Picker { proxy: root.m.top.mode; implicitWidth: 118 }
+                    Toggle { proxy: root.m.top.mute; text: "Mute" }
+                    Btn {
+                        proxy: root.running ? root.m.top.stop : root.m.top.start
+                        text: root.running ? "Stop" : "Start"
+                        look: root.running ? "danger" : "primary"
+                        implicitWidth: 112
+                        implicitHeight: 34
+                        Accessible.name: proxy.text
+                    }
+                }
+            }
+        }
+
+        // Under the top bar, so Start and Mute stay where they are when one appears.
         Repeater {
             model: root.m.banners
             delegate: Rectangle {
+                id: banner
                 required property var modelData
                 visible: modelData.shown
                 Layout.fillWidth: true
@@ -918,56 +1048,18 @@ Rectangle {
                 Layout.rightMargin: 16
                 implicitHeight: bannerText.implicitHeight + 16
                 radius: root.t.radiusControl
-                color: root.t.warning_banner_surface
+                color: root.t.status_warn_surface
+                border.color: root.t.status_warn_border
                 Text {
                     id: bannerText
                     anchors.fill: parent
                     anchors.margins: 8
-                    text: parent.modelData.text
-                    color: root.t.warning_banner_text
-                    font.pixelSize: 13
+                    text: banner.modelData.text
+                    color: root.t.status_warn_text
+                    font.pixelSize: root.fsBody
                     wrapMode: Text.Wrap
-                    Accessible.name: parent.modelData.name + ": " + text
-                }
-            }
-        }
-
-        // Top bar: route and transport
-        Surface {
-            Layout.fillWidth: true
-            Layout.leftMargin: 8
-            Layout.rightMargin: 16
-            pad: 14
-            RowLayout {
-                spacing: 12
-                Caption { text: "Input"; visible: root.wide }
-                Picker { proxy: root.m.top.input; Layout.fillWidth: true; Layout.preferredWidth: 200 }
-                Text {
-                    text: root.m.glyphs.next
-                    visible: root.t.iconFont !== ""
-                    font.family: root.t.iconFont
-                    font.pixelSize: 11
-                    color: root.t.text_muted
-                }
-                Caption { text: "Output"; visible: root.wide }
-                Picker { proxy: root.m.top.output; Layout.fillWidth: true; Layout.preferredWidth: 200 }
-                IconBtn { proxy: root.m.top.refresh; glyph: root.m.glyphs.refresh }
-                Rectangle {
-                    width: 1
-                    color: root.t.border
-                    Layout.fillHeight: true
-                    Layout.topMargin: 4
-                    Layout.bottomMargin: 4
-                }
-                Picker { proxy: root.m.top.mode; implicitWidth: 118 }
-                Toggle { proxy: root.m.top.mute; text: "Mute" }
-                Btn {
-                    proxy: root.running ? root.m.top.stop : root.m.top.start
-                    text: root.running ? "Stop" : "Start"
-                    look: root.running ? "danger" : "primary"
-                    implicitWidth: 112
-                    implicitHeight: 34
-                    Accessible.name: proxy.text
+                    Accessible.role: Accessible.AlertMessage
+                    Accessible.name: banner.modelData.name + ": " + text
                 }
             }
         }
@@ -998,7 +1090,7 @@ Rectangle {
                         Text {
                             text: "PRESET"
                             color: root.t.text_muted
-                            font.pixelSize: 10
+                            font.pixelSize: root.fsCaption
                             font.letterSpacing: 1.2
                             font.weight: Font.DemiBold
                         }
@@ -1008,7 +1100,7 @@ Rectangle {
                                 objectName: "presetName"
                                 text: presetBar.preset.name
                                 color: root.t.text_primary
-                                font.pixelSize: 19
+                                font.pixelSize: root.fsHeading
                                 font.weight: Font.DemiBold
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
@@ -1030,7 +1122,7 @@ Rectangle {
                                     text: presetBar.preset.modified ? "Unsaved changes" : "Saved"
                                     color: presetBar.preset.modified ? root.t.status_warn_text
                                                                      : root.t.status_idle_text
-                                    font.pixelSize: 11
+                                    font.pixelSize: root.fsCaption
                                 }
                             }
                             Item { Layout.fillWidth: true }
@@ -1042,14 +1134,14 @@ Rectangle {
                         Layout.fillWidth: false
                         Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
                         Btn { proxy: root.m.presets.menu }
-                        IconBtn { proxy: root.m.presets.undo; glyph: root.m.glyphs.undo }
-                        IconBtn { proxy: root.m.presets.redo; glyph: root.m.glyphs.redo }
+                        IconBtn { proxy: root.m.presets.undo; glyph: root.m.glyphs.undo; visible: root.t.iconFont !== "" }
+                        IconBtn { proxy: root.m.presets.redo; glyph: root.m.glyphs.redo; visible: root.t.iconFont !== "" }
                         // Without a system icon font the two are spelled out.
                         Btn { proxy: root.m.presets.undo; visible: root.t.iconFont === "" }
                         Btn { proxy: root.m.presets.redo; visible: root.t.iconFont === "" }
                         Btn { proxy: root.m.presets.testSound }
                         Btn { proxy: root.m.presets.autoEq }
-                        Btn { objectName: "voiceSetupButton"; proxy: root.m.presets.voiceSetup; look: "primary" }
+                        Btn { objectName: "voiceSetupButton"; proxy: root.m.presets.voiceSetup }
                     }
                 }
 
@@ -1057,7 +1149,6 @@ Rectangle {
                     id: eqCard
                     readonly property var eq: root.m.eq
                     readonly property var band: eq.bands[eq.band.index]
-                    readonly property bool on: eq.toggle.checked
                     readonly property bool calibrated: eq.diagnostics.data.calibrated
                     Layout.fillWidth: true
                     CardHeader {
@@ -1065,7 +1156,7 @@ Rectangle {
                         Layout.fillWidth: true
                         Caption { text: eqCard.eq.layers.text; visible: root.wide }
                         Btn { proxy: eqCard.eq.tone }
-                        IconBtn { proxy: eqCard.eq.menu; glyph: root.m.glyphs.more }
+                        IconBtn { proxy: eqCard.eq.menu; glyph: root.m.glyphs.more; label: "More" }
                     }
                     EQGraphItem {
                         graph: eqCard.eq.curve
@@ -1089,10 +1180,9 @@ Rectangle {
                     }
                     // One row when there is room, two when the window is narrow.
                     GridLayout {
-                        columns: root.wide ? 2 : 1
+                        columns: root.roomy ? 2 : 1
                         columnSpacing: 12
                         rowSpacing: 10
-                        opacity: eqCard.on ? 1 : 0.5
                         Layout.fillWidth: true
                         RowLayout {
                             objectName: "bandEditorRow"
@@ -1100,32 +1190,34 @@ Rectangle {
                             Layout.fillWidth: true
                             IconBtn {
                                 glyph: root.m.glyphs.previous
+                                label: "Prev"
                                 hint: "Previous EQ band"
                                 onClicked: ui.stepBand(-1)
                             }
                             IconBtn {
                                 glyph: root.m.glyphs.next
+                                label: "Next"
                                 hint: "Next EQ band"
                                 onClicked: ui.stepBand(1)
                             }
                             // The band the editor shows; the graph prints this number on its handle once selected.
                             Rectangle {
-                                width: 18
-                                height: 18
-                                radius: 9
+                                implicitWidth: 20
+                                implicitHeight: 20
+                                radius: 10
                                 color: root.t.bandColors[eqCard.eq.band.index]
                                 Text {
                                     anchors.centerIn: parent
                                     text: eqCard.eq.band.index + 1
                                     color: root.t.text_on_accent
-                                    font.pixelSize: 10
+                                    font.pixelSize: root.fsCaption
                                     font.weight: Font.DemiBold
                                 }
                             }
                             Text {
                                 text: eqCard.band.frequencyLabel.text
                                 color: root.t.text_primary
-                                font.pixelSize: 15
+                                font.pixelSize: root.fsLead
                                 font.weight: Font.DemiBold
                                 Layout.preferredWidth: 58
                             }
@@ -1194,7 +1286,7 @@ Rectangle {
                     Text {
                         text: root.m.health.advice.text
                         color: root.t.text_primary
-                        font.pixelSize: 18
+                        font.pixelSize: root.fsHeading
                         wrapMode: Text.Wrap
                         Layout.fillWidth: true
                         Accessible.name: root.m.health.advice.name + ": " + text
@@ -1240,6 +1332,14 @@ Rectangle {
                     RowLayout {
                         visible: details.open
                         spacing: 12
+                        onVisibleChanged: if (visible) fadeIn.restart()
+                        NumberAnimation on opacity {
+                            id: fadeIn
+                            from: 0
+                            to: 1
+                            duration: root.t.motion
+                            easing.type: Easing.OutCubic
+                        }
                         Btn {
                             text: "Export diagnostics"
                             enabled: true
@@ -1311,8 +1411,8 @@ Rectangle {
             }
             // Heard (green), muted or waiting for a mute (amber), or stopped.
             Rectangle {
-                width: 8
-                height: 8
+                implicitWidth: 8
+                implicitHeight: 8
                 radius: 4
                 color: ({ ok: root.t.status_ok_text, warn: root.t.status_warn_text })[
                     root.m.status.transmission.state] ?? root.t.border_strong

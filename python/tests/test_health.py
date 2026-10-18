@@ -221,7 +221,7 @@ def test_every_warning_chip_has_plain_language_advice() -> None:
         ("Output: VERY LOUD (0 dB)", "is 0 dB", "Lower the makeup gain"),
         ("Gate: CHATTERING (3 times)", "rapidly 3 times", "Raise the hold time or lower the threshold"),
         ("Gate: EASED (3 times)", "3 times so far", "lowering the threshold yourself"),
-        ("Backend: rnnoise failed", "passing through unprocessed", "Check the model on the Noise Suppression card"),
+        ("Backend: rnnoise failed", "passing through unprocessed", "Check the Backend setting on the Noise Suppression card"),
         ("Device activity: input 12 ms ago, output 1400 ms ago", "for 1400 ms", "Check that the device is connected"),
         ("Dropouts: 3 (2 in a row)", "dropped out 3 times", "Close heavy applications"),
         ("Buffer: FILLING UP (1200 samples)", "1200 samples waiting", "Close heavy applications"),

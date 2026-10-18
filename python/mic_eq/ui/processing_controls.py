@@ -147,6 +147,7 @@ class GateText(QObject):
         super().__init__(parent)
         self._state, self._key = state, key
         state.changed.connect(self.changed)
+        state.telemetryChanged.connect(self.changed)
 
     text = Property(str, lambda self: self._state.presentation()[self._key], notify=changed)
     toolTip = Property(str, lambda self: "", constant=True)

@@ -294,11 +294,12 @@ def test_auto_eq_diagnostics_are_shown_in_the_eq_diagnostics_control(quick_windo
     quick_window.eq_state.apply_auto_eq_results(FLAT_BANDS, diagnostics=diagnostics)
     qapp.processEvents()
 
-    text = eq_control(quick_window, "diagnostics").text
-    assert "overall 82%" in text
-    assert "Correction ready" in text
-    assert "EQ 76%" in text
-    assert "4.2 dB -> 2.1 dB" in text
+    control = eq_control(quick_window, "diagnostics")
+    assert control.text == "Auto-EQ: Correction ready"
+    assert "Overall confidence: 82%" in control.toolTip
+    assert "EQ confidence: 76%" in control.toolTip
+    assert "Weighted target error before: 4.2 dB" in control.toolTip
+    assert "Weighted target error after: 2.1 dB" in control.toolTip
 
 
 def test_manual_filter_type_slope_and_bypass_sync_to_native_and_curve(quick_window, qapp):

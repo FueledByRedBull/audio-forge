@@ -120,14 +120,14 @@ def test_gate_refreshes_restored_vad_status_when_backend_becomes_available(qapp)
     state.set_settings(VAD_RESTORED)
 
     assert mode.index == 2
-    assert info.text == "VAD: Unavailable"
+    assert info.text == "Voice detection: unavailable"
 
     native.vad_available = True
     state.update_vad_confidence(0.75)
 
     assert mode.index == 2
-    assert info.text == "VAD: Active | Speech confidence only"
-    assert seen[-1] == "VAD: Active | Speech confidence only"
+    assert info.text == "Voice detection: on | Speech confidence only"
+    assert seen[-1] == "Voice detection: on | Speech confidence only"
 
 
 def _render(meter, width: int = 200, height: int = 20) -> QImage:
@@ -156,9 +156,9 @@ def test_vad_only_displays_confidence_threshold_and_moves_marker(qapp):
     assert meters.confidence.threshold == pytest.approx(0.35)
     before = _render(meters.confidence)
 
-    assert "VAD Threshold: 0.35" in str(status.text)
+    assert "Voice detection threshold: 0.35" in str(status.text)
     assert "Level fallback" in str(status.text)
-    assert auto.name == "Track noise floor"
+    assert auto.name == "Auto threshold (gate): track noise floor"
     assert not margin.enabled
 
     threshold.setValue(0.7)
@@ -166,7 +166,7 @@ def test_vad_only_displays_confidence_threshold_and_moves_marker(qapp):
     after = _render(meters.confidence)
     assert before != after
     assert meters.confidence.threshold == 0.7
-    assert "VAD Threshold: 0.70" in str(status.text)
+    assert "Voice detection threshold: 0.70" in str(status.text)
 
     state.update_vad_confidence(None)
     assert not meters.confidence.measurement_available
@@ -174,7 +174,7 @@ def test_vad_only_displays_confidence_threshold_and_moves_marker(qapp):
     assert meters.confidence.confidence == pytest.approx(0.4)
 
     mode.setIndex(1)
-    assert auto.name == "Enable automatic gate threshold"
+    assert auto.name == "Auto threshold (gate)"
     assert margin.enabled
     assert "Effective Threshold:" in str(status.text)
 
@@ -199,3 +199,26 @@ def test_gate_controls_share_state_without_replacing_unedited_exact_values(qapp)
     other_threshold.released()
     assert threshold.value == -35.0
     assert state.get_settings()["vad_pre_gain"] == 1.234567
+
+
+def test_a_new_confidence_reading_does_not_re_read_the_gate_controls(qapp):
+    native = RecordingProcessor()
+    state = GateState(native)
+    meters = ProcessingMeters(native, state)
+    controls = [_control(state, key) for key in ("gate_mode", "threshold_db", "vad_threshold", "vad_pre_gain")]
+    floor = GateText(state, "noise_floor", None)
+    control_reads: list[int] = []
+    floor_reads: list[str] = []
+    for control in controls:
+        control.changed.connect(lambda: control_reads.append(1))
+    floor.changed.connect(lambda: floor_reads.append(str(floor.text)))
+
+    for confidence in (0.2, 0.6, 0.9):
+        state.update_vad_confidence(confidence)
+
+    assert control_reads == []
+    assert floor_reads, "the noise floor text still follows the reading"
+    assert meters.confidence.confidence == pytest.approx(0.9)
+
+    state.set_value("vad_threshold", 0.6)
+    assert control_reads

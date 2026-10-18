@@ -56,6 +56,8 @@ from .capture_session import (
     sync_owner_processing_controls,
 )
 from .layout_constants import (
+    MARGIN_PANEL,
+    SPACING_NORMAL,
     SUBDUED_TEXT_STYLE,
     configure_resizable_dialog,
     configure_responsive_combo,
@@ -466,17 +468,22 @@ class ListeningComparisonDialog(QDialog):
         self.status_label.setAccessibleName("Listening comparison status")
         layout.addWidget(self.status_label)
 
+        # The actions stay in view while the page above them scrolls.
         actions = QHBoxLayout()
+        actions.setContentsMargins(MARGIN_PANEL, 0, MARGIN_PANEL, MARGIN_PANEL)
+        actions.setSpacing(SPACING_NORMAL)
         self.keep_button = QPushButton("Keep Proposed")
         self.keep_button.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
+        self.keep_button.setDefault(True)
         self.keep_button.setEnabled(False)
         self.keep_button.clicked.connect(lambda: self._request_close(True))
         self.reject_button = QPushButton("Reject Proposed")
         self.reject_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
         self.reject_button.clicked.connect(lambda: self._request_close(False))
-        actions.addWidget(self.keep_button)
         actions.addWidget(self.reject_button)
-        layout.addLayout(actions)
+        actions.addStretch(1)
+        actions.addWidget(self.keep_button)
+        outer.addLayout(actions)
         set_accessible_group(
             (
                 (self.refresh_button, "Refresh playback devices", None),
@@ -968,7 +975,7 @@ def _record_test_clip(window: Any) -> np.ndarray | None:
     )
     notice = QLabel(LIVE_OUTPUT_MUTED_NOTICE)
     notice.setWordWrap(True)
-    notice.setStyleSheet(SUBDUED_TEXT_STYLE)
+    notice.setStyleSheet(status_chip_style("warn"))
     layout.addWidget(notice)
     bar = QProgressBar()
     bar.setRange(0, 100)

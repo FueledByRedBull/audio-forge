@@ -6,7 +6,13 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QImage, QPainter, QRegion
 from PySide6.QtWidgets import QWidget
 
-from mic_eq.ui.level_meter import CLIP_FLAT_TOP_SAMPLES, CLIP_HOLD_SECONDS, LevelMeter, MeterWidget
+from mic_eq.ui.level_meter import (
+    CLIP_FLAT_TOP_SAMPLES,
+    CLIP_HOLD_SECONDS,
+    CLIP_STRIP_SECONDS,
+    LevelMeter,
+    MeterWidget,
+)
 
 
 class _Clock:
@@ -320,3 +326,57 @@ def test_a_mute_wins_over_the_clip_tag_on_the_label(qapp):
     assert label_strip(meter) == muted
     description = meter.property("description")
     assert "Muted" in description and "Clipping" in description
+
+
+def test_the_hold_line_falls_by_the_time_that_passed_not_by_the_number_of_ticks(qapp):
+    clock = _Clock()
+    meter = LevelMeter("IN", clock=clock)
+    meter.set_levels(-30.0, -10.0)
+    meter._decay_peak_hold()
+    assert meter.peak_hold_db == -10.0  # no time has passed
+    clock.now += 0.05
+    meter._decay_peak_hold()
+    assert abs(meter.peak_hold_db - (-10.0 - LevelMeter.PEAK_DECAY_RATE * 0.05)) < 1e-9
+    clock.now += 0.5  # a late tick catches up
+    meter._decay_peak_hold()
+    assert abs(meter.peak_hold_db - (-11.0 - LevelMeter.PEAK_DECAY_RATE * 0.5)) < 1e-9
+
+
+def test_the_clip_strip_is_steady_and_clears_by_the_clock(qapp):
+    clock = _Clock()
+    meter = LevelMeter("IN", clock=clock)
+    meter.set_levels(-30.0, 0.0)
+    strip = (2, 0, 20, 4)
+    frames = []
+    for _ in range(4):  # one frame per decay tick: the strip must not blink between them
+        frames.append(_paint(meter).copy(*strip))
+        clock.now += 0.05
+        meter._decay_peak_hold()
+        assert meter.is_clipping
+    assert all(frame == frames[0] for frame in frames)
+    assert frames[0] != _paint(LevelMeter("IN")).copy(*strip)
+    clock.now += CLIP_STRIP_SECONDS
+    meter._decay_peak_hold()
+    assert not meter.is_clipping
+
+
+def test_meters_speak_their_reading_and_announce_it_only_when_the_whole_number_changes(qapp):
+    from mic_eq.ui.level_meter import ConfidenceMeter, GainReductionMeter
+
+    meter = LevelMeter("IN", clock=_Clock())
+    assert meter.property("valueText") == "no signal"
+    announced = []
+    meter.valueTextChanged.connect(lambda: announced.append(meter.property("valueText")))
+    meter.set_levels(-20.2, -10.0)
+    meter.set_levels(-20.4, -10.0)  # same whole dB: nothing new to say
+    meter.set_levels(-24.0, -10.0)
+    assert announced == ["-20 dB", "-24 dB"]
+
+    reduction = GainReductionMeter("GR")
+    assert reduction.property("valueText") == "no reading"
+    reduction.set_gain_reduction(3.2)
+    assert reduction.property("valueText") == "3 dB"
+
+    confidence = ConfidenceMeter("VAD")
+    confidence.set_confidence(0.456)
+    assert confidence.property("valueText") == "46 percent"

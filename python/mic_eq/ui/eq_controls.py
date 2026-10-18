@@ -81,14 +81,14 @@ class EQControl(QObject):
             frequency = key == "frequency"
             decimals = 0 if frequency else 1
             value = float(QLocale.c().toString(band.frequency_hz if frequency else band.q, "f", decimals))
+            used = frequency or band.filter_type in Q_FILTER_TYPES
             view.update(
                 name=f"{band_name} center frequency" if frequency else f"{band_name} Q",
                 toolTip="Center frequency in Hz" if frequency else "",
                 value=value, text=self._locale.toString(value, "f", decimals) + (" Hz" if frequency else ""),
                 minimum=20.0 if frequency else 0.1, maximum=20000.0 if frequency else 10.0,
                 step=10.0 if frequency else 0.1,
-                enabled=frequency or band.filter_type in Q_FILTER_TYPES,
-                shown=frequency or band.filter_type in Q_FILTER_TYPES,
+                enabled=used, shown=used,
             )
         elif key == "type":
             choices = [choice for _name, choice in EQ_FILTER_OPTIONS]
@@ -104,12 +104,12 @@ class EQControl(QObject):
             )
         else:
             choices = sorted(EQ_SLOPES_DB_PER_OCTAVE)
+            used = band.filter_type in PASS_FILTER_TYPES
             view.update(
                 name=f"{band_name} pass-filter slope", index=choices.index(band.slope_db_per_octave),
                 items=[f"{slope} dB/oct" for slope in choices],
                 text=f"{band.slope_db_per_octave} dB/oct", toolTip="Pass-filter slope in dB per octave",
-                enabled=band.filter_type in PASS_FILTER_TYPES,
-                shown=band.filter_type in PASS_FILTER_TYPES,
+                enabled=used, shown=used,
             )
         return view
 

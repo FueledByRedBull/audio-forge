@@ -108,8 +108,8 @@ def _accessible_tree(window):
         )
 
 
-def _show(window, qapp, page: int = MIC) -> None:
-    window.resize(1400, 900)
+def _show(window, qapp, page: int = MIC, width: int = 1400) -> None:
+    window.resize(width, 900)
     window.activateWindow()
     window.centralWidget().setFocus()
     window.shell_page.setIndex(page)
@@ -538,9 +538,9 @@ def test_the_eq_graph_is_named_described_and_follows_the_selected_band(quick_win
 # --- 3. Keyboard -------------------------------------------------------------------
 
 
-def _tab_cycle(window, qapp, page: int = MIC) -> list:
+def _tab_cycle(window, qapp, page: int = MIC, width: int = 1400) -> list:
     """The items real Tab presses focus in turn, until the cycle comes round again."""
-    _show(window, qapp, page)
+    _show(window, qapp, page, width)
     view = window.centralWidget()
     stops = []
     for _ in range(400):
@@ -584,9 +584,11 @@ def test_tab_reaches_every_enabled_control_on_the_page(either_window, qapp, page
     assert missed == []
 
 
-def test_tab_visits_the_page_in_reading_order(either_window, qapp) -> None:
+# 1200 is wide but not roomy (one band-editor column); 1400 and up has two.
+@pytest.mark.parametrize("width", [1200, 1400, 1800])
+def test_tab_visits_the_page_in_reading_order(either_window, qapp, width) -> None:
     window = either_window
-    stops = _tab_cycle(window, qapp)
+    stops = _tab_cycle(window, qapp, width=width)
     with _AccessibleScene() as scene:
         names = [scene.name(item) for item in stops]
     assert len(set(map(id, stops))) == len(stops)
@@ -861,9 +863,10 @@ def test_graph_keys_leave_other_bands_alone_and_pass_unrelated_keys_on(graph, qa
 
 
 def _rings(window, control) -> list:
+    # The graph is no Control: its ring has none and sits directly on it.
     return [
         ring for ring in _of_kind(window, "FocusRing")
-        if ring.property("control") == control and ring.isVisible()
+        if (QQmlProperty.read(ring, "control") or ring.parentItem()) == control and ring.isVisible()
     ]
 
 
@@ -916,9 +919,7 @@ def test_focus_rings_follow_keyboard_focus_not_the_mouse(quick_window, qapp) -> 
     _show(window, qapp)
     toggle = _with_proxy(window, "Toggle", window.quick_bridge.model["top"]["mute"])
     view = window.centralWidget()
-    centre = toggle.mapToScene(toggle.boundingRect().center()).toPoint()
-    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=centre)
-    qapp.processEvents()
+    _click(window, toggle, qapp)
     assert window.user_muted
     assert _rings(window, toggle) == [], "a click must not draw the keyboard focus ring"
     _focus(window, _graph_item(view.rootObject()), qapp)  # focus leaves the toggle...
@@ -927,6 +928,10 @@ def test_focus_rings_follow_keyboard_focus_not_the_mouse(quick_window, qapp) -> 
 
 
 # --- 7. Layout, labels, text size and help ------------------------------------------
+
+
+def _scene_x(item) -> float:
+    return item.mapToScene(item.boundingRect().topLeft()).x()
 
 
 def _scene_y(item) -> float:
@@ -1116,11 +1121,8 @@ def test_the_mode_picker_keeps_stop_away_from_mute(quick_window, qapp, width) ->
     mode = _with_proxy(window, "Picker", top["mode"])
     start = _with_proxy(window, "Btn", top["start"])
 
-    def x_of(item) -> float:
-        return item.mapToScene(item.boundingRect().topLeft()).x()
-
-    assert x_of(mute) + mute.width() < x_of(mode) < x_of(start)
-    assert x_of(start) - (x_of(mute) + mute.width()) >= mode.width()
+    assert _scene_x(mute) + mute.width() < _scene_x(mode) < _scene_x(start)
+    assert _scene_x(start) - (_scene_x(mute) + mute.width()) >= mode.width()
 
 
 def test_q_and_slope_show_only_for_the_filters_that_use_them(quick_window, qapp) -> None:
@@ -1182,7 +1184,7 @@ def _perform(item, action: str) -> None:
     interface.doAction(name)
 
 
-KEYS = {"space": Qt.Key.Key_Space, "return": Qt.Key.Key_Return, "enter": Qt.Key.Key_Enter}
+KEYS = {str(param.id): param.values[0] for param in ACTIVATION_KEYS}
 
 
 def _click(window, item, qapp) -> None:

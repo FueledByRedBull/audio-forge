@@ -107,3 +107,15 @@ def test_widget_mirrors_the_meter_models_presentation(qapp):
     assert view.isEnabled()
     view.deleteLater()
     qapp.processEvents()
+
+
+def test_meter_accessible_text_changes_only_when_its_words_do(qapp):
+    meter = LevelMeter("IN")
+    meter.set_levels(-20.0, -10.0)
+    heard = []
+    meter.accessibleTextChanged.connect(lambda: heard.append(meter.property("accessibleText")))
+    meter.set_levels(-20.4, -10.0)  # same whole dB, same words
+    assert heard == []
+    meter.set_muted(True)
+    assert heard == ["-20 dB. Muted: the level shown is the level before the mute."]
+    assert ConfidenceMeter("VAD").property("accessibleText") == "no reading"

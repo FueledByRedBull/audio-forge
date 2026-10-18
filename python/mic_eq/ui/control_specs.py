@@ -162,16 +162,16 @@ CONTROL_SPECS = {
             choices=GATE_MODES, label="Gate mode",
         ),
         "vad_threshold": ControlSpec(
-            "VAD threshold (voice activity)", "Speech probability threshold (0.3-0.7)", 0.01,
-            label="VAD threshold",
+            "Voice threshold (speech detection)", "Speech probability threshold (0.3-0.7)", 0.01,
+            label="Voice threshold",
         ),
         "vad_hold_time_ms": ControlSpec(
             "Voice activity hold time", "Gate hold time after speech ends (prevents chatter)", 10.0, " ms",
             label="Hold time",
         ),
         "vad_pre_gain": ControlSpec(
-            "VAD pre-gain (voice activity)", "Pre-gain to boost weak signals for better VAD detection",
-            0.5, decimals=1, label="VAD pre-gain",
+            "Voice pre-gain (speech detection)", "Pre-gain to boost weak signals for better speech detection",
+            0.5, decimals=1, label="Voice pre-gain",
         ),
         "auto_threshold_enabled": ControlSpec(
             "Auto threshold (gate)",

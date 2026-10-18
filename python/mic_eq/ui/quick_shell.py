@@ -15,6 +15,7 @@ from pathlib import Path
 from PySide6.QtCore import (
     Property,
     QCoreApplication,
+    QEvent,
     QObject,
     QPointF,
     Qt,
@@ -109,8 +110,10 @@ class QuickBridge(QObject):
         self._trace_timer = QTimer(self)
         self._trace_timer.setInterval(TRACE_INTERVAL_MS)
         self._trace_timer.timeout.connect(self._sample_levels)
-        # A readout, not an animation: reduced motion keeps it.
-        self._trace_timer.start()
+        # A readout, not an animation: reduced motion keeps it. Like the meters, it
+        # runs only while the window shows.
+        window.installEventFilter(self)
+        self._sync_trace_timer()
 
     model = Property(dict, lambda self: self._model, constant=True)
 
@@ -121,6 +124,23 @@ class QuickBridge(QObject):
 
     levelsChanged = Signal()
     levels = Property(list, lambda self: list(self._levels), notify=levelsChanged)
+
+    def _sync_trace_timer(self) -> None:
+        window = self._window
+        if window.isVisible() and not window.isMinimized():
+            if not self._trace_timer.isActive():
+                self._trace_timer.start()
+        else:
+            self._trace_timer.stop()
+
+    def eventFilter(self, watched, event) -> bool:
+        kind = event.type()
+        if kind == QEvent.Type.Hide:
+            # Also sent while the window is destroyed, when it can no longer be asked.
+            self._trace_timer.stop()
+        elif kind in (QEvent.Type.Show, QEvent.Type.WindowStateChange):
+            self._sync_trace_timer()
+        return False
 
     def _sample_levels(self) -> None:
         """Record input and output level from what the meters already show."""

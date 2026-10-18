@@ -5,6 +5,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Effects
 import QtQuick.Layouts
+import QtQuick.Templates as T
 import AudioForge
 
 Rectangle {
@@ -12,6 +13,7 @@ Rectangle {
 
     readonly property var m: ui.model
     readonly property var t: m.theme
+    readonly property bool hasIcons: t.iconFont !== ""
     readonly property bool effects: GraphicsInfo.api !== GraphicsInfo.Software
     readonly property bool wide: width >= 1200
     // The band editor needs more room than the rest of the page for two columns.
@@ -86,7 +88,7 @@ Rectangle {
     }
 
     component FocusRing: Rectangle {
-        property var control: parent
+        property T.Control control
         anchors.fill: parent
         anchors.margins: -3
         radius: height / 2 < 9 ? height / 2 : 9
@@ -94,6 +96,13 @@ Rectangle {
         border.width: 2
         border.color: root.t.accent
         visible: control.visualFocus
+    }
+
+    component FadeIn: NumberAnimation {
+        from: 0
+        to: 1
+        duration: root.t.motion
+        easing.type: Easing.OutCubic
     }
 
     component Caption: Text {
@@ -154,27 +163,34 @@ Rectangle {
         Keys.onEnterPressed: event => { if (!event.isAutoRepeat) click() }
     }
 
-    component Toggle: KeyButton {
+    // A button whose check state belongs to the model. Every way of switching it (pointer, keys,
+    // assistive technology) changes `checked`, so requested() follows that; the model decides,
+    // and the button goes back to the model's state `on`.
+    component ModelButton: KeyButton {
+        property bool on
+        signal requested()
+        // The real check state, so assistive technology also hears it before the first change.
+        checkable: true
+        checked: on
+        onCheckedChanged: if (checked !== on) {
+            if (enabled) requested()
+            checked = Qt.binding(() => on)
+        }
+        Accessible.onPressAction: click()
+    }
+
+    component Toggle: ModelButton {
         id: toggle
         property var proxy
-        readonly property bool on: proxy ? proxy.checked : false
+        on: proxy ? proxy.checked : false
         // Colors follow this rather than `enabled`, so a row can own the click.
         property bool live: enabled
         enabled: proxy ? proxy.enabled : false
         implicitHeight: 22
         implicitWidth: track.width + (label.text === "" ? 0 : label.implicitWidth + 10)
-        // The real check state, so assistive technology also hears it before the first change.
-        // Every way of switching (pointer, keys, assistive technology) changes `checked`, so the
-        // action follows it; the model decides, and the switch goes back to the model's state.
-        checkable: true
-        checked: on
-        onCheckedChanged: if (proxy && checked !== on) {
-            if (enabled) proxy.click()
-            checked = Qt.binding(() => on)
-        }
+        onRequested: proxy.click()
         Accessible.role: Accessible.CheckBox
         Accessible.name: proxy && proxy.name !== "" ? proxy.name : text
-        Accessible.onPressAction: toggle.toggle()
         Hint { text: toggle.proxy ? toggle.proxy.toolTip : "" }
         background: null
         contentItem: Item {
@@ -492,10 +508,9 @@ Rectangle {
         }
         contentItem: Text {
             id: face
-            readonly property bool glyphs: root.t.iconFont !== ""
-            text: glyphs ? iconBtn.glyph : iconBtn.label
-            font.family: glyphs ? root.t.iconFont : Application.font.family
-            font.pixelSize: glyphs ? root.fsLead : root.fsBody
+            text: root.hasIcons ? iconBtn.glyph : iconBtn.label
+            font.family: root.hasIcons ? root.t.iconFont : Application.font.family
+            font.pixelSize: root.hasIcons ? root.fsLead : root.fsBody
             color: iconBtn.hovered ? root.t.hover_text : root.t.text_muted
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
@@ -662,7 +677,7 @@ Rectangle {
             }
             Text {
                 text: root.m.glyphs.expand
-                visible: root.t.iconFont !== ""
+                visible: root.hasIcons
                 font.family: root.t.iconFont
                 font.pixelSize: root.fsCaption
                 color: root.t.text_primary
@@ -736,13 +751,13 @@ Rectangle {
                 required property var modelData
                 row: modelData
                 Layout.fillWidth: true
-                NumberAnimation on opacity { from: 0; to: 1; duration: root.t.motion; easing.type: Easing.OutCubic }
+                FadeIn on opacity {}
             }
         }
     }
 
     // One line of the Settings page: a switch, an action, or a menu.
-    component SettingRow: KeyButton {
+    component SettingRow: ModelButton {
         id: setting
         property var row
         readonly property var p: row.proxy
@@ -750,17 +765,13 @@ Rectangle {
         visible: p.shown
         enabled: p.enabled
         implicitHeight: 44
-        // A switch row acts on its check state (see Toggle); the other rows on the click.
+        // A switch row acts on its check state (see ModelButton); the other rows on the click.
         onClicked: if (!isSwitch) root.press(this, p)
         checkable: isSwitch
-        checked: p.checked
-        onCheckedChanged: if (isSwitch && checked !== p.checked) {
-            if (enabled) root.press(this, p)
-            checked = Qt.binding(() => p.checked)
-        }
+        on: isSwitch && p.checked
+        onRequested: root.press(this, p)
         Accessible.role: isSwitch ? Accessible.CheckBox : Accessible.Button
         Accessible.name: p.text
-        Accessible.onPressAction: isSwitch ? setting.toggle() : root.press(setting, p)
         Hint { text: setting.p.toolTip !== setting.p.text ? setting.p.toolTip : "" }
         background: Rectangle {
             radius: root.t.radiusControl
@@ -789,7 +800,7 @@ Rectangle {
                 Layout.rightMargin: 10
             }
             Text {
-                visible: !setting.isSwitch && setting.enabled && root.t.iconFont !== ""
+                visible: !setting.isSwitch && setting.enabled && root.hasIcons
                 text: setting.row.kind === "menu" ? root.m.glyphs.expand : root.m.glyphs.next
                 Layout.rightMargin: 14
                 font.family: root.t.iconFont
@@ -915,7 +926,7 @@ Rectangle {
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: nav.modelData[0]
-                            visible: root.t.iconFont !== ""
+                            visible: root.hasIcons
                             color: nav.current ? root.t.accent
                                  : nav.hovered ? root.t.text_primary : root.t.text_muted
                             font.family: root.t.iconFont
@@ -963,10 +974,8 @@ Rectangle {
                     height: meterRow.height
                     Accessible.role: Accessible.ProgressBar
                     Accessible.name: modelData.name
-                    // The reading first; it changes only when the whole-dB value does.
-                    Accessible.description: modelData.description !== ""
-                                            ? modelData.valueText + ". " + modelData.description
-                                            : modelData.valueText
+                    // The reading first; it changes only when the whole-dB value or the words do.
+                    Accessible.description: modelData.accessibleText
                 }
             }
         }
@@ -1008,7 +1017,7 @@ Rectangle {
                     }
                     Text {
                         text: root.m.glyphs.next
-                        visible: root.t.iconFont !== ""
+                        visible: root.hasIcons
                         font.family: root.t.iconFont
                         font.pixelSize: root.fsCaption
                         color: root.t.text_muted
@@ -1146,11 +1155,11 @@ Rectangle {
                         Layout.fillWidth: false
                         Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
                         Btn { proxy: root.m.presets.menu }
-                        IconBtn { proxy: root.m.presets.undo; glyph: root.m.glyphs.undo; visible: root.t.iconFont !== "" }
-                        IconBtn { proxy: root.m.presets.redo; glyph: root.m.glyphs.redo; visible: root.t.iconFont !== "" }
+                        IconBtn { proxy: root.m.presets.undo; glyph: root.m.glyphs.undo; visible: root.hasIcons }
+                        IconBtn { proxy: root.m.presets.redo; glyph: root.m.glyphs.redo; visible: root.hasIcons }
                         // Without a system icon font the two are spelled out.
-                        Btn { proxy: root.m.presets.undo; visible: root.t.iconFont === "" }
-                        Btn { proxy: root.m.presets.redo; visible: root.t.iconFont === "" }
+                        Btn { proxy: root.m.presets.undo; visible: !root.hasIcons }
+                        Btn { proxy: root.m.presets.redo; visible: !root.hasIcons }
                         Btn { proxy: root.m.presets.testSound }
                         Btn { proxy: root.m.presets.autoEq }
                         Btn { objectName: "voiceSetupButton"; proxy: root.m.presets.voiceSetup }
@@ -1178,7 +1187,7 @@ Rectangle {
                         Accessible.role: Accessible.Graphic
                         Accessible.name: "Equalizer graph"
                         Accessible.description: graph ? graph.accessibleDescription : ""
-                        FocusRing { control: parent; visible: parent.activeFocus }
+                        FocusRing { visible: parent.activeFocus }
                     }
                     Caption {
                         text: eqCard.eq.layers.text
@@ -1221,7 +1230,7 @@ Rectangle {
                                 Text {
                                     anchors.centerIn: parent
                                     text: eqCard.eq.band.index + 1
-                                    color: root.t.text_on_accent
+                                    color: root.t.text_on_data_color
                                     font.pixelSize: root.fsCaption
                                     font.weight: Font.DemiBold
                                 }
@@ -1345,16 +1354,11 @@ Rectangle {
                         visible: details.open
                         spacing: 12
                         onVisibleChanged: if (visible) fadeIn.restart()
-                        NumberAnimation on opacity {
-                            id: fadeIn
-                            from: 0
-                            to: 1
-                            duration: root.t.motion
-                            easing.type: Easing.OutCubic
-                        }
+                        FadeIn on opacity { id: fadeIn }
                         Btn {
                             text: "Export diagnostics"
                             enabled: true
+                            Hint { text: "Save a support snapshot without audio or device names (Ctrl+Shift+D)" }
                             onClicked: ui.exportDiagnostics()
                         }
                         Btn {
@@ -1450,18 +1454,13 @@ Rectangle {
                 implicitHeight: 28
                 // A long reading must not push the other texts out of the strip.
                 Layout.maximumWidth: parent.room * 0.3
-                KeyButton {
+                ModelButton {
                     id: healthToggle
                     objectName: "healthToggle"
                     anchors.fill: parent
-                    checkable: true
-                    checked: root.m.page.index === root.m.healthPage
-                    onCheckedChanged: if (checked !== (root.m.page.index === root.m.healthPage)) {
-                        root.m.page.setIndex(checked ? root.m.healthPage : 0)
-                        checked = Qt.binding(() => root.m.page.index === root.m.healthPage)
-                    }
+                    on: root.m.page.index === root.m.healthPage
+                    onRequested: root.m.page.setIndex(checked ? root.m.healthPage : 0)
                     Accessible.role: Accessible.Button
-                    Accessible.onPressAction: healthToggle.toggle()
                     // Named by what it shows; the action goes in the description.
                     Accessible.name: root.m.status.health.text
                     Accessible.description: checked ? "Hide audio health details" : "Show audio health details"

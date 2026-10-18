@@ -62,11 +62,13 @@ class MeterModel(QObject):
     changed = Signal()
     # Only when the spoken value differs, so assistive technology is not told about every repaint.
     valueTextChanged = Signal()
+    accessibleTextChanged = Signal()
 
     def __init__(self, name: str = "", tip: str = "", parent: QObject | None = None):
         super().__init__(parent)
         self._name, self._tip, self._enabled = name, tip, True
         self._announced_value: str | None = None
+        self._announced_text: str | None = None
         self.changed.connect(self._sync_value_text)
 
     def _sync_value_text(self) -> None:
@@ -74,6 +76,15 @@ class MeterModel(QObject):
         if value != self._announced_value:
             self._announced_value = value
             self.valueTextChanged.emit()
+        text = self._accessible_text(value)
+        if text != self._announced_text:
+            self._announced_text = text
+            self.accessibleTextChanged.emit()
+
+    def _accessible_text(self, value: str) -> str:
+        """The reading, then what the meter adds, as one string for assistive technology."""
+        description = self._describe()
+        return f"{value}. {description}" if description else value
 
     def _read_value(self) -> str:
         """The reading as words, in whole units so that it changes only when it matters."""
@@ -90,6 +101,7 @@ class MeterModel(QObject):
     shown = Property(bool, lambda self: True, constant=True)
     description = Property(str, lambda self: self._describe(), notify=changed)
     valueText = Property(str, lambda self: self._read_value(), notify=valueTextChanged)
+    accessibleText = Property(str, lambda self: self._accessible_text(self._read_value()), notify=accessibleTextChanged)
 
     def _describe(self) -> str:
         """What assistive technology adds to the name right now."""

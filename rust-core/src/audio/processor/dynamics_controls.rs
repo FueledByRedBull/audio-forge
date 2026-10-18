@@ -28,7 +28,6 @@ impl AudioProcessor {
 
     /// Enable/disable de-esser.
     pub fn set_deesser_enabled(&self, enabled: bool) {
-        self.deesser_enabled.store(enabled, Ordering::Release);
         if let Ok(mut d) = self.deesser.lock() {
             d.set_enabled(enabled);
         }
@@ -781,7 +780,6 @@ impl AudioProcessor {
                 .clamp(DEESSER_LOW_CUT_MIN_HZ, DEESSER_LOW_CUT_MAX_HZ);
         }
 
-        self.deesser_enabled.store(state.enabled, Ordering::Release);
         if let Ok(mut d) = self.deesser.lock() {
             d.set_enabled(state.enabled);
             d.set_auto_enabled(state.auto_enabled);

@@ -192,7 +192,6 @@ pub struct AudioProcessor {
 
     /// De-esser
     deesser: Arc<Mutex<DeEsser>>,
-    deesser_enabled: Arc<AtomicBool>,
     deesser_control: Arc<Mutex<DeesserControlState>>,
     deesser_rt_control: Arc<AtomicDeesserControlState>,
     deesser_dirty: Arc<AtomicBool>,
@@ -577,7 +576,6 @@ impl AudioProcessor {
             compressor_rt_control: Arc::new(AtomicCompressorControlState::new()),
             compressor_dirty: Arc::new(AtomicBool::new(false)),
             deesser: Arc::new(Mutex::new(DeEsser::new(sample_rate as f64))),
-            deesser_enabled: Arc::new(AtomicBool::new(false)),
             deesser_control: Arc::new(Mutex::new(DeesserControlState::new())),
             deesser_rt_control: Arc::new(AtomicDeesserControlState::new()),
             deesser_dirty: Arc::new(AtomicBool::new(false)),

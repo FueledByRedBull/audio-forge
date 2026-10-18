@@ -186,6 +186,14 @@ impl SmoothNotch {
             return;
         }
         self.pending = NotchFilter::new(frequency_hz, self.q, self.sample_rate);
+        // A Q-36 notch rebuilt from zero state needs about 0.2 s to cancel hum
+        // again. Within half its bandwidth (f / 2Q) the active state is closer
+        // to the retuned notch's steady state than zero is, even when the move
+        // crosses the hum line; for wider moves it is not, so those restart.
+        if (frequency_hz - self.pending_frequency_hz).abs() <= 0.5 * frequency_hz / self.q {
+            self.pending.z1 = self.active.z1;
+            self.pending.z2 = self.active.z2;
+        }
         self.pending_frequency_hz = frequency_hz;
         self.fade_remaining = self.fade_total;
     }
@@ -743,6 +751,69 @@ mod adaptive_cleanup_tests {
         state.rumble_hold_samples = 480;
         state.process_block(&mut [0.0; 480]);
         assert_eq!(state.adaptive_highpass_hz, 100.0);
+    }
+
+    /// A 50.0 Hz notch (Q 36) settled on `hum_hz` hum and retuned to `to_hz`
+    /// at 3 s. `restart` clears the retuned state, as every retune did before.
+    fn render_notch_retune(to_hz: Option<f32>, hum_hz: f64, restart: bool) -> Vec<f32> {
+        use crate::test_signal::sine;
+        let mut notch = SmoothNotch::new(50.0, 36.0, 48_000.0);
+        (0..384_000)
+            .map(|n| {
+                if let (Some(to_hz), 144_000) = (to_hz, n) {
+                    notch.retune(to_hz);
+                    if restart {
+                        notch.pending.reset();
+                    }
+                }
+                notch.process_sample(sine(hum_hz, 0.1, 48_000.0, n))
+            })
+            .collect()
+    }
+
+    fn rms(signal: &[f32]) -> f64 {
+        (signal.iter().map(|&s| f64::from(s).powi(2)).sum::<f64>() / signal.len() as f64).sqrt()
+    }
+
+    #[test]
+    fn retuned_notch_keeps_cancelling_hum() {
+        // Hum at 50.15 Hz, inside the notch at both tunings. From zero state
+        // the hum came back: 0.0328 RMS over the 0.5 s after the retune
+        // against 0.0171 settled on either tuning; now 0.0094.
+        let retuned = render_notch_retune(Some(50.3), 50.15, false);
+        let restarted = render_notch_retune(Some(50.3), 50.15, true);
+        let after = rms(&retuned[144_000..168_000]);
+        let settled = rms(&retuned[120_000..144_000]);
+        assert!(
+            after < settled,
+            "residual hum {after} after the retune, {settled} settled"
+        );
+        assert!((rms(&restarted[144_000..168_000]) - 0.0328).abs() < 5e-4);
+
+        // A move across the hum line (0.6 Hz, just under f / 2Q) still beats
+        // a restart.
+        let crossing = rms(&render_notch_retune(Some(50.6), 50.3, false)[144_000..168_000]);
+        let crossing_restart = rms(&render_notch_retune(Some(50.6), 50.3, true)[144_000..168_000]);
+        assert!(
+            crossing < crossing_restart,
+            "{crossing} vs restart {crossing_restart}"
+        );
+
+        // Steady state: identical before the retune; from 4 s after it within
+        // 5e-4 (0.5% of the hum) of a notch tuned to 50.3 Hz from the start.
+        // f32 rounding in the Q-36 resonator alone leaves about 1.2e-4 here
+        // (1.3e-4 with the restart).
+        assert_eq!(
+            retuned[..144_000],
+            render_notch_retune(None, 50.15, false)[..144_000]
+        );
+        let mut target = SmoothNotch::new(50.3, 36.0, 48_000.0);
+        for (n, &actual) in retuned.iter().enumerate() {
+            let expected = target.process_sample(crate::test_signal::sine(50.15, 0.1, 48_000.0, n));
+            if n >= 336_000 {
+                assert!((actual - expected).abs() < 5e-4, "sample {n}");
+            }
+        }
     }
 }
 

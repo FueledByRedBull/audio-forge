@@ -47,6 +47,7 @@ impl AudioRingBuffer {
                 consumer: self.consumer,
                 capacity: self.capacity,
                 last_sample: 0.0, // Start at silence
+                resume_fade_remaining: 0,
             },
         )
     }
@@ -115,6 +116,8 @@ pub struct AudioConsumer {
     consumer: HeapCons<f32>,
     capacity: usize,
     last_sample: f32, // Track last sample for interpolation during underrun
+    /// Frames of the post-underrun fade-in still to apply.
+    resume_fade_remaining: usize,
 }
 
 impl AudioConsumer {
@@ -155,6 +158,14 @@ impl AudioConsumer {
 
     pub fn set_last_sample(&mut self, sample: f32) {
         self.last_sample = sample;
+    }
+
+    pub fn resume_fade_remaining(&self) -> usize {
+        self.resume_fade_remaining
+    }
+
+    pub fn set_resume_fade_remaining(&mut self, frames: usize) {
+        self.resume_fade_remaining = frames;
     }
 }
 

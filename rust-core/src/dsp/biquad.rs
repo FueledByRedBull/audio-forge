@@ -90,6 +90,8 @@ pub struct Biquad {
     pending_z2: f64,
     crossfade_total: usize,
     crossfade_remaining: usize,
+    /// A retarget arrived mid-fade; fade on to the current target afterwards.
+    retarget_queued: bool,
 
     // State variables for Direct Form II Transposed
     z1: f64,
@@ -133,6 +135,7 @@ impl Biquad {
             pending_z2: 0.0,
             crossfade_total: 0,
             crossfade_remaining: 0,
+            retarget_queued: false,
             z1: 0.0,
             z2: 0.0,
             filter_type,
@@ -297,6 +300,13 @@ impl Biquad {
         self.pending_z2 = 0.0;
         self.crossfade_total = 0;
         self.crossfade_remaining = 0;
+        self.retarget_queued = false;
+    }
+
+    /// A fade that has emitted samples blends two filters; restarting it
+    /// from the active filter would step the output back to that filter.
+    fn crossfade_has_started(&self) -> bool {
+        self.crossfade_remaining != 0 && self.crossfade_remaining != self.crossfade_total
     }
 
     fn clear_state(&mut self) {
@@ -306,9 +316,14 @@ impl Biquad {
         self.pending_z2 = 0.0;
         self.crossfade_total = 0;
         self.crossfade_remaining = 0;
+        self.retarget_queued = false;
     }
 
     fn schedule_coefficients_crossfade(&mut self, coeffs: (f64, f64, f64, f64, f64)) {
+        if self.crossfade_has_started() {
+            self.retarget_queued = true;
+            return;
+        }
         let (b0, b1, b2, a1, a2) = coeffs;
         self.pending_b0 = b0;
         self.pending_b1 = b1;
@@ -384,6 +399,10 @@ impl Biquad {
         self.crossfade_remaining -= 1;
         if self.crossfade_remaining == 0 {
             self.promote_pending_coefficients();
+            if self.retarget_queued {
+                self.retarget_queued = false;
+                self.schedule_coefficients_crossfade(self.calculate_coefficients_values());
+            }
         }
         output as f32
     }
@@ -425,9 +444,22 @@ impl Biquad {
     ///
     /// This is intended for already-smoothed modulation sources. UI parameter
     /// changes should use `set_gain_db` so they crossfade the audio output.
+    /// During a crossfade the new gain goes to the incoming filter only, so the
+    /// fade (e.g. a de-esser band moving) still completes.
     pub fn set_gain_db_immediate(&mut self, gain_db: f64) {
         self.gain_db = self.sanitized(self.frequency, gain_db, self.q).1;
-        self.set_coefficients_immediate(self.calculate_coefficients_values());
+        if self.crossfade_remaining == 0 {
+            self.set_coefficients_immediate(self.calculate_coefficients_values());
+        } else if !self.retarget_queued {
+            // A queued retarget already fades to this gain when it starts.
+            (
+                self.pending_b0,
+                self.pending_b1,
+                self.pending_b2,
+                self.pending_a1,
+                self.pending_a2,
+            ) = self.calculate_coefficients_values();
+        }
     }
 
     /// Set every coefficient-driving parameter in one click-safe update.
@@ -668,6 +700,69 @@ mod tests {
             previous = output;
         }
         assert!(max_step < 0.35, "rapid automation max step was {max_step}");
+    }
+
+    /// Render a 200 Hz tone through a 200 Hz peaking filter, boost it to 12 dB at
+    /// sample 4800 and run `retarget` 36 samples (half the fade) later.
+    fn render_retarget(retarget: impl Fn(&mut Biquad)) -> Vec<f32> {
+        use crate::test_signal::sine;
+        let mut filter = Biquad::new(BiquadType::Peaking, 200.0, 0.0, 1.0, 48_000.0);
+        (0..9_600)
+            .map(|n| {
+                if n == 4_800 {
+                    filter.set_gain_db(12.0);
+                }
+                if n == 4_836 {
+                    retarget(&mut filter);
+                }
+                filter.process_sample(sine(200.0, 0.2, 48_000.0, n))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_retarget_during_crossfade_continues_from_the_blend() {
+        use crate::test_signal::{max_residual, sine};
+        let tones = [200.0];
+        let single = render_retarget(|_| {});
+        let retargeted = render_retarget(|filter| filter.set_gain_db(-12.0));
+        // Restarting the fade from the old filter left a residual of 0.0501
+        // here; one clean fade leaves 0.0028.
+        let click = max_residual(&retargeted, &tones, 48_000.0, 4_752, 5_280);
+        let clean = max_residual(&single, &tones, 48_000.0, 4_752, 5_280);
+        assert!(
+            click < 1.1 * clean,
+            "retarget residual {click}, one fade {clean}"
+        );
+
+        // Steady state: untouched before the retarget, and 50 ms after it the
+        // filter is the -12 dB target within 1e-6 (measured 6e-15 before and after).
+        assert_eq!(retargeted[..4_836], single[..4_836]);
+        let mut settled = Biquad::new(BiquadType::Peaking, 200.0, -12.0, 1.0, 48_000.0);
+        for (n, &actual) in retargeted.iter().enumerate() {
+            let expected = settled.process_sample(sine(200.0, 0.2, 48_000.0, n));
+            if n >= 7_200 {
+                assert!((actual - expected).abs() < 1e-6, "sample {n}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_immediate_gain_during_crossfade_keeps_the_fade() {
+        let mut filter = Biquad::new(BiquadType::Peaking, 300.0, -6.0, 2.0, 48_000.0);
+        filter.set_parameters(BiquadType::Peaking, 600.0, -6.0, 2.0);
+        let _ = filter.process_sample(0.1);
+        filter.set_gain_db_immediate(-6.5);
+        assert!(filter.is_crossfading(), "a gain update cancelled the move");
+        for _ in 0..coefficient_crossfade_samples(48_000.0) {
+            let _ = filter.process_sample(0.1);
+        }
+        let target = Biquad::new(BiquadType::Peaking, 600.0, -6.5, 2.0, 48_000.0);
+        assert!(!filter.is_crossfading());
+        assert!(
+            (filter.magnitude_response_db(600.0) - target.magnitude_response_db(600.0)).abs()
+                < 1e-9
+        );
     }
 
     #[test]

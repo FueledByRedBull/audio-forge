@@ -39,7 +39,6 @@ pub struct OfflineDspBlockProcessor {
     true_peak_limiter: TruePeakLimiter,
     true_peak_detector: TruePeakDetector,
     pre_limiter_true_peak_detector: TruePeakDetector,
-    deesser_enabled: bool,
     /// Whether any block has been processed; enable changes before the first
     /// block apply instantly, later ones ramp like the live path.
     started: bool,
@@ -64,7 +63,6 @@ impl OfflineDspBlockProcessor {
             true_peak_limiter: TruePeakLimiter::default_settings(sample_rate as f32),
             true_peak_detector: TruePeakDetector::new(),
             pre_limiter_true_peak_detector: TruePeakDetector::new(),
-            deesser_enabled: false,
             started: false,
             normal_limiter_enabled: true,
             output_protection_enabled: true,
@@ -73,8 +71,10 @@ impl OfflineDspBlockProcessor {
     }
 
     pub fn set_deesser_enabled(&mut self, enabled: bool) {
-        self.deesser_enabled = enabled;
         self.deesser.set_enabled(enabled);
+        if !self.started {
+            self.deesser.finish_enable_transition();
+        }
     }
 
     pub fn set_eq_enabled(&mut self, enabled: bool) {
@@ -191,7 +191,7 @@ impl OfflineDspBlockProcessor {
         output.as_mut_slice().copy_from_slice(&input[..count]);
         let block = output.as_mut_slice();
 
-        if self.deesser_enabled {
+        if self.deesser.is_active() {
             self.deesser.process_block_inplace(block);
             stats.deesser_gain_reduction_db = self.deesser.current_gain_reduction_db();
         }

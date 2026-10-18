@@ -39,6 +39,9 @@ pub(crate) struct OutputProbeControl {
 /// buffer, a DSP slower than real time).
 pub(crate) const OUTPUT_PRIMING_MAX_US: u64 = 1_000_000;
 
+/// Frames over which an underrun fades out to silence and the next audio fades back in.
+const UNDERRUN_FADE_FRAMES: usize = 64;
+
 /// Output-callback underrun accounting shared with the processor.
 pub(crate) struct OutputUnderruns {
     pub(crate) streak: Arc<AtomicU32>,
@@ -203,7 +206,7 @@ impl AudioOutput {
             return;
         }
 
-        let fade_frames = remaining_frames.min(64);
+        let fade_frames = remaining_frames.min(UNDERRUN_FADE_FRAMES);
         if num_channels == 1 {
             for i in 0..remaining_frames {
                 let value = if i < fade_frames {
@@ -234,6 +237,23 @@ impl AudioOutput {
     }
 
     // RT_REGION_START: cpal_output_renderer
+    /// Ramp up the first audio after an underrun, which ended in silence.
+    fn fade_in_after_underrun(samples: &mut [f32], consumer: &mut AudioConsumer) {
+        let remaining = consumer.resume_fade_remaining();
+        let count = remaining.min(samples.len());
+        if count == 0 {
+            return;
+        }
+        let elapsed = UNDERRUN_FADE_FRAMES - remaining;
+        for (i, sample) in samples[..count].iter_mut().enumerate() {
+            let t = (elapsed + i + 1) as f32 / UNDERRUN_FADE_FRAMES as f32;
+            *sample *= (t * std::f32::consts::FRAC_PI_2).sin();
+        }
+        consumer.set_resume_fade_remaining(remaining - count);
+        // A tail starting inside the fade must fade from what was played.
+        consumer.set_last_sample(samples[samples.len() - 1]);
+    }
+
     fn render_output<T>(
         data: &mut [T],
         num_channels: usize,
@@ -260,6 +280,7 @@ impl AudioOutput {
             if count == 0 {
                 break;
             }
+            Self::fade_in_after_underrun(&mut scratch[..count], consumer);
 
             for (i, &sample) in scratch[..count].iter().enumerate() {
                 let frame_idx = copied_frames + i;
@@ -308,6 +329,7 @@ impl AudioOutput {
             }
             Self::fill_underrun_tail(data, copied_frames, num_channels, consumer.last_sample());
             consumer.set_last_sample(0.0);
+            consumer.set_resume_fade_remaining(UNDERRUN_FADE_FRAMES);
         } else {
             underruns.streak.store(0, Ordering::Relaxed);
             if queued_at_us != 0 {
@@ -790,6 +812,63 @@ mod tests {
         assert_eq!(output, [0.0; 4]);
         assert_eq!(underruns.streak.load(Ordering::Relaxed), 1);
         assert_eq!(underruns.total.load(Ordering::Relaxed), 1);
+    }
+
+    /// Serve 480-frame mono callbacks of a 997 Hz tone at 0.5, with callback
+    /// `dropout` finding the queue empty when `dropout` is set.
+    fn render_dropout(dropout: Option<usize>) -> Vec<f32> {
+        use crate::test_signal::sine;
+        let rb = crate::audio::AudioRingBuffer::new(4_096);
+        let (mut producer, mut consumer) = rb.split();
+        let underruns = queued_underruns(0, 0);
+        let mut scratch = [0.0_f32; 256];
+        let mut next = 0;
+        let mut rendered = Vec::new();
+        for callback in 0..20 {
+            if Some(callback) != dropout {
+                let block: Vec<f32> = (next..next + 480)
+                    .map(|n| sine(997.0, 0.5, 48_000.0, n))
+                    .collect();
+                assert_eq!(producer.write(&block), 480);
+                next += 480;
+            }
+            let mut output = [0.0_f32; 480];
+            AudioOutput::render_output(&mut output, 1, &mut consumer, &mut scratch, 0, &underruns);
+            rendered.extend_from_slice(&output);
+        }
+        rendered
+    }
+
+    #[test]
+    fn test_audio_after_an_underrun_fades_back_in() {
+        use crate::test_signal::max_residual;
+        let output = render_dropout(Some(10));
+        let clean = render_dropout(None);
+        let max_step = |range: std::ops::Range<usize>| {
+            range
+                .map(|n| (output[n] - output[n - 1]).abs())
+                .fold(0.0_f32, f32::max)
+        };
+        // Resuming at full level stepped 0.476 out of silence (residual 0.476);
+        // now 0.055, under the tone's own largest step of 0.065, and a
+        // residual of 0.012, under the existing fade-out's 0.024.
+        let resume_step = max_step(5_270..5_340);
+        let steady_step = max_step(1..4_800);
+        assert!(
+            resume_step <= steady_step,
+            "resume step {resume_step}, tone {steady_step}"
+        );
+        let resume = max_residual(&output, &[997.0], 48_000.0, 5_270, 5_400);
+        let fade_out = max_residual(&output, &[997.0], 48_000.0, 4_790, 4_900);
+        assert!(
+            resume < fade_out,
+            "resume residual {resume}, fade-out {fade_out}"
+        );
+
+        // Steady state: bit-identical before the dropout and from 64 frames
+        // after the resume, where the tone continues one callback late.
+        assert_eq!(output[..4_800], clean[..4_800]);
+        assert!((5_344..9_600).all(|n| output[n] == clean[n - 480]));
     }
 
     fn render_empty_queue(underruns: &OutputUnderruns) {

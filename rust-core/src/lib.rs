@@ -177,6 +177,42 @@ pub(crate) mod test_alloc {
     }
 }
 
+/// Click measurement for transition tests on tone inputs.
+#[cfg(test)]
+pub(crate) mod test_signal {
+    /// What is left of `signal` after the FIR `1 - 2cos(w)z^-1 + z^-2` for each
+    /// tone, which cancels a steady sinusoid exactly. A slowly moving gain
+    /// leaves a small residual; a step or a restart leaves a large one.
+    pub(crate) fn tone_residual(signal: &[f32], tones_hz: &[f64], sample_rate: f64) -> Vec<f64> {
+        let mut residual: Vec<f64> = signal.iter().map(|&sample| f64::from(sample)).collect();
+        for &tone_hz in tones_hz {
+            let c = 2.0 * (std::f64::consts::TAU * tone_hz / sample_rate).cos();
+            residual = (2..residual.len())
+                .map(|n| residual[n] - c * residual[n - 1] + residual[n - 2])
+                .collect();
+        }
+        residual
+    }
+
+    /// Largest residual magnitude among signal samples `start..end`.
+    pub(crate) fn max_residual(
+        signal: &[f32],
+        tones_hz: &[f64],
+        sample_rate: f64,
+        start: usize,
+        end: usize,
+    ) -> f64 {
+        let offset = 2 * tones_hz.len();
+        tone_residual(signal, tones_hz, sample_rate)[start.saturating_sub(offset)..end - offset]
+            .iter()
+            .fold(0.0, |peak, value| peak.max(value.abs()))
+    }
+
+    pub(crate) fn sine(frequency_hz: f64, amplitude: f64, sample_rate: f64, n: usize) -> f32 {
+        (amplitude * (std::f64::consts::TAU * frequency_hz * n as f64 / sample_rate).sin()) as f32
+    }
+}
+
 // Re-export main types
 pub use audio::{AudioProcessor, PyAudioProcessor};
 pub use dsp::{Biquad, Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ, RNNoiseProcessor};

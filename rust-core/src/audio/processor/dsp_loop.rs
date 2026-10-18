@@ -910,7 +910,6 @@ impl AudioProcessor {
         let eq_dirty = Arc::clone(&self.eq_dirty);
         let compressor_rt_control = Arc::clone(&self.compressor_rt_control);
         let compressor_dirty = Arc::clone(&self.compressor_dirty);
-        let deesser_enabled = Arc::clone(&self.deesser_enabled);
         let deesser_rt_control = Arc::clone(&self.deesser_rt_control);
         let deesser_dirty = Arc::clone(&self.deesser_dirty);
         let limiter_enabled = Arc::clone(&self.limiter_enabled);
@@ -1129,6 +1128,7 @@ impl AudioProcessor {
                 &lock_contention_count,
             );
             apply_deesser_control(&mut deesser_rt, &deesser_snapshot);
+            deesser_rt.finish_enable_transition();
             let limiter_snapshot = startup_control(
                 limiter_rt_control.snapshot(),
                 LimiterControlState::new,
@@ -1233,7 +1233,8 @@ impl AudioProcessor {
                         }
                     }
 
-                    if deesser_enabled.load(Ordering::Acquire) {
+                    // The de-esser owns its enable ramp, like the compressor.
+                    if deesser_rt.is_active() {
                         deesser_rt.process_block_inplace($buffer);
                         deesser_gain_reduction.store(
                             deesser_rt.current_gain_reduction_db().to_bits(),

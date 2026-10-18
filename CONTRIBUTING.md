@@ -54,14 +54,22 @@ cargo clippy --locked -p mic_eq_core --all-targets -- -D warnings
 
 Keep bug fixes, ownership refactors, and
 release preparation independently reviewable. Include a reproduction and a test
-that fails before a nontrivial fix. Changes to audible DSP behavior come in two
-kinds. A bug or transition fix (a click, step or restart when a stage toggles, a
-filter retunes, a parameter changes or the output recovers from a dropout) needs a
-deterministic test on fixed input: steady-state output stays the same within a
-stated tolerance, and the artifact gets measurably smaller. A tuning change (a
-default, threshold, model or Voice Setup decision) needs the objective, held-out
-evidence described in [evaluation/README.md](evaluation/README.md). Regenerate a
-reference output only in the pull request that means to change it, and say why.
+that fails before a nontrivial fix.
+
+Changes to audible DSP behavior come in three kinds. A transition fix removes an
+artifact at a change: a click, step or restart when a stage toggles, a filter
+retunes, a parameter changes or the output recovers from a dropout. It needs a
+deterministic test on a fixed input (synthetic or committed, with no open random
+seed) showing that steady-state output still matches the pre-fix output within a
+tolerance the test states, and that the artifact (peak step, click energy,
+restart gap) is measurably smaller. A bug fix that makes the output match its
+documented or tested intent, such as a wrong gain or a broken filter, needs the
+failing-before test above. Any other change to steady-state sound is a tuning
+change, whatever its motive (a default, threshold, model or Voice Setup
+decision), and needs the objective, held-out evidence described in
+[evaluation/README.md](evaluation/README.md). Update an expected-output file
+only in a pull request meant to change that output, and say why.
+
 Preserve strict realtime constraints in CPAL callbacks and the DSP loop after
 startup: no allocation, vector growth or Vec-returning suppressor helpers,
 formatting/logging, I/O, blocking locks, or `try_lock`. Keep parameter updates in

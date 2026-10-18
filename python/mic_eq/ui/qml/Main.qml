@@ -169,7 +169,7 @@ Rectangle {
         checkable: true
         checked: on
         onCheckedChanged: if (proxy && checked !== on) {
-            proxy.click()
+            if (enabled) proxy.click()
             checked = Qt.binding(() => on)
         }
         Accessible.role: Accessible.CheckBox
@@ -359,7 +359,8 @@ Rectangle {
         contentItem: Text {
             id: shown
             text: picker.prompting ? (picker.proxy.placeholder ?? "") : picker.displayText
-            color: picker.prompting ? root.t.text_muted : root.t.text_primary
+            color: picker.hovered || picker.down ? root.t.hover_text
+                 : picker.prompting ? root.t.text_muted : root.t.text_primary
             font.pixelSize: root.fsBody
             font.italic: picker.prompting
             elide: Text.ElideRight
@@ -371,7 +372,7 @@ Rectangle {
             text: root.m.glyphs.expand
             font.family: root.t.iconFont
             font.pixelSize: root.fsCaption
-            color: root.t.text_muted
+            color: picker.hovered || picker.down ? root.t.hover_text : root.t.text_muted
         }
         background: Rectangle {
             radius: root.t.radiusControl
@@ -388,7 +389,7 @@ Rectangle {
             highlighted: picker.highlightedIndex === index
             contentItem: Text {
                 text: option.modelData
-                color: root.t.text_primary
+                color: option.highlighted ? root.t.hover_text : root.t.text_primary
                 font.pixelSize: root.fsBody
                 elide: Text.ElideRight
                 verticalAlignment: Text.AlignVCenter
@@ -459,7 +460,7 @@ Rectangle {
             text: btn.text
             color: btn.look === "primary" ? root.t.text_on_accent
                  : btn.look === "danger" ? root.t.text_on_emphasis
-                 : root.t.text_primary
+                 : btn.hovered ? root.t.hover_text : root.t.text_primary
             font.pixelSize: root.fsBody
             font.weight: btn.look === "plain" ? Font.Normal : Font.DemiBold
             horizontalAlignment: Text.AlignHCenter
@@ -495,7 +496,7 @@ Rectangle {
             text: glyphs ? iconBtn.glyph : iconBtn.label
             font.family: glyphs ? root.t.iconFont : Application.font.family
             font.pixelSize: glyphs ? root.fsLead : root.fsBody
-            color: iconBtn.hovered ? root.t.text_primary : root.t.text_muted
+            color: iconBtn.hovered ? root.t.hover_text : root.t.text_muted
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
         }
@@ -754,7 +755,7 @@ Rectangle {
         checkable: isSwitch
         checked: p.checked
         onCheckedChanged: if (isSwitch && checked !== p.checked) {
-            root.press(this, p)
+            if (enabled) root.press(this, p)
             checked = Qt.binding(() => p.checked)
         }
         Accessible.role: isSwitch ? Accessible.CheckBox : Accessible.Button
@@ -1032,8 +1033,9 @@ Rectangle {
                         Layout.topMargin: 4
                         Layout.bottomMargin: 4
                     }
-                    Picker { proxy: root.m.top.mode; implicitWidth: 118 }
+                    // The mode picker sits between Mute and Stop, so one slip cannot hit both.
                     Toggle { proxy: root.m.top.mute; text: "Mute" }
+                    Picker { proxy: root.m.top.mode; implicitWidth: 118 }
                     Btn {
                         proxy: root.running ? root.m.top.stop : root.m.top.start
                         text: root.running ? "Stop" : "Start"

@@ -592,7 +592,7 @@ def test_tab_visits_the_page_in_reading_order(either_window, qapp) -> None:
     assert len(set(map(id, stops))) == len(stops)
     landmarks = [
         "Mic page", "Health page", "Settings page",
-        "Input audio device", "Output audio device", "Processing mode", "Mute output",
+        "Input audio device", "Output audio device", "Mute output", "Processing mode",
         "Start Processing",
         "Presets",
         "Enable EQ", "Tone preset", "Equalizer graph",
@@ -1106,6 +1106,23 @@ def test_the_gain_fader_keeps_room_beside_the_band_fields(quick_window, qapp, wi
     assert fader.width() >= 100
 
 
+@pytest.mark.parametrize("width", [900, 1199, 1200, 1400])
+def test_the_mode_picker_keeps_stop_away_from_mute(quick_window, qapp, width) -> None:
+    window = quick_window
+    window.resize(width, 900)
+    QTest.qWait(50)
+    top = window.quick_bridge.model["top"]
+    mute = _with_proxy(window, "Toggle", top["mute"])
+    mode = _with_proxy(window, "Picker", top["mode"])
+    start = _with_proxy(window, "Btn", top["start"])
+
+    def x_of(item) -> float:
+        return item.mapToScene(item.boundingRect().topLeft()).x()
+
+    assert x_of(mute) + mute.width() < x_of(mode) < x_of(start)
+    assert x_of(start) - (x_of(mute) + mute.width()) >= mode.width()
+
+
 def test_q_and_slope_show_only_for_the_filters_that_use_them(quick_window, qapp) -> None:
     window = quick_window
     _show(window, qapp)
@@ -1165,13 +1182,18 @@ def _perform(item, action: str) -> None:
     interface.doAction(name)
 
 
+KEYS = {"space": Qt.Key.Key_Space, "return": Qt.Key.Key_Return, "enter": Qt.Key.Key_Enter}
+
+
 def _click(window, item, qapp) -> None:
     centre = item.mapToScene(item.boundingRect().center()).toPoint()
     QTest.mouseClick(window.centralWidget(), Qt.MouseButton.LeftButton, pos=centre)
     qapp.processEvents()
 
 
-@pytest.mark.parametrize("how", ["toggleAction", "pressAction", "click", "key"])
+@pytest.mark.parametrize(
+    "how", ["toggleAction", "pressAction", "click", "space", "return", "enter"]
+)
 def test_a_switch_acts_once_and_shows_the_model_whichever_way_it_is_used(
     quick_window, qapp, how
 ) -> None:
@@ -1182,8 +1204,8 @@ def test_a_switch_acts_once_and_shows_the_model_whichever_way_it_is_used(
         for expected in (True, False):
             if how == "click":
                 _click(window, mute, qapp)
-            elif how == "key":
-                _activate(window, mute, Qt.Key.Key_Space, qapp)
+            elif how in KEYS:
+                _activate(window, mute, KEYS[how], qapp)
             else:
                 _perform(mute, how)
             qapp.processEvents()
@@ -1220,6 +1242,21 @@ def test_a_refused_switch_goes_back_to_the_models_state(quick_window, qapp) -> N
         _perform(toggle, "toggleAction")
         qapp.processEvents()
         assert toggle.property("checked") is on
+
+
+def test_a_disabled_switch_refuses_assistive_technology_and_snaps_back(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    mute = _with_proxy(window, "Toggle", window.quick_bridge.model["top"]["mute"])
+    clicks: list[bool] = []
+    mute.property("proxy").click = lambda: clicks.append(True)
+    window.user_mute_checkbox_action.setEnabled(False)
+    qapp.processEvents()
+    assert mute.property("enabled") is False
+    with _AccessibleScene():
+        _perform(mute, "toggleAction")
+        qapp.processEvents()
+    assert clicks == [] and mute.property("checked") is False
 
 
 def test_the_health_chip_follows_the_page_when_toggled_by_assistive_technology(

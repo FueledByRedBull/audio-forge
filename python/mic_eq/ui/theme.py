@@ -7,7 +7,7 @@ from drifting apart across different Windows appearance settings.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import os
 import sys
 
@@ -31,6 +31,8 @@ class SemanticPalette:
     text_muted: str = "#a2abb8"
     text_on_emphasis: str = "#ffffff"
     text_on_accent: str = "#14171c"
+    # Text on a hovered or selected control; the dark look keeps the normal text color.
+    hover_text: str = "#eef1f5"
     accent: str = "#f2743a"
     accent_hover: str = "#ff8a55"
     accent_pressed: str = "#d9612b"
@@ -97,7 +99,87 @@ class SemanticPalette:
     meter_reduction: str = "#f5c542"
 
 
-PALETTE = SemanticPalette()
+
+def windows_contrast_colors() -> dict[str, str] | None:
+    """Return the user's colors while a Windows contrast theme is on, else None."""
+
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        class HighContrast(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", ctypes.c_uint),
+                ("dwFlags", ctypes.c_uint),
+                ("lpszDefaultScheme", ctypes.c_wchar_p),
+            ]
+
+        info = HighContrast(ctypes.sizeof(HighContrast))
+        spi_get_high_contrast = 0x0042
+        hcf_high_contrast_on = 0x1
+        user32 = ctypes.windll.user32
+        if not user32.SystemParametersInfoW(
+            spi_get_high_contrast, info.cbSize, ctypes.byref(info), 0
+        ) or not info.dwFlags & hcf_high_contrast_on:
+            return None
+
+        def system_color(index: int) -> str:
+            # GetSysColor returns 0x00BBGGRR.
+            value = user32.GetSysColor(index)
+            return f"#{value & 0xFF:02x}{value >> 8 & 0xFF:02x}{value >> 16 & 0xFF:02x}"
+
+        color_window, color_window_text, color_gray_text = 5, 8, 17
+        color_highlight, color_highlight_text = 13, 14
+        return {
+            "window": system_color(color_window),
+            "window_text": system_color(color_window_text),
+            "gray_text": system_color(color_gray_text),
+            "highlight": system_color(color_highlight),
+            "highlight_text": system_color(color_highlight_text),
+        }
+    except (AttributeError, OSError):
+        return None
+
+
+def build_palette(system: dict[str, str] | None) -> SemanticPalette:
+    """Return the dark palette, or the user's contrast-theme colors when given."""
+
+    if system is None:
+        return SemanticPalette()
+    window, text, disabled = system["window"], system["window_text"], system["gray_text"]
+    accent, on_accent = system["highlight"], system["highlight_text"]
+    # Surfaces are the window color and text the window text, so any pair stays readable;
+    # a contrast theme has no muted tone, only GrayText for what cannot be used.
+    return replace(
+        SemanticPalette(),
+        app_surface=window, rail_surface=window, card_surface=window,
+        control_surface=window, control_surface_alt=window, control_hover=accent,
+        border=text, border_strong=text,
+        text_primary=text, text_muted=text, text_on_emphasis=window,
+        text_on_accent=on_accent, hover_text=on_accent,
+        accent=accent, accent_hover=accent, accent_pressed=accent,
+        action_primary=accent, action_destructive=text, action_destructive_border=text,
+        action_secondary=window, action_secondary_border=text,
+        action_disabled=window, action_disabled_text=disabled,
+        action_disabled_surface=window, action_disabled_border=disabled,
+        status_ok_surface=window, status_ok_text=text, status_ok_border=text,
+        status_warn_surface=window, status_warn_text=text, status_warn_border=text,
+        status_bad_surface=window, status_bad_text=text, status_bad_border=text,
+        status_info_surface=window, status_info_text=text, status_info_border=text,
+        status_idle_surface=window, status_idle_text=text, status_idle_border=text,
+        warning_banner_surface=accent, warning_banner_text=on_accent,
+        data_surface=window, data_surface_raised=window, data_grid=disabled,
+        data_text=text, data_text_muted=text, data_curve=text,
+        data_marker=accent, data_warning=accent, data_handle_selected=text,
+        meter_scale=text,
+    )
+
+
+# Read once at import: the styles below are built from it, so a contrast theme
+# switched on while the app runs is picked up at the next start.
+SYSTEM_CONTRAST_COLORS = windows_contrast_colors()
+PALETTE = build_palette(SYSTEM_CONTRAST_COLORS)
 
 RADIUS_CARD = 10
 RADIUS_CONTROL = 6
@@ -251,12 +333,12 @@ SUBDUED_TEXT_STYLE = f"font-size: 9pt; color: {PALETTE.text_muted};"
 DESCRIPTION_LABEL_STYLE = f"color: {PALETTE.text_muted}; font-size: 9pt; padding: 5px;"
 PROGRESS_LABEL_STYLE = f"font-size: 12pt; color: {PALETTE.text_primary}; font-weight: bold;"
 
-def _button_style(surface: str, text: str, border: str, hover: str) -> str:
+def _button_style(surface: str, text: str, border: str, hover: str, hover_text: str) -> str:
     return (
         f"QPushButton {{ background-color: {surface}; color: {text}; "
         f"font-weight: 600; border: 1px solid {border}; "
         f"border-radius: {RADIUS_CONTROL}px; padding: 6px 10px; }} "
-        f"QPushButton:hover {{ background-color: {hover}; }} "
+        f"QPushButton:hover {{ background-color: {hover}; color: {hover_text}; }} "
         f"QPushButton:focus {{ border-color: {PALETTE.text_primary}; }} "
         f"QPushButton:disabled {{ background-color: {PALETTE.action_disabled_surface}; "
         f"color: {PALETTE.action_disabled_text}; "
@@ -275,6 +357,7 @@ PRIMARY_ACTION_BUTTON_STYLE = _button_style(
     PALETTE.text_on_accent,
     PALETTE.action_primary,
     PALETTE.accent_hover,
+    PALETTE.text_on_accent,
 )
 
 SECONDARY_ACTION_BUTTON_STYLE = _button_style(
@@ -282,6 +365,7 @@ SECONDARY_ACTION_BUTTON_STYLE = _button_style(
     PALETTE.text_primary,
     PALETTE.action_secondary_border,
     PALETTE.control_hover,
+    PALETTE.hover_text,
 )
 
 CARD_STYLE = (
@@ -375,7 +459,7 @@ QGroupBox QGroupBox::title {{ padding: 10px 0 0 0; color: {p.text_muted}; }}
 QPushButton {{ background-color: {p.action_secondary}; color: {p.text_primary};
     border: 1px solid {p.action_secondary_border}; {control}
     padding: 6px 10px; }}
-QPushButton:hover {{ background-color: {p.control_hover}; }}
+QPushButton:hover {{ background-color: {p.control_hover}; color: {p.hover_text}; }}
 QPushButton:pressed {{ background-color: {p.control_surface_alt}; }}
 QPushButton:checked {{ border-color: {p.accent}; color: {p.accent}; }}
 QPushButton:focus {{ border-color: {p.text_primary}; }}
@@ -397,7 +481,7 @@ QAbstractSpinBox {{ qproperty-buttonSymbols: NoButtons; }}
 QComboBox QAbstractItemView {{ background-color: {p.control_surface};
     color: {p.text_primary}; border: 1px solid {p.border_strong};
     selection-background-color: {p.control_hover};
-    selection-color: {p.text_primary}; outline: 0; }}
+    selection-color: {p.hover_text}; outline: 0; }}
 
 QTextEdit {{ background-color: {p.data_surface};
     color: {p.text_primary}; border: 1px solid {p.border}; {control}
@@ -429,7 +513,7 @@ QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 QMenu {{ background-color: {p.control_surface}; color: {p.text_primary};
     border: 1px solid {p.border_strong}; padding: 4px; }}
 QMenu::item {{ padding: 6px 24px 6px 28px; border-radius: 4px; }}
-QMenu::item:selected {{ background-color: {p.control_hover}; }}
+QMenu::item:selected {{ background-color: {p.control_hover}; color: {p.hover_text}; }}
 QMenu::item:disabled {{ color: {p.action_disabled_text}; }}
 QMenu::separator {{ height: 1px; background-color: {p.border};
     margin: 4px 8px; }}

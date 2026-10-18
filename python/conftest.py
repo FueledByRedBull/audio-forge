@@ -163,6 +163,12 @@ def discard_unsaved_test_windows(monkeypatch, guard_violations):
 
 
 @pytest.fixture(autouse=True)
+def close_windows_without_the_quit_question(monkeypatch):
+    """A window closed while a test fakes a running engine must not wait for an answer."""
+    monkeypatch.setattr("mic_eq.ui.main_window.MainWindow._quit_choice", lambda _self: "quit")
+
+
+@pytest.fixture(autouse=True)
 def dispose_test_windows(monkeypatch):
     """Destroy each test's Qt parents through the event loop before Python GC."""
     app = QApplication.instance()

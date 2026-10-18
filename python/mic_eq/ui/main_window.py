@@ -8,6 +8,7 @@ DEBUG: Added terminal logging for processor state tracking
 
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QMainWindow,
     QDialog,
     QMessageBox,
@@ -73,6 +74,7 @@ from .device_selection import (
     start_processor_for_route,
 )
 from .stream_recovery import StreamRecoveryManager
+from .theme import SYSTEM_CONTRAST_COLORS, windows_contrast_colors
 from .config_history import (
     BoundedConfigurationHistory,
     ConfigurationSnapshot,
@@ -1515,6 +1517,12 @@ class MainWindow(QMainWindow):
         app = QGuiApplication.instance()
         if app is not None and not tray_only:
             app.aboutToQuit.connect(self._mark_quitting)
+            if isinstance(app, QGuiApplication):
+                # Direct, so the flag is set before Qt closes the windows for a Windows sign-out
+                # or shutdown; that close must neither ask a question nor hide to the tray.
+                app.commitDataRequest.connect(
+                    self._mark_quitting, Qt.ConnectionType.DirectConnection
+                )
 
         configured_hotkey = str(getattr(self.config, "mute_hotkey", "") or "")
         if configured_hotkey and not tray_only:
@@ -1649,11 +1657,62 @@ class MainWindow(QMainWindow):
             if not isinstance(modal, QDialog) or modal is self:
                 break
             modal.reject()
+        choice = self._quit_choice()
+        if choice == "tray":
+            self._hide_to_tray()
+            return
+        if choice == "cancel":
+            return
         self._quitting = True
         if self.close():
             app = QGuiApplication.instance()
             if app is not None:
                 app.quit()
+
+    def _quit_choice(self) -> str:
+        """Ask before a quit stops live audio: "quit", "tray" (hide, keep running) or "cancel"."""
+        if not self.processor.is_running() or not self.config.confirm_quit_when_live:
+            return "quit"
+        box = QMessageBox(
+            QMessageBox.Icon.Question,
+            "Stop Audio and Quit?",
+            "AudioForge is processing audio. Quitting stops it.",
+            parent=self,
+        )
+        quit_button = box.addButton("Quit", QMessageBox.ButtonRole.AcceptRole)
+        tray_button = None
+        if self._tray_icon is not None and self._tray_icon.isVisible():
+            tray_button = box.addButton("Keep Running in Tray", QMessageBox.ButtonRole.AcceptRole)
+        cancel_button = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(cancel_button)
+        box.setEscapeButton(cancel_button)
+        dont_ask = QCheckBox("Don't ask again")
+        box.setCheckBox(dont_ask)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is quit_button:
+            if dont_ask.isChecked():
+                self.config.confirm_quit_when_live = False
+                self._save_config_safely()
+            return "quit"
+        return "tray" if clicked is tray_button else "cancel"
+
+    def _hide_to_tray(self) -> None:
+        assert self._tray_icon is not None
+        if not self.__dict__.get("_hidden_to_tray"):
+            self._tray_icon.showMessage(
+                "AudioForge is running in the background",
+                "Audio continues while the window is closed. "
+                "Use the tray icon to show the window or Quit AudioForge.",
+                QSystemTrayIcon.MessageIcon.Information,
+                8000,
+            )
+        self._hidden_to_tray = True
+        self.hide()
+        self.status_message.showMessage(
+            "AudioForge is still running in the tray; use Quit AudioForge to exit",
+            5000,
+        )
 
     def _set_startup_preset(self, preset_id: str):
         """Set the startup preset and update checked states.
@@ -3238,6 +3297,14 @@ class MainWindow(QMainWindow):
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange:
             self._sync_meter_timer()
+        elif (
+            event.type() == QEvent.Type.ThemeChange
+            and "status_message" in self.__dict__
+            and windows_contrast_colors() != SYSTEM_CONTRAST_COLORS
+        ):
+            self.status_message.showMessage(
+                "Restart AudioForge to match the new Windows contrast colors", 8000
+            )
 
     def _sync_meter_timer(self) -> None:
         timer = self.__dict__.get("meter_timer")
@@ -4427,29 +4494,21 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close."""
-        if (
-            not self._quitting
-            and self._tray_icon is not None
-            and self._tray_icon.isVisible()
-            and self._close_to_tray_action is not None
-            and self._close_to_tray_action.isChecked()
-        ):
-            if not self.__dict__.get("_hidden_to_tray"):
-                self._tray_icon.showMessage(
-                    "AudioForge is running in the background",
-                    "Audio continues while the window is closed. "
-                    "Use the tray icon to show the window or Quit AudioForge.",
-                    QSystemTrayIcon.MessageIcon.Information,
-                    8000,
-                )
-            self._hidden_to_tray = True
-            self.hide()
-            event.ignore()
-            self.status_message.showMessage(
-                "AudioForge is still running in the tray; use Quit AudioForge to exit",
-                5000,
-            )
-            return
+        if not self._quitting:
+            if (
+                self._tray_icon is not None
+                and self._tray_icon.isVisible()
+                and self._close_to_tray_action is not None
+                and self._close_to_tray_action.isChecked()
+            ):
+                choice = "tray"
+            else:
+                choice = self._quit_choice()
+            if choice != "quit":
+                if choice == "tray":
+                    self._hide_to_tray()
+                event.ignore()
+                return
 
         if not self._confirm_discard_changes():
             self._quitting = False

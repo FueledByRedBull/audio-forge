@@ -219,6 +219,17 @@ def test_invalid_config_backup_collision_uses_exclusive_next_slot(tmp_path, monk
     )
 
 
+@pytest.mark.parametrize("old_version", [{}, {"schema_version": 1}])
+def test_a_config_from_before_the_quit_prompt_asks_and_then_saves_version_2(old_version):
+    loaded = AppConfig.from_dict({"close_to_tray": True, **old_version})
+    assert loaded.confirm_quit_when_live is True and loaded.close_to_tray is True
+    loaded.confirm_quit_when_live = False
+    saved = loaded.to_dict()
+    assert saved["schema_version"] == config.CONFIG_SCHEMA_VERSION == 2
+    assert AppConfig.from_dict(saved).confirm_quit_when_live is False
+    assert AppConfig.from_dict({"confirm_quit_when_live": "no"}).confirm_quit_when_live is True
+
+
 def test_negative_config_schema_is_rejected():
     with pytest.raises(config.PresetValidationError, match="cannot be negative"):
         AppConfig.from_dict({"schema_version": -1})

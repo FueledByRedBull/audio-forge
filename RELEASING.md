@@ -57,6 +57,8 @@ archive, and one `SHA256SUMS.txt`.
    hosted job can run them. Keep each measurement bound to its candidate
    revision and digest, never attribute an earlier candidate's results to the
    final binary, and name untested configurations in the release notes.
+   The runner is a personal machine that executes repository code: register it
+   only while a run is needed, and only for this repository.
 6. **Promote.** Run `Promote release candidate` with `release_tag`,
    `candidate_run_id`, and `expected_archive_sha256`. It downloads the same
    candidate bytes, verifies sidecars, evidence, and corresponding source
@@ -136,8 +138,12 @@ Then build the portable tree from `AudioForge.spec` and the MSI from it:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
-powershell -ExecutionPolicy Bypass -File .\build_msi.ps1
+powershell -ExecutionPolicy Bypass -File .\build_msi.ps1 -AcceptWixEula
 ```
+
+`build_msi.ps1` accepts the WiX Toolset 7 OSMF EULA only when you pass
+`-AcceptWixEula`; without it the script stops before building. Review the
+EULA before passing the switch. The release workflow passes it.
 
 `build_exe.ps1` verifies runtime assets, rebuilds the native extension with
 locked Cargo resolution, collects dependency notices, and reuses PyInstaller's
@@ -220,7 +226,7 @@ criteria come from a one-hour pilot on 2026-10-15.
 
 2. Choose the real microphone as input and an output endpoint nobody listens
    to, and turn the top-bar **Mute** toggle on. Change nothing else, and don't
-   press **Reset drop counter**. Press **Start Processing** (minute 0), then
+   press **Reset drop counter**. Press **Start** (minute 0), then
    run this in a second PowerShell window:
 
    ```powershell
@@ -285,8 +291,8 @@ every part of its criterion holds; record "not run" for any skipped.
 2. **Pages.** Open **Mic**, **Health** and **Settings** from the rail. Pass:
    each shows all its controls, no dialog opens, processing is stopped, and the
    About version (**Settings > Help**) is the candidate's.
-3. **Start and Stop.** Press **Start Processing**, speak, press **Stop
-   Processing**, then Start again. Pass: the input meter follows your voice,
+3. **Start and Stop.** Press **Start**, speak, press **Stop**,
+   then Start again. Pass: the input meter follows your voice,
    the status dot shows running, and the Health page's Drops row stays clear for
    30 seconds after Start. After Stop the window stays open, the meters fall to
    idle and the dot shows stopped.
@@ -305,8 +311,8 @@ every part of its criterion holds; record "not run" for any skipped.
    previous settings.
 7. **Health indicator and status bar.** While running, mute the microphone in
    Windows sound settings for ten seconds. Pass: the indicator names the quiet
-   input and Health gives advice for it; unmuting clears both. After **Stop
-   Processing**, the advice and tooltips are gone and the dot shows stopped.
+   input and Health gives advice for it; unmuting clears both. After **Stop**,
+   the advice and tooltips are gone and the dot shows stopped.
 8. **Tray and quit.** In **Settings > Tray and background**, turn on
    close-to-tray, start processing and close the window. Pass: audio keeps
    running, the tray tooltip reads "AudioForge: Running", **Show AudioForge**
@@ -449,7 +455,7 @@ shipping, verify the exact portable/MSI payload on Windows: explicit opt-in/out,
 Windows-disabled registration surviving upgrade, delayed endpoint enumeration,
 tray recovery/absence, ordinary uninstall cleanup, and preservation of a shortcut
 reassigned to a portable copy. Source tests do not establish those installer or
-Windows-shell lifecycle results; item 12 of the
+Windows-shell lifecycle results; item 13 of the
 [hands-on checklist](#hands-on-checklist) lists the checks.
 
 ## Local build cleanup

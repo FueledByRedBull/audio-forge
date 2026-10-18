@@ -452,14 +452,16 @@ jobs:
           powershell -ExecutionPolicy Bypass -File .\build_msi.ps1 `
             -Payload $upgradeBaselinePayload `
             -Version 0.0.0 `
-            -Output $upgradeBaseline
+            -Output $upgradeBaseline `
+            -AcceptWixEula
           if ($LASTEXITCODE -ne 0) {
             throw "MSI upgrade-baseline build failed with exit code $LASTEXITCODE."
           }
           powershell -ExecutionPolicy Bypass -File .\build_msi.ps1 `
             -Payload .\dist\AudioForge `
             -Version "${{ steps.meta.outputs.msi_version }}" `
-            -Output $installer
+            -Output $installer `
+            -AcceptWixEula
           if ($LASTEXITCODE -ne 0) {
             throw "MSI build failed with exit code $LASTEXITCODE."
           }
@@ -907,7 +909,7 @@ jobs:
             -WorkingDirectory $extract `
             -WindowStyle Hidden `
             -PassThru
-          $process | Wait-Process -Timeout 60
+          $process | Wait-Process -Timeout 60 -ErrorAction SilentlyContinue
           $process.Refresh()
           if (-not $process.HasExited) {
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
@@ -950,7 +952,6 @@ jobs:
               hidden_exe_startup = "passed"
               installer_provenance = "passed"
               installer_smoke = "passed"
-              installer_upgrade = "passed"
               source_distribution = "passed"
             }
           } | ConvertTo-Json -Depth 5 |

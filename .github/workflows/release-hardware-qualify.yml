@@ -100,7 +100,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.release_tag }}
+          ref: refs/tags/${{ inputs.release_tag }}
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -125,6 +125,30 @@ jobs:
             throw "The isolated hardware-qualification Python failed to start."
           }
 
+      - name: Verify the candidate run
+        id: producer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        run: |
+          if ($env:CANDIDATE_RUN_ID -notmatch '^\d+$') {
+            throw "candidate_run_id must contain only decimal digits."
+          }
+          $run = Invoke-RestMethod `
+            -Headers @{ Authorization = "Bearer $env:GH_TOKEN" } `
+            -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:CANDIDATE_RUN_ID"
+          $head = (git rev-parse HEAD).Trim()
+          if (
+            $run.name -ne "Release package" -or
+            $run.event -ne "workflow_dispatch" -or
+            $run.status -ne "completed" -or
+            $run.conclusion -ne "success" -or
+            $run.head_sha -ne $head
+          ) {
+            throw "candidate_run_id must be a successful Release package run of the release tag commit."
+          }
+          "attempt=$($run.run_attempt)" >> $env:GITHUB_OUTPUT
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: audioforge-release-candidate-${{ inputs.release_tag }}
@@ -142,6 +166,8 @@ jobs:
         env:
           EXPECTED_SHA256: ${{ inputs.expected_archive_sha256 }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          CANDIDATE_RUN_ATTEMPT: ${{ steps.producer.outputs.attempt }}
         run: |
           $canonicalTag = (python python/tools/release_version.py tag $env:RELEASE_TAG).Trim()
           if ($LASTEXITCODE -ne 0 -or $canonicalTag -ne $env:RELEASE_TAG) {
@@ -181,6 +207,9 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($tagCommit)) {
             throw "Unable to resolve release tag '$env:RELEASE_TAG'."
           }
+          if ((git rev-parse HEAD).Trim() -ne $tagCommit.Trim()) {
+            throw "The checkout is not the release tag commit."
+          }
 
           python python/tools/release_provenance.py verify `
             --bundle $extract `
@@ -191,6 +220,7 @@ jobs:
             --baseline evaluation/release-bundle-path-baseline.json `
             --expected-archive-sha256 ($env:EXPECTED_SHA256).ToLowerInvariant() `
             --expected-commit $tagCommit.Trim() `
+            --expected-producer "Release package" $env:CANDIDATE_RUN_ID $env:CANDIDATE_RUN_ATTEMPT `
             --require-source-distribution `
             --native-attestation $nativeAttestation.FullName
           if ($LASTEXITCODE -ne 0) {

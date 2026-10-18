@@ -6,20 +6,20 @@ build-backend = "maturin"
 name = "mic_eq"
 version = "1.18.1"
 description = "Low-latency microphone audio processor with noise suppression and equalization"
+license = "MIT"
 requires-python = ">=3.13,<3.14"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.13",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: Microsoft :: Windows",
 ]
 dependencies = [
     "PySide6-Essentials==6.11.1",
     "PySide6-Addons==6.11.1",
     "shiboken6==6.11.1",
-    "numpy>=1.24.0",
+    "numpy>=2.5,<3",
     "pywin32>=311; sys_platform == 'win32'",
 ]
 

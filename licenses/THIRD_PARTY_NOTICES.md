@@ -94,6 +94,27 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
+## Bench test fixtures
+
+The speech and noise recordings in `python/tests/fixtures/bench/` are test
+inputs for `python/tools/bench_report.py`. They are not part of the application
+bundle.
+
+| Files | Work | Authors | License |
+|---|---|---|---|
+| `take-*.wav`, `noise-*.wav` | Valentini-Botinhao, Cassia (2017), "Noisy speech database for training speech enhancement algorithms and TTS models", University of Edinburgh, School of Informatics, Centre for Speech Technology Research (CSTR), https://doi.org/10.7488/ds/2117. Speech is from the CSTR VCTK Corpus (https://doi.org/10.7488/ds/1994); noise is from DEMAND | Cassia Valentini-Botinhao; DEMAND: Joachim Thiemann, Nobutaka Ito and Emmanuel Vincent (https://doi.org/10.5281/zenodo.1227121) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/legalcode) |
+
+Changes: the takes are excerpts of clean test-set utterances of speakers p232
+and p257, trimmed, faded at their edges and concatenated with silent gaps. Each
+`noise-*.wav` is the noisy recording minus the clean recording of one test
+utterance, unscaled. `manifest.json` lists the source archive members and the
+SHA-256 of every file. The mixes are generated from these files at run time and
+are not stored.
+
+The DEMAND record lists CC BY 4.0 under its rights and CC BY-SA 3.0 in its
+description. The two `noise-*.wav` files are therefore also offered under
+[CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/legalcode).
+
 ## Corresponding source and release approval
 
 Release preparation must make the corresponding source and build instructions

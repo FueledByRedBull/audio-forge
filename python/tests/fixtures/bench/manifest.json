@@ -1,0 +1,1085 @@
+{
+ "schema_version": 1,
+ "purpose": "Fixed public clip set for the bench report (python/tools/bench_report.py).",
+ "sample_rate": 48000,
+ "source": {
+  "dataset": "Noisy speech database for training speech enhancement algorithms and TTS models (VoiceBank-DEMAND)",
+  "authors": "Cassia Valentini-Botinhao",
+  "publisher": "University of Edinburgh. School of Informatics. Centre for Speech Technology Research (CSTR)",
+  "doi": "10.7488/ds/2117",
+  "license": "CC BY 4.0",
+  "speech_origin": "CSTR VCTK Corpus, https://doi.org/10.7488/ds/1994",
+  "noise_origin": "DEMAND, https://doi.org/10.5281/zenodo.1227121 (CC BY 4.0)",
+  "archives": {
+   "clean_testset_wav.zip": {
+    "url": "https://datashare.ed.ac.uk/bitstreams/dec213d3-bf57-4777-9663-c24bdce92d5e/download",
+    "md5": "34eb1c0ba7ef667e9b966866c542fc16"
+   },
+   "noisy_testset_wav.zip": {
+    "url": "https://datashare.ed.ac.uk/bitstreams/13c1bfbf-14a6-41db-9b41-8f7310f01ad5/download",
+    "md5": "fb1b86caa31e8ba5b506c0c64da9aab5"
+   },
+   "testset_txt.zip": {
+    "url": "https://datashare.ed.ac.uk/bitstreams/09e12592-879e-4749-bf6d-e34cf0d1ddf6/download",
+    "md5": "6ca8ef3756f3769c05bb694e77ad29f0"
+   },
+   "logfiles.zip": {
+    "url": "https://datashare.ed.ac.uk/bitstreams/11185dc8-9cf1-405b-b858-35bd6a04aedd/download",
+    "md5": "0d16f5b6afe12d64238d1e4a0e6ff6e8",
+    "members_read": {
+     "log_testset.txt": "6cb8dc69aac3473bbe8709357411fc9a63c8c1d273938893129300df647d67c0"
+    }
+   }
+  },
+  "changes": "Excerpted and trimmed utterances, concatenated with silent gaps into takes; noise is noisy minus clean of one test utterance each, unscaled."
+ },
+ "takes": {
+  "t01": {
+   "file": "take-t01.wav",
+   "speaker": "p232",
+   "gender": "male",
+   "content": "plain sentences",
+   "sha256": "38081397e271198c78acc2268097adeddd4ae8a71daf7afe084fcabd23bdd652",
+   "bytes": 946584,
+   "duration_s": 9.86,
+   "utterances": [
+    {
+     "utterance": "p232_073",
+     "text": "There could be a way back.",
+     "member": "clean_testset_wav/p232_073.wav",
+     "member_sha256": "baedf54c30faf072fb0f2b293f4a79581abf710345d8e7384ed7f1d42e2529b8",
+     "source_samples": [
+      0,
+      91599
+     ],
+     "take_samples": [
+      14400,
+      105999
+     ],
+     "transcript_member": "testset_txt/p232_073.txt",
+     "transcript_sha256": "53d8c343a4e365138d8713c3e86bdcba8d28e031111cd117a82dabc79ba46969"
+    },
+    {
+     "utterance": "p232_101",
+     "text": "They were outside the circle.",
+     "member": "clean_testset_wav/p232_101.wav",
+     "member_sha256": "a763cb02a81b919ba2150f64a213498526bbedccf22d8ac6b071b9205e59c944",
+     "source_samples": [
+      960,
+      93120
+     ],
+     "take_samples": [
+      177999,
+      270159
+     ],
+     "transcript_member": "testset_txt/p232_101.txt",
+     "transcript_sha256": "66d0c77fa77171fcca60a2005de6089abbd55591878e630b76b6628267e427a1"
+    },
+    {
+     "utterance": "p232_153",
+     "text": "I was in daily contact.",
+     "member": "clean_testset_wav/p232_153.wav",
+     "member_sha256": "daaa0487dc402500332043c07e97ff1d87af73a63fbd92a252ac6d1fb5b843d3",
+     "source_samples": [
+      0,
+      92711
+     ],
+     "take_samples": [
+      342159,
+      434870
+     ],
+     "transcript_member": "testset_txt/p232_153.txt",
+     "transcript_sha256": "e25e414370cdf94515c04f25a3eafeede99468467281e88d2816e651f3ae0852"
+    }
+   ],
+   "speech_samples": [
+    [
+     14400,
+     105999
+    ],
+    [
+     177999,
+     270159
+    ],
+    [
+     342159,
+     434870
+    ]
+   ],
+   "assembly": {
+    "lead_s": 0.3,
+    "gaps_s": [
+     1.5,
+     1.5
+    ],
+    "trail_s": 0.8
+   }
+  },
+  "t02": {
+   "file": "take-t02.wav",
+   "speaker": "p232",
+   "gender": "male",
+   "content": "sibilant-heavy sentences",
+   "sha256": "adf454225379f2301733eab91c5d2cfc3dd50326c6ce29c450c98c6050f43190",
+   "bytes": 949754,
+   "duration_s": 9.893,
+   "utterances": [
+    {
+     "utterance": "p232_076",
+     "text": "I had my suspicions.",
+     "member": "clean_testset_wav/p232_076.wav",
+     "member_sha256": "cb70155ab3e35655d1bdc5645ccb031a2189b9881e8fb5deb8f5e6b852caa341",
+     "source_samples": [
+      0,
+      92489
+     ],
+     "take_samples": [
+      14400,
+      106889
+     ],
+     "transcript_member": "testset_txt/p232_076.txt",
+     "transcript_sha256": "fa52b0e3aff9220930ad486e9dc77a62c066a0912ae5db295a817fdcc9d94ef8"
+    },
+    {
+     "utterance": "p232_346",
+     "text": "Tiger is the exception.",
+     "member": "clean_testset_wav/p232_346.wav",
+     "member_sha256": "74f260612f97471c461877e98ce6ab391a36961717dce5deccd4568e947c59da",
+     "source_samples": [
+      0,
+      93734
+     ],
+     "take_samples": [
+      178889,
+      272623
+     ],
+     "transcript_member": "testset_txt/p232_346.txt",
+     "transcript_sha256": "76654eb70b5d7e882e9f439c47bee873b320c2b6053362cc34fa24690af2a8f0"
+    },
+    {
+     "utterance": "p232_203",
+     "text": "A deadline is still essential.",
+     "member": "clean_testset_wav/p232_203.wav",
+     "member_sha256": "b7b677706840a144b5c4c6831af52c0b76831e9264b84e75a5e2105ebba12b87",
+     "source_samples": [
+      0,
+      96632
+     ],
+     "take_samples": [
+      339823,
+      436455
+     ],
+     "transcript_member": "testset_txt/p232_203.txt",
+     "transcript_sha256": "2541e8114e6cf8112eefda91c1c754cb1189ad2b000bf1fc1004eea9ef491f70"
+    }
+   ],
+   "speech_samples": [
+    [
+     14400,
+     106889
+    ],
+    [
+     178889,
+     272623
+    ],
+    [
+     339823,
+     436455
+    ]
+   ],
+   "assembly": {
+    "lead_s": 0.3,
+    "gaps_s": [
+     1.5,
+     1.4
+    ],
+    "trail_s": 0.8
+   }
+  },
+  "t03": {
+   "file": "take-t03.wav",
+   "speaker": "p232",
+   "gender": "male",
+   "content": "plain sentences",
+   "sha256": "66e845e39a15c5adf3b776519a0d05eedacf86940a48a543534751a9da4af838",
+   "bytes": 931134,
+   "duration_s": 9.699,
+   "utterances": [
+    {
+     "utterance": "p232_040",
+     "text": "Dancing was her life.",
+     "member": "clean_testset_wav/p232_040.wav",
+     "member_sha256": "96df5bcbd92d50ef46d657e0d2f4930edaadfc02c49bf3626067d98a616797c8",
+     "source_samples": [
+      0,
+      91081
+     ],
+     "take_samples": [
+      14400,
+      105481
+     ],
+     "transcript_member": "testset_txt/p232_040.txt",
+     "transcript_sha256": "5233a7fadc380915f373a8e728c1bb8fea9d6426d9c767adae0bbf9d98a0d249"
+    },
+    {
+     "utterance": "p232_214",
+     "text": "She should not be blamed.",
+     "member": "clean_testset_wav/p232_214.wav",
+     "member_sha256": "e987885715ed9435b71018c82be13eb7b8e0e0c861ea7b17424669a0425c8e8a",
+     "source_samples": [
+      0,
+      92699
+     ],
+     "take_samples": [
+      172681,
+      265380
+     ],
+     "transcript_member": "testset_txt/p232_214.txt",
+     "transcript_sha256": "0f9087b3265311c33a9c09946318cbcc6bc60a3ac24459c9118771a719f52e56"
+    },
+    {
+     "utterance": "p232_351",
+     "text": "Everything was an effort.",
+     "member": "clean_testset_wav/p232_351.wav",
+     "member_sha256": "d32ecd8a36c864292d2a8aa2652fdfc0863569f7cd557a75d85267ff4cde8bfd",
+     "source_samples": [
+      0,
+      89765
+     ],
+     "take_samples": [
+      337380,
+      427145
+     ],
+     "transcript_member": "testset_txt/p232_351.txt",
+     "transcript_sha256": "79b7c371100b219065b0dba452c3bd86fb94536488e9f854755ffbdf2dda1b6c"
+    }
+   ],
+   "speech_samples": [
+    [
+     14400,
+     105481
+    ],
+    [
+     172681,
+     265380
+    ],
+    [
+     337380,
+     427145
+    ]
+   ],
+   "assembly": {
+    "lead_s": 0.3,
+    "gaps_s": [
+     1.4,
+     1.5
+    ],
+    "trail_s": 0.8
+   }
+  },
+  "t04": {
+   "file": "take-t04.wav",
+   "speaker": "p232",
+   "gender": "male",
+   "content": "plain sentences",
+   "sha256": "d9a0cd857e942619a0823318a6abbbf04576da573316f46a7c33330cb0173a32",
+   "bytes": 973632,
+   "duration_s": 10.142,
+   "utterances": [
+    {
+     "utterance": "p232_135",
+     "text": "Our intentions are real.",
+     "member": "clean_testset_wav/p232_135.wav",
+     "member_sha256": "2252f88de88312f0bd5e9720eae79d6261250957c0e086eb4033a1a378c75851",
+     "source_samples": [
+      0,
+      95218
+     ],
+     "take_samples": [
+      14400,
+      109618
+     ],
+     "transcript_member": "testset_txt/p232_135.txt",
+     "transcript_sha256": "a57b0535a66a8f5fc9343e605a8d27c81e906c66bc4758479f9da9ec2cf3eed9"
+    },
+    {
+     "utterance": "p232_116",
+     "text": "Maybe this battle has been.",
+     "member": "clean_testset_wav/p232_116.wav",
+     "member_sha256": "f8274600e446130bbb340008a5ad3537431d90984609513a18547f0da47efe40",
+     "source_samples": [
+      0,
+      95197
+     ],
+     "take_samples": [
+      181618,
+      276815
+     ],
+     "transcript_member": "testset_txt/p232_116.txt",
+     "transcript_sha256": "5e85180af4fb5e2d66b658136732b4dfbdd7f7f07ee1e374bb56d79372dc5025"
+    },
+    {
+     "utterance": "p232_308",
+     "text": "We are in the end game.",
+     "member": "clean_testset_wav/p232_308.wav",
+     "member_sha256": "8a11dc9954b7bad4c55945b39b070665921f6070d1784c7ee4ebf76ada7b6692",
+     "source_samples": [
+      0,
+      99579
+     ],
+     "take_samples": [
+      348815,
+      448394
+     ],
+     "transcript_member": "testset_txt/p232_308.txt",
+     "transcript_sha256": "9a349fbb1971f0f893ba478464ba516c9ce7d1991516d958f293ee5e469c73af"
+    }
+   ],
+   "speech_samples": [
+    [
+     14400,
+     109618
+    ],
+    [
+     181618,
+     276815
+    ],
+    [
+     348815,
+     448394
+    ]
+   ],
+   "assembly": {
+    "lead_s": 0.3,
+    "gaps_s": [
+     1.5,
+     1.5
+    ],
+    "trail_s": 0.8
+   }
+  },
+  "t05": {
+   "file": "take-t05.wav",
+   "speaker": "p232",
+   "gender": "male",
+   "content": "plain sentences",
+   "sha256": "1db641af652fbea37714cde3b3e80b60e03af3b86556eeb4109e376b5365123f",
+   "bytes": 993038,
+   "duration_s": 10.344,
+   "utterances": [
+    {
+     "utterance": "p232_335",
+     "text": "She did not attend the courtroom.",
+     "member": "clean_testset_wav/p232_335.wav",
+     "member_sha256": "17cd495357eaa743caedc6b322797e473e50345871a681c088c2793c513559f4",
+     "source_samples": [
+      0,
+      100401
+     ],
+     "take_samples": [
+      14400,
+      114801
+     ],
+     "transcript_member": "testset_txt/p232_335.txt",
+     "transcript_sha256": "32a8cf0bb63eb5e5834c4a5d88fa136e550f4da21074771a1e4d451f36215192"
+    },
+    {
+     "utterance": "p232_178",
+     "text": "It's the real thing, for sure.",
+     "member": "clean_testset_wav/p232_178.wav",
+     "member_sha256": "d07d3a412747a4b743e25d860c81361b6335839a753b145a077bf510e9cba76b",
+     "source_samples": [
+      0,
+      96410
+     ],
+     "take_samples": [
+      182001,
+      278411
+     ],
+     "transcript_member": "testset_txt/p232_178.txt",
+     "transcript_sha256": "d36bab11f5925adb37a1c7409af57313dcb954adcc7a034f14770544e6fe54d6"
+    },
+    {
+     "utterance": "p232_386",
+     "text": "That left a bad taste in my mouth.",
+     "member": "clean_testset_wav/p232_386.wav",
+     "member_sha256": "b0f861efdf9196d3ea58c25606686c70db798b35aa7e6967e3895f6eec6274b6",
+     "source_samples": [
+      0,
+      107686
+     ],
+     "take_samples": [
+      350411,
+      458097
+     ],
+     "transcript_member": "testset_txt/p232_386.txt",
+     "transcript_sha256": "1d1f453a5ad88b43dae63a665983caf9872a4ab846f6b677c23faf9d931af422"
+    }
+   ],
+   "speech_samples": [
+    [
+     14400,
+     114801
+    ],
+    [
+     182001,
+     278411
+    ],
+    [
+     350411,
+     458097
+    ]
+   ],
+   "assembly": {
+    "lead_s": 0.3,
+    "gaps_s": [
+     1.4,
+     1.5
+    ],
+    "trail_s": 0.8
+   }
+  },
+  "t06": {
+   "file": "take-t06.wav",
+   "speaker": "p257",
+   "gender": "female",
+   "content": "plain sentences",
+   "sha256": "8b327ba299f6fccd336c4614e5e3985c32f84cb4e4bfa2d6c143a925953b4767",
+   "bytes": 962154,
+   "duration_s": 10.022,
+   "utterances": [
+    {
+     "utterance": "p257_050",
+     "text": "He had no enemies.",
+     "member": "clean_testset_wav/p257_050.wav",
+     "member_sha256": "904864d8465210988f84c89fc8895ee05295bcb0338db00cea59d442cfa77cc0",
+     "source_samples": [
+      0,
+      92230
+     ],
+     "take_samples": [
+      14400,
+      106630
+     ],
+     "transcript_member": "testset_txt/p257_050.txt",
+     "transcript_sha256": "0acece6e140e7002b59aa665f566089152fb6772cbfbc8708b5eddecafea5cd9"
+    },
+    {
+     "utterance": "p257_105",
+     "text": "I didn't play well last year.",
+     "member": "clean_testset_wav/p257_105.wav",
+     "member_sha256": "f4abb9da4b13422fc128aa1c88be6bf55f4d9949eae52a1fc1069f9ef4e11727",
+     "source_samples": [
+      0,
+      94402
+     ],
+     "take_samples": [
+      178630,
+      273032
+     ],
+     "transcript_member": "testset_txt/p257_105.txt",
+     "transcript_sha256": "c3230c7201e4eb5ba66a88385e0fc85f4f728a1b1b4fdf9e9804f36322f82cb1"
+    },
+    {
+     "utterance": "p257_112",
+     "text": "I don't have many friends.",
+     "member": "clean_testset_wav/p257_112.wav",
+     "member_sha256": "6130c3ea475dfe578485d782a3c0f3eb830c4653de66e74ebc35eba3bc5304e8",
+     "source_samples": [
+      0,
+      102423
+     ],
+     "take_samples": [
+      340232,
+      442655
+     ],
+     "transcript_member": "testset_txt/p257_112.txt",
+     "transcript_sha256": "465c28029d93fd150507cda4550bc6cd7d93b19e891b71eb29b11546c1383765"
+    }
+   ],
+   "speech_samples": [
+    [
+     14400,
+     106630
+    ],
+    [
+     178630,
+     273032
+    ],
+    [
+     340232,
+     442655
+    ]
+   ],
+   "assembly": {
+    "lead_s": 0.3,
+    "gaps_s": [
+     1.5,
+     1.4
+    ],
+    "trail_s": 0.8
+   }
+  },
+  "t07": {
+   "file": "take-t07.wav",
+   "speaker": "p257",
+   "gender": "female",
+   "content": "sibilant-heavy sentences",
+   "sha256": "81a6d5e19e91dd0286dd42ee23cc1e89af410e974bd53bf6b01de5d1b358e741",
+   "bytes": 965574,
+   "duration_s": 10.058,
+   "utterances": [
+    {
+     "utterance": "p257_072",
+     "text": "I had my suspicions.",
+     "member": "clean_testset_wav/p257_072.wav",
+     "member_sha256": "da25c02be71760bc51cdb4543bd40f28e313963b1af5897fc7b875412352a45f",
+     "source_samples": [
+      0,
+      88557
+     ],
+     "take_samples": [
+      14400,
+      102957
+     ],
+     "transcript_member": "testset_txt/p257_072.txt",
+     "transcript_sha256": "fa52b0e3aff9220930ad486e9dc77a62c066a0912ae5db295a817fdcc9d94ef8"
+    },
+    {
+     "utterance": "p257_064",
+     "text": "Sounds like The Sixth Sense?",
+     "member": "clean_testset_wav/p257_064.wav",
+     "member_sha256": "cffa436b604945a8b090e60d9b07314ef454c790591e74d0924d9c665e3d78a1",
+     "source_samples": [
+      0,
+      98970
+     ],
+     "take_samples": [
+      174957,
+      273927
+     ],
+     "transcript_member": "testset_txt/p257_064.txt",
+     "transcript_sha256": "3effb3cd70f6cd3439122bb97de7af8c17e106e6eeaf5a5e9348633cd8d31194"
+    },
+    {
+     "utterance": "p257_354",
+     "text": "It's a long process.",
+     "member": "clean_testset_wav/p257_354.wav",
+     "member_sha256": "b7a5f94a8c013f41d47ab13117d0fd7aadc422a8ac77b74a421fed104de2784c",
+     "source_samples": [
+      0,
+      98438
+     ],
+     "take_samples": [
+      345927,
+      444365
+     ],
+     "transcript_member": "testset_txt/p257_354.txt",
+     "transcript_sha256": "b7e08cc728aa49187954e691ca5a86094d35bf4bad42f2159f0f9e85db0e71a0"
+    }
+   ],
+   "speech_samples": [
+    [
+     14400,
+     102957
+    ],
+    [
+     174957,
+     273927
+    ],
+    [
+     345927,
+     444365
+    ]
+   ],
+   "assembly": {
+    "lead_s": 0.3,
+    "gaps_s": [
+     1.5,
+     1.5
+    ],
+    "trail_s": 0.8
+   }
+  },
+  "t08": {
+   "file": "take-t08.wav",
+   "speaker": "p257",
+   "gender": "female",
+   "content": "plain sentences",
+   "sha256": "c9560d271cd98203f2e8c1af226447dc946144e05598db3da9ab8bbf601b2e85",
+   "bytes": 976834,
+   "duration_s": 10.175,
+   "utterances": [
+    {
+     "utterance": "p257_141",
+     "text": "I feel very grateful with everything.",
+     "member": "clean_testset_wav/p257_141.wav",
+     "member_sha256": "f1390ae71861e57fdc0c04206586a633e91a5faa02bbc15a7e584cbece03bd46",
+     "source_samples": [
+      0,
+      101238
+     ],
+     "take_samples": [
+      14400,
+      115638
+     ],
+     "transcript_member": "testset_txt/p257_141.txt",
+     "transcript_sha256": "708c76ce8c042516d8e80ff88fa05f7674b4dbdd106291bdd2ffb7510b30079e"
+    },
+    {
+     "utterance": "p257_161",
+     "text": "I've learned from my mistakes.",
+     "member": "clean_testset_wav/p257_161.wav",
+     "member_sha256": "345d36abd454cbc85aac38d8bd6300eead144ae434e5d122c082d8360603e6d7",
+     "source_samples": [
+      0,
+      104306
+     ],
+     "take_samples": [
+      182838,
+      287144
+     ],
+     "transcript_member": "testset_txt/p257_161.txt",
+     "transcript_sha256": "2b07a4f4bab7200c3d4caed22cebcd43ca3a1ddee269e7ec2d5dde5760190c7e"
+    },
+    {
+     "utterance": "p257_305",
+     "text": "Henman has been warned.",
+     "member": "clean_testset_wav/p257_305.wav",
+     "member_sha256": "bb687564864b8ab4a5c7012fe6d4fd6d110a8b43e40e892b55629dbd78dbea9f",
+     "source_samples": [
+      0,
+      90851
+     ],
+     "take_samples": [
+      359144,
+      449995
+     ],
+     "transcript_member": "testset_txt/p257_305.txt",
+     "transcript_sha256": "283f1ad11cc9ad96b7d4a92015b6692e2fa2e7ceba2da38d7b6acf48d1ab9a26"
+    }
+   ],
+   "speech_samples": [
+    [
+     14400,
+     115638
+    ],
+    [
+     182838,
+     287144
+    ],
+    [
+     359144,
+     449995
+    ]
+   ],
+   "assembly": {
+    "lead_s": 0.3,
+    "gaps_s": [
+     1.4,
+     1.5
+    ],
+    "trail_s": 0.8
+   }
+  },
+  "t09": {
+   "file": "take-t09.wav",
+   "speaker": "p257",
+   "gender": "female",
+   "content": "plain sentences",
+   "sha256": "0798ef88dfd92318bb90462204f4876fdddd9ebaaf1ba437aa40274d72804396",
+   "bytes": 946660,
+   "duration_s": 9.861,
+   "utterances": [
+    {
+     "utterance": "p257_344",
+     "text": "I wanted to go out on a high.",
+     "member": "clean_testset_wav/p257_344.wav",
+     "member_sha256": "e451cf2cce2046aaf368978e10cc7ab4863285c701fc281231c702ac2a857a26",
+     "source_samples": [
+      0,
+      91138
+     ],
+     "take_samples": [
+      14400,
+      105538
+     ],
+     "transcript_member": "testset_txt/p257_344.txt",
+     "transcript_sha256": "65e073833d4bbb9b285c9ab51d3a2bb9c7b49b56b9c9323c7cd5d4876e5ec8e1"
+    },
+    {
+     "utterance": "p257_321",
+     "text": "Three years ago he would have been.",
+     "member": "clean_testset_wav/p257_321.wav",
+     "member_sha256": "f9ba87d9de73741ae0bcab9c590642c2839855ee6136ded48a0a35d573e3ff12",
+     "source_samples": [
+      0,
+      93855
+     ],
+     "take_samples": [
+      177538,
+      271393
+     ],
+     "transcript_member": "testset_txt/p257_321.txt",
+     "transcript_sha256": "2eb637ea4c4e118883cc2f2f4218dbc07bb90c03e33b043ccd2f8bf2d27c9b3a"
+    },
+    {
+     "utterance": "p257_412",
+     "text": "I recommend a tour.",
+     "member": "clean_testset_wav/p257_412.wav",
+     "member_sha256": "f406073955c16b338162e0ee8013a6b6f095b2f0987a73d47e575fe9bc03371f",
+     "source_samples": [
+      0,
+      91515
+     ],
+     "take_samples": [
+      343393,
+      434908
+     ],
+     "transcript_member": "testset_txt/p257_412.txt",
+     "transcript_sha256": "4bfb19bfee8b24403ac9736118f0e560cf714a5ed8c837769e0487ab4df967ec"
+    }
+   ],
+   "speech_samples": [
+    [
+     14400,
+     105538
+    ],
+    [
+     177538,
+     271393
+    ],
+    [
+     343393,
+     434908
+    ]
+   ],
+   "assembly": {
+    "lead_s": 0.3,
+    "gaps_s": [
+     1.5,
+     1.5
+    ],
+    "trail_s": 0.8
+   }
+  },
+  "t10": {
+   "file": "take-t10.wav",
+   "speaker": "p257",
+   "gender": "female",
+   "content": "plain sentences",
+   "sha256": "11ab1c86f10d1ff78c0aac4c32e23724779e8728e0871f6a7baa425db2d24f57",
+   "bytes": 980684,
+   "duration_s": 10.215,
+   "utterances": [
+    {
+     "utterance": "p257_400",
+     "text": "I am the Son of Sam.",
+     "member": "clean_testset_wav/p257_400.wav",
+     "member_sha256": "fced9d6f5ef364e16614d90b446af97fa278e26f46b1cae490444cef572fbacd",
+     "source_samples": [
+      0,
+      91417
+     ],
+     "take_samples": [
+      14400,
+      105817
+     ],
+     "transcript_member": "testset_txt/p257_400.txt",
+     "transcript_sha256": "0c0be4a81d941d80232171b7d8378475b9ff4795c2e6b5ad8f94bc15b180e239"
+    },
+    {
+     "utterance": "p257_273",
+     "text": "You've got to have both sides.",
+     "member": "clean_testset_wav/p257_273.wav",
+     "member_sha256": "1573fec5c65aabb02dbaf063bfab1cbaf7209ce12f3da0db77bd8e516f001992",
+     "source_samples": [
+      0,
+      101919
+     ],
+     "take_samples": [
+      173017,
+      274936
+     ],
+     "transcript_member": "testset_txt/p257_273.txt",
+     "transcript_sha256": "f7a34ed42d9e034f635fc361af51c6597b6179fcbcfa591ede332d30fb9b49d2"
+    },
+    {
+     "utterance": "p257_356",
+     "text": "He knew his job inside out.",
+     "member": "clean_testset_wav/p257_356.wav",
+     "member_sha256": "5d84d91ed58f887a79d5cba0520a1360fe66be236d352a3046895bcb035ab3be",
+     "source_samples": [
+      0,
+      104984
+     ],
+     "take_samples": [
+      346936,
+      451920
+     ],
+     "transcript_member": "testset_txt/p257_356.txt",
+     "transcript_sha256": "7645d27c9023f243e4924a27e6e0787b865eca158511f46d2e4f940084b79d0f"
+    }
+   ],
+   "speech_samples": [
+    [
+     14400,
+     105817
+    ],
+    [
+     173017,
+     274936
+    ],
+    [
+     346936,
+     451920
+    ]
+   ],
+   "assembly": {
+    "lead_s": 0.3,
+    "gaps_s": [
+     1.4,
+     1.5
+    ],
+    "trail_s": 0.8
+   }
+  }
+ },
+ "noises": {
+  "cafe": {
+   "file": "noise-cafe.wav",
+   "kind": "real DEMAND recording, as noisy minus clean",
+   "demand_environment": "cafe",
+   "log_snr_db": 7.5,
+   "utterance": "p257_008",
+   "members": {
+    "clean": {
+     "member": "clean_testset_wav/p257_008.wav",
+     "sha256": "e4d93c15e49a577b7db5c58cec7e02a18d18bdf6c4896fc250c3588849d64c20"
+    },
+    "noisy": {
+     "member": "noisy_testset_wav/p257_008.wav",
+     "sha256": "897804adff453e209dea57d8af3ef0b8b0c0ae175a94aac110da929cbb3629c5"
+    }
+   },
+   "sha256": "b0923ad61edbc12f68f7c30a82010ecf8cb340fe7ebfb561672777e4d7d4a05f",
+   "bytes": 536022,
+   "duration_s": 5.583
+  },
+  "bus": {
+   "file": "noise-bus.wav",
+   "kind": "real DEMAND recording, as noisy minus clean",
+   "demand_environment": "bus",
+   "log_snr_db": 7.5,
+   "utterance": "p232_003",
+   "members": {
+    "clean": {
+     "member": "clean_testset_wav/p232_003.wav",
+     "sha256": "85bd30db189b8abdde6719efb07b34965fb5fb9b6e476ae23f6e6b2d4fd720db"
+    },
+    "noisy": {
+     "member": "noisy_testset_wav/p232_003.wav",
+     "sha256": "e8d3be9cc8e2343b7f55fc6922b65233fc6e2abd93c3d9f85153fb2c00870a7e"
+    }
+   },
+   "sha256": "c1c0226fb43cbe0b561d30ef8be00f2eab82a6e3a5b9d8d8c36c73193618a1ce",
+   "bytes": 689790,
+   "duration_s": 7.185
+  }
+ },
+ "mixes": {
+  "fan-t01": {
+   "take": "t01",
+   "condition": "fan",
+   "seed": 530068180,
+   "speech_dbfs": -26.0,
+   "noise": {
+    "kind": "fan",
+    "snr_db": 24.0
+   }
+  },
+  "keyboard-t06": {
+   "take": "t06",
+   "condition": "keyboard",
+   "seed": 1683074919,
+   "speech_dbfs": -26.0,
+   "noise": {
+    "kind": "keyboard",
+    "snr_db": 22.0
+   },
+   "post": {
+    "peak": 0.9
+   }
+  },
+  "cafe-t02": {
+   "take": "t02",
+   "condition": "cafe",
+   "seed": 2412378886,
+   "speech_dbfs": -26.0,
+   "noise": {
+    "kind": "real",
+    "source": "cafe",
+    "snr_db": 22.0
+   }
+  },
+  "traffic-t07": {
+   "take": "t07",
+   "condition": "traffic",
+   "seed": 4111005600,
+   "speech_dbfs": -26.0,
+   "noise": {
+    "kind": "real",
+    "source": "bus",
+    "snr_db": 8.0
+   }
+  },
+  "hum50-t03": {
+   "take": "t03",
+   "condition": "hum50",
+   "seed": 2613267409,
+   "speech_dbfs": -26.0,
+   "noise": {
+    "kind": "hum",
+    "hz": 50.0,
+    "snr_db": 22.0
+   }
+  },
+  "hum60-t08": {
+   "take": "t08",
+   "condition": "hum60",
+   "seed": 2324029687,
+   "speech_dbfs": -26.0,
+   "noise": {
+    "kind": "hum",
+    "hz": 60.0,
+    "snr_db": 22.0
+   }
+  },
+  "reverb-t04": {
+   "take": "t04",
+   "condition": "reverb",
+   "seed": 3996778403,
+   "speech_dbfs": -26.0,
+   "noise": {
+    "kind": "pink",
+    "snr_db": 30.0
+   },
+   "rir": {
+    "rt60_s": 0.6,
+    "drr_db": 0.0,
+    "seed": 510820777
+   }
+  },
+  "farmic-t09": {
+   "take": "t09",
+   "condition": "farmic",
+   "seed": 16083189,
+   "speech_dbfs": -41.0,
+   "noise": {
+    "kind": "pink",
+    "snr_db": 20.0
+   },
+   "level_drop_db": 15.0,
+   "rir": {
+    "rt60_s": 0.35,
+    "drr_db": -4.0,
+    "seed": 2383374914
+   }
+  },
+  "hot-t05": {
+   "take": "t05",
+   "condition": "hot",
+   "seed": 1485857731,
+   "speech_dbfs": -20.0,
+   "noise": {
+    "kind": "pink",
+    "snr_db": 30.0
+   },
+   "post": {
+    "peak": 0.97
+   }
+  },
+  "quiet-t10": {
+   "take": "t10",
+   "condition": "quiet",
+   "seed": 1308626285,
+   "speech_dbfs": -48.0,
+   "noise": {
+    "kind": "pink",
+    "snr_db": 25.0
+   }
+  },
+  "clipped-t01": {
+   "take": "t01",
+   "condition": "clipped",
+   "seed": 1646337453,
+   "speech_dbfs": -20.0,
+   "noise": {
+    "kind": "pink",
+    "snr_db": 30.0
+   },
+   "post": {
+    "peak": 2.0,
+    "clip": true
+   }
+  },
+  "tv-t06": {
+   "take": "t06",
+   "condition": "tv",
+   "seed": 1186983710,
+   "speech_dbfs": -26.0,
+   "noise": {
+    "kind": "tv",
+    "snr_db": 10.0
+   }
+  },
+  "music-t03": {
+   "take": "t03",
+   "condition": "music",
+   "seed": 3796538522,
+   "speech_dbfs": -26.0,
+   "noise": {
+    "kind": "music",
+    "snr_db": 10.0
+   }
+  },
+  "babble-t08": {
+   "take": "t08",
+   "condition": "babble",
+   "seed": 728227272,
+   "speech_dbfs": -26.0,
+   "noise": {
+    "kind": "babble",
+    "takes": [
+     "t09",
+     "t01",
+     "t02",
+     "t04",
+     "t05",
+     "t10"
+    ],
+    "snr_db": 8.0
+   }
+  },
+  "room-t02": {
+   "take": "t02",
+   "condition": "room",
+   "seed": 2023271399,
+   "speech_dbfs": -26.0,
+   "noise": {
+    "kind": "pink",
+    "snr_db": 35.0
+   }
+  },
+  "room-t07": {
+   "take": "t07",
+   "condition": "room",
+   "seed": 150101864,
+   "speech_dbfs": -26.0,
+   "noise": {
+    "kind": "pink",
+    "snr_db": 35.0
+   }
+  }
+ }
+}

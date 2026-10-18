@@ -49,7 +49,8 @@ def test_deesser_controls_preserve_exact_values_and_follow_normalized_state(qapp
     assert low.value == 11000.0
     assert high.value == 11200.0
     assert state.get_settings()["high_cut_hz"] == 11200.0
-    processor.set_deesser_high_cut_hz.assert_called_with(11200.0)
+    written = processor.apply_deesser_settings.call_args.args[0]
+    assert (written["low_cut_hz"], written["high_cut_hz"]) == (11000.0, 11200.0)
 
 
 @pytest.mark.parametrize("width_hz", [200.0, 399.0, 400.0, 599.0, 600.0])
@@ -91,8 +92,8 @@ def test_deesser_round_trip_preserves_200_hz_cutoff_interval(qapp):
 
     assert state.get_settings() == settings
     assert state.get_applied_settings() == settings
-    processor.set_deesser_low_cut_hz.assert_called_with(4000.0)
-    processor.set_deesser_high_cut_hz.assert_called_with(4200.0)
+    written = processor.apply_deesser_settings.call_args.args[0]
+    assert (written["low_cut_hz"], written["high_cut_hz"]) == (4000.0, 4200.0)
 
 
 def test_deesser_moves_narrow_range_without_native_clamping(qapp):
@@ -110,7 +111,7 @@ def test_deesser_moves_narrow_range_without_native_clamping(qapp):
 def test_deesser_native_setter_failure_reaches_configuration_caller(qapp):
     processor = _processor()
     state = DeEsserState(processor)
-    processor.set_deesser_threshold_db.side_effect = RuntimeError(
+    processor.apply_deesser_settings.side_effect = RuntimeError(
         "native de-esser write failed"
     )
 

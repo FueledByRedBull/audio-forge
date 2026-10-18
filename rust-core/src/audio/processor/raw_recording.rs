@@ -147,6 +147,14 @@ impl AudioProcessor {
             ));
         }
 
+        // The probe bypasses the limiter, so scale it to the effective ceiling.
+        let ceiling = 10.0_f32.powf(self.limiter_effective_ceiling_db() as f32 / 20.0);
+        let peak = samples
+            .iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        let gain = if peak > ceiling { ceiling / peak } else { 1.0 };
+        let scaled: Vec<f32> = samples.iter().map(|sample| sample * gain).collect();
+
         let mut producer_guard = self
             .output_probe_producer
             .lock()
@@ -157,11 +165,11 @@ impl AudioProcessor {
         if producer.free_len() != producer.capacity() {
             return Err("Output probe buffer still contains stale samples".to_string());
         }
-        let written = producer.write(samples);
-        if written != samples.len() {
+        let written = producer.write(&scaled);
+        if written != scaled.len() {
             return Err(format!(
                 "Output probe write was incomplete ({written}/{})",
-                samples.len()
+                scaled.len()
             ));
         }
 

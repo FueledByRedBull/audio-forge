@@ -5175,3 +5175,1014 @@ fn test_dropped_sample_reset_keeps_the_capture_gap_counter() {
     processor.input_dropped.fetch_add(2, Ordering::Relaxed);
     assert_eq!(processor.get_dropped_samples(), 2);
 }
+
+/// Regression tests for the 1.18.1 realtime audit (RB-003/004/005/012, RT-004..RT-027).
+#[cfg(test)]
+mod rt_audit_tests {
+    use super::*;
+
+    fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+        let from = source.find(start).unwrap_or_else(|| panic!("missing {start}"));
+        let to = source[from..]
+            .find(end)
+            .map(|offset| from + offset)
+            .unwrap_or_else(|| panic!("missing {end}"));
+        &source[from..to]
+    }
+
+    fn region<'a>(source: &'a str, name: &str) -> &'a str {
+        let start = source.find(&format!("RT_REGION_START: {name}")).unwrap();
+        let start = start + source[start..].find('\n').unwrap() + 1;
+        let end = start + source[start..].find(&format!("RT_REGION_END: {name}")).unwrap();
+        &source[start..end]
+    }
+
+    fn assert_rt_clean(label: &str, text: &str) {
+        for pattern in [
+            ".lock()",
+            "try_lock",
+            ".reserve(",
+            ".resize(",
+            ".to_vec(",
+            ".drain(",
+            "drop(",
+            "format!",
+            "println!",
+            "eprintln!",
+            "vec!",
+            "Vec::",
+            "Box::new",
+            "String::",
+            "std::mem::forget",
+        ] {
+            assert!(!text.contains(pattern), "{label} contains forbidden RT pattern {pattern}");
+        }
+    }
+
+    /// The production part of dsp_loop.rs: everything but its inline test modules.
+    fn dsp_loop_production() -> String {
+        let source = include_str!("dsp_loop.rs");
+        let tests_start = source.find("#[cfg(test)]\nmod input_continuity_tests").unwrap();
+        let impl_start = source.find("impl AudioProcessor {").unwrap();
+        format!("{}{}", &source[..tests_start], &source[impl_start..])
+    }
+
+    // --- RB-003 / RT-022: every snapshot site re-arms ------------------------
+
+    #[test]
+    fn every_dsp_loop_control_snapshot_site_rearms_or_goes_through_startup_control() {
+        let production = dsp_loop_production();
+        let sites: Vec<usize> = production.match_indices(".snapshot()").map(|(i, _)| i).collect();
+        assert!(sites.len() >= 10, "expected the loop and start-up snapshot sites");
+        for (n, &site) in sites.iter().enumerate() {
+            let next = sites.get(n + 1).copied().unwrap_or(production.len());
+            let before = &production[site.saturating_sub(60)..site];
+            let after = &production[site..next];
+            // The VAD snapshot is the lock-free result seqlock, not a control state.
+            if before.contains("vad_result") || before.contains("vad_snapshot") {
+                continue;
+            }
+            assert!(
+                before.contains("startup_control(")
+                    || after.contains("_dirty.store(true, Ordering::Release)"),
+                "snapshot site without a re-arm: ...{}{}",
+                before,
+                &after[..after.len().min(120)]
+            );
+        }
+        assert!(!production.contains("unwrap_or_else(GateControlState::new)"));
+    }
+
+    #[test]
+    fn unstable_start_up_snapshot_rearms_dirty_and_counts_contention() {
+        let dirty = AtomicBool::new(false);
+        let contention = AtomicU64::new(0);
+        let stable = startup_control(Some(7_u32), || 0, &dirty, &contention);
+        assert_eq!(stable, 7);
+        assert!(!dirty.load(Ordering::Acquire));
+        assert_eq!(contention.load(Ordering::Relaxed), 0);
+
+        let fallback = startup_control(None, || 42_u32, &dirty, &contention);
+        assert_eq!(fallback, 42);
+        assert!(dirty.load(Ordering::Acquire), "defaults must not outlive the first pass");
+        assert_eq!(contention.load(Ordering::Relaxed), 1);
+    }
+
+    // --- RT-011: contention is measured, limiter reports instability -----------
+
+    #[test]
+    fn limiter_consume_reports_an_unstable_snapshot_for_the_contention_counter() {
+        let control = AtomicLimiterControlState::new();
+        let dirty = AtomicBool::new(true);
+        let mut limiter = Limiter::default_settings(48_000.0);
+        let release = Cell::new(50.0_f32);
+        let ceiling = Cell::new(1.0_f32);
+        let lookahead = AtomicU64::new(0);
+        control.seq.store(1, Ordering::Release);
+        assert!(apply_pending_limiter_control(
+            &dirty, &control, &mut limiter, &release, &ceiling, &lookahead
+        ));
+        control.seq.store(2, Ordering::Release);
+        assert!(!apply_pending_limiter_control(
+            &dirty, &control, &mut limiter, &release, &ceiling, &lookahead
+        ));
+        let production = dsp_loop_production();
+        assert!(production.contains("lock_contention_count.fetch_add(1, Ordering::Relaxed)"));
+    }
+
+    // --- RB-004: seqlock fences ------------------------------------------------
+
+    #[test]
+    fn control_seqlock_orders_its_relaxed_data_with_fences() {
+        let source = include_str!("control.rs");
+        let writer = between(source, "fn locked_control_update", "fn stable_control_snapshot");
+        let first = writer.find("fetch_add(1, Ordering::Relaxed)").unwrap();
+        let fence = writer.find("fence(Ordering::Release)").unwrap();
+        let apply = writer.find("apply();").unwrap();
+        assert!(first < fence && fence < apply);
+        let reader = between(source, "fn stable_control_snapshot", "fn release_ms_to_tenth_ms");
+        let read = reader.find("read();").unwrap();
+        let fence = reader.find("fence(Ordering::Acquire)").unwrap();
+        let second = reader.rfind("seq.load(").unwrap();
+        assert!(read < fence && fence < second);
+
+        let vad = include_str!("vad_worker.rs");
+        let begin = between(vad, "fn begin_write", "fn invalidate");
+        assert!(begin.contains("fence(Ordering::Release)"));
+        assert_eq!(vad.matches("self.begin_write()").count(), 2);
+        assert!(!vad.contains("sequence.fetch_add(1, Ordering::AcqRel)"));
+    }
+
+    #[test]
+    fn control_seqlock_never_returns_a_torn_pair() {
+        let writer = Mutex::new(());
+        let seq = AtomicU64::new(0);
+        let (a, b) = (AtomicU64::new(0), AtomicU64::new(0));
+        let done = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for value in 1..=100_000_u64 {
+                    locked_control_update(&writer, &seq, || {
+                        a.store(value, Ordering::Relaxed);
+                        b.store(value, Ordering::Relaxed);
+                    });
+                }
+                done.store(true, Ordering::Release);
+            });
+            let mut seen = 0_u64;
+            while !done.load(Ordering::Acquire) {
+                if let Some((x, y)) = stable_control_snapshot(&seq, || {
+                    (a.load(Ordering::Relaxed), b.load(Ordering::Relaxed))
+                }) {
+                    assert_eq!(x, y, "torn snapshot");
+                    seen += 1;
+                }
+            }
+            assert!(seen > 0);
+        });
+    }
+
+    // --- RB-005 / RT-012: start lifecycle --------------------------------------
+
+    #[test]
+    fn redundant_start_keeps_the_pending_restart_and_the_backoff() {
+        let mut processor = AudioProcessor::new();
+        processor.running.store(true, Ordering::SeqCst);
+        processor.restart_requested.store(true, Ordering::Release);
+        processor.restart_backoff_index.store(2, Ordering::Release);
+
+        assert_eq!(processor.start(None, None), Err("Already running".to_string()));
+
+        assert!(processor.restart_requested.load(Ordering::Acquire));
+        assert_eq!(processor.restart_backoff_index.load(Ordering::Acquire), 2);
+        assert!(processor.supervisor_thread.is_none());
+        processor.running.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn failed_start_attempt_leaves_the_clean_stopped_state() {
+        let mut processor = AudioProcessor::new();
+        processor.output_sample_rate.store(96_000, Ordering::Relaxed);
+        let result = processor.start_with_cleanup(|processor| {
+            // What a half-built attempt has published when the output step fails.
+            processor.input_fixed_buffer_frames.store(480, Ordering::Relaxed);
+            processor.output_fixed_buffer_frames.store(480, Ordering::Relaxed);
+            processor.output_sample_rate.store(44_100, Ordering::Relaxed);
+            processor.running.store(true, Ordering::SeqCst);
+            processor.restart_requested.store(true, Ordering::Release);
+            let (_producer, consumer) = AudioRingBuffer::new(16).split();
+            *processor.raw_recording_consumer.lock().unwrap() = Some(consumer);
+            let (probe, _consumer) = AudioRingBuffer::new(16).split();
+            *processor.output_probe_producer.lock().unwrap() = Some(probe);
+            processor.output_probe_active.store(true, Ordering::Release);
+            Err("Failed to resolve audio output: test".to_string())
+        });
+
+        assert_eq!(result, Err("Failed to resolve audio output: test".to_string()));
+        assert!(!processor.is_running());
+        assert_eq!(processor.input_fixed_buffer_frames(), 0);
+        assert_eq!(processor.output_fixed_buffer_frames(), 0);
+        assert_eq!(
+            processor.output_sample_rate(),
+            96_000,
+            "the failed attempt's rate must not stay"
+        );
+        assert!(processor.raw_recording_consumer.lock().unwrap().is_none());
+        assert!(processor.output_probe_producer.lock().unwrap().is_none());
+        assert!(!processor.output_probe_active.load(Ordering::Acquire));
+        assert!(!processor.restart_requested.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn successful_start_attempt_is_not_cleaned_up() {
+        let mut processor = AudioProcessor::new();
+        let result = processor.start_with_cleanup(|processor| {
+            processor.input_fixed_buffer_frames.store(480, Ordering::Relaxed);
+            Ok("started".to_string())
+        });
+        assert_eq!(result, Ok("started".to_string()));
+        assert_eq!(processor.input_fixed_buffer_frames(), 480);
+    }
+
+    #[test]
+    fn dsp_thread_spawn_failure_is_an_error_not_a_panic() {
+        let production = dsp_loop_production();
+        let start = between(&production, "fn start_streams_unguarded(", "/// Stop audio processing");
+        assert!(!start.contains("std::thread::spawn("));
+        assert!(start.contains("std::thread::Builder::new().spawn("));
+        let public = between(
+            &production,
+            "pub fn start_with_device_ordinals_and_ids(",
+            "fn start_with_cleanup(",
+        );
+        assert!(public.contains("self.start_with_cleanup("));
+        assert!(
+            public.find("\"Already running\"").unwrap() < public.find("ensure_supervisor").unwrap(),
+            "the running check must precede any state change"
+        );
+    }
+
+    // --- RT-023: a late fault cannot restart a stopped processor ---------------
+
+    #[test]
+    fn stop_clears_a_restart_request_raised_while_the_dsp_thread_winds_down() {
+        let mut processor = AudioProcessor::new();
+        processor.running.store(true, Ordering::SeqCst);
+        processor.restart_requested.store(true, Ordering::Release);
+        let running = Arc::clone(&processor.running);
+        let restart_requested = Arc::clone(&processor.restart_requested);
+        processor.process_thread = Some(std::thread::spawn(move || {
+            while running.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+            // A fault in the pass after running=false raises its request only
+            // once stop() has cleared the earlier one. Wait (bounded) for that
+            // clear: the fixed stop() clears after the join, so this times out.
+            let deadline = Instant::now() + Duration::from_millis(100);
+            while restart_requested.load(Ordering::Acquire) && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            restart_requested.store(true, Ordering::Release);
+        }));
+
+        processor.stop();
+
+        assert!(
+            !processor.restart_requested.load(Ordering::Acquire),
+            "a request raised during shutdown survived stop()"
+        );
+        assert_eq!(processor.service_recovery(), None);
+    }
+
+    // --- RT-006: DSP thread panic ----------------------------------------------
+
+    #[test]
+    fn dsp_loop_panic_is_recorded_and_requests_a_restart() {
+        let state = Mutex::new(StreamRecoveryState::default());
+        let restart = AtomicBool::new(false);
+        run_guarded_dsp_loop(|| panic!("index out of bounds"), &state, &restart);
+        assert!(restart.load(Ordering::Acquire));
+        assert_eq!(
+            state.lock().unwrap().last_reason.as_deref(),
+            Some("DSP thread panicked: index out of bounds")
+        );
+
+        let state = Mutex::new(StreamRecoveryState::default());
+        let restart = AtomicBool::new(false);
+        run_guarded_dsp_loop(|| {}, &state, &restart);
+        assert!(!restart.load(Ordering::Acquire));
+        assert!(state.lock().unwrap().last_reason.is_none());
+
+        let source = include_str!("dsp_loop.rs");
+        assert!(!region(source, "dsp_processing_loop").contains("catch_unwind"));
+        assert!(source.contains("run_guarded_dsp_loop(\n                dsp_loop,"));
+    }
+
+    #[test]
+    fn stop_records_a_dsp_thread_that_ended_in_a_panic() {
+        let mut processor = AudioProcessor::new();
+        let thread = std::thread::spawn(|| panic!("late failure"));
+        while !thread.is_finished() {
+            std::thread::yield_now();
+        }
+        processor.process_thread = Some(thread);
+        processor.stop();
+        assert!(processor
+            .get_last_restart_reason()
+            .is_some_and(|reason| reason.contains("DSP thread panicked: late failure")));
+        assert!(!processor.restart_requested.load(Ordering::Acquire));
+    }
+
+    // --- RT-007: start path ----------------------------------------------------
+
+    #[test]
+    fn missing_pro_audio_registration_degrades_instead_of_failing_start() {
+        let degraded = AtomicBool::new(false);
+        let guard = tolerate_scheduling_failure(Err::<u8, _>("no MMCSS task"), &degraded);
+        assert!(guard.is_none());
+        assert!(degraded.load(Ordering::Relaxed));
+        let guard = tolerate_scheduling_failure(Ok::<_, &str>(5_u8), &degraded);
+        assert_eq!(guard, Some(5));
+        assert!(!degraded.load(Ordering::Relaxed));
+        assert!(!dsp_loop_production().contains("Failed to register DSP thread with Pro Audio"));
+        assert!(!AudioProcessor::new().is_dsp_scheduling_degraded());
+    }
+
+    #[test]
+    fn initial_suppressor_engine_is_built_before_the_dsp_thread_exists() {
+        let production = dsp_loop_production();
+        let start = between(&production, "fn start_streams_unguarded(", "/// Stop audio processing");
+        let spawn = start.find("std::thread::Builder::new().spawn(").unwrap();
+        let build = start.find("new_noise_suppression_engine(").unwrap();
+        assert!(build < spawn, "a model or DLL load must not delay DSP readiness");
+        assert!(!start[spawn..].contains("new_noise_suppression_engine("));
+    }
+
+    // --- RT-004: suppressor command queue ----------------------------------------
+
+    #[test]
+    fn suppressor_queue_is_drained_at_the_top_of_every_pass() {
+        let source = include_str!("dsp_loop.rs");
+        let rt = region(source, "dsp_processing_loop");
+        let call = rt.rfind("apply_pending_suppressor_change!(").unwrap();
+        let input_read = rt.find("read_contiguous_input(").unwrap();
+        let first_branch = rt.find("if n_raw > 0").unwrap();
+        assert!(call < input_read && call < first_branch);
+        // The old drain lived inside `if use_suppressor`, in the Full path only.
+        let full_path = between(
+            rt,
+            "let use_suppressor =",
+            "// Suppressor disabled: clear buffer counter",
+        );
+        assert!(!full_path.contains("suppressor_rx"));
+        assert!(!full_path.contains("suppressor_dirty.swap"));
+        let mac = between(
+            rt,
+            "macro_rules! apply_pending_suppressor_change",
+            "apply_pending_suppressor_change!(\n",
+        );
+        assert!(mac.contains("suppressor_dirty.swap(false, Ordering::AcqRel)"));
+        assert!(mac.contains("retired_suppressor_tx"));
+        assert!(mac.contains("if $in_use"), "a swap with no suppressor audio must stay silent");
+    }
+
+    #[test]
+    fn suppressor_queue_has_room_for_only_two_engines() {
+        // Why the drain above must not depend on the suppressor being in use.
+        let processor = AudioProcessor::new();
+        let (tx, _rx) =
+            RtCommandQueue::<NoiseSuppressionEngine, RT_SUPPRESSOR_COMMAND_CAPACITY>::new().split();
+        *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
+        assert!(processor.rebuild_noise_suppressor());
+        assert!(processor.rebuild_noise_suppressor());
+        assert!(!processor.rebuild_noise_suppressor(), "nothing drains the queue here");
+    }
+
+    // --- RT-008: non-finite downstream output ------------------------------------
+
+    #[test]
+    fn non_finite_samples_are_zeroed_and_reported() {
+        let mut block = [0.25_f32, f32::NAN, -0.5, f32::INFINITY, f32::NEG_INFINITY];
+        assert!(contain_non_finite(&mut block));
+        assert_eq!(block, [0.25, 0.0, -0.5, 0.0, 0.0]);
+        let mut clean = [0.25_f32, -0.5, 1.0e-30];
+        let expected = clean;
+        assert!(!contain_non_finite(&mut clean));
+        assert_eq!(clean, expected, "finite input must stay bit-identical");
+        crate::test_alloc::assert_no_allocations("contain_non_finite", || {
+            contain_non_finite(&mut block);
+        });
+    }
+
+    #[test]
+    fn a_nan_latches_the_stages_and_meters_unless_contained_and_cleared() {
+        let poison = |buffer: &mut [f32; 64]| {
+            buffer.fill(0.1);
+            buffer[10] = f32::NAN;
+        };
+        let mut eq = ParametricEQ::new(48_000.0);
+        eq.set_band_gain(4, 6.0);
+        let mut poisoned = [0.0_f32; 64];
+        poison(&mut poisoned);
+        eq.process_block_inplace(&mut poisoned);
+        let mut next = [0.1_f32; 64];
+        eq.process_block_inplace(&mut next);
+        assert!(next.iter().any(|s| !s.is_finite()), "premise: filter state latches NaN");
+        reset_eq_clearing_filter_memory(&mut eq);
+        let mut recovered = [0.1_f32; 64];
+        eq.process_block_inplace(&mut recovered);
+        assert!(recovered.iter().all(|s| s.is_finite()), "the EQ must recover");
+        assert!(eq.is_enabled(), "a recovery must not leave the EQ disabled");
+        let mut disabled = ParametricEQ::new(48_000.0);
+        disabled.set_enabled(false);
+        reset_eq_clearing_filter_memory(&mut disabled);
+        assert!(!disabled.is_enabled(), "a user-disabled EQ stays disabled");
+
+        let mut deesser = DeEsser::new(48_000.0);
+        deesser.set_enabled(true);
+        let mut block = [0.0_f32; 64];
+        poison(&mut block);
+        deesser.process_block_inplace(&mut block);
+        deesser.reset();
+        let mut recovered = [0.1_f32; 64];
+        deesser.process_block_inplace(&mut recovered);
+        assert!(recovered.iter().all(|s| s.is_finite()), "the de-esser must recover");
+
+        // The compressor and limiter shed a NaN without help, which is why the
+        // chain does not pay for their reset (the compressor's allocates).
+        let mut compressor = Compressor::default_voice(48_000.0);
+        let mut limiter = Limiter::default_settings(48_000.0);
+        for _ in 0..2 {
+            poison(&mut block);
+            compressor.process_block_inplace(&mut block);
+            poison(&mut block);
+            limiter.process_block_inplace(&mut block);
+            let mut clean = [0.1_f32; 64];
+            compressor.process_block_inplace(&mut clean);
+            assert!(clean.iter().all(|s| s.is_finite()));
+            let mut clean = [0.1_f32; 64];
+            limiter.process_block_inplace(&mut clean);
+            assert!(clean.iter().all(|s| s.is_finite()));
+        }
+
+        let coeff = smoothing_coeff_for_time_constant(48_000.0, 100.0);
+        let mut meter = MeterState::default();
+        poison(&mut poisoned);
+        update_meter_block_stats(&poisoned, &mut meter, coeff);
+        assert!(meter.rms_acc.is_nan(), "premise: an unsanitized NaN latches the meter");
+        let mut meter = MeterState::default();
+        contain_non_finite(&mut poisoned);
+        let stats = update_meter_block_stats(&poisoned, &mut meter, coeff);
+        assert!(meter.rms_acc.is_finite() && stats.rms_db.is_finite());
+
+        // The chain must contain, count and clear before anything measures.
+        let source = include_str!("dsp_loop.rs");
+        let chain = between(
+            source,
+            "macro_rules! apply_downstream_chain_rt",
+            "// Time-based EMA smoothing",
+        );
+        let contain = chain.find("if contain_non_finite($buffer)").unwrap();
+        let tail = &chain[contain..];
+        for step in [
+            "deesser_rt.reset()",
+            "reset_eq_clearing_filter_memory(&mut correction_eq_rt)",
+            "reset_eq_clearing_filter_memory(&mut tone_eq_rt)",
+            "downstream_non_finite_count.fetch_add",
+        ] {
+            assert!(tail.contains(step), "{step} missing from the NaN recovery");
+        }
+        assert_eq!(AudioProcessor::new().get_downstream_non_finite_count(), 0);
+    }
+
+    // --- RT-009 ---------------------------------------------------------------------
+
+    #[test]
+    fn input_ring_is_sized_from_the_device_rate_after_the_device_is_selected() {
+        let production = dsp_loop_production();
+        let start = between(&production, "fn start_streams_unguarded(", "/// Stop audio processing");
+        assert!(!start.contains("AudioRingBuffer::new(self.sample_rate as usize * 2)"));
+        let select = start.find("from_named_device_identity_setup(").unwrap();
+        let ring = start
+            .find("AudioRingBuffer::new(input_sample_rate_for_thread as usize * 2)")
+            .unwrap();
+        let open = start.find("AudioInput::from_setup(").unwrap();
+        assert!(select < ring && ring < open);
+    }
+
+    // --- RT-013 --------------------------------------------------------------------
+
+    #[test]
+    fn no_denormals_safety_comment_states_the_documented_caveat() {
+        let source = include_str!("dsp_loop.rs");
+        let comment = between(source, "// SAFETY: `no_denormals`", "let dsp_loop = || unsafe");
+        assert!(comment.contains("technically undefined"));
+        assert!(comment.contains("restores them when the closure returns or"));
+    }
+
+    // --- RT-020 ---------------------------------------------------------------------
+
+    #[test]
+    fn output_rates_beyond_the_scratch_capacity_are_rejected_at_start() {
+        for (rate, fits) in [(96_000, true), (192_000, true), (352_800, false), (384_000, false)] {
+            let resampler = build_sinc_resampler(48_000, rate, RESAMPLER_CHUNK_SIZE).unwrap();
+            let checked =
+                ensure_resampler_scratch_capacity(&resampler, RT_OUTPUT_SCRATCH_CAPACITY, "output");
+            assert_eq!(checked.is_ok(), fits, "{rate} Hz: {checked:?}");
+            if let Err(message) = checked {
+                assert!(message.contains("output"));
+            }
+        }
+        let writer = region(include_str!("dsp_loop.rs"), "dsp_output_writer");
+        assert!(
+            writer.contains("output_resampler_error_count"),
+            "output resampler errors must be counted"
+        );
+        assert_eq!(AudioProcessor::new().get_output_resampler_error_count(), 0);
+    }
+
+    // --- RT-021 -----------------------------------------------------------------------
+
+    #[test]
+    fn input_fill_smoothing_follows_wall_time_not_pass_count() {
+        let settle = |pass_ms: f32| {
+            let mut state = 0.0_f32;
+            let mut elapsed = 0.0_f32;
+            while elapsed < 200.0 - 1e-3 {
+                advance_time_ema(&mut state, 1000.0, pass_ms, 200.0);
+                elapsed += pass_ms;
+            }
+            state
+        };
+        let expected = 1000.0 * (1.0 - (-1.0_f32).exp());
+        for pass_ms in [0.1_f32, 1.6, 10.0, 20.0] {
+            let value = settle(pass_ms);
+            assert!((value - expected).abs() < 2.0, "{pass_ms} ms passes gave {value}");
+        }
+        let rt = region(include_str!("dsp_loop.rs"), "dsp_processing_loop");
+        let compact: String = rt.split_whitespace().collect();
+        assert!(!compact.contains("smooth_buffer(raw_input_len"));
+        assert!(compact.contains("advance_time_ema(&mutsmoothed_input_len"));
+    }
+
+    // --- RT-025 -------------------------------------------------------------------------
+
+    #[test]
+    fn control_apply_and_stage_resets_do_not_allocate() {
+        let sample_rate = TARGET_SAMPLE_RATE as f64;
+        let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, sample_rate);
+        let mut correction_eq = ParametricEQ::new(sample_rate);
+        let mut tone_eq = ParametricEQ::new(sample_rate);
+        let mut compressor = Compressor::default_voice(sample_rate);
+        let mut deesser = DeEsser::new(sample_rate);
+        let mut limiter = Limiter::default_settings(sample_rate);
+        let mut suppressor = new_noise_suppression_engine(
+            NoiseModel::RNNoise,
+            Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+        );
+        let gate_control = GateControlState::new();
+        let eq_control = EqControlSnapshot::new();
+        let compressor_control = CompressorControlState::new();
+        let deesser_control = DeesserControlState::new();
+        let limiter_control = LimiterControlState::new();
+        let suppressor_control = SuppressorControlState::new();
+        let mut block = [0.1_f32; 480];
+        for (index, sample) in block.iter_mut().enumerate() {
+            *sample = (index as f32 * 0.037).sin() * 0.35;
+        }
+
+        // One pass through every path warms any lazily built state.
+        gate.process_block_inplace(&mut block);
+        correction_eq.process_block_inplace(&mut block);
+        compressor.process_block_inplace(&mut block);
+        deesser.process_block_inplace(&mut block);
+        limiter.process_block_inplace(&mut block);
+        let mut apply = || {
+            apply_gate_control(&mut gate, &gate_control);
+            apply_eq_control(&mut correction_eq, &mut tone_eq, &eq_control);
+            apply_compressor_control(&mut compressor, &compressor_control);
+            apply_deesser_control(&mut deesser, &deesser_control);
+            apply_limiter_control(&mut limiter, &limiter_control);
+            apply_suppressor_control(&mut suppressor, &suppressor_control);
+        };
+        apply();
+        crate::test_alloc::assert_no_allocations("steady-state apply_*_control", apply);
+
+        let counted = |function: &mut dyn FnMut()| {
+            crate::test_alloc::allocation_count_during(function)
+        };
+        assert_eq!(counted(&mut || gate.reset()), 0, "gate reset");
+        assert_eq!(counted(&mut || correction_eq.reset()), 0, "eq reset");
+        assert_eq!(counted(&mut || deesser.reset()), 0, "deesser reset");
+        assert_eq!(counted(&mut || limiter.reset()), 0, "limiter reset");
+        assert_eq!(counted(&mut || suppressor.soft_reset()), 0, "suppressor soft_reset");
+    }
+
+    // RD-003: `Compressor::reset` rebuilds its EBU R128 meter (9 allocations), and the
+    // DSP loop calls it on every processing-path change. The fix is in src/dsp.
+    #[test]
+    #[ignore = "RD-003: Compressor::reset allocates; src/dsp/compressor is outside this change"]
+    fn compressor_reset_does_not_allocate() {
+        let mut compressor = Compressor::default_voice(TARGET_SAMPLE_RATE as f64);
+        compressor.reset();
+        assert_eq!(
+            crate::test_alloc::allocation_count_during(|| compressor.reset()),
+            0
+        );
+    }
+
+    #[test]
+    fn dsp_loop_meters_cleanup_and_sanitizers_do_not_allocate() {
+        let mut block = [0.0_f32; 480];
+        for (index, sample) in block.iter_mut().enumerate() {
+            *sample = (index as f32 * 0.037).sin() * 0.35;
+        }
+        block[9] = 1.5;
+        let coeff = smoothing_coeff_for_time_constant(48_000.0, 100.0);
+        let mut meter = MeterState::default();
+        let clip_count = AtomicU64::new(0);
+        let clip_peak = AtomicU32::new((-120.0_f32).to_bits());
+        let mut pre_state = InputPreFilterState::default();
+        let mut pre_filter = new_input_pre_filter(48_000.0);
+        let mut cleanup = AdaptiveInputCleanupState::new(48_000.0);
+        cleanup.set_mode(InputCleanupMode::Gentle);
+        let long: Vec<f32> = (0..cleanup.hum_window_samples * 2)
+            .map(|n| 0.05 * (2.0 * std::f32::consts::PI * 50.0 * n as f32 / 48_000.0).sin())
+            .collect();
+
+        let mut run = |block: &mut [f32; 480]| {
+            block[7] = f32::NAN;
+            sanitize_and_clamp_input_inplace(block, &clip_count, &clip_peak);
+            block[7] = f32::NAN;
+            sanitize_and_clamp_output_inplace(block, 0.9);
+            apply_input_pre_filter(block, &mut pre_state, &mut pre_filter, true);
+            update_meter_block_stats(block, &mut meter, coeff);
+            cleanup.analyze_input(&long);
+            cleanup.process_block(block);
+        };
+        // Warm-up pass, then the measured pass over every listed function.
+        run(&mut block);
+        crate::test_alloc::assert_no_allocations("meters, cleanup and sanitizers", || {
+            run(&mut block)
+        });
+
+        let source = include_str!("dsp_loop.rs");
+        for (label, start, end) in [
+            ("contain_non_finite", "fn contain_non_finite(", "/// Advance an exponential"),
+            ("advance_time_ema", "fn advance_time_ema(", "/// Keep why the DSP thread died"),
+            ("startup_control", "fn startup_control<", "/// Consume a pending limiter"),
+        ] {
+            assert_rt_clean(label, between(source, start, end));
+        }
+        let loop_source = include_str!("dsp_loop.rs");
+        assert_rt_clean("dsp_level_meter", region(loop_source, "dsp_level_meter"));
+        assert_rt_clean("dsp_output_writer", region(loop_source, "dsp_output_writer"));
+        assert_rt_clean(
+            "dsp_processing_loop",
+            region(loop_source, "dsp_processing_loop"),
+        );
+        let routing = include_str!("routing.rs");
+        assert_rt_clean(
+            "routing.rs meters",
+            between(routing, "fn update_meter_block_stats(", "fn record_level_extremes("),
+        );
+        assert_rt_clean(
+            "routing.rs sanitizers",
+            between(routing, "fn sanitize_and_clamp_output_inplace(", "fn new_input_pre_filter("),
+        );
+        assert_rt_clean(
+            "routing.rs adaptive cleanup",
+            between(routing, "    fn analyze_input(", "fn wrap_phase("),
+        );
+        let control = include_str!("control.rs");
+        assert_rt_clean(
+            "control.rs apply_*_control",
+            between(control, "fn apply_eq_control(", "#[cfg(test)]\nmod compressor_control_tests"),
+        );
+    }
+
+    // --- RT-027 ---------------------------------------------------------------------------
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn vad_load_retries_back_off_and_the_last_error_is_published() {
+        let mut retry = VadRetryBackoff::default();
+        let delays: Vec<u64> = (0..9).map(|_| retry.next_delay().as_millis() as u64).collect();
+        assert_eq!(delays, [50, 100, 200, 400, 800, 1_600, 3_200, 5_000, 5_000]);
+        retry.reset();
+        assert_eq!(retry.next_delay().as_millis(), 50);
+
+        let slot = Mutex::new(None);
+        let error = crate::dsp::vad::VadError::InvalidSampleRate(44_100);
+        publish_vad_worker_error(&slot, Some(error.to_string()));
+        assert_eq!(
+            slot.lock().unwrap().as_deref(),
+            Some("Unsupported VAD sample rate: 44100 Hz")
+        );
+        publish_vad_worker_error(&slot, None);
+        assert!(AudioProcessor::new().get_vad_worker_error().is_none());
+
+        let worker = include_str!("vad_worker.rs");
+        assert!(!worker.contains("from_millis(50)"), "fixed 50 ms retry loops are gone");
+    }
+
+    // --- RB-012 -----------------------------------------------------------------------------
+
+    #[test]
+    fn processor_keeps_no_write_only_gate_shadow() {
+        let source = include_str!("../processor.rs");
+        let fields = between(source, "pub struct AudioProcessor {", "impl AudioProcessor {");
+        assert!(!fields.contains("gate: Arc<Mutex<NoiseGate>>"));
+        let stop = between(include_str!("dsp_loop.rs"), "pub fn stop(", "\n    }\n}\n");
+        assert!(!stop.contains("self.gate.lock()"));
+    }
+}
+
+#[test]
+fn test_output_probe_is_scaled_to_the_effective_limiter_ceiling() {
+    let processor = AudioProcessor::new();
+    let (producer, mut consumer) = AudioRingBuffer::new(16).split();
+    *processor.output_probe_producer.lock().unwrap() = Some(producer);
+    processor.running.store(true, Ordering::Release);
+    processor.output_sample_rate.store(8, Ordering::Relaxed);
+    processor.set_limiter_ceiling(-6.0);
+    let ceiling = 10.0_f32.powf(processor.limiter_effective_ceiling_db() as f32 / 20.0);
+
+    processor.queue_output_probe(&[1.0, -0.5]).unwrap();
+
+    let mut rendered = [0.0_f32; 2];
+    assert_eq!(consumer.read(&mut rendered), 2);
+    assert!((rendered[0] - ceiling).abs() < 1.0e-6, "{rendered:?}");
+    assert!((rendered[1] + 0.5 * ceiling).abs() < 1.0e-6, "{rendered:?}");
+    processor.running.store(false, Ordering::Release);
+}
+
+#[test]
+fn test_product_resampler_offline_hook_bounds_the_rate_ratio() {
+    let probe = |input_rate, output_rate| {
+        simulate_product_resampler(vec![0.0; 64], input_rate, output_rate, 64, None, None)
+    };
+    assert!(probe(8_000, 1_000_000).is_err());
+    assert!(probe(1_000_000, 8_000).is_err());
+    assert!(probe(7_999, 48_000).is_err());
+    assert!(probe(8_000, 768_000).is_ok());
+}
+
+#[test]
+fn test_compressor_release_setters_keep_adaptive_base_in_its_range() {
+    let processor = AudioProcessor::new();
+    let stored_release =
+        |processor: &AudioProcessor| processor.compressor_control.lock().unwrap().base_release_ms;
+
+    processor.set_compressor_adaptive_release(false);
+    processor.set_compressor_release(500.0);
+    assert_eq!(stored_release(&processor), 500.0);
+
+    // Entering adaptive mode must not keep the manual value as its base.
+    processor.set_compressor_adaptive_release(true);
+    assert_eq!(stored_release(&processor), COMPRESSOR_BASE_RELEASE_MAX_MS);
+    assert_eq!(
+        processor.get_compressor_release(),
+        COMPRESSOR_BASE_RELEASE_MAX_MS
+    );
+
+    processor.set_compressor_release(900.0);
+    assert_eq!(stored_release(&processor), COMPRESSOR_BASE_RELEASE_MAX_MS);
+    processor.set_compressor_release(5.0);
+    assert_eq!(stored_release(&processor), COMPRESSOR_BASE_RELEASE_MIN_MS);
+}
+
+#[test]
+fn test_offline_simulator_clamps_settings_to_the_live_ranges() {
+    Python::initialize();
+    Python::attach(|py| {
+        let audio: Vec<f32> = (0..4_800).map(|n| 0.8 * (n as f32 * 0.05).sin()).collect();
+        let gain_reduction = |ratio: f64| {
+            let settings = pyo3::types::PyDict::new(py);
+            settings.set_item("ratio", ratio).unwrap();
+            let audio = numpy::PyArray1::from_vec(py, audio.clone());
+            let result = simulate_auto_makeup_control(
+                py,
+                numpy::PyArrayMethods::readonly(&audio),
+                48_000.0,
+                vec![0.9; 10],
+                -60.0,
+                1.0,
+                Some(&settings),
+            )
+            .unwrap();
+            result
+                .bind(py)
+                .get_item("gain_reduction_db")
+                .unwrap()
+                .extract::<Vec<f32>>()
+                .unwrap()
+        };
+
+        let at_live_maximum = gain_reduction(COMPRESSOR_RATIO_MAX);
+        assert!(at_live_maximum.iter().any(|reduction| *reduction > 0.0));
+        assert_eq!(gain_reduction(1.0e6), at_live_maximum);
+    });
+}
+
+#[test]
+fn test_live_setters_count_rejected_non_finite_values() {
+    let wrapper = PyAudioProcessor {
+        processor: AudioProcessor::new(),
+    };
+    let processor = &wrapper.processor;
+    processor.set_gate_threshold(f64::NAN);
+    processor.set_compressor_ratio(f64::INFINITY);
+    processor.set_limiter_release(f64::NEG_INFINITY);
+    assert_eq!(processor.get_rejected_control_value_count(), 3);
+
+    // Finite out-of-range values are still clamped and accepted.
+    processor.set_gate_threshold(1.0e9);
+    processor.set_compressor_ratio(1.0e9);
+    assert_eq!(processor.get_rejected_control_value_count(), 3);
+    assert_eq!(
+        processor.compressor_control.lock().unwrap().ratio,
+        COMPRESSOR_RATIO_MAX
+    );
+
+    Python::initialize();
+    Python::attach(|py| {
+        let diagnostics = wrapper.get_runtime_diagnostics(py).unwrap();
+        let count = diagnostics
+            .bind(py)
+            .cast::<pyo3::types::PyDict>()
+            .unwrap()
+            .get_item("rejected_control_value_count")
+            .unwrap()
+            .unwrap()
+            .extract::<u64>()
+            .unwrap();
+        assert_eq!(count, 3);
+    });
+}
+
+/// Alternate two published configurations while another thread snapshots the
+/// control state; every snapshot must equal one whole configuration.
+#[cfg(test)]
+fn assert_snapshots_stay_whole(
+    publish: impl Fn(bool) + Sync,
+    snapshot_is_whole: impl Fn() -> Option<bool> + Sync,
+) {
+    let done = AtomicBool::new(false);
+    let (observed, torn) = std::thread::scope(|scope| {
+        let reader = scope.spawn(|| {
+            let (mut observed, mut torn) = (0_u64, 0_u64);
+            while !done.load(Ordering::Acquire) {
+                match snapshot_is_whole() {
+                    Some(true) => observed += 1,
+                    Some(false) => torn += 1,
+                    None => {}
+                }
+            }
+            (observed, torn)
+        });
+        for iteration in 0..50_000 {
+            publish(iteration % 2 == 0);
+        }
+        done.store(true, Ordering::Release);
+        reader.join().unwrap()
+    });
+    assert!(observed > 0, "the reader never saw a stable snapshot");
+    assert_eq!(torn, 0, "{torn} snapshots mixed two configurations");
+}
+
+#[test]
+fn test_deesser_settings_publish_the_cut_pair_atomically() {
+    let processor = AudioProcessor::new();
+    let pair = |narrow: bool| {
+        if narrow {
+            (3_000.0, 5_000.0)
+        } else {
+            (9_000.0, 14_000.0)
+        }
+    };
+    let settings = |narrow: bool| {
+        let (low_cut_hz, high_cut_hz) = pair(narrow);
+        DeesserControlState {
+            low_cut_hz,
+            high_cut_hz,
+            ..DeesserControlState::new()
+        }
+    };
+    assert_snapshots_stay_whole(
+        |narrow| processor.apply_deesser_settings(&settings(narrow)),
+        || {
+            processor.deesser_rt_control.snapshot().map(|state| {
+                let (low, high) = (state.low_cut_hz, state.high_cut_hz);
+                low + DEESSER_MIN_BANDWIDTH_HZ < high
+                    && [true, false]
+                        .iter()
+                        .any(|narrow| pair(*narrow) == (low, high))
+            })
+        },
+    );
+}
+
+#[test]
+fn test_deesser_settings_resolve_an_invalid_cut_pair_and_clamp() {
+    let processor = AudioProcessor::new();
+    processor.apply_deesser_settings(&DeesserControlState {
+        low_cut_hz: 9_000.0,
+        high_cut_hz: 5_000.0,
+        ratio: 1.0e9,
+        threshold_db: f64::NAN,
+        ..DeesserControlState::new()
+    });
+    let state = processor.deesser_rt_control.snapshot().unwrap();
+    assert_eq!(state.high_cut_hz, 5_000.0);
+    assert_eq!(state.low_cut_hz, 5_000.0 - DEESSER_MIN_BANDWIDTH_HZ);
+    assert_eq!(state.ratio, DEESSER_RATIO_MAX);
+    // A non-finite value keeps the current one and is counted.
+    assert_eq!(state.threshold_db, DeesserControlState::new().threshold_db);
+    assert_eq!(processor.get_rejected_control_value_count(), 1);
+    assert_eq!(processor.get_deesser_low_cut_hz(), state.low_cut_hz);
+    assert_eq!(processor.get_deesser_high_cut_hz(), state.high_cut_hz);
+}
+
+#[test]
+fn test_compressor_settings_publish_mode_and_release_together() {
+    let processor = AudioProcessor::new();
+    let settings = |adaptive: bool| CompressorControlState {
+        adaptive_release: adaptive,
+        base_release_ms: if adaptive { 50.0 } else { 500.0 },
+        ratio: if adaptive { 2.0 } else { 8.0 },
+        ..CompressorControlState::new()
+    };
+    assert_snapshots_stay_whole(
+        |adaptive| processor.apply_compressor_settings(&settings(adaptive)),
+        || {
+            processor.compressor_rt_control.snapshot().map(|state| {
+                let adaptive = state.adaptive_release;
+                state.base_release_ms == if adaptive { 50.0 } else { 500.0 }
+                    && state.ratio == if adaptive { 2.0 } else { 8.0 }
+            })
+        },
+    );
+
+    // An adaptive base keeps its own range instead of the manual one.
+    processor.apply_compressor_settings(&CompressorControlState {
+        adaptive_release: true,
+        base_release_ms: 900.0,
+        ..CompressorControlState::new()
+    });
+    assert_eq!(
+        processor
+            .compressor_rt_control
+            .snapshot()
+            .unwrap()
+            .base_release_ms,
+        COMPRESSOR_BASE_RELEASE_MAX_MS
+    );
+}
+
+#[cfg(feature = "vad")]
+#[test]
+fn test_gate_settings_publish_all_fields_together() {
+    let processor = AudioProcessor::new();
+    let settings = |loose: bool| GateControlState {
+        threshold_db: if loose { -30.0 } else { -60.0 },
+        attack_ms: if loose { 5.0 } else { 50.0 },
+        release_ms: if loose { 50.0 } else { 500.0 },
+        gate_mode: if loose {
+            GateMode::ThresholdOnly
+        } else {
+            GateMode::VadOnly
+        },
+        ..GateControlState::new()
+    };
+    assert_snapshots_stay_whole(
+        |loose| processor.apply_gate_settings(&settings(loose)),
+        || {
+            processor.gate_rt_control.snapshot().map(|state| {
+                let loose = state.threshold_db == -30.0;
+                state.attack_ms == if loose { 5.0 } else { 50.0 }
+                    && state.release_ms == if loose { 50.0 } else { 500.0 }
+                    && (state.gate_mode == GateMode::ThresholdOnly) == loose
+            })
+        },
+    );
+}
+
+#[test]
+fn test_python_deesser_settings_reject_missing_keys_without_applying() {
+    Python::initialize();
+    Python::attach(|py| {
+        let wrapper = PyAudioProcessor {
+            processor: AudioProcessor::new(),
+        };
+        let settings = pyo3::types::PyDict::new(py);
+        settings.set_item("enabled", true).unwrap();
+        settings.set_item("low_cut_hz", 6_000.0).unwrap();
+        let error = wrapper.apply_deesser_settings(&settings).unwrap_err();
+        assert!(error.is_instance_of::<pyo3::exceptions::PyKeyError>(py));
+        assert_eq!(
+            wrapper.processor.get_deesser_low_cut_hz(),
+            DeesserControlState::new().low_cut_hz
+        );
+    });
+}

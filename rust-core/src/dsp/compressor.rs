@@ -219,7 +219,7 @@ impl Compressor {
 
     /// Set threshold in dB
     pub fn set_threshold(&mut self, threshold_db: f64) {
-        if self.threshold_db == threshold_db {
+        if threshold_db.is_nan() || self.threshold_db == threshold_db {
             return;
         }
         self.threshold_db = threshold_db;
@@ -243,12 +243,15 @@ impl Compressor {
 
     /// Set attack time in ms
     pub fn set_attack_time(&mut self, attack_ms: f64) {
+        if attack_ms.is_nan() {
+            return;
+        }
         self.attack_coeff = util::time_constant_to_coeff(attack_ms, self.sample_rate);
     }
 
     /// Set release time in ms
     pub fn set_release_time(&mut self, release_ms: f64) {
-        if self.base_release_ms == release_ms {
+        if release_ms.is_nan() || self.base_release_ms == release_ms {
             return;
         }
         self.base_release_ms = release_ms;
@@ -290,7 +293,7 @@ impl Compressor {
 
     /// Set base release time
     pub fn set_base_release_time(&mut self, release_ms: f64) {
-        if self.base_release_ms == release_ms {
+        if release_ms.is_nan() || self.base_release_ms == release_ms {
             return;
         }
         self.base_release_ms = release_ms;
@@ -375,6 +378,26 @@ impl Compressor {
     /// Check if auto makeup is enabled
     pub fn auto_makeup_enabled(&self) -> bool {
         self.makeup.auto_makeup_enabled()
+    }
+
+    /// Why auto makeup is unavailable or not tracking, for diagnostics.
+    pub fn auto_makeup_error(&self) -> Option<&str> {
+        self.makeup.auto_makeup_error()
+    }
+
+    /// `auto_makeup_error` as a code the DSP thread can publish through an
+    /// atomic; decode it with `auto_makeup_error_text`.
+    pub fn auto_makeup_error_code(&self) -> u8 {
+        self.makeup.auto_makeup_error_code()
+    }
+
+    /// Message for a code from `auto_makeup_error_code`; `None` for 0 or unknown.
+    pub fn auto_makeup_error_text(code: u8) -> Option<&'static str> {
+        match code {
+            1 => Some("Loudness meter does not support this sample rate; auto makeup is off"),
+            2 => Some("Loudness meter rejected audio; auto makeup is not tracking loudness"),
+            _ => None,
+        }
     }
 
     /// Set target LUFS for auto makeup gain
@@ -1867,5 +1890,59 @@ mod tests {
         comp.reset();
 
         assert_eq!(comp.current_lufs(), -100.0);
+    }
+
+    #[test]
+    fn nan_setters_are_ignored_and_auto_makeup_keeps_running() {
+        let mut comp = Compressor::default_voice(48_000.0);
+        comp.set_auto_makeup_enabled(true);
+        let threshold = comp.threshold_db();
+        let release = comp.base_release_ms();
+        let target = comp.target_lufs();
+
+        comp.set_threshold(f64::NAN);
+        comp.set_attack_time(f64::NAN);
+        comp.set_release_time(f64::NAN);
+        comp.set_base_release_time(f64::NAN);
+        comp.set_makeup_gain(f64::NAN);
+        comp.set_target_lufs(f64::NAN);
+        comp.set_limiter_feedback_gain_reduction_db(f64::NAN);
+        assert_eq!(comp.threshold_db(), threshold);
+        assert_eq!(comp.base_release_ms(), release);
+        assert_eq!(comp.target_lufs(), target);
+
+        let mut speech_like = vec![0.04_f32; 48_000];
+        for _ in 0..10 {
+            comp.process_block_inplace(&mut speech_like);
+        }
+        assert!(speech_like.iter().all(|sample| sample.is_finite()));
+        assert!(comp.current_makeup_gain().is_finite());
+    }
+
+    #[test]
+    fn test_unsupported_sample_rate_reports_why_auto_makeup_is_off() {
+        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 200.0, 0.0, 0.0, 22_050.0);
+        comp.set_auto_makeup_enabled(true);
+        assert!(!comp.auto_makeup_enabled());
+        assert!(comp
+            .auto_makeup_error()
+            .expect("an unsupported rate must be reported")
+            .contains("22050"));
+
+        let mut supported = Compressor::default_voice(48_000.0);
+        supported.set_auto_makeup_enabled(true);
+        assert!(supported.auto_makeup_enabled());
+        assert!(supported.auto_makeup_error().is_none());
+
+        assert_eq!(comp.auto_makeup_error_code(), 1);
+        assert!(Compressor::auto_makeup_error_text(1)
+            .expect("code 1 has a message")
+            .contains("sample rate"));
+        assert_eq!(supported.auto_makeup_error_code(), 0);
+        assert!(Compressor::auto_makeup_error_text(0).is_none());
+
+        // Never asked for: nothing to report.
+        let unrequested = Compressor::new(-20.0, 4.0, 10.0, 200.0, 0.0, 0.0, 22_050.0);
+        assert_eq!(unrequested.auto_makeup_error_code(), 0);
     }
 }

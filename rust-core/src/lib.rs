@@ -172,17 +172,45 @@ pub(crate) mod test_alloc {
 pub use audio::{AudioProcessor, PyAudioProcessor};
 pub use dsp::{Biquad, Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ, RNNoiseProcessor};
 
+/// Run a pyfunction body so a Rust panic becomes a `RuntimeError`. PyO3's own
+/// `PanicException` derives from `BaseException`, which the app's
+/// `except Exception` handlers do not catch.
+pub(crate) fn catch_panic<T>(body: impl FnOnce() -> PyResult<T>) -> PyResult<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or_else(|_| {
+        Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "internal error: the native audio core panicked",
+        ))
+    })
+}
+
+const MIN_EQ_SAMPLE_RATE: f64 = 8_000.0;
+const MAX_EQ_SAMPLE_RATE: f64 = 768_000.0;
+
+fn validate_eq_sample_rate(sample_rate: f64) -> PyResult<()> {
+    if !sample_rate.is_finite() || !(MIN_EQ_SAMPLE_RATE..=MAX_EQ_SAMPLE_RATE).contains(&sample_rate)
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "sample_rate must be finite and between {MIN_EQ_SAMPLE_RATE:.0} and {MAX_EQ_SAMPLE_RATE:.0} Hz"
+        )));
+    }
+    Ok(())
+}
+
 #[pyfunction]
 fn eq_magnitude_response(
     frequencies_hz: Vec<f64>,
     bands: Vec<(f64, f64, f64)>,
     sample_rate: f64,
 ) -> PyResult<Vec<f64>> {
-    if !sample_rate.is_finite() || sample_rate <= 0.0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "sample_rate must be finite and positive",
-        ));
-    }
+    catch_panic(|| eq_magnitude_response_impl(frequencies_hz, bands, sample_rate))
+}
+
+fn eq_magnitude_response_impl(
+    frequencies_hz: Vec<f64>,
+    bands: Vec<(f64, f64, f64)>,
+    sample_rate: f64,
+) -> PyResult<Vec<f64>> {
+    validate_eq_sample_rate(sample_rate)?;
     if bands.len() != dsp::eq::NUM_BANDS {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "expected {} EQ bands, got {}",
@@ -192,21 +220,12 @@ fn eq_magnitude_response(
     }
     let nyquist = sample_rate / 2.0;
     for (index, (frequency_hz, gain_db, q)) in bands.iter().copied().enumerate() {
-        if !frequency_hz.is_finite() || frequency_hz <= 0.0 || frequency_hz >= nyquist {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "band {index} frequency must be between 0 Hz and Nyquist"
-            )));
-        }
-        if !gain_db.is_finite() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "band {index} gain must be finite"
-            )));
-        }
-        if !q.is_finite() || q <= 0.0 {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "band {index} Q must be finite and positive"
-            )));
-        }
+        dsp::eq::validate_eq_frequency_hz(frequency_hz, sample_rate)
+            .and_then(|()| dsp::eq::validate_eq_gain_db(gain_db))
+            .and_then(|()| dsp::eq::validate_eq_q(q))
+            .map_err(|message| {
+                pyo3::exceptions::PyValueError::new_err(format!("band {index}: {message}"))
+            })?;
     }
     if frequencies_hz.iter().any(|frequency_hz| {
         !frequency_hz.is_finite() || *frequency_hz < 0.0 || *frequency_hz > nyquist
@@ -228,11 +247,7 @@ fn eq_magnitude_response(
 type PyEqBandV2 = (String, f64, f64, f64, u8, bool);
 
 fn parse_eq_v2_bands(bands: &[PyEqBandV2], sample_rate: f64) -> PyResult<Vec<dsp::EqBandConfig>> {
-    if !sample_rate.is_finite() || sample_rate <= 0.0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "sample_rate must be finite and positive",
-        ));
-    }
+    validate_eq_sample_rate(sample_rate)?;
     if bands.len() != dsp::eq::NUM_BANDS {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "expected {} EQ bands, got {}",
@@ -270,6 +285,14 @@ fn eq_magnitude_response_v2(
     bands: Vec<PyEqBandV2>,
     sample_rate: f64,
 ) -> PyResult<Vec<f64>> {
+    catch_panic(|| eq_magnitude_response_v2_impl(frequencies_hz, bands, sample_rate))
+}
+
+fn eq_magnitude_response_v2_impl(
+    frequencies_hz: Vec<f64>,
+    bands: Vec<PyEqBandV2>,
+    sample_rate: f64,
+) -> PyResult<Vec<f64>> {
     let configs = parse_eq_v2_bands(&bands, sample_rate)?;
     let nyquist = sample_rate / 2.0;
     if frequencies_hz.iter().any(|frequency_hz| {
@@ -296,11 +319,6 @@ fn simulate_eq_v2(
     bands: Vec<PyEqBandV2>,
     return_output_audio: bool,
 ) -> PyResult<Py<PyAny>> {
-    if !sample_rate.is_finite() || !(8_000.0..=768_000.0).contains(&sample_rate) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "sample_rate must be finite and between 8000 and 768000 Hz",
-        ));
-    }
     let configs = parse_eq_v2_bands(&bands, sample_rate)?;
     let input = audio.as_slice()?.to_vec();
     if input.iter().any(|sample| !sample.is_finite()) {
@@ -402,8 +420,10 @@ fn measure_integrated_loudness(
     sample_rate: u32,
 ) -> PyResult<f64> {
     let samples = audio.as_slice()?.to_vec();
-    py.detach(move || dsp::loudness::integrated_loudness_lufs(&samples, sample_rate))
-        .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+    catch_panic(|| {
+        py.detach(move || dsp::loudness::integrated_loudness_lufs(&samples, sample_rate))
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+    })
 }
 
 #[pyfunction]
@@ -485,4 +505,77 @@ fn configure_deepfilter_runtime_paths(
 ) -> PyResult<()> {
     dsp::deepfilter_ffi::configure_app_owned_paths(library_path, model_path)
         .map_err(pyo3::exceptions::PyValueError::new_err)
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+
+    fn default_bands() -> Vec<(f64, f64, f64)> {
+        (0..dsp::eq::NUM_BANDS)
+            .map(|index| (100.0 * (index + 1) as f64, 0.0, 1.0))
+            .collect()
+    }
+
+    fn eq_response_error(bands: Vec<(f64, f64, f64)>, sample_rate: f64) -> String {
+        eq_magnitude_response(vec![1000.0], bands, sample_rate)
+            .expect_err("out-of-range input must be rejected")
+            .to_string()
+    }
+
+    #[test]
+    fn eq_response_v1_rejects_values_outside_the_live_eq_ranges() {
+        assert!(eq_magnitude_response(vec![1000.0], default_bands(), 48_000.0).is_ok());
+
+        let mut bands = default_bands();
+        bands[3].1 = 1e300;
+        assert!(eq_response_error(bands, 48_000.0).contains("band 3"));
+
+        let mut bands = default_bands();
+        bands[4].2 = 1e300;
+        assert!(eq_response_error(bands, 48_000.0).contains("band 4"));
+
+        let mut bands = default_bands();
+        bands[5].0 = 1e-3;
+        assert!(eq_response_error(bands, 48_000.0).contains("band 5"));
+
+        assert!(eq_response_error(default_bands(), 1e300).contains("sample_rate"));
+    }
+
+    #[test]
+    fn eq_response_v2_bounds_sample_rate_like_simulate_eq_v2() {
+        let bands = (0..dsp::eq::NUM_BANDS)
+            .map(|index| {
+                (
+                    "bell".to_string(),
+                    100.0 * (index + 1) as f64,
+                    0.0,
+                    1.0,
+                    12,
+                    true,
+                )
+            })
+            .collect::<Vec<_>>();
+        for sample_rate in [1e9, 1_000.0] {
+            let error = eq_magnitude_response_v2(vec![1000.0], bands.clone(), sample_rate)
+                .expect_err("sample rate outside 8-768 kHz must be rejected");
+            assert!(error.to_string().contains("sample_rate"));
+        }
+    }
+
+    #[pyfunction]
+    fn guarded_panic() -> PyResult<()> {
+        catch_panic(|| panic!("test panic"))
+    }
+
+    #[test]
+    fn pyfunction_panic_becomes_a_runtime_error() {
+        Python::initialize();
+        Python::attach(|py| {
+            let guarded = wrap_pyfunction!(guarded_panic, py).unwrap();
+            let error = guarded.call0().unwrap_err();
+            assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+            assert!(error.is_instance_of::<pyo3::exceptions::PyException>(py));
+        });
+    }
 }

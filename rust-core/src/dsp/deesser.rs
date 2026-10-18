@@ -499,6 +499,9 @@ impl DeEsser {
 
     /// Set auto mode amount [0.0, 1.0].
     pub fn set_auto_amount(&mut self, amount: f64) {
+        if amount.is_nan() {
+            return;
+        }
         self.auto_amount = amount.clamp(0.0, 1.0);
     }
 
@@ -508,6 +511,9 @@ impl DeEsser {
 
     /// Set detector low cutoff (high-pass edge) in Hz.
     pub fn set_low_cut_hz(&mut self, low_cut_hz: f64) {
+        if low_cut_hz.is_nan() {
+            return;
+        }
         let low_cut_hz = low_cut_hz.clamp(2000.0, 12000.0);
         let mut high_cut_hz = self.high_cut_hz;
         if high_cut_hz <= low_cut_hz + 200.0 {
@@ -523,6 +529,9 @@ impl DeEsser {
 
     /// Set detector high cutoff (low-pass edge) in Hz.
     pub fn set_high_cut_hz(&mut self, high_cut_hz: f64) {
+        if high_cut_hz.is_nan() {
+            return;
+        }
         let high_cut_hz = high_cut_hz.clamp(2200.0, 16000.0);
         let mut low_cut_hz = self.low_cut_hz;
         if high_cut_hz <= low_cut_hz + 200.0 {
@@ -538,28 +547,44 @@ impl DeEsser {
 
     /// Set threshold in dBFS.
     pub fn set_threshold_db(&mut self, threshold_db: f64) {
+        if threshold_db.is_nan() {
+            return;
+        }
         self.threshold_db = threshold_db.clamp(-60.0, -6.0);
     }
 
     /// Set ratio (>= 1.0).
     pub fn set_ratio(&mut self, ratio: f64) {
+        if ratio.is_nan() {
+            return;
+        }
         self.ratio = ratio.clamp(1.0, 20.0);
     }
 
     /// Set attack in milliseconds.
     pub fn set_attack_ms(&mut self, attack_ms: f64) {
+        if attack_ms.is_nan() {
+            return;
+        }
         self.attack_coeff =
             util::time_constant_to_coeff(attack_ms.clamp(0.1, 50.0), self.sample_rate);
     }
 
     /// Set release in milliseconds.
     pub fn set_release_ms(&mut self, release_ms: f64) {
+        if release_ms.is_nan() {
+            return;
+        }
         self.release_coeff =
             util::time_constant_to_coeff(release_ms.clamp(5.0, 500.0), self.sample_rate);
     }
 
     /// Set max reduction cap in dB.
     pub fn set_max_reduction_db(&mut self, max_reduction_db: f64) {
+        // A NaN cap would panic the `clamp` bound in the realtime loop.
+        if max_reduction_db.is_nan() {
+            return;
+        }
         self.max_reduction_db = max_reduction_db.clamp(0.0, 24.0);
     }
 
@@ -2270,5 +2295,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn nan_setters_keep_previous_values() {
+        let mut deesser = DeEsser::new(48_000.0);
+        let snapshot = |d: &DeEsser| {
+            [
+                d.low_cut_hz(),
+                d.high_cut_hz(),
+                d.threshold_db(),
+                d.ratio(),
+                d.max_reduction_db(),
+                d.auto_amount(),
+                d.attack_coeff,
+                d.release_coeff,
+            ]
+        };
+        let before = snapshot(&deesser);
+        deesser.set_low_cut_hz(f64::NAN);
+        deesser.set_high_cut_hz(f64::NAN);
+        deesser.set_threshold_db(f64::NAN);
+        deesser.set_ratio(f64::NAN);
+        deesser.set_attack_ms(f64::NAN);
+        deesser.set_release_ms(f64::NAN);
+        deesser.set_max_reduction_db(f64::NAN);
+        deesser.set_auto_amount(f64::NAN);
+        assert_eq!(snapshot(&deesser), before);
     }
 }

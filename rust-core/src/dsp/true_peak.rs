@@ -353,6 +353,10 @@ impl TruePeakLimiter {
     }
 
     pub fn set_ceiling_linear(&mut self, ceiling_linear: f32) {
+        // A NaN ceiling would panic the `clamp` bounds in the realtime loop.
+        if ceiling_linear.is_nan() {
+            return;
+        }
         let previous = self.ceiling_linear;
         self.ceiling_linear = ceiling_linear.clamp(0.000_001, 1.0);
         if self.enabled && self.ceiling_linear < previous {
@@ -385,6 +389,9 @@ impl TruePeakLimiter {
     }
 
     pub fn set_release_ms(&mut self, release_ms: f32) {
+        if release_ms.is_nan() {
+            return;
+        }
         self.release_coeff = util::time_constant_to_coeff(
             release_ms.clamp(5.0, 500.0) as f64,
             self.sample_rate as f64,
@@ -852,5 +859,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn nan_ceiling_is_rejected_and_output_stays_bounded() {
+        let mut limiter = TruePeakLimiter::new(48_000.0, -6.0, 20.0);
+        let ceiling = limiter.ceiling_linear;
+        limiter.set_ceiling_linear(f32::NAN);
+        assert_eq!(limiter.ceiling_linear, ceiling);
+
+        let mut block = vec![0.9_f32; 4_096];
+        limiter.process_block_inplace(&mut block);
+        assert!(block.iter().all(|sample| sample.abs() <= ceiling));
+    }
+
+    #[test]
+    fn nan_release_is_rejected() {
+        let mut limiter = TruePeakLimiter::new(48_000.0, -6.0, 20.0);
+        let coefficient = limiter.release_coefficient();
+        limiter.set_release_ms(f32::NAN);
+        assert_eq!(limiter.release_coefficient(), coefficient);
     }
 }

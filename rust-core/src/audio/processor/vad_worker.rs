@@ -55,10 +55,17 @@ struct VadResultAtomics<'a> {
 
 #[cfg(feature = "vad")]
 impl VadResultAtomics<'_> {
+    // Odd sequence first, then a release fence so no result store can move above it.
+    #[inline]
+    fn begin_write(&self) {
+        self.sequence.fetch_add(1, Ordering::Relaxed);
+        std::sync::atomic::fence(Ordering::Release);
+    }
+
     #[inline]
     fn invalidate(&self, backend_available: bool) {
         let generation = self.source_discontinuity.load(Ordering::Acquire);
-        self.sequence.fetch_add(1, Ordering::AcqRel);
+        self.begin_write();
         self.probability.store(0.0_f32.to_bits(), Ordering::Relaxed);
         self.last_update_us.store(0, Ordering::Relaxed);
         self.source_sample_end.store(0, Ordering::Relaxed);
@@ -81,7 +88,7 @@ impl VadResultAtomics<'_> {
             return false;
         }
 
-        self.sequence.fetch_add(1, Ordering::AcqRel);
+        self.begin_write();
         if self.source_discontinuity.load(Ordering::Acquire) != expected_generation {
             self.sequence.fetch_add(1, Ordering::Release);
             return false;
@@ -142,6 +149,41 @@ impl VadResultAtomics<'_> {
     }
 }
 
+/// Retry delay after consecutive VAD load or inference failures. A corrupt
+/// model or an unsupported rate does not fix itself, so rebuilding the ONNX
+/// session 20 times a second only burns CPU next to the realtime loop.
+#[cfg(feature = "vad")]
+#[derive(Default)]
+struct VadRetryBackoff {
+    failures: u32,
+}
+
+#[cfg(feature = "vad")]
+impl VadRetryBackoff {
+    const FIRST_DELAY_MS: u64 = 50;
+    const MAX_DELAY_MS: u64 = 5_000;
+
+    fn next_delay(&mut self) -> std::time::Duration {
+        let delay_ms = Self::FIRST_DELAY_MS
+            .saturating_mul(1_u64 << self.failures.min(10))
+            .min(Self::MAX_DELAY_MS);
+        self.failures = self.failures.saturating_add(1);
+        std::time::Duration::from_millis(delay_ms)
+    }
+
+    fn reset(&mut self) {
+        self.failures = 0;
+    }
+}
+
+/// Publish the last VAD worker failure for diagnostics (`None` clears it).
+#[cfg(feature = "vad")]
+fn publish_vad_worker_error(slot: &Mutex<Option<String>>, error: Option<String>) {
+    if let Ok(mut slot) = slot.lock() {
+        *slot = error;
+    }
+}
+
 impl AudioProcessor {
 #[cfg(feature = "vad")]
 fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
@@ -163,6 +205,8 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
     let result_sequence = Arc::clone(&self.vad_result_sequence);
     let result_generation = Arc::clone(&self.vad_result_generation);
     let gate_rt_control = Arc::clone(&self.gate_rt_control);
+    let worker_error = Arc::clone(&self.vad_worker_error);
+    publish_vad_worker_error(&worker_error, None);
     let sample_rate = self.sample_rate;
     let threshold = self
         .gate_rt_control
@@ -185,6 +229,7 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
         let mut source_samples_read = 0_u64;
         let mut vad_source_base = 0_u64;
         let mut observed_discontinuity = source_discontinuity.load(Ordering::Acquire);
+        let mut retry = VadRetryBackoff::default();
         let mut local = Vec::with_capacity(VAD_WORKER_MAX_BUFFER_SAMPLES);
         while running.load(Ordering::Acquire) {
             let current_discontinuity = source_discontinuity.load(Ordering::Acquire);
@@ -232,11 +277,13 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
                         VAD_WORKER_MODEL_INITS.fetch_add(1, Ordering::Release);
                         vad_source_base = source_samples_read;
                         vad = Some(candidate);
+                        publish_vad_worker_error(&worker_error, None);
                         result.invalidate(true);
                     }
-                    Err(_) => {
+                    Err(error) => {
+                        publish_vad_worker_error(&worker_error, Some(error.to_string()));
                         result.invalidate(false);
-                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        std::thread::sleep(retry.next_delay());
                         continue;
                     }
                 }
@@ -274,9 +321,10 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
                 }
                 #[cfg(test)]
                 if VAD_WORKER_FORCE_INFERENCE_ERROR.swap(false, Ordering::AcqRel) {
+                    publish_vad_worker_error(&worker_error, Some("forced test failure".to_string()));
                     result.invalidate(false);
                     vad = None;
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    std::thread::sleep(retry.next_delay());
                     continue;
                 }
                 let inference = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -284,6 +332,7 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
                 }));
                 match inference {
                     Ok(Ok(Some(prob))) => {
+                        retry.reset();
                         let processed_samples = vad
                             .as_ref()
                         .expect("VAD backend initialized")
@@ -301,10 +350,15 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
                         }
                     }
                     Ok(Ok(None)) => {}
-                    Ok(Err(_)) | Err(_) => {
+                    failure => {
+                        let reason = match failure {
+                            Ok(Err(error)) => error.to_string(),
+                            _ => "VAD inference panicked".to_string(),
+                        };
+                        publish_vad_worker_error(&worker_error, Some(reason));
                         result.invalidate(false);
                         vad = None;
-                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        std::thread::sleep(retry.next_delay());
                     }
                 }
                 local.clear();
@@ -313,6 +367,13 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
             }
         }
     }));
+}
+
+/// Why the VAD backend is unavailable (missing or corrupt model, unsupported
+/// rate, failed inference), or `None` while it loads and runs.
+#[cfg(feature = "vad")]
+pub fn get_vad_worker_error(&self) -> Option<String> {
+    self.vad_worker_error.lock().ok().and_then(|error| error.clone())
 }
 
 #[cfg(feature = "vad")]

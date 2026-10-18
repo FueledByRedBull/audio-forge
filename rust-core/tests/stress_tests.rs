@@ -13,13 +13,16 @@ fn seeded_control_and_dsp_loops_remain_finite_under_contention() {
     for seed in [1, 0x5eed, 0xdead_beef, u64::MAX - 1] {
         let report = run_seeded_control_dsp_stress(seed, 600)
             .unwrap_or_else(|error| panic!("seed {seed:#x}: {error}"));
-        assert_eq!(report.control_updates, 600);
+        // control_updates echoes the iteration count, so only observed effects count.
         assert!(report.processed_blocks >= 600);
+        // The 0.22 amplitude input must reach the output, not just stay finite.
+        assert!(report.max_output_abs > 0.01, "silent output: {report:?}");
         assert!(report.snapshot_rearms >= 1);
         assert!(report.model_switches >= 1);
         assert!(report.suppressor_resets >= 1);
         assert!(report.max_output_abs.is_finite());
-        assert!(report.max_output_abs <= 16.0);
+        // The output chain ends in a -1.5 dBFS true-peak limiter.
+        assert!(report.max_output_abs <= 1.0);
     }
 }
 
@@ -39,19 +42,13 @@ fn device_enumeration_and_lifecycle_smoke() {
         }
     }
 
-    if let Some(&first_count) = device_counts.first() {
-        assert!(
-            device_counts.iter().all(|&count| count == first_count)
-                || device_counts.iter().any(|&count| count > 0),
-            "device enumeration should be stable or discover at least one device"
-        );
-    }
-
-    if let Ok(devices) = list_input_devices() {
-        assert!(!devices
-            .iter()
-            .any(|device| device.name.contains("FAKE_DEVICE_DOES_NOT_EXIST")));
-    }
+    let first_count = *device_counts
+        .first()
+        .expect("device enumeration never succeeded");
+    assert!(
+        device_counts.iter().all(|&count| count == first_count),
+        "device enumeration changed between calls: {device_counts:?}"
+    );
 
     let processor = AudioProcessor::new();
     assert!(!processor.is_running());

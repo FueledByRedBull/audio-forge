@@ -92,9 +92,22 @@ pub(crate) struct ControlledSample {
     pub gate: GateControl,
 }
 
+/// Longest model delay gate compensation can cover (three 480-sample frames).
+pub(crate) const GATE_COMPENSATION_MAX_DELAY: usize = 1440;
+
+/// Clamp a wet/dry strength to [0, 1]; a non-finite value yields `fallback`
+/// so a NaN can never reach the smoothed mix.
+pub(crate) fn strength_or(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        fallback
+    }
+}
+
 /// Uses only the model's existing delay; it never queues or delays audio.
 pub(crate) struct GateCompensation {
-    history: [GateControl; 1440],
+    history: [GateControl; GATE_COMPENSATION_MAX_DELAY],
     delay: usize,
     position: usize,
     filled: usize,
@@ -103,9 +116,9 @@ pub(crate) struct GateCompensation {
 
 impl GateCompensation {
     pub fn new(delay: usize) -> Self {
-        assert!(delay <= 1440);
+        assert!(delay <= GATE_COMPENSATION_MAX_DELAY);
         Self {
-            history: [GateControl::BYPASS; 1440],
+            history: [GateControl::BYPASS; GATE_COMPENSATION_MAX_DELAY],
             delay,
             position: 0,
             filled: 0,

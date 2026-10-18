@@ -1,6 +1,6 @@
 //! RNNoise integration with proper scaling and 480-sample frame buffering
 
-use super::noise_suppressor::{ControlledSample, GateCompensation, GateControl};
+use super::noise_suppressor::{strength_or, ControlledSample, GateCompensation, GateControl};
 use crate::audio::input::TARGET_SAMPLE_RATE;
 use crate::audio::rt::FixedAudioRing;
 use nnnoiseless::DenoiseState;
@@ -53,12 +53,7 @@ impl RNNoiseProcessor {
         let smoothing_tau_s = smoothing_ms / 1000.0;
         let frame_dt_s = RNNOISE_FRAME_SIZE as f32 / sample_rate;
         let smoothing_coeff = 1.0 - (-(frame_dt_s / smoothing_tau_s)).exp();
-        let requested_strength = f32::from_bits(strength.load(Ordering::Relaxed));
-        let initial_strength = if requested_strength.is_finite() {
-            requested_strength.clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
+        let initial_strength = strength_or(f32::from_bits(strength.load(Ordering::Relaxed)), 1.0);
         Self {
             denoiser: DenoiseState::new(),
             input_buffer: FixedAudioRing::new(),
@@ -81,7 +76,7 @@ impl RNNoiseProcessor {
     /// 0.0 = fully dry (original signal)
     /// 1.0 = fully wet (processed signal)
     pub fn set_strength(&self, value: f32) {
-        let clamped = value.clamp(0.0, 1.0);
+        let clamped = strength_or(value, self.get_strength());
         let bits = clamped.to_bits();
         self.strength.store(bits, Ordering::Relaxed);
     }
@@ -94,7 +89,11 @@ impl RNNoiseProcessor {
     /// Update smoothed strength using exponential moving average
     /// Returns the current smoothed value
     fn update_smoothing(&mut self) -> f32 {
-        let target = f32::from_bits(self.strength.load(Ordering::Relaxed));
+        // A producer that bypasses `set_strength` must not poison the smoother.
+        let target = strength_or(
+            f32::from_bits(self.strength.load(Ordering::Relaxed)),
+            self.smoothed_strength,
+        );
         self.smoothed_strength =
             target * self.smoothing_coeff + self.smoothed_strength * (1.0 - self.smoothing_coeff);
         self.smoothed_strength
@@ -316,9 +315,7 @@ impl super::noise_suppressor::NoiseSuppressor for RNNoiseProcessor {
     }
 
     fn set_strength(&self, value: f32) {
-        let clamped = value.clamp(0.0, 1.0);
-        let bits = clamped.to_bits();
-        self.strength.store(bits, Ordering::Relaxed);
+        RNNoiseProcessor::set_strength(self, value);
     }
 
     fn get_strength(&self) -> f32 {
@@ -607,15 +604,22 @@ mod tests {
 
     #[test]
     fn test_rnnoise_wet_dry_mix() {
-        let strength = Arc::new(AtomicU32::new(0.5_f32.to_bits()));
-        let mut processor = RNNoiseProcessor::new(strength);
+        let render = |strength: f32| {
+            let mut processor = RNNoiseProcessor::new(Arc::new(AtomicU32::new(strength.to_bits())));
+            processor.push_samples(&[0.5; 480]);
+            processor.process_frames();
+            let mut output = [0.0; RNNOISE_FRAME_SIZE];
+            assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
+            output
+        };
 
-        // Push exactly one frame
-        processor.push_samples(&[0.5; 480]);
-        processor.process_frames();
-
-        // Should have 480 samples available (processed with mix)
-        assert_eq!(processor.available_samples(), 480);
+        // The first frame mixes the wet output with an empty (silent) dry
+        // delay, so half strength is exactly half of the fully wet frame.
+        let wet = render(1.0);
+        let half = render(0.5);
+        for (mixed, wet) in half.iter().zip(wet) {
+            assert!((mixed - 0.5 * wet).abs() < 1.0e-6);
+        }
     }
 
     #[test]
@@ -687,5 +691,24 @@ mod tests {
             assert!(sample.is_finite());
             assert!(sample.abs() <= 2.0);
         }
+    }
+
+    #[test]
+    fn test_rnnoise_ignores_non_finite_strength() {
+        let strength = Arc::new(AtomicU32::new(0.5_f32.to_bits()));
+        let mut processor = RNNoiseProcessor::new(Arc::clone(&strength));
+        processor.set_strength(f32::NAN);
+        assert_eq!(processor.get_strength(), 0.5);
+        crate::dsp::noise_suppressor::NoiseSuppressor::set_strength(&processor, f32::NAN);
+        assert_eq!(processor.get_strength(), 0.5);
+
+        // A producer that bypasses set_strength must not poison the smoother.
+        strength.store(f32::NAN.to_bits(), Ordering::Relaxed);
+        processor.push_samples(&[0.1; RNNOISE_FRAME_SIZE]);
+        processor.process_frames();
+        assert!(processor.smoothed_strength.is_finite());
+        let mut output = [0.0; RNNOISE_FRAME_SIZE];
+        assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
+        assert!(output.iter().all(|sample| sample.is_finite()));
     }
 }

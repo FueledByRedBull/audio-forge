@@ -89,22 +89,7 @@ class DeEsserState(QObject):
             self.changed.emit()
 
     def _write(self, settings: dict) -> None:
-        self.processor.set_deesser_enabled(settings["enabled"])
-        self.processor.set_deesser_auto_enabled(settings["auto_enabled"])
-        self.processor.set_deesser_auto_amount(settings["auto_amount"])
-        # Expand first so native validation never clamps a valid new interval
-        # against the old narrow range; use the native value during rollback too.
-        if settings["high_cut_hz"] > self.processor.get_deesser_high_cut_hz():
-            self.processor.set_deesser_high_cut_hz(settings["high_cut_hz"])
-            self.processor.set_deesser_low_cut_hz(settings["low_cut_hz"])
-        else:
-            self.processor.set_deesser_low_cut_hz(settings["low_cut_hz"])
-            self.processor.set_deesser_high_cut_hz(settings["high_cut_hz"])
-        self.processor.set_deesser_threshold_db(settings["threshold_db"])
-        self.processor.set_deesser_ratio(settings["ratio"])
-        self.processor.set_deesser_attack_ms(settings["attack_ms"])
-        self.processor.set_deesser_release_ms(settings["release_ms"])
-        self.processor.set_deesser_max_reduction_db(settings["max_reduction_db"])
+        self.processor.apply_deesser_settings(settings)
 
     def _apply(self, candidate: dict, *, edited: bool) -> None:
         previous = self._applied_settings

@@ -57,10 +57,15 @@ mod tests {
     #[test]
     fn test_vad_rejects_preconfigured_ort_environment() {
         if std::env::var_os("AUDIOFORGE_VAD_TELEMETRY_CHILD").is_some() {
-            assert!(ort::init().commit(), "test must own the first ORT configuration");
+            assert!(
+                ort::init().commit(),
+                "test must own the first ORT configuration"
+            );
 
             let error = match SileroVAD::new(SILERO_SAMPLE_RATE, 0.5) {
-                Ok(_) => panic!("VAD must reject an environment configured before telemetry opt-out"),
+                Ok(_) => {
+                    panic!("VAD must reject an environment configured before telemetry opt-out")
+                }
                 Err(error) => error,
             };
             assert!(matches!(
@@ -88,7 +93,7 @@ mod tests {
 
     #[test]
     fn test_hold_time_persists_gate_after_speech_drop() {
-        let mut gate = VadAutoGate::new(48000, 0.5);
+        let mut gate = VadAutoGate::without_backend(48000, 0.5);
         gate.set_gate_mode(GateMode::VadOnly);
         gate.set_hold_time(100.0);
 
@@ -108,7 +113,7 @@ mod tests {
 
     #[test]
     fn test_debounce_blocks_short_reopen_glitch() {
-        let mut gate = VadAutoGate::new(48000, 0.5);
+        let mut gate = VadAutoGate::without_backend(48000, 0.5);
         gate.set_gate_mode(GateMode::VadOnly);
         gate.set_hold_time(0.0); // isolate debounce behavior
 
@@ -130,7 +135,7 @@ mod tests {
 
     #[test]
     fn test_auto_threshold_adapts_toward_background_level() {
-        let mut gate = VadAutoGate::new(48000, 0.5);
+        let mut gate = VadAutoGate::without_backend(48000, 0.5);
         gate.set_gate_mode(GateMode::VadAssisted);
         gate.set_auto_threshold(true);
 
@@ -150,7 +155,7 @@ mod tests {
 
     #[test]
     fn test_auto_threshold_ignores_high_confidence_speech_frames() {
-        let mut gate = VadAutoGate::new(48_000, 0.5);
+        let mut gate = VadAutoGate::without_backend(48_000, 0.5);
         gate.set_gate_mode(GateMode::VadAssisted);
         gate.set_auto_threshold(true);
         let initial_floor = gate.noise_floor();
@@ -170,7 +175,7 @@ mod tests {
 
     #[test]
     fn test_auto_threshold_slew_limits_per_frame() {
-        let mut gate = VadAutoGate::new(48_000, 0.5);
+        let mut gate = VadAutoGate::without_backend(48_000, 0.5);
         gate.set_gate_mode(GateMode::VadAssisted);
         gate.set_auto_threshold(true);
 
@@ -275,15 +280,19 @@ mod tests {
     #[test]
     fn test_precomputed_resampler_matches_reference_samples_at_supported_rates() {
         for sample_rate in [48_000_u32, 96_000, 192_000] {
-            let input_len =
-                ((SILERO_WINDOW_SIZE as f32 * sample_rate as f32) / SILERO_SAMPLE_RATE as f32)
-                    .ceil() as usize;
+            let input_len = ((SILERO_WINDOW_SIZE as f32 * sample_rate as f32)
+                / SILERO_SAMPLE_RATE as f32)
+                .ceil() as usize;
             let input: Vec<f32> = (0..input_len)
                 .map(|index| {
                     let time = index as f32 / sample_rate as f32;
                     let body = 0.3 * (2.0 * std::f32::consts::PI * 233.0 * time).sin()
                         + 0.1 * (2.0 * std::f32::consts::PI * 3_100.0 * time).sin();
-                    body + if index == 0 || index + 1 == input_len { 0.25 } else { 0.0 }
+                    body + if index == 0 || index + 1 == input_len {
+                        0.25
+                    } else {
+                        0.0
+                    }
                 })
                 .collect();
             let ratio = SILERO_SAMPLE_RATE as f32 / sample_rate as f32;
@@ -303,9 +312,9 @@ mod tests {
     fn benchmark_vad_resampler_cost() {
         const REPEATS: usize = 400;
         for sample_rate in [48_000_u32, 96_000, 192_000] {
-            let input_len =
-                ((SILERO_WINDOW_SIZE as f32 * sample_rate as f32) / SILERO_SAMPLE_RATE as f32)
-                    .ceil() as usize;
+            let input_len = ((SILERO_WINDOW_SIZE as f32 * sample_rate as f32)
+                / SILERO_SAMPLE_RATE as f32)
+                .ceil() as usize;
             let input: Vec<f32> = (0..input_len)
                 .map(|index| {
                     let time = index as f32 / sample_rate as f32;
@@ -491,15 +500,18 @@ mod tests {
     ];
 
     fn scipy_fixture(sample_rate: u32, high_frequency_noise: bool) -> Vec<f32> {
-        let input_len = (SILERO_WINDOW_SIZE as f64 * sample_rate as f64
-            / SILERO_SAMPLE_RATE as f64)
+        let input_len = (SILERO_WINDOW_SIZE as f64 * sample_rate as f64 / SILERO_SAMPLE_RATE as f64)
             .ceil() as usize;
         if high_frequency_noise {
             let mut state = 0xA17D_5EED_u32;
             return (0..input_len)
                 .map(|_| {
                     state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                    if state & 0x8000_0000 != 0 { 0.4 } else { -0.4 }
+                    if state & 0x8000_0000 != 0 {
+                        0.4
+                    } else {
+                        -0.4
+                    }
                 })
                 .collect();
         }
@@ -860,8 +872,7 @@ mod tests {
             gate.push_noise_floor_sample(-52.0);
         }
 
-        let expected =
-            (NOISE_FLOOR_HISTORY_FRAMES / 4) as f32 / NOISE_FLOOR_HISTORY_FRAMES as f32;
+        let expected = (NOISE_FLOOR_HISTORY_FRAMES / 4) as f32 / NOISE_FLOOR_HISTORY_FRAMES as f32;
         assert!((gate.noise_floor_reliability() - expected).abs() < 1.0e-6);
     }
 
@@ -886,5 +897,108 @@ mod tests {
                 None
             }
         }
+    }
+
+    #[test]
+    fn test_nan_vad_gate_settings_keep_previous_values() {
+        let mut gate = VadAutoGate::without_backend(48_000, 0.4);
+        gate.set_auto_threshold(false);
+        let manual = gate.effective_threshold_db();
+        let (hold, margin) = (gate.hold_time(), gate.margin());
+
+        gate.set_vad_threshold(f32::NAN);
+        gate.set_manual_threshold(f32::NAN);
+        gate.set_hold_time(f32::NAN);
+        gate.set_margin(f32::NAN);
+
+        assert_eq!(gate.vad_threshold(), 0.4);
+        assert_eq!(gate.effective_threshold_db(), manual);
+        assert_eq!((gate.hold_time(), gate.margin()), (hold, margin));
+        assert!(VadAutoGate::without_backend(48_000, f32::NAN)
+            .vad_threshold()
+            .is_finite());
+    }
+
+    #[test]
+    fn test_nan_external_probability_counts_as_unknown() {
+        let mut gate = VadAutoGate::without_backend(48_000, 0.5);
+        let frame = vec![0.01_f32; 480];
+        assert_eq!(
+            gate.process_with_external_probability(&frame, Some(f32::NAN)),
+            (false, 0.0)
+        );
+        assert!(!gate.is_available());
+    }
+
+    #[test]
+    fn test_sha256_matches_published_vectors() {
+        let cases: [(&[u8], &str); 4] = [
+            (
+                b"",
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+            (
+                b"abc",
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ),
+            // 56 bytes: the length field no longer fits the first padded block.
+            (
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+                "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+            ),
+            (
+                &[b'x'; 1000],
+                "44f8354494a5ba03ba1792a8d3e9c534c47a9181980fde7a3f44b06ef2ae7c7f",
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(sha256_hex(input), expected);
+        }
+    }
+
+    #[test]
+    fn test_release_manifest_pins_a_silero_sha256() {
+        let hash = expected_silero_sha256().expect("manifest lists models/silero_vad.onnx");
+        assert_eq!(hash.len(), 64);
+        assert!(hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_unpinned_model_file_is_rejected() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        // Test fixture only; uniqueness prevents parallel-test collisions.
+        // nosemgrep: rust.lang.security.temp-dir.temp-dir
+        let path = std::env::temp_dir().join(format!("audioforge-vad-{suffix}.onnx"));
+        std::fs::write(&path, b"a different Silero release").unwrap();
+
+        let result = read_pinned_silero_model(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(matches!(
+            result,
+            Err(VadError::ModelLoadError(message)) if message.contains("SHA-256")
+        ));
+    }
+
+    #[test]
+    fn test_pinned_model_file_is_accepted() {
+        let path = Path::new("../models/silero_vad.onnx");
+        if !path.exists() {
+            eprintln!("Skipping model-optional pinned Silero hash coverage");
+            return;
+        }
+        assert!(read_pinned_silero_model(path).is_ok());
+    }
+
+    #[test]
+    fn test_missing_explicit_model_path_does_not_fall_back_to_cwd_models() {
+        let result = SileroVAD::find_model_path(Some("missing-dir/silero_vad.onnx".to_string()));
+        assert!(matches!(
+            result,
+            Err(VadError::ModelNotFound(message)) if message.contains("VAD_MODEL_PATH")
+        ));
     }
 }

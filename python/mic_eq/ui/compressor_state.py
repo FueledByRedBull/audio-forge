@@ -161,20 +161,7 @@ class CompressorState(QObject):
             self.changed.emit()
 
     def _write(self, settings: dict) -> None:
-        self.processor.set_compressor_enabled(settings["enabled"])
-        self.processor.set_compressor_threshold(settings["threshold_db"])
-        self.processor.set_compressor_ratio(settings["ratio"])
-        self.processor.set_compressor_attack(settings["attack_ms"])
-        self.processor.set_compressor_adaptive_release(settings["adaptive_release"])
-        if settings["adaptive_release"]:
-            self.processor.set_compressor_base_release(settings["base_release_ms"])
-        else:
-            self.processor.set_compressor_release(settings["release_ms"])
-        self.processor.set_compressor_makeup_gain(settings["makeup_gain_db"])
-        self.processor.set_compressor_sidechain_highpass_enabled(settings["sidechain_highpass_enabled"])
-        self.processor.set_compressor_auto_makeup_enabled(settings["auto_makeup_enabled"])
-        self.processor.set_compressor_target_lufs(settings["target_lufs"])
-        self.processor.set_compressor_noise_reference_reliability(settings["noise_reference_reliability"])
+        self.processor.apply_compressor_settings(settings)
 
     def _apply(self, candidate: dict, baseline: dict | None, *, label: str | None = None) -> None:
         previous = self._applied_settings

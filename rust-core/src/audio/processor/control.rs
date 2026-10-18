@@ -11,7 +11,9 @@ where
     let _writer = writer
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    seq.fetch_add(1, Ordering::AcqRel);
+    seq.fetch_add(1, Ordering::Relaxed);
+    // Orders the odd sequence before every data store that follows.
+    std::sync::atomic::fence(Ordering::Release);
     apply();
     seq.fetch_add(1, Ordering::Release);
 }
@@ -28,7 +30,9 @@ where
         }
 
         let state = read();
-        let seq_after = seq.load(Ordering::Acquire);
+        // Keeps the relaxed data loads above from being satisfied after this check.
+        std::sync::atomic::fence(Ordering::Acquire);
+        let seq_after = seq.load(Ordering::Relaxed);
         if seq_before == seq_after {
             return Some(state);
         }

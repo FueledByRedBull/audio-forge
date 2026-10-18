@@ -8,6 +8,12 @@ use std::f64::consts::PI;
 const MIN_BIQUAD_Q: f64 = 1e-6;
 const COEFF_CROSSFADE_MS: f64 = 1.5;
 const MAX_COEFF_CROSSFADE_SAMPLES: usize = 4096;
+/// Lowest tunable frequency; 0 Hz and below put the poles on or outside the unit circle.
+const MIN_BIQUAD_FREQUENCY_HZ: f64 = 1e-3;
+/// Keep the centre frequency just below Nyquist, where `sin(omega)` turns negative.
+const NYQUIST_FRACTION_MAX: f64 = 0.5 * (1.0 - 1e-9);
+/// Beyond this a gain is not a level change but an overflow (`10^(dB/40)`).
+const MAX_BIQUAD_GAIN_DB: f64 = 120.0;
 
 pub(super) fn coefficient_crossfade_samples(sample_rate: f64) -> usize {
     let samples = (sample_rate * COEFF_CROSSFADE_MS / 1000.0).round();
@@ -16,6 +22,37 @@ pub(super) fn coefficient_crossfade_samples(sample_rate: f64) -> usize {
     } else {
         1
     }
+}
+
+/// Clamp coefficient-driving parameters to where the RBJ filters stay stable
+/// (0 < f < Nyquist, finite gain). A NaN keeps its `previous` value, because
+/// it would otherwise poison the coefficients and the filter state for good.
+/// Values already in range pass through unchanged.
+fn sanitized_parameters(
+    sample_rate: f64,
+    frequency: f64,
+    gain_db: f64,
+    q: f64,
+    previous: (f64, f64, f64),
+) -> (f64, f64, f64) {
+    // `max`/`min` rather than `clamp`: a bad sample rate must not panic here.
+    let bounded = |value: f64, fallback: f64, low: f64, high: f64| {
+        if value.is_nan() {
+            fallback
+        } else {
+            value.max(low).min(high)
+        }
+    };
+    (
+        bounded(
+            frequency,
+            previous.0,
+            MIN_BIQUAD_FREQUENCY_HZ,
+            sample_rate * NYQUIST_FRACTION_MAX,
+        ),
+        bounded(gain_db, previous.1, -MAX_BIQUAD_GAIN_DB, MAX_BIQUAD_GAIN_DB),
+        if q.is_nan() { previous.2 } else { q },
+    )
 }
 
 /// Biquad filter types
@@ -69,6 +106,9 @@ pub struct Biquad {
 
 impl Biquad {
     /// Create a new biquad filter
+    ///
+    /// Out-of-range parameters are clamped to the stable range; a NaN falls
+    /// back to 1 kHz, 0 dB and Q 1.
     pub fn new(
         filter_type: BiquadType,
         frequency: f64,
@@ -76,6 +116,8 @@ impl Biquad {
         q: f64,
         sample_rate: f64,
     ) -> Self {
+        let (frequency, gain_db, q) =
+            sanitized_parameters(sample_rate, frequency, gain_db, q, (1_000.0, 0.0, 1.0));
         let mut filter = Self {
             b0: 1.0,
             b1: 0.0,
@@ -103,6 +145,17 @@ impl Biquad {
         let coeffs = filter.calculate_coefficients_values();
         filter.set_coefficients_immediate(coeffs);
         filter
+    }
+
+    /// Clamp new parameters for this filter; a NaN keeps the current value.
+    fn sanitized(&self, frequency: f64, gain_db: f64, q: f64) -> (f64, f64, f64) {
+        sanitized_parameters(
+            self.sample_rate,
+            frequency,
+            gain_db,
+            q,
+            (self.frequency, self.gain_db, self.q),
+        )
     }
 
     /// Calculate filter coefficients based on current parameters
@@ -358,13 +411,13 @@ impl Biquad {
 
     /// Set filter frequency and recalculate coefficients
     pub fn set_frequency(&mut self, frequency: f64) {
-        self.frequency = frequency;
+        self.frequency = self.sanitized(frequency, self.gain_db, self.q).0;
         self.schedule_coefficients_crossfade(self.calculate_coefficients_values());
     }
 
     /// Set filter gain and recalculate coefficients
     pub fn set_gain_db(&mut self, gain_db: f64) {
-        self.gain_db = gain_db;
+        self.gain_db = self.sanitized(self.frequency, gain_db, self.q).1;
         self.schedule_coefficients_crossfade(self.calculate_coefficients_values());
     }
 
@@ -373,7 +426,7 @@ impl Biquad {
     /// This is intended for already-smoothed modulation sources. UI parameter
     /// changes should use `set_gain_db` so they crossfade the audio output.
     pub fn set_gain_db_immediate(&mut self, gain_db: f64) {
-        self.gain_db = gain_db;
+        self.gain_db = self.sanitized(self.frequency, gain_db, self.q).1;
         self.set_coefficients_immediate(self.calculate_coefficients_values());
     }
 
@@ -385,6 +438,7 @@ impl Biquad {
         gain_db: f64,
         q: f64,
     ) {
+        let (frequency, gain_db, q) = self.sanitized(frequency, gain_db, q);
         self.filter_type = filter_type;
         self.frequency = frequency;
         self.gain_db = gain_db;
@@ -403,6 +457,7 @@ impl Biquad {
         gain_db: f64,
         q: f64,
     ) {
+        let (frequency, gain_db, q) = self.sanitized(frequency, gain_db, q);
         self.filter_type = filter_type;
         self.frequency = frequency;
         self.gain_db = gain_db;
@@ -645,5 +700,82 @@ mod tests {
             automated_elapsed.as_nanos() as f64 / SAMPLES as f64,
             automated_elapsed.as_secs_f64() / steady_elapsed.as_secs_f64()
         );
+    }
+
+    fn assert_bounded_response(filter: &mut Biquad, limit: f32) {
+        let mut peak = 0.0_f32;
+        for index in 0..20_000 {
+            let output = filter.process_sample((index as f32 * 0.05).sin());
+            assert!(output.is_finite(), "non-finite output at sample {index}");
+            peak = peak.max(output.abs());
+        }
+        assert!(peak < limit, "filter diverged: peak {peak}");
+    }
+
+    #[test]
+    fn test_out_of_range_frequency_cannot_destabilize_the_filter() {
+        for frequency in [
+            -1_000.0,
+            0.0,
+            30_000.0,
+            48_000.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            let mut constructed = Biquad::new(BiquadType::Peaking, frequency, 12.0, 1.0, 48_000.0);
+            assert_bounded_response(&mut constructed, 100.0);
+
+            let mut retuned = Biquad::new(BiquadType::HighShelf, 1_000.0, 12.0, 1.0, 48_000.0);
+            retuned.set_frequency(frequency);
+            assert_bounded_response(&mut retuned, 100.0);
+            retuned.set_parameters_immediate(BiquadType::LowPass, frequency, 0.0, 0.7);
+            assert_bounded_response(&mut retuned, 100.0);
+        }
+    }
+
+    #[test]
+    fn test_non_finite_gain_is_bounded_and_nan_is_rejected() {
+        let mut filter = Biquad::new(BiquadType::Peaking, 1_000.0, 6.0, 1.0, 48_000.0);
+        filter.set_gain_db(f64::INFINITY);
+        assert_bounded_response(&mut filter, 2.0e6);
+        filter.set_gain_db(6.0);
+        filter.set_gain_db(f64::NAN);
+        assert_eq!(filter.gain_db(), 6.0);
+    }
+
+    #[test]
+    fn test_nan_parameters_keep_the_previous_filter() {
+        let mut filter = Biquad::new(BiquadType::Peaking, 1_000.0, 6.0, 1.4, 48_000.0);
+        let mut reference = filter.clone();
+        filter.set_frequency(f64::NAN);
+        filter.set_gain_db(f64::NAN);
+        filter.set_gain_db_immediate(f64::NAN);
+        filter.set_parameters(BiquadType::Peaking, f64::NAN, f64::NAN, f64::NAN);
+        filter.set_parameters_immediate(BiquadType::Peaking, f64::NAN, f64::NAN, f64::NAN);
+        for index in 0..2_000 {
+            let input = (index as f32 * 0.05).sin();
+            let expected = reference.process_sample(input);
+            let actual = filter.process_sample(input);
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "sample {index}: {actual} vs {expected}"
+            );
+        }
+
+        let mut constructed =
+            Biquad::new(BiquadType::Peaking, f64::NAN, f64::NAN, f64::NAN, 48_000.0);
+        assert_bounded_response(&mut constructed, 100.0);
+    }
+
+    #[test]
+    fn test_valid_parameters_are_not_altered_by_sanitizing() {
+        let mut filter = Biquad::new(BiquadType::Peaking, 1_000.0, 6.0, 1.4, 48_000.0);
+        filter.set_parameters(BiquadType::LowShelf, 80.0, -12.0, 0.707);
+        assert_eq!(
+            (filter.frequency, filter.gain_db(), filter.q),
+            (80.0, -12.0, 0.707)
+        );
+        filter.set_frequency(23_999.0);
+        assert_eq!(filter.frequency, 23_999.0);
     }
 }

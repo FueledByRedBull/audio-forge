@@ -25,6 +25,8 @@ class RecordingProcessor:
             return lambda: False
         if name == "get_deesser_high_cut_hz":
             return lambda: self.values["deesser_high_cut_hz"]
+        if name.startswith("apply_"):
+            return lambda settings: self.values.__setitem__(name, dict(settings))
         if name.startswith("set_"):
             key = name.removeprefix("set_")
             return lambda value: self.values.__setitem__(key, value)

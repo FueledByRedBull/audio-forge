@@ -14,7 +14,7 @@ impl AudioProcessor {
     /// Set noise gate threshold
     pub fn set_gate_threshold(&self, threshold_db: f64) {
         let Some(threshold_db) =
-            clamp_control_value(threshold_db, GATE_THRESHOLD_MIN_DB, GATE_THRESHOLD_MAX_DB)
+            self.clamp_live_control(threshold_db, GATE_THRESHOLD_MIN_DB, GATE_THRESHOLD_MAX_DB)
         else {
             return;
         };
@@ -28,7 +28,7 @@ impl AudioProcessor {
     /// Set noise gate attack time
     pub fn set_gate_attack(&self, attack_ms: f64) {
         let Some(attack_ms) =
-            clamp_control_value(attack_ms, GATE_ATTACK_MIN_MS, GATE_ATTACK_MAX_MS)
+            self.clamp_live_control(attack_ms, GATE_ATTACK_MIN_MS, GATE_ATTACK_MAX_MS)
         else {
             return;
         };
@@ -42,7 +42,7 @@ impl AudioProcessor {
     /// Set noise gate release time
     pub fn set_gate_release(&self, release_ms: f64) {
         let Some(release_ms) =
-            clamp_control_value(release_ms, GATE_RELEASE_MIN_MS, GATE_RELEASE_MAX_MS)
+            self.clamp_live_control(release_ms, GATE_RELEASE_MIN_MS, GATE_RELEASE_MAX_MS)
         else {
             return;
         };
@@ -104,7 +104,7 @@ impl AudioProcessor {
     /// Set VAD probability threshold (0.0-1.0)
     pub fn set_vad_threshold(&self, threshold: f32) {
         let Some(threshold) =
-            clamp_control_value_f32(threshold, VAD_THRESHOLD_MIN, VAD_THRESHOLD_MAX)
+            self.clamp_live_control_f32(threshold, VAD_THRESHOLD_MIN, VAD_THRESHOLD_MAX)
         else {
             return;
         };
@@ -118,7 +118,7 @@ impl AudioProcessor {
     #[cfg(feature = "vad")]
     /// Set VAD hold time in milliseconds
     pub fn set_vad_hold_time(&self, hold_ms: f32) {
-        let Some(hold_ms) = clamp_control_value_f32(hold_ms, VAD_HOLD_MIN_MS, VAD_HOLD_MAX_MS)
+        let Some(hold_ms) = self.clamp_live_control_f32(hold_ms, VAD_HOLD_MIN_MS, VAD_HOLD_MAX_MS)
         else {
             return;
         };
@@ -134,7 +134,8 @@ impl AudioProcessor {
     /// Default is 1.0 (no gain). Values > 1.0 boost the signal.
     /// This helps with quiet microphones where VAD can't detect speech.
     pub fn set_vad_pre_gain(&self, gain: f32) {
-        let Some(gain) = clamp_control_value_f32(gain, VAD_PRE_GAIN_MIN, VAD_PRE_GAIN_MAX) else {
+        let Some(gain) = self.clamp_live_control_f32(gain, VAD_PRE_GAIN_MIN, VAD_PRE_GAIN_MAX)
+        else {
             return;
         };
         if let Ok(mut control) = self.gate_control.lock() {
@@ -167,7 +168,7 @@ impl AudioProcessor {
     /// Set margin above noise floor for auto-threshold (in dB)
     pub fn set_gate_margin(&self, margin_db: f32) {
         let Some(margin_db) =
-            clamp_control_value_f32(margin_db, GATE_MARGIN_MIN_DB, GATE_MARGIN_MAX_DB)
+            self.clamp_live_control_f32(margin_db, GATE_MARGIN_MIN_DB, GATE_MARGIN_MAX_DB)
         else {
             return;
         };
@@ -192,6 +193,124 @@ impl AudioProcessor {
             .map(|control| control.auto_threshold)
             .unwrap_or(false)
     }
+}
 
+impl AtomicGateControlState {
+    /// Publish every field in one seqlock update (see the de-esser version).
+    fn publish(&self, state: &GateControlState) {
+        self.update(|atomic| {
+            atomic.enabled.store(state.enabled, Ordering::Relaxed);
+            atomic
+                .threshold_db_bits
+                .store(state.threshold_db.to_bits(), Ordering::Relaxed);
+            atomic
+                .attack_ms_bits
+                .store(state.attack_ms.to_bits(), Ordering::Relaxed);
+            atomic
+                .release_ms_bits
+                .store(state.release_ms.to_bits(), Ordering::Relaxed);
+            #[cfg(feature = "vad")]
+            {
+                atomic
+                    .gate_mode
+                    .store(state.gate_mode as u8, Ordering::Relaxed);
+                atomic
+                    .vad_threshold_bits
+                    .store(state.vad_threshold.to_bits(), Ordering::Relaxed);
+                atomic
+                    .hold_ms_bits
+                    .store(state.hold_ms.to_bits(), Ordering::Relaxed);
+                atomic
+                    .pre_gain_bits
+                    .store(state.pre_gain.to_bits(), Ordering::Relaxed);
+                atomic
+                    .auto_threshold
+                    .store(state.auto_threshold, Ordering::Relaxed);
+                atomic
+                    .margin_db_bits
+                    .store(state.margin_db.to_bits(), Ordering::Relaxed);
+            }
+        });
+    }
+}
 
+impl AudioProcessor {
+    /// Apply a complete gate configuration as one published snapshot.
+    ///
+    /// Each value is clamped like its single setter and a non-finite value
+    /// keeps the current one.
+    fn apply_gate_settings(&self, requested: &GateControlState) {
+        let mut state = self
+            .gate_control
+            .lock()
+            .map(|control| control.clone())
+            .unwrap_or_else(|_| GateControlState::new());
+        state.enabled = requested.enabled;
+        for (value, min, max, slot) in [
+            (
+                requested.threshold_db,
+                GATE_THRESHOLD_MIN_DB,
+                GATE_THRESHOLD_MAX_DB,
+                &mut state.threshold_db,
+            ),
+            (
+                requested.attack_ms,
+                GATE_ATTACK_MIN_MS,
+                GATE_ATTACK_MAX_MS,
+                &mut state.attack_ms,
+            ),
+            (
+                requested.release_ms,
+                GATE_RELEASE_MIN_MS,
+                GATE_RELEASE_MAX_MS,
+                &mut state.release_ms,
+            ),
+        ] {
+            if let Some(clamped) = self.clamp_live_control(value, min, max) {
+                *slot = clamped;
+            }
+        }
+        #[cfg(feature = "vad")]
+        {
+            state.gate_mode = requested.gate_mode;
+            state.auto_threshold = requested.auto_threshold;
+            for (value, min, max, slot) in [
+                (
+                    requested.vad_threshold,
+                    VAD_THRESHOLD_MIN,
+                    VAD_THRESHOLD_MAX,
+                    &mut state.vad_threshold,
+                ),
+                (
+                    requested.hold_ms,
+                    VAD_HOLD_MIN_MS,
+                    VAD_HOLD_MAX_MS,
+                    &mut state.hold_ms,
+                ),
+                (
+                    requested.pre_gain,
+                    VAD_PRE_GAIN_MIN,
+                    VAD_PRE_GAIN_MAX,
+                    &mut state.pre_gain,
+                ),
+                (
+                    requested.margin_db,
+                    GATE_MARGIN_MIN_DB,
+                    GATE_MARGIN_MAX_DB,
+                    &mut state.margin_db,
+                ),
+            ] {
+                if let Some(clamped) = self.clamp_live_control_f32(value, min, max) {
+                    *slot = clamped;
+                }
+            }
+        }
+
+        self.gate_enabled.store(state.enabled, Ordering::Release);
+        self.gate_rt_control.publish(&state);
+        if let Ok(mut control) = self.gate_control.lock() {
+            *control = state;
+        }
+        self.gate_dirty.store(true, Ordering::Release);
+    }
 }

@@ -226,11 +226,9 @@ pub fn simulate_product_resampler(
     sinc_len: Option<usize>,
     window: Option<&str>,
 ) -> PyResult<(Vec<f64>, usize, usize, Vec<u64>)> {
-    if input_rate == 0 || output_rate == 0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "sample rates must be positive",
-        ));
-    }
+    // Bounds the rate ratio (at most 96x), which sizes the output buffers.
+    validate_offline_sample_rate(f64::from(input_rate))?;
+    validate_offline_sample_rate(f64::from(output_rate))?;
     if !(1..=RESAMPLER_CHUNK_SIZE).contains(&chunk_size) {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "chunk_size must be between 1 and {RESAMPLER_CHUNK_SIZE}"
@@ -321,15 +319,17 @@ pub fn simulate_product_resampler_py(
     window: Option<&str>,
 ) -> PyResult<(Vec<f64>, usize, usize, Vec<u64>)> {
     let window = window.map(str::to_owned);
-    py.detach(move || {
-        simulate_product_resampler(
-            samples,
-            input_rate,
-            output_rate,
-            chunk_size,
-            sinc_len,
-            window.as_deref(),
-        )
+    crate::catch_panic(|| {
+        py.detach(move || {
+            simulate_product_resampler(
+                samples,
+                input_rate,
+                output_rate,
+                chunk_size,
+                sinc_len,
+                window.as_deref(),
+            )
+        })
     })
 }
 

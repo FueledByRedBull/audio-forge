@@ -142,9 +142,25 @@ impl AudioProcessor {
             .store(self.input_dropped.load(Ordering::Relaxed), Ordering::Relaxed);
     }
 
-    /// Get total real-time lock contention events.
+    /// Real-time control-snapshot reads that stayed unstable (a writer was
+    /// mid-update for the whole retry budget) and were re-armed for the next pass.
     pub fn get_lock_contention_count(&self) -> u64 {
         self.lock_contention_count.load(Ordering::Relaxed)
+    }
+
+    /// Blocks where the downstream chain produced non-finite samples.
+    pub fn get_downstream_non_finite_count(&self) -> u64 {
+        self.downstream_non_finite_count.load(Ordering::Relaxed)
+    }
+
+    /// Output resampler failures since start.
+    pub fn get_output_resampler_error_count(&self) -> u64 {
+        self.output_resampler_error_count.load(Ordering::Relaxed)
+    }
+
+    /// Whether the DSP thread runs without MMCSS Pro Audio scheduling.
+    pub fn is_dsp_scheduling_degraded(&self) -> bool {
+        self.dsp_scheduling_degraded.load(Ordering::Relaxed)
     }
 
     pub fn get_suppressor_non_finite_count(&self) -> u64 {

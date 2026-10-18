@@ -35,7 +35,6 @@ libloading = { version = "0.8", optional = true }
 
 # Audio thread optimization
 no_denormals = "0.3"
-thread-priority = "1.0"
 
 # Utilities
 thiserror = "1.0"
@@ -53,6 +52,10 @@ ort = {
     default-features = false,
     features = ["std", "ndarray", "tracing"],
 }
+
+# Windows uses MMCSS (audio/scheduling.rs); thread-priority covers other targets.
+[target.'cfg(not(windows))'.dependencies]
+thread-priority = "1.0"
 
 [features]
 default = ["vad", "deepfilter"]
@@ -74,3 +77,9 @@ vad = ["dep:ndarray", "dep:ort"]
 # Note: Does NOT require DeepFilterNet C library to be present at compile time
 # See: rust-core/src/dsp/deepfilter_ffi.rs for runtime library loading
 deepfilter = ["dep:libloading"]
+
+# The benchmark links the DeepFilter FFI module, which only exists with this feature.
+[[bin]]
+name = "deepfilter_benchmark"
+path = "src/bin/deepfilter_benchmark.rs"
+required-features = ["deepfilter"]

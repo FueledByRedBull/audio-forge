@@ -4,7 +4,9 @@
 //! - Avoids the Rc/Send issues with the Rust libDF crate
 //! - Provides a stable ABI through C interface
 //! - Uses runtime dynamic loading (no compile-time library dependency)
-//! - Falls back to passthrough if library is not available
+//! - Falls back to passthrough, with the reason in `backend_error`, when the
+//!   library or model is unavailable or `df_create` returns null. A panic inside
+//!   the library cannot unwind across the C ABI.
 //!
 //! C API FUNCTIONS (from libDF/src/capi.rs):
 //! - df_create(path, atten_lim, log_level) -> *mut DFState
@@ -23,14 +25,14 @@
 //! DeepFilterNet requires a model tar.gz file supplied by the application
 //! bootstrap, or by `DEEPFILTER_MODEL_PATH` under the external-assets opt-in.
 //!
-//! If the library or model is not found, the processor will use passthrough mode.
+//! If the library or model is not found, the processor uses passthrough mode.
 //!
 //! Expected latency: ~10ms with LL variant (no lookahead)
 
 use crate::audio::rt::FixedAudioRing;
 use crate::dsp::noise_suppressor::{
-    ControlledNoiseSuppressor, ControlledSample, GateCompensation, GateControl, NoiseModel,
-    NoiseSuppressor,
+    strength_or, ControlledNoiseSuppressor, ControlledSample, GateCompensation, GateControl,
+    NoiseModel, NoiseSuppressor, GATE_COMPENSATION_MAX_DELAY,
 };
 use std::env;
 use std::path::{Path, PathBuf};
@@ -44,6 +46,7 @@ use std::vec::Vec;
 pub const DEEPFILTER_FRAME_SIZE: usize = 480;
 const DEEPFILTER_BUFFER_CAPACITY: usize = 8192 + DEEPFILTER_FRAME_SIZE;
 const DEEPFILTER_MAX_LATENCY_SAMPLES: usize = DEEPFILTER_FRAME_SIZE * 3;
+const _: () = assert!(DEEPFILTER_MAX_LATENCY_SAMPLES <= GATE_COMPENSATION_MAX_DELAY);
 pub const DEFAULT_DEEPFILTER_ATTENUATION_LIMIT_DB: f32 = 30.0;
 pub const DEFAULT_DEEPFILTER_POST_FILTER_BETA: f32 = 0.0;
 
@@ -95,12 +98,14 @@ impl Default for DeepFilterRuntimeConfig {
     }
 }
 
+fn parse_external_opt_in(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on"
+}
+
 fn external_deepfilter_paths_allowed() -> bool {
     env::var("AUDIOFORGE_ALLOW_EXTERNAL_DF")
-        .map(|value| {
-            let normalized = value.trim().to_ascii_lowercase();
-            normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on"
-        })
+        .map(|value| parse_external_opt_in(&value))
         .unwrap_or(false)
 }
 
@@ -242,24 +247,25 @@ impl DeepFilterModel {
 }
 
 /// Resolve a DeepFilterNet model from app-owned paths or an opted-in override.
+///
+/// `external_model` is the caller's `DEEPFILTER_MODEL_PATH`; it is passed in so
+/// tests need not mutate the process environment.
 fn find_model_path(
     model: DeepFilterModel,
     app_paths: &AppOwnedDeepFilterPaths,
     allow_external: bool,
+    external_model: Option<&Path>,
 ) -> Option<PathBuf> {
     let filename = model.filename();
 
     // 1. Honor an explicit external override only after the separate opt-in.
-    if allow_external {
-        if let Ok(path) = env::var("DEEPFILTER_MODEL_PATH") {
-            let path_buf = PathBuf::from(&path);
-            if path_buf.is_file() {
-                return Some(path_buf);
-            }
-            let candidate = path_buf.join(filename);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
+    if let Some(path_buf) = external_model.filter(|_| allow_external) {
+        if path_buf.is_file() {
+            return Some(path_buf.to_path_buf());
+        }
+        let candidate = path_buf.join(filename);
+        if candidate.is_file() {
+            return Some(candidate);
         }
     }
 
@@ -300,6 +306,27 @@ fn find_model_path(
     None
 }
 
+/// Open the library without the default Windows DLL search order, which would
+/// resolve the library's own imports from the process CWD and `PATH`. Only its
+/// own directory and the application, System32 and registered user directories
+/// are searched.
+#[cfg(windows)]
+unsafe fn open_library(path: &Path) -> Result<libloading::Library, libloading::Error> {
+    use libloading::os::windows::{
+        Library, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+    };
+    Library::load_with_flags(
+        path,
+        LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+    )
+    .map(Into::into)
+}
+
+#[cfg(not(windows))]
+unsafe fn open_library(path: &Path) -> Result<libloading::Library, libloading::Error> {
+    libloading::Library::new(path)
+}
+
 impl DeepFilterLib {
     fn add_canonical_file_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
         if let Ok(canonical) = path.canonicalize() {
@@ -313,14 +340,13 @@ impl DeepFilterLib {
         _lib_name: &str,
         app_paths: &AppOwnedDeepFilterPaths,
         allow_external: bool,
+        external_library: Option<&Path>,
     ) -> Vec<PathBuf> {
         let mut candidates = Vec::new();
 
         // External override is lower trust and requires an explicit opt-in.
-        if allow_external {
-            if let Ok(lib_path) = env::var("DEEPFILTER_LIB_PATH") {
-                Self::add_canonical_file_path(&mut candidates, PathBuf::from(lib_path));
-            }
+        if let Some(lib_path) = external_library.filter(|_| allow_external) {
+            Self::add_canonical_file_path(&mut candidates, lib_path.to_path_buf());
         }
 
         // App-owned bundled path supplied by the bootstrap is the safe default.
@@ -341,8 +367,7 @@ impl DeepFilterLib {
     }
 
     unsafe fn load_symbols_from_path(path: &Path) -> Result<Self, String> {
-        let library =
-            libloading::Library::new(path).map_err(|e| format!("{} ({})", path.display(), e))?;
+        let library = open_library(path).map_err(|e| format!("{} ({})", path.display(), e))?;
 
         // Load all required symbols and extract raw pointers.
         let df_create: libloading::Symbol<DfCreateFn> = library
@@ -405,7 +430,13 @@ impl DeepFilterLib {
         #[cfg(target_os = "macos")]
         let lib_name = "libdf.dylib";
 
-        let candidates = Self::trusted_library_candidates(lib_name, app_paths, allow_external);
+        let external_library = env::var_os("DEEPFILTER_LIB_PATH").map(PathBuf::from);
+        let candidates = Self::trusted_library_candidates(
+            lib_name,
+            app_paths,
+            allow_external,
+            external_library.as_deref(),
+        );
         if candidates.is_empty() {
             return Err(format!(
                 "No trusted DeepFilter library file found. Bundle {} with the app, or set \
@@ -442,14 +473,16 @@ AUDIOFORGE_ALLOW_EXTERNAL_DF=1 together with DEEPFILTER_LIB_PATH.",
 ///
 /// # Safety
 /// This struct is safe to send across threads because:
-/// 1. The underlying C library (DeepFilterNet) uses thread-local state only
-/// 2. We ensure exclusive access through &mut self references
+/// 1. The C state is owned by exactly one wrapper and is only touched through
+///    `&mut self`, so it is never accessed from two threads at once
+/// 2. The state is created, used and freed as a whole, and moving it between
+///    threads relies on the pinned library keeping no per-thread state inside
+///    it (re-check this when the DeepFilterNet revision changes)
 /// 3. The C pointer is opaque and managed through create/free
 ///
 /// # Thread Safety
-/// While DeepFilterNet's C API itself may not be fully thread-safe,
-/// our wrapper ensures that only one thread can access the instance at a time
-/// through Rust's borrowing rules (&mut self).
+/// DeepFilterNet's C API is not documented as thread-safe, so the wrapper
+/// allows one thread at a time through Rust's borrowing rules (&mut self).
 pub struct DeepFilterFFI {
     _lib: Arc<DeepFilterLib>, // Keep library loaded
     state: NonNull<DFState>,
@@ -479,7 +512,8 @@ impl DeepFilterFFI {
         allow_external: bool,
     ) -> Result<Self, String> {
         // Find model path
-        let model_path = find_model_path(model, app_paths, allow_external)
+        let external_model = env::var_os("DEEPFILTER_MODEL_PATH").map(PathBuf::from);
+        let model_path = find_model_path(model, app_paths, allow_external, external_model.as_deref())
             .ok_or_else(|| {
                 format!("DeepFilterNet model file not found. Bundle {} with the app, or opt in to an external DEEPFILTER_MODEL_PATH", model.filename())
             })?;
@@ -676,7 +710,7 @@ impl DeepFilterProcessor {
         model: DeepFilterModel,
         runtime_config: DeepFilterRuntimeConfig,
     ) -> Self {
-        let initial_strength = f32::from_bits(strength.load(Ordering::Relaxed)).clamp(0.0, 1.0);
+        let initial_strength = strength_or(f32::from_bits(strength.load(Ordering::Relaxed)), 1.0);
         let compensation_delay = match model {
             DeepFilterModel::LowLatency => DEEPFILTER_FRAME_SIZE,
             DeepFilterModel::Standard => 0,
@@ -826,7 +860,11 @@ impl DeepFilterProcessor {
     pub fn process_frames_internal(&mut self) {
         // Advance the 15 ms strength EMA once per processed 10 ms frame so
         // backlog size and callback chunking cannot change the ramp duration.
-        let target_strength = f32::from_bits(self.strength.load(Ordering::Relaxed));
+        // A producer that bypasses `set_strength` must not poison the smoother.
+        let target_strength = strength_or(
+            f32::from_bits(self.strength.load(Ordering::Relaxed)),
+            self.smoothed_strength,
+        );
         const TAU_MS: f32 = 15.0;
         const SAMPLE_RATE: f32 = 48000.0;
         let alpha =
@@ -961,7 +999,7 @@ impl NoiseSuppressor for DeepFilterProcessor {
     }
 
     fn set_strength(&self, value: f32) {
-        let clamped = value.clamp(0.0, 1.0);
+        let clamped = strength_or(value, self.get_strength());
         let bits = clamped.to_bits();
         self.strength.store(bits, Ordering::Relaxed);
     }

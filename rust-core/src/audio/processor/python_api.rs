@@ -24,6 +24,16 @@ fn py_dict_bool(
     Ok(default)
 }
 
+/// A setting that must be present in `settings`.
+fn py_required<'py>(
+    settings: &Bound<'py, pyo3::types::PyDict>,
+    key: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    settings.get_item(key)?.ok_or_else(|| {
+        PyErr::new::<pyo3::exceptions::PyKeyError, _>(format!("missing setting {key}"))
+    })
+}
+
 fn py_dict_f64(
     settings: Option<&Bound<'_, pyo3::types::PyDict>>,
     key: &str,
@@ -41,6 +51,18 @@ fn py_dict_f64(
         }
     }
     Ok(default)
+}
+
+/// `py_dict_f64` clamped to the range the matching live setter enforces, so
+/// offline renders cannot run outside the production limits.
+fn py_dict_f64_in(
+    settings: Option<&Bound<'_, pyo3::types::PyDict>>,
+    key: &str,
+    default: f64,
+    min: f64,
+    max: f64,
+) -> PyResult<f64> {
+    Ok(py_dict_f64(settings, key, default)?.clamp(min, max))
 }
 
 const MIN_OFFLINE_SAMPLE_RATE: f64 = 8_000.0;
@@ -325,9 +347,27 @@ fn simulate_input_frontend_with_activity(
     }
 
     let mut gate = NoiseGate::new(
-        py_dict_f64(settings, "gate_threshold_db", -40.0)?,
-        py_dict_f64(settings, "gate_attack_ms", 10.0)?,
-        py_dict_f64(settings, "gate_release_ms", 100.0)?,
+        py_dict_f64_in(
+            settings,
+            "gate_threshold_db",
+            -40.0,
+            GATE_THRESHOLD_MIN_DB,
+            GATE_THRESHOLD_MAX_DB,
+        )?,
+        py_dict_f64_in(
+            settings,
+            "gate_attack_ms",
+            10.0,
+            GATE_ATTACK_MIN_MS,
+            GATE_ATTACK_MAX_MS,
+        )?,
+        py_dict_f64_in(
+            settings,
+            "gate_release_ms",
+            100.0,
+            GATE_RELEASE_MIN_MS,
+            GATE_RELEASE_MAX_MS,
+        )?,
         sample_rate,
     );
     let vad_auto_gate = VadAutoGate::without_backend(sample_rate as u32, vad_threshold as f32);
@@ -592,12 +632,48 @@ pub fn simulate_auto_makeup_control(
         )));
     }
 
-    let threshold_db = py_dict_f64(settings, "threshold_db", -24.0)?;
-    let ratio = py_dict_f64(settings, "ratio", 3.0)?;
-    let attack_ms = py_dict_f64(settings, "attack_ms", 10.0)?;
-    let release_ms = py_dict_f64(settings, "release_ms", 180.0)?;
-    let makeup_gain_db = py_dict_f64(settings, "makeup_gain_db", 0.0)?;
-    let target_lufs = py_dict_f64(settings, "target_lufs", -18.0)?;
+    let threshold_db = py_dict_f64_in(
+        settings,
+        "threshold_db",
+        -24.0,
+        COMPRESSOR_THRESHOLD_MIN_DB,
+        COMPRESSOR_THRESHOLD_MAX_DB,
+    )?;
+    let ratio = py_dict_f64_in(
+        settings,
+        "ratio",
+        3.0,
+        COMPRESSOR_RATIO_MIN,
+        COMPRESSOR_RATIO_MAX,
+    )?;
+    let attack_ms = py_dict_f64_in(
+        settings,
+        "attack_ms",
+        10.0,
+        COMPRESSOR_ATTACK_MIN_MS,
+        COMPRESSOR_ATTACK_MAX_MS,
+    )?;
+    let release_ms = py_dict_f64_in(
+        settings,
+        "release_ms",
+        180.0,
+        COMPRESSOR_RELEASE_MIN_MS,
+        COMPRESSOR_RELEASE_MAX_MS,
+    )?;
+    let makeup_gain_db = py_dict_f64_in(
+        settings,
+        "makeup_gain_db",
+        0.0,
+        COMPRESSOR_MAKEUP_MIN_DB,
+        COMPRESSOR_MAKEUP_MAX_DB,
+    )?;
+    let target_lufs = py_dict_f64_in(
+        settings,
+        "target_lufs",
+        -18.0,
+        COMPRESSOR_TARGET_LUFS_MIN,
+        COMPRESSOR_TARGET_LUFS_MAX,
+    )?;
     let adaptive_release = py_dict_bool(settings, "adaptive_release", true)?;
     let sidechain_highpass_enabled =
         py_dict_bool(settings, "sidechain_highpass_enabled", true)?;
@@ -764,9 +840,27 @@ pub fn simulate_gate_suppressor_order(
     }
 
     let mut gate = NoiseGate::new(
-        py_dict_f64(settings, "gate_threshold_db", -40.0)?,
-        py_dict_f64(settings, "gate_attack_ms", 10.0)?,
-        py_dict_f64(settings, "gate_release_ms", 100.0)?,
+        py_dict_f64_in(
+            settings,
+            "gate_threshold_db",
+            -40.0,
+            GATE_THRESHOLD_MIN_DB,
+            GATE_THRESHOLD_MAX_DB,
+        )?,
+        py_dict_f64_in(
+            settings,
+            "gate_attack_ms",
+            10.0,
+            GATE_ATTACK_MIN_MS,
+            GATE_ATTACK_MAX_MS,
+        )?,
+        py_dict_f64_in(
+            settings,
+            "gate_release_ms",
+            100.0,
+            GATE_RELEASE_MIN_MS,
+            GATE_RELEASE_MAX_MS,
+        )?,
         48_000.0,
     );
     let gate_mode = match py_dict_u8(settings, "gate_mode", 1)? {
@@ -1267,21 +1361,53 @@ pub fn simulate_auto_eq_chain(
         // Render an established configuration, not a live makeup-slider transition.
         // Starting the ramp at zero would understate short-capture headroom use.
         *compressor = Compressor::new(
-            py_dict_f64(settings, "compressor_threshold_db", -20.0)?,
-            py_dict_f64(settings, "compressor_ratio", 4.0)?,
-            py_dict_f64(settings, "compressor_attack_ms", 10.0)?,
-            py_dict_f64(settings, "compressor_release_ms", 200.0)?,
-            py_dict_f64(settings, "compressor_makeup_gain_db", 0.0)?,
+            py_dict_f64_in(
+                settings,
+                "compressor_threshold_db",
+                -20.0,
+                COMPRESSOR_THRESHOLD_MIN_DB,
+                COMPRESSOR_THRESHOLD_MAX_DB,
+            )?,
+            py_dict_f64_in(
+                settings,
+                "compressor_ratio",
+                4.0,
+                COMPRESSOR_RATIO_MIN,
+                COMPRESSOR_RATIO_MAX,
+            )?,
+            py_dict_f64_in(
+                settings,
+                "compressor_attack_ms",
+                10.0,
+                COMPRESSOR_ATTACK_MIN_MS,
+                COMPRESSOR_ATTACK_MAX_MS,
+            )?,
+            py_dict_f64_in(
+                settings,
+                "compressor_release_ms",
+                200.0,
+                COMPRESSOR_RELEASE_MIN_MS,
+                COMPRESSOR_RELEASE_MAX_MS,
+            )?,
+            py_dict_f64_in(
+                settings,
+                "compressor_makeup_gain_db",
+                0.0,
+                COMPRESSOR_MAKEUP_MIN_DB,
+                COMPRESSOR_MAKEUP_MAX_DB,
+            )?,
             6.0,
             sample_rate,
         );
         let adaptive_release = py_dict_bool(settings, "compressor_adaptive_release", false)?;
         compressor.set_adaptive_release(adaptive_release);
         if adaptive_release {
-            compressor.set_base_release_time(py_dict_f64(
+            compressor.set_base_release_time(py_dict_f64_in(
                 settings,
                 "compressor_base_release_ms",
                 50.0,
+                COMPRESSOR_BASE_RELEASE_MIN_MS,
+                COMPRESSOR_BASE_RELEASE_MAX_MS,
             )?);
         }
         compressor.set_auto_makeup_enabled(py_dict_bool(
@@ -1289,12 +1415,20 @@ pub fn simulate_auto_eq_chain(
             "compressor_auto_makeup_enabled",
             false,
         )?);
-        compressor.set_noise_reference_reliability(py_dict_f64(
+        compressor.set_noise_reference_reliability(py_dict_f64_in(
             settings,
             "compressor_noise_reference_reliability",
             0.0,
+            0.0,
+            1.0,
         )?);
-        compressor.set_target_lufs(py_dict_f64(settings, "compressor_target_lufs", -18.0)?);
+        compressor.set_target_lufs(py_dict_f64_in(
+            settings,
+            "compressor_target_lufs",
+            -18.0,
+            COMPRESSOR_TARGET_LUFS_MIN,
+            COMPRESSOR_TARGET_LUFS_MAX,
+        )?);
         compressor.set_sidechain_highpass_enabled(py_dict_bool(
             settings,
             "compressor_sidechain_highpass_enabled",
@@ -1309,7 +1443,13 @@ pub fn simulate_auto_eq_chain(
         // applies the configured final true-peak safety stage.
         processor.set_normal_limiter_enabled(false);
     }
-    let limiter_ceiling_db = py_dict_f64(settings, "limiter_ceiling_db", -0.5)?;
+    let limiter_ceiling_db = py_dict_f64_in(
+        settings,
+        "limiter_ceiling_db",
+        -0.5,
+        LIMITER_CEILING_MIN_DB,
+        LIMITER_CEILING_MAX_DB,
+    )?;
     let careful_output_enabled = py_dict_bool(settings, "limiter_careful_output_enabled", true)?;
     let effective_ceiling_db = if limiter_enabled {
         effective_limiter_ceiling_db(limiter_ceiling_db, careful_output_enabled) as f32
@@ -1323,12 +1463,22 @@ pub fn simulate_auto_eq_chain(
         processor
             .limiter_mut()
             .set_ceiling(effective_ceiling_db as f64);
-        processor
-            .limiter_mut()
-            .set_release_time(py_dict_f64(settings, "limiter_release_ms", 50.0)?);
+        processor.limiter_mut().set_release_time(py_dict_f64_in(
+            settings,
+            "limiter_release_ms",
+            50.0,
+            LIMITER_RELEASE_MIN_MS,
+            LIMITER_RELEASE_MAX_MS,
+        )?);
         processor
             .true_peak_limiter_mut()
-            .set_release_ms(py_dict_f64(settings, "limiter_release_ms", 50.0)? as f32);
+            .set_release_ms(py_dict_f64_in(
+                settings,
+                "limiter_release_ms",
+                50.0,
+                LIMITER_RELEASE_MIN_MS,
+                LIMITER_RELEASE_MAX_MS,
+            )? as f32);
     }
 
     let processed_samples = audio.len();
@@ -1848,21 +1998,26 @@ impl PyAudioProcessor {
         input_device_endpoint_id: Option<&str>,
         output_device_endpoint_id: Option<&str>,
     ) -> PyResult<String> {
-        self.processor
-            .start_with_device_ordinals_and_ids(
-                input_device,
-                input_device_name_ordinal,
-                input_device_endpoint_id,
-                output_device,
-                output_device_name_ordinal,
-                output_device_endpoint_id,
-            )
-            .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
+        crate::catch_panic(|| {
+            self.processor
+                .start_with_device_ordinals_and_ids(
+                    input_device,
+                    input_device_name_ordinal,
+                    input_device_endpoint_id,
+                    output_device,
+                    output_device_name_ordinal,
+                    output_device_endpoint_id,
+                )
+                .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
+        })
     }
 
     /// Stop audio processing
-    fn stop(&mut self) {
-        self.processor.stop();
+    fn stop(&mut self) -> PyResult<()> {
+        crate::catch_panic(|| {
+            self.processor.stop();
+            Ok(())
+        })
     }
 
     /// Check if running
@@ -2063,11 +2218,13 @@ impl PyAudioProcessor {
     }
 
     /// Set noise suppression model by name ("rnnoise" or "deepfilter")
-    fn set_noise_model(&self, model: &str) -> bool {
-        match NoiseModel::from_id(model) {
-            Some(m) => self.processor.set_noise_model(m),
-            None => false,
-        }
+    fn set_noise_model(&self, model: &str) -> PyResult<bool> {
+        crate::catch_panic(|| {
+            Ok(match NoiseModel::from_id(model) {
+                Some(m) => self.processor.set_noise_model(m),
+                None => false,
+            })
+        })
     }
 
     /// Get current noise model name
@@ -2111,8 +2268,10 @@ impl PyAudioProcessor {
         &self,
         bands: Vec<(String, f64, f64, f64, u8, bool)>,
     ) -> PyResult<()> {
-        let parsed = crate::parse_eq_v2_bands(&bands, self.processor.sample_rate as f64)?;
-        self.processor.apply_eq_settings_v2(parsed)
+        crate::catch_panic(|| {
+            let parsed = crate::parse_eq_v2_bands(&bands, self.processor.sample_rate as f64)?;
+            self.processor.apply_eq_settings_v2(parsed)
+        })
     }
 
     /// Apply independent microphone correction and user tone EQ stages.
@@ -2125,10 +2284,113 @@ impl PyAudioProcessor {
         correction_bands: Vec<(String, f64, f64, f64, u8, bool)>,
         tone_bands: Vec<(String, f64, f64, f64, u8, bool)>,
     ) -> PyResult<()> {
-        let sample_rate = self.processor.sample_rate as f64;
-        let correction = crate::parse_eq_v2_bands(&correction_bands, sample_rate)?;
-        let tone = crate::parse_eq_v2_bands(&tone_bands, sample_rate)?;
-        self.processor.apply_eq_layers(correction, tone)
+        crate::catch_panic(|| {
+            let sample_rate = self.processor.sample_rate as f64;
+            let correction = crate::parse_eq_v2_bands(&correction_bands, sample_rate)?;
+            let tone = crate::parse_eq_v2_bands(&tone_bands, sample_rate)?;
+            self.processor.apply_eq_layers(correction, tone)
+        })
+    }
+
+    /// Apply a complete de-esser configuration as one atomic update.
+    ///
+    /// `settings` needs the de-esser state keys: enabled, auto_enabled,
+    /// auto_amount, low_cut_hz, high_cut_hz, threshold_db, ratio, attack_ms,
+    /// release_ms and max_reduction_db. Values are clamped like the single
+    /// setters; the DSP thread never sees a partly applied combination.
+    fn apply_deesser_settings(&self, settings: &Bound<'_, pyo3::types::PyDict>) -> PyResult<()> {
+        crate::catch_panic(|| {
+            let requested = DeesserControlState {
+                enabled: py_required(settings, "enabled")?.extract()?,
+                auto_enabled: py_required(settings, "auto_enabled")?.extract()?,
+                auto_amount: py_required(settings, "auto_amount")?.extract()?,
+                low_cut_hz: py_required(settings, "low_cut_hz")?.extract()?,
+                high_cut_hz: py_required(settings, "high_cut_hz")?.extract()?,
+                threshold_db: py_required(settings, "threshold_db")?.extract()?,
+                ratio: py_required(settings, "ratio")?.extract()?,
+                attack_ms: py_required(settings, "attack_ms")?.extract()?,
+                release_ms: py_required(settings, "release_ms")?.extract()?,
+                max_reduction_db: py_required(settings, "max_reduction_db")?.extract()?,
+            };
+            self.processor.apply_deesser_settings(&requested);
+            Ok(())
+        })
+    }
+
+    /// Apply a complete compressor configuration as one atomic update.
+    ///
+    /// `settings` needs the compressor state keys: enabled, threshold_db,
+    /// ratio, attack_ms, adaptive_release, base_release_ms, release_ms,
+    /// makeup_gain_db, sidechain_highpass_enabled, auto_makeup_enabled,
+    /// target_lufs and noise_reference_reliability. `base_release_ms` is used
+    /// when adaptive_release is on and `release_ms` otherwise.
+    fn apply_compressor_settings(&self, settings: &Bound<'_, pyo3::types::PyDict>) -> PyResult<()> {
+        crate::catch_panic(|| {
+            let adaptive_release: bool = py_required(settings, "adaptive_release")?.extract()?;
+            let release_key = if adaptive_release {
+                "base_release_ms"
+            } else {
+                "release_ms"
+            };
+            let requested = CompressorControlState {
+                enabled: py_required(settings, "enabled")?.extract()?,
+                threshold_db: py_required(settings, "threshold_db")?.extract()?,
+                ratio: py_required(settings, "ratio")?.extract()?,
+                attack_ms: py_required(settings, "attack_ms")?.extract()?,
+                base_release_ms: py_required(settings, release_key)?.extract()?,
+                makeup_gain_db: py_required(settings, "makeup_gain_db")?.extract()?,
+                adaptive_release,
+                auto_makeup_enabled: py_required(settings, "auto_makeup_enabled")?.extract()?,
+                target_lufs: py_required(settings, "target_lufs")?.extract()?,
+                noise_reference_reliability: py_required(settings, "noise_reference_reliability")?
+                    .extract()?,
+                sidechain_highpass_enabled: py_required(settings, "sidechain_highpass_enabled")?
+                    .extract()?,
+            };
+            self.processor.apply_compressor_settings(&requested);
+            Ok(())
+        })
+    }
+
+    /// Apply a complete gate configuration as one atomic update.
+    ///
+    /// `settings` needs the gate state keys: enabled, threshold_db, attack_ms,
+    /// release_ms and, with VAD, gate_mode, vad_threshold, vad_hold_time_ms,
+    /// vad_pre_gain, auto_threshold_enabled and gate_margin_db.
+    fn apply_gate_settings(&self, settings: &Bound<'_, pyo3::types::PyDict>) -> PyResult<()> {
+        crate::catch_panic(|| {
+            #[cfg(feature = "vad")]
+            let gate_mode = match py_required(settings, "gate_mode")?.extract::<u8>()? {
+                0 => GateMode::ThresholdOnly,
+                1 => GateMode::VadAssisted,
+                2 => GateMode::VadOnly,
+                mode => {
+                    return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                        "unknown gate mode {mode}; use 0, 1, or 2"
+                    )))
+                }
+            };
+            let requested = GateControlState {
+                enabled: py_required(settings, "enabled")?.extract()?,
+                threshold_db: py_required(settings, "threshold_db")?.extract()?,
+                attack_ms: py_required(settings, "attack_ms")?.extract()?,
+                release_ms: py_required(settings, "release_ms")?.extract()?,
+                #[cfg(feature = "vad")]
+                gate_mode,
+                #[cfg(feature = "vad")]
+                vad_threshold: py_required(settings, "vad_threshold")?.extract()?,
+                #[cfg(feature = "vad")]
+                hold_ms: py_required(settings, "vad_hold_time_ms")?.extract()?,
+                #[cfg(feature = "vad")]
+                pre_gain: py_required(settings, "vad_pre_gain")?.extract()?,
+                #[cfg(feature = "vad")]
+                auto_threshold: py_required(settings, "auto_threshold_enabled")?.extract()?,
+                #[cfg(feature = "vad")]
+                margin_db: py_required(settings, "gate_margin_db")?.extract()?,
+            };
+            self.processor.apply_gate_settings(&requested);
+            Ok(())
+        })
     }
 
     // === De-Esser ===
@@ -2515,6 +2777,10 @@ impl PyAudioProcessor {
             self.processor.get_output_retime_adjustment_count(),
         )?;
         diagnostics.set_item(
+            "rejected_control_value_count",
+            self.processor.get_rejected_control_value_count(),
+        )?;
+        diagnostics.set_item(
             "output_recovery_event_count",
             self.processor.get_output_recovery_event_count(),
         )?;
@@ -2787,8 +3053,8 @@ impl PyAudioProcessor {
     // === Stream Recovery Status ===
 
     /// Service pending recovery requests (returns None if no attempt).
-    fn service_recovery(&mut self) -> Option<bool> {
-        self.processor.service_recovery()
+    fn service_recovery(&mut self) -> PyResult<Option<bool>> {
+        crate::catch_panic(|| Ok(self.processor.service_recovery()))
     }
 
     fn is_recovery_requested(&self) -> bool {
@@ -2824,23 +3090,27 @@ impl PyAudioProcessor {
         duration_secs: f64,
         before_cleanup: bool,
     ) -> PyResult<()> {
-        self.processor
-            .start_raw_recording_with_tap(duration_secs, before_cleanup)
-            .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
+        crate::catch_panic(|| {
+            self.processor
+                .start_raw_recording_with_tap(duration_secs, before_cleanup)
+                .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
+        })
     }
 
     /// Stop recording and return audio data as NumPy array
     fn stop_raw_recording(&mut self, py: Python) -> PyResult<Py<PyAny>> {
-        if let Some(audio) = self.processor.stop_raw_recording() {
-            // Zero-copy transfer to NumPy
-            use numpy::PyArray1;
-            let array = PyArray1::from_vec(py, audio);
-            Ok(array.into_any().unbind())
-        } else {
-            Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "No recording in progress",
-            ))
-        }
+        crate::catch_panic(|| {
+            if let Some(audio) = self.processor.stop_raw_recording() {
+                // Zero-copy transfer to NumPy
+                use numpy::PyArray1;
+                let array = PyArray1::from_vec(py, audio);
+                Ok(array.into_any().unbind())
+            } else {
+                Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "No recording in progress",
+                ))
+            }
+        })
     }
 
     /// Check if recording is complete
@@ -2868,14 +3138,16 @@ impl PyAudioProcessor {
         &self,
         samples: numpy::PyReadonlyArray1<'_, f32>,
     ) -> PyResult<()> {
-        let samples = samples.as_slice().map_err(|error| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "output probe must be a contiguous float32 array: {error}"
-            ))
-        })?;
-        self.processor
-            .queue_output_probe(samples)
-            .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
+        crate::catch_panic(|| {
+            let samples = samples.as_slice().map_err(|error| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "output probe must be a contiguous float32 array: {error}"
+                ))
+            })?;
+            self.processor
+                .queue_output_probe(samples)
+                .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
+        })
     }
 
     fn is_output_probe_complete(&self) -> bool {

@@ -17,8 +17,11 @@ use super::buffer::AudioConsumer;
 use super::clock::now_micros;
 use super::device::{device_for_endpoint_id, device_name, persisted_endpoint_id};
 use super::input::{AudioDeviceInfo, AudioError, TARGET_SAMPLE_RATE};
-use super::rt::{store_rt_error, RtErrorCode};
-use super::{find_48khz_config, parse_fixed_buffer_frames, supported_fixed_buffer_frames};
+use super::rt::RtErrorCode;
+use super::{
+    find_48khz_config, handle_stream_error, parse_fixed_buffer_frames,
+    supported_fixed_buffer_frames, validate_stream_format,
+};
 
 pub(crate) struct OutputProbeControl {
     pub(crate) consumer: AudioConsumer,
@@ -95,19 +98,11 @@ impl AudioOutput {
         sample_format: SampleFormat,
         config: &StreamConfig,
     ) -> bool {
-        match sample_format {
-            SampleFormat::I8 => Self::preflight_config::<i8>(device, config),
-            SampleFormat::F32 => Self::preflight_config::<f32>(device, config),
-            SampleFormat::F64 => Self::preflight_config::<f64>(device, config),
-            SampleFormat::I16 => Self::preflight_config::<i16>(device, config),
-            SampleFormat::I32 => Self::preflight_config::<i32>(device, config),
-            SampleFormat::I64 => Self::preflight_config::<i64>(device, config),
-            SampleFormat::U8 => Self::preflight_config::<u8>(device, config),
-            SampleFormat::U16 => Self::preflight_config::<u16>(device, config),
-            SampleFormat::U32 => Self::preflight_config::<u32>(device, config),
-            SampleFormat::U64 => Self::preflight_config::<u64>(device, config),
-            _ => false,
-        }
+        dispatch_sample_format!(
+            sample_format,
+            S => Self::preflight_config::<S>(device, config),
+            _ => false
+        )
     }
 
     fn select_device(device: Device) -> Result<OutputStreamSetup, AudioError> {
@@ -138,6 +133,7 @@ impl AudioOutput {
             .ok_or_else(|| {
                 AudioError::DefaultConfig("No suitable output config found".to_string())
             })?;
+        validate_stream_format(supported_config.channels(), supported_config.sample_rate())?;
 
         let device_info = AudioDeviceInfo {
             name,
@@ -421,6 +417,7 @@ impl AudioOutput {
         underruns: OutputUnderruns,
         error_count: Arc<AtomicU64>,
         rt_error_code: Arc<AtomicU32>,
+        restart_requested: Arc<AtomicBool>,
         output_probe: Option<OutputProbeControl>,
         fixed_buffer_frames: Option<u32>,
     ) -> Result<Self, AudioError>
@@ -500,9 +497,13 @@ impl AudioOutput {
                     // RT_REGION_END: cpal_output_callback
                 },
                 move |err| {
-                    let _ = err;
-                    error_count.fetch_add(1, Ordering::Relaxed);
-                    store_rt_error(rt_error_code.as_ref(), RtErrorCode::OutputStreamError);
+                    handle_stream_error(
+                        &err,
+                        RtErrorCode::OutputStreamError,
+                        &error_count,
+                        &rt_error_code,
+                        &restart_requested,
+                    );
                 },
                 None,
             )
@@ -525,6 +526,7 @@ impl AudioOutput {
         underruns: OutputUnderruns,
         error_count: Arc<AtomicU64>,
         rt_error_code: Arc<AtomicU32>,
+        restart_requested: Arc<AtomicBool>,
         output_probe: Option<OutputProbeControl>,
     ) -> Result<Self, AudioError> {
         let sample_format = setup.supported_config.sample_format();
@@ -541,8 +543,9 @@ impl AudioOutput {
             }
         }
 
-        match sample_format {
-            SampleFormat::I8 => Self::build_stream::<i8>(
+        dispatch_sample_format!(
+            sample_format,
+            S => Self::build_stream::<S>(
                 setup.device,
                 stream_config,
                 setup.device_info,
@@ -553,137 +556,12 @@ impl AudioOutput {
                 underruns,
                 error_count,
                 rt_error_code,
+                restart_requested,
                 output_probe,
                 fixed_buffer_frames,
             ),
-            SampleFormat::F32 => Self::build_stream::<f32>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::F64 => Self::build_stream::<f64>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::I16 => Self::build_stream::<i16>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::I32 => Self::build_stream::<i32>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::I64 => Self::build_stream::<i64>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::U8 => Self::build_stream::<u8>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::U16 => Self::build_stream::<u16>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::U32 => Self::build_stream::<u32>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::U64 => Self::build_stream::<u64>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            other => Err(AudioError::UnsupportedSampleFormat(other.to_string())),
-        }
+            _ => Err(AudioError::UnsupportedSampleFormat(sample_format.to_string()))
+        )
     }
 
     /// Start playing audio
@@ -1140,5 +1018,52 @@ mod tests {
         assert!(!active.load(Ordering::Acquire));
         assert!(complete.load(Ordering::Acquire));
         assert!(!cancel_requested.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn test_24_bit_output_formats_render_from_a_synthetic_queue() {
+        use crate::audio::buffer::AudioRingBuffer;
+        use cpal::{I24, U24};
+
+        let (mut producer, mut consumer) = AudioRingBuffer::new(8).split();
+        assert_eq!(producer.write(&[0.5, -0.5, 1.0, -1.0]), 4);
+        let mut scratch = [0.0_f32; 4];
+        let underruns = queued_underruns(0, 0);
+        let mut signed = [I24::new(0).unwrap(); 4];
+        let copied = AudioOutput::render_output::<I24>(
+            &mut signed,
+            1,
+            &mut consumer,
+            &mut scratch,
+            0,
+            &underruns,
+        );
+        assert_eq!(copied, 4);
+        let signed: Vec<i32> = signed.iter().map(|sample| sample.inner()).collect();
+        assert!((signed[0] - 4_194_304).abs() <= 1, "{signed:?}");
+        assert!((signed[1] + 4_194_304).abs() <= 1, "{signed:?}");
+        assert!(
+            signed[2] >= 8_388_606 && signed[3] <= -8_388_607,
+            "{signed:?}"
+        );
+
+        assert_eq!(producer.write(&[0.0, 1.0, -1.0, 0.5]), 4);
+        let mut unsigned = [U24::new(0).unwrap(); 4];
+        let copied = AudioOutput::render_output::<U24>(
+            &mut unsigned,
+            1,
+            &mut consumer,
+            &mut scratch,
+            0,
+            &underruns,
+        );
+        assert_eq!(copied, 4);
+        let unsigned: Vec<i32> = unsigned.iter().map(|sample| sample.inner()).collect();
+        assert!((unsigned[0] - 8_388_608).abs() <= 1, "{unsigned:?}");
+        assert!(
+            unsigned[1] >= 16_777_214 && unsigned[2] <= 1,
+            "{unsigned:?}"
+        );
+        assert!((unsigned[3] - 12_582_912).abs() <= 1, "{unsigned:?}");
     }
 }

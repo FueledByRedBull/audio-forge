@@ -2,13 +2,11 @@
 mod tests {
     use super::*;
     use std::fs;
-    use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
+    // The path-resolution tests below pass external overrides as arguments
+    // instead of setting DEEPFILTER_* variables: mutating the process
+    // environment would race with every other test that builds a processor.
 
     fn temp_test_dir(name: &str) -> PathBuf {
         let suffix = SystemTime::now()
@@ -26,13 +24,12 @@ mod tests {
     #[test]
     fn test_ffi_availability() {
         let processor = DeepFilterProcessor::default();
-        // This test passes regardless of whether FFI is available
-        // If not available, the processor will use passthrough
-        if processor.is_ffi_available() {
-            println!("DeepFilterNet C FFI is available");
-        } else {
-            println!("DeepFilterNet C FFI is not available (using passthrough)");
-        }
+        // Passes with or without the library, but an unavailable backend
+        // (passthrough) must always say why.
+        assert_eq!(
+            processor.is_ffi_available(),
+            processor.backend_error().is_none()
+        );
     }
 
     #[test]
@@ -131,26 +128,25 @@ mod tests {
     #[test]
     fn dry_delay_matches_each_model_latency_and_resets() {
         for model in [DeepFilterModel::LowLatency, DeepFilterModel::Standard] {
-            let mut processor = DeepFilterProcessor::new(
-                Arc::new(AtomicU32::new(0.5_f32.to_bits())),
-                model,
-            );
+            let mut processor =
+                DeepFilterProcessor::new(Arc::new(AtomicU32::new(0.5_f32.to_bits())), model);
             processor.dry_frame.fill(0.0);
             processor.dry_frame[0] = 1.0;
             processor.delay_dry_frame();
-            assert!(processor.aligned_dry_frame.iter().all(|sample| *sample == 0.0));
+            assert!(processor
+                .aligned_dry_frame
+                .iter()
+                .all(|sample| *sample == 0.0));
 
             let frame_count = model.latency_samples() / DEEPFILTER_FRAME_SIZE;
             for frame in 1..=frame_count {
                 processor.dry_frame.fill(0.0);
                 processor.delay_dry_frame();
                 if frame < frame_count {
-                    assert!(
-                        processor
-                            .aligned_dry_frame
-                            .iter()
-                            .all(|sample| *sample == 0.0)
-                    );
+                    assert!(processor
+                        .aligned_dry_frame
+                        .iter()
+                        .all(|sample| *sample == 0.0));
                 } else {
                     assert_eq!(processor.aligned_dry_frame[0], 1.0);
                 }
@@ -159,7 +155,10 @@ mod tests {
             processor.soft_reset();
             processor.dry_frame.fill(0.0);
             processor.delay_dry_frame();
-            assert!(processor.aligned_dry_frame.iter().all(|sample| *sample == 0.0));
+            assert!(processor
+                .aligned_dry_frame
+                .iter()
+                .all(|sample| *sample == 0.0));
         }
     }
 
@@ -291,20 +290,20 @@ mod tests {
 
     #[test]
     fn native_soft_reset_mutes_only_the_reported_model_overlap() {
-        let before = std::array::from_fn::<_, 480, _>(|index| {
-            (index as f32 * 0.047).sin() * 0.25
-        });
-        let after = std::array::from_fn::<_, 480, _>(|index| {
-            (index as f32 * 0.091).sin() * -0.17
-        });
+        let before = std::array::from_fn::<_, 480, _>(|index| (index as f32 * 0.047).sin() * 0.25);
+        let after = std::array::from_fn::<_, 480, _>(|index| (index as f32 * 0.091).sin() * -0.17);
         for model in [DeepFilterModel::LowLatency, DeepFilterModel::Standard] {
             for gain in [0.3, 1.0] {
                 for strength in [0.0_f32, 0.37, 1.0] {
                     let mut processor = DeepFilterProcessor::new(
-                        Arc::new(AtomicU32::new(strength.to_bits())), model,
+                        Arc::new(AtomicU32::new(strength.to_bits())),
+                        model,
                     );
                     if !processor.is_ffi_available() {
-                        eprintln!("Skipping native reset regression: {:?}", processor.backend_error());
+                        eprintln!(
+                            "Skipping native reset regression: {:?}",
+                            processor.backend_error()
+                        );
                         return;
                     }
                     let mut output = [0.0; 480];
@@ -428,10 +427,8 @@ mod tests {
         let frames = 4;
 
         let batched_strength = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
-        let mut batched = DeepFilterProcessor::new(
-            batched_strength.clone(),
-            DeepFilterModel::LowLatency,
-        );
+        let mut batched =
+            DeepFilterProcessor::new(batched_strength.clone(), DeepFilterModel::LowLatency);
         batched_strength.store(1.0_f32.to_bits(), Ordering::Relaxed);
         for _ in 0..frames {
             assert_eq!(batched.push_samples(&frame), DEEPFILTER_FRAME_SIZE);
@@ -439,10 +436,8 @@ mod tests {
         batched.process_frames();
 
         let streamed_strength = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
-        let mut streamed = DeepFilterProcessor::new(
-            streamed_strength.clone(),
-            DeepFilterModel::LowLatency,
-        );
+        let mut streamed =
+            DeepFilterProcessor::new(streamed_strength.clone(), DeepFilterModel::LowLatency);
         streamed_strength.store(1.0_f32.to_bits(), Ordering::Relaxed);
         for _ in 0..frames {
             assert_eq!(streamed.push_samples(&frame), DEEPFILTER_FRAME_SIZE);
@@ -492,26 +487,22 @@ mod tests {
 
     #[test]
     fn test_external_model_path_requires_explicit_opt_in() {
-        let _guard = env_lock().lock().unwrap();
         let temp_dir = temp_test_dir("deepfilter-file");
         let model_path = temp_dir.join("custom-model.tar.gz");
         fs::write(&model_path, []).unwrap();
 
-        std::env::set_var("DEEPFILTER_MODEL_PATH", &model_path);
-        std::env::remove_var("AUDIOFORGE_ALLOW_EXTERNAL_DF");
         let blocked = find_model_path(
             DeepFilterModel::LowLatency,
             &AppOwnedDeepFilterPaths::default(),
-            external_deepfilter_paths_allowed(),
+            parse_external_opt_in(""),
+            Some(&model_path),
         );
-        std::env::set_var("AUDIOFORGE_ALLOW_EXTERNAL_DF", "1");
         let allowed = find_model_path(
             DeepFilterModel::LowLatency,
             &AppOwnedDeepFilterPaths::default(),
-            external_deepfilter_paths_allowed(),
+            parse_external_opt_in(" 1 "),
+            Some(&model_path),
         );
-        std::env::remove_var("DEEPFILTER_MODEL_PATH");
-        std::env::remove_var("AUDIOFORGE_ALLOW_EXTERNAL_DF");
 
         assert_ne!(blocked, Some(model_path.clone()));
         assert_eq!(allowed, Some(model_path));
@@ -519,8 +510,17 @@ mod tests {
     }
 
     #[test]
+    fn test_external_opt_in_accepts_only_explicit_truthy_values() {
+        for value in ["1", "true", "YES", " on "] {
+            assert!(parse_external_opt_in(value), "{value:?}");
+        }
+        for value in ["", "0", "false", "enable", "2"] {
+            assert!(!parse_external_opt_in(value), "{value:?}");
+        }
+    }
+
+    #[test]
     fn test_app_owned_model_path_does_not_require_external_opt_in() {
-        let _guard = env_lock().lock().unwrap();
         let temp_dir = temp_test_dir("deepfilter-dir");
         let model_path = temp_dir.join(DeepFilterModel::LowLatency.filename());
         fs::write(&model_path, []).unwrap();
@@ -529,7 +529,7 @@ mod tests {
             library: None,
             model: Some(temp_dir.clone()),
         };
-        let resolved = find_model_path(DeepFilterModel::LowLatency, &app_paths, false);
+        let resolved = find_model_path(DeepFilterModel::LowLatency, &app_paths, false, None);
 
         assert_eq!(resolved, Some(model_path));
         let _ = fs::remove_dir_all(temp_dir);
@@ -537,7 +537,6 @@ mod tests {
 
     #[test]
     fn test_opted_in_external_model_overrides_app_owned_model() {
-        let _guard = env_lock().lock().unwrap();
         let temp_dir = temp_test_dir("deepfilter-model-precedence");
         let bundled_dir = temp_dir.join("bundled");
         fs::create_dir_all(&bundled_dir).unwrap();
@@ -550,10 +549,18 @@ mod tests {
             model: Some(bundled_dir),
         };
 
-        std::env::set_var("DEEPFILTER_MODEL_PATH", &external_model);
-        let default_path = find_model_path(DeepFilterModel::LowLatency, &app_paths, false);
-        let overridden_path = find_model_path(DeepFilterModel::LowLatency, &app_paths, true);
-        std::env::remove_var("DEEPFILTER_MODEL_PATH");
+        let default_path = find_model_path(
+            DeepFilterModel::LowLatency,
+            &app_paths,
+            false,
+            Some(&external_model),
+        );
+        let overridden_path = find_model_path(
+            DeepFilterModel::LowLatency,
+            &app_paths,
+            true,
+            Some(&external_model),
+        );
 
         assert_eq!(default_path, Some(bundled_model));
         assert_eq!(overridden_path, Some(external_model));
@@ -562,7 +569,6 @@ mod tests {
 
     #[test]
     fn test_external_library_path_requires_explicit_opt_in() {
-        let _guard = env_lock().lock().unwrap();
         let temp_dir = temp_test_dir("deepfilter-library");
         let library_path = temp_dir.join(if cfg!(target_os = "windows") {
             "df.dll"
@@ -574,18 +580,18 @@ mod tests {
         fs::write(&library_path, []).unwrap();
         let library_name = library_path.file_name().unwrap().to_str().unwrap();
 
-        std::env::set_var("DEEPFILTER_LIB_PATH", &library_path);
         let blocked = DeepFilterLib::trusted_library_candidates(
             library_name,
             &AppOwnedDeepFilterPaths::default(),
             false,
+            Some(&library_path),
         );
         let allowed = DeepFilterLib::trusted_library_candidates(
             library_name,
             &AppOwnedDeepFilterPaths::default(),
             true,
+            Some(&library_path),
         );
-        std::env::remove_var("DEEPFILTER_LIB_PATH");
 
         let canonical = library_path.canonicalize().unwrap();
         assert!(!blocked.contains(&canonical));
@@ -595,7 +601,6 @@ mod tests {
 
     #[test]
     fn test_opted_in_external_library_precedes_app_owned_library() {
-        let _guard = env_lock().lock().unwrap();
         let temp_dir = temp_test_dir("deepfilter-library-precedence");
         let library_name = if cfg!(target_os = "windows") {
             "df.dll"
@@ -617,15 +622,49 @@ mod tests {
             model: None,
         };
 
-        std::env::set_var("DEEPFILTER_LIB_PATH", &external_library);
-        let default_candidates =
-            DeepFilterLib::trusted_library_candidates(library_name, &app_paths, false);
-        let override_candidates =
-            DeepFilterLib::trusted_library_candidates(library_name, &app_paths, true);
-        std::env::remove_var("DEEPFILTER_LIB_PATH");
+        let default_candidates = DeepFilterLib::trusted_library_candidates(
+            library_name,
+            &app_paths,
+            false,
+            Some(&external_library),
+        );
+        let override_candidates = DeepFilterLib::trusted_library_candidates(
+            library_name,
+            &app_paths,
+            true,
+            Some(&external_library),
+        );
 
-        assert_eq!(default_candidates.first(), bundled_library.canonicalize().ok().as_ref());
-        assert_eq!(override_candidates.first(), external_library.canonicalize().ok().as_ref());
+        assert_eq!(
+            default_candidates.first(),
+            bundled_library.canonicalize().ok().as_ref()
+        );
+        assert_eq!(
+            override_candidates.first(),
+            external_library.canonicalize().ok().as_ref()
+        );
         let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_non_finite_strength_never_reaches_the_wet_dry_mix() {
+        let bits = Arc::new(AtomicU32::new(f32::NAN.to_bits()));
+        let mut processor = DeepFilterProcessor::new(Arc::clone(&bits), DeepFilterModel::Standard);
+        assert!(processor.smoothed_strength.is_finite());
+
+        processor.set_strength(0.5);
+        NoiseSuppressor::set_strength(&processor, f32::NAN);
+        assert_eq!(processor.get_strength(), 0.5);
+
+        bits.store(f32::NAN.to_bits(), Ordering::Relaxed);
+        processor.push_samples(&[0.1; DEEPFILTER_FRAME_SIZE]);
+        processor.process_frames();
+        assert!(processor.smoothed_strength.is_finite());
+        let mut output = [0.0_f32; DEEPFILTER_FRAME_SIZE];
+        assert_eq!(
+            processor.pop_samples_into(&mut output),
+            DEEPFILTER_FRAME_SIZE
+        );
+        assert!(output.iter().all(|sample| sample.is_finite()));
     }
 }

@@ -185,6 +185,9 @@ impl NoiseGate {
 
     /// Update gate parameters
     pub fn set_threshold(&mut self, threshold_db: f64) {
+        if !threshold_db.is_finite() {
+            return;
+        }
         self.threshold_db = threshold_db;
         #[cfg(feature = "vad")]
         if let Some(vad) = &mut self.vad_auto_gate {
@@ -788,8 +791,14 @@ impl NoiseGate {
     #[cfg(feature = "vad")]
     /// Publish a probability computed by the non-realtime VAD worker.
     pub fn set_external_vad_probability(&mut self, probability: f32, available: bool) {
-        self.vad_external_probability = probability.clamp(0.0, 1.0);
-        self.vad_external_available = available;
+        // A non-finite posterior is unknown, not silence.
+        let finite = probability.is_finite();
+        self.vad_external_probability = if finite {
+            probability.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.vad_external_available = available && finite;
     }
 
     #[cfg(feature = "vad")]
@@ -826,25 +835,6 @@ impl NoiseGate {
     pub fn set_hold_time(&mut self, hold_ms: f32) {
         if let Some(vad) = &mut self.vad_auto_gate {
             vad.set_hold_time(hold_ms);
-        }
-    }
-
-    #[cfg(feature = "vad")]
-    /// Set VAD pre-gain to boost weak signals for better speech detection
-    /// Default is 1.0 (no gain). Values > 1.0 boost the signal.
-    pub fn set_vad_pre_gain(&mut self, gain: f32) {
-        if let Some(vad) = &mut self.vad_auto_gate {
-            vad.set_pre_gain(gain);
-        }
-    }
-
-    #[cfg(feature = "vad")]
-    /// Get current VAD pre-gain
-    pub fn vad_pre_gain(&self) -> f32 {
-        if let Some(vad) = &self.vad_auto_gate {
-            vad.pre_gain()
-        } else {
-            1.0
         }
     }
 
@@ -1467,5 +1457,28 @@ mod tests {
             / tail.len() as f64)
             .sqrt();
         20.0 * (output_rms / amplitude as f64).log10()
+    }
+
+    #[test]
+    fn test_nan_threshold_is_rejected() {
+        let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, 48_000.0);
+        gate.set_threshold(f64::NAN);
+        assert_eq!(gate.threshold_db(), -40.0);
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_nan_vad_settings_cannot_panic_the_gate() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 20.0, 48_000.0);
+        gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(48_000, 0.5)));
+        gate.set_gate_mode(GateMode::VadOnly);
+        gate.set_vad_threshold(f32::NAN);
+        gate.set_external_vad_probability(f32::NAN, true);
+        assert!(!gate.is_vad_available());
+
+        let mut buffer = vec![0.1_f32; 3_000];
+        gate.process_block_inplace(&mut buffer);
+        assert!(buffer.iter().all(|sample| sample.is_finite()));
+        assert!(gate.current_gain().is_finite());
     }
 }

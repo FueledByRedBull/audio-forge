@@ -12,8 +12,10 @@ const NOISE_RELATIVE_ACTIVITY_START_DB: f64 = 3.0;
 const NOISE_RELATIVE_ACTIVITY_FULL_DB: f64 = 15.0;
 const MAKEUP_SILENCE_RELAX_MS: f64 = 1500.0;
 pub(super) const AUTO_MAKEUP_SAMPLE_WINDOW_MS: f64 = 10.0;
-// Compressor callers accept generic rates through 192 kHz; reserve the full
-// 10 ms window at that rate even when the optional loudness meter is absent.
+// Compressor callers accept generic rates through 192 kHz, but the loudness
+// meter supports only the rates in `loudness::validate_sample_rate`. Reserve
+// the full 10 ms window at 192 kHz even when the meter (and so auto makeup) is
+// unavailable at the current rate.
 const AUTO_MAKEUP_SAMPLE_WINDOW_MAX_SAMPLES: usize = 1_920;
 
 #[derive(Clone, Copy, Debug)]
@@ -27,6 +29,8 @@ pub(super) struct MakeupController {
     makeup_gain_db: f64,
     /// Loudness meter for auto makeup gain
     pub(super) loudness_meter: Option<crate::dsp::loudness::LoudnessMeter>,
+    /// Why `loudness_meter` is absent, so a disabled auto makeup is visible.
+    loudness_error: Option<String>,
     /// Fixed storage for the sample API's auto-makeup control window.
     auto_makeup_sample_window: [f32; AUTO_MAKEUP_SAMPLE_WINDOW_MAX_SAMPLES],
     /// Number of output samples currently held for the sample API window.
@@ -37,6 +41,8 @@ pub(super) struct MakeupController {
     pub(super) auto_makeup_sample_window_samples: usize,
     /// Auto makeup gain enabled
     auto_makeup_enabled: bool,
+    /// Whether auto makeup was asked for, so a missing meter only reports then.
+    auto_makeup_requested: bool,
     /// Target LUFS for auto makeup gain
     target_lufs: f64,
     /// Smoothed makeup gain (for transitions)
@@ -62,7 +68,11 @@ pub(super) struct MakeupController {
 impl MakeupController {
     pub(super) fn new(makeup_gain_db: f64, sample_rate: f64) -> Self {
         let makeup_smoothing_coeff = util::time_constant_to_coeff(200.0, sample_rate);
-        let loudness_meter = crate::dsp::loudness::LoudnessMeter::new(sample_rate as u32).ok();
+        let (loudness_meter, loudness_error) =
+            match crate::dsp::loudness::LoudnessMeter::new(sample_rate as u32) {
+                Ok(meter) => (Some(meter), None),
+                Err(error) => (None, Some(error.to_string())),
+            };
         let auto_makeup_sample_window_samples = if sample_rate.is_finite() && sample_rate > 0.0 {
             (sample_rate * AUTO_MAKEUP_SAMPLE_WINDOW_MS / 1_000.0)
                 .round()
@@ -74,11 +84,13 @@ impl MakeupController {
         Self {
             makeup_gain_db,
             loudness_meter,
+            loudness_error,
             auto_makeup_sample_window: [0.0; AUTO_MAKEUP_SAMPLE_WINDOW_MAX_SAMPLES],
             auto_makeup_sample_window_len: 0,
             auto_makeup_sample_activity_sum: 0.0,
             auto_makeup_sample_window_samples,
             auto_makeup_enabled: false,
+            auto_makeup_requested: false,
             target_lufs: -18.0,
             smoothed_makeup_gain: makeup_gain_db,
             makeup_smoothing_coeff,
@@ -99,10 +111,14 @@ impl MakeupController {
     }
 
     pub(super) fn set_makeup_gain(&mut self, makeup_gain_db: f64) {
+        if !makeup_gain_db.is_finite() {
+            return;
+        }
         self.makeup_gain_db = makeup_gain_db;
     }
 
     pub(super) fn set_auto_makeup_enabled(&mut self, enabled: bool) {
+        self.auto_makeup_requested = enabled;
         let enabled = enabled && self.loudness_meter.is_some();
         if self.auto_makeup_enabled == enabled {
             return;
@@ -117,7 +133,36 @@ impl MakeupController {
         self.auto_makeup_enabled
     }
 
+    /// Why auto makeup cannot run (no meter for this sample rate) or has
+    /// stopped tracking (the meter rejected audio); `None` when healthy or not
+    /// requested.
+    pub(super) fn auto_makeup_error(&self) -> Option<&str> {
+        if !self.auto_makeup_requested {
+            return None;
+        }
+        if let Some(error) = &self.loudness_error {
+            return Some(error);
+        }
+        self.loudness_meter
+            .as_ref()
+            .filter(|meter| meter.processing_failures() > 0)
+            .map(|_| "Loudness meter rejected audio; auto makeup is not tracking loudness")
+    }
+
+    /// `auto_makeup_error` as a code an atomic can carry: 0 healthy, 1 no meter
+    /// for this sample rate, 2 the meter rejected audio.
+    pub(super) fn auto_makeup_error_code(&self) -> u8 {
+        match self.auto_makeup_error() {
+            None => 0,
+            Some(_) if self.loudness_error.is_some() => 1,
+            Some(_) => 2,
+        }
+    }
+
     pub(super) fn set_target_lufs(&mut self, target: f64) {
+        if target.is_nan() {
+            return;
+        }
         let target = target.clamp(-24.0, -12.0);
         if self.target_lufs != target {
             self.target_lufs = target;
@@ -149,6 +194,10 @@ impl MakeupController {
     }
 
     pub(super) fn set_limiter_feedback_gain_reduction_db(&mut self, gain_reduction_db: f64) {
+        // A NaN here would reach the `clamp` bounds in the auto-makeup update.
+        if gain_reduction_db.is_nan() {
+            return;
+        }
         self.limiter_feedback_gain_reduction_db = gain_reduction_db.clamp(0.0, 24.0);
     }
 

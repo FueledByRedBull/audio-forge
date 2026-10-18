@@ -362,7 +362,29 @@ impl AudioOutput {
             }
         }
         consumer.set_last_sample(0.0);
+        // Unmute, the end of a recording and the end of a probe resume out of silence.
+        consumer.set_resume_fade_remaining(UNDERRUN_FADE_FRAMES);
         drained
+    }
+
+    /// Drain the queue and play silence while muted or recording; the cut
+    /// fades from the last played sample like an underrun tail.
+    fn render_muted<T>(
+        data: &mut [T],
+        num_channels: usize,
+        consumer: &mut AudioConsumer,
+        scratch: &mut [f32],
+    ) where
+        T: SizedSample + FromSample<f32>,
+    {
+        let frames_needed = if num_channels == 1 {
+            data.len()
+        } else {
+            data.len() / num_channels
+        };
+        let last_played = consumer.last_sample();
+        Self::drain_muted_consumer(consumer, frames_needed, scratch);
+        Self::fill_underrun_tail(data, 0, num_channels, last_played);
     }
 
     fn render_probe<T>(
@@ -494,17 +516,8 @@ impl AudioOutput {
                     if recording_active_clone.load(Ordering::Relaxed)
                         || output_muted_clone.load(Ordering::Relaxed)
                     {
-                        let frames_needed = if num_channels == 1 {
-                            data.len()
-                        } else {
-                            data.len() / num_channels
-                        };
-                        Self::drain_muted_consumer(&mut consumer, frames_needed, &mut mono_scratch);
+                        Self::render_muted(data, num_channels, &mut consumer, &mut mono_scratch);
                         underruns.streak.store(0, Ordering::Relaxed);
-                        let silence = Self::convert_output_sample::<T>(0.0);
-                        for sample in data.iter_mut() {
-                            *sample = silence;
-                        }
                         return;
                     }
 
@@ -869,6 +882,62 @@ mod tests {
         // after the resume, where the tone continues one callback late.
         assert_eq!(output[..4_800], clean[..4_800]);
         assert!((5_344..9_600).all(|n| output[n] == clean[n - 480]));
+    }
+
+    /// Like `render_dropout`, but callback 10 is muted while the DSP keeps
+    /// queueing, so the tone stays on its timeline.
+    fn render_mute(mute: Option<usize>) -> Vec<f32> {
+        use crate::test_signal::sine;
+        let rb = crate::audio::AudioRingBuffer::new(4_096);
+        let (mut producer, mut consumer) = rb.split();
+        let underruns = queued_underruns(0, 0);
+        let mut scratch = [0.0_f32; 256];
+        let mut rendered = Vec::new();
+        for callback in 0..20 {
+            let block: Vec<f32> = (callback * 480..callback * 480 + 480)
+                .map(|n| sine(997.0, 0.5, 48_000.0, n))
+                .collect();
+            assert_eq!(producer.write(&block), 480);
+            let mut output = [0.0_f32; 480];
+            if Some(callback) == mute {
+                AudioOutput::render_muted(&mut output, 1, &mut consumer, &mut scratch);
+            } else {
+                AudioOutput::render_output(
+                    &mut output,
+                    1,
+                    &mut consumer,
+                    &mut scratch,
+                    0,
+                    &underruns,
+                );
+            }
+            rendered.extend_from_slice(&output);
+        }
+        rendered
+    }
+
+    #[test]
+    fn test_mute_fades_out_and_unmute_fades_back_in() {
+        let output = render_mute(Some(10));
+        let clean = render_mute(None);
+        let max_step = |range: std::ops::Range<usize>| {
+            range
+                .map(|n| (output[n] - output[n - 1]).abs())
+                .fold(0.0_f32, f32::max)
+        };
+        // The hard cut stepped 0.451 into silence and unmute 0.438 out of it;
+        // now 0.011 and 0.056, under the tone's own largest step of 0.065.
+        let steady = max_step(1..4_800);
+        let mute = max_step(4_800..4_900);
+        let unmute = max_step(5_270..5_340);
+        assert!(mute <= steady, "mute step {mute}, tone {steady}");
+        assert!(unmute <= steady, "unmute step {unmute}, tone {steady}");
+
+        // Steady state: bit-identical before the mute and from 64 frames
+        // after the unmute; the muted callback is silent after its fade.
+        assert_eq!(output[..4_800], clean[..4_800]);
+        assert!(output[4_864..5_280].iter().all(|&sample| sample == 0.0));
+        assert_eq!(output[5_344..], clean[5_344..]);
     }
 
     fn render_empty_queue(underruns: &OutputUnderruns) {

@@ -2423,11 +2423,18 @@ mod tests {
         );
         // A hard switch left 0.151 at disable (6 dB on the 7 kHz tone) and
         // 0.131 at enable (frozen filter state ringing on the 300 Hz body);
-        // measured now 0.00056 and below 1e-6. Steady state reads 1e-5.
+        // measured now 0.00056 and 1.6e-8. Steady state reads 1e-5.
         let disable = residual(23_904, 24_960);
         let enable = residual(47_904, 49_920);
         assert!(disable < 0.002, "disable residual {disable}");
-        assert!(enable < 0.002, "enable residual {enable}");
+        assert!(enable < 1e-5, "enable residual {enable}");
+        // The fresh state on re-enable keeps the output on the never-toggled
+        // de-esser right after the ramp (measured 6e-6); resuming the frozen
+        // state left 6e-4 here.
+        let resumed = (48_480..72_000)
+            .map(|n| (toggled[n] - reference[n]).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(resumed < 5e-5, "deviation after re-enable {resumed}");
 
         // Steady state: identical before the toggle, exactly dry once the
         // 10 ms fade is over, and within 1e-5 of the never-toggled de-esser

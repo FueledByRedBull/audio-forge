@@ -188,8 +188,10 @@ impl SmoothNotch {
         self.pending = NotchFilter::new(frequency_hz, self.q, self.sample_rate);
         // A Q-36 notch rebuilt from zero state needs about 0.2 s to cancel hum
         // again. Within half its bandwidth (f / 2Q) the active state is closer
-        // to the retuned notch's steady state than zero is, even when the move
-        // crosses the hum line; for wider moves it is not, so those restart.
+        // to the retuned notch's steady state than zero is even when the move
+        // crosses the hum line (that worst case breaks even near 1.15x). The
+        // threshold is conservative: moves on one side of the line still gain
+        // up to about 3x it. Wider moves restart, as before.
         if (frequency_hz - self.pending_frequency_hz).abs() <= 0.5 * frequency_hz / self.q {
             self.pending.z1 = self.active.z1;
             self.pending.z2 = self.active.z2;

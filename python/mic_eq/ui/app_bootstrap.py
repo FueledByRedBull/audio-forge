@@ -14,7 +14,9 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Callable, Iterator, Type, cast
 
-from PySide6.QtCore import QMessageLogContext, QtMsgType, QTimer, qInstallMessageHandler
+from PySide6.QtCore import (
+    QCoreApplication, QEvent, QMessageLogContext, QtMsgType, QTimer, qInstallMessageHandler,
+)
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
@@ -536,7 +538,12 @@ def _run_qt_app(
         # first event, proving that construction and the event loop both work.
         QTimer.singleShot(0, finish_smoke_test)
 
-    return app.exec()
+    code = app.exec()
+    # Destroy the window and everything parented to it while QApplication still exists: left to
+    # interpreter shutdown, they are freed in an order that crashes on the native Windows platform.
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    return code
 
 
 def run_smoke_test(window_cls: Type[QMainWindow]) -> int:

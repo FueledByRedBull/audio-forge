@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 
 from mic_eq.analysis import compressor_calibration, voice_setup
-from tools.evaluate_compressor_search import _calibrate_compressor_expanded
 from mic_eq.analysis.cancellation import AnalysisCancelled
 from mic_eq.config import Preset
 
@@ -14,16 +13,10 @@ def _run(
     progress_callback=None,
     cancel_check=None,
     vad_probabilities=None,
-    allow_expanded_search=False,
 ):
     preset = Preset()
     t = np.arange(4800, dtype=np.float32) / 48000
-    calibrate = (
-        _calibrate_compressor_expanded
-        if allow_expanded_search
-        else voice_setup._calibrate_compressor_threshold
-    )
-    return calibrate(
+    return voice_setup._calibrate_compressor_threshold(
         speech_audio=(0.12 * np.sin(2 * np.pi * 180 * t)).astype(np.float32),
         sample_rate=48000,
         eq_settings=preset.eq.to_dict(),
@@ -44,14 +37,10 @@ def test_parallel_compressor_search_matches_serial_native_results(monkeypatch):
     parallel, parallel_diag = _run(
         lambda text, value: progress.append(value),
         vad_probabilities=model_probabilities,
-        allow_expanded_search=True,
     )
     pool = compressor_calibration.ThreadPoolExecutor
     monkeypatch.setattr(compressor_calibration, "ThreadPoolExecutor", lambda **_: pool(max_workers=1))
-    serial, serial_diag = _run(
-        vad_probabilities=model_probabilities,
-        allow_expanded_search=True,
-    )
+    serial, serial_diag = _run(vad_probabilities=model_probabilities)
     assert parallel == serial
     for key in parallel_diag:
         if key != "search_runtime_ms":

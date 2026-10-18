@@ -104,8 +104,8 @@ which also gives exact speech/pause labels. Noise is channel 1 of eight 48 kHz
 DEMAND environments (CC BY 4.0 on Zenodo): kitchen, living room, washing machine,
 office, meeting room, hallway, cafeteria, traffic. Each speaker is mixed with
 two environments at 5, 15 and 25 dB SNR (144 mixtures), split 12/12 speakers
-by gender into training and held-out halves. `evaluate_gate_corpus.py fetch`
-builds it (manifest SHA-256 `67dac07c…6105`). It replaces the earlier order
+by gender into training and held-out halves. The tool at v1.18.0,
+`evaluate_gate_corpus.py fetch`, built it (manifest SHA-256 `67dac07c…6105`). It replaces the earlier order
 evaluation's 12 clips, which were all 0 dB SNR, three babble-type noises and
 16 kHz source audio.
 
@@ -134,8 +134,8 @@ gain form G = Gmin^(1 − p) (Cohen & Berdugo, 2001), p being one logistic over
 the VAD posterior and, in VAD Assisted, the level above the noise floor.
 Weights were fitted on the training speakers. Each mode's bias was the
 midpoint of the biases matching the current gate's pause attenuation there
-through RNNoise and DeepFilter LL. The rule in `evaluate_gate_corpus.py`'s
-docstring was fixed first: on held-out speakers, with the VAD available and
+through RNNoise and DeepFilter LL. The rule in the docstring of
+`evaluate_gate_corpus.py` at v1.18.0 was fixed first: on held-out speakers, with the VAD available and
 unavailable, on both backends, ESTOI non-inferior (lower bound ≥ −0.002),
 pauses and tails under +1 dB louder, SI-SDR lower bound above −0.1 dB, plus a
 material win on RNNoise.
@@ -155,8 +155,8 @@ speakers, since these 12 held-out speakers have now informed the design. An
 earlier pass of this study used VAD results interpolated across windows that
 had not finished yet, which overstated onsets; its numbers are superseded.
 
-Reproduce with `evaluate_gate_corpus.py qualify --incumbent <build>
---candidate <build>`. The incumbent is commit `4f77bb0` (extension SHA-256
+It ran with `evaluate_gate_corpus.py qualify --incumbent <build>
+--candidate <build>` at v1.18.0; that tool is no longer in this tree. The incumbent is commit `4f77bb0` (extension SHA-256
 `587cfc9e…558c`); the candidate is that commit plus the patch, fit and
 calibration preserved under ignored
 `models/evaluation-details/gate-speech-presence-2026-10/` (extension SHA-256
@@ -164,19 +164,11 @@ calibration preserved under ignored
 
 ## Corpora
 
-Evaluation corpora live under ignored `models/` and are never release assets.
-Each fetcher pins sources and hashes: `evaluate_gate_corpus.py fetch`
-(EARS/DEMAND), `evaluate_voice_setup.py fetch` (VoiceBank/DEMAND, CC BY 4.0;
-EARS is non-commercial, so nothing shipped is fitted on it),
-`fetch_deepfilter_fullband_corpus.py`, and `build_vad_evaluation_corpus.py`.
-The last two stay because evaluators that
-remain read their corpora: `evaluate_product_tuning.py` the full-band set,
-`evaluate_compressor_search.py` and `evaluate_voice_regressions.py` the VAD set.
-
-The third EARS cohort for Voice Setup verification (`models/voice_setup_2026_10_cohort3`, 24 speakers) is used up for verification
-questions after the tonal-check-by-band study. VoiceBank fit indices 72-89, 102-119 and 132-149 are
-used up for Voice Setup questions after the refusal study. All 20 DAPS speakers (script 1, Zenodo 4660670, CC BY-NC 4.0,
-evaluation only) are used up for Voice Setup questions after the three-change refusal study.
+Held-out speech-cohort evaluation was retired on 2026-10-18. The speech
+corpora, their fetchers and the evaluators that read them are gone from the
+tree. The reports stay as history, with their stated limitations, and the tools
+are in the source of v1.18.0 (see the table below). Corpora were never release
+assets.
 
 ## Retired evaluators
 
@@ -206,17 +198,25 @@ tag that shipped them.
 | `capture_microphone_noise.py` | `deepfilter-fullband-report.json` (its noise capture) | v1.16.0 |
 | `evaluate_voice_setup_refusals.py` | `voice-setup-refusals-2026-10-report.json` | v1.18.0 |
 | `evaluate_voice_setup_arms.py` | `voice-setup-arms-2026-10-report.json` (it also read the DAPS corpus under `models/daps_script1/`) | v1.18.0 |
+| `build_vad_evaluation_corpus.py` | None; it built the VAD corpus that `evaluate_compressor_search.py` and `evaluate_voice_regressions.py` read | v1.18.0 |
+| `fetch_deepfilter_fullband_corpus.py` | None; it fetched the VoiceBank-DEMAND full-band subset that `evaluate_product_tuning.py` and `evaluate_deepfilter_source_build.py` read | v1.18.0 |
+| `evaluate_compressor_search.py` | `compressor-search-report.json` and `compressor-expanded-search-2026-09-report.json`, both made by an earlier revision of it (they predate complete source provenance, so which revision is not recorded) | v1.18.0 |
+| `evaluate_voice_regressions.py` | `voice-preservation-report.json`, `voice-preservation-2026-09-report.json`, `warm-auto-eq-report.json` | v1.18.0 |
+| `evaluate_product_tuning.py` | `product-joint-tuning-2026-09-report.json`, `product-joint-tuning-deepfilter-2026-09-report.json`, `product-joint-tuning-deepfilter-ll-2026-09-report.json` | v1.18.0 |
+| `evaluate_deepfilter_source_build.py` | `deepfilter-source-build-report.json` (cited by `build-support/deepfilter/provenance.json`) | v1.18.0 |
+| `evaluate_gate_corpus.py` | `gate-speech-presence-2026-10-report.json`; `processing-order-2026-10-report.json` (gate order) | v1.18.0 |
+| `evaluate_voice_setup.py` | `voice-setup-tuner-2026-10-report.json`, `gate-policy-2026-10-report.json` | v1.18.0 |
+| `evaluate_voice_setup_loudness.py` | `voice-setup-loudness-fit-2026-10-report.json`, `voice-setup-limiter-allowance-narrow-2026-10-report.json` | v1.18.0 |
+| `evaluate_voice_setup_verification.py` | `voice-setup-verification-tonal-check-2026-10-report.json` | v1.18.0 |
+| `evaluate_deesser_real_speech.py` | `deesser-real-speech-2026-10-report.json` | v1.18.0 |
+| `_eval_common.py` | None; the ESTOI and SI-SDR helper the evaluators above imported. Reports whose source hashes include it: `audio-followups-2026-10-report.json`, `auto-makeup-real-speech-2026-09-report.json`, `gate-speech-presence-2026-10-report.json`, `processing-order-2026-09-report.json`, `processing-order-2026-10-report.json`, `resampler-quality-2026-10-report.json`, `voice-setup-arms-2026-10-report.json`, `voice-setup-limiter-allowance-narrow-2026-10-report.json`, `voice-setup-loudness-fit-2026-10-report.json`, `voice-setup-refusals-2026-10-report.json`, `voice-setup-verification-tonal-check-2026-10-report.json` | v1.18.0 |
 
-A tool and its tests leave the tree once its decision row records a final outcome,
-every report it produced has shipped in a release tag unedited, nothing that
-stays imports it or depends on it as a gate, and no planned study reuses it. The reports, their
-manifests and the decision row stay unchanged. Never edit a report after its
-release, since the hygiene check reads it at that tag; a new measurement goes in a
-new report. Never retire `check_evaluation_hygiene.py`, a tool the release or CI
-workflows run, a helper or simulator the next study reuses (`_eval_common.py` and
-the gate, Voice Setup, loudness, verification and de-esser evaluators), a
-regression gate named in this file, or a corpus fetcher while an evaluator that
-reads its corpus remains.
+A tool and its tests leave the tree once its decision row records a final
+outcome, every report it produced has shipped in a release tag unedited, and
+nothing that stays imports it. The reports, their manifests and the decision row
+stay unchanged. Never edit a report after its release, since the hygiene check
+reads it at that tag; a new measurement goes in a new report. Never retire
+`check_evaluation_hygiene.py` or a tool the release or CI workflows run.
 
 ## Provenance and hygiene
 

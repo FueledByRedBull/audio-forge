@@ -459,4 +459,4 @@ build outputs are disposable only after required candidates and unpublished
 evidence are kept elsewhere; prefer each tool's own clean command. Don't
 delete `target/` or `build/` wholesale: they can hold the project Python, the
 hydrated runtime DLLs, source receipts, and unpublished measurements. Keep
-virtual environments, `models/`, and corpora.
+virtual environments and `models/`.

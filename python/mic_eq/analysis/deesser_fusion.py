@@ -9,7 +9,7 @@ CORPUS_VERSION = "audioforge-generated-deesser-corpus-v1"
 
 # A ridge fit on VoiceBank development speakers, never EARS. This signed score
 # distinguishes local resonance from broad tilt; it is not a probability.
-# Reproduce with python/tools/evaluate_deesser_real_speech.py.
+# Fitted with python/tools/evaluate_deesser_real_speech.py at v1.18.0.
 PERSISTENT_SHAPE_VERSION = "deesser-persistent-shape-v1"
 PERSISTENT_SHAPE_INTERCEPT = 0.06988054447490766
 PERSISTENT_SHAPE_COEFFICIENTS = np.asarray([

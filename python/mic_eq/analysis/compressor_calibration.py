@@ -157,9 +157,6 @@ class _CompressorCalibration:
             "candidate_budget": _COMPRESSOR_SEARCH_BUDGET,
             "objective_normalizers": dict(_COMPRESSOR_OBJECTIVE_NORMALIZERS),
             "objective_weights": dict(_COMPRESSOR_OBJECTIVE_WEIGHTS),
-            "expanded_search_status": "disabled_unqualified",
-            "expanded_search_selected": False,
-            "expanded_candidate_objective": None,
         }
         self.started = time.perf_counter()
         self.mapped_vad_probabilities: np.ndarray | None = None
@@ -388,9 +385,6 @@ class _CompressorCalibration:
     def finish(
         self,
         chosen: tuple[float, dict[str, Any], dict[str, float]] | None,
-        *,
-        expanded: tuple[float, dict[str, Any], dict[str, float]] | None = None,
-        expanded_selected: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         if chosen is None:
             self.diagnostics["iterations"] = len(self.evaluated)
@@ -457,10 +451,6 @@ class _CompressorCalibration:
                 "threshold_only_objective": min(
                     threshold_only_scores, default=float("inf")
                 ),
-                "expanded_candidate_objective": (
-                    expanded[0] if expanded is not None else None
-                ),
-                "expanded_search_selected": expanded_selected,
                 "active_output_gain_db": float(
                     best_simulation.get("active_output_gain_db", 0.0)
                 ),

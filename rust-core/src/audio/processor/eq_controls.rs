@@ -59,7 +59,8 @@ impl AudioProcessor {
                 eq.set_band_config(index, config);
             }
         }
-        self.eq_control.set_layers(&correction_bands, &snapshot_bands);
+        self.eq_control
+            .set_layers(&correction_bands, &snapshot_bands);
         self.eq_dirty.store(true, Ordering::Release);
         Ok(())
     }
@@ -99,9 +100,9 @@ impl AudioProcessor {
                 eq.set_band_config(index, config);
             }
         }
-        self.eq_control.set_layers(&correction_snapshot, &tone_snapshot);
+        self.eq_control
+            .set_layers(&correction_snapshot, &tone_snapshot);
         self.eq_dirty.store(true, Ordering::Release);
         Ok(())
     }
-
 }

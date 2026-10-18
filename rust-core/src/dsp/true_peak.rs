@@ -184,7 +184,6 @@ pub struct TruePeakLimiterBlockStats {
     /// One when the controller attacks during this block; zero otherwise.
     pub limited_events: u64,
     pub input_true_peak: f32,
-    pub output_true_peak: f32,
     pub max_gain_reduction_db: f32,
 }
 
@@ -193,7 +192,6 @@ impl Default for TruePeakLimiterBlockStats {
         Self {
             limited_events: 0,
             input_true_peak: 0.0,
-            output_true_peak: 0.0,
             max_gain_reduction_db: 0.0,
         }
     }
@@ -275,9 +273,7 @@ pub struct TruePeakLimiter {
     gain_history: [f32; TRUE_PEAK_GAIN_AVERAGE_SAMPLES],
     gain_history_idx: usize,
     gain_history_sum: f64,
-    output_oversampler: BandlimitedPeak<TRUE_PEAK_LONG_TAPS_PER_PHASE>,
     last_input_true_peak: f32,
-    last_output_true_peak: f32,
     peak_gain_reduction_db: f32,
     sample_rate: f32,
     enabled: bool,
@@ -302,9 +298,7 @@ impl TruePeakLimiter {
             gain_history: [1.0; TRUE_PEAK_GAIN_AVERAGE_SAMPLES],
             gain_history_idx: 0,
             gain_history_sum: TRUE_PEAK_GAIN_AVERAGE_SAMPLES as f64,
-            output_oversampler: BandlimitedPeak::new(&bank.long),
             last_input_true_peak: 0.0,
-            last_output_true_peak: 0.0,
             peak_gain_reduction_db: 0.0,
             sample_rate: sample_rate.max(1.0),
             enabled: true,
@@ -331,9 +325,7 @@ impl TruePeakLimiter {
         self.gain_history = [1.0; TRUE_PEAK_GAIN_AVERAGE_SAMPLES];
         self.gain_history_idx = 0;
         self.gain_history_sum = TRUE_PEAK_GAIN_AVERAGE_SAMPLES as f64;
-        self.output_oversampler.reset();
         self.last_input_true_peak = 0.0;
-        self.last_output_true_peak = 0.0;
         self.peak_gain_reduction_db = 0.0;
     }
 
@@ -353,6 +345,10 @@ impl TruePeakLimiter {
     }
 
     pub fn set_ceiling_linear(&mut self, ceiling_linear: f32) {
+        // A NaN ceiling would panic the `clamp` bounds in the realtime loop.
+        if ceiling_linear.is_nan() {
+            return;
+        }
         let previous = self.ceiling_linear;
         self.ceiling_linear = ceiling_linear.clamp(0.000_001, 1.0);
         if self.enabled && self.ceiling_linear < previous {
@@ -385,6 +381,9 @@ impl TruePeakLimiter {
     }
 
     pub fn set_release_ms(&mut self, release_ms: f32) {
+        if release_ms.is_nan() {
+            return;
+        }
         self.release_coeff = util::time_constant_to_coeff(
             release_ms.clamp(5.0, 500.0) as f64,
             self.sample_rate as f64,
@@ -412,10 +411,6 @@ impl TruePeakLimiter {
 
     pub fn last_input_true_peak(&self) -> f32 {
         self.last_input_true_peak
-    }
-
-    pub fn last_output_true_peak(&self) -> f32 {
-        self.last_output_true_peak
     }
 
     pub fn process_block_inplace(&mut self, samples: &mut [f32]) -> TruePeakLimiterBlockStats {
@@ -472,9 +467,6 @@ impl TruePeakLimiter {
                 output
             };
             let output = if output.is_finite() { output } else { 0.0 };
-            let output_peak = self.output_oversampler.observe(output);
-            self.last_output_true_peak = output_peak;
-            stats.output_true_peak = stats.output_true_peak.max(output_peak);
             *sample = output;
         }
 
@@ -852,5 +844,62 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn nan_ceiling_is_rejected_and_output_stays_bounded() {
+        let mut limiter = TruePeakLimiter::new(48_000.0, -6.0, 20.0);
+        let ceiling = limiter.ceiling_linear;
+        limiter.set_ceiling_linear(f32::NAN);
+        assert_eq!(limiter.ceiling_linear, ceiling);
+
+        let mut block = vec![0.9_f32; 4_096];
+        limiter.process_block_inplace(&mut block);
+        assert!(block.iter().all(|sample| sample.abs() <= ceiling));
+    }
+
+    #[test]
+    fn nan_release_is_rejected() {
+        let mut limiter = TruePeakLimiter::new(48_000.0, -6.0, 20.0);
+        let coefficient = limiter.release_coefficient();
+        limiter.set_release_ms(f32::NAN);
+        assert_eq!(limiter.release_coefficient(), coefficient);
+    }
+
+    /// A hot 0.4 s chirp with bursts, so the limiter attacks and releases.
+    fn limiter_probe_input() -> Vec<f32> {
+        (0..19_200)
+            .map(|n| {
+                let t = n as f32 / 48_000.0;
+                let burst = if (n / 2_400) % 2 == 0 { 1.4 } else { 0.3 };
+                burst * (std::f32::consts::TAU * (200.0 + 4_000.0 * t) * t).sin()
+            })
+            .collect()
+    }
+
+    #[test]
+    #[ignore = "release-mode callback cost measurement"]
+    fn benchmark_true_peak_stage_cost() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        const BLOCKS: usize = 2_000;
+        let input = limiter_probe_input();
+        let mut limiter = TruePeakLimiter::default_settings(48_000.0);
+        let mut detector = TruePeakDetector::new();
+        let mut block = [0.0_f32; 480];
+        let started = Instant::now();
+        for index in 0..BLOCKS {
+            let offset = (index * 480) % input.len();
+            block.copy_from_slice(&input[offset..offset + 480]);
+            black_box(limiter.process_block_inplace(black_box(&mut block)));
+            black_box(detector.process_block(black_box(&block)));
+        }
+        let elapsed = started.elapsed();
+        println!(
+            "true-peak limiter + output detector: {:.1} ns/sample, {:.2}% of one core at 48 kHz",
+            elapsed.as_nanos() as f64 / (BLOCKS * 480) as f64,
+            elapsed.as_secs_f64() / (BLOCKS * 480) as f64 * 48_000.0 * 100.0
+        );
     }
 }

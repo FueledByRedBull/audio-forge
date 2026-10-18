@@ -94,7 +94,9 @@ impl AudioProcessor {
 
     /// Set user latency compensation in milliseconds (added to reported latency).
     pub fn set_latency_compensation_ms(&self, compensation_ms: f32) {
-        let clamped_ms = compensation_ms.clamp(0.0, 5000.0);
+        let Some(clamped_ms) = self.clamp_live_control_f32(compensation_ms, 0.0, 5000.0) else {
+            return;
+        };
         let compensation_us = (clamped_ms * 1000.0) as u64;
         self.latency_compensation_us
             .store(compensation_us, Ordering::Relaxed);
@@ -138,13 +140,38 @@ impl AudioProcessor {
 
     /// Reset dropped sample counter
     pub fn reset_dropped_samples(&self) {
-        self.input_dropped_baseline
-            .store(self.input_dropped.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.input_dropped_baseline.store(
+            self.input_dropped.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
     }
 
-    /// Get total real-time lock contention events.
+    /// Real-time control-snapshot reads that stayed unstable (a writer was
+    /// mid-update for the whole retry budget) and were re-armed for the next pass.
     pub fn get_lock_contention_count(&self) -> u64 {
         self.lock_contention_count.load(Ordering::Relaxed)
+    }
+
+    /// Blocks where the downstream chain produced non-finite samples.
+    pub fn get_downstream_non_finite_count(&self) -> u64 {
+        self.downstream_non_finite_count.load(Ordering::Relaxed)
+    }
+
+    /// Output resampler failures since start.
+    pub fn get_output_resampler_error_count(&self) -> u64 {
+        self.output_resampler_error_count.load(Ordering::Relaxed)
+    }
+
+    /// Whether the DSP thread runs without MMCSS Pro Audio scheduling.
+    pub fn is_dsp_scheduling_degraded(&self) -> bool {
+        self.dsp_scheduling_degraded.load(Ordering::Relaxed)
+    }
+
+    /// Why the live compressor's auto makeup is off or not tracking, if it is.
+    pub fn get_auto_makeup_error(&self) -> Option<&'static str> {
+        Compressor::auto_makeup_error_text(
+            self.compressor_auto_makeup_error.load(Ordering::Relaxed),
+        )
     }
 
     pub fn get_suppressor_non_finite_count(&self) -> u64 {

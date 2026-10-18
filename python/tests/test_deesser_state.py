@@ -15,25 +15,12 @@ class RecordingProcessor:
         self.failures_left = 0
         self.stopped = False
 
-    def __getattr__(self, name):
-        if not name.startswith("set_deesser_"):
-            raise AttributeError(name)
-        key = name.removeprefix("set_deesser_")
-        if key not in self.settings:
-            raise AttributeError(name)
-
-        def write(value):
-            if key == "threshold_db" and self.failures_left:
-                self.failures_left -= 1
-                raise OSError("de-esser write rejected")
-            if key == "low_cut_hz":
-                value = min(value, self.settings["high_cut_hz"] - 200.0)
-            elif key == "high_cut_hz":
-                value = max(value, self.settings["low_cut_hz"] + 200.0)
-            self.settings[key] = value
-            self.calls.append((key, value))
-
-        return write
+    def apply_deesser_settings(self, settings):
+        if self.failures_left:
+            self.failures_left -= 1
+            raise OSError("de-esser write rejected")
+        self.settings.update({key: settings[key] for key in self.settings})
+        self.calls.append(dict(settings))
 
     def get_deesser_high_cut_hz(self):
         return self.settings["high_cut_hz"]
@@ -70,7 +57,7 @@ def test_deesser_coalesces_exact_edits_and_preset_cancels_stale_work(qapp):
     assert edits == ["De-esser edit"]
 
 
-def test_deesser_cutoffs_expand_first_and_normalize_the_other_endpoint(qapp):
+def test_deesser_cutoffs_move_together_and_normalize_the_other_endpoint(qapp):
     processor = RecordingProcessor()
     state = DeEsserState(processor)
     for low, high in [(4000.0, 4200.0), (8000.123, 8200.123), (3000.0, 3200.0)]:

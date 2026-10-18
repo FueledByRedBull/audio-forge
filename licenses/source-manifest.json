@@ -56,19 +56,6 @@
     },
     {
       "build_role": "resolved Rust dependency",
-      "filename": "bitflags-2.11.0.crate",
-      "id": "cargo-bitflags-2.11.0",
-      "kind": "cargo-crate",
-      "license": "MIT OR Apache-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "bitflags",
-      "sha256": "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af",
-      "source_of_truth": "https://crates.io/crates/bitflags/2.11.0",
-      "url": "https://crates.io/api/v1/crates/bitflags/2.11.0/download",
-      "version": "2.11.0"
-    },
-    {
-      "build_role": "resolved Rust dependency",
       "filename": "cfg-if-1.0.4.crate",
       "id": "cargo-cfg-if-1.0.4",
       "kind": "cargo-crate",
@@ -235,19 +222,6 @@
       "source_of_truth": "https://crates.io/crates/lock_api/0.4.14",
       "url": "https://crates.io/api/v1/crates/lock_api/0.4.14/download",
       "version": "0.4.14"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "log-0.4.29.crate",
-      "id": "cargo-log-0.4.29",
-      "kind": "cargo-crate",
-      "license": "MIT OR Apache-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "log",
-      "sha256": "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897",
-      "source_of_truth": "https://crates.io/crates/log/0.4.29",
-      "url": "https://crates.io/api/v1/crates/log/0.4.29/download",
-      "version": "0.4.29"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -641,19 +615,6 @@
     },
     {
       "build_role": "resolved Rust dependency",
-      "filename": "rustversion-1.0.22.crate",
-      "id": "cargo-rustversion-1.0.22",
-      "kind": "cargo-crate",
-      "license": "MIT OR Apache-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "rustversion",
-      "sha256": "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d",
-      "source_of_truth": "https://crates.io/crates/rustversion/1.0.22",
-      "url": "https://crates.io/api/v1/crates/rustversion/1.0.22/download",
-      "version": "1.0.22"
-    },
-    {
-      "build_role": "resolved Rust dependency",
       "filename": "scopeguard-1.2.0.crate",
       "id": "cargo-scopeguard-1.2.0",
       "kind": "cargo-crate",
@@ -771,19 +732,6 @@
     },
     {
       "build_role": "resolved Rust dependency",
-      "filename": "thread-priority-1.2.0.crate",
-      "id": "cargo-thread-priority-1.2.0",
-      "kind": "cargo-crate",
-      "license": "MIT",
-      "lock_file": "Cargo.lock",
-      "name": "thread-priority",
-      "sha256": "cfe075d7053dae61ac5413a34ea7d4913b6e6207844fd726bdd858b37ff72bf5",
-      "source_of_truth": "https://crates.io/crates/thread-priority/1.2.0",
-      "url": "https://crates.io/api/v1/crates/thread-priority/1.2.0/download",
-      "version": "1.2.0"
-    },
-    {
-      "build_role": "resolved Rust dependency",
       "filename": "tracing-0.1.44.crate",
       "id": "cargo-tracing-0.1.44",
       "kind": "cargo-crate",
@@ -833,19 +781,6 @@
       "source_of_truth": "https://crates.io/crates/unicode-ident/1.0.24",
       "url": "https://crates.io/api/v1/crates/unicode-ident/1.0.24/download",
       "version": "1.0.24"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "winapi-0.3.9.crate",
-      "id": "cargo-winapi-0.3.9",
-      "kind": "cargo-crate",
-      "license": "MIT/Apache-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "winapi",
-      "sha256": "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419",
-      "source_of_truth": "https://crates.io/crates/winapi/0.3.9",
-      "url": "https://crates.io/api/v1/crates/winapi/0.3.9/download",
-      "version": "0.3.9"
     },
     {
       "build_role": "resolved Rust dependency",

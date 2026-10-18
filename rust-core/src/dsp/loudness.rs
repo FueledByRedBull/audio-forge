@@ -108,6 +108,9 @@ pub struct LoudnessMeter {
     sample_rate: u32,
     /// Current momentary loudness (LUFS)
     current_lufs: f32,
+    /// Blocks the underlying meter rejected; reported instead of printed
+    /// because `process` runs inside the realtime chain.
+    processing_failures: u64,
 }
 
 impl LoudnessMeter {
@@ -132,6 +135,7 @@ impl LoudnessMeter {
             meter,
             sample_rate,
             current_lufs: -100.0, // Start with very low loudness
+            processing_failures: 0,
         })
     }
 
@@ -141,8 +145,8 @@ impl LoudnessMeter {
     /// * `samples` - Audio samples (interleaved mono)
     pub fn process(&mut self, samples: &[f32]) {
         // Process samples through EBU R128 meter
-        if let Err(e) = self.meter.add_frames_f32(samples) {
-            eprintln!("Loudness meter error: {}", e);
+        if self.meter.add_frames_f32(samples).is_err() {
+            self.processing_failures = self.processing_failures.saturating_add(1);
             return;
         }
 
@@ -164,6 +168,11 @@ impl LoudnessMeter {
         self.current_lufs
     }
 
+    /// Number of audio blocks the meter rejected since creation.
+    pub fn processing_failures(&self) -> u64 {
+        self.processing_failures
+    }
+
     /// Get sample rate
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
@@ -171,8 +180,8 @@ impl LoudnessMeter {
 
     /// Reset loudness meter state
     pub fn reset(&mut self) -> Result<(), LoudnessError> {
-        // Reset the EBU R128 meter
-        // Note: ebur128 crate doesn't have explicit reset, so we recreate
+        // Recreates the meter, which allocates. `EbuR128::reset` (ebur128 0.1.10)
+        // would clear the same state in place.
         let meter = EbuR128::new(1, self.sample_rate, Mode::M | Mode::HISTOGRAM)
             .map_err(|e| LoudnessError::InitError(e.to_string()))?;
         self.meter = meter;

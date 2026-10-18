@@ -1,6 +1,7 @@
 //! 10-Band Parametric Equalizer
 //!
-//! Band configuration:
+//! Default band layout (each band's filter type, frequency, gain, Q and
+//! pass-filter slope can be reconfigured; see `EqBandConfig`):
 //! - Band 0: Low shelf (80 Hz)
 //! - Bands 1-8: Peaking (160 Hz - 12 kHz)
 //! - Band 9: High shelf (16 kHz)
@@ -330,6 +331,8 @@ impl EqBand {
                 (BiquadType::Bypass, 0.0, DEFAULT_Q)
             };
             section.set_parameters_immediate(filter_type, self.config.frequency_hz, gain_db, q);
+            // Also drop the filter memory, so a NaN cannot survive the reset.
+            section.clear_state();
         }
         self.processing_sections = target_sections;
         self.target_sections = target_sections;
@@ -418,7 +421,7 @@ impl ParametricEQ {
         (dry as f64 * (1.0 - self.wet_mix) + sample as f64 * self.wet_mix) as f32
     }
 
-    /// Reset all filter states
+    /// Reset all filter states and clear filter memory
     pub fn reset(&mut self) {
         for band in &mut self.bands {
             band.reset();
@@ -429,13 +432,13 @@ impl ParametricEQ {
         self.transition_remaining = 0;
     }
 
-    /// Set gain for a specific band (0-9)
+    /// Set gain for a specific band (0-9); a non-finite value is ignored.
     ///
     /// # Arguments
     /// * `band_index` - Band index (0-9)
     /// * `gain_db` - Gain in dB (typically -12 to +12)
     pub fn set_band_gain(&mut self, band_index: usize, gain_db: f64) {
-        if band_index < NUM_BANDS {
+        if band_index < NUM_BANDS && gain_db.is_finite() {
             let mut config = self.bands[band_index].config;
             config.gain_db = gain_db;
             self.bands[band_index].set_config(config);
@@ -448,7 +451,7 @@ impl ParametricEQ {
     /// * `band_index` - Band index (0-9)
     /// * `frequency` - Center frequency in Hz
     pub fn set_band_frequency(&mut self, band_index: usize, frequency: f64) {
-        if band_index < NUM_BANDS {
+        if band_index < NUM_BANDS && frequency.is_finite() {
             let mut config = self.bands[band_index].config;
             config.frequency_hz = frequency;
             self.bands[band_index].set_config(config);
@@ -461,7 +464,7 @@ impl ParametricEQ {
     /// * `band_index` - Band index (0-9)
     /// * `q` - Q factor (higher = narrower bandwidth)
     pub fn set_band_q(&mut self, band_index: usize, q: f64) {
-        if band_index < NUM_BANDS {
+        if band_index < NUM_BANDS && q.is_finite() {
             let mut config = self.bands[band_index].config;
             config.q = q;
             self.bands[band_index].set_config(config);
@@ -479,7 +482,9 @@ impl ParametricEQ {
 
     /// Apply one complete band configuration in one coefficient transition.
     pub fn set_band_config(&mut self, band_index: usize, config: EqBandConfig) {
-        if band_index < NUM_BANDS {
+        let finite =
+            config.frequency_hz.is_finite() && config.gain_db.is_finite() && config.q.is_finite();
+        if band_index < NUM_BANDS && finite {
             self.bands[band_index].set_config(config);
         }
     }
@@ -951,6 +956,127 @@ mod tests {
             .all(|section| !section.is_crossfading()));
     }
 
+    fn multi_band_eq(sample_rate: f64) -> ParametricEQ {
+        let mut eq = ParametricEQ::new(sample_rate);
+        for (index, filter_type, frequency_hz, gain_db, q, slope) in [
+            (0, EqFilterType::HighPass, 80.0, 0.0, 0.7, 24),
+            (1, EqFilterType::LowShelf, 120.0, 3.0, 0.7, 12),
+            (3, EqFilterType::Bell, 400.0, -4.0, 1.2, 12),
+            (4, EqFilterType::Bell, 1_000.0, 6.0, 2.0, 12),
+            (6, EqFilterType::Notch, 3_200.0, 0.0, 4.0, 12),
+            (8, EqFilterType::HighShelf, 9_000.0, -2.5, 0.8, 12),
+            (9, EqFilterType::LowPass, 16_000.0, 0.0, 0.7, 48),
+        ] {
+            let mut config = eq.get_band_config(index).unwrap();
+            config.filter_type = filter_type;
+            config.frequency_hz = frequency_hz;
+            config.gain_db = gain_db;
+            config.q = q;
+            config.slope_db_per_octave = slope;
+            eq.set_band_config(index, config);
+        }
+        eq.reset();
+        eq
+    }
+
+    fn tone_and_noise(samples: usize, sample_rate: f64) -> Vec<f32> {
+        let mut seed = 0x1234_5678_u32;
+        (0..samples)
+            .map(|n| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let noise = (seed >> 8) as f32 / (1 << 24) as f32 - 0.5;
+                let t = n as f64 / sample_rate;
+                0.2 * noise + (0.3 * (2.0 * PI * 440.0 * t).sin()) as f32
+            })
+            .collect()
+    }
+
+    /// FNV-1a over the output bits of a fixed multi-band run on a fresh EQ. The
+    /// constant was recorded before `reset` started clearing filter memory. A
+    /// fresh EQ holds no memory to clear, so this proves only that construction,
+    /// configuration and a first reset still give the same output.
+    #[test]
+    fn test_fresh_eq_output_for_fixed_finite_input_is_bit_identical_across_the_reset_fix() {
+        let sample_rate = 48_000.0;
+        let mut eq = multi_band_eq(sample_rate);
+        let input = tone_and_noise(4096, sample_rate);
+        let mut block = input.clone();
+        eq.process_block_inplace(&mut block[..2048]);
+        let sample_path: Vec<f32> = input[2048..]
+            .iter()
+            .map(|sample| eq.process_sample(*sample))
+            .collect();
+        block[2048..].copy_from_slice(&sample_path);
+
+        let hash = block
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, sample| {
+                (hash ^ u64::from(sample.to_bits())).wrapping_mul(0x0000_0100_0000_01b3)
+            });
+        assert_eq!(hash, 1_257_022_541_975_953_709);
+    }
+
+    /// Before the fix a reset with unchanged settings left the filters running,
+    /// so it was the same as not resetting. After it, the first samples restart
+    /// from silence while the settled output is unchanged.
+    #[test]
+    fn test_reset_after_audio_restarts_the_filters_and_keeps_the_settled_output() {
+        let sample_rate = 48_000.0;
+        let warm = tone_and_noise(4096, sample_rate);
+        let next: Vec<f32> = tone_and_noise(12_288, sample_rate)[4096..].to_vec();
+
+        let mut reset_eq = multi_band_eq(sample_rate);
+        let mut continuing = multi_band_eq(sample_rate); // the pre-fix reset behaviour
+        let mut fresh = multi_band_eq(sample_rate);
+        reset_eq.process_block_inplace(&mut warm.clone());
+        continuing.process_block_inplace(&mut warm.clone());
+        reset_eq.reset();
+
+        let (mut after_reset, mut after_continuing, mut after_fresh) =
+            (next.clone(), next.clone(), next.clone());
+        reset_eq.process_block_inplace(&mut after_reset);
+        continuing.process_block_inplace(&mut after_continuing);
+        fresh.process_block_inplace(&mut after_fresh);
+
+        // Reset means "as new": the same bits as an EQ that never saw the warm-up.
+        assert_eq!(after_reset, after_fresh);
+        // The start-up differs from the stale-memory run, so the clear is real.
+        assert!(after_reset[..64]
+            .iter()
+            .zip(&after_continuing[..64])
+            .any(|(a, b)| (a - b).abs() > 1.0e-4));
+        // The settled tail agrees with the pre-fix behaviour.
+        let tail = after_reset.len() - 4096..;
+        let worst = after_reset[tail.clone()]
+            .iter()
+            .zip(&after_continuing[tail])
+            .fold(0.0_f32, |worst, (a, b)| worst.max((a - b).abs()));
+        assert!(worst < 1.0e-4, "settled output moved by {worst}");
+    }
+
+    #[test]
+    fn test_reset_clears_filter_memory_so_a_nan_does_not_survive() {
+        let mut eq = ParametricEQ::new(48_000.0);
+        eq.set_band_gain(4, 6.0);
+        let mut poisoned = [0.1_f32; 64];
+        poisoned[10] = f32::NAN;
+        eq.process_block_inplace(&mut poisoned);
+        let mut latched = [0.1_f32; 64];
+        eq.process_block_inplace(&mut latched);
+        assert!(
+            latched.iter().any(|s| !s.is_finite()),
+            "premise: NaN latches"
+        );
+
+        // The DSP thread calls this when it contains a NaN, so it must not allocate.
+        crate::test_alloc::assert_no_allocations("ParametricEQ::reset", || eq.reset());
+
+        let mut after = [0.1_f32; 64];
+        eq.process_block_inplace(&mut after);
+        assert!(after.iter().all(|s| s.is_finite()));
+        assert!(eq.is_enabled());
+    }
+
     #[test]
     #[ignore = "release-mode EQ cost measurement"]
     fn benchmark_parametric_eq_filter_types() {
@@ -980,5 +1106,22 @@ mod tests {
             steep_elapsed.as_nanos() as f64 / SAMPLES as f64,
             steep_elapsed.as_secs_f64() / default_elapsed.as_secs_f64()
         );
+    }
+
+    #[test]
+    fn non_finite_band_edits_are_ignored() {
+        let mut eq = ParametricEQ::new(48_000.0);
+        let before = eq.get_band_config(3).unwrap();
+        eq.set_band_gain(3, f64::NAN);
+        eq.set_band_frequency(3, f64::INFINITY);
+        eq.set_band_q(3, f64::NAN);
+        let mut config = before;
+        config.gain_db = f64::NAN;
+        eq.set_band_config(3, config);
+        assert_eq!(eq.get_band_config(3).unwrap(), before);
+
+        let mut block = vec![0.1_f32; 4_800];
+        eq.process_block_inplace(&mut block);
+        assert!(block.iter().all(|sample| sample.is_finite()));
     }
 }

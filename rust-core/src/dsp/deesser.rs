@@ -209,6 +209,8 @@ impl DeEsserBand {
 /// Real-time de-esser processor.
 pub struct DeEsser {
     enabled: bool,
+    /// Crossfade between the dry and the de-essed signal at a toggle.
+    enable_ramp: util::EnableRamp,
     auto_enabled: bool,
     auto_amount: f64,
     threshold_db: f64,
@@ -243,6 +245,7 @@ impl DeEsser {
 
         Self {
             enabled: false,
+            enable_ramp: util::EnableRamp::new(sample_rate, false),
             auto_enabled: true,
             auto_background_db: 0.0,
             auto_amount: 0.5,
@@ -474,9 +477,24 @@ impl DeEsser {
         (Self::dynamic_eq_center_hz(low_cut_hz, high_cut_hz) / bandwidth).clamp(0.5, 6.0)
     }
 
-    /// Enable or disable de-essing.
+    /// Enable or disable de-essing with a short crossfade to or from dry.
     pub fn set_enabled(&mut self, enabled: bool) {
+        if enabled && !self.enabled && self.enable_ramp.is_bypassed() {
+            // Resume from full bypass with fresh detector, gain and filter
+            // state, not what was frozen when processing stopped.
+            self.reset_detector_state();
+        }
         self.enabled = enabled;
+    }
+
+    /// Whether the de-esser still affects audio (enabled or fading out).
+    pub fn is_active(&self) -> bool {
+        self.enabled || !self.enable_ramp.is_bypassed()
+    }
+
+    /// Complete any enable/disable ramp now, for state set before audio starts.
+    pub fn finish_enable_transition(&mut self) {
+        self.enable_ramp.finish(self.enabled);
     }
 
     /// Check whether de-esser is enabled.
@@ -499,6 +517,9 @@ impl DeEsser {
 
     /// Set auto mode amount [0.0, 1.0].
     pub fn set_auto_amount(&mut self, amount: f64) {
+        if amount.is_nan() {
+            return;
+        }
         self.auto_amount = amount.clamp(0.0, 1.0);
     }
 
@@ -508,6 +529,9 @@ impl DeEsser {
 
     /// Set detector low cutoff (high-pass edge) in Hz.
     pub fn set_low_cut_hz(&mut self, low_cut_hz: f64) {
+        if low_cut_hz.is_nan() {
+            return;
+        }
         let low_cut_hz = low_cut_hz.clamp(2000.0, 12000.0);
         let mut high_cut_hz = self.high_cut_hz;
         if high_cut_hz <= low_cut_hz + 200.0 {
@@ -523,6 +547,9 @@ impl DeEsser {
 
     /// Set detector high cutoff (low-pass edge) in Hz.
     pub fn set_high_cut_hz(&mut self, high_cut_hz: f64) {
+        if high_cut_hz.is_nan() {
+            return;
+        }
         let high_cut_hz = high_cut_hz.clamp(2200.0, 16000.0);
         let mut low_cut_hz = self.low_cut_hz;
         if high_cut_hz <= low_cut_hz + 200.0 {
@@ -538,28 +565,44 @@ impl DeEsser {
 
     /// Set threshold in dBFS.
     pub fn set_threshold_db(&mut self, threshold_db: f64) {
+        if threshold_db.is_nan() {
+            return;
+        }
         self.threshold_db = threshold_db.clamp(-60.0, -6.0);
     }
 
     /// Set ratio (>= 1.0).
     pub fn set_ratio(&mut self, ratio: f64) {
+        if ratio.is_nan() {
+            return;
+        }
         self.ratio = ratio.clamp(1.0, 20.0);
     }
 
     /// Set attack in milliseconds.
     pub fn set_attack_ms(&mut self, attack_ms: f64) {
+        if attack_ms.is_nan() {
+            return;
+        }
         self.attack_coeff =
             util::time_constant_to_coeff(attack_ms.clamp(0.1, 50.0), self.sample_rate);
     }
 
     /// Set release in milliseconds.
     pub fn set_release_ms(&mut self, release_ms: f64) {
+        if release_ms.is_nan() {
+            return;
+        }
         self.release_coeff =
             util::time_constant_to_coeff(release_ms.clamp(5.0, 500.0), self.sample_rate);
     }
 
     /// Set max reduction cap in dB.
     pub fn set_max_reduction_db(&mut self, max_reduction_db: f64) {
+        // A NaN cap would panic the `clamp` bound in the realtime loop.
+        if max_reduction_db.is_nan() {
+            return;
+        }
         self.max_reduction_db = max_reduction_db.clamp(0.0, 24.0);
     }
 
@@ -651,11 +694,22 @@ impl DeEsser {
 
     #[inline]
     pub fn process_sample(&mut self, input: f32) -> f32 {
-        if !self.enabled {
+        if !self.is_active() {
             self.current_reduction_db = 0.0;
             self.detector_confidence = 0.0;
             return input;
         }
+        let processed = self.process_active_sample(input);
+        match self.enable_ramp.advance(self.enabled) {
+            // The f64 quotient of two integers below 2^24 rounds to the same
+            // f32 as their f32 quotient.
+            Some(mix) => input + mix as f32 * (processed - input),
+            None => processed,
+        }
+    }
+
+    #[inline]
+    fn process_active_sample(&mut self, input: f32) -> f32 {
         // An empty intersection with the usable frequency range has no band
         // to detect or attenuate. Partial intersections retain their coverage.
         if self
@@ -858,9 +912,16 @@ impl DeEsser {
 
     /// Process a full block in place.
     pub fn process_block_inplace(&mut self, buffer: &mut [f32]) {
-        if !self.enabled {
+        if !self.is_active() {
             self.current_reduction_db = 0.0;
             self.detector_confidence = 0.0;
+            return;
+        }
+        if self.enabled && self.enable_ramp.is_fully_processed() {
+            // Settled: `process_sample` would return the processed sample as is.
+            for sample in buffer.iter_mut() {
+                *sample = self.process_active_sample(*sample);
+            }
             return;
         }
 
@@ -872,6 +933,13 @@ impl DeEsser {
     /// Reset internal state.
     pub fn reset(&mut self) {
         self.auto_background_db = 0.0;
+        self.reset_detector_state();
+        self.finish_enable_transition();
+    }
+
+    /// Clear detector, gain and filter state; the slow shared background
+    /// estimate is observer state and survives a re-enable.
+    fn reset_detector_state(&mut self) {
         self.current_reduction_db = 0.0;
         self.voice_reference_env = 0.0;
         self.detector_confidence = 0.0;
@@ -2007,8 +2075,9 @@ mod tests {
                         .expect("nonempty physical band");
                     detector.reset();
                     band.dynamic_eq.set_gain_db_immediate(-6.0);
+                    // The cutoff change is still crossfading; check its target.
                     assert!(
-                        (band.dynamic_eq.magnitude_response_db(center) + 6.0).abs() < 1e-5,
+                        (band.dynamic_eq.target_magnitude_response_db(center) + 6.0).abs() < 1e-5,
                         "bell peak missed detector center at {sample_rate} Hz, {left}-{right} Hz"
                     );
                     for edge in [left, right] {
@@ -2018,7 +2087,7 @@ mod tests {
                             "notch complement missed its half-power edge"
                         );
                         assert!(
-                            (band.dynamic_eq.magnitude_response_db(edge) + 3.0).abs() < 1e-5,
+                            (band.dynamic_eq.target_magnitude_response_db(edge) + 3.0).abs() < 1e-5,
                             "bell missed its half-gain edge at {sample_rate} Hz, {left}-{right} Hz"
                         );
                     }
@@ -2220,6 +2289,7 @@ mod tests {
         let configure = || {
             let mut deesser = DeEsser::new(48_000.0);
             deesser.set_enabled(true);
+            deesser.finish_enable_transition();
             deesser.set_auto_amount(0.5);
             deesser
         };
@@ -2270,5 +2340,139 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn nan_setters_keep_previous_values() {
+        let mut deesser = DeEsser::new(48_000.0);
+        let snapshot = |d: &DeEsser| {
+            [
+                d.low_cut_hz(),
+                d.high_cut_hz(),
+                d.threshold_db(),
+                d.ratio(),
+                d.max_reduction_db(),
+                d.auto_amount(),
+                d.attack_coeff,
+                d.release_coeff,
+            ]
+        };
+        let before = snapshot(&deesser);
+        deesser.set_low_cut_hz(f64::NAN);
+        deesser.set_high_cut_hz(f64::NAN);
+        deesser.set_threshold_db(f64::NAN);
+        deesser.set_ratio(f64::NAN);
+        deesser.set_attack_ms(f64::NAN);
+        deesser.set_release_ms(f64::NAN);
+        deesser.set_max_reduction_db(f64::NAN);
+        deesser.set_auto_amount(f64::NAN);
+        assert_eq!(snapshot(&deesser), before);
+    }
+
+    const TOGGLE_RATE: f64 = 48_000.0;
+    const TOGGLE_TONES: [f64; 2] = [300.0, 7_000.0];
+
+    /// A 300 Hz body with a 7 kHz sibilant tone that fades out over 0.60-0.62 s.
+    fn toggle_input(n: usize) -> f32 {
+        use crate::test_signal::sine;
+        let fade = ((0.62 * TOGGLE_RATE - n as f64) / (0.02 * TOGGLE_RATE)).clamp(0.0, 1.0);
+        sine(300.0, 0.05, TOGGLE_RATE, n) + fade as f32 * sine(7_000.0, 0.3, TOGGLE_RATE, n)
+    }
+
+    fn render_toggles(events: &[(usize, bool)]) -> (Vec<f32>, Vec<f32>) {
+        let mut deesser = DeEsser::new(TOGGLE_RATE);
+        deesser.set_enabled(true);
+        deesser.finish_enable_transition();
+        let mut reductions = Vec::new();
+        let output = (0..96_000)
+            .map(|n| {
+                for &(at, enabled) in events {
+                    if at == n {
+                        deesser.set_enabled(enabled);
+                    }
+                }
+                let out = deesser.process_sample(toggle_input(n));
+                reductions.push(deesser.current_gain_reduction_db());
+                out
+            })
+            .collect();
+        (output, reductions)
+    }
+
+    #[test]
+    fn test_toggle_crossfades_and_resumes_from_fresh_state() {
+        use crate::test_signal::max_residual;
+        let (toggled, reductions) = render_toggles(&[(24_000, false), (48_000, true)]);
+        let (reference, _) = render_toggles(&[]);
+        let residual = |start, end| max_residual(&toggled, &TOGGLE_TONES, TOGGLE_RATE, start, end);
+        assert!(
+            reductions[23_999] > 5.0,
+            "the tone must be de-essed when toggled off"
+        );
+        // A hard switch left 0.151 at disable (6 dB on the 7 kHz tone) and
+        // 0.131 at enable (frozen filter state ringing on the 300 Hz body);
+        // measured now 0.00056 and 1.6e-8. Steady state reads 1e-5.
+        let disable = residual(23_904, 24_960);
+        let enable = residual(47_904, 49_920);
+        assert!(disable < 0.002, "disable residual {disable}");
+        assert!(enable < 1e-5, "enable residual {enable}");
+        // The fresh state on re-enable keeps the output on the never-toggled
+        // de-esser right after the ramp (measured 6e-6); resuming the frozen
+        // state left 6e-4 here.
+        let resumed = (48_480..72_000)
+            .map(|n| (toggled[n] - reference[n]).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(resumed < 5e-5, "deviation after re-enable {resumed}");
+
+        // Steady state: identical before the toggle, exactly dry once the
+        // 10 ms fade is over, and within 1e-5 of the never-toggled de-esser
+        // from 0.5 s after the re-enable (measured 1.3e-6; 2.1e-6 before).
+        assert_eq!(toggled[..24_000], reference[..24_000]);
+        assert!((24_480..48_000).all(|n| toggled[n] == toggle_input(n)));
+        for n in 72_000..96_000 {
+            assert!((toggled[n] - reference[n]).abs() < 1e-5, "sample {n}");
+        }
+    }
+
+    fn render_geometry_edit(edit: bool) -> (Vec<f32>, usize) {
+        let mut deesser = DeEsser::new(TOGGLE_RATE);
+        deesser.set_enabled(true);
+        deesser.finish_enable_transition();
+        let mut fading = 0;
+        let output = (0..4_800)
+            .map(|n| {
+                if edit && n == 96 {
+                    deesser.set_low_cut_hz(5_000.0);
+                }
+                let out = deesser.process_sample(toggle_input(n));
+                if edit && n == 96 {
+                    fading = deesser
+                        .bands
+                        .iter()
+                        .filter(|band| band.dynamic_eq.is_crossfading())
+                        .count();
+                }
+                out
+            })
+            .collect();
+        (output, fading)
+    }
+
+    #[test]
+    fn test_moving_cutoffs_while_reducing_crossfade_every_band() {
+        use crate::test_signal::max_residual;
+        let (edited, fading) = render_geometry_edit(true);
+        let (reference, _) = render_geometry_edit(false);
+        // The per-sample gain update cancelled two of the three band fades,
+        // and the snap left a residual of 0.00449 against 0.00130 without the
+        // edit; the edit now adds nothing measurable.
+        assert_eq!(fading, DEESSER_BAND_COUNT);
+        let click = max_residual(&edited, &TOGGLE_TONES, TOGGLE_RATE, 72, 600);
+        let unedited = max_residual(&reference, &TOGGLE_TONES, TOGGLE_RATE, 72, 600);
+        assert!(
+            click < 1.1 * unedited,
+            "edit residual {click}, without edit {unedited}"
+        );
+        assert_eq!(edited[..96], reference[..96]);
     }
 }

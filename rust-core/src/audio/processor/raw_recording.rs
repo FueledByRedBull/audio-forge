@@ -131,21 +131,26 @@ impl AudioProcessor {
             return Err("Output probe contains non-finite samples".to_string());
         }
         if self.output_probe_active.load(Ordering::Acquire)
-            || self
-                .output_probe_cancel_requested
-                .load(Ordering::Acquire)
+            || self.output_probe_cancel_requested.load(Ordering::Acquire)
         {
             return Err("An output probe is already active".to_string());
         }
 
-        let max_samples =
-            self.output_sample_rate() as usize * MAX_OUTPUT_PROBE_SECONDS;
+        let max_samples = self.output_sample_rate() as usize * MAX_OUTPUT_PROBE_SECONDS;
         if samples.len() > max_samples {
             return Err(format!(
                 "Output probe exceeds the {} second limit",
                 MAX_OUTPUT_PROBE_SECONDS
             ));
         }
+
+        // The probe bypasses the limiter, so scale it to the effective ceiling.
+        let ceiling = 10.0_f32.powf(self.limiter_effective_ceiling_db() as f32 / 20.0);
+        let peak = samples
+            .iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        let gain = if peak > ceiling { ceiling / peak } else { 1.0 };
+        let scaled: Vec<f32> = samples.iter().map(|sample| sample * gain).collect();
 
         let mut producer_guard = self
             .output_probe_producer
@@ -157,11 +162,11 @@ impl AudioProcessor {
         if producer.free_len() != producer.capacity() {
             return Err("Output probe buffer still contains stale samples".to_string());
         }
-        let written = producer.write(samples);
-        if written != samples.len() {
+        let written = producer.write(&scaled);
+        if written != scaled.len() {
             return Err(format!(
                 "Output probe write was incomplete ({written}/{})",
-                samples.len()
+                scaled.len()
             ));
         }
 

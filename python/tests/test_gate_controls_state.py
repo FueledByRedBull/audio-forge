@@ -74,7 +74,7 @@ def test_vad_threshold_control_matches_native_range_and_endpoint(qapp):
 def test_bulk_gate_apply_propagates_vad_native_failure(qapp, monkeypatch):
     native = RecordingProcessor()
     monkeypatch.setattr(
-        native, "set_vad_threshold", Mock(side_effect=RuntimeError("VAD write failed")), raising=False
+        native, "apply_gate_settings", Mock(side_effect=RuntimeError("VAD write failed")), raising=False
     )
     state = GateState(native)
 

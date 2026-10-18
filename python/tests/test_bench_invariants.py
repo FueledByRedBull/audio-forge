@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 import bench_metrics as bm
+from test_bench_metrics import built_mix
 from mic_eq import CORE_AVAILABLE
 from mic_eq.analysis import joint_tuning, voice_setup
 from mic_eq.analysis.auto_eq_parts import headroom
@@ -40,7 +41,7 @@ def test_every_bench_mix_keeps_the_factory_chain_invariants(bench):
     ceiling_db = float(settings["limiter_settings"]["ceiling_db"])
     assert settings["limiter_settings"]["enabled"]
     for mix_id in bench.manifest["mixes"]:
-        raw = bm.build_mix(bench, mix_id)["raw"]
+        raw = built_mix(mix_id)["raw"]
         result = bm.render(settings, raw)
         output = np.asarray(result["output_audio"], np.float32)
         assert output.shape == raw.shape and np.isfinite(output).all() and not result["non_finite_output"], mix_id
@@ -57,7 +58,7 @@ def test_the_limiter_holds_the_ceiling_when_driven(bench):
     """No bench mix reaches the limiter at factory settings (the loudest peaks at -2.7 dBFS), so drive one."""
     settings = bm.current_settings(False)
     settings["compressor_settings"].update(auto_makeup_enabled=False, makeup_gain_db=12.0)
-    raw = bm.build_mix(bench, "hot-t05")["raw"]
+    raw = built_mix("hot-t05")["raw"]
     result = bm.render(settings, raw)
     output = np.asarray(result["output_audio"], np.float32)
     assert result["pre_limiter_true_peak_headroom_db"] < 0.0  # without the limiter this would clip
@@ -79,8 +80,8 @@ def test_voice_setup_refuses_silence_the_clipped_take_and_under_two_seconds_of_s
         "silence": ({"raw": silence, "clean": silence.astype(np.float64), "labels": np.ones(silence.size, bool),
                      "noise_capture": np.zeros(int(1.6 * SR), np.float32)}, "B1"),
         # One phrase (about 1.9 s of speech) and its pause.
-        "under two seconds of speech": (_crop(bm.build_mix(bench, "room-t02"), 3.2), "B2"),
-        "the clipped take": (bm.build_mix(bench, "clipped-t01"), "capture"),
+        "under two seconds of speech": (_crop(built_mix("room-t02"), 3.2), "B2"),
+        "the clipped take": (built_mix("clipped-t01"), "capture"),
     }
     for name, (mix, veto) in cases.items():
         outcome = bm.voice_setup(bm.make_context(mix), False)
@@ -93,7 +94,7 @@ def test_an_applied_voice_setup_proposal_meets_the_final_headroom_check(bench):
             headroom.TRUE_PEAK_GAIN_REDUCTION_WARN_DB) == (1.0, 1.0, 0.5)
     assert voice_setup.LIMITER_ALLOWANCE_DB == 3.0
 
-    outcome = bm.voice_setup(bm.make_context(_crop(bm.build_mix(bench, "room-t02"), 6.0)), False)
+    outcome = bm.voice_setup(bm.make_context(_crop(built_mix("room-t02"), 6.0)), False)
     assert outcome["outcome"] == "applied", outcome["reason"]
     # The check is the released rule (allowance 0) or the narrow limiter allowance; nothing in between.
     allowance = float(outcome["limiter_allowance_db"])

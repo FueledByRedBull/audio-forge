@@ -170,5 +170,5 @@ def test_the_bootstrap_hands_the_window_the_instance_guard(qapp, monkeypatch) ->
                  "configure_vad_env", "apply_windows_window_icon", "apply_windows_taskbar_properties"):
         monkeypatch.setattr(app_bootstrap, name, lambda *_: None)
 
-    assert app_bootstrap._run_qt_app(Window, smoke_test=False) == 0
+    assert app_bootstrap._run_qt_app(Window, smoke_test=False, enable_qt_log=lambda: None) == 0
     assert getattr(windows[0], "single_instance") is instance

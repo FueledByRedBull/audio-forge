@@ -148,6 +148,7 @@ _EQ_BAND_ENUMS = {
 }
 _RUNTIME_NUMBERS = frozenset(
     {
+        "downstream_non_finite_count",
         "input_dropped_samples",
         "input_backlog_dropped_samples",
         "input_backlog_recovery_count",
@@ -168,6 +169,7 @@ _RUNTIME_NUMBERS = frozenset(
         "output_recovery_count",
         "output_recovery_event_count",
         "output_resampler_delay_samples",
+        "output_resampler_error_count",
         "output_retime_adjustment_count",
         "output_sample_rate",
         "output_short_term_lufs",
@@ -178,6 +180,7 @@ _RUNTIME_NUMBERS = frozenset(
         "output_true_peak_headroom_db",
         "output_underrun_streak",
         "output_underrun_total",
+        "rejected_control_value_count",
         "rt_buffer_overflow_count",
         "stream_restart_count",
         "suppressor_non_finite_count",
@@ -195,6 +198,7 @@ _RUNTIME_NUMBERS = frozenset(
 )
 _RUNTIME_BOOLS = frozenset(
     {
+        "dsp_scheduling_degraded",
         "gate_auto_relax_active",
         "input_cleanup_hum_detected",
         "input_cleanup_rumble_detected",
@@ -217,13 +221,18 @@ _RUNTIME_ENUMS = {
         {"none", "delay_left", "delay_right", "polarity_flip"}
     ),
     "noise_model": frozenset({"rnnoise", "deepfilter-ll", "deepfilter"}),
+    # The names `RtErrorCode::as_str` returns in rust-core/src/audio/rt.rs.
     "rt_error_name": frozenset(
         {
             "none",
-            "input_queue_full",
-            "output_queue_full",
-            "non_finite",
-            "processor_unavailable",
+            "input stream error",
+            "output stream error",
+            "output queue overflow",
+            "input backlog dropped",
+            "suppressor backend failed",
+            "suppressor produced non-finite output",
+            "fixed real-time buffer overflow",
+            "input resampler failed",
         }
     ),
 }
@@ -280,6 +289,8 @@ _RUNTIME_FIELDS = frozenset(
         *_RUNTIME_BOOLS,
         *_RUNTIME_ENUMS,
         "backend_error_present",
+        "auto_makeup_error_present",
+        "vad_worker_error_present",
         "stream_error_present",
         "restart_reason_present",
     }
@@ -464,6 +475,12 @@ def _sanitized_runtime(
             result[key] = _safe_enum(diagnostics[key], allowed)
     result["backend_error_present"] = bool(
         diagnostics.get("noise_backend_error")
+    )
+    result["auto_makeup_error_present"] = bool(
+        diagnostics.get("auto_makeup_error")
+    )
+    result["vad_worker_error_present"] = bool(
+        diagnostics.get("vad_worker_error")
     )
     result["stream_error_present"] = bool(
         diagnostics.get("last_stream_error")

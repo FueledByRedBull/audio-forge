@@ -1,9 +1,26 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const RUNTIME_FILES: [&str; 2] = ["onnxruntime.dll", "onnxruntime_providers_shared.dll"];
 const LINK_LIBRARY: &str = "onnxruntime.lib";
+
+/// Windows refuses to overwrite a DLL that a running process has mapped, so
+/// only copy when the destination differs.
+fn copy_if_different(source: &Path, destination: &Path) -> std::io::Result<()> {
+    let same_len = matches!(
+        (fs::metadata(source), fs::metadata(destination)),
+        (Ok(wanted), Ok(present)) if wanted.len() == present.len()
+    );
+    if same_len {
+        if let (Ok(wanted), Ok(present)) = (fs::read(source), fs::read(destination)) {
+            if wanted == present {
+                return Ok(());
+            }
+        }
+    }
+    fs::copy(source, destination).map(drop)
+}
 
 fn main() {
     println!("cargo:rerun-if-env-changed=ORT_LIB_LOCATION");
@@ -64,7 +81,7 @@ fn main() {
         for name in RUNTIME_FILES {
             let source = lib_dir.join(name);
             let destination = destination_dir.join(name);
-            fs::copy(&source, &destination).unwrap_or_else(|error| {
+            copy_if_different(&source, &destination).unwrap_or_else(|error| {
                 panic!(
                     "could not place pinned CPU ONNX Runtime asset at {}: {error}",
                     destination.display()

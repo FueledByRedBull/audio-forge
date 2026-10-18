@@ -39,7 +39,6 @@ pub struct OfflineDspBlockProcessor {
     true_peak_limiter: TruePeakLimiter,
     true_peak_detector: TruePeakDetector,
     pre_limiter_true_peak_detector: TruePeakDetector,
-    deesser_enabled: bool,
     /// Whether any block has been processed; enable changes before the first
     /// block apply instantly, later ones ramp like the live path.
     started: bool,
@@ -47,7 +46,6 @@ pub struct OfflineDspBlockProcessor {
     /// limiter so bypass can match the live path.
     normal_limiter_enabled: bool,
     output_protection_enabled: bool,
-    eq_before_deesser: bool,
     previous_true_peak_limiter_gain_reduction_db: f64,
 }
 
@@ -65,18 +63,18 @@ impl OfflineDspBlockProcessor {
             true_peak_limiter: TruePeakLimiter::default_settings(sample_rate as f32),
             true_peak_detector: TruePeakDetector::new(),
             pre_limiter_true_peak_detector: TruePeakDetector::new(),
-            deesser_enabled: false,
             started: false,
             normal_limiter_enabled: true,
             output_protection_enabled: true,
-            eq_before_deesser: false,
             previous_true_peak_limiter_gain_reduction_db: 0.0,
         }
     }
 
     pub fn set_deesser_enabled(&mut self, enabled: bool) {
-        self.deesser_enabled = enabled;
         self.deesser.set_enabled(enabled);
+        if !self.started {
+            self.deesser.finish_enable_transition();
+        }
     }
 
     pub fn set_eq_enabled(&mut self, enabled: bool) {
@@ -109,10 +107,6 @@ impl OfflineDspBlockProcessor {
         self.normal_limiter_enabled = enabled;
     }
 
-    pub fn set_eq_before_deesser(&mut self, enabled: bool) {
-        self.eq_before_deesser = enabled;
-    }
-
     pub fn eq_mut(&mut self) -> &mut ParametricEQ {
         &mut self.tone_eq
     }
@@ -122,7 +116,8 @@ impl OfflineDspBlockProcessor {
         &mut self.correction_eq
     }
 
-    /// Apply both EQ layers before the next block is rendered.
+    /// Apply both EQ layers before the next block is rendered. After audio has
+    /// started the bands crossfade like the live path instead of restarting.
     pub fn set_eq_layers(
         &mut self,
         correction_bands: &[EqBandConfig; NUM_BANDS],
@@ -133,8 +128,10 @@ impl OfflineDspBlockProcessor {
                 .set_band_config(index, correction_bands[index]);
             self.tone_eq.set_band_config(index, tone_bands[index]);
         }
-        self.correction_eq.reset();
-        self.tone_eq.reset();
+        if !self.started {
+            self.correction_eq.reset();
+            self.tone_eq.reset();
+        }
     }
 
     pub fn deesser_mut(&mut self) -> &mut DeEsser {
@@ -180,7 +177,10 @@ impl OfflineDspBlockProcessor {
         activity: Option<AutoMakeupActivityInput>,
     ) -> OfflineDspBlockStats {
         let mut stats = OfflineDspBlockStats {
-            input_sample_peak: input.iter().map(|sample| sample.abs()).fold(0.0_f32, f32::max),
+            input_sample_peak: input
+                .iter()
+                .map(|sample| sample.abs())
+                .fold(0.0_f32, f32::max),
             ..OfflineDspBlockStats::default()
         };
         self.started = true;
@@ -194,21 +194,12 @@ impl OfflineDspBlockProcessor {
         output.as_mut_slice().copy_from_slice(&input[..count]);
         let block = output.as_mut_slice();
 
-        if self.eq_before_deesser {
-            self.correction_eq.process_block_inplace(block);
-            self.tone_eq.process_block_inplace(block);
-            if self.deesser_enabled {
-                self.deesser.process_block_inplace(block);
-                stats.deesser_gain_reduction_db = self.deesser.current_gain_reduction_db();
-            }
-        } else {
-            if self.deesser_enabled {
-                self.deesser.process_block_inplace(block);
-                stats.deesser_gain_reduction_db = self.deesser.current_gain_reduction_db();
-            }
-            self.correction_eq.process_block_inplace(block);
-            self.tone_eq.process_block_inplace(block);
+        if self.deesser.is_active() {
+            self.deesser.process_block_inplace(block);
+            stats.deesser_gain_reduction_db = self.deesser.current_gain_reduction_db();
         }
+        self.correction_eq.process_block_inplace(block);
+        self.tone_eq.process_block_inplace(block);
         if self.compressor.is_active() {
             if let Some(activity) = activity {
                 let limiter_feedback = if self.normal_limiter_enabled {
@@ -229,8 +220,7 @@ impl OfflineDspBlockProcessor {
             } else {
                 self.compressor.process_block_inplace(block);
             }
-            stats.compressor_gain_reduction_db =
-                self.compressor.block_peak_gain_reduction() as f32;
+            stats.compressor_gain_reduction_db = self.compressor.block_peak_gain_reduction() as f32;
         }
         stats.pre_limiter_true_peak = self.pre_limiter_true_peak_detector.process_block(block);
         if self.normal_limiter_enabled {
@@ -247,8 +237,7 @@ impl OfflineDspBlockProcessor {
         // Same order as the live output writer: ceiling first, so a re-enable
         // plans queued audio against the configured ceiling.
         if self.output_protection_enabled {
-            self.true_peak_limiter
-                .set_ceiling_linear(output_ceiling);
+            self.true_peak_limiter.set_ceiling_linear(output_ceiling);
         }
         self.true_peak_limiter
             .set_enabled(self.output_protection_enabled);
@@ -265,7 +254,10 @@ impl OfflineDspBlockProcessor {
 
         sanitize_and_clamp_output_inplace(block, output_ceiling);
 
-        stats.output_sample_peak = block.iter().map(|sample| sample.abs()).fold(0.0_f32, f32::max);
+        stats.output_sample_peak = block
+            .iter()
+            .map(|sample| sample.abs())
+            .fold(0.0_f32, f32::max);
         stats.output_true_peak = self.true_peak_detector.process_block(block);
         stats
     }
@@ -322,8 +314,7 @@ mod block_processor_tests {
         let block_at = |start: usize| -> Vec<f32> {
             (start..start + 480)
                 .map(|n| {
-                    0.9 * (std::f32::consts::PI * n as f32 / 2.0 + std::f32::consts::PI / 4.0)
-                        .sin()
+                    0.9 * (std::f32::consts::PI * n as f32 / 2.0 + std::f32::consts::PI / 4.0).sin()
                 })
                 .collect()
         };
@@ -351,7 +342,10 @@ mod block_processor_tests {
                 peak = peak.max(detector.process_block(output.as_slice()));
             }
         }
-        assert!(peak <= ceiling * 1.01, "true peak {peak} over ceiling {ceiling}");
+        assert!(
+            peak <= ceiling * 1.01,
+            "true peak {peak} over ceiling {ceiling}"
+        );
     }
 
     #[test]
@@ -384,8 +378,74 @@ mod block_processor_tests {
             .fold(0.0_f32, f32::max);
         // A ramp moves a small fraction of the processed/dry difference per
         // sample; skipping the compressor would step by all of it.
-        assert!(max_step < (compressed - 0.3).abs() / 20.0, "max_step={max_step}");
+        assert!(
+            max_step < (compressed - 0.3).abs() / 20.0,
+            "max_step={max_step}"
+        );
         assert!((emitted.last().unwrap() - 0.3).abs() < 1e-4);
+    }
+
+    /// A tone at the tone EQ's band-4 frequency through the offline chain, with
+    /// that band at +6 dB; at block 50 it moves to -6 dB. `reset_after_edit`
+    /// reproduces the old filter-memory reset.
+    fn render_offline_eq_edit(reset_after_edit: bool) -> Vec<f32> {
+        use crate::test_signal::sine;
+        let flat: [EqBandConfig; NUM_BANDS] = std::array::from_fn(EqBandConfig::default_for_index);
+        let mut boosted = flat;
+        boosted[4].gain_db = 6.0;
+        let mut cut = flat;
+        cut[4].gain_db = -6.0;
+        let tone_hz = flat[4].frequency_hz;
+
+        let mut processor = OfflineDspBlockProcessor::new(48_000.0);
+        processor.set_limiter_enabled(false);
+        processor.set_eq_enabled(true);
+        processor.set_eq_layers(&flat, &boosted);
+        let mut output = FixedAudioBuffer::<f32, 480>::new();
+        let mut emitted = Vec::new();
+        for block_index in 0..100 {
+            if block_index == 50 {
+                processor.set_eq_layers(&flat, &cut);
+                if reset_after_edit {
+                    processor.eq_mut().reset();
+                    processor.correction_eq_mut().reset();
+                }
+            }
+            let mut block: [f32; 480] =
+                std::array::from_fn(|i| sine(tone_hz, 0.2, 48_000.0, block_index * 480 + i));
+            processor.process_block_with_stats(&mut block, &mut output);
+            emitted.extend_from_slice(output.as_slice());
+        }
+        emitted
+    }
+
+    #[test]
+    fn offline_eq_edit_after_audio_starts_crossfades_like_live() {
+        use crate::test_signal::max_residual;
+        let tones = [EqBandConfig::default_for_index(4).frequency_hz];
+        let crossfaded = render_offline_eq_edit(false);
+        let restarted = render_offline_eq_edit(true);
+        let edit = 50 * 480;
+        let window = (edit, edit + 9_600);
+        let click = max_residual(&crossfaded, &tones, 48_000.0, window.0, window.1);
+        let restart = max_residual(&restarted, &tones, 48_000.0, window.0, window.1);
+        // Measured 0.0031; the reset left 0.0345.
+        assert!(
+            click < 0.25 * restart,
+            "EQ edit residual {click}, reset restart {restart}"
+        );
+
+        // Steady state: identical before the edit, and 0.25 s after it within
+        // 1e-5 of the restarted render, whose filters settled on the same target.
+        assert_eq!(crossfaded[..edit], restarted[..edit]);
+        for n in edit + 12_000..crossfaded.len() {
+            assert!(
+                (crossfaded[n] - restarted[n]).abs() < 1e-5,
+                "sample {n}: {} vs {}",
+                crossfaded[n],
+                restarted[n]
+            );
+        }
     }
 
     #[test]
@@ -404,9 +464,7 @@ mod block_processor_tests {
         without_evidence
             .compressor_mut()
             .set_auto_makeup_enabled(true);
-        without_evidence
-            .compressor_mut()
-            .set_target_lufs(-12.0);
+        without_evidence.compressor_mut().set_target_lufs(-12.0);
 
         let evidence = AutoMakeupActivityInput {
             vad_probability: 0.95,

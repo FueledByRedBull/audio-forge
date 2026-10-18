@@ -1194,10 +1194,10 @@ def test_failed_bulk_configuration_restores_applied_not_queued_settings(quick_wi
         def __getattr__(self, name):
             return getattr(native, name)
 
-        def set_deesser_threshold_db(self, value):
-            if value == -22.0:
+        def apply_deesser_settings(self, settings):
+            if settings["threshold_db"] == -22.0:
                 raise RuntimeError("bulk de-esser candidate rejected")
-            native.set_deesser_threshold_db(value)
+            native.apply_deesser_settings(settings)
 
     window.deesser_state.processor = RejectCandidate()
     with pytest.raises(RuntimeError, match="previous sound restored"):

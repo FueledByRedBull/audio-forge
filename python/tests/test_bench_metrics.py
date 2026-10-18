@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
+from copy import deepcopy
 
 import numpy as np
 import pytest
@@ -18,8 +20,18 @@ def bench() -> bm.Bench:
     return bm.load_bench()
 
 
+@functools.cache
+def built_mix(mix_id: str) -> dict[str, np.ndarray]:
+    """A bench mix built once for the whole run; its arrays are read-only. Tests that need their own build call
+    ``bm.build_mix``."""
+    mix = bm.build_mix(bm.load_bench(), mix_id)
+    for audio in mix.values():
+        audio.setflags(write=False)
+    return mix
+
+
 def test_manifest_hashes_match_the_committed_files():
-    manifest = bm.load_bench().manifest
+    manifest = bm.read_manifest()
     files = {**manifest["takes"], **manifest["noises"]}
     for entry in files.values():
         path = bm.BENCH_DIR / entry["file"]
@@ -73,7 +85,7 @@ def test_mix_construction_is_deterministic(bench):
 
 def test_mixes_have_the_levels_and_lengths_their_recipes_state(bench):
     for mix_id, recipe in bench.manifest["mixes"].items():
-        mix = bm.build_mix(bench, mix_id)
+        mix = built_mix(mix_id)
         assert mix["raw"].shape == mix["clean"].shape == mix["labels"].shape == bench.takes[recipe["take"]].shape
         assert mix["noise_capture"].size == int(bm.NOISE_S * SR)
         assert np.isfinite(mix["raw"]).all()
@@ -85,13 +97,13 @@ def test_mixes_have_the_levels_and_lengths_their_recipes_state(bench):
             assert peak <= 0.98, mix_id
         if "peak" in post and not post.get("clip"):
             assert peak == pytest.approx(post["peak"], abs=1e-3)
-    levels = {m: bm.active_level_db(bm.build_mix(bench, m)["raw"].astype(float)) for m in ("hot-t05", "quiet-t10")}
+    levels = {m: bm.active_level_db(built_mix(m)["raw"].astype(float)) for m in ("hot-t05", "quiet-t10")}
     assert levels["hot-t05"] > levels["quiet-t10"] + 20.0
 
 
 def test_requested_snr_is_met_in_the_noise_only_stretch(bench):
     recipe = bench.manifest["mixes"]["fan-t01"]
-    mix = bm.build_mix(bench, "fan-t01")
+    mix = built_mix("fan-t01")
     noise = mix["raw"].astype(float) - mix["clean"]
     snr = bm.active_level_db(mix["clean"]) - 10 * np.log10(np.mean(noise**2))
     assert snr == pytest.approx(recipe["noise"]["snr_db"], abs=0.1)
@@ -164,3 +176,71 @@ def test_veto_bookkeeping_matches_the_retired_rule():
     assert bm.first_whole(["C1", "B6"], False) is None  # verification of an unrecommended setup is not a refusal
     assert bm.first_whole(["C1"], True) == "C1"
     assert bm.fired_vetoes([], True, True, None, None) == ["B1", "B2"]
+
+
+def test_a_failed_render_is_recorded_and_a_failed_measure_is_not_hidden_as_one(monkeypatch):
+    ctx = {"raw": np.zeros(8, np.float32)}
+
+    def failing_render(*_args, **_kwargs):
+        raise RuntimeError("no native chain")
+
+    monkeypatch.setattr(bm, "render", failing_render)
+    assert bm.measure_settings({}, ctx) == {"error": "RuntimeError: no native chain"}
+
+    def broken_measure(*_args, **_kwargs):
+        raise ValueError("metric bug")
+
+    monkeypatch.setattr(bm, "render", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(bm, "measure", broken_measure)
+    with pytest.raises(ValueError, match="metric bug"):
+        bm.measure_settings({}, ctx)
+
+
+def _scripted_verification(monkeypatch, outcomes):
+    """Make the bench's verification return ``outcomes`` in turn; returns the settings each verdict was read on."""
+    from mic_eq.analysis import voice_setup
+
+    seen, script = [], iter(outcomes)
+
+    def verdict(*args, **kwargs):
+        seen.append(deepcopy(args[4]["compressor_settings"]))
+        return next(script)
+
+    monkeypatch.setattr(voice_setup, "validate_voice_setup_verification", verdict)
+    return seen
+
+
+def _proposal(**compressor):
+    settings = bm.current_settings(False)
+    settings["compressor_settings"].update(compressor)
+    return settings
+
+
+def _captures():
+    silence = np.zeros(SR, np.float32)
+    return {"noise": silence, "setup": silence, "raw_noise": silence, "takes": [(silence, silence)]}
+
+
+def _reduce(pressure):
+    return {"decision": "reduce", "reduction_targets": ["limiter"], "limiter_pressure_db": pressure}
+
+
+def test_the_bench_reduces_a_target_the_way_the_dialog_does(monkeypatch):
+    # An auto target above the control's range comes back to its top, not to one step below where it was.
+    seen = _scripted_verification(monkeypatch, [_reduce(5.0), {"decision": "accept"}])
+    flow = bm.verify_flow(_proposal(auto_makeup_enabled=True, target_lufs=-10.0), _captures())
+    assert (flow["decision"], flow["adjustments"], flow["ended"]) == ("accept", 1, None)
+    assert [c["target_lufs"] for c in seen] == [-10.0, -12.0]
+
+
+def test_the_bench_stops_where_the_dialog_stops(monkeypatch):
+    _scripted_verification(monkeypatch, [_reduce(5.0), _reduce(4.0), _reduce(3.0), _reduce(2.0)])
+    flow = bm.verify_flow(_proposal(auto_makeup_enabled=True, target_lufs=-18.0), _captures())
+    assert (flow["decision"], flow["adjustments"], flow["ended"]) == ("gave_up", 3, "three_adjustments")
+
+    _scripted_verification(monkeypatch, [_reduce(5.0), _reduce(5.0)])
+    flow = bm.verify_flow(_proposal(auto_makeup_enabled=True, target_lufs=-18.0), _captures())
+    assert (flow["decision"], flow["adjustments"], flow["ended"]) == ("gave_up", 1, "no_help")
+
+    _scripted_verification(monkeypatch, [{"decision": "reduce", "reduction_targets": []}])
+    assert bm.verify_flow(_proposal(), _captures())["ended"] == "no_target"

@@ -1,5 +1,7 @@
 """Shared processing presentation metadata and desired/applied setting contract."""
 
+from typing import Any
+
 import pytest
 
 from mic_eq.ui.compressor_state import CompressorState
@@ -16,7 +18,7 @@ from mic_eq.ui.processing_controls import SettingControl
 
 class RecordingProcessor:
     def __init__(self):
-        self.values = {"deesser_high_cut_hz": 11000.0}
+        self.values: dict[str, Any] = {"deesser_high_cut_hz": 11000.0}
 
     def __getattr__(self, name):
         if name == "is_vad_available":
@@ -25,6 +27,8 @@ class RecordingProcessor:
             return lambda: False
         if name == "get_deesser_high_cut_hz":
             return lambda: self.values["deesser_high_cut_hz"]
+        if name.startswith("apply_"):
+            return lambda settings: self.values.__setitem__(name, dict(settings))
         if name.startswith("set_"):
             key = name.removeprefix("set_")
             return lambda value: self.values.__setitem__(key, value)

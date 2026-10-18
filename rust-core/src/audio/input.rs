@@ -17,8 +17,11 @@ use thiserror::Error;
 use super::buffer::AudioProducer;
 use super::clock::now_micros;
 use super::device::{device_for_endpoint_id, device_name, persisted_endpoint_id};
-use super::rt::{store_rt_error, RtErrorCode};
-use super::{find_48khz_config, parse_fixed_buffer_frames, supported_fixed_buffer_frames};
+use super::rt::RtErrorCode;
+use super::{
+    find_48khz_config, handle_stream_error, parse_fixed_buffer_frames,
+    supported_fixed_buffer_frames, validate_stream_format,
+};
 
 /// Target sample rate for internal processing
 pub const TARGET_SAMPLE_RATE: u32 = 48000;
@@ -272,6 +275,7 @@ struct InputCallbackMetrics {
     last_callback_time_us: Arc<AtomicU64>,
     error_count: Arc<AtomicU64>,
     rt_error_code: Arc<AtomicU32>,
+    restart_requested: Arc<AtomicBool>,
 }
 
 impl InputCallbackMetrics {
@@ -279,11 +283,13 @@ impl InputCallbackMetrics {
         last_callback_time_us: Arc<AtomicU64>,
         error_count: Arc<AtomicU64>,
         rt_error_code: Arc<AtomicU32>,
+        restart_requested: Arc<AtomicBool>,
     ) -> Self {
         Self {
             last_callback_time_us,
             error_count,
             rt_error_code,
+            restart_requested,
         }
     }
 }
@@ -310,6 +316,9 @@ pub enum AudioError {
 
     #[error("Unsupported audio sample format: {0}")]
     UnsupportedSampleFormat(String),
+
+    #[error("Unusable device format: {0}")]
+    InvalidDeviceFormat(String),
 }
 
 /// Audio device information
@@ -319,6 +328,13 @@ pub struct AudioDeviceInfo {
     pub endpoint_id: Option<String>,
     pub sample_rate: u32,
     pub channels: u16,
+}
+
+/// A selected input device and its negotiated format, before a stream exists.
+pub(crate) struct InputStreamSetup {
+    pub(crate) device: Device,
+    pub(crate) supported_config: SupportedStreamConfig,
+    pub(crate) device_info: AudioDeviceInfo,
 }
 
 /// Audio input stream with optional resampling
@@ -373,24 +389,14 @@ impl AudioInput {
         sample_format: SampleFormat,
         config: &StreamConfig,
     ) -> bool {
-        match sample_format {
-            SampleFormat::I8 => Self::preflight_config::<i8>(device, config),
-            SampleFormat::F32 => Self::preflight_config::<f32>(device, config),
-            SampleFormat::F64 => Self::preflight_config::<f64>(device, config),
-            SampleFormat::I16 => Self::preflight_config::<i16>(device, config),
-            SampleFormat::I32 => Self::preflight_config::<i32>(device, config),
-            SampleFormat::I64 => Self::preflight_config::<i64>(device, config),
-            SampleFormat::U8 => Self::preflight_config::<u8>(device, config),
-            SampleFormat::U16 => Self::preflight_config::<u16>(device, config),
-            SampleFormat::U32 => Self::preflight_config::<u32>(device, config),
-            SampleFormat::U64 => Self::preflight_config::<u64>(device, config),
-            _ => false,
-        }
+        dispatch_sample_format!(
+            sample_format,
+            S => Self::preflight_config::<S>(device, config),
+            _ => false
+        )
     }
 
-    fn select_device(
-        device: Device,
-    ) -> Result<(Device, SupportedStreamConfig, AudioDeviceInfo), AudioError> {
+    fn select_device(device: Device) -> Result<InputStreamSetup, AudioError> {
         let name = device_name(&device).map_err(AudioError::DeviceName)?;
 
         let supported_configs: Vec<_> = device
@@ -418,6 +424,7 @@ impl AudioInput {
             .ok_or_else(|| {
                 AudioError::DefaultConfig("No suitable input config found".to_string())
             })?;
+        validate_stream_format(supported_config.channels(), supported_config.sample_rate())?;
 
         let device_info = AudioDeviceInfo {
             name,
@@ -429,9 +436,16 @@ impl AudioInput {
             channels: supported_config.channels(),
         };
 
-        Ok((device, supported_config, device_info))
+        Ok(InputStreamSetup {
+            device,
+            supported_config,
+            device_info,
+        })
     }
 
+    // RT_REGION_START: cpal_input_mixers
+    // Everything from here to the matching end marker runs inside the CPAL input
+    // callback and is covered by the RT source scan and allocation tests.
     fn normalize_input_sample<T>(sample: T) -> f32
     where
         T: Sample,
@@ -927,6 +941,7 @@ impl AudioInput {
 
         (frame_count, stereo_correlation, diagnostics)
     }
+    // RT_REGION_END: cpal_input_mixers
 
     #[cfg(test)]
     fn mix_interleaved_to_mono<T>(interleaved: &[T], num_channels: usize, mono: &mut [f32]) -> usize
@@ -967,6 +982,7 @@ impl AudioInput {
         let last_callback_time_us = metrics.last_callback_time_us;
         let error_count = metrics.error_count;
         let rt_error_code = metrics.rt_error_code;
+        let restart_requested = metrics.restart_requested;
 
         const INPUT_SCRATCH_CAPACITY: usize = 8192;
         let mut mono_scratch: Vec<f32> = vec![0.0; INPUT_SCRATCH_CAPACITY];
@@ -1037,9 +1053,13 @@ impl AudioInput {
                     // RT_REGION_END: cpal_input_callback
                 },
                 move |err| {
-                    let _ = err;
-                    error_count.fetch_add(1, Ordering::Relaxed);
-                    store_rt_error(rt_error_code.as_ref(), RtErrorCode::InputStreamError);
+                    handle_stream_error(
+                        &err,
+                        RtErrorCode::InputStreamError,
+                        &error_count,
+                        &rt_error_code,
+                        &restart_requested,
+                    );
                 },
                 None,
             )
@@ -1052,61 +1072,40 @@ impl AudioInput {
         })
     }
 
-    pub fn from_default_device_with_options(
-        producer: AudioProducer,
-        last_callback_time_us: Arc<AtomicU64>,
-        error_count: Arc<AtomicU64>,
-        rt_error_code: Arc<AtomicU32>,
-        options: InputStreamOptions,
-    ) -> Result<Self, AudioError> {
+    pub(crate) fn from_default_device_setup() -> Result<InputStreamSetup, AudioError> {
         let host = cpal::default_host();
         let device = host.default_input_device().ok_or(AudioError::NoDevice)?;
-
-        Self::from_device_with_options(
-            device,
-            producer,
-            last_callback_time_us,
-            error_count,
-            rt_error_code,
-            options,
-        )
+        Self::select_device(device)
     }
 
-    /// Create an input stream using a stable platform endpoint ID when one is
+    /// Select an input using a stable platform endpoint ID when one is
     /// available, falling back to the legacy friendly-name occurrence only
     /// when no ID was persisted.
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_device_identity_with_options(
+    pub(crate) fn from_named_device_identity_setup(
         name: &str,
         name_ordinal: u32,
         endpoint_id: Option<&str>,
-        producer: AudioProducer,
-        last_callback_time_us: Arc<AtomicU64>,
-        error_count: Arc<AtomicU64>,
-        rt_error_code: Arc<AtomicU32>,
-        options: InputStreamOptions,
-    ) -> Result<Self, AudioError> {
+    ) -> Result<InputStreamSetup, AudioError> {
         let device = Self::named_input_device(name, name_ordinal, endpoint_id)?;
-
-        Self::from_device_with_options(
-            device,
-            producer,
-            last_callback_time_us,
-            error_count,
-            rt_error_code,
-            options,
-        )
+        Self::select_device(device)
     }
 
-    pub fn from_device_with_options(
-        device: Device,
+    /// Build the capture stream for a selected device. The caller sizes its
+    /// capture ring from `setup.device_info` before the producer exists.
+    pub(crate) fn from_setup(
+        setup: InputStreamSetup,
         producer: AudioProducer,
         last_callback_time_us: Arc<AtomicU64>,
         error_count: Arc<AtomicU64>,
         rt_error_code: Arc<AtomicU32>,
+        restart_requested: Arc<AtomicBool>,
         options: InputStreamOptions,
     ) -> Result<Self, AudioError> {
-        let (device, supported_config, device_info) = Self::select_device(device)?;
+        let InputStreamSetup {
+            device,
+            supported_config,
+            device_info,
+        } = setup;
         let device_sample_rate = supported_config.sample_rate();
         let sample_format = supported_config.sample_format();
         let mut stream_config = supported_config.config();
@@ -1121,8 +1120,12 @@ impl AudioInput {
                 }
             }
         }
-        let callback_metrics =
-            InputCallbackMetrics::new(last_callback_time_us, error_count, rt_error_code);
+        let callback_metrics = InputCallbackMetrics::new(
+            last_callback_time_us,
+            error_count,
+            rt_error_code,
+            restart_requested,
+        );
 
         if device_sample_rate != TARGET_SAMPLE_RATE {
             println!(
@@ -1131,8 +1134,9 @@ impl AudioInput {
             );
         }
 
-        match sample_format {
-            SampleFormat::I8 => Self::build_stream::<i8>(
+        dispatch_sample_format!(
+            sample_format,
+            S => Self::build_stream::<S>(
                 device,
                 stream_config,
                 producer,
@@ -1141,89 +1145,8 @@ impl AudioInput {
                 options,
                 fixed_buffer_frames,
             ),
-            SampleFormat::F32 => Self::build_stream::<f32>(
-                device,
-                stream_config,
-                producer,
-                callback_metrics,
-                device_info,
-                options,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::F64 => Self::build_stream::<f64>(
-                device,
-                stream_config,
-                producer,
-                callback_metrics,
-                device_info,
-                options,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::I16 => Self::build_stream::<i16>(
-                device,
-                stream_config,
-                producer,
-                callback_metrics,
-                device_info,
-                options,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::I32 => Self::build_stream::<i32>(
-                device,
-                stream_config,
-                producer,
-                callback_metrics,
-                device_info,
-                options,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::I64 => Self::build_stream::<i64>(
-                device,
-                stream_config,
-                producer,
-                callback_metrics,
-                device_info,
-                options,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::U8 => Self::build_stream::<u8>(
-                device,
-                stream_config,
-                producer,
-                callback_metrics,
-                device_info,
-                options,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::U16 => Self::build_stream::<u16>(
-                device,
-                stream_config,
-                producer,
-                callback_metrics,
-                device_info,
-                options,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::U32 => Self::build_stream::<u32>(
-                device,
-                stream_config,
-                producer,
-                callback_metrics,
-                device_info,
-                options,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::U64 => Self::build_stream::<u64>(
-                device,
-                stream_config,
-                producer,
-                callback_metrics,
-                device_info,
-                options,
-                fixed_buffer_frames,
-            ),
-            other => Err(AudioError::UnsupportedSampleFormat(other.to_string())),
-        }
+            _ => Err(AudioError::UnsupportedSampleFormat(sample_format.to_string()))
+        )
     }
 
     /// Start capturing audio
@@ -2044,6 +1967,99 @@ mod tests {
             average.as_nanos() as f64 / frames,
             phase_safe.as_nanos() as f64 / frames,
             phase_safe.as_secs_f64() / average.as_secs_f64(),
+        );
+    }
+
+    #[test]
+    fn test_24_bit_input_formats_mix_from_synthetic_buffers() {
+        use cpal::{I24, U24};
+
+        let signed = [
+            I24::new(8_388_607).unwrap(),
+            I24::new(-8_388_608).unwrap(),
+            I24::new(4_194_304).unwrap(),
+            I24::new(0).unwrap(),
+        ];
+        let mut mono = [0.0_f32; 2];
+        let (written, _, _) = AudioInput::mix_interleaved_to_mono_with_mode(
+            &signed,
+            2,
+            InputChannelMode::Left,
+            &mut mono,
+        );
+        assert_eq!(written, 2);
+        assert!(mono[0] > 0.999 && (mono[1] - 0.5).abs() < 1e-3, "{mono:?}");
+
+        let unsigned = [
+            U24::new(0).unwrap(),
+            U24::new(16_777_215).unwrap(),
+            U24::new(8_388_608).unwrap(),
+            U24::new(12_582_912).unwrap(),
+        ];
+        let (written, _, _) = AudioInput::mix_interleaved_to_mono_with_mode(
+            &unsigned,
+            2,
+            InputChannelMode::Right,
+            &mut mono,
+        );
+        assert_eq!(written, 2);
+        assert!(mono[0] > 0.999 && (mono[1] - 0.5).abs() < 1e-3, "{mono:?}");
+    }
+
+    #[test]
+    fn test_input_mixers_are_inside_a_marked_rt_region_and_do_not_allocate() {
+        let region = crate::rt_scan::marked_region(include_str!("input.rs"), "cpal_input_mixers");
+        assert!(region.contains("fn mix_phase_safe_stereo"));
+        assert!(region.contains("fn best_phase_alignment"));
+        assert!(
+            region.contains("fn smooth_strategy_transition")
+                || region.contains("PhaseSafeMonoState")
+        );
+        assert!(region.contains("fn mix_interleaved_to_mono_with_mode_and_state"));
+        // The forbidden-API scan of this region runs with the others in
+        // processor/tests.rs.
+
+        // A drifting, anti-phased stereo pair forces an alignment candidate and,
+        // when the pair flips, a strategy change with its smoothing transition.
+        let frames = 480;
+        let tone = |index: usize, phase: f32| {
+            (2.0 * std::f32::consts::PI * 220.0 * index as f32 / 48_000.0 + phase).sin() * 0.4
+        };
+        let mut aligned = Vec::with_capacity(frames * 2);
+        let mut delayed_anti_phase = Vec::with_capacity(frames * 2);
+        for index in 0..frames {
+            aligned.push(tone(index, 0.0));
+            aligned.push(tone(index, 0.0));
+            delayed_anti_phase.push(tone(index, 0.0));
+            delayed_anti_phase.push(-tone(index + 3, 0.0));
+        }
+        let mut mono = vec![0.0_f32; frames];
+        let mut state = PhaseSafeMonoState::default();
+        let run = |block: &[f32], state: &mut PhaseSafeMonoState, mono: &mut [f32]| {
+            AudioInput::mix_interleaved_to_mono_with_mode_and_state(
+                block,
+                2,
+                InputChannelMode::PhaseSafeMono,
+                mono,
+                state,
+            )
+        };
+        // Warm up so the first measured call is a steady-state callback.
+        run(&aligned, &mut state, &mut mono);
+        let mut strategies = [0_u8; 3];
+        crate::test_alloc::assert_no_allocations("phase-safe stereo mixer", || {
+            for (slot, block) in
+                strategies
+                    .iter_mut()
+                    .zip([&delayed_anti_phase, &aligned, &delayed_anti_phase])
+            {
+                let (_, _, diagnostics) = run(block, &mut state, &mut mono);
+                *slot = diagnostics.strategy as u8;
+            }
+        });
+        assert!(
+            strategies.iter().any(|strategy| *strategy != strategies[0]),
+            "the blocks must exercise an alignment candidate and a strategy change"
         );
     }
 }

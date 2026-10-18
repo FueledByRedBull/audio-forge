@@ -2085,11 +2085,11 @@ def test_configuration_finishes_rate_limited_native_writes_before_unmute(window,
     _use_processor(window, processor)
     defaults = Preset()
     states = (
-        (window.gate_state, "threshold_db", processor.set_gate_threshold,
+        (window.gate_state, "threshold_db", processor.apply_gate_settings,
          defaults.gate.threshold_db),
-        (window.deesser_state, "threshold_db", processor.set_deesser_threshold_db,
+        (window.deesser_state, "threshold_db", processor.apply_deesser_settings,
          defaults.deesser.threshold_db),
-        (window.compressor_state, "threshold_db", processor.set_compressor_threshold,
+        (window.compressor_state, "threshold_db", processor.apply_compressor_settings,
          defaults.compressor.threshold_db),
         (window.limiter_state, "ceiling_db", processor.set_limiter_ceiling,
          defaults.limiter.ceiling_db),
@@ -2104,11 +2104,13 @@ def test_configuration_finishes_rate_limited_native_writes_before_unmute(window,
 
     writes = _writes_between_mutes(processor.mock_calls[queued:])
     assert {name for name, _args, _kwargs in writes} >= {
-        "set_gate_threshold", "set_deesser_threshold_db",
-        "set_compressor_threshold", "set_limiter_ceiling",
+        "apply_gate_settings", "apply_deesser_settings",
+        "apply_compressor_settings", "set_limiter_ceiling",
     }
-    for state, _name, write, default in states:
-        assert write.call_args.args == (default,)
+    for state, name, write, default in states:
+        # The last write carries the configured value, not the queued -12.0.
+        last = write.call_args.args[0]
+        assert (last[name] if isinstance(last, dict) else last) == default
         assert not state._rate_limiter._timer.isActive()
 
 
@@ -2116,12 +2118,12 @@ def test_setter_failure_rolls_back_before_unmute(window):
     processor = _configuration_processor()
     failed = []
 
-    def set_threshold(value):
-        if value == -11.0 and not failed:
-            failed.append(value)
+    def apply_settings(settings):
+        if settings["threshold_db"] == -11.0 and not failed:
+            failed.append(settings["threshold_db"])
             raise RuntimeError("de-esser setter failed")
 
-    processor.set_deesser_threshold_db.side_effect = set_threshold
+    processor.apply_deesser_settings.side_effect = apply_settings
     _use_processor(window, processor)
     candidate = Preset()
     candidate.deesser.threshold_db = -11.0
@@ -2130,8 +2132,12 @@ def test_setter_failure_rolls_back_before_unmute(window):
         window.apply_processing_configuration(candidate)
 
     writes = _writes_between_mutes(processor.mock_calls)
-    assert call.set_deesser_threshold_db(-28.0) in writes
-    assert call.set_deesser_threshold_db(-11.0) in writes
+    thresholds = [
+        c.args[0]["threshold_db"] for c in writes if c[0] == "apply_deesser_settings"
+    ]
+    # The rejected write comes first, and the last write restores the old value.
+    assert thresholds[0] == -11.0
+    assert thresholds[-1] == -28.0
 
 
 def test_configuration_cancels_superseded_eq_edits_before_snapshot_and_unmute(window, monkeypatch):

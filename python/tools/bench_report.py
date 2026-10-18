@@ -54,12 +54,15 @@ MEASURES = (
 
 
 def git_revision(root: Path = bm.REPO_ROOT) -> str | None:
-    """HEAD when the working tree is clean, otherwise None (a report of unsaved code names no commit)."""
+    """HEAD when no tracked file is modified, otherwise None (a report of unsaved code names no commit).
+
+    Untracked files do not count: the run's own ``.partial.jsonl`` is one.
+    """
     def run(*args: str) -> str:
         return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
 
     try:
-        return run("rev-parse", "HEAD") if not run("status", "--porcelain") else None
+        return run("rev-parse", "HEAD") if not run("status", "--porcelain", "--untracked-files=no") else None
     except (OSError, subprocess.CalledProcessError):
         return None
 
@@ -80,10 +83,10 @@ def build_identity(root: Path, vad: bool) -> dict[str, Any]:
     }
 
 
-def check_files(bench: bm.Bench, root: Path) -> None:
+def check_files(bench: bm.Bench) -> None:
     """The committed inputs are the files the manifest names; a report of other audio compares with nothing."""
     entries = {**bench.manifest["takes"], **bench.manifest["noises"]}
-    differ = [e["file"] for e in entries.values() if bm.file_sha256(root / e["file"]) != e["sha256"]]
+    differ = [e["file"] for e in entries.values() if bench.sha256[e["file"]] != e["sha256"]]
     if differ:
         raise SystemExit(f"bench files differ from the manifest: {', '.join(differ)}")
 
@@ -272,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
                 key in earlier for key in ("build", "mixes")):
             parser.error(f"{args.compare} is not a schema {SCHEMA_VERSION} bench report")
     bench = bm.load_bench(args.bench_dir)
-    check_files(bench, args.bench_dir)
+    check_files(bench)
     mix_ids = args.mixes.split(",") if args.mixes else list(bench.manifest["mixes"])
     unknown = [m for m in mix_ids if m not in bench.manifest["mixes"]]
     if unknown:

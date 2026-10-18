@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -23,7 +25,7 @@ SHORT_S = 4.6  # a phrase and a half of take t01, above the three-second minimum
 def short_bench(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A bench folder of one 5 s take and one fan mix, so the whole tool runs in seconds."""
     monkeypatch.setenv("VAD_MODEL_PATH", str(tmp_path / "no-silero.onnx"))  # Silero is not needed or assumed
-    full = bm.load_bench().manifest
+    full = bm.read_manifest()
     size = int(SHORT_S * bm.SAMPLE_RATE)
     take = full["takes"]["t01"]
     pcm = np.round(bm.read_wav(bm.BENCH_DIR / take["file"])[:size] * 32768).astype(np.int16)
@@ -116,3 +118,20 @@ def test_a_crash_keeps_the_mixes_that_finished(short_bench: Path, tmp_path: Path
         bench_report.main(["--bench-dir", str(short_bench), "--skip-voice-setup", "--json-output", str(numbers)])
     lines = (tmp_path / "bench.json.partial.jsonl").read_text(encoding="utf-8").splitlines()
     assert [list(json.loads(line)) for line in lines] == [["fan-short"]] and not numbers.exists()
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_git_revision_ignores_untracked_files_but_not_edits(tmp_path: Path):
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args], cwd=tmp_path,
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    git("init", "-q")
+    (tmp_path / "tracked.txt").write_text("a", encoding="utf-8")
+    git("add", "tracked.txt")
+    git("commit", "-q", "-m", "first")
+    # The run's partial file sits next to the report while git_revision reads the tree.
+    (tmp_path / "bench.json.partial.jsonl").write_text("{}", encoding="utf-8")
+    assert bench_report.git_revision(tmp_path) == git("rev-parse", "HEAD")
+    (tmp_path / "tracked.txt").write_text("b", encoding="utf-8")
+    assert bench_report.git_revision(tmp_path) is None

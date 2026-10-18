@@ -161,8 +161,6 @@ include!("processor/output_writer.rs");
 
 /// Main audio processor combining all DSP stages
 pub struct AudioProcessor {
-    /// Noise gate
-    gate: Arc<Mutex<NoiseGate>>,
     gate_enabled: Arc<AtomicBool>,
     gate_control: Arc<Mutex<GateControlState>>,
     gate_rt_control: Arc<AtomicGateControlState>,
@@ -194,7 +192,6 @@ pub struct AudioProcessor {
 
     /// De-esser
     deesser: Arc<Mutex<DeEsser>>,
-    deesser_enabled: Arc<AtomicBool>,
     deesser_control: Arc<Mutex<DeesserControlState>>,
     deesser_rt_control: Arc<AtomicDeesserControlState>,
     deesser_dirty: Arc<AtomicBool>,
@@ -350,11 +347,16 @@ pub struct AudioProcessor {
     #[cfg(feature = "vad")]
     /// Source discontinuity generation bound to the published result.
     vad_result_generation: Arc<AtomicU64>,
+    #[cfg(feature = "vad")]
+    /// Last reason the VAD worker could not provide results.
+    vad_worker_error: Arc<Mutex<Option<String>>>,
 
     /// Compressor current release time in milliseconds (for metering)
     compressor_current_release_ms: Arc<AtomicU64>,
     /// Compressor current measured loudness in LUFS (f64 bits).
     compressor_current_lufs: Arc<AtomicU64>,
+    /// `Compressor::auto_makeup_error_code` of the live compressor (0 healthy).
+    compressor_auto_makeup_error: Arc<AtomicU8>,
     /// Compressor current applied makeup gain in dB (f64 bits).
     compressor_current_makeup_gain: Arc<AtomicU64>,
 
@@ -405,11 +407,11 @@ pub struct AudioProcessor {
     /// Last idle sleep duration selected by the DSP loop.
     dsp_idle_sleep_us: Arc<AtomicU64>,
 
-    /// Smoothed DSP processing time in microseconds (EMA, 200ms time constant)
+    /// Smoothed DSP processing time in microseconds (EMA per processed block, nominal 200ms time constant)
     dsp_time_smoothed_us: Arc<AtomicU64>,
-    /// Smoothed input buffer fill level (EMA, 200ms time constant)
+    /// Smoothed input buffer fill level (EMA over measured wall time, 200ms time constant)
     smoothed_input_buffer_len: Arc<AtomicU32>,
-    /// Smoothed suppressor buffer fill level (EMA, 200ms time constant)
+    /// Smoothed suppressor buffer fill level (EMA per processed block, nominal 200ms time constant)
     smoothed_buffer_len: Arc<AtomicU32>,
 
     /// Dropped samples counter from input ring buffer
@@ -422,10 +424,18 @@ pub struct AudioProcessor {
     /// Samples proactively dropped from the input backlog.
     input_backlog_dropped_samples: Arc<AtomicU64>,
 
-    /// Total lock contention events in the real-time processing loop.
+    /// Control-snapshot reads in the real-time loop that stayed unstable and were re-armed.
     lock_contention_count: Arc<AtomicU64>,
     /// Number of times suppressor output contained non-finite samples.
     suppressor_non_finite_count: Arc<AtomicU64>,
+    /// Number of blocks where the downstream chain (de-esser, EQ, compressor,
+    /// limiter) produced non-finite samples; the stages were reset each time.
+    downstream_non_finite_count: Arc<AtomicU64>,
+    /// Output resampler failures; each drops a chunk and requests a restart.
+    output_resampler_error_count: Arc<AtomicU64>,
+    /// True when the DSP thread could not register for MMCSS Pro Audio
+    /// scheduling and runs at normal priority.
+    dsp_scheduling_degraded: Arc<AtomicBool>,
     /// Number of clipped input samples before safety clamp.
     clip_event_count: Arc<AtomicU64>,
     /// Peak pre-clamp level in dBFS.
@@ -511,6 +521,8 @@ pub struct AudioProcessor {
     output_probe_cancel_requested: Arc<AtomicBool>,
     /// Temporarily disables watchdog-driven recovery during intrusive UI workflows.
     recovery_suppressed: Arc<AtomicBool>,
+    /// Non-finite values the clamping live setters ignored.
+    rejected_control_value_count: AtomicU64,
 }
 
 impl AudioProcessor {
@@ -529,7 +541,6 @@ impl AudioProcessor {
     /// Create a new audio processor
     pub fn new() -> Self {
         let sample_rate = TARGET_SAMPLE_RATE;
-        let gate_control_state = GateControlState::new();
         let suppressor_control_state = SuppressorControlState::new();
         let compressor_control_state = CompressorControlState::new();
 
@@ -537,27 +548,8 @@ impl AudioProcessor {
         let suppressor_strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
 
         Self {
-            gate: {
-                let gate = Arc::new(Mutex::new(NoiseGate::new(
-                    -40.0,
-                    10.0,
-                    100.0,
-                    sample_rate as f64,
-                )));
-
-                #[cfg(feature = "vad")]
-                {
-                    let vad_auto_gate = VadAutoGate::without_backend(sample_rate, 0.48);
-                    if let Ok(mut g) = gate.lock() {
-                        g.set_vad_auto_gate(Some(vad_auto_gate));
-                        apply_gate_control(&mut g, &gate_control_state);
-                    }
-                }
-
-                gate
-            },
             gate_enabled: Arc::new(AtomicBool::new(true)),
-            gate_control: Arc::new(Mutex::new(gate_control_state)),
+            gate_control: Arc::new(Mutex::new(GateControlState::new())),
             gate_rt_control: Arc::new(AtomicGateControlState::new()),
             gate_dirty: Arc::new(AtomicBool::new(false)),
             suppressor_enabled: Arc::new(AtomicBool::new(true)),
@@ -584,7 +576,6 @@ impl AudioProcessor {
             compressor_rt_control: Arc::new(AtomicCompressorControlState::new()),
             compressor_dirty: Arc::new(AtomicBool::new(false)),
             deesser: Arc::new(Mutex::new(DeEsser::new(sample_rate as f64))),
-            deesser_enabled: Arc::new(AtomicBool::new(false)),
             deesser_control: Arc::new(Mutex::new(DeesserControlState::new())),
             deesser_rt_control: Arc::new(AtomicDeesserControlState::new()),
             deesser_dirty: Arc::new(AtomicBool::new(false)),
@@ -667,10 +658,13 @@ impl AudioProcessor {
             vad_result_sequence: Arc::new(AtomicU64::new(0)),
             #[cfg(feature = "vad")]
             vad_result_generation: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "vad")]
+            vad_worker_error: Arc::new(Mutex::new(None)),
             compressor_current_release_ms: Arc::new(AtomicU64::new(
                 COMPRESSOR_DEFAULT_RELEASE_TENTH_MS,
             )),
             compressor_current_lufs: Arc::new(AtomicU64::new((-100.0_f64).to_bits())),
+            compressor_auto_makeup_error: Arc::new(AtomicU8::new(0)),
             compressor_current_makeup_gain: Arc::new(AtomicU64::new(0.0_f64.to_bits())),
             latency_us: Arc::new(AtomicU64::new(0)),
             latency_compensation_us: Arc::new(AtomicU64::new(0)),
@@ -708,6 +702,9 @@ impl AudioProcessor {
             // Initialize lock contention counter
             lock_contention_count: Arc::new(AtomicU64::new(0)),
             suppressor_non_finite_count: Arc::new(AtomicU64::new(0)),
+            downstream_non_finite_count: Arc::new(AtomicU64::new(0)),
+            output_resampler_error_count: Arc::new(AtomicU64::new(0)),
+            dsp_scheduling_degraded: Arc::new(AtomicBool::new(false)),
             clip_event_count: Arc::new(AtomicU64::new(0)),
             clip_peak_db: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
             input_peak_hold: Arc::new(AtomicU32::new(0)),
@@ -749,6 +746,7 @@ impl AudioProcessor {
             output_probe_complete: Arc::new(AtomicBool::new(true)),
             output_probe_cancel_requested: Arc::new(AtomicBool::new(false)),
             recovery_suppressed: Arc::new(AtomicBool::new(false)),
+            rejected_control_value_count: AtomicU64::new(0),
         }
     }
 }

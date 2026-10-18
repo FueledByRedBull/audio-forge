@@ -3,14 +3,18 @@
 //! Silero VAD is a lightweight neural network model for speech detection.
 //! Model: https://github.com/snakers4/silero-vad
 //!
-//! CRITICAL: Silero VAD is a STATEFUL model requiring hidden state management.
-//! Each inference call requires passing h/c states from the previous call.
+//! CRITICAL: Silero VAD v6.2.1 is a STATEFUL model. Each inference call takes
+//! one combined recurrent `state` tensor ([2, 1, 128]) and returns the next one
+//! as `stateN`; the input is 64 samples of rolling context plus a 512-sample
+//! frame (576 samples at 16 kHz). Only the pinned model's SHA-256 identifies it.
 
 use ndarray::{Array3, ArrayView1, ArrayView2};
 use ort::{session::builder::GraphOptimizationLevel, session::Session, value::TensorRef};
 use std::env;
-use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use super::util::unit_or;
 use thiserror::Error;
 
 /// Gate operating modes
@@ -22,6 +26,18 @@ pub enum GateMode {
     VadAssisted,
     /// VAD-only: gate opens solely based on speech probability
     VadOnly,
+}
+
+impl GateMode {
+    /// The mode for its wire value (0, 1 or 2), as Python and the atomics carry it.
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::ThresholdOnly),
+            1 => Some(Self::VadAssisted),
+            2 => Some(Self::VadOnly),
+            _ => None,
+        }
+    }
 }
 
 /// Silero VAD sample rate (model trained at 16kHz)
@@ -111,8 +127,8 @@ fn ensure_ort_telemetry_disabled() -> Result<(), VadError> {
 
 /// Silero VAD for voice activity detection
 ///
-/// IMPORTANT: This is a stateful model. The h/c LSTM states must persist
-/// between inference calls for accurate detection.
+/// IMPORTANT: This is a stateful model. The combined recurrent `state` tensor
+/// must persist between inference calls for accurate detection.
 pub struct SileroVAD {
     /// ONNX Runtime session
     session: Session,
@@ -167,13 +183,18 @@ pub struct SileroVAD {
 
 impl SileroVAD {
     /// Find Silero VAD model file
-    fn find_model_path() -> Result<PathBuf, VadError> {
-        // 1. Check environment variable
-        if let Ok(path) = env::var("VAD_MODEL_PATH") {
+    fn find_model_path(env_override: Option<String>) -> Result<PathBuf, VadError> {
+        // 1. Check environment variable. The bootstrap points it at the bundled
+        // model, so an explicit path that is missing is an error rather than a
+        // silent fall-through to a CWD-relative model.
+        if let Some(path) = env_override {
             let path_buf = PathBuf::from(&path);
             if path_buf.exists() {
                 return Ok(path_buf);
             }
+            return Err(VadError::ModelNotFound(format!(
+                "VAD_MODEL_PATH points to a missing file: {path}"
+            )));
         }
 
         // 2. Check ./models/ directory
@@ -234,7 +255,9 @@ impl SileroVAD {
             return Err(VadError::InvalidSampleRate(sample_rate));
         }
         ensure_ort_telemetry_disabled()?;
-        let model_path = Self::find_model_path()?;
+        let model_path = Self::find_model_path(env::var("VAD_MODEL_PATH").ok())?;
+        // Hash and load the same bytes so the file cannot change in between.
+        let model_bytes = cached_pinned_silero_model(&model_path)?;
 
         // Create ONNX Runtime session with ort 2.0 API
         let session = Session::builder()
@@ -251,7 +274,7 @@ impl SileroVAD {
             .map_err(|e| {
                 VadError::ModelLoadError(format!("Failed to set intra-op thread count: {}", e))
             })?
-            .commit_from_file(&model_path)
+            .commit_from_memory(&model_bytes)
             .map_err(|e| {
                 VadError::ModelLoadError(format!(
                     "Failed to load model from {:?}: {}",
@@ -275,7 +298,7 @@ impl SileroVAD {
         Ok(Self {
             session,
             sample_rate,
-            threshold: threshold.clamp(0.0, 1.0),
+            threshold: unit_or(threshold, DEFAULT_VAD_THRESHOLD),
             resample_ratio,
             resample_kernel,
             buffer: Vec::with_capacity(window_size * 4),
@@ -469,7 +492,7 @@ impl SileroVAD {
 
     /// Set speech detection threshold
     pub fn set_threshold(&mut self, threshold: f32) {
-        self.threshold = threshold.clamp(0.0, 1.0);
+        self.threshold = unit_or(threshold, self.threshold);
     }
 
     /// Get current threshold
@@ -480,6 +503,9 @@ impl SileroVAD {
     /// Set pre-gain for VAD input (boosts weak signals)
     /// Default is 1.0 (no gain). Values > 1.0 boost the signal.
     pub fn set_pre_gain(&mut self, gain: f32) {
+        if !gain.is_finite() {
+            return;
+        }
         self.pre_gain = gain.max(0.1); // Minimum gain to prevent division by zero
     }
 
@@ -830,8 +856,6 @@ fn anti_aliased_resample_into(input: &[f32], ratio: f32, output: &mut Vec<f32>) 
 
 /// VAD-based auto-gate controller
 pub struct VadAutoGate {
-    /// Silero VAD instance
-    vad: Option<SileroVAD>,
     /// Current noise floor estimate (dB)
     noise_floor: f32,
     /// Margin above noise floor for gate threshold (dB)
@@ -866,8 +890,6 @@ pub struct VadAutoGate {
     sample_rate: u32,
     /// Current VAD probability for metering
     current_probability: f32,
-    /// Whether probability is supplied by an external non-realtime worker.
-    uses_external_probability: bool,
     /// Whether the external worker has a fresh probability.
     external_probability_available: bool,
     /// Circular history buffer of low-confidence frame levels for percentile floor estimation.
@@ -885,47 +907,9 @@ pub struct VadAutoGate {
 }
 
 impl VadAutoGate {
-    /// Create a new VAD auto-gate controller
-    pub fn new(sample_rate: u32, vad_threshold: f32) -> Self {
-        let vad = SileroVAD::new(sample_rate, vad_threshold).ok();
-
-        let enabled = vad.is_some();
-
-        Self {
-            vad,
-            noise_floor: -60.0,
-            margin: 10.0, // Increased from 6.0 to 10.0 dB for better noise rejection
-            min_threshold: -80.0, // Lowered from -50.0 to allow proper adaptation in quiet rooms
-            max_threshold: -10.0,
-            manual_threshold_db: -40.0,
-            auto_threshold_enabled: true, // Default to noise-floor tracking
-            enabled,
-            gate_mode: GateMode::ThresholdOnly,
-            vad_threshold,
-            hold_time_ms: 200.0,
-            hold_timer: 0.0,
-            timer_running: false,
-            prev_gate_open: false,
-            debounce_time_ms: 50.0, // 50ms debounce to prevent oscillation
-            // Start "matured" so the first utterance can open immediately.
-            closed_counter_samples: sample_rate as f32 * 0.05,
-            sample_rate,
-            current_probability: 0.0,
-            uses_external_probability: false,
-            external_probability_available: false,
-            noise_floor_history: [0.0; NOISE_FLOOR_HISTORY_FRAMES],
-            noise_floor_history_len: 0,
-            noise_floor_history_cursor: 0,
-            noise_floor_bins: [0; NOISE_FLOOR_BIN_COUNT],
-            noise_floor_pending_samples: 0,
-            noise_floor_pending_sum_sq: 0.0,
-        }
-    }
-
     /// Create VAD gate logic that consumes probabilities from a non-realtime worker.
     pub fn without_backend(sample_rate: u32, vad_threshold: f32) -> Self {
         Self {
-            vad: None,
             noise_floor: -60.0,
             margin: 10.0,
             min_threshold: -80.0,
@@ -934,7 +918,7 @@ impl VadAutoGate {
             auto_threshold_enabled: true,
             enabled: true,
             gate_mode: GateMode::ThresholdOnly,
-            vad_threshold,
+            vad_threshold: unit_or(vad_threshold, DEFAULT_VAD_THRESHOLD),
             hold_time_ms: 200.0,
             hold_timer: 0.0,
             timer_running: false,
@@ -943,7 +927,6 @@ impl VadAutoGate {
             closed_counter_samples: sample_rate as f32 * 0.05,
             sample_rate,
             current_probability: 0.0,
-            uses_external_probability: true,
             external_probability_available: false,
             noise_floor_history: [0.0; NOISE_FLOOR_HISTORY_FRAMES],
             noise_floor_history_len: 0,
@@ -954,38 +937,16 @@ impl VadAutoGate {
         }
     }
 
-    /// Process audio and return gate state
-    pub fn process(&mut self, samples: &[f32]) -> (bool, f32) {
-        if !self.enabled || self.vad.is_none() {
-            // When VAD disabled, gate should be CLOSED (not open!)
-            return (false, 0.0);
-        }
-
-        let vad = match self.vad.as_mut() {
-            Some(vad) => vad,
-            None => return (false, 0.0),
-        };
-
-        let prob = match vad.process(samples) {
-            Ok(p) => p,
-            Err(_) => {
-                return (false, 0.0);
-            }
-        };
-
-        self.process_with_probability(samples, prob)
-    }
-
     pub fn process_with_external_probability(
         &mut self,
         samples: &[f32],
         probability: Option<f32>,
     ) -> (bool, f32) {
-        if !self.enabled || !self.uses_external_probability {
+        if !self.enabled {
             return (false, 0.0);
         }
 
-        let Some(probability) = probability else {
+        let Some(probability) = probability.filter(|value| !value.is_nan()) else {
             // Unknown is not silence: do not teach the auto-threshold that a
             // worker outage or stale result is a low-level background frame.
             // Advance the hold as closed audio so a worker outage cannot keep
@@ -1168,15 +1129,11 @@ impl VadAutoGate {
     }
 
     pub fn is_available(&self) -> bool {
-        if self.uses_external_probability {
-            self.external_probability_available
-        } else {
-            self.vad.is_some()
-        }
+        self.external_probability_available
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled && (self.vad.is_some() || self.uses_external_probability);
+        self.enabled = enabled;
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -1184,6 +1141,9 @@ impl VadAutoGate {
     }
 
     pub fn set_margin(&mut self, margin: f32) {
+        if margin.is_nan() {
+            return;
+        }
         self.margin = margin.clamp(0.0, 20.0);
     }
 
@@ -1212,6 +1172,9 @@ impl VadAutoGate {
 
     /// Set manual threshold used when auto-threshold is disabled
     pub fn set_manual_threshold(&mut self, threshold_db: f32) {
+        if threshold_db.is_nan() {
+            return;
+        }
         self.manual_threshold_db = threshold_db.clamp(self.min_threshold, self.max_threshold);
     }
 
@@ -1249,9 +1212,6 @@ impl VadAutoGate {
         self.noise_floor_bins = [0; NOISE_FLOOR_BIN_COUNT];
         self.noise_floor_pending_samples = 0;
         self.noise_floor_pending_sum_sq = 0.0;
-        if let Some(vad) = &mut self.vad {
-            vad.reset();
-        }
     }
 
     pub fn set_gate_mode(&mut self, mode: GateMode) {
@@ -1265,10 +1225,7 @@ impl VadAutoGate {
     }
 
     pub fn set_vad_threshold(&mut self, threshold: f32) {
-        self.vad_threshold = threshold.clamp(0.0, 1.0);
-        if let Some(vad) = &mut self.vad {
-            vad.set_threshold(threshold);
-        }
+        self.vad_threshold = unit_or(threshold, self.vad_threshold);
     }
 
     pub fn vad_threshold(&self) -> f32 {
@@ -1276,6 +1233,9 @@ impl VadAutoGate {
     }
 
     pub fn set_hold_time(&mut self, hold_ms: f32) {
+        if hold_ms.is_nan() {
+            return;
+        }
         self.hold_time_ms = hold_ms.clamp(0.0, 500.0);
     }
 
@@ -1286,24 +1246,134 @@ impl VadAutoGate {
     pub fn probability(&self) -> f32 {
         self.current_probability
     }
+}
 
-    /// Set pre-gain for VAD input (boosts weak signals)
-    /// Default is 1.0 (no gain). Values > 1.0 boost the signal.
-    /// This helps with quiet microphones where VAD can't detect speech.
-    pub fn set_pre_gain(&mut self, gain: f32) {
-        if let Some(vad) = &mut self.vad {
-            vad.set_pre_gain(gain);
+const DEFAULT_VAD_THRESHOLD: f32 = 0.5;
+
+/// SHA-256 of the pinned Silero VAD model, read from the release manifest at
+/// build time so the manifest stays the single source of truth.
+fn expected_silero_sha256() -> Option<&'static str> {
+    const MANIFEST: &str = include_str!("../../../release-assets.json");
+    let entry = &MANIFEST[MANIFEST.find("\"path\": \"models/silero_vad.onnx\"")?..];
+    let key = "\"sha256\": \"";
+    let start = entry.find(key)? + key.len();
+    entry.get(start..start + 64)
+}
+
+/// Read the model and refuse anything but the pinned Silero v6.2.1 file; file
+/// size is not a version signal (v5 and v6 are the same size).
+fn read_pinned_silero_model(path: &Path) -> Result<Vec<u8>, VadError> {
+    let bytes = std::fs::read(path).map_err(|e| {
+        VadError::ModelLoadError(format!("Failed to read model {}: {e}", path.display()))
+    })?;
+    let expected = expected_silero_sha256().ok_or_else(|| {
+        VadError::ModelLoadError("Release manifest has no Silero VAD SHA-256".to_string())
+    })?;
+    let actual = sha256_hex(&bytes);
+    if actual != expected {
+        return Err(VadError::ModelLoadError(format!(
+            "Model {} has SHA-256 {actual}, but only the pinned Silero VAD v6.2.1 ({expected}) is supported",
+            path.display()
+        )));
+    }
+    Ok(bytes)
+}
+
+/// `read_pinned_silero_model`, remembering the last verified file so later VAD
+/// instances (worker restarts, offline analyses) skip re-reading and re-hashing
+/// its 2.3 MB. Never called on the realtime path.
+/// shortcut: a file replaced at the same path keeps the verified copy until
+/// the process restarts; key by modification time if that ever matters.
+fn cached_pinned_silero_model(path: &Path) -> Result<Arc<[u8]>, VadError> {
+    type VerifiedModel = (PathBuf, Arc<[u8]>);
+    static VERIFIED: OnceLock<Mutex<Option<VerifiedModel>>> = OnceLock::new();
+    let verified = VERIFIED.get_or_init(|| Mutex::new(None));
+    if let Ok(cached) = verified.lock() {
+        if let Some((cached_path, bytes)) = cached.as_ref() {
+            if cached_path == path {
+                return Ok(Arc::clone(bytes));
+            }
         }
     }
-
-    /// Get current pre-gain
-    pub fn pre_gain(&self) -> f32 {
-        if let Some(vad) = &self.vad {
-            vad.pre_gain()
-        } else {
-            1.0
-        }
+    let bytes: Arc<[u8]> = read_pinned_silero_model(path)?.into();
+    if let Ok(mut cached) = verified.lock() {
+        *cached = Some((path.to_path_buf(), Arc::clone(&bytes)));
     }
+    Ok(bytes)
+}
+
+/// Minimal SHA-256 (FIPS 180-4); the crate has no hashing dependency and this
+/// runs once per model load, off the realtime path.
+fn sha256_hex(data: &[u8]) -> String {
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+    let mut state: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let compress = |state: &mut [u32; 8], block: &[u8]| {
+        let mut w = [0u32; 64];
+        for (word, bytes) in w.iter_mut().zip(block.chunks_exact(4)) {
+            *word = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = *state;
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ (!e & g);
+            let t1 = h
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let t2 = s0.wrapping_add(maj);
+            h = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(t1);
+            d = c;
+            c = b;
+            b = a;
+            a = t1.wrapping_add(t2);
+        }
+        for (slot, value) in state.iter_mut().zip([a, b, c, d, e, f, g, h]) {
+            *slot = slot.wrapping_add(value);
+        }
+    };
+
+    let mut blocks = data.chunks_exact(64);
+    for block in &mut blocks {
+        compress(&mut state, block);
+    }
+    let tail = blocks.remainder();
+    let mut padded = [0u8; 128];
+    padded[..tail.len()].copy_from_slice(tail);
+    padded[tail.len()] = 0x80;
+    let padded_len = if tail.len() < 56 { 64 } else { 128 };
+    padded[padded_len - 8..padded_len].copy_from_slice(&((data.len() as u64) * 8).to_be_bytes());
+    for block in padded[..padded_len].chunks_exact(64) {
+        compress(&mut state, block);
+    }
+    state.iter().map(|word| format!("{word:08x}")).collect()
 }
 
 /// Compute RMS level in dB

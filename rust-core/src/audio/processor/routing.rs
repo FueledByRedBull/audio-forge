@@ -186,6 +186,17 @@ impl SmoothNotch {
             return;
         }
         self.pending = NotchFilter::new(frequency_hz, self.q, self.sample_rate);
+        // A Q-36 notch rebuilt from zero state needs about 0.2 s to cancel hum
+        // again. Within half its bandwidth (f / 2Q) the active state is closer
+        // to the retuned notch's steady state than zero is even when the move
+        // crosses the hum line (that worst case breaks even near 1.15x). The
+        // threshold is conservative: moves on one side of the line still gain
+        // up to about 3x it. Wider moves restart, as before. The copied state is
+        // the active filter's, so the move is measured from its frequency.
+        if (frequency_hz - self.frequency_hz).abs() <= 0.5 * frequency_hz / self.q {
+            self.pending.z1 = self.active.z1;
+            self.pending.z2 = self.active.z2;
+        }
         self.pending_frequency_hz = frequency_hz;
         self.fade_remaining = self.fade_total;
     }
@@ -318,8 +329,7 @@ impl AdaptiveInputCleanupState {
         self.hum_phase_valid = false;
         self.hum_strength = 0.0;
         self.harmonic_strength = 0.0;
-        self.adaptive_highpass
-            .set_frequency(INPUT_PREFILTER_HZ);
+        self.adaptive_highpass.set_frequency(INPUT_PREFILTER_HZ);
         self.adaptive_highpass.reset();
         self.adaptive_highpass_hz = INPUT_PREFILTER_HZ as f32;
         self.hum_notch.reset();
@@ -334,8 +344,7 @@ impl AdaptiveInputCleanupState {
             return;
         }
 
-        let lowpass_coeff = (2.0 * std::f32::consts::PI * 150.0 / self.sample_rate)
-            .clamp(0.0, 1.0);
+        let lowpass_coeff = (2.0 * std::f32::consts::PI * 150.0 / self.sample_rate).clamp(0.0, 1.0);
         let fast_attack = 0.08;
         let fast_release = 0.006;
         let slow_coeff = 0.0012;
@@ -473,8 +482,7 @@ impl AdaptiveInputCleanupState {
             } else {
                 0.0
             };
-            let spectral_frequency = (best_frequency_hz
-                + spectral_offset * HUM_TRACK_STEP_HZ)
+            let spectral_frequency = (best_frequency_hz + spectral_offset * HUM_TRACK_STEP_HZ)
                 .clamp(HUM_MIN_HZ, HUM_MAX_HZ);
 
             // The bank phase is measured relative to each bin's oscillator.
@@ -493,13 +501,11 @@ impl AdaptiveInputCleanupState {
                 * self.hum_window_samples as f64
                 / self.sample_rate.max(1.0) as f64)
                 .rem_euclid(1.0);
-            let absolute_phase = wrap_phase(
-                -best_primary_phase + (std::f64::consts::TAU * center_turns) as f32,
-            );
+            let absolute_phase =
+                wrap_phase(-best_primary_phase + (std::f64::consts::TAU * center_turns) as f32);
             let phase_frequency = if self.hum_phase_valid && window_seconds > 0.0 {
                 let phase_delta = wrap_phase(absolute_phase - self.hum_previous_absolute_phase);
-                let base_frequency = phase_delta
-                    / (2.0 * std::f32::consts::PI * window_seconds);
+                let base_frequency = phase_delta / (2.0 * std::f32::consts::PI * window_seconds);
                 let alias_spacing = 1.0 / window_seconds;
                 let mut best_alias = base_frequency;
                 let mut best_alias_error = f32::INFINITY;
@@ -558,16 +564,10 @@ impl AdaptiveInputCleanupState {
             InputCleanupMode::Strong => 0.34,
         };
         let hum_release_per_10ms = 0.035;
-        let hum_attack = smoothing_amount_for_samples(
-            hum_attack_per_10ms,
-            buffer.len(),
-            self.sample_rate,
-        );
-        let hum_release = smoothing_amount_for_samples(
-            hum_release_per_10ms,
-            buffer.len(),
-            self.sample_rate,
-        );
+        let hum_attack =
+            smoothing_amount_for_samples(hum_attack_per_10ms, buffer.len(), self.sample_rate);
+        let hum_release =
+            smoothing_amount_for_samples(hum_release_per_10ms, buffer.len(), self.sample_rate);
         let target_hum = if self.hum_detected {
             match self.mode {
                 InputCleanupMode::Off => 0.0,
@@ -586,8 +586,12 @@ impl AdaptiveInputCleanupState {
             0.0
         };
         self.hum_strength = smooth_toward(self.hum_strength, target_hum, hum_attack, hum_release);
-        self.harmonic_strength =
-            smooth_toward(self.harmonic_strength, target_harmonic, hum_attack, hum_release);
+        self.harmonic_strength = smooth_toward(
+            self.harmonic_strength,
+            target_harmonic,
+            hum_attack,
+            hum_release,
+        );
         if self.hum_line_hz > 0.0 {
             self.hum_notch.retune(self.hum_line_hz);
             self.harmonic_notch.retune(self.hum_line_hz * 2.0);
@@ -634,8 +638,7 @@ mod adaptive_cleanup_tests {
             let time = index as f32 / sample_rate;
             input.push(
                 0.08 * (2.0 * std::f32::consts::PI * frequency_hz * time).sin()
-                    + 0.025
-                        * (2.0 * std::f32::consts::PI * 2.0 * frequency_hz * time).sin(),
+                    + 0.025 * (2.0 * std::f32::consts::PI * 2.0 * frequency_hz * time).sin(),
             );
         }
 
@@ -667,20 +670,17 @@ mod adaptive_cleanup_tests {
             state.hum_phase_valid = true;
 
             let phase_at_center = |frequency_hz: f64, window_index: u64| {
-                let turns = ((window_index as f64 + 0.5)
-                    * state.hum_window_samples as f64
-                    * frequency_hz
-                    / SAMPLE_RATE as f64)
-                    .rem_euclid(1.0);
+                let turns =
+                    ((window_index as f64 + 0.5) * state.hum_window_samples as f64 * frequency_hz
+                        / SAMPLE_RATE as f64)
+                        .rem_euclid(1.0);
                 (std::f64::consts::TAU * turns) as f32
             };
-            state.hum_previous_absolute_phase =
-                phase_at_center(SIGNAL_HZ, ELAPSED_WINDOWS - 1);
+            state.hum_previous_absolute_phase = phase_at_center(SIGNAL_HZ, ELAPSED_WINDOWS - 1);
 
             let window_index = ELAPSED_WINDOWS;
             let bin_phase = wrap_phase(
-                phase_at_center(BIN_HZ, window_index)
-                    - phase_at_center(SIGNAL_HZ, window_index),
+                phase_at_center(BIN_HZ, window_index) - phase_at_center(SIGNAL_HZ, window_index),
             );
             let window_samples = state.hum_window_samples as f32;
             for (index, bin) in state.hum_bins.iter_mut().enumerate() {
@@ -717,10 +717,7 @@ mod adaptive_cleanup_tests {
 
         state.finish_hum_window();
 
-        assert_eq!(
-            state.hum_windows_observed,
-            u64::from(u32::MAX) + 1
-        );
+        assert_eq!(state.hum_windows_observed, u64::from(u32::MAX) + 1);
     }
 
     #[test]
@@ -757,6 +754,118 @@ mod adaptive_cleanup_tests {
         state.rumble_hold_samples = 480;
         state.process_block(&mut [0.0; 480]);
         assert_eq!(state.adaptive_highpass_hz, 100.0);
+    }
+
+    /// A 50.0 Hz notch (Q 36) settled on `hum_hz` hum and retuned to `to_hz`
+    /// at 3 s. `restart` clears the retuned state, as every retune did before.
+    fn render_notch_retune(to_hz: Option<f32>, hum_hz: f64, restart: bool) -> Vec<f32> {
+        use crate::test_signal::sine;
+        let mut notch = SmoothNotch::new(50.0, 36.0, 48_000.0);
+        (0..384_000)
+            .map(|n| {
+                if let (Some(to_hz), 144_000) = (to_hz, n) {
+                    notch.retune(to_hz);
+                    if restart {
+                        notch.pending.reset();
+                    }
+                }
+                notch.process_sample(sine(hum_hz, 0.1, 48_000.0, n))
+            })
+            .collect()
+    }
+
+    fn rms(signal: &[f32]) -> f64 {
+        (signal.iter().map(|&s| f64::from(s).powi(2)).sum::<f64>() / signal.len() as f64).sqrt()
+    }
+
+    #[test]
+    fn retuned_notch_keeps_cancelling_hum() {
+        // Hum at 50.15 Hz, inside the notch at both tunings. From zero state
+        // the hum came back: 0.0328 RMS over the 0.5 s after the retune
+        // against 0.0171 settled on either tuning; now 0.0094.
+        let retuned = render_notch_retune(Some(50.3), 50.15, false);
+        let restarted = render_notch_retune(Some(50.3), 50.15, true);
+        let after = rms(&retuned[144_000..168_000]);
+        let settled = rms(&retuned[120_000..144_000]);
+        assert!(
+            after < settled,
+            "residual hum {after} after the retune, {settled} settled"
+        );
+        assert!((rms(&restarted[144_000..168_000]) - 0.0328).abs() < 5e-4);
+
+        // A move across the hum line (0.6 Hz, just under f / 2Q) still beats
+        // a restart.
+        let crossing = rms(&render_notch_retune(Some(50.6), 50.3, false)[144_000..168_000]);
+        let crossing_restart = rms(&render_notch_retune(Some(50.6), 50.3, true)[144_000..168_000]);
+        assert!(
+            crossing < crossing_restart,
+            "{crossing} vs restart {crossing_restart}"
+        );
+
+        // Steady state: identical before the retune; from 4 s after it within
+        // 5e-4 (0.5% of the hum) of a notch tuned to 50.3 Hz from the start.
+        // f32 rounding in the Q-36 resonator alone leaves about 1.2e-4 here
+        // (1.3e-4 with the restart).
+        assert_eq!(
+            retuned[..144_000],
+            render_notch_retune(None, 50.15, false)[..144_000]
+        );
+        let mut target = SmoothNotch::new(50.3, 36.0, 48_000.0);
+        for (n, &actual) in retuned.iter().enumerate() {
+            let expected = target.process_sample(crate::test_signal::sine(50.15, 0.1, 48_000.0, n));
+            if n >= 336_000 {
+                assert!((actual - expected).abs() < 5e-4, "sample {n}");
+            }
+        }
+    }
+
+    /// 50.15 Hz hum through a settled 50.0 Hz notch that a spurious reading
+    /// retunes to 51.1 Hz at 3 s and, 5 ms into that fade, back to 50.3 Hz.
+    /// `restart` forces the old rule, which measured the second move from the
+    /// pending 51.1 Hz (0.8 Hz, beyond f / 2Q) and so restarted from zero
+    /// state, although the copied state is the active 50.0 Hz notch's, 0.3 Hz away.
+    fn render_double_retune(restart: bool) -> Vec<f32> {
+        use crate::test_signal::sine;
+        let mut notch = SmoothNotch::new(50.0, 36.0, 48_000.0);
+        (0..384_000)
+            .map(|n| {
+                if n == 144_000 {
+                    notch.retune(51.1);
+                }
+                if n == 144_240 {
+                    notch.retune(50.3);
+                    if restart {
+                        notch.pending.reset();
+                    }
+                }
+                notch.process_sample(sine(50.15, 0.1, 48_000.0, n))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn retune_mid_fade_measures_the_move_from_the_active_notch() {
+        let fixed = render_double_retune(false);
+        let restarted = render_double_retune(true);
+        let after = 144_240..168_240;
+        let residual = rms(&fixed[after.clone()]);
+        let restarted_residual = rms(&restarted[after]);
+        // Measured 0.0093 RMS; the restart left 0.0325.
+        assert!(
+            residual < restarted_residual,
+            "residual hum {residual}, restarted {restarted_residual}"
+        );
+
+        // Steady state: identical up to the second retune; from 4 s after it
+        // within 5e-4 of a notch tuned to 50.3 Hz from the start.
+        assert_eq!(fixed[..144_240], restarted[..144_240]);
+        let mut target = SmoothNotch::new(50.3, 36.0, 48_000.0);
+        for (n, &actual) in fixed.iter().enumerate() {
+            let expected = target.process_sample(crate::test_signal::sine(50.15, 0.1, 48_000.0, n));
+            if n >= 336_240 {
+                assert!((actual - expected).abs() < 5e-4, "sample {n}");
+            }
+        }
     }
 }
 

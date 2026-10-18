@@ -229,7 +229,7 @@ impl<
         true_peak_limiter.set_enabled(limiting);
         let stats = true_peak_limiter.process_block_inplace(output_safety_scratch.as_mut_slice());
         if limiting {
-            Self::record_true_peak_limiter_stats(stats, output_ceiling, counters);
+            Self::record_true_peak_limiter_stats(stats, counters);
         } else {
             counters
                 .output_true_peak_gain_reduction_db
@@ -272,9 +272,9 @@ impl<
             .store(headroom_db.to_bits(), Ordering::Relaxed);
     }
 
+    /// Output headroom is measured after the final clamp, in `record_true_peak`.
     fn record_true_peak_limiter_stats(
         stats: TruePeakLimiterBlockStats,
-        output_ceiling: f32,
         counters: &OutputWriteCounters<'_>,
     ) {
         if stats.limited_events > 0 {
@@ -294,11 +294,6 @@ impl<
             counters.output_true_peak_gain_reduction_history_db,
             0.15,
         );
-        let headroom_db =
-            20.0 * (output_ceiling.max(1e-10) / stats.output_true_peak.max(1e-10)).log10();
-        counters
-            .output_true_peak_headroom_db
-            .store(headroom_db.to_bits(), Ordering::Relaxed);
     }
 
     fn write_to_output_queue(
@@ -351,10 +346,7 @@ impl<
         }
     }
 
-    fn update_output_fill(
-        output_producer: &AudioProducer,
-        counters: &OutputWriteCounters<'_>,
-    ) {
+    fn update_output_fill(output_producer: &AudioProducer, counters: &OutputWriteCounters<'_>) {
         let new_fill = output_producer
             .capacity()
             .saturating_sub(output_producer.free_len());

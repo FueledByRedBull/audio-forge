@@ -23,7 +23,14 @@ from mic_eq.analysis.voice_setup import (
     _shape_error_db,
     _vad_masked_speech_features,
     analyze_voice_setup,
+    MAX_VERIFICATION_ADJUSTMENTS,
+    TARGET_LUFS_MAX,
+    TARGET_LUFS_MIN,
+    reduce_for_verification,
+    reducible_targets,
+    reduction_metrics,
     validate_voice_setup_verification,
+    verification_stop,
 )
 from mic_eq.analysis.auto_eq import get_target_curve, simulate_candidate_chain
 from mic_eq.analysis.cancellation import AnalysisCancelled
@@ -2297,3 +2304,45 @@ def test_a_rejected_voice_take_asks_for_another_voice_take(voice_dialog, take, t
     assert voice_dialog.start_button.text() == "Record Voice"
     assert voice_dialog.time_label.text() == "Ready to record again"
     assert voice_dialog.progress_bar.value() == 0
+
+
+def test_a_verification_reduction_steps_each_implicated_control_within_its_limits():
+    compressor = {"threshold_db": -1.0, "ratio": 1.05, "auto_makeup_enabled": True, "target_lufs": -18.0}
+    deesser = {"auto_amount": 0.6}
+    reduction = reduce_for_verification(compressor, deesser, ["compressor", "limiter", "deesser"])
+    assert reduction.compressor["threshold_db"] == 0.0 and reduction.compressor["ratio"] == 1.0
+    assert reduction.compressor["target_lufs"] == -19.0 and reduction.adjusted_target_lufs == -19.0
+    assert reduction.deesser["auto_amount"] == pytest.approx(0.51)
+    assert reduction.notes == [
+        "reduced compressor intensity", "lowered auto target loudness to -19 LUFS", "reduced de-esser intensity",
+    ]
+    assert compressor["target_lufs"] == -18.0 and deesser["auto_amount"] == 0.6  # the inputs are left alone
+
+    # The auto target stays inside the control's range at both ends, and a clamp that changes nothing says nothing.
+    above = reduce_for_verification({"auto_makeup_enabled": True, "target_lufs": -10.0}, {}, ["limiter"])
+    assert above.compressor["target_lufs"] == TARGET_LUFS_MAX and above.adjusted_target_lufs == TARGET_LUFS_MAX
+    floor = reduce_for_verification({"auto_makeup_enabled": True, "target_lufs": TARGET_LUFS_MIN}, {}, ["limiter"])
+    assert floor.compressor["target_lufs"] == TARGET_LUFS_MIN
+    assert floor.adjusted_target_lufs is None and floor.notes == []
+
+    manual = reduce_for_verification({"makeup_gain_db": 0.5}, {}, ["limiter"])
+    assert manual.compressor["makeup_gain_db"] == 0.0 and manual.notes == ["lowered manual makeup to 0.0 dB"]
+    assert reduce_for_verification({}, {}, []).notes == []
+
+
+def test_verification_stops_reducing_when_it_cannot_help():
+    assert reducible_targets(["limiter", "bogus", "deesser"]) == ["limiter", "deesser"]
+    assert reducible_targets(None) == []
+    metrics = reduction_metrics({"limiter_pressure_db": 4.0, "compressor_gain_reduction_p95_db": float("nan"),
+                                 "deesser_gain_reduction_p95_db": "high"})
+    assert metrics == {"limiter": 4.0}
+
+    assert verification_stop(0, [], None, {}) == "no_target"
+    assert verification_stop(MAX_VERIFICATION_ADJUSTMENTS, ["limiter"], None, {"limiter": 4.0}) == "three_adjustments"
+    assert verification_stop(1, ["limiter"], None, {"limiter": 4.0}) is None  # nothing to compare yet
+    assert verification_stop(1, ["limiter"], {"limiter": 4.0}, {"limiter": 3.9}) is None
+    assert verification_stop(1, ["limiter"], {"limiter": 4.0}, {"limiter": 3.96}) == "no_help"  # under 0.05 dB better
+    # One target that improved is enough; a target with no earlier reading is not compared.
+    assert verification_stop(1, ["limiter", "deesser"], {"limiter": 4.0, "deesser": 5.0},
+                             {"limiter": 4.0, "deesser": 4.0}) is None
+    assert verification_stop(1, ["deesser"], {"limiter": 4.0}, {"deesser": 6.0}) is None

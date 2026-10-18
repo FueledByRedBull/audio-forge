@@ -96,16 +96,7 @@ class GateState(QObject):
             self.changed.emit()
 
     def _write(self, settings: dict) -> None:
-        self.processor.set_gate_enabled(settings["enabled"])
-        self.processor.set_gate_threshold(settings["threshold_db"])
-        self.processor.set_gate_attack(settings["attack_ms"])
-        self.processor.set_gate_release(settings["release_ms"])
-        self.processor.set_gate_mode(settings["gate_mode"])
-        self.processor.set_vad_threshold(settings["vad_threshold"])
-        self.processor.set_vad_hold_time(settings["vad_hold_time_ms"])
-        self.processor.set_vad_pre_gain(settings["vad_pre_gain"])
-        self.processor.set_auto_threshold(settings["auto_threshold_enabled"])
-        self.processor.set_gate_margin(settings["gate_margin_db"])
+        self.processor.apply_gate_settings(settings)
 
     def _apply(self, candidate: dict, *, edited: bool) -> None:
         previous = self._applied_settings

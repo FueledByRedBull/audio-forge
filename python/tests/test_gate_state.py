@@ -18,23 +18,11 @@ class RecordingProcessor:
         self.fail_all_margins = False
         self.stopped = False
 
-    def __getattr__(self, name):
-        keys = {
-            "set_gate_enabled": "enabled", "set_gate_threshold": "threshold_db",
-            "set_gate_attack": "attack_ms", "set_gate_release": "release_ms",
-            "set_gate_mode": "gate_mode", "set_vad_threshold": "vad_threshold",
-            "set_vad_hold_time": "vad_hold_time_ms", "set_vad_pre_gain": "vad_pre_gain",
-            "set_auto_threshold": "auto_threshold_enabled",
-        }
-        if name in keys:
-            return lambda value: self.settings.__setitem__(keys[name], value)
-        raise AttributeError(name)
-
-    def set_gate_margin(self, value):
+    def apply_gate_settings(self, settings):
         if self.fail_next_margin or self.fail_all_margins:
             self.fail_next_margin = False
             raise RuntimeError("margin write rejected")
-        self.settings["gate_margin_db"] = value
+        self.settings.update({key: settings[key] for key in self.settings if key in settings})
         self.writes.append(self.settings.copy())
 
     def is_vad_available(self):

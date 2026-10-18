@@ -47,6 +47,7 @@ impl AudioRingBuffer {
                 consumer: self.consumer,
                 capacity: self.capacity,
                 last_sample: 0.0, // Start at silence
+                resume_fade_remaining: 0,
             },
         )
     }
@@ -76,8 +77,10 @@ impl AudioProducer {
         let written = self.producer.push_slice(samples);
         let dropped = samples.len() - written;
         if dropped > 0 {
+            // Release pairs with the DSP loop's Acquire load: the samples pushed
+            // above must be visible before the gap marker is.
             self.dropped_count
-                .fetch_add(dropped as u64, Ordering::Relaxed);
+                .fetch_add(dropped as u64, Ordering::Release);
         }
         written
     }
@@ -113,6 +116,8 @@ pub struct AudioConsumer {
     consumer: HeapCons<f32>,
     capacity: usize,
     last_sample: f32, // Track last sample for interpolation during underrun
+    /// Frames of the post-underrun fade-in still to apply.
+    resume_fade_remaining: usize,
 }
 
 impl AudioConsumer {
@@ -153,6 +158,14 @@ impl AudioConsumer {
 
     pub fn set_last_sample(&mut self, sample: f32) {
         self.last_sample = sample;
+    }
+
+    pub fn resume_fade_remaining(&self) -> usize {
+        self.resume_fade_remaining
+    }
+
+    pub fn set_resume_fade_remaining(&mut self, frames: usize) {
+        self.resume_fade_remaining = frames;
     }
 }
 
@@ -231,5 +244,15 @@ mod tests {
         // Reset counter
         producer.reset_dropped_count();
         assert_eq!(producer.get_dropped_count(), 0);
+    }
+
+    #[test]
+    fn dropped_counter_publishes_with_release() {
+        // The reader pairs this with an Acquire load to order the partial block
+        // pushed just before the bump; x86 cannot show the difference at runtime.
+        let source = include_str!("buffer.rs");
+        let write = &source
+            [source.find("pub fn write(").unwrap()..source.find("pub fn free_len(").unwrap()];
+        assert!(write.contains("fetch_add(dropped as u64, Ordering::Release)"));
     }
 }

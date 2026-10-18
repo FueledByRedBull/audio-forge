@@ -14,6 +14,10 @@ pub enum RtErrorCode {
     None = 0,
     InputStreamError = 1,
     OutputStreamError = 2,
+    /// Never stored: a full output queue is reported by the short-write and
+    /// recovery counters, and storing it here would overwrite a more serious
+    /// code (such as `SuppressorBackendFailed`) and keep the engine-error
+    /// warning lit until restart.
     OutputQueueOverflow = 3,
     InputBacklogDropped = 4,
     SuppressorBackendFailed = 5,

@@ -121,10 +121,10 @@ def test_bulk_compressor_apply_propagates_native_failure(native):
         def __getattr__(self, name):
             return getattr(native, name)
 
-        def set_compressor_adaptive_release(self, enabled):
+        def apply_compressor_settings(self, settings):
             if self.fail:
                 raise RuntimeError("adaptive release write failed")
-            native.set_compressor_adaptive_release(enabled)
+            native.apply_compressor_settings(settings)
 
     processor = FailingProcessor()
     state = CompressorState(processor)

@@ -17,8 +17,11 @@ use super::buffer::AudioConsumer;
 use super::clock::now_micros;
 use super::device::{device_for_endpoint_id, device_name, persisted_endpoint_id};
 use super::input::{AudioDeviceInfo, AudioError, TARGET_SAMPLE_RATE};
-use super::rt::{store_rt_error, RtErrorCode};
-use super::{find_48khz_config, parse_fixed_buffer_frames, supported_fixed_buffer_frames};
+use super::rt::RtErrorCode;
+use super::{
+    find_48khz_config, handle_stream_error, parse_fixed_buffer_frames,
+    supported_fixed_buffer_frames, validate_stream_format,
+};
 
 pub(crate) struct OutputProbeControl {
     pub(crate) consumer: AudioConsumer,
@@ -35,6 +38,9 @@ pub(crate) struct OutputProbeControl {
 /// margin and still surfaces a stream that never catches up (an oversized fixed
 /// buffer, a DSP slower than real time).
 pub(crate) const OUTPUT_PRIMING_MAX_US: u64 = 1_000_000;
+
+/// Frames over which an underrun fades out to silence and the next audio fades back in.
+const UNDERRUN_FADE_FRAMES: usize = 64;
 
 /// Output-callback underrun accounting shared with the processor.
 pub(crate) struct OutputUnderruns {
@@ -95,19 +101,11 @@ impl AudioOutput {
         sample_format: SampleFormat,
         config: &StreamConfig,
     ) -> bool {
-        match sample_format {
-            SampleFormat::I8 => Self::preflight_config::<i8>(device, config),
-            SampleFormat::F32 => Self::preflight_config::<f32>(device, config),
-            SampleFormat::F64 => Self::preflight_config::<f64>(device, config),
-            SampleFormat::I16 => Self::preflight_config::<i16>(device, config),
-            SampleFormat::I32 => Self::preflight_config::<i32>(device, config),
-            SampleFormat::I64 => Self::preflight_config::<i64>(device, config),
-            SampleFormat::U8 => Self::preflight_config::<u8>(device, config),
-            SampleFormat::U16 => Self::preflight_config::<u16>(device, config),
-            SampleFormat::U32 => Self::preflight_config::<u32>(device, config),
-            SampleFormat::U64 => Self::preflight_config::<u64>(device, config),
-            _ => false,
-        }
+        dispatch_sample_format!(
+            sample_format,
+            S => Self::preflight_config::<S>(device, config),
+            _ => false
+        )
     }
 
     fn select_device(device: Device) -> Result<OutputStreamSetup, AudioError> {
@@ -138,6 +136,7 @@ impl AudioOutput {
             .ok_or_else(|| {
                 AudioError::DefaultConfig("No suitable output config found".to_string())
             })?;
+        validate_stream_format(supported_config.channels(), supported_config.sample_rate())?;
 
         let device_info = AudioDeviceInfo {
             name,
@@ -207,28 +206,26 @@ impl AudioOutput {
             return;
         }
 
-        let fade_frames = remaining_frames.min(64);
+        let fade_frames = remaining_frames.min(UNDERRUN_FADE_FRAMES);
+        let tail = |i: usize| -> f32 {
+            if i >= fade_frames {
+                0.0
+            } else if last_sample == 0.0 {
+                // A zero of either sign times the non-negative gain is itself.
+                last_sample
+            } else {
+                let t = (i + 1) as f32 / fade_frames as f32;
+                let gain = ((1.0 - t) * std::f32::consts::FRAC_PI_2).sin();
+                last_sample * gain
+            }
+        };
         if num_channels == 1 {
             for i in 0..remaining_frames {
-                let value = if i < fade_frames {
-                    let t = (i + 1) as f32 / fade_frames as f32;
-                    let gain = ((1.0 - t) * std::f32::consts::FRAC_PI_2).sin();
-                    last_sample * gain
-                } else {
-                    0.0
-                };
-                data[copied_frames + i] = Self::convert_output_sample::<T>(value);
+                data[copied_frames + i] = Self::convert_output_sample::<T>(tail(i));
             }
         } else {
             for i in 0..remaining_frames {
-                let value = if i < fade_frames {
-                    let t = (i + 1) as f32 / fade_frames as f32;
-                    let gain = ((1.0 - t) * std::f32::consts::FRAC_PI_2).sin();
-                    last_sample * gain
-                } else {
-                    0.0
-                };
-                let converted = Self::convert_output_sample::<T>(value);
+                let converted = Self::convert_output_sample::<T>(tail(i));
                 let frame_idx = copied_frames + i;
                 for channel in 0..num_channels {
                     data[frame_idx * num_channels + channel] = converted;
@@ -238,6 +235,23 @@ impl AudioOutput {
     }
 
     // RT_REGION_START: cpal_output_renderer
+    /// Ramp up the first audio after an underrun, which ended in silence.
+    fn fade_in_after_underrun(samples: &mut [f32], consumer: &mut AudioConsumer) {
+        let remaining = consumer.resume_fade_remaining();
+        let count = remaining.min(samples.len());
+        if count == 0 {
+            return;
+        }
+        let elapsed = UNDERRUN_FADE_FRAMES - remaining;
+        for (i, sample) in samples[..count].iter_mut().enumerate() {
+            let t = (elapsed + i + 1) as f32 / UNDERRUN_FADE_FRAMES as f32;
+            *sample *= (t * std::f32::consts::FRAC_PI_2).sin();
+        }
+        consumer.set_resume_fade_remaining(remaining - count);
+        // A tail starting inside the fade must fade from what was played.
+        consumer.set_last_sample(samples[samples.len() - 1]);
+    }
+
     fn render_output<T>(
         data: &mut [T],
         num_channels: usize,
@@ -264,6 +278,7 @@ impl AudioOutput {
             if count == 0 {
                 break;
             }
+            Self::fade_in_after_underrun(&mut scratch[..count], consumer);
 
             for (i, &sample) in scratch[..count].iter().enumerate() {
                 let frame_idx = copied_frames + i;
@@ -312,6 +327,7 @@ impl AudioOutput {
             }
             Self::fill_underrun_tail(data, copied_frames, num_channels, consumer.last_sample());
             consumer.set_last_sample(0.0);
+            consumer.set_resume_fade_remaining(UNDERRUN_FADE_FRAMES);
         } else {
             underruns.streak.store(0, Ordering::Relaxed);
             if queued_at_us != 0 {
@@ -344,7 +360,29 @@ impl AudioOutput {
             }
         }
         consumer.set_last_sample(0.0);
+        // Unmute, the end of a recording and the end of a probe resume out of silence.
+        consumer.set_resume_fade_remaining(UNDERRUN_FADE_FRAMES);
         drained
+    }
+
+    /// Drain the queue and play silence while muted or recording; the cut
+    /// fades from the last played sample like an underrun tail.
+    fn render_muted<T>(
+        data: &mut [T],
+        num_channels: usize,
+        consumer: &mut AudioConsumer,
+        scratch: &mut [f32],
+    ) where
+        T: SizedSample + FromSample<f32>,
+    {
+        let frames_needed = if num_channels == 1 {
+            data.len()
+        } else {
+            data.len() / num_channels
+        };
+        let last_played = consumer.last_sample();
+        Self::drain_muted_consumer(consumer, frames_needed, scratch);
+        Self::fill_underrun_tail(data, 0, num_channels, last_played);
     }
 
     fn render_probe<T>(
@@ -421,6 +459,7 @@ impl AudioOutput {
         underruns: OutputUnderruns,
         error_count: Arc<AtomicU64>,
         rt_error_code: Arc<AtomicU32>,
+        restart_requested: Arc<AtomicBool>,
         output_probe: Option<OutputProbeControl>,
         fixed_buffer_frames: Option<u32>,
     ) -> Result<Self, AudioError>
@@ -475,17 +514,8 @@ impl AudioOutput {
                     if recording_active_clone.load(Ordering::Relaxed)
                         || output_muted_clone.load(Ordering::Relaxed)
                     {
-                        let frames_needed = if num_channels == 1 {
-                            data.len()
-                        } else {
-                            data.len() / num_channels
-                        };
-                        Self::drain_muted_consumer(&mut consumer, frames_needed, &mut mono_scratch);
+                        Self::render_muted(data, num_channels, &mut consumer, &mut mono_scratch);
                         underruns.streak.store(0, Ordering::Relaxed);
-                        let silence = Self::convert_output_sample::<T>(0.0);
-                        for sample in data.iter_mut() {
-                            *sample = silence;
-                        }
                         return;
                     }
 
@@ -500,9 +530,13 @@ impl AudioOutput {
                     // RT_REGION_END: cpal_output_callback
                 },
                 move |err| {
-                    let _ = err;
-                    error_count.fetch_add(1, Ordering::Relaxed);
-                    store_rt_error(rt_error_code.as_ref(), RtErrorCode::OutputStreamError);
+                    handle_stream_error(
+                        &err,
+                        RtErrorCode::OutputStreamError,
+                        &error_count,
+                        &rt_error_code,
+                        &restart_requested,
+                    );
                 },
                 None,
             )
@@ -525,6 +559,7 @@ impl AudioOutput {
         underruns: OutputUnderruns,
         error_count: Arc<AtomicU64>,
         rt_error_code: Arc<AtomicU32>,
+        restart_requested: Arc<AtomicBool>,
         output_probe: Option<OutputProbeControl>,
     ) -> Result<Self, AudioError> {
         let sample_format = setup.supported_config.sample_format();
@@ -541,8 +576,9 @@ impl AudioOutput {
             }
         }
 
-        match sample_format {
-            SampleFormat::I8 => Self::build_stream::<i8>(
+        dispatch_sample_format!(
+            sample_format,
+            S => Self::build_stream::<S>(
                 setup.device,
                 stream_config,
                 setup.device_info,
@@ -553,137 +589,12 @@ impl AudioOutput {
                 underruns,
                 error_count,
                 rt_error_code,
+                restart_requested,
                 output_probe,
                 fixed_buffer_frames,
             ),
-            SampleFormat::F32 => Self::build_stream::<f32>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::F64 => Self::build_stream::<f64>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::I16 => Self::build_stream::<i16>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::I32 => Self::build_stream::<i32>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::I64 => Self::build_stream::<i64>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::U8 => Self::build_stream::<u8>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::U16 => Self::build_stream::<u16>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::U32 => Self::build_stream::<u32>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            SampleFormat::U64 => Self::build_stream::<u64>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                output_probe,
-                fixed_buffer_frames,
-            ),
-            other => Err(AudioError::UnsupportedSampleFormat(other.to_string())),
-        }
+            _ => Err(AudioError::UnsupportedSampleFormat(sample_format.to_string()))
+        )
     }
 
     /// Start playing audio
@@ -914,6 +825,119 @@ mod tests {
         assert_eq!(underruns.total.load(Ordering::Relaxed), 1);
     }
 
+    /// Serve 480-frame mono callbacks of a 997 Hz tone at 0.5, with callback
+    /// `dropout` finding the queue empty when `dropout` is set.
+    fn render_dropout(dropout: Option<usize>) -> Vec<f32> {
+        use crate::test_signal::sine;
+        let rb = crate::audio::AudioRingBuffer::new(4_096);
+        let (mut producer, mut consumer) = rb.split();
+        let underruns = queued_underruns(0, 0);
+        let mut scratch = [0.0_f32; 256];
+        let mut next = 0;
+        let mut rendered = Vec::new();
+        for callback in 0..20 {
+            if Some(callback) != dropout {
+                let block: Vec<f32> = (next..next + 480)
+                    .map(|n| sine(997.0, 0.5, 48_000.0, n))
+                    .collect();
+                assert_eq!(producer.write(&block), 480);
+                next += 480;
+            }
+            let mut output = [0.0_f32; 480];
+            AudioOutput::render_output(&mut output, 1, &mut consumer, &mut scratch, 0, &underruns);
+            rendered.extend_from_slice(&output);
+        }
+        rendered
+    }
+
+    #[test]
+    fn test_audio_after_an_underrun_fades_back_in() {
+        use crate::test_signal::max_residual;
+        let output = render_dropout(Some(10));
+        let clean = render_dropout(None);
+        let max_step = |range: std::ops::Range<usize>| {
+            range
+                .map(|n| (output[n] - output[n - 1]).abs())
+                .fold(0.0_f32, f32::max)
+        };
+        // Resuming at full level stepped 0.476 out of silence (residual 0.476);
+        // now 0.055, under the tone's own largest step of 0.065, and a
+        // residual of 0.012, under the existing fade-out's 0.024.
+        let resume_step = max_step(5_270..5_340);
+        let steady_step = max_step(1..4_800);
+        assert!(
+            resume_step <= steady_step,
+            "resume step {resume_step}, tone {steady_step}"
+        );
+        let resume = max_residual(&output, &[997.0], 48_000.0, 5_270, 5_400);
+        let fade_out = max_residual(&output, &[997.0], 48_000.0, 4_790, 4_900);
+        assert!(
+            resume < fade_out,
+            "resume residual {resume}, fade-out {fade_out}"
+        );
+
+        // Steady state: bit-identical before the dropout and from 64 frames
+        // after the resume, where the tone continues one callback late.
+        assert_eq!(output[..4_800], clean[..4_800]);
+        assert!((5_344..9_600).all(|n| output[n] == clean[n - 480]));
+    }
+
+    /// Like `render_dropout`, but callback 10 is muted while the DSP keeps
+    /// queueing, so the tone stays on its timeline.
+    fn render_mute(mute: Option<usize>) -> Vec<f32> {
+        use crate::test_signal::sine;
+        let rb = crate::audio::AudioRingBuffer::new(4_096);
+        let (mut producer, mut consumer) = rb.split();
+        let underruns = queued_underruns(0, 0);
+        let mut scratch = [0.0_f32; 256];
+        let mut rendered = Vec::new();
+        for callback in 0..20 {
+            let block: Vec<f32> = (callback * 480..callback * 480 + 480)
+                .map(|n| sine(997.0, 0.5, 48_000.0, n))
+                .collect();
+            assert_eq!(producer.write(&block), 480);
+            let mut output = [0.0_f32; 480];
+            if Some(callback) == mute {
+                AudioOutput::render_muted(&mut output, 1, &mut consumer, &mut scratch);
+            } else {
+                AudioOutput::render_output(
+                    &mut output,
+                    1,
+                    &mut consumer,
+                    &mut scratch,
+                    0,
+                    &underruns,
+                );
+            }
+            rendered.extend_from_slice(&output);
+        }
+        rendered
+    }
+
+    #[test]
+    fn test_mute_fades_out_and_unmute_fades_back_in() {
+        let output = render_mute(Some(10));
+        let clean = render_mute(None);
+        let max_step = |range: std::ops::Range<usize>| {
+            range
+                .map(|n| (output[n] - output[n - 1]).abs())
+                .fold(0.0_f32, f32::max)
+        };
+        // The hard cut stepped 0.451 into silence and unmute 0.438 out of it;
+        // now 0.011 and 0.056, under the tone's own largest step of 0.065.
+        let steady = max_step(1..4_800);
+        let mute = max_step(4_800..4_900);
+        let unmute = max_step(5_270..5_340);
+        assert!(mute <= steady, "mute step {mute}, tone {steady}");
+        assert!(unmute <= steady, "unmute step {unmute}, tone {steady}");
+
+        // Steady state: bit-identical before the mute and from 64 frames
+        // after the unmute; the muted callback is silent after its fade.
+        assert_eq!(output[..4_800], clean[..4_800]);
+        assert!(output[4_864..5_280].iter().all(|&sample| sample == 0.0));
+        assert_eq!(output[5_344..], clean[5_344..]);
+    }
+
     fn render_empty_queue(underruns: &OutputUnderruns) {
         render_empty_queue_at(underruns, 0);
     }
@@ -1140,5 +1164,52 @@ mod tests {
         assert!(!active.load(Ordering::Acquire));
         assert!(complete.load(Ordering::Acquire));
         assert!(!cancel_requested.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn test_24_bit_output_formats_render_from_a_synthetic_queue() {
+        use crate::audio::buffer::AudioRingBuffer;
+        use cpal::{I24, U24};
+
+        let (mut producer, mut consumer) = AudioRingBuffer::new(8).split();
+        assert_eq!(producer.write(&[0.5, -0.5, 1.0, -1.0]), 4);
+        let mut scratch = [0.0_f32; 4];
+        let underruns = queued_underruns(0, 0);
+        let mut signed = [I24::new(0).unwrap(); 4];
+        let copied = AudioOutput::render_output::<I24>(
+            &mut signed,
+            1,
+            &mut consumer,
+            &mut scratch,
+            0,
+            &underruns,
+        );
+        assert_eq!(copied, 4);
+        let signed: Vec<i32> = signed.iter().map(|sample| sample.inner()).collect();
+        assert!((signed[0] - 4_194_304).abs() <= 1, "{signed:?}");
+        assert!((signed[1] + 4_194_304).abs() <= 1, "{signed:?}");
+        assert!(
+            signed[2] >= 8_388_606 && signed[3] <= -8_388_607,
+            "{signed:?}"
+        );
+
+        assert_eq!(producer.write(&[0.0, 1.0, -1.0, 0.5]), 4);
+        let mut unsigned = [U24::new(0).unwrap(); 4];
+        let copied = AudioOutput::render_output::<U24>(
+            &mut unsigned,
+            1,
+            &mut consumer,
+            &mut scratch,
+            0,
+            &underruns,
+        );
+        assert_eq!(copied, 4);
+        let unsigned: Vec<i32> = unsigned.iter().map(|sample| sample.inner()).collect();
+        assert!((unsigned[0] - 8_388_608).abs() <= 1, "{unsigned:?}");
+        assert!(
+            unsigned[1] >= 16_777_214 && unsigned[2] <= 1,
+            "{unsigned:?}"
+        );
+        assert!((unsigned[3] - 12_582_912).abs() <= 1, "{unsigned:?}");
     }
 }

@@ -153,6 +153,7 @@ class LatencyCalibrationWorker(QThread):
             }
             self.result_ready.emit(payload)
         except Exception as e:
+            logger.exception("Latency calibration analysis failed")
             self.failed.emit(f"Latency calibration failed: {type(e).__name__}: {e}")
 
     def stop(self):

@@ -18,24 +18,18 @@ class RecordingProcessor:
         self.failures_left = 0
         self.stopped = False
 
-    def __getattr__(self, name):
-        if not name.startswith("set_compressor_"):
-            raise AttributeError(name)
-
-        def write(value):
-            if name == "set_compressor_target_lufs" and self.failures_left:
-                self.failures_left -= 1
-                raise OSError("compressor write rejected")
-            self.values[name] = value
-            self.calls.append((name.removeprefix("set_compressor_"), value))
-
-        return write
+    def apply_compressor_settings(self, settings):
+        if self.failures_left:
+            self.failures_left -= 1
+            raise OSError("compressor write rejected")
+        self.values = dict(settings)
+        self.calls.append(dict(settings))
 
     def stop(self):
         self.stopped = True
 
 
-def test_adaptive_mode_flushes_old_release_before_applying_new_mode(qapp):
+def test_adaptive_mode_flushes_old_release_then_applies_new_mode_in_one_write(qapp):
     processor = RecordingProcessor()
     state = CompressorState(processor)
     state.set_settings({"release_ms": 220.123456, "base_release_ms": 60.987654})
@@ -44,9 +38,11 @@ def test_adaptive_mode_flushes_old_release_before_applying_new_mode(qapp):
     state.set_value("release_ms", 400.123456)
     assert not processor.calls
     state.set_value("adaptive_release", True)
-    assert processor.calls.index(("release", 400.123456)) < processor.calls.index(
-        ("adaptive_release", True)
-    ) < processor.calls.index(("base_release", 60.987654))
+    # The pending manual release is flushed in the old mode, then the new mode follows.
+    assert [(call["adaptive_release"], call["release_ms"], call["base_release_ms"])
+            for call in processor.calls] == [
+        (False, 400.123456, 60.987654), (True, 400.123456, 60.987654)
+    ]
     assert state.get_settings()["release_ms"] == 400.123456
     assert state.get_settings()["base_release_ms"] == 60.987654
     assert not state.control_enabled("release_ms")
@@ -54,9 +50,9 @@ def test_adaptive_mode_flushes_old_release_before_applying_new_mode(qapp):
 
     processor.calls.clear()
     state.set_value("adaptive_release", False)
-    assert processor.calls.index(("adaptive_release", False)) < processor.calls.index(
-        ("release", 400.123456)
-    )
+    assert [(call["adaptive_release"], call["release_ms"]) for call in processor.calls] == [
+        (False, 400.123456)
+    ]
     assert state.control_enabled("release_ms")
     assert not state.control_enabled("base_release_ms")
 

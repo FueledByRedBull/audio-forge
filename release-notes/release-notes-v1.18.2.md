@@ -5,10 +5,12 @@ changes no audio processing, no Voice Setup or Auto-EQ decision and no sound
 default.
 
 **Settings format.** The settings file (`config.json`) is now schema version 2.
-1.18.1 and older keep their defaults, show "AudioForge found a newer config
-format.", keep a recovery copy and will not save over a settings file this
-version has written. If you go back to an older build, expect its default
-settings until you return to 1.18.2. Presets are unchanged.
+1.12.0 through 1.18.1 keep their defaults, keep a recovery copy, show
+"AudioForge found a newer config format. It was preserved; settings changes cannot be saved until this build is upgraded."
+and will not save over a settings file this version has written. If you go
+back to an older build, expect its default settings until you return to
+1.18.2. The preset format is unchanged, but presets saved by 1.18.2 are
+stamped 1.18.2, and 1.18.1 and older refuse them as newer.
 
 ## Downloads
 
@@ -37,22 +39,31 @@ AudioForge remains unsigned. Virtual audio cable setup is described in the
   theme while AudioForge runs, the status line asks you to restart it. The
   peak-hold line takes the window text colour, and the EQ band numbers and the
   clip label keep dark text on their colours.
-- **Layout and text.** Text follows the app font and nothing is under 12 px.
+- **Layout and text.** Text in the main window's controls follows the app font
+  and none is under 12 px.
   The route row stacks below 1200 px, and the band editor keeps two columns only
   from 1400 px so the gain fader keeps its width. Switched-off stages show an
   Off badge instead of dimming, and each view has one primary button.
-- **Accessibility.** Banners and status messages are announced, tooltips appear
-  sooner and follow keyboard focus, picker popups stay inside the window, open
+- **Accessibility.** Banners and status messages are announced, and banners
+  sit under the top bar. Tooltips appear sooner; the help (?) tips open from
+  the keyboard and close on Esc or when focus leaves, and the page scrolls to
+  keep the focused control in view. Picker popups stay inside the window, open
   Advanced sections survive a layout change, and the rail and meters have
-  label-first accessible names with roles. Tab order is tested at 1200, 1400 and
+  label-first accessible names with roles. Reduced motion no longer slows the
+  meters or stops the level trace. Tab order is tested at 1200, 1400 and
   1800 px. Nothing was checked with a real screen reader or voice control.
 - **Wording.** Locked device pickers and Refresh say why. A failed device
   listing shows a warning instead of an "Error:" entry in the list. The gate's
   voice-detection rows read Voice threshold and Voice pre-gain. Start, Stop and
   Export diagnostics name their shortcuts, Health advice names where each
-  setting lives, and the tray tooltip fits Windows' 127 characters.
-- **Dialogs.** The listening comparison keeps Keep and Reject in view and says
-  the live output is muted. The latency dialog shows Total latency and
+  setting lives, and the tray tooltip fits Windows' 127 characters. Pressing
+  Start with no output selected says to choose one in the Output list. The
+  Auto-EQ chip is shorter, with its numbers in the tooltip, and the band editor
+  hides Q and slope when the filter does not use them. Settings rows for the
+  startup preset and device presets show the current choice.
+- **Dialogs.** The listening comparison keeps **Keep Proposed** and **Reject
+  Proposed** in view and says the live output is muted. Auto-EQ and Voice Setup
+  show that notice only while a recording mutes the output. The latency dialog shows Total latency and
   Confidence, with the other readings behind Show details.
 
 ## Fixes

@@ -14,12 +14,15 @@
 - Under a contrast theme the peak-hold line takes the window text colour, and the EQ band numbers and the clip label keep dark text on their colours.
 - A switch flipped with the Windows UI Automation toggle command (used by some screen readers and voice control) now changes the setting, not only the screen; this fixes the known issue in the 1.18.1 notes.
 - A switch acts only while it is enabled and returns to the setting's state if the change is refused.
-- Text sizes follow the app font, and none is under 12 px.
+- Text in the main window's controls follows the app font, and none is under 12 px.
 - The route row stacks below 1200 px, and the band editor keeps two columns only from 1400 px so the gain fader keeps its width.
 - Switched-off stages show an Off badge instead of dimming.
 - Each view has one primary button, and text stands in when the icon font is missing.
-- Banners and status messages are announced, and the rail and meters have label-first accessible names with roles; nothing was checked with a real screen reader or voice control.
-- Tooltips appear sooner and follow keyboard focus; picker popups stay inside the window; open Advanced sections survive a layout change.
+- Banners and status messages are announced, and banners sit under the top bar.
+- The rail and meters have label-first accessible names with roles; nothing was checked with a real screen reader or voice control.
+- Tooltips appear sooner; the help (?) tips open from the keyboard and close on Esc or when focus leaves.
+- The page scrolls to keep the focused control in view, picker popups stay inside the window, and open Advanced sections survive a layout change.
+- Reduced motion no longer slows the meters or stops the level trace.
 - Meter accessibility text changes only when its words do, and the level trace stops while the window is hidden.
 - Locked device pickers and Refresh say why they are locked.
 - A failed device listing shows a warning instead of an "Error:" entry in the list.
@@ -27,7 +30,11 @@
 - Start, Stop and Export diagnostics name their shortcuts in their tooltips.
 - Health advice names where each setting lives.
 - The tray tooltip fits Windows' 127 characters.
-- The listening comparison keeps Keep and Reject in view and says the live output is muted.
+- Pressing Start with no output selected says to choose one in the Output list.
+- The Auto-EQ chip is shorter, with its numbers in the tooltip.
+- The band editor hides Q and slope when the filter does not use them.
+- Settings rows for the startup preset and device presets show the current choice.
+- The listening comparison keeps **Keep Proposed** and **Reject Proposed** in view and says the live output is muted.
 - The live-output-muted notice in Auto-EQ and Voice Setup shows only while a recording mutes the output.
 - The latency dialog shows Total latency and Confidence, with the other readings behind Show details.
 - Peak hold and the clip strip run on elapsed time.
@@ -35,7 +42,8 @@
 ### Settings and presets
 
 - The config schema is now 2, for the new `confirm_quit_when_live` key; version 1 files migrate on load and presets are unchanged.
-- 1.18.1 and older find the newer format, run on their defaults, keep a recovery copy, show "AudioForge found a newer config format." and will not save over a settings file this version has written.
+- 1.12.0 through 1.18.1 find the newer format, run on their defaults, keep a recovery copy, show "AudioForge found a newer config format. It was preserved; settings changes cannot be saved until this build is upgraded." and will not save over a settings file this version has written.
+- The preset format is unchanged; presets saved by 1.18.2 are stamped 1.18.2, so 1.18.1 and older refuse them as newer.
 
 ### Internal
 

@@ -64,8 +64,8 @@ def test_catalog_keeps_the_quick_row_labels(qapp):
         "gate": {
             "threshold_db": "Threshold", "auto_threshold_enabled": "Auto threshold",
             "attack_ms": "Attack", "release_ms": "Release", "gate_mode": "Gate mode",
-            "vad_threshold": "VAD threshold", "vad_hold_time_ms": "Hold time",
-            "vad_pre_gain": "VAD pre-gain", "gate_margin_db": "Margin",
+            "vad_threshold": "Voice threshold", "vad_hold_time_ms": "Hold time",
+            "vad_pre_gain": "Voice pre-gain", "gate_margin_db": "Margin",
         },
         "deesser": {
             "auto_enabled": "Auto", "auto_amount": "Amount", "low_cut_hz": "Low cut",

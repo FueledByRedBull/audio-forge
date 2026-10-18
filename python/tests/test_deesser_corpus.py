@@ -136,3 +136,54 @@ def test_threshold_search_refuses_to_substitute_a_constant():
         evaluate_deesser_corpus._low_false_activation_threshold(
             labels, probabilities, maximum_false_positive_rate=0.0
         )
+
+
+def test_out_of_fold_split_holds_out_whole_clips_and_balances_labels(monkeypatch):
+    class StopAfterFrameFolds(Exception):
+        pass
+
+    clips = []
+    next_row = 0
+    for index in range(18):
+        row_count = 1 + index % 3
+        clips.append(
+            {
+                "name": f"clip-{index}",
+                "label": int(index % 3 != 0),
+                "row_start": next_row,
+                "row_count": row_count,
+            }
+        )
+        next_row += row_count
+    features = np.arange(next_row, dtype=float).reshape(-1, 1)
+    labels = np.zeros(next_row, dtype=int)
+    monkeypatch.setattr(
+        evaluate_deesser_corpus,
+        "_extract_corpus",
+        lambda: (features, labels, clips),
+    )
+    training_rows: list[set[int]] = []
+
+    def record_fit(train_features, train_labels, **kwargs):
+        training_rows.append({int(row) for row in train_features[:, 0]})
+        if len(training_rows) == 6:
+            raise StopAfterFrameFolds
+        return 0.0, np.zeros(1)
+
+    monkeypatch.setattr(evaluate_deesser_corpus, "_fit_logistic", record_fit)
+
+    with pytest.raises(StopAfterFrameFolds):
+        evaluate_deesser_corpus.train_and_evaluate()
+
+    all_rows = set(range(next_row))
+    held_out = [all_rows - rows for rows in training_rows]
+    assert sum(len(rows) for rows in held_out) == next_row
+    assert set().union(*held_out) == all_rows
+    for rows in held_out:
+        held_clips = [
+            clip
+            for clip in clips
+            if set(range(clip["row_start"], clip["row_start"] + clip["row_count"])) <= rows
+        ]
+        assert sum(clip["row_count"] for clip in held_clips) == len(rows)
+        assert sorted(int(clip["label"]) for clip in held_clips) == [0, 1, 1]

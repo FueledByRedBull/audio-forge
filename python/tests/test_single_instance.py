@@ -232,6 +232,7 @@ def test_login_lifecycle_keeps_hidden_session_alive_and_releases_lock_on_quit(
         def __init__(self, *, login_startup=False):
             super().__init__()
             self._quitting = False
+            self._quit_dont_ask = False
             self._hidden_to_tray = True
             self.tray_visible = True
             self._tray_icon = SimpleNamespace(

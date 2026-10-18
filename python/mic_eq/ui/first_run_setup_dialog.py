@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 from ..config import coerce_device_identity, save_config
 from ..config_parts.app_config import FIRST_RUN_SETUP_STEPS
 from .accessibility import bind_label, set_accessible_group
-from .components import Card, ToggleSwitch, form_layout
+from .components import Card, ToggleSwitch, form_layout, update_label
 from .health import RecentStreamHealth
 from .layout_constants import (
     MARGIN_PANEL,
@@ -431,10 +431,7 @@ class FirstRunSetupDialog(QDialog):
             else:
                 meter.set_unavailable()
                 text, style = f"{direction.title()}: --", message_text_style("idle")
-            if label.text() != text:
-                label.setText(text)
-            if label.styleSheet() != style:
-                label.setStyleSheet(style)
+            update_label(label, text, style)
 
     def _save_progress(self) -> bool:
         self.config.first_run_setup_step = self.current_step

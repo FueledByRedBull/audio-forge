@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .capture_session import LIVE_OUTPUT_MUTED_NOTICE
 from .layout_constants import MARGIN_PANEL, SPACING_SECTION
 from .theme import (
     CARD_STYLE,
@@ -23,6 +24,7 @@ from .theme import (
     STEP_STYLE,
     prefers_reduced_motion,
     qcolor,
+    status_chip_style,
 )
 
 SPACING_CARD = 16
@@ -167,6 +169,24 @@ def plain_label(text: str) -> str:
     """Menu text as a label: no mnemonic marker, no trailing ellipsis."""
 
     return text.replace("&&", "\0").replace("&", "").replace("\0", "&").removesuffix("...")
+
+
+def live_output_muted_notice() -> QLabel:
+    """The warning chip a dialog shows while its recording mutes the live output."""
+
+    label = QLabel(LIVE_OUTPUT_MUTED_NOTICE)
+    label.setWordWrap(True)
+    label.setStyleSheet(status_chip_style("warn"))
+    return label
+
+
+def update_label(label: QLabel, text: str, style: str) -> None:
+    """Set a label's text and style only when they changed, for callers that run on a timer."""
+
+    if label.text() != text:
+        label.setText(text)
+    if label.styleSheet() != style:
+        label.setStyleSheet(style)
 
 
 class StepHeader(QWidget):

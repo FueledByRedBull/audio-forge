@@ -48,7 +48,7 @@ from .auto_eq_explanation import (
     headroom_advice,
     target_profile_text,
 )
-from .components import StepHeader
+from .components import StepHeader, live_output_muted_notice, update_label
 from .layout_constants import (
     MARGIN_PANEL,
     SUBDUED_TEXT_STYLE,
@@ -79,7 +79,6 @@ from .setup_messages import (
 )
 from .capture_session import (
     CaptureSession,
-    LIVE_OUTPUT_MUTED_NOTICE,
     active_device_identities as _active_device_identities,
     device_label as _device_label,
     device_name as _device_name,
@@ -195,8 +194,8 @@ class CalibrationDialog(QDialog):
         self.curve_group.setVisible(step == 0)
         # The passage stays up before recording so it can be read ahead.
         self.instructions_group.setVisible(step < 2)
-        # Nothing records on the review step, so the live output is back.
-        self.mute_notice.setVisible(step != 2)
+        # Only a recording mutes the live output.
+        self.mute_notice.setVisible(self._recording_state in ("level_check", "recording"))
         # The meter only matters while something is being recorded.
         for widget in (self.progress_bar, self.time_label, self.level_meter_widget):
             widget.setVisible(step == 1)
@@ -343,9 +342,7 @@ class CalibrationDialog(QDialog):
 
         layout.addWidget(instructions_group)
 
-        self.mute_notice = QLabel(LIVE_OUTPUT_MUTED_NOTICE)
-        self.mute_notice.setWordWrap(True)
-        self.mute_notice.setStyleSheet(status_chip_style("warn"))
+        self.mute_notice = live_output_muted_notice()
         layout.addWidget(self.mute_notice)
 
         # Recording UI group
@@ -998,8 +995,9 @@ class CalibrationDialog(QDialog):
             again="check again" if self.recording_state == "level_check" else "record again",
         )
         if verdict is not None:
-            self.warning_label.setText(verdict.message)
-            self.warning_label.setStyleSheet(message_text_style(verdict.state, strong=True))
+            update_label(
+                self.warning_label, verdict.message, message_text_style(verdict.state, strong=True)
+            )
 
     def _finish_level_check(self, audio_data: np.ndarray) -> None:
         """Judge the check from its samples and offer the next step the verdict allows."""

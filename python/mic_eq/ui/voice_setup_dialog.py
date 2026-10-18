@@ -58,7 +58,6 @@ from ..config import (
 from .accessibility import bind_label, set_accessible_group
 from .capture_session import (
     CaptureSession,
-    LIVE_OUTPUT_MUTED_NOTICE,
     active_device_identities as _active_device_identities,
     device_label as _device_label,
     device_name as _device_name,
@@ -89,7 +88,7 @@ from .calibration_support import (
     on_analysis_thread_finished,
     wait_for_analysis_workers,
 )
-from .components import StepHeader
+from .components import StepHeader, live_output_muted_notice, update_label
 from .layout_constants import (
     MARGIN_PANEL,
     SUBDUED_TEXT_STYLE,
@@ -570,8 +569,11 @@ class VoiceSetupDialog(QDialog):
         # The level check is spoken from the passage, so it is shown from the first step on.
         self.voice_group.setVisible(step in (1, 3))
         self.review_page.setVisible(step == 4)
-        # Nothing records on the review step, so the live output is back.
-        self.mute_notice.setVisible(step != 4)
+        # Only a recording mutes the live output.
+        self.mute_notice.setVisible(
+            self._setup_state
+            in ("level_check", "noise_recording", "voice_recording", "verification_recording")
+        )
         if "start_button" in self.__dict__:
             suggestions = self._advisory_only and self._setup_state == "completed"
             self.start_button.setStyleSheet("" if suggestions else PRIMARY_ACTION_BUTTON_STYLE)
@@ -801,9 +803,7 @@ class VoiceSetupDialog(QDialog):
         voice_layout.addWidget(passage_text)
         layout.addWidget(voice_group)
 
-        self.mute_notice = QLabel(LIVE_OUTPUT_MUTED_NOTICE)
-        self.mute_notice.setWordWrap(True)
-        self.mute_notice.setStyleSheet(status_chip_style("warn"))
+        self.mute_notice = live_output_muted_notice()
         layout.addWidget(self.mute_notice)
 
         self.recording_group = QGroupBox("Recording")
@@ -1253,11 +1253,7 @@ class VoiceSetupDialog(QDialog):
 
     def _show_live_message(self, message: str, state: str) -> None:
         """Update the live label only when it changed; this runs on every 100 ms poll."""
-        style = message_text_style(state, strong=True)
-        if self.warning_label.text() != message:
-            self.warning_label.setText(message)
-        if self.warning_label.styleSheet() != style:
-            self.warning_label.setStyleSheet(style)
+        update_label(self.warning_label, message, message_text_style(state, strong=True))
 
     def _finish_level_check(self, audio_data: np.ndarray) -> None:
         """Judge the check from its samples and offer the next step the verdict allows."""

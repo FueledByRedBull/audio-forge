@@ -69,8 +69,7 @@ SCREENSHOTS: tuple[dict[str, str], ...] = (
         "view": "processing",
         "alt": (
             "AudioForge cards for noise suppression, noise gate, de-esser, "
-            "compressor and limiter, each with a switch and a collapsed Advanced "
-            "section."
+            "compressor and limiter, each with an on/off switch."
         ),
     },
     {

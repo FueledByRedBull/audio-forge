@@ -1,11 +1,9 @@
-# Registry rules used by the AudioForge security scan.
+# Registry rules used by the AudioForge security scan. Registry packs cannot
+# be pinned by version, so they follow the registry. Only registry names or
+# paths to rule files work here: semgrep loads no rules from a GitHub
+# repository URL and reports no error.
 p/security-audit
 p/secrets
 p/python
 p/rust
 p/github-actions
-
-# Third-party rule collections included in the reviewed 2026-07-10 audit.
-https://github.com/trailofbits/semgrep-rules
-https://github.com/elttam/semgrep-rules
-https://github.com/apiiro/malicious-code-ruleset

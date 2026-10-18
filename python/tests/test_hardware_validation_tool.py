@@ -65,6 +65,48 @@ def test_hardware_sample_rate_evidence_rejects_missing_or_non_integer_values() -
     assert TOOL._diagnostic_input_sample_rate({"input_sample_rate": 48_000}) == 48_000
 
 
+class _FakeHealthProcessor:
+    """A healthy processor; tests supply the diagnostics and restart count."""
+
+    restart_count = 0
+
+    def start(self, _input, _output):
+        return "Started"
+
+    def stop(self):
+        return None
+
+    def get_input_callback_age_ms(self):
+        return 1
+
+    def get_output_callback_age_ms(self):
+        return 1
+
+    def service_recovery(self):
+        return None
+
+    def get_stream_restart_count(self):
+        return self.restart_count
+
+    def get_runtime_diagnostics(self):
+        raise NotImplementedError
+
+
+def _install_fake_health_runtime(monkeypatch, processor: type) -> list[float]:
+    """Install a fake mic_eq module and a manual clock that sleeping advances by 1 s."""
+    module = ModuleType("mic_eq")
+    monkeypatch.setattr(module, "AudioProcessor", processor, raising=False)
+    monkeypatch.setitem(sys.modules, "mic_eq", module)
+    clock = [0.0]
+    monkeypatch.setattr(HEALTH_TOOL.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        HEALTH_TOOL.time,
+        "sleep",
+        lambda _seconds: clock.__setitem__(0, clock[0] + 1.0),
+    )
+    return clock
+
+
 def test_health_check_fails_after_warmup_on_backend_failure(monkeypatch, capsys) -> None:
     clean = {
         "noise_backend_available": True,
@@ -80,46 +122,22 @@ def test_health_check_fails_after_warmup_on_backend_failure(monkeypatch, capsys)
     diagnostics = iter((clean, failed))
     diagnostic_reads = 0
     stopped = False
-    clock = [0.0]
 
-    class Processor:
-        def start(self, _input, _output):
-            return "Started"
-
+    class Processor(_FakeHealthProcessor):
         def stop(self):
             nonlocal stopped
             stopped = True
-
-        def get_input_callback_age_ms(self):
-            return 1
-
-        def get_output_callback_age_ms(self):
-            return 1
-
-        def service_recovery(self):
-            return None
-
-        def get_stream_restart_count(self):
-            return 0
 
         def get_runtime_diagnostics(self):
             nonlocal diagnostic_reads
             diagnostic_reads += 1
             return next(diagnostics)
 
-    module = ModuleType("mic_eq")
-    monkeypatch.setattr(module, "AudioProcessor", Processor, raising=False)
-    monkeypatch.setitem(sys.modules, "mic_eq", module)
+    clock = _install_fake_health_runtime(monkeypatch, Processor)
     monkeypatch.setattr(
         HEALTH_TOOL.sys,
         "argv",
         ["health_check.py", "--duration", "1800", "--warmup", "0", "--poll", "0"],
-    )
-    monkeypatch.setattr(HEALTH_TOOL.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(
-        HEALTH_TOOL.time,
-        "sleep",
-        lambda _seconds: clock.__setitem__(0, clock[0] + 1.0),
     )
 
     assert HEALTH_TOOL.main() == 6
@@ -142,39 +160,14 @@ def test_health_check_allow_recovery_tolerates_recovery_counters(
         "output_recovery_event_count": 1,
         "stream_restart_count": 1,
     }
-    clock = [0.0]
 
-    class Processor:
-        def start(self, _input, _output):
-            return "Started"
-
-        def stop(self):
-            return None
-
-        def get_input_callback_age_ms(self):
-            return 1
-
-        def get_output_callback_age_ms(self):
-            return 1
-
-        def service_recovery(self):
-            return None
-
-        def get_stream_restart_count(self):
-            return 1
+    class Processor(_FakeHealthProcessor):
+        restart_count = 1
 
         def get_runtime_diagnostics(self):
             return diagnostics
 
-    module = ModuleType("mic_eq")
-    monkeypatch.setattr(module, "AudioProcessor", Processor, raising=False)
-    monkeypatch.setitem(sys.modules, "mic_eq", module)
-    monkeypatch.setattr(HEALTH_TOOL.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(
-        HEALTH_TOOL.time,
-        "sleep",
-        lambda _seconds: clock.__setitem__(0, clock[0] + 1.0),
-    )
+    clock = _install_fake_health_runtime(monkeypatch, Processor)
     arguments = ["health_check.py", "--duration", "3", "--warmup", "0", "--poll", "0"]
 
     monkeypatch.setattr(HEALTH_TOOL.sys, "argv", [*arguments, "--allow-recovery"])

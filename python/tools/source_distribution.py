@@ -52,6 +52,8 @@ TRUSTED_SOURCE_HOSTS = frozenset(
     }
 )
 EXPECTED_CPYTHON_VERSION = "3.13.15"
+# The largest pinned source archive is qtbase at about 51 MB.
+DOWNLOAD_MAX_BYTES = 256 * 1024 * 1024
 PYPI_SDIST_PACKAGES = (
     ("numpy", "NumPy"),
     ("pyinstaller", "PyInstaller"),
@@ -1553,6 +1555,17 @@ def _git_archive_bytes(revision: str, version: str) -> bytes:
     return completed.stdout
 
 
+def _tar_entries(data: bytes) -> list[tuple[str, str, int, str, str]]:
+    """List what a tar extracts to, ignoring timestamps and owners."""
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as archive:
+        entries = []
+        for member in archive.getmembers():
+            body = archive.extractfile(member) if member.isfile() else None
+            digest = hashlib.sha256(body.read()).hexdigest() if body is not None else ""
+            entries.append((member.name, member.type.decode(), member.mode, member.linkname, digest))
+    return sorted(entries)
+
+
 def _validate_project_archive(path: Path, manifest: dict[str, Any], revision: str) -> str:
     """Prove the project tar is the git archive for the recorded revision."""
     if not path.is_file():
@@ -1562,9 +1575,10 @@ def _validate_project_archive(path: Path, manifest: dict[str, Any], revision: st
     actual_bytes = path.read_bytes()
     expected_bytes = _git_archive_bytes(revision, str(manifest["project_version"]))
     actual_digest = hashlib.sha256(actual_bytes).hexdigest()
-    if actual_bytes != expected_bytes:
-        raise SourceDistributionError("Project source archive does not match the recorded git revision")
     try:
+        # Not a byte comparison: other git versions write different tar bytes.
+        if _tar_entries(actual_bytes) != _tar_entries(expected_bytes):
+            raise SourceDistributionError("Project source archive does not match the recorded git revision")
         with tarfile.open(fileobj=io.BytesIO(actual_bytes), mode="r:") as archive:
             members = archive.getmembers()
             if not members:
@@ -1619,7 +1633,13 @@ def _download(entry: dict[str, Any], destination: Path) -> Path:
             _validate_source_url(final_url)
             with temporary.open("xb") as handle:
                 digest = hashlib.sha256()
+                size = 0
                 for chunk in iter(lambda: response.read(1024 * 1024), b""):
+                    size += len(chunk)
+                    if size > DOWNLOAD_MAX_BYTES:
+                        raise SourceDistributionError(
+                            f"Source download for {entry.get('id')} exceeded {DOWNLOAD_MAX_BYTES} bytes"
+                        )
                     digest.update(chunk)
                     handle.write(chunk)
                 handle.flush()
@@ -1639,7 +1659,7 @@ def _download(entry: dict[str, Any], destination: Path) -> Path:
         raise SourceDistributionError(
             f"Could not download source for {entry.get('id')}: {exc}"
         ) from exc
-    except Exception:
+    except BaseException:
         temporary.unlink(missing_ok=True)
         raise
 

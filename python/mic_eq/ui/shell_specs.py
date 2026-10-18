@@ -164,8 +164,8 @@ ACTION_SPECS = {
         "Refresh", "Refresh audio devices", "Refresh audio devices",
         locked_tip="Refresh audio devices (not available while processing)",
     ),
-    "start_btn": _ActionSpec("Start Processing"),
-    "stop_btn": _ActionSpec("Stop Processing", enabled=False),
+    "start_btn": _ActionSpec("Start Processing", "Start processing (Ctrl+Return)"),
+    "stop_btn": _ActionSpec("Stop Processing", "Stop processing (Ctrl+.)", enabled=False),
     "_undo_auto_eq_button": _ActionSpec(
         "Undo",
         "Undo the most recent processing-configuration edit (Ctrl+Z)",

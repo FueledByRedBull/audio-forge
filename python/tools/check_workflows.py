@@ -78,6 +78,11 @@ FORBIDDEN_TRIGGERS = frozenset({"pull_request_target", "workflow_run", "issue_co
 # (inputs, event fields, even through env) reaches a script as $env:NAME instead.
 RUN_EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
 SAFE_RUN_EXPRESSION = re.compile(r"(?:steps|needs)\.[\w-]+\.outputs\.[\w-]+")
+# A checkout of a tag input names refs/tags/ (a bare name can resolve to a
+# branch of that name) and the job then asserts HEAD is the tag's commit.
+TAG_INPUT = re.compile(r"inputs\.\w*tag\b")
+TAG_CHECKOUT_REF = re.compile(r"refs/tags/\$\{\{\s*inputs\.\w+\s*\}\}")
+HEAD_IS_TAG_COMMIT = re.compile(r"git rev-parse HEAD\)\.Trim\(\)\s+-ne\b")
 # Allowed pip_audit --ignore-vuln ids, each with the dev-lock pin that causes it.
 # The ignore stops being allowed once the lock moves off that pin.
 AUDIT_IGNORES = {"CVE-2026-59951": ("mcp", "1.29.0")}
@@ -492,18 +497,17 @@ def _joined_run_lines(document: dict[str, Any]) -> list[str]:
     return joined.splitlines()
 
 
+def _reviewed_advisories() -> set[str]:
+    warnings = json.loads(DEEPFILTER_PROVENANCE_PATH.read_text(encoding="utf-8"))[
+        "audit"
+    ]["allowed_warnings"]
+    return {warning["advisory"] for warning in warnings}
+
+
 def _check_rustsec_ignores(
-    name: str, document: dict[str, Any], errors: list[str]
+    name: str, document: dict[str, Any], reviewed: set[str], errors: list[str]
 ) -> None:
     """Allow only the DeepFilter advisories reviewed in provenance.json, and only there."""
-    try:
-        warnings = json.loads(DEEPFILTER_PROVENANCE_PATH.read_text(encoding="utf-8"))[
-            "audit"
-        ]["allowed_warnings"]
-        reviewed = {warning["advisory"] for warning in warnings}
-    except (OSError, KeyError, TypeError, ValueError) as error:
-        errors.append(f"{name}: cannot read the reviewed advisories in provenance.json: {error}")
-        return
     audits_deepfilter = False
     for line in _joined_run_lines(document):
         if not _active_run_has_marker([line], "cargo audit"):
@@ -530,19 +534,45 @@ def _check_triggers_and_expressions(
         if trigger in FORBIDDEN_TRIGGERS:
             errors.append(f"{name}: trigger {trigger} is not allowed")
     jobs = document.get("jobs")
+    job_list = [job for job in jobs.values() if isinstance(job, dict)] if isinstance(jobs, dict) else []
     if names != ["workflow_dispatch"] and any(
-        isinstance(job, dict) and "self-hosted" in str(job.get("runs-on"))
-        for job in (jobs.values() if isinstance(jobs, dict) else ())
+        "self-hosted" in str(job.get("runs-on")) for job in job_list
     ):
         errors.append(f"{name}: a self-hosted runner may be used only by workflow_dispatch")
-    for job in jobs.values() if isinstance(jobs, dict) else ():
-        for step in job.get("steps", []) if isinstance(job, dict) else ():
+    for job in job_list:
+        for step in job.get("steps", []):
             for expression in RUN_EXPRESSION.findall(str(step.get("run", ""))):
                 if SAFE_RUN_EXPRESSION.fullmatch(expression.strip()) is None:
                     errors.append(
                         f"{name}: run text must not interpolate {expression.strip()!r}; "
                         "pass it through env"
                     )
+
+
+def _check_tag_checkouts(
+    name: str, document: dict[str, Any], errors: list[str]
+) -> None:
+    """Tag-input checkouts must use refs/tags/ and be followed by a HEAD-is-tag-commit assertion."""
+    jobs = document.get("jobs")
+    for job_id, job in jobs.items() if isinstance(jobs, dict) else ():
+        steps = [step for step in (job.get("steps") if isinstance(job, dict) else None) or [] if isinstance(step, dict)]
+        runs = "\n".join(str(step.get("run", "")) for step in steps)
+        for step in steps:
+            ref = str((step.get("with") or {}).get("ref", ""))
+            # release-package.yml's optional-tag ref has its own tag-commit gate.
+            if (
+                not str(step.get("uses", "")).startswith("actions/checkout@")
+                or TAG_INPUT.search(ref) is None
+                or ref == RELEASE_SOURCE_REF
+            ):
+                continue
+            if TAG_CHECKOUT_REF.fullmatch(ref) is None:
+                errors.append(f"{name}: {job_id}: checkout of {ref} must use refs/tags/")
+            elif HEAD_IS_TAG_COMMIT.search(runs) is None:
+                errors.append(
+                    f"{name}: {job_id}: checkout of {ref} must be followed by a check "
+                    "that HEAD is the tag commit"
+                )
 
 
 def _check_audit_ignores(
@@ -907,6 +937,12 @@ def check_workflows() -> list[str]:
     if not paths:
         return ["no workflow YAML files found"]
 
+    try:
+        reviewed = _reviewed_advisories()
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        errors.append(f"cannot read the reviewed advisories in provenance.json: {error}")
+        reviewed = None
+
     for path in paths:
         source = path.read_text(encoding="utf-8")
         try:
@@ -919,8 +955,10 @@ def check_workflows() -> list[str]:
         _check_required_gates(path.name, source, errors, document=document)
         _check_cargo_locked(path.name, document, errors)
         _check_audit_ignores(path.name, document, errors)
-        _check_rustsec_ignores(path.name, document, errors)
+        if reviewed is not None:
+            _check_rustsec_ignores(path.name, document, reviewed, errors)
         _check_triggers_and_expressions(path.name, document, errors)
+        _check_tag_checkouts(path.name, document, errors)
         _check_python_runtime(path.name, source, errors)
 
         action_refs = ACTION_REF.findall(source)

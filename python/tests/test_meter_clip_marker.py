@@ -10,6 +10,8 @@ from mic_eq.ui.level_meter import (
     CLIP_FLAT_TOP_SAMPLES,
     CLIP_HOLD_SECONDS,
     CLIP_STRIP_SECONDS,
+    ConfidenceMeter,
+    GainReductionMeter,
     LevelMeter,
     MeterWidget,
 )
@@ -361,8 +363,6 @@ def test_the_clip_strip_is_steady_and_clears_by_the_clock(qapp):
 
 
 def test_meters_speak_their_reading_and_announce_it_only_when_the_whole_number_changes(qapp):
-    from mic_eq.ui.level_meter import ConfidenceMeter, GainReductionMeter
-
     meter = LevelMeter("IN", clock=_Clock())
     assert meter.property("valueText") == "no signal"
     announced = []

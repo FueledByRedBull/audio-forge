@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pytest
 
 import evaluate_resampler_quality
 
@@ -38,6 +39,20 @@ def test_run_trims_padding_to_native_expected_count():
     assert output.tolist() == source.tolist()
     assert delay == 7
     assert timings == [10]
+
+
+def test_long_stream_case_rejects_a_simulator_without_timings(monkeypatch):
+    monkeypatch.setattr(
+        evaluate_resampler_quality, "_run", lambda *args, **kwargs: ([], 0, [])
+    )
+
+    with pytest.raises(ValueError, match="no block timings"):
+        evaluate_resampler_quality._long_stream_and_timing_case(
+            44_100,
+            48_000,
+            1,
+            evaluate_resampler_quality.ResamplerConfiguration("test", 128, "blackman"),
+        )
 
 
 def test_offline_reference_is_flat_at_twenty_kilohertz():

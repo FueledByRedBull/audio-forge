@@ -4258,7 +4258,7 @@
       "files": [
         {
           "path": "build_deepfilter.ps1",
-          "sha256": "4c558d0989901cabeadd6e9bb3bb373dd7130049e16e9c68bf5bd29d6110ff83"
+          "sha256": "d5de382ae958afa5c099ac05d7110b95dcc2f952e9f6fbbbc4fc07d66cdf7d65"
         },
         {
           "path": "build-support/deepfilter/Cargo.toml",
@@ -4270,7 +4270,7 @@
         },
         {
           "path": "build-support/deepfilter/provenance.json",
-          "sha256": "7922529f3563e1a94799d784a852d3ad4f07d1b2f76bb8d2251f9af598394983"
+          "sha256": "adec0fbd46cc0bb80fd818a1762213fabf5a08a739e64560751c66a9107b8624"
         }
       ],
       "id": "deepfilter-build",

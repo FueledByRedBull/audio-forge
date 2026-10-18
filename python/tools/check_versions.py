@@ -131,6 +131,13 @@ def _check_only_current_release_notes(version: ReleaseVersion) -> None:
         )
 
 
+def _check_changelog_entry(version: ReleaseVersion) -> None:
+    # A release candidate is described by the changelog section of its final version.
+    heading = f"v{version.base}"
+    if re.search(rf"(?m)^## {re.escape(heading)}(?:\s|$)", _read("CHANGELOG.md")) is None:
+        raise ValueError(f"CHANGELOG.md has no '## {heading}' entry")
+
+
 def main() -> int:
     _check_python_runtime()
     _check_release_asset_hydration()
@@ -176,6 +183,7 @@ def main() -> int:
             f"release notes: expected file is missing: {release_notes_path.relative_to(REPO_ROOT)}"
         )
     _check_only_current_release_notes(expected)
+    _check_changelog_entry(expected)
 
     mismatches = {
         path: version

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import http.client
 import io
 import os
 import runpy
@@ -441,6 +442,16 @@ def test_build_script_propagates_pyinstaller_failure_code():
     assert "exit $pyinstallerExitCode" in source
 
 
+def test_msi_builder_accepts_the_wix_eula_only_when_asked():
+    script = (check_workflows.REPO_ROOT / "build_msi.ps1").read_text(encoding="utf-8")
+    workflow = (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert script.index("if (-not $AcceptWixEula)") < script.index("eula accept wix7")
+    assert workflow.count("build_msi.ps1") == workflow.count("-AcceptWixEula")
+
+
 def test_msi_builder_accepts_explicit_python_path():
     source = (check_workflows.REPO_ROOT / "build_msi.ps1").read_text(
         encoding="utf-8"
@@ -853,6 +864,105 @@ def test_release_job_layout_is_part_of_the_release_gate_check():
     )
 
     assert "release-package.yml: static must run '-m ruff check'" in errors
+
+
+def test_audit_ignore_is_found_whatever_order_the_flags_take(tmp_path, monkeypatch):
+    reordered = (
+        "pip_audit -r requirements/dev.txt --ignore-vuln CVE-2000-0001 --require-hashes"
+    )
+    errors = _audit_ignore_errors(tmp_path, monkeypatch, DEV_AUDIT, reordered)
+    assert "CVE-2000-0001" in errors and "not an allowed audit ignore" in errors
+
+
+def _rustsec_errors(tmp_path, monkeypatch, old, new):
+    source = (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+    assert old in source
+    (tmp_path / "ci.yml").write_text(source.replace(old, new), encoding="utf-8")
+    monkeypatch.setattr(check_workflows, "WORKFLOW_DIR", tmp_path)
+    return "; ".join(check_workflows.check_workflows())
+
+
+def test_rustsec_ignores_must_match_the_reviewed_deepfilter_advisories(
+    tmp_path, monkeypatch
+):
+    errors = _rustsec_errors(
+        tmp_path, monkeypatch, "--ignore RUSTSEC-2026-0319", "--ignore RUSTSEC-2000-0001"
+    )
+    assert "cargo audit ignores" in errors and "RUSTSEC-2026-0319" in errors
+
+
+def test_deepfilter_rustsec_audit_is_required(tmp_path, monkeypatch):
+    errors = _rustsec_errors(
+        tmp_path, monkeypatch, "--file build-support/deepfilter/Cargo.lock", "--file Cargo.lock"
+    )
+    assert "ci.yml: missing a cargo audit of build-support/deepfilter/Cargo.lock" in errors
+
+
+def test_rustsec_ignore_is_rejected_on_the_application_lock(tmp_path, monkeypatch):
+    errors = _rustsec_errors(
+        tmp_path,
+        monkeypatch,
+        "cargo audit --deny warnings\n",
+        "cargo audit --deny warnings --ignore RUSTSEC-2024-0436\n",
+    )
+    assert "cargo audit ignores ['RUSTSEC-2024-0436'], expected []" in errors
+
+
+def test_workflow_checker_rejects_privileged_triggers_and_run_interpolation():
+    errors: list[str] = []
+    document = {
+        True: {"pull_request_target": {}, "workflow_dispatch": {}},
+        "jobs": {
+            "build": {
+                "runs-on": "windows-latest",
+                "steps": [
+                    {"run": "echo ${{ inputs.release_tag }}"},
+                    {"run": "echo ${{ steps.meta.outputs.tag }} ${{ needs.a-b.outputs.c }}"},
+                    {"run": "echo ${{ steps.a.outputs.b || inputs.release_tag }}"},
+                    {"run": "echo ${{ env.FROM_INPUT }} ${{ github.event.head_commit.message }}"},
+                ],
+            }
+        },
+    }
+
+    check_workflows._check_triggers_and_expressions("x.yml", document, errors)
+
+    assert errors == [
+        "x.yml: trigger pull_request_target is not allowed",
+        "x.yml: run text must not interpolate 'inputs.release_tag'; pass it through env",
+        "x.yml: run text must not interpolate 'steps.a.outputs.b || inputs.release_tag'; "
+        "pass it through env",
+        "x.yml: run text must not interpolate 'env.FROM_INPUT'; pass it through env",
+        "x.yml: run text must not interpolate 'github.event.head_commit.message'; "
+        "pass it through env",
+    ]
+
+
+def test_workflow_checker_limits_self_hosted_runners_to_manual_dispatch():
+    document = {
+        True: {"pull_request": {}},
+        "jobs": {"hw": {"runs-on": ["self-hosted", "windows"], "steps": []}},
+    }
+    errors: list[str] = []
+
+    check_workflows._check_triggers_and_expressions("x.yml", document, errors)
+
+    assert errors == ["x.yml: a self-hosted runner may be used only by workflow_dispatch"]
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [
+        "uses: actions/setup-python@v7\n  with:\n    python-version: 3.12\n",
+        "uses: actions/setup-python@v7\n  with:\n    python-version-file: .python-version\n",
+    ],
+)
+def test_workflow_checker_reads_unquoted_and_missing_python_versions(setup):
+    errors: list[str] = []
+
+    check_workflows._check_python_runtime("ci.yml", f"- {setup}", errors)
+
+    assert errors
 
 
 def test_workflow_checker_rejects_legacy_python_pin():
@@ -1733,6 +1843,22 @@ def test_prune_bundle_removes_duplicate_native_extension_only_when_packaged_copy
     assert not (bundle / "_internal" / "mic_eq_core").exists()
 
 
+def test_prune_bundle_cli_refuses_a_folder_that_is_not_a_bundle(
+    tmp_path, monkeypatch, capsys
+):
+    stray = tmp_path / "venv" / "Lib" / "ucrtbase.dll"
+    stray.parent.mkdir(parents=True)
+    stray.write_bytes(b"x")
+    monkeypatch.setattr(sys, "argv", ["prune_bundle.py", str(tmp_path)])
+
+    with pytest.raises(SystemExit) as raised:
+        prune_bundle.main()
+
+    assert raised.value.code == 2
+    assert "is not an AudioForge bundle" in capsys.readouterr().err
+    assert stray.is_file()
+
+
 def test_prune_bundle_removes_foreign_python_abi_extension(tmp_path):
     bundle = tmp_path / "AudioForge"
     _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
@@ -2261,11 +2387,19 @@ def test_verify_release_assets_accepts_attested_source_build(tmp_path, monkeypat
     assert any("recipe hash mismatch" in error for error in errors)
 
 
+class _FakeOpener:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def open(self, request, timeout):
+        return io.BytesIO(self.payload)
+
+
 def test_fetch_release_assets_direct_download_writes_response(tmp_path, monkeypatch):
     monkeypatch.setattr(
         fetch_release_assets.urllib.request,
-        "urlopen",
-        lambda request, timeout: io.BytesIO(b"pinned-model"),
+        "build_opener",
+        lambda *handlers: _FakeOpener(b"pinned-model"),
     )
     destination = tmp_path / "silero_vad.onnx"
 
@@ -2275,6 +2409,37 @@ def test_fetch_release_assets_direct_download_writes_response(tmp_path, monkeypa
     )
 
     assert destination.read_bytes() == b"pinned-model"
+
+
+def test_fetch_release_assets_direct_download_rejects_oversized_response(tmp_path, monkeypatch):
+    monkeypatch.setattr(fetch_release_assets, "DIRECT_DOWNLOAD_MAX_BYTES", 4)
+    monkeypatch.setattr(
+        fetch_release_assets.urllib.request,
+        "build_opener",
+        lambda *handlers: _FakeOpener(b"too-large"),
+    )
+    destination = tmp_path / "silero_vad.onnx"
+
+    with pytest.raises(RuntimeError, match="exceeded 4 bytes"):
+        fetch_release_assets._download_direct_url(
+            "https://raw.githubusercontent.com/example/project/revision/silero_vad.onnx",
+            destination,
+        )
+
+    assert not destination.exists()
+
+
+def test_fetch_release_assets_direct_download_does_not_follow_redirects():
+    handler = fetch_release_assets._NoRedirectHandler()
+    request = fetch_release_assets.urllib.request.Request(
+        "https://raw.githubusercontent.com/example/project/revision/silero_vad.onnx"
+    )
+
+    redirected = handler.redirect_request(
+        request, io.BytesIO(), 302, "Found", http.client.HTTPMessage(), "https://evil.example/x"
+    )
+
+    assert redirected is None
 
 
 def test_fetch_release_assets_rejects_untrusted_direct_download_url(tmp_path):
@@ -2561,6 +2726,32 @@ def test_version_check_accepts_generated_archive_sidecar_references(
     monkeypatch.setattr(check_versions, "REPO_ROOT", tmp_path)
 
     check_versions._check_no_static_current_archive_claims("9.8.7")
+
+
+def test_version_check_requires_a_changelog_entry_for_the_version(tmp_path, monkeypatch):
+    monkeypatch.setattr(check_versions, "REPO_ROOT", tmp_path)
+    version = check_versions.parse_version("9.8.7")
+    (tmp_path / "CHANGELOG.md").write_text("# Changelog\n\n## v9.8.6\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="no '## v9.8.7' entry"):
+        check_versions._check_changelog_entry(version)
+
+    (tmp_path / "CHANGELOG.md").write_text("## v9.8.7 - 2026-10-18\n", encoding="utf-8")
+    check_versions._check_changelog_entry(version)
+
+
+def test_version_check_accepts_the_final_versions_changelog_for_a_release_candidate(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(check_versions, "REPO_ROOT", tmp_path)
+    version = check_versions.parse_version("9.8.7rc1")
+    (tmp_path / "CHANGELOG.md").write_text("## v9.8.6\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="no '## v9.8.7' entry"):
+        check_versions._check_changelog_entry(version)
+
+    (tmp_path / "CHANGELOG.md").write_text("## v9.8.7\n", encoding="utf-8")
+    check_versions._check_changelog_entry(version)
 
 
 def test_version_check_rejects_extra_release_notes(tmp_path, monkeypatch):

@@ -70,6 +70,14 @@ RELEASE_JOB_GATES = {
     "rust-stress": ("cargo test --release --locked -p mic_eq_core --test stress_tests",),
 }
 DEV_LOCK_PATH = REPO_ROOT / "requirements" / "dev.txt"
+DEEPFILTER_LOCK = "build-support/deepfilter/Cargo.lock"
+DEEPFILTER_PROVENANCE_PATH = REPO_ROOT / "build-support" / "deepfilter" / "provenance.json"
+# Workflows never run on triggers that give a fork's code a token.
+FORBIDDEN_TRIGGERS = frozenset({"pull_request_target", "workflow_run", "issue_comment"})
+# Run text may interpolate only step and job outputs; anything user-controlled
+# (inputs, event fields, even through env) reaches a script as $env:NAME instead.
+RUN_EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
+SAFE_RUN_EXPRESSION = re.compile(r"(?:steps|needs)\.[\w-]+\.outputs\.[\w-]+")
 # Allowed pip_audit --ignore-vuln ids, each with the dev-lock pin that causes it.
 # The ignore stops being allowed once the lock moves off that pin.
 AUDIT_IGNORES = {"CVE-2026-59951": ("mcp", "1.29.0")}
@@ -478,14 +486,72 @@ def _check_cargo_locked(
                 errors.append(f"{name}: 'cargo {command}' must pass --locked: {line.strip()}")
 
 
+def _joined_run_lines(document: dict[str, Any]) -> list[str]:
+    """Run lines with PowerShell backtick continuations joined into one command."""
+    joined = re.sub(r"`[ \t]*\n\s*", " ", "\n".join(_active_run_lines(document)))
+    return joined.splitlines()
+
+
+def _check_rustsec_ignores(
+    name: str, document: dict[str, Any], errors: list[str]
+) -> None:
+    """Allow only the DeepFilter advisories reviewed in provenance.json, and only there."""
+    try:
+        warnings = json.loads(DEEPFILTER_PROVENANCE_PATH.read_text(encoding="utf-8"))[
+            "audit"
+        ]["allowed_warnings"]
+        reviewed = {warning["advisory"] for warning in warnings}
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        errors.append(f"{name}: cannot read the reviewed advisories in provenance.json: {error}")
+        return
+    audits_deepfilter = False
+    for line in _joined_run_lines(document):
+        if not _active_run_has_marker([line], "cargo audit"):
+            continue
+        audits_deepfilter |= DEEPFILTER_LOCK in line
+        ignored = set(re.findall(r"--ignore\s+(\S+)", line))
+        expected = reviewed if DEEPFILTER_LOCK in line else set()
+        if ignored != expected:
+            errors.append(
+                f"{name}: cargo audit ignores {sorted(ignored)}, expected {sorted(expected)}"
+            )
+    if name in ("ci.yml", "release-package.yml") and not audits_deepfilter:
+        errors.append(f"{name}: missing a cargo audit of {DEEPFILTER_LOCK}")
+
+
+def _check_triggers_and_expressions(
+    name: str, document: dict[str, Any], errors: list[str]
+) -> None:
+    """Reject privileged triggers and user-controlled expressions in run text."""
+    # YAML reads the bare key `on` as the boolean True.
+    triggers = next((value for key, value in document.items() if key in ("on", True)), None)
+    names = [triggers] if isinstance(triggers, str) else list(triggers or [])
+    for trigger in names:
+        if trigger in FORBIDDEN_TRIGGERS:
+            errors.append(f"{name}: trigger {trigger} is not allowed")
+    jobs = document.get("jobs")
+    if names != ["workflow_dispatch"] and any(
+        isinstance(job, dict) and "self-hosted" in str(job.get("runs-on"))
+        for job in (jobs.values() if isinstance(jobs, dict) else ())
+    ):
+        errors.append(f"{name}: a self-hosted runner may be used only by workflow_dispatch")
+    for job in jobs.values() if isinstance(jobs, dict) else ():
+        for step in job.get("steps", []) if isinstance(job, dict) else ():
+            for expression in RUN_EXPRESSION.findall(str(step.get("run", ""))):
+                if SAFE_RUN_EXPRESSION.fullmatch(expression.strip()) is None:
+                    errors.append(
+                        f"{name}: run text must not interpolate {expression.strip()!r}; "
+                        "pass it through env"
+                    )
+
+
 def _check_audit_ignores(
     name: str, document: dict[str, Any], errors: list[str]
 ) -> None:
     """Allow only the pip_audit ignores in AUDIT_IGNORES, and only on the dev lock."""
-    # PowerShell backtick continuations join into one command line.
-    joined = re.sub(r"`[ \t]*\n\s*", " ", "\n".join(_active_run_lines(document)))
-    for line in joined.splitlines():
-        if not _active_run_has_marker([line], "pip_audit --require-hashes"):
+    for line in _joined_run_lines(document):
+        # Any pip_audit invocation is in scope, whatever order its flags take.
+        if not _active_run_has_marker([line], "pip_audit "):
             continue
         tokens = [token.strip("\"'") for token in line.split()]
         ignored = []
@@ -809,7 +875,10 @@ def _check_dependabot(errors: list[str]) -> None:
 
 
 def _check_python_runtime(name: str, source: str, errors: list[str]) -> None:
-    versions = re.findall(r"(?m)^\s*python-version:\s*[\"']([^\"']+)[\"']", source)
+    versions = re.findall(r"(?m)^\s*python-version:\s*[\"']?([^\"'\s#]+)", source)
+    setups = len(re.findall(r"(?m)^\s*(?:-\s*)?uses:\s*actions/setup-python@", source))
+    if setups != len(versions):
+        errors.append(f"{name}: every actions/setup-python step must set python-version")
     for version in versions:
         if version != PYTHON_VERSION:
             errors.append(
@@ -850,6 +919,8 @@ def check_workflows() -> list[str]:
         _check_required_gates(path.name, source, errors, document=document)
         _check_cargo_locked(path.name, document, errors)
         _check_audit_ignores(path.name, document, errors)
+        _check_rustsec_ignores(path.name, document, errors)
+        _check_triggers_and_expressions(path.name, document, errors)
         _check_python_runtime(path.name, source, errors)
 
         action_refs = ACTION_REF.findall(source)

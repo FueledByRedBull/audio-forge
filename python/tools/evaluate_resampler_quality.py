@@ -73,8 +73,6 @@ def _db_ratio(numerator: float, denominator: float) -> float:
 
 
 def _percentile(values: Sequence[float], percentile: float) -> float:
-    if not values:
-        return 0.0
     return float(np.percentile(np.asarray(values, dtype=np.float64), percentile))
 
 
@@ -377,11 +375,13 @@ def _long_stream_and_timing_case(
     output, delay, timings = _run(
         source, input_rate, output_rate, configuration=configuration
     )
+    if not timings:
+        raise ValueError("resampler returned no block timings")
     expected = int(round(frames * output_rate / input_rate))
     block_deadline_ns = CHUNK_SIZE / input_rate * 1_000_000_000.0
     p95 = _percentile(timings, 95)
     p99 = _percentile(timings, 99)
-    maximum = float(max(timings, default=0))
+    maximum = float(max(timings))
     return {
         "input_rate": input_rate,
         "output_rate": output_rate,
@@ -393,7 +393,7 @@ def _long_stream_and_timing_case(
         "reported_output_delay_samples": delay,
         "blocks": len(timings),
         "block_time_ns": {
-            "median": statistics.median(timings) if timings else 0,
+            "median": statistics.median(timings),
             "p95": p95,
             "p99": p99,
             "max": maximum,
@@ -699,7 +699,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output",
         type=Path,
-        default=REPO_ROOT / "evaluation/resampler-quality-report.json",
+        required=True,
     )
     parser.add_argument(
         "--details-output",

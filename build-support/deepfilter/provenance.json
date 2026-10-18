@@ -112,14 +112,22 @@
     "vulnerabilities": 0,
     "allowed_warnings": [
       {
+        "advisory": "RUSTSEC-2024-0436",
         "crate": "paste",
         "version": "1.0.15",
         "reason": "Unmaintained compile-time proc-macro used by the tract dependency family; no security advisory is reported."
       },
       {
+        "advisory": "RUSTSEC-2024-0370",
         "crate": "proc-macro-error",
         "version": "1.0.4",
         "reason": "Unmaintained dependency of the inactive optional upstream hdf5 dataset dependency retained in the source package lock; it is removed from the production CAPI dependency graph."
+      },
+      {
+        "advisory": "RUSTSEC-2026-0319",
+        "crate": "anymap2",
+        "version": "0.13.0",
+        "reason": "Unmaintained type-map dependency of liquid-core in the locked graph; the advisory names anymap3 as the replacement and reports no vulnerability."
       }
     ]
   },

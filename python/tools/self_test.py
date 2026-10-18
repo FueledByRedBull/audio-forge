@@ -220,12 +220,6 @@ def main() -> int:
                 print(f"Retrying self-test ({attempt_index + 1}/{attempts})...")
                 time.sleep(0.15)
 
-            expected_latency_min_ms = 20.0
-            expected_latency_max_ms = 500.0
-            if best_attempt is not None and best_attempt.round_trip_ms > 0.0:
-                expected_latency_min_ms = max(20.0, best_attempt.round_trip_ms - 120.0)
-                expected_latency_max_ms = min(500.0, best_attempt.round_trip_ms + 120.0)
-
             attempt = _run_attempt(
                 processor,
                 duration=args.duration,
@@ -233,8 +227,8 @@ def main() -> int:
                 capture_sample_rate=capture_sample_rate,
                 output_sample_rate=output_sample_rate,
                 probe_duration_ms=args.probe_duration_ms,
-                expected_latency_min_ms=expected_latency_min_ms,
-                expected_latency_max_ms=expected_latency_max_ms,
+                expected_latency_min_ms=20.0,
+                expected_latency_max_ms=500.0,
                 expected_playback_jitter_ms=150.0,
             )
             attempt_passed = (

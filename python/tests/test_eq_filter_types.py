@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+from typing import Any
 from pathlib import Path
 
 import numpy as np
@@ -55,6 +56,7 @@ def _call_typed_eq_boundary(entrypoint, bands):
             processor.apply_eq_settings_v2(bands)
         else:
             processor.apply_eq_layers(_typed_default_bands(), bands)
+        return [processor.get_eq_band_config(i) for i in range(10)]
     except (ValueError, TypeError):
         assert [processor.get_eq_band_config(i) for i in range(10)] == before
         raise
@@ -91,7 +93,19 @@ def test_typed_eq_entrypoints_share_rejection_contract(entrypoint, invalid):
 def test_typed_eq_entrypoints_accept_every_filter(entrypoint, filter_type):
     bands = _typed_default_bands()
     bands[4] = (filter_type, 1000.0, 0.0, 1.0, 12, True)
-    _call_typed_eq_boundary(entrypoint, bands)
+    result: Any = _call_typed_eq_boundary(entrypoint, bands)
+    if entrypoint == "response":
+        # Unity-Q cutoff of a pass filter is -3 dB, a notch nulls its centre, others are flat at zero gain.
+        expected = {"high_pass": -3.0103, "low_pass": -3.0103, "notch": -200.0}.get(filter_type, 0.0)
+        assert result == [pytest.approx(expected, abs=1e-3)]
+    elif entrypoint == "render":
+        assert result["sample_count"] == 480
+        assert result["non_finite_output"] is False
+    elif entrypoint in {"chain", "chain_layers"}:
+        assert result["processed_samples"] == 480
+        assert result["non_finite_output"] is False
+    else:
+        assert result[4] == bands[4]
 
 
 def test_raw_preview_measures_intersample_peak() -> None:

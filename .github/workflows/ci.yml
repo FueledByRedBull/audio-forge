@@ -191,7 +191,7 @@ jobs:
             $targets = @($shards.PSObject.Properties | Where-Object { $_.Name -eq $env:SHARD } | ForEach-Object { $_.Value })
             if ($targets.Count -eq 0) { throw "Unknown pytest shard $env:SHARD." }
           }
-          python -m pytest @targets -q --durations=15
+          python -m pytest @targets -q -rs --durations=15
 
   rust-tests:
     runs-on: windows-latest

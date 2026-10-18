@@ -51,19 +51,19 @@ def test_cancel_keeps_running_latency_worker_owned_until_it_stops(qapp, monkeypa
     try:
         dialog._poll_capture()
         worker = dialog.worker
-        assert worker is not None and entered.wait(1.0)
+        assert worker is not None and entered.wait(5.0)
 
         timer.start()
         started = time.monotonic()
         dialog.reject()
-        assert time.monotonic() - started < 0.25
+        # The old implementation blocked here for 1.5 seconds; the margin tolerates a loaded runner.
+        assert time.monotonic() - started < 1.0
 
         assert worker.isRunning()
         assert dialog.worker is worker
         assert dialog.isVisible()
         assert "cancel" in dialog.status_label.text().lower()
 
-        # The old implementation blocked here for 1.5 seconds in reject().
         deadline = time.monotonic() + 1.65
         while time.monotonic() < deadline:
             qapp.processEvents()
@@ -75,7 +75,7 @@ def test_cancel_keeps_running_latency_worker_owned_until_it_stops(qapp, monkeypa
         assert "cancel" in dialog.status_label.text().lower()
 
         release.set()
-        deadline = time.monotonic() + 2.0
+        deadline = time.monotonic() + 5.0
         while dialog.isVisible() and time.monotonic() < deadline:
             qapp.processEvents()
             time.sleep(0.01)

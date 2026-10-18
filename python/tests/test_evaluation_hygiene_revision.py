@@ -6,6 +6,16 @@ import subprocess
 from pathlib import Path
 
 import check_evaluation_hygiene as hygiene
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolated_git_config(tmp_path: Path, monkeypatch) -> None:
+    """Keep a developer's global git config (gpgsign, hooks) out of the fixture repos."""
+    global_config = tmp_path / "gitconfig"
+    global_config.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
 def _git(root: Path, *args: str) -> str:

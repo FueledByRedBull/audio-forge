@@ -131,15 +131,12 @@ impl AudioProcessor {
             return Err("Output probe contains non-finite samples".to_string());
         }
         if self.output_probe_active.load(Ordering::Acquire)
-            || self
-                .output_probe_cancel_requested
-                .load(Ordering::Acquire)
+            || self.output_probe_cancel_requested.load(Ordering::Acquire)
         {
             return Err("An output probe is already active".to_string());
         }
 
-        let max_samples =
-            self.output_sample_rate() as usize * MAX_OUTPUT_PROBE_SECONDS;
+        let max_samples = self.output_sample_rate() as usize * MAX_OUTPUT_PROBE_SECONDS;
         if samples.len() > max_samples {
             return Err(format!(
                 "Output probe exceeds the {} second limit",

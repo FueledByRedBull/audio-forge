@@ -318,8 +318,7 @@ impl AdaptiveInputCleanupState {
         self.hum_phase_valid = false;
         self.hum_strength = 0.0;
         self.harmonic_strength = 0.0;
-        self.adaptive_highpass
-            .set_frequency(INPUT_PREFILTER_HZ);
+        self.adaptive_highpass.set_frequency(INPUT_PREFILTER_HZ);
         self.adaptive_highpass.reset();
         self.adaptive_highpass_hz = INPUT_PREFILTER_HZ as f32;
         self.hum_notch.reset();
@@ -334,8 +333,7 @@ impl AdaptiveInputCleanupState {
             return;
         }
 
-        let lowpass_coeff = (2.0 * std::f32::consts::PI * 150.0 / self.sample_rate)
-            .clamp(0.0, 1.0);
+        let lowpass_coeff = (2.0 * std::f32::consts::PI * 150.0 / self.sample_rate).clamp(0.0, 1.0);
         let fast_attack = 0.08;
         let fast_release = 0.006;
         let slow_coeff = 0.0012;
@@ -473,8 +471,7 @@ impl AdaptiveInputCleanupState {
             } else {
                 0.0
             };
-            let spectral_frequency = (best_frequency_hz
-                + spectral_offset * HUM_TRACK_STEP_HZ)
+            let spectral_frequency = (best_frequency_hz + spectral_offset * HUM_TRACK_STEP_HZ)
                 .clamp(HUM_MIN_HZ, HUM_MAX_HZ);
 
             // The bank phase is measured relative to each bin's oscillator.
@@ -493,13 +490,11 @@ impl AdaptiveInputCleanupState {
                 * self.hum_window_samples as f64
                 / self.sample_rate.max(1.0) as f64)
                 .rem_euclid(1.0);
-            let absolute_phase = wrap_phase(
-                -best_primary_phase + (std::f64::consts::TAU * center_turns) as f32,
-            );
+            let absolute_phase =
+                wrap_phase(-best_primary_phase + (std::f64::consts::TAU * center_turns) as f32);
             let phase_frequency = if self.hum_phase_valid && window_seconds > 0.0 {
                 let phase_delta = wrap_phase(absolute_phase - self.hum_previous_absolute_phase);
-                let base_frequency = phase_delta
-                    / (2.0 * std::f32::consts::PI * window_seconds);
+                let base_frequency = phase_delta / (2.0 * std::f32::consts::PI * window_seconds);
                 let alias_spacing = 1.0 / window_seconds;
                 let mut best_alias = base_frequency;
                 let mut best_alias_error = f32::INFINITY;
@@ -558,16 +553,10 @@ impl AdaptiveInputCleanupState {
             InputCleanupMode::Strong => 0.34,
         };
         let hum_release_per_10ms = 0.035;
-        let hum_attack = smoothing_amount_for_samples(
-            hum_attack_per_10ms,
-            buffer.len(),
-            self.sample_rate,
-        );
-        let hum_release = smoothing_amount_for_samples(
-            hum_release_per_10ms,
-            buffer.len(),
-            self.sample_rate,
-        );
+        let hum_attack =
+            smoothing_amount_for_samples(hum_attack_per_10ms, buffer.len(), self.sample_rate);
+        let hum_release =
+            smoothing_amount_for_samples(hum_release_per_10ms, buffer.len(), self.sample_rate);
         let target_hum = if self.hum_detected {
             match self.mode {
                 InputCleanupMode::Off => 0.0,
@@ -586,8 +575,12 @@ impl AdaptiveInputCleanupState {
             0.0
         };
         self.hum_strength = smooth_toward(self.hum_strength, target_hum, hum_attack, hum_release);
-        self.harmonic_strength =
-            smooth_toward(self.harmonic_strength, target_harmonic, hum_attack, hum_release);
+        self.harmonic_strength = smooth_toward(
+            self.harmonic_strength,
+            target_harmonic,
+            hum_attack,
+            hum_release,
+        );
         if self.hum_line_hz > 0.0 {
             self.hum_notch.retune(self.hum_line_hz);
             self.harmonic_notch.retune(self.hum_line_hz * 2.0);
@@ -634,8 +627,7 @@ mod adaptive_cleanup_tests {
             let time = index as f32 / sample_rate;
             input.push(
                 0.08 * (2.0 * std::f32::consts::PI * frequency_hz * time).sin()
-                    + 0.025
-                        * (2.0 * std::f32::consts::PI * 2.0 * frequency_hz * time).sin(),
+                    + 0.025 * (2.0 * std::f32::consts::PI * 2.0 * frequency_hz * time).sin(),
             );
         }
 
@@ -667,20 +659,17 @@ mod adaptive_cleanup_tests {
             state.hum_phase_valid = true;
 
             let phase_at_center = |frequency_hz: f64, window_index: u64| {
-                let turns = ((window_index as f64 + 0.5)
-                    * state.hum_window_samples as f64
-                    * frequency_hz
-                    / SAMPLE_RATE as f64)
-                    .rem_euclid(1.0);
+                let turns =
+                    ((window_index as f64 + 0.5) * state.hum_window_samples as f64 * frequency_hz
+                        / SAMPLE_RATE as f64)
+                        .rem_euclid(1.0);
                 (std::f64::consts::TAU * turns) as f32
             };
-            state.hum_previous_absolute_phase =
-                phase_at_center(SIGNAL_HZ, ELAPSED_WINDOWS - 1);
+            state.hum_previous_absolute_phase = phase_at_center(SIGNAL_HZ, ELAPSED_WINDOWS - 1);
 
             let window_index = ELAPSED_WINDOWS;
             let bin_phase = wrap_phase(
-                phase_at_center(BIN_HZ, window_index)
-                    - phase_at_center(SIGNAL_HZ, window_index),
+                phase_at_center(BIN_HZ, window_index) - phase_at_center(SIGNAL_HZ, window_index),
             );
             let window_samples = state.hum_window_samples as f32;
             for (index, bin) in state.hum_bins.iter_mut().enumerate() {
@@ -717,10 +706,7 @@ mod adaptive_cleanup_tests {
 
         state.finish_hum_window();
 
-        assert_eq!(
-            state.hum_windows_observed,
-            u64::from(u32::MAX) + 1
-        );
+        assert_eq!(state.hum_windows_observed, u64::from(u32::MAX) + 1);
     }
 
     #[test]

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -14,6 +16,7 @@ from mic_eq.diagnostics_export import (
     MAX_SERIALIZED_BYTES,
     SCHEMA_NAME,
     SCHEMA_VERSION,
+    _RUNTIME_ENUMS,
     build_diagnostics_snapshot,
     diagnostics_filename,
     sanitize_setup_result,
@@ -62,6 +65,12 @@ def _runtime() -> dict[str, object]:
         "noise_model": "deepfilter-ll",
         "noise_backend_error": "C:\\Users\\private\\model.onnx failed",
         "last_stream_error": "token=secret-value",
+        "downstream_non_finite_count": 4,
+        "output_resampler_error_count": 2,
+        "rejected_control_value_count": 7,
+        "dsp_scheduling_degraded": True,
+        "vad_worker_error": "C:\\Users\\private\\silero.onnx missing",
+        "auto_makeup_error": "meter rejected audio",
         "last_restart_reason": "/home/private/device changed",
         "unknown_path": "C:\\Users\\private\\raw.wav",
         "raw_audio": [0.1, 0.2],
@@ -97,6 +106,36 @@ def _build(
     )
 
 
+def test_every_rust_rt_error_code_has_an_exported_name() -> None:
+    source = (
+        Path(__file__).resolve().parents[2] / "rust-core" / "src" / "audio" / "rt.rs"
+    ).read_text(encoding="utf-8")
+    codes = dict(re.findall(r"^    (\w+) = (\d+),$", source, re.MULTILINE))
+    names = dict(re.findall(r'Self::(\w+) => "([^"]+)",', source))
+    assert "OutputQueueOverflow" in codes
+    assert set(codes) == set(names), "as_str must name every RtErrorCode"
+    assert {int(value) for value in codes.values()} == set(range(len(codes)))
+    assert set(names.values()) == _RUNTIME_ENUMS["rt_error_name"]
+
+    for name in names.values():
+        runtime = {**_runtime(), "rt_error_name": name}
+        snapshot = build_diagnostics_snapshot(
+            app_version="1.10.1",
+            runtime_diagnostics=runtime,
+            config=_config(),
+            processing_settings=Preset().to_dict(),
+            input_device=None,
+            output_device=None,
+            processing_sample_rate_hz=48_000,
+            output_sample_rate_hz=48_000,
+            running=True,
+            generated_at=FIXED_TIME,
+            pseudonym_key=b"K" * 32,
+            system_info=FIXED_SYSTEM,
+        )
+        assert snapshot["runtime"]["rt_error_name"] == name
+
+
 def test_snapshot_is_deterministic_finite_bounded_and_private() -> None:
     first = _build()
     second = _build()
@@ -123,6 +162,12 @@ def test_snapshot_is_deterministic_finite_bounded_and_private() -> None:
     assert first["runtime"]["output_underrun_total"] == 0
     assert first["runtime"]["backend_error_present"] is True
     assert first["runtime"]["stream_error_present"] is True
+    assert first["runtime"]["downstream_non_finite_count"] == 4
+    assert first["runtime"]["output_resampler_error_count"] == 2
+    assert first["runtime"]["rejected_control_value_count"] == 7
+    assert first["runtime"]["dsp_scheduling_degraded"] is True
+    assert first["runtime"]["vad_worker_error_present"] is True
+    assert first["runtime"]["auto_makeup_error_present"] is True
     assert first["runtime"]["restart_reason_present"] is True
     assert first["configuration"]["saved_latency_profile_count"] == 1
     assert first["configuration"]["device_preset_binding_count"] == 0

@@ -46,11 +46,16 @@ mod tests {
             return;
         }
         let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
-        for model in [NoiseModel::RNNoise, NoiseModel::DeepFilterNetLL, NoiseModel::DeepFilterNet] {
+        for model in [
+            NoiseModel::RNNoise,
+            NoiseModel::DeepFilterNetLL,
+            NoiseModel::DeepFilterNet,
+        ] {
             for strength in [0.0_f32, 0.37, 1.0] {
                 for pending in [0, 123] {
                     let mut processor = new_noise_suppression_engine(
-                        model, Arc::new(AtomicU32::new(strength.to_bits())),
+                        model,
+                        Arc::new(AtomicU32::new(strength.to_bits())),
                     );
                     if model == NoiseModel::RNNoise {
                         processor.set_enabled(false);
@@ -72,12 +77,15 @@ mod tests {
                         let mut output = [0.0; RNNOISE_FRAME_SIZE];
                         assert_eq!(processor.pop_samples_into(&mut output), output.len());
                         assert_eq!(output, [0.25; RNNOISE_FRAME_SIZE]);
-                        crate::test_alloc::assert_no_allocations("unavailable recovery fade", || {
-                            recovery.apply(&mut output);
-                            let mut remaining = writer_fade.get();
-                            fade_in(&mut output, &mut remaining, fade_samples);
-                            writer_fade.set(remaining);
-                        });
+                        crate::test_alloc::assert_no_allocations(
+                            "unavailable recovery fade",
+                            || {
+                                recovery.apply(&mut output);
+                                let mut remaining = writer_fade.get();
+                                fade_in(&mut output, &mut remaining, fade_samples);
+                                writer_fade.set(remaining);
+                            },
+                        );
                         for (index, sample) in output.iter().enumerate() {
                             let elapsed = frame * RNNOISE_FRAME_SIZE + index;
                             let factor = ((elapsed + 1) as f32 / fade_samples as f32).min(1.0);
@@ -188,9 +196,8 @@ mod tests {
         }
         let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
         for model in [NoiseModel::DeepFilterNetLL, NoiseModel::DeepFilterNet] {
-            let mut processor = new_noise_suppression_engine(
-                model, Arc::new(AtomicU32::new(0.37_f32.to_bits())),
-            );
+            let mut processor =
+                new_noise_suppression_engine(model, Arc::new(AtomicU32::new(0.37_f32.to_bits())));
             assert!(processor.backend_available());
             TEST_FAIL_PROCESS_AFTER.with(|remaining| remaining.set(Some(0)));
             processor.push_samples(&[0.1; RNNOISE_FRAME_SIZE]);
@@ -212,7 +219,10 @@ mod tests {
                 for (index, sample) in output.iter().enumerate() {
                     let elapsed = frame * RNNOISE_FRAME_SIZE + index;
                     let valid = (elapsed + 1).saturating_sub(latency);
-                    assert_eq!(*sample, 0.25 * (valid as f32 / fade_samples as f32).min(1.0));
+                    assert_eq!(
+                        *sample,
+                        0.25 * (valid as f32 / fade_samples as f32).min(1.0)
+                    );
                 }
                 assert!(processor.backend_failed());
             }
@@ -382,9 +392,7 @@ mod tests {
 
     #[test]
     fn test_total_reported_latency_includes_limiter_lookahead_across_sample_rates() {
-        for (sample_rate, expected_us) in
-            [(44_100_u32, 498_u64), (48_000, 500), (96_000, 500)]
-        {
+        for (sample_rate, expected_us) in [(44_100_u32, 498_u64), (48_000, 500), (96_000, 500)] {
             let limiter = Limiter::default_settings(sample_rate as f64);
             let lookahead_samples = limiter.lookahead_samples() as u64;
             let total = total_reported_latency_us(
@@ -400,17 +408,15 @@ mod tests {
                 },
                 0,
             );
-            assert_eq!(
-                total,
-                expected_us + samples_to_micros(20, sample_rate)
-            );
+            assert_eq!(total, expected_us + samples_to_micros(20, sample_rate));
         }
     }
 
     #[test]
     fn test_published_latency_counts_lookahead_limiter_only_on_full_path() {
         for sample_rate in [44_100_u32, 48_000, 96_000] {
-            let lookahead = Limiter::default_settings(sample_rate as f64).lookahead_samples() as u64;
+            let lookahead =
+                Limiter::default_settings(sample_rate as f64).lookahead_samples() as u64;
             let true_peak =
                 TruePeakLimiter::default_settings(sample_rate as f32).lookahead_samples() as u64;
             let compensation_us = 7_000;
@@ -459,7 +465,10 @@ mod tests {
         // Raw monitor, Bypass and the early `continue;`s all sit after this
         // point, so none of them can skip the periodic publish.
         let first_continue = region.find("continue;").expect("loop has early continues");
-        assert!(publish < first_continue, "publish must precede every continue");
+        assert!(
+            publish < first_continue,
+            "publish must precede every continue"
+        );
         // Nothing but the 100 ms tick may gate the publish: not the path, the
         // input queue, nor a constant condition.
         let head: String = region[..publish]
@@ -587,9 +596,8 @@ mod tests {
         let end = start + frame_count * 2;
         let mut audio = Vec::with_capacity(frame_count * 3);
         for sample in wav[start..end].chunks_exact(2) {
-            let sample = f32::from(i16::from_le_bytes([sample[0], sample[1]]))
-                / f32::from(i16::MAX)
-                * 0.03;
+            let sample =
+                f32::from(i16::from_le_bytes([sample[0], sample[1]])) / f32::from(i16::MAX) * 0.03;
             audio.extend([sample, sample, sample]);
         }
 
@@ -617,14 +625,10 @@ mod tests {
             )
             .expect("native VAD should process the fixture")
             .rendered;
-            let high_gain = simulate_input_frontend_with_activity(
-                py,
-                audio,
-                48_000.0,
-                Some(&high_settings),
-            )
-            .expect("native VAD should process the fixture")
-            .rendered;
+            let high_gain =
+                simulate_input_frontend_with_activity(py, audio, 48_000.0, Some(&high_settings))
+                    .expect("native VAD should process the fixture")
+                    .rendered;
 
             let low_energy = low_gain.iter().map(|sample| sample.abs()).sum::<f32>();
             let high_energy = high_gain.iter().map(|sample| sample.abs()).sum::<f32>();
@@ -676,7 +680,6 @@ mod tests {
                                 )));
                                 gate.set_gate_mode(mode);
                                 gate.set_hold_time(200.0);
-                                gate.set_vad_pre_gain(1.0);
                                 gate.set_auto_threshold(true);
                                 gate.set_margin(10.0);
                                 gate
@@ -851,7 +854,9 @@ mod tests {
                 simulate_input_frontend_with_activity(py, audio, 48_000.0, Some(&settings))
                     .expect("native VAD should process the fixture")
                     .activity_evidence;
-            assert!(evidence[..4].iter().all(|block| block.vad_reliability == 0.0));
+            assert!(evidence[..4]
+                .iter()
+                .all(|block| block.vad_reliability == 0.0));
             assert_eq!(evidence[4].vad_reliability, 1.0);
         });
     }
@@ -933,7 +938,10 @@ mod tests {
         processor.output_sample_rate.store(8, Ordering::Relaxed);
 
         processor.set_output_mute(true);
-        assert!(processor.queue_output_probe(&[0.1]).unwrap_err().contains("Unmute"));
+        assert!(processor
+            .queue_output_probe(&[0.1])
+            .unwrap_err()
+            .contains("Unmute"));
         assert_eq!(consumer.read(&mut [0.0]), 0);
         processor.set_output_mute(false);
         assert!(processor.queue_output_probe(&[]).is_err());
@@ -954,19 +962,15 @@ mod tests {
     fn test_output_probe_cancel_only_requests_callback_drain_when_active() {
         let processor = AudioProcessor::new();
         processor.cancel_output_probe();
-        assert!(
-            !processor
-                .output_probe_cancel_requested
-                .load(Ordering::Acquire)
-        );
+        assert!(!processor
+            .output_probe_cancel_requested
+            .load(Ordering::Acquire));
 
         processor.output_probe_active.store(true, Ordering::Release);
         processor.cancel_output_probe();
-        assert!(
-            processor
-                .output_probe_cancel_requested
-                .load(Ordering::Acquire)
-        );
+        assert!(processor
+            .output_probe_cancel_requested
+            .load(Ordering::Acquire));
     }
 
     #[test]
@@ -981,7 +985,10 @@ mod tests {
         assert_eq!(next_process_idle_sleep_us(1, u64::MAX), 200);
         assert_eq!(next_process_idle_sleep_us(2, u64::MAX), 400);
         assert_eq!(next_process_idle_sleep_us(3, u64::MAX), 800);
-        assert_eq!(next_process_idle_sleep_us(10, u64::MAX), PROCESS_IDLE_MAX_SLEEP_US);
+        assert_eq!(
+            next_process_idle_sleep_us(10, u64::MAX),
+            PROCESS_IDLE_MAX_SLEEP_US
+        );
     }
 
     #[test]
@@ -1023,12 +1030,9 @@ mod tests {
     fn product_resampler_offline_hook_rejects_invalid_inputs() {
         assert!(simulate_product_resampler(vec![0.0], 0, 48_000, 1024, None, None).is_err());
         assert!(
-            simulate_product_resampler(vec![f64::NAN], 48_000, 44_100, 1024, None, None)
-                .is_err()
+            simulate_product_resampler(vec![f64::NAN], 48_000, 44_100, 1024, None, None).is_err()
         );
-        assert!(
-            simulate_product_resampler(vec![0.0], 48_000, 44_100, 0, None, None).is_err()
-        );
+        assert!(simulate_product_resampler(vec![0.0], 48_000, 44_100, 0, None, None).is_err());
         assert!(simulate_product_resampler(
             vec![0.0],
             48_000,
@@ -1038,24 +1042,13 @@ mod tests {
             None
         )
         .is_err());
-        assert!(simulate_product_resampler(
-            vec![0.0],
-            48_000,
-            44_100,
-            1024,
-            Some(96),
-            None
-        )
-        .is_err());
-        assert!(simulate_product_resampler(
-            vec![0.0],
-            48_000,
-            44_100,
-            1024,
-            None,
-            Some("unknown")
-        )
-        .is_err());
+        assert!(
+            simulate_product_resampler(vec![0.0], 48_000, 44_100, 1024, Some(96), None).is_err()
+        );
+        assert!(
+            simulate_product_resampler(vec![0.0], 48_000, 44_100, 1024, None, Some("unknown"))
+                .is_err()
+        );
     }
 
     #[test]
@@ -1185,7 +1178,9 @@ mod tests {
         processor
             .noise_backend_available
             .store(false, Ordering::Relaxed);
-        processor.noise_backend_failed.store(true, Ordering::Relaxed);
+        processor
+            .noise_backend_failed
+            .store(true, Ordering::Relaxed);
         *processor.noise_backend_error.lock().unwrap() = Some("previous backend".to_string());
 
         let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
@@ -1240,8 +1235,7 @@ mod tests {
         }
         processor.vad_worker_thread = Some(finished);
 
-        let (mut producer, consumer) =
-            AudioRingBuffer::new(VAD_WORKER_MAX_BUFFER_SAMPLES).split();
+        let (mut producer, consumer) = AudioRingBuffer::new(VAD_WORKER_MAX_BUFFER_SAMPLES).split();
         processor.ensure_vad_worker(consumer);
         let replacement_id = processor
             .vad_worker_thread
@@ -1327,8 +1321,10 @@ mod tests {
         assert!(wait_until(&|| processor
             .vad_backend_available
             .load(Ordering::Acquire)));
-        assert!(VAD_WORKER_DISCONTINUITY_FLUSHED_SAMPLES.load(Ordering::Acquire)
-            >= flushed_count + VAD_WORKER_MAX_BUFFER_SAMPLES as u64);
+        assert!(
+            VAD_WORKER_DISCONTINUITY_FLUSHED_SAMPLES.load(Ordering::Acquire)
+                >= flushed_count + VAD_WORKER_MAX_BUFFER_SAMPLES as u64
+        );
 
         processor.stop_vad_worker();
     }
@@ -1381,9 +1377,7 @@ mod tests {
         let mut processor = AudioProcessor::new();
         install_raw_recording_consumer(&processor);
 
-        processor
-            .start_raw_recording_with_tap(0.01, true)
-            .unwrap();
+        processor.start_raw_recording_with_tap(0.01, true).unwrap();
         assert!(processor
             .raw_recording_before_cleanup
             .load(Ordering::Acquire));
@@ -1572,7 +1566,8 @@ mod tests {
     #[test]
     fn test_input_prefilter_response_is_the_same_high_pass_in_every_cleanup_mode() {
         let frequencies = [0.0, 20.0, 80.0, 1000.0, 20_000.0];
-        let off = static_input_pre_filter_response_db(&frequencies, InputCleanupMode::Off, 48_000.0);
+        let off =
+            static_input_pre_filter_response_db(&frequencies, InputCleanupMode::Off, 48_000.0);
         let gentle =
             static_input_pre_filter_response_db(&frequencies, InputCleanupMode::Gentle, 48_000.0);
         let strong =
@@ -1586,7 +1581,10 @@ mod tests {
         // The high-pass is -3 dB at its corner, on top of the DC blocker, and
         // cuts the bass below it.
         let corner_db = off[2] - dc_block_response_db(80.0, 48_000.0);
-        assert!(corner_db < -2.9 && corner_db > -3.1, "corner {corner_db} dB");
+        assert!(
+            corner_db < -2.9 && corner_db > -3.1,
+            "corner {corner_db} dB"
+        );
         assert!(off[1] < -20.0);
         assert!(off[3].abs() < 0.05 && off[4].abs() < 0.05);
     }
@@ -1742,12 +1740,8 @@ mod tests {
 
         let (cleaned, hum, _, _, tracked_hz) =
             process_adaptive_input_cleanup(&input, InputCleanupMode::Strong, sample_rate, 480);
-        let (clean_voice, _, _, _, _) = process_adaptive_input_cleanup(
-            &voice_only,
-            InputCleanupMode::Strong,
-            sample_rate,
-            480,
-        );
+        let (clean_voice, _, _, _, _) =
+            process_adaptive_input_cleanup(&voice_only, InputCleanupMode::Strong, sample_rate, 480);
         let tail = len / 2;
         let input_residual = input[tail..]
             .iter()
@@ -1765,7 +1759,10 @@ mod tests {
             .fold(0.0_f32, f32::max);
 
         assert!(hum);
-        assert!((57.0..=61.0).contains(&tracked_hz), "tracked_hz={tracked_hz}");
+        assert!(
+            (57.0..=61.0).contains(&tracked_hz),
+            "tracked_hz={tracked_hz}"
+        );
         assert!(
             cleaned_residual < input_residual * 0.72,
             "cleaned_residual={cleaned_residual} input_residual={input_residual}"
@@ -1794,7 +1791,10 @@ mod tests {
         let cleaned_harmonic = tone_amplitude(&cleaned[tail..], sample_rate, fundamental * 2.0);
 
         assert!(hum);
-        assert!((tracked_hz - fundamental).abs() < 1.5, "tracked_hz={tracked_hz}");
+        assert!(
+            (tracked_hz - fundamental).abs() < 1.5,
+            "tracked_hz={tracked_hz}"
+        );
         assert!(cleaned_harmonic < fixed_harmonic * 0.72);
     }
 
@@ -1806,8 +1806,7 @@ mod tests {
             .map(|index| {
                 let time = index as f32 / sample_rate;
                 if time < 0.055 {
-                    0.7 * (1.0 - time / 0.055)
-                        * (2.0 * std::f32::consts::PI * 52.0 * time).sin()
+                    0.7 * (1.0 - time / 0.055) * (2.0 * std::f32::consts::PI * 52.0 * time).sin()
                 } else {
                     0.0
                 }
@@ -1822,18 +1821,10 @@ mod tests {
             })
             .collect();
 
-        let (_, plosive_hum, plosive_rumble, _, _) = process_adaptive_input_cleanup(
-            &plosive,
-            InputCleanupMode::Strong,
-            sample_rate,
-            480,
-        );
-        let (_, voice_hum, _, voice_highpass, _) = process_adaptive_input_cleanup(
-            &low_voice,
-            InputCleanupMode::Strong,
-            sample_rate,
-            480,
-        );
+        let (_, plosive_hum, plosive_rumble, _, _) =
+            process_adaptive_input_cleanup(&plosive, InputCleanupMode::Strong, sample_rate, 480);
+        let (_, voice_hum, _, voice_highpass, _) =
+            process_adaptive_input_cleanup(&low_voice, InputCleanupMode::Strong, sample_rate, 480);
 
         assert!(!plosive_hum);
         assert!(plosive_rumble);
@@ -1852,12 +1843,8 @@ mod tests {
             })
             .collect();
         let fixed = process_fixed_input_prefilter(&input, sample_rate);
-        let (adaptive, hum, rumble, highpass, _) = process_adaptive_input_cleanup(
-            &input,
-            InputCleanupMode::Gentle,
-            sample_rate,
-            480,
-        );
+        let (adaptive, hum, rumble, highpass, _) =
+            process_adaptive_input_cleanup(&input, InputCleanupMode::Gentle, sample_rate, 480);
         let max_difference = fixed
             .iter()
             .zip(adaptive.iter())
@@ -1979,7 +1966,11 @@ mod tests {
         let hold = AtomicU32::new(0);
         let count = AtomicU64::new(0);
 
-        record_level_extremes(&[f32::NAN, f32::INFINITY, f32::NEG_INFINITY], &hold, Some(&count));
+        record_level_extremes(
+            &[f32::NAN, f32::INFINITY, f32::NEG_INFINITY],
+            &hold,
+            Some(&count),
+        );
         assert_eq!(hold.load(Ordering::Relaxed), 0);
         assert_eq!(count.load(Ordering::Relaxed), 0);
 
@@ -2111,8 +2102,14 @@ mod tests {
         let queued_peak = queued.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
         assert_eq!(final_peak, queued_peak, "must equal what was queued");
         assert!(final_peak > 0.1, "the burst must reach the output");
-        assert!(final_peak <= 0.5 + 1e-6, "limited to the ceiling: {final_peak}");
-        assert!(final_peak < input_peak - 0.3, "post-limiter must differ from the input");
+        assert!(
+            final_peak <= 0.5 + 1e-6,
+            "limited to the ceiling: {final_peak}"
+        );
+        assert!(
+            final_peak < input_peak - 0.3,
+            "post-limiter must differ from the input"
+        );
         assert_eq!(full_scale, 0);
     }
 
@@ -2126,7 +2123,9 @@ mod tests {
 
         // Limiter off: the ceiling is 1.0 whatever the setting, the clamp holds
         // the over-range burst at full scale, and the NaN became silence.
-        assert!(queued.iter().all(|sample| sample.is_finite() && sample.abs() <= 1.0));
+        assert!(queued
+            .iter()
+            .all(|sample| sample.is_finite() && sample.abs() <= 1.0));
         assert_eq!(final_peak, 1.0);
         assert!(full_scale >= 40, "full_scale={full_scale}");
     }
@@ -2214,12 +2213,20 @@ mod tests {
         let mut queued = Vec::new();
         let mut drained = [0.0_f32; 1024];
         for (index, block) in input.chunks(480).enumerate() {
-            before_block(index, queued.len(), &limiter_enabled, &output_ceiling_linear);
+            before_block(
+                index,
+                queued.len(),
+                &limiter_enabled,
+                &output_ceiling_linear,
+            );
             assert!(writer.write_chunk(block, clean_path));
             let read = consumer.read(&mut drained);
             queued.extend_from_slice(&drained[..read]);
         }
-        assert_eq!(output_short_write_dropped_samples.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            output_short_write_dropped_samples.load(Ordering::Relaxed),
+            0
+        );
         assert_eq!(rt_buffer_overflow_count.load(Ordering::Relaxed), 0);
         (
             queued,
@@ -2249,7 +2256,11 @@ mod tests {
     fn longest_run_at_ceiling(samples: &[f32], ceiling: f32) -> usize {
         let (mut longest, mut run) = (0, 0);
         for s in samples {
-            run = if s.abs() >= ceiling * 0.9995 { run + 1 } else { 0 };
+            run = if s.abs() >= ceiling * 0.9995 {
+                run + 1
+            } else {
+                0
+            };
             longest = longest.max(run);
         }
         longest
@@ -2272,8 +2283,10 @@ mod tests {
                     assert!(peak <= ceiling + 1e-6, "{label}: peak {peak} > {ceiling}");
                     assert!(peak >= 0.5 * ceiling, "{label}: signal lost, peak {peak}");
                     // The counter sees only what was queued, after the limiter.
-                    let queued_full_scale =
-                        queued.iter().filter(|s| s.abs() >= FULL_SCALE_LINEAR).count() as u64;
+                    let queued_full_scale = queued
+                        .iter()
+                        .filter(|s| s.abs() >= FULL_SCALE_LINEAR)
+                        .count() as u64;
                     assert_eq!(full_scale, queued_full_scale, "{label}");
                     if ceiling < FULL_SCALE_LINEAR {
                         assert_eq!(full_scale, 0, "{label}: full-scale above the ceiling");
@@ -2309,9 +2322,15 @@ mod tests {
                     assert!(clip_events > 0, "{label}: the clamp never clipped");
                 }
 
-                assert!(queued.iter().all(|s| s.is_finite() && s.abs() <= 1.0), "{label}");
+                assert!(
+                    queued.iter().all(|s| s.is_finite() && s.abs() <= 1.0),
+                    "{label}"
+                );
                 let peak = queued.iter().fold(0.0_f32, |p, s| p.max(s.abs()));
-                assert!(peak > ceiling + 0.05, "{label}: peak {peak} stayed under {ceiling}");
+                assert!(
+                    peak > ceiling + 0.05,
+                    "{label}: peak {peak} stayed under {ceiling}"
+                );
                 assert!(full_scale > 0, "{label}: no full-scale samples");
             }
         }
@@ -2365,10 +2384,20 @@ mod tests {
         let changed_at = changed_at.expect("the change block must run");
         let peak = |samples: &[f32]| samples.iter().fold(0.0_f32, |p, s| p.max(s.abs()));
         if consume {
-            assert_eq!(clip_events, 0, "the limiter, not the clamp, must hold the new ceiling");
-            assert!(!dirty.load(Ordering::Acquire), "the change must be consumed");
+            assert_eq!(
+                clip_events, 0,
+                "the limiter, not the clamp, must hold the new ceiling"
+            );
+            assert!(
+                !dirty.load(Ordering::Acquire),
+                "the change must be consumed"
+            );
         }
-        (peak(&queued[..changed_at]), peak(&queued[changed_at..]), release_ms.get())
+        (
+            peak(&queued[..changed_at]),
+            peak(&queued[changed_at..]),
+            release_ms.get(),
+        )
     }
 
     #[test]
@@ -2376,16 +2405,28 @@ mod tests {
         let new_ceiling = 10.0_f32.powf(-6.0 / 20.0);
         for (mode, clean_path) in [("bypass", false), ("raw monitor", true)] {
             let (before, after, release) = run_live_path_with_ceiling_change(clean_path, true);
-            assert!(before > 0.9, "{mode}: the 0 dB ceiling must pass the hot sine, got {before}");
-            assert!(after <= new_ceiling + 1e-6, "{mode}: peak {after} > {new_ceiling}");
-            assert!(after >= 0.5 * new_ceiling, "{mode}: signal lost, peak {after}");
+            assert!(
+                before > 0.9,
+                "{mode}: the 0 dB ceiling must pass the hot sine, got {before}"
+            );
+            assert!(
+                after <= new_ceiling + 1e-6,
+                "{mode}: peak {after} > {new_ceiling}"
+            );
+            assert!(
+                after >= 0.5 * new_ceiling,
+                "{mode}: signal lost, peak {after}"
+            );
             assert_eq!(release, 120.0, "{mode}: release was not published");
 
             // Contrast: a path that never consumes the change keeps the old
             // ceiling, which is what Bypass and Raw monitor did.
             let (_, stale_after, stale_release) =
                 run_live_path_with_ceiling_change(clean_path, false);
-            assert!(stale_after > 0.9, "{mode}: stale ceiling should still pass, got {stale_after}");
+            assert!(
+                stale_after > 0.9,
+                "{mode}: stale ceiling should still pass, got {stale_after}"
+            );
             assert_eq!(stale_release, 50.0, "{mode}");
         }
     }
@@ -2411,7 +2452,10 @@ mod tests {
 
         control.seq.store(1, Ordering::Release);
         consume(&mut limiter_rt);
-        assert!(dirty.load(Ordering::Acquire), "an unstable snapshot must re-arm");
+        assert!(
+            dirty.load(Ordering::Acquire),
+            "an unstable snapshot must re-arm"
+        );
         assert_eq!(ceiling.get(), 1.0);
 
         control.seq.store(2, Ordering::Release);
@@ -2447,9 +2491,16 @@ mod tests {
                 },
             );
             let changed_at = changed_at.unwrap();
-            let before = queued[..changed_at].iter().fold(0.0_f32, |p, s| p.max(s.abs()));
-            let after = queued[changed_at..].iter().fold(0.0_f32, |p, s| p.max(s.abs()));
-            assert!(before > 0.9, "{mode}: limiter off must pass the hot sine, got {before}");
+            let before = queued[..changed_at]
+                .iter()
+                .fold(0.0_f32, |p, s| p.max(s.abs()));
+            let after = queued[changed_at..]
+                .iter()
+                .fold(0.0_f32, |p, s| p.max(s.abs()));
+            assert!(
+                before > 0.9,
+                "{mode}: limiter off must pass the hot sine, got {before}"
+            );
             assert!(after <= ceiling + 1e-6, "{mode}: peak {after} > {ceiling}");
         }
     }
@@ -2463,7 +2514,12 @@ mod tests {
         assert!(region.contains("input_peak_hold.as_ref()"));
         // OUT meter tap (before the final limiter): raw monitor, bypass and the
         // two normal-path sites. Input sites pass no hold.
-        assert_eq!(region.matches("Some(&output_pre_limiter_peak_hold)").count(), 4);
+        assert_eq!(
+            region
+                .matches("Some(&output_pre_limiter_peak_hold)")
+                .count(),
+            4
+        );
     }
 
     #[test]
@@ -2524,14 +2580,8 @@ mod tests {
             .collect::<Vec<_>>();
         let mut whole_scratch = FixedAudioBuffer::<f32, 1024>::new();
         let mut whole_state = DriftRetimer::default();
-        let whole = retime_audio_block(
-            &input,
-            1.008,
-            1024,
-            &mut whole_scratch,
-            &mut whole_state,
-        )
-        .to_vec();
+        let whole =
+            retime_audio_block(&input, 1.008, 1024, &mut whole_scratch, &mut whole_state).to_vec();
 
         let mut chunk_scratch = FixedAudioBuffer::<f32, 1024>::new();
         let mut chunk_state = DriftRetimer::default();
@@ -2547,12 +2597,10 @@ mod tests {
         }
 
         assert_eq!(chunked.len(), whole.len());
-        assert!(
-            chunked
-                .iter()
-                .zip(&whole)
-                .all(|(chunked, whole)| (chunked - whole).abs() < 1.0e-5)
-        );
+        assert!(chunked
+            .iter()
+            .zip(&whole)
+            .all(|(chunked, whole)| (chunked - whole).abs() < 1.0e-5));
     }
 
     fn warmed_meter_stats(buffer: &[f32]) -> MeterBlockStats {
@@ -2589,7 +2637,9 @@ mod tests {
 
         let noise_like: Vec<f32> = (0..len)
             .map(|index| {
-                let n = ((index as u32).wrapping_mul(1_664_525).wrapping_add(1_013_904_223)
+                let n = ((index as u32)
+                    .wrapping_mul(1_664_525)
+                    .wrapping_add(1_013_904_223)
                     & 0xffff) as f32
                     / 32768.0
                     - 1.0;
@@ -2681,14 +2731,16 @@ mod tests {
             .filter(|(end, _)| *end > burst_end)
             .map(|&(_, crest)| crest)
             .fold(f32::INFINITY, f32::min);
-        assert!(worst >= 3.0, "worst crest {worst} dB on quiet blocks after a burst");
+        assert!(
+            worst >= 3.0,
+            "worst crest {worst} dB on quiet blocks after a burst"
+        );
     }
 
     fn generate_sine(sample_rate: f32, frequency_hz: f32, len: usize) -> Vec<f32> {
         (0..len)
             .map(|index| {
-                let phase =
-                    2.0 * std::f32::consts::PI * frequency_hz * index as f32 / sample_rate;
+                let phase = 2.0 * std::f32::consts::PI * frequency_hz * index as f32 / sample_rate;
                 0.8 * phase.sin()
             })
             .collect()
@@ -2725,7 +2777,11 @@ mod tests {
         dbfs(max_harmonic)
     }
 
-    fn subtract_fitted_fundamental(signal: &[f32], sample_rate: f32, frequency_hz: f32) -> Vec<f32> {
+    fn subtract_fitted_fundamental(
+        signal: &[f32],
+        sample_rate: f32,
+        frequency_hz: f32,
+    ) -> Vec<f32> {
         let (cos_coeff, sin_coeff) = tone_components(signal, sample_rate, frequency_hz);
         let omega = 2.0 * std::f64::consts::PI * frequency_hz as f64 / sample_rate as f64;
         signal
@@ -2786,8 +2842,7 @@ mod tests {
             window: WindowFunction::BlackmanHarris2,
         };
         let mut resampler =
-            SincFixedIn::<f64>::new(1.0 / speed_ratio as f64, 1.2, params, input.len(), 1)
-                .unwrap();
+            SincFixedIn::<f64>::new(1.0 / speed_ratio as f64, 1.2, params, input.len(), 1).unwrap();
         let input_f64: Vec<f64> = input.iter().map(|sample| *sample as f64).collect();
         let in_slices = [&input_f64[..]];
         let mut outbuf = resampler.output_buffer_allocate(true);
@@ -2824,10 +2879,12 @@ mod tests {
             let expected_fundamental_hz = 10_000.0 * speed_ratio;
             let linear_fundamental_db =
                 dbfs(tone_amplitude(linear, sample_rate, expected_fundamental_hz));
-            let reference_fundamental_db =
-                dbfs(tone_amplitude(reference, sample_rate, expected_fundamental_hz));
-            let linear_harmonic_db =
-                max_harmonic_db(linear, sample_rate, expected_fundamental_hz);
+            let reference_fundamental_db = dbfs(tone_amplitude(
+                reference,
+                sample_rate,
+                expected_fundamental_hz,
+            ));
+            let linear_harmonic_db = max_harmonic_db(linear, sample_rate, expected_fundamental_hz);
             let linear_residual_db = rms_db(&subtract_fitted_fundamental(
                 linear,
                 sample_rate,
@@ -2889,16 +2946,12 @@ mod tests {
         static OUTPUT_TRUE_PEAK_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
         static OUTPUT_TRUE_PEAK_DB: AtomicU32 = AtomicU32::new((-120.0_f32).to_bits());
         static OUTPUT_TRUE_PEAK_INPUT_DB: AtomicU32 = AtomicU32::new((-120.0_f32).to_bits());
-        static OUTPUT_TRUE_PEAK_GAIN_REDUCTION_DB: AtomicU32 =
-            AtomicU32::new(0.0_f32.to_bits());
+        static OUTPUT_TRUE_PEAK_GAIN_REDUCTION_DB: AtomicU32 = AtomicU32::new(0.0_f32.to_bits());
         static OUTPUT_TRUE_PEAK_GAIN_REDUCTION_HISTORY_DB: AtomicU32 =
             AtomicU32::new(0.0_f32.to_bits());
         static OUTPUT_TRUE_PEAK_HEADROOM_DB: AtomicU32 = AtomicU32::new(120.0_f32.to_bits());
-        let (
-            jitter_dropped_samples,
-            output_retime_adjustment_count,
-            output_recovery_event_count,
-        ) = output_counts;
+        let (jitter_dropped_samples, output_retime_adjustment_count, output_recovery_event_count) =
+            output_counts;
         OutputWriteCounters {
             jitter_dropped_samples,
             output_retime_adjustment_count,
@@ -2916,8 +2969,7 @@ mod tests {
             output_true_peak_db: &OUTPUT_TRUE_PEAK_DB,
             output_true_peak_input_db: &OUTPUT_TRUE_PEAK_INPUT_DB,
             output_true_peak_gain_reduction_db: &OUTPUT_TRUE_PEAK_GAIN_REDUCTION_DB,
-            output_true_peak_gain_reduction_history_db:
-                &OUTPUT_TRUE_PEAK_GAIN_REDUCTION_HISTORY_DB,
+            output_true_peak_gain_reduction_history_db: &OUTPUT_TRUE_PEAK_GAIN_REDUCTION_HISTORY_DB,
             output_true_peak_headroom_db: &OUTPUT_TRUE_PEAK_HEADROOM_DB,
         }
     }
@@ -3026,8 +3078,7 @@ mod tests {
     #[test]
     fn production_output_harness_covers_resampling_retiming_and_limiter_release() {
         for input_rate in [44_100, TARGET_SAMPLE_RATE] {
-            let (rendered, retime_adjustments) =
-                run_production_output_harness(input_rate, 50.0);
+            let (rendered, retime_adjustments) = run_production_output_harness(input_rate, 50.0);
             assert!(rendered.iter().all(|sample| sample.is_finite()));
             assert!(rendered.iter().all(|sample| sample.abs() <= 0.500_001));
             assert!(retime_adjustments > 0);
@@ -3115,7 +3166,8 @@ mod tests {
         let output_recovery_event_count = AtomicU64::new(0);
         let output_short_write_dropped_samples = AtomicU64::new(0);
         let rt_buffer_overflow_count = AtomicU64::new(0);
-        let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+        // A suppressor failure is already recorded when the queue overflows.
+        let rt_error_code = AtomicU32::new(RtErrorCode::SuppressorBackendFailed as u32);
         let output_buffer_len = AtomicU32::new(3);
         let last_output_write_time = AtomicU64::new(0);
         let mut true_peak_detector = TruePeakDetector::new();
@@ -3160,6 +3212,11 @@ mod tests {
         assert_eq!(writer.output_fade_remaining, 4);
         assert_eq!(fade_remaining.get(), 0);
         assert_eq!(output_buffer_len.load(Ordering::Relaxed), 4);
+        // The overflow is counted, and it must not overwrite the failure code.
+        assert_eq!(
+            RtErrorCode::from_u32(rt_error_code.load(Ordering::Relaxed)),
+            RtErrorCode::SuppressorBackendFailed
+        );
         // The first queued audio ends start-up priming for the output callback.
         assert_ne!(last_output_write_time.load(Ordering::Relaxed), 0);
 
@@ -3510,16 +3567,17 @@ mod tests {
         let mut output = [0.0_f32; 1024];
         assert_eq!(consumer.read(&mut output), output.len());
         assert!(output.iter().any(|sample| sample.abs() > 0.1));
-        assert_eq!(output_short_write_dropped_samples.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            output_short_write_dropped_samples.load(Ordering::Relaxed),
+            0
+        );
         assert_eq!(rt_buffer_overflow_count.load(Ordering::Relaxed), 0);
 
         assert_eq!(output_clip_event_count.load(Ordering::Relaxed), 0);
         assert_eq!(output_true_peak_event_count.load(Ordering::Relaxed), 1);
         assert!(f32::from_bits(output_true_peak_db.load(Ordering::Relaxed)) <= 0.01);
         assert!(f32::from_bits(output_true_peak_input_db.load(Ordering::Relaxed)) > 0.0);
-        assert!(
-            f32::from_bits(output_true_peak_gain_reduction_db.load(Ordering::Relaxed)) > 0.0
-        );
+        assert!(f32::from_bits(output_true_peak_gain_reduction_db.load(Ordering::Relaxed)) > 0.0);
     }
 
     fn fill_probe_block(buffer: &mut [f32]) {
@@ -3583,10 +3641,8 @@ mod tests {
             noise_floor_db: -58.0,
             live_noise_reliability: 0.9,
         };
-        compressor.process_block_inplace_with_activity_control(
-            &mut block,
-            Some(auto_makeup_evidence),
-        );
+        compressor
+            .process_block_inplace_with_activity_control(&mut block, Some(auto_makeup_evidence));
         crate::test_alloc::assert_no_allocations("compressor activity-control block", || {
             compressor.process_block_inplace_with_activity_control(
                 &mut block,
@@ -3616,21 +3672,10 @@ mod tests {
         let mut scratch = FixedAudioBuffer::<f32, 1024>::new();
         let mut retime_state = DriftRetimer::default();
         let retime_input = [0.1_f32; 256];
-        let _ = retime_audio_block(
-            &retime_input,
-            0.98,
-            512,
-            &mut scratch,
-            &mut retime_state,
-        );
+        let _ = retime_audio_block(&retime_input, 0.98, 512, &mut scratch, &mut retime_state);
         crate::test_alloc::assert_no_allocations("retime block", || {
-            let output = retime_audio_block(
-                &retime_input,
-                0.98,
-                512,
-                &mut scratch,
-                &mut retime_state,
-            );
+            let output =
+                retime_audio_block(&retime_input, 0.98, 512, &mut scratch, &mut retime_state);
             assert!(!output.is_empty());
         });
 
@@ -3714,7 +3759,12 @@ mod tests {
         let count = AtomicU64::new(0);
         let state = AtomicU32::new(0);
         let counters = output_writer_counters(
-            (&count, &count, &count), &count, &count, &state, &state, &count,
+            (&count, &count, &count),
+            &count,
+            &count,
+            &state,
+            &state,
+            &count,
         );
         for enabled in [false, true] {
             let mut processor = OfflineDspBlockProcessor::new(48_000.0);
@@ -3734,8 +3784,13 @@ mod tests {
             for value in [0.95, -1.5, 0.3, 0.0, 0.0] {
                 let mut input = [value; 128];
                 let live = OutputWriteContext::<128, 128, 128>::sanitize_and_limit(
-                    &input, &mut safety, &mut detector, &mut limiter,
-                    &enable_control, &ceiling, &counters,
+                    &input,
+                    &mut safety,
+                    &mut detector,
+                    &mut limiter,
+                    &enable_control,
+                    &ceiling,
+                    &counters,
                 );
                 processor.process_block(&mut input, &mut output);
                 assert_eq!(output.as_slice(), live, "enabled={enabled}, value={value}");
@@ -3781,8 +3836,7 @@ mod tests {
         processor.eq_mut().reset();
 
         let input_sample = |sample_index: usize| {
-            (0.01
-                * (2.0 * std::f64::consts::PI * 80.0 * sample_index as f64 / sample_rate).sin())
+            (0.01 * (2.0 * std::f64::consts::PI * 80.0 * sample_index as f64 / sample_rate).sin())
                 as f32
         };
         let mut output = FixedAudioBuffer::<f32, 512>::new();
@@ -3946,18 +4000,14 @@ mod tests {
                 noise_state = noise_state
                     .wrapping_mul(6_364_136_223_846_793_005)
                     .wrapping_add(1_442_695_040_888_963_407);
-                let noise = (((noise_state >> 40) as u32) as f64
-                    / ((1_u32 << 24) - 1) as f64
-                    * 2.0
-                    - 1.0)
-                    * 0.012;
+                let noise =
+                    (((noise_state >> 40) as u32) as f64 / ((1_u32 << 24) - 1) as f64 * 2.0 - 1.0)
+                        * 0.012;
                 *sample = (phrase
                     * (0.30 * (2.0 * std::f64::consts::PI * 180.0 * time).sin()
                         + 0.14 * (2.0 * std::f64::consts::PI * 360.0 * time).sin()
                         + 0.08 * (2.0 * std::f64::consts::PI * 2_700.0 * time).sin())
-                    + sibilant_gate
-                        * 0.35
-                        * (2.0 * std::f64::consts::PI * 7_200.0 * time).sin()
+                    + sibilant_gate * 0.35 * (2.0 * std::f64::consts::PI * 7_200.0 * time).sin()
                     + noise) as f32;
             }
 
@@ -4046,7 +4096,9 @@ mod tests {
     #[cfg(feature = "deepfilter")]
     #[test]
     fn test_deepfilter_accepts_full_rt_block_without_short_write() {
-        use crate::dsp::deepfilter_ffi::{DeepFilterModel, DeepFilterProcessor, DEEPFILTER_FRAME_SIZE};
+        use crate::dsp::deepfilter_ffi::{
+            DeepFilterModel, DeepFilterProcessor, DEEPFILTER_FRAME_SIZE,
+        };
 
         let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
         let mut suppressor = DeepFilterProcessor::new(strength, DeepFilterModel::LowLatency);
@@ -4077,7 +4129,8 @@ mod tests {
         }
 
         let input_frames_needed = resampler.input_frames_next();
-        while resample_input.len() >= input_frames_needed && input_frames_needed <= input_frame.len()
+        while resample_input.len() >= input_frames_needed
+            && input_frames_needed <= input_frame.len()
         {
             if !has_resampler_output_capacity(&scratch, &outbuf) {
                 break;
@@ -4202,8 +4255,7 @@ mod tests {
             std::array::from_fn(EqBandConfig::default_for_index);
         correction[1].gain_db = 4.5;
         correction[1].frequency_hz = 850.0;
-        let tone: [EqBandConfig; NUM_BANDS] =
-            std::array::from_fn(EqBandConfig::default_for_index);
+        let tone: [EqBandConfig; NUM_BANDS] = std::array::from_fn(EqBandConfig::default_for_index);
 
         processor
             .apply_eq_layers(correction.to_vec(), tone.to_vec())
@@ -4273,7 +4325,10 @@ mod tests {
         processor.set_gate_attack(f64::INFINITY);
         processor.set_gate_release(f64::NEG_INFINITY);
 
-        let control = processor.gate_rt_control.snapshot().expect("stable gate state");
+        let control = processor
+            .gate_rt_control
+            .snapshot()
+            .expect("stable gate state");
         assert_eq!(control.threshold_db, -40.0);
         assert_eq!(control.attack_ms, 10.0);
         assert_eq!(control.release_ms, 100.0);
@@ -4282,7 +4337,10 @@ mod tests {
         processor.set_gate_attack(0.01);
         processor.set_gate_release(5000.0);
 
-        let control = processor.gate_rt_control.snapshot().expect("stable gate state");
+        let control = processor
+            .gate_rt_control
+            .snapshot()
+            .expect("stable gate state");
         assert_eq!(control.threshold_db, GATE_THRESHOLD_MIN_DB);
         assert_eq!(control.attack_ms, GATE_ATTACK_MIN_MS);
         assert_eq!(control.release_ms, GATE_RELEASE_MAX_MS);
@@ -4478,8 +4536,7 @@ mod tests {
             let sample_count = state.hum_window_samples * 4;
             let input: Vec<f32> = (0..sample_count)
                 .map(|index| {
-                    0.08 * (2.0 * std::f32::consts::PI * frequency_hz * index as f32
-                        / sample_rate)
+                    0.08 * (2.0 * std::f32::consts::PI * frequency_hz * index as f32 / sample_rate)
                         .sin()
                 })
                 .collect();
@@ -4526,8 +4583,7 @@ mod tests {
         let mut irregular = Vec::new();
         let mut samples = 0;
         while samples < 3 * 48_000 {
-            let next = pattern[irregular.len() % pattern.len()]
-                .min(3 * 48_000 - samples);
+            let next = pattern[irregular.len() % pattern.len()].min(3 * 48_000 - samples);
             irregular.push(next);
             samples += next;
         }
@@ -4574,19 +4630,16 @@ mod tests {
             4
         );
         assert_eq!(pos.load(Ordering::Acquire), 4);
-        assert!((pos.load(Ordering::Acquire) as f32 / target.load(Ordering::Acquire) as f32 - 0.8).abs() < 1e-6);
+        assert!(
+            (pos.load(Ordering::Acquire) as f32 / target.load(Ordering::Acquire) as f32 - 0.8)
+                .abs()
+                < 1e-6
+        );
         let expected_level = 20.0 * ((0.3_f32.powi(2) + 0.4_f32.powi(2)) / 2.0).sqrt().log10();
         assert!((f32::from_bits(level.load(Ordering::Relaxed)) - expected_level).abs() < 1e-5);
 
         assert_eq!(
-            record_raw_recording_block(
-                &[0.8, 0.9, 1.0],
-                20,
-                &mut producer,
-                &pos,
-                &target,
-                &level,
-            ),
+            record_raw_recording_block(&[0.8, 0.9, 1.0], 20, &mut producer, &pos, &target, &level,),
             1
         );
         assert_eq!(pos.load(Ordering::Acquire), target.load(Ordering::Acquire));
@@ -4951,9 +5004,7 @@ mod tests {
             .processor
             .input_phase_polarity_flipped
             .store(true, Ordering::Relaxed);
-        wrapper
-            .processor
-            .set_limiter_careful_output_enabled(false);
+        wrapper.processor.set_limiter_careful_output_enabled(false);
         wrapper.processor.set_limiter_ceiling(-0.25);
 
         Python::initialize();
@@ -5047,14 +5098,12 @@ mod tests {
                     .abs()
                     < 1e-6
             );
-            assert!(
-                !diagnostics
-                    .get_item("limiter_careful_output_enabled")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<bool>()
-                    .unwrap()
-            );
+            assert!(!diagnostics
+                .get_item("limiter_careful_output_enabled")
+                .unwrap()
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
             assert!(
                 (diagnostics
                     .get_item("limiter_effective_ceiling_db")
@@ -5106,14 +5155,12 @@ mod tests {
                     .abs()
                     < 1e-6
             );
-            assert!(
-                diagnostics
-                    .get_item("input_phase_polarity_flipped")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<bool>()
-                    .unwrap()
-            );
+            assert!(diagnostics
+                .get_item("input_phase_polarity_flipped")
+                .unwrap()
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
         });
     }
 
@@ -5144,14 +5191,12 @@ mod tests {
                 .extract::<f32>()
                 .unwrap();
             assert!((score - 0.42).abs() < 1e-6);
-            assert!(
-                diagnostics
-                    .get_item("gate_auto_relax_active")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<bool>()
-                    .unwrap()
-            );
+            assert!(diagnostics
+                .get_item("gate_auto_relax_active")
+                .unwrap()
+                .unwrap()
+                .extract::<bool>()
+                .unwrap());
         });
     }
 }
@@ -5182,7 +5227,9 @@ mod rt_audit_tests {
     use super::*;
 
     fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
-        let from = source.find(start).unwrap_or_else(|| panic!("missing {start}"));
+        let from = source
+            .find(start)
+            .unwrap_or_else(|| panic!("missing {start}"));
         let to = source[from..]
             .find(end)
             .map(|offset| from + offset)
@@ -5193,7 +5240,10 @@ mod rt_audit_tests {
     fn region<'a>(source: &'a str, name: &str) -> &'a str {
         let start = source.find(&format!("RT_REGION_START: {name}")).unwrap();
         let start = start + source[start..].find('\n').unwrap() + 1;
-        let end = start + source[start..].find(&format!("RT_REGION_END: {name}")).unwrap();
+        let end = start
+            + source[start..]
+                .find(&format!("RT_REGION_END: {name}"))
+                .unwrap();
         &source[start..end]
     }
 
@@ -5215,14 +5265,46 @@ mod rt_audit_tests {
             "String::",
             "std::mem::forget",
         ] {
-            assert!(!text.contains(pattern), "{label} contains forbidden RT pattern {pattern}");
+            assert!(
+                !text.contains(pattern),
+                "{label} contains forbidden RT pattern {pattern}"
+            );
         }
+    }
+
+    /// The `if .. { } else { }` chain or `match` that starts at `site`: from `site`
+    /// to the closing brace of its last branch. Keeps a source-scan assertion
+    /// inside one statement, so a later unrelated match cannot satisfy it.
+    fn statement_after(src: &str, site: usize) -> &str {
+        let close = |open: usize| -> usize {
+            let mut depth = 0_usize;
+            for (offset, byte) in src.as_bytes()[open..].iter().enumerate() {
+                match byte {
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return open + offset + 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("unbalanced braces after a source-scan site");
+        };
+        let mut end = close(site + src[site..].find('{').unwrap());
+        while src[end..].trim_start().starts_with("else") {
+            end = close(end + src[end..].find('{').unwrap());
+        }
+        &src[site..end]
     }
 
     /// The production part of dsp_loop.rs: everything but its inline test modules.
     fn dsp_loop_production() -> String {
         let source = include_str!("dsp_loop.rs");
-        let tests_start = source.find("#[cfg(test)]\nmod input_continuity_tests").unwrap();
+        let tests_start = source
+            .find("#[cfg(test)]\nmod input_continuity_tests")
+            .unwrap();
         let impl_start = source.find("impl AudioProcessor {").unwrap();
         format!("{}{}", &source[..tests_start], &source[impl_start..])
     }
@@ -5232,12 +5314,17 @@ mod rt_audit_tests {
     #[test]
     fn every_dsp_loop_control_snapshot_site_rearms_or_goes_through_startup_control() {
         let production = dsp_loop_production();
-        let sites: Vec<usize> = production.match_indices(".snapshot()").map(|(i, _)| i).collect();
-        assert!(sites.len() >= 10, "expected the loop and start-up snapshot sites");
-        for (n, &site) in sites.iter().enumerate() {
-            let next = sites.get(n + 1).copied().unwrap_or(production.len());
+        let sites: Vec<usize> = production
+            .match_indices(".snapshot()")
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            sites.len() >= 10,
+            "expected the loop and start-up snapshot sites"
+        );
+        for &site in &sites {
             let before = &production[site.saturating_sub(60)..site];
-            let after = &production[site..next];
+            let after = statement_after(&production, site);
             // The VAD snapshot is the lock-free result seqlock, not a control state.
             if before.contains("vad_result") || before.contains("vad_snapshot") {
                 continue;
@@ -5264,7 +5351,10 @@ mod rt_audit_tests {
 
         let fallback = startup_control(None, || 42_u32, &dirty, &contention);
         assert_eq!(fallback, 42);
-        assert!(dirty.load(Ordering::Acquire), "defaults must not outlive the first pass");
+        assert!(
+            dirty.load(Ordering::Acquire),
+            "defaults must not outlive the first pass"
+        );
         assert_eq!(contention.load(Ordering::Relaxed), 1);
     }
 
@@ -5280,14 +5370,36 @@ mod rt_audit_tests {
         let lookahead = AtomicU64::new(0);
         control.seq.store(1, Ordering::Release);
         assert!(apply_pending_limiter_control(
-            &dirty, &control, &mut limiter, &release, &ceiling, &lookahead
+            &dirty,
+            &control,
+            &mut limiter,
+            &release,
+            &ceiling,
+            &lookahead
         ));
         control.seq.store(2, Ordering::Release);
         assert!(!apply_pending_limiter_control(
-            &dirty, &control, &mut limiter, &release, &ceiling, &lookahead
+            &dirty,
+            &control,
+            &mut limiter,
+            &release,
+            &ceiling,
+            &lookahead
         ));
+        // The loop counts contention exactly when the limiter reports instability.
         let production = dsp_loop_production();
-        assert!(production.contains("lock_contention_count.fetch_add(1, Ordering::Relaxed)"));
+        let call = production
+            .find("if apply_pending_limiter_control(")
+            .unwrap();
+        let branch = statement_after(&production, call);
+        assert!(
+            branch.contains("lock_contention_count.fetch_add(1, Ordering::Relaxed)"),
+            "the limiter's unstable result must feed lock_contention_count: {branch}"
+        );
+        assert!(
+            !branch.contains("else"),
+            "the counter must not be conditional on anything else"
+        );
     }
 
     // --- RB-004: seqlock fences ------------------------------------------------
@@ -5295,12 +5407,20 @@ mod rt_audit_tests {
     #[test]
     fn control_seqlock_orders_its_relaxed_data_with_fences() {
         let source = include_str!("control.rs");
-        let writer = between(source, "fn locked_control_update", "fn stable_control_snapshot");
+        let writer = between(
+            source,
+            "fn locked_control_update",
+            "fn stable_control_snapshot",
+        );
         let first = writer.find("fetch_add(1, Ordering::Relaxed)").unwrap();
         let fence = writer.find("fence(Ordering::Release)").unwrap();
         let apply = writer.find("apply();").unwrap();
         assert!(first < fence && fence < apply);
-        let reader = between(source, "fn stable_control_snapshot", "fn release_ms_to_tenth_ms");
+        let reader = between(
+            source,
+            "fn stable_control_snapshot",
+            "fn release_ms_to_tenth_ms",
+        );
         let read = reader.find("read();").unwrap();
         let fence = reader.find("fence(Ordering::Acquire)").unwrap();
         let second = reader.rfind("seq.load(").unwrap();
@@ -5351,7 +5471,10 @@ mod rt_audit_tests {
         processor.restart_requested.store(true, Ordering::Release);
         processor.restart_backoff_index.store(2, Ordering::Release);
 
-        assert_eq!(processor.start(None, None), Err("Already running".to_string()));
+        assert_eq!(
+            processor.start(None, None),
+            Err("Already running".to_string())
+        );
 
         assert!(processor.restart_requested.load(Ordering::Acquire));
         assert_eq!(processor.restart_backoff_index.load(Ordering::Acquire), 2);
@@ -5362,12 +5485,20 @@ mod rt_audit_tests {
     #[test]
     fn failed_start_attempt_leaves_the_clean_stopped_state() {
         let mut processor = AudioProcessor::new();
-        processor.output_sample_rate.store(96_000, Ordering::Relaxed);
+        processor
+            .output_sample_rate
+            .store(96_000, Ordering::Relaxed);
         let result = processor.start_with_cleanup(|processor| {
             // What a half-built attempt has published when the output step fails.
-            processor.input_fixed_buffer_frames.store(480, Ordering::Relaxed);
-            processor.output_fixed_buffer_frames.store(480, Ordering::Relaxed);
-            processor.output_sample_rate.store(44_100, Ordering::Relaxed);
+            processor
+                .input_fixed_buffer_frames
+                .store(480, Ordering::Relaxed);
+            processor
+                .output_fixed_buffer_frames
+                .store(480, Ordering::Relaxed);
+            processor
+                .output_sample_rate
+                .store(44_100, Ordering::Relaxed);
             processor.running.store(true, Ordering::SeqCst);
             processor.restart_requested.store(true, Ordering::Release);
             let (_producer, consumer) = AudioRingBuffer::new(16).split();
@@ -5378,7 +5509,10 @@ mod rt_audit_tests {
             Err("Failed to resolve audio output: test".to_string())
         });
 
-        assert_eq!(result, Err("Failed to resolve audio output: test".to_string()));
+        assert_eq!(
+            result,
+            Err("Failed to resolve audio output: test".to_string())
+        );
         assert!(!processor.is_running());
         assert_eq!(processor.input_fixed_buffer_frames(), 0);
         assert_eq!(processor.output_fixed_buffer_frames(), 0);
@@ -5397,7 +5531,9 @@ mod rt_audit_tests {
     fn successful_start_attempt_is_not_cleaned_up() {
         let mut processor = AudioProcessor::new();
         let result = processor.start_with_cleanup(|processor| {
-            processor.input_fixed_buffer_frames.store(480, Ordering::Relaxed);
+            processor
+                .input_fixed_buffer_frames
+                .store(480, Ordering::Relaxed);
             Ok("started".to_string())
         });
         assert_eq!(result, Ok("started".to_string()));
@@ -5407,7 +5543,11 @@ mod rt_audit_tests {
     #[test]
     fn dsp_thread_spawn_failure_is_an_error_not_a_panic() {
         let production = dsp_loop_production();
-        let start = between(&production, "fn start_streams_unguarded(", "/// Stop audio processing");
+        let start = between(
+            &production,
+            "fn start_streams_unguarded(",
+            "/// Stop audio processing",
+        );
         assert!(!start.contains("std::thread::spawn("));
         assert!(start.contains("std::thread::Builder::new().spawn("));
         let public = between(
@@ -5511,10 +5651,17 @@ mod rt_audit_tests {
     #[test]
     fn initial_suppressor_engine_is_built_before_the_dsp_thread_exists() {
         let production = dsp_loop_production();
-        let start = between(&production, "fn start_streams_unguarded(", "/// Stop audio processing");
+        let start = between(
+            &production,
+            "fn start_streams_unguarded(",
+            "/// Stop audio processing",
+        );
         let spawn = start.find("std::thread::Builder::new().spawn(").unwrap();
         let build = start.find("new_noise_suppression_engine(").unwrap();
-        assert!(build < spawn, "a model or DLL load must not delay DSP readiness");
+        assert!(
+            build < spawn,
+            "a model or DLL load must not delay DSP readiness"
+        );
         assert!(!start[spawn..].contains("new_noise_suppression_engine("));
     }
 
@@ -5543,7 +5690,10 @@ mod rt_audit_tests {
         );
         assert!(mac.contains("suppressor_dirty.swap(false, Ordering::AcqRel)"));
         assert!(mac.contains("retired_suppressor_tx"));
-        assert!(mac.contains("if $in_use"), "a swap with no suppressor audio must stay silent");
+        assert!(
+            mac.contains("if $in_use"),
+            "a swap with no suppressor audio must stay silent"
+        );
     }
 
     #[test]
@@ -5555,7 +5705,10 @@ mod rt_audit_tests {
         *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
         assert!(processor.rebuild_noise_suppressor());
         assert!(processor.rebuild_noise_suppressor());
-        assert!(!processor.rebuild_noise_suppressor(), "nothing drains the queue here");
+        assert!(
+            !processor.rebuild_noise_suppressor(),
+            "nothing drains the queue here"
+        );
     }
 
     // --- RT-008: non-finite downstream output ------------------------------------
@@ -5574,6 +5727,68 @@ mod rt_audit_tests {
         });
     }
 
+    /// A Bypass/Raw -> Full transition resets both EQs (now clearing their
+    /// memory) and starts the output's discontinuity fade. The faded result must
+    /// not step harder than the settled signal itself.
+    #[test]
+    fn an_eq_reset_at_a_path_transition_stays_inside_the_discontinuity_fade() {
+        let sample_rate = 48_000.0;
+        let fade_samples = duration_samples(48_000, 6).max(1);
+        let make_eq = || {
+            let mut eq = ParametricEQ::new(sample_rate);
+            for (index, frequency_hz, gain_db) in [(2, 200.0, 6.0), (5, 1_500.0, -4.0)] {
+                let mut config = eq.get_band_config(index).unwrap();
+                config.frequency_hz = frequency_hz;
+                config.gain_db = gain_db;
+                eq.set_band_config(index, config);
+            }
+            eq.reset();
+            eq
+        };
+        let tone = |range: std::ops::Range<usize>| -> Vec<f32> {
+            range
+                .map(|n| {
+                    0.5 * (2.0 * std::f64::consts::PI * 200.0 * n as f64 / sample_rate).sin() as f32
+                })
+                .collect()
+        };
+        let max_step = |samples: &[f32]| {
+            samples
+                .windows(2)
+                .fold(0.0_f32, |worst, pair| worst.max((pair[1] - pair[0]).abs()))
+        };
+
+        // The settled signal: an EQ that has run on the tone the whole time.
+        let mut steady = make_eq();
+        steady.process_block_inplace(&mut tone(0..24_000));
+        let mut reference = tone(24_060..26_108);
+        steady.process_block_inplace(&mut reference);
+        let settled_step = max_step(&reference);
+
+        // The transition: the same EQ is reset on the way into the Full path.
+        let mut eq = make_eq();
+        eq.process_block_inplace(&mut tone(0..24_000));
+        eq.reset();
+        let mut settled = tone(24_060..26_108);
+        eq.process_block_inplace(&mut settled);
+        // The output starts from silence, so the first sample is a step too.
+        let from_silence = |samples: &[f32]| max_step(&[&[0.0_f32][..], samples].concat());
+        let unfaded_step = from_silence(&settled);
+        // Without the fade the restart is a hard step, so the fade is what bounds it.
+        assert!(
+            unfaded_step > settled_step * 5.0,
+            "premise: an unfaded restart steps {unfaded_step}"
+        );
+        let mut remaining = fade_samples;
+        fade_in(&mut settled, &mut remaining, fade_samples);
+        assert_eq!(remaining, 0);
+        let faded_step = from_silence(&settled);
+        assert!(
+            faded_step <= settled_step * 1.5,
+            "faded transition stepped {faded_step}, settled signal steps {settled_step}"
+        );
+    }
+
     #[test]
     fn a_nan_latches_the_stages_and_meters_unless_contained_and_cleared() {
         let poison = |buffer: &mut [f32; 64]| {
@@ -5587,15 +5802,21 @@ mod rt_audit_tests {
         eq.process_block_inplace(&mut poisoned);
         let mut next = [0.1_f32; 64];
         eq.process_block_inplace(&mut next);
-        assert!(next.iter().any(|s| !s.is_finite()), "premise: filter state latches NaN");
-        reset_eq_clearing_filter_memory(&mut eq);
+        assert!(
+            next.iter().any(|s| !s.is_finite()),
+            "premise: filter state latches NaN"
+        );
+        eq.reset();
         let mut recovered = [0.1_f32; 64];
         eq.process_block_inplace(&mut recovered);
-        assert!(recovered.iter().all(|s| s.is_finite()), "the EQ must recover");
+        assert!(
+            recovered.iter().all(|s| s.is_finite()),
+            "the EQ must recover"
+        );
         assert!(eq.is_enabled(), "a recovery must not leave the EQ disabled");
         let mut disabled = ParametricEQ::new(48_000.0);
         disabled.set_enabled(false);
-        reset_eq_clearing_filter_memory(&mut disabled);
+        disabled.reset();
         assert!(!disabled.is_enabled(), "a user-disabled EQ stays disabled");
 
         let mut deesser = DeEsser::new(48_000.0);
@@ -5606,7 +5827,10 @@ mod rt_audit_tests {
         deesser.reset();
         let mut recovered = [0.1_f32; 64];
         deesser.process_block_inplace(&mut recovered);
-        assert!(recovered.iter().all(|s| s.is_finite()), "the de-esser must recover");
+        assert!(
+            recovered.iter().all(|s| s.is_finite()),
+            "the de-esser must recover"
+        );
 
         // The compressor and limiter shed a NaN without help, which is why the
         // chain does not pay for their reset (the compressor's allocates).
@@ -5629,7 +5853,10 @@ mod rt_audit_tests {
         let mut meter = MeterState::default();
         poison(&mut poisoned);
         update_meter_block_stats(&poisoned, &mut meter, coeff);
-        assert!(meter.rms_acc.is_nan(), "premise: an unsanitized NaN latches the meter");
+        assert!(
+            meter.rms_acc.is_nan(),
+            "premise: an unsanitized NaN latches the meter"
+        );
         let mut meter = MeterState::default();
         contain_non_finite(&mut poisoned);
         let stats = update_meter_block_stats(&poisoned, &mut meter, coeff);
@@ -5646,8 +5873,8 @@ mod rt_audit_tests {
         let tail = &chain[contain..];
         for step in [
             "deesser_rt.reset()",
-            "reset_eq_clearing_filter_memory(&mut correction_eq_rt)",
-            "reset_eq_clearing_filter_memory(&mut tone_eq_rt)",
+            "correction_eq_rt.reset()",
+            "tone_eq_rt.reset()",
             "downstream_non_finite_count.fetch_add",
         ] {
             assert!(tail.contains(step), "{step} missing from the NaN recovery");
@@ -5660,7 +5887,11 @@ mod rt_audit_tests {
     #[test]
     fn input_ring_is_sized_from_the_device_rate_after_the_device_is_selected() {
         let production = dsp_loop_production();
-        let start = between(&production, "fn start_streams_unguarded(", "/// Stop audio processing");
+        let start = between(
+            &production,
+            "fn start_streams_unguarded(",
+            "/// Stop audio processing",
+        );
         assert!(!start.contains("AudioRingBuffer::new(self.sample_rate as usize * 2)"));
         let select = start.find("from_named_device_identity_setup(").unwrap();
         let ring = start
@@ -5675,7 +5906,11 @@ mod rt_audit_tests {
     #[test]
     fn no_denormals_safety_comment_states_the_documented_caveat() {
         let source = include_str!("dsp_loop.rs");
-        let comment = between(source, "// SAFETY: `no_denormals`", "let dsp_loop = || unsafe");
+        let comment = between(
+            source,
+            "// SAFETY: `no_denormals`",
+            "let dsp_loop = || unsafe",
+        );
         assert!(comment.contains("technically undefined"));
         assert!(comment.contains("restores them when the closure returns or"));
     }
@@ -5684,7 +5919,12 @@ mod rt_audit_tests {
 
     #[test]
     fn output_rates_beyond_the_scratch_capacity_are_rejected_at_start() {
-        for (rate, fits) in [(96_000, true), (192_000, true), (352_800, false), (384_000, false)] {
+        for (rate, fits) in [
+            (96_000, true),
+            (192_000, true),
+            (352_800, false),
+            (384_000, false),
+        ] {
             let resampler = build_sinc_resampler(48_000, rate, RESAMPLER_CHUNK_SIZE).unwrap();
             let checked =
                 ensure_resampler_scratch_capacity(&resampler, RT_OUTPUT_SCRATCH_CAPACITY, "output");
@@ -5717,7 +5957,10 @@ mod rt_audit_tests {
         let expected = 1000.0 * (1.0 - (-1.0_f32).exp());
         for pass_ms in [0.1_f32, 1.6, 10.0, 20.0] {
             let value = settle(pass_ms);
-            assert!((value - expected).abs() < 2.0, "{pass_ms} ms passes gave {value}");
+            assert!(
+                (value - expected).abs() < 2.0,
+                "{pass_ms} ms passes gave {value}"
+            );
         }
         let rt = region(include_str!("dsp_loop.rs"), "dsp_processing_loop");
         let compact: String = rt.split_whitespace().collect();
@@ -5768,14 +6011,17 @@ mod rt_audit_tests {
         apply();
         crate::test_alloc::assert_no_allocations("steady-state apply_*_control", apply);
 
-        let counted = |function: &mut dyn FnMut()| {
-            crate::test_alloc::allocation_count_during(function)
-        };
+        let counted =
+            |function: &mut dyn FnMut()| crate::test_alloc::allocation_count_during(function);
         assert_eq!(counted(&mut || gate.reset()), 0, "gate reset");
         assert_eq!(counted(&mut || correction_eq.reset()), 0, "eq reset");
         assert_eq!(counted(&mut || deesser.reset()), 0, "deesser reset");
         assert_eq!(counted(&mut || limiter.reset()), 0, "limiter reset");
-        assert_eq!(counted(&mut || suppressor.soft_reset()), 0, "suppressor soft_reset");
+        assert_eq!(
+            counted(&mut || suppressor.soft_reset()),
+            0,
+            "suppressor soft_reset"
+        );
     }
 
     // RD-003: `Compressor::reset` rebuilds its EBU R128 meter (9 allocations), and the
@@ -5828,15 +6074,34 @@ mod rt_audit_tests {
 
         let source = include_str!("dsp_loop.rs");
         for (label, start, end) in [
-            ("contain_non_finite", "fn contain_non_finite(", "/// Advance an exponential"),
-            ("advance_time_ema", "fn advance_time_ema(", "/// Keep why the DSP thread died"),
-            ("startup_control", "fn startup_control<", "/// Consume a pending limiter"),
+            (
+                "contain_non_finite",
+                "fn contain_non_finite(",
+                "/// Advance an exponential",
+            ),
+            (
+                "advance_time_ema",
+                "fn advance_time_ema(",
+                "/// Keep why the DSP thread died",
+            ),
+            (
+                "startup_control",
+                "fn startup_control<",
+                "/// Consume a pending limiter",
+            ),
         ] {
             assert_rt_clean(label, between(source, start, end));
         }
         let loop_source = include_str!("dsp_loop.rs");
         assert_rt_clean("dsp_level_meter", region(loop_source, "dsp_level_meter"));
-        assert_rt_clean("dsp_output_writer", region(loop_source, "dsp_output_writer"));
+        assert_rt_clean(
+            "dsp_downstream_chain",
+            region(loop_source, "dsp_downstream_chain"),
+        );
+        assert_rt_clean(
+            "dsp_output_writer",
+            region(loop_source, "dsp_output_writer"),
+        );
         assert_rt_clean(
             "dsp_processing_loop",
             region(loop_source, "dsp_processing_loop"),
@@ -5844,11 +6109,19 @@ mod rt_audit_tests {
         let routing = include_str!("routing.rs");
         assert_rt_clean(
             "routing.rs meters",
-            between(routing, "fn update_meter_block_stats(", "fn record_level_extremes("),
+            between(
+                routing,
+                "fn update_meter_block_stats(",
+                "fn record_level_extremes(",
+            ),
         );
         assert_rt_clean(
             "routing.rs sanitizers",
-            between(routing, "fn sanitize_and_clamp_output_inplace(", "fn new_input_pre_filter("),
+            between(
+                routing,
+                "fn sanitize_and_clamp_output_inplace(",
+                "fn new_input_pre_filter(",
+            ),
         );
         assert_rt_clean(
             "routing.rs adaptive cleanup",
@@ -5857,7 +6130,11 @@ mod rt_audit_tests {
         let control = include_str!("control.rs");
         assert_rt_clean(
             "control.rs apply_*_control",
-            between(control, "fn apply_eq_control(", "#[cfg(test)]\nmod compressor_control_tests"),
+            between(
+                control,
+                "fn apply_eq_control(",
+                "#[cfg(test)]\nmod compressor_control_tests",
+            ),
         );
     }
 
@@ -5867,7 +6144,9 @@ mod rt_audit_tests {
     #[test]
     fn vad_load_retries_back_off_and_the_last_error_is_published() {
         let mut retry = VadRetryBackoff::default();
-        let delays: Vec<u64> = (0..9).map(|_| retry.next_delay().as_millis() as u64).collect();
+        let delays: Vec<u64> = (0..9)
+            .map(|_| retry.next_delay().as_millis() as u64)
+            .collect();
         assert_eq!(delays, [50, 100, 200, 400, 800, 1_600, 3_200, 5_000, 5_000]);
         retry.reset();
         assert_eq!(retry.next_delay().as_millis(), 50);
@@ -5883,7 +6162,36 @@ mod rt_audit_tests {
         assert!(AudioProcessor::new().get_vad_worker_error().is_none());
 
         let worker = include_str!("vad_worker.rs");
-        assert!(!worker.contains("from_millis(50)"), "fixed 50 ms retry loops are gone");
+        assert!(
+            !worker.contains("from_millis(50)"),
+            "fixed 50 ms retry loops are gone"
+        );
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn a_stopped_vad_worker_does_not_wait_out_its_maximum_back_off() {
+        let running = Arc::new(AtomicBool::new(true));
+        let mut retry = VadRetryBackoff::default();
+        let max_delay = (0..9).map(|_| retry.next_delay()).last().unwrap();
+        assert_eq!(max_delay, Duration::from_millis(5_000));
+
+        let worker_running = Arc::clone(&running);
+        let worker = std::thread::spawn(move || sleep_while_running(&worker_running, max_delay));
+        std::thread::sleep(Duration::from_millis(30));
+        let started = Instant::now();
+        running.store(false, Ordering::Release);
+        worker.join().unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "stop waited {:?}",
+            started.elapsed()
+        );
+
+        // An unmolested back-off still waits its full delay.
+        let started = Instant::now();
+        sleep_while_running(&AtomicBool::new(true), Duration::from_millis(60));
+        assert!(started.elapsed() >= Duration::from_millis(60));
     }
 
     // --- RB-012 -----------------------------------------------------------------------------
@@ -5891,7 +6199,11 @@ mod rt_audit_tests {
     #[test]
     fn processor_keeps_no_write_only_gate_shadow() {
         let source = include_str!("../processor.rs");
-        let fields = between(source, "pub struct AudioProcessor {", "impl AudioProcessor {");
+        let fields = between(
+            source,
+            "pub struct AudioProcessor {",
+            "impl AudioProcessor {",
+        );
         assert!(!fields.contains("gate: Arc<Mutex<NoiseGate>>"));
         let stop = between(include_str!("dsp_loop.rs"), "pub fn stop(", "\n    }\n}\n");
         assert!(!stop.contains("self.gate.lock()"));
@@ -5994,12 +6306,14 @@ fn test_live_setters_count_rejected_non_finite_values() {
     processor.set_gate_threshold(f64::NAN);
     processor.set_compressor_ratio(f64::INFINITY);
     processor.set_limiter_release(f64::NEG_INFINITY);
-    assert_eq!(processor.get_rejected_control_value_count(), 3);
+    processor.set_rnnoise_strength(f32::NAN);
+    processor.set_latency_compensation_ms(f32::INFINITY);
+    assert_eq!(processor.get_rejected_control_value_count(), 5);
 
     // Finite out-of-range values are still clamped and accepted.
     processor.set_gate_threshold(1.0e9);
     processor.set_compressor_ratio(1.0e9);
-    assert_eq!(processor.get_rejected_control_value_count(), 3);
+    assert_eq!(processor.get_rejected_control_value_count(), 5);
     assert_eq!(
         processor.compressor_control.lock().unwrap().ratio,
         COMPRESSOR_RATIO_MAX
@@ -6017,7 +6331,54 @@ fn test_live_setters_count_rejected_non_finite_values() {
             .unwrap()
             .extract::<u64>()
             .unwrap();
-        assert_eq!(count, 3);
+        assert_eq!(count, 5);
+    });
+}
+
+#[test]
+fn test_runtime_diagnostics_report_rt_failure_counters() {
+    let wrapper = PyAudioProcessor {
+        processor: AudioProcessor::new(),
+    };
+    wrapper
+        .processor
+        .downstream_non_finite_count
+        .store(2, Ordering::Relaxed);
+    wrapper
+        .processor
+        .output_resampler_error_count
+        .store(3, Ordering::Relaxed);
+    wrapper
+        .processor
+        .dsp_scheduling_degraded
+        .store(true, Ordering::Relaxed);
+    wrapper
+        .processor
+        .compressor_auto_makeup_error
+        .store(1, Ordering::Relaxed);
+
+    Python::initialize();
+    Python::attach(|py| {
+        let diagnostics = wrapper.get_runtime_diagnostics(py).unwrap();
+        let diagnostics = diagnostics.bind(py).cast::<pyo3::types::PyDict>().unwrap();
+        let get = |key: &str| diagnostics.get_item(key).unwrap().unwrap();
+        assert_eq!(
+            get("downstream_non_finite_count").extract::<u64>().unwrap(),
+            2
+        );
+        assert_eq!(
+            get("output_resampler_error_count")
+                .extract::<u64>()
+                .unwrap(),
+            3
+        );
+        assert!(get("dsp_scheduling_degraded").extract::<bool>().unwrap());
+        assert!(get("auto_makeup_error")
+            .extract::<String>()
+            .unwrap()
+            .contains("sample rate"));
+        #[cfg(feature = "vad")]
+        assert!(get("vad_worker_error").is_none());
     });
 }
 

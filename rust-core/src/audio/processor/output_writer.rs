@@ -351,10 +351,7 @@ impl<
         }
     }
 
-    fn update_output_fill(
-        output_producer: &AudioProducer,
-        counters: &OutputWriteCounters<'_>,
-    ) {
+    fn update_output_fill(output_producer: &AudioProducer, counters: &OutputWriteCounters<'_>) {
         let new_fill = output_producer
             .capacity()
             .saturating_sub(output_producer.free_len());

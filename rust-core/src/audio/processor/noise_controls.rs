@@ -23,7 +23,7 @@ impl AudioProcessor {
     /// Set noise suppression wet/dry mix strength (0.0 = fully dry, 1.0 = fully wet)
     pub fn set_rnnoise_strength(&self, strength: f32) {
         let Some(clamped) =
-            clamp_control_value_f32(strength, RNNOISE_STRENGTH_MIN, RNNOISE_STRENGTH_MAX)
+            self.clamp_live_control_f32(strength, RNNOISE_STRENGTH_MIN, RNNOISE_STRENGTH_MAX)
         else {
             return;
         };
@@ -176,8 +176,10 @@ impl AudioProcessor {
             if crate::dsp::noise_suppressor::deepfilter_experimental_enabled() {
                 let strength = Arc::clone(&self.suppressor_strength);
 
-                let ll =
-                    new_noise_suppression_engine(NoiseModel::DeepFilterNetLL, Arc::clone(&strength));
+                let ll = new_noise_suppression_engine(
+                    NoiseModel::DeepFilterNetLL,
+                    Arc::clone(&strength),
+                );
                 if ll.backend_available() {
                     models.push((
                         NoiseModel::DeepFilterNetLL.id().to_string(),

@@ -14,8 +14,9 @@ pub mod dsp;
 
 #[cfg(test)]
 pub(crate) mod test_alloc {
-    // This measures Rust global allocations on the calling thread. Allocations
-    // performed inside foreign libraries are outside this instrumentation.
+    // This counts Rust global allocations and frees on the calling thread, so
+    // dropping a buffer on the RT path is caught like allocating one. Calls
+    // made inside foreign libraries are outside this instrumentation.
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::Cell;
     use std::sync::Barrier;
@@ -45,6 +46,7 @@ pub(crate) mod test_alloc {
         }
 
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            count_allocation();
             System.dealloc(ptr, layout);
         }
     }
@@ -151,6 +153,13 @@ pub(crate) mod test_alloc {
 
             assert_eq!(main_count, 0);
             assert!(handle.join().unwrap() > 0);
+        }
+
+        #[test]
+        fn freeing_a_buffer_counts() {
+            let buffer = std::hint::black_box(vec![0_u8; 19]);
+            let count = allocation_count_during(move || drop(buffer));
+            assert!(count > 0);
         }
 
         #[test]
@@ -319,6 +328,16 @@ fn simulate_eq_v2(
     bands: Vec<PyEqBandV2>,
     return_output_audio: bool,
 ) -> PyResult<Py<PyAny>> {
+    crate::catch_panic(|| simulate_eq_v2_impl(py, audio, sample_rate, bands, return_output_audio))
+}
+
+fn simulate_eq_v2_impl(
+    py: Python<'_>,
+    audio: numpy::PyReadonlyArray1<'_, f32>,
+    sample_rate: f64,
+    bands: Vec<PyEqBandV2>,
+    return_output_audio: bool,
+) -> PyResult<Py<PyAny>> {
     let configs = parse_eq_v2_bands(&bands, sample_rate)?;
     let input = audio.as_slice()?.to_vec();
     if input.iter().any(|sample| !sample.is_finite()) {
@@ -430,13 +449,15 @@ fn measure_integrated_loudness(
 fn _k_weighted_48k<'py>(
     py: Python<'py>,
     audio: numpy::PyReadonlyArray1<'py, f64>,
-) -> Bound<'py, numpy::PyArray1<f64>> {
-    let mut samples: Vec<f64> = audio.as_array().iter().copied().collect();
-    let output = py.detach(move || {
-        dsp::loudness::k_weighted_48k_inplace(&mut samples);
-        samples
-    });
-    numpy::PyArray1::from_vec(py, output)
+) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
+    catch_panic(|| {
+        let mut samples: Vec<f64> = audio.as_array().iter().copied().collect();
+        let output = py.detach(move || {
+            dsp::loudness::k_weighted_48k_inplace(&mut samples);
+            samples
+        });
+        Ok(numpy::PyArray1::from_vec(py, output))
+    })
 }
 
 /// Python module initialization
@@ -503,8 +524,10 @@ fn configure_deepfilter_runtime_paths(
     library_path: Option<&str>,
     model_path: Option<&str>,
 ) -> PyResult<()> {
-    dsp::deepfilter_ffi::configure_app_owned_paths(library_path, model_path)
-        .map_err(pyo3::exceptions::PyValueError::new_err)
+    catch_panic(|| {
+        dsp::deepfilter_ffi::configure_app_owned_paths(library_path, model_path)
+            .map_err(pyo3::exceptions::PyValueError::new_err)
+    })
 }
 
 #[cfg(test)]
@@ -566,6 +589,39 @@ mod boundary_tests {
     #[pyfunction]
     fn guarded_panic() -> PyResult<()> {
         catch_panic(|| panic!("test panic"))
+    }
+
+    /// Every module-level `#[pyfunction]` must run its body under `catch_panic`,
+    /// or a Rust panic reaches Python as a `BaseException` the app does not catch.
+    #[test]
+    fn every_pyfunction_runs_under_catch_panic() {
+        let lib = include_str!("lib.rs");
+        let production = &lib[..lib
+            .find(
+                "#[cfg(test)]
+mod boundary_tests",
+            )
+            .unwrap()];
+        let api = include_str!("audio/processor/python_api.rs");
+        let mut checked = 0;
+        for source in [production, api] {
+            for chunk in source.split("#[pyfunction]").skip(1) {
+                let body = &chunk[..chunk
+                    .find(
+                        "
+}
+",
+                    )
+                    .unwrap()];
+                let name = body.split("fn ").nth(1).unwrap().split('(').next().unwrap();
+                assert!(
+                    body.contains("catch_panic"),
+                    "{name} is not under catch_panic"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= 11, "only {checked} pyfunctions found");
     }
 
     #[test]

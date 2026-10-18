@@ -117,18 +117,15 @@ pub fn run_seeded_control_dsp_stress(
                 0 => {
                     control_gate.update(|state| {
                         state.enabled.store(rng.boolean(), Ordering::Relaxed);
-                        state.threshold_db_bits.store(
-                            rng.range_f64(-70.0, -15.0).to_bits(),
-                            Ordering::Relaxed,
-                        );
-                        state.attack_ms_bits.store(
-                            rng.range_f64(0.1, 80.0).to_bits(),
-                            Ordering::Relaxed,
-                        );
-                        state.release_ms_bits.store(
-                            rng.range_f64(10.0, 800.0).to_bits(),
-                            Ordering::Relaxed,
-                        );
+                        state
+                            .threshold_db_bits
+                            .store(rng.range_f64(-70.0, -15.0).to_bits(), Ordering::Relaxed);
+                        state
+                            .attack_ms_bits
+                            .store(rng.range_f64(0.1, 80.0).to_bits(), Ordering::Relaxed);
+                        state
+                            .release_ms_bits
+                            .store(rng.range_f64(10.0, 800.0).to_bits(), Ordering::Relaxed);
                     });
                     control_gate_dirty.store(true, Ordering::Release);
                 }
@@ -136,44 +133,33 @@ pub fn run_seeded_control_dsp_stress(
                     let band = (rng.next_u64() as usize) % NUM_BANDS;
                     control_eq.update(|state| {
                         state.enabled.store(rng.boolean(), Ordering::Relaxed);
-                        state.frequency_bits[band].store(
-                            rng.range_f64(30.0, 20_000.0).to_bits(),
-                            Ordering::Relaxed,
-                        );
-                        state.gain_bits[band].store(
-                            rng.range_f64(-6.0, 6.0).to_bits(),
-                            Ordering::Relaxed,
-                        );
-                        state.q_bits[band].store(
-                            rng.range_f64(0.2, 6.0).to_bits(),
-                            Ordering::Relaxed,
-                        );
+                        state.frequency_bits[band]
+                            .store(rng.range_f64(30.0, 20_000.0).to_bits(), Ordering::Relaxed);
+                        state.gain_bits[band]
+                            .store(rng.range_f64(-6.0, 6.0).to_bits(), Ordering::Relaxed);
+                        state.q_bits[band]
+                            .store(rng.range_f64(0.2, 6.0).to_bits(), Ordering::Relaxed);
                     });
                     control_eq_dirty.store(true, Ordering::Release);
                 }
                 2 => {
                     control_compressor.update(|state| {
                         state.enabled.store(rng.boolean(), Ordering::Relaxed);
-                        state.threshold_db_bits.store(
-                            rng.range_f64(-50.0, -6.0).to_bits(),
-                            Ordering::Relaxed,
-                        );
-                        state.ratio_bits.store(
-                            rng.range_f64(1.0, 12.0).to_bits(),
-                            Ordering::Relaxed,
-                        );
-                        state.attack_ms_bits.store(
-                            rng.range_f64(0.1, 80.0).to_bits(),
-                            Ordering::Relaxed,
-                        );
-                        state.base_release_ms_bits.store(
-                            rng.range_f64(20.0, 500.0).to_bits(),
-                            Ordering::Relaxed,
-                        );
-                        state.makeup_gain_db_bits.store(
-                            rng.range_f64(0.0, 6.0).to_bits(),
-                            Ordering::Relaxed,
-                        );
+                        state
+                            .threshold_db_bits
+                            .store(rng.range_f64(-50.0, -6.0).to_bits(), Ordering::Relaxed);
+                        state
+                            .ratio_bits
+                            .store(rng.range_f64(1.0, 12.0).to_bits(), Ordering::Relaxed);
+                        state
+                            .attack_ms_bits
+                            .store(rng.range_f64(0.1, 80.0).to_bits(), Ordering::Relaxed);
+                        state
+                            .base_release_ms_bits
+                            .store(rng.range_f64(20.0, 500.0).to_bits(), Ordering::Relaxed);
+                        state
+                            .makeup_gain_db_bits
+                            .store(rng.range_f64(0.0, 6.0).to_bits(), Ordering::Relaxed);
                     });
                     control_compressor_dirty.store(true, Ordering::Release);
                 }
@@ -181,33 +167,31 @@ pub fn run_seeded_control_dsp_stress(
                     let low_cut = rng.range_f64(2_000.0, 10_000.0);
                     control_deesser.update(|state| {
                         state.enabled.store(rng.boolean(), Ordering::Relaxed);
-                        state.low_cut_hz_bits.store(low_cut.to_bits(), Ordering::Relaxed);
+                        state
+                            .low_cut_hz_bits
+                            .store(low_cut.to_bits(), Ordering::Relaxed);
                         state.high_cut_hz_bits.store(
                             rng.range_f64(low_cut + 200.0, 16_000.0).to_bits(),
                             Ordering::Relaxed,
                         );
-                        state.threshold_db_bits.store(
-                            rng.range_f64(-50.0, -8.0).to_bits(),
-                            Ordering::Relaxed,
-                        );
-                        state.ratio_bits.store(
-                            rng.range_f64(1.0, 12.0).to_bits(),
-                            Ordering::Relaxed,
-                        );
+                        state
+                            .threshold_db_bits
+                            .store(rng.range_f64(-50.0, -8.0).to_bits(), Ordering::Relaxed);
+                        state
+                            .ratio_bits
+                            .store(rng.range_f64(1.0, 12.0).to_bits(), Ordering::Relaxed);
                     });
                     control_deesser_dirty.store(true, Ordering::Release);
                 }
                 4 => {
                     control_limiter.update(|state| {
                         state.enabled.store(rng.boolean(), Ordering::Relaxed);
-                        state.ceiling_db_bits.store(
-                            rng.range_f64(-9.0, -0.1).to_bits(),
-                            Ordering::Relaxed,
-                        );
-                        state.release_ms_bits.store(
-                            rng.range_f64(10.0, 300.0).to_bits(),
-                            Ordering::Relaxed,
-                        );
+                        state
+                            .ceiling_db_bits
+                            .store(rng.range_f64(-9.0, -0.1).to_bits(), Ordering::Relaxed);
+                        state
+                            .release_ms_bits
+                            .store(rng.range_f64(10.0, 300.0).to_bits(), Ordering::Relaxed);
                     });
                     control_limiter_dirty.store(true, Ordering::Release);
                 }

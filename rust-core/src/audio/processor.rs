@@ -356,6 +356,8 @@ pub struct AudioProcessor {
     compressor_current_release_ms: Arc<AtomicU64>,
     /// Compressor current measured loudness in LUFS (f64 bits).
     compressor_current_lufs: Arc<AtomicU64>,
+    /// `Compressor::auto_makeup_error_code` of the live compressor (0 healthy).
+    compressor_auto_makeup_error: Arc<AtomicU8>,
     /// Compressor current applied makeup gain in dB (f64 bits).
     compressor_current_makeup_gain: Arc<AtomicU64>,
 
@@ -664,6 +666,7 @@ impl AudioProcessor {
                 COMPRESSOR_DEFAULT_RELEASE_TENTH_MS,
             )),
             compressor_current_lufs: Arc::new(AtomicU64::new((-100.0_f64).to_bits())),
+            compressor_auto_makeup_error: Arc::new(AtomicU8::new(0)),
             compressor_current_makeup_gain: Arc::new(AtomicU64::new(0.0_f64.to_bits())),
             latency_us: Arc::new(AtomicU64::new(0)),
             latency_compensation_us: Arc::new(AtomicU64::new(0)),

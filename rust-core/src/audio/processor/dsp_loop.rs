@@ -141,19 +141,6 @@ fn contain_non_finite(buffer: &mut [f32]) -> bool {
     found
 }
 
-/// `ParametricEQ::reset` restores coefficients but keeps the biquad memory, so a
-/// NaN in the filters survives it. Re-enabling from a disabled state clears that
-/// memory (and fades back in from dry), so cycle the EQ through it.
-fn reset_eq_clearing_filter_memory(eq: &mut ParametricEQ) {
-    if eq.is_enabled() {
-        eq.set_enabled(false);
-        eq.reset();
-        eq.set_enabled(true);
-    } else {
-        eq.reset();
-    }
-}
-
 /// Advance an exponential moving average by the wall time since its last update.
 fn advance_time_ema(state: &mut f32, sample: f32, elapsed_ms: f32, time_constant_ms: f32) {
     let alpha = 1.0 - (-elapsed_ms / time_constant_ms).exp();
@@ -577,7 +564,8 @@ impl AudioProcessor {
         self.input_dropped_baseline.store(0, Ordering::Relaxed);
         self.output_underrun_streak.store(0, Ordering::Relaxed);
         self.output_underrun_total.store(0, Ordering::Relaxed);
-        self.output_priming_underrun_total.store(0, Ordering::Relaxed);
+        self.output_priming_underrun_total
+            .store(0, Ordering::Relaxed);
         self.jitter_dropped_samples.store(0, Ordering::Relaxed);
         self.output_retime_adjustment_count
             .store(0, Ordering::Relaxed);
@@ -590,8 +578,11 @@ impl AudioProcessor {
         self.lock_contention_count.store(0, Ordering::Relaxed);
         self.suppressor_non_finite_count.store(0, Ordering::Relaxed);
         self.downstream_non_finite_count.store(0, Ordering::Relaxed);
-        self.output_resampler_error_count.store(0, Ordering::Relaxed);
+        self.output_resampler_error_count
+            .store(0, Ordering::Relaxed);
         self.dsp_scheduling_degraded.store(false, Ordering::Relaxed);
+        self.compressor_auto_makeup_error
+            .store(0, Ordering::Relaxed);
         self.input_backlog_recovery_count
             .store(0, Ordering::Relaxed);
         self.input_backlog_dropped_samples
@@ -640,8 +631,7 @@ impl AudioProcessor {
         self.input_stereo_correlation
             .store(1.0_f32.to_bits(), Ordering::Relaxed);
         self.input_phase_warning_count.store(0, Ordering::Relaxed);
-        self.input_phase_rescue_strategy
-            .store(0, Ordering::Relaxed);
+        self.input_phase_rescue_strategy.store(0, Ordering::Relaxed);
         self.input_phase_estimated_delay_samples
             .store(0.0_f32.to_bits(), Ordering::Relaxed);
         self.input_phase_polarity_flipped
@@ -653,8 +643,7 @@ impl AudioProcessor {
         self.input_cleanup_high_pass_hz
             .store((INPUT_PREFILTER_HZ as f32).to_bits(), Ordering::Relaxed);
         self.gate_chatter_event_count.store(0, Ordering::Relaxed);
-        self.gate_auto_relax_active
-            .store(false, Ordering::Relaxed);
+        self.gate_auto_relax_active.store(false, Ordering::Relaxed);
         self.last_input_callback_time_us.store(0, Ordering::Relaxed);
         self.last_output_callback_time_us
             .store(0, Ordering::Relaxed);
@@ -702,10 +691,8 @@ impl AudioProcessor {
         )
         .map_err(|e| format!("Failed to start audio input: {}", e))?;
 
-        self.input_fixed_buffer_frames.store(
-            input.fixed_buffer_frames().unwrap_or(0),
-            Ordering::Relaxed,
-        );
+        self.input_fixed_buffer_frames
+            .store(input.fixed_buffer_frames().unwrap_or(0), Ordering::Relaxed);
         let input_device_name = input.device_info().name.clone();
 
         let output_setup = match output_device {
@@ -731,9 +718,8 @@ impl AudioProcessor {
         // Create output ring buffer sized for the actual playback device rate.
         let output_rb = AudioRingBuffer::new(output_sample_rate_for_thread as usize * 2);
         let (output_producer, output_consumer) = output_rb.split();
-        let output_probe_rb = AudioRingBuffer::new(
-            output_sample_rate_for_thread as usize * MAX_OUTPUT_PROBE_SECONDS,
-        );
+        let output_probe_rb =
+            AudioRingBuffer::new(output_sample_rate_for_thread as usize * MAX_OUTPUT_PROBE_SECONDS);
         let (output_probe_producer, output_probe_consumer) = output_probe_rb.split();
         {
             let mut producer = self
@@ -785,10 +771,8 @@ impl AudioProcessor {
                 return Err(format!("Failed to start audio output: {}", e));
             }
         };
-        self.output_fixed_buffer_frames.store(
-            output.fixed_buffer_frames().unwrap_or(0),
-            Ordering::Relaxed,
-        );
+        self.output_fixed_buffer_frames
+            .store(output.fixed_buffer_frames().unwrap_or(0), Ordering::Relaxed);
 
         let output_prime_samples = duration_samples(output_sample_rate_for_thread, OUTPUT_PRIME_MS);
         let mut prod = output_producer;
@@ -802,11 +786,17 @@ impl AudioProcessor {
         self.input_device_name_ordinal = input_device_name_ordinal;
         // Bind recovery to the endpoints actually opened, including a user's
         // initial default-device choice, even if another same-name device appears.
-        self.input_device_endpoint_id = input.device_info().endpoint_id.clone()
+        self.input_device_endpoint_id = input
+            .device_info()
+            .endpoint_id
+            .clone()
             .or_else(|| input_device_endpoint_id.map(ToOwned::to_owned));
         self.output_device_name = Some(output_device_name.clone());
         self.output_device_name_ordinal = output_device_name_ordinal;
-        self.output_device_endpoint_id = output.device_info().endpoint_id.clone()
+        self.output_device_endpoint_id = output
+            .device_info()
+            .endpoint_id
+            .clone()
             .or_else(|| output_device_endpoint_id.map(ToOwned::to_owned));
         self.audio_input = Some(input);
         self.audio_output = Some(output);
@@ -975,6 +965,7 @@ impl AudioProcessor {
         let compressor_current_release_ms = Arc::clone(&self.compressor_current_release_ms);
         let compressor_current_lufs = Arc::clone(&self.compressor_current_lufs);
         let compressor_current_makeup_gain = Arc::clone(&self.compressor_current_makeup_gain);
+        let compressor_auto_makeup_error = Arc::clone(&self.compressor_auto_makeup_error);
         let latency_us = Arc::clone(&self.latency_us);
         let latency_compensation_us = Arc::clone(&self.latency_compensation_us);
         let sample_rate_for_latency = self.sample_rate;
@@ -1016,8 +1007,7 @@ impl AudioProcessor {
         let output_true_peak_headroom_db = Arc::clone(&self.output_true_peak_headroom_db);
         let limiter_gain_reduction_db = Arc::clone(&self.limiter_gain_reduction_db);
         let limiter_peak_gain_reduction_db = Arc::clone(&self.limiter_peak_gain_reduction_db);
-        let limiter_gain_reduction_history_db =
-            Arc::clone(&self.limiter_gain_reduction_history_db);
+        let limiter_gain_reduction_history_db = Arc::clone(&self.limiter_gain_reduction_history_db);
         let output_true_peak_gain_reduction_history_db =
             Arc::clone(&self.output_true_peak_gain_reduction_history_db);
         let input_cleanup_mode = Arc::clone(&self.input_cleanup_mode);
@@ -1203,8 +1193,8 @@ impl AudioProcessor {
                         3000.0,
                         buffer.len(),
                     );
-                    *short_power = block_coeff * *short_power
-                        + (1.0 - block_coeff) * stats.mean_power;
+                    *short_power =
+                        block_coeff * *short_power + (1.0 - block_coeff) * stats.mean_power;
                     let loudness = if *short_power > 1.0e-12 {
                         10.0 * (*short_power).log10() - 0.691
                     } else {
@@ -1215,6 +1205,7 @@ impl AudioProcessor {
             };
             // RT_REGION_END: dsp_level_meter
 
+            // RT_REGION_START: dsp_downstream_chain
             macro_rules! apply_downstream_chain_rt {
                 ($buffer:expr) => {{
                     if deesser_dirty.swap(false, Ordering::AcqRel) {
@@ -1298,15 +1289,12 @@ impl AudioProcessor {
                                     let reliability = if snapshot.backend_available
                                         && age_us <= VAD_PROBABILITY_STALE_US
                                     {
-                                        let freshness =
-                                            if age_us <= VAD_PROBABILITY_STALE_US / 2 {
-                                                1.0
-                                            } else {
-                                                1.0
-                                                    - (age_us - VAD_PROBABILITY_STALE_US / 2)
-                                                        as f64
-                                                        / (VAD_PROBABILITY_STALE_US / 2) as f64
-                                            };
+                                        let freshness = if age_us <= VAD_PROBABILITY_STALE_US / 2 {
+                                            1.0
+                                        } else {
+                                            1.0 - (age_us - VAD_PROBABILITY_STALE_US / 2) as f64
+                                                / (VAD_PROBABILITY_STALE_US / 2) as f64
+                                        };
                                         let t = freshness.clamp(0.0, 1.0);
                                         t * t * (3.0 - 2.0 * t)
                                     } else {
@@ -1348,12 +1336,15 @@ impl AudioProcessor {
                             compressor_rt.current_makeup_gain().to_bits(),
                             Ordering::Relaxed,
                         );
+                        compressor_auto_makeup_error
+                            .store(compressor_rt.auto_makeup_error_code(), Ordering::Relaxed);
                     } else {
                         compressor_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
                         compressor_current_release_ms
                             .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed);
                         compressor_current_lufs.store((-100.0_f64).to_bits(), Ordering::Relaxed);
                         compressor_current_makeup_gain.store(0.0_f64.to_bits(), Ordering::Relaxed);
+                        compressor_auto_makeup_error.store(0, Ordering::Relaxed);
                     }
 
                     // Always run the limiter: disabled means unity gain through
@@ -1367,10 +1358,8 @@ impl AudioProcessor {
                             (limiter_rt.current_gain_reduction().abs() as f32).to_bits(),
                             Ordering::Relaxed,
                         );
-                        limiter_peak_gain_reduction_db.store(
-                            limiter_peak_gr.to_bits(),
-                            Ordering::Relaxed,
-                        );
+                        limiter_peak_gain_reduction_db
+                            .store(limiter_peak_gr.to_bits(), Ordering::Relaxed);
                         update_decaying_peak_db(
                             limiter_peak_gr,
                             limiter_gain_reduction_history_db.as_ref(),
@@ -1394,11 +1383,12 @@ impl AudioProcessor {
                     if contain_non_finite($buffer) {
                         downstream_non_finite_count.fetch_add(1, Ordering::Relaxed);
                         deesser_rt.reset();
-                        reset_eq_clearing_filter_memory(&mut correction_eq_rt);
-                        reset_eq_clearing_filter_memory(&mut tone_eq_rt);
+                        correction_eq_rt.reset();
+                        tone_eq_rt.reset();
                     }
                 }};
             }
+            // RT_REGION_END: dsp_downstream_chain
 
             // Time-based EMA smoothing for metrics (200ms time constant).
             // The input fill level advances by measured wall time on every loop pass;
@@ -1446,8 +1436,7 @@ impl AudioProcessor {
             apply_true_peak_limiter_control(&mut output_true_peak_limiter, &limiter_snapshot);
             let output_limiter_release_ms = Cell::new(limiter_snapshot.release_ms as f32);
             let mut applied_output_limiter_release_ms = limiter_snapshot.release_ms as f32;
-            let true_peak_lookahead_samples =
-                output_true_peak_limiter.lookahead_samples() as u64;
+            let true_peak_lookahead_samples = output_true_peak_limiter.lookahead_samples() as u64;
             let mut output_drift_error_ema = 0.0_f32;
             let mut output_drift_retimer = DriftRetimer::default();
             let mut output_writer = OutputWriteContext {
@@ -1479,8 +1468,7 @@ impl AudioProcessor {
                     output_true_peak_event_count: output_true_peak_event_count.as_ref(),
                     output_true_peak_db: output_true_peak_db.as_ref(),
                     output_true_peak_input_db: output_true_peak_input_db.as_ref(),
-                    output_true_peak_gain_reduction_db: output_true_peak_gain_reduction_db
-                        .as_ref(),
+                    output_true_peak_gain_reduction_db: output_true_peak_gain_reduction_db.as_ref(),
                     output_true_peak_gain_reduction_history_db:
                         output_true_peak_gain_reduction_history_db.as_ref(),
                     output_true_peak_headroom_db: output_true_peak_headroom_db.as_ref(),
@@ -1550,8 +1538,7 @@ impl AudioProcessor {
                                     // The dropped chunk is a hole in the output;
                                     // count it and rebuild the stream like the
                                     // input side does.
-                                    output_resampler_error_count
-                                        .fetch_add(1, Ordering::Relaxed);
+                                    output_resampler_error_count.fetch_add(1, Ordering::Relaxed);
                                     restart_requested_for_dsp.store(true, Ordering::Release);
                                     output_resample_input.clear();
                                     break;
@@ -1679,8 +1666,7 @@ impl AudioProcessor {
                                 LatencyComponents {
                                     input_resampler_delay_samples:
                                         input_resampler_delay_samples_for_latency,
-                                    output_buffer_samples: output_buffer_len
-                                        .load(Ordering::Relaxed)
+                                    output_buffer_samples: output_buffer_len.load(Ordering::Relaxed)
                                         as u64,
                                     output_sample_rate: output_sample_rate_for_latency,
                                     output_resampler_delay_samples:
@@ -1719,27 +1705,37 @@ impl AudioProcessor {
                                         while deferred_suppressor_retire.is_none()
                                             && !retired_suppressor_tx.is_full()
                                         {
-                                            let candidate_matches = match suppressor_rx.iter().next() {
-                                                Some(candidate) => candidate.model_type() == control.model,
-                                                None => break,
-                                            };
+                                            let candidate_matches =
+                                                match suppressor_rx.iter().next() {
+                                                    Some(candidate) => {
+                                                        candidate.model_type() == control.model
+                                                    }
+                                                    None => break,
+                                                };
                                             let Some(candidate) = suppressor_rx.try_pop() else {
                                                 break;
                                             };
 
                                             if candidate_matches {
-                                                let retired = std::mem::replace(&mut suppressor_rt, candidate);
+                                                let retired = std::mem::replace(
+                                                    &mut suppressor_rt,
+                                                    candidate,
+                                                );
                                                 suppressor_rt.soft_reset();
                                                 if $in_use {
-                                                    suppressor_recovery_fade.restart_for_suppressor(
-                                                        &suppressor_rt,
-                                                        &discontinuity_fade_remaining,
-                                                        discontinuity_fade_samples,
-                                                    );
+                                                    suppressor_recovery_fade
+                                                        .restart_for_suppressor(
+                                                            &suppressor_rt,
+                                                            &discontinuity_fade_remaining,
+                                                            discontinuity_fade_samples,
+                                                        );
                                                 }
-                                                if let Err(retired) = retired_suppressor_tx.try_push(retired) {
+                                                if let Err(retired) =
+                                                    retired_suppressor_tx.try_push(retired)
+                                                {
                                                     deferred_suppressor_retire = Some(retired);
-                                                    rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
+                                                    rt_buffer_overflow_count
+                                                        .fetch_add(1, Ordering::Relaxed);
                                                     store_rt_error(
                                                         rt_error_code.as_ref(),
                                                         RtErrorCode::FixedBufferOverflow,
@@ -1750,7 +1746,8 @@ impl AudioProcessor {
                                                 retired_suppressor_tx.try_push(candidate)
                                             {
                                                 deferred_suppressor_retire = Some(candidate);
-                                                rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
+                                                rt_buffer_overflow_count
+                                                    .fetch_add(1, Ordering::Relaxed);
                                                 store_rt_error(
                                                     rt_error_code.as_ref(),
                                                     RtErrorCode::FixedBufferOverflow,
@@ -1963,22 +1960,17 @@ impl AudioProcessor {
                                     .store((-100.0_f64).to_bits(), Ordering::Relaxed);
                                 compressor_current_makeup_gain
                                     .store(0.0_f64.to_bits(), Ordering::Relaxed);
-                                limiter_gain_reduction_db.store(
-                                    0.0_f32.to_bits(),
-                                    Ordering::Relaxed,
-                                );
-                                limiter_peak_gain_reduction_db.store(
-                                    0.0_f32.to_bits(),
-                                    Ordering::Relaxed,
-                                );
+                                limiter_gain_reduction_db
+                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
+                                limiter_peak_gain_reduction_db
+                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 limiter_gain_reduction_history_db
                                     .store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 output_true_peak_gain_reduction_history_db
                                     .store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 suppressor_buffer_len.store(0, Ordering::Relaxed);
                                 suppressor_latency_samples.store(0, Ordering::Relaxed);
-                                suppressor_successful_inference_frames
-                                    .store(0, Ordering::Relaxed);
+                                suppressor_successful_inference_frames.store(0, Ordering::Relaxed);
                                 smoothed_buffer_len.store(0, Ordering::Relaxed);
                                 discontinuity_fade_remaining.set(discontinuity_fade_samples);
 
@@ -2081,14 +2073,10 @@ impl AudioProcessor {
                                     .store((-100.0_f64).to_bits(), Ordering::Relaxed);
                                 compressor_current_makeup_gain
                                     .store(0.0_f64.to_bits(), Ordering::Relaxed);
-                                limiter_gain_reduction_db.store(
-                                    0.0_f32.to_bits(),
-                                    Ordering::Relaxed,
-                                );
-                                limiter_peak_gain_reduction_db.store(
-                                    0.0_f32.to_bits(),
-                                    Ordering::Relaxed,
-                                );
+                                limiter_gain_reduction_db
+                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
+                                limiter_peak_gain_reduction_db
+                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 update_decaying_peak_db(
                                     0.0,
                                     limiter_gain_reduction_history_db.as_ref(),
@@ -2101,8 +2089,7 @@ impl AudioProcessor {
                                 );
                                 suppressor_buffer_len.store(0, Ordering::Relaxed);
                                 suppressor_latency_samples.store(0, Ordering::Relaxed);
-                                suppressor_successful_inference_frames
-                                    .store(0, Ordering::Relaxed);
+                                suppressor_successful_inference_frames.store(0, Ordering::Relaxed);
                                 smoothed_buffer_len.store(0, Ordering::Relaxed);
 
                                 write_output(buffer, uses_clean_write_path(processing_path));
@@ -2222,14 +2209,10 @@ impl AudioProcessor {
                                     .store((-100.0_f64).to_bits(), Ordering::Relaxed);
                                 compressor_current_makeup_gain
                                     .store(0.0_f64.to_bits(), Ordering::Relaxed);
-                                limiter_gain_reduction_db.store(
-                                    0.0_f32.to_bits(),
-                                    Ordering::Relaxed,
-                                );
-                                limiter_peak_gain_reduction_db.store(
-                                    0.0_f32.to_bits(),
-                                    Ordering::Relaxed,
-                                );
+                                limiter_gain_reduction_db
+                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
+                                limiter_peak_gain_reduction_db
+                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 update_decaying_peak_db(
                                     0.0,
                                     limiter_gain_reduction_history_db.as_ref(),
@@ -2316,14 +2299,10 @@ impl AudioProcessor {
                                         gate_rt.current_gain().clamp(0.0, 1.0).to_bits(),
                                         Ordering::Relaxed,
                                     );
-                                    gate_chatter_event_count.store(
-                                        gate_rt.chatter_event_count(),
-                                        Ordering::Relaxed,
-                                    );
-                                    gate_auto_relax_active.store(
-                                        gate_rt.auto_relax_active(),
-                                        Ordering::Relaxed,
-                                    );
+                                    gate_chatter_event_count
+                                        .store(gate_rt.chatter_event_count(), Ordering::Relaxed);
+                                    gate_auto_relax_active
+                                        .store(gate_rt.auto_relax_active(), Ordering::Relaxed);
                                     #[cfg(feature = "vad")]
                                     {
                                         let prob = gate_rt.get_vad_probability();
@@ -2505,7 +2484,8 @@ impl AudioProcessor {
                                     if suppressor_reset_requested.swap(false, Ordering::AcqRel) {
                                         suppressor_rt.soft_reset();
                                         suppressor_recovery_fade.restart(0);
-                                        discontinuity_fade_remaining.set(discontinuity_fade_samples);
+                                        discontinuity_fade_remaining
+                                            .set(discontinuity_fade_samples);
                                         update_backend_status_rt(
                                             &noise_backend_available,
                                             &noise_backend_failed,

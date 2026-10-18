@@ -9,7 +9,6 @@ impl AudioProcessor {
         clamped
     }
 
-    #[cfg(feature = "vad")]
     /// `clamp_control_value_f32` that counts the non-finite values it drops.
     fn clamp_live_control_f32(&self, value: f32, min_value: f32, max_value: f32) -> Option<f32> {
         let clamped = clamp_control_value_f32(value, min_value, max_value);

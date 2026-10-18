@@ -933,7 +933,6 @@ fn apply_gate_control(gate: &mut NoiseGate, control: &GateControlState) {
         gate.set_gate_mode(control.gate_mode);
         gate.set_vad_threshold(control.vad_threshold);
         gate.set_hold_time(control.hold_ms);
-        gate.set_vad_pre_gain(control.pre_gain);
         gate.set_auto_threshold(control.auto_threshold);
         gate.set_margin(control.margin_db);
     }

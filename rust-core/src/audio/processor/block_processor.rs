@@ -47,7 +47,6 @@ pub struct OfflineDspBlockProcessor {
     /// limiter so bypass can match the live path.
     normal_limiter_enabled: bool,
     output_protection_enabled: bool,
-    eq_before_deesser: bool,
     previous_true_peak_limiter_gain_reduction_db: f64,
 }
 
@@ -69,7 +68,6 @@ impl OfflineDspBlockProcessor {
             started: false,
             normal_limiter_enabled: true,
             output_protection_enabled: true,
-            eq_before_deesser: false,
             previous_true_peak_limiter_gain_reduction_db: 0.0,
         }
     }
@@ -107,10 +105,6 @@ impl OfflineDspBlockProcessor {
     /// `set_limiter_enabled`.
     pub fn set_normal_limiter_enabled(&mut self, enabled: bool) {
         self.normal_limiter_enabled = enabled;
-    }
-
-    pub fn set_eq_before_deesser(&mut self, enabled: bool) {
-        self.eq_before_deesser = enabled;
     }
 
     pub fn eq_mut(&mut self) -> &mut ParametricEQ {
@@ -180,7 +174,10 @@ impl OfflineDspBlockProcessor {
         activity: Option<AutoMakeupActivityInput>,
     ) -> OfflineDspBlockStats {
         let mut stats = OfflineDspBlockStats {
-            input_sample_peak: input.iter().map(|sample| sample.abs()).fold(0.0_f32, f32::max),
+            input_sample_peak: input
+                .iter()
+                .map(|sample| sample.abs())
+                .fold(0.0_f32, f32::max),
             ..OfflineDspBlockStats::default()
         };
         self.started = true;
@@ -194,21 +191,12 @@ impl OfflineDspBlockProcessor {
         output.as_mut_slice().copy_from_slice(&input[..count]);
         let block = output.as_mut_slice();
 
-        if self.eq_before_deesser {
-            self.correction_eq.process_block_inplace(block);
-            self.tone_eq.process_block_inplace(block);
-            if self.deesser_enabled {
-                self.deesser.process_block_inplace(block);
-                stats.deesser_gain_reduction_db = self.deesser.current_gain_reduction_db();
-            }
-        } else {
-            if self.deesser_enabled {
-                self.deesser.process_block_inplace(block);
-                stats.deesser_gain_reduction_db = self.deesser.current_gain_reduction_db();
-            }
-            self.correction_eq.process_block_inplace(block);
-            self.tone_eq.process_block_inplace(block);
+        if self.deesser_enabled {
+            self.deesser.process_block_inplace(block);
+            stats.deesser_gain_reduction_db = self.deesser.current_gain_reduction_db();
         }
+        self.correction_eq.process_block_inplace(block);
+        self.tone_eq.process_block_inplace(block);
         if self.compressor.is_active() {
             if let Some(activity) = activity {
                 let limiter_feedback = if self.normal_limiter_enabled {
@@ -229,8 +217,7 @@ impl OfflineDspBlockProcessor {
             } else {
                 self.compressor.process_block_inplace(block);
             }
-            stats.compressor_gain_reduction_db =
-                self.compressor.block_peak_gain_reduction() as f32;
+            stats.compressor_gain_reduction_db = self.compressor.block_peak_gain_reduction() as f32;
         }
         stats.pre_limiter_true_peak = self.pre_limiter_true_peak_detector.process_block(block);
         if self.normal_limiter_enabled {
@@ -247,8 +234,7 @@ impl OfflineDspBlockProcessor {
         // Same order as the live output writer: ceiling first, so a re-enable
         // plans queued audio against the configured ceiling.
         if self.output_protection_enabled {
-            self.true_peak_limiter
-                .set_ceiling_linear(output_ceiling);
+            self.true_peak_limiter.set_ceiling_linear(output_ceiling);
         }
         self.true_peak_limiter
             .set_enabled(self.output_protection_enabled);
@@ -265,7 +251,10 @@ impl OfflineDspBlockProcessor {
 
         sanitize_and_clamp_output_inplace(block, output_ceiling);
 
-        stats.output_sample_peak = block.iter().map(|sample| sample.abs()).fold(0.0_f32, f32::max);
+        stats.output_sample_peak = block
+            .iter()
+            .map(|sample| sample.abs())
+            .fold(0.0_f32, f32::max);
         stats.output_true_peak = self.true_peak_detector.process_block(block);
         stats
     }
@@ -322,8 +311,7 @@ mod block_processor_tests {
         let block_at = |start: usize| -> Vec<f32> {
             (start..start + 480)
                 .map(|n| {
-                    0.9 * (std::f32::consts::PI * n as f32 / 2.0 + std::f32::consts::PI / 4.0)
-                        .sin()
+                    0.9 * (std::f32::consts::PI * n as f32 / 2.0 + std::f32::consts::PI / 4.0).sin()
                 })
                 .collect()
         };
@@ -351,7 +339,10 @@ mod block_processor_tests {
                 peak = peak.max(detector.process_block(output.as_slice()));
             }
         }
-        assert!(peak <= ceiling * 1.01, "true peak {peak} over ceiling {ceiling}");
+        assert!(
+            peak <= ceiling * 1.01,
+            "true peak {peak} over ceiling {ceiling}"
+        );
     }
 
     #[test]
@@ -384,7 +375,10 @@ mod block_processor_tests {
             .fold(0.0_f32, f32::max);
         // A ramp moves a small fraction of the processed/dry difference per
         // sample; skipping the compressor would step by all of it.
-        assert!(max_step < (compressed - 0.3).abs() / 20.0, "max_step={max_step}");
+        assert!(
+            max_step < (compressed - 0.3).abs() / 20.0,
+            "max_step={max_step}"
+        );
         assert!((emitted.last().unwrap() - 0.3).abs() < 1e-4);
     }
 
@@ -404,9 +398,7 @@ mod block_processor_tests {
         without_evidence
             .compressor_mut()
             .set_auto_makeup_enabled(true);
-        without_evidence
-            .compressor_mut()
-            .set_target_lufs(-12.0);
+        without_evidence.compressor_mut().set_target_lufs(-12.0);
 
         let evidence = AutoMakeupActivityInput {
             vad_probability: 0.95,

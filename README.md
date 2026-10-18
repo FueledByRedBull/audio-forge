@@ -66,11 +66,18 @@ Both include everything the app needs; you don't need Python or Rust. The
 other files on the release page (source code, validation evidence, and
 checksums) are for verification and redistribution.
 
-**Windows SmartScreen:** AudioForge isn't code-signed, so Windows may show
-"Windows protected your PC". Download only from this repository's Releases
-page. To confirm the file is intact, run `Get-FileHash <file>` in PowerShell
-and compare the result with the matching line in
-`AudioForge-v<version>-SHA256SUMS.txt`. Then choose **More info > Run anyway**.
+**Verify your download:** the executable, the DLLs and the MSI aren't
+code-signed, so Windows SmartScreen may show "Windows protected your PC" the
+first time you run them. Download only from this repository's Releases page,
+then check the file two ways:
+
+- Run `Get-FileHash -Algorithm SHA256 <file>` in PowerShell and compare the
+  result with the matching line in `AudioForge-v<version>-SHA256SUMS.txt`.
+- With the [GitHub CLI](https://cli.github.com/), run
+  `gh release verify-asset v<version> <file> --repo FueledByRedBull/audio-forge`.
+  It checks the file against the release's signed attestation.
+
+If both match, choose **More info > Run anyway**.
 
 ## Set Up
 

@@ -31,6 +31,8 @@ class SemanticPalette:
     text_muted: str = "#a2abb8"
     text_on_emphasis: str = "#ffffff"
     text_on_accent: str = "#14171c"
+    # Dark text on a data color (EQ band, clip); a contrast theme keeps those colors.
+    text_on_data_color: str = "#14171c"
     # Text on a hovered or selected control; the dark look keeps the normal text color.
     hover_text: str = "#eef1f5"
     accent: str = "#f2743a"
@@ -172,7 +174,7 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         data_surface=window, data_surface_raised=window, data_grid=disabled,
         data_text=text, data_text_muted=text, data_curve=text,
         data_marker=accent, data_warning=accent, data_handle_selected=text,
-        meter_scale=text,
+        meter_scale=text, meter_peak=text,
     )
 
 
@@ -294,7 +296,7 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
     ("muted data text", PALETTE.data_text_muted, PALETTE.data_surface),
     # The number on the selected EQ handle, dark on the band's color.
     *(
-        (f"EQ band {number} number on handle", PALETTE.text_on_accent, color)
+        (f"EQ band {number} number on handle", PALETTE.text_on_data_color, color)
         for number, color in enumerate(PALETTE.eq_band_colors, start=1)
     ),
 )

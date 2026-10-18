@@ -1519,7 +1519,8 @@ class MainWindow(QMainWindow):
             app.aboutToQuit.connect(self._mark_quitting)
             if isinstance(app, QGuiApplication):
                 # Direct, so the flag is set before Qt closes the windows for a Windows sign-out
-                # or shutdown; that close must neither ask a question nor hide to the tray.
+                # or shutdown; that close neither asks the live-audio question nor hides to
+                # the tray. Unsaved sound changes still ask, as they would on any quit.
                 app.commitDataRequest.connect(
                     self._mark_quitting, Qt.ConnectionType.DirectConnection
                 )
@@ -1671,7 +1672,14 @@ class MainWindow(QMainWindow):
 
     def _quit_choice(self) -> str:
         """Ask before a quit stops live audio: "quit", "tray" (hide, keep running) or "cancel"."""
-        if not self.processor.is_running() or not self.config.confirm_quit_when_live:
+        close_to_tray = (
+            self._close_to_tray_action is not None and self._close_to_tray_action.isChecked()
+        )
+        if (
+            close_to_tray
+            or not self.processor.is_running()
+            or not self.config.confirm_quit_when_live
+        ):
             return "quit"
         box = QMessageBox(
             QMessageBox.Icon.Question,
@@ -1691,9 +1699,9 @@ class MainWindow(QMainWindow):
         box.exec()
         clicked = box.clickedButton()
         if clicked is quit_button:
+            # closeEvent saves the config on the way out.
             if dont_ask.isChecked():
                 self.config.confirm_quit_when_live = False
-                self._save_config_safely()
             return "quit"
         return "tray" if clicked is tray_button else "cancel"
 

@@ -139,11 +139,21 @@ def test_dont_ask_again_suppresses_the_question(live_window, answers):
     assert answers.asked == [] and not live_window.processor.running
 
 
-def test_a_windows_sign_out_never_asks_or_hides(live_window, answers, qapp):
-    _tray(live_window, close_to_tray=True)
+@pytest.mark.parametrize("close_to_tray", [False, True])
+def test_a_windows_sign_out_never_asks_or_hides(live_window, answers, qapp, close_to_tray):
+    _tray(live_window, close_to_tray=close_to_tray)
     qapp.commitDataRequest.emit(None)
 
     assert _close(live_window)
+    assert answers.asked == [] and not live_window.processor.running
+
+
+def test_tray_quit_with_close_to_tray_on_quits_without_asking(live_window, answers, monkeypatch):
+    monkeypatch.setattr(QGuiApplication, "quit", staticmethod(lambda: None))
+    _tray(live_window, close_to_tray=True)
+
+    live_window._quit_from_tray()
+
     assert answers.asked == [] and not live_window.processor.running
 
 

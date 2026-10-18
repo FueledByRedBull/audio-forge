@@ -211,6 +211,18 @@ def test_a_contrast_theme_takes_every_surface_text_and_accent_from_the_system() 
     assert "hover_text" in asdict(palette)  # the QML tokens come from this mapping
 
 
+def test_a_white_contrast_theme_keeps_the_peak_line_and_band_numbers_readable() -> None:
+    palette = build_palette({
+        "window": "#ffffff", "window_text": "#000000", "gray_text": "#600000",
+        "highlight": "#37006e", "highlight_text": "#ffffff",
+    })
+    assert contrast_ratio(palette.meter_peak, palette.data_surface) >= 3
+    assert all(
+        contrast_ratio(palette.text_on_data_color, color) >= 4.5
+        for color in (*palette.eq_band_colors, palette.meter_clip)
+    )
+
+
 def test_the_widget_palette_and_stylesheet_follow_the_contrast_theme(monkeypatch) -> None:
     monkeypatch.setattr(theme, "PALETTE", build_palette(SYSTEM_COLORS))
     palette = application_palette()

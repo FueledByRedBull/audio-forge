@@ -926,7 +926,7 @@ class EQGraphRenderer:
                 # The number the band editor shows beside the same color.
                 painter.setFont(number_font)
                 painter.setPen(
-                    qcolor(PALETTE.text_on_accent if enabled else PALETTE.data_text)
+                    qcolor(PALETTE.text_on_data_color if enabled else PALETTE.data_text)
                 )
                 painter.drawText(box, Qt.AlignmentFlag.AlignCenter, str(index + 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)

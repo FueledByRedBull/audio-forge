@@ -173,9 +173,9 @@ cargo audit
 
 - **Semgrep:** `run_semgrep.py` fails on any ERROR or WARNING that isn't
   suppressed in source with `nosemgrep` and a reason. Review the notes by
-  hand in the SARIF. The rule packs in `semgrep-rulesets.txt` aren't pinned,
-  so a new upstream rule can fail CI without a code change: fix the code or
-  suppress the finding with its reason.
+  hand in the SARIF. `semgrep-rulesets.txt` lists registry packs, which can't
+  be pinned, so a new registry rule can fail CI without a code change: fix the
+  code or suppress the finding with its reason.
 - **RustSec:** `cargo audit` must be clean for the application lockfile; never
   add an ignore just to release. The separate
   `build-support/deepfilter/Cargo.lock` graph ignores only three reviewed
@@ -318,9 +318,12 @@ every part of its criterion holds; record "not run" for any skipped.
    running, the tray tooltip reads "AudioForge: Running", **Show AudioForge**
    restores the same window, and a second launch shows that window instead of
    starting another stream. **Ctrl+Q** and the tray **Quit AudioForge** each
-   leave no `AudioForge.exe` in Task Manager within five seconds. With
-   close-to-tray off, closing the window stops audio and quits; with unsaved
-   changes it asks Save, Discard or Cancel, and Cancel keeps audio running.
+   quit without a prompt and leave no `AudioForge.exe` in Task Manager within
+   five seconds. Relaunch, turn close-to-tray off, start processing and close
+   the window. Pass: **Stop Audio and Quit?** appears with **Quit**, **Keep Running
+   in Tray** (only while the tray icon shows) and **Cancel**. **Cancel** keeps
+   audio running; **Quit** leaves no `AudioForge.exe` within five seconds. With
+   unsaved changes, this question comes first, then Save, Discard or Cancel.
 9. **Device change while running.** Pick another input in the top bar, disable
    that input in Windows sound settings, then enable it and use **Refresh**.
    Pass: the meter follows the new input; when a device disappears the app

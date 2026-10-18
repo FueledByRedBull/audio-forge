@@ -151,6 +151,20 @@ def test_download_refuses_existing_hash_mismatch(tmp_path: Path):
     assert target.read_bytes() == b"tampered"
 
 
+def test_download_refuses_response_over_byte_cap(tmp_path: Path, monkeypatch):
+    payload = b"x" * 33
+    entry = _entry(payload)
+    _mock_urlopen(monkeypatch, payload)
+    monkeypatch.setattr(source_tool, "DOWNLOAD_MAX_BYTES", 32)
+    target = _archive_target(tmp_path / "hydrated", entry)
+
+    with pytest.raises(SourceDistributionError, match="exceeded 32 bytes"):
+        source_tool._download(entry, target)
+
+    assert not target.exists()
+    assert not list(target.parent.glob("*.part"))
+
+
 def test_recipe_digest_normalizes_checkout_line_endings(tmp_path: Path):
     recipe = tmp_path / "recipe.ps1"
     recipe.write_bytes(b"one\r\ntwo\r\n")
@@ -286,6 +300,55 @@ def test_validate_project_archive_accepts_real_git_archive(tmp_path: Path):
     )
 
     assert digest == hashlib.sha256(archive_bytes).hexdigest()
+
+
+def _rewrite_tar(archive_bytes: bytes, change: str) -> bytes:
+    """Re-encode a tar with new timestamps and owners, plus an optional content change."""
+    output = io.BytesIO()
+    with (
+        tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:") as source,
+        tarfile.open(fileobj=output, mode="w", format=tarfile.GNU_FORMAT) as target,
+    ):
+        root = source.getnames()[0]
+        for member in source.getmembers():
+            if change == "missing" and member.name == f"{root}/LICENSE":
+                continue
+            body = source.extractfile(member) if member.isfile() else None
+            data = body.read() if body else None
+            if change == "changed" and member.name == f"{root}/pyproject.toml":
+                data = (data or b"") + b"# tampered\n"
+                member.size = len(data)
+            member.mtime, member.uid, member.gid, member.uname, member.gname = 1, 7, 7, "x", "x"
+            target.addfile(member, io.BytesIO(data) if data is not None else None)
+        if change == "extra":
+            extra = tarfile.TarInfo(f"{root}/extra.txt")
+            extra.size = 1
+            target.addfile(extra, io.BytesIO(b"x"))
+    return output.getvalue()
+
+
+@pytest.mark.parametrize("change", ["same", "changed", "extra", "missing"])
+def test_validate_project_archive_compares_contents_not_bytes(tmp_path: Path, change: str):
+    revision = source_tool._git_text("rev-parse", "--verify", "HEAD^{commit}")
+    project_version = tomllib.loads(
+        source_tool._git_text("show", f"{revision}:pyproject.toml")
+    )["project"]["version"]
+    genuine = source_tool._git_archive_bytes(revision, project_version)
+    rewritten = _rewrite_tar(genuine, change)
+    assert rewritten != genuine
+    archive_path = tmp_path / "AudioForge-project-source.tar"
+    archive_path.write_bytes(rewritten)
+
+    def validate() -> str:
+        return source_tool._validate_project_archive(
+            archive_path, {"project_version": project_version}, revision
+        )
+
+    if change == "same":
+        assert validate() == hashlib.sha256(rewritten).hexdigest()
+    else:
+        with pytest.raises(SourceDistributionError, match="does not match the recorded git revision"):
+            validate()
 
 
 def test_source_receipt_binds_manifest_and_revision(tmp_path: Path, monkeypatch):

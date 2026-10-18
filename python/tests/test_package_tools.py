@@ -874,38 +874,77 @@ def test_audit_ignore_is_found_whatever_order_the_flags_take(tmp_path, monkeypat
     assert "CVE-2000-0001" in errors and "not an allowed audit ignore" in errors
 
 
-def _rustsec_errors(tmp_path, monkeypatch, old, new):
-    source = (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
-    assert old in source
-    (tmp_path / "ci.yml").write_text(source.replace(old, new), encoding="utf-8")
-    monkeypatch.setattr(check_workflows, "WORKFLOW_DIR", tmp_path)
-    return "; ".join(check_workflows.check_workflows())
-
-
 def test_rustsec_ignores_must_match_the_reviewed_deepfilter_advisories(
     tmp_path, monkeypatch
 ):
-    errors = _rustsec_errors(
+    errors = _audit_ignore_errors(
         tmp_path, monkeypatch, "--ignore RUSTSEC-2026-0319", "--ignore RUSTSEC-2000-0001"
     )
     assert "cargo audit ignores" in errors and "RUSTSEC-2026-0319" in errors
 
 
 def test_deepfilter_rustsec_audit_is_required(tmp_path, monkeypatch):
-    errors = _rustsec_errors(
+    errors = _audit_ignore_errors(
         tmp_path, monkeypatch, "--file build-support/deepfilter/Cargo.lock", "--file Cargo.lock"
     )
     assert "ci.yml: missing a cargo audit of build-support/deepfilter/Cargo.lock" in errors
 
 
 def test_rustsec_ignore_is_rejected_on_the_application_lock(tmp_path, monkeypatch):
-    errors = _rustsec_errors(
+    errors = _audit_ignore_errors(
         tmp_path,
         monkeypatch,
         "cargo audit --deny warnings\n",
         "cargo audit --deny warnings --ignore RUSTSEC-2024-0436\n",
     )
     assert "cargo audit ignores ['RUSTSEC-2024-0436'], expected []" in errors
+
+
+@pytest.mark.parametrize(
+    ("workflow", "old", "new", "expected"),
+    [
+        (
+            name,
+            "ref: refs/tags/${{ inputs.release_tag }}",
+            "ref: ${{ inputs.release_tag }}",
+            "must use refs/tags/",
+        )
+        for name in (
+            "release-promote.yml",
+            "release-hardware-qualify.yml",
+            "release-hardware-matrix.yml",
+        )
+    ]
+    + [
+        (
+            name,
+            "git rev-parse HEAD).Trim() -ne",
+            "git rev-parse HEAD).Trim() -eq",
+            "HEAD is the tag commit",
+        )
+        for name in (
+            "release-promote.yml",
+            "release-hardware-qualify.yml",
+            "release-hardware-matrix.yml",
+        )
+    ],
+)
+def test_tag_checkout_must_use_tag_ref_and_assert_head_is_the_tag_commit(
+    workflow, old, new, expected
+):
+    source = (check_workflows.WORKFLOW_DIR / workflow).read_text(encoding="utf-8")
+    assert old in source
+    errors: list[str] = []
+
+    check_workflows._check_tag_checkouts(
+        workflow, check_workflows.yaml.safe_load(source), errors
+    )
+    assert errors == []
+
+    check_workflows._check_tag_checkouts(
+        workflow, check_workflows.yaml.safe_load(source.replace(old, new)), errors
+    )
+    assert len(errors) == 1 and expected in errors[0]
 
 
 def test_workflow_checker_rejects_privileged_triggers_and_run_interpolation():
@@ -2728,29 +2767,22 @@ def test_version_check_accepts_generated_archive_sidecar_references(
     check_versions._check_no_static_current_archive_claims("9.8.7")
 
 
-def test_version_check_requires_a_changelog_entry_for_the_version(tmp_path, monkeypatch):
+# A release candidate is covered by its final version's entry.
+@pytest.mark.parametrize(
+    ("version_text", "heading"),
+    [("9.8.7", "## v9.8.7 - 2026-10-18"), ("9.8.7rc1", "## v9.8.7")],
+)
+def test_version_check_requires_a_changelog_entry_for_the_version(
+    tmp_path, monkeypatch, version_text, heading
+):
     monkeypatch.setattr(check_versions, "REPO_ROOT", tmp_path)
-    version = check_versions.parse_version("9.8.7")
+    version = check_versions.parse_version(version_text)
     (tmp_path / "CHANGELOG.md").write_text("# Changelog\n\n## v9.8.6\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="no '## v9.8.7' entry"):
         check_versions._check_changelog_entry(version)
 
-    (tmp_path / "CHANGELOG.md").write_text("## v9.8.7 - 2026-10-18\n", encoding="utf-8")
-    check_versions._check_changelog_entry(version)
-
-
-def test_version_check_accepts_the_final_versions_changelog_for_a_release_candidate(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(check_versions, "REPO_ROOT", tmp_path)
-    version = check_versions.parse_version("9.8.7rc1")
-    (tmp_path / "CHANGELOG.md").write_text("## v9.8.6\n", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="no '## v9.8.7' entry"):
-        check_versions._check_changelog_entry(version)
-
-    (tmp_path / "CHANGELOG.md").write_text("## v9.8.7\n", encoding="utf-8")
+    (tmp_path / "CHANGELOG.md").write_text(heading + "\n", encoding="utf-8")
     check_versions._check_changelog_entry(version)
 
 

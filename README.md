@@ -99,9 +99,14 @@ If both match, choose **More info > Run anyway**.
    Press **Ctrl+S** to save a preset when it sounds right.
 
 Opening AudioForge normally leaves processing stopped. **Stop** keeps
-the window open. Closing the window stops audio and quits, unless you turn on
-close-to-tray under **Settings > Tray and background**. Then audio keeps running
-and you quit with **Ctrl+Q** or **Quit AudioForge** in the tray.
+the window open. While audio runs, closing the window, **Ctrl+Q** and **Quit
+AudioForge** in the tray ask **Stop Audio and Quit?** You can quit, keep running
+in the tray (offered only while the tray icon shows) or cancel. **Don't ask
+again** skips the question, and **Ask before quitting while audio is running** under
+**Settings > Tray and background** brings it back. With close-to-tray turned on
+in the same menu, closing the window hides it and audio keeps running;
+**Ctrl+Q** and **Quit AudioForge** then quit without asking. Signing out of
+Windows or shutting it down never asks.
 
 Login startup is opt-in and off by default. Packaged copies offer
 **Settings > Tray and background > Configure login shortcut for this copy**.

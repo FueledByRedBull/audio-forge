@@ -173,13 +173,19 @@ def _download_direct_url(url: str, destination: Path) -> None:
     # The host is checked above, so a redirect to another host is refused, and
     # callers hash-verify the download.
     opener = urllib.request.build_opener(_NoRedirectHandler)
-    with opener.open(request, timeout=60) as response:
-        data = response.read(DIRECT_DOWNLOAD_MAX_BYTES + 1)
-    if len(data) > DIRECT_DOWNLOAD_MAX_BYTES:
-        raise RuntimeError(
-            f"direct release asset exceeded {DIRECT_DOWNLOAD_MAX_BYTES} bytes"
-        )
-    destination.write_bytes(data)
+    byte_count = 0
+    try:
+        with opener.open(request, timeout=60) as response, destination.open("wb") as output:
+            for chunk in iter(lambda: response.read(1024 * 1024), b""):
+                byte_count += len(chunk)
+                if byte_count > DIRECT_DOWNLOAD_MAX_BYTES:
+                    raise RuntimeError(
+                        f"direct release asset exceeded {DIRECT_DOWNLOAD_MAX_BYTES} bytes"
+                    )
+                output.write(chunk)
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
 
 
 def _validate_pinned_archive_url(url: str) -> None:

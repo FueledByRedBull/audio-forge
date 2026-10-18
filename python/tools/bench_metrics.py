@@ -178,6 +178,15 @@ def frame_labels(labels: np.ndarray) -> np.ndarray:
     return labels[: count * FRAME].reshape(count, FRAME).any(axis=1)
 
 
+def pause_frames(speech: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The pause frames within 300 ms after speech (tail) and those at least 600 ms from speech on both sides (deep)."""
+    index = np.arange(speech.size)
+    since = index - np.maximum.accumulate(np.where(speech, index, -(10**6)))
+    until = np.minimum.accumulate(np.where(speech, index, 10**6)[::-1])[::-1] - index
+    pause = ~speech
+    return pause & (since <= 30), pause & (since >= 60) & (until >= 60)
+
+
 def score(case: dict[str, Any], output: np.ndarray) -> dict[str, float]:
     """ESTOI, SI-SDR, onset, pause, deep-pause (pause noise) and tail readings; ``evaluate_gate_corpus.score``.
 
@@ -187,18 +196,8 @@ def score(case: dict[str, Any], output: np.ndarray) -> dict[str, float]:
     """
     speech = frame_labels(case["labels"])
     count = speech.size
-    since = np.full(count, 10**6)
-    until = np.full(count, 10**6)
-    last, nxt = -(10**6), 10**6
-    for index in range(count):
-        last = index if speech[index] else last
-        since[index] = index - last
-    for index in range(count - 1, -1, -1):
-        nxt = index if speech[index] else nxt
-        until[index] = nxt - index
     pause = ~speech
-    tail = pause & (since <= 30)
-    deep = pause & (since >= 60) & (until >= 60)
+    tail, deep = pause_frames(speech)
     out_db = frame_rms_db(output)[:count]
     in_db = frame_rms_db(case["noisy"])[:count]
     clean_db = frame_rms_db(case["clean"])[:count]
@@ -224,13 +223,7 @@ def score(case: dict[str, Any], output: np.ndarray) -> dict[str, float]:
 
 def deep_pause_seconds(labels: np.ndarray) -> float:
     """Seconds of deep-pause frames (at least 600 ms from speech) that ``score`` can read."""
-    speech = frame_labels(labels)
-    index = np.arange(speech.size)
-    pos = np.where(speech, index, -(10**6))
-    since = index - np.maximum.accumulate(pos)
-    pos = np.where(speech, index, 10**6)
-    until = np.minimum.accumulate(pos[::-1])[::-1] - index
-    return float(np.count_nonzero(~speech & (since >= 60) & (until >= 60))) * FRAME / SAMPLE_RATE
+    return float(np.count_nonzero(pause_frames(frame_labels(labels))[1])) * FRAME / SAMPLE_RATE
 
 
 def level_matched(case: dict[str, Any], output: np.ndarray) -> np.ndarray:
@@ -567,11 +560,11 @@ def voice_setup(ctx: dict[str, Any], vad_available: bool) -> dict[str, Any]:
             if str(error) not in CAPTURE_REFUSALS:  # anything else is a fault
                 raise
             return {"outcome": "refused", "veto": "capture", "vetoes": [], "reason": str(error), "steps": [],
-                    "cpu_s": time.process_time() - started, "proposal": None, "final": None}
+                    "cpu_s": time.process_time() - started, "proposal": None, "final": None, "suppressor": None}
     diagnostics = result["diagnostics"]
     if result["eq_settings"] is None:
         return {"outcome": "failed", "veto": None, "vetoes": [], "reason": str(result["eq_error"]), "steps": [],
-                "cpu_s": time.process_time() - started, "proposal": None, "final": None}
+                "cpu_s": time.process_time() - started, "proposal": None, "final": None, "suppressor": None}
     b1 = any(not entry["passed"] for entry in validation)
     vad = bool(diagnostics["vad_available"])
     current = current_settings(vad)
@@ -593,6 +586,7 @@ def voice_setup(ctx: dict[str, Any], vad_available: bool) -> dict[str, Any]:
         "outcome": outcome, "veto": veto, "vetoes": fired, "reason": "; ".join(diagnostics["uncertainty_reasons"]),
         "steps": changed_steps(final or proposal, current), "cpu_s": cpu,
         "proposal": measure_settings(proposal, ctx),
+        "suppressor": {k: proposal["suppressor_settings"].get(k) for k in ("enabled", "model", "strength")},
         "final": None if final is None else measure_settings(final, ctx),
         "verification": None if flow is None else {k: flow[k] for k in ("decision", "first_decision", "adjustments",
                                                                             "ended", "takes", "retakes")},

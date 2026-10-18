@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -73,6 +74,8 @@ def build_identity(root: Path, vad: bool) -> dict[str, Any]:
         "git_revision": git_revision(),
         "manifest_sha256": bm.file_sha256(root / "manifest.json"),
         "vad": "silero" if vad else "unavailable",
+        # The tuner tries DeepFilter models only when this is set, so reports from different setups differ visibly.
+        "deepfilter_enabled": os.environ.get("AUDIOFORGE_ENABLE_DEEPFILTER"),
         "python": platform.python_version(), "numpy": np.__version__, "scipy": scipy.__version__,
     }
 
@@ -85,20 +88,29 @@ def check_files(bench: bm.Bench, root: Path) -> None:
         raise SystemExit(f"bench files differ from the manifest: {', '.join(differ)}")
 
 
-def run(bench: bm.Bench, mix_ids: list[str], vad: bool, *, with_voice_setup: bool = True) -> dict[str, Any]:
+def run(bench: bm.Bench, mix_ids: list[str], vad: bool, *, with_voice_setup: bool = True,
+        partial: Path | None = None) -> dict[str, Any]:
+    """Render each mix; ``partial`` gets one JSON line per finished mix, so a crash keeps the earlier ones."""
     mixes: dict[str, Any] = {}
+    if partial:
+        partial.write_text("", encoding="utf-8")
     for mix_id in mix_ids:
         mix = bm.build_mix(bench, mix_id)
         ctx = bm.make_context(mix)
+        settings = bm.current_settings(vad)
         started = time.process_time()
-        factory = bm.measure_settings(bm.current_settings(vad), ctx)
+        factory = bm.measure_settings(settings, ctx)
         entry: dict[str, Any] = {
             "condition": bench.manifest["mixes"][mix_id]["condition"], "take": bench.manifest["mixes"][mix_id]["take"],
-            "factory": {**factory, "cpu_s": time.process_time() - started},
+            "factory": {**factory, "cpu_s": time.process_time() - started,
+                        "suppressor": {k: settings["suppressor_settings"].get(k) for k in ("enabled", "model", "strength")}},
         }
         if with_voice_setup:
             entry["voice_setup"] = bm.voice_setup(ctx, vad)
         mixes[mix_id] = entry
+        if partial:
+            with partial.open("a", encoding="utf-8", newline="\n") as lines:
+                lines.write(json.dumps({mix_id: entry}, default=float) + "\n")
         print(f"{mix_id} done", file=sys.stderr)
     return mixes
 
@@ -154,6 +166,17 @@ def _rows(mixes: dict[str, Any], measures_of: Any, lead: Any, tail: Any) -> list
     return rows
 
 
+def _suppressors(mixes: dict[str, Any]) -> str:
+    """The factory chain's model and the models Voice Setup's tuner chose, with how many mixes each."""
+    def count(models: list[str]) -> str:
+        return ", ".join(f"{name} x{models.count(name)}" for name in sorted(set(models))) or "none"
+
+    factory = [str(e["factory"].get("suppressor", {}).get("model")) for e in mixes.values()]
+    chosen = [str(e["voice_setup"]["suppressor"]["model"]) for e in mixes.values()
+              if (e.get("voice_setup") or {}).get("suppressor")]
+    return f"factory chain {count(factory)}; Voice Setup chose {count(chosen)}"
+
+
 def markdown(result: dict[str, Any]) -> str:
     build, mixes = result["build"], result["mixes"]
     head = [h for _, h, _ in MEASURES]
@@ -163,7 +186,8 @@ def markdown(result: dict[str, Any]) -> str:
         "",
         f"- Build: native module `{build['native_module_sha256'][:16]}`, git revision "
         f"`{build['git_revision'] or 'not clean'}`, manifest `{build['manifest_sha256'][:16]}`.",
-        f"- VAD: {'Silero' if build['vad'] == 'silero' else 'unavailable (energy path)'}. Suppressor: RNNoise.",
+        f"- VAD: {'Silero' if build['vad'] == 'silero' else 'unavailable (energy path)'}.",
+        f"- Suppressor: {_suppressors(mixes)}. AUDIOFORGE_ENABLE_DEEPFILTER: {build.get('deepfilter_enabled') or 'unset'}.",
         f"- Run time: {result['run_seconds']:.0f} s wall, {sum(e['factory']['cpu_s'] for e in mixes.values()):.1f} s "
         f"CPU in the factory renders.",
         "",
@@ -192,8 +216,9 @@ def _delta(after: Any, before: Any) -> float | None:
 def compare_markdown(result: dict[str, Any], earlier: dict[str, Any]) -> str:
     """After minus before for every measure of every mix the two reports share."""
     notes = []
-    for key, label in (("vad", "VAD"), ("manifest_sha256", "bench manifest")):
-        if result["build"][key] != earlier["build"][key]:
+    for key, label in (("vad", "VAD"), ("manifest_sha256", "bench manifest"),
+                       ("deepfilter_enabled", "AUDIOFORGE_ENABLE_DEEPFILTER setting")):
+        if result["build"].get(key) != earlier["build"].get(key):
             notes.append(f"- The {label} differs between the two reports, so the numbers are not comparable.")
     shared = [k for k in result["mixes"] if k in earlier["mixes"]]
     skipped = sorted(set(result["mixes"]) ^ set(earlier["mixes"]))
@@ -233,9 +258,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mixes", help="comma-separated mix ids (default: all)")
     parser.add_argument("--skip-voice-setup", action="store_true", help="factory chain only")
     parser.add_argument("--output", type=Path, help="write the Markdown report here (default: stdout)")
-    parser.add_argument("--json-output", type=Path, help="write the numbers and the build identity here")
+    parser.add_argument("--json-output", type=Path, help="write the numbers and the build identity here; each "
+                        "finished mix is also appended to <file>.partial.jsonl until the run ends")
     parser.add_argument("--compare", type=Path, help="an earlier report's JSON; print after-minus-before deltas")
     args = parser.parse_args(argv)
+    earlier = None
+    if args.compare:  # fail before the run, not after ten minutes
+        try:
+            earlier = json.loads(args.compare.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            parser.error(f"cannot read {args.compare}: {error}")
+        if not isinstance(earlier, dict) or earlier.get("schema_version") != SCHEMA_VERSION or not all(
+                key in earlier for key in ("build", "mixes")):
+            parser.error(f"{args.compare} is not a schema {SCHEMA_VERSION} bench report")
     bench = bm.load_bench(args.bench_dir)
     check_files(bench, args.bench_dir)
     mix_ids = args.mixes.split(",") if args.mixes else list(bench.manifest["mixes"])
@@ -244,17 +279,17 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"unknown mix ids: {', '.join(unknown)}")
     vad = bm.silero_available()
     started = time.perf_counter()
-    mixes = run(bench, mix_ids, vad, with_voice_setup=not args.skip_voice_setup)
+    partial = args.json_output.with_name(args.json_output.name + ".partial.jsonl") if args.json_output else None
+    mixes = run(bench, mix_ids, vad, with_voice_setup=not args.skip_voice_setup, partial=partial)
     result = {"schema_version": SCHEMA_VERSION, "build": build_identity(args.bench_dir, vad),
               "run_seconds": time.perf_counter() - started, "mixes": mixes}
     text = markdown(result)
-    if args.compare:
-        earlier = json.loads(args.compare.read_text(encoding="utf-8"))
-        if earlier.get("schema_version") != SCHEMA_VERSION:
-            parser.error(f"{args.compare} is not a schema {SCHEMA_VERSION} bench report")
+    if earlier:
         text += "\n" + compare_markdown(result, earlier)
     if args.json_output:
         args.json_output.write_text(json.dumps(result, indent=1, default=float) + "\n", encoding="utf-8", newline="\n")
+        if partial:
+            partial.unlink(missing_ok=True)
     if args.output:
         args.output.write_text(text, encoding="utf-8", newline="\n")
     else:

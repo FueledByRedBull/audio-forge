@@ -23,9 +23,11 @@ pytestmark = pytest.mark.skipif(not CORE_AVAILABLE, reason="native extension is 
 
 SR = bm.SAMPLE_RATE
 # The latency budget the code states: the joint tuner's limit on a suppressor's latency (its comment: 10 ms for
-# RNNoise, 30 ms for the standard DeepFilterNet, plus 5 ms of allowance). The whole factory chain, limiters
-# included, has to fit inside it.
+# RNNoise, 30 ms for the standard DeepFilterNet, plus 5 ms of allowance). The whole factory chain has to fit inside it.
 LATENCY_BUDGET_MS = joint_tuning._DEFAULT_MAX_SUPPRESSOR_LATENCY_MS
+# A pin, not a product budget: the factory chain measures 17.2 ms (RNNoise's 10 ms frame plus the limiters'
+# lookahead), so this catches a doubling that the 35 ms budget would let through. Raise it with a stated reason.
+LATENCY_PIN_MS = 20.0
 
 
 @pytest.fixture(scope="module")
@@ -45,10 +47,23 @@ def test_every_bench_mix_keeps_the_factory_chain_invariants(bench):
         # The ceiling the chain reports is the configured one, or lower when careful output is on.
         assert result["limiter_effective_ceiling_db"] <= ceiling_db + 1e-9, mix_id
         assert np.max(np.abs(output)) <= 10 ** (result["limiter_effective_ceiling_db"] / 20) + 1e-6, mix_id
-        # No clipping in the output beyond what the input already had; with the limiter on, none at all.
-        assert np.count_nonzero(np.abs(output) >= 1.0) <= np.count_nonzero(np.abs(raw) >= 1.0), mix_id
+        # No clipping: with the limiter on, not even where the input (the clipped take) already clipped.
         assert np.count_nonzero(np.abs(output) >= 1.0) == 0, mix_id
-        assert result["chain_latency_samples"] * 1000.0 / SR <= LATENCY_BUDGET_MS, mix_id
+        latency_ms = result["chain_latency_samples"] * 1000.0 / SR
+        assert latency_ms <= LATENCY_PIN_MS <= LATENCY_BUDGET_MS, mix_id
+
+
+def test_the_limiter_holds_the_ceiling_when_driven(bench):
+    """No bench mix reaches the limiter at factory settings (the loudest peaks at -2.7 dBFS), so drive one."""
+    settings = bm.current_settings(False)
+    settings["compressor_settings"].update(auto_makeup_enabled=False, makeup_gain_db=12.0)
+    raw = bm.build_mix(bench, "hot-t05")["raw"]
+    result = bm.render(settings, raw)
+    output = np.asarray(result["output_audio"], np.float32)
+    assert result["pre_limiter_true_peak_headroom_db"] < 0.0  # without the limiter this would clip
+    assert result["limiter_gain_reduction_db"] > 0.0
+    assert np.max(np.abs(output)) <= 10 ** (result["limiter_effective_ceiling_db"] / 20) + 1e-6
+    assert np.isfinite(output).all() and np.count_nonzero(np.abs(output) >= 1.0) == 0
 
 
 def _crop(mix: dict[str, np.ndarray], seconds: float, noise_seconds: float = 1.6) -> dict[str, np.ndarray]:
@@ -59,19 +74,17 @@ def _crop(mix: dict[str, np.ndarray], seconds: float, noise_seconds: float = 1.6
 
 def test_voice_setup_refuses_silence_the_clipped_take_and_under_two_seconds_of_speech(bench):
     silence = np.zeros(3 * SR + SR // 5, np.float32)
+    # Each case with the veto that refuses it: B1 the unclear recording, B2 the weak capture, "capture" the take itself.
     cases = {
-        "silence": {"raw": silence, "clean": silence.astype(np.float64), "labels": np.ones(silence.size, bool),
-                    "noise_capture": np.zeros(int(1.6 * SR), np.float32)},
+        "silence": ({"raw": silence, "clean": silence.astype(np.float64), "labels": np.ones(silence.size, bool),
+                     "noise_capture": np.zeros(int(1.6 * SR), np.float32)}, "B1"),
         # One phrase (about 1.9 s of speech) and its pause.
-        "under two seconds of speech": _crop(bm.build_mix(bench, "room-t02"), 3.2),
-        "the clipped take": bm.build_mix(bench, "clipped-t01"),
+        "under two seconds of speech": (_crop(bm.build_mix(bench, "room-t02"), 3.2), "B2"),
+        "the clipped take": (bm.build_mix(bench, "clipped-t01"), "capture"),
     }
-    for name, mix in cases.items():
+    for name, (mix, veto) in cases.items():
         outcome = bm.voice_setup(bm.make_context(mix), False)
-        assert outcome["outcome"] == "refused", (name, outcome["reason"])
-        assert outcome["final"] is None, name  # nothing a user could apply
-        if name == "the clipped take":
-            assert outcome["veto"] == "capture"
+        assert (outcome["outcome"], outcome["veto"]) == ("refused", veto), (name, outcome["reason"])
 
 
 def test_an_applied_voice_setup_proposal_meets_the_final_headroom_check(bench):

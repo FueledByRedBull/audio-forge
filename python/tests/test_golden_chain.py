@@ -10,7 +10,10 @@ window around each change.
 Why these suffice: the block curves pin the steady-state level of every stage within the stated tolerance,
 so a fix may not move sound outside its window. The largest step is the size of the worst click, and the
 window energy is how much the change disturbs the sound around it, which are the two things a transition fix
-has to make smaller. Nothing here stores audio.
+has to make smaller. Those artifact numbers fail only when they grow, and the blocks inside a change's window
+(20 ms before to 40 ms after) are not compared, so a transition fix that shrinks the artifact and leaves the
+steady-state blocks alone passes; it regenerates the transition file in its own pull request. Nothing here stores
+audio.
 
 The offline entry points render one fixed configuration per call, so a stage toggled, an EQ retuned or a
 parameter changed in the middle of a render cannot be reached from Python; the changes below are the ones the
@@ -239,24 +242,39 @@ def _summary(case: dict[str, Any], output: np.ndarray) -> dict[str, Any]:
     return summary
 
 
+def _change_blocks(summary: dict[str, Any]) -> np.ndarray:
+    """The 10 ms blocks that touch a change's window (20 ms before to 40 ms after); empty without changes."""
+    mask = np.zeros(len(summary["rms_db"]), bool)
+    for change in summary.get("changes", ()):
+        mask[max(0, change - BEFORE) // BLOCK : (change + AFTER - 1) // BLOCK + 1] = True
+    return mask
+
+
 def _differences(expected: dict[str, Any], actual: dict[str, Any]) -> list[str]:
+    """What differs from the stored values. Steady state is compared both ways, outside the change windows.
+
+    The artifact numbers (the largest step, each window's largest step and energy) fail only when larger than
+    stored, and the blocks inside a change window are not compared, so a transition fix that shrinks the artifact
+    and leaves the steady state alone passes. It regenerates the transition file in its own pull request.
+    """
     found: list[str] = []
     if expected["samples"] != actual["samples"] or expected.get("changes") != actual.get("changes"):
         return ["the input shape differs from the stored one"]
+    steady = ~_change_blocks(expected)
     for key in ("rms_db", "peak_db"):
-        delta = np.abs(np.array(expected[key]) - np.array(actual[key]))
+        delta = np.abs(np.array(expected[key]) - np.array(actual[key]))[steady]
         bad = np.flatnonzero(delta > TOLERANCE["block_db"])
         if bad.size:
-            found.append(f"{key}: {bad.size} of {delta.size} blocks differ by more than {TOLERANCE['block_db']} dB "
-                         f"(worst {delta.max():.2f} dB at block {int(delta.argmax())})")
+            found.append(f"{key}: {bad.size} of {delta.size} steady blocks differ by more than {TOLERANCE['block_db']} dB "
+                         f"(worst {delta.max():.2f} dB)")
     if "max_step" in expected:
         for key in ("max_step", "window_max_step"):
             want, got = np.atleast_1d(expected[key]), np.atleast_1d(actual[key])
-            if np.any(np.abs(want - got) > TOLERANCE["step_relative"] * want + TOLERANCE["step_absolute"]):
-                found.append(f"{key}: expected {want.tolist()}, got {got.tolist()}")
-        delta = np.abs(np.array(expected["window_energy_db"]) - np.array(actual["window_energy_db"]))
-        if np.any(delta > TOLERANCE["window_energy_db"]):
-            found.append(f"window_energy_db: expected {expected['window_energy_db']}, got {actual['window_energy_db']}")
+            if np.any(got > want * (1.0 + TOLERANCE["step_relative"]) + TOLERANCE["step_absolute"]):
+                found.append(f"{key}: larger than stored {want.tolist()}, got {got.tolist()}")
+        want, got = np.array(expected["window_energy_db"]), np.array(actual["window_energy_db"])
+        if np.any(got > want + TOLERANCE["window_energy_db"]):
+            found.append(f"window_energy_db: more than stored {want.tolist()}, got {got.tolist()}")
     return found
 
 
@@ -305,6 +323,29 @@ def test_the_comparison_fails_when_one_setting_moves():
     for name in ("bench_room_t02", "speech_like"):
         case = CASES[name]()
         assert _differences(stored["cases"][name], _summary(case, _render(case, edit=boost))), name
+
+
+def test_a_transition_fix_passes_and_a_worse_artifact_fails():
+    stored = _load(GOLDEN_DIR / "factory_chain.json")["cases"]["transition_limiter_burst"]
+
+    def variant(step_scale: float, energy_db: float, window_block_db: float = 0.0, steady_block_db: float = 0.0) -> dict:
+        case = copy.deepcopy(stored)
+        case["max_step"] *= step_scale
+        case["window_max_step"] = [value * step_scale for value in case["window_max_step"]]
+        case["window_energy_db"] = [value + energy_db for value in case["window_energy_db"]]
+        inside = np.flatnonzero(_change_blocks(stored))
+        outside = np.flatnonzero(~_change_blocks(stored))
+        case["rms_db"][inside[0]] += window_block_db
+        case["rms_db"][outside[0]] += steady_block_db
+        return case
+
+    assert not _differences(stored, variant(1.0, 0.0))
+    # Half the step and 1 dB less energy around each change, with the blocks inside the windows moved, passes.
+    assert not _differences(stored, variant(0.5, -1.0, window_block_db=-3.0))
+    # A larger step, more energy, or a moved steady-state block fails.
+    assert _differences(stored, variant(1.5, 0.0))
+    assert _differences(stored, variant(1.0, 1.0))
+    assert _differences(stored, variant(0.5, -1.0, steady_block_db=0.5))
 
 
 def test_the_silero_gate_matches_its_stored_values_where_the_model_is_provisioned(monkeypatch):

@@ -82,10 +82,12 @@ change can ship behind a setting, or off by default, for one release first.
 Listening is never a gate.
 
 Change a test's expected output (a golden file or expected values in the test)
-only in a pull request meant to change that output, and say why. A transition
-fix leaves it unchanged. The offline chain's expected values are in
-`python/tests/fixtures/golden/`; regenerate them with
-`AUDIOFORGE_UPDATE_GOLDEN=1 python -m pytest python/tests/test_golden_chain.py`.
+only in a pull request meant to change that output, and say why. The offline
+chain's expected values are in `python/tests/fixtures/golden/`; regenerate them
+with `AUDIOFORGE_UPDATE_GOLDEN=1 python -m pytest python/tests/test_golden_chain.py`.
+A transition fix keeps the steady-state blocks and may only shrink the artifact
+numbers, and it regenerates the transition cases in its own pull request; the
+regenerated file differs from the old one in those cases only.
 
 Preserve strict realtime constraints in CPAL callbacks and the DSP loop after
 startup: no allocation, vector growth or Vec-returning suppressor helpers,

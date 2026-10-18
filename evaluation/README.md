@@ -104,8 +104,8 @@ which also gives exact speech/pause labels. Noise is channel 1 of eight 48 kHz
 DEMAND environments (CC BY 4.0 on Zenodo): kitchen, living room, washing machine,
 office, meeting room, hallway, cafeteria, traffic. Each speaker is mixed with
 two environments at 5, 15 and 25 dB SNR (144 mixtures), split 12/12 speakers
-by gender into training and held-out halves. `evaluate_gate_corpus.py fetch`
-builds it (manifest SHA-256 `67dac07c…6105`). It replaces the earlier order
+by gender into training and held-out halves. The tool at v1.18.0,
+`evaluate_gate_corpus.py fetch`, built it (manifest SHA-256 `67dac07c…6105`). It replaces the earlier order
 evaluation's 12 clips, which were all 0 dB SNR, three babble-type noises and
 16 kHz source audio.
 
@@ -134,8 +134,8 @@ gain form G = Gmin^(1 − p) (Cohen & Berdugo, 2001), p being one logistic over
 the VAD posterior and, in VAD Assisted, the level above the noise floor.
 Weights were fitted on the training speakers. Each mode's bias was the
 midpoint of the biases matching the current gate's pause attenuation there
-through RNNoise and DeepFilter LL. The rule in `evaluate_gate_corpus.py`'s
-docstring was fixed first: on held-out speakers, with the VAD available and
+through RNNoise and DeepFilter LL. The rule in the docstring of
+`evaluate_gate_corpus.py` at v1.18.0 was fixed first: on held-out speakers, with the VAD available and
 unavailable, on both backends, ESTOI non-inferior (lower bound ≥ −0.002),
 pauses and tails under +1 dB louder, SI-SDR lower bound above −0.1 dB, plus a
 material win on RNNoise.
@@ -155,8 +155,8 @@ speakers, since these 12 held-out speakers have now informed the design. An
 earlier pass of this study used VAD results interpolated across windows that
 had not finished yet, which overstated onsets; its numbers are superseded.
 
-Reproduce with `evaluate_gate_corpus.py qualify --incumbent <build>
---candidate <build>`. The incumbent is commit `4f77bb0` (extension SHA-256
+It ran with `evaluate_gate_corpus.py qualify --incumbent <build>
+--candidate <build>` at v1.18.0; that tool is no longer in this tree. The incumbent is commit `4f77bb0` (extension SHA-256
 `587cfc9e…558c`); the candidate is that commit plus the patch, fit and
 calibration preserved under ignored
 `models/evaluation-details/gate-speech-presence-2026-10/` (extension SHA-256
@@ -200,7 +200,7 @@ tag that shipped them.
 | `evaluate_voice_setup_arms.py` | `voice-setup-arms-2026-10-report.json` (it also read the DAPS corpus under `models/daps_script1/`) | v1.18.0 |
 | `build_vad_evaluation_corpus.py` | None; it built the VAD corpus that `evaluate_compressor_search.py` and `evaluate_voice_regressions.py` read | v1.18.0 |
 | `fetch_deepfilter_fullband_corpus.py` | None; it fetched the VoiceBank-DEMAND full-band subset that `evaluate_product_tuning.py` and `evaluate_deepfilter_source_build.py` read | v1.18.0 |
-| `evaluate_compressor_search.py` | `compressor-search-report.json`, `compressor-expanded-search-2026-09-report.json` | v1.18.0 |
+| `evaluate_compressor_search.py` | `compressor-search-report.json` and `compressor-expanded-search-2026-09-report.json`, both made by an earlier revision of it (they predate complete source provenance, so which revision is not recorded) | v1.18.0 |
 | `evaluate_voice_regressions.py` | `voice-preservation-report.json`, `voice-preservation-2026-09-report.json`, `warm-auto-eq-report.json` | v1.18.0 |
 | `evaluate_product_tuning.py` | `product-joint-tuning-2026-09-report.json`, `product-joint-tuning-deepfilter-2026-09-report.json`, `product-joint-tuning-deepfilter-ll-2026-09-report.json` | v1.18.0 |
 | `evaluate_deepfilter_source_build.py` | `deepfilter-source-build-report.json` (cited by `build-support/deepfilter/provenance.json`) | v1.18.0 |
@@ -209,6 +209,7 @@ tag that shipped them.
 | `evaluate_voice_setup_loudness.py` | `voice-setup-loudness-fit-2026-10-report.json`, `voice-setup-limiter-allowance-narrow-2026-10-report.json` | v1.18.0 |
 | `evaluate_voice_setup_verification.py` | `voice-setup-verification-tonal-check-2026-10-report.json` | v1.18.0 |
 | `evaluate_deesser_real_speech.py` | `deesser-real-speech-2026-10-report.json` | v1.18.0 |
+| `_eval_common.py` | None; the ESTOI and SI-SDR helper the evaluators above imported. Reports whose source hashes include it: `audio-followups-2026-10-report.json`, `auto-makeup-real-speech-2026-09-report.json`, `gate-speech-presence-2026-10-report.json`, `processing-order-2026-09-report.json`, `processing-order-2026-10-report.json`, `resampler-quality-2026-10-report.json`, `voice-setup-arms-2026-10-report.json`, `voice-setup-limiter-allowance-narrow-2026-10-report.json`, `voice-setup-loudness-fit-2026-10-report.json`, `voice-setup-refusals-2026-10-report.json`, `voice-setup-verification-tonal-check-2026-10-report.json` | v1.18.0 |
 
 A tool and its tests leave the tree once its decision row records a final
 outcome, every report it produced has shipped in a release tag unedited, and

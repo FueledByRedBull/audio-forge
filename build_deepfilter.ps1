@@ -106,7 +106,7 @@ function Get-FileVersion([string]$Path) {
     }
 }
 
-function Find-Dumpbin([string]$ExpectedVersion) {
+function Find-Dumpbin {
     $candidates = [System.Collections.Generic.List[string]]::new()
     $command = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
     if ($command) {
@@ -128,16 +128,10 @@ function Find-Dumpbin([string]$ExpectedVersion) {
         }
     }
 
-    foreach ($candidate in ($candidates | Select-Object -Unique)) {
-        $version = Get-FileVersion $candidate
-        if ([string]::IsNullOrWhiteSpace($ExpectedVersion) -or $version -like "$ExpectedVersion*") {
-            return $candidate
-        }
-    }
     if ($candidates.Count -eq 0) {
         throw "dumpbin.exe was not found. Install the MSVC build tools or put dumpbin.exe on PATH."
     }
-    throw "No dumpbin.exe matched the pinned MSVC toolset $ExpectedVersion. Found: $($candidates -join ', ')"
+    return $candidates[0]
 }
 
 function Invoke-Captured([string]$FilePath, [string[]]$Arguments) {
@@ -371,18 +365,19 @@ Ensure-VerifiedArchive `
     ("tract-linalg-" + $tractVersion + ".crate") `
     $archiveSha `
     ([string]$provenance.tract_linalg_patch.archive_url)
+$extractRoot = Join-Path $sourceRoot ("tract-linalg-" + $tractVersion + "-" + $commit)
+$extracted = Join-Path $extractRoot ("tract-linalg-" + $tractVersion)
+if (-not (Test-Path -LiteralPath $extracted -PathType Container)) {
+    New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
+    $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
+    if (-not $tar) { throw "tar.exe is required to extract the pinned tract-linalg archive." }
+    Invoke-Checked $tar.Source @("-xf", $archiveCache, "-C", $extractRoot)
+}
+Assert-FileHash $archiveCache $archiveSha "tract-linalg source archive"
+if (-not (Test-Path -LiteralPath $extracted -PathType Container)) {
+    throw "tract-linalg archive did not contain $extracted"
+}
 if (-not (Test-Path -LiteralPath (Join-Path $tractPatch "Cargo.toml") -PathType Leaf)) {
-    $extractRoot = Join-Path $sourceRoot ("tract-linalg-" + $tractVersion + "-" + $commit)
-    $extracted = Join-Path $extractRoot ("tract-linalg-" + $tractVersion)
-    if (-not (Test-Path -LiteralPath $extracted -PathType Container)) {
-        New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
-        $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
-        if (-not $tar) { throw "tar.exe is required to extract the pinned tract-linalg archive." }
-        Invoke-Checked $tar.Source @("-xf", $archiveCache, "-C", $extractRoot)
-    }
-    if (-not (Test-Path -LiteralPath $extracted -PathType Container)) {
-        throw "tract-linalg archive did not contain $extracted"
-    }
     New-Item -ItemType Directory -Force -Path $tractPatch | Out-Null
     foreach ($item in Get-ChildItem -LiteralPath $extracted -Force) {
         Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $tractPatch $item.Name) -Recurse -Force
@@ -401,18 +396,6 @@ if (-not (Test-Path -LiteralPath (Join-Path $tractPatch "Cargo.toml") -PathType 
 }
 Assert-FileHash (Join-Path $tractPatch "Cargo.toml") ([string]$provenance.tract_linalg_patch.patched_cargo_toml_sha256) "Patched tract-linalg manifest"
 Assert-FileHash (Join-Path $tractPatch "build.rs") ([string]$provenance.tract_linalg_patch.build_rs_sha256) "tract-linalg build script"
-$extractRoot = Join-Path $sourceRoot ("tract-linalg-" + $tractVersion + "-" + $commit)
-$extracted = Join-Path $extractRoot ("tract-linalg-" + $tractVersion)
-if (-not (Test-Path -LiteralPath $extracted -PathType Container)) {
-    New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
-    $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
-    if (-not $tar) { throw "tar.exe is required to extract the pinned tract-linalg archive." }
-    Invoke-Checked $tar.Source @("-xf", $archiveCache, "-C", $extractRoot)
-}
-Assert-FileHash $archiveCache $archiveSha "tract-linalg source archive"
-if (-not (Test-Path -LiteralPath $extracted -PathType Container)) {
-    throw "tract-linalg archive did not contain $extracted"
-}
 Assert-PatchTree $extracted $tractPatch ([string]$provenance.tract_linalg_patch.patched_cargo_toml_sha256)
 
 $libManifest = Join-Path $workspace "libDF\Cargo.toml"
@@ -497,7 +480,7 @@ try {
 
 $builtDll = Join-Path $cargoTarget (([string]$provenance.build.target) + "\release-lto\df.dll")
 if (-not (Test-Path -LiteralPath $builtDll -PathType Leaf)) { throw "Cargo succeeded but did not produce $builtDll" }
-$dumpbin = Find-Dumpbin ""
+$dumpbin = Find-Dumpbin
 $stagedOutput = "$outputFullPath.build-$PID"
 $stagedAttestation = "$attestationFullPath.build-$PID"
 if (Test-Path -LiteralPath $stagedOutput -PathType Leaf) {
@@ -549,6 +532,7 @@ try {
             rustc = $rustVersion
             cargo = $cargoVersion
             dumpbin = $dumpbin
+            dumpbin_version = Get-FileVersion $dumpbin
         }
         abi = [ordered]@{
             required_exports = @([string[]]$provenance.build.required_exports)

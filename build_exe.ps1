@@ -65,7 +65,7 @@ $env:ORT_LIB_LOCATION = (Resolve-Path -LiteralPath $ortLibDirectory).Path
 $env:ORT_PREFER_DYNAMIC_LINK = "1"
 Write-Host "Using CPU ONNX Runtime from $env:ORT_LIB_LOCATION" -ForegroundColor Cyan
 
-$null = & $venvPython (Join-Path $ProjectRoot "python\tools\verify_release_assets.py")
+& $venvPython (Join-Path $ProjectRoot "python\tools\verify_release_assets.py") | Out-Host
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Release asset verification failed. Packaging will not use stale dist/ contents as source assets." -ForegroundColor Red
     exit $LASTEXITCODE

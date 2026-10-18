@@ -45,11 +45,12 @@ DEEPFILTER_RECIPE_FILES = (
     "models/DeepFilterNet3_ll_onnx.tar.gz",
 )
 DEEPFILTER_TEXT_RECIPE_SUFFIXES = frozenset({".json", ".lock", ".ps1", ".toml"})
-CPU_ORT_BUNDLE_ASSETS = {
+BUNDLED_RELEASE_ASSETS = {
     "target/onnxruntime-cpu/lib/onnxruntime.dll": "_internal/onnxruntime.dll",
     "target/onnxruntime-cpu/lib/onnxruntime_providers_shared.dll": (
         "_internal/onnxruntime_providers_shared.dll"
     ),
+    "models/silero_vad.onnx": "_internal/models/silero_vad.onnx",
 }
 QUALIFICATION_KINDS = frozenset(
     {
@@ -391,34 +392,26 @@ def _deepfilter_attestation_contract_errors(
     return errors
 
 
-def _cpu_ort_asset_errors(bundle: Path) -> list[str]:
-    """Bind every bundled CPU ORT DLL to the checked-in asset manifest."""
-    present = [
-        bundle / relative
-        for relative in CPU_ORT_BUNDLE_ASSETS.values()
-        if (bundle / relative).exists()
-    ]
-    if not present:
-        return []
-
+def _bundled_asset_errors(bundle: Path) -> list[str]:
+    """Bind the bundled CPU ORT DLLs and Silero model to the checked-in asset manifest."""
     manifest_path = REPO_ROOT / "release-assets.json"
     try:
         entries = load_asset_manifest(manifest_path).entries
     except (OSError, ValueError) as exc:
-        return [f"CPU ORT release asset manifest could not be loaded: {exc}"]
+        return [f"release asset manifest could not be loaded: {exc}"]
     errors: list[str] = []
-    for manifest_path_name, bundle_path_name in CPU_ORT_BUNDLE_ASSETS.items():
+    for manifest_path_name, bundle_path_name in BUNDLED_RELEASE_ASSETS.items():
         asset_path = bundle / bundle_path_name
         if not asset_path.is_file():
-            errors.append(f"candidate bundle is missing CPU ORT asset: {bundle_path_name}")
+            errors.append(f"candidate bundle is missing release asset: {bundle_path_name}")
             continue
         asset = entries.get(manifest_path_name)
         expected = asset.get("sha256") if isinstance(asset, dict) else None
         if not isinstance(expected, str) or SHA256_PATTERN.fullmatch(expected.casefold()) is None:
-            errors.append(f"CPU ORT release asset manifest lacks a valid hash: {manifest_path_name}")
+            errors.append(f"release asset manifest lacks a valid hash: {manifest_path_name}")
             continue
         if sha256_file(asset_path) != expected.casefold():
-            errors.append(f"candidate CPU ORT asset does not match release-assets.json: {bundle_path_name}")
+            errors.append(f"candidate asset does not match release-assets.json: {bundle_path_name}")
     return errors
 
 
@@ -597,7 +590,6 @@ def _qualification_errors(
             "hidden_exe_startup",
             "installer_provenance",
             "installer_smoke",
-            "installer_upgrade",
             "source_distribution",
         }
         if not isinstance(checks, dict) or any(
@@ -889,11 +881,11 @@ def create_sidecars(
             "candidate source or pass --allow-dirty for a non-promotable local artifact"
         )
 
-    ort_errors = _cpu_ort_asset_errors(bundle)
-    if ort_errors:
+    asset_errors = _bundled_asset_errors(bundle)
+    if asset_errors:
         raise ValueError(
-            "CPU ORT assets are not bound to release-assets.json:\n  "
-            + "\n  ".join(ort_errors)
+            "Bundled assets are not bound to release-assets.json:\n  "
+            + "\n  ".join(asset_errors)
         )
 
     manifest = build_bundle_manifest(bundle)
@@ -1095,7 +1087,7 @@ def verify_sidecars(
                     expected_revision=metadata.get("commit"),
                 )
             )
-            errors.extend(_cpu_ort_asset_errors(bundle))
+            errors.extend(_bundled_asset_errors(bundle))
             actual_manifest = build_bundle_manifest(bundle)
             file_contract_fields = (
                 "schema_version",

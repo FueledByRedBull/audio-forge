@@ -30,6 +30,7 @@ from verify_release_assets import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = REPO_ROOT / "release-assets.json"
+DIRECT_DOWNLOAD_MAX_BYTES = 32 * 1024 * 1024
 
 
 class AssetPlan(TypedDict):
@@ -147,6 +148,11 @@ def _download_asset(tag: str, repo: str, pattern: str, destination_dir: Path) ->
     )
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
 def _download_direct_url(url: str, destination: Path) -> None:
     parsed = urllib.parse.urlsplit(url)
     if (
@@ -164,14 +170,16 @@ def _download_direct_url(url: str, destination: Path) -> None:
         url,
         headers={"User-Agent": "AudioForge-release-assets"},
     )
-    with (
-        # The scheme, host, userinfo, port and fragment are checked above, and
-        # callers hash-verify the download.
-        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
-        urllib.request.urlopen(request, timeout=60) as response,
-        destination.open("wb") as output,
-    ):
-        shutil.copyfileobj(response, output)
+    # The host is checked above, so a redirect to another host is refused, and
+    # callers hash-verify the download.
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    with opener.open(request, timeout=60) as response:
+        data = response.read(DIRECT_DOWNLOAD_MAX_BYTES + 1)
+    if len(data) > DIRECT_DOWNLOAD_MAX_BYTES:
+        raise RuntimeError(
+            f"direct release asset exceeded {DIRECT_DOWNLOAD_MAX_BYTES} bytes"
+        )
+    destination.write_bytes(data)
 
 
 def _validate_pinned_archive_url(url: str) -> None:

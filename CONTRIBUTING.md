@@ -63,16 +63,23 @@ deterministic test on a fixed input (synthetic or committed, with no open random
 seed) showing that steady-state output still matches the pre-fix output within a
 tolerance the test states, and that the artifact (peak step, click energy,
 restart gap) is measurably smaller. A bug fix that makes the output match its
-documented or tested intent, such as a wrong gain or a broken filter, needs the
-failing-before test above. Any other change to steady-state sound is a tuning
-change, whatever its motive (a default, threshold, model or Voice Setup
-decision). Its pull request carries the bench report on the fixed bench clip
-set, before and after. The numbers are information, not a pass/fail gate. The
-invariant tests must be green: output finite and under the limiter ceiling, no
-new clipping, latency in budget, silent, clipped and too-short takes refused, and
-a refused Voice Setup leaving settings untouched. The owner decides. A large change can ship behind a setting, or off by default,
-for one release first. Listening is never a gate. Update an expected-output file
-only in a pull request meant to change that output, and say why.
+documented or tested intent, such as a wrong gain or a broken filter, names the
+document or test that states that intent and needs the failing-before test
+above. Any other change to steady-state sound is a tuning change, whatever its
+motive (a default, threshold, model or Voice Setup decision).
+
+A tuning pull request carries the bench report on the fixed bench clip set,
+before and after, in its description. The numbers are information, not a
+pass/fail gate. The invariant tests must be green: output finite and under the
+limiter ceiling, no new clipping, latency in budget, silent, clipped and
+too-short takes refused, and a refused Voice Setup leaving settings untouched.
+The maintainer decides, and may treat a claimed bug fix as tuning. A large
+change can ship behind a setting, or off by default, for one release first.
+Listening is never a gate.
+
+Change a test's expected output (a golden file or expected values in the test)
+only in a pull request meant to change that output, and say why. A transition
+fix leaves it unchanged.
 
 Preserve strict realtime constraints in CPAL callbacks and the DSP loop after
 startup: no allocation, vector growth or Vec-returning suppressor helpers,
@@ -142,10 +149,10 @@ pre- and post-processing, how it resets, and how it fails. Measure CPU, latency
 and memory, and run it for 30 minutes to check stability.
 
 Swapping or adding a model is a tuning change. Put the bench report against the
-current model in the pull request, with the invariant tests green; the owner
-decides. State which hardware was covered and which was not. A model that ships
-also needs an entry in the explicit model list in `AudioForge.spec`, in
-`package_smoke.py`'s required files, and in the reviewed bundle paths,
+current model in the pull request, with the invariant tests green; the
+maintainer decides. State which hardware was covered and which was not. A model
+that ships also needs an entry in the explicit model list in `AudioForge.spec`,
+in `package_smoke.py`'s required files, and in the reviewed bundle paths,
 `evaluation/release-bundle-path-baseline.json`.
 
 ## Runtime assets and configuration

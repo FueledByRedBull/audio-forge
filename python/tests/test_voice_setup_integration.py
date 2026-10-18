@@ -25,6 +25,7 @@ from mic_eq.analysis.voice_setup import (
 from mic_eq.config import EQSettings, Preset, build_eq_candidate_settings, load_preset
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+from capture_helpers import finish_take
 from test_auto_eq_candidate_lifecycle import _CalibrationOwner
 
 
@@ -863,7 +864,7 @@ def _start_noise_take(dialog: VoiceSetupDialog) -> None:
     t = np.arange(3 * 48_000) / 48_000
     dialog._on_start_clicked()
     dialog._capture_start_timer.stop()
-    dialog._on_recording_complete((0.3 * np.sin(2 * np.pi * 180.0 * t)).astype(np.float32))
+    finish_take(dialog, (0.3 * np.sin(2 * np.pi * 180.0 * t)).astype(np.float32))
     assert dialog.setup_state == "level_result"
     dialog._on_start_clicked()
     dialog._capture_start_timer.stop()
@@ -930,7 +931,7 @@ def test_a_clipped_room_noise_take_leaves_the_target_page_usable(real_main_windo
     monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: True)
     try:
         _start_noise_take(dialog)
-        dialog._on_recording_complete(np.ones(48_000, dtype=np.float32))
+        finish_take(dialog, np.ones(48_000, dtype=np.float32))
 
         assert dialog.setup_state == "idle"
         assert dialog.phase_label.text() == "Room-noise capture rejected"

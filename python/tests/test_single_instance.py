@@ -144,7 +144,7 @@ def test_smoke_test_skips_single_instance_coordinator(monkeypatch):
     monkeypatch.setattr(
         app_bootstrap,
         "_run_qt_app",
-        lambda _window_cls, *, smoke_test: 0 if smoke_test else 1,
+        lambda _window_cls, *, smoke_test, enable_qt_log: 0 if smoke_test else 1,
     )
 
     assert app_bootstrap.run_qt_app(cast(type[QMainWindow], object), smoke_test=True) == 0

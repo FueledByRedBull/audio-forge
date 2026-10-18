@@ -487,7 +487,7 @@ def _watch_for_renderer(window, view: QQuickWidget) -> None:
 
     Qt logs "Failed to get a QRhi", leaves the view Ready, emits no error and
     tries no other backend. The scene graph never initialises; the window may
-    start hidden, so only a shown window counts.
+    start hidden or minimized, so only a window on screen counts.
     """
 
     if os.environ.get("AUDIOFORGE_SMOKE_TEST"):
@@ -500,7 +500,7 @@ def _watch_for_renderer(window, view: QQuickWidget) -> None:
         nonlocal shown
         if view.quickWindow().isSceneGraphInitialized():
             timer.stop()
-        elif not window.isVisible():
+        elif not window.isVisible() or window.isMinimized():
             shown = 0
         else:
             shown += 1

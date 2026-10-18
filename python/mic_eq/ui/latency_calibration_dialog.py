@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 from PySide6.QtCore import QThread, QTimer, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -198,6 +199,10 @@ class LatencyCalibrationDialog(QDialog):
             self._measurement_format_context = _known_capture_format_context(
                 existing_profile.get("capture_format_context")
             )
+
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._wait_for_worker)
 
         self._setup_ui(existing_profile)
         configure_resizable_dialog(
@@ -674,6 +679,14 @@ class LatencyCalibrationDialog(QDialog):
             self,
             int(QDialog.DialogCode.Accepted if self._close_result else QDialog.DialogCode.Rejected),
         )
+
+    # A real method, so Qt drops the aboutToQuit connection when the dialog is destroyed.
+    def _wait_for_worker(self) -> None:
+        """Keep application shutdown from destroying a running QThread."""
+        self._request_close(False)
+        if self.worker is not None:
+            self.worker.wait()
+            self.worker = None
 
     def _request_close(self, accepted: bool) -> None:
         if self._close_requested:

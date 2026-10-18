@@ -27,7 +27,12 @@ def get_log_file() -> Path:
 def configure_app_logging() -> Path:
     """Configure rotating file logging for the desktop app."""
     log_file = get_log_file()
-    log_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # A read-only or locked profile must not stop the app from starting.
+        logging.getLogger(__name__).warning("File logging is off: %s", log_file.parent, exc_info=True)
+        return log_file
 
     root_logger = logging.getLogger()
     for handler in root_logger.handlers:
@@ -39,6 +44,8 @@ def configure_app_logging() -> Path:
         maxBytes=LOG_FILE_MAX_BYTES,
         backupCount=LOG_FILE_BACKUP_COUNT,
         encoding="utf-8",
+        # A second launch that exits early never opens app.log, so it cannot block the first one's rollover.
+        delay=True,
     )
     handler.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")

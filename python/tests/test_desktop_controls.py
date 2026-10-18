@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
@@ -121,8 +122,8 @@ def test_tray_close_keeps_audio_running_until_explicit_quit() -> None:
 def test_hotkey_registration_is_idempotent_and_released(qapp, monkeypatch):
     register = Mock(return_value=True)
     unregister = Mock(return_value=True)
-    monkeypatch.setattr(desktop_integration.ctypes.windll.user32, "RegisterHotKey", register)
-    monkeypatch.setattr(desktop_integration.ctypes.windll.user32, "UnregisterHotKey", unregister)
+    monkeypatch.setattr(desktop_integration._user32(), "RegisterHotKey", register)
+    monkeypatch.setattr(desktop_integration._user32(), "UnregisterHotKey", unregister)
     hotkey = desktop_integration.GlobalMuteHotkey("Ctrl+Alt+M", lambda: None)
     try:
         assert hotkey.register() == (True, None)
@@ -134,6 +135,28 @@ def test_hotkey_registration_is_idempotent_and_released(qapp, monkeypatch):
     hotkey.unregister()
     unregister.assert_called_once()
     assert not hotkey.registered
+
+
+def test_failed_hotkey_registration_reports_the_error_of_the_failing_call(qapp, monkeypatch):
+    def refuse(*_args):
+        ctypes.set_last_error(1409)  # ERROR_HOTKEY_ALREADY_REGISTERED
+        return 0
+
+    monkeypatch.setattr(desktop_integration._user32(), "RegisterHotKey", refuse)
+
+    registered, error = desktop_integration.GlobalMuteHotkey("Ctrl+Alt+M", lambda: None).register()
+
+    assert not registered
+    assert error is not None and "1409" in error
+
+
+def test_user32_handle_keeps_the_error_code_of_a_failing_call():
+    ctypes.set_last_error(0)
+
+    # A null window handle is rejected with ERROR_INVALID_WINDOW_HANDLE.
+    assert desktop_integration._user32().GetWindowTextLengthW(None) == 0
+
+    assert ctypes.get_last_error() == 1400
 
 
 def test_failed_hotkey_registration_is_not_shown_or_saved_as_enabled(monkeypatch):

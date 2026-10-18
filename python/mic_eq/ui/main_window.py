@@ -7,6 +7,7 @@ DEBUG: Added terminal logging for processor state tracking
 """
 
 from PySide6.QtWidgets import (
+    QApplication,
     QMainWindow,
     QDialog,
     QMessageBox,
@@ -627,7 +628,7 @@ class MainWindow(QMainWindow):
             if hasattr(self.processor, "set_input_channel_mode"):
                 self.processor.set_input_channel_mode(target)
         except Exception:
-            logger.debug("Failed to apply input channel mode", exc_info=True)
+            logger.warning("Failed to apply input channel mode", exc_info=True)
 
     @staticmethod
     def _is_valid_input_cleanup_mode(mode: object) -> bool:
@@ -646,7 +647,7 @@ class MainWindow(QMainWindow):
             if hasattr(self.processor, "set_input_cleanup_mode"):
                 self.processor.set_input_cleanup_mode(target)
         except Exception:
-            logger.debug("Failed to apply input cleanup mode", exc_info=True)
+            logger.warning("Failed to apply input cleanup mode", exc_info=True)
 
     @staticmethod
     def _is_valid_processing_mode(mode: object) -> bool:
@@ -723,7 +724,7 @@ class MainWindow(QMainWindow):
             self._output_mute_error = None
         except Exception:
             self._output_mute_error = "unavailable"
-            logger.debug("Failed to apply output mute state", exc_info=True)
+            logger.warning("Failed to apply output mute state", exc_info=True)
         tray_mute_action = self.__dict__.get("_tray_mute_action")
         if tray_mute_action is not None:
             tray_mute_action.blockSignals(True)
@@ -797,12 +798,16 @@ class MainWindow(QMainWindow):
         self.output_meter.set_muted(muted)
         tray = self.__dict__.get("_tray_icon")
         if tray is not None:
-            tray.setToolTip(build_tray_tooltip(
+            tooltip = build_tray_tooltip(
                 processing=running,
                 muted=bool(self.user_muted or self._temporary_mute_reasons),
                 health=self.shell_texts["health_summary_label"].text.removeprefix("Health: "),
                 route=f"{input_name} -> {output_name}",
-            ))
+            )
+            # This runs every diagnostics tick; each assignment is a shell notification.
+            if tooltip != self.__dict__.get("_tray_tooltip"):
+                self._tray_tooltip = tooltip
+                tray.setToolTip(tooltip)
         if self.__dict__.get("_history_ready") and not self.__dict__.get("_calibration_dialog_open"):
             self._refresh_calibration_status()
 
@@ -1606,6 +1611,14 @@ class MainWindow(QMainWindow):
         self.user_mute_checkbox_action.setChecked(not self.user_mute_checkbox_action.isChecked())
 
     def _quit_from_tray(self) -> None:
+        # An open setup dialog holds provisional settings and puts the old ones back when it
+        # is rejected; do that before the unsaved-changes prompt can offer to save them.
+        # A message box on top of the setup dialog is rejected first, then the dialog under it.
+        for _ in range(8):
+            modal = QApplication.activeModalWidget()
+            if not isinstance(modal, QDialog) or modal is self:
+                break
+            modal.reject()
         self._quitting = True
         if self.close():
             app = QGuiApplication.instance()
@@ -1691,7 +1704,10 @@ class MainWindow(QMainWindow):
         self, _checked: bool = False, *, restart_completed: bool = True
     ) -> None:
         dialog = FirstRunSetupDialog(self, restart_completed=restart_completed)
-        dialog.exec()
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()  # parented to this window, it would otherwise live as long as the window
 
     def _current_device_route_key(self) -> str | None:
         input_identity = self._combo_device_identity(self.input_choice)
@@ -2063,6 +2079,7 @@ class MainWindow(QMainWindow):
             return dialog.exec() == QDialog.DialogCode.Accepted
         finally:
             self._calibration_dialog_open = False
+            dialog.deleteLater()
 
     def _on_latency_calibration_saved(self, profile_data: dict) -> bool:
         previous = dict(self.config.latency_calibration_profiles)
@@ -2476,10 +2493,12 @@ class MainWindow(QMainWindow):
                 self.config.load_warning = "\n".join(
                     text for text in (self.config.load_warning, warning) if text
                 )
-                self.config.last_preset = ""
-                cleared = self._save_config_safely()
-                if not cleared:
-                    self.config.load_warning += "\nThe cleared preset reference could not be saved."
+                # A file that cannot be read right now may load next time; only a bad one loses its reference.
+                if not isinstance(e, OSError):
+                    self.config.last_preset = ""
+                    cleared = self._save_config_safely()
+                    if not cleared:
+                        self.config.load_warning += "\nThe cleared preset reference could not be saved."
 
         self._startup_restore_ready = (
             not startup_preset_failed and (preset_loaded or not requested_preset)
@@ -2751,6 +2770,7 @@ class MainWindow(QMainWindow):
         finally:
             self._history_transaction_depth -= 1
             self._calibration_dialog_open = False
+            dialog.deleteLater()
         self._sync_calibration_evidence()
         if DEBUG:
             logger.debug("Calibration dialog closed, result=%s", dialog.result())
@@ -2781,6 +2801,7 @@ class MainWindow(QMainWindow):
         finally:
             self._history_transaction_depth -= 1
             self._calibration_dialog_open = False
+            dialog.deleteLater()
         self._sync_calibration_evidence()
         return applied
 
@@ -3803,6 +3824,8 @@ class MainWindow(QMainWindow):
         self.shell_texts["health_summary_label"].update(tip=advice)
         self._update_session_summary()
 
+    _recovery_service_failing = False
+
     def _service_stream_recovery(
         self,
         *,
@@ -3878,8 +3901,12 @@ class MainWindow(QMainWindow):
                             6000,
                         )
                 self._sync_processing_controls()
+            self._recovery_service_failing = False
         except Exception:
-            logger.debug("Rust recovery service failed", exc_info=True)
+            # Runs every tick: log the first failure of a streak, not each repeat.
+            if not self._recovery_service_failing:
+                logger.warning("Rust recovery service failed", exc_info=True)
+            self._recovery_service_failing = True
 
     def _recover_output_path(self):
         """Best-effort output recovery while preserving both mute owners."""

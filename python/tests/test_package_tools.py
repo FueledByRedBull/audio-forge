@@ -1565,6 +1565,8 @@ with tempfile.TemporaryDirectory(prefix="audioforge-ssl-regression-") as root:
         "3a84935d64d89fb8cf1fb3f0688e33b9b5c299d07cf16acbf7c51bb354cb8b46"
     )
     log_file = configure_app_logging()
+    # The handler opens the file on its first record, not at setup.
+    logging.getLogger("probe").warning("startup probe")
     assert log_file.is_file()
     for handler in list(logging.getLogger().handlers):
         handler.close()

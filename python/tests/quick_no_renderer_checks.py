@@ -120,6 +120,17 @@ def test_a_window_that_is_not_shown_is_not_judged(spawned) -> None:
     assert len(spawned) == 1
 
 
+def test_a_minimized_window_is_not_judged_until_it_is_restored(spawned) -> None:
+    window = _window()
+    window.showMinimized()
+    QTest.qWait(SETTLE_MS)
+    assert window.isMinimized() and spawned == []
+
+    window.showNormal()
+    QTest.qWait(SETTLE_MS)
+    assert len(spawned) == 1
+
+
 def test_hiding_the_window_restarts_the_count(spawned, monkeypatch) -> None:
     monkeypatch.setattr(quick_shell, "RENDERER_CHECK_MS", 50)
     monkeypatch.setattr(quick_shell, "RENDERER_CHECKS", 4)

@@ -8,7 +8,8 @@ import logging
 from collections import deque
 from collections.abc import Mapping
 from copy import deepcopy
-from typing import Any
+from functools import partial
+from typing import Any, NamedTuple
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -34,7 +35,7 @@ from ..config import (
 )
 from ..analysis.noise_reference import capture_is_silent
 from ..analysis.voice_setup import raw_capture_is_clipped
-from .analysis_worker import AnalysisWorker
+from .analysis_worker import AnalysisWorker, CaptureAnalysisWorker
 from .accessibility import bind_label, set_accessible_group
 from .auto_eq_explanation import (
     TARGET_MODE_LABELS,
@@ -146,6 +147,19 @@ def _headroom_declined(headroom: Mapping[str, Any]) -> bool:
     return headroom.get("status") == "risk_worse"
 
 
+class _CaptureAnalysis(NamedTuple):
+    """What a finished take needs before the dialog can decide about it."""
+
+    audio: np.ndarray
+    silent: bool
+
+
+def _analyze_capture(raw_audio: np.ndarray, sample_rate: int) -> _CaptureAnalysis:
+    """The slow half of a finished take; it runs on a worker thread."""
+    audio = _filtered_capture_for_analysis(raw_audio, sample_rate)
+    return _CaptureAnalysis(audio, capture_is_silent(audio))
+
+
 class CalibrationDialog(QDialog):
     """Auto-EQ calibration dialog with target curve selection."""
 
@@ -159,6 +173,7 @@ class CalibrationDialog(QDialog):
         "level_check": 1,
         "level_result": 1,
         "recording": 1,
+        "capture_analyzing": 1,
         "analyzing": 1,
         "ready": 2,
     }
@@ -216,8 +231,8 @@ class CalibrationDialog(QDialog):
         self._level_verdict: LevelVerdict | None = None
         self._level_override: str | None = None
         self._recording_duration = RECORDING_DURATION
-        self.analysis_worker: AnalysisWorker | None = None
-        self._analysis_workers: list[AnalysisWorker] = []
+        self.analysis_worker: AnalysisWorker | CaptureAnalysisWorker | None = None
+        self._analysis_workers: list[AnalysisWorker | CaptureAnalysisWorker] = []
         self._analysis_generation = 0
         self._close_requested = False
         self._close_result = False
@@ -1036,15 +1051,51 @@ class CalibrationDialog(QDialog):
         if raw_capture_is_clipped(raw_audio, sample_rate):
             self._reject_capture(clipped_message(raw_audio, sample_rate))
             return
-        analysis_audio = _filtered_capture_for_analysis(raw_audio, sample_rate)
-        if capture_is_silent(analysis_audio):
+        self._cancel_analysis_workers()
+        generation = self._analysis_generation + 1
+        self._analysis_generation = generation
+        self.recording_state = "capture_analyzing"
+        self.progress_bar.setRange(0, 0)
+        self.start_button.setEnabled(False)
+        self.warning_label.setText("Checking the recording...")
+        self.warning_label.setStyleSheet(message_text_style("info", strong=True))
+        worker = CaptureAnalysisWorker(partial(_analyze_capture, raw_audio, sample_rate))
+        self.analysis_worker = worker
+        self._analysis_workers.append(worker)
+        worker.result_ready.connect(
+            lambda result, token=generation: self._on_capture_analyzed(
+                result, raw_audio, token
+            )
+        )
+        worker.failed.connect(
+            lambda error, token=generation: self._on_capture_analysis_failed(error, token)
+        )
+        worker.finished.connect(
+            lambda finished_worker=worker: self._on_analysis_thread_finished(
+                finished_worker
+            )
+        )
+        worker.start()
+
+    def _on_capture_analysis_failed(self, error: str, generation: int) -> None:
+        if generation != self._analysis_generation or self._close_requested:
+            return
+        self._on_recording_failed(plain_error(f"Recording error: {error}"))
+
+    def _on_capture_analyzed(
+        self, analysis: _CaptureAnalysis, raw_audio: np.ndarray, generation: int
+    ) -> None:
+        """Decide about a finished take once its post-processing is done."""
+        if generation != self._analysis_generation or self._close_requested:
+            return
+        if analysis.silent:
             self._reject_capture(
                 "No sound came from the microphone. Check that it is not muted and "
                 "that the right input is selected, then record again."
             )
             return
         self.preview_audio_data = raw_audio
-        self.audio_data = analysis_audio
+        self.audio_data = analysis.audio
         self._clear_eq_candidate()
         self.recording_state = "analyzing"
         self.progress_bar.setRange(0, 0)  # the analysis reports no steady progress

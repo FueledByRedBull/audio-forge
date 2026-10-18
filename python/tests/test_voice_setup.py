@@ -27,6 +27,7 @@ from mic_eq.analysis.voice_setup import (
 )
 from mic_eq.analysis.auto_eq import get_target_curve, simulate_candidate_chain
 from mic_eq.analysis.cancellation import AnalysisCancelled
+from capture_helpers import finish_take
 from mic_eq.config import Preset
 from mic_eq.ui.voice_setup_dialog import (
     VoiceSetupVerificationWorker,
@@ -2121,7 +2122,7 @@ def test_silent_room_noise_moves_on_and_a_silent_voice_is_the_fault(qapp, monkey
     monkeypatch.setattr(dialog, "_start_analysis", lambda: analyses.append(1))
     try:
         dialog.setup_state = "noise_recording"
-        dialog._on_recording_complete(np.zeros(96_000, dtype=np.float32))
+        finish_take(dialog, np.zeros(96_000, dtype=np.float32))
         assert dialog.setup_state == "noise_ready"
         assert dialog.noise_audio is not None
         assert dialog.phase_label.text() == "Room noise captured"
@@ -2133,7 +2134,7 @@ def test_silent_room_noise_moves_on_and_a_silent_voice_is_the_fault(qapp, monkey
         for start in range(0, leaky_gate.size, 19_200):
             leaky_gate[start : start + 9_600] = 0.0
         dialog.setup_state = "noise_recording"
-        dialog._on_recording_complete(leaky_gate)
+        finish_take(dialog, leaky_gate)
         assert dialog.setup_state == "noise_ready"
         unsteady = analyze_noise_reference(
             dialog.noise_audio, None, 48_000, noise_metadata=dialog.noise_metadata
@@ -2147,7 +2148,7 @@ def test_silent_room_noise_moves_on_and_a_silent_voice_is_the_fault(qapp, monkey
 
         # A capture the analysis cannot use at all still has to be retaken.
         dialog.setup_state = "noise_recording"
-        dialog._on_recording_complete(_make_noise(48_000, seconds=0.5))
+        finish_take(dialog, _make_noise(48_000, seconds=0.5))
         assert dialog.setup_state == "idle" and dialog.noise_audio is None
         assert dialog.phase_label.text() == "Room-noise capture rejected"
         assert dialog.start_button.text() == "Retake Room Noise"
@@ -2156,28 +2157,28 @@ def test_silent_room_noise_moves_on_and_a_silent_voice_is_the_fault(qapp, monkey
         clipped = _make_noise(48_000)
         clipped[::200] = 1.0
         dialog.setup_state = "noise_recording"
-        dialog._on_recording_complete(clipped)
+        finish_take(dialog, clipped)
         assert dialog.setup_state == "idle" and dialog.noise_audio is None
         assert all(token in dialog.warning_label.text() for token in _LOUD_ROOM)
 
         dialog.setup_state = "noise_recording"
-        dialog._on_recording_complete(np.zeros(96_000, dtype=np.float32))
+        finish_take(dialog, np.zeros(96_000, dtype=np.float32))
         loud_voice = _make_voice(48_000)
         loud_voice[1000:1006] = 1.0
         dialog.setup_state = "voice_recording"
-        dialog._on_recording_complete(loud_voice)
+        finish_take(dialog, loud_voice)
         assert dialog.setup_state == "noise_ready" and not analyses
         assert all(token in dialog.warning_label.text() for token in _CLIPPED)
         assert "move back" in dialog.warning_label.text()
         dialog.setup_state = "voice_recording"
-        dialog._on_recording_complete(np.zeros(480_000, dtype=np.float32))
+        finish_take(dialog, np.zeros(480_000, dtype=np.float32))
         assert dialog.setup_state == "noise_ready"
         assert dialog.voice_audio is None and not analyses
         assert all(token in dialog.warning_label.text() for token in _NO_SOUND)
         assert dialog.start_button.text() == "Record Voice"
 
         dialog.setup_state = "voice_recording"
-        dialog._on_recording_complete(_make_voice(48_000))
+        finish_take(dialog, _make_voice(48_000))
         assert dialog.setup_state == "analyzing" and analyses == [1]
     finally:
         dialog.reject()
@@ -2216,7 +2217,7 @@ def _finish_take(dialog, step, audio):
     dialog.phase_label.setText("Capturing")
     dialog.progress_bar.setValue(100)
     dialog.time_label.setText("Complete!")
-    dialog._on_recording_complete(audio)
+    finish_take(dialog, audio)
 
 
 def _poked(audio, index, value):

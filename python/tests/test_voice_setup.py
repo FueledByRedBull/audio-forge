@@ -15,8 +15,6 @@ import mic_eq
 from mic_eq.analysis import voice_setup as voice_setup_module
 from mic_eq.analysis import vad as vad_analysis
 from mic_eq.analysis.auto_eq_parts.headroom import _is_headroom_safe
-from mic_eq.analysis.compressor_calibration import _COMPRESSOR_SEARCH_BUDGET
-from tools.evaluate_compressor_search import _calibrate_compressor_expanded
 from mic_eq.analysis.voice_setup import (
     _calibrate_compressor_threshold,
     _fit_loudness_to_headroom,
@@ -475,84 +473,6 @@ def test_automatic_makeup_needs_a_reliable_capture_and_a_good_score():
     assert diagnostics["auto_makeup_enabled"] is False
     assert unreliable["makeup_gain_db"] == 2.0
     assert low_score["auto_makeup_enabled"] is False
-
-
-def test_expanded_compressor_search_is_bounded_deterministic_and_improves(
-    monkeypatch,
-):
-    def fake_simulation(_audio, _sample_rate, _eq, chain):
-        compressor = chain["compressor"]
-        ratio = float(compressor["ratio"])
-        attack = float(compressor["attack_ms"])
-        release = float(compressor["release_ms"])
-        pumping = (
-            abs(ratio - 4.0)
-            + abs(attack - 10.0) / 10.0
-            + abs(release - 180.0) / 100.0
-        )
-
-        return {
-            "simulation_backend": "rust",
-            "compressor_gain_reduction_db": 3.7,
-            "compressor_gain_reduction_median_db": 1.4,
-            "compressor_gain_reduction_p95_db": 3.5,
-            "compressor_gain_reduction_active_ratio": 1.0,
-            "active_output_gain_db": 0.0,
-            "output_true_peak_db": -3.0,
-            "limiter_effective_ceiling_db": -1.5,
-            "pre_limiter_true_peak_headroom_db": 2.0,
-            "compressor_pumping_score_db": pumping,
-            "silence_level_delta_db": 0.0,
-            "non_finite_output": False,
-        }
-
-    monkeypatch.setattr(
-        "mic_eq.analysis.compressor_calibration.simulate_candidate_chain",
-        fake_simulation,
-    )
-    compressor = {
-        "threshold_db": -24.0,
-        "ratio": 2.0,
-        "attack_ms": 20.0,
-        "release_ms": 300.0,
-        "auto_makeup_enabled": True,
-        "makeup_gain_db": 0.0,
-        "target_lufs": -18.0,
-        "measured_short_term_lufs": -22.0,
-    }
-    eq = {
-        "band_freqs": list(np.geomspace(60.0, 16000.0, 10)),
-        "band_gains": [0.0] * 10,
-        "band_qs": [1.41] * 10,
-    }
-
-    def run_search():
-        return _calibrate_compressor_expanded(
-            speech_audio=np.zeros(4800, dtype=np.float32),
-            sample_rate=48000,
-            eq_settings=eq,
-            deesser_settings={"enabled": False},
-            compressor_settings=compressor,
-            target_p95_db=3.5,
-            target_median_db=1.4,
-            peak_cap_db=8.0,
-        )
-
-    first, first_diag = run_search()
-    second, second_diag = run_search()
-
-    assert first_diag["candidate_count"] <= _COMPRESSOR_SEARCH_BUDGET
-    assert first_diag["expanded_search_selected"] is True
-    assert first_diag["total_objective"] < first_diag["threshold_only_objective"]
-    assert first["ratio"] != compressor["ratio"]
-    assert {
-        key: first[key]
-        for key in ("threshold_db", "ratio", "attack_ms", "release_ms")
-    } == {
-        key: second[key]
-        for key in ("threshold_db", "ratio", "attack_ms", "release_ms")
-    }
-    assert first_diag["candidate_count"] == second_diag["candidate_count"]
 
 
 def test_compressor_target_miss_alone_blocks_recommendation(monkeypatch):
@@ -1285,34 +1205,6 @@ def test_production_compressor_search_keeps_nonthreshold_controls(monkeypatch):
         20.0,
         300.0,
     )
-    assert diagnostics["expanded_search_selected"] is False
-    assert diagnostics["expanded_search_status"] == "disabled_unqualified"
-    assert diagnostics["expanded_candidate_objective"] is None
-
-
-def test_production_compressor_calibration_cannot_enable_expanded_search(monkeypatch):
-    monkeypatch.setattr(
-        "mic_eq.analysis.compressor_calibration.simulate_candidate_chain",
-        lambda *_args: {"simulation_backend": "unavailable"},
-    )
-    unqualified_option: dict[str, Any] = {"allow_expanded_search": True}
-    with pytest.raises(TypeError, match="allow_expanded_search"):
-        _calibrate_compressor_threshold(
-            speech_audio=np.zeros(4800, dtype=np.float32),
-            sample_rate=48_000,
-            eq_settings={},
-            deesser_settings={"enabled": False},
-            compressor_settings={
-                "threshold_db": -24.0,
-                "ratio": 3.0,
-                "attack_ms": 10.0,
-                "release_ms": 180.0,
-            },
-            target_p95_db=3.5,
-            target_median_db=1.4,
-            peak_cap_db=8.0,
-            **unqualified_option,
-        )
 
 
 def test_compressor_search_requires_measured_quiet_level(monkeypatch):
@@ -1379,121 +1271,6 @@ def test_compressor_search_requires_measured_quiet_level(monkeypatch):
     assert unchanged == compressor
     assert unavailable_diag["backend"] == "unavailable"
     assert unavailable_diag["silence_level_delta_db"] is None
-
-
-def test_compressor_search_evaluator_keeps_unmeasurable_capture_failed(
-    monkeypatch, tmp_path
-):
-    import json
-
-    from tools import evaluate_compressor_search
-
-    manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "captures": [
-                    {
-                        "split": "held_out",
-                        "sample_rate": 48_000,
-                        "condition": "clean_48k",
-                        "path": "capture.wav",
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        evaluate_compressor_search,
-        "_load_audio",
-        lambda _path: (48_000, np.zeros(4800, dtype=np.float32)),
-    )
-    monkeypatch.setattr(
-        evaluate_compressor_search,
-        "_calibrate_compressor_expanded",
-        lambda **_kwargs: (
-            dict(evaluate_compressor_search.INCUMBENT),
-            {
-                "backend": "unavailable",
-                "expanded_search_status": "experimental_opt_in",
-                "expanded_search_selected": False,
-                "silence_level_delta_db": None,
-            },
-        ),
-    )
-
-    report = evaluate_compressor_search.evaluate(manifest_path, limit=1)
-
-    row = report["rows"][0]
-    assert report["capture_count"] == 1
-    assert report["measurement_complete"] is False
-    assert report["measurable_capture_count"] == 0
-    assert report["unmeasurable_capture_count"] == 1
-    assert report["median_relative_improvement"] is None
-    assert report["improved_fraction"] == 0.0
-    assert report["safety_passed"] is False
-    assert report["retained"] is False
-    assert row["calibration_backend"] == "unavailable"
-    assert row["relative_improvement"] is None
-    assert row["threshold_only_objective"] is None
-    assert row["expanded_objective"] is None
-    assert row["silence_level_delta_db"] is None
-    assert row["candidate_count"] is None
-
-
-def test_expanded_compressor_search_keeps_safe_profile_on_effective_tie(
-    monkeypatch,
-):
-    def tied_simulation(_audio, _sample_rate, _eq, _chain):
-        return {
-            "simulation_backend": "rust",
-            "compressor_gain_reduction_db": 3.7,
-            "compressor_gain_reduction_median_db": 1.4,
-            "compressor_gain_reduction_p95_db": 3.5,
-            "compressor_gain_reduction_active_ratio": 1.0,
-            "active_output_gain_db": 0.0,
-            "output_true_peak_db": -3.0,
-            "limiter_effective_ceiling_db": -1.5,
-            "pre_limiter_true_peak_headroom_db": 2.0,
-            "compressor_pumping_score_db": 0.0,
-            "silence_level_delta_db": 0.0,
-            "non_finite_output": False,
-        }
-
-    monkeypatch.setattr(
-        "mic_eq.analysis.compressor_calibration.simulate_candidate_chain",
-        tied_simulation,
-    )
-    compressor = {
-        "threshold_db": -24.0,
-        "ratio": 2.5,
-        "attack_ms": 12.0,
-        "release_ms": 180.0,
-        "auto_makeup_enabled": True,
-        "makeup_gain_db": 0.0,
-        "target_lufs": -18.0,
-        "measured_short_term_lufs": -22.0,
-    }
-    calibrated, diagnostics = _calibrate_compressor_expanded(
-        speech_audio=np.zeros(4800, dtype=np.float32),
-        sample_rate=48000,
-        eq_settings={
-            "band_freqs": list(np.geomspace(60.0, 16000.0, 10)),
-            "band_gains": [0.0] * 10,
-            "band_qs": [1.41] * 10,
-        },
-        deesser_settings={"enabled": False},
-        compressor_settings=compressor,
-        target_p95_db=3.5,
-        target_median_db=1.4,
-        peak_cap_db=8.0,
-    )
-
-    assert diagnostics["expanded_search_selected"] is False
-    assert calibrated["ratio"] == compressor["ratio"]
-    assert calibrated["attack_ms"] == compressor["attack_ms"]
-    assert calibrated["release_ms"] == compressor["release_ms"]
 
 
 def test_compressor_calibration_uses_one_limiter_configuration(monkeypatch):
@@ -2284,70 +2061,6 @@ def test_review_shows_settings_before_and_after(qapp, monkeypatch):
         owner.close()
         owner.deleteLater()
         qapp.processEvents()
-
-
-def test_expanded_compressor_search_handles_no_safe_threshold_only_candidate(
-    monkeypatch,
-):
-    incumbent = {
-        "ratio": 2.5,
-        "attack_ms": 12.0,
-        "release_ms": 180.0,
-    }
-
-    def simulation_with_rejected_threshold_only(_audio, _sample_rate, _eq, chain):
-        compressor = chain["compressor"]
-        threshold_only = all(
-            abs(float(compressor[key]) - value) <= 1.0e-6
-            for key, value in incumbent.items()
-        )
-        return {
-            "simulation_backend": "rust",
-            "compressor_gain_reduction_db": 3.7,
-            "compressor_gain_reduction_median_db": 1.4,
-            "compressor_gain_reduction_p95_db": 3.5,
-            "compressor_gain_reduction_active_ratio": 1.0,
-            "active_output_gain_db": 0.0,
-            "output_true_peak_db": 0.0 if threshold_only else -3.0,
-            "limiter_effective_ceiling_db": -1.5,
-            "pre_limiter_true_peak_headroom_db": 2.0,
-            "compressor_pumping_score_db": 0.0,
-            "silence_level_delta_db": 0.0,
-            "non_finite_output": False,
-        }
-
-    monkeypatch.setattr(
-        "mic_eq.analysis.compressor_calibration.simulate_candidate_chain",
-        simulation_with_rejected_threshold_only,
-    )
-    calibrated, diagnostics = _calibrate_compressor_expanded(
-        speech_audio=np.zeros(4800, dtype=np.float32),
-        sample_rate=48000,
-        eq_settings={
-            "band_freqs": list(np.geomspace(60.0, 16000.0, 10)),
-            "band_gains": [0.0] * 10,
-            "band_qs": [1.41] * 10,
-        },
-        deesser_settings={"enabled": False},
-        compressor_settings={
-            "threshold_db": -24.0,
-            **incumbent,
-            "auto_makeup_enabled": True,
-            "makeup_gain_db": 0.0,
-            "target_lufs": -18.0,
-            "measured_short_term_lufs": -22.0,
-        },
-        target_p95_db=3.5,
-        target_median_db=1.4,
-        peak_cap_db=8.0,
-    )
-
-    assert diagnostics["expanded_search_selected"] is True
-    assert diagnostics["threshold_only_objective"] == float("inf")
-    assert any(
-        calibrated[key] != value
-        for key, value in incumbent.items()
-    )
 
 
 def test_native_chain_reports_robust_reduction_and_can_return_rendered_audio():

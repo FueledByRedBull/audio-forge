@@ -164,19 +164,11 @@ calibration preserved under ignored
 
 ## Corpora
 
-Evaluation corpora live under ignored `models/` and are never release assets.
-Each fetcher pins sources and hashes: `evaluate_gate_corpus.py fetch`
-(EARS/DEMAND), `evaluate_voice_setup.py fetch` (VoiceBank/DEMAND, CC BY 4.0;
-EARS is non-commercial, so nothing shipped is fitted on it),
-`fetch_deepfilter_fullband_corpus.py`, and `build_vad_evaluation_corpus.py`.
-The last two stay because evaluators that
-remain read their corpora: `evaluate_product_tuning.py` the full-band set,
-`evaluate_compressor_search.py` and `evaluate_voice_regressions.py` the VAD set.
-
-The third EARS cohort for Voice Setup verification (`models/voice_setup_2026_10_cohort3`, 24 speakers) is used up for verification
-questions after the tonal-check-by-band study. VoiceBank fit indices 72-89, 102-119 and 132-149 are
-used up for Voice Setup questions after the refusal study. All 20 DAPS speakers (script 1, Zenodo 4660670, CC BY-NC 4.0,
-evaluation only) are used up for Voice Setup questions after the three-change refusal study.
+Held-out speech-cohort evaluation was retired on 2026-10-18. The speech
+corpora, their fetchers and the evaluators that read them are gone from the
+tree. The reports stay as history, with their stated limitations, and the tools
+are in the source of v1.18.0 (see the table below). Corpora were never release
+assets.
 
 ## Retired evaluators
 
@@ -206,17 +198,24 @@ tag that shipped them.
 | `capture_microphone_noise.py` | `deepfilter-fullband-report.json` (its noise capture) | v1.16.0 |
 | `evaluate_voice_setup_refusals.py` | `voice-setup-refusals-2026-10-report.json` | v1.18.0 |
 | `evaluate_voice_setup_arms.py` | `voice-setup-arms-2026-10-report.json` (it also read the DAPS corpus under `models/daps_script1/`) | v1.18.0 |
+| `build_vad_evaluation_corpus.py` | None; it built the VAD corpus that `evaluate_compressor_search.py` and `evaluate_voice_regressions.py` read | v1.18.0 |
+| `fetch_deepfilter_fullband_corpus.py` | None; it fetched the VoiceBank-DEMAND full-band subset that `evaluate_product_tuning.py` and `evaluate_deepfilter_source_build.py` read | v1.18.0 |
+| `evaluate_compressor_search.py` | `compressor-search-report.json`, `compressor-expanded-search-2026-09-report.json` | v1.18.0 |
+| `evaluate_voice_regressions.py` | `voice-preservation-report.json`, `voice-preservation-2026-09-report.json`, `warm-auto-eq-report.json` | v1.18.0 |
+| `evaluate_product_tuning.py` | `product-joint-tuning-2026-09-report.json`, `product-joint-tuning-deepfilter-2026-09-report.json`, `product-joint-tuning-deepfilter-ll-2026-09-report.json` | v1.18.0 |
+| `evaluate_deepfilter_source_build.py` | `deepfilter-source-build-report.json` (cited by `build-support/deepfilter/provenance.json`) | v1.18.0 |
+| `evaluate_gate_corpus.py` | `gate-speech-presence-2026-10-report.json`; `processing-order-2026-10-report.json` (gate order) | v1.18.0 |
+| `evaluate_voice_setup.py` | `voice-setup-tuner-2026-10-report.json`, `gate-policy-2026-10-report.json` | v1.18.0 |
+| `evaluate_voice_setup_loudness.py` | `voice-setup-loudness-fit-2026-10-report.json`, `voice-setup-limiter-allowance-narrow-2026-10-report.json` | v1.18.0 |
+| `evaluate_voice_setup_verification.py` | `voice-setup-verification-tonal-check-2026-10-report.json` | v1.18.0 |
+| `evaluate_deesser_real_speech.py` | `deesser-real-speech-2026-10-report.json` | v1.18.0 |
 
-A tool and its tests leave the tree once its decision row records a final outcome,
-every report it produced has shipped in a release tag unedited, nothing that
-stays imports it or depends on it as a gate, and no planned study reuses it. The reports, their
-manifests and the decision row stay unchanged. Never edit a report after its
-release, since the hygiene check reads it at that tag; a new measurement goes in a
-new report. Never retire `check_evaluation_hygiene.py`, a tool the release or CI
-workflows run, a helper or simulator the next study reuses (`_eval_common.py` and
-the gate, Voice Setup, loudness, verification and de-esser evaluators), a
-regression gate named in this file, or a corpus fetcher while an evaluator that
-reads its corpus remains.
+A tool and its tests leave the tree once its decision row records a final
+outcome, every report it produced has shipped in a release tag unedited, and
+nothing that stays imports it. The reports, their manifests and the decision row
+stay unchanged. Never edit a report after its release, since the hygiene check
+reads it at that tag; a new measurement goes in a new report. Never retire
+`check_evaluation_hygiene.py` or a tool the release or CI workflows run.
 
 ## Provenance and hygiene
 

@@ -15,8 +15,6 @@ from pathlib import Path
 from typing import Any, cast
 from release_provenance import sha256_file as _sha256
 
-from _eval_common import percentile_or_zero as _percentile
-
 import numpy as np
 from scipy import __version__ as scipy_version
 from scipy.signal import firwin, resample_poly
@@ -72,6 +70,12 @@ def _db_ratio(numerator: float, denominator: float) -> float:
     if numerator <= 0.0:
         return -300.0
     return 20.0 * math.log10(numerator / max(denominator, 1e-15))
+
+
+def _percentile(values: Sequence[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    return float(np.percentile(np.asarray(values, dtype=np.float64), percentile))
 
 
 def _rms(values: np.ndarray) -> float:
@@ -577,7 +581,6 @@ def evaluate(
         REPO_ROOT / "rust-core/src/audio/processor/resampling.rs",
         REPO_ROOT / "rust-core/src/audio/processor/dsp_loop.rs",
         REPO_ROOT / "python/tools/evaluate_resampler_quality.py",
-        REPO_ROOT / "python/tools/_eval_common.py",
     )
     product_streams = product["measurements"]["long_stream_and_timing"]
     product_impulses = product["measurements"]["impulse"]

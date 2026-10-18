@@ -2557,7 +2557,7 @@ mod tests {
 
     fn warmed_meter_stats(buffer: &[f32]) -> MeterBlockStats {
         let coeff = smoothing_coeff_for_time_constant(TARGET_SAMPLE_RATE as f32, 100.0);
-        let mut rms_acc = 0.0;
+        let mut meter = MeterState::default();
         let mut stats = MeterBlockStats {
             peak_db: -120.0,
             rms_db: -120.0,
@@ -2565,7 +2565,7 @@ mod tests {
             mean_power: 0.0,
         };
         for _ in 0..4 {
-            stats = update_meter_block_stats(buffer, &mut rms_acc, coeff);
+            stats = update_meter_block_stats(buffer, &mut meter, coeff);
         }
         stats
     }
@@ -2613,6 +2613,75 @@ mod tests {
         let speech_stats = warmed_meter_stats(&speech_like);
         assert!(speech_stats.rms_db < -12.0);
         assert!((5.0..=14.0).contains(&speech_stats.crest_factor_db));
+    }
+
+    /// Deterministic Gaussian-ish noise (Irwin-Hall sum of 12 xorshift32 uniforms).
+    fn seeded_gaussian_noise(seed: u32, rms: f32, len: usize) -> Vec<f32> {
+        let mut state = seed;
+        let mut uniform = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as f32 / u32::MAX as f32
+        };
+        (0..len)
+            .map(|_| rms * ((0..12).map(|_| uniform()).sum::<f32>() - 6.0))
+            .collect()
+    }
+
+    /// Per-block crest factors from the real meter, feeding `block_lens` cyclically.
+    fn crest_trace(signal: &[f32], block_lens: &[usize]) -> Vec<(usize, f32)> {
+        let coeff = smoothing_coeff_for_time_constant(TARGET_SAMPLE_RATE as f32, 100.0);
+        let mut meter = MeterState::default();
+        let mut start = 0;
+        let mut trace = Vec::new();
+        for &len in block_lens.iter().cycle() {
+            if start >= signal.len() {
+                break;
+            }
+            let end = (start + len).min(signal.len());
+            let stats = update_meter_block_stats(&signal[start..end], &mut meter, coeff);
+            trace.push((end, stats.crest_factor_db));
+            start = end;
+        }
+        trace
+    }
+
+    #[test]
+    fn test_meter_crest_of_room_noise_survives_small_blocks() {
+        let sample_rate = TARGET_SAMPLE_RATE as usize;
+        let noise = seeded_gaussian_noise(0x1234_5678, 0.007_94, sample_rate * 6 / 5);
+        let warm_up = sample_rate * 3 / 10;
+        for block_lens in [&[16_usize][..], &[1, 2, 3, 4]] {
+            let trace = crest_trace(&noise, block_lens);
+            let worst = trace
+                .iter()
+                .filter(|(end, _)| *end > warm_up)
+                .map(|&(_, crest)| crest)
+                .fold(f32::INFINITY, f32::min);
+            assert!(
+                worst >= 4.0,
+                "blocks {block_lens:?}: worst crest {worst} dB for -42 dBFS noise"
+            );
+        }
+    }
+
+    #[test]
+    fn test_meter_crest_after_loud_burst_never_collapses_to_zero() {
+        let sample_rate = TARGET_SAMPLE_RATE as usize;
+        let lead_in = sample_rate * 3 / 10;
+        let burst = sample_rate / 20;
+        let mut signal = seeded_gaussian_noise(7, 0.007_94, lead_in);
+        signal.extend(seeded_gaussian_noise(99, 0.1, burst));
+        signal.extend(seeded_gaussian_noise(5, 0.007_94, sample_rate));
+        let burst_end = lead_in + burst;
+        let trace = crest_trace(&signal, &[16]);
+        let worst = trace
+            .iter()
+            .filter(|(end, _)| *end > burst_end)
+            .map(|&(_, crest)| crest)
+            .fold(f32::INFINITY, f32::min);
+        assert!(worst >= 3.0, "worst crest {worst} dB on quiet blocks after a burst");
     }
 
     fn generate_sine(sample_rate: f32, frequency_hz: f32, len: usize) -> Vec<f32> {

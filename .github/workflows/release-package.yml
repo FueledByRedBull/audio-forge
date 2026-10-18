@@ -452,14 +452,16 @@ jobs:
           powershell -ExecutionPolicy Bypass -File .\build_msi.ps1 `
             -Payload $upgradeBaselinePayload `
             -Version 0.0.0 `
-            -Output $upgradeBaseline
+            -Output $upgradeBaseline `
+            -AcceptWixEula
           if ($LASTEXITCODE -ne 0) {
             throw "MSI upgrade-baseline build failed with exit code $LASTEXITCODE."
           }
           powershell -ExecutionPolicy Bypass -File .\build_msi.ps1 `
             -Payload .\dist\AudioForge `
             -Version "${{ steps.meta.outputs.msi_version }}" `
-            -Output $installer
+            -Output $installer `
+            -AcceptWixEula
           if ($LASTEXITCODE -ne 0) {
             throw "MSI build failed with exit code $LASTEXITCODE."
           }

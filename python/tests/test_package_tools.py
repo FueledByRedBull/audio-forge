@@ -442,6 +442,16 @@ def test_build_script_propagates_pyinstaller_failure_code():
     assert "exit $pyinstallerExitCode" in source
 
 
+def test_msi_builder_accepts_the_wix_eula_only_when_asked():
+    script = (check_workflows.REPO_ROOT / "build_msi.ps1").read_text(encoding="utf-8")
+    workflow = (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert script.index("if (-not $AcceptWixEula)") < script.index("eula accept wix7")
+    assert workflow.count("build_msi.ps1") == workflow.count("-AcceptWixEula")
+
+
 def test_msi_builder_accepts_explicit_python_path():
     source = (check_workflows.REPO_ROOT / "build_msi.ps1").read_text(
         encoding="utf-8"

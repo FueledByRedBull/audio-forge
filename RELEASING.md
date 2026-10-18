@@ -138,8 +138,12 @@ Then build the portable tree from `AudioForge.spec` and the MSI from it:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
-powershell -ExecutionPolicy Bypass -File .\build_msi.ps1
+powershell -ExecutionPolicy Bypass -File .\build_msi.ps1 -AcceptWixEula
 ```
+
+`build_msi.ps1` accepts the WiX Toolset 7 OSMF EULA only when you pass
+`-AcceptWixEula`; without it the script stops before building. Review the
+EULA before passing the switch. The release workflow passes it.
 
 `build_exe.ps1` verifies runtime assets, rebuilds the native extension with
 locked Cargo resolution, collects dependency notices, and reuses PyInstaller's

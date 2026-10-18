@@ -3,7 +3,8 @@ param(
     [string]$Output,
     [string]$WixPath,
     [string]$Version,
-    [string]$PythonPath = ""
+    [string]$PythonPath = "",
+    [switch]$AcceptWixEula
 )
 
 $ErrorActionPreference = "Stop"
@@ -128,6 +129,9 @@ try {
     $wixVersionOutput = (& $WixPath --version | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $wixVersionOutput -notmatch '^7\.0\.0(?:\+.*)?$') {
         throw "Expected WiX Toolset 7.0.0, got '$wixVersionOutput'."
+    }
+    if (-not $AcceptWixEula) {
+        throw "Building the MSI requires accepting the WiX Toolset 7 Open Source Maintenance Fee (OSMF) EULA. Review it, then pass -AcceptWixEula to accept it."
     }
     & $WixPath eula accept wix7
     if ($LASTEXITCODE -ne 0) {

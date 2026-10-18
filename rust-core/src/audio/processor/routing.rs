@@ -858,10 +858,17 @@ struct MeterBlockStats {
     mean_power: f32,
 }
 
+/// Per-sample IIR meter state; both fields are mean-square domain.
+#[derive(Debug, Default, Clone, Copy)]
+struct MeterState {
+    rms_acc: f32,
+    peak_sq_acc: f32,
+}
+
 #[inline]
 fn update_meter_block_stats(
     buffer: &[f32],
-    rms_acc: &mut f32,
+    state: &mut MeterState,
     meter_coeff: f32,
 ) -> MeterBlockStats {
     let mut peak: f32 = 0.0;
@@ -871,8 +878,11 @@ fn update_meter_block_stats(
         if abs > peak {
             peak = abs;
         }
-        block_power += sample * sample;
-        *rms_acc = meter_coeff * *rms_acc + (1.0 - meter_coeff) * (sample * sample);
+        let power = sample * sample;
+        block_power += power;
+        state.rms_acc = meter_coeff * state.rms_acc + (1.0 - meter_coeff) * power;
+        // Squared domain so the peak envelope decays exactly like the RMS window.
+        state.peak_sq_acc = power.max(meter_coeff * state.peak_sq_acc);
     }
 
     let peak_db = if peak > 0.0 {
@@ -880,12 +890,18 @@ fn update_meter_block_stats(
     } else {
         -120.0
     };
-    let rms_db = if *rms_acc > 0.0 {
-        10.0 * rms_acc.log10()
+    let rms_db = if state.rms_acc > 0.0 {
+        10.0 * state.rms_acc.log10()
     } else {
         -120.0
     };
-    let crest_factor_db = (peak_db - rms_db).clamp(0.0, 80.0);
+    let crest_factor_db = if state.rms_acc > 0.0 {
+        // The block's own peak keeps the reading from dipping below a plain block-peak crest.
+        let peak_sq = state.peak_sq_acc.max(peak * peak);
+        (10.0 * (peak_sq / state.rms_acc).log10()).clamp(0.0, 80.0)
+    } else {
+        0.0
+    };
     let mean_power = if buffer.is_empty() {
         0.0
     } else {

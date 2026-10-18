@@ -286,13 +286,13 @@ pub struct AudioProcessor {
     input_peak: Arc<AtomicU32>,
     /// Input RMS level
     input_rms: Arc<AtomicU32>,
-    /// Input crest factor in dB (sample peak minus RMS).
+    /// Input crest factor in dB (decaying sample peak over RMS, same 100 ms window).
     input_crest_factor_db: Arc<AtomicU32>,
     /// Output peak level (after all processing)
     output_peak: Arc<AtomicU32>,
     /// Output RMS level
     output_rms: Arc<AtomicU32>,
-    /// Output crest factor in dB (sample peak minus RMS).
+    /// Output crest factor in dB (decaying sample peak over RMS, same 100 ms window).
     output_crest_factor_db: Arc<AtomicU32>,
     /// Output short-term loudness estimate in LUFS-like dB.
     output_short_term_lufs: Arc<AtomicU32>,

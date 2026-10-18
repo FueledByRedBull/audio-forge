@@ -878,8 +878,8 @@ fn update_meter_block_stats(
         if abs > peak {
             peak = abs;
         }
-        block_power += sample * sample;
         let power = sample * sample;
+        block_power += power;
         state.rms_acc = meter_coeff * state.rms_acc + (1.0 - meter_coeff) * power;
         // Squared domain so the peak envelope decays exactly like the RMS window.
         state.peak_sq_acc = power.max(meter_coeff * state.peak_sq_acc);
@@ -896,7 +896,9 @@ fn update_meter_block_stats(
         -120.0
     };
     let crest_factor_db = if state.rms_acc > 0.0 {
-        (10.0 * (state.peak_sq_acc / state.rms_acc).log10()).clamp(0.0, 80.0)
+        // The block's own peak keeps the reading from dipping below a plain block-peak crest.
+        let peak_sq = state.peak_sq_acc.max(peak * peak);
+        (10.0 * (peak_sq / state.rms_acc).log10()).clamp(0.0, 80.0)
     } else {
         0.0
     };

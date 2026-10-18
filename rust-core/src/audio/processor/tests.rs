@@ -2612,7 +2612,7 @@ mod tests {
             .collect();
         let speech_stats = warmed_meter_stats(&speech_like);
         assert!(speech_stats.rms_db < -12.0);
-        assert!((3.0..=14.0).contains(&speech_stats.crest_factor_db));
+        assert!((5.0..=14.0).contains(&speech_stats.crest_factor_db));
     }
 
     /// Deterministic Gaussian-ish noise (Irwin-Hall sum of 12 xorshift32 uniforms).

@@ -103,16 +103,16 @@ recoveries, and Health named no fault except gate chatter: the room noise sat
 near the default gate threshold. The hands-on checklist in RELEASING.md was also
 run on this build. These parts were driven through Windows UI Automation and
 passed: first launch, the three pages, Start and Stop (with room noise, not
-speech), Mute in the window, switch edits with Undo and Redo, a preset load and
-its Undo, closing to the tray and launching again, Cancel at the unsaved-changes
-prompt, quitting with the tray off, opening and closing Guided Setup, the
-diagnostics export, and the pages at the minimum window size. The maintainer ran
-the rest (the meter following speech, keyboard undo after an EQ drag and a gate
-threshold change, a muted microphone, a device change, the tray menu and
-tooltip, Ctrl+Q, closing Guided Setup during the level check, login startup on
-the portable copy and the MSI) and reported no failure. That is one machine and
-one route. Audible output, sleep and resume, and other audio applications were
-not tested.
+speech), Mute in the window, switch edits with Undo and Redo, closing to the
+tray and launching again, Cancel at the unsaved-changes prompt, quitting with
+the tray off, opening and closing Guided Setup, the diagnostics export, and the
+pages at the minimum window size. The maintainer ran the rest (the meter
+following speech, keyboard undo after an EQ drag and a gate threshold change, a
+preset load, a muted microphone, a device change, the tray menu and tooltip,
+Ctrl+Q, closing Guided Setup during the level check, login startup on the
+portable copy and the MSI) and reported no failure. That is one machine and one
+route. Audible output, sleep and resume, and other audio applications were not
+tested.
 
 Known issue, also in 1.18.0: a switch flipped with an assistive technology's
 toggle command (the Windows UI Automation toggle that some screen readers and

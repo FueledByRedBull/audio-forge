@@ -1659,7 +1659,7 @@ def _download(entry: dict[str, Any], destination: Path) -> Path:
         raise SourceDistributionError(
             f"Could not download source for {entry.get('id')}: {exc}"
         ) from exc
-    except Exception:
+    except BaseException:
         temporary.unlink(missing_ok=True)
         raise
 

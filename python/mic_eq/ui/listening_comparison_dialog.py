@@ -467,6 +467,7 @@ class ListeningComparisonDialog(QDialog):
         self.status_label.setWordWrap(True)
         self.status_label.setAccessibleName("Listening comparison status")
         layout.addWidget(self.status_label)
+        layout.addWidget(live_output_muted_notice())
 
         # The actions stay in view while the page above them scrolls.
         actions = QHBoxLayout()

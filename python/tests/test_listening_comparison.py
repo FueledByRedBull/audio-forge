@@ -457,3 +457,25 @@ def test_keep_and_reject_stay_outside_the_scrolling_page_with_keep_on_the_right(
         assert dialog.reject_button.geometry().x() < dialog.keep_button.geometry().x()
     finally:
         dialog.close()
+
+
+def test_the_comparison_says_live_output_is_muted(qapp, monkeypatch):
+    """Every caller mutes the live output while the comparison is open."""
+    from PySide6.QtWidgets import QLabel
+
+    from mic_eq.ui.capture_session import LIVE_OUTPUT_MUTED_NOTICE
+    from mic_eq.ui.listening_comparison_dialog import ListeningComparisonDialog
+
+    monkeypatch.setattr(ListeningComparisonDialog, "_start_render", lambda self: None)
+    dialog = ListeningComparisonDialog(
+        audio_data=np.zeros(480, dtype=np.float32), sample_rate=48_000,
+        current_settings=_settings(), proposed_settings=_settings(),
+    )
+    try:
+        notices = [
+            label for label in dialog.findChildren(QLabel)
+            if label.text() == LIVE_OUTPUT_MUTED_NOTICE
+        ]
+        assert len(notices) == 1 and notices[0].isVisibleTo(dialog)
+    finally:
+        dialog.close()

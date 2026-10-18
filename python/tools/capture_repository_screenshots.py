@@ -13,9 +13,9 @@ from release_provenance import sha256_file as _sha256
 from unittest.mock import patch
 
 # These must be fixed before QApplication is created.
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("QT_SCALE_FACTOR", "1")
-os.environ.setdefault("QT_FONT_DPI", "96")
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+os.environ["QT_SCALE_FACTOR"] = "1"
+os.environ["QT_FONT_DPI"] = "96"
 os.environ.setdefault("AUDIOFORGE_REDUCED_MOTION", "1")
 
 from PySide6.QtCore import QByteArray, QObject

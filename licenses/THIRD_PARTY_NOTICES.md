@@ -10,7 +10,9 @@ inventory identifies the bundled components.
 
 Earlier releases containing PyQt6 remain distributed under GNU GPL version 3;
 see their original notices and `GPL-3.0.txt`. This migration does not change
-the terms of those previously published packages. For the current bindings,
+the terms of those previously published packages. `GPL-3.0.txt` is also the
+GPLv3 text that the LGPLv3 Qt components incorporate by reference, which is why
+every bundle carries it. For the current bindings,
 see [Qt for Python licensing](https://doc.qt.io/qtforpython-6/licenses.html).
 
 Each build collects versioned component identities and license texts under

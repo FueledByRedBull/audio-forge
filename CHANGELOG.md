@@ -46,7 +46,7 @@
 
 ### Voice Setup and Auto-EQ
 
-- No Voice Setup or Auto-EQ decision changes: three switch-gated changes failed their gates and stay off, and two later ones, not evaluated on held-out recordings, are also off (`evaluation/README.md`).
+- No Voice Setup or Auto-EQ decision changes. Three changes built behind off-by-default switches (keeping your EQ when only the tone change is refused, a by-band tonal check, an RNNoise default strength of 0.7) failed their gates on held-out recordings, and two later ones (keeping your compressor when only the compressor fails, a lower level-check limit) were never evaluated. All five switches stayed off and were removed in 1.18.1; `evaluation/README.md` covers the three that were evaluated.
 - Apply Suggestions after Auto-EQ abstained no longer replaces your correction EQ with a flat one or switches a disabled EQ on.
 - The level check's too-quiet advice says a higher level would push the loudest moments past the limit, not that they would clip.
 - The line "Everything else below still applies." is gone from the tone line after an Auto-EQ error.

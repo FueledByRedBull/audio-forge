@@ -4,11 +4,11 @@ Security fixes target the latest stable release. A release candidate remains
 prerelease software until its published qualification evidence is complete;
 older versions receive no promised backports.
 
-Report a suspected vulnerability using GitHub's **Security > Report a
-vulnerability** for this repository when available. If private reporting is
-unavailable, open a public issue requesting a private contact without including
-the exploit, sensitive data, or credentials. This project does not promise a
-response-time SLA.
+Report a suspected vulnerability privately: open the repository's **Security**
+tab and choose **Report a vulnerability**. Don't post details in a public issue.
+If that button is ever missing, open an issue that only asks for a private way
+to send the report, with no exploit, sensitive data or credentials in it. This
+project does not promise a response-time SLA.
 
 Include affected versions, a minimal reproduction, impact, and whether the
 problem requires an explicitly enabled external model/DLL override. Share

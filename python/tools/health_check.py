@@ -34,6 +34,11 @@ _ZERO_REQUIRED_DIAGNOSTICS = (
     "suppressor_non_finite_count",
 )
 
+# --allow-recovery tolerates these; every other counter stays strict.
+_RECOVERY_DIAGNOSTICS = frozenset(
+    {"output_recovery_count", "output_recovery_event_count", "stream_restart_count"}
+)
+
 
 def _critical_diagnostic_failures(
     diagnostics: dict,
@@ -331,6 +336,9 @@ def main() -> int:
         diagnostic_failures = _critical_diagnostic_failures(
             diagnostics,
             output_underrun_baseline=output_underrun_baseline,
+            ignored_zero_diagnostics=(
+                _RECOVERY_DIAGNOSTICS if args.allow_recovery else frozenset()
+            ),
         )
         diagnostic_failures.extend(_input_sample_rate_diagnostic_failures(diagnostics))
         diagnostic_failures.extend(

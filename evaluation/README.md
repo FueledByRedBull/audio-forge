@@ -18,10 +18,11 @@ Per-case detail stays out of Git (`--details-output` under ignored
 | --- | --- | --- |
 | Noise gate, VAD modes | Keep the existing gate and VAD rules. The historical speech-presence replacement failed in both modes; the current follow-up compensates supported suppressors' wet output separately. | [Historical gate study](#gate-study-october-2026); `gate-speech-presence-2026-10-report.json`; [audio follow-up](audio-followups-2026-10-report.json) |
 | Voice Setup gate/suppression tuner | Corrected check ordering: select the frontend with compression bypassed, then calibrate compression and verify the full chain. Continuous speech-then-noise processing checks post-speech noise against the incumbent. The original October study graded an uncalibrated compressor and never changed settings; its rejected relative checks, fitted selector and reference-free onset measures remain rejected. | Current [implementation](../python/mic_eq/analysis/joint_tuning.py) and [regressions](../python/tests/test_joint_tuning.py); historical study: `voice-setup-tuner-2026-10-report.json` |
-| Gate with a neural suppressor | Add aligned wet-output compensation for RNNoise and DeepFilter LL while preserving the gated neural input and dry mix. The historical study kept the factory gate: it cost 4–7 dB at phrase onsets but kept long pauses 6–10 dB quieter, and gate off/VAD Assisted failed its rule. The new follow-up has separate onset and quiet-pause evidence. | Current [audio follow-up](audio-followups-2026-10-report.json); historical `gate-policy-2026-10-report.json` |
+| Gate with a neural suppressor | Add aligned wet-output compensation for RNNoise and DeepFilter LL while preserving the gated neural input and dry mix. The historical study kept the factory gate: it cost 4–7 dB at phrase onsets but kept long pauses 6–10 dB quieter, and gate off/VAD Assisted failed its rule. The new follow-up has separate onset and quiet-pause evidence, reused from the earlier 24-case run. It is adopted under an owner timing exception: its mandatory timing gate failed. | Current [audio follow-up](audio-followups-2026-10-report.json); historical `gate-policy-2026-10-report.json` |
 | Processing order | Gate before noise suppression; de-esser before EQ. | `processing-order-2026-10-report.json` (gate); `processing-order-2026-09-report.json` (de-esser/EQ) |
 | Limiter | 0.5 ms lookahead, zero output true-peak overshoot. | `limiter-lookahead-2026-10-report.json`. Its removed predecessors shifted already-aligned audio, so their gain-envelope and transient-shape metrics were invalid; correctly aligned, the three lookaheads score within 0.01 dB. |
 | DeepFilter | 30 dB attenuation, beta 0.0. | `deepfilter-hardening-report.json`, `deepfilter-fullband-report.json` |
+| DeepFilter build | Ship `df.dll` built from the pinned DeepFilterNet source instead of the inherited DLL. On 8 held-out cases the output matches the inherited DLL exactly (maximum absolute difference 0.0) with the same latency (480 samples for Low Latency, 1440 for Standard). The inherited DLL's build identity was not recoverable, so this shows behavior, not provenance. | `deepfilter-source-build-report.json`; its evaluator is listed under [Retired evaluators](#retired-evaluators) |
 | VAD | Silero v6.2.1 with independent calibration and multi-speaker validation. | `vad-model-selection-report.json`, `vad-v6.2.1-report.json` |
 | Voice preservation | All 78 held-out gate cases and all 60 current EQ cases pass; Natural stays neutral and adaptive tone stays bounded. Doesn't establish perceptual quality or reproduce the live post-yell issue. | `voice-preservation-report.json` (the change against its predecessor, 48 EQ cases); `voice-preservation-2026-09-report.json` (no change since v1.13.0) |
 | Warm target | All 60 dialog and 60 held-out EQ cases pass; Warm adds bounded low-mid body. | `warm-auto-eq-report.json` |
@@ -36,8 +37,8 @@ Per-case detail stays out of Git (`--details-output` under ignored
 | Voice Setup refusals, three changes | Measured on held-out DAPS recordings: partial results, the by-band tonal check and RNNoise 0.7 each failed a predefined gate, so nothing changes and the current build stays. | [Study](#refusals-three-changes); `voice-setup-arms-2026-10-report.json` (the tool writes it with 2-space indentation; stored with 1-space indentation to fit the size limit, same content); rows, rule and development material in ignored `models/evaluation-details/voice-setup-arms-2026-10/` |
 | Voice Setup capture clip rule | Keep the rule that refuses a take for a flat top of 6 samples (125 microseconds at 48 kHz) or more than 20 separate runs at or above 0.999. | [Study](#capture-clip-rule); Ignored `models/evaluation-details/capture-clip-rule-2026-10/` (`README.md`, `run.py`, `results.json`). |
 | De-esser detector | Historical transient setup detector: all 96 generated corpus clips classified correctly, with no false positives. This scores detection, not the audio change or the new persistent-shape model. | `deesser-corpus-v1-report.json` (coefficient fit); `deesser-corpus-v1-2026-09-report.json` (re-run); current [audio follow-up](audio-followups-2026-10-report.json) |
-| De-esser on real speech | Add persistent notch-complement power concentration with a shared spectral-background reference, plus a signed-curvature setup model. The earlier study's no-change decision remains historical: its setup model enabled 65% of harsh, 62% of bright and 42% of ordinary simulated voices, while Auto reduced the sibilance band by only ~0.3–0.7 dB. The current change has separate benefit and preservation evidence. | Current [audio follow-up](audio-followups-2026-10-report.json); historical `deesser-real-speech-2026-10-report.json` |
-| Resampling | 128-tap Blackman product resampler. The October 2026 re-run on the current source passes all 11 checks and reproduces every quality figure of the historical report to the last digit; only the timings differ. The rejected 128-tap Blackman-Harris-squared window still fails the same four (10.3 dB passband error at 44.1 to 48 kHz), and a Rust test fails if the product window reverts to it. | `resampler-quality-report.json` (historical); `resampler-quality-2026-10-report.json` (current source, from [`evaluate_resampler_quality.py`](../python/tools/evaluate_resampler_quality.py); pass `--output`, since its default is the historical report) |
+| De-esser on real speech | Add persistent notch-complement power concentration with a shared spectral-background reference, plus a signed-curvature setup model. The earlier study's no-change decision remains historical: its setup model enabled 65% of harsh, 62% of bright and 42% of ordinary simulated voices, while Auto reduced the sibilance band by only ~0.3–0.7 dB. The current change has separate benefit and preservation evidence, and is adopted under the same owner timing exception as the gate compensation above (its mandatory timing gate failed). | Current [audio follow-up](audio-followups-2026-10-report.json); historical `deesser-real-speech-2026-10-report.json` |
+| Resampling | 128-tap Blackman product resampler. The October 2026 re-run on the current source passes all 11 checks and reproduces every quality figure of the historical report to the last digit; only the timings differ. The rejected 128-tap Blackman-Harris-squared window still fails the same four (10.3 dB passband error at 44.1 to 48 kHz), and a Rust test fails if the product window reverts to it. | `resampler-quality-report.json` (historical); `resampler-quality-2026-10-report.json` (current source, from [`evaluate_resampler_quality.py`](../python/tools/evaluate_resampler_quality.py); `--output` is required) |
 | Manual EQ types | Bell, notch, shelf and pass filters with selectable slopes. | `eq-filter-types-report.json` |
 | Auto-EQ candidate pool | Nested wider pools and sparse type selection rejected. | `eq-candidate-pool-report.json`, `sparse-auto-eq-filter-report.json` |
 | Auto-EQ fitter | Keep the dynamic band layout. A fixed-grid, gains-only fitter tracked the intended curve more closely on average (0.06 vs 0.13 dB RMS) but failed its rule on 56 of 2,084 cases: Warm with Broad smoothing fit worse, and 14 recommendations flipped between apply and reduced (October 2026). | `auto-eq-fixed-grid-2026-10-report.json` |
@@ -80,6 +81,12 @@ unchanged.
 The Windows audio worker now registers with MMCSS Pro Audio after initialization
 and before streams start, propagates registration failure through startup
 cleanup, and checks same-thread reversion on normal shutdown.
+
+The follow-up measured DeepFilter with a `df.dll` whose SHA-256 (`9c9c57dc…60fe`)
+differs from the reference digest pinned in `release-assets.json`
+(`38605121…b027`). The report does not say why and no parity check between the
+two DLLs was run, so its DeepFilter results cannot be tied by hash to the DLL a
+release ships.
 
 Adoption uses an explicit user-approved timing exception. One mandatory
 component-event p99 was **1.2151 ms**, exceeding the unchanged **0.5 ms** limit;
@@ -328,7 +335,10 @@ Eight arms on the same users covered three changes that had been built behind
 off-by-default switches: keeping the user's EQ when only the tone change is
 refused ("partial results"), the by-band tonal check, and RNNoise default
 strength 0.7. The switches and the evaluator were removed from the code after
-the 1.18.0 release; the tool is recoverable from that tag.
+the 1.18.0 release; the tool is recoverable from that tag. Two more switches,
+keeping the user's compressor when only the compressor fails and a lower limit
+for the level check, were never evaluated on held-out recordings and were
+removed with them.
 
 18 DAPS speakers (9 female, 9 male; m1 excluded for lack of pause material) in 5
 of the 10 non-balcony device-and-room versions each, at factory settings or
@@ -485,8 +495,8 @@ squash or rebase drops the pinned commits. Superseded reports and the
 evaluators of closed decisions have been removed over time; their reports stay,
 and the Retired evaluators table names the release whose source still has each
 tool. Two evaluators, `evaluate_deesser_corpus.py` and
-`evaluate_resampler_quality.py`, default `--output` to a tracked historical
-file: pass an explicit path and add new measurements beside it.
+`evaluate_resampler_quality.py`, require `--output`: pass a path that is not a
+tracked report and add new measurements beside it.
 `evaluate_deesser_corpus.py` still regenerates the shipped de-esser
 coefficients. The older
 `compressor-control-report.json`, `compressor-search-report.json`, and

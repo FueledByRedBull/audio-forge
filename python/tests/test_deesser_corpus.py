@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
+import evaluate_deesser_corpus
 from mic_eq.analysis.deesser_corpus import (
     CORPUS_CASES,
     CORPUS_LICENSE,
@@ -113,3 +115,24 @@ def test_clip_fusion_is_continuous_around_operating_threshold():
     assert float(np.max(differences)) < 0.02
     assert np.all(FRAME_COEFFICIENTS >= 0.0)
     assert np.all(CLIP_COEFFICIENTS >= 0.0)
+
+
+def test_threshold_search_takes_the_best_recall_within_the_false_positive_limit():
+    labels = np.array([0, 0, 0, 0, 1, 1, 1, 1])
+    probabilities = np.array([0.1, 0.2, 0.3, 0.4, 0.6, 0.7, 0.8, 0.9])
+
+    threshold = evaluate_deesser_corpus._low_false_activation_threshold(
+        labels, probabilities
+    )
+
+    assert 0.4 < threshold <= 0.6
+
+
+def test_threshold_search_refuses_to_substitute_a_constant():
+    labels = np.array([0, 0, 1, 1])
+    probabilities = np.array([0.9, 0.95, 0.4, 0.5])
+
+    with pytest.raises(ValueError, match="false-positive rate"):
+        evaluate_deesser_corpus._low_false_activation_threshold(
+            labels, probabilities, maximum_false_positive_rate=0.0
+        )

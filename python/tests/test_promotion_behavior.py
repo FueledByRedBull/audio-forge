@@ -33,6 +33,7 @@ def _origin_gate_script() -> str:
         (("event", "schedule"), "unsupported event"),
         (("event", "push"), "unsupported event"),
         (("tag_type", "commit"), "must be an annotated tag"),
+        (("head", "b" * 40), "checkout is not the release tag commit"),
         (("attempt", 0), "invalid attempt number"),
     ],
 )
@@ -54,8 +55,11 @@ def test_promotion_origin_gate_executes_commit_and_run_binding(
         "attempt": 1,
     }
     tag_type = "tag"
+    head = commit
     if mutation and mutation[0] == "tag_type":
         tag_type = str(mutation[1])
+    elif mutation and mutation[0] == "head":
+        head = str(mutation[1])
     elif mutation:
         run[mutation[0]] = mutation[1]
     output = tmp_path / "github-output"
@@ -74,6 +78,7 @@ def test_promotion_origin_gate_executes_commit_and_run_binding(
           $global:LASTEXITCODE = 0
           if ($CommandArgs[0] -eq 'fetch') { return }
           if ($CommandArgs[0] -eq 'cat-file') { $env:TEST_TAG_TYPE; return }
+          if ($CommandArgs[0] -eq 'rev-parse') { $env:TEST_HEAD; return }
           $env:TEST_COMMIT
         }
         function gh {
@@ -92,6 +97,7 @@ def test_promotion_origin_gate_executes_commit_and_run_binding(
             "GITHUB_OUTPUT": str(output),
             "TEST_TAG": "v1.12.0",
             "TEST_COMMIT": commit,
+            "TEST_HEAD": head,
             "TEST_TAG_TYPE": tag_type,
             "TEST_RUN_JSON": json.dumps(run),
         }

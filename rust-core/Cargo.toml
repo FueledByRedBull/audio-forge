@@ -4,6 +4,7 @@ version = "1.18.1"
 edition = "2021"
 rust-version = "1.94"
 description = "High-performance DSP engine for AudioForge - real-time noise suppression and equalization"
+license = "MIT"
 build = "build.rs"
 
 [lib]

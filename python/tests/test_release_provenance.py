@@ -12,11 +12,14 @@ import pytest
 import release_provenance
 
 _EXPECTED_PRODUCER = ("Release package", "123", "1")
+_bundled_asset_errors = release_provenance._bundled_asset_errors
 
 
 @pytest.fixture(autouse=True)
 def _clean_source_tree(monkeypatch):
     monkeypatch.setattr(release_provenance, "_git_is_dirty", lambda: False)
+    # The stand-in bundles here hold no release assets; the binding has its own test.
+    monkeypatch.setattr(release_provenance, "_bundled_asset_errors", lambda bundle: [])
 
 
 def _bundle(root: Path) -> Path:
@@ -78,7 +81,6 @@ def _promotion_candidate(tmp_path: Path, monkeypatch):
                     "hidden_exe_startup": "passed",
                     "installer_provenance": "passed",
                     "installer_smoke": "passed",
-                    "installer_upgrade": "passed",
                     "source_distribution": "passed",
                 },
             }
@@ -143,10 +145,10 @@ def test_path_baseline_reports_additions_and_removals(tmp_path):
     assert removals == ["old.dll"]
 
 
-def test_cpu_ort_bundle_assets_match_release_manifest(tmp_path, monkeypatch):
+def test_bundled_assets_match_release_manifest(tmp_path, monkeypatch):
     bundle = _bundle(tmp_path)
     manifest_assets = []
-    for manifest_path, bundle_path in release_provenance.CPU_ORT_BUNDLE_ASSETS.items():
+    for manifest_path, bundle_path in release_provenance.BUNDLED_RELEASE_ASSETS.items():
         target = bundle / bundle_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(manifest_path.encode("ascii"))
@@ -161,11 +163,16 @@ def test_cpu_ort_bundle_assets_match_release_manifest(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(release_provenance, "REPO_ROOT", tmp_path)
 
-    assert release_provenance._cpu_ort_asset_errors(bundle) == []
+    assert _bundled_asset_errors(bundle) == []
     (bundle / "_internal" / "onnxruntime.dll").write_bytes(b"tampered")
     assert any(
         "does not match release-assets.json" in error
-        for error in release_provenance._cpu_ort_asset_errors(bundle)
+        for error in _bundled_asset_errors(bundle)
+    )
+    (bundle / "_internal" / "models" / "silero_vad.onnx").unlink()
+    assert any(
+        "missing release asset: _internal/models/silero_vad.onnx" in error
+        for error in _bundled_asset_errors(bundle)
     )
 
 

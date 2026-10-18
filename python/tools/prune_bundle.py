@@ -140,7 +140,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Prune unused payload from a bundled AudioForge app.")
     parser.add_argument("bundle_root", type=Path, help="Path to dist/AudioForge")
     args = parser.parse_args()
-    prune_bundle(args.bundle_root.resolve())
+    bundle_root = args.bundle_root.resolve()
+    if not (bundle_root / "AudioForge.exe").is_file() or not (bundle_root / "_internal").is_dir():
+        parser.error(f"{bundle_root} is not an AudioForge bundle (no AudioForge.exe and _internal)")
+    prune_bundle(bundle_root)
     return 0
 
 

@@ -83,20 +83,16 @@ try {
     $cachedMsi = Join-Path $toolRoot "wix-cli-x64.msi"
 
     if ([string]::IsNullOrWhiteSpace($WixPath)) {
-        $cachedWix = Get-ChildItem -LiteralPath $toolRoot -Recurse -Filter wix.exe -File -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-        if ($cachedWix) {
-            $WixPath = $cachedWix.FullName
-        }
-    }
-
-    if ([string]::IsNullOrWhiteSpace($WixPath)) {
         New-Item -ItemType Directory -Force -Path $toolRoot | Out-Null
-        if (-not (Test-Path -LiteralPath $cachedMsi -PathType Leaf)) {
-            Invoke-WebRequest -Uri $wixUrl -OutFile $cachedMsi
+        $actualSha256 = if (Test-Path -LiteralPath $cachedMsi -PathType Leaf) {
+            (Get-FileHash -LiteralPath $cachedMsi -Algorithm SHA256).Hash.ToLowerInvariant()
         }
-        $actualSha256 = (Get-FileHash -LiteralPath $cachedMsi -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($actualSha256 -ne $wixSha256) {
+            Invoke-WebRequest -Uri $wixUrl -OutFile $cachedMsi
+            $actualSha256 = (Get-FileHash -LiteralPath $cachedMsi -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        if ($actualSha256 -ne $wixSha256) {
+            Remove-Item -LiteralPath $cachedMsi -Force
             throw "WiX CLI SHA-256 mismatch: expected $wixSha256, got $actualSha256."
         }
 
@@ -155,4 +151,7 @@ try {
 }
 finally {
     Pop-Location
+    if ($adminRoot) {
+        Remove-Item -LiteralPath $adminRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }

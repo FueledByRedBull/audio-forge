@@ -458,6 +458,25 @@ raise SystemExit(status)
     assert observed["pipeline_cache"] is False
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the crash needs the native Windows platform")
+def test_the_real_window_exits_cleanly_after_the_smoke_test():
+    """The window is torn down before interpreter shutdown, not left to the GC's order."""
+    environment = dict(app_bootstrap.os.environ)
+    environment.pop("QT_QPA_PLATFORM", None)
+    environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    result = subprocess.run(
+        [sys.executable, "-m", "mic_eq", "--smoke-test"],
+        cwd=Path(__file__).resolve().parents[2],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, (result.returncode, result.stderr[-2000:])
+
+
 def test_auto_eq_solver_check_runs_all_eq_fit_solvers(monkeypatch):
     from mic_eq.analysis.auto_eq_parts import optimizer
 

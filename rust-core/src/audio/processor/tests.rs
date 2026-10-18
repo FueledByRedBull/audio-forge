@@ -6548,21 +6548,36 @@ fn assert_snapshots_stay_whole(
     publish: impl Fn(bool) + Sync,
     snapshot_is_whole: impl Fn() -> Option<bool> + Sync,
 ) {
+    // Start from one of the two configurations: the default state is neither.
+    publish(false);
     let done = AtomicBool::new(false);
+    let reader_started = AtomicBool::new(false);
     let (observed, torn) = std::thread::scope(|scope| {
         let reader = scope.spawn(|| {
             let (mut observed, mut torn) = (0_u64, 0_u64);
+            let mut count = |whole: Option<bool>| match whole {
+                Some(true) => observed += 1,
+                Some(false) => torn += 1,
+                None => {}
+            };
+            reader_started.store(true, Ordering::Release);
             while !done.load(Ordering::Acquire) {
-                match snapshot_is_whole() {
-                    Some(true) => observed += 1,
-                    Some(false) => torn += 1,
-                    None => {}
-                }
+                count(snapshot_is_whole());
             }
+            // The writer has stopped, so this read cannot be torn or unstable.
+            count(snapshot_is_whole());
             (observed, torn)
         });
+        // On a busy two-core runner the reader may not be scheduled before the
+        // writer finishes; wait for it and yield now and then so reads overlap writes.
+        while !reader_started.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
         for iteration in 0..50_000 {
             publish(iteration % 2 == 0);
+            if iteration % 256 == 0 {
+                std::thread::yield_now();
+            }
         }
         done.store(true, Ordering::Release);
         reader.join().unwrap()

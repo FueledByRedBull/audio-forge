@@ -1,5 +1,57 @@
 # Changelog
 
+## v1.18.2
+
+### Window and interface
+
+- Closing the window, **Ctrl+Q** or **Quit AudioForge** in the tray while audio runs and close-to-tray is off asks "Stop Audio and Quit?": Quit, Keep Running in Tray (only while the tray icon shows) or Cancel.
+- Keep Running in Tray hides the window for that close only and leaves the close-to-tray setting alone.
+- Don't ask again counts only once a Quit goes ahead, and **Settings > Tray and background > Ask before quitting while audio is running** turns the question back on.
+- A Windows sign-out or shutdown never asks.
+- Stop no longer sits beside Mute: the top bar reads Mute, the mode picker, Start/Stop.
+- Windows contrast themes are followed: while one is on, the window takes the system colours; otherwise the dark look is unchanged.
+- Changing the contrast theme while AudioForge runs puts a restart note in the status line.
+- Under a contrast theme the peak-hold line takes the window text colour, and the EQ band numbers and the clip label keep dark text on their colours.
+- A switch flipped with the Windows UI Automation toggle command (used by some screen readers and voice control) now changes the setting, not only the screen; this fixes the known issue in the 1.18.1 notes.
+- A switch acts only while it is enabled and returns to the setting's state if the change is refused.
+- Text sizes follow the app font, and none is under 12 px.
+- The route row stacks below 1200 px, and the band editor keeps two columns only from 1400 px so the gain fader keeps its width.
+- Switched-off stages show an Off badge instead of dimming.
+- Each view has one primary button, and text stands in when the icon font is missing.
+- Banners and status messages are announced, and the rail and meters have label-first accessible names with roles; nothing was checked with a real screen reader or voice control.
+- Tooltips appear sooner and follow keyboard focus; picker popups stay inside the window; open Advanced sections survive a layout change.
+- Meter accessibility text changes only when its words do, and the level trace stops while the window is hidden.
+- Locked device pickers and Refresh say why they are locked.
+- A failed device listing shows a warning instead of an "Error:" entry in the list.
+- The gate's voice-detection rows read Voice threshold and Voice pre-gain.
+- Start, Stop and Export diagnostics name their shortcuts in their tooltips.
+- Health advice names where each setting lives.
+- The tray tooltip fits Windows' 127 characters.
+- The listening comparison keeps Keep and Reject in view and says the live output is muted.
+- The live-output-muted notice in Auto-EQ and Voice Setup shows only while a recording mutes the output.
+- The latency dialog shows Total latency and Confidence, with the other readings behind Show details.
+- Peak hold and the clip strip run on elapsed time.
+
+### Settings and presets
+
+- The config schema is now 2, for the new `confirm_quit_when_live` key; version 1 files migrate on load and presets are unchanged.
+- 1.18.1 and older find the newer format, run on their defaults, keep a recovery copy, show "AudioForge found a newer config format." and will not save over a settings file this version has written.
+
+### Internal
+
+- `build_msi.ps1` accepts the WiX Toolset 7 OSMF EULA only with `-AcceptWixEula` (the release workflow passes it) and checks the switch before downloading anything.
+- numpy is bounded to `>=2.5,<3`, and both manifests declare MIT.
+- The project source archive is compared member by member (name, type, mode, link and content hash) against a fresh `git archive`, so a different git version or compression no longer fails it.
+- Source and asset downloads stream with a byte cap and delete a partial file.
+- Promote and hardware runs check out `refs/tags/<tag>` and fail unless HEAD is the tag commit.
+- `check_workflows.py` rejects risky triggers, input-derived expressions in run text, unpinned `python-version`, pip-audit ignores in any flag order and a missing DeepFilter `cargo audit`.
+- `check_versions.py` requires a changelog heading for the release.
+- Release provenance binds the Silero model and both ONNX Runtime DLLs.
+- The semgrep scan lists registry packs only: it loaded no rules from the three GitHub repository URLs and reported no error, so those collections never ran.
+- The DeepFilter build recipe extracts once and records the `dumpbin` version, so an existing local `df.dll` attestation is stale; rebuild it with `build_deepfilter.ps1`.
+- Evaluator and tool edge cases are fixed: hardware matrix, de-esser and resampler evaluators, `health_check.py --allow-recovery`, `self_test.py` retries, the hygiene check and the screenshot tool.
+- The README gains steps to verify an unsigned download, and its screenshots are regenerated.
+
 ## v1.18.1
 
 ### Audio engine and Health

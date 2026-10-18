@@ -37,7 +37,7 @@ your audio never leaves your PC.
 
 ### Processing cards
 
-![AudioForge cards for noise suppression, noise gate, de-esser, compressor and limiter, each with a switch and a collapsed Advanced section.](docs/images/audioforge-processing.png)
+![AudioForge cards for noise suppression, noise gate, de-esser, compressor and limiter, each with an on/off switch.](docs/images/audioforge-processing.png)
 
 ### Auto Voice Setup
 

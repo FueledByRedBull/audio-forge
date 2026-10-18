@@ -1,10 +1,10 @@
 # Evaluation evidence
 
-This directory records why AudioForge's sound-processing defaults are what
-they are. The decisions up to 2026-10-18 used predefined pass/fail rules
-applied to held-out data, and their rows below stay as history, unchanged. The
-audio follow-up below has an explicit user-approved timing exception; its
-failed gate remains a failure. Tuning decisions after 2026-10-18 follow
+This directory records why AudioForge's sound-processing defaults are what they
+are. The decisions up to 2026-10-18 used predefined pass/fail rules applied to
+held-out data, and their rows and sections below stay as history, unchanged. The
+audio follow-up below has an explicit user-approved timing exception; its failed
+gate remains a failure. Tuning decisions after 2026-10-18 follow
 [CONTRIBUTING.md](../CONTRIBUTING.md): the bench report on the fixed bench clip
 set goes in the pull request as information, the invariant tests are the gate,
 and the maintainer decides. The JSON reports hold configuration, source and
@@ -28,20 +28,20 @@ Per-case detail stays out of Git (`--details-output` under ignored
 | Auto-EQ confidence | Historical calibration of the former absolute-spectrum objective, not of today's bounded tonal adjustment. | `auto-eq-confidence-calibration.json` |
 | Auto-EQ cross-take confidence | Rejected. A candidate scored on repeated takes of the same voice failed its predefined gates on an independent lexical holdout, in both the validation and test splits (12 take pairs from 6 actors each): median held-out improvement −0.32 and −1.34 dB against a 0.0 dB floor, and lower decile −1.76 and −1.82 dB against −0.5 dB. The abstention, retry, headroom and runtime checks passed. The candidate stayed evaluation-only, no product call path accepts repeated-take input, and the incumbent remains. The actors read short fixed statements, so the corpus doesn't represent conversational delivery (rejected in v1.11.0; report refreshed September 2026). | `cross-take-auto-eq-report.json` |
 | Compressor | VAD/reliability-driven automatic makeup; all six real-speech gates and the −30 dB aliasing gate (worst −48.2 dB) pass. Calibration searches threshold only; the expanded search failed held-out qualification and stays disabled. | `auto-makeup-real-speech-2026-09-report.json`, `dynamics-aliasing-2026-09-report.json`, `compressor-expanded-search-2026-09-report.json`, `compressor-control-report.json`, `compressor-search-report.json` |
-| Voice Setup loudness | When a proposal's peaks leave less headroom than the final check requires, lower its loudness target by whole decibels until it passes; leave it as released when no allowed loudness does. Of 30 held-out simulated users 24 get a proposal to score: 16 pass the check against 13 as released, and the other 8 fail at every allowed loudness. Where the limiter is enabled, makeup is automatic and the voice is not too hot for it, the final check and verification let the limiter take up to 3 dB off the loudest peaks, so the target is lowered only as far as that requires. On 48 simulated EARS users (34 scored, from 21 of 24 speakers; the rest get no Auto-EQ settings), against the loudness fit alone, passing proposals rise from 24 to 31 (21 as released), recommended ones from 9 to 16 and verification accepts from 23 to 24 (22 as released), measured with the bypassed tonal check of the next row (15 to 16 with the earlier check); no ESTOI fell and the largest limiter gain reduction among passing proposals is 5.62 dB against the app's 6 dB warning. All seven predefined gates pass. A broader allowance applied to every proposal was rejected earlier: its rule failed on a too-hot input that it recommended and whose next take drove the limiter 7 dB. | `voice-setup-loudness-fit-2026-10-report.json`; `voice-setup-limiter-allowance-narrow-2026-10-report.json`; the rejected broader candidate and its results stay under ignored `models/evaluation-details/voice-setup-limiter-allowance-2026-10/` |
-| Voice Setup verification | Compute the tonal check with the noise suppressor bypassed; keep the 1.0 RNNoise default; advise when noise suppression is dulling consonants, which never changes a verification result. The tonal check ("target error") compares the voice's median spectrum before any processing with the one after the whole chain, so the noise suppressor trips it: on 48 simulated EARS users at four suppressor settings (34 scored each), it rolled back 31 of the 96 RNNoise 1.0, DeepFilterNet and DeepFilterNet LL pairs that pass once the suppressor is bypassed. When the proposal's suppressor is on, the check now reads a second render of the same recordings through the same chain with only the suppressor off; every other finding still comes from the real render. On 48 users of a second EARS cohort (36 scored, from 21 of 24 speakers; 108 pairs over RNNoise 1.0, DeepFilterNet 1.0 and DeepFilterNet LL 1.0), target-error rollbacks fall from 36 to 0; a 9 dB wrong EQ at 3 kHz is reported for 105 of 108 pairs (90 % required) and a 12 dB one for 108 of 108 (97 % required); no pair the released check accepts is rolled back; no other finding or advisory moved. All four predefined gates pass; the two extra renders add 2.2 s (31 %) to a verification. On the first cohort's 34 scored users at RNNoise 1.0 it rolls back 2 for target error instead of 16, but it is stricter than the released check for one user the released check accepts (test 0, p024); the second cohort's gate saw no such pair. The first design, measuring the check against the suppressor's own output, removed all 31 false alarms and was never stricter, but agreed with the tone stages within 0.75 dB for 93.1 % of pairs (95 % required) and caught a 9 dB wrong EQ at 3 kHz for 93.75 % (95 % required): rejected on the first cohort, which is why this second design was judged on new speakers. The advisory for the suppressor dulling sibilants fired for 8 of 8 dulled pairs and 1 of 113 intact ones and changed no decision; its rule made it conditional on the first design, and it was adopted on its own under the owner's exception of 2026-10-13: its own gates passed and the condition was waived. RNNoise default strength 0.7 against 1.0 left 0 of 34 users losing more than 6 dB of sibilant level (10 of 34 at 1.0) and raised median ESTOI by 0.06, but 25 of 28 users (89.3 %, 90 % required) kept at least 4 dB of deep-pause reduction and one more user ended in rollback or gave up (10 against 9); its median cost was a 9.3 dB higher deep-pause level: rejected. Known limit, unchanged: the tonal check is nearly blind to errors below 1 kHz; a 6 dB cut at 200 Hz is not reported by either check. | `voice-setup-verification-tonal-check-2026-10-report.json`; ignored `models/evaluation-details/voice-setup-tonal-check-followup-2026-10/`, `.../voice-setup-verification-fix-2026-10/` (first design, advisory, default strength) and `.../voice-setup-verification-target-error-2026-10/` (investigation) |
-| Voice Setup verification, tonal check by band | Add a second reading of the verification tonal check that weighs every third-octave band alike (the shipped margin of 1.0 dB; it can only add `target_error` rollbacks): rejected on gate L2, the shipped check stays. The tonal check ("target error") takes the RMS error over 1018 linear bins of 80 to 12000 Hz, so the 79 bins below 1 kHz carry under 8 % of it: a 9 dB bell adds 1.0 dB of RMS at 215 Hz and 3.5 dB at 2.7 kHz, and the shipped check hardly reports 9 dB errors at the lowest correction bands (3 or fewer of 93 pairs in the study below). On 12 VoiceBank development users the second reading added no rollback and reported 9 dB errors there for 58 to 83 % of users and 12 dB errors for 92 to 100 %. On the third EARS cohort (24 speakers no study had used, 48 users, RNNoise 1.0, DeepFilterNet 1.0 and DeepFilterNet LL 1.0; 93 verified pairs from 31 users and 22 speakers) the predefined gates L1, L3 and L4 passed (0 extra rollbacks of 93 against a limit of 3 %; 0 of the 15 wrong EQs the shipped check reports lost; nothing else moved in 93 pairs) and L2 failed: errors of 9 dB at the correction bands nearest 100 and 200 Hz were reported for 61 to 75 % of pairs (50 % required), errors of 12 dB for 74 to 81 % (85 % required, 80 of 93 pairs; the cells reached 75, 69, 75 and 75). The shipped check reported 0 to 5 of them. After the judgement: the 18 pairs missed in three of the four 12 dB cells are the 18 verifications that ended in a delivery-mismatch retry, where neither tonal reading runs; among the other 75 pairs the second reading reported 100 % (92 % for -12 dB at 100 Hz), but the rule counted retries as verified, so no candidate could pass L2 here and the verdict stands as fixed. Errors of 6 dB at low frequencies stay mostly unreported (second reading 3 to 16 of 93 per cell, first pass, shipped 0 to 3). The proposals the shipped check accepts came closer to the margin than in development (headroom 0.18 dB for the per-bin reading and 0.34 dB for the band reading, against 0.82 and 0.97 dB), with no rollback. Known limit unchanged: a 6 dB cut at 200 Hz is not reliably reported by either check. This third cohort is used up for verification questions. | Ignored `models/evaluation-details/voice-setup-tonal-check-by-band-2026-10/` (rule file copied byte for byte, frozen files and hashes, rows, `report-bands.json`, `judgement.txt`, development material); the rule in `tonal-check-by-band-rules-final.md` (SHA-256 `318e0c2f...`). No tracked report: the study failed. |
-| Voice Setup suppressor strength (per user) | Rejected in development; no cohort was run. A rule that lowers RNNoise to the highest of 0.85 and 0.7 at which the consonant-dulling measure of verification falls under 6 dB cannot work from one take: on 12 VoiceBank development users the measure of the 10 s setup take correlates at r = +0.14 with the loss on a held-out take of the same user (error sd 4.2 dB; the verification take r = +0.72, sd 2.5 dB; a user's loss ranges from about 0 to 17 dB between takes). At 6 dB it changes 4 of 12 users and leaves 5 of 12 losing more than 6 dB of sibilant level on the held-out take (8 of 12 at a fixed 1.0); at 3 dB it changes 10 of 12, which is a global default under another name. A fixed 0.7 gives 0 of 12 users losing more than 6 dB, ESTOI never lower (median +0.037) and 10 of 10 users with a deep pause keeping at least 4 dB of pause reduction on these users; the EARS failure of the global 0.7 (three users under 4 dB) is not among them. Development only: VoiceBank, simulated rooms, no microphone captures. | Ignored `models/evaluation-details/voice-setup-suppressor-strength-2026-10/` (`README.md`, `development.md`, patch, rows). |
-| Voice Setup refusals | Measured; no veto changed. 54 simulated users at VoiceBank fit indices no study had used (fresh rooms, noise and levels; the 18 voices had been heard before), factory settings. At least 13 % of users (95 % interval 3.7–24 %; about 20 % if an unmeasurable clause counts as not worse) had their setup refused first by a veto although the refused setup was no worse than their current settings within the rule's tolerances; 2 of those 7 are judged on the proposal the product discards when the recording is unclear. A weak capture was the first false refusal for 9.3 % (1.9–18.5 %). The Auto-EQ abstention crossed the study's trigger on its own step: the tone change it holds back was no worse for 8 of the 13 users it fired on (14.8 % of all users, interval 5.6–24 %). All 13 were refused first by another veto, so loosening the abstention alone would have changed no outcome here. The tuner kept the current gate and suppressor for every user; some candidate was no worse for up to 35. Simulated rooms, 48 of the 54 users male, tuner and de-esser readings flattering (these voices fed both). | `voice-setup-refusals-2026-10-report.json`; per-user rows in `models/evaluation-details/voice-setup-refusals-2026-10/` |
-| Voice Setup refusals, three changes | Measured on held-out DAPS recordings; nothing changes, the current build stays. Eight arms on the same users covered three changes that had been built behind off-by-default switches: keeping the user's EQ when only the tone change is refused ("partial results"), the by-band tonal check, and RNNoise default strength 0.7. The switches and the evaluator were removed from the code after the 1.18.0 release; the tool is recoverable from that tag. 18 DAPS speakers (9 female, 9 male; m1 excluded for lack of pause material) in 5 of the 10 non-balcony device-and-room versions each, at factory settings or factory plus a hand-set tone EQ: 170 user-conditions in 17 speaker clusters. Every change failed a predefined gate on both contrasts, so by the fixed decision table no arm ships. Partial results failed BEN-P: it withheld only the tone for 2 users and turned no false whole-setup refusal into an accept (58 with and without; it had to be lower). The by-band check failed BEN-T: it reported injected 12 dB errors for 69 to 73 of 73 pairs in three cells but 18 of 73 for a 12 dB cut at 100 Hz (80 % required). RNNoise 0.7 failed the budgets: the unclear-recording (B1) and weak-capture (B2) vetoes each rose by one user past their limits (12 against 11, 25 against 24), and the tuner withheld a step that was no worse for 52 users instead of 16 (limit 18). Its benefit gates passed without showing much: both arms kept deep-pause noise at -4 dB or lower for all 83 measurable factory users, and users losing more than 3 dB of sibilance fell from 2 to 1 (not confirmed at 95 %). False accepts were 6 in every arm. In the current build at least 58 of 170 user-conditions (34 %; interval 36 to 80 of 170; 62 counting unmeasurable clauses as not worse) had their setup refused first by a veto although it was no worse than their current settings; weak capture (24), the final check (19) and an unclear recording (11) were the largest sources. The balcony recordings (heavy traffic, 16 factory users, f5 and m1 excluded) were reported apart and never gated: 13 of 16 false first refusals in the current build, 11 with RNNoise 0.7. Takes the level check called too hot as recorded were lowered until its peak reading sat at -6 dB, as a user following its advice would. Loudspeaker playback of read speech, one script; device and room confounded; with 17 clusters the budgets that passed near their limits are not confirmed at 95 %. Both were rejected before on EARS (rows above): RNNoise 0.7 on a different gate, the by-band check on the same kind of gate (reporting injected low-band errors). | `voice-setup-arms-2026-10-report.json` (the tool writes it with 2-space indentation; stored with 1-space indentation to fit the size limit, same content); rows, rule and development material in ignored `models/evaluation-details/voice-setup-arms-2026-10/` |
-| Voice Setup capture clip rule | Keep the rule that refuses a take for a flat top of 6 samples (125 microseconds at 48 kHz) or more than 20 separate runs at or above 0.999. On 12 VoiceBank takes of 10 s (12 speakers of the fit split) hard-clipped at 0, 0.25, 0.5, 1, 2, 3 and 6 dB, it accepts 29 of 84 cases: the 12 unchanged takes and 17 takes clipped by 0.25 or 0.5 dB, whose clipping error is at most -51.5 dB of the take's energy (the bound for negligible, set before the run, was -40 dB). It refuses every take from +1 dB up. 19 refused takes have an error under -40 dB: all 12 at +1 dB and 7 at +0.25 or +0.5 dB. The live meter's CLIP tag (6 full-scale samples within 3 s) lights for 16 of the 29 accepted takes: it counts how often full scale was reached, while the rule judges damage. Isolated clicks of 1 to 5 samples are accepted up to 20 runs, because a run rule cannot tell them from the peak of a normalised take. Digital hard clipping only; no room, noise or microphone captures of real clicks. | Ignored `models/evaluation-details/capture-clip-rule-2026-10/` (`README.md`, `run.py`, `results.json`). |
+| Voice Setup loudness | When a proposal's peaks leave less headroom than the final check requires, lower its loudness target by whole decibels until it passes; leave it as released when no allowed loudness does. | [Study](#loudness-fit); `voice-setup-loudness-fit-2026-10-report.json`; `voice-setup-limiter-allowance-narrow-2026-10-report.json`; the rejected broader candidate and its results stay under ignored `models/evaluation-details/voice-setup-limiter-allowance-2026-10/` |
+| Voice Setup verification | Compute the tonal check with the noise suppressor bypassed; keep the 1.0 RNNoise default; advise when noise suppression is dulling consonants, which never changes a verification result. | [Study](#verification-tonal-check); `voice-setup-verification-tonal-check-2026-10-report.json`; ignored `models/evaluation-details/voice-setup-tonal-check-followup-2026-10/`, `.../voice-setup-verification-fix-2026-10/` (first design, advisory, default strength) and `.../voice-setup-verification-target-error-2026-10/` (investigation) |
+| Voice Setup verification, tonal check by band | Add a second reading of the verification tonal check that weighs every third-octave band alike (the shipped margin of 1.0 dB; it can only add `target_error` rollbacks): rejected on gate L2, the shipped check stays. | [Study](#tonal-check-by-band); Ignored `models/evaluation-details/voice-setup-tonal-check-by-band-2026-10/` (rule file copied byte for byte, frozen files and hashes, rows, `report-bands.json`, `judgement.txt`, development material); the rule in `tonal-check-by-band-rules-final.md` (SHA-256 `318e0c2f...`). No tracked report: the study failed. |
+| Voice Setup suppressor strength (per user) | Rejected in development, no cohort run: the consonant-dulling measure of one take does not predict a user's loss on another take. | [Study](#suppressor-strength-per-user); Ignored `models/evaluation-details/voice-setup-suppressor-strength-2026-10/` (`README.md`, `development.md`, patch, rows). |
+| Voice Setup refusals | Measured; no veto changed. | [Study](#refusals); `voice-setup-refusals-2026-10-report.json`; per-user rows in `models/evaluation-details/voice-setup-refusals-2026-10/` |
+| Voice Setup refusals, three changes | Measured on held-out DAPS recordings: partial results, the by-band tonal check and RNNoise 0.7 each failed a predefined gate, so nothing changes and the current build stays. | [Study](#refusals-three-changes); `voice-setup-arms-2026-10-report.json` (the tool writes it with 2-space indentation; stored with 1-space indentation to fit the size limit, same content); rows, rule and development material in ignored `models/evaluation-details/voice-setup-arms-2026-10/` |
+| Voice Setup capture clip rule | Keep the rule that refuses a take for a flat top of 6 samples (125 microseconds at 48 kHz) or more than 20 separate runs at or above 0.999. | [Study](#capture-clip-rule); Ignored `models/evaluation-details/capture-clip-rule-2026-10/` (`README.md`, `run.py`, `results.json`). |
 | De-esser detector | Historical transient setup detector: all 96 generated corpus clips classified correctly, with no false positives. This scores detection, not the audio change or the new persistent-shape model. | `deesser-corpus-v1-report.json` (coefficient fit); `deesser-corpus-v1-2026-09-report.json` (re-run); current [audio follow-up](audio-followups-2026-10-report.json) |
 | De-esser on real speech | Add persistent notch-complement power concentration with a shared spectral-background reference, plus a signed-curvature setup model. The earlier study's no-change decision remains historical: its setup model enabled 65% of harsh, 62% of bright and 42% of ordinary simulated voices, while Auto reduced the sibilance band by only ~0.3–0.7 dB. The current change has separate benefit and preservation evidence. | Current [audio follow-up](audio-followups-2026-10-report.json); historical `deesser-real-speech-2026-10-report.json` |
 | Resampling | 128-tap Blackman product resampler. The October 2026 re-run on the current source passes all 11 checks and reproduces every quality figure of the historical report to the last digit; only the timings differ. The rejected 128-tap Blackman-Harris-squared window still fails the same four (10.3 dB passband error at 44.1 to 48 kHz), and a Rust test fails if the product window reverts to it. | `resampler-quality-report.json` (historical); `resampler-quality-2026-10-report.json` (current source, from [`evaluate_resampler_quality.py`](../python/tools/evaluate_resampler_quality.py); pass `--output`, since its default is the historical report) |
 | Manual EQ types | Bell, notch, shelf and pass filters with selectable slopes. | `eq-filter-types-report.json` |
 | Auto-EQ candidate pool | Nested wider pools and sparse type selection rejected. | `eq-candidate-pool-report.json`, `sparse-auto-eq-filter-report.json` |
 | Auto-EQ fitter | Keep the dynamic band layout. A fixed-grid, gains-only fitter tracked the intended curve more closely on average (0.06 vs 0.13 dB RMS) but failed its rule on 56 of 2,084 cases: Warm with Broad smoothing fit worse, and 14 recommendations flipped between apply and reduced (October 2026). | `auto-eq-fixed-grid-2026-10-report.json` |
-| Auto-EQ solvers without SciPy | Use NumPy solvers for the Auto-EQ fit (bounded least squares, gain projection, constrained refinement) and drop SciPy from the runtime. On 2,084 held-out cases (the fixed-grid study's cases without its four development passages) all four predefined gates pass: no failure or recommendation status changed, the constraint and nonlinear solver verdicts never differed, and 1,992 of 2,071 fitted responses (96 %) are within 0.05 dB of SciPy's at every frequency, against 2,002 for the control arm. The control is SciPy with every start moved one unit in the last place; it changed one recommendation status, so SciPy is not stable against itself. The largest response difference is 2.30 dB for the port and 2.44 dB for the control; 34 and 40 cases are over 0.25 dB, and 19 and 19 over 1.0 dB. Against SciPy's own algorithm running on NumPy's SVD the port differs by at most 0.0003 dB. No case exercised the path where SciPy's constraint solve failed and the NumPy one succeeded, so that behaviour rests on a separate study of 360 seeded synthetic fits. The comparison ran twice, the second time after a finite-input check was added to the solver and the WAV reader was tightened; both runs gave the same gate numbers. Offline fits only; no audio was rendered. | `auto-eq-solver-port-2026-10-report.json`, from `evaluate_auto_eq_solver_port.py` (removed; see [Retired evaluators](#retired-evaluators)); ignored `models/evaluation-details/auto-eq-solver-port-2026-10/` (details, both runs, parity study) |
+| Auto-EQ solvers without SciPy | Use NumPy solvers for the Auto-EQ fit (bounded least squares, gain projection, constrained refinement) and drop SciPy from the runtime; all four predefined gates pass on 2,084 held-out cases. | [Study](#auto-eq-solvers-without-scipy-october-2026); `auto-eq-solver-port-2026-10-report.json`, from `evaluate_auto_eq_solver_port.py` (removed; see [Retired evaluators](#retired-evaluators)); ignored `models/evaluation-details/auto-eq-solver-port-2026-10/` (details, both runs, parity study) |
 | Auto-EQ Adaptive layer | Keep. Its voice-balance inputs saturate for 97–100% of real voices, so Adaptive is effectively a gentler fixed version of each preset and where it measures cannot matter; fixing the offsets explicitly failed its equivalence rule on noisy captures and was no closer to the clean-voice curve (October 2026). | `auto-eq-tone-layer-2026-10-report.json` |
 | Microphone correction | Not automated. Estimating a mic's coloration from 10 s of speech with a population prior made it worse (+0.18 dB RMS), because speaker, room and noise differences (2–9 dB per band) are as large as the colorations (October 2026). | `mic-coloration-prior-2026-10-report.json` |
 | EQ stages | Independent correction and tone stages (requested product change); 12 cases pass safety, cost, schema, and zero-added-latency gates. | `correction-tone-product-report.json` |
@@ -162,6 +162,256 @@ calibration preserved under ignored
 `models/evaluation-details/gate-speech-presence-2026-10/` (extension SHA-256
 `644bd363…d692`).
 
+## Voice Setup studies (October 2026)
+
+The full account behind each Voice Setup row of the table.
+
+### Loudness fit
+
+When a proposal's peaks leave less headroom than the final check requires, lower
+its loudness target by whole decibels until it passes; leave it as released when
+no allowed loudness does. Of 30 held-out simulated users 24 get a proposal to
+score: 16 pass the check against 13 as released, and the other 8 fail at every
+allowed loudness.
+
+Where the limiter is enabled, makeup is automatic and the voice is not too hot
+for it, the final check and verification let the limiter take up to 3 dB off the
+loudest peaks, so the target is lowered only as far as that requires.
+
+On 48 simulated EARS users (34 scored, from 21 of 24 speakers; the rest get no
+Auto-EQ settings), against the loudness fit alone, passing proposals rise from
+24 to 31 (21 as released), recommended ones from 9 to 16 and verification
+accepts from 23 to 24 (22 as released), measured with the bypassed tonal check
+of the next section (15 to 16 with the earlier check); no ESTOI fell and the
+largest limiter gain reduction among passing proposals is 5.62 dB against the
+app's 6 dB warning. All seven predefined gates pass.
+
+A broader allowance applied to every proposal was rejected earlier: its rule
+failed on a too-hot input that it recommended and whose next take drove the
+limiter 7 dB.
+
+### Verification tonal check
+
+Compute the tonal check with the noise suppressor bypassed; keep the 1.0 RNNoise
+default; advise when noise suppression is dulling consonants, which never
+changes a verification result. The tonal check ("target error") compares the
+voice's median spectrum before any processing with the one after the whole
+chain, so the noise suppressor trips it: on 48 simulated EARS users at four
+suppressor settings (34 scored each), it rolled back 31 of the 96 RNNoise 1.0,
+DeepFilterNet and DeepFilterNet LL pairs that pass once the suppressor is
+bypassed. When the proposal's suppressor is on, the check now reads a second
+render of the same recordings through the same chain with only the suppressor
+off; every other finding still comes from the real render.
+
+On 48 users of a second EARS cohort (36 scored, from 21 of 24 speakers; 108
+pairs over RNNoise 1.0, DeepFilterNet 1.0 and DeepFilterNet LL 1.0),
+target-error rollbacks fall from 36 to 0; a 9 dB wrong EQ at 3 kHz is reported
+for 105 of 108 pairs (90 % required) and a 12 dB one for 108 of 108 (97 %
+required); no pair the released check accepts is rolled back; no other finding
+or advisory moved. All four predefined gates pass; the two extra renders add 2.2
+s (31 %) to a verification.
+
+On the first cohort's 34 scored users at RNNoise 1.0 it rolls back 2 for target
+error instead of 16, but it is stricter than the released check for one user the
+released check accepts (test 0, p024); the second cohort's gate saw no such
+pair. The first design, measuring the check against the suppressor's own output,
+removed all 31 false alarms and was never stricter, but agreed with the tone
+stages within 0.75 dB for 93.1 % of pairs (95 % required) and caught a 9 dB
+wrong EQ at 3 kHz for 93.75 % (95 % required): rejected on the first cohort,
+which is why this second design was judged on new speakers.
+
+The advisory for the suppressor dulling sibilants fired for 8 of 8 dulled pairs
+and 1 of 113 intact ones and changed no decision; its rule made it conditional
+on the first design, and it was adopted on its own under the owner's exception
+of 2026-10-13: its own gates passed and the condition was waived.
+
+RNNoise default strength 0.7 against 1.0 left 0 of 34 users losing more than 6
+dB of sibilant level (10 of 34 at 1.0) and raised median ESTOI by 0.06, but 25
+of 28 users (89.3 %, 90 % required) kept at least 4 dB of deep-pause reduction
+and one more user ended in rollback or gave up (10 against 9); its median cost
+was a 9.3 dB higher deep-pause level: rejected.
+
+Known limit, unchanged: the tonal check is nearly blind to errors below 1 kHz; a
+6 dB cut at 200 Hz is not reported by either check.
+
+### Tonal check by band
+
+Add a second reading of the verification tonal check that weighs every
+third-octave band alike (the shipped margin of 1.0 dB; it can only add
+`target_error` rollbacks): rejected on gate L2, the shipped check stays. The
+tonal check ("target error") takes the RMS error over 1018 linear bins of 80 to
+12000 Hz, so the 79 bins below 1 kHz carry under 8 % of it: a 9 dB bell adds 1.0
+dB of RMS at 215 Hz and 3.5 dB at 2.7 kHz, and the shipped check hardly reports
+9 dB errors at the lowest correction bands (3 or fewer of 93 pairs in the study
+below).
+
+On 12 VoiceBank development users the second reading added no rollback and
+reported 9 dB errors there for 58 to 83 % of users and 12 dB errors for 92 to
+100 %.
+
+On the third EARS cohort (24 speakers no study had used, 48 users, RNNoise 1.0,
+DeepFilterNet 1.0 and DeepFilterNet LL 1.0; 93 verified pairs from 31 users and
+22 speakers) the predefined gates L1, L3 and L4 passed (0 extra rollbacks of 93
+against a limit of 3 %; 0 of the 15 wrong EQs the shipped check reports lost;
+nothing else moved in 93 pairs) and L2 failed: errors of 9 dB at the correction
+bands nearest 100 and 200 Hz were reported for 61 to 75 % of pairs (50 %
+required), errors of 12 dB for 74 to 81 % (85 % required, 80 of 93 pairs; the
+cells reached 75, 69, 75 and 75). The shipped check reported 0 to 5 of them.
+
+After the judgement: the 18 pairs missed in three of the four 12 dB cells are
+the 18 verifications that ended in a delivery-mismatch retry, where neither
+tonal reading runs; among the other 75 pairs the second reading reported 100 %
+(92 % for -12 dB at 100 Hz), but the rule counted retries as verified, so no
+candidate could pass L2 here and the verdict stands as fixed.
+
+Errors of 6 dB at low frequencies stay mostly unreported (second reading 3 to 16
+of 93 per cell, first pass, shipped 0 to 3).
+
+The proposals the shipped check accepts came closer to the margin than in
+development (headroom 0.18 dB for the per-bin reading and 0.34 dB for the band
+reading, against 0.82 and 0.97 dB), with no rollback.
+
+Known limit unchanged: a 6 dB cut at 200 Hz is not reliably reported by either
+check.
+
+This third cohort is used up for verification questions.
+
+### Suppressor strength per user
+
+Rejected in development; no cohort was run. A rule that lowers RNNoise to the
+highest of 0.85 and 0.7 at which the consonant-dulling measure of verification
+falls under 6 dB cannot work from one take: on 12 VoiceBank development users
+the measure of the 10 s setup take correlates at r = +0.14 with the loss on a
+held-out take of the same user (error sd 4.2 dB; the verification take r =
++0.72, sd 2.5 dB; a user's loss ranges from about 0 to 17 dB between takes).
+
+At 6 dB it changes 4 of 12 users and leaves 5 of 12 losing more than 6 dB of
+sibilant level on the held-out take (8 of 12 at a fixed 1.0); at 3 dB it changes
+10 of 12, which is a global default under another name.
+
+A fixed 0.7 gives 0 of 12 users losing more than 6 dB, ESTOI never lower (median
++0.037) and 10 of 10 users with a deep pause keeping at least 4 dB of pause
+reduction on these users; the EARS failure of the global 0.7 (three users under
+4 dB) is not among them.
+
+Development only: VoiceBank, simulated rooms, no microphone captures.
+
+### Refusals
+
+Measured; no veto changed. 54 simulated users at VoiceBank fit indices no study
+had used (fresh rooms, noise and levels; the 18 voices had been heard before),
+factory settings.
+
+At least 13 % of users (95 % interval 3.7–24 %; about 20 % if an unmeasurable
+clause counts as not worse) had their setup refused first by a veto although the
+refused setup was no worse than their current settings within the rule's
+tolerances; 2 of those 7 are judged on the proposal the product discards when
+the recording is unclear.
+
+A weak capture was the first false refusal for 9.3 % (1.9–18.5 %).
+
+The Auto-EQ abstention crossed the study's trigger on its own step: the tone
+change it holds back was no worse for 8 of the 13 users it fired on (14.8 % of
+all users, interval 5.6–24 %). All 13 were refused first by another veto, so
+loosening the abstention alone would have changed no outcome here.
+
+The tuner kept the current gate and suppressor for every user; some candidate
+was no worse for up to 35.
+
+Simulated rooms, 48 of the 54 users male, tuner and de-esser readings flattering
+(these voices fed both).
+
+### Refusals, three changes
+
+Measured on held-out DAPS recordings; nothing changes, the current build stays.
+Eight arms on the same users covered three changes that had been built behind
+off-by-default switches: keeping the user's EQ when only the tone change is
+refused ("partial results"), the by-band tonal check, and RNNoise default
+strength 0.7. The switches and the evaluator were removed from the code after
+the 1.18.0 release; the tool is recoverable from that tag.
+
+18 DAPS speakers (9 female, 9 male; m1 excluded for lack of pause material) in 5
+of the 10 non-balcony device-and-room versions each, at factory settings or
+factory plus a hand-set tone EQ: 170 user-conditions in 17 speaker clusters.
+
+Every change failed a predefined gate on both contrasts, so by the fixed
+decision table no arm ships. Partial results failed BEN-P: it withheld only the
+tone for 2 users and turned no false whole-setup refusal into an accept (58 with
+and without; it had to be lower). The by-band check failed BEN-T: it reported
+injected 12 dB errors for 69 to 73 of 73 pairs in three cells but 18 of 73 for a
+12 dB cut at 100 Hz (80 % required). RNNoise 0.7 failed the budgets: the
+unclear-recording (B1) and weak-capture (B2) vetoes each rose by one user past
+their limits (12 against 11, 25 against 24), and the tuner withheld a step that
+was no worse for 52 users instead of 16 (limit 18). Its benefit gates passed
+without showing much: both arms kept deep-pause noise at -4 dB or lower for all
+83 measurable factory users, and users losing more than 3 dB of sibilance fell
+from 2 to 1 (not confirmed at 95 %). False accepts were 6 in every arm.
+
+In the current build at least 58 of 170 user-conditions (34 %; interval 36 to 80
+of 170; 62 counting unmeasurable clauses as not worse) had their setup refused
+first by a veto although it was no worse than their current settings; weak
+capture (24), the final check (19) and an unclear recording (11) were the
+largest sources.
+
+The balcony recordings (heavy traffic, 16 factory users, f5 and m1 excluded)
+were reported apart and never gated: 13 of 16 false first refusals in the
+current build, 11 with RNNoise 0.7.
+
+Takes the level check called too hot as recorded were lowered until its peak
+reading sat at -6 dB, as a user following its advice would.
+
+Loudspeaker playback of read speech, one script; device and room confounded;
+with 17 clusters the budgets that passed near their limits are not confirmed at
+95 %. Both were rejected before on EARS (sections above): RNNoise 0.7 on a
+different gate, the by-band check on the same kind of gate (reporting injected
+low-band errors).
+
+### Capture clip rule
+
+Keep the rule that refuses a take for a flat top of 6 samples (125 microseconds
+at 48 kHz) or more than 20 separate runs at or above 0.999.
+
+On 12 VoiceBank takes of 10 s (12 speakers of the fit split) hard-clipped at 0,
+0.25, 0.5, 1, 2, 3 and 6 dB, it accepts 29 of 84 cases: the 12 unchanged takes
+and 17 takes clipped by 0.25 or 0.5 dB, whose clipping error is at most -51.5 dB
+of the take's energy (the bound for negligible, set before the run, was -40 dB).
+It refuses every take from +1 dB up. 19 refused takes have an error under -40
+dB: all 12 at +1 dB and 7 at +0.25 or +0.5 dB.
+
+The live meter's CLIP tag (6 full-scale samples within 3 s) lights for 16 of the
+29 accepted takes: it counts how often full scale was reached, while the rule
+judges damage. Isolated clicks of 1 to 5 samples are accepted up to 20 runs,
+because a run rule cannot tell them from the peak of a normalised take.
+
+Digital hard clipping only; no room, noise or microphone captures of real
+clicks.
+
+## Auto-EQ solvers without SciPy (October 2026)
+
+Use NumPy solvers for the Auto-EQ fit (bounded least squares, gain projection,
+constrained refinement) and drop SciPy from the runtime. On 2,084 held-out cases
+(the fixed-grid study's cases without its four development passages) all four
+predefined gates pass: no failure or recommendation status changed, the
+constraint and nonlinear solver verdicts never differed, and 1,992 of 2,071
+fitted responses (96 %) are within 0.05 dB of SciPy's at every frequency,
+against 2,002 for the control arm.
+
+The control is SciPy with every start moved one unit in the last place; it
+changed one recommendation status, so SciPy is not stable against itself.
+
+The largest response difference is 2.30 dB for the port and 2.44 dB for the
+control; 34 and 40 cases are over 0.25 dB, and 19 and 19 over 1.0 dB. Against
+SciPy's own algorithm running on NumPy's SVD the port differs by at most 0.0003
+dB.
+
+No case exercised the path where SciPy's constraint solve failed and the NumPy
+one succeeded, so that behaviour rests on a separate study of 360 seeded
+synthetic fits. The comparison ran twice, the second time after a finite-input
+check was added to the solver and the WAV reader was tightened; both runs gave
+the same gate numbers.
+
+Offline fits only; no audio was rendered.
+
 ## Corpora
 
 Held-out speech-cohort evaluation was retired on 2026-10-18. The speech
@@ -175,7 +425,7 @@ assets.
 The evaluators and fetchers below served decisions the Decisions table records as
 closed. They were removed with their tests; their reports stay, with their stated
 limitations, and each tool remains in the source of the release named in the last
-column (`git show <tag>:python/tools/<name>`). A recovered tool imports its
+column (`git show <tag>:python/tools/<name>`; a row that gives a path reads from that path). A recovered tool imports its
 siblings of that tag, so check the tag out to run it. Their measurements can no
 longer be reproduced from this checkout. Released reports are still checked at the
 tag that shipped them.
@@ -210,6 +460,10 @@ tag that shipped them.
 | `evaluate_voice_setup_verification.py` | `voice-setup-verification-tonal-check-2026-10-report.json` | v1.18.0 |
 | `evaluate_deesser_real_speech.py` | `deesser-real-speech-2026-10-report.json` | v1.18.0 |
 | `_eval_common.py` | None; the ESTOI and SI-SDR helper the evaluators above imported. Reports whose source hashes include it: `audio-followups-2026-10-report.json`, `auto-makeup-real-speech-2026-09-report.json`, `gate-speech-presence-2026-10-report.json`, `processing-order-2026-09-report.json`, `processing-order-2026-10-report.json`, `resampler-quality-2026-10-report.json`, `voice-setup-arms-2026-10-report.json`, `voice-setup-limiter-allowance-narrow-2026-10-report.json`, `voice-setup-loudness-fit-2026-10-report.json`, `voice-setup-refusals-2026-10-report.json`, `voice-setup-verification-tonal-check-2026-10-report.json` | v1.18.0 |
+| `python/mic_eq/analysis/wav_io.py` | None; the WAV reader the evaluators used. Reports whose source hashes include it: `audio-followups-2026-10-report.json`, `auto-eq-solver-port-2026-10-report.json`, `auto-makeup-real-speech-2026-09-report.json`, `correction-tone-product-report.json`, `cross-take-auto-eq-report.json`, `deepfilter-hardening-report.json`, `eq-filter-types-report.json`, `limiter-lookahead-2026-10-report.json`, `sparse-auto-eq-filter-report.json`, `voice-setup-arms-2026-10-report.json`, `voice-setup-refusals-2026-10-report.json` | v1.18.0 |
+| `rust-core/src/bin/auto_makeup_benchmark.rs` | None; the automatic-makeup benchmark binary. Reports that name it: `audio-followups-2026-10-report.json` (source hash), `compressor-control-report.json` (its release command) | v1.18.0 |
+| `rust-core/src/bin/deepfilter_benchmark.rs` | None; the DeepFilter benchmark binary. Reports that name it: `audio-followups-2026-10-report.json`, `deepfilter-fullband-report.json` and `deepfilter-hardening-report.json` (source hash and built executable), `deepfilter-source-build-report.json` (its benchmark command) | v1.18.0 |
+| `rust-core/src/bin/rnnoise_benchmark.rs` | None; the RNNoise benchmark binary. Reports that name it: `audio-followups-2026-10-report.json` (source hash), `rnnoise-backend-comparison.json` (the built executable) | v1.18.0 |
 
 A tool and its tests leave the tree once its decision row records a final
 outcome, every report it produced has shipped in a release tag unedited, and
@@ -230,9 +484,11 @@ the working tree. Merge branches that carry reports with a merge commit, since
 squash or rebase drops the pinned commits. Superseded reports and the
 evaluators of closed decisions have been removed over time; their reports stay,
 and the Retired evaluators table names the release whose source still has each
-tool. Several
-evaluators default `--report` to a tracked historical file: pass an explicit
-path and add new measurements beside it. The older
+tool. Two evaluators, `evaluate_deesser_corpus.py` and
+`evaluate_resampler_quality.py`, default `--output` to a tracked historical
+file: pass an explicit path and add new measurements beside it.
+`evaluate_deesser_corpus.py` still regenerates the shipped de-esser
+coefficients. The older
 `compressor-control-report.json`, `compressor-search-report.json`, and
 `rnnoise-backend-comparison.json` predate complete source provenance; they
 support their decisions but don't reproduce the current checkout. The

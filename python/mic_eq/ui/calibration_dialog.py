@@ -9,7 +9,7 @@ from collections import deque
 from collections.abc import Mapping
 from copy import deepcopy
 from functools import partial
-from typing import Any, NamedTuple
+from typing import Any
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -35,7 +35,12 @@ from ..config import (
 )
 from ..analysis.noise_reference import capture_is_silent
 from ..analysis.voice_setup import raw_capture_is_clipped
-from .analysis_worker import AnalysisWorker, CaptureAnalysisWorker
+from .analysis_worker import (
+    AnalysisWorker,
+    CaptureAnalysis,
+    CaptureAnalysisWorker,
+    start_capture_analysis,
+)
 from .accessibility import bind_label, set_accessible_group
 from .auto_eq_explanation import (
     TARGET_MODE_LABELS,
@@ -147,17 +152,10 @@ def _headroom_declined(headroom: Mapping[str, Any]) -> bool:
     return headroom.get("status") == "risk_worse"
 
 
-class _CaptureAnalysis(NamedTuple):
-    """What a finished take needs before the dialog can decide about it."""
-
-    audio: np.ndarray
-    silent: bool
-
-
-def _analyze_capture(raw_audio: np.ndarray, sample_rate: int) -> _CaptureAnalysis:
+def _analyze_capture(raw_audio: np.ndarray, sample_rate: int) -> CaptureAnalysis:
     """The slow half of a finished take; it runs on a worker thread."""
     audio = _filtered_capture_for_analysis(raw_audio, sample_rate)
-    return _CaptureAnalysis(audio, capture_is_silent(audio))
+    return CaptureAnalysis(audio, capture_is_silent(audio))
 
 
 class CalibrationDialog(QDialog):
@@ -1059,23 +1057,14 @@ class CalibrationDialog(QDialog):
         self.start_button.setEnabled(False)
         self.warning_label.setText("Checking the recording...")
         self.warning_label.setStyleSheet(message_text_style("info", strong=True))
-        worker = CaptureAnalysisWorker(partial(_analyze_capture, raw_audio, sample_rate))
-        self.analysis_worker = worker
-        self._analysis_workers.append(worker)
-        worker.result_ready.connect(
+        start_capture_analysis(
+            self,
+            partial(_analyze_capture, raw_audio, sample_rate),
             lambda result, token=generation: self._on_capture_analyzed(
                 result, raw_audio, token
-            )
+            ),
+            lambda error, token=generation: self._on_capture_analysis_failed(error, token),
         )
-        worker.failed.connect(
-            lambda error, token=generation: self._on_capture_analysis_failed(error, token)
-        )
-        worker.finished.connect(
-            lambda finished_worker=worker: self._on_analysis_thread_finished(
-                finished_worker
-            )
-        )
-        worker.start()
 
     def _on_capture_analysis_failed(self, error: str, generation: int) -> None:
         if generation != self._analysis_generation or self._close_requested:
@@ -1083,7 +1072,7 @@ class CalibrationDialog(QDialog):
         self._on_recording_failed(plain_error(f"Recording error: {error}"))
 
     def _on_capture_analyzed(
-        self, analysis: _CaptureAnalysis, raw_audio: np.ndarray, generation: int
+        self, analysis: CaptureAnalysis, raw_audio: np.ndarray, generation: int
     ) -> None:
         """Decide about a finished take once its post-processing is done."""
         if generation != self._analysis_generation or self._close_requested:

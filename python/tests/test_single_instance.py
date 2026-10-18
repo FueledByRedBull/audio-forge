@@ -164,7 +164,7 @@ def test_failed_instance_lock_shows_error_before_audio_setup(qapp, monkeypatch):
     message = Mock()
     monkeypatch.setattr(app_bootstrap.QMessageBox, "critical", message)
 
-    assert app_bootstrap._run_qt_app(QMainWindow, smoke_test=False) == 1
+    assert app_bootstrap._run_qt_app(QMainWindow, smoke_test=False, enable_qt_log=lambda: None) == 1
     audio_setup.assert_not_called()
     assert "owner unavailable" in message.call_args.args[2]
 
@@ -205,7 +205,7 @@ def test_login_bootstrap_never_shows_window_or_modal_and_uses_quiet_lock(qapp, m
     monkeypatch.setattr(app_bootstrap.QMessageBox, "critical", message)
     previous = qapp.quitOnLastWindowClosed()
     try:
-        assert app_bootstrap._run_qt_app(QuietWindow, smoke_test=False) == 0
+        assert app_bootstrap._run_qt_app(QuietWindow, smoke_test=False, enable_qt_log=lambda: None) == 0
         assert seen == [True, False]
         instance.acquire.assert_called_once_with(activate_existing=False)
     finally:
@@ -281,7 +281,7 @@ def test_login_lifecycle_keeps_hidden_session_alive_and_releases_lock_on_quit(
     try:
         qapp.setQuitOnLastWindowClosed(True)
         watchdog.start(1000)
-        assert app_bootstrap._run_qt_app(LoginWindow, smoke_test=False) == 0
+        assert app_bootstrap._run_qt_app(LoginWindow, smoke_test=False, enable_qt_log=lambda: None) == 0
         expected = [("initially_hidden", True), ("tray_after_close", close_to_tray)]
         if close_to_tray:
             expected.append(("tray_session_alive", True))
@@ -308,7 +308,7 @@ def test_login_duplicate_exits_before_window_or_audio_setup(qapp, monkeypatch):
     audio_setup = Mock()
     monkeypatch.setattr(app_bootstrap, "configure_deepfilter_env", audio_setup)
     window = Mock()
-    assert app_bootstrap._run_qt_app(cast(type[QMainWindow], window), smoke_test=False) == 0
+    assert app_bootstrap._run_qt_app(cast(type[QMainWindow], window), smoke_test=False, enable_qt_log=lambda: None) == 0
     audio_setup.assert_not_called()
     window.assert_not_called()
 
@@ -328,5 +328,5 @@ def test_login_construction_error_is_logged_and_exits_without_exception_dialog(q
                  "configure_deepfilter_env", "configure_vad_env"):
         monkeypatch.setattr(app_bootstrap, name, lambda *_: None)
     window = Mock(side_effect=RuntimeError("saved configuration failed"))
-    assert app_bootstrap._run_qt_app(cast(type[QMainWindow], window), smoke_test=False) == 1
+    assert app_bootstrap._run_qt_app(cast(type[QMainWindow], window), smoke_test=False, enable_qt_log=lambda: None) == 1
     instance.close.assert_called_once()

@@ -6,7 +6,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from mic_eq.ui import analysis_worker, listening_comparison_dialog, voice_setup_dialog
+from mic_eq.ui import (
+    analysis_worker,
+    latency_calibration_dialog,
+    listening_comparison_dialog,
+    voice_setup_dialog,
+)
 
 
 def _audio() -> np.ndarray:
@@ -32,6 +37,10 @@ def _comparison_worker():
     return listening_comparison_dialog.ListeningComparisonWorker(_audio(), 48_000, {}, {})
 
 
+def _latency_worker():
+    return latency_calibration_dialog.LatencyCalibrationWorker(_audio(), _audio(), 48_000)
+
+
 @pytest.mark.parametrize(
     ("module", "function", "make_worker", "message"),
     [
@@ -39,6 +48,7 @@ def _comparison_worker():
         (voice_setup_dialog, "analyze_voice_setup", _voice_worker, "Voice Setup analysis"),
         (voice_setup_dialog, "validate_voice_setup_verification", _verification_worker, "verification"),
         (listening_comparison_dialog, "render_comparison", _comparison_worker, "Listening comparison"),
+        (latency_calibration_dialog, "analyze_latency", _latency_worker, "Latency calibration"),
     ],
 )
 def test_a_worker_exception_is_logged_with_its_traceback(

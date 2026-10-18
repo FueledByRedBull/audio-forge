@@ -8,8 +8,8 @@ before the UI offers to apply them.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from typing import Any
+from collections.abc import Callable, Iterable, Mapping
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -2187,6 +2187,99 @@ def validate_voice_setup_verification(
         "simulation_backend": processed.get("simulation_backend"),
         **dulling_details,
     }
+
+
+# Verification's automatic reductions. The Voice Setup dialog applies them to the live
+# controls and python/tools/bench_metrics.py replays them offline; both call these.
+MAX_VERIFICATION_ADJUSTMENTS = 3
+MAX_VERIFICATION_BAD_CAPTURES = 3
+LIMITER_PRESSURE_STEP_DB = 1.0
+TARGET_LUFS_MIN = -24.0
+TARGET_LUFS_MAX = -12.0
+REDUCIBLE_TARGETS = ("compressor", "limiter", "deesser")
+_REDUCTION_METRIC_KEYS = {
+    "compressor": "compressor_gain_reduction_p95_db",
+    "limiter": "limiter_pressure_db",
+    "deesser": "deesser_gain_reduction_p95_db",
+}
+
+
+class VerificationReduction(NamedTuple):
+    """Gentler compressor and de-esser sections, what changed in words, and a lowered auto target."""
+
+    compressor: dict[str, Any]
+    deesser: dict[str, Any]
+    notes: list[str]
+    adjusted_target_lufs: float | None
+
+
+def reducible_targets(targets: Iterable[Any] | None) -> list[str]:
+    """The verdict's reduction targets that a reduction can act on, in the verdict's order."""
+    return [target for target in targets or () if target in REDUCIBLE_TARGETS]
+
+
+def reduction_metrics(outcome: Mapping[str, Any]) -> dict[str, float]:
+    """The verdict's finite pressure reading for each reducible target."""
+    values: dict[str, float] = {}
+    for target, key in _REDUCTION_METRIC_KEYS.items():
+        value = outcome.get(key)
+        if isinstance(value, (int, float)) and np.isfinite(float(value)):
+            values[target] = float(value)
+    return values
+
+
+def verification_stop(
+    adjustments: int,
+    targets: list[str],
+    previous_metrics: Mapping[str, float] | None,
+    metrics: Mapping[str, float],
+) -> str | None:
+    """Why verification stops reducing: no target, three adjustments made, or the last one did not help."""
+    if not targets:
+        return "no_target"
+    if adjustments >= MAX_VERIFICATION_ADJUSTMENTS:
+        return "three_adjustments"
+    if previous_metrics is not None:
+        comparable = [
+            (previous_metrics[target], metrics[target])
+            for target in targets
+            if target in previous_metrics and target in metrics
+        ]
+        if comparable and not any(now < before - 0.05 for before, now in comparable):
+            return "no_help"
+    return None
+
+
+def reduce_for_verification(
+    compressor: Mapping[str, Any], deesser: Mapping[str, Any], targets: Iterable[str]
+) -> VerificationReduction:
+    """One automatic reduction of the targets a verification implicated; the inputs are not modified."""
+    targets = set(targets)
+    compressor, deesser = dict(compressor), dict(deesser)
+    notes: list[str] = []
+    adjusted_target_lufs: float | None = None
+    if "compressor" in targets:
+        compressor["threshold_db"] = min(0.0, float(compressor.get("threshold_db", -24.0)) + 2.0)
+        compressor["ratio"] = max(1.0, float(compressor.get("ratio", 2.5)) * 0.9)
+        notes.append("reduced compressor intensity")
+    if "limiter" in targets:
+        if bool(compressor.get("auto_makeup_enabled", False)):
+            target_lufs = float(compressor.get("target_lufs", -18.0))
+            adjusted = max(TARGET_LUFS_MIN, min(TARGET_LUFS_MAX, target_lufs - LIMITER_PRESSURE_STEP_DB))
+            compressor["target_lufs"] = adjusted
+            if adjusted != target_lufs:
+                adjusted_target_lufs = adjusted
+                notes.append(f"lowered auto target loudness to {adjusted:.0f} LUFS")
+        else:
+            makeup_gain = float(compressor.get("makeup_gain_db", 0.0))
+            adjusted = max(0.0, makeup_gain - LIMITER_PRESSURE_STEP_DB)
+            compressor["makeup_gain_db"] = adjusted
+            if adjusted != makeup_gain:
+                notes.append(f"lowered manual makeup to {adjusted:.1f} dB")
+    if "deesser" in targets:
+        deesser["auto_amount"] = max(0.0, float(deesser.get("auto_amount", 0.0)) * 0.85)
+        notes.append("reduced de-esser intensity")
+    return VerificationReduction(compressor, deesser, notes, adjusted_target_lufs)
 
 
 __all__ = [

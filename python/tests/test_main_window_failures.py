@@ -116,6 +116,43 @@ def test_an_unreadable_last_preset_is_kept_for_the_next_launch(
     assert load_config().last_preset == str(filepath)
 
 
+def test_a_last_preset_locked_while_loading_is_kept_for_the_next_launch(
+    qapp, monkeypatch, tmp_path
+):
+    """The real ``open`` inside ``load_preset`` fails; its error arrives wrapped in PresetValidationError."""
+    from mic_eq.config import load_config
+    from mic_eq.config_parts import presets, shared
+
+    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
+    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
+
+    window = MainWindow()
+    try:
+        preset = window._get_current_preset()
+        preset.name = "Locked Sound"
+        filepath = window._save_preset_file(preset)
+        assert filepath is not None
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+    def locked(*_args, **_kwargs):
+        raise PermissionError(32, "being used by another process")
+
+    monkeypatch.setattr(presets, "open", locked, raising=False)
+    restored = MainWindow()
+    try:
+        assert restored.config.last_preset == str(filepath)
+        assert "Could not restore the previous preset" in (restored.config.load_warning or "")
+    finally:
+        restored.close()
+        restored.deleteLater()
+        qapp.processEvents()
+    assert load_config().last_preset == str(filepath)
+
+
 def test_a_corrupt_last_preset_still_clears_its_reference(qapp, monkeypatch, tmp_path):
     from mic_eq.config import load_config
     from mic_eq.config_parts import shared

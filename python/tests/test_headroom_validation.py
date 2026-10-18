@@ -1,4 +1,4 @@
-"""Headroom validation behaviours that a mutation run found unpinned."""
+"""Headroom validation of Auto-EQ candidates: native-render inputs, failed renders, the correction split, and when the validation gain scale abstains or reduces."""
 
 from typing import Any
 

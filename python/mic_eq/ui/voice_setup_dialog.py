@@ -8,12 +8,11 @@ from collections.abc import Callable, Mapping
 from functools import partial
 import json
 import logging
-import threading
 import time
-from typing import Any, NamedTuple
+from typing import Any
 
 import numpy as np
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -34,17 +33,20 @@ from ..analysis.noise_reference import (
     SILENT_REFERENCE_GUIDANCE,
     SILENT_REFERENCE_REASON,
     CaptureMetadata,
-    NoiseReferenceAnalysis,
     analyze_noise_reference,
     capture_is_silent,
 )
-from ..analysis.cancellation import AnalysisCancelled
 from ..analysis.voice_setup import (
     GATE_MODE_LABELS,
+    MAX_VERIFICATION_BAD_CAPTURES,
     _normalise_limiter_settings,
     analyze_voice_setup,
     raw_capture_is_clipped,
+    reduce_for_verification,
+    reducible_targets,
+    reduction_metrics,
     validate_voice_setup_verification,
+    verification_stop,
 )
 from ..config import (
     EQ_FREQUENCIES,
@@ -71,7 +73,12 @@ from .capture_session import (
     start_selected_route as _start_selected_route,
     sync_owner_processing_controls as _sync_owner_processing_controls,
 )
-from .analysis_worker import UNEXPECTED_FAILURE, CaptureAnalysisWorker
+from .analysis_worker import (
+    CancellableWorker,
+    CaptureAnalysis,
+    CaptureAnalysisWorker,
+    start_capture_analysis,
+)
 from .calibration_support import (
     RAINBOW_PASSAGE,
     candidate_metadata as _candidate_metadata,
@@ -152,11 +159,6 @@ _GATE_WORDS = {
     "VAD Assisted": "level plus speech detection",
     "VAD Only": "speech detection only",
 }
-_MAX_VERIFICATION_ADJUSTMENTS = 3
-_MAX_VERIFICATION_BAD_CAPTURES = 3
-_LIMITER_PRESSURE_STEP_DB = 1.0
-_TARGET_LUFS_MIN = -24.0
-_TARGET_LUFS_MAX = -12.0
 # Modes in which nothing is processed; setup analyses, applies and verifies as Normal.
 _UNPROCESSED_MODES = ("raw", "bypass")
 _VERIFIED_STAGES = (
@@ -364,12 +366,12 @@ def _voice_setup_context_matches(
     )
 
 
-class VoiceSetupWorker(QThread):
+class VoiceSetupWorker(CancellableWorker):
     """Background worker for multi-stage voice setup analysis."""
 
     step_progress = Signal(str, int)
     result_ready = Signal(dict)
-    failed = Signal(str)
+    _failure_log = "Voice Setup analysis failed"
 
     def __init__(
         self,
@@ -416,58 +418,44 @@ class VoiceSetupWorker(QThread):
         self.raw_speech_audio = raw_speech_audio
         self.input_cleanup_mode = input_cleanup_mode
         self.processing_mode = processing_mode
-        self._stop_event = threading.Event()
 
-    def stop(self) -> None:
-        """Request cooperative cancellation."""
-        self._stop_event.set()
-
-    def _should_stop(self) -> bool:
-        return self._stop_event.is_set()
-
-    def run(self) -> None:
-        try:
-            if self._should_stop():
-                return
-            result = analyze_voice_setup(
-                self.noise_audio,
-                self.voice_audio,
-                self.sample_rate,
-                self.target_preset,
-                vad_available=self.vad_available,
-                dynamics_intensity=self.dynamics_intensity,
-                custom_target_p95_db=self.custom_target_p95_db,
-                custom_peak_cap_db=self.custom_peak_cap_db,
-                target_lufs=self.target_lufs,
-                limiter_settings=self.limiter_settings,
-                noise_metadata=self.noise_metadata,
-                speech_metadata=self.voice_metadata,
-                cancel_check=self._should_stop,
-                progress_callback=self.step_progress.emit,
-                noise_model=self.noise_model,
-                suppressor_strength=self.suppressor_strength,
-                incumbent_settings=self.incumbent_settings,
-                raw_noise_audio=self.raw_noise_audio,
-                raw_speech_audio=self.raw_speech_audio,
-                input_cleanup_mode=self.input_cleanup_mode,
-                processing_mode=self.processing_mode,
-            )
-            if self._should_stop():
-                return
-            self.result_ready.emit(result)
-        except AnalysisCancelled:
+    def _run(self) -> None:
+        if self._should_stop():
             return
-        except Exception as exc:
-            logger.exception("Voice Setup analysis failed")
-            self.failed.emit(str(exc) or UNEXPECTED_FAILURE)
+        result = analyze_voice_setup(
+            self.noise_audio,
+            self.voice_audio,
+            self.sample_rate,
+            self.target_preset,
+            vad_available=self.vad_available,
+            dynamics_intensity=self.dynamics_intensity,
+            custom_target_p95_db=self.custom_target_p95_db,
+            custom_peak_cap_db=self.custom_peak_cap_db,
+            target_lufs=self.target_lufs,
+            limiter_settings=self.limiter_settings,
+            noise_metadata=self.noise_metadata,
+            speech_metadata=self.voice_metadata,
+            cancel_check=self._should_stop,
+            progress_callback=self.step_progress.emit,
+            noise_model=self.noise_model,
+            suppressor_strength=self.suppressor_strength,
+            incumbent_settings=self.incumbent_settings,
+            raw_noise_audio=self.raw_noise_audio,
+            raw_speech_audio=self.raw_speech_audio,
+            input_cleanup_mode=self.input_cleanup_mode,
+            processing_mode=self.processing_mode,
+        )
+        if self._should_stop():
+            return
+        self.result_ready.emit(result)
 
 
-class VoiceSetupVerificationWorker(QThread):
+class VoiceSetupVerificationWorker(CancellableWorker):
     """Run second-passage chain verification off the UI thread."""
 
     step_progress = Signal(str, int)
     result_ready = Signal(dict)
-    failed = Signal(str)
+    _failure_log = "Voice Setup verification failed"
 
     def __init__(
         self,
@@ -490,48 +478,26 @@ class VoiceSetupVerificationWorker(QThread):
         self.sample_rate = sample_rate
         self.setup_result = deepcopy(setup_result)
         self.target_preset = target_preset
-        self._stop_event = threading.Event()
 
-    def stop(self) -> None:
-        """Request cooperative cancellation."""
-        self._stop_event.set()
-
-    def _should_stop(self) -> bool:
-        return self._stop_event.is_set()
-
-    def run(self) -> None:
-        try:
-            if self._should_stop():
-                return
-            self.step_progress.emit("Validating the combined processing chain...", 55)
-            result = validate_voice_setup_verification(
-                self.noise_audio,
-                self.original_speech_audio,
-                self.verification_speech_audio,
-                self.sample_rate,
-                self.setup_result,
-                self.target_preset,
-                raw_noise_audio=self.raw_noise_audio,
-                raw_verification_speech_audio=self.raw_verification_speech_audio,
-                cancel_check=self._should_stop,
-            )
-            if self._should_stop():
-                return
-            self.step_progress.emit("Finalizing verification...", 95)
-            self.result_ready.emit(result)
-        except AnalysisCancelled:
+    def _run(self) -> None:
+        if self._should_stop():
             return
-        except Exception as exc:
-            logger.exception("Voice Setup verification failed")
-            self.failed.emit(str(exc) or UNEXPECTED_FAILURE)
-
-
-class _CaptureAnalysis(NamedTuple):
-    """What a finished take needs before the dialog can decide about it."""
-
-    audio: np.ndarray
-    noise_quality: NoiseReferenceAnalysis | None
-    silent: bool
+        self.step_progress.emit("Validating the combined processing chain...", 55)
+        result = validate_voice_setup_verification(
+            self.noise_audio,
+            self.original_speech_audio,
+            self.verification_speech_audio,
+            self.sample_rate,
+            self.setup_result,
+            self.target_preset,
+            raw_noise_audio=self.raw_noise_audio,
+            raw_verification_speech_audio=self.raw_verification_speech_audio,
+            cancel_check=self._should_stop,
+        )
+        if self._should_stop():
+            return
+        self.step_progress.emit("Finalizing verification...", 95)
+        self.result_ready.emit(result)
 
 
 def _analyze_capture(
@@ -539,7 +505,7 @@ def _analyze_capture(
     sample_rate: int,
     phase: str,
     metadata: CaptureMetadata | None,
-) -> _CaptureAnalysis:
+) -> CaptureAnalysis:
     """The slow half of a finished take; it runs on a worker thread."""
     audio = _filtered_capture_for_analysis(raw_audio, sample_rate)
     if phase == "noise_recording":
@@ -549,10 +515,10 @@ def _analyze_capture(
             int(metadata.sample_rate or 48_000) if metadata is not None else 48_000,
             noise_metadata=metadata,
         )
-        return _CaptureAnalysis(audio, quality, False)
+        return CaptureAnalysis(audio, False, quality)
     if phase == "voice_recording":
-        return _CaptureAnalysis(audio, None, capture_is_silent(audio))
-    return _CaptureAnalysis(audio, None, False)
+        return CaptureAnalysis(audio, capture_is_silent(audio))
+    return CaptureAnalysis(audio, False)
 
 
 class VoiceSetupDialog(QDialog):
@@ -1352,33 +1318,22 @@ class VoiceSetupDialog(QDialog):
         self.start_button.setEnabled(False)
         self.warning_label.setText("Checking the recording...")
         self.warning_label.setStyleSheet(message_text_style("info", strong=True))
-        worker = CaptureAnalysisWorker(
+        start_capture_analysis(
+            self,
             partial(
                 _analyze_capture,
                 raw_audio,
                 sample_rate,
                 phase,
                 self._current_capture_metadata,
-            )
-        )
-        self.analysis_worker = worker
-        self._analysis_workers.append(worker)
-        worker.result_ready.connect(
+            ),
             lambda result, token=generation: self._on_capture_analyzed(
                 result, raw_audio, phase, token
-            )
-        )
-        worker.failed.connect(
+            ),
             lambda error, token=generation: self._on_capture_analysis_failed(
                 error, phase, token
-            )
+            ),
         )
-        worker.finished.connect(
-            lambda finished_worker=worker: self._on_analysis_thread_finished(
-                finished_worker
-            )
-        )
-        worker.start()
 
     def _on_capture_analysis_failed(self, error: str, phase: str, generation: int) -> None:
         if generation != self._analysis_generation or self._close_requested:
@@ -1388,7 +1343,7 @@ class VoiceSetupDialog(QDialog):
 
     def _on_capture_analyzed(
         self,
-        analysis: _CaptureAnalysis,
+        analysis: CaptureAnalysis,
         raw_audio: np.ndarray,
         phase: str,
         generation: int,
@@ -2460,18 +2415,6 @@ class VoiceSetupDialog(QDialog):
         self._verification_bad_capture_count = 0
         self._verification_last_reduction_metrics = None
 
-    def _reduction_metrics(self, result: Mapping[str, Any]) -> dict[str, float]:
-        values: dict[str, float] = {}
-        for target, key in (
-            ("compressor", "compressor_gain_reduction_p95_db"),
-            ("limiter", "limiter_pressure_db"),
-            ("deesser", "deesser_gain_reduction_p95_db"),
-        ):
-            value = result.get(key)
-            if isinstance(value, (int, float)) and np.isfinite(float(value)):
-                values[target] = float(value)
-        return values
-
     def _verification_settings_snapshot(self) -> tuple[Any, ...]:
         if self.setup_result is None:
             return ()
@@ -2505,47 +2448,16 @@ class VoiceSetupDialog(QDialog):
         previous_adjusted_target = self.setup_result.get(
             "verification_adjusted_target_lufs"
         )
-        compressor = dict(self.setup_result.get("compressor_settings") or {})
-        deesser = dict(self.setup_result.get("deesser_settings") or {})
-        adjustment_notes: list[str] = []
-        adjusted_target_lufs: float | None = None
+        reduction = reduce_for_verification(
+            self.setup_result.get("compressor_settings") or {},
+            self.setup_result.get("deesser_settings") or {},
+            reduction_targets,
+        )
+        adjustment_notes = reduction.notes
+        adjusted_target_lufs = reduction.adjusted_target_lufs
 
-        if "compressor" in reduction_targets:
-            threshold = float(compressor.get("threshold_db", -24.0))
-            ratio = float(compressor.get("ratio", 2.5))
-            compressor["threshold_db"] = min(0.0, threshold + 2.0)
-            compressor["ratio"] = max(1.0, ratio * 0.9)
-            adjustment_notes.append("reduced compressor intensity")
-
-        if "limiter" in reduction_targets:
-            if bool(compressor.get("auto_makeup_enabled", False)):
-                target_lufs = float(compressor.get("target_lufs", -18.0))
-                adjusted_target = max(
-                    _TARGET_LUFS_MIN,
-                    min(_TARGET_LUFS_MAX, target_lufs - _LIMITER_PRESSURE_STEP_DB),
-                )
-                compressor["target_lufs"] = adjusted_target
-                if adjusted_target != target_lufs:
-                    adjusted_target_lufs = adjusted_target
-                    adjustment_notes.append(
-                        f"lowered auto target loudness to {adjusted_target:.0f} LUFS"
-                    )
-            else:
-                makeup_gain = float(compressor.get("makeup_gain_db", 0.0))
-                adjusted_makeup = max(0.0, makeup_gain - _LIMITER_PRESSURE_STEP_DB)
-                compressor["makeup_gain_db"] = adjusted_makeup
-                if adjusted_makeup != makeup_gain:
-                    adjustment_notes.append(
-                        f"lowered manual makeup to {adjusted_makeup:.1f} dB"
-                    )
-
-        if "deesser" in reduction_targets:
-            auto_amount = float(deesser.get("auto_amount", 0.0))
-            deesser["auto_amount"] = max(0.0, auto_amount * 0.85)
-            adjustment_notes.append("reduced de-esser intensity")
-
-        self.setup_result["compressor_settings"] = compressor
-        self.setup_result["deesser_settings"] = deesser
+        self.setup_result["compressor_settings"] = reduction.compressor
+        self.setup_result["deesser_settings"] = reduction.deesser
         if self._verification_settings_snapshot() == before:
             for name, value in before_sections.items():
                 self.setup_result[name] = value
@@ -2888,12 +2800,15 @@ class VoiceSetupDialog(QDialog):
             self.warning_label.setStyleSheet(message_text_style("info", strong=True))
             return
         if decision == "reduce" and parent is not None:
-            reduction_targets = [
-                target
-                for target in result.get("reduction_targets", ())
-                if target in {"compressor", "limiter", "deesser"}
-            ]
-            if not reduction_targets:
+            reduction_targets = reducible_targets(result.get("reduction_targets"))
+            current_metrics = reduction_metrics(result)
+            stop = verification_stop(
+                self._verification_adjustment_count,
+                reduction_targets,
+                self._verification_last_reduction_metrics,
+                current_metrics,
+            )
+            if stop == "no_target":
                 self._on_verification_failed(
                     "Setup could not decide what to change. Record the passage again.",
                     generation,
@@ -2905,7 +2820,7 @@ class VoiceSetupDialog(QDialog):
                     generation,
                 )
                 return
-            if self._verification_adjustment_count >= _MAX_VERIFICATION_ADJUSTMENTS:
+            if stop == "three_adjustments":
                 self._on_verification_failed(
                     f"{reason} Setup could not make the settings safe on your recording "
                     "after three adjustments. Lower the microphone level and record again."
@@ -2913,25 +2828,14 @@ class VoiceSetupDialog(QDialog):
                     generation,
                 )
                 return
-            current_metrics = self._reduction_metrics(result)
-            previous_metrics = self._verification_last_reduction_metrics
-            if previous_metrics is not None:
-                comparable = [
-                    (previous_metrics[target], current_metrics[target])
-                    for target in reduction_targets
-                    if target in previous_metrics and target in current_metrics
-                ]
-                if comparable and not any(
-                    current < previous - 0.05
-                    for previous, current in comparable
-                ):
-                    self._on_verification_failed(
-                        f"{reason} The last adjustment did not help. Lower the microphone "
-                        "level and record again."
-                        + advice_suffix,
-                        generation,
-                    )
-                    return
+            if stop == "no_help":
+                self._on_verification_failed(
+                    f"{reason} The last adjustment did not help. Lower the microphone "
+                    "level and record again."
+                    + advice_suffix,
+                    generation,
+                )
+                return
             if current_metrics:
                 self._verification_last_reduction_metrics = current_metrics
             try:
@@ -2984,7 +2888,7 @@ class VoiceSetupDialog(QDialog):
             ).strip()
         else:
             self._verification_bad_capture_count += 1
-            if self._verification_bad_capture_count >= _MAX_VERIFICATION_BAD_CAPTURES:
+            if self._verification_bad_capture_count >= MAX_VERIFICATION_BAD_CAPTURES:
                 self._on_verification_failed(
                     f"{reason} Setup stopped after three tries.",
                     generation,
@@ -2993,7 +2897,7 @@ class VoiceSetupDialog(QDialog):
             self.setup_state = "verification_ready"
             self.start_button.setText(
                 "Retry Verification "
-                f"({self._verification_bad_capture_count}/{_MAX_VERIFICATION_BAD_CAPTURES})"
+                f"({self._verification_bad_capture_count}/{MAX_VERIFICATION_BAD_CAPTURES})"
             )
         self.start_button.setEnabled(True)
         self.curve_combo.setEnabled(decision == "rollback")

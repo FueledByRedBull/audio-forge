@@ -59,9 +59,11 @@ def hung_test_traceback():
 @pytest.fixture(autouse=True)
 def isolated_settings_directory(monkeypatch, tmp_path_factory):
     """Keep every test away from the developer's real settings, logs and caches."""
-    monkeypatch.setenv("APPDATA", str(tmp_path_factory.mktemp("appdata")))
     home = tmp_path_factory.mktemp("home")
+    appdata = home / "appdata"
+    appdata.mkdir()
     for name, path in {
+        "APPDATA": appdata,
         "LOCALAPPDATA": home / "local",
         "XDG_CONFIG_HOME": home / "config",
         "HOME": home,

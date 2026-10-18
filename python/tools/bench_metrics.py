@@ -1,7 +1,10 @@
 """Measures, Voice Setup driver and mix construction for ``bench_report.py``.
 
 Every measure keeps its definition at tag v1.18.0; each docstring names the
-retired tool it comes from. The bench clips live in
+retired tool it comes from. Those evaluators (``evaluate_gate_corpus``,
+``evaluate_voice_setup_refusals``, ``_eval_common`` and the rest) are no longer
+in the tree: read one with ``git show v1.18.0:python/tools/<name>.py``, and see
+the Retired evaluators table in ``evaluation/README.md``. The bench clips live in
 ``python/tests/fixtures/bench/``: clean takes and two noise segments are
 committed, every mix is built from them by ``build_mix`` with the recipe in
 ``manifest.json`` and a fixed seed, and no mix is stored.
@@ -9,17 +12,19 @@ committed, every mix is built from them by ``build_mix`` with the recipe in
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import io
 import json
 import math
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 from scipy.io import wavfile
@@ -44,11 +49,7 @@ VETO_NAMES = {
 }
 CAPTURE_REFUSALS = ("raw setup captures are non-finite or clipped", "Room-noise capture was too short for setup.",
                     "Voice capture was too short for setup.")
-MAX_BAD_TAKES = 3  # the dialog's _MAX_VERIFICATION_BAD_CAPTURES
-MAX_ADJUSTMENTS = 3  # the dialog's _MAX_VERIFICATION_ADJUSTMENTS
-LIMITER_STEP_DB = 1.0
 ACTIVE_BAND_DB = 0.25  # the Auto-EQ stage's own threshold for a band that corrects anything
-REDUCIBLE = ("compressor", "limiter", "deesser")
 RETRY_COSTS = {"verification_delivery_mismatch": "D1", "verification_capture_too_short": "D2",
                "verification_capture_invalid": "D2"}
 TONE_FRAME, TONE_HOP, MIN_TONE_FRAMES = 4096, 2048, 8
@@ -125,33 +126,50 @@ def _third_octave_bands() -> np.ndarray:
     return bands
 
 
-def estoi(reference: np.ndarray, estimate: np.ndarray, sample_rate: int) -> float:
-    """Extended STOI (Jensen & Taal, 2016); ``_eval_common.estoi`` at v1.18.0."""
-    reference = resample_audio(reference, sample_rate, _ESTOI_RATE)
-    estimate = resample_audio(estimate, sample_rate, _ESTOI_RATE)
-    ref_frames, est_frames = _estoi_frames(reference), _estoi_frames(estimate)
+class _EstoiReference(NamedTuple):
+    """The reference side of ESTOI: the frames that count and the reference's normalised band envelopes."""
+
+    keep: np.ndarray
+    segments: int
+    normalized: np.ndarray | None  # None when the reference is too short for one segment
+
+
+def _band_envelopes(signal: np.ndarray, bands: np.ndarray) -> np.ndarray:
+    spectrum = np.fft.rfft(_estoi_frames(signal), n=_ESTOI_FFT, axis=1).T
+    return np.sqrt(bands @ np.square(np.abs(spectrum)))
+
+
+def _normalized_segments(envelopes: np.ndarray, segments: int) -> np.ndarray:
+    seg = np.stack([envelopes[:, m : m + _ESTOI_SEGMENT] for m in range(segments)])
+    seg = seg - seg.mean(axis=2, keepdims=True)
+    seg = seg / (np.linalg.norm(seg, axis=2, keepdims=True) + 1e-20)
+    seg = seg - seg.mean(axis=1, keepdims=True)
+    return seg / (np.linalg.norm(seg, axis=1, keepdims=True) + 1e-20)
+
+
+def estoi_reference(reference: np.ndarray, sample_rate: int) -> _EstoiReference:
+    """Everything of ``estoi`` that depends on the reference alone, so one clean take serves every render."""
+    ref_frames = _estoi_frames(resample_audio(reference, sample_rate, _ESTOI_RATE))
     energy = 20.0 * np.log10(np.linalg.norm(ref_frames, axis=1) + 1e-20)
     keep = energy > np.max(energy) - 40.0
-    reference, estimate = _overlap_add(ref_frames[keep]), _overlap_add(est_frames[keep])
-    bands = _third_octave_bands()
-
-    def band_envelopes(signal: np.ndarray) -> np.ndarray:
-        spectrum = np.fft.rfft(_estoi_frames(signal), n=_ESTOI_FFT, axis=1).T
-        return np.sqrt(bands @ np.square(np.abs(spectrum)))
-
-    ref_bands, est_bands = band_envelopes(reference), band_envelopes(estimate)
+    ref_bands = _band_envelopes(_overlap_add(ref_frames[keep]), _third_octave_bands())
     segments = ref_bands.shape[1] - _ESTOI_SEGMENT + 1
-    if segments < 1:
+    return _EstoiReference(keep, segments, _normalized_segments(ref_bands, segments) if segments >= 1 else None)
+
+
+def estoi_against(reference: _EstoiReference, estimate: np.ndarray, sample_rate: int) -> float:
+    """Extended STOI (Jensen & Taal, 2016) of ``estimate`` against a prepared reference."""
+    if reference.normalized is None:
         return float("nan")
+    est_frames = _estoi_frames(resample_audio(estimate, sample_rate, _ESTOI_RATE))
+    est_bands = _band_envelopes(_overlap_add(est_frames[reference.keep]), _third_octave_bands())
+    normalized = _normalized_segments(est_bands, reference.segments)
+    return float(np.sum(reference.normalized * normalized) / (_ESTOI_SEGMENT * reference.segments))
 
-    def normalized(envelopes: np.ndarray) -> np.ndarray:
-        seg = np.stack([envelopes[:, m : m + _ESTOI_SEGMENT] for m in range(segments)])
-        seg = seg - seg.mean(axis=2, keepdims=True)
-        seg = seg / (np.linalg.norm(seg, axis=2, keepdims=True) + 1e-20)
-        seg = seg - seg.mean(axis=1, keepdims=True)
-        return seg / (np.linalg.norm(seg, axis=1, keepdims=True) + 1e-20)
 
-    return float(np.sum(normalized(ref_bands) * normalized(est_bands)) / (_ESTOI_SEGMENT * segments))
+def estoi(reference: np.ndarray, estimate: np.ndarray, sample_rate: int) -> float:
+    """Extended STOI (Jensen & Taal, 2016); ``_eval_common.estoi`` at v1.18.0."""
+    return estoi_against(estoi_reference(reference, sample_rate), estimate, sample_rate)
 
 
 def frame_rms_db(audio: np.ndarray) -> np.ndarray:
@@ -163,14 +181,20 @@ def frame_rms_db(audio: np.ndarray) -> np.ndarray:
 def active_level_db(speech: np.ndarray) -> float:
     """Energy mean of the frames within 40 dB of the loudest; ``evaluate_gate_corpus._active_level_db``."""
     levels = frame_rms_db(speech)
-    active = levels > np.max(levels) - 40.0
-    return float(10.0 * np.log10(np.mean(10.0 ** (levels[active] / 10.0))))
+    return _energy_mean_db(levels, levels > np.max(levels) - 40.0)
 
 
-def _energy_mean_db(levels_db: np.ndarray, mask: np.ndarray) -> float:
-    if not np.any(mask):
+def _energy_mean_db(levels_db: np.ndarray, where: np.ndarray | slice) -> float:
+    """Energy mean of the levels a boolean mask or a slice picks; NaN when it picks none."""
+    picked = levels_db[where]
+    if picked.size == 0:
         return float("nan")
-    return float(10.0 * np.log10(np.mean(10.0 ** (levels_db[mask] / 10.0))))
+    return float(10.0 * np.log10(np.mean(10.0 ** (picked / 10.0))))
+
+
+def _shared(case: dict[str, Any], key: str, compute: Callable[[], Any]) -> Any:
+    """A reading of the input and clean take that ``make_context`` computed once, or computed now for a bare case."""
+    return case[key] if key in case else compute()
 
 
 def frame_labels(labels: np.ndarray) -> np.ndarray:
@@ -199,21 +223,19 @@ def score(case: dict[str, Any], output: np.ndarray) -> dict[str, float]:
     pause = ~speech
     tail, deep = pause_frames(speech)
     out_db = frame_rms_db(output)[:count]
-    in_db = frame_rms_db(case["noisy"])[:count]
-    clean_db = frame_rms_db(case["clean"])[:count]
+    in_db = _shared(case, "noisy_db", lambda: frame_rms_db(case["noisy"]))[:count]
+    clean_db = _shared(case, "clean_db", lambda: frame_rms_db(case["clean"]))[:count]
     onset_ratio = []
     for start in np.flatnonzero(speech[1:] & ~speech[:-1]) + 1:
         if start + 130 > count:
             continue
-        onset = np.zeros(count, bool)
-        body = np.zeros(count, bool)
-        onset[start : start + 10] = True
-        body[start + 30 : start + 130] = True
+        onset, body = slice(start, start + 10), slice(start + 30, start + 130)
         onset_ratio.append((_energy_mean_db(out_db, onset) - _energy_mean_db(clean_db, onset))
                            - (_energy_mean_db(out_db, body) - _energy_mean_db(clean_db, body)))
+    reference = _shared(case, "estoi_reference", lambda: estoi_reference(case["clean"], SAMPLE_RATE))
     return {
         "si_sdr": si_sdr(case["clean"], output),
-        "estoi": estoi(case["clean"], output, SAMPLE_RATE),
+        "estoi": estoi_against(reference, output, SAMPLE_RATE),
         "pause_db": _energy_mean_db(out_db, pause) - _energy_mean_db(in_db, pause),
         "deep_pause_db": _energy_mean_db(out_db, deep) - _energy_mean_db(in_db, deep),
         "tail_db": _energy_mean_db(out_db, tail) - _energy_mean_db(in_db, tail),
@@ -229,7 +251,7 @@ def deep_pause_seconds(labels: np.ndarray) -> float:
 def level_matched(case: dict[str, Any], output: np.ndarray) -> np.ndarray:
     """``output`` scaled so its speech frames have the input's energy; ``evaluate_voice_setup_refusals.level_matched``."""
     speech = frame_labels(case["labels"])
-    out_db, in_db = frame_rms_db(output), frame_rms_db(case["noisy"])
+    out_db, in_db = frame_rms_db(output), _shared(case, "noisy_db", lambda: frame_rms_db(case["noisy"]))
     count = min(speech.size, out_db.size, in_db.size)
     gain = _energy_mean_db(out_db[:count], speech[:count]) - _energy_mean_db(in_db[:count], speech[:count])
     return output * 10.0 ** (-gain / 20.0) if math.isfinite(gain) else output
@@ -270,15 +292,15 @@ def measure(rendered: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     from mic_eq.analysis.voice_setup import _sibilant_change_db
 
     output = np.asarray(rendered["output_audio"], np.float64)[: ctx["clean"].size]
-    case = {name: ctx[name] for name in ("clean", "noisy", "labels")}
-    change, _ = _sibilant_change_db(case["noisy"], output, ctx["noise"], SAMPLE_RATE)
+    change, _ = _sibilant_change_db(ctx["noisy"], output, ctx["noise"], SAMPLE_RATE)
+    peak = float(np.max(np.abs(output)))
     limiter = float(rendered["limiter_gain_reduction_db"])
     true_peak = float(rendered["true_peak_limiter_gain_reduction_db"])
     return {
-        **scored(case, output), "tone_error_db": tone_error_db(case["clean"], output, case["labels"]),
+        **scored(ctx, output), "tone_error_db": tone_error_db(ctx["clean"], output, ctx["labels"]),
         "sibilant_loss_db": None if change is None else -float(change),
-        "finite": bool(np.isfinite(output).all()), "peak": float(np.max(np.abs(output))),
-        "clipped": bool(np.max(np.abs(output)) >= 1.0),
+        "finite": bool(np.isfinite(output).all()), "peak": peak,
+        "clipped": bool(peak >= 1.0),
         "limiter_gain_reduction_db": limiter, "true_peak_limiter_gain_reduction_db": true_peak,
         "pre_limiter_true_peak_headroom_db": float(rendered["pre_limiter_true_peak_headroom_db"]),
         "chain_latency_samples": int(rendered["chain_latency_samples"]),
@@ -357,11 +379,12 @@ def render(settings: dict[str, Any], capture: np.ndarray, chain: dict[str, Any] 
 
 
 def measure_settings(settings: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    """Render ``settings`` once and read it; a render that fails is recorded, not hidden."""
+    """Render ``settings`` once and read it; a render that fails is recorded, not hidden (a measure that fails is a fault)."""
     try:
-        return measure(render(settings, ctx["raw"]), ctx)
+        rendered = render(settings, ctx["raw"])
     except (RuntimeError, ValueError) as error:
         return {"error": f"{type(error).__name__}: {error}"}
+    return measure(rendered, ctx)
 
 
 def is_vacuous(withheld: dict[str, Any], current: dict[str, Any], sections: tuple[str, ...]) -> bool:
@@ -385,39 +408,20 @@ def changed_steps(proposal: dict[str, Any], current: dict[str, Any]) -> list[str
 # Voice Setup
 
 
-def reduce_settings(result: dict[str, Any], targets: list[str]) -> None:
-    """The dialog's ``_apply_verification_reduction``; ``evaluate_voice_setup_loudness._reduce``."""
-    compressor, deesser = dict(result["compressor_settings"]), dict(result["deesser_settings"])
-    if "compressor" in targets:
-        compressor["threshold_db"] = min(0.0, float(compressor["threshold_db"]) + 2.0)
-        compressor["ratio"] = max(1.0, float(compressor["ratio"]) * 0.9)
-    if "limiter" in targets:
-        if compressor.get("auto_makeup_enabled"):
-            compressor["target_lufs"] = max(-24.0, float(compressor["target_lufs"]) - LIMITER_STEP_DB)
-        else:
-            compressor["makeup_gain_db"] = max(0.0, float(compressor["makeup_gain_db"]) - LIMITER_STEP_DB)
-    if "deesser" in targets:
-        deesser["auto_amount"] = float(deesser.get("auto_amount", 0.0)) * 0.85
-    result["compressor_settings"], result["deesser_settings"] = compressor, deesser
-
-
-def _reduction_metrics(outcome: dict[str, Any]) -> dict[str, float]:
-    values = {}
-    for target, key in (("compressor", "compressor_gain_reduction_p95_db"), ("limiter", "limiter_pressure_db"),
-                        ("deesser", "deesser_gain_reduction_p95_db")):
-        value = outcome.get(key)
-        if isinstance(value, (int, float)) and math.isfinite(value):
-            values[target] = float(value)
-    return values
-
-
 def verify_flow(result: dict[str, Any], captures: dict[str, Any]) -> dict[str, Any]:
     """The dialog's verification of a proposal with its automatic reductions; refusals ``verify_flow``.
 
     ``captures["takes"]`` are the second takes the user can record, as (filtered, raw) pairs. A ``retry`` asks for
     the next one and the third bad take stops with no verdict; ``gave_up`` is a reduction that cannot be settled.
     """
-    from mic_eq.analysis.voice_setup import validate_voice_setup_verification
+    from mic_eq.analysis.voice_setup import (
+        MAX_VERIFICATION_BAD_CAPTURES,
+        reduce_for_verification,
+        reducible_targets,
+        reduction_metrics,
+        validate_voice_setup_verification,
+        verification_stop,
+    )
 
     state = deepcopy(result)
     state["eq_settings"] = applied_eq(state["eq_settings"])
@@ -431,26 +435,21 @@ def verify_flow(result: dict[str, Any], captures: dict[str, Any]) -> dict[str, A
         first = first or outcome["decision"]
         if outcome["decision"] == "retry":
             retakes.append(next((RETRY_COSTS[c] for c in outcome.get("reason_codes") or () if c in RETRY_COSTS), "unknown"))
-            if len(retakes) >= MAX_BAD_TAKES or take + 1 >= len(takes):
+            if len(retakes) >= MAX_VERIFICATION_BAD_CAPTURES or take + 1 >= len(takes):
                 ended = "bad_takes"
                 break
             take += 1
             continue
         if outcome["decision"] != "reduce":
             break
-        targets = [t for t in outcome.get("reduction_targets") or () if t in REDUCIBLE]
-        metrics = _reduction_metrics(outcome)
-        comparable = [(last[t], metrics[t]) for t in targets if last and t in last and t in metrics]
-        if not targets:
-            ended = "no_target"
-        elif adjustments >= MAX_ADJUSTMENTS:
-            ended = "three_adjustments"
-        elif comparable and not any(now < before - 0.05 for before, now in comparable):
-            ended = "no_help"
+        targets = reducible_targets(outcome.get("reduction_targets"))
+        metrics = reduction_metrics(outcome)
+        ended = verification_stop(adjustments, targets, last, metrics)
         if ended:
             break
         before = deepcopy((state["compressor_settings"], state["deesser_settings"]))
-        reduce_settings(state, targets)
+        reduction = reduce_for_verification(state["compressor_settings"], state["deesser_settings"], targets)
+        state["compressor_settings"], state["deesser_settings"] = reduction.compressor, reduction.deesser
         if metrics:
             last = metrics
         if before == (state["compressor_settings"], state["deesser_settings"]):
@@ -523,14 +522,18 @@ def silero_available() -> bool:
 
 
 def make_context(mix: dict[str, Any]) -> dict[str, Any]:
-    """The raw mix, and the pre-filtered noisy input, clean reference and noise capture the measures read."""
+    """The raw mix, the pre-filtered noisy input, clean reference and noise capture the measures read, and what
+    every render of the mix shares: the frame levels of the input and the clean take, and ESTOI's reference side."""
     from mic_eq.ui.calibration_support import filtered_capture_for_analysis
 
     def filtered(audio: np.ndarray) -> np.ndarray:
         return filtered_capture_for_analysis(audio, SAMPLE_RATE).astype(np.float64)
 
-    return {"raw": mix["raw"], "labels": mix["labels"], "raw_noise": mix["noise_capture"],
-            "noise": filtered(mix["noise_capture"]), "clean": filtered(mix["clean"]), "noisy": filtered(mix["raw"])}
+    ctx = {"raw": mix["raw"], "labels": mix["labels"], "raw_noise": mix["noise_capture"],
+           "noise": filtered(mix["noise_capture"]), "clean": filtered(mix["clean"]), "noisy": filtered(mix["raw"])}
+    ctx["noisy_db"], ctx["clean_db"] = frame_rms_db(ctx["noisy"]), frame_rms_db(ctx["clean"])
+    ctx["estoi_reference"] = estoi_reference(ctx["clean"], SAMPLE_RATE)
+    return ctx
 
 
 def voice_setup(ctx: dict[str, Any], vad_available: bool) -> dict[str, Any]:
@@ -542,11 +545,10 @@ def voice_setup(ctx: dict[str, Any], vad_available: bool) -> dict[str, Any]:
     """
     from mic_eq.analysis.voice_setup import analyze_voice_setup
     from mic_eq.config import EQSettings, Preset
-    from mic_eq.ui.calibration_support import filtered_capture_for_analysis
 
     raw_noise, raw = ctx["raw_noise"], ctx["raw"]
-    noise = filtered_capture_for_analysis(raw_noise, SAMPLE_RATE)
-    setup = filtered_capture_for_analysis(raw, SAMPLE_RATE)
+    # The context holds the filtered captures widened to float64; narrowing them gives back the filter's own float32.
+    noise, setup = ctx["noise"].astype(np.float32), ctx["noisy"].astype(np.float32)
     preset = Preset()
     started = time.process_time()
     with _unclear_recording_tap() as validation:
@@ -605,24 +607,44 @@ class Bench:
     manifest: dict[str, Any]
     takes: dict[str, np.ndarray]
     noises: dict[str, np.ndarray]
+    sha256: dict[str, str]  # of each audio file as read, by file name
+
+
+def _decode_wav(data: bytes, name: str) -> np.ndarray:
+    rate, audio = wavfile.read(io.BytesIO(data))
+    if rate != SAMPLE_RATE or audio.dtype != np.int16 or audio.ndim != 1:
+        raise ValueError(f"{name} must be 48 kHz mono 16-bit")
+    return audio.astype(np.float64) / 32768.0
 
 
 def read_wav(path: Path) -> np.ndarray:
-    rate, audio = wavfile.read(path)
-    if rate != SAMPLE_RATE or audio.dtype != np.int16 or audio.ndim != 1:
-        raise ValueError(f"{path.name} must be 48 kHz mono 16-bit")
-    return audio.astype(np.float64) / 32768.0
+    return _decode_wav(path.read_bytes(), path.name)
 
 
 def file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def read_manifest(root: Path = BENCH_DIR) -> dict[str, Any]:
+    return json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+
+
+@functools.cache
 def load_bench(root: Path = BENCH_DIR) -> Bench:
-    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    return Bench(manifest,
-                 {name: read_wav(root / entry["file"]) for name, entry in manifest["takes"].items()},
-                 {name: read_wav(root / entry["file"]) for name, entry in manifest["noises"].items()})
+    """The bench set, read once per folder: the clips are shared and read-only, and each file is hashed as it is read."""
+    manifest = read_manifest(root)
+    sha256: dict[str, str] = {}
+
+    def load(entries: dict[str, Any]) -> dict[str, np.ndarray]:
+        audio = {}
+        for name, entry in entries.items():
+            data = (root / entry["file"]).read_bytes()
+            sha256[entry["file"]] = hashlib.sha256(data).hexdigest()
+            audio[name] = _decode_wav(data, entry["file"])
+            audio[name].setflags(write=False)
+        return audio
+
+    return Bench(manifest, load(manifest["takes"]), load(manifest["noises"]), sha256)
 
 
 def speech_labels(entry: dict[str, Any], size: int) -> np.ndarray:

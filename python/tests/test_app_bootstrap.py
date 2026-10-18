@@ -695,7 +695,7 @@ def test_startup_failure_is_logged_once_and_only_the_windowed_app_shows_a_dialog
 
     with pytest.raises(RuntimeError, match="saved configuration failed"):
         with app_bootstrap._crash_diagnostics():
-            app_bootstrap._run_qt_app(broken_window, smoke_test=smoke_test)  # type: ignore[arg-type]
+            app_bootstrap._run_qt_app(broken_window, smoke_test=smoke_test, enable_qt_log=lambda: None)  # type: ignore[arg-type]
 
     logged = [r for r in caplog.records if r.exc_info]
     assert len(logged) == 1
@@ -718,7 +718,7 @@ def test_startup_reaches_the_window_when_the_log_folder_cannot_be_created(
         raise RuntimeError("stop at the window")
 
     with pytest.raises(RuntimeError, match="stop at the window"):
-        app_bootstrap._run_qt_app(window, smoke_test=False)  # type: ignore[arg-type]
+        app_bootstrap._run_qt_app(window, smoke_test=False, enable_qt_log=lambda: None)  # type: ignore[arg-type]
 
     assert reached
 
@@ -824,12 +824,12 @@ def test_suppressed_repeats_are_totalled_once_at_exit(crash_diagnostics, caplog)
 def test_the_repeat_table_stops_growing_and_counts_the_overflow():
     counts: dict = {}
 
-    for number in range(app_bootstrap._REPEAT_KEYS_MAX + 100):
-        app_bootstrap._count_repeat(counts, ("key", number))
+    used = [app_bootstrap._count_repeat(counts, ("key", number))[0] for number in range(app_bootstrap._REPEAT_KEYS_MAX + 100)]
 
     assert len(counts) == app_bootstrap._REPEAT_KEYS_MAX + 1
     assert counts[app_bootstrap._OVERFLOW_KEY] == 100
-    assert app_bootstrap._count_repeat(counts, ("key", 0)) == (2, False)
+    assert used.count(app_bootstrap._OVERFLOW_KEY) == 100  # the key it counted under is the one it returns
+    assert app_bootstrap._count_repeat(counts, ("key", 0)) == (("key", 0), 2, False)
 
 
 def test_distinct_qt_messages_are_bounded_but_the_first_of_each_is_still_logged(

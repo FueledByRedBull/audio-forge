@@ -75,6 +75,18 @@ def _take(dialog: VoiceSetupDialog, state: str, audio: np.ndarray, *, finish=fin
     finish(dialog, audio)
 
 
+def _gated_voice_take(dialog: VoiceSetupDialog, monkeypatch, state: str) -> _Spy:
+    """Finish a take of the phase ``state`` and hold its post-processing open; returns the spy that holds it."""
+    prefilter = _Spy(monkeypatch, voice_setup_dialog, "_filtered_capture_for_analysis", gated=True)
+    if state == "voice_recording":
+        dialog.noise_audio = _make_noise(RATE)
+    dialog.setup_state = state
+    dialog._current_capture_metadata = None
+    dialog._on_recording_complete(_speech() if state == "voice_recording" else _make_noise(RATE))
+    assert prefilter.entered.wait(5.0)
+    return prefilter
+
+
 def test_a_good_room_noise_take_is_kept_filtered_and_voice_comes_next(voice) -> None:
     raw = _make_noise(RATE)
     _take(voice, "noise_recording", raw)
@@ -160,14 +172,8 @@ def test_voice_setup_post_processing_runs_off_the_gui_thread(voice, monkeypatch)
 
 
 def test_voice_setup_waits_in_its_own_state_and_then_continues(voice, monkeypatch) -> None:
-    prefilter = _Spy(monkeypatch, voice_setup_dialog, "_filtered_capture_for_analysis", gated=True)
-    voice.noise_audio = _make_noise(RATE)
-    voice.setup_state = "voice_recording"
-    voice._current_capture_metadata = None
+    prefilter = _gated_voice_take(voice, monkeypatch, "voice_recording")
 
-    voice._on_recording_complete(_speech())
-
-    assert prefilter.entered.wait(5.0)
     assert voice.setup_state == "capture_analyzing"
     assert not voice.start_button.isEnabled()
     voice._on_start_clicked()  # nothing to do while the take is checked
@@ -179,12 +185,7 @@ def test_voice_setup_waits_in_its_own_state_and_then_continues(voice, monkeypatc
 
 
 def test_closing_voice_setup_while_a_take_is_checked_drops_the_result(voice, monkeypatch) -> None:
-    prefilter = _Spy(monkeypatch, voice_setup_dialog, "_filtered_capture_for_analysis", gated=True)
-    voice.noise_audio = _make_noise(RATE)
-    voice.setup_state = "voice_recording"
-    voice._current_capture_metadata = None
-    voice._on_recording_complete(_speech())
-    assert prefilter.entered.wait(5.0)
+    prefilter = _gated_voice_take(voice, monkeypatch, "voice_recording")
 
     voice.reject()
     assert voice._close_requested
@@ -201,11 +202,7 @@ def test_closing_voice_setup_while_a_take_is_checked_drops_the_result(voice, mon
 
 
 def test_starting_over_while_a_take_is_checked_drops_the_result(voice, monkeypatch) -> None:
-    prefilter = _Spy(monkeypatch, voice_setup_dialog, "_filtered_capture_for_analysis", gated=True)
-    voice.setup_state = "noise_recording"
-    voice._current_capture_metadata = None
-    voice._on_recording_complete(_make_noise(RATE))
-    assert prefilter.entered.wait(5.0)
+    prefilter = _gated_voice_take(voice, monkeypatch, "noise_recording")
 
     voice._reset_setup_ui()
     prefilter.release.set()
@@ -217,11 +214,7 @@ def test_starting_over_while_a_take_is_checked_drops_the_result(voice, monkeypat
 
 
 def test_application_quit_joins_a_take_still_being_checked(voice, monkeypatch) -> None:
-    prefilter = _Spy(monkeypatch, voice_setup_dialog, "_filtered_capture_for_analysis", gated=True)
-    voice.setup_state = "noise_recording"
-    voice._current_capture_metadata = None
-    voice._on_recording_complete(_make_noise(RATE))
-    assert prefilter.entered.wait(5.0)
+    prefilter = _gated_voice_take(voice, monkeypatch, "noise_recording")
     worker = voice._analysis_workers[0]
     threading.Timer(0.1, prefilter.release.set).start()
 
@@ -279,6 +272,15 @@ def _auto_take(dialog: CalibrationDialog, audio: np.ndarray, finish: Callable = 
     finish(dialog, audio)
 
 
+def _gated_auto_eq_take(dialog: CalibrationDialog, monkeypatch) -> _Spy:
+    """Finish a take and hold its post-processing open; returns the spy that holds it."""
+    prefilter = _Spy(monkeypatch, calibration_dialog, "_filtered_capture_for_analysis", gated=True)
+    dialog.recording_state = "recording"
+    dialog._on_recording_complete(_speech())
+    assert prefilter.entered.wait(5.0)
+    return prefilter
+
+
 def test_auto_eq_keeps_a_good_take_filtered_and_starts_the_analysis(auto_eq) -> None:
     raw = _speech()
     _auto_take(auto_eq, raw)
@@ -314,12 +316,8 @@ def test_auto_eq_post_processing_runs_off_the_gui_thread(auto_eq, monkeypatch) -
 
 
 def test_auto_eq_waits_in_its_own_state_and_then_continues(auto_eq, monkeypatch) -> None:
-    prefilter = _Spy(monkeypatch, calibration_dialog, "_filtered_capture_for_analysis", gated=True)
-    auto_eq.recording_state = "recording"
+    prefilter = _gated_auto_eq_take(auto_eq, monkeypatch)
 
-    auto_eq._on_recording_complete(_speech())
-
-    assert prefilter.entered.wait(5.0)
     assert auto_eq.recording_state == "capture_analyzing"
     assert not auto_eq.start_button.isEnabled()
     auto_eq._on_start_clicked()
@@ -331,10 +329,7 @@ def test_auto_eq_waits_in_its_own_state_and_then_continues(auto_eq, monkeypatch)
 
 
 def test_closing_auto_eq_while_a_take_is_checked_drops_the_result(auto_eq, monkeypatch) -> None:
-    prefilter = _Spy(monkeypatch, calibration_dialog, "_filtered_capture_for_analysis", gated=True)
-    auto_eq.recording_state = "recording"
-    auto_eq._on_recording_complete(_speech())
-    assert prefilter.entered.wait(5.0)
+    prefilter = _gated_auto_eq_take(auto_eq, monkeypatch)
 
     auto_eq.reject()
     assert auto_eq._close_requested
@@ -351,10 +346,7 @@ def test_closing_auto_eq_while_a_take_is_checked_drops_the_result(auto_eq, monke
 
 
 def test_auto_eq_start_over_while_a_take_is_checked_drops_the_result(auto_eq, monkeypatch) -> None:
-    prefilter = _Spy(monkeypatch, calibration_dialog, "_filtered_capture_for_analysis", gated=True)
-    auto_eq.recording_state = "recording"
-    auto_eq._on_recording_complete(_speech())
-    assert prefilter.entered.wait(5.0)
+    prefilter = _gated_auto_eq_take(auto_eq, monkeypatch)
 
     auto_eq._reset_recording_ui()
     prefilter.release.set()
@@ -366,10 +358,7 @@ def test_auto_eq_start_over_while_a_take_is_checked_drops_the_result(auto_eq, mo
 
 
 def test_auto_eq_application_quit_joins_a_take_still_being_checked(auto_eq, monkeypatch) -> None:
-    prefilter = _Spy(monkeypatch, calibration_dialog, "_filtered_capture_for_analysis", gated=True)
-    auto_eq.recording_state = "recording"
-    auto_eq._on_recording_complete(_speech())
-    assert prefilter.entered.wait(5.0)
+    prefilter = _gated_auto_eq_take(auto_eq, monkeypatch)
     worker = auto_eq._analysis_workers[0]
     threading.Timer(0.1, prefilter.release.set).start()
 

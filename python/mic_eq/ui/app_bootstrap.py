@@ -250,15 +250,17 @@ _QT_MESSAGE_KEY_CHARS = 200
 _OVERFLOW_KEY = "<keys beyond the table size>"
 
 
-def _count_repeat(counts: dict, key: object) -> tuple[int, bool]:
-    """Count one more occurrence of key; True when it deserves a log line (1st, 10th, 100th, every 1000th).
+def _count_repeat(counts: dict, key: object) -> tuple[object, int, bool]:
+    """Count one more occurrence of key; returns the key counted, its count, and whether it deserves a log
+    line (1st, 10th, 100th, every 1000th).
 
-    Keys that arrive once the table is full share one overflow counter, so it never grows past the cap.
+    Keys that arrive once the table is full share one overflow counter (the key returned is then
+    ``_OVERFLOW_KEY``), so the table never grows past the cap.
     """
     if key not in counts and len(counts) >= _REPEAT_KEYS_MAX:
         key = _OVERFLOW_KEY
     counts[key] = count = counts.get(key, 0) + 1
-    return count, count in (1, 10, 100) or count % 1000 == 0
+    return key, count, count in (1, 10, 100) or count % 1000 == 0
 
 
 def _describe_exception_key(key: object) -> str:
@@ -304,7 +306,7 @@ def _crash_diagnostics() -> Iterator[Callable[[], None]]:
         while origin is not None and origin.tb_next is not None:
             origin = origin.tb_next
         place = (origin.tb_frame.f_code.co_filename, origin.tb_lineno) if origin else None
-        count, log_it = _count_repeat(exception_counts, (exc_type, place))
+        _, count, log_it = _count_repeat(exception_counts, (exc_type, place))
         if count == 1:
             logger.critical(
                 "Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback)
@@ -332,10 +334,10 @@ def _crash_diagnostics() -> Iterator[Callable[[], None]]:
         in_qt_handler.busy = True
         try:
             key = (kind, context.category, message[:_QT_MESSAGE_KEY_CHARS])
-            count, log_it = _count_repeat(qt_counts, key)
+            key, count, log_it = _count_repeat(qt_counts, key)
             if log_it:
                 suffix = ""
-                if key not in qt_counts:
+                if key is _OVERFLOW_KEY:
                     suffix = f" (message {count} beyond the {_REPEAT_KEYS_MAX} distinct ones tracked)"
                 elif count > 1:
                     suffix = f" (seen {count} times)"
@@ -427,7 +429,7 @@ def _run_qt_app(
     window_cls: Type[QMainWindow],
     *,
     smoke_test: bool,
-    enable_qt_log: Callable[[], None] = lambda: None,
+    enable_qt_log: Callable[[], None],
 ) -> int:
     """Create the app and event loop, optionally running a startup smoke test."""
     configure_app_logging()

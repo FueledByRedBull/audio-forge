@@ -1,4 +1,4 @@
-"""Noise-reference behaviours that a mutation run found unpinned."""
+"""Noise-reference scoring: octave bands, VAD interpolation, the weighted quality mean, sample-rate flags, and the transient, contamination, age and shape scores."""
 
 from __future__ import annotations
 

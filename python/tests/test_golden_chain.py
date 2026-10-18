@@ -27,7 +27,7 @@ pull request meant to change the sound, and say why.
 from __future__ import annotations
 
 import copy
-import hashlib
+import functools
 import json
 import os
 import zlib
@@ -39,6 +39,7 @@ import pytest
 
 import bench_metrics as bm
 from mic_eq import CORE_AVAILABLE
+from test_bench_metrics import built_mix
 
 pytestmark = pytest.mark.skipif(not CORE_AVAILABLE, reason="native extension is not built")
 
@@ -126,7 +127,7 @@ def _hot() -> dict[str, Any]:
 
 
 def _bench_crop(mix_id: str, seconds: float = 4.0, chain: dict[str, Any] | None = None) -> dict[str, Any]:
-    mix = bm.build_mix(bm.load_bench(), mix_id)
+    mix = built_mix(mix_id)
     size = int(seconds * SR)
     return _case(mix["raw"][:size], mix["labels"][:size], chain=chain, note=f"the first {seconds:g} s of bench mix {mix_id}")
 
@@ -206,8 +207,7 @@ CASES = {
 
 def _probabilities(labels: np.ndarray) -> list[float]:
     """The VAD posterior at the 10 ms cadence: 0.95 in frames with speech, 0.05 elsewhere."""
-    frames = labels[: labels.size // BLOCK * BLOCK].reshape(-1, BLOCK).any(axis=1)
-    return np.where(frames, 0.95, 0.05).round(2).tolist()
+    return np.where(bm.frame_labels(labels), 0.95, 0.05).round(2).tolist()
 
 
 def _render(case: dict[str, Any], *, vad: bool | list[float] = True, edit: Any = None) -> np.ndarray:
@@ -225,13 +225,12 @@ def _render(case: dict[str, Any], *, vad: bool | list[float] = True, edit: Any =
 
 
 def _summary(case: dict[str, Any], output: np.ndarray) -> dict[str, Any]:
-    blocks = output.astype(np.float64).reshape(-1, BLOCK)
-    rms = _db_floor(10.0 * np.log10(np.mean(blocks**2, axis=1) + 1e-20))
-    peak = _db_floor(20.0 * np.log10(np.max(np.abs(blocks), axis=1) + 1e-10))
+    out = output.astype(np.float64)
+    rms = _db_floor(bm.frame_rms_db(out))
+    peak = _db_floor(20.0 * np.log10(np.max(np.abs(out.reshape(-1, BLOCK)), axis=1) + 1e-10))
     summary: dict[str, Any] = {"note": case["note"], "samples": int(output.size), "rms_db": rms.round(2).tolist(),
                                "peak_db": peak.round(2).tolist()}
     if case["changes"]:
-        out = output.astype(np.float64)
         windows = [out[max(0, c - BEFORE) : c + AFTER] for c in case["changes"]]
         summary |= {
             "changes": [int(c) for c in case["changes"]],
@@ -297,9 +296,16 @@ def _load(path: Path) -> dict[str, Any]:
     return stored
 
 
+@functools.cache
+def _unedited(name: str) -> tuple[dict[str, Any], np.ndarray]:
+    """A case and its render at factory settings, made once for the run (the tests that edit a case render it anew)."""
+    case = CASES[name]()
+    return case, _render(case)
+
+
 def test_cases_match_the_stored_expected_values():
     path = GOLDEN_DIR / "factory_chain.json"
-    actual = {name: _summary(case, _render(case)) for name, build in CASES.items() for case in [build()]}
+    actual = {name: _summary(*_unedited(name)) for name in CASES}
     if UPDATE:
         GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
         _write(path, _header(), actual)
@@ -354,7 +360,7 @@ def test_the_silero_gate_matches_its_stored_values_where_the_model_is_provisione
     if not model.is_file():
         pytest.skip("Silero model not provisioned (set VAD_MODEL_PATH or place models/silero_vad.onnx)")
     monkeypatch.setenv("VAD_MODEL_PATH", str(model))
-    digest = hashlib.sha256(model.read_bytes()).hexdigest()
+    digest = bm.file_sha256(model)
     case = _bench_crop("room-t02")
     actual = {"bench_room_t02_silero_gate": _summary(case, _render(case, vad=False))}
     if UPDATE:
@@ -369,6 +375,6 @@ def test_the_silero_gate_matches_its_stored_values_where_the_model_is_provisione
 
 def test_every_case_renders_the_same_twice_and_is_finite():
     for name in ("noise_bursts", "transition_limiter_burst"):
-        case = CASES[name]()
-        first, second = _render(case), _render(copy.deepcopy(case))
+        case, first = _unedited(name)
+        second = _render(copy.deepcopy(case))
         assert np.isfinite(first).all() and first.tobytes() == second.tobytes(), name

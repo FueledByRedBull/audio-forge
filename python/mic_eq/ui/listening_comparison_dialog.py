@@ -873,8 +873,8 @@ class RawProcessedDialog(ListeningComparisonDialog):
         playback_device: QAudioDevice | None = None,
         playback_device_key: str | None = None,
     ) -> None:
-        # ponytail: the shared worker renders the same settings twice (current
-        # and proposed); add a single-render path to render_comparison if a
+        # shortcut: the shared worker renders the same settings twice (current
+        # and proposed), add a single-render path to render_comparison if a
         # five-second clip ever takes noticeably long.
         super().__init__(
             parent,

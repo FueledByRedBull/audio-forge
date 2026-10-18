@@ -1,4 +1,4 @@
-"""Tests for preset/config v1.7 migration and latency profile persistence."""
+"""Preset and app-config persistence: legacy migration, schema validation, corrupt-file recovery, and latency-profile and route-key round trips."""
 
 import json
 import math

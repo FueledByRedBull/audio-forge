@@ -242,6 +242,14 @@ def _level_reading(processor, name: str) -> float | None:
     return value if math.isfinite(value) else None
 
 
+def _exec_and_release(dialog: QDialog) -> int:
+    """Run a modal dialog, then release it: parented to the window, it would otherwise live as long as the window."""
+    try:
+        return dialog.exec()
+    finally:
+        dialog.deleteLater()
+
+
 def _fit_window_geometry_to_screens(
     geometry: dict[str, int] | None,
     available_geometries: list[QRect],
@@ -1703,11 +1711,7 @@ class MainWindow(QMainWindow):
     def _show_first_run_setup(
         self, _checked: bool = False, *, restart_completed: bool = True
     ) -> None:
-        dialog = FirstRunSetupDialog(self, restart_completed=restart_completed)
-        try:
-            dialog.exec()
-        finally:
-            dialog.deleteLater()  # parented to this window, it would otherwise live as long as the window
+        _exec_and_release(FirstRunSetupDialog(self, restart_completed=restart_completed))
 
     def _current_device_route_key(self) -> str | None:
         input_identity = self._combo_device_identity(self.input_choice)
@@ -2076,10 +2080,9 @@ class MainWindow(QMainWindow):
         dialog = LatencyCalibrationDialog(self, existing_profile=existing_profile)
         self._calibration_dialog_open = True
         try:
-            return dialog.exec() == QDialog.DialogCode.Accepted
+            return _exec_and_release(dialog) == QDialog.DialogCode.Accepted
         finally:
             self._calibration_dialog_open = False
-            dialog.deleteLater()
 
     def _on_latency_calibration_saved(self, profile_data: dict) -> bool:
         previous = dict(self.config.latency_calibration_profiles)
@@ -2493,8 +2496,9 @@ class MainWindow(QMainWindow):
                 self.config.load_warning = "\n".join(
                     text for text in (self.config.load_warning, warning) if text
                 )
-                # A file that cannot be read right now may load next time; only a bad one loses its reference.
-                if not isinstance(e, OSError):
+                # A file that cannot be read right now may load next time (load_preset wraps OS errors in
+                # PresetValidationError); only a bad one loses its reference.
+                if not (isinstance(e, OSError) or isinstance(e.__cause__, OSError)):
                     self.config.last_preset = ""
                     cleared = self._save_config_safely()
                     if not cleared:
@@ -2766,11 +2770,10 @@ class MainWindow(QMainWindow):
         self._calibration_dialog_open = True
         self._history_transaction_depth += 1
         try:
-            dialog.exec()  # Modal dialog - blocks until user closes
+            _exec_and_release(dialog)  # Modal dialog - blocks until user closes
         finally:
             self._history_transaction_depth -= 1
             self._calibration_dialog_open = False
-            dialog.deleteLater()
         self._sync_calibration_evidence()
         if DEBUG:
             logger.debug("Calibration dialog closed, result=%s", dialog.result())
@@ -2797,11 +2800,10 @@ class MainWindow(QMainWindow):
         self._calibration_dialog_open = True
         self._history_transaction_depth += 1
         try:
-            dialog.exec()
+            _exec_and_release(dialog)
         finally:
             self._history_transaction_depth -= 1
             self._calibration_dialog_open = False
-            dialog.deleteLater()
         self._sync_calibration_evidence()
         return applied
 

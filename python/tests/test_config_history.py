@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from mic_eq.config import AppConfig, EQSettings, Preset, build_eq_candidate_settings
+from mic_eq.config_parts.shared import PresetValidationError
 from mic_eq.ui.config_history import (
     BoundedConfigurationHistory,
     ConfigurationSnapshot,
@@ -231,7 +232,7 @@ def test_malformed_snapshot_is_rejected_without_corrupting_history() -> None:
         "test",
     )
 
-    with pytest.raises(Exception):
+    with pytest.raises(PresetValidationError, match="threshold_db"):
         history.record(malformed)
 
     assert history.size == 1

@@ -27,6 +27,7 @@ from .shared import (
     get_preset_imports_dir,
     get_presets_dir,
     migration_pending,
+    replace_file,
 )
 from .validation import (
     VALIDATION_RANGES,
@@ -695,6 +696,46 @@ class Preset:
             raise PresetValidationError(f"Preset data is invalid or corrupted: {exc}") from exc
 
 
+_MAX_AUTO_STEM_LENGTH = 100
+_WINDOWS_DEVICE_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"{device}{number}" for device in ("COM", "LPT") for number in range(1, 10)}
+)
+
+
+def _auto_preset_path(name: str) -> Path:
+    """Pick a file for a preset name without taking over another preset's file."""
+    stem = "".join(c if c.isalnum() or c in " -_" else "_" for c in name)
+    stem = stem[:_MAX_AUTO_STEM_LENGTH].strip().replace(" ", "_") or "preset"
+    if stem.upper() in _WINDOWS_DEVICE_NAMES:
+        stem = f"preset_{stem}"
+    presets_dir = get_presets_dir()
+    candidate = presets_dir / f"{stem}.json"
+    index = 1
+    # Distinct names can sanitize to one stem; only the preset with this exact
+    # name may be offered for overwrite.
+    while candidate.exists() and not _holds_preset_named(candidate, name):
+        index += 1
+        candidate = presets_dir / f"{stem}_{index}.json"
+    return candidate
+
+
+def _holds_preset_named(filepath: Path, name: str) -> bool:
+    try:
+        return _load_resolved_preset(filepath).name == name
+    except (OSError, PresetValidationError):
+        return False
+
+
+def _publish_exclusive(temporary_path: Path, destination: Path) -> None:
+    """Move temporary_path to destination, raising FileExistsError if it exists.
+
+    Windows-only app: os.rename refuses an existing destination there (unlike POSIX), is
+    atomic, and needs no hard-link support from the volume.
+    """
+    os.rename(temporary_path, destination)
+
+
 def save_preset(
     preset: Preset,
     filepath: Optional[Path] = None,
@@ -705,11 +746,7 @@ def save_preset(
         raise OSError("AudioForge config migration is still pending")
     preset = Preset.from_dict(preset.to_dict())
     if filepath is None:
-        safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in preset.name)
-        safe_name = safe_name.strip().replace(" ", "_")
-        if not safe_name:
-            safe_name = "preset"
-        filepath = get_presets_dir() / f"{safe_name}.json"
+        filepath = _auto_preset_path(preset.name)
 
     filepath = Path(filepath)
     filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -728,13 +765,11 @@ def save_preset(
             handle.flush()
             os.fsync(handle.fileno())
         if overwrite:
-            os.replace(temporary_path, filepath)
+            replace_file(temporary_path, filepath)
         else:
-            # Hard-link publication is exclusive on Windows and POSIX: a
-            # competing writer cannot appear between an exists() check and a
-            # destructive replace.
-            os.link(temporary_path, filepath)
-            temporary_path.unlink()
+            # Exclusive publication: a competing writer cannot appear between
+            # an exists() check and a destructive replace.
+            _publish_exclusive(temporary_path, filepath)
     except Exception:
         temporary_path.unlink(missing_ok=True)
         raise
@@ -860,14 +895,13 @@ def import_preset(filepath: Path) -> tuple[Preset, Path]:
                 temporary_path.unlink(missing_ok=True)
                 return preset, imported_path
             try:
-                os.link(temporary_path, imported_path)
+                _publish_exclusive(temporary_path, imported_path)
             except FileExistsError:
                 suffix_index += 1
                 imported_path = imports_dir / (
                     f"{source_path.stem} ({suffix_index}){source_path.suffix}"
                 )
                 continue
-            temporary_path.unlink()
             return preset, imported_path
     except Exception:
         temporary_path.unlink(missing_ok=True)

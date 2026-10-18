@@ -98,7 +98,10 @@ source-scan tests. Do not enable `extension-module` in Rust test builds.
 
 A preset schema change needs a migration and round-trip tests. Migrate a stored
 value only when its provenance is `migration_default`; a legacy value without
-provenance counts as explicit.
+provenance counts as explicit. A new field in `config.json` raises
+`CONFIG_SCHEMA_VERSION`. An older build saves only the keys it knows, so it would
+drop a field added under the same version; a newer version makes it keep the
+file and not save over it.
 
 Two benchmarks cover callback cost. They are ignored release-mode tests that
 nothing runs automatically. They are recommended, not required, for changes on

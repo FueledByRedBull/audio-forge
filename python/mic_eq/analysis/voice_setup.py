@@ -71,7 +71,8 @@ _DULLING_FRAME, _DULLING_HOP = 1024, 512
 # In full-chain verification with the noise suppressor enabled, the tonal check
 # ("target error") measures a second render of the same takes through the same chain
 # with only the suppressor switched off; every other finding comes from the real
-# render. False is the released check, which the evaluator renders as its baseline.
+# render. True is the shipped check; the switch exists so the tests and the
+# evaluator can read the unbypassed render.
 # Qualified on held-out simulated users in
 # evaluation/voice-setup-verification-tonal-check-2026-10-report.json.
 TONAL_CHECK_BYPASSES_SUPPRESSOR = True
@@ -1346,33 +1347,6 @@ def analyze_voice_setup(
     full_chain_active_gain_db = 0.0
     full_chain_voice_dropout = False
     full_chain_headroom_safe = False
-    beyond_headroom_passed = False
-
-    def passes_beyond_headroom(validation: Mapping[str, Any], voice_dropout: bool) -> bool:
-        """The final check without its headroom rule."""
-        output_true_peak = float(validation.get("output_true_peak_db", 120.0))
-        ceiling = float(
-            validation.get(
-                "limiter_effective_ceiling_db",
-                effective_limiter_settings["ceiling_db"],
-            )
-        )
-        compressor_gr = float(validation.get("compressor_gain_reduction_db", 120.0))
-        compressor_p95 = float(
-            validation.get("compressor_gain_reduction_p95_db", compressor_gr)
-        )
-        deesser_gr = float(validation.get("deesser_gain_reduction_db", 120.0))
-        return bool(
-            np.isfinite([output_true_peak, compressor_gr, deesser_gr]).all()
-            and output_true_peak <= ceiling + 0.15
-            and compressor_gr
-            <= float(compressor_diag["peak_reduction_cap_db"]) + 0.25
-            and compressor_p95
-            <= float(compressor_diag["target_p95_reduction_db"]) + 1.25
-            and deesser_gr <= 10.0
-            and not voice_dropout
-            and full_chain_raw_available
-        )
 
     try:
         if full_chain_eq_settings is None:
@@ -1413,11 +1387,33 @@ def analyze_voice_setup(
             features, _frame_rms_db(rendered_full_chain, sample_rate)
         )
         full_chain_voice_dropout = full_chain_active_gain_db < -12.0
-        beyond_headroom_passed = passes_beyond_headroom(
-            offline_validation, full_chain_voice_dropout
-        )
         full_chain_headroom_safe = _headroom_safe(offline_validation, allowance_db)
-        offline_validation_passed = beyond_headroom_passed and full_chain_headroom_safe
+        output_true_peak = float(offline_validation.get("output_true_peak_db", 120.0))
+        ceiling = float(
+            offline_validation.get(
+                "limiter_effective_ceiling_db",
+                effective_limiter_settings["ceiling_db"],
+            )
+        )
+        compressor_gr = float(
+            offline_validation.get("compressor_gain_reduction_db", 120.0)
+        )
+        compressor_p95 = float(
+            offline_validation.get("compressor_gain_reduction_p95_db", compressor_gr)
+        )
+        deesser_gr = float(offline_validation.get("deesser_gain_reduction_db", 120.0))
+        offline_validation_passed = bool(
+            np.isfinite([output_true_peak, compressor_gr, deesser_gr]).all()
+            and output_true_peak <= ceiling + 0.15
+            and compressor_gr
+            <= float(compressor_diag["peak_reduction_cap_db"]) + 0.25
+            and compressor_p95
+            <= float(compressor_diag["target_p95_reduction_db"]) + 1.25
+            and deesser_gr <= 10.0
+            and not full_chain_voice_dropout
+            and full_chain_raw_available
+            and full_chain_headroom_safe
+        )
     except AnalysisCancelled:
         raise
     except Exception as exc:  # pragma: no cover - defensive diagnostics

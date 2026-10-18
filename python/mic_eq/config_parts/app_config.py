@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import filecmp
 import json
 import logging
 import math
@@ -22,6 +23,7 @@ from .shared import (
     get_config_file,
     migration_pending,
     parse_latency_profile_key,
+    replace_file,
 )
 from .validation import _coerce_config_bool, _coerce_window_geometry
 
@@ -154,7 +156,7 @@ def _canonical_input_preference_key(value: object) -> str | None:
     text = value.strip()
     try:
         payload = json.loads(text)
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError, RecursionError):
         payload = None
     if isinstance(payload, dict):
         if payload.get("endpoint_id") and not payload.get("name"):
@@ -538,7 +540,7 @@ def save_config(config: AppConfig) -> bool:
             json.dump(config.to_dict(), handle, indent=2, allow_nan=False)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_path, filepath)
+        replace_file(temp_path, filepath)
     except Exception:
         try:
             temp_path.unlink(missing_ok=True)
@@ -632,7 +634,13 @@ def _preserve_invalid_config(filepath: Path) -> bool:
             logger.warning("Preserved invalid AudioForge config at %s", backup)
             return True
         except FileExistsError:
-            # Another process won the destination race; try the next slot.
+            # An identical copy from an earlier launch already protects this file.
+            try:
+                if filecmp.cmp(filepath, backup, shallow=False):
+                    return True
+            except OSError:
+                pass
+            # Otherwise another process or an older bad file holds the slot.
             continue
         except OSError:
             if destination is not None:

@@ -77,10 +77,10 @@ def test_import_cleans_staging_file_when_atomic_publication_fails(
     source = tmp_path / "failed.json"
     _write_preset(source, "Failed")
 
-    def fail_link(_source: Path, _destination: Path) -> None:
+    def fail_rename(_source: Path, _destination: Path) -> None:
         raise OSError("simulated publication failure")
 
-    monkeypatch.setattr(presets_module.os, "link", fail_link)
+    monkeypatch.setattr(presets_module.os, "rename", fail_rename)
 
     with pytest.raises(OSError, match="simulated publication failure"):
         config.import_preset(source)

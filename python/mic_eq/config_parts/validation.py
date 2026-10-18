@@ -70,6 +70,11 @@ def _coerce_config_bool(value: object, default: bool) -> bool:
     return default
 
 
+# Qt rectangles hold C ints; stay far below that so a hand-edited value cannot
+# stop the main window from opening.
+_MAX_WINDOW_COORDINATE = 100_000
+
+
 def _coerce_window_geometry(value: object) -> dict[str, int] | None:
     if not isinstance(value, dict):
         return None
@@ -83,7 +88,7 @@ def _coerce_window_geometry(value: object) -> dict[str, int] | None:
             numeric = float(raw)
         except OverflowError:
             return None
-        if not math.isfinite(numeric):
+        if not math.isfinite(numeric) or abs(numeric) > _MAX_WINDOW_COORDINATE:
             return None
         coerced[key] = int(round(numeric))
 

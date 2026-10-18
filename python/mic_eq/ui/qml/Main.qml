@@ -163,13 +163,18 @@ Rectangle {
         enabled: proxy ? proxy.enabled : false
         implicitHeight: 22
         implicitWidth: track.width + (label.text === "" ? 0 : label.implicitWidth + 10)
-        onClicked: proxy.click()
         // The real check state, so assistive technology also hears it before the first change.
+        // Every way of switching (pointer, keys, assistive technology) changes `checked`, so the
+        // action follows it; the model decides, and the switch goes back to the model's state.
         checkable: true
         checked: on
-        onToggled: checked = Qt.binding(() => on)
+        onCheckedChanged: if (proxy && checked !== on) {
+            proxy.click()
+            checked = Qt.binding(() => on)
+        }
         Accessible.role: Accessible.CheckBox
         Accessible.name: proxy && proxy.name !== "" ? proxy.name : text
+        Accessible.onPressAction: toggle.toggle()
         Hint { text: toggle.proxy ? toggle.proxy.toolTip : "" }
         background: null
         contentItem: Item {
@@ -744,12 +749,17 @@ Rectangle {
         visible: p.shown
         enabled: p.enabled
         implicitHeight: 44
-        onClicked: root.press(this, p)
+        // A switch row acts on its check state (see Toggle); the other rows on the click.
+        onClicked: if (!isSwitch) root.press(this, p)
         checkable: isSwitch
         checked: p.checked
-        onToggled: checked = Qt.binding(() => p.checked)
+        onCheckedChanged: if (isSwitch && checked !== p.checked) {
+            root.press(this, p)
+            checked = Qt.binding(() => p.checked)
+        }
         Accessible.role: isSwitch ? Accessible.CheckBox : Accessible.Button
         Accessible.name: p.text
+        Accessible.onPressAction: isSwitch ? setting.toggle() : root.press(setting, p)
         Hint { text: setting.p.toolTip !== setting.p.text ? setting.p.toolTip : "" }
         background: Rectangle {
             radius: root.t.radiusControl
@@ -1442,12 +1452,14 @@ Rectangle {
                     id: healthToggle
                     objectName: "healthToggle"
                     anchors.fill: parent
-                    onClicked: root.m.page.setIndex(
-                        root.m.page.index === root.m.healthPage ? 0 : root.m.healthPage)
                     checkable: true
                     checked: root.m.page.index === root.m.healthPage
-                    onToggled: checked = Qt.binding(() => root.m.page.index === root.m.healthPage)
+                    onCheckedChanged: if (checked !== (root.m.page.index === root.m.healthPage)) {
+                        root.m.page.setIndex(checked ? root.m.healthPage : 0)
+                        checked = Qt.binding(() => root.m.page.index === root.m.healthPage)
+                    }
                     Accessible.role: Accessible.Button
+                    Accessible.onPressAction: healthToggle.toggle()
                     // Named by what it shows; the action goes in the description.
                     Accessible.name: root.m.status.health.text
                     Accessible.description: checked ? "Hide audio health details" : "Show audio health details"

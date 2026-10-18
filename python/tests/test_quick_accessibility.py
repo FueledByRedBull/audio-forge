@@ -1151,3 +1151,101 @@ def test_refresh_gives_its_reason_only_while_it_is_disabled(quick_window, qapp) 
     assert refresh.toolTip == "Refresh audio devices"
     window.refresh_btn_action.setEnabled(False)
     assert "not available while processing" in refresh.toolTip
+
+
+# --- 8. Every way of switching acts once and the switch follows the model ---------
+
+
+def _perform(item, action: str) -> None:
+    from PySide6.QtGui import QAccessibleActionInterface
+
+    name = getattr(QAccessibleActionInterface, action)()
+    interface = _iface(item).actionInterface()
+    assert name in interface.actionNames(), (action, interface.actionNames())
+    interface.doAction(name)
+
+
+def _click(window, item, qapp) -> None:
+    centre = item.mapToScene(item.boundingRect().center()).toPoint()
+    QTest.mouseClick(window.centralWidget(), Qt.MouseButton.LeftButton, pos=centre)
+    qapp.processEvents()
+
+
+@pytest.mark.parametrize("how", ["toggleAction", "pressAction", "click", "key"])
+def test_a_switch_acts_once_and_shows_the_model_whichever_way_it_is_used(
+    quick_window, qapp, how
+) -> None:
+    window = quick_window
+    _show(window, qapp)
+    mute = _with_proxy(window, "Toggle", window.quick_bridge.model["top"]["mute"])
+    with _AccessibleScene():
+        for expected in (True, False):
+            if how == "click":
+                _click(window, mute, qapp)
+            elif how == "key":
+                _activate(window, mute, Qt.Key.Key_Space, qapp)
+            else:
+                _perform(mute, how)
+            qapp.processEvents()
+            assert window.user_muted is expected, f"{how} changes the state once"
+            assert bool(_iface(mute).state().checked) is expected
+            assert mute.property("checked") is expected
+
+
+def test_a_switch_row_in_settings_acts_once_whichever_way_it_is_used(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp, SETTINGS)
+    proxy = next(
+        row["proxy"] for card in window.quick_bridge.model["settings"]["cards"]
+        for row in card["rows"] if row["proxy"].text.startswith("Include Measured")
+    )
+    row = next(r for r in _of_kind(window, "SettingRow") if r.property("p") is proxy)
+    with _AccessibleScene():
+        for how in ("toggleAction", "pressAction", "toggleAction", "pressAction"):
+            before = proxy.checked
+            _perform(row, how)
+            qapp.processEvents()
+            assert proxy.checked is not before, how
+            assert bool(_iface(row).state().checked) is proxy.checked
+
+
+def test_a_refused_switch_goes_back_to_the_models_state(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    toggle = _with_proxy(window, "Toggle", window.quick_bridge.model["eq"]["toggle"])
+    on = toggle.property("on")
+    # The model does not change: the switch must not keep the flipped state.
+    toggle.property("proxy").click = lambda: None
+    with _AccessibleScene():
+        _perform(toggle, "toggleAction")
+        qapp.processEvents()
+        assert toggle.property("checked") is on
+
+
+def test_the_health_chip_follows_the_page_when_toggled_by_assistive_technology(
+    quick_window, qapp
+) -> None:
+    window = quick_window
+    _show(window, qapp)
+    chip = window.centralWidget().rootObject().findChild(QObject, "healthToggle")
+    with _AccessibleScene():
+        _perform(chip, "pressAction")
+        qapp.processEvents()
+        assert window.shell_page.currentIndex() == HEALTH
+        assert bool(_iface(chip).state().checked)
+        _perform(chip, "pressAction")
+        qapp.processEvents()
+        assert window.shell_page.currentIndex() == MIC
+        assert not _iface(chip).state().checked
+
+
+def test_an_action_row_in_settings_acts_once_on_the_press_action(quick_window, qapp, monkeypatch) -> None:
+    window = quick_window
+    exported: list[bool] = []
+    monkeypatch.setattr(window, "_export_diagnostics", lambda: exported.append(True))
+    _show(window, qapp, SETTINGS)
+    with _AccessibleScene():
+        row = _named(window, "Export Diagnostics", "SettingRow")
+        _perform(row, "pressAction")
+        qapp.processEvents()
+    assert exported == [True]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -311,3 +313,72 @@ def test_opt_out_does_not_report_running_audio_as_stopped(startup_window, monkey
     monkeypatch.setattr(main_window.login_startup, "set_login_startup", Mock(return_value=True))
     window._on_login_startup_toggled(False)
     assert not any("audio remains stopped" in message.lower() for message in shown)
+
+
+@pytest.fixture
+def packaged_registry(startup_window, monkeypatch):
+    """The login-shortcut menu of a frozen copy over a fake registration store."""
+    window = startup_window[0]
+    registry = {"state": "absent", "calls": [], "error": None}
+
+    def set_login_startup(executable, enabled):
+        registry["calls"].append((executable, enabled))
+        if registry["error"] is not None:
+            raise registry["error"]
+        registry["state"] = "configured" if enabled else "absent"
+        return True
+
+    monkeypatch.setattr(main_window.login_startup, "registration_state", lambda _executable: registry["state"])
+    monkeypatch.setattr(main_window.login_startup, "set_login_startup", set_login_startup)
+    with monkeypatch.context() as frozen:
+        frozen.setattr(sys, "frozen", True, raising=False)
+        yield window, registry
+
+
+@pytest.mark.parametrize(
+    ("state", "checked", "enabled", "text"),
+    [
+        ("absent", False, True, "No login shortcut configured"),
+        ("configured", True, True, "Shortcut configured; Windows may disable it"),
+        ("other", False, False, "Login shortcut belongs to another copy or is unrecognized"),
+        ("unreadable", False, False, "Login shortcut could not be read; left unchanged"),
+    ],
+)
+def test_login_shortcut_menu_follows_the_registration_state(
+    packaged_registry, state, checked, enabled, text
+):
+    window, registry = packaged_registry
+    registry["state"] = state
+    window._refresh_login_startup_action()
+    assert window._login_startup_action.isChecked() is checked
+    assert window._login_startup_action.isEnabled() is enabled
+    assert window._login_startup_status_action.text() == text
+
+
+def test_login_shortcut_menu_is_disabled_outside_the_packaged_executable(startup_window):
+    window = startup_window[0]
+    assert not hasattr(sys, "frozen")
+    window._refresh_login_startup_action()
+    assert not window._login_startup_action.isEnabled()
+    assert window._login_startup_status_action.text() == "Login startup requires the packaged executable"
+
+
+def test_ticking_the_login_shortcut_registers_this_copy(packaged_registry):
+    window, registry = packaged_registry
+    window._refresh_login_startup_action()
+    window._login_startup_action.trigger()
+    assert registry["calls"] == [(Path(sys.executable), True)]
+    assert window._login_startup_action.isChecked()
+    assert window._login_startup_status_action.text() == "Shortcut configured; Windows may disable it"
+
+
+def test_failed_login_shortcut_change_is_reported_and_leaves_the_menu_unchanged(packaged_registry):
+    window, registry = packaged_registry
+    registry["error"] = PermissionError("Startup folder is not writable")
+    window._refresh_login_startup_action()
+    window._login_startup_action.trigger()
+    assert registry["calls"] == [(Path(sys.executable), True)]
+    assert window.status_message.text == "Startup folder is not writable"
+    assert not window._login_startup_action.isChecked()
+    assert window._login_startup_status_action.text() == "No login shortcut configured"
+

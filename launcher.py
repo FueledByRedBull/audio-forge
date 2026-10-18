@@ -13,18 +13,18 @@ def _configure_frozen_runtime():
     if not getattr(sys, "frozen", False):
         return
 
-    exe_dir = Path(sys.executable).resolve().parent
-    meipass = Path(getattr(sys, "_MEIPASS", "")) if hasattr(sys, "_MEIPASS") else None
-
-    # Improve DLL resolution for df.dll and ORT/Qt dependencies in bundled runtime.
-    for dll_dir in [exe_dir, meipass, (meipass / "_internal") if meipass else None]:
-        if not dll_dir or not dll_dir.exists():
-            continue
-        try:
-            os.add_dll_directory(str(dll_dir))
-        except Exception:
-            # Best-effort only; keep startup resilient on older Python/Windows modes.
-            pass
+    # The bundle's DLLs (df.dll, ORT, Qt) all live in the PyInstaller content
+    # directory; the executable's own folder holds only the exe, so it stays off
+    # the search path.
+    meipass = getattr(sys, "_MEIPASS", None)
+    dll_dir = Path(meipass) if meipass else None
+    if not dll_dir or not dll_dir.exists():
+        return
+    try:
+        os.add_dll_directory(str(dll_dir))
+    except OSError:
+        # Best-effort; keep startup resilient on older Python/Windows modes.
+        logging.getLogger(__name__).warning("Could not add %s to the DLL search path", dll_dir)
 
 _configure_frozen_runtime()
 

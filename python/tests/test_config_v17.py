@@ -66,17 +66,18 @@ def test_preset_save_is_atomic_and_preserves_existing_file_on_replace_failure(
     assert list(tmp_path.glob("*.tmp")) == []
 
 
-def test_auto_preset_paths_reject_sanitization_collisions_without_overwrite(
+def test_auto_preset_paths_keep_sanitization_collisions_in_separate_files(
     tmp_path, monkeypatch
 ):
     presets_dir = tmp_path / "presets"
     monkeypatch.setattr(presets_module, "get_presets_dir", lambda: presets_dir)
     first_path = config.save_preset(Preset(name="A/B"))
 
-    with pytest.raises(FileExistsError):
-        config.save_preset(Preset(name="A:B"), overwrite=False)
+    second_path = config.save_preset(Preset(name="A:B"), overwrite=False)
 
+    assert second_path != first_path
     assert config.load_preset(first_path).name == "A/B"
+    assert config.load_preset(second_path).name == "A:B"
 
 
 def test_list_presets_skips_recursively_malformed_json(tmp_path, monkeypatch):
@@ -165,7 +166,7 @@ def test_exclusive_preset_creation_wins_against_a_competing_writer(
         Path(target).write_text("occupied", encoding="utf-8")
         raise FileExistsError("destination appeared during publication")
 
-    monkeypatch.setattr(presets_module.os, "link", competing_writer)
+    monkeypatch.setattr(presets_module.os, "rename", competing_writer)
 
     with pytest.raises(FileExistsError):
         config.save_preset(Preset(name="Race"), destination)

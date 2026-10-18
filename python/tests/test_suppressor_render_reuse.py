@@ -9,12 +9,14 @@ from mic_eq.ui.app_bootstrap import configure_deepfilter_env
 
 
 @pytest.mark.parametrize("model", ["rnnoise", "deepfilter-ll", "deepfilter"])
-def test_cached_mix_matches_native_with_partial_frame(model):
+def test_cached_mix_matches_native_with_partial_frame(model, monkeypatch):
     if model != "rnnoise":
         root = Path(__file__).resolve().parents[2]
         archive = "DeepFilterNet3_ll_onnx.tar.gz" if model == "deepfilter-ll" else "DeepFilterNet3_onnx.tar.gz"
         if not (root / "df.dll").is_file() or not (root / "models" / archive).is_file():
             pytest.skip("local DeepFilter runtime assets are unavailable")
+    # monkeypatch restores the variable that configure_deepfilter_env() would otherwise leak.
+    monkeypatch.setenv("AUDIOFORGE_ENABLE_DEEPFILTER", "1")
     configure_deepfilter_env()
     audio = np.random.default_rng(24).normal(0, .03, 4807).astype(np.float32)
     probabilities = [0.9] * 11

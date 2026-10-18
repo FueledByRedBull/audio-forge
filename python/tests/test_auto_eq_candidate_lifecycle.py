@@ -20,6 +20,7 @@ from mic_eq.config import (
     Preset,
     build_eq_candidate_settings,
 )
+from capture_helpers import finish_take
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.calibration_support import AutoEqCandidate, chain_settings
 from mic_eq.ui.theme import message_text_style, status_chip_style
@@ -216,7 +217,7 @@ def _capture(dialog: CalibrationDialog, monkeypatch, curve: str) -> None:
     )
     dialog.curve_combo.setCurrentIndex(dialog.curve_combo.findData(curve))
     dialog.recording_state = "recording"
-    dialog._on_recording_complete(np.full(128, 0.1, dtype=np.float32))
+    finish_take(dialog, np.full(128, 0.1, dtype=np.float32))
 
 
 def test_retake_and_failed_next_analysis_cannot_apply_old_candidate(qapp, monkeypatch):
@@ -782,7 +783,7 @@ def test_only_an_authoritative_not_worsened_result_opens_the_gate(qapp, monkeypa
 def _record(dialog: CalibrationDialog, monkeypatch, take: np.ndarray) -> None:
     monkeypatch.setattr("mic_eq.ui.calibration_dialog.AnalysisWorker", _AnalysisWorkerStub)
     dialog.recording_state = "recording"
-    dialog._on_recording_complete(take)
+    finish_take(dialog, take)
 
 
 def _clipped() -> np.ndarray:

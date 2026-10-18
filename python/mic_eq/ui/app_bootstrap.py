@@ -14,7 +14,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Callable, Iterator, Type, cast
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QMessageLogContext, QtMsgType, QTimer, qInstallMessageHandler
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
@@ -245,17 +245,72 @@ def _check_auto_eq_solvers() -> None:
         )
 
 
+_REPEAT_KEYS_MAX = 256
+_QT_MESSAGE_KEY_CHARS = 200
+_OVERFLOW_KEY = "<keys beyond the table size>"
+
+
+def _count_repeat(counts: dict, key: object) -> tuple[int, bool]:
+    """Count one more occurrence of key; True when it deserves a log line (1st, 10th, 100th, every 1000th).
+
+    Keys that arrive once the table is full share one overflow counter, so it never grows past the cap.
+    """
+    if key not in counts and len(counts) >= _REPEAT_KEYS_MAX:
+        key = _OVERFLOW_KEY
+    counts[key] = count = counts.get(key, 0) + 1
+    return count, count in (1, 10, 100) or count % 1000 == 0
+
+
+def _describe_exception_key(key: object) -> str:
+    if not isinstance(key, tuple):
+        return str(key)
+    exc_type, place = key
+    return f"{exc_type.__name__} at {place[0]}:{place[1]}" if place else exc_type.__name__
+
+
+def _describe_qt_key(key: object) -> str:
+    if not isinstance(key, tuple):
+        return str(key)
+    _kind, category, message = key
+    return f"{category}: {message}"
+
+
+_QT_LOG_LEVELS = {
+    QtMsgType.QtWarningMsg: logging.WARNING,
+    QtMsgType.QtCriticalMsg: logging.ERROR,
+    QtMsgType.QtFatalMsg: logging.CRITICAL,
+}
+
+
 @contextlib.contextmanager
-def _crash_diagnostics() -> Iterator[None]:
-    """Send uncaught exceptions and hard crashes to the app log, then restore."""
+def _crash_diagnostics() -> Iterator[Callable[[], None]]:
+    """Send uncaught exceptions, Qt warnings and hard crashes to the app log, then restore.
+
+    Qt messages reach stderr from the start but the app log only once the yielded callable is
+    called: a second launch must not open app.log, whose rollover belongs to the first instance.
+    """
     logger = logging.getLogger(__name__)
+    qt_logger = logging.getLogger("qt")
     previous_excepthook = sys.excepthook
     previous_thread_hook = threading.excepthook
+    exception_counts: dict = {}
+    qt_counts: dict = {}
+    in_qt_handler = threading.local()
+    qt_to_log = threading.Event()
 
     def log_uncaught(exc_type, exc_value, exc_traceback) -> None:
-        logger.critical(
-            "Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback)
-        )
+        # A slot that fails on every timer tick would otherwise flush the log in seconds.
+        origin = exc_traceback
+        while origin is not None and origin.tb_next is not None:
+            origin = origin.tb_next
+        place = (origin.tb_frame.f_code.co_filename, origin.tb_lineno) if origin else None
+        count, log_it = _count_repeat(exception_counts, (exc_type, place))
+        if count == 1:
+            logger.critical(
+                "Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback)
+            )
+        elif log_it:
+            logger.critical("Uncaught exception repeated %d times: %r", count, exc_value)
         previous_excepthook(exc_type, exc_value, exc_traceback)
 
     def log_thread_uncaught(args) -> None:
@@ -266,6 +321,27 @@ def _crash_diagnostics() -> Iterator[None]:
                 exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
             )
         previous_thread_hook(args)
+
+    def log_qt_message(kind: QtMsgType, context: QMessageLogContext, message: str) -> None:
+        # A windowed build has no stderr, so QML errors would otherwise leave no trace.
+        if sys.stderr is not None:
+            print(message, file=sys.stderr)
+        level = _QT_LOG_LEVELS.get(kind)
+        if level is None or not qt_to_log.is_set() or getattr(in_qt_handler, "busy", False):
+            return
+        in_qt_handler.busy = True
+        try:
+            key = (kind, context.category, message[:_QT_MESSAGE_KEY_CHARS])
+            count, log_it = _count_repeat(qt_counts, key)
+            if log_it:
+                suffix = ""
+                if key not in qt_counts:
+                    suffix = f" (message {count} beyond the {_REPEAT_KEYS_MAX} distinct ones tracked)"
+                elif count > 1:
+                    suffix = f" (seen {count} times)"
+                qt_logger.log(level, "%s: %s%s", context.category, message, suffix)
+        finally:
+            in_qt_handler.busy = False
 
     # A sibling file: a second handle on app.log would block its rotation on Windows.
     crash_file = None
@@ -279,15 +355,24 @@ def _crash_diagnostics() -> Iterator[None]:
 
     sys.excepthook = log_uncaught
     threading.excepthook = log_thread_uncaught
+    previous_qt_handler = qInstallMessageHandler(log_qt_message)
     try:
-        yield
+        yield qt_to_log.set
     except Exception:
         # The hooks are restored below, before any top-level handler could log this.
         logger.critical("Uncaught exception", exc_info=True)
         raise
     finally:
+        qInstallMessageHandler(previous_qt_handler)
         sys.excepthook = previous_excepthook
         threading.excepthook = previous_thread_hook
+        for key, count in exception_counts.items():
+            if count > 1:
+                logger.critical("Uncaught exception %s: %d occurrences in total, repeats logged sparsely", _describe_exception_key(key), count)
+        if qt_to_log.is_set():
+            for key, count in qt_counts.items():
+                if count > 1:
+                    qt_logger.warning("%s: %d occurrences in total, repeats logged sparsely", _describe_qt_key(key), count)
         if crash_file is not None:
             faulthandler.disable()
             # Another instance can hold crash.log open, and Windows then refuses
@@ -317,8 +402,8 @@ def run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool = False) -> in
         os.environ["QT_DISABLE_SHADER_DISK_CACHE"] = "1"
 
     try:
-        with _crash_diagnostics():
-            return _run_qt_app(window_cls, smoke_test=smoke_test)
+        with _crash_diagnostics() as enable_qt_log:
+            return _run_qt_app(window_cls, smoke_test=smoke_test, enable_qt_log=enable_qt_log)
     finally:
         if isolated_config is not None:
             log_file = get_log_file()
@@ -338,7 +423,12 @@ def run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool = False) -> in
             isolated_config.cleanup()
 
 
-def _run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool) -> int:
+def _run_qt_app(
+    window_cls: Type[QMainWindow],
+    *,
+    smoke_test: bool,
+    enable_qt_log: Callable[[], None] = lambda: None,
+) -> int:
     """Create the app and event loop, optionally running a startup smoke test."""
     configure_app_logging()
     configure_windows_app_id()
@@ -378,6 +468,7 @@ def _run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool) -> int:
             return 1
         app.aboutToQuit.connect(instance.close)
 
+    enable_qt_log()
     try:
         configure_deepfilter_env()
         configure_vad_env()

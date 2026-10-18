@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from PySide6.QtCore import Qt, QTimer
@@ -35,6 +36,8 @@ from .layout_constants import (
 from .level_meter import LevelMeter, MeterWidget
 from .theme import DESCRIPTION_LABEL_STYLE, message_text_style, status_chip_style
 
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_SETUP_STEPS = ("devices", "route", "voice")
 
@@ -638,6 +641,7 @@ class FirstRunSetupDialog(QDialog):
             try:
                 applied = bool(self.owner._on_auto_voice_setup_clicked())
             except Exception:
+                logger.exception("Voice Setup failed inside the first-run setup")
                 applied = False
             finally:
                 self.show()
@@ -680,6 +684,7 @@ class FirstRunSetupDialog(QDialog):
         try:
             saved = bool(self.owner._on_latency_calibration_clicked())
         except Exception:
+            logger.exception("Latency calibration failed inside the first-run setup")
             saved = False
         finally:
             self.show()

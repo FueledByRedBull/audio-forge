@@ -7,6 +7,7 @@ the Windows global hotkey and the Qt single-instance activation channel.
 from __future__ import annotations
 
 import ctypes
+import functools
 import getpass
 import logging
 import os
@@ -27,10 +28,65 @@ from .login_startup import LOGIN_STARTUP_ARGUMENT
 logger = logging.getLogger(__name__)
 
 WM_HOTKEY = 0x0312
-try:
-    _USER_SCOPE = getpass.getuser().encode("utf-8").hex()
-except Exception:
-    _USER_SCOPE = "default"
+
+
+def _windows_user_sid() -> str:
+    """Return the account SID of this process, which no environment variable can change."""
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)
+    ]
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.ConvertSidToStringSidW.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)
+    ]
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        size = wintypes.DWORD()
+        advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))  # TokenUser
+        buffer = ctypes.create_string_buffer(size.value)
+        if not advapi32.GetTokenInformation(token, 1, buffer, size, ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        # TOKEN_USER starts with the SID pointer.
+        sid = ctypes.c_void_p.from_buffer(buffer).value
+        text = ctypes.c_void_p()
+        if not advapi32.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return ctypes.wstring_at(text.value or 0)
+        finally:
+            kernel32.LocalFree(text)
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def _user_scope() -> str:
+    """Name part that keeps one account's session lock and activation pipe apart from another's."""
+
+    if os.name == "nt":
+        try:
+            return _windows_user_sid()
+        except OSError:
+            logger.warning("Could not read the account SID; scoping by user name", exc_info=True)
+    # getuser() trusts LOGNAME and USER, which any process can set.
+    try:
+        return getpass.getuser().encode("utf-8").hex()
+    except Exception:
+        return "default"
+
+
+_USER_SCOPE = _user_scope()
 SINGLE_INSTANCE_SERVER = f"AudioForge.SingleInstance.v1.{_USER_SCOPE}"
 # Set in the environment of a copy started after the renderer failed.
 RENDERER_RELAUNCH_ENV = "AUDIOFORGE_RENDERER_RELAUNCH"
@@ -66,6 +122,12 @@ _SPECIAL_KEYS = {
     "LEFT": 0x25,
     "RIGHT": 0x27,
 }
+
+
+@functools.cache
+def _user32() -> ctypes.WinDLL:
+    # Only a handle opened with use_last_error keeps the error code of the failing call.
+    return ctypes.WinDLL("user32", use_last_error=True)
 
 
 def parse_global_hotkey(shortcut: str) -> tuple[int, int]:
@@ -149,12 +211,11 @@ class GlobalMuteHotkey:
             return False, "Qt application is not running"
 
         hotkey_id = self._allocate_id()
-        register_hot_key = ctypes.windll.user32.RegisterHotKey
+        register_hot_key = _user32().RegisterHotKey
         register_hot_key.argtypes = [wintypes.HWND, wintypes.INT, wintypes.UINT, wintypes.UINT]
         register_hot_key.restype = wintypes.BOOL
         if not register_hot_key(None, hotkey_id, modifiers | 0x4000, virtual_key):
-            error = ctypes.WinError(ctypes.windll.kernel32.GetLastError())
-            return False, str(error)
+            return False, str(ctypes.WinError(ctypes.get_last_error()))
 
         event_filter = _WindowsHotkeyFilter(hotkey_id, self.callback)
         app.installNativeEventFilter(event_filter)
@@ -173,7 +234,7 @@ class GlobalMuteHotkey:
             app.removeNativeEventFilter(self._event_filter)
         try:
             if os.name == "nt":
-                ctypes.windll.user32.UnregisterHotKey(None, hotkey_id)
+                _user32().UnregisterHotKey(None, hotkey_id)
         finally:
             self._hotkey_id = None
             self._event_filter = None

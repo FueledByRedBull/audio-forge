@@ -1349,12 +1349,10 @@ def tune_gate_suppression_dynamics(
         selected_gate = dict(incumbent_gate)
         selected_strength = incumbent_strength
         selected_model = incumbent_model
-    elif passing:
+    else:
         selected_gate = dict(selected["gate"])
         selected_strength = float(selected["suppressor_strength"])
         selected_model = str(selected["model"])
-    else:
-        selected_model = incumbent_model
     if progress_callback is not None:
         progress_callback("Suppression and gate search complete", 55)
     reasons: list[str] = []

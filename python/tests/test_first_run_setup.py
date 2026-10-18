@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -516,6 +518,40 @@ def test_setup_keeps_latency_optional_and_advanced(qapp, monkeypatch):
     dialog._run_latency_calibration()
     assert config.first_run_setup_steps["latency"] == "completed"
     assert dialog.current_step == "voice"
+
+
+@pytest.mark.parametrize("step", ["latency", "voice"])
+def test_a_failing_setup_step_is_logged_with_its_traceback(qapp, monkeypatch, caplog, step):
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: True
+    )
+    config = AppConfig(
+        first_run_setup_state="in_progress",
+        first_run_setup_step="voice",
+        first_run_setup_steps={
+            "devices": "completed", "route": "completed", "latency": "completed", "voice": "pending",
+        },
+    )
+    owner = _Owner(config, _Processor())
+
+    def broken():
+        raise RuntimeError("dialog could not be built")
+
+    monkeypatch.setattr(owner, "_on_latency_calibration_clicked", broken)
+    monkeypatch.setattr(owner, "_on_auto_voice_setup_clicked", broken)
+    dialog = FirstRunSetupDialog(owner)
+
+    if step == "latency":
+        dialog._run_latency_calibration()
+    else:
+        assert dialog.current_step == "voice"
+        dialog._run_current_step()
+
+    assert any(
+        r.levelno >= logging.ERROR and r.exc_info and "could not be built" in str(r.exc_info[1])
+        for r in caplog.records
+    )
+    assert dialog.status_label.text()
 
 
 def test_setup_resumes_legacy_saved_latency_step(qapp, monkeypatch):

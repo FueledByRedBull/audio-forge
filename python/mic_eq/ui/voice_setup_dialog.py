@@ -5,11 +5,12 @@ from __future__ import annotations
 from copy import deepcopy
 from collections import deque
 from collections.abc import Callable, Mapping
+from functools import partial
 import json
 import logging
 import threading
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
@@ -33,6 +34,7 @@ from ..analysis.noise_reference import (
     SILENT_REFERENCE_GUIDANCE,
     SILENT_REFERENCE_REASON,
     CaptureMetadata,
+    NoiseReferenceAnalysis,
     analyze_noise_reference,
     capture_is_silent,
 )
@@ -69,6 +71,7 @@ from .capture_session import (
     start_selected_route as _start_selected_route,
     sync_owner_processing_controls as _sync_owner_processing_controls,
 )
+from .analysis_worker import UNEXPECTED_FAILURE, CaptureAnalysisWorker
 from .calibration_support import (
     RAINBOW_PASSAGE,
     candidate_metadata as _candidate_metadata,
@@ -455,7 +458,8 @@ class VoiceSetupWorker(QThread):
         except AnalysisCancelled:
             return
         except Exception as exc:
-            self.failed.emit(str(exc))
+            logger.exception("Voice Setup analysis failed")
+            self.failed.emit(str(exc) or UNEXPECTED_FAILURE)
 
 
 class VoiceSetupVerificationWorker(QThread):
@@ -518,7 +522,37 @@ class VoiceSetupVerificationWorker(QThread):
         except AnalysisCancelled:
             return
         except Exception as exc:
-            self.failed.emit(str(exc))
+            logger.exception("Voice Setup verification failed")
+            self.failed.emit(str(exc) or UNEXPECTED_FAILURE)
+
+
+class _CaptureAnalysis(NamedTuple):
+    """What a finished take needs before the dialog can decide about it."""
+
+    audio: np.ndarray
+    noise_quality: NoiseReferenceAnalysis | None
+    silent: bool
+
+
+def _analyze_capture(
+    raw_audio: np.ndarray,
+    sample_rate: int,
+    phase: str,
+    metadata: CaptureMetadata | None,
+) -> _CaptureAnalysis:
+    """The slow half of a finished take; it runs on a worker thread."""
+    audio = _filtered_capture_for_analysis(raw_audio, sample_rate)
+    if phase == "noise_recording":
+        quality = analyze_noise_reference(
+            audio,
+            None,
+            int(metadata.sample_rate or 48_000) if metadata is not None else 48_000,
+            noise_metadata=metadata,
+        )
+        return _CaptureAnalysis(audio, quality, False)
+    if phase == "voice_recording":
+        return _CaptureAnalysis(audio, None, capture_is_silent(audio))
+    return _CaptureAnalysis(audio, None, False)
 
 
 class VoiceSetupDialog(QDialog):
@@ -554,7 +588,9 @@ class VoiceSetupDialog(QDialog):
             self._show_step_for_state()
 
     def _show_step_for_state(self) -> None:
-        step = self.STEP_FOR_STATE.get(self._setup_state, 0)
+        # A take being checked stays on the step it was recorded on.
+        state = self._capture_phase if self._setup_state == "capture_analyzing" else self._setup_state
+        step = self.STEP_FOR_STATE.get(state, 0)
         if self._setup_state == "idle" and self._failed_step is not None:
             # A take that failed stays on its own step, with its message.
             step = self._failed_step
@@ -597,11 +633,15 @@ class VoiceSetupDialog(QDialog):
         # What each stage was set to before this setup, for the "Before:" lines.
         self._review_current: dict[str, Mapping[str, Any]] = {}
         self._capture_context_key: str | None = None
-        self.analysis_worker: VoiceSetupWorker | VoiceSetupVerificationWorker | None = None
+        self.analysis_worker: (
+            VoiceSetupWorker | VoiceSetupVerificationWorker | CaptureAnalysisWorker | None
+        ) = None
         self._analysis_workers: list[
-            VoiceSetupWorker | VoiceSetupVerificationWorker
+            VoiceSetupWorker | VoiceSetupVerificationWorker | CaptureAnalysisWorker
         ] = []
         self._analysis_generation = 0
+        # The recording phase a take in "capture_analyzing" came from.
+        self._capture_phase = "voice_recording"
         self._close_requested = False
         self._close_result = False
         self._started_processor = False
@@ -1303,20 +1343,69 @@ class VoiceSetupDialog(QDialog):
             )
             return
 
-        analysis_audio = _filtered_capture_for_analysis(raw_audio, sample_rate)
+        phase = self.setup_state
+        self._cancel_analysis_workers()
+        generation = self._analysis_generation + 1
+        self._analysis_generation = generation
+        self._capture_phase = phase
+        self.setup_state = "capture_analyzing"
+        self.start_button.setEnabled(False)
+        self.warning_label.setText("Checking the recording...")
+        self.warning_label.setStyleSheet(message_text_style("info", strong=True))
+        worker = CaptureAnalysisWorker(
+            partial(
+                _analyze_capture,
+                raw_audio,
+                sample_rate,
+                phase,
+                self._current_capture_metadata,
+            )
+        )
+        self.analysis_worker = worker
+        self._analysis_workers.append(worker)
+        worker.result_ready.connect(
+            lambda result, token=generation: self._on_capture_analyzed(
+                result, raw_audio, phase, token
+            )
+        )
+        worker.failed.connect(
+            lambda error, token=generation: self._on_capture_analysis_failed(
+                error, phase, token
+            )
+        )
+        worker.finished.connect(
+            lambda finished_worker=worker: self._on_analysis_thread_finished(
+                finished_worker
+            )
+        )
+        worker.start()
+
+    def _on_capture_analysis_failed(self, error: str, phase: str, generation: int) -> None:
+        if generation != self._analysis_generation or self._close_requested:
+            return
+        self.setup_state = phase
+        self._on_recording_failed(plain_error(f"Recording error: {error}"))
+
+    def _on_capture_analyzed(
+        self,
+        analysis: _CaptureAnalysis,
+        raw_audio: np.ndarray,
+        phase: str,
+        generation: int,
+    ) -> None:
+        """Decide about a finished take once its post-processing is done."""
+        if generation != self._analysis_generation or self._close_requested:
+            return
+        self.setup_state = phase
+        self.start_button.setEnabled(True)
+        analysis_audio = analysis.audio
 
         if self.setup_state == "noise_recording":
             self.preview_noise_audio = raw_audio
             self.noise_audio = analysis_audio
             self.noise_metadata = self._current_capture_metadata
-            quick_quality = analyze_noise_reference(
-                self.noise_audio,
-                None,
-                int(self.noise_metadata.sample_rate or 48_000)
-                if self.noise_metadata is not None
-                else 48_000,
-                noise_metadata=self.noise_metadata,
-            )
+            quick_quality = analysis.noise_quality
+            assert quick_quality is not None
             if quick_quality.must_recapture:
                 self.noise_metadata = None
                 guidance = quick_quality.guidance or (
@@ -1354,7 +1443,7 @@ class VoiceSetupDialog(QDialog):
             self._complete_verification(analysis_audio)
             return
 
-        if capture_is_silent(analysis_audio):
+        if analysis.silent:
             # Silence while talking, unlike silent room noise, is a microphone fault.
             self._reject_capture(
                 "No sound came from the microphone. Check that it is not muted and "

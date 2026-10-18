@@ -11,6 +11,7 @@ from mic_eq.ui import calibration_dialog
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.theme import message_text_style
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+from capture_helpers import finish_take
 from test_auto_eq_candidate_lifecycle import _Owner
 from test_voice_setup_integration import real_main_window  # noqa: F401  (a fixture)
 
@@ -367,7 +368,7 @@ def _record_room_noise(voice: VoiceSetupDialog, take: np.ndarray) -> None:
     voice.level_override_btn.click()
     voice._capture_start_timer.stop()
     assert voice.setup_state == "noise_recording"
-    voice._on_recording_complete(take)
+    finish_take(voice, take)
 
 
 def test_retake_room_noise_starts_the_room_noise_take_and_keeps_the_level_choice(voice) -> None:
@@ -440,7 +441,7 @@ def test_the_start_button_is_named_by_what_it_says(voice, auto_eq) -> None:
         assert accessible_name(dialog.start_button) == dialog.start_button.text()
         dialog._on_start_clicked()
         dialog._capture_start_timer.stop()
-        dialog._on_recording_complete(take)
+        finish_take(dialog, take)
         assert accessible_name(dialog.start_button) == dialog.start_button.text()
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import struct
 from pathlib import Path
 
@@ -258,3 +259,58 @@ def test_mono_only_contract_rejects_stereo() -> None:
             np.zeros((2, 2), dtype=np.int16),
             allow_stereo=False,
         )
+
+
+def test_read_wav_rejects_a_zero_sample_rate(tmp_path) -> None:
+    path = _wav(tmp_path / "a.wav", bytes(8))
+    good = path.read_bytes()
+    at = good.index(b"fmt ") + 8 + 4
+    path.write_bytes(good[:at] + struct.pack("<I", 0) + good[at + 4 :])
+
+    with pytest.raises(ValueError, match="invalid sample rate"):
+        read_mono_wav(path)
+
+
+def _mutate(rng: random.Random, good: bytes) -> bytes:
+    data = bytearray(good)
+    kind = rng.randrange(4)
+    if kind == 0:
+        for _ in range(rng.randint(1, 4)):
+            data[rng.randrange(len(data))] ^= 1 << rng.randrange(8)
+    elif kind == 1:
+        del data[rng.randrange(len(data)) :]
+    elif kind == 2:
+        at = rng.randrange(len(data) - 3)
+        data[at : at + 4] = rng.choice([b"\xff" * 4, b"\x00" * 4, rng.randbytes(4)])
+    else:
+        at = rng.randrange(len(data))
+        data[at:at] = rng.randbytes(rng.randint(1, 16))
+    return bytes(data)
+
+
+def test_read_wav_survives_seeded_corruption_of_valid_files(tmp_path) -> None:
+    rng = random.Random(1181)
+    variants = [
+        {"bits": 8},
+        {"bits": 16, "channels": 2, "before_data": ODD_CHUNK},
+        {"bits": 24, "extensible": True},
+        {"tag": 3, "bits": 32, "after_data": ODD_CHUNK},
+    ]
+    seeds = [
+        _wav(tmp_path / f"seed{i}.wav", bytes(range(24)), **kwargs).read_bytes()
+        for i, kwargs in enumerate(variants)
+    ]
+    path = tmp_path / "fuzz.wav"
+    parsed = 0
+    for _ in range(1500):
+        content = _mutate(rng, rng.choice(seeds))
+        path.write_bytes(content)
+        try:
+            rate, audio = _read_wav(path)
+        except ValueError:
+            continue
+        # Anything accepted must be sane, and never larger than the file it came from.
+        parsed += 1
+        assert rate >= 1
+        assert audio.nbytes <= len(content)
+    assert 0 < parsed < 1500

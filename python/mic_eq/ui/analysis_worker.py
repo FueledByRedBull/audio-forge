@@ -6,7 +6,9 @@ Runs audio analysis in background thread with step-by-step progress signals.
 import logging
 import threading
 import time
+from collections.abc import Callable
 from copy import deepcopy
+from typing import Any
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
@@ -15,6 +17,8 @@ from ..analysis.cancellation import AnalysisCancelled
 
 
 logger = logging.getLogger(__name__)
+
+UNEXPECTED_FAILURE = "The analysis could not finish. The cause is in the log file."
 
 
 class AnalysisWorker(QThread):
@@ -125,5 +129,34 @@ class AnalysisWorker(QThread):
         except AnalysisCancelled:
             return
         except Exception as e:
-            # Catch any unexpected errors
-            self.failed.emit(str(e))
+            logger.exception("Auto-EQ analysis failed")
+            self.failed.emit(str(e) or UNEXPECTED_FAILURE)
+
+
+class CaptureAnalysisWorker(QThread):
+    """Runs the post-processing of a finished take off the GUI thread."""
+
+    result_ready = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, analyze: Callable[[], Any]) -> None:
+        super().__init__()
+        self._analyze = analyze
+        self._stop_event = threading.Event()
+
+    def stop(self) -> None:
+        """Drop the result; the call in flight cannot be interrupted."""
+        self._stop_event.set()
+
+    def run(self) -> None:
+        if self._stop_event.is_set():
+            return
+        try:
+            result = self._analyze()
+        except Exception as exc:
+            logger.exception("Capture post-processing failed")
+            if not self._stop_event.is_set():
+                self.failed.emit(str(exc) or UNEXPECTED_FAILURE)
+            return
+        if not self._stop_event.is_set():
+            self.result_ready.emit(result)

@@ -2,18 +2,19 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import runpy
 import subprocess
 import sys
 import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from mic_eq.app_logging import configure_app_logging, get_log_file
 from mic_eq.ui import app_bootstrap
-
 
 def _deepfilter_lib_name() -> str:
     if app_bootstrap.os.name == "nt":
@@ -35,6 +36,20 @@ def _write_vad_asset(root: Path) -> None:
     models = root / "models"
     models.mkdir(parents=True, exist_ok=True)
     (models / "silero_vad.onnx").write_bytes(b"x")
+
+
+@pytest.fixture
+def restore_deepfilter_enable():
+    """configure_deepfilter_env sets the variable for good; undo it and check that it is undone.
+
+    delenv on an absent variable records nothing, so the value would outlive the test.
+    The own patch context ends before the check, whatever order the tests run in.
+    """
+    before = os.environ.get("AUDIOFORGE_ENABLE_DEEPFILTER")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("AUDIOFORGE_ENABLE_DEEPFILTER", "0")
+        yield
+    assert os.environ.get("AUDIOFORGE_ENABLE_DEEPFILTER") == before
 
 
 def _capture_deepfilter_registration(monkeypatch) -> list[tuple[str, str]]:
@@ -68,7 +83,7 @@ def test_deepfilter_bootstrap_ignores_cwd_assets(tmp_path, monkeypatch):
     assert registrations == []
 
 
-def test_deepfilter_bootstrap_uses_trusted_runtime_root(tmp_path, monkeypatch):
+def test_deepfilter_bootstrap_uses_trusted_runtime_root(tmp_path, monkeypatch, restore_deepfilter_enable):
     cwd = tmp_path / "cwd"
     trusted = tmp_path / "trusted"
     cwd.mkdir()
@@ -145,7 +160,7 @@ def test_deepfilter_bootstrap_allows_explicit_external_override(tmp_path, monkey
 
 
 def test_deepfilter_bootstrap_external_override_gets_missing_bundled_defaults(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, restore_deepfilter_enable
 ):
     trusted = tmp_path / "trusted"
     trusted.mkdir()
@@ -167,7 +182,7 @@ def test_deepfilter_bootstrap_external_override_gets_missing_bundled_defaults(
     ]
 
 
-def test_deepfilter_bootstrap_uses_standard_model_when_ll_absent(tmp_path, monkeypatch):
+def test_deepfilter_bootstrap_uses_standard_model_when_ll_absent(tmp_path, monkeypatch, restore_deepfilter_enable):
     trusted = tmp_path / "trusted"
     trusted.mkdir()
     _write_deepfilter_assets(trusted, low_latency=False)
@@ -244,6 +259,42 @@ def test_app_logging_uses_audioforge_rotating_log(tmp_path, monkeypatch):
             ):
                 root_logger.removeHandler(handler)
                 handler.close()
+
+
+def test_app_logging_survives_an_unusable_profile_folder(tmp_path, monkeypatch):
+    profile = tmp_path / "profile"
+    profile.write_text("a file where the profile folder should be")
+    monkeypatch.setenv("APPDATA", str(profile))
+    handlers_before = list(logging.getLogger().handlers)
+
+    assert configure_app_logging() == get_log_file()
+
+    assert logging.getLogger().handlers == handlers_before
+
+
+def test_app_logging_does_not_open_the_log_file_until_something_is_logged(tmp_path, monkeypatch):
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    log_file = configure_app_logging()
+    try:
+        assert not log_file.exists()
+    finally:
+        for handler in list(logging.getLogger().handlers):
+            if isinstance(handler, RotatingFileHandler) and Path(handler.baseFilename) == log_file:
+                logging.getLogger().removeHandler(handler)
+                handler.close()
+
+
+def test_main_module_reports_a_failed_import_and_returns_one(monkeypatch, capsys):
+    from mic_eq import __main__ as entry_point
+
+    monkeypatch.setattr(sys, "argv", ["mic_eq"])
+    monkeypatch.setitem(sys.modules, "mic_eq.ui.main_window", None)
+
+    assert entry_point.main() == 1
+
+    output = capsys.readouterr().out
+    assert output.startswith("Error: ") and "mic_eq.ui.main_window" in output
+    assert "Build the Rust core" in output
 
 
 def test_launcher_leaves_model_discovery_to_app_bootstrap(tmp_path, monkeypatch):
@@ -334,6 +385,7 @@ def test_packaged_startup_smoke_runs_real_event_loop_in_isolated_config(tmp_path
 import json
 import os
 from pathlib import Path
+from typing import Any
 from PySide6.QtCore import QUrl
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickGraphicsConfiguration
@@ -607,13 +659,9 @@ def test_crash_file_cleanup_failure_does_not_change_the_run_result(
     assert app_bootstrap.run_qt_app(app_bootstrap.QMainWindow) == 0
 
 
-@pytest.mark.parametrize(
-    ("frozen", "smoke_test", "dialog_expected"),
-    [(True, False, True), (True, True, False), (False, False, False)],
-)
-def test_startup_failure_is_logged_once_and_only_the_windowed_app_shows_a_dialog(
-    qapp, monkeypatch, caplog, crash_diagnostics, frozen, smoke_test, dialog_expected
-):
+@pytest.fixture
+def startup_fakes(qapp, monkeypatch):
+    """Stand-ins for the process-wide parts of `_run_qt_app`; the Qt classes stay real."""
     from types import SimpleNamespace
     from unittest.mock import Mock
 
@@ -626,6 +674,17 @@ def test_startup_failure_is_logged_once_and_only_the_windowed_app_shows_a_dialog
     for name in ("configure_windows_app_id", "configure_deepfilter_env", "configure_vad_env"):
         monkeypatch.setattr(app_bootstrap, name, lambda *_: None)
     monkeypatch.setattr(sys, "argv", ["AudioForge.exe"])
+
+
+@pytest.mark.parametrize(
+    ("frozen", "smoke_test", "dialog_expected"),
+    [(True, False, True), (True, True, False), (False, False, False)],
+)
+def test_startup_failure_is_logged_once_and_only_the_windowed_app_shows_a_dialog(
+    startup_fakes, monkeypatch, caplog, crash_diagnostics, frozen, smoke_test, dialog_expected
+):
+    from unittest.mock import Mock
+
     monkeypatch.setattr(sys, "frozen", frozen, raising=False)
     dialog = Mock()
     monkeypatch.setattr(app_bootstrap.QMessageBox, "critical", dialog)
@@ -644,3 +703,184 @@ def test_startup_failure_is_logged_once_and_only_the_windowed_app_shows_a_dialog
     assert dialog.called is dialog_expected
     if dialog_expected:
         assert str(get_log_file()) in dialog.call_args.args[2]
+
+
+def test_startup_reaches_the_window_when_the_log_folder_cannot_be_created(
+    startup_fakes, monkeypatch, tmp_path
+):
+    profile = tmp_path / "profile"
+    profile.write_text("a file where the profile folder should be")
+    monkeypatch.setenv("APPDATA", str(profile))
+    reached = []
+
+    def window():
+        reached.append(True)
+        raise RuntimeError("stop at the window")
+
+    with pytest.raises(RuntimeError, match="stop at the window"):
+        app_bootstrap._run_qt_app(window, smoke_test=False)  # type: ignore[arg-type]
+
+    assert reached
+
+
+def test_a_repeating_uncaught_exception_logs_one_traceback_and_a_few_counts(
+    crash_diagnostics, caplog
+):
+    sys.excepthook = lambda *_info: None
+
+    with app_bootstrap._crash_diagnostics():
+        for _ in range(1000):
+            try:
+                raise ValueError("tick failed")
+            except ValueError:
+                sys.excepthook(*sys.exc_info())
+
+    critical = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+    assert len([r for r in critical if r.exc_info]) == 1
+    assert len(critical) <= 5
+    assert "repeated 1000 times" in critical[-2].getMessage()
+
+
+def test_qt_warnings_reach_the_app_log_until_the_context_ends(crash_diagnostics, caplog):
+    from PySide6.QtCore import qWarning
+
+    with app_bootstrap._crash_diagnostics() as enable_qt_log:
+        enable_qt_log()
+        qWarning("qrc:/Main.qml:12: TypeError: undefined is not a function")
+    qWarning("after the context")
+
+    qt_records = [r for r in caplog.records if r.name == "qt"]
+    assert len(qt_records) == 1
+    assert qt_records[0].levelno == logging.WARNING
+    assert "Main.qml:12" in qt_records[0].getMessage()
+
+
+def test_a_repeating_qt_warning_is_counted_instead_of_logged_every_time(
+    crash_diagnostics, caplog
+):
+    from PySide6.QtCore import qWarning
+
+    with app_bootstrap._crash_diagnostics() as enable_qt_log:
+        enable_qt_log()
+        for _ in range(1000):
+            qWarning("binding loop detected")
+
+    qt_records = [r for r in caplog.records if r.name == "qt"]
+    assert 1 < len(qt_records) <= 5
+    assert "seen 1000 times" in qt_records[-2].getMessage()
+
+
+def _raise_at_one_site(message: str) -> None:
+    raise ValueError(message)
+
+
+def _raise_at_another_site(message: str) -> None:
+    raise ValueError(message)
+
+
+def _report_uncaught(raiser, message: str) -> None:
+    try:
+        raiser(message)
+    except ValueError as error:
+        sys.excepthook(ValueError, error, error.__traceback__)
+
+
+def test_the_same_exception_at_one_site_collapses_whatever_its_message(crash_diagnostics, caplog):
+    sys.excepthook = lambda *_info: None
+
+    with app_bootstrap._crash_diagnostics():
+        for tick in range(50):
+            _report_uncaught(_raise_at_one_site, f"tick {tick} failed")
+        _report_uncaught(_raise_at_another_site, "elsewhere")
+
+    full = [r for r in caplog.records if r.exc_info]
+    assert [r.exc_info[1].args[0] for r in full if r.exc_info] == ["tick 0 failed", "elsewhere"]
+    repeats = [r.getMessage() for r in caplog.records if "repeated" in r.getMessage()]
+    assert len(repeats) == 1 and "repeated 10 times" in repeats[0]
+
+
+def test_suppressed_repeats_are_totalled_once_at_exit(crash_diagnostics, caplog):
+    from PySide6.QtCore import qWarning
+
+    sys.excepthook = lambda *_info: None
+
+    with app_bootstrap._crash_diagnostics() as enable_qt_log:
+        enable_qt_log()
+        for tick in range(7):
+            _report_uncaught(_raise_at_one_site, f"tick {tick}")
+        _report_uncaught(_raise_at_another_site, "once")
+        for _ in range(3):
+            qWarning("binding loop detected")
+        qWarning("seen once")
+        caplog.clear()
+
+    totals = [r.getMessage() for r in caplog.records]
+    assert len(totals) == 2
+    site = f"ValueError at {__file__}:{_raise_at_one_site.__code__.co_firstlineno + 1}: 7 occurrences"
+    assert site in totals[0]
+    assert totals[1].endswith("binding loop detected: 3 occurrences in total, repeats logged sparsely")
+
+
+def test_the_repeat_table_stops_growing_and_counts_the_overflow():
+    counts: dict = {}
+
+    for number in range(app_bootstrap._REPEAT_KEYS_MAX + 100):
+        app_bootstrap._count_repeat(counts, ("key", number))
+
+    assert len(counts) == app_bootstrap._REPEAT_KEYS_MAX + 1
+    assert counts[app_bootstrap._OVERFLOW_KEY] == 100
+    assert app_bootstrap._count_repeat(counts, ("key", 0)) == (2, False)
+
+
+def test_distinct_qt_messages_are_bounded_but_the_first_of_each_is_still_logged(
+    crash_diagnostics, caplog
+):
+    from PySide6.QtCore import qWarning
+
+    distinct = app_bootstrap._REPEAT_KEYS_MAX + 20
+    with app_bootstrap._crash_diagnostics() as enable_qt_log:
+        enable_qt_log()
+        for number in range(distinct):
+            qWarning(f"item {number}: undefined")
+
+    qt_records = [r.getMessage() for r in caplog.records if r.name == "qt"]
+    assert "item 0: undefined" in qt_records[0]
+    assert any("item 10: undefined" in message for message in qt_records[:20])
+    assert any("beyond the" in message for message in qt_records)
+
+
+def test_a_second_launch_never_opens_the_app_log_for_qt_messages(
+    qapp, startup_fakes, monkeypatch, caplog, crash_diagnostics, capfd
+):
+    from PySide6.QtCore import qWarning
+
+    def warn_then(value):
+        qWarning("QApplication-time warning")
+        return value
+
+    coordinator: Any = app_bootstrap.SingleInstanceCoordinator
+    coordinator.return_value.acquire.side_effect = (
+        lambda *_a, **_k: warn_then(coordinator.ALREADY_RUNNING)
+    )
+    monkeypatch.setattr(app_bootstrap, "QApplication", lambda _args: warn_then(qapp))
+
+    assert app_bootstrap.run_qt_app(app_bootstrap.QMainWindow) == 0
+
+    assert not get_log_file().exists()
+    assert not [r for r in caplog.records if r.name == "qt"]
+    assert capfd.readouterr().err.count("QApplication-time warning") == 2
+
+
+def test_the_first_launch_logs_qt_messages_once_it_owns_the_instance(
+    startup_fakes, caplog, crash_diagnostics
+):
+    from PySide6.QtCore import qWarning
+
+    def window():
+        qWarning("window-time warning")
+        raise RuntimeError("stop at the window")
+
+    with pytest.raises(RuntimeError, match="stop at the window"):
+        app_bootstrap.run_qt_app(window)  # type: ignore[arg-type]
+
+    assert [r.getMessage() for r in caplog.records if r.name == "qt"] == ["default: window-time warning"]

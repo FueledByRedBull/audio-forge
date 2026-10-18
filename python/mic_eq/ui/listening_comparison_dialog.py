@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import logging
 import math
 import threading
 from typing import Any
@@ -68,6 +69,8 @@ from .theme import (
     PROGRESS_BAR_STYLE,
     message_text_style,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _device_key(device: QAudioDevice | None) -> bytes | None:
@@ -286,6 +289,7 @@ class ListeningComparisonWorker(QThread):
         except AnalysisCancelled:
             self.canceled.emit()
         except Exception as error:
+            logger.exception("Listening comparison failed")
             self.failed.emit(f"{type(error).__name__}: {error}")
 
 

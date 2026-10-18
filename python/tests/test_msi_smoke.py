@@ -2,28 +2,13 @@
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 import sys
 from pathlib import Path
 
 import pytest
 
-
-TOOLS_DIR = Path(__file__).parent.parent / "tools"
-for name in ("prune_bundle", "package_smoke", "release_provenance"):
-    path = TOOLS_DIR / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-
-spec = importlib.util.spec_from_file_location("msi_smoke", TOOLS_DIR / "msi_smoke.py")
-assert spec is not None and spec.loader is not None
-msi_smoke = importlib.util.module_from_spec(spec)
-sys.modules["msi_smoke"] = msi_smoke
-spec.loader.exec_module(msi_smoke)
+import msi_smoke
 
 
 def _bundle(root: Path, marker: bytes = b"payload") -> Path:

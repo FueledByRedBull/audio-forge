@@ -8,6 +8,7 @@ import math
 import os
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -40,6 +41,20 @@ def _version_tuple(version: str) -> tuple[int, int, int]:
         except (IndexError, ValueError):
             normalized.append(0)
     return tuple(normalized)  # type: ignore[return-value]
+
+
+def replace_file(source: Path, destination: Path) -> None:
+    """os.replace that rides out a scanner or editor briefly holding the target open."""
+    attempts = 4
+    for attempt in range(1, attempts + 1):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            # A read-only target stays refused; waiting would only stall the GUI thread.
+            if attempt == attempts or (destination.exists() and not os.access(destination, os.W_OK)):
+                raise
+            time.sleep(0.05 * attempt)
 
 
 def _config_base_dir() -> Path:
@@ -108,6 +123,10 @@ def _config_dir() -> Path:
                 partial_dir.rmdir()
                 config_dir.replace(partial_dir)
             staged_dir.replace(config_dir)
+            if partial_dir is not None:
+                logger.warning(
+                    "Kept the previous AudioForge config folder at %s", partial_dir
+                )
             # Mark the directory as staged only after the atomic publication.
             # A crash before this write leaves the pending marker, so the next
             # process retries instead of accepting a partial destination.
@@ -302,7 +321,7 @@ def parse_latency_profile_key(
     text = str(key)
     try:
         payload = json.loads(text)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         payload = None
 
     if isinstance(payload, dict) and set(payload) == {"input", "output"}:
@@ -363,4 +382,5 @@ __all__ = [
     "legacy_latency_profile_key",
     "parse_latency_profile_key",
     "migration_pending",
+    "replace_file",
 ]

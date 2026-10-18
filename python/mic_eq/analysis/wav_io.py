@@ -70,6 +70,8 @@ def _read_wav(path: Path) -> tuple[int, np.ndarray]:
     if len(header) < 16:
         raise ValueError(f"{path.name} has a truncated format chunk")
     tag, channels, rate, _, block, bits = struct.unpack("<HHIIHH", header[:16])
+    if rate < 1:
+        raise ValueError(f"{path.name} has an invalid sample rate")
     if tag == _FORMAT_EXTENSIBLE:
         if len(header) < 40 or struct.unpack("<H", header[16:18])[0] < 22:
             raise ValueError(f"{path.name} has a truncated extensible format chunk")

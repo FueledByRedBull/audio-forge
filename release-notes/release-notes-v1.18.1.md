@@ -72,10 +72,16 @@ AudioForge remains unsigned. Virtual audio cable setup is described in the
   `auto_makeup_error_present` and `vad_worker_error_present`. Its
   `rt_error_name` now carries the engine's own error names; before, it read
   `other` for every error.
-- `app.log` now records uncaught exceptions and Qt or QML warnings with
-  tracebacks. A message that repeats is counted and logged at the 1st, 10th,
-  100th and every 1000th time, with the total at exit. A second launch no
-  longer opens the log.
+- Qt and QML warnings and errors now reach `app.log`. A repeated uncaught
+  exception or Qt message is counted and logged at the 1st, 10th, 100th and
+  every 1000th time, and messages seen more than once get their total at exit.
+  A second launch no longer opens the log.
+- A Rust panic in the native audio core reaches the app as an ordinary error it
+  can report, instead of one that bypasses its error handling.
+- The portable app adds only its own bundle folder to the DLL search path, not
+  the folder the executable sits in.
+- The native module drops its single-field gate, de-esser and compressor
+  setters; the app applies each stage's settings in one call.
 - The limiter's duplicate output oversampler is gone: about 27% less true-peak
   CPU for the same output.
 - Settings from earlier versions load as before, and so do presets.
@@ -85,9 +91,10 @@ AudioForge remains unsigned. Virtual audio cable setup is described in the
 The evidence archive records the exact candidate revision, hashes and automated
 qualification results, including portable startup and MSI lifecycle checks.
 
-Steady-state audio is the same as in 1.18.0: the golden outputs for the chain
-on the public bench set match unchanged. The click fixes were measured on
-synthetic signals and on that bench set, not by ear on a live call.
+Steady-state audio is the same as in 1.18.0: outside the windows around each
+change, the golden cases (synthetic signals and two bench mixes) match within
+0.1 dB. The click fixes were measured on synthetic signals in fixed-input
+tests, not by ear on a live call.
 
 No audio-hardware run of this build is claimed. The hour-long soak and the
 hands-on checks in the 1.18.0 notes were of the 1.18.0 candidate and are not

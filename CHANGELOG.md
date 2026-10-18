@@ -32,7 +32,8 @@
 ### Diagnostics
 
 - The export gains `downstream_non_finite_count`, `output_resampler_error_count`, `rejected_control_value_count`, `dsp_scheduling_degraded`, `auto_makeup_error_present` and `vad_worker_error_present`; it stays at schema version 3, and `rt_error_name` now reports the engine's real error names instead of `other`.
-- Uncaught exceptions and Qt or QML warnings reach `app.log` with tracebacks, repeats are counted and logged sparsely, and a second launch never opens the log.
+- Qt and QML warnings and errors reach `app.log`, repeated exceptions and Qt messages are counted and logged sparsely with a total at exit, and a second launch never opens the log.
+- A Rust panic in the native core reaches the app as an ordinary error, and the portable app adds only its bundle folder to the DLL search path.
 - The single-instance lock and activation pipe are named per Windows account SID, so 1.18.1 and a running 1.18.0 or earlier do not see each other; close the old version first.
 
 ### Internal

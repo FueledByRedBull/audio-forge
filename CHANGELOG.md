@@ -1,5 +1,46 @@
 # Changelog
 
+## v1.18.1
+
+### Audio engine and Health
+
+- The de-esser no longer clicks when switched on or off, an EQ or de-esser filter retargeted mid-fade no longer steps, and a hum notch retuned by less than half its bandwidth keeps its filter state and leaves less residual hum.
+- Audio after an output dropout fades in over 64 frames, and mute, unmute and the end of a recording or probe fade the same way instead of stepping.
+- One non-finite sample after the downstream chain is zeroed and counted (`downstream_non_finite_count`), and it no longer leaves the compressor not compressing for the rest of the session.
+- A panic on the audio thread is recorded and restarts the engine; restarts after a panic, stall, stream error or resampler failure name their cause instead of passing as a suppressor rebuild.
+- 24-bit integer input devices (I24 and U24) work; the input buffer is sized from the device's rate, and a device that reports zero channels or a zero rate fails at start.
+- If Windows refuses the multimedia scheduling request, the engine runs at normal priority instead of failing to start (`dsp_scheduling_degraded`).
+- The gate, de-esser and compressor apply their settings in one step, and the engine ignores NaN and infinite values.
+- The Silero model must match its pinned SHA-256, a `VAD_MODEL_PATH` that does not exist is an error, and `df.dll` loads without the current directory or `PATH` in its search.
+- Health no longer shows "ALREADY COMPRESSED (0.0 dB)" on plain room noise; the crest factor is measured over the meter window, not one audio block.
+- The limiter's duplicate oversampler is gone: about 27% less true-peak CPU, same output.
+
+### Window and interface
+
+- The recording check in Voice Setup and the calibration dialogs runs off the GUI thread, shows "Checking the recording...", and drops its result if the dialog was closed.
+- Quit from the tray rolls back every open dialog before the save prompt.
+- A minimized window no longer trips the renderer watchdog.
+- A preset that fails to read because of a locked file keeps its place as the last preset.
+
+### Settings and presets
+
+- An invalid or newer-schema `config.json` keeps one recovery copy instead of a new one on every launch.
+- Saves retry a brief sharing violation and give up at once on a read-only file, so the window no longer stalls.
+- A preset name that sanitizes to the same file name as another preset gets its own file, so the overwrite prompt names the right preset; Windows device names and very long names are handled.
+- A deeply nested route key or an oversized saved window geometry no longer discards the whole `config.json`.
+
+### Diagnostics
+
+- The export gains `downstream_non_finite_count`, `output_resampler_error_count`, `rejected_control_value_count`, `dsp_scheduling_degraded`, `auto_makeup_error_present` and `vad_worker_error_present`; it stays at schema version 3, and `rt_error_name` now reports the engine's real error names instead of `other`.
+- Uncaught exceptions and Qt or QML warnings reach `app.log` with tracebacks, repeats are counted and logged sparsely, and a second launch never opens the log.
+- The single-instance lock and activation pipe are named per Windows account SID, so 1.18.1 and a running 1.18.0 or earlier do not see each other; close the old version first.
+
+### Internal
+
+- Held-out cohort evaluation is replaced by a public bench set with golden and invariant tests, the five 1.18.0 study switches and their evaluators are removed, and the audible-change rules now separate transition fixes from tuning.
+- Shared helpers replace repeated engine code, unused benchmarks and setters are removed, and CI checks the build without default features and the formatting of the included processor files.
+- Tests no longer touch the real profile and fail on unpatched modal dialogs.
+
 ## v1.18.0
 
 ### Voice Setup and Auto-EQ

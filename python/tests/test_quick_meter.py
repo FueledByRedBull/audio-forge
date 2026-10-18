@@ -68,7 +68,8 @@ def test_quick_meter_and_widget_paint_the_same_snapshot_as_the_model(qapp):
 
 
 def test_meter_changes_and_enabled_state_reach_quick_repaint_source(qapp):
-    meter = LevelMeter("OUT", show_scale=False)
+    now = [0.0]
+    meter = LevelMeter("OUT", show_scale=False, clock=lambda: now[0])
     item = _ObservedMeterItem()
     repaint_notifications = QSignalSpy(meter.changed)
     item.setProperty("source", meter)
@@ -78,6 +79,7 @@ def test_meter_changes_and_enabled_state_reach_quick_repaint_source(qapp):
     assert item.repaint_requests == 1
 
     # The same 50 ms decay path notifies Quick, whether or not any widget exists.
+    now[0] += 0.05
     meter._decay_peak_hold()
     assert repaint_notifications.count() == 2
     assert item.repaint_requests == 2

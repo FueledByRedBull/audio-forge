@@ -467,3 +467,32 @@ def test_auto_eq_says_the_live_output_is_muted_while_it_records(auto_eq) -> None
     auto_eq._capture_start_timer.stop()
 
     assert _says_live_output_is_muted(auto_eq.mute_notice)
+
+
+def test_the_mute_notice_is_a_warning_chip_that_goes_away_on_the_review_step(voice, auto_eq) -> None:
+    from mic_eq.ui.theme import status_chip_style
+
+    voice.show()
+    auto_eq.show()
+    for dialog, review_state in ((voice, "completed"), (auto_eq, "ready")):
+        assert dialog.mute_notice.styleSheet() == status_chip_style("warn")
+        assert dialog.mute_notice.isVisibleTo(dialog)
+        attribute = "setup_state" if dialog is voice else "recording_state"
+        setattr(dialog, attribute, review_state)
+        assert not dialog.mute_notice.isVisibleTo(dialog)
+        setattr(dialog, attribute, "idle")
+        assert dialog.mute_notice.isVisibleTo(dialog)
+
+
+def test_the_live_message_is_not_restyled_while_it_stays_the_same(voice, monkeypatch) -> None:
+    styles: list[str] = []
+    original = voice.warning_label.setStyleSheet
+    monkeypatch.setattr(voice.warning_label, "setStyleSheet", lambda s: (styles.append(s), original(s)))
+
+    voice._show_live_message("Room is quiet", "ok")
+    voice._show_live_message("Room is quiet", "ok")
+    voice._show_live_message("Room is quiet", "ok")
+    assert len(styles) == 1
+
+    voice._show_live_message("Room is noisy", "warn")
+    assert len(styles) == 2 and voice.warning_label.text() == "Room is noisy"

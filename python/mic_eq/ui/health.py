@@ -20,6 +20,8 @@ INPUT_PEAK_WARN_DB = -3.0
 INPUT_PEAK_TARGET_DB = -6.0
 # With the limiter off, the advice leaves this much room below full scale.
 OUTPUT_PEAK_TARGET_DB = -1.0
+# Where the settings the advice names are in the window; they are all behind an Advanced section.
+_WHERE_MAKEUP = " Makeup gain is under Advanced on the Compressor card."
 
 STREAM_EVENT_COUNTERS = frozenset({
     "input_callback_error_count", "output_callback_error_count",
@@ -204,12 +206,12 @@ def _output_full_scale_advice(numbers: list[float]) -> str:
     if not numbers:
         return (
             "The output reaches full scale and the limiter is off, so loud sounds are cut off "
-            f"and sound distorted. {action}."
+            f"and sound distorted. {action}.{_WHERE_MAKEUP}"
         )
     drop = math.ceil(round(numbers[0] - OUTPUT_PEAK_TARGET_DB, 6))
     return (
         f"The output reaches full scale (peak {numbers[0]:.1f} dB) and the limiter is off, so loud sounds "
-        f"are cut off and sound distorted. {action}; the makeup gain would need to come down by about {drop} dB."
+        f"are cut off and sound distorted. {action}; the makeup gain would need to come down by about {drop} dB.{_WHERE_MAKEUP}"
     )
 
 
@@ -219,7 +221,7 @@ def _headroom_advice(numbers: list[float]) -> str:
     side = f"only {headroom:.1f} dB below" if headroom >= 0 else f"{-headroom:.1f} dB above"
     return (
         f"The latest output peak is {side} the ceiling, so peaks can distort on some players. "
-        f"Lower the makeup gain by about {gap} dB."
+        f"Lower the makeup gain by about {gap} dB.{_WHERE_MAKEUP}"
     )
 
 
@@ -292,23 +294,24 @@ _ADVICE: tuple[tuple[str, Callable[[list[float]], str]], ...] = (
     ("Output: AT FULL SCALE", _output_full_scale_advice),
     ("Output: LIMITER WORKING HARD", lambda n: (
         f"The limiter is turning the output down by up to {n[0]:.1f} dB, which can make loud words sound "
-        f"squashed. Lower the compressor makeup gain or the microphone level by about {math.ceil(n[0])} dB.")),
+        f"squashed. Lower the compressor makeup gain or the microphone level by about {math.ceil(n[0])} dB.{_WHERE_MAKEUP}")),
     ("Output: PEAK ABOVE CEILING", _plain(
         "The output went above the limiter ceiling for a moment, which can distort on some players. "
-        "Turn on careful output mode or lower the makeup gain.")),
+        "Turn on careful output mode or lower the makeup gain. Careful output mode is under Advanced "
+        f"on the Limiter card.{_WHERE_MAKEUP}")),
     ("Output: LITTLE HEADROOM", _headroom_advice),
     ("Output: VERY LOUD", lambda n: (
         f"The average output level is {n[0]:.0f} dB, which is extremely loud for speech and can overload "
-        "whatever receives it. Lower the makeup gain.")),
+        f"whatever receives it. Lower the makeup gain.{_WHERE_MAKEUP}")),
     ("Gate: CHATTERING", lambda n: (
         f"The gate opened and closed rapidly {plural(n[0], 'time')}, which makes your voice stutter. "
-        "Raise the hold time or lower the threshold.")),
+        "Raise the hold time or lower the threshold. Hold time is under Advanced on the Noise Gate card.")),
     ("Gate: EASED", lambda n: (
         f"The gate eased its threshold by itself to stop chattering ({plural(n[0], 'time')} so far). "
         "Consider lowering the threshold yourself so it does not need to.")),
     ("Backend:", _plain(
         "Noise suppression is not running as selected, so your voice may be passing through unprocessed. "
-        "Check the model on the Noise Suppression card.")),
+        "Check the Backend setting on the Noise Suppression card.")),
     ("Device activity:", _device_activity_advice),
     ("Dropouts:", lambda n: (
         f"Audio dropped out {plural(n[0], 'time')} because the output could not keep up, which sounds like gaps "

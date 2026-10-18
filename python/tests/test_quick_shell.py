@@ -409,7 +409,7 @@ def test_scene_loads_cleanly(quick_window) -> None:
     # Meters age their own peak holds, so nothing needs a visible widget to run.
     meter = quick_window.input_meter
     meter.set_levels(-30.0, -0.2)
-    assert meter.clip_flash_counter == 10 and meter.decay_timer.isActive()
+    assert meter.is_clipping and meter.decay_timer.isActive()
 
 
 def test_the_menu_bar_stays_hidden_and_the_window_can_shrink_to_900_by_640(quick_window) -> None:
@@ -1063,7 +1063,7 @@ def test_level_history_follows_the_meters_and_clears_when_they_stop(quick_window
 def test_settings_rows_tell_switches_menus_and_actions_apart(quick_window) -> None:
     cards = quick_window.quick_bridge.model["settings"]["cards"]
     kinds = {row["proxy"].text: row["kind"] for card in cards for row in card["rows"]}
-    assert kinds["Startup Preset"] == "menu"
+    assert kinds["Startup Preset: Last Used"] == "menu"
     assert kinds["Run Guided Setup"] == "action"
     assert kinds["Keep running in tray when window is closed"] == "toggle"
 
@@ -1272,9 +1272,11 @@ def test_quick_picker_shows_the_placeholder_while_nothing_is_selected(quick_wind
     picker = _find(quick_window.centralWidget().rootObject(), "Picker", choice)
     assert picker is not None
     assert _picker_text(picker) == "Select a replacement destination"
+    assert picker.property("prompting") is True, "a prompt is set apart from a real choice"
     choice.addItem("Cable Input", DeviceIdentity(name="Cable Input", direction="output"))
     qapp.processEvents()
     assert _picker_text(picker) == "Cable Input"
+    assert picker.property("prompting") is False
 
 
 def test_a_device_name_cut_short_at_the_minimum_window_size_is_whole_in_the_tooltip(
@@ -1294,8 +1296,8 @@ def test_a_device_name_cut_short_at_the_minimum_window_size_is_whole_in_the_tool
     try:
         quick_window.resize(900, 640)
         names = {
-            quick_window.input_choice: "Studio Microphone (USB)",
-            quick_window.output_choice: "CABLE Input (VB-Audio Virtual Cable)",
+            quick_window.input_choice: "Studio Microphone Array (Realtek High Definition Audio USB Device)",
+            quick_window.output_choice: "CABLE Input (VB-Audio Virtual Cable) on the Realtek Digital Output",
         }
         for choice, name in names.items():
             choice.addItem(name, DeviceIdentity(name=name, direction="input"))
@@ -1337,7 +1339,7 @@ def test_quick_meters_describe_a_lit_clip_marker_to_assistive_technology(quick_w
         return QAccessible.queryAccessibleInterface(item).text(QAccessible.Text.Description)
 
     try:
-        assert description() == ""
+        assert description() == "no signal"
         meter.set_levels(-20.0, -10.0)
         meter.note_peak(None, None, full_scale_count=0)
         meter.note_peak(1.0, 1.0, full_scale_count=CLIP_FLAT_TOP_SAMPLES)
@@ -1683,7 +1685,7 @@ def test_a_muted_output_says_its_levels_are_from_before_the_mute(engine_window, 
     try:
         _diagnostic_labels(window, **loud)
         assert row.state == "bad" and summary.state == "bad"
-        assert description() == ""
+        assert "mute" not in description()
 
         window.user_mute_checkbox_action.setChecked(True)
         _diagnostic_labels(window, **loud)
@@ -1694,7 +1696,7 @@ def test_a_muted_output_says_its_levels_are_from_before_the_mute(engine_window, 
         assert "before the mute" in description()
 
         window.user_mute_checkbox_action.setChecked(False)
-        assert description() == ""
+        assert "mute" not in description()
 
         # The row, the meter and the dot follow one state: a mute change the engine
         # refused is pending, not muted, whatever the engine still reports.
@@ -1704,6 +1706,6 @@ def test_a_muted_output_says_its_levels_are_from_before_the_mute(engine_window, 
         _diagnostic_labels(window, **{**loud, "diagnostics": {**loud["diagnostics"], "output_muted": True}})
         assert window.shell_texts["transmission_status_label"].text.endswith("Mute pending")
         assert row.state == "bad"
-        assert description() == ""
+        assert "mute" not in description()
     finally:
         QAccessible.setActive(was_active)

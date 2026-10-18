@@ -21,6 +21,8 @@ class GateState(QObject):
     """Own exact settings; the view formats them without becoming the stored values."""
 
     changed = Signal()
+    # The confidence and noise floor move every meter tick; only the views that show them listen.
+    telemetryChanged = Signal()
     configurationEdited = Signal(str)
     writeFailed = Signal(str)
     recoveryFailed = Signal(str)
@@ -156,8 +158,10 @@ class GateState(QObject):
                     self.noise_floor_db = floor
             except (AttributeError, OSError, RuntimeError, TypeError, ValueError, OverflowError):
                 pass
-        if previous != (self.vad_available, self.confidence, self.noise_floor_db):
+        if previous[0] != self.vad_available:
             self.changed.emit()
+        elif previous != (self.vad_available, self.confidence, self.noise_floor_db):
+            self.telemetryChanged.emit()
 
     def control_enabled(self, name: str) -> bool:
         mode = self._settings["gate_mode"]
@@ -185,8 +189,8 @@ class GateState(QObject):
         automatic = mode == 1 and self.vad_available and settings["auto_threshold_enabled"]
         if mode == 2:
             summary = (
-                f"VAD Threshold: {vad_threshold:.2f} | "
-                f"Level fallback when VAD is unavailable: {threshold:.1f} dB"
+                f"Voice detection threshold: {vad_threshold:.2f} | "
+                f"Level fallback when voice detection is unavailable: {threshold:.1f} dB"
             )
         elif automatic:
             if self.noise_floor_db is None:
@@ -200,15 +204,15 @@ class GateState(QObject):
         else:
             summary = f"Effective Threshold: {threshold:.1f} dB (manual)"
         if mode == 0:
-            vad_info = "VAD: Threshold mode"
+            vad_info = "Voice detection: off (level threshold only)"
         elif not self.vad_available:
-            vad_info = "VAD: Unavailable"
+            vad_info = "Voice detection: unavailable"
         elif mode == 2:
-            vad_info = "VAD: Active | Speech confidence only"
+            vad_info = "Voice detection: on | Speech confidence only"
         elif settings["auto_threshold_enabled"]:
-            vad_info = "VAD: Active | Auto threshold on"
+            vad_info = "Voice detection: on | Auto threshold on"
         else:
-            vad_info = "VAD: Active | Manual threshold"
+            vad_info = "Voice detection: on | Manual threshold"
         return {
             "threshold_status": summary,
             "noise_floor": (
@@ -217,7 +221,7 @@ class GateState(QObject):
             ),
             "vad_info": vad_info,
             "auto_threshold_name": (
-                "Track noise floor" if mode == 2 else auto_threshold_spec.accessible_name
+                "Auto threshold (gate): track noise floor" if mode == 2 else auto_threshold_spec.accessible_name
             ),
             "auto_threshold_tooltip": (
                 "Track the noise floor without changing the VAD speech threshold."

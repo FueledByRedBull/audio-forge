@@ -195,6 +195,8 @@ class CalibrationDialog(QDialog):
         self.curve_group.setVisible(step == 0)
         # The passage stays up before recording so it can be read ahead.
         self.instructions_group.setVisible(step < 2)
+        # Nothing records on the review step, so the live output is back.
+        self.mute_notice.setVisible(step != 2)
         # The meter only matters while something is being recorded.
         for widget in (self.progress_bar, self.time_label, self.level_meter_widget):
             widget.setVisible(step == 1)
@@ -343,7 +345,7 @@ class CalibrationDialog(QDialog):
 
         self.mute_notice = QLabel(LIVE_OUTPUT_MUTED_NOTICE)
         self.mute_notice.setWordWrap(True)
-        self.mute_notice.setStyleSheet(SUBDUED_TEXT_STYLE)
+        self.mute_notice.setStyleSheet(status_chip_style("warn"))
         layout.addWidget(self.mute_notice)
 
         # Recording UI group

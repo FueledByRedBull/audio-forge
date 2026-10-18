@@ -101,29 +101,18 @@ def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str
     if not headroom_safe:
         state = "warn" if state == "ok" else state
 
-    text = (
-        f"Auto-EQ: {explanation.summary} | "
-        f"overall {_percent(confidence)} | "
-        f"EQ {_percent(eq_confidence)} | "
-        f"capture {_percent(capture_confidence)} | "
-        f"validation {_percent(validation_confidence)} | "
-        f"target error {_db_value(before)} -> {_db_value(after)} | "
-        f"gain scale {_percent(scale)}"
-    )
+    # The chip says what happened; the numbers are in the tooltip.
+    text = f"Auto-EQ: {explanation.summary}"
     if used_fallback:
-        text += " | fallback spectrum"
+        text += " | used a fallback spectrum"
     if low_confidence:
-        text += f" | active low-confidence bands {low_confidence}"
+        text += f" | {low_confidence} active bands are low confidence"
+    if not headroom_safe:
+        text += " | not enough headroom"
     if isinstance(headroom_after, dict):
         pre_tp_headroom = headroom_after.get("pre_limiter_true_peak_headroom_db")
         limiter_gr = headroom_after.get("limiter_gain_reduction_db")
         true_peak_gr = headroom_after.get("true_peak_limiter_gain_reduction_db")
-        headroom_status = (
-            "advisory" if headroom_advisory else "safe" if headroom_safe else "risk"
-        )
-        text += " | headroom " + headroom_status + f" TP {_db_value(pre_tp_headroom)}"
-        if headroom_scale is not None and float(headroom_scale) < 1.0:
-            text += f" scale {_percent(headroom_scale)}"
         tooltip_status = (
             "advisory only (Rust simulator unavailable)"
             if headroom_advisory
@@ -141,6 +130,7 @@ def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str
     else:
         tooltip_extra = ""
 
+    low_confidence_line = f"\nActive low-confidence bands: {low_confidence}" if low_confidence else ""
     explanation_details = "\n".join(f"- {detail}" for detail in explanation.details)
     tooltip = (
         "Auto-EQ calibration diagnostics\n"
@@ -158,6 +148,7 @@ def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str
         f"Validation gain scale: {_percent(scale)}\n"
         f"Target profile: {target_profile_text(diagnostics.get('target_profile'))}\n"
         f"Fallback analysis: {'yes' if used_fallback else 'no'}"
+        f"{low_confidence_line}"
         f"{tooltip_extra}"
     )
     return text, state, tooltip

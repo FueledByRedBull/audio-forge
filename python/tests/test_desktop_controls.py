@@ -106,6 +106,7 @@ def test_tray_close_keeps_audio_running_until_explicit_quit() -> None:
         _save_ui_state=lambda: True, processor=Mock(),
         _confirm_discard_changes=lambda: True,
     )
+    owner._hide_to_tray = lambda: MainWindow._hide_to_tray(owner)
     event = Mock()
     MainWindow.closeEvent(owner, event)
     owner.hide.assert_called_once()

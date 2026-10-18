@@ -597,3 +597,19 @@ def test_headroom_advice_names_the_target_loudness_for_the_recordings_part_with_
         purpose="give your own peaks enough room",
         makeup_note=True,
     )
+
+
+def test_the_auto_eq_chip_says_the_result_and_the_numbers_are_in_the_tooltip() -> None:
+    text, _state, tooltip = _format_auto_eq_diagnostics(
+        {
+            "recommendation_status": "apply",
+            "analysis_confidence": 0.82,
+            "validation_before_error_db": 4.2,
+            "validation_after_error_db": 2.1,
+            "low_confidence_active_bands": 2,
+        }
+    )
+
+    assert "%" not in text and " dB" not in text
+    assert "2 active bands are low confidence" in text
+    assert "Overall confidence: 82%" in tooltip and "Active low-confidence bands: 2" in tooltip

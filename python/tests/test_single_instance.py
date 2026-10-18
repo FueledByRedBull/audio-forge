@@ -20,7 +20,7 @@ def test_tray_tooltip_reflects_processing_mute_health_and_route():
         processing=True,
         muted=True,
         health="Healthy",
-        route="Mic -> Cable",
+        route=("Mic", "Cable"),
     )
 
     assert tooltip == "AudioForge: Running / Muted | Health: Healthy | Mic -> Cable"
@@ -240,6 +240,8 @@ def test_login_lifecycle_keeps_hidden_session_alive_and_releases_lock_on_quit(
             )
             self._close_to_tray_action = SimpleNamespace(isChecked=lambda: close_to_tray)
             self._confirm_discard_changes = lambda: True
+            self._quit_choice = lambda: "quit"
+            self._hide_to_tray = lambda: MainWindow._hide_to_tray(cast(MainWindow, self))
             self._unregister_mute_hotkey = lambda: None
             self._save_ui_state = lambda: True
             self.processor = SimpleNamespace(is_running=lambda: False)

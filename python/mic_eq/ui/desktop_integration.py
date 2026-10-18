@@ -28,6 +28,8 @@ from .login_startup import LOGIN_STARTUP_ARGUMENT
 logger = logging.getLogger(__name__)
 
 WM_HOTKEY = 0x0312
+# Windows shows at most 127 characters of a tray tooltip.
+TRAY_TOOLTIP_LIMIT = 127
 
 
 def _windows_user_sid() -> str:
@@ -253,17 +255,36 @@ def build_tray_tooltip(
     processing: bool,
     muted: bool,
     health: str,
-    route: str | None = None,
+    route: tuple[str, str] | None = None,
 ) -> str:
-    """Build the short state summary shown by the tray icon."""
+    """Build the short state summary shown by the tray icon.
+
+    The state comes first. The route is last and its device names are shortened
+    (or it is left out) so that the whole text fits the tray tooltip.
+    """
 
     state = "Running" if processing else "Stopped"
     if muted:
         state += " / Muted"
     parts = [f"AudioForge: {state}", f"Health: {str(health).strip() or 'unknown'}"]
+    summary = " | ".join(parts)
     if route:
-        parts.append(str(route).strip())
-    return " | ".join(parts)[:240]
+        source, destination = (str(name).strip() for name in route)
+        room = TRAY_TOOLTIP_LIMIT - len(summary) - len(" |  -> ")
+        half = room // 2
+        if len(source) <= half:
+            destination = _shorten(destination, room - len(source))
+        elif len(destination) <= half:
+            source = _shorten(source, room - len(destination))
+        else:
+            source, destination = _shorten(source, half), _shorten(destination, room - half)
+        if room >= 8:
+            summary += f" | {source} -> {destination}"
+    return summary[:TRAY_TOOLTIP_LIMIT]
+
+
+def _shorten(text: str, room: int) -> str:
+    return text if len(text) <= room else text[: max(room - 3, 0)] + "..."
 
 
 def activate_window(window: QMainWindow) -> None:

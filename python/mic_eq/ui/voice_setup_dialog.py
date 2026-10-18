@@ -570,6 +570,8 @@ class VoiceSetupDialog(QDialog):
         # The level check is spoken from the passage, so it is shown from the first step on.
         self.voice_group.setVisible(step in (1, 3))
         self.review_page.setVisible(step == 4)
+        # Nothing records on the review step, so the live output is back.
+        self.mute_notice.setVisible(step != 4)
         if "start_button" in self.__dict__:
             suggestions = self._advisory_only and self._setup_state == "completed"
             self.start_button.setStyleSheet("" if suggestions else PRIMARY_ACTION_BUTTON_STYLE)
@@ -801,7 +803,7 @@ class VoiceSetupDialog(QDialog):
 
         self.mute_notice = QLabel(LIVE_OUTPUT_MUTED_NOTICE)
         self.mute_notice.setWordWrap(True)
-        self.mute_notice.setStyleSheet(SUBDUED_TEXT_STYLE)
+        self.mute_notice.setStyleSheet(status_chip_style("warn"))
         layout.addWidget(self.mute_notice)
 
         self.recording_group = QGroupBox("Recording")
@@ -847,7 +849,7 @@ class VoiceSetupDialog(QDialog):
         self.summary_group.setVisible(False)
         self.overall_label = QLabel("Overall: --")
         self.eq_label = QLabel("EQ: --")
-        self.gate_label = QLabel("Gate/VAD: --")
+        self.gate_label = QLabel("Noise gate: --")
         self.deesser_label = QLabel("De-esser: --")
         self.compressor_label = QLabel("Compressor: --")
         for label in (
@@ -1237,9 +1239,7 @@ class VoiceSetupDialog(QDialog):
         self._recent_peak_db.append(peak_db)
 
         if self.setup_state == "noise_recording":
-            message, state = room_noise_message(self._recent_rms_db)
-            self.warning_label.setText(message)
-            self.warning_label.setStyleSheet(message_text_style(state, strong=True))
+            self._show_live_message(*room_noise_message(self._recent_rms_db))
             return
 
         # The loudest of a full window of blocks: the pauses between words are not "quiet".
@@ -1249,8 +1249,15 @@ class VoiceSetupDialog(QDialog):
             again="check again" if self.setup_state == "level_check" else "record again",
         )
         if verdict is not None:
-            self.warning_label.setText(verdict.message)
-            self.warning_label.setStyleSheet(message_text_style(verdict.state, strong=True))
+            self._show_live_message(verdict.message, verdict.state)
+
+    def _show_live_message(self, message: str, state: str) -> None:
+        """Update the live label only when it changed; this runs on every 100 ms poll."""
+        style = message_text_style(state, strong=True)
+        if self.warning_label.text() != message:
+            self.warning_label.setText(message)
+        if self.warning_label.styleSheet() != style:
+            self.warning_label.setStyleSheet(style)
 
     def _finish_level_check(self, audio_data: np.ndarray) -> None:
         """Judge the check from its samples and offer the next step the verdict allows."""

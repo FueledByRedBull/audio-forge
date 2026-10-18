@@ -47,6 +47,7 @@ class ProcessingMeters(QObject):
         }
         if gate_state is not None:
             gate_state.changed.connect(self._render_gate)
+            gate_state.telemetryChanged.connect(self._render_gate)
             self._render_gate()
 
     def _render_gate(self) -> None:

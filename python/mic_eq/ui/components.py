@@ -184,6 +184,8 @@ class StepHeader(QWidget):
         self.set_current(0)
 
     def set_current(self, step: int) -> None:
+        if 0 <= step < len(self._labels):
+            self.setAccessibleName(f"Step {step + 1} of {len(self._labels)}: {self._labels[step].text()}")
         for index, label in enumerate(self._labels):
             label.setStyleSheet(STEP_CURRENT_STYLE if index == step else STEP_STYLE)
 

@@ -30,7 +30,7 @@ from .validation import _coerce_config_bool, _coerce_window_geometry
 
 logger = logging.getLogger(__name__)
 
-CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 2
 _last_blocked_save_reason: str | None = None
 
 INPUT_CHANNEL_MODES = frozenset(
@@ -249,6 +249,7 @@ class AppConfig:
     )
     user_muted: bool = False
     close_to_tray: bool = False
+    confirm_quit_when_live: bool = True
     mute_hotkey: str = ""
     calibration_results: list[CalibrationResult] = field(default_factory=list)
     first_run_setup_state: str = "not_started"
@@ -308,6 +309,7 @@ class AppConfig:
             },
             "user_muted": self.user_muted,
             "close_to_tray": self.close_to_tray,
+            "confirm_quit_when_live": self.confirm_quit_when_live,
             "mute_hotkey": self.mute_hotkey,
             "calibration_results": [result.to_dict() for result in self.calibration_results[-16:]],
             "first_run_setup_state": self.first_run_setup_state,
@@ -471,6 +473,9 @@ class AppConfig:
             route_input_preferences=parsed_route_preferences,
             user_muted=_coerce_config_bool(data.get("user_muted", False), False),
             close_to_tray=_coerce_config_bool(data.get("close_to_tray", False), False),
+            confirm_quit_when_live=_coerce_config_bool(
+                data.get("confirm_quit_when_live", True), True
+            ),
             mute_hotkey=(data["mute_hotkey"] if isinstance(data.get("mute_hotkey"), str)
                          and len(data["mute_hotkey"]) <= 80 else ""),
             calibration_results=parse_calibration_results(data.get("calibration_results")),
@@ -506,9 +511,9 @@ def _migrate_config_data(data: dict) -> dict:
         )
 
     migrated = dict(data)
-    if raw_version < 1:
-        # Pre-schema files used the same field names and are treated as v1.
-        migrated["schema_version"] = 1
+    if raw_version < 2:
+        # Versions 0 and 1 share every field name; the key added in 2 defaults on when absent.
+        migrated["schema_version"] = 2
     return migrated
 
 

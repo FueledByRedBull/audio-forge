@@ -30,6 +30,8 @@ CLIP_HOLD_SECONDS = 3.0
 # (6). The count has no runs in it, so six separate touches also light the tag:
 # it says the signal reached full scale that many times, not that it was held.
 CLIP_FLAT_TOP_SAMPLES = round(48_000 * CLIP_FLAT_TOP_S)
+# The red strip at the top of the bar stays lit this long after a peak at full scale.
+CLIP_STRIP_SECONDS = 0.5
 # How far back peaks are remembered for the health advice.
 RECENT_PEAK_SECONDS = 10.0
 
@@ -58,10 +60,24 @@ class MeterModel(QObject):
     """What every meter view reads: presentation properties and a change signal."""
 
     changed = Signal()
+    # Only when the spoken value differs, so assistive technology is not told about every repaint.
+    valueTextChanged = Signal()
 
     def __init__(self, name: str = "", tip: str = "", parent: QObject | None = None):
         super().__init__(parent)
         self._name, self._tip, self._enabled = name, tip, True
+        self._announced_value: str | None = None
+        self.changed.connect(self._sync_value_text)
+
+    def _sync_value_text(self) -> None:
+        value = self._read_value()
+        if value != self._announced_value:
+            self._announced_value = value
+            self.valueTextChanged.emit()
+
+    def _read_value(self) -> str:
+        """The reading as words, in whole units so that it changes only when it matters."""
+        return ""
 
     def set_enabled(self, enabled: bool) -> None:
         if enabled != self._enabled:
@@ -73,6 +89,7 @@ class MeterModel(QObject):
     enabled = Property(bool, lambda self: self._enabled, set_enabled, notify=changed)
     shown = Property(bool, lambda self: True, constant=True)
     description = Property(str, lambda self: self._describe(), notify=changed)
+    valueText = Property(str, lambda self: self._read_value(), notify=valueTextChanged)
 
     def _describe(self) -> str:
         """What assistive technology adds to the name right now."""
@@ -119,7 +136,8 @@ class LevelMeter(MeterModel):
         self.peak_db = -120.0
         self.peak_hold_db = -120.0
         self.is_clipping = False
-        self.clip_flash_counter = 0
+        self._clip_strip_until = 0.0
+        self._decayed_at = 0.0
         self.clip_marker = False
         self.muted = False
         self.clip_peak_db = self.DB_MIN
@@ -139,9 +157,10 @@ class LevelMeter(MeterModel):
     def _sync_decay_timer(self) -> None:
         active = self.measurement_available and (
             self.clip_marker or (self.peak_available and (
-                self.peak_hold_db > self.DB_MIN or self.clip_flash_counter > 0))
+                self.peak_hold_db > self.DB_MIN or self.is_clipping))
         )
         if active and not self.decay_timer.isActive():
+            self._decayed_at = self.clock()
             self.decay_timer.start()
         elif not active:
             self.decay_timer.stop()
@@ -162,7 +181,7 @@ class LevelMeter(MeterModel):
             self.peak_hold_db = self.peak_db
         if peak_db >= -0.5:
             self.is_clipping = True
-            self.clip_flash_counter = 10
+            self._clip_strip_until = self.clock() + CLIP_STRIP_SECONDS
         self._sync_decay_timer()
         if previous != (self.rms_db, self.peak_db, True, True):
             self.changed.emit()
@@ -269,7 +288,6 @@ class LevelMeter(MeterModel):
         self.rms_db = max(self.DB_MIN, min(self.DB_MAX, rms_db))
         self.peak_db = self.peak_hold_db = self.DB_MIN
         self.is_clipping = False
-        self.clip_flash_counter = 0
         self._sync_decay_timer()
         if previous != (self.rms_db, True, False):
             self.changed.emit()
@@ -279,7 +297,6 @@ class LevelMeter(MeterModel):
         self.measurement_available = self.peak_available = False
         self.rms_db = self.peak_db = self.peak_hold_db = self.DB_MIN
         self.is_clipping = False
-        self.clip_flash_counter = 0
         self._clear_clip()
         self.decay_timer.stop()
         if changed:
@@ -287,18 +304,22 @@ class LevelMeter(MeterModel):
 
     def _decay_peak_hold(self):
         """Decay measured peak hold; stop repainting once it reaches the floor."""
-        previous = (self.peak_hold_db, self.clip_flash_counter, self.clip_marker)
-        self.peak_hold_db = max(self.DB_MIN, self.peak_hold_db - self.PEAK_DECAY_RATE * 0.05)
-        if self.clip_flash_counter > 0:
-            self.clip_flash_counter -= 1
-            if self.clip_flash_counter == 0:
-                self.is_clipping = False
-        if self.clip_marker and self.clock() >= self._clip_until:
+        previous = (self.peak_hold_db, self.is_clipping, self.clip_marker)
+        now = self.clock()
+        # Fall by the time that passed, so a late timer tick does not slow the hold line.
+        self.peak_hold_db = max(self.DB_MIN, self.peak_hold_db - self.PEAK_DECAY_RATE * (now - self._decayed_at))
+        self._decayed_at = now
+        if self.is_clipping and now >= self._clip_strip_until:
+            self.is_clipping = False
+        if self.clip_marker and now >= self._clip_until:
             self.clip_marker = False
             self.clip_peak_db = self.DB_MIN
         self._sync_decay_timer()
-        if previous != (self.peak_hold_db, self.clip_flash_counter, self.clip_marker):
+        if previous != (self.peak_hold_db, self.is_clipping, self.clip_marker):
             self.changed.emit()
+
+    def _read_value(self) -> str:
+        return f"{self.rms_db:.0f} dB" if self.measurement_available else "no signal"
 
     def set_muted(self, muted: bool) -> None:
         """Say that the bars show the level before a mute, which nobody hears."""
@@ -399,7 +420,7 @@ class LevelMeter(MeterModel):
                 )
 
         # Draw clipping indicator at top
-        if self.is_clipping and self.clip_flash_counter % 2 == 0:
+        if self.is_clipping:
             painter.fillRect(2, 0, meter_width - 2, 4, self.COLOR_CLIP)
 
         # Draw label at bottom; while the clip marker is lit a "CLIP" tag replaces it,
@@ -414,7 +435,7 @@ class LevelMeter(MeterModel):
                 painter.drawRoundedRect(
                     QRectF(2, height - label_height + 1, width - 4, label_height - 2), 3, 3
                 )
-                painter.setPen(QPen(qcolor(PALETTE.text_on_accent)))
+                painter.setPen(QPen(qcolor(PALETTE.text_on_data_color)))
             else:
                 painter.setPen(QPen(qcolor(PALETTE.meter_scale)))
             font = QFont()
@@ -441,6 +462,9 @@ class GainReductionMeter(MeterModel):
         super().__init__(name, parent=parent)
         self.measurement_available = False
         self.gain_reduction_db = 0.0
+
+    def _read_value(self) -> str:
+        return f"{self.gain_reduction_db:.0f} dB" if self.measurement_available else "no reading"
 
     def set_gain_reduction(self, db: float | None):
         """Update reduction, keeping unavailable distinct from measured zero."""
@@ -485,6 +509,9 @@ class ConfidenceMeter(MeterModel):
         self.measurement_available = False
         self.confidence = 0.0
         self.threshold = 0.5
+
+    def _read_value(self) -> str:
+        return f"{self.confidence * 100:.0f} percent" if self.measurement_available else "no reading"
 
     def set_confidence(self, value: float | None):
         """Update confidence, or explicitly clear an unavailable measurement."""

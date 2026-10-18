@@ -19,7 +19,7 @@ def test_level_meter_decays_without_any_widget_and_stops_by_itself(qapp):
     assert not meter.decay_timer.isActive()
     meter.set_levels(-20.0, 0.0)
     assert meter.decay_timer.isActive()
-    assert meter.is_clipping and meter.clip_flash_counter == 10
+    assert meter.is_clipping
     _wait(125)
     assert len(ticks) >= 1
     assert meter.peak_hold_db < meter.DB_MAX
@@ -30,7 +30,7 @@ def test_level_meter_decays_without_any_widget_and_stops_by_itself(qapp):
         _wait(50)
     assert not meter.decay_timer.isActive()
     assert meter.peak_hold_db == meter.DB_MIN
-    assert meter.clip_flash_counter == 0 and not meter.is_clipping
+    assert not meter.is_clipping
     assert meter.measurement_available
 
 

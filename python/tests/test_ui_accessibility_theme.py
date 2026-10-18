@@ -3,11 +3,15 @@
 
 from __future__ import annotations
 
+import ctypes
 import re
+import sys
+from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QRect
+from PySide6.QtCore import QEvent, QRect
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QScrollArea, QWidget
 
@@ -24,13 +28,18 @@ from mic_eq.ui.main_window import (
 )
 from mic_eq.ui.level_meter import SCALE_TEXT_GAP, _scale_mark_geometry
 from mic_eq.ui.shell_specs import TEXT_SPECS
+from mic_eq.ui import theme
 from mic_eq.ui.theme import (
     PALETTE,
     TEXT_CONTRAST_PAIRS,
+    SemanticPalette,
     application_palette,
+    application_stylesheet,
+    build_palette,
     contrast_ratio,
     prefers_reduced_motion,
     qcolor,
+    windows_contrast_colors,
 )
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
@@ -171,6 +180,93 @@ def test_ui_sources_do_not_bypass_semantic_color_or_scalable_type_tokens() -> No
     assert violations == []
 
 
+SYSTEM_COLORS = {
+    "window": "#102030", "window_text": "#f0e0d0", "gray_text": "#80ff80",
+    "highlight": "#ffee00", "highlight_text": "#000011",
+}
+
+
+def test_without_a_contrast_theme_the_dark_look_is_unchanged() -> None:
+    dark = build_palette(None)
+    assert dark == SemanticPalette()
+    assert (dark.app_surface, dark.text_primary, dark.accent) == ("#14171c", "#eef1f5", "#f2743a")
+    assert dark.hover_text == dark.text_primary
+
+
+def test_a_contrast_theme_takes_every_surface_text_and_accent_from_the_system() -> None:
+    palette = build_palette(SYSTEM_COLORS)
+    surfaces = [
+        palette.app_surface, palette.rail_surface, palette.card_surface, palette.control_surface,
+        palette.data_surface, palette.status_ok_surface, palette.status_bad_surface,
+        palette.action_secondary,
+    ]
+    assert set(surfaces) == {SYSTEM_COLORS["window"]}
+    assert {palette.text_primary, palette.text_muted, palette.data_text, palette.border} == {
+        SYSTEM_COLORS["window_text"]
+    }
+    assert palette.action_disabled_text == SYSTEM_COLORS["gray_text"]
+    assert (palette.accent, palette.action_primary, palette.control_hover) == (SYSTEM_COLORS["highlight"],) * 3
+    assert (palette.text_on_accent, palette.hover_text) == (SYSTEM_COLORS["highlight_text"],) * 2
+    assert contrast_ratio(palette.text_primary, palette.app_surface) > 10
+    assert "hover_text" in asdict(palette)  # the QML tokens come from this mapping
+
+
+def test_a_white_contrast_theme_keeps_the_peak_line_and_band_numbers_readable() -> None:
+    palette = build_palette({
+        "window": "#ffffff", "window_text": "#000000", "gray_text": "#600000",
+        "highlight": "#37006e", "highlight_text": "#ffffff",
+    })
+    assert contrast_ratio(palette.meter_peak, palette.data_surface) >= 3
+    assert all(
+        contrast_ratio(palette.text_on_data_color, color) >= 4.5
+        for color in (*palette.eq_band_colors, palette.meter_clip)
+    )
+
+
+def test_the_widget_palette_and_stylesheet_follow_the_contrast_theme(monkeypatch) -> None:
+    monkeypatch.setattr(theme, "PALETTE", build_palette(SYSTEM_COLORS))
+    palette = application_palette()
+    assert palette.color(QPalette.ColorRole.Window).name() == SYSTEM_COLORS["window"]
+    assert palette.color(QPalette.ColorRole.WindowText).name() == SYSTEM_COLORS["window_text"]
+    assert palette.color(QPalette.ColorRole.Highlight).name() == SYSTEM_COLORS["highlight"]
+    stylesheet = application_stylesheet()
+    assert SYSTEM_COLORS["window_text"] in stylesheet
+    assert SemanticPalette().app_surface not in stylesheet and SemanticPalette().accent not in stylesheet
+
+
+def _fake_windows(monkeypatch, *, contrast_on: bool) -> None:
+    def parameters(_action, _size, reference, _flags) -> int:
+        reference._obj.dwFlags = 1 if contrast_on else 0
+        return 1
+
+    def sys_color(index: int) -> int:  # 0x00BBGGRR
+        return {5: 0x302010, 8: 0xD0E0F0, 17: 0x80FF80, 13: 0x00EEFF, 14: 0x110000}[index]
+
+    user32 = SimpleNamespace(SystemParametersInfoW=parameters, GetSysColor=sys_color)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(user32=user32), raising=False)
+
+
+def test_windows_contrast_colors_are_read_only_while_a_contrast_theme_is_on(monkeypatch) -> None:
+    _fake_windows(monkeypatch, contrast_on=True)
+    assert windows_contrast_colors() == SYSTEM_COLORS
+    _fake_windows(monkeypatch, contrast_on=False)
+    assert windows_contrast_colors() is None
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert windows_contrast_colors() is None
+
+
+def test_a_changed_contrast_theme_asks_for_a_restart(isolated_main_window, monkeypatch) -> None:
+    window = isolated_main_window
+    monkeypatch.setattr("mic_eq.ui.main_window.windows_contrast_colors", lambda: None)
+    window.status_message.clearMessage()
+    window.changeEvent(QEvent(QEvent.Type.ThemeChange))
+    assert window.status_message.text == ""
+    monkeypatch.setattr("mic_eq.ui.main_window.windows_contrast_colors", lambda: SYSTEM_COLORS)
+    window.changeEvent(QEvent(QEvent.Type.ThemeChange))
+    assert "Restart AudioForge" in window.status_message.text
+
+
 def test_reduced_motion_environment_override(monkeypatch) -> None:
     monkeypatch.setenv("AUDIOFORGE_REDUCED_MOTION", "yes")
     assert prefers_reduced_motion() is True
@@ -286,7 +382,7 @@ def test_first_run_setup_buttons_fit_the_minimum_dialog(
     qapp.processEvents()
 
 
-def test_reduced_motion_lowers_nonessential_meter_refresh(
+def test_reduced_motion_keeps_the_meters_at_their_normal_refresh(
     qapp,
     monkeypatch,
 ) -> None:
@@ -297,7 +393,7 @@ def test_reduced_motion_lowers_nonessential_meter_refresh(
     monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
     window = MainWindow()
-    assert window.meter_timer.interval() == 100
+    assert window.meter_timer.interval() == 16
     window.processor.stop()
     window.close()
     window.deleteLater()

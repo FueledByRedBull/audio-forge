@@ -511,9 +511,9 @@ def _migrate_config_data(data: dict) -> dict:
         )
 
     migrated = dict(data)
-    if raw_version < 2:
-        # Versions 0 and 1 share every field name; the key added in 2 defaults on when absent.
-        migrated["schema_version"] = 2
+    if raw_version < CONFIG_SCHEMA_VERSION:
+        # Older versions share every field name; keys added since default in when absent.
+        migrated["schema_version"] = CONFIG_SCHEMA_VERSION
     return migrated
 
 

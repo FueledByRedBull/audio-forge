@@ -65,9 +65,6 @@ class SemanticPalette:
     status_idle_text: str = "#cbd5e1"
     status_idle_border: str = "#3d4552"
 
-    warning_banner_surface: str = "#d97706"
-    warning_banner_text: str = "#111827"
-
     data_surface: str = "#111419"
     data_surface_raised: str = "#1b1f26"
     data_grid: str = "#333a45"
@@ -170,7 +167,6 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         status_bad_surface=window, status_bad_text=text, status_bad_border=text,
         status_info_surface=window, status_info_text=text, status_info_border=text,
         status_idle_surface=window, status_idle_text=text, status_idle_border=text,
-        warning_banner_surface=accent, warning_banner_text=on_accent,
         data_surface=window, data_surface_raised=window, data_grid=disabled,
         data_text=text, data_text_muted=text, data_curve=text,
         data_marker=accent, data_warning=accent, data_handle_selected=text,
@@ -182,6 +178,13 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
 # switched on while the app runs is picked up at the next start.
 SYSTEM_CONTRAST_COLORS = windows_contrast_colors()
 PALETTE = build_palette(SYSTEM_CONTRAST_COLORS)
+
+
+def contrast_theme_changed() -> bool:
+    """True when Windows contrast colors differ from the ones the styles were built with."""
+
+    return windows_contrast_colors() != SYSTEM_CONTRAST_COLORS
+
 
 RADIUS_CARD = 10
 RADIUS_CONTROL = 6
@@ -286,7 +289,6 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
         PALETTE.action_disabled_text,
         PALETTE.action_disabled_surface,
     ),
-    ("warning banner", PALETTE.warning_banner_text, PALETTE.warning_banner_surface),
     ("success status", PALETTE.status_ok_text, PALETTE.status_ok_surface),
     ("warning status", PALETTE.status_warn_text, PALETTE.status_warn_surface),
     ("error status", PALETTE.status_bad_text, PALETTE.status_bad_surface),
@@ -335,12 +337,14 @@ SUBDUED_TEXT_STYLE = f"font-size: 9pt; color: {PALETTE.text_muted};"
 DESCRIPTION_LABEL_STYLE = f"color: {PALETTE.text_muted}; font-size: 9pt; padding: 5px;"
 PROGRESS_LABEL_STYLE = f"font-size: 12pt; color: {PALETTE.text_primary}; font-weight: bold;"
 
-def _button_style(surface: str, text: str, border: str, hover: str, hover_text: str) -> str:
+def _button_style(
+    surface: str, text: str, border: str, hover: str, hover_text: str | None = None
+) -> str:
     return (
         f"QPushButton {{ background-color: {surface}; color: {text}; "
         f"font-weight: 600; border: 1px solid {border}; "
         f"border-radius: {RADIUS_CONTROL}px; padding: 6px 10px; }} "
-        f"QPushButton:hover {{ background-color: {hover}; color: {hover_text}; }} "
+        f"QPushButton:hover {{ background-color: {hover}; color: {hover_text or text}; }} "
         f"QPushButton:focus {{ border-color: {PALETTE.text_primary}; }} "
         f"QPushButton:disabled {{ background-color: {PALETTE.action_disabled_surface}; "
         f"color: {PALETTE.action_disabled_text}; "
@@ -359,7 +363,6 @@ PRIMARY_ACTION_BUTTON_STYLE = _button_style(
     PALETTE.text_on_accent,
     PALETTE.action_primary,
     PALETTE.accent_hover,
-    PALETTE.text_on_accent,
 )
 
 SECONDARY_ACTION_BUTTON_STYLE = _button_style(

@@ -74,7 +74,7 @@ from .device_selection import (
     start_processor_for_route,
 )
 from .stream_recovery import StreamRecoveryManager
-from .theme import SYSTEM_CONTRAST_COLORS, windows_contrast_colors
+from .theme import contrast_theme_changed
 from .config_history import (
     BoundedConfigurationHistory,
     ConfigurationSnapshot,
@@ -389,6 +389,7 @@ class MainWindow(QMainWindow):
         self.quick_view_graphics_api = "not_applicable"
         self.single_instance = None  # set by the app bootstrap; the relaunch releases it
         self._quitting = False
+        self._quit_dont_ask = False
         self._tray_icon: QSystemTrayIcon | None = None
         self._tray_menu: QMenu | None = None
         self._tray_mute_action: QAction | None = None
@@ -1363,6 +1364,12 @@ class MainWindow(QMainWindow):
         self._close_to_tray_action.toggled.connect(self._on_close_to_tray_toggled)
         desktop_menu.addAction(self._close_to_tray_action)
 
+        confirm_quit_action = QAction("Ask before quitting while audio is running", self)
+        confirm_quit_action.setCheckable(True)
+        confirm_quit_action.setChecked(self.config.confirm_quit_when_live)
+        confirm_quit_action.toggled.connect(self._on_confirm_quit_toggled)
+        desktop_menu.addAction(confirm_quit_action)
+
         self._mute_hotkey_action = QAction(
             f"Enable global mute shortcut ({DEFAULT_MUTE_HOTKEY})", self
         )
@@ -1602,6 +1609,11 @@ class MainWindow(QMainWindow):
             message += "; preference could not be saved"
         self.status_message.showMessage(message, 5000 if not saved else 3000)
 
+    def _on_confirm_quit_toggled(self, checked: bool) -> None:
+        self.config.confirm_quit_when_live = bool(checked)
+        if not self._save_config_safely():
+            self.status_message.showMessage("Preference could not be saved", 5000)
+
     def _on_mute_hotkey_toggled(self, checked: bool) -> None:
         configured_hotkey = DEFAULT_MUTE_HOTKEY if checked else ""
         setattr(self.config, "mute_hotkey", configured_hotkey)
@@ -1699,9 +1711,8 @@ class MainWindow(QMainWindow):
         box.exec()
         clicked = box.clickedButton()
         if clicked is quit_button:
-            # closeEvent saves the config on the way out.
-            if dont_ask.isChecked():
-                self.config.confirm_quit_when_live = False
+            # closeEvent applies it once the quit goes ahead, and saves the config on the way out.
+            self._quit_dont_ask = dont_ask.isChecked()
             return "quit"
         return "tray" if clicked is tray_button else "cancel"
 
@@ -3308,7 +3319,7 @@ class MainWindow(QMainWindow):
         elif (
             event.type() == QEvent.Type.ThemeChange
             and "status_message" in self.__dict__
-            and windows_contrast_colors() != SYSTEM_CONTRAST_COLORS
+            and contrast_theme_changed()
         ):
             self.status_message.showMessage(
                 "Restart AudioForge to match the new Windows contrast colors", 8000
@@ -4039,7 +4050,7 @@ class MainWindow(QMainWindow):
             logger.exception("Auto-recovery failed")
             self.status_message.showMessage(
                 f"AudioForge could not restart the output automatically ({e}). "
-                "Check the device, then press Start Processing.",
+                "Check the device, then press Start.",
                 5000,
             )
             self.start_btn_action.setEnabled(True)
@@ -4512,17 +4523,20 @@ class MainWindow(QMainWindow):
                 choice = "tray"
             else:
                 choice = self._quit_choice()
+            if choice == "tray":
+                self._hide_to_tray()
             if choice != "quit":
-                if choice == "tray":
-                    self._hide_to_tray()
                 event.ignore()
                 return
 
         if not self._confirm_discard_changes():
             self._quitting = False
+            self._quit_dont_ask = False
             event.ignore()
             return
         self._quitting = True
+        if self._quit_dont_ask:
+            self.config.confirm_quit_when_live = False
         self._unregister_mute_hotkey()
         if self._tray_icon is not None:
             self._tray_icon.hide()

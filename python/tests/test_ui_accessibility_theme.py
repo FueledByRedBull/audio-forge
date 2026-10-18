@@ -6,7 +6,7 @@ from __future__ import annotations
 import ctypes
 import re
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,6 +37,7 @@ from mic_eq.ui.theme import (
     application_stylesheet,
     build_palette,
     contrast_ratio,
+    contrast_theme_changed,
     prefers_reduced_motion,
     qcolor,
     windows_contrast_colors,
@@ -211,6 +212,19 @@ def test_a_contrast_theme_takes_every_surface_text_and_accent_from_the_system() 
     assert "hover_text" in asdict(palette)  # the QML tokens come from this mapping
 
 
+# Data colors a contrast theme keeps on purpose; every other token must follow the system.
+KEPT_UNDER_CONTRAST_THEME = {
+    "eq_band_colors", "text_on_data_color",
+    "meter_safe", "meter_caution", "meter_danger", "meter_clip", "meter_reduction",
+}
+
+
+def test_every_color_token_follows_the_contrast_theme_or_is_kept_on_purpose() -> None:
+    dark, contrast = SemanticPalette(), build_palette(SYSTEM_COLORS)
+    followed = {f.name for f in fields(dark) if getattr(contrast, f.name) != getattr(dark, f.name)}
+    assert {f.name for f in fields(dark)} - followed == KEPT_UNDER_CONTRAST_THEME
+
+
 def test_a_white_contrast_theme_keeps_the_peak_line_and_band_numbers_readable() -> None:
     palette = build_palette({
         "window": "#ffffff", "window_text": "#000000", "gray_text": "#600000",
@@ -258,11 +272,14 @@ def test_windows_contrast_colors_are_read_only_while_a_contrast_theme_is_on(monk
 
 def test_a_changed_contrast_theme_asks_for_a_restart(isolated_main_window, monkeypatch) -> None:
     window = isolated_main_window
-    monkeypatch.setattr("mic_eq.ui.main_window.windows_contrast_colors", lambda: None)
+    monkeypatch.setattr(theme, "SYSTEM_CONTRAST_COLORS", None)
+    monkeypatch.setattr(theme, "windows_contrast_colors", lambda: None)
+    assert not contrast_theme_changed()
     window.status_message.clearMessage()
     window.changeEvent(QEvent(QEvent.Type.ThemeChange))
     assert window.status_message.text == ""
-    monkeypatch.setattr("mic_eq.ui.main_window.windows_contrast_colors", lambda: SYSTEM_COLORS)
+    monkeypatch.setattr(theme, "windows_contrast_colors", lambda: SYSTEM_COLORS)
+    assert contrast_theme_changed()
     window.changeEvent(QEvent(QEvent.Type.ThemeChange))
     assert "Restart AudioForge" in window.status_message.text
 

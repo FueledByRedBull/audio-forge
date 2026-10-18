@@ -83,8 +83,13 @@ def test_stopped_audio_quits_without_asking(live_window, answers):
     assert answers.asked == []
 
 
-def test_live_audio_asks_and_cancel_keeps_everything_running(live_window, answers):
-    assert not _close(live_window)
+def _quit_from_tray(window: Any) -> None:
+    window._quit_from_tray()
+
+
+@pytest.mark.parametrize("attempt", [_close, _quit_from_tray])
+def test_live_audio_asks_and_cancel_keeps_everything_running(live_window, answers, attempt):
+    attempt(live_window)
     assert answers.asked == [["Quit", "Cancel"]]
     assert live_window.processor.running and not live_window._quitting
 
@@ -132,11 +137,54 @@ def test_dont_ask_again_is_remembered_only_for_quit(live_window, answers, monkey
     assert not live_window.config.confirm_quit_when_live and False in saves
 
 
+@pytest.mark.parametrize("attempt", [_close, _quit_from_tray])
+def test_dont_ask_again_waits_for_the_quit_to_go_ahead(
+    live_window, answers, attempt, monkeypatch
+):
+    monkeypatch.setattr(QGuiApplication, "quit", staticmethod(lambda: None))
+    answers.reply.update(button="Quit", dont_ask=True)
+    discard = {"allowed": False}
+    monkeypatch.setattr(live_window, "_confirm_discard_changes", lambda: discard["allowed"])
+
+    attempt(live_window)
+    assert live_window.config.confirm_quit_when_live and live_window.processor.running
+
+    discard["allowed"] = True
+    attempt(live_window)
+    assert not live_window.config.confirm_quit_when_live
+
+
 def test_dont_ask_again_suppresses_the_question(live_window, answers):
     live_window.config.confirm_quit_when_live = False
 
     assert _close(live_window)
     assert answers.asked == [] and not live_window.processor.running
+
+
+def test_the_question_can_be_switched_back_on_from_settings(live_window, answers, monkeypatch):
+    saves: list[bool] = []
+    monkeypatch.setattr(
+        "mic_eq.ui.main_window.save_config",
+        lambda config: saves.append(config.confirm_quit_when_live) or True,
+    )
+    label = "Ask before quitting while audio is running"
+    action = next(
+        row["proxy"].action
+        for card in live_window.shell_settings_cards
+        for row in card["rows"]
+        if row["proxy"].text == label
+    )
+    assert action.isChecked()
+
+    action.setChecked(False)
+    assert not live_window.config.confirm_quit_when_live and saves == [False]
+    assert _close(live_window) and answers.asked == []
+
+    live_window._quitting = False
+    live_window.processor.running = True
+    action.setChecked(True)
+    assert live_window.config.confirm_quit_when_live and saves[-1] is True
+    assert not _close(live_window) and answers.asked == [["Quit", "Cancel"]]
 
 
 @pytest.mark.parametrize("close_to_tray", [False, True])
@@ -169,13 +217,6 @@ def test_tray_quit_asks_once_then_asks_about_unsaved_changes(live_window, answer
 
     assert answers.asked == [["Quit", "Cancel"], "Unsaved Sound Changes"]
     assert not live_window.processor.running
-
-
-def test_tray_quit_can_be_cancelled(live_window, answers):
-    live_window._quit_from_tray()
-
-    assert answers.asked == [["Quit", "Cancel"]]
-    assert live_window.processor.running and not live_window._quitting
 
 
 def test_tray_quit_keep_running_hides_the_window(live_window, answers):

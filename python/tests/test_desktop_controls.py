@@ -99,7 +99,8 @@ def test_processing_mode_updates_both_native_flags() -> None:
 
 def test_tray_close_keeps_audio_running_until_explicit_quit() -> None:
     owner: Any = SimpleNamespace(
-        _quitting=False, _tray_icon=SimpleNamespace(isVisible=lambda: True, hide=Mock(), showMessage=Mock()),
+        _quitting=False, _quit_dont_ask=False,
+        _tray_icon=SimpleNamespace(isVisible=lambda: True, hide=Mock(), showMessage=Mock()),
         _close_to_tray_action=SimpleNamespace(isChecked=lambda: True), hide=Mock(),
         status_message=Mock(), _unregister_mute_hotkey=Mock(), config=SimpleNamespace(),
         normalGeometry=lambda: QRect(0, 0, 1280, 850), isMaximized=lambda: False,

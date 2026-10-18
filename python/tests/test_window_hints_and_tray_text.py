@@ -6,9 +6,11 @@ from typing import Any
 from unittest.mock import Mock
 
 import numpy as np
+from PySide6.QtGui import QAccessible
 from PySide6.QtWidgets import QWidget
 
 from mic_eq.ui import latency_calibration_dialog as latency_ui
+from mic_eq.ui.components import StepHeader
 from mic_eq.ui.control_specs import control_label
 from mic_eq.ui.desktop_integration import TRAY_TOOLTIP_LIMIT, build_tray_tooltip
 from mic_eq.ui.health import advice_for
@@ -160,8 +162,6 @@ def test_a_failed_device_listing_leaves_the_list_empty_and_says_so_in_the_warnin
 
 
 def test_the_step_header_names_the_current_step(qapp):
-    from mic_eq.ui.components import StepHeader
-
     header = StepHeader(("Level", "Record", "Review"))
     assert header.accessibleName() == "Step 1 of 3: Level"
     header.set_current(2)
@@ -169,8 +169,6 @@ def test_the_step_header_names_the_current_step(qapp):
 
 
 def test_a_new_status_message_is_announced_once(isolated_main_window, monkeypatch):
-    from PySide6.QtGui import QAccessible
-
     sent: list[str] = []
     monkeypatch.setattr(QAccessible, "isActive", staticmethod(lambda: True))
     monkeypatch.setattr(QAccessible, "updateAccessibility", staticmethod(lambda event: sent.append(event.__class__.__name__)))

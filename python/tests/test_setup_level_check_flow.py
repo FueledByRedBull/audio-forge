@@ -453,7 +453,7 @@ def _says_live_output_is_muted(label) -> bool:
 
 
 def test_voice_setup_says_the_live_output_is_muted_while_it_records(voice) -> None:
-    assert _says_live_output_is_muted(voice.mute_notice)
+    assert not _says_live_output_is_muted(voice.mute_notice)
 
     voice._on_start_clicked()
 
@@ -461,7 +461,7 @@ def test_voice_setup_says_the_live_output_is_muted_while_it_records(voice) -> No
 
 
 def test_auto_eq_says_the_live_output_is_muted_while_it_records(auto_eq) -> None:
-    assert _says_live_output_is_muted(auto_eq.mute_notice)
+    assert not _says_live_output_is_muted(auto_eq.mute_notice)
 
     auto_eq._on_start_clicked()
     auto_eq._capture_start_timer.stop()
@@ -469,19 +469,26 @@ def test_auto_eq_says_the_live_output_is_muted_while_it_records(auto_eq) -> None
     assert _says_live_output_is_muted(auto_eq.mute_notice)
 
 
-def test_the_mute_notice_is_a_warning_chip_that_goes_away_on_the_review_step(voice, auto_eq) -> None:
+def test_the_mute_notice_is_a_warning_chip_shown_only_while_a_recording_mutes_the_output(
+    voice, auto_eq
+) -> None:
     from mic_eq.ui.theme import status_chip_style
 
     voice.show()
     auto_eq.show()
-    for dialog, review_state in ((voice, "completed"), (auto_eq, "ready")):
-        assert dialog.mute_notice.styleSheet() == status_chip_style("warn")
-        assert dialog.mute_notice.isVisibleTo(dialog)
+    for dialog, recording_states, other_states in (
+        (voice, ("level_check", "noise_recording", "voice_recording", "verification_recording"),
+         ("idle", "level_result", "capture_analyzing", "noise_ready", "completed")),
+        (auto_eq, ("level_check", "recording"), ("idle", "level_result", "capture_analyzing", "ready")),
+    ):
         attribute = "setup_state" if dialog is voice else "recording_state"
-        setattr(dialog, attribute, review_state)
-        assert not dialog.mute_notice.isVisibleTo(dialog)
-        setattr(dialog, attribute, "idle")
-        assert dialog.mute_notice.isVisibleTo(dialog)
+        assert dialog.mute_notice.styleSheet() == status_chip_style("warn")
+        for state in recording_states:
+            setattr(dialog, attribute, state)
+            assert dialog.mute_notice.isVisibleTo(dialog), state
+        for state in other_states:
+            setattr(dialog, attribute, state)
+            assert not dialog.mute_notice.isVisibleTo(dialog), state
 
 
 def test_the_live_message_is_not_restyled_while_it_stays_the_same(voice, monkeypatch) -> None:

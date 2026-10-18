@@ -332,7 +332,7 @@ impl EqBand {
             };
             section.set_parameters_immediate(filter_type, self.config.frequency_hz, gain_db, q);
             // Also drop the filter memory, so a NaN cannot survive the reset.
-            section.reset();
+            section.clear_state();
         }
         self.processing_sections = target_sections;
         self.target_sections = target_sections;

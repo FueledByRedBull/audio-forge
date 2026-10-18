@@ -213,6 +213,77 @@ pub(crate) mod test_signal {
     }
 }
 
+/// Source scans of the realtime code: the `RT_REGION_START: name` ..
+/// `RT_REGION_END: name` regions and the helpers cut out of them by name.
+#[cfg(test)]
+pub(crate) mod rt_scan {
+    /// Blocking, allocating, freeing, formatting and logging APIs the RT path
+    /// must not reach.
+    const FORBIDDEN: [&str; 16] = [
+        ".lock()",
+        "try_lock",
+        ".reserve(",
+        ".resize(",
+        ".to_vec(",
+        ".drain(",
+        "drop(",
+        "format!",
+        "println!",
+        "eprintln!",
+        "processor_debug_log!",
+        "std::mem::forget",
+        "vec!",
+        "Vec::",
+        "Box::new",
+        "String::",
+    ];
+
+    const START: &str = "RT_REGION_START: ";
+
+    /// The body of the region `name` (between its marker lines).
+    pub(crate) fn marked_region<'a>(source: &'a str, name: &str) -> &'a str {
+        let start_marker = format!("{START}{name}");
+        let end_marker = format!("RT_REGION_END: {name}");
+        let start = source
+            .find(&start_marker)
+            .unwrap_or_else(|| panic!("missing {start_marker}"));
+        let body_start = source[start..]
+            .find('\n')
+            .map_or(start, |offset| start + offset + 1);
+        let end = source[body_start..]
+            .find(&end_marker)
+            .map(|offset| body_start + offset)
+            .unwrap_or_else(|| panic!("missing {end_marker}"));
+        &source[body_start..end]
+    }
+
+    pub(crate) fn assert_rt_clean(label: &str, text: &str) {
+        for pattern in FORBIDDEN {
+            assert!(
+                !text.contains(pattern),
+                "{label} contains forbidden RT pattern {pattern}"
+            );
+        }
+    }
+
+    /// Check every marked region of `source`; returns their names.
+    pub(crate) fn assert_marked_regions_clean<'a>(file: &str, source: &'a str) -> Vec<&'a str> {
+        let names: Vec<&str> = source
+            .match_indices(START)
+            .map(|(index, _)| {
+                source[index + START.len()..]
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_else(|| panic!("{file}: unnamed RT region"))
+            })
+            .collect();
+        for name in &names {
+            assert_rt_clean(&format!("{file}:{name}"), marked_region(source, name));
+        }
+        names
+    }
+}
+
 // Re-export main types
 pub use audio::{AudioProcessor, PyAudioProcessor};
 pub use dsp::{Biquad, Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ, RNNoiseProcessor};
@@ -221,21 +292,32 @@ pub use dsp::{Biquad, Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ, RNN
 /// `PanicException` derives from `BaseException`, which the app's
 /// `except Exception` handlers do not catch.
 pub(crate) fn catch_panic<T>(body: impl FnOnce() -> PyResult<T>) -> PyResult<T> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or_else(|_| {
-        Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "internal error: the native audio core panicked",
-        ))
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or_else(|payload| {
+        Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "internal error: the native audio core panicked: {}",
+            panic_message(payload.as_ref())
+        )))
     })
 }
 
-const MIN_EQ_SAMPLE_RATE: f64 = 8_000.0;
-const MAX_EQ_SAMPLE_RATE: f64 = 768_000.0;
+/// The text a panic carried (`panic!` with a literal or a formatted message).
+pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_string())
+}
 
-fn validate_eq_sample_rate(sample_rate: f64) -> PyResult<()> {
-    if !sample_rate.is_finite() || !(MIN_EQ_SAMPLE_RATE..=MAX_EQ_SAMPLE_RATE).contains(&sample_rate)
-    {
+const MIN_SAMPLE_RATE: f64 = 8_000.0;
+const MAX_SAMPLE_RATE: f64 = 768_000.0;
+
+/// The sample-rate range the offline entry points accept (EQ responses,
+/// simulators, the resampler).
+pub(crate) fn validate_sample_rate(sample_rate: f64) -> PyResult<()> {
+    if !sample_rate.is_finite() || !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&sample_rate) {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "sample_rate must be finite and between {MIN_EQ_SAMPLE_RATE:.0} and {MAX_EQ_SAMPLE_RATE:.0} Hz"
+            "sample_rate must be finite and between {MIN_SAMPLE_RATE:.0} and {MAX_SAMPLE_RATE:.0} Hz"
         )));
     }
     Ok(())
@@ -247,52 +329,46 @@ fn eq_magnitude_response(
     bands: Vec<(f64, f64, f64)>,
     sample_rate: f64,
 ) -> PyResult<Vec<f64>> {
-    catch_panic(|| eq_magnitude_response_impl(frequencies_hz, bands, sample_rate))
-}
+    catch_panic(|| {
+        validate_sample_rate(sample_rate)?;
+        if bands.len() != dsp::eq::NUM_BANDS {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "expected {} EQ bands, got {}",
+                dsp::eq::NUM_BANDS,
+                bands.len()
+            )));
+        }
+        let nyquist = sample_rate / 2.0;
+        for (index, (frequency_hz, gain_db, q)) in bands.iter().copied().enumerate() {
+            dsp::eq::validate_eq_frequency_hz(frequency_hz, sample_rate)
+                .and_then(|()| dsp::eq::validate_eq_gain_db(gain_db))
+                .and_then(|()| dsp::eq::validate_eq_q(q))
+                .map_err(|message| {
+                    pyo3::exceptions::PyValueError::new_err(format!("band {index}: {message}"))
+                })?;
+        }
+        if frequencies_hz.iter().any(|frequency_hz| {
+            !frequency_hz.is_finite() || *frequency_hz < 0.0 || *frequency_hz > nyquist
+        }) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "response frequencies must be finite and between 0 Hz and Nyquist",
+            ));
+        }
 
-fn eq_magnitude_response_impl(
-    frequencies_hz: Vec<f64>,
-    bands: Vec<(f64, f64, f64)>,
-    sample_rate: f64,
-) -> PyResult<Vec<f64>> {
-    validate_eq_sample_rate(sample_rate)?;
-    if bands.len() != dsp::eq::NUM_BANDS {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "expected {} EQ bands, got {}",
-            dsp::eq::NUM_BANDS,
-            bands.len()
-        )));
-    }
-    let nyquist = sample_rate / 2.0;
-    for (index, (frequency_hz, gain_db, q)) in bands.iter().copied().enumerate() {
-        dsp::eq::validate_eq_frequency_hz(frequency_hz, sample_rate)
-            .and_then(|()| dsp::eq::validate_eq_gain_db(gain_db))
-            .and_then(|()| dsp::eq::validate_eq_q(q))
-            .map_err(|message| {
-                pyo3::exceptions::PyValueError::new_err(format!("band {index}: {message}"))
-            })?;
-    }
-    if frequencies_hz.iter().any(|frequency_hz| {
-        !frequency_hz.is_finite() || *frequency_hz < 0.0 || *frequency_hz > nyquist
-    }) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "response frequencies must be finite and between 0 Hz and Nyquist",
-        ));
-    }
-
-    let mut eq = ParametricEQ::new(sample_rate);
-    for (index, (frequency_hz, gain_db, q)) in bands.into_iter().enumerate() {
-        eq.set_band_frequency(index, frequency_hz);
-        eq.set_band_gain(index, gain_db);
-        eq.set_band_q(index, q);
-    }
-    Ok(eq.magnitude_response_db(&frequencies_hz))
+        let mut eq = ParametricEQ::new(sample_rate);
+        for (index, (frequency_hz, gain_db, q)) in bands.into_iter().enumerate() {
+            eq.set_band_frequency(index, frequency_hz);
+            eq.set_band_gain(index, gain_db);
+            eq.set_band_q(index, q);
+        }
+        Ok(eq.magnitude_response_db(&frequencies_hz))
+    })
 }
 
 type PyEqBandV2 = (String, f64, f64, f64, u8, bool);
 
 fn parse_eq_v2_bands(bands: &[PyEqBandV2], sample_rate: f64) -> PyResult<Vec<dsp::EqBandConfig>> {
-    validate_eq_sample_rate(sample_rate)?;
+    validate_sample_rate(sample_rate)?;
     if bands.len() != dsp::eq::NUM_BANDS {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "expected {} EQ bands, got {}",
@@ -330,29 +406,23 @@ fn eq_magnitude_response_v2(
     bands: Vec<PyEqBandV2>,
     sample_rate: f64,
 ) -> PyResult<Vec<f64>> {
-    catch_panic(|| eq_magnitude_response_v2_impl(frequencies_hz, bands, sample_rate))
-}
+    catch_panic(|| {
+        let configs = parse_eq_v2_bands(&bands, sample_rate)?;
+        let nyquist = sample_rate / 2.0;
+        if frequencies_hz.iter().any(|frequency_hz| {
+            !frequency_hz.is_finite() || *frequency_hz < 0.0 || *frequency_hz > nyquist
+        }) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "response frequencies must be finite and between 0 Hz and Nyquist",
+            ));
+        }
 
-fn eq_magnitude_response_v2_impl(
-    frequencies_hz: Vec<f64>,
-    bands: Vec<PyEqBandV2>,
-    sample_rate: f64,
-) -> PyResult<Vec<f64>> {
-    let configs = parse_eq_v2_bands(&bands, sample_rate)?;
-    let nyquist = sample_rate / 2.0;
-    if frequencies_hz.iter().any(|frequency_hz| {
-        !frequency_hz.is_finite() || *frequency_hz < 0.0 || *frequency_hz > nyquist
-    }) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "response frequencies must be finite and between 0 Hz and Nyquist",
-        ));
-    }
-
-    let mut eq = ParametricEQ::new(sample_rate);
-    for (index, config) in configs.into_iter().enumerate() {
-        eq.set_band_config(index, config);
-    }
-    Ok(eq.magnitude_response_db(&frequencies_hz))
+        let mut eq = ParametricEQ::new(sample_rate);
+        for (index, config) in configs.into_iter().enumerate() {
+            eq.set_band_config(index, config);
+        }
+        Ok(eq.magnitude_response_db(&frequencies_hz))
+    })
 }
 
 #[pyfunction]
@@ -364,79 +434,17 @@ fn simulate_eq_v2(
     bands: Vec<PyEqBandV2>,
     return_output_audio: bool,
 ) -> PyResult<Py<PyAny>> {
-    crate::catch_panic(|| simulate_eq_v2_impl(py, audio, sample_rate, bands, return_output_audio))
-}
-
-fn simulate_eq_v2_impl(
-    py: Python<'_>,
-    audio: numpy::PyReadonlyArray1<'_, f32>,
-    sample_rate: f64,
-    bands: Vec<PyEqBandV2>,
-    return_output_audio: bool,
-) -> PyResult<Py<PyAny>> {
-    let configs = parse_eq_v2_bands(&bands, sample_rate)?;
-    let input = audio.as_slice()?.to_vec();
-    if input.iter().any(|sample| !sample.is_finite()) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "audio must contain only finite samples",
-        ));
-    }
-    let sample_count = input.len();
-
-    let (
-        output,
-        input_peak,
-        output_peak,
-        input_true_peak,
-        output_true_peak,
-        input_rms,
-        output_rms,
-        max_response_db,
-        runtime_ms,
-        non_finite_output,
-    ) = py.detach(move || {
-        let mut eq = ParametricEQ::new(sample_rate);
-        for (index, config) in configs.into_iter().enumerate() {
-            eq.set_band_config(index, config);
+    crate::catch_panic(|| {
+        let configs = parse_eq_v2_bands(&bands, sample_rate)?;
+        let input = audio.as_slice()?.to_vec();
+        if input.iter().any(|sample| !sample.is_finite()) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "audio must contain only finite samples",
+            ));
         }
-        eq.reset();
+        let sample_count = input.len();
 
-        let mut output = input.clone();
-        let started = Instant::now();
-        eq.process_block_inplace(&mut output);
-        let runtime_ms = started.elapsed().as_secs_f64() * 1000.0;
-
-        let input_square_sum = input
-            .iter()
-            .map(|sample| f64::from(*sample) * f64::from(*sample))
-            .sum::<f64>();
-        let output_square_sum = output
-            .iter()
-            .map(|sample| f64::from(*sample) * f64::from(*sample))
-            .sum::<f64>();
-        let divisor = input.len().max(1) as f64;
-        let input_peak = input
-            .iter()
-            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
-        let output_peak = output
-            .iter()
-            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
-        let mut input_true_peak_detector = dsp::TruePeakDetector::new();
-        let mut output_true_peak_detector = dsp::TruePeakDetector::new();
-        let input_true_peak = input_true_peak_detector.process_block(&input);
-        let output_true_peak = output_true_peak_detector.process_block(&output);
-        let response_frequencies = (0..512)
-            .map(|index| 20.0 * (20_000.0_f64 / 20.0).powf(index as f64 / 511.0))
-            .collect::<Vec<_>>();
-        let max_response_db = eq
-            .magnitude_response_db(&response_frequencies)
-            .into_iter()
-            .fold(f64::NEG_INFINITY, f64::max);
-        let input_rms = (input_square_sum / divisor).sqrt();
-        let output_rms = (output_square_sum / divisor).sqrt();
-        let non_finite_output = output.iter().any(|sample| !sample.is_finite());
-
-        (
+        let (
             output,
             input_peak,
             output_peak,
@@ -447,25 +455,79 @@ fn simulate_eq_v2_impl(
             max_response_db,
             runtime_ms,
             non_finite_output,
-        )
-    });
+        ) = py.detach(move || {
+            let mut eq = ParametricEQ::new(sample_rate);
+            for (index, config) in configs.into_iter().enumerate() {
+                eq.set_band_config(index, config);
+            }
+            eq.reset();
 
-    let diagnostics = pyo3::types::PyDict::new(py);
-    diagnostics.set_item("input_sample_peak", input_peak)?;
-    diagnostics.set_item("output_sample_peak", output_peak)?;
-    diagnostics.set_item("input_true_peak", input_true_peak)?;
-    diagnostics.set_item("output_true_peak", output_true_peak)?;
-    diagnostics.set_item("input_rms", input_rms)?;
-    diagnostics.set_item("output_rms", output_rms)?;
-    diagnostics.set_item("max_response_db", max_response_db)?;
-    diagnostics.set_item("runtime_ms", runtime_ms)?;
-    diagnostics.set_item("sample_count", sample_count)?;
-    diagnostics.set_item("algorithmic_latency_samples", 0)?;
-    diagnostics.set_item("non_finite_output", non_finite_output)?;
-    if return_output_audio {
-        diagnostics.set_item("output_audio", numpy::PyArray1::from_vec(py, output))?;
-    }
-    Ok(diagnostics.into_any().unbind())
+            let mut output = input.clone();
+            let started = Instant::now();
+            eq.process_block_inplace(&mut output);
+            let runtime_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+            let input_square_sum = input
+                .iter()
+                .map(|sample| f64::from(*sample) * f64::from(*sample))
+                .sum::<f64>();
+            let output_square_sum = output
+                .iter()
+                .map(|sample| f64::from(*sample) * f64::from(*sample))
+                .sum::<f64>();
+            let divisor = input.len().max(1) as f64;
+            let input_peak = input
+                .iter()
+                .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+            let output_peak = output
+                .iter()
+                .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+            let mut input_true_peak_detector = dsp::TruePeakDetector::new();
+            let mut output_true_peak_detector = dsp::TruePeakDetector::new();
+            let input_true_peak = input_true_peak_detector.process_block(&input);
+            let output_true_peak = output_true_peak_detector.process_block(&output);
+            let response_frequencies = (0..512)
+                .map(|index| 20.0 * (20_000.0_f64 / 20.0).powf(index as f64 / 511.0))
+                .collect::<Vec<_>>();
+            let max_response_db = eq
+                .magnitude_response_db(&response_frequencies)
+                .into_iter()
+                .fold(f64::NEG_INFINITY, f64::max);
+            let input_rms = (input_square_sum / divisor).sqrt();
+            let output_rms = (output_square_sum / divisor).sqrt();
+            let non_finite_output = output.iter().any(|sample| !sample.is_finite());
+
+            (
+                output,
+                input_peak,
+                output_peak,
+                input_true_peak,
+                output_true_peak,
+                input_rms,
+                output_rms,
+                max_response_db,
+                runtime_ms,
+                non_finite_output,
+            )
+        });
+
+        let diagnostics = pyo3::types::PyDict::new(py);
+        diagnostics.set_item("input_sample_peak", input_peak)?;
+        diagnostics.set_item("output_sample_peak", output_peak)?;
+        diagnostics.set_item("input_true_peak", input_true_peak)?;
+        diagnostics.set_item("output_true_peak", output_true_peak)?;
+        diagnostics.set_item("input_rms", input_rms)?;
+        diagnostics.set_item("output_rms", output_rms)?;
+        diagnostics.set_item("max_response_db", max_response_db)?;
+        diagnostics.set_item("runtime_ms", runtime_ms)?;
+        diagnostics.set_item("sample_count", sample_count)?;
+        diagnostics.set_item("algorithmic_latency_samples", 0)?;
+        diagnostics.set_item("non_finite_output", non_finite_output)?;
+        if return_output_audio {
+            diagnostics.set_item("output_audio", numpy::PyArray1::from_vec(py, output))?;
+        }
+        Ok(diagnostics.into_any().unbind())
+    })
 }
 
 #[pyfunction]
@@ -639,9 +701,12 @@ mod boundary_tests",
             )
             .unwrap()];
         let api = include_str!("audio/processor/python_api.rs");
+        let device = include_str!("audio/device.rs");
+        let resampling = include_str!("audio/processor/resampling.rs");
         let mut checked = 0;
-        for source in [production, api] {
-            for chunk in source.split("#[pyfunction]").skip(1) {
+        for source in [production, api, device, resampling] {
+            // Also `#[pyfunction(name = ...)]`.
+            for chunk in source.split("#[pyfunction").skip(1) {
                 let body = &chunk[..chunk
                     .find(
                         "
@@ -657,7 +722,7 @@ mod boundary_tests",
                 checked += 1;
             }
         }
-        assert!(checked >= 11, "only {checked} pyfunctions found");
+        assert!(checked >= 15, "only {checked} pyfunctions found");
     }
 
     #[test]
@@ -668,6 +733,10 @@ mod boundary_tests",
             let error = guarded.call0().unwrap_err();
             assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
             assert!(error.is_instance_of::<pyo3::exceptions::PyException>(py));
+            assert!(
+                error.to_string().contains("test panic"),
+                "the panic message is lost: {error}"
+            );
         });
     }
 }

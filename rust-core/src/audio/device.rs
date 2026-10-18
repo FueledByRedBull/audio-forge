@@ -196,13 +196,13 @@ fn collect_devices(input: bool) -> PyResult<Vec<DeviceInfo>> {
 /// List all available input (microphone) devices.
 #[pyfunction]
 pub fn list_input_devices() -> PyResult<Vec<DeviceInfo>> {
-    collect_devices(true)
+    crate::catch_panic(|| collect_devices(true))
 }
 
 /// List all available output devices.
 #[pyfunction]
 pub fn list_output_devices() -> PyResult<Vec<DeviceInfo>> {
-    collect_devices(false)
+    crate::catch_panic(|| collect_devices(false))
 }
 
 #[cfg(test)]

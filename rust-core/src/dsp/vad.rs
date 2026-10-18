@@ -12,7 +12,9 @@ use ndarray::{Array3, ArrayView1, ArrayView2};
 use ort::{session::builder::GraphOptimizationLevel, session::Session, value::TensorRef};
 use std::env;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
+
+use super::util::unit_or;
 use thiserror::Error;
 
 /// Gate operating modes
@@ -24,6 +26,18 @@ pub enum GateMode {
     VadAssisted,
     /// VAD-only: gate opens solely based on speech probability
     VadOnly,
+}
+
+impl GateMode {
+    /// The mode for its wire value (0, 1 or 2), as Python and the atomics carry it.
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::ThresholdOnly),
+            1 => Some(Self::VadAssisted),
+            2 => Some(Self::VadOnly),
+            _ => None,
+        }
+    }
 }
 
 /// Silero VAD sample rate (model trained at 16kHz)
@@ -243,7 +257,7 @@ impl SileroVAD {
         ensure_ort_telemetry_disabled()?;
         let model_path = Self::find_model_path(env::var("VAD_MODEL_PATH").ok())?;
         // Hash and load the same bytes so the file cannot change in between.
-        let model_bytes = read_pinned_silero_model(&model_path)?;
+        let model_bytes = cached_pinned_silero_model(&model_path)?;
 
         // Create ONNX Runtime session with ort 2.0 API
         let session = Session::builder()
@@ -284,7 +298,7 @@ impl SileroVAD {
         Ok(Self {
             session,
             sample_rate,
-            threshold: unit_threshold_or(threshold, DEFAULT_VAD_THRESHOLD),
+            threshold: unit_or(threshold, DEFAULT_VAD_THRESHOLD),
             resample_ratio,
             resample_kernel,
             buffer: Vec::with_capacity(window_size * 4),
@@ -478,7 +492,7 @@ impl SileroVAD {
 
     /// Set speech detection threshold
     pub fn set_threshold(&mut self, threshold: f32) {
-        self.threshold = unit_threshold_or(threshold, self.threshold);
+        self.threshold = unit_or(threshold, self.threshold);
     }
 
     /// Get current threshold
@@ -904,7 +918,7 @@ impl VadAutoGate {
             auto_threshold_enabled: true,
             enabled: true,
             gate_mode: GateMode::ThresholdOnly,
-            vad_threshold: unit_threshold_or(vad_threshold, DEFAULT_VAD_THRESHOLD),
+            vad_threshold: unit_or(vad_threshold, DEFAULT_VAD_THRESHOLD),
             hold_time_ms: 200.0,
             hold_timer: 0.0,
             timer_running: false,
@@ -1211,7 +1225,7 @@ impl VadAutoGate {
     }
 
     pub fn set_vad_threshold(&mut self, threshold: f32) {
-        self.vad_threshold = unit_threshold_or(threshold, self.vad_threshold);
+        self.vad_threshold = unit_or(threshold, self.vad_threshold);
     }
 
     pub fn vad_threshold(&self) -> f32 {
@@ -1235,16 +1249,6 @@ impl VadAutoGate {
 }
 
 const DEFAULT_VAD_THRESHOLD: f32 = 0.5;
-
-/// Clamp a speech-probability threshold; a NaN keeps `fallback` because
-/// `f32::clamp` would pass it through and later bound arithmetic would panic.
-fn unit_threshold_or(value: f32, fallback: f32) -> f32 {
-    if value.is_nan() {
-        fallback
-    } else {
-        value.clamp(0.0, 1.0)
-    }
-}
 
 /// SHA-256 of the pinned Silero VAD model, read from the release manifest at
 /// build time so the manifest stays the single source of truth.
@@ -1271,6 +1275,29 @@ fn read_pinned_silero_model(path: &Path) -> Result<Vec<u8>, VadError> {
             "Model {} has SHA-256 {actual}, but only the pinned Silero VAD v6.2.1 ({expected}) is supported",
             path.display()
         )));
+    }
+    Ok(bytes)
+}
+
+/// `read_pinned_silero_model`, remembering the last verified file so later VAD
+/// instances (worker restarts, offline analyses) skip re-reading and re-hashing
+/// its 2.3 MB. Never called on the realtime path.
+/// shortcut: a file replaced at the same path keeps the verified copy until
+/// the process restarts; key by modification time if that ever matters.
+fn cached_pinned_silero_model(path: &Path) -> Result<Arc<[u8]>, VadError> {
+    type VerifiedModel = (PathBuf, Arc<[u8]>);
+    static VERIFIED: OnceLock<Mutex<Option<VerifiedModel>>> = OnceLock::new();
+    let verified = VERIFIED.get_or_init(|| Mutex::new(None));
+    if let Ok(cached) = verified.lock() {
+        if let Some((cached_path, bytes)) = cached.as_ref() {
+            if cached_path == path {
+                return Ok(Arc::clone(bytes));
+            }
+        }
+    }
+    let bytes: Arc<[u8]> = read_pinned_silero_model(path)?.into();
+    if let Ok(mut cached) = verified.lock() {
+        *cached = Some((path.to_path_buf(), Arc::clone(&bytes)));
     }
     Ok(bytes)
 }

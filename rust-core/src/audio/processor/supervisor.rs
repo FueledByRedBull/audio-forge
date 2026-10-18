@@ -86,6 +86,7 @@ impl AudioProcessor {
                     );
                     if let Ok(mut state) = recovery_state.lock() {
                         state.last_reason = Some(reason);
+                        state.reason_pending = true;
                     }
                     restart_requested.store(true, Ordering::Release);
                     consecutive_stalls = 0;

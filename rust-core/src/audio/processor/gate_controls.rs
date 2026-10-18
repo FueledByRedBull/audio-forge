@@ -1,16 +1,6 @@
 impl AudioProcessor {
     // === Noise Gate Controls ===
 
-    /// Enable/disable noise gate
-    pub fn set_gate_enabled(&self, enabled: bool) {
-        self.gate_enabled.store(enabled, Ordering::Release);
-        if let Ok(mut control) = self.gate_control.lock() {
-            control.enabled = enabled;
-        }
-        self.gate_rt_control.set_enabled(enabled);
-        self.gate_dirty.store(true, Ordering::Release);
-    }
-
     /// Set noise gate threshold
     pub fn set_gate_threshold(&self, threshold_db: f64) {
         let Some(threshold_db) =
@@ -25,34 +15,6 @@ impl AudioProcessor {
         self.gate_dirty.store(true, Ordering::Release);
     }
 
-    /// Set noise gate attack time
-    pub fn set_gate_attack(&self, attack_ms: f64) {
-        let Some(attack_ms) =
-            self.clamp_live_control(attack_ms, GATE_ATTACK_MIN_MS, GATE_ATTACK_MAX_MS)
-        else {
-            return;
-        };
-        if let Ok(mut control) = self.gate_control.lock() {
-            control.attack_ms = attack_ms;
-        }
-        self.gate_rt_control.set_attack_ms(attack_ms);
-        self.gate_dirty.store(true, Ordering::Release);
-    }
-
-    /// Set noise gate release time
-    pub fn set_gate_release(&self, release_ms: f64) {
-        let Some(release_ms) =
-            self.clamp_live_control(release_ms, GATE_RELEASE_MIN_MS, GATE_RELEASE_MAX_MS)
-        else {
-            return;
-        };
-        if let Ok(mut control) = self.gate_control.lock() {
-            control.release_ms = release_ms;
-        }
-        self.gate_rt_control.set_release_ms(release_ms);
-        self.gate_dirty.store(true, Ordering::Release);
-    }
-
     /// Number of rapid gate open/close chatter events since processing start.
     pub fn get_gate_chatter_event_count(&self) -> u64 {
         self.gate_chatter_event_count.load(Ordering::Relaxed)
@@ -64,23 +26,6 @@ impl AudioProcessor {
     }
 
     // === VAD Gate Controls (VAD feature only) ===
-
-    #[cfg(feature = "vad")]
-    /// Set gate mode
-    pub fn set_gate_mode(&self, mode: u8) -> Result<(), String> {
-        let gate_mode = match mode {
-            0 => GateMode::ThresholdOnly,
-            1 => GateMode::VadAssisted,
-            2 => GateMode::VadOnly,
-            _ => return Err("Invalid gate mode".to_string()),
-        };
-        if let Ok(mut control) = self.gate_control.lock() {
-            control.gate_mode = gate_mode;
-        }
-        self.gate_rt_control.set_gate_mode(gate_mode);
-        self.gate_dirty.store(true, Ordering::Release);
-        Ok(())
-    }
 
     #[cfg(feature = "vad")]
     /// Get VAD speech probability (0.0-1.0)
@@ -165,21 +110,6 @@ impl AudioProcessor {
     }
 
     #[cfg(feature = "vad")]
-    /// Set margin above noise floor for auto-threshold (in dB)
-    pub fn set_gate_margin(&self, margin_db: f32) {
-        let Some(margin_db) =
-            self.clamp_live_control_f32(margin_db, GATE_MARGIN_MIN_DB, GATE_MARGIN_MAX_DB)
-        else {
-            return;
-        };
-        if let Ok(mut control) = self.gate_control.lock() {
-            control.margin_db = margin_db;
-        }
-        self.gate_rt_control.set_margin_db(margin_db);
-        self.gate_dirty.store(true, Ordering::Release);
-    }
-
-    #[cfg(feature = "vad")]
     /// Get current noise floor estimate (in dB)
     pub fn get_noise_floor(&self) -> f32 {
         f32::from_bits(self.gate_noise_floor_db.load(Ordering::Relaxed))
@@ -246,64 +176,52 @@ impl AudioProcessor {
             .map(|control| control.clone())
             .unwrap_or_else(|_| GateControlState::new());
         state.enabled = requested.enabled;
-        for (value, min, max, slot) in [
-            (
-                requested.threshold_db,
-                GATE_THRESHOLD_MIN_DB,
-                GATE_THRESHOLD_MAX_DB,
-                &mut state.threshold_db,
-            ),
-            (
-                requested.attack_ms,
-                GATE_ATTACK_MIN_MS,
-                GATE_ATTACK_MAX_MS,
-                &mut state.attack_ms,
-            ),
-            (
-                requested.release_ms,
-                GATE_RELEASE_MIN_MS,
-                GATE_RELEASE_MAX_MS,
-                &mut state.release_ms,
-            ),
-        ] {
-            if let Some(clamped) = self.clamp_live_control(value, min, max) {
-                *slot = clamped;
-            }
-        }
+        self.clamp_into(
+            &mut state.threshold_db,
+            requested.threshold_db,
+            GATE_THRESHOLD_MIN_DB,
+            GATE_THRESHOLD_MAX_DB,
+        );
+        self.clamp_into(
+            &mut state.attack_ms,
+            requested.attack_ms,
+            GATE_ATTACK_MIN_MS,
+            GATE_ATTACK_MAX_MS,
+        );
+        self.clamp_into(
+            &mut state.release_ms,
+            requested.release_ms,
+            GATE_RELEASE_MIN_MS,
+            GATE_RELEASE_MAX_MS,
+        );
         #[cfg(feature = "vad")]
         {
             state.gate_mode = requested.gate_mode;
             state.auto_threshold = requested.auto_threshold;
-            for (value, min, max, slot) in [
-                (
-                    requested.vad_threshold,
-                    VAD_THRESHOLD_MIN,
-                    VAD_THRESHOLD_MAX,
-                    &mut state.vad_threshold,
-                ),
-                (
-                    requested.hold_ms,
-                    VAD_HOLD_MIN_MS,
-                    VAD_HOLD_MAX_MS,
-                    &mut state.hold_ms,
-                ),
-                (
-                    requested.pre_gain,
-                    VAD_PRE_GAIN_MIN,
-                    VAD_PRE_GAIN_MAX,
-                    &mut state.pre_gain,
-                ),
-                (
-                    requested.margin_db,
-                    GATE_MARGIN_MIN_DB,
-                    GATE_MARGIN_MAX_DB,
-                    &mut state.margin_db,
-                ),
-            ] {
-                if let Some(clamped) = self.clamp_live_control_f32(value, min, max) {
-                    *slot = clamped;
-                }
-            }
+            self.clamp_into_f32(
+                &mut state.vad_threshold,
+                requested.vad_threshold,
+                VAD_THRESHOLD_MIN,
+                VAD_THRESHOLD_MAX,
+            );
+            self.clamp_into_f32(
+                &mut state.hold_ms,
+                requested.hold_ms,
+                VAD_HOLD_MIN_MS,
+                VAD_HOLD_MAX_MS,
+            );
+            self.clamp_into_f32(
+                &mut state.pre_gain,
+                requested.pre_gain,
+                VAD_PRE_GAIN_MIN,
+                VAD_PRE_GAIN_MAX,
+            );
+            self.clamp_into_f32(
+                &mut state.margin_db,
+                requested.margin_db,
+                GATE_MARGIN_MIN_DB,
+                GATE_MARGIN_MAX_DB,
+            );
         }
 
         self.gate_enabled.store(state.enabled, Ordering::Release);

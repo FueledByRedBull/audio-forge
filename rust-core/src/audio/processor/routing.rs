@@ -191,8 +191,9 @@ impl SmoothNotch {
         // to the retuned notch's steady state than zero is even when the move
         // crosses the hum line (that worst case breaks even near 1.15x). The
         // threshold is conservative: moves on one side of the line still gain
-        // up to about 3x it. Wider moves restart, as before.
-        if (frequency_hz - self.pending_frequency_hz).abs() <= 0.5 * frequency_hz / self.q {
+        // up to about 3x it. Wider moves restart, as before. The copied state is
+        // the active filter's, so the move is measured from its frequency.
+        if (frequency_hz - self.frequency_hz).abs() <= 0.5 * frequency_hz / self.q {
             self.pending.z1 = self.active.z1;
             self.pending.z2 = self.active.z2;
         }
@@ -813,6 +814,55 @@ mod adaptive_cleanup_tests {
         for (n, &actual) in retuned.iter().enumerate() {
             let expected = target.process_sample(crate::test_signal::sine(50.15, 0.1, 48_000.0, n));
             if n >= 336_000 {
+                assert!((actual - expected).abs() < 5e-4, "sample {n}");
+            }
+        }
+    }
+
+    /// 50.15 Hz hum through a settled 50.0 Hz notch that a spurious reading
+    /// retunes to 51.1 Hz at 3 s and, 5 ms into that fade, back to 50.3 Hz.
+    /// `restart` forces the old rule, which measured the second move from the
+    /// pending 51.1 Hz (0.8 Hz, beyond f / 2Q) and so restarted from zero
+    /// state, although the copied state is the active 50.0 Hz notch's, 0.3 Hz away.
+    fn render_double_retune(restart: bool) -> Vec<f32> {
+        use crate::test_signal::sine;
+        let mut notch = SmoothNotch::new(50.0, 36.0, 48_000.0);
+        (0..384_000)
+            .map(|n| {
+                if n == 144_000 {
+                    notch.retune(51.1);
+                }
+                if n == 144_240 {
+                    notch.retune(50.3);
+                    if restart {
+                        notch.pending.reset();
+                    }
+                }
+                notch.process_sample(sine(50.15, 0.1, 48_000.0, n))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn retune_mid_fade_measures_the_move_from_the_active_notch() {
+        let fixed = render_double_retune(false);
+        let restarted = render_double_retune(true);
+        let after = 144_240..168_240;
+        let residual = rms(&fixed[after.clone()]);
+        let restarted_residual = rms(&restarted[after]);
+        // Measured 0.0093 RMS; the restart left 0.0325.
+        assert!(
+            residual < restarted_residual,
+            "residual hum {residual}, restarted {restarted_residual}"
+        );
+
+        // Steady state: identical up to the second retune; from 4 s after it
+        // within 5e-4 of a notch tuned to 50.3 Hz from the start.
+        assert_eq!(fixed[..144_240], restarted[..144_240]);
+        let mut target = SmoothNotch::new(50.3, 36.0, 48_000.0);
+        for (n, &actual) in fixed.iter().enumerate() {
+            let expected = target.process_sample(crate::test_signal::sine(50.15, 0.1, 48_000.0, n));
+            if n >= 336_240 {
                 assert!((actual - expected).abs() < 5e-4, "sample {n}");
             }
         }

@@ -19,18 +19,42 @@ fn startup_control<T>(
     dirty: &AtomicBool,
     contention: &AtomicU64,
 ) -> T {
-    snapshot.unwrap_or_else(|| {
+    rearm_unless_stable(snapshot, dirty, contention).unwrap_or_else(fallback)
+}
+
+/// Pass a stable control snapshot through; for an unstable one (`None`)
+/// re-arm `dirty` and count the contention, so the next pass retries.
+fn rearm_unless_stable<T>(
+    snapshot: Option<T>,
+    dirty: &AtomicBool,
+    contention: &AtomicU64,
+) -> Option<T> {
+    if snapshot.is_none() {
         dirty.store(true, Ordering::Release);
         contention.fetch_add(1, Ordering::Relaxed);
-        fallback()
-    })
+    }
+    snapshot
+}
+
+/// Consume a pending control change: swap `dirty` off and return a stable
+/// snapshot, or re-arm it (see `rearm_unless_stable`). `None` when nothing
+/// was pending or the snapshot was unstable.
+fn take_dirty<T>(
+    dirty: &AtomicBool,
+    snapshot: impl FnOnce() -> Option<T>,
+    contention: &AtomicU64,
+) -> Option<T> {
+    if dirty.swap(false, Ordering::AcqRel) {
+        rearm_unless_stable(snapshot(), dirty, contention)
+    } else {
+        None
+    }
 }
 
 /// Consume a pending limiter change once per block, whatever the processing
 /// path. Bypass and Raw monitor never run the lookahead limiter, but they still
 /// write through the output stage, which reads the ceiling and release
-/// published here. Returns whether the snapshot was unstable and the change was
-/// re-armed for the next pass.
+/// published here. An unstable snapshot is re-armed and counted in `contention`.
 fn apply_pending_limiter_control(
     limiter_dirty: &AtomicBool,
     limiter_rt_control: &AtomicLimiterControlState,
@@ -38,20 +62,14 @@ fn apply_pending_limiter_control(
     output_limiter_release_ms: &Cell<f32>,
     output_ceiling_linear: &Cell<f32>,
     limiter_lookahead_samples: &AtomicU64,
-) -> bool {
-    if limiter_dirty.swap(false, Ordering::AcqRel) {
-        if let Some(control) = limiter_rt_control.snapshot() {
-            apply_limiter_control(limiter_rt, &control);
-            output_limiter_release_ms.set(control.release_ms as f32);
-            output_ceiling_linear.set(10.0_f32.powf(limiter_rt.ceiling_db() as f32 / 20.0));
-            limiter_lookahead_samples
-                .store(limiter_rt.lookahead_samples() as u64, Ordering::Relaxed);
-        } else {
-            limiter_dirty.store(true, Ordering::Release);
-            return true;
-        }
+    contention: &AtomicU64,
+) {
+    if let Some(control) = take_dirty(limiter_dirty, || limiter_rt_control.snapshot(), contention) {
+        apply_limiter_control(limiter_rt, &control);
+        output_limiter_release_ms.set(control.release_ms as f32);
+        output_ceiling_linear.set(10.0_f32.powf(limiter_rt.ceiling_db() as f32 / 20.0));
+        limiter_lookahead_samples.store(limiter_rt.lookahead_samples() as u64, Ordering::Relaxed);
     }
-    false
 }
 
 #[cfg(test)]
@@ -149,17 +167,16 @@ fn advance_time_ema(state: &mut f32, sample: f32, elapsed_ms: f32, time_constant
 
 /// Keep why the DSP thread died where `last_restart_reason` reports it; the
 /// panic message otherwise goes to a stderr nobody reads in the windowed app.
+/// `requests_restart` marks the reason as the cause of the pending restart.
 fn record_dsp_thread_panic(
     payload: &(dyn std::any::Any + Send),
     recovery_state: &Mutex<StreamRecoveryState>,
+    requests_restart: bool,
 ) {
-    let message = payload
-        .downcast_ref::<&str>()
-        .map(|message| (*message).to_string())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "non-string panic payload".to_string());
+    let message = crate::panic_message(payload);
     if let Ok(mut state) = recovery_state.lock() {
         state.last_reason = Some(format!("DSP thread panicked: {message}"));
+        state.reason_pending |= requests_restart;
     }
 }
 
@@ -172,7 +189,7 @@ fn run_guarded_dsp_loop(
     restart_requested: &AtomicBool,
 ) {
     if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
-        record_dsp_thread_panic(payload.as_ref(), recovery_state);
+        record_dsp_thread_panic(payload.as_ref(), recovery_state, true);
         restart_requested.store(true, Ordering::Release);
     }
 }
@@ -1208,29 +1225,24 @@ impl AudioProcessor {
             // RT_REGION_START: dsp_downstream_chain
             macro_rules! apply_downstream_chain_rt {
                 ($buffer:expr) => {{
-                    if deesser_dirty.swap(false, Ordering::AcqRel) {
-                        if let Some(control) = deesser_rt_control.snapshot() {
-                            apply_deesser_control(&mut deesser_rt, &control);
-                        } else {
-                            deesser_dirty.store(true, Ordering::Release);
-                            lock_contention_count.fetch_add(1, Ordering::Relaxed);
-                        }
+                    if let Some(control) = take_dirty(
+                        &deesser_dirty,
+                        || deesser_rt_control.snapshot(),
+                        &lock_contention_count,
+                    ) {
+                        apply_deesser_control(&mut deesser_rt, &control);
                     }
-                    if eq_dirty.swap(false, Ordering::AcqRel) {
-                        if let Some(eq_snapshot) = eq_control.snapshot() {
-                            apply_eq_control(&mut correction_eq_rt, &mut tone_eq_rt, &eq_snapshot);
-                        } else {
-                            eq_dirty.store(true, Ordering::Release);
-                            lock_contention_count.fetch_add(1, Ordering::Relaxed);
-                        }
+                    if let Some(eq_snapshot) =
+                        take_dirty(&eq_dirty, || eq_control.snapshot(), &lock_contention_count)
+                    {
+                        apply_eq_control(&mut correction_eq_rt, &mut tone_eq_rt, &eq_snapshot);
                     }
-                    if compressor_dirty.swap(false, Ordering::AcqRel) {
-                        if let Some(control) = compressor_rt_control.snapshot() {
-                            apply_compressor_control(&mut compressor_rt, &control);
-                        } else {
-                            compressor_dirty.store(true, Ordering::Release);
-                            lock_contention_count.fetch_add(1, Ordering::Relaxed);
-                        }
+                    if let Some(control) = take_dirty(
+                        &compressor_dirty,
+                        || compressor_rt_control.snapshot(),
+                        &lock_contention_count,
+                    ) {
+                        apply_compressor_control(&mut compressor_rt, &control);
                     }
 
                     // The de-esser owns its enable ramp, like the compressor.
@@ -1377,15 +1389,17 @@ impl AudioProcessor {
                     }
 
                     // One non-finite sample would poison the meters and latch in the
-                    // filter state of the de-esser and EQs, muting the stream for good.
-                    // Count it, zero it and clear those stages. The compressor and
-                    // limiter recover on their own, and resetting the compressor
-                    // allocates.
+                    // filter state of the de-esser and EQs, muting the stream for good,
+                    // and in the compressor's envelopes, which then never reduce gain
+                    // again. Count it, zero it and clear those stages; the compressor
+                    // clears only its detector, because its full reset allocates. The
+                    // limiter recovers on its own.
                     if contain_non_finite($buffer) {
                         downstream_non_finite_count.fetch_add(1, Ordering::Relaxed);
                         deesser_rt.reset();
                         correction_eq_rt.reset();
                         tone_eq_rt.reset();
+                        compressor_rt.reset_detector_state();
                     }
                 }};
             }
@@ -1654,8 +1668,9 @@ impl AudioProcessor {
                         // Publish latency on every pass, before any path branch or
                         // early `continue`, so Raw monitor, Bypass and idle wakeups
                         // all keep it current.
-                        if last_latency_update.elapsed() >= latency_update_interval {
-                            last_latency_update = Instant::now();
+                        let pass_now = Instant::now();
+                        if pass_now.duration_since(last_latency_update) >= latency_update_interval {
+                            last_latency_update = pass_now;
                             let suppressor_latency_samples =
                                 if suppressor_enabled.load(Ordering::Acquire) {
                                     suppressor_latency_samples.load(Ordering::Relaxed) as u64
@@ -1690,113 +1705,91 @@ impl AudioProcessor {
                         // pending suppressor control change. It runs at the top of every pass,
                         // whether or not the suppressor is in use and whether or not input
                         // arrived, so the bounded command queue cannot fill up behind a
-                        // disabled suppressor and make later switches fail. `$in_use` is true
-                        // only when this pass feeds the suppressor; otherwise the swap is
-                        // silent (no fade), as the output carries no suppressor audio.
-                        macro_rules! apply_pending_suppressor_change {
-                            ($in_use:expr) => {{
-                                if let Some(retired) = deferred_suppressor_retire.take() {
-                                    if let Err(retired) = retired_suppressor_tx.try_push(retired) {
-                                        deferred_suppressor_retire = Some(retired);
-                                    }
-                                }
-
-                                if suppressor_dirty.swap(false, Ordering::AcqRel) {
-                                    if let Some(control) = suppressor_rt_control.snapshot() {
-                                        while deferred_suppressor_retire.is_none()
-                                            && !retired_suppressor_tx.is_full()
-                                        {
-                                            let candidate_matches =
-                                                match suppressor_rx.iter().next() {
-                                                    Some(candidate) => {
-                                                        candidate.model_type() == control.model
-                                                    }
-                                                    None => break,
-                                                };
-                                            let Some(candidate) = suppressor_rx.try_pop() else {
-                                                break;
-                                            };
-
-                                            if candidate_matches {
-                                                let retired = std::mem::replace(
-                                                    &mut suppressor_rt,
-                                                    candidate,
-                                                );
-                                                suppressor_rt.soft_reset();
-                                                if $in_use {
-                                                    suppressor_recovery_fade
-                                                        .restart_for_suppressor(
-                                                            &suppressor_rt,
-                                                            &discontinuity_fade_remaining,
-                                                            discontinuity_fade_samples,
-                                                        );
-                                                }
-                                                if let Err(retired) =
-                                                    retired_suppressor_tx.try_push(retired)
-                                                {
-                                                    deferred_suppressor_retire = Some(retired);
-                                                    rt_buffer_overflow_count
-                                                        .fetch_add(1, Ordering::Relaxed);
-                                                    store_rt_error(
-                                                        rt_error_code.as_ref(),
-                                                        RtErrorCode::FixedBufferOverflow,
-                                                    );
-                                                    break;
-                                                }
-                                            } else if let Err(candidate) =
-                                                retired_suppressor_tx.try_push(candidate)
-                                            {
-                                                deferred_suppressor_retire = Some(candidate);
-                                                rt_buffer_overflow_count
-                                                    .fetch_add(1, Ordering::Relaxed);
-                                                store_rt_error(
-                                                    rt_error_code.as_ref(),
-                                                    RtErrorCode::FixedBufferOverflow,
-                                                );
-                                                break;
-                                            }
-                                        }
-                                        if suppressor_rt.model_type() == control.model {
-                                            apply_suppressor_control(&mut suppressor_rt, &control);
-                                            update_backend_status_rt(
-                                                &noise_backend_available,
-                                                &noise_backend_failed,
-                                                rt_error_code.as_ref(),
-                                                &suppressor_rt,
-                                            );
-                                        } else {
-                                            suppressor_dirty.store(true, Ordering::Release);
-                                        }
-                                    } else {
-                                        suppressor_dirty.store(true, Ordering::Release);
-                                        lock_contention_count.fetch_add(1, Ordering::Relaxed);
-                                    }
-                                }
-                            }};
+                        // disabled suppressor and make later switches fail.
+                        // `suppressor_in_use` is true only when this pass feeds the
+                        // suppressor; otherwise the swap is silent (no fade), as the output
+                        // carries no suppressor audio.
+                        let suppressor_in_use = suppressor_enabled.load(Ordering::Acquire)
+                            && select_processing_path(
+                                raw_monitor_enabled.load(Ordering::Acquire),
+                                bypass.load(Ordering::SeqCst),
+                            ) == ProcessingPath::Full;
+                        if let Some(retired) = deferred_suppressor_retire.take() {
+                            if let Err(retired) = retired_suppressor_tx.try_push(retired) {
+                                deferred_suppressor_retire = Some(retired);
+                            }
                         }
 
-                        apply_pending_suppressor_change!(
-                            suppressor_enabled.load(Ordering::Acquire)
-                                && select_processing_path(
-                                    raw_monitor_enabled.load(Ordering::Acquire),
-                                    bypass.load(Ordering::SeqCst),
-                                ) == ProcessingPath::Full
-                        );
+                        if let Some(control) = take_dirty(
+                            &suppressor_dirty,
+                            || suppressor_rt_control.snapshot(),
+                            &lock_contention_count,
+                        ) {
+                            while deferred_suppressor_retire.is_none()
+                                && !retired_suppressor_tx.is_full()
+                            {
+                                let candidate_matches = match suppressor_rx.iter().next() {
+                                    Some(candidate) => candidate.model_type() == control.model,
+                                    None => break,
+                                };
+                                let Some(candidate) = suppressor_rx.try_pop() else {
+                                    break;
+                                };
+
+                                if candidate_matches {
+                                    let retired = std::mem::replace(&mut suppressor_rt, candidate);
+                                    suppressor_rt.soft_reset();
+                                    if suppressor_in_use {
+                                        suppressor_recovery_fade.restart_for_suppressor(
+                                            &suppressor_rt,
+                                            &discontinuity_fade_remaining,
+                                            discontinuity_fade_samples,
+                                        );
+                                    }
+                                    if let Err(retired) = retired_suppressor_tx.try_push(retired) {
+                                        deferred_suppressor_retire = Some(retired);
+                                        rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
+                                        store_rt_error(
+                                            rt_error_code.as_ref(),
+                                            RtErrorCode::FixedBufferOverflow,
+                                        );
+                                        break;
+                                    }
+                                } else if let Err(candidate) =
+                                    retired_suppressor_tx.try_push(candidate)
+                                {
+                                    deferred_suppressor_retire = Some(candidate);
+                                    rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
+                                    store_rt_error(
+                                        rt_error_code.as_ref(),
+                                        RtErrorCode::FixedBufferOverflow,
+                                    );
+                                    break;
+                                }
+                            }
+                            if suppressor_rt.model_type() == control.model {
+                                apply_suppressor_control(&mut suppressor_rt, &control);
+                                update_backend_status_rt(
+                                    &noise_backend_available,
+                                    &noise_backend_failed,
+                                    rt_error_code.as_ref(),
+                                    &suppressor_rt,
+                                );
+                            } else {
+                                suppressor_dirty.store(true, Ordering::Release);
+                            }
+                        }
 
                         // Record input buffer fill level (samples waiting to be processed)
                         let raw_input_len = consumer.len() as u32;
                         input_buffer_len.store(raw_input_len, Ordering::Relaxed);
-                        let smoothing_now = Instant::now();
                         advance_time_ema(
                             &mut smoothed_input_len,
                             raw_input_len as f32,
-                            smoothing_now
-                                .duration_since(last_input_smoothing)
-                                .as_secs_f32()
-                                * 1000.0,
+                            pass_now.duration_since(last_input_smoothing).as_secs_f32() * 1000.0,
                             TAU_MS,
                         );
-                        last_input_smoothing = smoothing_now;
+                        last_input_smoothing = pass_now;
                         smoothed_input_buffer_len
                             .store(smoothed_input_len.round() as u32, Ordering::Relaxed);
 
@@ -1976,11 +1969,12 @@ impl AudioProcessor {
                                 discontinuity_fade_remaining.set(discontinuity_fade_samples);
 
                                 gate_rt.reset();
-                                if let Some(control) = gate_rt_control.snapshot() {
+                                if let Some(control) = rearm_unless_stable(
+                                    gate_rt_control.snapshot(),
+                                    &gate_dirty,
+                                    &lock_contention_count,
+                                ) {
                                     apply_gate_control(&mut gate_rt, &control);
-                                } else {
-                                    gate_dirty.store(true, Ordering::Release);
-                                    lock_contention_count.fetch_add(1, Ordering::Relaxed);
                                 }
                                 correction_eq_rt.reset();
                                 tone_eq_rt.reset();
@@ -2008,16 +2002,15 @@ impl AudioProcessor {
                                 previous_processing_path = processing_path;
                             }
 
-                            if apply_pending_limiter_control(
+                            apply_pending_limiter_control(
                                 &limiter_dirty,
                                 &limiter_rt_control,
                                 &mut limiter_rt,
                                 &output_limiter_release_ms,
                                 &output_ceiling_linear,
                                 &limiter_lookahead_samples,
-                            ) {
-                                lock_contention_count.fetch_add(1, Ordering::Relaxed);
-                            }
+                                &lock_contention_count,
+                            );
 
                             if processing_path == ProcessingPath::RawMonitor {
                                 sanitize_non_finite_inplace(buffer);
@@ -2276,13 +2269,12 @@ impl AudioProcessor {
                                     .as_mut_capacity_slice()[..buffer.len()];
                                 gate_controls.fill(GateControl::BYPASS);
                                 if gate_enabled.load(Ordering::Acquire) {
-                                    if gate_dirty.swap(false, Ordering::AcqRel) {
-                                        if let Some(control) = gate_rt_control.snapshot() {
-                                            apply_gate_control(&mut gate_rt, &control);
-                                        } else {
-                                            gate_dirty.store(true, Ordering::Release);
-                                            lock_contention_count.fetch_add(1, Ordering::Relaxed);
-                                        }
+                                    if let Some(control) = take_dirty(
+                                        &gate_dirty,
+                                        || gate_rt_control.snapshot(),
+                                        &lock_contention_count,
+                                    ) {
+                                        apply_gate_control(&mut gate_rt, &control);
                                     }
 
                                     #[cfg(feature = "vad")]
@@ -2391,14 +2383,7 @@ impl AudioProcessor {
                                             let _ = rnnoise_output.set_len_zeroed(processed);
                                             let output_slice = rnnoise_output.as_mut_slice();
 
-                                            let mut detected_non_finite = false;
-                                            for sample in output_slice.iter_mut() {
-                                                if !sample.is_finite() {
-                                                    *sample = 0.0;
-                                                    detected_non_finite = true;
-                                                }
-                                            }
-                                            if detected_non_finite {
+                                            if contain_non_finite(output_slice) {
                                                 suppressor_non_finite_count
                                                     .fetch_add(1, Ordering::Relaxed);
                                                 store_rt_error(
@@ -2598,7 +2583,7 @@ impl AudioProcessor {
 
         if let Some(handle) = self.process_thread.take() {
             if let Err(payload) = handle.join() {
-                record_dsp_thread_panic(payload.as_ref(), self.recovery_state.as_ref());
+                record_dsp_thread_panic(payload.as_ref(), self.recovery_state.as_ref(), false);
             }
         }
         #[cfg(feature = "vad")]
@@ -2619,6 +2604,9 @@ impl AudioProcessor {
         // the streams dropped: either can still raise one while stopping, and a
         // stale request would restart a processor the user just stopped.
         self.restart_requested.store(false, Ordering::Release);
+        if let Ok(mut state) = self.recovery_state.lock() {
+            state.reason_pending = false;
+        }
         self.recovering.store(false, Ordering::Release);
 
         // Clear capture state without changing the caller's output mute.

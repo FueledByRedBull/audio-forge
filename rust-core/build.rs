@@ -8,9 +8,15 @@ const LINK_LIBRARY: &str = "onnxruntime.lib";
 /// Windows refuses to overwrite a DLL that a running process has mapped, so
 /// only copy when the destination differs.
 fn copy_if_different(source: &Path, destination: &Path) -> std::io::Result<()> {
-    if let (Ok(wanted), Ok(present)) = (fs::read(source), fs::read(destination)) {
-        if wanted == present {
-            return Ok(());
+    let same_len = matches!(
+        (fs::metadata(source), fs::metadata(destination)),
+        (Ok(wanted), Ok(present)) if wanted.len() == present.len()
+    );
+    if same_len {
+        if let (Ok(wanted), Ok(present)) = (fs::read(source), fs::read(destination)) {
+            if wanted == present {
+                return Ok(());
+            }
         }
     }
     fs::copy(source, destination).map(drop)

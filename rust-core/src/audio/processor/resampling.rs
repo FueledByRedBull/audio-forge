@@ -227,8 +227,8 @@ pub fn simulate_product_resampler(
     window: Option<&str>,
 ) -> PyResult<(Vec<f64>, usize, usize, Vec<u64>)> {
     // Bounds the rate ratio (at most 96x), which sizes the output buffers.
-    validate_offline_sample_rate(f64::from(input_rate))?;
-    validate_offline_sample_rate(f64::from(output_rate))?;
+    crate::validate_sample_rate(f64::from(input_rate))?;
+    crate::validate_sample_rate(f64::from(output_rate))?;
     if !(1..=RESAMPLER_CHUNK_SIZE).contains(&chunk_size) {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "chunk_size must be between 1 and {RESAMPLER_CHUNK_SIZE}"
@@ -334,14 +334,16 @@ pub fn simulate_product_resampler_py(
 }
 
 #[pyfunction]
-pub fn product_resampler_configuration() -> (usize, String, String, usize, usize) {
-    (
-        PRODUCT_RESAMPLER_SINC_LEN,
-        PRODUCT_RESAMPLER_WINDOW_NAME.to_string(),
-        "cubic".to_string(),
-        256,
-        RESAMPLER_CHUNK_SIZE,
-    )
+pub fn product_resampler_configuration() -> PyResult<(usize, String, String, usize, usize)> {
+    crate::catch_panic(|| {
+        Ok((
+            PRODUCT_RESAMPLER_SINC_LEN,
+            PRODUCT_RESAMPLER_WINDOW_NAME.to_string(),
+            "cubic".to_string(),
+            256,
+            RESAMPLER_CHUNK_SIZE,
+        ))
+    })
 }
 
 #[inline]

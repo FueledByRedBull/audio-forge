@@ -2,6 +2,7 @@
 mod tests {
     use super::*;
     use crate::dsp::noise_suppressor::NoiseSuppressor;
+    use crate::rt_scan::{assert_marked_regions_clean, assert_rt_clean, marked_region};
     use pyo3::types::PyDict;
     use pyo3::Python;
 
@@ -479,8 +480,9 @@ mod tests {
         assert_eq!(
             head,
             "whilerunning.load(Ordering::SeqCst){\
-             iflast_latency_update.elapsed()>=latency_update_interval{\
-             last_latency_update=Instant::now();\
+             letpass_now=Instant::now();\
+             ifpass_now.duration_since(last_latency_update)>=latency_update_interval{\
+             last_latency_update=pass_now;\
              letsuppressor_latency_samples=\
              ifsuppressor_enabled.load(Ordering::Acquire){\
              suppressor_latency_samples.load(Ordering::Relaxed)asu64}else{0};"
@@ -1015,7 +1017,7 @@ mod tests {
     #[test]
     fn product_resampler_metadata_matches_native_defaults() {
         assert_eq!(
-            product_resampler_configuration(),
+            product_resampler_configuration().unwrap(),
             (
                 PRODUCT_RESAMPLER_SINC_LEN,
                 PRODUCT_RESAMPLER_WINDOW_NAME.to_string(),
@@ -1128,6 +1130,172 @@ mod tests {
         assert!(processor
             .get_last_restart_reason()
             .is_some_and(|reason| reason.contains("suppressor engine rebuilt")));
+    }
+
+    /// Hold a pending restart in the back-off so `service_recovery` reaches the
+    /// full restart path without opening a device.
+    fn hold_restart_in_backoff(processor: &AudioProcessor) {
+        processor.restart_backoff_index.store(1, Ordering::Release);
+        processor
+            .last_restart_attempt_us
+            .store(now_micros(), Ordering::Release);
+    }
+
+    #[test]
+    fn a_rebuilt_suppressor_does_not_claim_a_later_dsp_panic() {
+        let mut processor = AudioProcessor::new();
+        let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
+        let (tx, mut rx) = queue.split();
+        *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
+        processor.restart_requested.store(true, Ordering::Release);
+        store_rt_error(
+            processor.rt_error_code.as_ref(),
+            RtErrorCode::SuppressorBackendFailed,
+        );
+        assert_eq!(processor.service_recovery(), Some(true));
+        assert!(rx.try_pop().is_some());
+        assert_eq!(processor.get_rt_error_code(), RtErrorCode::None as u32);
+
+        run_guarded_dsp_loop(
+            || panic!("late fault"),
+            &processor.recovery_state,
+            &processor.restart_requested,
+        );
+        hold_restart_in_backoff(&processor);
+        assert_eq!(
+            processor.service_recovery(),
+            None,
+            "the panic must take the full restart path, not another rebuild"
+        );
+        assert!(processor.restart_requested.load(Ordering::Acquire));
+        assert!(rx.try_pop().is_none());
+        assert_eq!(
+            processor.get_last_restart_reason().as_deref(),
+            Some("DSP thread panicked: late fault")
+        );
+    }
+
+    /// A single non-finite suppressor block stores its code without asking for
+    /// a restart, so the code is still set when something else does.
+    #[test]
+    fn a_sticky_suppressor_code_does_not_claim_a_later_restart() {
+        for panic_restart in [true, false] {
+            let mut processor = AudioProcessor::new();
+            let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
+            let (tx, mut rx) = queue.split();
+            *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
+            store_rt_error(
+                processor.rt_error_code.as_ref(),
+                RtErrorCode::SuppressorNonFinite,
+            );
+            let expected = if panic_restart {
+                run_guarded_dsp_loop(
+                    || panic!("late fault"),
+                    &processor.recovery_state,
+                    &processor.restart_requested,
+                );
+                "DSP thread panicked: late fault"
+            } else {
+                processor
+                    .output_resampler_error_count
+                    .store(1, Ordering::Relaxed);
+                processor.restart_requested.store(true, Ordering::Release);
+                "output resampler failed"
+            };
+            hold_restart_in_backoff(&processor);
+            assert_eq!(
+                processor.service_recovery(),
+                None,
+                "the full restart path, not a suppressor rebuild"
+            );
+            assert!(processor.restart_requested.load(Ordering::Acquire));
+            assert!(rx.try_pop().is_none(), "no engine for a dying DSP thread");
+            assert_eq!(
+                processor.get_last_restart_reason().as_deref(),
+                Some(expected)
+            );
+        }
+    }
+
+    /// A restart that fails to open the devices retries for the same cause: a
+    /// counter left over afterwards must not rename it.
+    #[test]
+    fn a_failed_restart_retries_under_its_recorded_cause() {
+        let mut processor = AudioProcessor::new();
+        processor.input_device_name = Some("AudioForge test: no such input".to_string());
+        processor.input_device_endpoint_id = Some("wasapi:audioforge-test-missing".to_string());
+        store_rt_error(
+            processor.rt_error_code.as_ref(),
+            RtErrorCode::InputStreamError,
+        );
+        processor.restart_requested.store(true, Ordering::Release);
+        assert_eq!(processor.service_recovery(), Some(false));
+        assert!(processor.restart_requested.load(Ordering::Acquire));
+        assert!(processor.get_last_stream_error().is_some());
+        assert_eq!(
+            processor.get_last_restart_reason().as_deref(),
+            Some("input stream error")
+        );
+
+        processor
+            .output_resampler_error_count
+            .store(1, Ordering::Relaxed);
+        hold_restart_in_backoff(&processor);
+        assert_eq!(processor.service_recovery(), None);
+        assert_eq!(
+            processor.get_last_restart_reason().as_deref(),
+            Some("input stream error")
+        );
+    }
+
+    #[test]
+    fn a_stream_or_resampler_restart_records_its_cause() {
+        for (code, output_resampler_failed, reason) in [
+            (RtErrorCode::InputStreamError, false, "input stream error"),
+            (RtErrorCode::OutputStreamError, false, "output stream error"),
+            (
+                RtErrorCode::InputResamplerFailed,
+                false,
+                "input resampler failed",
+            ),
+            (RtErrorCode::None, true, "output resampler failed"),
+        ] {
+            let mut processor = AudioProcessor::new();
+            processor.recovery_state.lock().unwrap().last_reason = Some("stale".to_string());
+            store_rt_error(processor.rt_error_code.as_ref(), code);
+            if output_resampler_failed {
+                processor
+                    .output_resampler_error_count
+                    .store(1, Ordering::Relaxed);
+            }
+            processor.restart_requested.store(true, Ordering::Release);
+            hold_restart_in_backoff(&processor);
+            assert_eq!(processor.service_recovery(), None);
+            assert_eq!(
+                processor.get_last_restart_reason().as_deref(),
+                Some(reason),
+                "{code:?}"
+            );
+        }
+
+        // A panic or stall records its own reason, which a stale stream error
+        // must not overwrite.
+        let mut processor = AudioProcessor::new();
+        store_rt_error(
+            processor.rt_error_code.as_ref(),
+            RtErrorCode::InputStreamError,
+        );
+        run_guarded_dsp_loop(
+            || panic!("boom"),
+            &processor.recovery_state,
+            &processor.restart_requested,
+        );
+        hold_restart_in_backoff(&processor);
+        assert_eq!(processor.service_recovery(), None);
+        assert_eq!(
+            processor.get_last_restart_reason().as_deref(),
+            Some("DSP thread panicked: boom")
+        );
     }
 
     #[test]
@@ -2377,6 +2545,7 @@ mod tests {
                         &release_ms,
                         ceiling,
                         &lookahead_samples,
+                        &AtomicU64::new(0),
                     );
                 }
             },
@@ -2447,6 +2616,7 @@ mod tests {
                 &release_ms,
                 &ceiling,
                 &lookahead_samples,
+                &AtomicU64::new(0),
             )
         };
 
@@ -4321,9 +4491,13 @@ mod tests {
     #[test]
     fn test_gate_control_validation_rejects_non_finite_and_clamps_ranges() {
         let processor = AudioProcessor::new();
-        processor.set_gate_threshold(f64::NAN);
-        processor.set_gate_attack(f64::INFINITY);
-        processor.set_gate_release(f64::NEG_INFINITY);
+        let gate = |threshold_db, attack_ms, release_ms| GateControlState {
+            threshold_db,
+            attack_ms,
+            release_ms,
+            ..GateControlState::new()
+        };
+        processor.apply_gate_settings(&gate(f64::NAN, f64::INFINITY, f64::NEG_INFINITY));
 
         let control = processor
             .gate_rt_control
@@ -4333,9 +4507,7 @@ mod tests {
         assert_eq!(control.attack_ms, 10.0);
         assert_eq!(control.release_ms, 100.0);
 
-        processor.set_gate_threshold(-120.0);
-        processor.set_gate_attack(0.01);
-        processor.set_gate_release(5000.0);
+        processor.apply_gate_settings(&gate(-120.0, 0.01, 5000.0));
 
         let control = processor
             .gate_rt_control
@@ -4364,15 +4536,30 @@ mod tests {
     #[test]
     fn test_deesser_control_validation_rejects_non_finite_and_clamps_ranges() {
         let processor = AudioProcessor::new();
-
-        processor.set_deesser_low_cut_hz(f64::NAN);
-        processor.set_deesser_high_cut_hz(f64::INFINITY);
-        processor.set_deesser_threshold_db(f64::NEG_INFINITY);
-        processor.set_deesser_ratio(f64::NAN);
-        processor.set_deesser_attack_ms(f64::NAN);
-        processor.set_deesser_release_ms(f64::NAN);
-        processor.set_deesser_max_reduction_db(f64::NAN);
-        processor.set_deesser_auto_amount(f64::NAN);
+        let deesser = |low, high, threshold, ratio, attack, release, max_reduction, amount| {
+            DeesserControlState {
+                low_cut_hz: low,
+                high_cut_hz: high,
+                threshold_db: threshold,
+                ratio,
+                attack_ms: attack,
+                release_ms: release,
+                max_reduction_db: max_reduction,
+                auto_amount: amount,
+                ..DeesserControlState::new()
+            }
+        };
+        let nan = f64::NAN;
+        processor.apply_deesser_settings(&deesser(
+            nan,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            nan,
+            nan,
+            nan,
+            nan,
+            nan,
+        ));
 
         assert_eq!(processor.get_deesser_low_cut_hz(), 4000.0);
         assert_eq!(processor.get_deesser_high_cut_hz(), 11_000.0);
@@ -4381,14 +4568,9 @@ mod tests {
         assert_eq!(processor.get_deesser_max_reduction_db(), 6.0);
         assert_eq!(processor.get_deesser_auto_amount(), 0.5);
 
-        processor.set_deesser_low_cut_hz(100.0);
-        processor.set_deesser_high_cut_hz(80_000.0);
-        processor.set_deesser_threshold_db(-100.0);
-        processor.set_deesser_ratio(100.0);
-        processor.set_deesser_attack_ms(0.01);
-        processor.set_deesser_release_ms(10_000.0);
-        processor.set_deesser_max_reduction_db(100.0);
-        processor.set_deesser_auto_amount(2.0);
+        processor.apply_deesser_settings(&deesser(
+            100.0, 80_000.0, -100.0, 100.0, 0.01, 10_000.0, 100.0, 2.0,
+        ));
 
         assert_eq!(processor.get_deesser_low_cut_hz(), DEESSER_LOW_CUT_MIN_HZ);
         assert_eq!(processor.get_deesser_high_cut_hz(), DEESSER_HIGH_CUT_MAX_HZ);
@@ -4407,11 +4589,18 @@ mod tests {
     #[test]
     fn test_compressor_runtime_meter_getters_read_rt_atomically() {
         let processor = AudioProcessor::new();
+        let apply = |sidechain_highpass_enabled, makeup_gain_db| {
+            processor.apply_compressor_settings(&CompressorControlState {
+                sidechain_highpass_enabled,
+                makeup_gain_db,
+                ..CompressorControlState::new()
+            })
+        };
 
         assert!(processor.get_compressor_sidechain_highpass_enabled());
-        processor.set_compressor_sidechain_highpass_enabled(false);
+        apply(false, 0.0);
         assert!(!processor.get_compressor_sidechain_highpass_enabled());
-        processor.set_compressor_sidechain_highpass_enabled(true);
+        apply(true, 0.0);
         assert!(processor.get_compressor_sidechain_highpass_enabled());
 
         processor
@@ -4424,7 +4613,7 @@ mod tests {
         assert_eq!(processor.get_compressor_current_lufs(), -23.5);
         assert_eq!(processor.get_compressor_current_makeup_gain(), 4.25);
 
-        processor.set_compressor_makeup_gain(6.0);
+        apply(true, 6.0);
         assert_eq!(processor.get_compressor_current_makeup_gain(), 6.0);
     }
 
@@ -4458,23 +4647,6 @@ mod tests {
 
         let invalid = smoothing_coeff_for_time_constant(0.0, 100.0);
         assert_eq!(invalid, 0.0);
-    }
-
-    fn marked_region<'a>(source: &'a str, name: &str) -> &'a str {
-        let start_marker = format!("RT_REGION_START: {name}");
-        let end_marker = format!("RT_REGION_END: {name}");
-        let start = source
-            .find(&start_marker)
-            .unwrap_or_else(|| panic!("missing {start_marker}"));
-        let body_start = source[start..]
-            .find('\n')
-            .map(|offset| start + offset + 1)
-            .unwrap_or(start);
-        let end = source[body_start..]
-            .find(&end_marker)
-            .map(|offset| body_start + offset)
-            .unwrap_or_else(|| panic!("missing {end_marker}"));
-        &source[body_start..end]
     }
 
     #[test]
@@ -4685,56 +4857,35 @@ mod tests {
         &source[start..end]
     }
 
-    fn assert_no_forbidden_rt_patterns(label: &str, region: &str) {
-        let forbidden = [
-            ".lock()",
-            ".try_lock()",
-            "try_lock",
-            ".reserve(",
-            ".resize(",
-            ".to_vec(",
-            ".drain(",
-            "drop(",
-            "format!",
-            "println!",
-            "eprintln!",
-            "processor_debug_log!",
-            "std::mem::forget",
-        ];
-
-        for pattern in forbidden {
-            assert!(
-                !region.contains(pattern),
-                "{label} contains forbidden RT pattern {pattern}"
-            );
-        }
-    }
-
     #[test]
     fn test_marked_rt_regions_reject_blocking_or_allocating_apis() {
-        let files = [
+        for (file, source, expected) in [
             (
                 "processor/dsp_loop.rs",
                 include_str!("dsp_loop.rs"),
-                &["dsp_processing_loop"][..],
+                &[
+                    "dsp_level_meter",
+                    "dsp_downstream_chain",
+                    "dsp_output_writer",
+                    "dsp_processing_loop",
+                ][..],
             ),
             (
                 "input.rs",
                 include_str!("../input.rs"),
-                &["cpal_input_callback"][..],
+                &["cpal_input_mixers", "cpal_input_callback"][..],
             ),
             (
                 "output.rs",
                 include_str!("../output.rs"),
                 &["cpal_output_callback", "cpal_output_renderer"][..],
             ),
-        ];
-
-        for (file, source, regions) in files {
-            for region_name in regions {
-                let region = marked_region(source, region_name);
-                assert_no_forbidden_rt_patterns(&format!("{file}:{region_name}"), region);
-            }
+        ] {
+            let mut names = assert_marked_regions_clean(file, source);
+            names.sort_unstable();
+            let mut expected = expected.to_vec();
+            expected.sort_unstable();
+            assert_eq!(names, expected, "{file}");
         }
     }
 
@@ -4742,12 +4893,12 @@ mod tests {
     fn test_level_meter_and_output_writer_sources_reject_blocking_or_allocating_apis() {
         // These files carry no RT_REGION markers, so the functions are cut out by name.
         let writer = include_str!("output_writer.rs");
-        assert_no_forbidden_rt_patterns(
+        assert_rt_clean(
             "output_writer.rs:OutputWriteContext",
             source_between(writer, "fn write_chunk(", "fn new(total: usize)"),
         );
         let routing = include_str!("routing.rs");
-        assert_no_forbidden_rt_patterns(
+        assert_rt_clean(
             "routing.rs:record_level_extremes",
             source_between(
                 routing,
@@ -4766,7 +4917,7 @@ mod tests {
             "// Time-based EMA smoothing",
         );
 
-        assert_no_forbidden_rt_patterns("processor/dsp_loop.rs:apply_downstream_chain_rt", region);
+        assert_rt_clean("processor/dsp_loop.rs:apply_downstream_chain_rt", region);
     }
 
     #[test]
@@ -4796,6 +4947,9 @@ mod tests {
     #[test]
     fn test_dsp_loop_uses_swap_dirty_flags_to_preserve_racing_updates() {
         let source = include_str!("dsp_loop.rs");
+        let take = source_between(source, "fn take_dirty<", "/// Consume a pending limiter");
+        assert!(take.contains("dirty.swap(false, Ordering::AcqRel)"));
+        let compact: String = source.split_whitespace().collect();
 
         for dirty_flag in [
             "gate_dirty",
@@ -4806,8 +4960,9 @@ mod tests {
             "limiter_dirty",
         ] {
             assert!(
-                source.contains(&format!("{dirty_flag}.swap(false, Ordering::AcqRel)")),
-                "{dirty_flag} must be consumed with swap(false) in the RT loop"
+                compact.contains(&format!("take_dirty(&{dirty_flag},"))
+                    || compact.contains(&format!("take_dirty({dirty_flag},")),
+                "{dirty_flag} must be consumed through take_dirty (swap(false)) in the RT loop"
             );
             assert!(
                 !source.contains(&format!("{dirty_flag}.load(Ordering::Acquire)")),
@@ -4818,21 +4973,31 @@ mod tests {
 
     #[test]
     fn test_dsp_loop_rearms_dirty_flags_on_unstable_snapshots() {
-        let source = include_str!("dsp_loop.rs");
+        let dirty = AtomicBool::new(true);
+        let contention = AtomicU64::new(0);
+        crate::test_alloc::assert_no_allocations("take_dirty", || {
+            assert_eq!(take_dirty(&dirty, || None::<u8>, &contention), None);
+        });
+        assert!(
+            dirty.load(Ordering::Acquire),
+            "an unstable snapshot must re-arm"
+        );
+        assert_eq!(contention.load(Ordering::Relaxed), 1);
 
-        for dirty_flag in [
-            "gate_dirty",
-            "suppressor_dirty",
-            "eq_dirty",
-            "deesser_dirty",
-            "compressor_dirty",
-            "limiter_dirty",
-        ] {
-            assert!(
-                source.contains(&format!("{dirty_flag}.store(true, Ordering::Release)")),
-                "{dirty_flag} must be re-armed when a control snapshot is unstable"
-            );
-        }
+        assert_eq!(take_dirty(&dirty, || Some(3_u8), &contention), Some(3));
+        assert!(!dirty.load(Ordering::Acquire));
+        let unread = || -> Option<u8> { panic!("snapshot read without a pending change") };
+        assert_eq!(take_dirty(&dirty, unread, &contention), None);
+        assert_eq!(contention.load(Ordering::Relaxed), 1);
+
+        assert_eq!(
+            rearm_unless_stable(Some(4_u8), &dirty, &contention),
+            Some(4)
+        );
+        assert!(!dirty.load(Ordering::Acquire));
+        assert_eq!(rearm_unless_stable(None::<u8>, &dirty, &contention), None);
+        assert!(dirty.load(Ordering::Acquire));
+        assert_eq!(contention.load(Ordering::Relaxed), 2);
     }
 
     #[test]
@@ -4861,7 +5026,7 @@ mod tests {
             "limiter changes must be consumed before the Raw monitor, Bypass and Full paths split"
         );
 
-        assert_no_forbidden_rt_patterns(
+        assert_rt_clean(
             "processor/dsp_loop.rs:apply_pending_limiter_control",
             source_between(source, "fn apply_pending_limiter_control(", "thread_local!"),
         );
@@ -5225,6 +5390,7 @@ fn test_dropped_sample_reset_keeps_the_capture_gap_counter() {
 #[cfg(test)]
 mod rt_audit_tests {
     use super::*;
+    use crate::rt_scan::{assert_rt_clean, marked_region};
 
     fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
         let from = source
@@ -5235,68 +5401,6 @@ mod rt_audit_tests {
             .map(|offset| from + offset)
             .unwrap_or_else(|| panic!("missing {end}"));
         &source[from..to]
-    }
-
-    fn region<'a>(source: &'a str, name: &str) -> &'a str {
-        let start = source.find(&format!("RT_REGION_START: {name}")).unwrap();
-        let start = start + source[start..].find('\n').unwrap() + 1;
-        let end = start
-            + source[start..]
-                .find(&format!("RT_REGION_END: {name}"))
-                .unwrap();
-        &source[start..end]
-    }
-
-    fn assert_rt_clean(label: &str, text: &str) {
-        for pattern in [
-            ".lock()",
-            "try_lock",
-            ".reserve(",
-            ".resize(",
-            ".to_vec(",
-            ".drain(",
-            "drop(",
-            "format!",
-            "println!",
-            "eprintln!",
-            "vec!",
-            "Vec::",
-            "Box::new",
-            "String::",
-            "std::mem::forget",
-        ] {
-            assert!(
-                !text.contains(pattern),
-                "{label} contains forbidden RT pattern {pattern}"
-            );
-        }
-    }
-
-    /// The `if .. { } else { }` chain or `match` that starts at `site`: from `site`
-    /// to the closing brace of its last branch. Keeps a source-scan assertion
-    /// inside one statement, so a later unrelated match cannot satisfy it.
-    fn statement_after(src: &str, site: usize) -> &str {
-        let close = |open: usize| -> usize {
-            let mut depth = 0_usize;
-            for (offset, byte) in src.as_bytes()[open..].iter().enumerate() {
-                match byte {
-                    b'{' => depth += 1,
-                    b'}' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return open + offset + 1;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            panic!("unbalanced braces after a source-scan site");
-        };
-        let mut end = close(site + src[site..].find('{').unwrap());
-        while src[end..].trim_start().starts_with("else") {
-            end = close(end + src[end..].find('{').unwrap());
-        }
-        &src[site..end]
     }
 
     /// The production part of dsp_loop.rs: everything but its inline test modules.
@@ -5324,17 +5428,21 @@ mod rt_audit_tests {
         );
         for &site in &sites {
             let before = &production[site.saturating_sub(60)..site];
-            let after = statement_after(&production, site);
             // The VAD snapshot is the lock-free result seqlock, not a control state.
             if before.contains("vad_result") || before.contains("vad_snapshot") {
                 continue;
             }
+            // The statement holding this snapshot, up to it, must hand the
+            // snapshot to a helper that re-arms an unstable one.
+            let statement_start = production[..site]
+                .rfind([';', '{', '}'])
+                .map_or(0, |index| index + 1);
+            let statement = &production[statement_start..site];
             assert!(
-                before.contains("startup_control(")
-                    || after.contains("_dirty.store(true, Ordering::Release)"),
-                "snapshot site without a re-arm: ...{}{}",
-                before,
-                &after[..after.len().min(120)]
+                ["startup_control(", "take_dirty(", "rearm_unless_stable("]
+                    .iter()
+                    .any(|helper| statement.contains(helper)),
+                "snapshot site without a re-arm: ...{statement}"
             );
         }
         assert!(!production.contains("unwrap_or_else(GateControlState::new)"));
@@ -5361,45 +5469,37 @@ mod rt_audit_tests {
     // --- RT-011: contention is measured, limiter reports instability -----------
 
     #[test]
-    fn limiter_consume_reports_an_unstable_snapshot_for_the_contention_counter() {
+    fn limiter_consume_counts_an_unstable_snapshot_as_contention() {
         let control = AtomicLimiterControlState::new();
         let dirty = AtomicBool::new(true);
         let mut limiter = Limiter::default_settings(48_000.0);
         let release = Cell::new(50.0_f32);
         let ceiling = Cell::new(1.0_f32);
         let lookahead = AtomicU64::new(0);
+        let contention = AtomicU64::new(0);
+        let mut consume = || {
+            apply_pending_limiter_control(
+                &dirty,
+                &control,
+                &mut limiter,
+                &release,
+                &ceiling,
+                &lookahead,
+                &contention,
+            )
+        };
         control.seq.store(1, Ordering::Release);
-        assert!(apply_pending_limiter_control(
-            &dirty,
-            &control,
-            &mut limiter,
-            &release,
-            &ceiling,
-            &lookahead
-        ));
+        consume();
         control.seq.store(2, Ordering::Release);
-        assert!(!apply_pending_limiter_control(
-            &dirty,
-            &control,
-            &mut limiter,
-            &release,
-            &ceiling,
-            &lookahead
-        ));
-        // The loop counts contention exactly when the limiter reports instability.
-        let production = dsp_loop_production();
-        let call = production
-            .find("if apply_pending_limiter_control(")
-            .unwrap();
-        let branch = statement_after(&production, call);
-        assert!(
-            branch.contains("lock_contention_count.fetch_add(1, Ordering::Relaxed)"),
-            "the limiter's unstable result must feed lock_contention_count: {branch}"
-        );
-        assert!(
-            !branch.contains("else"),
-            "the counter must not be conditional on anything else"
-        );
+        consume();
+        assert!(!dirty.load(Ordering::Acquire));
+        assert_eq!(contention.load(Ordering::Relaxed), 1);
+
+        // The loop feeds its own contention counter.
+        let region = marked_region(include_str!("dsp_loop.rs"), "dsp_processing_loop");
+        let call = &region[region.find("apply_pending_limiter_control(").unwrap()..];
+        let call = &call[..call.find(");").unwrap()];
+        assert!(call.contains("&lock_contention_count"), "{call}");
     }
 
     // --- RB-004: seqlock fences ------------------------------------------------
@@ -5614,7 +5714,7 @@ mod rt_audit_tests {
         assert!(state.lock().unwrap().last_reason.is_none());
 
         let source = include_str!("dsp_loop.rs");
-        assert!(!region(source, "dsp_processing_loop").contains("catch_unwind"));
+        assert!(!marked_region(source, "dsp_processing_loop").contains("catch_unwind"));
         assert!(source.contains("run_guarded_dsp_loop(\n                dsp_loop,"));
     }
 
@@ -5670,8 +5770,8 @@ mod rt_audit_tests {
     #[test]
     fn suppressor_queue_is_drained_at_the_top_of_every_pass() {
         let source = include_str!("dsp_loop.rs");
-        let rt = region(source, "dsp_processing_loop");
-        let call = rt.rfind("apply_pending_suppressor_change!(").unwrap();
+        let rt = marked_region(source, "dsp_processing_loop");
+        let call = rt.find("let suppressor_in_use =").unwrap();
         let input_read = rt.find("read_contiguous_input(").unwrap();
         let first_branch = rt.find("if n_raw > 0").unwrap();
         assert!(call < input_read && call < first_branch);
@@ -5681,17 +5781,18 @@ mod rt_audit_tests {
             "let use_suppressor =",
             "// Suppressor disabled: clear buffer counter",
         );
+        let compact = |text: &str| text.split_whitespace().collect::<String>();
         assert!(!full_path.contains("suppressor_rx"));
-        assert!(!full_path.contains("suppressor_dirty.swap"));
-        let mac = between(
+        assert!(!compact(full_path).contains("take_dirty(&suppressor_dirty"));
+        let drain = between(
             rt,
-            "macro_rules! apply_pending_suppressor_change",
-            "apply_pending_suppressor_change!(\n",
+            "let suppressor_in_use =",
+            "// Record input buffer fill level",
         );
-        assert!(mac.contains("suppressor_dirty.swap(false, Ordering::AcqRel)"));
-        assert!(mac.contains("retired_suppressor_tx"));
+        assert!(compact(drain).contains("take_dirty(&suppressor_dirty,"));
+        assert!(drain.contains("retired_suppressor_tx"));
         assert!(
-            mac.contains("if $in_use"),
+            drain.contains("if suppressor_in_use"),
             "a swap with no suppressor audio must stay silent"
         );
     }
@@ -5709,6 +5810,25 @@ mod rt_audit_tests {
             !processor.rebuild_noise_suppressor(),
             "nothing drains the queue here"
         );
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn offline_gate_clamps_vad_threshold_and_pre_gain_like_the_live_setters() {
+        Python::initialize();
+        Python::attach(|py| {
+            let settings = pyo3::types::PyDict::new(py);
+            for (threshold, pre_gain, expected) in [
+                (5.0, 1e6, (VAD_THRESHOLD_MAX, VAD_PRE_GAIN_MAX)),
+                (-1.0, 0.0, (VAD_THRESHOLD_MIN, VAD_PRE_GAIN_MIN)),
+                (0.55, 2.5, (0.55, 2.5)),
+            ] {
+                settings.set_item("gate_vad_threshold", threshold).unwrap();
+                settings.set_item("gate_vad_pre_gain", pre_gain).unwrap();
+                let gate = py_gate(Some(&settings), 48_000.0, 1).unwrap();
+                assert_eq!((gate.vad_threshold, gate.vad_pre_gain), expected);
+            }
+        });
     }
 
     // --- RT-008: non-finite downstream output ------------------------------------
@@ -5832,18 +5952,58 @@ mod rt_audit_tests {
             "the de-esser must recover"
         );
 
-        // The compressor and limiter shed a NaN without help, which is why the
-        // chain does not pay for their reset (the compressor's allocates).
+        // The compressor's output stays finite after a NaN, but its envelopes
+        // latch it and it never reduces gain again; clearing the detector
+        // (field zeroing, no allocation) restores it.
+        let loud_gain_reduction = |compressor: &mut Compressor| {
+            let mut loud = [0.9_f32; 480];
+            compressor.process_block_inplace(&mut loud);
+            assert!(loud.iter().all(|s| s.is_finite()));
+            compressor.current_gain_reduction()
+        };
+        // The release path after the loud block: gain reduction must fall back
+        // smoothly, which a NaN release time or coefficient prevents.
+        let release_trace = |compressor: &mut Compressor| -> Vec<f64> {
+            (0..20)
+                .map(|_| {
+                    let mut quiet = [0.001_f32; 480];
+                    compressor.process_block_inplace(&mut quiet);
+                    assert!(quiet.iter().all(|s| s.is_finite()));
+                    compressor.current_gain_reduction()
+                })
+                .collect()
+        };
         let mut compressor = Compressor::default_voice(48_000.0);
+        compressor.set_adaptive_release(true);
+        poison(&mut block);
+        compressor.process_block_inplace(&mut block);
+        let latched = loud_gain_reduction(&mut compressor);
+        assert!(
+            latched.is_nan() || latched <= 0.0,
+            "premise: a latched NaN stops gain reduction, got {latched}"
+        );
+        // The adaptive release never sees the NaN: the detector reads a NaN
+        // envelope as its -200 dB floor.
+        assert!(compressor.current_release_time().is_finite());
+        poison(&mut block);
+        compressor.process_block_inplace(&mut block);
+        crate::test_alloc::assert_no_allocations("compressor detector reset", || {
+            compressor.reset_detector_state();
+        });
+        let reduced = loud_gain_reduction(&mut compressor);
+        assert!(reduced > 0.0);
+        let release = release_trace(&mut compressor);
+        assert!(compressor.current_release_time().is_finite());
+        assert!(
+            release.windows(2).all(|pair| pair[1] <= pair[0]) && release[19] < 0.5 * reduced,
+            "the release must fall back from {reduced} dB: {release:?}"
+        );
+
+        // The limiter sheds a NaN without help.
         let mut limiter = Limiter::default_settings(48_000.0);
         for _ in 0..2 {
             poison(&mut block);
-            compressor.process_block_inplace(&mut block);
-            poison(&mut block);
             limiter.process_block_inplace(&mut block);
-            let mut clean = [0.1_f32; 64];
-            compressor.process_block_inplace(&mut clean);
-            assert!(clean.iter().all(|s| s.is_finite()));
             let mut clean = [0.1_f32; 64];
             limiter.process_block_inplace(&mut clean);
             assert!(clean.iter().all(|s| s.is_finite()));
@@ -5875,6 +6035,7 @@ mod rt_audit_tests {
             "deesser_rt.reset()",
             "correction_eq_rt.reset()",
             "tone_eq_rt.reset()",
+            "compressor_rt.reset_detector_state()",
             "downstream_non_finite_count.fetch_add",
         ] {
             assert!(tail.contains(step), "{step} missing from the NaN recovery");
@@ -5933,7 +6094,7 @@ mod rt_audit_tests {
                 assert!(message.contains("output"));
             }
         }
-        let writer = region(include_str!("dsp_loop.rs"), "dsp_output_writer");
+        let writer = marked_region(include_str!("dsp_loop.rs"), "dsp_output_writer");
         assert!(
             writer.contains("output_resampler_error_count"),
             "output resampler errors must be counted"
@@ -5962,7 +6123,7 @@ mod rt_audit_tests {
                 "{pass_ms} ms passes gave {value}"
             );
         }
-        let rt = region(include_str!("dsp_loop.rs"), "dsp_processing_loop");
+        let rt = marked_region(include_str!("dsp_loop.rs"), "dsp_processing_loop");
         let compact: String = rt.split_whitespace().collect();
         assert!(!compact.contains("smooth_buffer(raw_input_len"));
         assert!(compact.contains("advance_time_ema(&mutsmoothed_input_len"));
@@ -6092,20 +6253,6 @@ mod rt_audit_tests {
         ] {
             assert_rt_clean(label, between(source, start, end));
         }
-        let loop_source = include_str!("dsp_loop.rs");
-        assert_rt_clean("dsp_level_meter", region(loop_source, "dsp_level_meter"));
-        assert_rt_clean(
-            "dsp_downstream_chain",
-            region(loop_source, "dsp_downstream_chain"),
-        );
-        assert_rt_clean(
-            "dsp_output_writer",
-            region(loop_source, "dsp_output_writer"),
-        );
-        assert_rt_clean(
-            "dsp_processing_loop",
-            region(loop_source, "dsp_processing_loop"),
-        );
         let routing = include_str!("routing.rs");
         assert_rt_clean(
             "routing.rs meters",
@@ -6241,26 +6388,32 @@ fn test_product_resampler_offline_hook_bounds_the_rate_ratio() {
 }
 
 #[test]
-fn test_compressor_release_setters_keep_adaptive_base_in_its_range() {
+fn test_compressor_release_settings_keep_adaptive_base_in_its_range() {
     let processor = AudioProcessor::new();
     let stored_release =
         |processor: &AudioProcessor| processor.compressor_control.lock().unwrap().base_release_ms;
+    let apply = |adaptive_release, base_release_ms| {
+        processor.apply_compressor_settings(&CompressorControlState {
+            adaptive_release,
+            base_release_ms,
+            ..CompressorControlState::new()
+        })
+    };
 
-    processor.set_compressor_adaptive_release(false);
-    processor.set_compressor_release(500.0);
+    apply(false, 500.0);
     assert_eq!(stored_release(&processor), 500.0);
 
     // Entering adaptive mode must not keep the manual value as its base.
-    processor.set_compressor_adaptive_release(true);
+    apply(true, 500.0);
     assert_eq!(stored_release(&processor), COMPRESSOR_BASE_RELEASE_MAX_MS);
     assert_eq!(
         processor.get_compressor_release(),
         COMPRESSOR_BASE_RELEASE_MAX_MS
     );
 
-    processor.set_compressor_release(900.0);
+    apply(true, 900.0);
     assert_eq!(stored_release(&processor), COMPRESSOR_BASE_RELEASE_MAX_MS);
-    processor.set_compressor_release(5.0);
+    apply(true, 5.0);
     assert_eq!(stored_release(&processor), COMPRESSOR_BASE_RELEASE_MIN_MS);
 }
 
@@ -6303,8 +6456,14 @@ fn test_live_setters_count_rejected_non_finite_values() {
         processor: AudioProcessor::new(),
     };
     let processor = &wrapper.processor;
+    let ratio = |ratio| {
+        processor.apply_compressor_settings(&CompressorControlState {
+            ratio,
+            ..CompressorControlState::new()
+        })
+    };
     processor.set_gate_threshold(f64::NAN);
-    processor.set_compressor_ratio(f64::INFINITY);
+    ratio(f64::INFINITY);
     processor.set_limiter_release(f64::NEG_INFINITY);
     processor.set_rnnoise_strength(f32::NAN);
     processor.set_latency_compensation_ms(f32::INFINITY);
@@ -6312,7 +6471,7 @@ fn test_live_setters_count_rejected_non_finite_values() {
 
     // Finite out-of-range values are still clamped and accepted.
     processor.set_gate_threshold(1.0e9);
-    processor.set_compressor_ratio(1.0e9);
+    ratio(1.0e9);
     assert_eq!(processor.get_rejected_control_value_count(), 5);
     assert_eq!(
         processor.compressor_control.lock().unwrap().ratio,

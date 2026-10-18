@@ -40,8 +40,6 @@ const VOICE_REFERENCE_LOW_PASS_Q1: f64 = 0.541_196_100_146_197;
 const VOICE_REFERENCE_LOW_PASS_Q2: f64 = 1.306_562_964_876_377;
 const BROADBAND_NARROWNESS_GATE: f64 = 0.34;
 const BROADBAND_NARROWNESS_FULL: f64 = 0.68;
-/// Enable/disable crossfade between the de-essed and the dry signal.
-const ENABLE_TRANSITION_MS: f64 = 10.0;
 
 struct DeEsserBand {
     low_hz: f64,
@@ -211,9 +209,8 @@ impl DeEsserBand {
 /// Real-time de-esser processor.
 pub struct DeEsser {
     enabled: bool,
-    /// Enable-ramp position: 0 is bypassed, `enable_ramp_samples` is fully processed.
-    enable_ramp_position: usize,
-    enable_ramp_samples: usize,
+    /// Crossfade between the dry and the de-essed signal at a toggle.
+    enable_ramp: util::EnableRamp,
     auto_enabled: bool,
     auto_amount: f64,
     threshold_db: f64,
@@ -248,10 +245,7 @@ impl DeEsser {
 
         Self {
             enabled: false,
-            enable_ramp_position: 0,
-            enable_ramp_samples: (sample_rate * ENABLE_TRANSITION_MS / 1_000.0)
-                .round()
-                .max(1.0) as usize,
+            enable_ramp: util::EnableRamp::new(sample_rate, false),
             auto_enabled: true,
             auto_background_db: 0.0,
             auto_amount: 0.5,
@@ -485,7 +479,7 @@ impl DeEsser {
 
     /// Enable or disable de-essing with a short crossfade to or from dry.
     pub fn set_enabled(&mut self, enabled: bool) {
-        if enabled && !self.enabled && self.enable_ramp_position == 0 {
+        if enabled && !self.enabled && self.enable_ramp.is_bypassed() {
             // Resume from full bypass with fresh detector, gain and filter
             // state, not what was frozen when processing stopped.
             self.reset_detector_state();
@@ -495,16 +489,12 @@ impl DeEsser {
 
     /// Whether the de-esser still affects audio (enabled or fading out).
     pub fn is_active(&self) -> bool {
-        self.enabled || self.enable_ramp_position > 0
+        self.enabled || !self.enable_ramp.is_bypassed()
     }
 
     /// Complete any enable/disable ramp now, for state set before audio starts.
     pub fn finish_enable_transition(&mut self) {
-        self.enable_ramp_position = if self.enabled {
-            self.enable_ramp_samples
-        } else {
-            0
-        };
+        self.enable_ramp.finish(self.enabled);
     }
 
     /// Check whether de-esser is enabled.
@@ -710,21 +700,12 @@ impl DeEsser {
             return input;
         }
         let processed = self.process_active_sample(input);
-        let ramp_target = if self.enabled {
-            self.enable_ramp_samples
-        } else {
-            0
-        };
-        if self.enable_ramp_position == ramp_target {
-            return processed;
+        match self.enable_ramp.advance(self.enabled) {
+            // The f64 quotient of two integers below 2^24 rounds to the same
+            // f32 as their f32 quotient.
+            Some(mix) => input + mix as f32 * (processed - input),
+            None => processed,
         }
-        if self.enabled {
-            self.enable_ramp_position += 1;
-        } else {
-            self.enable_ramp_position -= 1;
-        }
-        let mix = self.enable_ramp_position as f32 / self.enable_ramp_samples as f32;
-        input + mix * (processed - input)
     }
 
     #[inline]
@@ -934,6 +915,13 @@ impl DeEsser {
         if !self.is_active() {
             self.current_reduction_db = 0.0;
             self.detector_confidence = 0.0;
+            return;
+        }
+        if self.enabled && self.enable_ramp.is_fully_processed() {
+            // Settled: `process_sample` would return the processed sample as is.
+            for sample in buffer.iter_mut() {
+                *sample = self.process_active_sample(*sample);
+            }
             return;
         }
 

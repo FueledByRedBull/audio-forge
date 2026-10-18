@@ -31,9 +31,10 @@
 
 use crate::audio::rt::FixedAudioRing;
 use crate::dsp::noise_suppressor::{
-    strength_or, ControlledNoiseSuppressor, ControlledSample, GateCompensation, GateControl,
-    NoiseModel, NoiseSuppressor, GATE_COMPENSATION_MAX_DELAY,
+    ControlledNoiseSuppressor, ControlledSample, GateCompensation, GateControl, NoiseModel,
+    NoiseSuppressor, GATE_COMPENSATION_MAX_DELAY,
 };
+use crate::dsp::util::unit_or;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
@@ -710,7 +711,7 @@ impl DeepFilterProcessor {
         model: DeepFilterModel,
         runtime_config: DeepFilterRuntimeConfig,
     ) -> Self {
-        let initial_strength = strength_or(f32::from_bits(strength.load(Ordering::Relaxed)), 1.0);
+        let initial_strength = unit_or(f32::from_bits(strength.load(Ordering::Relaxed)), 1.0);
         let compensation_delay = match model {
             DeepFilterModel::LowLatency => DEEPFILTER_FRAME_SIZE,
             DeepFilterModel::Standard => 0,
@@ -861,7 +862,7 @@ impl DeepFilterProcessor {
         // Advance the 15 ms strength EMA once per processed 10 ms frame so
         // backlog size and callback chunking cannot change the ramp duration.
         // A producer that bypasses `set_strength` must not poison the smoother.
-        let target_strength = strength_or(
+        let target_strength = unit_or(
             f32::from_bits(self.strength.load(Ordering::Relaxed)),
             self.smoothed_strength,
         );
@@ -999,7 +1000,7 @@ impl NoiseSuppressor for DeepFilterProcessor {
     }
 
     fn set_strength(&self, value: f32) {
-        let clamped = strength_or(value, self.get_strength());
+        let clamped = unit_or(value, self.get_strength());
         let bits = clamped.to_bits();
         self.strength.store(bits, Ordering::Relaxed);
     }

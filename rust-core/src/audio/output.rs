@@ -207,27 +207,25 @@ impl AudioOutput {
         }
 
         let fade_frames = remaining_frames.min(UNDERRUN_FADE_FRAMES);
+        let tail = |i: usize| -> f32 {
+            if i >= fade_frames {
+                0.0
+            } else if last_sample == 0.0 {
+                // A zero of either sign times the non-negative gain is itself.
+                last_sample
+            } else {
+                let t = (i + 1) as f32 / fade_frames as f32;
+                let gain = ((1.0 - t) * std::f32::consts::FRAC_PI_2).sin();
+                last_sample * gain
+            }
+        };
         if num_channels == 1 {
             for i in 0..remaining_frames {
-                let value = if i < fade_frames {
-                    let t = (i + 1) as f32 / fade_frames as f32;
-                    let gain = ((1.0 - t) * std::f32::consts::FRAC_PI_2).sin();
-                    last_sample * gain
-                } else {
-                    0.0
-                };
-                data[copied_frames + i] = Self::convert_output_sample::<T>(value);
+                data[copied_frames + i] = Self::convert_output_sample::<T>(tail(i));
             }
         } else {
             for i in 0..remaining_frames {
-                let value = if i < fade_frames {
-                    let t = (i + 1) as f32 / fade_frames as f32;
-                    let gain = ((1.0 - t) * std::f32::consts::FRAC_PI_2).sin();
-                    last_sample * gain
-                } else {
-                    0.0
-                };
-                let converted = Self::convert_output_sample::<T>(value);
+                let converted = Self::convert_output_sample::<T>(tail(i));
                 let frame_idx = copied_frames + i;
                 for channel in 0..num_channels {
                     data[frame_idx * num_channels + channel] = converted;

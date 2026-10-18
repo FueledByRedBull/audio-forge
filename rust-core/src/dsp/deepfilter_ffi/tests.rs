@@ -32,6 +32,30 @@ mod tests {
         );
     }
 
+    /// The passthrough tests above pass without the library; this one needs the
+    /// real load wherever the development df.dll sits at the repository root.
+    #[test]
+    fn repository_df_dll_loads_when_present() {
+        let library = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("rust-core sits under the repository root")
+            .join("df.dll");
+        if !cfg!(all(windows, debug_assertions)) || !library.is_file() {
+            eprintln!(
+                "SKIPPED repository_df_dll_loads_when_present: {} absent or not a debug Windows build",
+                library.display()
+            );
+            return;
+        }
+        let loaded = DeepFilterLib::try_load(&AppOwnedDeepFilterPaths::default(), false);
+        assert!(
+            loaded.is_ok(),
+            "{} must load: {:?}",
+            library.display(),
+            loaded.err()
+        );
+    }
+
     #[test]
     fn test_frame_size() {
         assert_eq!(DEEPFILTER_FRAME_SIZE, 480);

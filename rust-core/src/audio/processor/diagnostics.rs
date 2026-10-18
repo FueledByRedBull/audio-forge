@@ -59,5 +59,8 @@ fn update_backend_status_rt(
 struct StreamRecoveryState {
     last_error: Option<String>,
     last_reason: Option<String>,
+    /// `last_reason` describes the pending restart request, so recovery must
+    /// not replace it with a callback's error code.
+    reason_pending: bool,
     restart_count: u64,
 }

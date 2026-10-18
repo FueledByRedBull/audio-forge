@@ -116,7 +116,8 @@ impl OfflineDspBlockProcessor {
         &mut self.correction_eq
     }
 
-    /// Apply both EQ layers before the next block is rendered.
+    /// Apply both EQ layers before the next block is rendered. After audio has
+    /// started the bands crossfade like the live path instead of restarting.
     pub fn set_eq_layers(
         &mut self,
         correction_bands: &[EqBandConfig; NUM_BANDS],
@@ -127,8 +128,10 @@ impl OfflineDspBlockProcessor {
                 .set_band_config(index, correction_bands[index]);
             self.tone_eq.set_band_config(index, tone_bands[index]);
         }
-        self.correction_eq.reset();
-        self.tone_eq.reset();
+        if !self.started {
+            self.correction_eq.reset();
+            self.tone_eq.reset();
+        }
     }
 
     pub fn deesser_mut(&mut self) -> &mut DeEsser {
@@ -380,6 +383,69 @@ mod block_processor_tests {
             "max_step={max_step}"
         );
         assert!((emitted.last().unwrap() - 0.3).abs() < 1e-4);
+    }
+
+    /// A tone at the tone EQ's band-4 frequency through the offline chain, with
+    /// that band at +6 dB; at block 50 it moves to -6 dB. `reset_after_edit`
+    /// reproduces the old filter-memory reset.
+    fn render_offline_eq_edit(reset_after_edit: bool) -> Vec<f32> {
+        use crate::test_signal::sine;
+        let flat: [EqBandConfig; NUM_BANDS] = std::array::from_fn(EqBandConfig::default_for_index);
+        let mut boosted = flat;
+        boosted[4].gain_db = 6.0;
+        let mut cut = flat;
+        cut[4].gain_db = -6.0;
+        let tone_hz = flat[4].frequency_hz;
+
+        let mut processor = OfflineDspBlockProcessor::new(48_000.0);
+        processor.set_limiter_enabled(false);
+        processor.set_eq_enabled(true);
+        processor.set_eq_layers(&flat, &boosted);
+        let mut output = FixedAudioBuffer::<f32, 480>::new();
+        let mut emitted = Vec::new();
+        for block_index in 0..100 {
+            if block_index == 50 {
+                processor.set_eq_layers(&flat, &cut);
+                if reset_after_edit {
+                    processor.eq_mut().reset();
+                    processor.correction_eq_mut().reset();
+                }
+            }
+            let mut block: [f32; 480] =
+                std::array::from_fn(|i| sine(tone_hz, 0.2, 48_000.0, block_index * 480 + i));
+            processor.process_block_with_stats(&mut block, &mut output);
+            emitted.extend_from_slice(output.as_slice());
+        }
+        emitted
+    }
+
+    #[test]
+    fn offline_eq_edit_after_audio_starts_crossfades_like_live() {
+        use crate::test_signal::max_residual;
+        let tones = [EqBandConfig::default_for_index(4).frequency_hz];
+        let crossfaded = render_offline_eq_edit(false);
+        let restarted = render_offline_eq_edit(true);
+        let edit = 50 * 480;
+        let window = (edit, edit + 9_600);
+        let click = max_residual(&crossfaded, &tones, 48_000.0, window.0, window.1);
+        let restart = max_residual(&restarted, &tones, 48_000.0, window.0, window.1);
+        // Measured 0.0031; the reset left 0.0345.
+        assert!(
+            click < 0.25 * restart,
+            "EQ edit residual {click}, reset restart {restart}"
+        );
+
+        // Steady state: identical before the edit, and 0.25 s after it within
+        // 1e-5 of the restarted render, whose filters settled on the same target.
+        assert_eq!(crossfaded[..edit], restarted[..edit]);
+        for n in edit + 12_000..crossfaded.len() {
+            assert!(
+                (crossfaded[n] - restarted[n]).abs() < 1e-5,
+                "sample {n}: {} vs {}",
+                crossfaded[n],
+                restarted[n]
+            );
+        }
     }
 
     #[test]

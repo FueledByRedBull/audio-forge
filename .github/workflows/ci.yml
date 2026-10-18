@@ -284,9 +284,9 @@ jobs:
       # Default features hide the cfg(not(feature = ...)) branches; compile each
       # reduced feature set once.
       - name: Check without default features
-        run: cargo check --locked -p mic_eq_core --no-default-features --bins
+        run: cargo check --locked -p mic_eq_core --no-default-features --lib
       - name: Check with VAD only
-        run: cargo check --locked -p mic_eq_core --no-default-features --features vad --bins
+        run: cargo check --locked -p mic_eq_core --no-default-features --features vad --lib
 
   # The only run of the seeded control/DSP contention stress test.
   rust-stress:

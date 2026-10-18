@@ -27,10 +27,9 @@ pub(super) struct AutoMakeupActivityEstimate {
 pub(super) struct MakeupController {
     /// Makeup gain in dB to compensate for gain reduction
     makeup_gain_db: f64,
-    /// Loudness meter for auto makeup gain
+    /// Loudness meter for auto makeup gain; `None` when the sample rate has no
+    /// K-weighting filter, which `auto_makeup_error_code` reports.
     pub(super) loudness_meter: Option<crate::dsp::loudness::LoudnessMeter>,
-    /// Why `loudness_meter` is absent, so a disabled auto makeup is visible.
-    loudness_error: Option<String>,
     /// Fixed storage for the sample API's auto-makeup control window.
     auto_makeup_sample_window: [f32; AUTO_MAKEUP_SAMPLE_WINDOW_MAX_SAMPLES],
     /// Number of output samples currently held for the sample API window.
@@ -68,11 +67,7 @@ pub(super) struct MakeupController {
 impl MakeupController {
     pub(super) fn new(makeup_gain_db: f64, sample_rate: f64) -> Self {
         let makeup_smoothing_coeff = util::time_constant_to_coeff(200.0, sample_rate);
-        let (loudness_meter, loudness_error) =
-            match crate::dsp::loudness::LoudnessMeter::new(sample_rate as u32) {
-                Ok(meter) => (Some(meter), None),
-                Err(error) => (None, Some(error.to_string())),
-            };
+        let loudness_meter = crate::dsp::loudness::LoudnessMeter::new(sample_rate as u32).ok();
         let auto_makeup_sample_window_samples = if sample_rate.is_finite() && sample_rate > 0.0 {
             (sample_rate * AUTO_MAKEUP_SAMPLE_WINDOW_MS / 1_000.0)
                 .round()
@@ -84,7 +79,6 @@ impl MakeupController {
         Self {
             makeup_gain_db,
             loudness_meter,
-            loudness_error,
             auto_makeup_sample_window: [0.0; AUTO_MAKEUP_SAMPLE_WINDOW_MAX_SAMPLES],
             auto_makeup_sample_window_len: 0,
             auto_makeup_sample_activity_sum: 0.0,
@@ -133,29 +127,15 @@ impl MakeupController {
         self.auto_makeup_enabled
     }
 
-    /// Why auto makeup cannot run (no meter for this sample rate) or has
-    /// stopped tracking (the meter rejected audio); `None` when healthy or not
-    /// requested.
-    pub(super) fn auto_makeup_error(&self) -> Option<&str> {
-        if !self.auto_makeup_requested {
-            return None;
-        }
-        if let Some(error) = &self.loudness_error {
-            return Some(error);
-        }
-        self.loudness_meter
-            .as_ref()
-            .filter(|meter| meter.processing_failures() > 0)
-            .map(|_| "Loudness meter rejected audio; auto makeup is not tracking loudness")
-    }
-
-    /// `auto_makeup_error` as a code an atomic can carry: 0 healthy, 1 no meter
-    /// for this sample rate, 2 the meter rejected audio.
+    /// Why requested auto makeup cannot run or has stopped tracking, as a code
+    /// an atomic can carry: 0 healthy or not requested, 1 no meter for this
+    /// sample rate, 2 the meter rejected audio.
     pub(super) fn auto_makeup_error_code(&self) -> u8 {
-        match self.auto_makeup_error() {
-            None => 0,
-            Some(_) if self.loudness_error.is_some() => 1,
-            Some(_) => 2,
+        match &self.loudness_meter {
+            _ if !self.auto_makeup_requested => 0,
+            None => 1,
+            Some(meter) if meter.processing_failures() > 0 => 2,
+            Some(_) => 0,
         }
     }
 

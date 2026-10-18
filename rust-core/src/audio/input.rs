@@ -2006,19 +2006,9 @@ mod tests {
         assert!(mono[0] > 0.999 && (mono[1] - 0.5).abs() < 1e-3, "{mono:?}");
     }
 
-    fn marked_region<'a>(source: &'a str, name: &str) -> &'a str {
-        let start = source.find(&format!("RT_REGION_START: {name}")).unwrap();
-        let start = start + source[start..].find('\n').unwrap() + 1;
-        let end = start
-            + source[start..]
-                .find(&format!("RT_REGION_END: {name}"))
-                .unwrap();
-        &source[start..end]
-    }
-
     #[test]
     fn test_input_mixers_are_inside_a_marked_rt_region_and_do_not_allocate() {
-        let region = marked_region(include_str!("input.rs"), "cpal_input_mixers");
+        let region = crate::rt_scan::marked_region(include_str!("input.rs"), "cpal_input_mixers");
         assert!(region.contains("fn mix_phase_safe_stereo"));
         assert!(region.contains("fn best_phase_alignment"));
         assert!(
@@ -2026,23 +2016,8 @@ mod tests {
                 || region.contains("PhaseSafeMonoState")
         );
         assert!(region.contains("fn mix_interleaved_to_mono_with_mode_and_state"));
-        for pattern in [
-            ".lock()",
-            "try_lock",
-            ".reserve(",
-            ".resize(",
-            ".to_vec(",
-            "vec!",
-            "Vec::",
-            "format!",
-            "println!",
-            "Box::new",
-        ] {
-            assert!(
-                !region.contains(pattern),
-                "input mixers contain forbidden RT pattern {pattern}"
-            );
-        }
+        // The forbidden-API scan of this region runs with the others in
+        // processor/tests.rs.
 
         // A drifting, anti-phased stereo pair forces an alignment candidate and,
         // when the pair flips, a strategy change with its smoothing transition.

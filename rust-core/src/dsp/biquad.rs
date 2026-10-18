@@ -6,6 +6,9 @@
 use std::f64::consts::PI;
 
 const MIN_BIQUAD_Q: f64 = 1e-6;
+/// Far above any EQ or notch in the chain (EQ_Q_MAX is 10, the hum notch 36);
+/// beyond it the bandwidth is below a hertz at audio rates.
+const MAX_BIQUAD_Q: f64 = 1e3;
 const COEFF_CROSSFADE_MS: f64 = 1.5;
 const MAX_COEFF_CROSSFADE_SAMPLES: usize = 4096;
 /// Lowest tunable frequency; 0 Hz and below put the poles on or outside the unit circle.
@@ -25,8 +28,9 @@ pub(super) fn coefficient_crossfade_samples(sample_rate: f64) -> usize {
 }
 
 /// Clamp coefficient-driving parameters to where the RBJ filters stay stable
-/// (0 < f < Nyquist, finite gain). A NaN keeps its `previous` value, because
-/// it would otherwise poison the coefficients and the filter state for good.
+/// (0 < f < Nyquist, finite gain, Q at most `MAX_BIQUAD_Q`). A NaN, or an
+/// infinite Q, keeps its `previous` value, because it would otherwise poison
+/// the coefficients and the filter state for good.
 /// Values already in range pass through unchanged.
 fn sanitized_parameters(
     sample_rate: f64,
@@ -51,7 +55,12 @@ fn sanitized_parameters(
             sample_rate * NYQUIST_FRACTION_MAX,
         ),
         bounded(gain_db, previous.1, -MAX_BIQUAD_GAIN_DB, MAX_BIQUAD_GAIN_DB),
-        if q.is_nan() { previous.2 } else { q },
+        // An infinite Q is no more meaningful than a NaN one.
+        if q.is_finite() {
+            q.min(MAX_BIQUAD_Q)
+        } else {
+            previous.2
+        },
     )
 }
 
@@ -309,7 +318,8 @@ impl Biquad {
         self.crossfade_remaining != 0 && self.crossfade_remaining != self.crossfade_total
     }
 
-    fn clear_state(&mut self) {
+    /// Drop the filter memory and any crossfade, keeping the coefficients.
+    pub(crate) fn clear_state(&mut self) {
         self.z1 = 0.0;
         self.z2 = 0.0;
         self.pending_z1 = 0.0;
@@ -319,12 +329,14 @@ impl Biquad {
         self.retarget_queued = false;
     }
 
-    fn schedule_coefficients_crossfade(&mut self, coeffs: (f64, f64, f64, f64, f64)) {
+    /// Fade to the current parameters; mid-fade, queue the retarget and leave
+    /// the coefficients to be computed when it starts.
+    fn schedule_coefficients_crossfade(&mut self) {
         if self.crossfade_has_started() {
             self.retarget_queued = true;
             return;
         }
-        let (b0, b1, b2, a1, a2) = coeffs;
+        let (b0, b1, b2, a1, a2) = self.calculate_coefficients_values();
         self.pending_b0 = b0;
         self.pending_b1 = b1;
         self.pending_b2 = b2;
@@ -401,7 +413,7 @@ impl Biquad {
             self.promote_pending_coefficients();
             if self.retarget_queued {
                 self.retarget_queued = false;
-                self.schedule_coefficients_crossfade(self.calculate_coefficients_values());
+                self.schedule_coefficients_crossfade();
             }
         }
         output as f32
@@ -431,13 +443,13 @@ impl Biquad {
     /// Set filter frequency and recalculate coefficients
     pub fn set_frequency(&mut self, frequency: f64) {
         self.frequency = self.sanitized(frequency, self.gain_db, self.q).0;
-        self.schedule_coefficients_crossfade(self.calculate_coefficients_values());
+        self.schedule_coefficients_crossfade();
     }
 
     /// Set filter gain and recalculate coefficients
     pub fn set_gain_db(&mut self, gain_db: f64) {
         self.gain_db = self.sanitized(self.frequency, gain_db, self.q).1;
-        self.schedule_coefficients_crossfade(self.calculate_coefficients_values());
+        self.schedule_coefficients_crossfade();
     }
 
     /// Set filter gain immediately.
@@ -475,7 +487,7 @@ impl Biquad {
         self.frequency = frequency;
         self.gain_db = gain_db;
         self.q = q.max(MIN_BIQUAD_Q);
-        self.schedule_coefficients_crossfade(self.calculate_coefficients_values());
+        self.schedule_coefficients_crossfade();
     }
 
     /// Set every coefficient-driving parameter without a transition.
@@ -763,6 +775,71 @@ mod tests {
             (filter.magnitude_response_db(600.0) - target.magnitude_response_db(600.0)).abs()
                 < 1e-9
         );
+    }
+
+    #[test]
+    fn test_immediate_gain_during_a_queued_retarget_leaves_the_running_fade_alone() {
+        use crate::test_signal::{max_residual, sine};
+        // Boost at sample 4800, retune one sample into that fade (queued) and
+        // send an immediate gain 50 samples later (70% through), still queued.
+        let render = |immediate_gain: Option<f64>| {
+            let mut filter = Biquad::new(BiquadType::Peaking, 200.0, 0.0, 1.0, 48_000.0);
+            let output: Vec<f32> = (0..9_600)
+                .map(|n| {
+                    if n == 4_800 {
+                        filter.set_gain_db(12.0);
+                    }
+                    if n == 4_801 {
+                        filter.set_frequency(400.0);
+                    }
+                    if let (Some(gain_db), 4_850) = (immediate_gain, n) {
+                        filter.set_gain_db_immediate(gain_db);
+                    }
+                    filter.process_sample(sine(200.0, 0.2, 48_000.0, n))
+                })
+                .collect();
+            (output, filter)
+        };
+        let (queued_only, _) = render(None);
+        let (with_immediate, filter) = render(Some(-12.0));
+        let tones = [200.0];
+        let clean = max_residual(&queued_only, &tones, 48_000.0, 4_752, 5_280);
+        let click = max_residual(&with_immediate, &tones, 48_000.0, 4_752, 5_280);
+        // Measured 0.0040 against 0.0027; rewriting the pending coefficients
+        // under the queued retarget left 0.0171.
+        assert!(
+            click < 2.0 * clean,
+            "immediate gain residual {click}, queued retarget alone {clean}"
+        );
+
+        assert!(!filter.is_crossfading());
+        let target = Biquad::new(BiquadType::Peaking, 400.0, -12.0, 1.0, 48_000.0);
+        for frequency in [100.0, 200.0, 400.0, 2_000.0] {
+            assert!(
+                (filter.magnitude_response_db(frequency) - target.magnitude_response_db(frequency))
+                    .abs()
+                    < 1e-9,
+                "{frequency} Hz"
+            );
+        }
+    }
+
+    #[test]
+    fn test_non_finite_and_huge_q_are_bounded() {
+        let reference = Biquad::new(BiquadType::Peaking, 1_000.0, 6.0, 1.4, 48_000.0);
+        for q in [f64::INFINITY, f64::NEG_INFINITY] {
+            let mut filter = reference.clone();
+            filter.set_parameters_immediate(BiquadType::Peaking, 1_000.0, 6.0, q);
+            assert_eq!(filter.q, 1.4, "Q {q} must keep the previous value");
+            filter.set_parameters(BiquadType::Peaking, 1_000.0, 6.0, q);
+            assert_eq!(filter.q, 1.4, "Q {q} must keep the previous value");
+            let constructed = Biquad::new(BiquadType::Peaking, 1_000.0, 6.0, q, 48_000.0);
+            assert_eq!(constructed.q, 1.0, "Q {q} must fall back like NaN");
+        }
+        let mut huge = reference.clone();
+        huge.set_parameters_immediate(BiquadType::Notch, 1_000.0, 0.0, 1e12);
+        assert_eq!(huge.q, MAX_BIQUAD_Q);
+        assert_bounded_response(&mut huge, 2.0);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! RNNoise integration with proper scaling and 480-sample frame buffering
 
-use super::noise_suppressor::{strength_or, ControlledSample, GateCompensation, GateControl};
+use super::noise_suppressor::{ControlledSample, GateCompensation, GateControl};
+use super::util::unit_or;
 use crate::audio::input::TARGET_SAMPLE_RATE;
 use crate::audio::rt::FixedAudioRing;
 use nnnoiseless::DenoiseState;
@@ -53,7 +54,7 @@ impl RNNoiseProcessor {
         let smoothing_tau_s = smoothing_ms / 1000.0;
         let frame_dt_s = RNNOISE_FRAME_SIZE as f32 / sample_rate;
         let smoothing_coeff = 1.0 - (-(frame_dt_s / smoothing_tau_s)).exp();
-        let initial_strength = strength_or(f32::from_bits(strength.load(Ordering::Relaxed)), 1.0);
+        let initial_strength = unit_or(f32::from_bits(strength.load(Ordering::Relaxed)), 1.0);
         Self {
             denoiser: DenoiseState::new(),
             input_buffer: FixedAudioRing::new(),
@@ -76,7 +77,7 @@ impl RNNoiseProcessor {
     /// 0.0 = fully dry (original signal)
     /// 1.0 = fully wet (processed signal)
     pub fn set_strength(&self, value: f32) {
-        let clamped = strength_or(value, self.get_strength());
+        let clamped = unit_or(value, self.get_strength());
         let bits = clamped.to_bits();
         self.strength.store(bits, Ordering::Relaxed);
     }
@@ -90,7 +91,7 @@ impl RNNoiseProcessor {
     /// Returns the current smoothed value
     fn update_smoothing(&mut self) -> f32 {
         // A producer that bypasses `set_strength` must not poison the smoother.
-        let target = strength_or(
+        let target = unit_or(
             f32::from_bits(self.strength.load(Ordering::Relaxed)),
             self.smoothed_strength,
         );

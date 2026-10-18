@@ -23,8 +23,6 @@ const ADAPTIVE_RELEASE_COEFF_UPDATE_MS: f64 = 1.0;
 const PLOSIVE_RATIO_START: f64 = 1.25;
 const PLOSIVE_RATIO_FULL: f64 = 5.0;
 const PLOSIVE_MIN_DETECTOR_GAIN: f64 = 0.35;
-/// Enable/disable ramps between processed and unity gain instead of stepping.
-const ENABLE_TRANSITION_MS: f64 = 10.0;
 
 /// Non-realtime speech evidence used only by auto-makeup measurement/control.
 ///
@@ -72,9 +70,8 @@ pub struct Compressor {
     sample_rate: f64,
     /// Whether compressor is enabled
     enabled: bool,
-    /// Enable-ramp position: 0 is bypassed, `enable_ramp_samples` is fully processed.
-    enable_ramp_position: usize,
-    enable_ramp_samples: usize,
+    /// Ramp between unity gain and the processed gain at a toggle.
+    enable_ramp: util::EnableRamp,
     /// Whether adaptive release is enabled
     adaptive_release: bool,
     /// Base release time in milliseconds (user-controlled)
@@ -153,14 +150,6 @@ impl Compressor {
             1
         };
 
-        let enable_ramp_samples = if sample_rate.is_finite() && sample_rate > 0.0 {
-            (sample_rate * ENABLE_TRANSITION_MS / 1_000.0)
-                .round()
-                .max(1.0) as usize
-        } else {
-            1
-        };
-
         Self {
             threshold_db,
             ratio: ratio.max(1.0),
@@ -179,8 +168,7 @@ impl Compressor {
             block_peak_gain_reduction_db: 0.0,
             sample_rate,
             enabled: true,
-            enable_ramp_position: enable_ramp_samples,
-            enable_ramp_samples,
+            enable_ramp: util::EnableRamp::new(sample_rate, true),
             adaptive_release: false,
             base_release_ms: release_ms,
             current_release_ms: release_ms,
@@ -219,7 +207,7 @@ impl Compressor {
 
     /// Set threshold in dB
     pub fn set_threshold(&mut self, threshold_db: f64) {
-        if threshold_db.is_nan() || self.threshold_db == threshold_db {
+        if !threshold_db.is_finite() || self.threshold_db == threshold_db {
             return;
         }
         self.threshold_db = threshold_db;
@@ -330,7 +318,7 @@ impl Compressor {
 
     /// Enable or disable the compressor with a short gain ramp.
     pub fn set_enabled(&mut self, enabled: bool) {
-        if enabled && !self.enabled && self.enable_ramp_position == 0 {
+        if enabled && !self.enabled && self.enable_ramp.is_bypassed() {
             // Resume from full bypass with fresh detector state, not the
             // envelope frozen when processing stopped.
             self.reset_detector_state();
@@ -348,16 +336,12 @@ impl Compressor {
 
     /// Whether the compressor still affects audio (enabled or fading out).
     pub fn is_active(&self) -> bool {
-        self.enabled || self.enable_ramp_position > 0
+        self.enabled || !self.enable_ramp.is_bypassed()
     }
 
     /// Complete any enable/disable ramp now, for state set before audio starts.
     pub fn finish_enable_transition(&mut self) {
-        self.enable_ramp_position = if self.enabled {
-            self.enable_ramp_samples
-        } else {
-            0
-        };
+        self.enable_ramp.finish(self.enabled);
     }
 
     /// Get current gain reduction in dB (for metering)
@@ -380,13 +364,8 @@ impl Compressor {
         self.makeup.auto_makeup_enabled()
     }
 
-    /// Why auto makeup is unavailable or not tracking, for diagnostics.
-    pub fn auto_makeup_error(&self) -> Option<&str> {
-        self.makeup.auto_makeup_error()
-    }
-
-    /// `auto_makeup_error` as a code the DSP thread can publish through an
-    /// atomic; decode it with `auto_makeup_error_text`.
+    /// Why auto makeup is unavailable or not tracking, as a code the DSP thread
+    /// can publish through an atomic; decode it with `auto_makeup_error_text`.
     pub fn auto_makeup_error_code(&self) -> u8 {
         self.makeup.auto_makeup_error_code()
     }
@@ -480,7 +459,11 @@ impl Compressor {
         self.plosive_ratio = 0.0;
     }
 
-    fn reset_detector_state(&mut self) {
+    /// Clear the detector envelopes and gain state (field zeroing only, so the
+    /// DSP loop may call it); a NaN latched in them would stop gain reduction.
+    /// The release time needs no reset: `linear_to_db` reads a NaN envelope as
+    /// its floor, so the adaptive release only ever sees finite levels.
+    pub(crate) fn reset_detector_state(&mut self) {
         self.peak_envelope = 0.0;
         self.rms_envelope_sq = 0.0;
         self.current_gain_reduction_db = 0.0;
@@ -740,18 +723,7 @@ impl Compressor {
 
         let mut output_gain = util::db_to_linear(-self.current_gain_reduction_db)
             * util::db_to_linear(self.makeup.current_makeup_gain());
-        let ramp_target = if self.enabled {
-            self.enable_ramp_samples
-        } else {
-            0
-        };
-        if self.enable_ramp_position != ramp_target {
-            if self.enabled {
-                self.enable_ramp_position += 1;
-            } else {
-                self.enable_ramp_position -= 1;
-            }
-            let mix = self.enable_ramp_position as f64 / self.enable_ramp_samples as f64;
+        if let Some(mix) = self.enable_ramp.advance(self.enabled) {
             output_gain = 1.0 + mix * (output_gain - 1.0);
         }
         let output = (input_f64 * output_gain) as f32;
@@ -1920,19 +1892,24 @@ mod tests {
     }
 
     #[test]
+    fn test_non_finite_threshold_keeps_the_current_one() {
+        let mut comp = Compressor::default_voice(48_000.0);
+        comp.set_threshold(-24.0);
+        for threshold in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            comp.set_threshold(threshold);
+            assert_eq!(comp.threshold_db(), -24.0, "{threshold}");
+        }
+    }
+
+    #[test]
     fn test_unsupported_sample_rate_reports_why_auto_makeup_is_off() {
         let mut comp = Compressor::new(-20.0, 4.0, 10.0, 200.0, 0.0, 0.0, 22_050.0);
         comp.set_auto_makeup_enabled(true);
         assert!(!comp.auto_makeup_enabled());
-        assert!(comp
-            .auto_makeup_error()
-            .expect("an unsupported rate must be reported")
-            .contains("22050"));
 
         let mut supported = Compressor::default_voice(48_000.0);
         supported.set_auto_makeup_enabled(true);
         assert!(supported.auto_makeup_enabled());
-        assert!(supported.auto_makeup_error().is_none());
 
         assert_eq!(comp.auto_makeup_error_code(), 1);
         assert!(Compressor::auto_makeup_error_text(1)

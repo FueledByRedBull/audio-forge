@@ -163,11 +163,8 @@ impl AtomicGateControlState {
             attack_ms: f64::from_bits(self.attack_ms_bits.load(Ordering::Relaxed)),
             release_ms: f64::from_bits(self.release_ms_bits.load(Ordering::Relaxed)),
             #[cfg(feature = "vad")]
-            gate_mode: match self.gate_mode.load(Ordering::Relaxed) {
-                1 => GateMode::VadAssisted,
-                2 => GateMode::VadOnly,
-                _ => GateMode::ThresholdOnly,
-            },
+            gate_mode: GateMode::from_u8(self.gate_mode.load(Ordering::Relaxed))
+                .unwrap_or(GateMode::ThresholdOnly),
             #[cfg(feature = "vad")]
             vad_threshold: f32::from_bits(self.vad_threshold_bits.load(Ordering::Relaxed)),
             #[cfg(feature = "vad")]
@@ -181,37 +178,12 @@ impl AtomicGateControlState {
         })
     }
 
-    fn set_enabled(&self, enabled: bool) {
-        self.update(|state| state.enabled.store(enabled, Ordering::Relaxed));
-    }
-
     fn set_threshold_db(&self, threshold_db: f64) {
         self.update(|state| {
             state
                 .threshold_db_bits
                 .store(threshold_db.to_bits(), Ordering::Relaxed);
         });
-    }
-
-    fn set_attack_ms(&self, attack_ms: f64) {
-        self.update(|state| {
-            state
-                .attack_ms_bits
-                .store(attack_ms.to_bits(), Ordering::Relaxed);
-        });
-    }
-
-    fn set_release_ms(&self, release_ms: f64) {
-        self.update(|state| {
-            state
-                .release_ms_bits
-                .store(release_ms.to_bits(), Ordering::Relaxed);
-        });
-    }
-
-    #[cfg(feature = "vad")]
-    fn set_gate_mode(&self, gate_mode: GateMode) {
-        self.update(|state| state.gate_mode.store(gate_mode as u8, Ordering::Relaxed));
     }
 
     #[cfg(feature = "vad")]
@@ -244,15 +216,6 @@ impl AtomicGateControlState {
     #[cfg(feature = "vad")]
     fn set_auto_threshold(&self, enabled: bool) {
         self.update(|state| state.auto_threshold.store(enabled, Ordering::Relaxed));
-    }
-
-    #[cfg(feature = "vad")]
-    fn set_margin_db(&self, margin_db: f32) {
-        self.update(|state| {
-            state
-                .margin_db_bits
-                .store(margin_db.to_bits(), Ordering::Relaxed);
-        });
     }
 }
 
@@ -582,74 +545,6 @@ impl AtomicDeesserControlState {
             max_reduction_db: f64::from_bits(self.max_reduction_db_bits.load(Ordering::Relaxed)),
         })
     }
-
-    fn set_enabled(&self, enabled: bool) {
-        self.update(|state| state.enabled.store(enabled, Ordering::Relaxed));
-    }
-
-    fn set_auto_enabled(&self, enabled: bool) {
-        self.update(|state| state.auto_enabled.store(enabled, Ordering::Relaxed));
-    }
-
-    fn set_auto_amount(&self, value: f64) {
-        self.update(|state| {
-            state
-                .auto_amount_bits
-                .store(value.to_bits(), Ordering::Relaxed)
-        });
-    }
-
-    fn set_low_cut_hz(&self, value: f64) {
-        self.update(|state| {
-            state
-                .low_cut_hz_bits
-                .store(value.to_bits(), Ordering::Relaxed)
-        });
-    }
-
-    fn set_high_cut_hz(&self, value: f64) {
-        self.update(|state| {
-            state
-                .high_cut_hz_bits
-                .store(value.to_bits(), Ordering::Relaxed)
-        });
-    }
-
-    fn set_threshold_db(&self, value: f64) {
-        self.update(|state| {
-            state
-                .threshold_db_bits
-                .store(value.to_bits(), Ordering::Relaxed)
-        });
-    }
-
-    fn set_ratio(&self, value: f64) {
-        self.update(|state| state.ratio_bits.store(value.to_bits(), Ordering::Relaxed));
-    }
-
-    fn set_attack_ms(&self, value: f64) {
-        self.update(|state| {
-            state
-                .attack_ms_bits
-                .store(value.to_bits(), Ordering::Relaxed)
-        });
-    }
-
-    fn set_release_ms(&self, value: f64) {
-        self.update(|state| {
-            state
-                .release_ms_bits
-                .store(value.to_bits(), Ordering::Relaxed)
-        });
-    }
-
-    fn set_max_reduction_db(&self, value: f64) {
-        self.update(|state| {
-            state
-                .max_reduction_db_bits
-                .store(value.to_bits(), Ordering::Relaxed);
-        });
-    }
 }
 
 #[derive(Clone)]
@@ -749,75 +644,11 @@ impl AtomicCompressorControlState {
         })
     }
 
-    fn set_enabled(&self, enabled: bool) {
-        self.update(|state| state.enabled.store(enabled, Ordering::Relaxed));
-    }
-
     fn set_threshold_db(&self, value: f64) {
         self.update(|state| {
             state
                 .threshold_db_bits
                 .store(value.to_bits(), Ordering::Relaxed)
-        });
-    }
-
-    fn set_ratio(&self, value: f64) {
-        self.update(|state| state.ratio_bits.store(value.to_bits(), Ordering::Relaxed));
-    }
-
-    fn set_attack_ms(&self, value: f64) {
-        self.update(|state| {
-            state
-                .attack_ms_bits
-                .store(value.to_bits(), Ordering::Relaxed)
-        });
-    }
-
-    fn set_base_release_ms(&self, value: f64) {
-        self.update(|state| {
-            state
-                .base_release_ms_bits
-                .store(value.to_bits(), Ordering::Relaxed);
-        });
-    }
-
-    fn set_makeup_gain_db(&self, value: f64) {
-        self.update(|state| {
-            state
-                .makeup_gain_db_bits
-                .store(value.to_bits(), Ordering::Relaxed);
-        });
-    }
-
-    fn set_adaptive_release(&self, enabled: bool) {
-        self.update(|state| state.adaptive_release.store(enabled, Ordering::Relaxed));
-    }
-
-    fn set_auto_makeup_enabled(&self, enabled: bool) {
-        self.update(|state| state.auto_makeup_enabled.store(enabled, Ordering::Relaxed));
-    }
-
-    fn set_target_lufs(&self, value: f64) {
-        self.update(|state| {
-            state
-                .target_lufs_bits
-                .store(value.to_bits(), Ordering::Relaxed)
-        });
-    }
-
-    fn set_noise_reference_reliability(&self, value: f64) {
-        self.update(|state| {
-            state
-                .noise_reference_reliability_bits
-                .store(value.to_bits(), Ordering::Relaxed);
-        });
-    }
-
-    fn set_sidechain_highpass_enabled(&self, enabled: bool) {
-        self.update(|state| {
-            state
-                .sidechain_highpass_enabled
-                .store(enabled, Ordering::Relaxed);
         });
     }
 }

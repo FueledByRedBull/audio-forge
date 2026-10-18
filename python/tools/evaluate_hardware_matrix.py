@@ -118,10 +118,6 @@ def aggregate(
         for _path, report in reports
         if isinstance(report.get("case"), dict)
     }
-    missing = coverage_missing(report for _path, report in reports)
-    complete = not errors and all(
-        value == 0 or value == [] for value in missing.values()
-    )
     resolved_report_root = report_root.resolve() if report_root is not None else None
 
     def report_label(path: Path) -> str:
@@ -133,6 +129,11 @@ def aggregate(
                 errors.append(f"{path.name}: report is outside the declared report root")
         return (Path(path.parent.name) / path.name).as_posix()
 
+    report_labels = [report_label(path) for path, _report in reports]
+    missing = coverage_missing(report for _path, report in reports)
+    complete = not errors and all(
+        value == 0 or value == [] for value in missing.values()
+    )
     result = {
         "schema_version": 1,
         "qualification_kind": "exact-artifact-hardware-matrix",
@@ -169,7 +170,7 @@ def aggregate(
         "cases": [
             {
                 "id": str(case_field(report, "id", "")),
-                "report_file": report_label(path),
+                "report_file": label,
                 "report_sha256": sha256_file(path),
                 "os_release": machine_release(report),
                 "device_class": str(case_field(report, "device_class", "")),
@@ -177,7 +178,7 @@ def aggregate(
                 "scenario": str(case_field(report, "scenario", "")),
                 "evidence_kind": str(case_field(report, "evidence_kind", "")),
             }
-            for path, report in reports
+            for label, (path, report) in zip(report_labels, reports, strict=True)
         ],
         "errors": errors,
         "limitations": [

@@ -15,8 +15,12 @@ from typing import Any, NoReturn
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EVALUATION_ROOT = REPO_ROOT / "evaluation"
 MAX_TRACKED_REPORT_BYTES = 100_000
-WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:[/\\]")
-POSIX_HOME = re.compile(r"^/(?:Users|home)/[^/]+(?:/|$)")
+# A local path anywhere in a string: drive letter, UNC share or home folder.
+LOCAL_PATH = re.compile(
+    r"(?<![A-Za-z0-9])[A-Za-z]:[/\\]"
+    r"|(?:^|[\s\"'=(])\\\\[^\\\s]+\\"
+    r"|(?:^|[\s\"'=(:,;/])/(?:Users|home)/[^/\s]+(?:/|$)"
+)
 AUDIBLE_CONTRACT_FIELDS = {
     "configuration",
     "asset_hashes",
@@ -435,7 +439,7 @@ def validate_report(path: Path, *, unverified: list[str] | None = None) -> list[
     errors.extend(schema_errors)
 
     for location, value in _walk_strings(report):
-        if WINDOWS_ABSOLUTE.match(value) or POSIX_HOME.match(value):
+        if LOCAL_PATH.search(value):
             errors.append(f"{path}:{location}: machine-local absolute path: {value!r}")
 
     resolved_revisions: dict[str, str | None] = {}

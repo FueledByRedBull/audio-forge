@@ -129,6 +129,63 @@ def test_health_check_fails_after_warmup_on_backend_failure(monkeypatch, capsys)
     assert "noise_backend_failed=true" in capsys.readouterr().out
 
 
+def test_health_check_allow_recovery_tolerates_recovery_counters(
+    monkeypatch, capsys
+) -> None:
+    diagnostics = {
+        **dict.fromkeys(HEALTH_TOOL._ZERO_REQUIRED_DIAGNOSTICS, 0),
+        "noise_backend_available": True,
+        "noise_backend_failed": False,
+        "input_sample_rate": 48_000,
+        "output_underrun_total": 0,
+        "output_recovery_count": 1,
+        "output_recovery_event_count": 1,
+        "stream_restart_count": 1,
+    }
+    clock = [0.0]
+
+    class Processor:
+        def start(self, _input, _output):
+            return "Started"
+
+        def stop(self):
+            return None
+
+        def get_input_callback_age_ms(self):
+            return 1
+
+        def get_output_callback_age_ms(self):
+            return 1
+
+        def service_recovery(self):
+            return None
+
+        def get_stream_restart_count(self):
+            return 1
+
+        def get_runtime_diagnostics(self):
+            return diagnostics
+
+    module = ModuleType("mic_eq")
+    monkeypatch.setattr(module, "AudioProcessor", Processor, raising=False)
+    monkeypatch.setitem(sys.modules, "mic_eq", module)
+    monkeypatch.setattr(HEALTH_TOOL.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        HEALTH_TOOL.time,
+        "sleep",
+        lambda _seconds: clock.__setitem__(0, clock[0] + 1.0),
+    )
+    arguments = ["health_check.py", "--duration", "3", "--warmup", "0", "--poll", "0"]
+
+    monkeypatch.setattr(HEALTH_TOOL.sys, "argv", [*arguments, "--allow-recovery"])
+    assert HEALTH_TOOL.main() == 0
+
+    clock[0] = 0.0
+    monkeypatch.setattr(HEALTH_TOOL.sys, "argv", arguments)
+    assert HEALTH_TOOL.main() == 6
+    assert "output_recovery_count=1" in capsys.readouterr().out
+
+
 def test_power_event_reader_rejects_unbounded_or_entity_xml(monkeypatch) -> None:
     valid_xml = """
     <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
@@ -855,6 +912,31 @@ def test_hardware_matrix_accepts_required_risk_based_coverage(tmp_path) -> None:
     assert result["passed"] is True
     assert result["coverage"]["missing"]["automated_baseline_cases"] == 0
     assert result["coverage"]["missing"]["scenarios"] == []
+
+
+def test_hardware_matrix_fails_when_a_report_is_outside_the_report_root(
+    tmp_path,
+) -> None:
+    archive_hash = "a" * 64
+    root = tmp_path / "root"
+    root.mkdir()
+    paths = []
+    for index, case in enumerate(_complete_matrix_cases(archive_hash)):
+        path = (root if index == 0 else tmp_path) / f"case-{index}.json"
+        path.write_text(json.dumps(case), encoding="utf-8")
+        paths.append(path)
+
+    result = MATRIX_TOOL.aggregate(
+        paths,
+        expected_archive_sha256=archive_hash,
+        output=tmp_path / "matrix.json",
+        report_root=root,
+        allow_incomplete=True,
+    )
+
+    assert result["passed"] is False
+    assert result["status"] == "incomplete"
+    assert any("outside the declared report root" in e for e in result["errors"])
 
 
 @pytest.mark.parametrize(

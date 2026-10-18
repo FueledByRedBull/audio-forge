@@ -66,11 +66,18 @@ Both include everything the app needs; you don't need Python or Rust. The
 other files on the release page (source code, validation evidence, and
 checksums) are for verification and redistribution.
 
-**Windows SmartScreen:** AudioForge isn't code-signed, so Windows may show
-"Windows protected your PC". Download only from this repository's Releases
-page. To confirm the file is intact, run `Get-FileHash <file>` in PowerShell
-and compare the result with the matching line in
-`AudioForge-v<version>-SHA256SUMS.txt`. Then choose **More info > Run anyway**.
+**Verify your download:** the executable, the DLLs and the MSI aren't
+code-signed, so Windows SmartScreen may show "Windows protected your PC" the
+first time you run them. Download only from this repository's Releases page,
+then check the file two ways:
+
+- Run `Get-FileHash -Algorithm SHA256 <file>` in PowerShell and compare the
+  result with the matching line in `AudioForge-v<version>-SHA256SUMS.txt`.
+- With the [GitHub CLI](https://cli.github.com/), run
+  `gh release verify-asset v<version> <file> --repo FueledByRedBull/audio-forge`.
+  It checks the file against the release's signed attestation.
+
+If both match, choose **More info > Run anyway**.
 
 ## Set Up
 
@@ -82,7 +89,7 @@ and compare the result with the matching line in
    first, choose your headphones as Output instead.
 3. **Point your app at the cable.** In Discord, OBS, Zoom, or Teams, set the
    microphone (input device) to **CABLE Output (VB-Audio Virtual Cable)**.
-4. **Start and check.** Press **Start Processing** and speak. The AudioForge
+4. **Start and check.** Press **Start** and speak. The AudioForge
    meters and your app's input meter should both move, and a short test
    recording in your app should contain your processed voice.
 5. **Tune and save.** Noise suppression starts with RNNoise, the low-latency
@@ -91,7 +98,7 @@ and compare the result with the matching line in
    microphone level and says how much to raise or lower it when a change helps.
    Press **Ctrl+S** to save a preset when it sounds right.
 
-Opening AudioForge normally leaves processing stopped. **Stop Processing** keeps
+Opening AudioForge normally leaves processing stopped. **Stop** keeps
 the window open. Closing the window stops audio and quits, unless you turn on
 close-to-tray under **Settings > Tray and background**. Then audio keeps running
 and you quit with **Ctrl+Q** or **Quit AudioForge** in the tray.
@@ -109,7 +116,7 @@ location. See the
 
 ### No sound?
 
-- Check that processing is started and **Mute Output** is off.
+- Check that processing is started and **Mute** is off.
 - Check the pair: AudioForge's **Output** is **CABLE Input**, and your app's
   microphone is **CABLE Output**. The two names are easy to swap.
 - In Windows Settings, microphone privacy must allow desktop apps to use your

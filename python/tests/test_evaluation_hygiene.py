@@ -152,6 +152,31 @@ def test_machine_local_paths_are_rejected_recursively(tmp_path: Path):
     assert any("machine-local absolute path" in error for error in errors)
 
 
+@pytest.mark.parametrize(
+    ("value", "rejected"),
+    [
+        ("cmd C:/Users/test/a.wav --fast", True),
+        (r"failed to open C:\Users\test\a.wav", True),
+        (r"copy \\server\share\a.wav", True),
+        ("path=/home/test/a.wav", True),
+        (r"OSError: 'C:\\Users\\a'", True),
+        ("file:///home/test/a.wav", True),
+        ("a.wav,/home/test/b.wav", True),
+        ("https://example.test/home/page and a:b", False),
+        ("model/Users guide", False),
+    ],
+)
+def test_machine_local_paths_are_found_inside_longer_strings(
+    tmp_path: Path, value: str, rejected: bool
+):
+    path = tmp_path / "report.json"
+    _write(path, {"schema_version": 1, "note": value})
+
+    errors = hygiene.validate_report(path)
+
+    assert any("machine-local absolute path" in e for e in errors) is rejected
+
+
 def test_audible_report_requires_complete_contract(tmp_path: Path):
     path = tmp_path / "report.json"
     _write(path, {"schema_version": 2, "audible_change": True})

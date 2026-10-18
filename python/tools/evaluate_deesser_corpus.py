@@ -29,9 +29,6 @@ from mic_eq.analysis.deesser_fusion import (
 )
 from mic_eq.analysis.voice_setup import _vad_masked_speech_features
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_REPORT = REPO_ROOT / "evaluation" / "deesser-corpus-v1-report.json"
-
 
 def _sigmoid(values: np.ndarray) -> np.ndarray:
     values = np.asarray(values, dtype=float)
@@ -196,7 +193,10 @@ def _low_false_activation_threshold(
         precision = float(metrics["precision"])
         feasible.append((recall, precision, float(threshold)))
     if not feasible:
-        return 0.95
+        raise ValueError(
+            f"no threshold keeps the false-positive rate at or below "
+            f"{maximum_false_positive_rate}"
+        )
     best_recall = max(item[0] for item in feasible)
     recall_matches = [
         item for item in feasible if np.isclose(item[0], best_recall, atol=1e-12)
@@ -463,7 +463,7 @@ def _check_runtime_model(report: dict[str, Any]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--check-model", action="store_true")
     args = parser.parse_args()
 

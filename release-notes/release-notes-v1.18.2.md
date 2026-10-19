@@ -82,15 +82,15 @@ qualification results, including portable startup and MSI lifecycle checks.
 
 The Rust audio core is unchanged since 1.18.1 apart from a license field in its
 manifest, so steady-state audio is the same. The interface changes are covered
-by automated tests, not by a run on audio hardware.
+by automated tests and by the run described below.
 
 This build ran for an hour on Windows 11 with a real USB microphone and a silent
-output on a separate clock, output muted, factory settings. Memory stayed within
-2 % of its five-minute reading. There were no dropouts, restarts or output
-recoveries, and Health named no fault except gate chatter: the room noise sat
-near the default gate threshold. The hands-on checklist in RELEASING.md was also
-run on this build. These parts were driven through Windows UI Automation and
-passed: first launch, the three pages, Start and Stop (with room noise, not
+output on a separate clock, output muted, factory settings. At the hour mark,
+memory was within 2 % of its five-minute reading. There were no dropouts,
+restarts or output recoveries, and Health named no fault except gate chatter.
+The hands-on checklist in RELEASING.md was also run on this build. These parts
+were driven through Windows UI Automation, and every automated check passed:
+first launch, the three pages, Start and Stop (with room noise, not
 speech), Mute in the window, switch edits with Undo and Redo, a preset load and
 its Undo, closing to the tray and launching again, the new quit question and its
 Cancel, Cancel at the unsaved-changes prompt, quitting with the tray off,

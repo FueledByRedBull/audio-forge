@@ -1,4 +1,5 @@
 use super::lifecycle::Streams;
+use super::supervisor::output_silent_under_signal;
 use super::AudioProcessor;
 use crate::audio::clock::now_micros;
 use crate::audio::rt::RtErrorCode;
@@ -60,8 +61,9 @@ impl AudioProcessor {
     }
 
     /// A restart that opened the streams only counts as successful once both
-    /// keep delivering: a device that opens but stays silent must keep growing
-    /// the back-off, which the start result alone cannot show.
+    /// keep delivering and the output is not silent under a live microphone: a
+    /// device that opens but stays silent must keep growing the back-off, which
+    /// the start result alone cannot show.
     fn reset_backoff_after_healthy_streams(&self, now: u64) {
         let attempt = self
             .shared
@@ -76,6 +78,7 @@ impl AudioProcessor {
             && now.saturating_sub(attempt) >= HEALTHY_STREAM_MS * 1000
             && delivering(&self.shared.input.callback_time_us)
             && delivering(&self.shared.output.last_write_time_us)
+            && !output_silent_under_signal(&self.shared)
         {
             self.shared
                 .stream

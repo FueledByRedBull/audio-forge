@@ -14,7 +14,6 @@ from mic_eq.ui.health import RecentStreamHealth, advice_for
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.shell_specs import TEXT_SPECS
 from mic_eq.ui.shell_state import TextState
-from mic_eq.ui.stream_recovery import StreamRecoveryManager
 from mic_eq.ui.theme import PALETTE
 
 
@@ -140,7 +139,7 @@ def _diagnostic_window(diagnostics: dict[str, Any]):
     state_owner = QObject()
     window: Any = SimpleNamespace(
         _stream_health=RecentStreamHealth(),
-        _stream_recovery=StreamRecoveryManager(),
+        _processing=False,
         _last_backend_warning=None,
         processor=processor,
         _update_session_summary=Mock(),

@@ -1636,6 +1636,245 @@ fn the_restart_backoff_resets_only_after_both_streams_keep_delivering() {
     );
 }
 
+const SILENT_REASON: &str = "output went silent while the microphone had signal";
+
+/// A running processor whose callbacks beat on a fake clock while the output
+/// carries no signal under a microphone that has some.
+fn silent_output_rig() -> (AudioProcessor, Supervisor) {
+    let processor = AudioProcessor::new();
+    let shared = &processor.shared;
+    shared.stream.running.store(true, Ordering::Release);
+    shared
+        .stream
+        .last_start_time_us
+        .store(at(0), Ordering::Release);
+    shared
+        .input
+        .rms
+        .store((-20.0_f32).to_bits(), Ordering::Relaxed);
+    shared
+        .output
+        .rms
+        .store((-120.0_f32).to_bits(), Ordering::Relaxed);
+    let supervisor = Supervisor::new(Arc::clone(&processor.shared));
+    (processor, supervisor)
+}
+
+/// Healthy callbacks and writes at `now`, then one watchdog pass.
+fn beat_and_check(processor: &AudioProcessor, supervisor: &mut Supervisor, now: u64) -> bool {
+    let shared = &processor.shared;
+    shared.input.callback_time_us.store(now, Ordering::Relaxed);
+    shared.output.callback_time_us.store(now, Ordering::Relaxed);
+    shared
+        .output
+        .last_write_time_us
+        .store(now, Ordering::Relaxed);
+    supervisor.check(now)
+}
+
+/// The first watchdog pass within `span_ms` of `from` that asks for a restart.
+fn first_request(
+    processor: &AudioProcessor,
+    supervisor: &mut Supervisor,
+    from: u64,
+    span_ms: u64,
+) -> Option<u64> {
+    let tick = CHECK_INTERVAL_MS * 1_000;
+    (0..=span_ms * 1_000 / tick)
+        .map(|step| from + step * tick)
+        .find(|&now| beat_and_check(processor, supervisor, now))
+}
+
+#[test]
+fn a_silent_output_under_a_live_microphone_restarts_the_streams_after_the_grace_time() {
+    let (processor, mut supervisor) = silent_output_rig();
+    // Nothing is judged during the start-up grace period.
+    assert_eq!(
+        first_request(&processor, &mut supervisor, at(0), STARTUP_GRACE_MS - 1),
+        None
+    );
+    // The silence is timed from the first pass that sees it.
+    let seen = at(0) + STARTUP_GRACE_MS * 1_000;
+    let requested = seen + SILENT_OUTPUT_MS * 1_000;
+    assert_eq!(
+        first_request(&processor, &mut supervisor, seen, 10_000),
+        Some(requested)
+    );
+    assert!(processor.is_recovery_requested());
+    assert_eq!(
+        processor.get_last_restart_reason().as_deref(),
+        Some(SILENT_REASON)
+    );
+    // A pending request is not asked for again.
+    assert!(!beat_and_check(
+        &processor,
+        &mut supervisor,
+        requested + 250_000
+    ));
+
+    assert_eq!(
+        processor.service_recovery_at(requested, streams_open),
+        Some(true)
+    );
+    assert_eq!(processor.get_stream_restart_count(), 1);
+    assert_eq!(
+        processor.get_last_restart_reason().as_deref(),
+        Some(SILENT_REASON)
+    );
+}
+
+#[test]
+fn a_silence_that_is_broken_starts_the_clock_again() {
+    let (processor, mut supervisor) = silent_output_rig();
+    let from = at(10);
+    assert_eq!(
+        first_request(&processor, &mut supervisor, from, 1_000),
+        None
+    );
+    processor
+        .shared
+        .output
+        .rms
+        .store((-60.0_f32).to_bits(), Ordering::Relaxed);
+    assert!(!beat_and_check(
+        &processor,
+        &mut supervisor,
+        from + 1_250_000
+    ));
+    processor
+        .shared
+        .output
+        .rms
+        .store((-120.0_f32).to_bits(), Ordering::Relaxed);
+    assert_eq!(
+        first_request(&processor, &mut supervisor, from + 1_500_000, 5_000),
+        Some(from + 1_500_000 + SILENT_OUTPUT_MS * 1_000)
+    );
+}
+
+#[test]
+fn nothing_that_explains_the_silence_counts_as_a_silent_output() {
+    type Setup = fn(&AudioProcessor);
+    let cases: [(&str, Setup); 6] = [
+        ("output muted", |p| p.set_output_mute(true)),
+        ("recovery suppressed", |p| p.set_recovery_suppressed(true)),
+        ("recording", |p| {
+            p.shared.recording.active.store(true, Ordering::Release)
+        }),
+        ("microphone quiet", |p| {
+            p.shared
+                .input
+                .rms
+                .store((-40.0_f32).to_bits(), Ordering::Relaxed)
+        }),
+        ("microphone at the limit", |p| {
+            p.shared
+                .input
+                .rms
+                .store((-35.0_f32).to_bits(), Ordering::Relaxed)
+        }),
+        ("output at the limit", |p| {
+            p.shared
+                .output
+                .rms
+                .store((-85.0_f32).to_bits(), Ordering::Relaxed)
+        }),
+    ];
+    for (name, setup) in cases {
+        let (processor, mut supervisor) = silent_output_rig();
+        setup(&processor);
+        assert_eq!(
+            first_request(&processor, &mut supervisor, at(10), 10_000),
+            None,
+            "{name}"
+        );
+    }
+    // The same rig does fire once nothing explains it.
+    let (processor, mut supervisor) = silent_output_rig();
+    assert!(first_request(&processor, &mut supervisor, at(10), 10_000).is_some());
+}
+
+#[cfg(feature = "vad")]
+#[test]
+fn only_a_closed_vad_only_gate_explains_a_silent_output() {
+    for (mode, score, explained) in [
+        (GateMode::VadOnly, 0.05, true),
+        (GateMode::VadOnly, 0.12, false),
+        (GateMode::VadAssisted, 0.05, false),
+        (GateMode::ThresholdOnly, 0.05, false),
+    ] {
+        let (processor, mut supervisor) = silent_output_rig();
+        let gate = &processor.shared.gate;
+        gate.rt_control
+            .gate_mode
+            .store(mode as u8, Ordering::Relaxed);
+        gate.fused_score
+            .store(f32::to_bits(score), Ordering::Relaxed);
+        let requested = first_request(&processor, &mut supervisor, at(10), 10_000);
+        assert_eq!(requested.is_none(), explained, "{mode:?} {score}");
+    }
+}
+
+/// The streams of a silence that stays keep delivering, so only the level
+/// keeps the back-off from resetting every 10 s.
+#[test]
+fn a_silence_that_a_restart_does_not_cure_backs_off_to_the_cap() {
+    let (processor, mut supervisor) = silent_output_rig();
+    let tick = CHECK_INTERVAL_MS * 1_000;
+    let mut restarts = Vec::new();
+    for step in 0..=800 {
+        let now = at(0) + step * tick;
+        beat_and_check(&processor, &mut supervisor, now);
+        let reopen = |processor: &AudioProcessor, _: &mut Streams| {
+            processor
+                .shared
+                .stream
+                .running
+                .store(true, Ordering::Release);
+            processor
+                .shared
+                .stream
+                .last_start_time_us
+                .store(now, Ordering::Release);
+            Ok("started".to_string())
+        };
+        if processor.service_recovery_at(now, reopen) == Some(true) {
+            restarts.push(now);
+        }
+    }
+    assert_eq!(processor.get_stream_restart_count(), restarts.len() as u64);
+    assert!(restarts.len() >= 7, "{restarts:?}");
+    for (attempt, pair) in restarts.windows(2).enumerate() {
+        let wait_ms = RESTART_BACKOFF_MS[(attempt + 1).min(RESTART_BACKOFF_MS.len() - 1)];
+        assert!(pair[1] - pair[0] >= wait_ms * 1_000, "{restarts:?}");
+    }
+    let last = restarts.len() - 1;
+    assert!(restarts[last] - restarts[last - 1] >= 30_000_000);
+
+    // Once the output carries signal again, delivering streams reset the back-off.
+    processor
+        .shared
+        .stream
+        .restart_requested
+        .store(false, Ordering::Release);
+    processor
+        .shared
+        .output
+        .rms
+        .store((-30.0_f32).to_bits(), Ordering::Relaxed);
+    let healthy = restarts[last] + 11_000_000;
+    beat_and_check(&processor, &mut supervisor, healthy);
+    assert_eq!(processor.service_recovery_at(healthy, streams_open), None);
+    assert_eq!(
+        processor
+            .shared
+            .stream
+            .restart_backoff_index
+            .load(Ordering::Acquire),
+        0
+    );
+}
+
 #[test]
 fn suppressor_rebuilds_are_rate_limited() {
     let processor = AudioProcessor::new();

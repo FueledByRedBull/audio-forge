@@ -73,8 +73,8 @@ from .device_selection import (
     preferred_output_index,
     start_processor_for_route,
 )
+from .capture_session import recovery_paused
 from .engine_tasks import EngineTasks, attempt
-from .stream_recovery import StreamRecoveryManager
 from .theme import contrast_theme_changed
 from .config_history import (
     BoundedConfigurationHistory,
@@ -215,6 +215,8 @@ NO_CALLBACK_YET = 2**64 - 1
 # warning. Any engine restart resets the callback ages, so the wait is timed from the
 # moment the not-started state appears, not from when processing began.
 DEVICE_STARTUP_GRACE_SECONDS = 5.0
+# How the engine's supervisor words a stall restart's reason (callback ages, in ms).
+STALL_REASON_PREFIX = "input_cb_age_ms="
 # The native getters the meters and Health read; an older extension module lacks them.
 METER_GETTERS = (
     "take_input_peak_since_read",
@@ -410,7 +412,7 @@ class MainWindow(QMainWindow):
         self._undo_action = None
         self._redo_action = None
         self._calibration_dialog_open = False
-        self._stream_recovery = StreamRecoveryManager()
+        self._processing = False
         self._engine = EngineTasks(self)
         self._engine_busy: str | None = None  # the call the Start, Stop and Refresh controls wait on
         self._recovery_polling = False
@@ -2288,7 +2290,8 @@ class MainWindow(QMainWindow):
         dialog = LatencyCalibrationDialog(self, existing_profile=existing_profile)
         self._calibration_dialog_open = True
         try:
-            return _exec_and_release(dialog) == QDialog.DialogCode.Accepted
+            with recovery_paused(self.processor):
+                return _exec_and_release(dialog) == QDialog.DialogCode.Accepted
         finally:
             self._calibration_dialog_open = False
 
@@ -2950,7 +2953,7 @@ class MainWindow(QMainWindow):
             self.input_choice.setEnabled(False)
             self.output_choice.setEnabled(False)
             self.refresh_btn_action.setEnabled(False)
-            self._stream_recovery.mark_processing_started()
+            self._processing = True
             self._update_session_summary()
             self._sync_meter_timer()
             if DEBUG:
@@ -3046,7 +3049,7 @@ class MainWindow(QMainWindow):
             self.input_choice.setEnabled(True)
             self.output_choice.setEnabled(True)
             self.refresh_btn_action.setEnabled(True)
-            self._stream_recovery.mark_processing_stopped()
+            self._processing = False
             self._device_wait_since = None
             self._sync_meter_timer()
             self._update_session_summary()
@@ -3070,7 +3073,8 @@ class MainWindow(QMainWindow):
         self._calibration_dialog_open = True
         self._history_transaction_depth += 1
         try:
-            _exec_and_release(dialog)  # Modal dialog - blocks until user closes
+            with recovery_paused(self.processor):
+                _exec_and_release(dialog)  # Modal dialog - blocks until user closes
         finally:
             self._history_transaction_depth -= 1
             self._calibration_dialog_open = False
@@ -3100,7 +3104,8 @@ class MainWindow(QMainWindow):
         self._calibration_dialog_open = True
         self._history_transaction_depth += 1
         try:
-            _exec_and_release(dialog)
+            with recovery_paused(self.processor):
+                _exec_and_release(dialog)
         finally:
             self._history_transaction_depth -= 1
             self._calibration_dialog_open = False
@@ -3632,18 +3637,13 @@ class MainWindow(QMainWindow):
         if callable(sync_meters):
             sync_meters()
         if not self.processor.is_running():
-            self._stream_recovery.mark_processing_stopped()
+            self._processing = False
             self._device_wait_since = None
             self._last_backend_warning = None
             self._reset_health_labels()
             # A failed native restart intentionally leaves recovery pending
             # while the stream is stopped. Keep servicing that request here.
-            self._service_stream_recovery(
-                diagnostics={},
-                input_rms=-120.0,
-                output_rms=-120.0,
-                output_buf=0,
-            )
+            self._service_stream_recovery()
             self._sync_processing_controls()
             return
 
@@ -3673,9 +3673,7 @@ class MainWindow(QMainWindow):
                 "Stop and start processing; if this keeps happening, restart AudioForge."
             ))
             # Missing presentation data must not suppress native recovery service.
-            self._service_stream_recovery(
-                diagnostics={}, input_rms=float("nan"), output_rms=float("nan"), output_buf=0,
-            )
+            self._service_stream_recovery()
             return
 
         self._update_diagnostic_labels(
@@ -3695,12 +3693,7 @@ class MainWindow(QMainWindow):
             output_at_full_scale=self.output_meter.clipped_within(HEALTH_PEAK_WINDOW_SECONDS),
             limiter_enabled=bool(self.limiter_state.get_settings()["enabled"]),
         )
-        self._service_stream_recovery(
-            diagnostics=diagnostics,
-            input_rms=input_rms,
-            output_rms=output_rms,
-            output_buf=output_buf,
-        )
+        self._service_stream_recovery()
 
     def _update_diagnostic_labels(
         self,
@@ -3908,7 +3901,7 @@ class MainWindow(QMainWindow):
             if age is not None and 0 <= age < NO_CALLBACK_YET
         ]
         not_started = NO_CALLBACK_YET in (input_callback_age_ms, output_callback_age_ms)
-        if not_started and self._stream_recovery.processing_started_at is not None:
+        if not_started and self._processing:
             now = time.monotonic()
             if self._device_wait_since is None:
                 self._device_wait_since = now
@@ -4146,53 +4139,10 @@ class MainWindow(QMainWindow):
 
     _recovery_service_failing = False
 
-    def _service_stream_recovery(
-        self,
-        *,
-        diagnostics: dict,
-        input_rms: float,
-        output_rms: float,
-        output_buf: int,
-    ) -> None:
-        """Service UI-side and Rust-side stream recovery; the restarts run on the worker."""
+    def _service_stream_recovery(self) -> None:
+        """Poll the engine's own stream recovery; it detects stalls, backs off and restarts."""
         if self._engine_busy or self._recovery_polling or self._shut_down:
             return
-        gate_state = getattr(self, "gate_state", None)
-        gate_mode = int(gate_state.get_settings()["gate_mode"]) if gate_state is not None else 0
-        if self._stream_recovery.maybe_recover_output_stall(
-            input_rms=input_rms,
-            output_rms=output_rms,
-            output_buf=output_buf,
-            calibration_dialog_open=self._calibration_dialog_open,
-            recovery_suppressed=bool(diagnostics.get("recovery_suppressed", False)),
-            intentional_mute=bool(diagnostics.get("output_muted", False)),
-            expected_gate_closed=(
-                gate_mode == 2
-                and float(diagnostics.get("gate_fused_score", 1.0)) < 0.12
-            ),
-        ):
-            self._recover_output_path()
-            return
-
-        input_cb_age_ms = None
-        output_cb_age_ms = None
-        try:
-            if hasattr(self.processor, "get_input_callback_age_ms"):
-                input_cb_age_ms = self.processor.get_input_callback_age_ms()
-            if hasattr(self.processor, "get_output_callback_age_ms"):
-                output_cb_age_ms = self.processor.get_output_callback_age_ms()
-        except Exception:
-            input_cb_age_ms = None
-            output_cb_age_ms = None
-        if input_cb_age_ms is not None and output_cb_age_ms is not None:
-            if self._stream_recovery.maybe_recover_callback_stall(
-                input_cb_age_ms=input_cb_age_ms,
-                output_cb_age_ms=output_cb_age_ms,
-                calibration_dialog_open=self._calibration_dialog_open,
-            ):
-                self._recover_output_path()
-                return
-
         # Not locked like a click: it asks the engine every tick and mostly has nothing to do.
         self._recovery_polling = True
         self._engine.submit(lambda: self.processor.service_recovery(), self._recovery_serviced)
@@ -4215,6 +4165,8 @@ class MainWindow(QMainWindow):
                         reason = self.processor.get_last_restart_reason() or ""
                     except Exception:
                         reason = ""
+                    if reason.startswith(STALL_REASON_PREFIX):
+                        reason = "audio stalled"
                     suffix = f" after: {reason}" if reason else ""
                     self.status_message.showMessage(
                         f"Audio restarted automatically{suffix}; you may have heard a short gap",
@@ -4245,49 +4197,6 @@ class MainWindow(QMainWindow):
             self._recovery_service_failing = True
         if start:
             self._on_start_clicked()
-
-    def _recover_output_path(self):
-        """Best-effort output recovery while preserving both mute owners: stop, mute, start."""
-        self._run_engine("recover", self.processor.stop, self._restart_output_path)
-
-    def _restart_output_path(self, outcome: Any) -> None:
-        try:
-            if isinstance(outcome, Exception):
-                raise outcome
-            self._apply_output_mute()
-        except Exception as e:
-            self._output_recovery_failed(e)
-            return
-        route = (
-            self._combo_device_identity(self.input_choice),
-            self._combo_device_identity(self.output_choice),
-        )
-        self._run_engine(
-            "recover",
-            partial(start_processor_for_route, self.processor, *route),
-            self._output_path_restarted,
-        )
-
-    def _output_path_restarted(self, outcome: Any) -> None:
-        try:
-            if isinstance(outcome, Exception):
-                raise outcome
-            self._apply_latency_compensation_for_current_devices()
-            self._apply_output_mute()
-            self.status_message.showMessage(
-                f"The output stopped responding, so AudioForge restarted it ({outcome})",
-                4000,
-            )
-        except Exception as e:
-            self._output_recovery_failed(e)
-
-    def _output_recovery_failed(self, error: Exception) -> None:
-        logger.error("Auto-recovery failed", exc_info=error)
-        self.status_message.showMessage(
-            f"AudioForge could not restart the output automatically ({error}). "
-            "Check the device, then press Start.",
-            5000,
-        )
 
     def _export_diagnostics(self) -> None:
         """Export an allowlisted support snapshot off the realtime path."""

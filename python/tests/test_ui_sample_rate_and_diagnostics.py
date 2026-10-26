@@ -44,7 +44,6 @@ from mic_eq.ui.auto_eq_explanation import explain_auto_eq
 from mic_eq.ui.health import RecentStreamHealth
 from mic_eq.ui.noise_suppression_state import NoiseSuppressionState
 from mic_eq.ui.startup_presets import startup_custom_id as _startup_custom_id
-from mic_eq.ui.stream_recovery import StreamRecoveryManager
 from mic_eq.ui.theme import status_chip_style
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from mic_eq.config import (
@@ -401,7 +400,7 @@ def _recovery_setup(window, processor=None):
     """Run recovery and diagnostics against a processor that reports healthy telemetry."""
     _use_processor(window, processor or _MeterProcessor())
     window._engine.threaded = False  # the fake processor answers at once
-    window._stream_recovery = StreamRecoveryManager(processing_started_at=0.0)
+    window._processing = True
 
 
 def _healthy_runtime_diagnostics(**overrides):
@@ -901,7 +900,7 @@ def test_a_device_that_has_not_called_back_yet_is_unknown_not_a_huge_number(wind
     from mic_eq.ui.health import advice_for
 
     _recovery_setup(window)
-    window._stream_recovery.processing_started_at = time.monotonic()  # still starting up
+    window._processing = True  # still starting up
     never = 2**64 - 1  # what the engine reports before a device's first callback
     chip = window.shell_texts["callback_health_label"]
 
@@ -954,7 +953,7 @@ def test_a_device_that_never_starts_is_a_warning_once_the_startup_grace_is_over(
     assert "has not started" in window.shell_texts["health_advice_label"].text
     assert " ms" not in window.shell_texts["health_advice_label"].text
 
-    window._stream_recovery.processing_started_at = None  # not processing: nothing to warn about
+    window._processing = False  # not processing: nothing to warn about
     _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age)
     assert chip.state != "warn"
 
@@ -963,7 +962,7 @@ def test_a_restart_long_after_processing_began_gets_the_startup_grace_again(wind
     clock = [1000.0]
     monkeypatch.setattr("mic_eq.ui.main_window.time.monotonic", lambda: clock[0])
     _recovery_setup(window)
-    window._stream_recovery.processing_started_at = clock[0] - 30  # the engine has run for a while
+    window._processing = True  # the engine has run for a while
     chip = window.shell_texts["callback_health_label"]
 
     _labels(window)

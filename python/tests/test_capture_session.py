@@ -11,6 +11,7 @@ from mic_eq.ui.capture_session import (
     CaptureSession,
     active_device_identities as _active_device_identities,
     restart_processor_for_route as _restart_processor_for_route,
+    recovery_paused,
     route_identities_match as _route_identities_match,
     set_temporary_mute as _set_temporary_mute,
 )
@@ -78,6 +79,49 @@ def test_capture_session_cleans_up_when_native_start_raises() -> None:
 
     set_mute.assert_has_calls([call(True, "test_capture"), call(False, "test_capture")])
     processor.set_recovery_suppressed.assert_has_calls([call(True), call(False)])
+
+
+class _Engine:
+    """The one flag of the engine that a dialog and a capture both set."""
+
+    suppressed = False
+
+    def is_recovery_suppressed(self) -> bool:
+        return self.suppressed
+
+    def set_recovery_suppressed(self, value: bool) -> None:
+        self.suppressed = value
+
+    def start_raw_recording(self, *_args, **_kwargs) -> None:
+        pass
+
+    def stop_raw_recording(self) -> object:
+        return object()
+
+
+@pytest.mark.parametrize("before", [False, True])
+def test_recovery_paused_puts_back_what_was_set_even_when_the_dialog_fails(before: bool) -> None:
+    engine = _Engine()
+    engine.suppressed = before
+
+    with pytest.raises(RuntimeError, match="dialog failed"):
+        with recovery_paused(engine):
+            assert engine.suppressed is True
+            raise RuntimeError("dialog failed")
+
+    assert engine.suppressed is before
+
+
+def test_a_capture_inside_a_paused_dialog_does_not_end_the_pause() -> None:
+    engine = _Engine()
+    owner = Mock(processor=engine)
+
+    with recovery_paused(engine):
+        session = CaptureSession(owner, "test_capture")
+        session.start(4.0)
+        session.stop_recording()
+        assert engine.suppressed is True  # the capture put back the dialog's pause, not a clear
+    assert engine.suppressed is False
 
 
 def test_capture_session_aborts_when_prior_recovery_state_cannot_be_read() -> None:

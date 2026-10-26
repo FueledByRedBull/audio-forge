@@ -125,6 +125,7 @@ def test_cancelled_latency_dialog_does_not_report_an_old_profile_as_saved(monkey
         _current_latency_profile=lambda: _profile((48_000, 1, 48_000, 2)),
         _refresh_latency_profile_engine=lambda _profile: False,
         _calibration_dialog_open=False,
+        processor=Mock(is_recovery_suppressed=Mock(return_value=False)),
     )
     dialog = Mock()
     dialog.exec.return_value = 0

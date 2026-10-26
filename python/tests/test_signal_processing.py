@@ -14,8 +14,16 @@ from mic_eq.analysis.signal_processing import (
 from mic_eq.analysis.spectrum import compute_voice_spectrum
 
 
-@pytest.mark.parametrize("length", [0, 1, 2, 5, 31, 1024, 4410])
-@pytest.mark.parametrize("rates", [(1, 3), (3, 2), (160, 147), (147, 160)])
+# Empty input returns before the rates are used, so one rate pair covers it.
+@pytest.mark.parametrize(
+    ("length", "rates"),
+    [
+        pytest.param(length, rates, id=f"rates{index}-{length}")
+        for index, rates in enumerate([(1, 3), (3, 2), (160, 147), (147, 160)])
+        for length in (0, 1, 2, 5, 31, 1024, 4410)
+        if length or index == 0
+    ],
+)
 def test_resample_poly_matches_scipy_length_alignment_and_short_inputs(length, rates):
     rng = np.random.default_rng(1937 + length)
     samples = rng.standard_normal(length)
@@ -110,15 +118,25 @@ def test_voice_spectrum_and_short_input_validation_match_scipy_reference():
         compute_voice_spectrum(np.zeros(nperseg - 1), fs=fs, nperseg=nperseg)
 
 
+_PEAK_SAMPLES = (
+    np.array([0, 1, 0, 2, 2, 2, 0, 1, 0, 3, 0.0]),
+    np.array([0, 3, 2, 3, 0.0]),
+    np.random.default_rng(772).standard_normal(257),
+)
+
+
+# Local maxima are at least 2 samples apart, so distances 1 and 2 select the same peaks: distance 2
+# is the stricter boundary (two peaks exactly 2 apart both stay) and distance 1 only has to be
+# accepted. The second sample has two peaks 2 apart, so every distance from 3 up drops the same one.
 @pytest.mark.parametrize(
-    "samples",
+    ("samples", "distance"),
     [
-        np.array([0, 1, 0, 2, 2, 2, 0, 1, 0, 3, 0.0]),
-        np.array([0, 3, 2, 3, 0.0]),
-        np.random.default_rng(772).standard_normal(257),
+        pytest.param(_PEAK_SAMPLES[index], distance, id=f"{distance}-samples{index}")
+        for distance, index in [
+            (1, 1), (2, 0), (2, 1), (2, 2), (3, 0), (3, 1), (3, 2), (8, 0), (8, 2),
+        ]
     ],
 )
-@pytest.mark.parametrize("distance", [1, 2, 3, 8])
 def test_peak_detection_matches_scipy_distance_and_prominence(samples, distance):
     actual = find_peaks_distance_prominence(
         samples, distance=distance, prominence=0.75

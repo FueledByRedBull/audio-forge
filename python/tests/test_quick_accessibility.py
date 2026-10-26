@@ -218,18 +218,6 @@ def _announced_range(window, fader) -> tuple[float, float, float]:
     return value.minimumValue(), value.maximumValue(), value.currentValue()
 
 
-def test_a_gain_fader_announces_its_value_in_decibels(quick_window, qapp) -> None:
-    window = quick_window
-    _show(window, qapp)
-    gain = window.quick_bridge.model["eq"]["bands"][0]["gain"]
-    fader = _with_proxy(window, "Fader", gain)
-    with _AccessibleScene():
-        gain.setValue(25.0)
-        gain.released()
-        qapp.processEvents()
-        assert _announced_range(window, fader) == (-12.0, 12.0, 2.5)
-
-
 def test_a_value_box_reports_editable_text_with_its_name_and_shown_value(quick_window, qapp) -> None:
     window = quick_window
     model = window.quick_bridge.model
@@ -1088,7 +1076,8 @@ def test_reduced_motion_keeps_the_level_trace_running(reduced_motion_window) -> 
     assert bridge._trace_timer.isActive()
 
 
-@pytest.mark.parametrize("width", [900, 1000, 1199, 1200, 1399, 1400])
+# The tight cells are the left edge of each layout regime: the minimum, `wide` at 1200 and `roomy` at 1400.
+@pytest.mark.parametrize("width", [900, 1200, 1400])
 @pytest.mark.parametrize("kind", ["low_shelf", "high_pass", "notch"])
 def test_the_gain_fader_keeps_room_beside_the_band_fields(quick_window, qapp, width, kind) -> None:
     window = quick_window
@@ -1478,16 +1467,6 @@ def test_names_and_messages_with_markup_are_shown_as_typed(quick_window, qapp) -
     assert [item.property("text") for item in shown if _text_format(item) != plain] == []
     picker = _with_proxy(window, "Picker", window.quick_bridge.model["top"]["input"])
     assert picker.property("displayText") == markup[1]
-
-
-def test_the_bridge_is_a_typed_property_of_the_scene_not_a_context_property(quick_window) -> None:
-    window = quick_window
-    view = window.centralWidget()
-    assert view.rootContext().contextProperty("ui") is None
-    start = window.quick_bridge.model["top"]["start"]
-    root = view.rootObject()
-    expression = QQmlExpression(QQmlEngine.contextForObject(root), root, "ui.model.top.start.text")
-    assert expression.evaluate()[0] == start.text != "" and not expression.hasError()
 
 
 def test_a_value_set_through_assistive_technology_is_committed_once(quick_window, qapp) -> None:

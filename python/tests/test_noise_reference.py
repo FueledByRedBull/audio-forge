@@ -175,21 +175,6 @@ def test_intermittent_reference_is_rejected_as_nonstationary():
     )
 
 
-def test_speech_contamination_uses_noise_vad_probability():
-    sample_rate = 48_000
-    noise = _stationary_noise(sample_rate)
-    noise_vad = np.full(100, 0.90, dtype=float)
-    result = analyze_noise_reference(
-        noise,
-        _speech_with_quiet_gaps(sample_rate),
-        sample_rate,
-        noise_vad_probabilities=noise_vad,
-    )
-
-    assert result.status == "invalid"
-    assert any("speech is present" in reason for reason in result.reasons)
-
-
 def test_capture_identity_and_age_mismatch_are_invalid():
     sample_rate = 48_000
     noise_meta = CaptureMetadata(

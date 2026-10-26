@@ -5,7 +5,6 @@ from __future__ import annotations
 import filecmp
 import json
 import logging
-import math
 import os
 import shutil
 import tempfile
@@ -178,19 +177,6 @@ def _coerce_float(value: object, default: float, low: float, high: float) -> flo
     if not low <= parsed <= high:
         return default
     return parsed
-
-
-def _coerce_int(value: object, default: int, low: int, high: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        return default
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    if not math.isfinite(numeric) or not numeric.is_integer():
-        return default
-    parsed = int(numeric)
-    return parsed if low <= parsed <= high else default
 
 
 def _coerce_dynamics_intensity(value: object) -> str:

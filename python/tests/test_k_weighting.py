@@ -109,8 +109,16 @@ def test_native_k_weighting_starts_from_zero_on_every_call():
     _assert_sample_parity(repeated, _scipy_reference(source))
 
 
-@pytest.mark.parametrize("sample_rate", [8_000, 16_000, 32_000, 44_100, 48_000, 96_000])
-@pytest.mark.parametrize("length", [0, 1, 257, 32_007])
+# Empty input returns before the rate matters (one rate covers it), 48 kHz skips the resampler (the
+# native cases above cover it) and 8 kHz is integer up-sampling like 16 kHz.
+@pytest.mark.parametrize(
+    ("length", "sample_rate"),
+    [
+        (0, 44_100),
+        *((length, rate) for length in (1, 257) for rate in (16_000, 32_000, 44_100, 96_000)),
+        *((32_007, rate) for rate in (16_000, 32_000, 44_100, 48_000, 96_000)),
+    ],
+)
 def test_python_k_weighting_keeps_resampling_contract(
     sample_rate: int, length: int, record_property,
 ):

@@ -36,6 +36,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 GIT_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 DECIMAL_PATTERN = re.compile(r"[0-9]+")
+# A file name goes into a Markdown table cell inside backticks.
+_TABLE_CELL_ESCAPES = str.maketrans({"|": "&#124;", "`": "'", "\n": " ", "\r": " "})
 DEEPFILTER_RECIPE_FILES = (
     "build_deepfilter.ps1",
     "build-support/deepfilter/Cargo.toml",
@@ -188,7 +190,7 @@ def compare_bundle_sizes(current: dict[str, Any], previous: dict[str, Any]) -> s
         "| --- | ---: | ---: | ---: |",
     ])
     for path, delta in [change for change in changes if change[1]][:20]:
-        label = path.replace("|", "&#124;").replace("`", "'").replace("\n", " ").replace("\r", " ")
+        label = path.translate(_TABLE_CELL_ESCAPES)
         lines.append(f"| `{label}` | {before.get(path, 0):,} | {after.get(path, 0):,} | {delta:+,} |")
     if not any(delta for _, delta in changes):
         lines.append("| No payload size changes | | | |")

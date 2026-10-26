@@ -11,7 +11,8 @@ from dataclasses import dataclass, replace
 import os
 import sys
 
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtCore import QPointF, QRectF, QSize
+from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QApplication
 
 
@@ -27,6 +28,9 @@ class SemanticPalette:
     control_hover: str = "#2f3540"
     border: str = "#2b313b"
     border_strong: str = "#3d4552"
+    # The edge of a control, a switch track and a slider track: 3:1 against every surface
+    # a control sits on (WCAG 1.4.11). The two borders above only divide surfaces.
+    control_edge: str = "#7c8696"
     text_primary: str = "#eef1f5"
     text_muted: str = "#a2abb8"
     text_on_emphasis: str = "#ffffff"
@@ -43,7 +47,6 @@ class SemanticPalette:
     action_destructive: str = "#b3261e"
     action_destructive_border: str = "#dc4a41"
     action_secondary: str = "#262b34"
-    action_secondary_border: str = "#3d4552"
     action_disabled: str = "#232830"
     action_disabled_text: str = "#8f98a6"
     action_disabled_surface: str = "#1e2229"
@@ -159,7 +162,7 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         text_on_accent=on_accent, hover_text=on_accent,
         accent=accent, accent_hover=accent, accent_pressed=accent,
         action_primary=accent, action_destructive=text, action_destructive_border=text,
-        action_secondary=window, action_secondary_border=text,
+        action_secondary=window, control_edge=text,
         action_disabled=window, action_disabled_text=disabled,
         action_disabled_surface=window, action_disabled_border=disabled,
         status_ok_surface=window, status_ok_text=text, status_ok_border=text,
@@ -304,6 +307,46 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def control_boundary_pairs(palette: SemanticPalette) -> tuple[tuple[str, str, str], ...]:
+    """Non-text parts that identify a control, each with the surface behind it; 3:1 (WCAG 1.4.11)."""
+
+    return (
+        ("control edge on app surface", palette.control_edge, palette.app_surface),
+        ("control edge on card", palette.control_edge, palette.card_surface),
+        ("control edge on field", palette.control_edge, palette.control_surface),
+        ("switch on, slider fill and focus ring on card", palette.accent, palette.card_surface),
+        ("focus ring on app surface", palette.accent, palette.app_surface),
+        ("danger button edge on card", palette.action_destructive_border, palette.card_surface),
+        ("empty picker edge on card", palette.status_warn_border, palette.card_surface),
+    )
+
+
+CONTROL_BOUNDARY_PAIRS = control_boundary_pairs(PALETTE)
+
+
+def muted_icon(icon: QIcon) -> QIcon:
+    """The icon with a crossed-out badge in its corner, for the tray while output is muted."""
+
+    muted = QIcon()
+    for size in icon.availableSizes() or [QSize(32, 32)]:
+        pixmap = icon.pixmap(size)
+        if pixmap.isNull():
+            continue
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        side = pixmap.width() * 0.6
+        badge = QRectF(pixmap.width() - side, pixmap.height() - side, side, side).adjusted(1, 1, -1, -1)
+        mark = QPen(qcolor(PALETTE.text_on_emphasis), max(1.0, side / 8))
+        painter.setPen(mark)
+        painter.setBrush(qcolor(PALETTE.action_destructive))
+        painter.drawEllipse(badge)
+        centre, reach = badge.center(), side * 0.2
+        painter.drawLine(centre + QPointF(reach, -reach), centre + QPointF(-reach, reach))
+        painter.end()
+        muted.addPixmap(pixmap)
+    return muted
+
+
 def prefers_reduced_motion() -> bool:
     """Return the user's reduced-motion preference.
 
@@ -368,7 +411,7 @@ PRIMARY_ACTION_BUTTON_STYLE = _button_style(
 SECONDARY_ACTION_BUTTON_STYLE = _button_style(
     PALETTE.action_secondary,
     PALETTE.text_primary,
-    PALETTE.action_secondary_border,
+    PALETTE.control_edge,
     PALETTE.control_hover,
     PALETTE.hover_text,
 )
@@ -462,7 +505,7 @@ QGroupBox QGroupBox {{ background-color: transparent; border: none;
 QGroupBox QGroupBox::title {{ padding: 10px 0 0 0; color: {p.text_muted}; }}
 
 QPushButton {{ background-color: {p.action_secondary}; color: {p.text_primary};
-    border: 1px solid {p.action_secondary_border}; {control}
+    border: 1px solid {p.control_edge}; {control}
     padding: 6px 10px; }}
 QPushButton:hover {{ background-color: {p.control_hover}; color: {p.hover_text}; }}
 QPushButton:pressed {{ background-color: {p.control_surface_alt}; }}
@@ -472,11 +515,11 @@ QPushButton:disabled {{ background-color: {p.action_disabled_surface};
     color: {p.action_disabled_text}; border-color: {p.action_disabled_border}; }}
 
 QComboBox, QAbstractSpinBox, QLineEdit {{ background-color: {p.control_surface};
-    color: {p.text_primary}; border: 1px solid {p.border}; {control}
+    color: {p.text_primary}; border: 1px solid {p.control_edge}; {control}
     padding: 5px 8px; selection-background-color: {p.accent};
     selection-color: {p.text_on_accent}; }}
 QComboBox:hover, QAbstractSpinBox:hover, QLineEdit:hover {{
-    border-color: {p.border_strong}; }}
+    border-color: {p.text_muted}; }}
 QComboBox:focus, QAbstractSpinBox:focus, QLineEdit:focus {{
     border-color: {p.accent}; }}
 QComboBox:disabled, QAbstractSpinBox:disabled, QLineEdit:disabled {{
@@ -489,11 +532,11 @@ QComboBox QAbstractItemView {{ background-color: {p.control_surface};
     selection-color: {p.hover_text}; outline: 0; }}
 
 QTextEdit {{ background-color: {p.data_surface};
-    color: {p.text_primary}; border: 1px solid {p.border}; {control}
+    color: {p.text_primary}; border: 1px solid {p.control_edge}; {control}
     padding: 8px; }}
 
 QSlider::groove:horizontal {{ height: 4px; border-radius: 2px;
-    background-color: {p.border_strong}; }}
+    background-color: {p.control_edge}; }}
 QSlider::sub-page:horizontal {{ border-radius: 2px;
     background-color: {p.accent}; }}
 QSlider::handle:horizontal {{ width: 14px; height: 14px; margin: -5px 0;
@@ -507,7 +550,7 @@ QSlider::handle:disabled {{ background-color: {p.action_disabled_text}; }}
 QScrollArea {{ border: none; }}
 QScrollBar:vertical {{ width: 10px; margin: 0; background: transparent; }}
 QScrollBar:horizontal {{ height: 10px; margin: 0; background: transparent; }}
-QScrollBar::handle {{ background-color: {p.border_strong};
+QScrollBar::handle {{ background-color: {p.control_edge};
     border-radius: 4px; margin: 1px; }}
 QScrollBar::handle:vertical {{ min-height: 32px; }}
 QScrollBar::handle:horizontal {{ min-width: 32px; }}

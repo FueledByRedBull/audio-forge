@@ -281,7 +281,6 @@ class LatencyCalibrationDialog(QDialog):
         layout.addWidget(self.progress)
 
         self.status_label = QLabel("Ready")
-        self.status_label.setAccessibleName("Latency calibration status")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
@@ -317,7 +316,6 @@ class LatencyCalibrationDialog(QDialog):
 
         set_accessible_group(
             (
-                (self.run_button, "Run latency calibration", None),
                 (self.accept_button, "Accept latency calibration", None),
                 (self.reset_button, "Reset latency calibration", None),
                 (self.close_button, "Close latency calibration", None),

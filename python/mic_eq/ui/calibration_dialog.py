@@ -334,7 +334,6 @@ class CalibrationDialog(QDialog):
         passage_text = QLabel(RAINBOW_PASSAGE)
         passage_text.setWordWrap(True)
         passage_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        passage_text.setAccessibleName("Auto-EQ passage")
         passage_text.setAccessibleDescription(
             "Read-only passage to speak while Auto-EQ records."
         )
@@ -364,7 +363,6 @@ class CalibrationDialog(QDialog):
         self.time_label = QLabel(f"Time remaining: {RECORDING_DURATION:.0f}s")
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.time_label.setStyleSheet(PROGRESS_LABEL_STYLE)
-        self.time_label.setAccessibleName("Auto-EQ time remaining")
         recording_layout.addWidget(self.time_label)
 
         # Level meter (vertical) for real-time validation
@@ -378,7 +376,6 @@ class CalibrationDialog(QDialog):
         self.warning_label = QLabel("Ready to record")
         self.warning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.warning_label.setStyleSheet(message_text_style("idle"))
-        self.warning_label.setAccessibleName("Auto-EQ status")
         self.warning_label.setWordWrap(True)
         recording_layout.addWidget(self.warning_label)
 
@@ -454,15 +451,17 @@ class CalibrationDialog(QDialog):
             (
                 (self.retake_btn, "Retake Auto-EQ recording", None),
                 (self.cancel_btn, "Cancel Auto-EQ", None),
-                (self.level_override_btn, "Continue past the level warning", None),
                 (self.level_meter_widget, "Auto-EQ input level", None),
             )
         )
         self.setTabOrder(self.curve_combo, self.target_mode_combo)
         self.setTabOrder(self.target_mode_combo, self.smoothing_combo)
-        self.setTabOrder(self.smoothing_combo, self.start_button)
-        self.setTabOrder(self.start_button, self.retake_btn)
-        self.setTabOrder(self.retake_btn, self.cancel_btn)
+        # The order of the button row, left to right.
+        self.setTabOrder(self.smoothing_combo, self.cancel_btn)
+        self.setTabOrder(self.cancel_btn, self.retake_btn)
+        self.setTabOrder(self.retake_btn, self.compare_button)
+        self.setTabOrder(self.compare_button, self.level_override_btn)
+        self.setTabOrder(self.level_override_btn, self.start_button)
 
         # Initialize with first curve description
         self._on_curve_changed(0)

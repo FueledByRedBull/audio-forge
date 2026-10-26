@@ -68,7 +68,9 @@ def _pick(window, index: int) -> None:
     # The call the Backend picker makes from the scene.
     scene = window.centralWidget()
     assert isinstance(scene, QQuickWidget)
-    call = QQmlExpression(scene.rootContext(), scene, f"ui.model.stages[0].rows[0].proxy.setIndex({index})")
+    call = QQmlExpression(
+        scene.rootContext(), scene.rootObject(), f"ui.model.stages[0].rows[0].proxy.setIndex({index})"
+    )
     call.evaluate()
     assert not call.hasError()
 

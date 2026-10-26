@@ -796,7 +796,6 @@ class VoiceSetupDialog(QDialog):
         passage_text = QLabel(RAINBOW_PASSAGE)
         passage_text.setWordWrap(True)
         passage_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        passage_text.setAccessibleName("Voice Setup passage")
         passage_text.setAccessibleDescription(
             "Read-only passage to speak during Auto Voice Setup."
         )
@@ -813,7 +812,6 @@ class VoiceSetupDialog(QDialog):
         self.phase_label = QLabel("Ready to start setup")
         self.phase_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.phase_label.setStyleSheet(PROGRESS_LABEL_STYLE)
-        self.phase_label.setAccessibleName("Voice Setup phase")
         recording_layout.addWidget(self.phase_label)
 
         self.progress_bar = QProgressBar()
@@ -828,7 +826,6 @@ class VoiceSetupDialog(QDialog):
         self.time_label = QLabel("Time remaining: 2s")
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.time_label.setStyleSheet(PROGRESS_LABEL_STYLE)
-        self.time_label.setAccessibleName("Voice Setup time remaining")
         recording_layout.addWidget(self.time_label)
 
         meter_layout = QHBoxLayout()
@@ -840,7 +837,6 @@ class VoiceSetupDialog(QDialog):
         self.warning_label = QLabel("Ready to record")
         self.warning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.warning_label.setStyleSheet(message_text_style("idle"))
-        self.warning_label.setAccessibleName("Voice Setup status")
         self.warning_label.setWordWrap(True)
         recording_layout.addWidget(self.warning_label)
 
@@ -920,7 +916,6 @@ class VoiceSetupDialog(QDialog):
             (
                 (self.retake_btn, "Retake Voice Setup recording", None),
                 (self.cancel_btn, "Cancel Auto Voice Setup", None),
-                (self.level_override_btn, "Continue past the level warning", None),
                 (self.level_meter_widget, "Voice Setup input level", None),
             )
         )
@@ -928,9 +923,12 @@ class VoiceSetupDialog(QDialog):
         self.setTabOrder(self.dynamics_combo, self.custom_p95_spin)
         self.setTabOrder(self.custom_p95_spin, self.custom_peak_spin)
         self.setTabOrder(self.custom_peak_spin, self.target_lufs_spin)
-        self.setTabOrder(self.target_lufs_spin, self.start_button)
-        self.setTabOrder(self.start_button, self.retake_btn)
-        self.setTabOrder(self.retake_btn, self.cancel_btn)
+        # The order of the button row, left to right.
+        self.setTabOrder(self.target_lufs_spin, self.cancel_btn)
+        self.setTabOrder(self.cancel_btn, self.retake_btn)
+        self.setTabOrder(self.retake_btn, self.compare_button)
+        self.setTabOrder(self.compare_button, self.level_override_btn)
+        self.setTabOrder(self.level_override_btn, self.start_button)
 
         self._on_curve_changed(0)
 
@@ -1416,6 +1414,8 @@ class VoiceSetupDialog(QDialog):
         self.start_button.setEnabled(False)
         self.start_button.setText("Analyzing...")
         self.phase_label.setText("Analyzing recordings")
+        # The recording's "Complete!" would read as the analysis being done.
+        self.time_label.setText("Analysis in progress")
         self.warning_label.setText("Building recommendations for your voice chain.")
         self.warning_label.setStyleSheet(message_text_style("info", strong=True))
         self._start_analysis()
@@ -2523,6 +2523,7 @@ class VoiceSetupDialog(QDialog):
         self.start_button.setText("Validating...")
         self.curve_combo.setEnabled(False)
         self.phase_label.setText("Checking the new settings")
+        self.time_label.setText("Analysis in progress")
         self.warning_label.setText("Comparing your second recording with the first...")
         worker = VoiceSetupVerificationWorker(
             noise_audio,

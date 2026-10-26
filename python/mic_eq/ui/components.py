@@ -122,10 +122,10 @@ class ToggleSwitch(QCheckBox):
             self.TRACK_WIDTH,
             self.TRACK_HEIGHT,
         )
-        off = qcolor(PALETTE.border_strong)
+        off = qcolor(PALETTE.control_edge)
         on = qcolor(PALETTE.accent)
         blend = self._position
-        color = qcolor(PALETTE.border_strong)
+        color = qcolor(PALETTE.control_edge)
         color.setRgbF(
             off.redF() + (on.redF() - off.redF()) * blend,
             off.greenF() + (on.greenF() - off.greenF()) * blend,

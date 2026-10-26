@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from shiboken6 import isValid
 
 from mic_eq.ui.main_window import MainWindow
+from mic_eq.ui.quick_error_screen import AUDIO_RUNNING, AUDIO_STOPPED
 from mic_eq.ui.quick_shell import QuickBridge, graphics_api
 from test_login_startup_ui import startup_window  # noqa: F401  (a fixture)
 from test_quick_shell import _load_config_without_devices, quick_window  # noqa: F401  (a fixture)
@@ -296,3 +297,30 @@ sys.exit(status)
     )
     assert result.returncode == 1, result.stdout[-2000:] + result.stderr[-2000:]
     assert "the Qt Quick view did not load" in result.stdout
+
+
+class _Engine:
+    """A stand-in for the audio engine: only whether it runs."""
+
+    def __init__(self, running: bool) -> None:
+        self.running = running
+
+    def is_running(self) -> bool:
+        return self.running
+
+
+def test_the_screen_says_whether_audio_still_runs_and_how_to_stop_it(failed_window, monkeypatch) -> None:
+    window = failed_window
+    audio = _label(window, "errorAudio")
+    assert not audio.isHidden()
+    assert audio.text() == AUDIO_STOPPED
+
+    # Audio that was running when the scene failed keeps running; Quit is what stops it.
+    monkeypatch.setattr(window, "processor", _Engine(True))
+    window.stop_btn_action.setEnabled(not window.stop_btn_action.isEnabled())
+    assert audio.text() == AUDIO_RUNNING
+    assert "Quit AudioForge to stop it" in audio.text() and _button(window, "Quit")
+
+    monkeypatch.setattr(window, "processor", _Engine(False))
+    window.stop_btn_action.setEnabled(not window.stop_btn_action.isEnabled())
+    assert audio.text() == AUDIO_STOPPED

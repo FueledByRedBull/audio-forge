@@ -9,12 +9,10 @@ to read the names, roles and states a screen reader would, and keys go through
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
-from PySide6.QtCore import QObject, Qt, qInstallMessageHandler
+from PySide6.QtCore import QObject, QPointF, Qt, qInstallMessageHandler
 from PySide6.QtGui import QAccessible
-from PySide6.QtQml import QQmlProperty
+from PySide6.QtQml import QQmlEngine, QQmlExpression, QQmlProperty
 from PySide6.QtTest import QTest
 
 from mic_eq.ui.eq_state import EQ_FILTER_OPTIONS
@@ -870,32 +868,22 @@ def _rings(window, control) -> list:
     ]
 
 
-def _border(item, part: str = "color") -> Any:
-    return QQmlProperty.read(item, f"border.{part}")
-
-
-def _shows_focus(window, item, theme: dict) -> bool:
-    """Whether the focused ``item`` looks different from an unfocused one of its kind."""
-    accent = theme["accent"].lower()
+def _shows_focus(window, item) -> bool:
+    """Whether the focused ``item`` wears the one focus ring and nothing hover also draws."""
     kind = _kind(item)
-    if kind in ("Toggle", "Fader", "Btn", "IconBtn", "EQGraphItem") or item.objectName() == "healthToggle":
-        return bool(_rings(window, item))
-    if kind in ("Picker", "Disclosure"):
-        return _border(item.property("background")).name().lower() == accent
-    if kind == "SettingRow":
-        return _border(item.property("background"), "width") == 2
-    if kind == "QQuickTextInput":
-        return _border(item.parentItem()).name().lower() == accent
-    if kind in PLAIN_BUTTONS:  # a navigation tab
+    # A value field is wrapped by its box, which wears the ring.
+    ringed = item.parentItem() if kind == "QQuickTextInput" else item
+    if len(_rings(window, ringed)) != 1:
+        return False
+    if kind in PLAIN_BUTTONS and not item.property("current"):  # a navigation tab
         QTest.qWait(200)  # its colour fades in
-        return item.property("background").property("color").name().lower() == theme["card_surface"].lower()
-    raise AssertionError(f"no focus rule for {kind}")
+        return item.property("background").property("color").alpha() == 0
+    return True
 
 
 @pytest.mark.parametrize("page", [MIC, SETTINGS], ids=["mic", "settings"])
 def test_the_focused_control_always_shows_where_focus_is(either_window, qapp, page) -> None:
     window = either_window
-    theme = window.quick_bridge.model["theme"]
     _show(window, qapp, page)
     view = window.centralWidget()
     stops = _tab_cycle(window, qapp, page)
@@ -907,8 +895,10 @@ def test_the_focused_control_always_shows_where_focus_is(either_window, qapp, pa
         qapp.processEvents()
         item = view.quickWindow().activeFocusItem()
         seen.add(_kind(item))
-        if not _shows_focus(window, item, theme):
+        if not _shows_focus(window, item):
             unmarked.append(f"{_kind(item)} {item.objectName()!r}")
+        # One ring at a time, wherever focus is.
+        assert len([ring for ring in _of_kind(window, "FocusRing") if ring.isVisible()]) == 1
     assert unmarked == []
     expected = {"Toggle", "Fader", "Picker", "Btn", "QQuickTextInput", "EQGraphItem", "Disclosure"}
     assert (expected if page == MIC else {"SettingRow", "Picker"}) <= seen
@@ -1001,7 +991,6 @@ def test_an_opened_advanced_section_stays_open_when_the_window_crosses_the_wide_
     qapp.processEvents()
     again = [d for d in _of_kind(window, "Disclosure") if d.property("subject") == "COMPRESSOR"]
     assert again and again[0].property("open") is True
-    assert again[0] is not opened[0], "the card was rebuilt"
 
 
 def test_a_stage_that_is_off_says_so_and_keeps_its_controls_at_full_strength(quick_window, qapp) -> None:
@@ -1083,7 +1072,8 @@ def test_a_help_tip_opened_by_the_keyboard_goes_when_focus_moves_on(quick_window
     _press(window, Qt.Key.Key_Space, qapp)
     assert tip.property("visible") is True
     _press(window, Qt.Key.Key_Tab, qapp)
-    assert tip.property("visible") is False
+    # The next control may show its own help; the help that was asked for goes.
+    assert not (tip.property("visible") and tip.property("text") == help_text)
 
 
 @pytest.fixture
@@ -1288,3 +1278,250 @@ def test_an_action_row_in_settings_acts_once_on_the_press_action(quick_window, q
         _perform(row, "pressAction")
         qapp.processEvents()
     assert exported == [True]
+
+
+# --- 9. Mute, mode, help, edges, card order, plain text, the bridge, sliders ------------
+
+
+def _colour(item, name: str) -> str:
+    return QQmlProperty.read(item, name).name().lower()
+
+
+def _text_format(item) -> int:
+    """The item's ``textFormat``, which PySide cannot hand over as a property."""
+    expression = QQmlExpression(QQmlEngine.contextForObject(item), item, "textFormat")
+    value, _undefined = expression.evaluate()
+    assert not expression.hasError()
+    return value
+
+
+def test_mute_is_said_in_words_and_the_window_has_its_own_shortcut(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    badge = window.centralWidget().rootObject().findChild(QObject, "mutedBadge")
+    assert "(Ctrl+M)" in window.quick_bridge.model["top"]["mute"].toolTip
+    assert badge.property("visible") is False
+
+    _press(window, Qt.Key.Key_M, qapp, Qt.KeyboardModifier.ControlModifier)
+    assert window.user_muted
+    assert badge.property("visible") is True
+    assert [child.property("text") for child in badge.childItems()] == ["Muted"]
+
+    _press(window, Qt.Key.Key_M, qapp, Qt.KeyboardModifier.ControlModifier)
+    assert not window.user_muted
+    assert badge.property("visible") is False
+
+
+def test_a_mode_that_changes_the_sound_stands_out_in_its_picker(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    mode = _with_proxy(window, "Picker", window.quick_bridge.model["top"]["mode"])
+    for index, alert in ((0, False), (1, True), (2, True), (0, False)):
+        window.processing_mode_choice.setIndex(index)
+        qapp.processEvents()
+        assert mode.property("alert") is alert, index
+
+
+def test_help_is_in_the_accessible_description_not_only_in_the_hover_tip(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    _open_every_disclosure(window, qapp)
+    wrong, checked = [], 0
+    with _AccessibleScene() as scene:
+        for item in _of_kind(window, "Toggle", "Fader", "Picker", "Btn"):
+            tip = getattr(item.property("proxy"), "toolTip", "")
+            if item.isVisible() and tip:
+                checked += 1
+                if scene.description(item) != tip:
+                    wrong.append(f"{_kind(item)} {scene.name(item)!r}")
+        band = window.quick_bridge.model["eq"]["bands"][0]["frequency"]
+        box = next(
+            child for child in _with_proxy(window, "ValueBox", band).childItems()
+            if _kind(child) == "QQuickTextInput"
+        )
+        assert band.toolTip and scene.description(box) == band.toolTip
+        chip = window.quick_bridge.model["health"]["signal"][0]["proxy"]
+        window.shell_page.setIndex(HEALTH)
+        qapp.processEvents()
+        row = next(
+            text for text in _of_kind(window, "QQuickText")
+            if _iface(text) is not None and scene.name(text).startswith(chip.name)
+        )
+        assert chip.toolTip and scene.description(row) == chip.toolTip
+        window.shell_page.setIndex(SETTINGS)
+        qapp.processEvents()
+        helped = [
+            (row, row.property("p")) for row in _of_kind(window, "SettingRow")
+            if row.isVisible() and row.property("p").toolTip not in ("", row.property("p").text)
+        ]
+        assert helped and [r for r, p in helped if scene.description(r) != p.toolTip] == []
+    assert checked >= 15 and wrong == []
+
+
+def test_keyboard_focus_shows_the_help_of_a_control_and_escape_closes_it(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    tip = window.centralWidget().rootObject().findChild(QObject, "tooltip")
+    mode = window.quick_bridge.model["top"]["mode"]
+    picker = _with_proxy(window, "Picker", mode)
+    _focus(window, picker, qapp)
+    QTest.qWait(700)  # the tip's delay
+    assert tip.property("visible") is True and tip.property("text") == mode.toolTip != ""
+    _press(window, Qt.Key.Key_Escape, qapp)
+    assert tip.property("visible") is False
+    # Focus given by a click is not a request for help.
+    _click(window, _with_proxy(window, "Toggle", window.quick_bridge.model["top"]["mute"]), qapp)
+    QTest.qWait(700)
+    assert tip.property("visible") is False
+
+
+def test_control_edges_and_tracks_draw_from_the_control_edge_token(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    _open_every_disclosure(window, qapp)
+    model = window.quick_bridge.model
+    edge = model["theme"]["control_edge"].lower()
+    track = _with_proxy(window, "Toggle", model["top"]["mute"]).property("contentItem").childItems()[0]
+    assert _colour(track, "color") == edge
+    band = model["eq"]["bands"][0]
+    assert _colour(_with_proxy(window, "Fader", band["gain"]).property("background"), "color") == edge
+    assert _colour(_with_proxy(window, "ValueBox", band["frequency"]), "border.color") == edge
+    picker = _with_proxy(window, "Picker", model["top"]["mode"])
+    assert _colour(picker.property("background"), "border.color") == edge
+    presets = _with_proxy(window, "Btn", model["presets"]["menu"])
+    assert _colour(presets.property("background"), "border.color") == edge
+    disclosure = next(d for d in _of_kind(window, "Disclosure") if d.isVisible())
+    assert _colour(disclosure.property("background"), "border.color") == edge
+
+
+@pytest.mark.parametrize("width", [900, 1200, 1400, 1800])
+def test_the_stage_cards_are_visited_and_laid_out_in_signal_order(quick_window, qapp, width) -> None:
+    window = quick_window
+    stops = _tab_cycle(window, qapp, width=width)
+    with _AccessibleScene() as scene:
+        names = [scene.name(item) for item in stops]
+    switches = [
+        "Enable noise suppression", "Enable noise gate", "Enable de-esser", "Enable compressor", "Enable limiter",
+    ]
+    positions = [names.index(name) for name in switches]
+    assert positions == sorted(positions), dict(zip(switches, positions))
+
+    grid = window.centralWidget().rootObject().findChild(QObject, "stageGrid")
+    cards = [item for item in grid.childItems() if _kind(item) == "StageCard"]
+    assert len(cards) == 5
+    rows = [(card.x(), card.y(), card.x() + card.width(), card.y() + card.height()) for card in cards]
+    assert grid.property("implicitHeight") >= max(row[3] for row in rows)
+    # One column under 1200 px, otherwise two: left to right, then down, each under the card above it.
+    wide = width >= 1200
+    assert len({round(row[0]) for row in rows}) == (2 if wide else 1)
+    for first, second in ((0, 1), (0, 2), (1, 3), (2, 4)) if wide else ((0, 1), (1, 2), (2, 3), (3, 4)):
+        above, below = rows[first], rows[second]
+        if above[0] == below[0]:
+            assert below[1] > above[3], (first, second)
+        else:
+            assert below[0] >= above[2] and below[1] == above[1] == 0, (first, second)
+    for i, a in enumerate(rows):
+        for b in rows[i + 1:]:
+            assert a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1], (a, b)
+
+
+def _text_blocks(source: str):
+    """Every ``Text { ... }`` the file declares, as (line number, its body)."""
+    import re
+
+    for match in re.finditer(r"(?<![\w.])Text \{", source):
+        depth, end = 0, match.end() - 1
+        while True:
+            depth += {"{": 1, "}": -1}.get(source[end], 0)
+            if depth == 0:
+                break
+            end += 1
+        yield source.count("\n", 0, match.start()) + 1, source[match.end() - 1:end]
+
+
+def test_no_text_in_the_scene_reads_the_strings_it_shows_as_markup() -> None:
+    from pathlib import Path
+
+    qml = (Path(__file__).parents[1] / "mic_eq" / "ui" / "qml" / "Main.qml").read_text(encoding="utf-8")
+    blocks = list(_text_blocks(qml))
+    assert len(blocks) > 25
+    assert [line for line, body in blocks if "textFormat: Text.PlainText" not in body] == []
+
+
+def test_names_and_messages_with_markup_are_shown_as_typed(quick_window, qapp) -> None:
+    from mic_eq.config import DeviceIdentity
+
+    window = quick_window
+    _show(window, qapp)
+    markup = ("<b>x</b>", "<i>mic</i>", "<u>boom</u>", "<s>warn</s>", "<b>drops</b>")
+    window.input_choice.addItem(markup[1], DeviceIdentity(name="mic", direction="input"))
+    window.input_choice.setCurrentIndex(window.input_choice.count() - 1)
+    window.shell_texts["config_warning_banner"].update(text=markup[3], shown=True)
+    window._set_health_chip("dropped_label", f"Drops: {markup[4]}", "warn")
+    window.shell_texts["preset_status_label"].update(data={"name": markup[0], "modified": True})
+    window.status_message.showMessage(markup[2])
+    qapp.processEvents()
+    shown = [
+        item for item in _of_kind(window, "QQuickText", "Caption", "StatusText", "Title")
+        if any(mark in item.property("text") for mark in markup)
+    ]
+    assert len(shown) >= 5, [item.property("text") for item in shown]
+    plain = Qt.TextFormat.PlainText.value
+    assert [item.property("text") for item in shown if _text_format(item) != plain] == []
+    picker = _with_proxy(window, "Picker", window.quick_bridge.model["top"]["input"])
+    assert picker.property("displayText") == markup[1]
+
+
+def test_the_bridge_is_a_typed_property_of_the_scene_not_a_context_property(quick_window) -> None:
+    window = quick_window
+    view = window.centralWidget()
+    assert view.rootContext().contextProperty("ui") is None
+    start = window.quick_bridge.model["top"]["start"]
+    root = view.rootObject()
+    expression = QQmlExpression(QQmlEngine.contextForObject(root), root, "ui.model.top.start.text")
+    assert expression.evaluate()[0] == start.text != "" and not expression.hasError()
+
+
+def test_a_value_set_through_assistive_technology_is_committed_once(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    gain = window.quick_bridge.model["eq"]["bands"][0]["gain"]
+    fader = _with_proxy(window, "Fader", gain)
+    set_value, commits = gain.setValue, []
+    gain.setValue = lambda value: (commits.append(value), set_value(value))[1]
+    with _AccessibleScene():
+        _iface(fader).valueInterface().setCurrentValue(2.5)
+        qapp.processEvents()
+        assert commits == [25.0]
+        assert gain.value == 25
+        window.eq_state.flush()
+        assert window.eq_state.get_band(0).gain_db == 2.5
+        assert _announced_range(window, fader) == (-12.0, 12.0, 2.5)
+        # Setting what the model already holds is no new edit.
+        _iface(fader).valueInterface().setCurrentValue(2.5)
+        qapp.processEvents()
+        assert commits == [25.0]
+
+
+def test_dragging_a_fader_commits_each_move_once(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    view = window.centralWidget()
+    gain = window.quick_bridge.model["eq"]["bands"][0]["gain"]
+    fader = _with_proxy(window, "Fader", gain)
+    set_value, commits = gain.setValue, []
+    gain.setValue = lambda value: (commits.append(value), set_value(value))[1]
+    middle = fader.mapToScene(QPointF(fader.width() * 0.5, fader.height() / 2)).toPoint()
+    stops = [
+        fader.mapToScene(QPointF(fader.width() * share, fader.height() / 2)).toPoint()
+        for share in (0.6, 0.7, 0.8)
+    ]
+    QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=middle)
+    for point in stops:
+        QTest.mouseMove(view, point)
+        qapp.processEvents()
+    QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=stops[-1])
+    # One commit per move, one for the press and one the slider sends on release; a second path
+    # would double each move.
+    assert len(stops) <= len(commits) <= len(stops) + 2 and commits == sorted(commits), commits
+    assert abs(gain.value - commits[-1]) <= 0.5 and gain.value > 0  # the control rounds to a tenth of a dB

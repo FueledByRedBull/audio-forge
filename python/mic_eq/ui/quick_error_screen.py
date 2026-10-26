@@ -21,6 +21,8 @@ BODY = (
     "The part that draws the controls failed to start, so there is nothing to show. "
     "Export diagnostics if you want to report this, then quit and open AudioForge again."
 )
+AUDIO_RUNNING = "Audio is still running with your last settings. Quit AudioForge to stop it."
+AUDIO_STOPPED = "Audio is not running."
 
 
 class QuickErrorScreen(QWidget):
@@ -28,11 +30,14 @@ class QuickErrorScreen(QWidget):
 
     def __init__(self, window, reason: str) -> None:
         super().__init__(window)
+        self._owner = window
         title = QLabel(TITLE)
         title.setObjectName("errorTitle")
         title.setStyleSheet("font-size: 15pt; font-weight: 600;")
         body = QLabel(BODY)
         body.setObjectName("errorBody")
+        self.audio = QLabel()
+        self.audio.setObjectName("errorAudio")
         caption = QLabel("Reason")
         caption.setObjectName("errorReasonCaption")
         # A long Qt error scrolls here instead of pushing the buttons off screen.
@@ -45,7 +50,7 @@ class QuickErrorScreen(QWidget):
         )
         detail.setTabChangesFocus(True)
         detail.setMaximumHeight(REASON_MAX_HEIGHT)
-        for label in (title, body):
+        for label in (title, body, self.audio):
             label.setWordWrap(True)
         export = QPushButton("Export diagnostics")
         export.clicked.connect(lambda: window._export_diagnostics())
@@ -61,7 +66,7 @@ class QuickErrorScreen(QWidget):
         buttons.addStretch(1)
         column = QVBoxLayout()
         column.setSpacing(14)
-        for item in (title, body, caption, detail):
+        for item in (title, body, self.audio, caption, detail):
             column.addWidget(item)
         column.addLayout(buttons)
         outer = QVBoxLayout(self)
@@ -70,6 +75,12 @@ class QuickErrorScreen(QWidget):
         outer.addLayout(column)
         outer.addStretch(2)
         export.setFocus()
+        self._show_audio_state()
+        # Audio can still be started from the keyboard while this screen is up.
+        window.stop_btn_action.changed.connect(self._show_audio_state)
+
+    def _show_audio_state(self) -> None:
+        self.audio.setText(AUDIO_RUNNING if self._owner.processor.is_running() else AUDIO_STOPPED)
 
 
 def show_quick_error(

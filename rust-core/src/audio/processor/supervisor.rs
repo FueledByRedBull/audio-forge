@@ -3,7 +3,7 @@ use super::lifecycle::Streams;
 use super::shared::Shared;
 use super::AudioProcessor;
 use crate::audio::clock::now_micros;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,12 +14,9 @@ pub(super) const STARTUP_GRACE_MS: u64 = 5000;
 pub(super) const CONSECUTIVE_STALL_CHECKS: u32 = 3;
 /// The microphone has signal above this input level.
 const SIGNAL_INPUT_DB: f32 = -35.0;
-/// What the meters read for digital silence (`update_meter_block_stats`). A loop
-/// that writes zeros lets the output meter decay through and past it.
-const METER_FLOOR_DB: f32 = -120.0;
-/// The output is digitally silent at or below this level. The gate attenuates
-/// by 36 dB at most and a suppressor's gated noise stays far above it.
-const SILENT_OUTPUT_DB: f32 = METER_FLOOR_DB + 0.01;
+/// The writer has only queued exact zeros for this long (two watchdog passes, so
+/// a block of signal between two passes is never missed).
+pub(super) const ZERO_OUTPUT_MS: u64 = 2 * CHECK_INTERVAL_MS;
 /// How long the output must stay silent under a live microphone to count as a stall.
 pub(super) const SILENT_OUTPUT_MS: u64 = 1500;
 /// The restart reason of that stall; recovery tells its request apart by it.
@@ -35,18 +32,26 @@ pub(super) fn request_stall_restart(
     reason: String,
 ) {
     if let Ok(mut state) = recovery_state.lock() {
-        state.last_reason = Some(reason);
+        state.prior_reason = state.last_reason.replace(reason);
         state.reason_pending = true;
     }
     restart_requested.store(true, Ordering::Release);
 }
 
-/// Whether the loop writes digital silence although the microphone has signal.
-/// The meters read before the output callback applies the mute, so a mute never
-/// looks silent here, and raw monitor and bypass send the input on.
-pub(super) fn output_silent_under_signal(shared: &Shared) -> bool {
-    let level = |bits: &AtomicU32| f32::from_bits(bits.load(Ordering::Relaxed));
-    level(&shared.input.rms) > SIGNAL_INPUT_DB && level(&shared.output.rms) <= SILENT_OUTPUT_DB
+/// Whether the microphone has signal while the writer has queued only exact
+/// zeros for the window. A meter level cannot tell that from a quiet signal (the
+/// suppressor takes steady noise 60 dB down and a closed gate another 36), so
+/// the writer stamps the last block that was not all zeros. The mute is applied
+/// after the writer, and raw monitor and bypass send the input on.
+pub(super) fn output_silent_under_signal(shared: &Shared, now: u64) -> bool {
+    let signal_age_us = now.saturating_sub(
+        shared
+            .output
+            .last_signal_write_time_us
+            .load(Ordering::Relaxed),
+    );
+    f32::from_bits(shared.input.rms.load(Ordering::Relaxed)) > SIGNAL_INPUT_DB
+        && signal_age_us >= ZERO_OUTPUT_MS * 1000
 }
 
 /// Watchdog over the streams: asks for a restart once a callback or the output
@@ -147,7 +152,7 @@ impl Supervisor {
         self.consecutive_stalls = 0;
 
         // The callbacks run, so judge what the loop makes of the signal.
-        if !output_silent_under_signal(&self.shared) {
+        if write_age_ms >= ZERO_OUTPUT_MS || !output_silent_under_signal(&self.shared, now) {
             self.silent_since_us = None;
             return false;
         }

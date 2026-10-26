@@ -98,7 +98,7 @@ impl AudioProcessor {
     /// under a live microphone once that has ended by itself. Another cause that
     /// asked too keeps the request, and so does a stopped stream: that is the
     /// retry of a restart that failed.
-    fn withdraw_stale_silent_output_request(&self) -> bool {
+    fn withdraw_stale_silent_output_request(&self, now: u64) -> bool {
         let stream = &self.shared.stream;
         let silent_output_pending = stream.recovery_state.lock().is_ok_and(|state| {
             state.reason_pending && state.last_reason.as_deref() == Some(SILENT_OUTPUT_REASON)
@@ -112,12 +112,14 @@ impl AudioProcessor {
                 .resampler_error_count
                 .load(Ordering::Relaxed)
                 > 0
-            || output_silent_under_signal(&self.shared)
+            || output_silent_under_signal(&self.shared, now)
         {
             return false;
         }
+        // Nothing restarted, so it is not the last recovery either.
         if let Ok(mut state) = stream.recovery_state.lock() {
             state.reason_pending = false;
+            state.last_reason = state.prior_reason.take();
         }
         // A cause that arrived meanwhile puts its request back.
         self.finish_suppressor_request(RtErrorCode::None, false);
@@ -190,7 +192,7 @@ impl AudioProcessor {
         self.reset_backoff_after_healthy_streams(now);
 
         if !self.shared.stream.restart_requested.load(Ordering::Acquire)
-            || self.withdraw_stale_silent_output_request()
+            || self.withdraw_stale_silent_output_request(now)
         {
             return None;
         }
@@ -289,7 +291,7 @@ impl AudioProcessor {
             return None;
         }
         // The wait for the lock can outlast the condition that asked.
-        if self.withdraw_stale_silent_output_request() {
+        if self.withdraw_stale_silent_output_request(now) {
             self.shared
                 .stream
                 .recovering

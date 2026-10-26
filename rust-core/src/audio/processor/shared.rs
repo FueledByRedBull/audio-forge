@@ -249,6 +249,9 @@ pub(super) struct OutputShared {
     pub(super) buffer_len: AtomicU32,
     /// Last successful output write time (for detecting stalled processing)
     pub(super) last_write_time_us: Arc<AtomicU64>,
+    /// Last time the writer queued a block that was not all exact zeros
+    /// (unix micros; 0 = none since the start).
+    pub(super) last_signal_write_time_us: AtomicU64,
     /// Last output callback heartbeat timestamp (unix micros)
     pub(super) callback_time_us: Arc<AtomicU64>,
     /// Consecutive output callback underrun count
@@ -587,6 +590,7 @@ impl Shared {
                 short_term_lufs: AtomicU32::new((-120.0_f32).to_bits()),
                 buffer_len: AtomicU32::new(0),
                 last_write_time_us: Arc::new(AtomicU64::new(0)),
+                last_signal_write_time_us: AtomicU64::new(0),
                 callback_time_us: Arc::new(AtomicU64::new(0)),
                 underrun_streak: Arc::new(AtomicU32::new(0)),
                 underrun_total: Arc::new(AtomicU64::new(0)),
@@ -803,6 +807,9 @@ impl Shared {
         self.input.callback_time_us.store(0, Ordering::Relaxed);
         self.output.callback_time_us.store(0, Ordering::Relaxed);
         self.output.last_write_time_us.store(0, Ordering::Relaxed);
+        self.output
+            .last_signal_write_time_us
+            .store(0, Ordering::Relaxed);
         self.output.primed.store(false, Ordering::Relaxed);
         self.output
             .priming_started_at_us

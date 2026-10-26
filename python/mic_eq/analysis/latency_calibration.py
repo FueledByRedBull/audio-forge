@@ -394,9 +394,9 @@ def _pick_peak(
 
     exclusion_radius = max(1, min(128, scores.size // 50))
     off_peak_mask = np.ones_like(scores, dtype=bool)
-    off_peak_mask[
-        max(0, peak_index - exclusion_radius) : peak_index + exclusion_radius + 1
-    ] = False
+    excluded_start = max(0, peak_index - exclusion_radius)
+    excluded_stop = peak_index + exclusion_radius + 1
+    off_peak_mask[excluded_start:excluded_stop] = False
     off_peak_scores = scores[off_peak_mask]
     background = float(np.median(off_peak_scores)) if off_peak_scores.size else 0.0
     second_peak = float(np.max(off_peak_scores)) if off_peak_scores.size else 0.0

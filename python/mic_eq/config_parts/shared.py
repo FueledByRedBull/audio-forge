@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 APPDATA_DIR_NAME = "AudioForge"
 LEGACY_APPDATA_DIR_NAME = "MicEq"
 _MIGRATION_MARKER_NAME = f".{APPDATA_DIR_NAME}.migration-pending"
+_migration_failure = ""
 
 
 class PresetValidationError(Exception):
@@ -68,17 +69,21 @@ def _migration_marker(base_dir: Path) -> Path:
 
 
 def _marker_state(marker: Path) -> str:
-    """Return "" with no marker, "staged" for a published copy, else "pending".
+    """Return "" with no marker, "staged" for a published copy, "unknown" when it
+    cannot be read, else "pending".
 
-    Empty, unreadable or unrecognised content (a crash mid-write, another build)
-    counts as pending so it is retried rather than left to block saves.
+    Empty or unrecognised text (a crash mid-write, another build) counts as
+    pending so it is retried rather than left to block saves. A read error says
+    nothing about the migration, so it is never grounds to swap folders.
     """
     try:
         text = marker.read_text(encoding="ascii").strip()
     except FileNotFoundError:
         return ""
-    except (OSError, UnicodeError):
+    except UnicodeError:
         return "pending"
+    except OSError:
+        return "unknown"
     return "staged" if text == "staged" else "pending"
 
 
@@ -86,11 +91,16 @@ def migration_pending() -> bool:
     """Return whether a legacy config migration needs a safe retry."""
     base_dir = _config_base_dir()
     state = _marker_state(_migration_marker(base_dir))
-    # A staged marker beside a published destination is complete even if it
-    # could not be deleted.
-    return bool(state) and not (
-        state == "staged" and (base_dir / APPDATA_DIR_NAME).exists()
+    # A staged or unreadable marker beside an existing destination cannot prove
+    # a migration is outstanding, and no swap runs for it, so saves go on.
+    return state == "pending" or (
+        state in {"staged", "unknown"} and not (base_dir / APPDATA_DIR_NAME).exists()
     )
+
+
+def migration_failure() -> str:
+    """Why the last config-folder resolution could not finish a migration, or ""."""
+    return _migration_failure
 
 
 def _write_migration_marker(marker: Path, state: str) -> None:
@@ -106,25 +116,33 @@ def _clear_migration_marker(marker: Path) -> None:
         logger.warning("Could not clear config migration marker", exc_info=True)
 
 
-def _restore_stranded_config(base_dir: Path, config_dir: Path) -> None:
-    """Put back a destination a failed migration moved aside, if nothing replaced it."""
-    kept = sorted(
-        base_dir.glob(f".{APPDATA_DIR_NAME}.partial-*"),
-        key=lambda path: path.stat().st_mtime,
-    )
-    if config_dir.exists() or not kept:
-        return
+def _restore_stranded_config(base_dir: Path, config_dir: Path) -> bool:
+    """Put back a destination a failed migration moved aside, if nothing replaced it.
+
+    Returns False when a folder should have been restored but could not be.
+    """
+    global _migration_failure
     try:
+        kept = sorted(
+            base_dir.glob(f".{APPDATA_DIR_NAME}.partial-*"),
+            key=lambda path: path.stat().st_mtime,
+        )
+        if config_dir.exists() or not kept:
+            return True
         kept[-1].replace(config_dir)
-    except OSError:
-        logger.warning("Could not restore config folder %s", kept[-1], exc_info=True)
-        return
+    except OSError as exc:
+        _migration_failure = f"could not restore the previous config folder: {exc}"
+        logger.warning("Could not restore stranded config folder", exc_info=True)
+        return False
     logger.warning("Restored the AudioForge config folder from %s", kept[-1])
     if len(kept) > 1:
         logger.warning("Older config folders were left in place: %s", ", ".join(map(str, kept[:-1])))
+    return True
 
 
 def _config_dir() -> Path:
+    global _migration_failure
+    _migration_failure = ""
     base_dir = _config_base_dir()
     config_dir = base_dir / APPDATA_DIR_NAME
     legacy_dir = base_dir / LEGACY_APPDATA_DIR_NAME
@@ -139,12 +157,13 @@ def _config_dir() -> Path:
         marker_state = ""
     elif marker_state and not legacy_dir.exists():
         # Nothing is left to migrate from, so the marker can only block saves.
-        try:
-            _restore_stranded_config(base_dir, config_dir)
-        except OSError:
-            logger.warning("Could not look for a stranded config folder", exc_info=True)
-        _clear_migration_marker(marker)
-        marker_state = ""
+        if _restore_stranded_config(base_dir, config_dir):
+            _clear_migration_marker(marker)
+            marker_state = ""
+        else:
+            # Keep the marker: saves stay blocked and the restore is retried, rather
+            # than letting a save on defaults orphan the stranded settings.
+            migration_failed = True
 
     needs_migration = legacy_dir.exists() and (
         not config_dir.exists() or marker_state == "pending"
@@ -183,8 +202,9 @@ def _config_dir() -> Path:
             except OSError:
                 logger.warning("Could not mark config migration as staged", exc_info=True)
             _clear_migration_marker(marker)
-        except OSError:
+        except OSError as exc:
             migration_failed = True
+            _migration_failure = str(exc)
             logger.warning("Legacy AudioForge config migration failed", exc_info=True)
             if staged_dir is not None and staged_dir.exists():
                 try:
@@ -427,6 +447,7 @@ __all__ = [
     "get_presets_dir",
     "legacy_latency_profile_key",
     "parse_latency_profile_key",
+    "migration_failure",
     "migration_pending",
     "replace_file",
 ]

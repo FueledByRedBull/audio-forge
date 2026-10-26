@@ -359,3 +359,104 @@ def test_logging_stays_off_while_a_failed_migration_is_pending(
     assert logging.getLogger().handlers == handlers_before
     assert not (tmp_path / CURRENT).exists()
     assert shared_module.migration_pending()
+
+
+# Review follow-ups: restore failure, unreadable marker, visible failure reason
+
+
+def _fail_replace_of(monkeypatch, name_prefix: str):
+    real_replace = Path.replace
+
+    def fail(self, target):
+        if self.name.startswith(name_prefix):
+            raise OSError("simulated rename failure")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail)
+
+
+def test_failed_restore_keeps_the_marker_and_does_not_create_an_empty_destination(
+    appdata, monkeypatch
+):
+    stranded = _folder(appdata, f".{CURRENT}.partial-abc123", "my settings")
+    _marker(appdata, "pending")
+    with monkeypatch.context() as failing:
+        _fail_replace_of(failing, f".{CURRENT}.partial-")
+        loaded = app_config_module.load_config()
+
+        assert _marker(appdata).exists()
+        assert not (appdata / CURRENT).exists()
+        assert shared_module.migration_pending()
+        assert loaded.save_blocked_reason
+        assert "could not restore" in (loaded.load_warning or "")
+        assert app_config_module.save_config(loaded) is False
+        assert (stranded / "config.json").read_text(encoding="utf-8") == "my settings"
+
+    config_dir = shared_module._config_dir()
+    assert (config_dir / "config.json").read_text(encoding="utf-8") == "my settings"
+    assert not _marker(appdata).exists()
+
+
+def test_unreadable_marker_never_swaps_a_live_destination_for_the_legacy_copy(
+    appdata, monkeypatch
+):
+    _folder(appdata, LEGACY, "stale legacy")
+    current = _folder(appdata, CURRENT, "live")
+    _marker(appdata, "staged")
+    real_read = Path.read_text
+
+    def unreadable(self, *args, **kwargs):
+        if self == _marker(appdata):
+            raise PermissionError("transient lock")
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+
+    assert shared_module._config_dir() == current
+
+    assert (current / "config.json").read_text(encoding="utf-8") == "live"
+    assert _partials(appdata) == []
+    assert not shared_module.migration_pending()
+
+
+def test_unreadable_marker_without_a_destination_stays_pending(appdata, monkeypatch):
+    _marker(appdata, "pending")
+    real_read = Path.read_text
+
+    def unreadable(self, *args, **kwargs):
+        if self == _marker(appdata):
+            raise PermissionError("transient lock")
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    _folder(appdata, LEGACY, "{}")
+
+    assert shared_module.migration_pending()
+
+
+def test_failed_migration_reason_reaches_the_load_warning(appdata, monkeypatch):
+    _folder(appdata, LEGACY, "{}")
+    monkeypatch.setattr(
+        shared_module.shutil, "copytree", lambda *a, **k: (_ for _ in ()).throw(OSError("disk is busy"))
+    )
+
+    loaded = app_config_module.load_config()
+
+    assert "disk is busy" in (loaded.load_warning or "")
+    assert loaded.save_blocked_reason
+
+
+def test_failed_migration_reason_reaches_the_load_warning_when_a_destination_exists(
+    appdata, monkeypatch
+):
+    _folder(appdata, LEGACY, "{}")
+    _folder(appdata, CURRENT, json.dumps({"last_preset": "Kept"}))
+    _marker(appdata, "pending")
+    monkeypatch.setattr(
+        shared_module.shutil, "copytree", lambda *a, **k: (_ for _ in ()).throw(OSError("disk is busy"))
+    )
+
+    loaded = app_config_module.load_config()
+
+    assert loaded.last_preset == "Kept"
+    assert "disk is busy" in (loaded.load_warning or "")

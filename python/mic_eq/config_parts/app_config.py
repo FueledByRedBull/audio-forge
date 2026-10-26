@@ -21,6 +21,7 @@ from .shared import (
     build_device_route_key,
     coerce_device_identity,
     get_config_file,
+    migration_failure,
     migration_pending,
     parse_latency_profile_key,
     replace_file,
@@ -554,15 +555,21 @@ def save_config(config: AppConfig) -> bool:
     return True
 
 
+def _migration_warning() -> str:
+    reason = migration_failure()
+    return (
+        "AudioForge could not complete its config migration"
+        + (f" ({reason})" if reason else "")
+        + ". Settings changes cannot be saved until the migration succeeds."
+    )
+
+
 def load_config() -> AppConfig:
     filepath = get_config_file()
     if not filepath.exists():
         if migration_pending():
             config = AppConfig()
-            config.load_warning = (
-                "AudioForge could not complete its config migration. "
-                "Settings changes cannot be saved until the migration succeeds."
-            )
+            config.load_warning = _migration_warning()
             config.save_blocked_reason = "legacy config migration is still pending"
             return config
         return AppConfig()
@@ -573,7 +580,10 @@ def load_config() -> AppConfig:
             data = json.load(handle, parse_constant=_reject_json_constant)
         if not isinstance(data, dict):
             raise PresetValidationError("Configuration root must be an object")
-        return AppConfig.from_dict(data)
+        config = AppConfig.from_dict(data)
+        if migration_pending():
+            config.load_warning = _migration_warning()
+        return config
     except (
         OSError,
         OverflowError,

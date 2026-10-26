@@ -71,7 +71,11 @@ jobs:
           # semgrep pins mcp==1.29.0 exactly, so the dev lock cannot move off
           # CVE-2026-59951. Only semgrep's MCP server uses mcp and nothing here
           # runs it. Remove the ignore when semgrep allows mcp>=1.30.0.
-          python -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951
+          # semgrep also pins opentelemetry-api~=1.37.0, so the lock cannot move
+          # off CVE-2026-114603, a ReDoS in TraceState.from_header for inbound
+          # tracestate headers. semgrep only exports telemetry. Remove the ignore
+          # when semgrep allows opentelemetry-api>=1.45.1.
+          python -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951 --ignore-vuln CVE-2026-114603
           if ($LASTEXITCODE -ne 0) { throw "Development dependency audit failed with exit code $LASTEXITCODE." }
 
       - name: Ruff
@@ -735,11 +739,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Runtime asset verification failed with exit code $LASTEXITCODE." }
 
       # The seeded contention stress test runs in the rust-stress job, in
-      # release mode; this debug run skips only that one test.
+      # release mode; this debug run skips only that one test. The DeepFilter and
+      # Silero tests print "skipping" and pass when an asset or the DeepFilter
+      # switch is missing; --nocapture shows those lines and any of them fails
+      # the step.
       - name: Rust tests
         env:
+          AUDIOFORGE_ENABLE_DEEPFILTER: "1"
           PYTHONPATH: ${{ github.workspace }}\.venv\Lib\site-packages;${{ github.workspace }}\python
-        run: cargo test --locked -p mic_eq_core -- --skip seeded_control_and_dsp_loops_remain_finite_under_contention --exact
+        run: |
+          $ErrorActionPreference = "Continue"
+          $log = Join-Path $env:RUNNER_TEMP "rust-tests.log"
+          cargo test --locked -p mic_eq_core -- --skip seeded_control_and_dsp_loops_remain_finite_under_contention --exact --nocapture 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw "Rust tests failed with exit code $LASTEXITCODE." }
+          $skipped = @(Select-String -Path $log -Pattern '\b(skipped|skipping)\b' | ForEach-Object { $_.Line.Trim() })
+          if ($skipped.Count -gt 0) { throw "Rust tests skipped coverage:`n$($skipped -join "`n")" }
 
       - name: Clippy
         run: cargo clippy --locked -p mic_eq_core --all-targets -- -D warnings

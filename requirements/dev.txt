@@ -53,9 +53,9 @@ cachecontrol==0.14.4 \
     # via
     #   cachecontrol
     #   pip-audit
-certifi==2026.7.22 \
-    --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775 \
-    --hash=sha256:741e2c3b351ddf169a738da9f2c048608ff7f2c5cc02f1ebc6b118bb090d5d55
+certifi==2026.10.23 \
+    --hash=sha256:a9895e6e2758b371e0545e321a3a8fd1fcfd9829ada8824a936dfb16aaaf36cd \
+    --hash=sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1
     # via
     #   httpcore
     #   httpx
@@ -341,9 +341,9 @@ face==26.0.1 \
     --hash=sha256:8183d94bc248baaea855a9f8445f97a22a9988908e60abddccc6e251da77c4c6 \
     --hash=sha256:ab0a83c37c9789dce658a67a9a80eafaa113c9ec37c5a9d950ff5480542a062d
     # via glom
-filelock==3.32.0 \
-    --hash=sha256:7be2ad23a14607ccc71808e68fe30848aeace7058ace17852f68e2a68e310402 \
-    --hash=sha256:d396bea984af47333ef05e50eae7eff88c84256de6112aea0ec48a233c064fe3
+filelock==4.2.4 \
+    --hash=sha256:301241438c57936ef93f4243a94f2559022268bfcf9b375a9a72eb0f8db8358e \
+    --hash=sha256:c6d8663535e1650ee430507b4ffbac7b464dd64b7647ea0112a9f406499d163d
     # via cachecontrol
 glom==25.12.0 \
     --hash=sha256:1ae7da88be3693df40ad27bdf57a765a55c075c86c971bcddd67927403eb0069 \
@@ -1489,9 +1489,9 @@ pip==26.2.1 \
     #   mic_eq (pyproject.toml)
     #   pip-api
     #   pip-tools
-setuptools==83.0.0 \
-    --hash=sha256:025bccbbf0fa05b6192bc64ae1e7b16e001fd6d6d4d5de03c97b1c1ade523bef \
-    --hash=sha256:29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3
+setuptools==84.2.1 \
+    --hash=sha256:3ff8b3b5492a0aa66960f4419365a86b84e013070d4313e4d4a6894f5d64d6bc \
+    --hash=sha256:ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2
     # via
     #   pip-tools
     #   pyinstaller

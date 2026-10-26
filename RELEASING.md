@@ -58,7 +58,9 @@ archive, and one `SHA256SUMS.txt`.
    revision and digest, never attribute an earlier candidate's results to the
    final binary, and name untested configurations in the release notes.
    The runner is a personal machine that executes repository code: register it
-   only while a run is needed, and only for this repository.
+   only while a run is needed, and only for this repository. Like promotion,
+   both hardware workflows refuse to run unless dispatched from `master` by
+   a user with the admin or maintain role.
 6. **Promote.** Run `Promote release candidate` with `release_tag`,
    `candidate_run_id`, and `expected_archive_sha256`. It downloads the same
    candidate bytes, verifies sidecars, evidence, and corresponding source
@@ -67,6 +69,23 @@ archive, and one `SHA256SUMS.txt`.
    revision; the binary stays bound to the tag. Reruns compare GitHub's
    SHA-256 digests in preflight, and the final check downloads and hashes
    every published file.
+
+   Promotion has two jobs. `verify-candidate` runs the candidate (the
+   executable, the MSI and the pinned pip packages) with a read-only token and
+   no credentials in its checkout, then stages the five files with their
+   SHA-256 as an artifact. Only `publish-release` can write; it runs none of the
+   candidate's code, re-hashes the staged files against the recorded digests and
+   `expected_archive_sha256`, and publishes.
+
+   Dispatch rules: the first step of every job in `Promote release candidate`
+   and in both hardware workflows fails unless the run is on
+   `refs/heads/master` and `github.triggering_actor` has the admin or maintain
+   role (`GET /repos/{repo}/collaborators/{user}/permission`). `publish-release`
+   also declares `environment: release`. Create that environment in the
+   repository settings (Settings, Environments) and limit its deployment
+   branches to `master` before the first promotion; GitHub creates a missing
+   environment without any protection rules. Add required reviewers there if a
+   second approval is wanted.
 
 GitHub release immutability is enabled: publication locks the assets and tag
 and creates GitHub's
@@ -162,7 +181,7 @@ stress test, then:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
-.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951 --ignore-vuln CVE-2026-114603
 .\.venv\Scripts\python.exe python\tools\run_semgrep.py --sarif semgrep-results.sarif
 .\.venv\Scripts\python.exe python\tools\check_versions.py
 .\.venv\Scripts\python.exe python\tools\check_workflows.py
@@ -175,7 +194,11 @@ cargo audit
   suppressed in source with `nosemgrep` and a reason. Review the notes by
   hand in the SARIF. `semgrep-rulesets.txt` lists registry packs, which can't
   be pinned, so a new registry rule can fail CI without a code change: fix the
-  code or suppress the finding with its reason.
+  code or suppress the finding with its reason. It also lists three
+  third-party collections (Trail of Bits, elttam, Apiiro). Semgrep loads no
+  rules from a repository URL, so `run_semgrep.py` clones each one at its
+  pinned commit into `build/semgrep-rules`; move a pin only after reading the
+  rule changes between the two commits, and triage what the new commit finds.
 - **RustSec:** `cargo audit` must be clean for the application lockfile; never
   add an ignore just to release. The separate
   `build-support/deepfilter/Cargo.lock` graph ignores only three reviewed
@@ -185,9 +208,17 @@ cargo audit
 - **Python:** install `requirements/dev.txt` with `--require-hashes`; never
   release from an environment resolved from open `pyproject.toml` ranges.
   The runtime audit has no ignores. The development audit ignores only
-  CVE-2026-59951: Semgrep pins `mcp==1.29.0` and only its MCP server uses it.
-  Remove the ignore when Semgrep allows `mcp>=1.30.0`; `check_workflows.py`
-  rejects it once the lock stops pinning 1.29.0.
+  two ids, each caused by a Semgrep pin. CVE-2026-59951: Semgrep pins
+  `mcp==1.29.0` and only its MCP server uses it. CVE-2026-114603: Semgrep pins
+  `opentelemetry-api~=1.37.0`; the ReDoS is in parsing inbound `tracestate`
+  headers, and Semgrep only exports telemetry. Remove each ignore when Semgrep
+  allows `mcp>=1.30.0` or `opentelemetry-api>=1.45.1`; `check_workflows.py`
+  rejects an ignore once the lock stops pinning 1.29.0 or 1.37.0.
+- **Package check:** `package-check.yml` builds the bundle and the MSI and
+  runs the package smoke, the hidden `--smoke-test` and the MSI smoke on every
+  push to `master` and on pull requests that touch packaging inputs. It
+  publishes nothing and is not a required check, because a path-filtered
+  workflow does not report on other pull requests.
 - **Dependabot:** GitHub Actions version updates stay on, weekly and grouped
   into one pull request, to keep the pinned actions current. Python and Cargo
   version updates are off (`open-pull-requests-limit: 0`); security updates stay

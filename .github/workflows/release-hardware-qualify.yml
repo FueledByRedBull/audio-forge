@@ -98,6 +98,21 @@ jobs:
       run:
         shell: powershell
     steps:
+      - name: Authorize the dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCHER: ${{ github.triggering_actor }}
+        run: |
+          if ($env:GITHUB_REF -ne "refs/heads/master") {
+            throw "This workflow runs only from refs/heads/master, not $env:GITHUB_REF."
+          }
+          $permission = Invoke-RestMethod `
+            -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" } `
+            -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/collaborators/$([uri]::EscapeDataString($env:DISPATCHER))/permission"
+          if ($permission.role_name -notin @("admin", "maintain")) {
+            throw "$env:DISPATCHER needs the admin or maintain role to run this workflow, but has '$($permission.role_name)'."
+          }
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ inputs.release_tag }}

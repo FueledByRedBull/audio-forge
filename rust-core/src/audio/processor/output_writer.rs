@@ -26,6 +26,7 @@ pub(super) struct OutputWriteCounters<'a> {
     pub(super) rt_error_code: &'a AtomicU32,
     pub(super) output_buffer_len: &'a AtomicU32,
     pub(super) last_output_write_time: &'a AtomicU64,
+    pub(super) last_signal_write_time: &'a AtomicU64,
     pub(super) output_clip_event_count: &'a AtomicU64,
     pub(super) output_clip_peak_db: &'a AtomicU32,
     pub(super) output_final_peak_hold: &'a AtomicU32,
@@ -50,6 +51,7 @@ impl<'a> OutputWriteCounters<'a> {
             rt_error_code: &shared.dsp.rt_error_code,
             output_buffer_len: &shared.output.buffer_len,
             last_output_write_time: &shared.output.last_write_time_us,
+            last_signal_write_time: &shared.output.last_signal_write_time_us,
             output_clip_event_count: &shared.output.clip_event_count,
             output_clip_peak_db: &shared.output.clip_peak_db,
             output_final_peak_hold: &shared.output.final_peak_hold,
@@ -379,9 +381,17 @@ impl<
                 counters.output_final_peak_hold,
                 Some(counters.output_full_scale_count),
             );
+            let now = now_micros();
             counters
                 .last_output_write_time
-                .store(now_micros(), Ordering::Relaxed);
+                .store(now, Ordering::Relaxed);
+            // Exact zeros are what a loop that lost its audio writes, and no
+            // stage makes them from a live signal: the supervisor looks for them.
+            if pending_slice[..written].iter().any(|&sample| sample != 0.0) {
+                counters
+                    .last_signal_write_time
+                    .store(now, Ordering::Relaxed);
+            }
         }
         if written < pending_slice.len() {
             let dropped = pending_slice.len() - written;

@@ -1300,6 +1300,8 @@ def test_mute_is_said_in_words_and_the_window_has_its_own_shortcut(quick_window,
     _show(window, qapp)
     badge = window.centralWidget().rootObject().findChild(QObject, "mutedBadge")
     assert "(Ctrl+M)" in window.quick_bridge.model["top"]["mute"].toolTip
+    # Holding the keys must not flap the live mute.
+    assert window.user_mute_checkbox_action.autoRepeat() is False
     assert badge.property("visible") is False
 
     _press(window, Qt.Key.Key_M, qapp, Qt.KeyboardModifier.ControlModifier)
@@ -1355,6 +1357,12 @@ def test_help_is_in_the_accessible_description_not_only_in_the_hover_tip(quick_w
             if row.isVisible() and row.property("p").toolTip not in ("", row.property("p").text)
         ]
         assert helped and [r for r, p in helped if scene.description(r) != p.toolTip] == []
+        # Buttons with no proxy say their own help: the tip and the description are one string.
+        window.shell_page.setIndex(HEALTH)
+        _open_every_disclosure(window, qapp)
+        for text in ("Export diagnostics", "Reset drop counter"):
+            button = next(b for b in _of_kind(window, "Btn") if b.property("text") == text)
+            assert button.property("help") and scene.description(button) == button.property("help"), text
     assert checked >= 15 and wrong == []
 
 
@@ -1525,3 +1533,44 @@ def test_dragging_a_fader_commits_each_move_once(quick_window, qapp) -> None:
     # would double each move.
     assert len(stops) <= len(commits) <= len(stops) + 2 and commits == sorted(commits), commits
     assert abs(gain.value - commits[-1]) <= 0.5 and gain.value > 0  # the control rounds to a tenth of a dB
+
+
+CONTRAST_COLORS = {
+    "window": "#102030", "window_text": "#f0e0d0", "gray_text": "#80ff80",
+    "highlight": "#ffee00", "highlight_text": "#000011",
+}
+
+
+@pytest.fixture(params=["dark", "contrast"])
+def themed_window(request, monkeypatch):
+    """The window with the dark palette, then with a Windows contrast theme's colours."""
+    from mic_eq.ui.theme import build_palette
+
+    if request.param == "contrast":
+        monkeypatch.setattr("mic_eq.ui.quick_shell.PALETTE", build_palette(CONTRAST_COLORS))
+    window = request.getfixturevalue("quick_window")
+    window.contrast = request.param == "contrast"
+    return window
+
+
+def test_the_alert_look_of_a_mode_picker_does_not_rely_on_colour(themed_window, qapp) -> None:
+    window = themed_window
+    _show(window, qapp)
+    picker = _with_proxy(window, "Picker", window.quick_bridge.model["top"]["mode"])
+    background, text = picker.property("background"), picker.property("contentItem")
+    looks = {}
+    for index in (0, 1):
+        window.processing_mode_choice.setIndex(index)
+        qapp.processEvents()
+        looks[index] = (
+            QQmlProperty.read(background, "border.width"),
+            _colour(background, "border.color"),
+            text.property("font").weight(),
+            _colour(text, "color"),
+        )
+    normal, bypass = looks[0], looks[1]
+    # A thicker edge and bolder text mark Bypass whatever the colours are.
+    assert bypass[0] > normal[0] and bypass[2] > normal[2]
+    if window.contrast:
+        # The theme has one text colour: the colours of the two looks are the same.
+        assert (bypass[1], bypass[3]) == (normal[1], normal[3])

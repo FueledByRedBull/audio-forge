@@ -88,7 +88,7 @@ from .calibration_support import (
     on_analysis_thread_finished,
     wait_for_analysis_workers,
 )
-from .components import StepHeader, live_output_muted_notice, update_label
+from .components import StepHeader, live_output_muted_notice, session_is_ending, update_label
 from .layout_constants import (
     MARGIN_PANEL,
     SUBDUED_TEXT_STYLE,
@@ -3224,6 +3224,12 @@ class VoiceSetupDialog(QDialog):
         return str(self.curve_combo.currentData() or "broadcast")
 
     def closeEvent(self, event) -> None:
+        if session_is_ending():
+            # A veto here would stop Windows from signing out: stop the work, join its threads, close.
+            self._wait_for_analysis_workers()
+            self._finish_close()
+            event.accept()
+            return
         self._request_close(False)
         event.ignore()
 

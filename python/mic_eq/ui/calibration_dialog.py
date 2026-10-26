@@ -48,7 +48,7 @@ from .auto_eq_explanation import (
     headroom_advice,
     target_profile_text,
 )
-from .components import StepHeader, live_output_muted_notice, update_label
+from .components import StepHeader, live_output_muted_notice, session_is_ending, update_label
 from .layout_constants import (
     MARGIN_PANEL,
     SUBDUED_TEXT_STYLE,
@@ -1767,6 +1767,12 @@ class CalibrationDialog(QDialog):
 
     def closeEvent(self, event):
         """Ensure recording state is cleaned up if dialog is closed directly."""
+        if session_is_ending():
+            # A veto here would stop Windows from signing out: stop the work, join its threads, close.
+            self._wait_for_analysis_workers()
+            self._finish_close()
+            event.accept()
+            return
         self._request_close(False)
         event.ignore()
 

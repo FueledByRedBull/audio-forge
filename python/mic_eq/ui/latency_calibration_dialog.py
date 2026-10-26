@@ -29,7 +29,7 @@ from ..analysis.latency_calibration import (
 )
 from ..analysis.signal_processing import resample_poly
 from .accessibility import set_accessible_group
-from .components import Card, form_layout
+from .components import Card, form_layout, session_is_ending
 from .level_meter import LevelMeter, MeterWidget
 from .capture_session import (
     CaptureSession,
@@ -723,6 +723,12 @@ class LatencyCalibrationDialog(QDialog):
         self._finish_close()
 
     def closeEvent(self, event):
+        if session_is_ending():
+            # A veto here would stop Windows from signing out: stop the work, join its thread, close.
+            self._wait_for_worker()
+            self._finish_close()
+            event.accept()
+            return
         self._request_close(False)
         event.ignore()
 

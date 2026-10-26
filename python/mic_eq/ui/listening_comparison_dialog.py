@@ -54,7 +54,7 @@ from .capture_session import (
     start_selected_route,
     sync_owner_processing_controls,
 )
-from .components import live_output_muted_notice
+from .components import live_output_muted_notice, session_is_ending
 from .layout_constants import (
     MARGIN_PANEL,
     SPACING_NORMAL,
@@ -845,6 +845,11 @@ class ListeningComparisonDialog(QDialog):
         QDialog.done(self, int(QDialog.DialogCode.Accepted if self._close_result else QDialog.DialogCode.Rejected))
 
     def closeEvent(self, event) -> None:
+        if session_is_ending():
+            # A veto here would stop Windows from signing out: stop playback and the render, close.
+            self._wait_for_worker()
+            event.accept()
+            return
         self._request_close(False)
         event.ignore()
 

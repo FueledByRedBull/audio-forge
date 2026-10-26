@@ -186,6 +186,8 @@ class QuickBridge(QObject):
             if spec.shortcut:
                 # No menu holds this action; the window owns its shortcut.
                 command.setShortcut(spec.shortcut)
+                # Holding the keys must not flap a live mute, as the global hotkey does not.
+                command.setAutoRepeat(False)
                 w.addAction(command)
             return ActionControl(command, self, name=spec.name, locked_tip=spec.locked_tip)
 

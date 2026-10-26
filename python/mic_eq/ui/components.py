@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QVariantAnimation
 from PySide6.QtGui import QFont, QFontDatabase, QPainter, QPen
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QFormLayout,
     QFrame,
@@ -178,6 +179,13 @@ def live_output_muted_notice() -> QLabel:
     label.setWordWrap(True)
     label.setStyleSheet(status_chip_style("warn"))
     return label
+
+
+def session_is_ending() -> bool:
+    """Whether Windows is signing out or shutting down, which the main window says on the app."""
+
+    app = QApplication.instance()
+    return app is not None and app.property("audioforge_session_ending") is True
 
 
 def update_label(label: QLabel, text: str, style: str) -> None:

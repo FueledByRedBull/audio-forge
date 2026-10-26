@@ -382,6 +382,8 @@ Rectangle {
         id: picker
         property var proxy
         // Set for a choice that changes what the sound does, so it does not read as the default.
+        // Colour is not the only cue (a contrast theme has one text colour): the edge is thicker
+        // and the text bolder.
         property bool alert: false
         model: proxy ? proxy.items : []
         currentIndex: proxy ? proxy.index : -1
@@ -416,6 +418,7 @@ Rectangle {
                  : picker.alert ? root.t.status_warn_text : root.t.text_primary
             font.pixelSize: root.fsBody
             font.italic: picker.prompting
+            font.weight: picker.alert ? Font.DemiBold : Font.Normal
             elide: Text.ElideRight
             verticalAlignment: Text.AlignVCenter
         }
@@ -431,6 +434,7 @@ Rectangle {
         background: Rectangle {
             radius: root.t.radiusControl
             color: picker.hovered || picker.down ? root.t.control_hover : root.t.control_surface
+            border.width: picker.alert ? 2 : 1
             border.color: picker.prompting ? root.t.status_warn_border
                         : picker.alert ? root.t.status_warn_text : root.t.control_edge
             FocusRing { control: picker }
@@ -493,6 +497,7 @@ Rectangle {
         property var proxy
         // "plain", "primary" or "danger"
         property string look: "plain"
+        property string help: proxy ? proxy.toolTip : ""
         text: proxy ? proxy.text : ""
         enabled: proxy ? proxy.enabled : false
         opacity: enabled ? 1 : 0.45
@@ -501,8 +506,8 @@ Rectangle {
         onClicked: if (proxy) root.press(this, proxy)
         Accessible.role: Accessible.Button
         Accessible.name: proxy && proxy.name !== "" ? proxy.name : text
-        Accessible.description: proxy ? proxy.toolTip : ""
-        Hint { text: btn.proxy ? btn.proxy.toolTip : "" }
+        Accessible.description: help
+        Hint { text: btn.help }
         background: Rectangle {
             radius: root.t.radiusControl
             color: btn.look === "primary" ? (btn.hovered ? root.t.accent_hover : root.t.accent)
@@ -1058,6 +1063,7 @@ Rectangle {
             pad: 14
             // The route and the transport share a row when there is room, else the route is on top.
             GridLayout {
+                objectName: "topBar"
                 columns: root.wide ? 2 : 1
                 columnSpacing: 12
                 rowSpacing: 10
@@ -1069,7 +1075,9 @@ Rectangle {
                         proxy: root.m.top.input
                         Layout.fillWidth: true
                         Layout.preferredWidth: 200
-                        Layout.minimumWidth: 140
+                        // Beside the transport the pickers give up width first, so the Muted badge
+                        // and a large app font still fit; a cut name is whole in the tooltip.
+                        Layout.minimumWidth: root.wide ? 100 : 140
                     }
                     Text {
                         textFormat: Text.PlainText
@@ -1084,7 +1092,7 @@ Rectangle {
                         proxy: root.m.top.output
                         Layout.fillWidth: true
                         Layout.preferredWidth: 200
-                        Layout.minimumWidth: 140
+                        Layout.minimumWidth: root.wide ? 100 : 140
                     }
                     IconBtn { proxy: root.m.top.refresh; glyph: root.m.glyphs.refresh; label: "Refresh" }
                 }
@@ -1452,12 +1460,13 @@ Rectangle {
                         FadeIn on opacity { id: fadeIn }
                         Btn {
                             text: "Export diagnostics"
+                            help: "Save a support snapshot without audio or device names (Ctrl+Shift+D)"
                             enabled: true
-                            Hint { text: "Save a support snapshot without audio or device names (Ctrl+Shift+D)" }
                             onClicked: root.ui.exportDiagnostics()
                         }
                         Btn {
                             text: "Reset drop counter"
+                            help: "Set the dropped-audio count back to zero."
                             enabled: true
                             onClicked: root.ui.resetDrops()
                         }

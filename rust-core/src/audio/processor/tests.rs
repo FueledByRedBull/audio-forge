@@ -1475,6 +1475,59 @@ mod tests {
         assert!(!processor.restart_requested.load(Ordering::Acquire));
     }
 
+    /// Between reading a suppressor request and clearing it, a stream error,
+    /// a stall or an output-resampler failure may ask for a restart of its
+    /// own. Clearing the flag must not erase that request.
+    #[test]
+    fn clearing_a_suppressor_request_keeps_one_that_arrived_meanwhile() {
+        let fault = RtErrorCode::SuppressorNonFinite;
+        for (clear_code, interleaved) in [
+            (false, "none"),
+            (true, "none"),
+            (false, "device lost"),
+            (true, "device lost"),
+            (false, "stall"),
+            (true, "stall"),
+            (false, "output resampler"),
+            (true, "output resampler"),
+        ] {
+            let processor = AudioProcessor::new();
+            // The request as service_recovery read it.
+            store_rt_error(processor.rt_error_code.as_ref(), fault);
+            processor.restart_requested.store(true, Ordering::Release);
+            // What the other thread did before the request is cleared.
+            match interleaved {
+                "device lost" => store_rt_error(
+                    processor.rt_error_code.as_ref(),
+                    RtErrorCode::InputStreamError,
+                ),
+                "stall" => request_stall_restart(
+                    &processor.recovery_state,
+                    &processor.restart_requested,
+                    "stalled".to_string(),
+                ),
+                "output resampler" => {
+                    processor
+                        .output_resampler_error_count
+                        .store(1, Ordering::Relaxed);
+                }
+                _ => {}
+            }
+            processor.finish_suppressor_request(fault, clear_code);
+            assert_eq!(
+                processor.restart_requested.load(Ordering::Acquire),
+                interleaved != "none",
+                "{interleaved}, clear_code {clear_code}"
+            );
+            let code = processor.get_rt_error_code();
+            match (interleaved, clear_code) {
+                ("device lost", _) => assert_eq!(code, RtErrorCode::InputStreamError as u32),
+                (_, true) => assert_eq!(code, RtErrorCode::None as u32),
+                (_, false) => assert_eq!(code, fault as u32),
+            }
+        }
+    }
+
     /// A stall inside the rebuild interval still restarts the streams: the
     /// supervisor keeps watching while a rebuild is being held back.
     #[test]
@@ -5219,62 +5272,88 @@ mod tests {
     }
 
     #[test]
-    fn suppressor_starvation_is_only_timed_while_the_suppressor_is_fed() {
-        let start = Instant::now();
-        let at = |ms: u64| start + Duration::from_millis(ms);
-        // A block every 5 ms (a 240-frame period) with no output: starved once
-        // the limit has passed, not before.
-        let mut watch = SuppressorStarvation::new(at(0));
-        for ms in (5..=400).step_by(5) {
-            watch.fed(at(ms));
-            assert!(!watch.starved(at(ms)), "{ms} ms");
-        }
-        watch.fed(at(405));
-        assert!(watch.starved(at(405)));
-
-        // Output ends the run.
-        watch.restart(at(410));
-        watch.fed(at(415));
-        assert!(!watch.starved(at(415)));
-
-        // The input goes quiet for up to 2.5 s (or the suppressor is disabled
-        // or bypassed), then resumes in blocks smaller than one frame. The
-        // first block gives no output yet, which is not starvation.
-        for quiet_ms in [150, 400, 1_000, 2_500] {
-            let mut watch = SuppressorStarvation::new(at(0));
-            watch.fed(at(5));
-            watch.restart(at(10)); // last output
-            let resumed = 10 + quiet_ms;
-            watch.fed(at(resumed));
-            assert!(!watch.starved(at(resumed)), "quiet for {quiet_ms} ms");
-            // ...but a suppressor that stays silent while fed still is.
-            for ms in (resumed + 5..=resumed + 400).step_by(5) {
-                watch.fed(at(ms));
+    fn suppressor_starvation_counts_audio_fed_without_output() {
+        let rate = TARGET_SAMPLE_RATE;
+        let limit = rate as usize * 4 / 10;
+        // Whatever the block cadence (a 5 ms period, a 100 ms resampler chunk,
+        // an 8 kHz input's 128 ms, an 8192-frame buffer's 171 ms), the
+        // suppressor counts as starved once 0.4 s of audio went in without
+        // output, and not before.
+        for block_ms in [5_usize, 100, 128, 171] {
+            let block = rate as usize * block_ms / 1000;
+            let mut watch = SuppressorStarvation::new(rate);
+            let mut fed = 0;
+            while fed + block < limit {
+                watch.fed(block);
+                fed += block;
+                assert!(!watch.starved(), "{block_ms} ms blocks, {fed} samples");
             }
-            assert!(!watch.starved(at(resumed + 400)));
-            watch.fed(at(resumed + 405));
-            assert!(watch.starved(at(resumed + 405)), "quiet for {quiet_ms} ms");
+            watch.fed(block);
+            assert!(watch.starved(), "{block_ms} ms blocks");
+        }
+
+        // Output ends the run, however long the suppressor had been fed.
+        let mut watch = SuppressorStarvation::new(rate);
+        watch.fed(limit - 1);
+        assert!(!watch.starved());
+        watch.restart();
+        watch.fed(limit - 1);
+        assert!(!watch.starved());
+        watch.fed(1);
+        assert!(watch.starved());
+
+        // Nothing is counted while nothing is fed: a quiet input, however
+        // long, leaves the count alone, so the first block after it (too
+        // small to give output yet) is not starvation.
+        let mut watch = SuppressorStarvation::new(rate);
+        watch.fed(480);
+        watch.restart(); // the last output
+        assert!(!watch.starved());
+        watch.fed(128);
+        assert!(!watch.starved());
+    }
+
+    /// An engine that gives a frame of output for every 480 samples it has
+    /// received is never starved, whatever the block size.
+    #[test]
+    fn a_healthy_suppressor_is_never_starved() {
+        let rate = TARGET_SAMPLE_RATE;
+        for block in [1_usize, 37, 128, 240, 480, 1024, 4096, 8192] {
+            let mut watch = SuppressorStarvation::new(rate);
+            let mut pending = 0;
+            for _ in 0..(10 * rate as usize / block).max(1) {
+                watch.fed(block);
+                pending += block;
+                if pending >= 480 {
+                    pending %= 480;
+                    watch.restart();
+                } else {
+                    assert!(!watch.starved(), "{block}-sample blocks");
+                }
+            }
         }
     }
 
-    /// The decision above only helps if the loop feeds the clock where the
-    /// suppressor is fed and restarts it where output arrives or the stream
-    /// is reset.
+    /// The count only helps if the loop feeds it where the suppressor is fed
+    /// and starts it over where output arrives or the suppressor is reset,
+    /// switched off or swapped.
     #[test]
-    fn suppressor_starvation_clock_is_wired_to_the_feed_and_the_output() {
+    fn suppressor_starvation_count_is_wired_to_the_feed_and_every_reset() {
         let source = include_str!("dsp_loop.rs");
         let enabled_branch = source_between(
             source,
             "// Always feed suppressor first so frame accumulation is correct.",
             "// Record DSP processing time",
         );
-        let feed = enabled_branch.find("suppressor_starvation.fed(").unwrap();
+        let feed = enabled_branch
+            .find("suppressor_starvation.fed(accepted)")
+            .unwrap();
         let process = enabled_branch
             .find("suppressor_rt.process_frames()")
             .unwrap();
         let output = enabled_branch.find("if available > 0 {").unwrap();
         let check = enabled_branch
-            .find("suppressor_starvation.starved(")
+            .find("suppressor_starvation.starved()")
             .unwrap();
         assert!(feed < process && process < output && output < check);
         let output_arm = source_between(
@@ -5282,13 +5361,34 @@ mod tests {
             "if available > 0 {",
             "} else if accepted > 0",
         );
-        assert!(output_arm.contains("suppressor_starvation.restart("));
+        assert!(output_arm.contains("suppressor_starvation.restart()"));
         let reset = source_between(
             source,
             "macro_rules! reset_input_continuity",
             "let mut consecutive_idle_wakeups",
         );
-        assert!(reset.contains("suppressor_starvation.restart("));
+        assert!(reset.contains("suppressor_starvation.restart()"));
+        // The engine swap, the path change and the reset request of an enabled
+        // suppressor each start the count over right after the reset; the
+        // disabled branch does it on every pass, checked below.
+        let region = marked_region(source, "dsp_processing_loop");
+        assert_eq!(region.matches("suppressor_rt.soft_reset()").count(), 4);
+        let restarted_after_reset = region
+            .match_indices("suppressor_rt.soft_reset()")
+            .filter(|(at, _)| {
+                region[*at..]
+                    .lines()
+                    .take(3)
+                    .any(|line| line.contains("suppressor_starvation.restart()"))
+            })
+            .count();
+        assert_eq!(restarted_after_reset, 3);
+        let disabled = source_between(
+            source,
+            "// Suppressor disabled: clear buffer counter",
+            "// Suppressor disabled: apply remaining stages directly",
+        );
+        assert!(disabled.contains("suppressor_starvation.restart()"));
         assert!(!source.contains("last_suppressor_output"));
     }
 

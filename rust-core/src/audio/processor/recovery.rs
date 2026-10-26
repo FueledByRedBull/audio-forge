@@ -66,6 +66,37 @@ impl AudioProcessor {
         }
     }
 
+    /// Clear the restart request once a suppressor fault has been dealt with
+    /// (`clear_code`: it was rebuilt, so its error code is done too). Another
+    /// cause may have asked for a restart since the request was read: a stream
+    /// error stores its own code first, a stall marks its reason pending first,
+    /// an output-resampler failure counts first. That request is put back, so
+    /// it is never lost to this one.
+    fn finish_suppressor_request(&self, handled: RtErrorCode, clear_code: bool) {
+        self.restart_requested.store(false, Ordering::Release);
+        let code_unchanged = if clear_code {
+            self.rt_error_code
+                .compare_exchange(
+                    handled as u32,
+                    RtErrorCode::None as u32,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+        } else {
+            self.rt_error_code.load(Ordering::Acquire) == handled as u32
+        };
+        let other_reason = self
+            .recovery_state
+            .lock()
+            .map(|state| state.reason_pending)
+            .unwrap_or(false)
+            || self.output_resampler_error_count.load(Ordering::Relaxed) > 0;
+        if !code_unchanged || other_reason {
+            self.restart_requested.store(true, Ordering::Release);
+        }
+    }
+
     /// `service_recovery` at a given time, with the stream start supplied by
     /// the caller so tests need neither a clock nor an audio device.
     fn service_recovery_at(
@@ -106,22 +137,17 @@ impl AudioProcessor {
             && last_rebuild_us > 0
             && now.saturating_sub(last_rebuild_us) < SUPPRESSOR_REBUILD_MIN_INTERVAL_MS * 1000
         {
-            self.restart_requested.store(false, Ordering::Release);
+            self.finish_suppressor_request(rt_error, false);
             return None;
         }
         if suppressor_fault && self.rebuild_noise_suppressor() {
-            self.restart_requested.store(false, Ordering::Release);
-            // Handled, unless a newer error was stored during the rebuild.
-            let _ = self.rt_error_code.compare_exchange(
-                rt_error as u32,
-                RtErrorCode::None as u32,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            );
+            self.finish_suppressor_request(rt_error, true);
             if let Ok(mut state) = self.recovery_state.lock() {
                 state.last_error = None;
-                state.last_reason =
-                    Some(format!("{}; suppressor engine rebuilt", rt_error.as_str()));
+                if !state.reason_pending {
+                    state.last_reason =
+                        Some(format!("{}; suppressor engine rebuilt", rt_error.as_str()));
+                }
                 state.last_suppressor_rebuild_us = now;
             }
             return Some(true);

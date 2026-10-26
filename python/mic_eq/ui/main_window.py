@@ -3079,7 +3079,7 @@ class MainWindow(QMainWindow):
     def _audio_stop_failed(self, outcome: Any) -> None:
         if isinstance(outcome, Exception) and not self._shut_down:
             logger.error("Stopping audio after a failed configuration failed", exc_info=outcome)
-            self.status_message.showMessage(f"Stopping audio failed: {outcome}; restart AudioForge", 7000)
+            self.status_message.showMessage(f"Stopping audio failed: {outcome}; restart AudioForge")
 
     def _on_auto_eq_clicked(self):
         """Open Auto-EQ calibration dialog."""
@@ -4408,7 +4408,7 @@ class MainWindow(QMainWindow):
             self.set_temporary_output_mute(True, "configuration")
             if self.__dict__.get("_output_mute_error") and self.processor.is_running():
                 self._stop_audio_on_worker()
-                raise RuntimeError("Audio stopped because configuration mute failed")
+                raise RuntimeError("Audio is muted and stopping because configuration mute failed")
             try:
                 self._write_processing_configuration(candidate)
                 if processing_mode is not None:
@@ -4436,13 +4436,13 @@ class MainWindow(QMainWindow):
                     release_mute = False
                     # Before the stop is asked for: its failure message must be the one left showing.
                     self.status_message.showMessage(
-                        "Audio stopped and muted: configuration restoration failed",
+                        "Audio muted and stopping: configuration restoration failed",
                         7000,
                     )
                     self._stop_audio_on_worker()
                     raise RuntimeError(
                         f"Configuration failed ({error}); restoration failed ({restore_error}). "
-                        "Audio is stopped and muted."
+                        "Audio is muted and stopping."
                     ) from restore_error
                 raise RuntimeError(f"Configuration was not applied; previous sound restored: {error}") from error
         finally:

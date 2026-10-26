@@ -406,7 +406,7 @@ run with `python/tools/bench_report.py` and summarised by `python/tools/bench_st
 `voice-setup-bench-2026-10-report.json`, which reads `measured`: the maintainer decides. For the first question the TV,
 music and babble mixes were also built at 6, 14, 18 and 22 dB (12 more mixes from the same recipes and seeds, not
 committed), because at their own SNR each also has a weak speech-to-noise ratio, which hides what the noise recording
-does. The runs were made on an uncommitted tree, so the report's `git_revision` is null; `bench_report.py` records the revision when the tree is clean. Per-mix rows, the five full runs and the de-esser patch are in ignored
+does. The runs were made on an uncommitted tree, so the report's `git_revision` is null; `bench_report.py` now records the revision on every run and sets `git_dirty` when the tree has edits. Per-mix rows, the five full runs and the de-esser patch are in ignored
 `models/evaluation-details/voice-setup-bench-2026-10/`.
 
 ### Questionable room-noise recording

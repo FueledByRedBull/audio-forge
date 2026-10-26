@@ -374,6 +374,25 @@ fn the_function_scan_matches_the_owning_type_not_just_the_name() {
     assert_functions_rt_clean("sample", &source, &[("First::new", SETUP)]);
 }
 
+/// A `#[cfg(test)]` on a field or statement blanks up to the next `{`, which
+/// can swallow a whole impl; the loop's worker calls must stay scanned.
+#[cfg(feature = "deepfilter")]
+#[test]
+fn the_function_scan_reaches_the_deepfilter_worker_link() {
+    let code = without_test_items(code_only(include_str!("dsp/deepfilter_ffi/worker.rs")));
+    let names: Vec<String> = functions(&code).into_iter().map(|(name, _)| name).collect();
+    for needed in [
+        "WorkerLink::offer",
+        "WorkerLink::late_frames",
+        "WorkerLink::take_head",
+    ] {
+        assert!(
+            names.iter().any(|name| name == needed),
+            "{needed} not scanned: {names:?}"
+        );
+    }
+}
+
 /// Setup, validation and offline code in the scanned sources, by function
 /// name (all functions of that name in the file), with why the loop never
 /// reaches it.

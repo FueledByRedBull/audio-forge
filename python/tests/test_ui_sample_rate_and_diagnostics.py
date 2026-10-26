@@ -399,7 +399,6 @@ class _StoppedRecoveryProcessor(_MeterProcessor):
 def _recovery_setup(window, processor=None):
     """Run recovery and diagnostics against a processor that reports healthy telemetry."""
     _use_processor(window, processor or _MeterProcessor())
-    window._engine.threaded = False  # the fake processor answers at once
     window._processing = True
 
 

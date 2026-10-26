@@ -290,6 +290,7 @@ def test_the_compression_aware_reading_judges_compression_for_what_it_does_beyon
     ctx = bm.make_context(built_mix("room-t02"))
     current = bm.current_settings(False)
     arms = bm.compressor_arms(current, GOOD_COMPRESSOR, ctx, False)
+    assert tuple(arms) == bm.COMPRESSOR_ARMS
     plain, aware = bm.measure_settings(current, ctx), bm.fair_settings_readings(current, ctx, False)
 
     # Read plain, a good compressor lifts the pauses and the tail, and taking the compressor away fails the onset

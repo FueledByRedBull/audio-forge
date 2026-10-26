@@ -28,6 +28,7 @@ def _engine():
     running = []
     engine = Mock()
     engine.is_running.side_effect = lambda: bool(running)
+    engine.is_recovery_requested.return_value = False
     engine.start.side_effect = lambda *_args, **_kwargs: running.append(True) or "started"
     engine.stop.side_effect = running.clear
     return engine
@@ -63,7 +64,6 @@ def startup_window(qapp, monkeypatch):
     monkeypatch.setattr(main_window, "list_input_devices", lambda: devices["input"])
     monkeypatch.setattr(main_window, "list_output_devices", list_outputs)
     window = MainWindow(login_startup=True)
-    window._engine.threaded = False  # the fake engine answers at once
     window.processor = _engine()
     window._tray_icon = QSystemTrayIcon(window)
     window._tray_icon.show()
@@ -232,6 +232,7 @@ def test_quiet_start_restores_mute_before_exact_route_and_stops_on_post_start_fa
 
     processor = Mock()
     processor.is_running.side_effect = lambda: bool(running)
+    processor.is_recovery_requested.return_value = False
     processor.set_output_mute.side_effect = set_output_mute
     processor.start.side_effect = start
     processor.stop.side_effect = stop

@@ -36,6 +36,8 @@ class _SlowEngine:
         self.start_error: BaseException | None = None
         self.recovery_result: bool | None = None
         self.recovery_error: BaseException | None = None
+        self.stop_error: BaseException | None = None
+        self.restart_requested = False
 
     def __getattr__(self, name: str):
         return getattr(self.native, name)
@@ -60,7 +62,13 @@ class _SlowEngine:
     def stop(self) -> None:
         self.calls.append("stop")
         self._hang()
+        if self.stop_error is not None:
+            raise self.stop_error
         self.running = False
+        self.restart_requested = False  # the native stop takes the pending request with it
+
+    def is_recovery_requested(self) -> bool:
+        return self.restart_requested
 
     def service_recovery(self):
         self.calls.append("service_recovery")
@@ -97,6 +105,7 @@ def run_loop_for(qapp, seconds: float) -> None:
 @pytest.fixture
 def engine_window(isolated_main_window, monkeypatch):
     window: Any = isolated_main_window
+    window._engine.threaded = True
     window.meter_timer.stop()
     window.diagnostics_timer.stop()
     engine = _SlowEngine(window.processor)
@@ -575,3 +584,94 @@ def test_a_start_click_during_a_recovery_poll_waits_for_its_answer(
     assert engine.lifecycle() == expected
     assert engine.running and not shown
 
+
+
+@pytest.mark.parametrize("synchronous", [False, True])
+def test_stop_cancels_a_restart_that_is_waiting_to_retry(engine_window, qapp, synchronous):
+    window, engine = engine_window
+    assert not window._prepare_stop() and not window.stop_btn_action.isEnabled()
+    engine.restart_requested = True  # a failed restart: the streams are closed, the retry waits
+
+    window._sync_processing_controls()
+    assert window.stop_btn_action.isEnabled()
+
+    if synchronous:
+        window._stop_processing()
+    else:
+        window.stop_btn_action.trigger()
+        wait_until(qapp, lambda: window._engine_busy is None)
+
+    assert engine.lifecycle() == ["stop"] and not engine.restart_requested
+    assert window.status_message.text == "Processing stopped"
+    assert not window.stop_btn_action.isEnabled()
+
+
+def test_a_stop_that_fails_with_any_error_is_reported(engine_window, qapp, monkeypatch):
+    window, engine = engine_window
+    window._start_processing()
+    engine.stop_error = OSError("device lost")
+    shown: list[str] = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda _parent, _title, text: shown.append(text))
+
+    window.stop_btn_action.trigger()
+    wait_until(qapp, lambda: bool(shown))
+    engine.stop_error = None  # the fixture's teardown stops it for real
+
+    assert "device lost" in shown[0] and window._engine_busy is None
+
+
+_CHAIN_STATES = [
+    "limiter_state", "deesser_state", "compressor_state",
+    "gate_state", "eq_state", "noise_suppression_state",
+]
+
+
+@pytest.mark.parametrize("state_name", _CHAIN_STATES)
+def test_a_failed_rollback_stops_the_audio_behind_the_call_that_holds_the_engine(
+    engine_window, qapp, monkeypatch, state_name
+):
+    window, engine = engine_window
+    window._start_processing()
+    engine.calls.clear()
+    engine.release.clear()
+    engine.entered.clear()
+    window._service_stream_recovery()  # a recovery on the worker holds the streams
+    assert engine.entered.wait(2.0)
+    state = getattr(window, state_name)
+
+    def refuse(*_args, **_kwargs):
+        raise RuntimeError("write refused")
+
+    monkeypatch.setattr(state, "_write", refuse)
+    began = time.monotonic()
+    with pytest.raises(RuntimeError, match="previous settings also failed"):
+        state.set_settings({"enabled": not state.get_settings()["enabled"]})
+    assert time.monotonic() - began < 1.0, "the stop waited for the engine on the GUI thread"
+    assert engine.lifecycle() == ["service_recovery"]
+
+    engine.release.set()
+    wait_until(qapp, lambda: engine.lifecycle() == ["service_recovery", "stop"])
+    window._engine.wait()
+    assert not engine.running
+
+
+def test_a_failed_configuration_restore_stops_the_audio_on_the_worker_and_says_so_if_that_fails(
+    engine_window, qapp, monkeypatch
+):
+    window, engine = engine_window
+    window._start_processing()
+    engine.calls.clear()
+    engine.stop_error = RuntimeError("stop unavailable")
+
+    def refuse(_preset):
+        raise RuntimeError("configuration write unavailable")
+
+    monkeypatch.setattr(window, "_write_processing_configuration", refuse)
+    with pytest.raises(RuntimeError, match="restoration failed"):
+        window.apply_processing_configuration(window._get_current_preset())
+    wait_until(qapp, lambda: "Stopping audio failed" in window.status_message.text)
+
+    engine.stop_error = None  # the fixture's teardown stops it for real
+    assert "stop unavailable" in window.status_message.text
+    assert engine.lifecycle() == ["stop"]
+    assert "configuration" in window._temporary_mute_reasons  # the mute stays on

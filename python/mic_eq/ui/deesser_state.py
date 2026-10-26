@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict
 
 from PySide6.QtCore import QObject, Signal
@@ -26,9 +27,17 @@ class DeEsserState(QObject):
     writeFailed = Signal(str)
     recoveryFailed = Signal(str)
 
-    def __init__(self, processor, parent: QObject | None = None):
+    def __init__(
+        self,
+        processor,
+        parent: QObject | None = None,
+        *,
+        stop_audio: Callable[[], object] | None = None,
+    ):
         super().__init__(parent)
         self.processor = processor
+        # Where the app routes a failure stop off the GUI thread; alone, the processor is stopped here.
+        self._stop_audio = stop_audio
         self._settings = asdict(DeEsserSettings())
         self._applied_settings = self._settings.copy()
         self._rate_limiter = RateLimiter(interval_ms=33)
@@ -106,7 +115,7 @@ class DeEsserState(QObject):
                 )
                 self.recoveryFailed.emit(message)
                 try:
-                    self.processor.stop()
+                    (self._stop_audio or self.processor.stop)()
                 except Exception as stop_error:
                     message += f"; stopping audio also failed: {stop_error}"
                 self.writeFailed.emit(message)

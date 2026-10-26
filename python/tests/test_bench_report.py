@@ -57,7 +57,8 @@ def test_report_runs_end_to_end_and_compares_with_an_earlier_run(short_bench: Pa
                                   "decided": None, "by": None}
     assert result["build"]["vad"] == "unavailable"
     assert len(result["build"]["native_module_sha256"]) == 64
-    assert "git_revision" in result["build"] and "manifest_sha256" in result["build"]
+    assert "git_revision" in result["build"] and "git_dirty" in result["build"] and "manifest_sha256" in result["build"]
+    assert numbers.read_text(encoding="utf-8").startswith('{\n  "schema_version": 1,')  # two-space indent
     factory = entry["factory"]
     assert factory["finite"] and not factory["clipped"] and 0.0 < factory["estoi"] <= 1.0 and factory["cpu_s"] > 0.0
     voice = entry["voice_setup"]
@@ -153,7 +154,7 @@ def test_a_crash_keeps_the_mixes_that_finished(short_bench: Path, tmp_path: Path
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
-def test_git_revision_ignores_untracked_files_but_not_edits(tmp_path: Path):
+def test_git_state_names_head_and_flags_edits_to_tracked_files_only(tmp_path: Path):
     def git(*args: str) -> str:
         return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args], cwd=tmp_path,
                               capture_output=True, text=True, check=True).stdout.strip()
@@ -162,11 +163,20 @@ def test_git_revision_ignores_untracked_files_but_not_edits(tmp_path: Path):
     (tmp_path / "tracked.txt").write_text("a", encoding="utf-8")
     git("add", "tracked.txt")
     git("commit", "-q", "-m", "first")
-    # The run's partial file sits next to the report while git_revision reads the tree.
+    head = git("rev-parse", "HEAD")
+    # The run's partial file sits next to the report while git_state reads the tree.
     (tmp_path / "bench.json.partial.jsonl").write_text("{}", encoding="utf-8")
-    assert bench_report.git_revision(tmp_path) == git("rev-parse", "HEAD")
+    assert bench_report.git_state(tmp_path) == (head, False)
     (tmp_path / "tracked.txt").write_text("b", encoding="utf-8")
-    assert bench_report.git_revision(tmp_path) is None
+    assert bench_report.git_state(tmp_path) == (head, True)  # still names the commit it was based on
+
+
+def test_the_report_names_the_commit_and_says_when_the_code_was_edited():
+    head = "c" * 40
+
+    assert bench_report._git_text({"git_revision": head, "git_dirty": False}) == f"`{head}`"
+    assert bench_report._git_text({"git_revision": head, "git_dirty": True}) == f"`{head}` plus uncommitted changes"
+    assert bench_report._git_text({"git_revision": None, "git_dirty": False}) == "not recorded"
 
 
 def test_the_snr_sweep_adds_each_distractor_at_the_given_levels_and_nothing_else():

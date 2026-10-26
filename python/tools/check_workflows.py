@@ -460,6 +460,11 @@ def _active_steps(document: dict[str, Any]) -> list[dict[str, Any]]:
     return active
 
 
+def _job_steps(job_id: str, job: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return one job's enabled, blocking workflow steps."""
+    return _active_steps({"jobs": {job_id: job}})
+
+
 def _active_run_lines(document: dict[str, Any]) -> list[str]:
     """Return executable run lines after excluding disabled/non-blocking jobs."""
     return [
@@ -488,28 +493,18 @@ def _active_run_source(document: dict[str, Any]) -> str:
 
 def _active_run_has_marker(lines: list[str], marker: str) -> bool:
     """Match required commands as executable tokens, rather than printed text."""
-    if marker.startswith("cargo "):
-        command = marker.removeprefix("cargo ")
-        return any(
-            re.search(
-                # A regular expression: its operator runs are not obfuscated code.
-                rf"(?i)(?:^\s*|[;&|]\s*)(?:&\s*)?(?:[^\s]+[/\\])?cargo(?:\.exe)?\s+{re.escape(command)}(?:\s|$)",  # nosemgrep: generic-obfuscation-operators
-                line,
+    for program in ("cargo", "gh"):
+        if marker.startswith(f"{program} "):
+            command = marker.removeprefix(f"{program} ")
+            return any(
+                re.search(
+                    # A regular expression: its operator runs are not obfuscated code.
+                    rf"(?i)(?:^\s*|[;&|]\s*)(?:&\s*)?(?:[^\s]+[/\\])?{program}(?:\.exe)?\s+{re.escape(command)}(?:\s|$)",  # nosemgrep: generic-obfuscation-operators
+                    line,
+                )
+                is not None
+                for line in lines
             )
-            is not None
-            for line in lines
-        )
-    if marker.startswith("gh "):
-        command = marker.removeprefix("gh ")
-        return any(
-            re.search(
-                # A regular expression: its operator runs are not obfuscated code.
-                rf"(?i)(?:^\s*|[;&|]\s*)(?:&\s*)?(?:[^\s]+[/\\])?gh(?:\.exe)?\s+{re.escape(command)}(?:\s|$)",  # nosemgrep: generic-obfuscation-operators
-                line,
-            )
-            is not None
-            for line in lines
-        )
     if marker.startswith("pip_audit "):
         return any(
             re.search(
@@ -699,7 +694,7 @@ def _check_step_sequences(
         if not isinstance(job, dict):
             errors.append(f"{name}: required job {job_id} is missing")
             continue
-        steps = _active_steps({"jobs": {job_id: job}})
+        steps = _job_steps(job_id, job)
         cursor = -1
         for needles in step_specs:
             selectors = [
@@ -791,7 +786,7 @@ def _check_promotion_jobs(name: str, document: dict[str, Any], errors: list[str]
             for command in PROMOTE_PUBLISH_ONLY_COMMANDS
             if _active_run_has_marker(lines, command)
         )
-        steps = _active_steps({"jobs": {job_id: job}})
+        steps = _job_steps(job_id, job)
         staged = next(
             (
                 index
@@ -1054,7 +1049,7 @@ def _check_release_jobs(document: dict[str, Any], errors: list[str]) -> None:
 
     def job_steps(job_name: str) -> list[dict[str, Any]]:
         job = jobs.get(job_name)
-        return _active_steps({"jobs": {job_name: job}}) if isinstance(job, dict) else []
+        return _job_steps(job_name, job) if isinstance(job, dict) else []
 
     def index(steps: list[dict[str, Any]], predicate: Any) -> int:
         return next((i for i, step in enumerate(steps) if predicate(step)), -1)

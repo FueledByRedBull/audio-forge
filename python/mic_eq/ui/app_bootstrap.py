@@ -437,7 +437,7 @@ def _run_qt_app(
     enable_qt_log: Callable[[], None],
 ) -> int:
     """Create the app and event loop, optionally running a startup smoke test."""
-    configure_app_logging()
+    log_file = configure_app_logging()
     configure_windows_app_id()
 
     login_startup = not smoke_test and LOGIN_STARTUP_ARGUMENT in sys.argv
@@ -506,7 +506,7 @@ def _run_qt_app(
                 None,
                 "AudioForge Could Not Start",
                 "AudioForge hit an error while starting and could not open. "
-                f"Details are in the log file:\n\n{get_log_file()}",
+                f"Details are in the log file:\n\n{log_file}",
             )
         raise
 

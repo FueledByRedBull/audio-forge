@@ -247,6 +247,11 @@ def get_config_file() -> Path:
     return _config_dir() / "config.json"
 
 
+def get_log_dir() -> Path:
+    """Get the log folder beside the config; it is not created."""
+    return _config_base_dir() / APPDATA_DIR_NAME / "logs"
+
+
 @dataclass(slots=True)
 class DeviceIdentity:
     """Persisted audio device identity used by the UI/config layer."""
@@ -443,6 +448,7 @@ __all__ = [
     "build_device_route_key",
     "coerce_device_identity",
     "get_config_file",
+    "get_log_dir",
     "get_preset_imports_dir",
     "get_presets_dir",
     "legacy_latency_profile_key",

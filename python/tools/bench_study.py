@@ -36,13 +36,12 @@ from typing import Any
 import numpy as np
 
 import bench_metrics as bm
-from evaluation_decision import decision_block
+from evaluation_decision import measured_decision
 
 SCHEMA_VERSION = 1
 # Margins of the retired de-esser ablation rule (0.1 dB, 0.002 ESTOI), used as a yardstick for "no change".
 MARGINS = {"estoi": 0.002, "si_sdr": 0.1, "tone_error_db": 0.1, "sibilant_loss_db": 0.1, "deep_pause_db": 0.1,
            "tail_db": 0.1, "onset_db": 0.1, "pause_db": 0.1}
-ARMS = ("step", "off", "squash")
 LIMITATIONS = (
     "Fixed public bench set: two speakers, synthetic and public-recording noise, one realization per mix. Nothing is "
     "held out, and the set can be overfitted; the numbers say what changed on it, not what a stranger's microphone does.",
@@ -67,14 +66,10 @@ def _rounded(value: Any) -> float | None:
     return round(float(value), 4) if isinstance(value, (int, float)) and np.isfinite(value) else None
 
 
-def _ends(vs: dict[str, Any]) -> str | None:
-    return "final" if vs.get("final") else "proposal" if vs.get("proposal") else None
-
-
 def setup_row(entry: dict[str, Any]) -> dict[str, Any]:
     """What Voice Setup did with a mix and how the setup the user ends with compares with the current settings."""
     vs, current = entry["voice_setup"], entry["factory"]
-    which = _ends(vs)
+    which = bm.ended_with(vs)
     row: dict[str, Any] = {"outcome": vs["outcome"], "veto": vs["veto"], "tuner": vs.get("tuner"), "steps": vs["steps"]}
     if which:
         readings = vs[which]
@@ -128,7 +123,7 @@ def noise_reference_study(before: dict[str, Any], after: dict[str, Any]) -> dict
 def compressor_study(report: dict[str, Any]) -> dict[str, Any]:
     mixes = [(k, e) for k, e in report["mixes"].items() if (e.get("voice_setup") or {}).get("compressor_step")]
     out: dict[str, Any] = {"mixes": len(mixes)}
-    for arm in ARMS:
+    for arm in bm.COMPRESSOR_ARMS:
         failing = {"plain": Counter(), "aware": Counter()}
         mixes_failing = {"plain": 0, "aware": 0}
         for _, entry in mixes:
@@ -180,13 +175,16 @@ def deesser_study(control: dict[str, Any], variant: dict[str, Any]) -> dict[str,
             "measurable_change": bool(beyond or outcome_changes)}
 
 
-def build_report(before: dict[str, Any], after: dict[str, Any], deesser: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def build_report(
+    before: dict[str, Any], after: dict[str, Any], deesser: dict[str, dict[str, Any]]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """The evaluation report and the per-mix rows of the noise-reference study, which stay out of it."""
     study = noise_reference_study(before, after)
     details_rows = study.pop("rows")
     report = {
         "schema_version": SCHEMA_VERSION,
         "title": "Voice Setup on the fixed bench set: the questionable room-noise reference, the compressor clauses, the de-esser confidence terms",
-        "decision": decision_block("measured", "The numbers are information; the maintainer decides."),
+        "decision": measured_decision(),
         "builds": {"before": before["build"], "after": after["build"], **{f"deesser_{n}": r["build"] for n, r in deesser.items()}},
         "bench": {"mixes": len(after["mixes"]), "sweep_mixes": sum("@" in k for k in after["mixes"])},
         "noise_reference": study,
@@ -194,8 +192,7 @@ def build_report(before: dict[str, Any], after: dict[str, Any], deesser: dict[st
         "deesser": {name: deesser_study(after, run) for name, run in deesser.items()},
         "limitations": list(LIMITATIONS),
     }
-    report["_rows"] = details_rows
-    return report
+    return report, details_rows
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -218,12 +215,11 @@ def main(argv: list[str] | None = None) -> int:
     for path, target in copies.items():
         if target.exists() and not target.samefile(path):
             raise SystemExit(f"{target} already exists; not overwriting an earlier input")
-    report = build_report(load(args.before), load(args.after), variants)
-    rows = report.pop("_rows")
-    args.output.write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8", newline="\n")
+    report, rows = build_report(load(args.before), load(args.after), variants)
+    args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8", newline="\n")
     if args.details_output:
         args.details_output.mkdir(parents=True, exist_ok=True)
-        (args.details_output / "rows.json").write_text(json.dumps(rows, indent=1) + "\n", encoding="utf-8", newline="\n")
+        (args.details_output / "rows.json").write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8", newline="\n")
         for path, target in copies.items():
             if not target.exists():
                 shutil.copy(path, target)

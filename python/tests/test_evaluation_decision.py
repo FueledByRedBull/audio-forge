@@ -106,6 +106,13 @@ def test_a_decision_block_has_exactly_four_fields():
         ed.decision_block("maybe", "Unsure.")
 
 
+def test_the_measured_decision_is_a_well_formed_block_that_leaves_the_decision_to_the_maintainer():
+    block = ed.measured_decision()
+
+    assert ed.block_errors(block) == []
+    assert block["outcome"] == "measured" and block["decided"] is None and block["by"] is None
+
+
 def test_the_hygiene_check_rejects_a_malformed_decision_block(tmp_path):
     path = tmp_path / "report.json"
     path.write_text(json.dumps({"decision": {**GOOD, "decided": "yesterday"}}), encoding="utf-8")

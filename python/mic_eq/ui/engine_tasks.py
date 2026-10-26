@@ -7,11 +7,6 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QThreadPool, Signal, Slot
 
-# The native AudioProcessor can be called from any thread (a frozen pyclass in rust-core,
-# python_api.rs), and start, stop, service_recovery and the device listings release the GIL, so the
-# window stays alive while they run. Getters and setters never wait for a start in progress.
-OFFLOAD_ENGINE_CALLS = True
-
 
 def attempt(call: Callable[[], Any]) -> Any:
     """The call's result, or the error it raised.
@@ -37,13 +32,17 @@ class EngineTasks(QObject):
     The outcome of each call (its result, or the exception it raised) goes to its callback on the
     GUI thread, which may therefore touch widgets. While ``threaded`` is false the call and its
     callback run at once, on the calling thread.
+
+    The native AudioProcessor can be called from any thread (a frozen pyclass in rust-core,
+    python_api.rs), and start, stop, service_recovery and the device listings release the GIL, so the
+    window stays alive while they run. Getters and setters never wait for a start in progress.
     """
 
     _finished = Signal(object, object)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self.threaded = OFFLOAD_ENGINE_CALLS
+        self.threaded = True
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(1)
         self._finished.connect(self._deliver)

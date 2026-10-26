@@ -4184,13 +4184,13 @@
       "version": "d375b2d8309e0935d165700c91da9de862a99c31"
     },
     {
-      "asset_sha256": "38605121768ed5c29fe933adf4edac2e2f4bbc98e53ead6838919cc7fd4ab027",
+      "asset_sha256": "849310c4176a3726b6fac9bcb39018e9523711953cd0bdd16000d6116195ab93",
       "filename": "d375b2d8309e0935d165700c91da9de862a99c31",
       "id": "runtime-df.dll",
       "kind": "runtime-asset",
       "license": "MIT option; bundled notice: licenses/DeepFilterNet-LICENSE.txt",
       "name": "df.dll",
-      "sha256": "38605121768ed5c29fe933adf4edac2e2f4bbc98e53ead6838919cc7fd4ab027",
+      "sha256": "849310c4176a3726b6fac9bcb39018e9523711953cd0bdd16000d6116195ab93",
       "source_build": true,
       "source_role": "runtime asset, not application source",
       "status": "available",
@@ -4258,19 +4258,23 @@
       "files": [
         {
           "path": "build_deepfilter.ps1",
-          "sha256": "d5de382ae958afa5c099ac05d7110b95dcc2f952e9f6fbbbc4fc07d66cdf7d65"
+          "sha256": "4fcdc7a4b4b77bb856be0431347a4d58d56d8e70e5f93390444cca7eb691bea7"
         },
         {
           "path": "build-support/deepfilter/Cargo.toml",
-          "sha256": "a4ff7a3e754fd0029f1e7e515d50eb23b0630f1a305b368eda91aa7f4b0291af"
+          "sha256": "f756ded61c98dc8b66a46f48569210070b9f983ef68a62a2d6b368ec1f2bc5c3"
         },
         {
           "path": "build-support/deepfilter/Cargo.lock",
           "sha256": "35591d5e442d11e1208add6960ef7c5190454e3632fcde10d8a1d1b78136224f"
         },
         {
+          "path": "build-support/deepfilter/capi.rs",
+          "sha256": "0dd5e27ccd0af28ee719ebe84674fb2a9e145ca58394ca0261705dd14a0f4602"
+        },
+        {
           "path": "build-support/deepfilter/provenance.json",
-          "sha256": "adec0fbd46cc0bb80fd818a1762213fabf5a08a739e64560751c66a9107b8624"
+          "sha256": "6565e0b19a5cbf852689eba9b7d2c85b59d9b4cec12da0515e35a27143d04cb1"
         }
       ],
       "id": "deepfilter-build",

@@ -214,14 +214,28 @@ pub(crate) mod test_signal {
 }
 
 /// Source scans of the realtime code: the `RT_REGION_START: name` ..
-/// `RT_REGION_END: name` regions and the helpers cut out of them by name.
+/// `RT_REGION_END: name` regions, the helpers cut out of them by name, and the
+/// function bodies of the DSP block sources the loop calls.
+///
+/// `.push(` is not listed: the fixed buffers and rings the loop uses push
+/// without allocating, so only the counting-allocator tests can tell a `Vec`
+/// push apart.
 #[cfg(test)]
 pub(crate) mod rt_scan {
     /// Blocking, allocating, freeing, formatting and logging APIs the RT path
     /// must not reach.
-    const FORBIDDEN: [&str; 16] = [
+    const FORBIDDEN: [&str; 41] = [
         ".lock()",
         "try_lock",
+        "Mutex",
+        "RwLock",
+        ".read()",
+        ".write()",
+        ".recv(",
+        ".send(",
+        ".join(",
+        "thread::spawn",
+        "std::fs",
         ".reserve(",
         ".resize(",
         ".to_vec(",
@@ -235,10 +249,168 @@ pub(crate) mod rt_scan {
         "vec!",
         "Vec::",
         "Box::new",
+        "Arc::new",
+        "Rc::new",
         "String::",
+        ".to_string(",
+        ".to_owned(",
+        ".push_str(",
+        ".collect",
+        ".extend(",
+        ".insert(",
+        ".entry(",
+        ".clone()",
+        ".into_boxed",
+        ".sort(",
+        ".sort_by(",
+        ".sort_by_key(",
+        "HashMap",
+        "VecDeque",
     ];
 
+    /// A marked region shorter than this has been emptied or mis-marked.
+    const MIN_REGION_LINES: usize = 10;
+
     const START: &str = "RT_REGION_START: ";
+
+    /// `source` with comments and the insides of string and char literals
+    /// blanked, so scans and brace matching see code only. Raw strings and
+    /// nested block comments are not handled; the scanned sources use neither.
+    fn code_only(source: &str) -> String {
+        let chars: Vec<char> = source.chars().collect();
+        let mut out = String::with_capacity(source.len());
+        let mut i = 0;
+        while i < chars.len() {
+            let blank_to = match (chars[i], chars.get(i + 1)) {
+                ('/', Some('/')) => chars[i..]
+                    .iter()
+                    .position(|&c| c == '\n')
+                    .map_or(chars.len(), |n| i + n),
+                ('/', Some('*')) => (i + 2..chars.len().saturating_sub(1))
+                    .find(|&j| chars[j] == '*' && chars[j + 1] == '/')
+                    .map_or(chars.len(), |j| j + 2),
+                ('"', _) => {
+                    let mut j = i + 1;
+                    while j < chars.len() && chars[j] != '"' {
+                        j += if chars[j] == '\\' { 2 } else { 1 };
+                    }
+                    (j + 1).min(chars.len())
+                }
+                ('\'', Some('\\')) => (i + 3..chars.len())
+                    .find(|&j| chars[j] == '\'')
+                    .map_or(chars.len(), |j| j + 1),
+                ('\'', Some(_)) if chars.get(i + 2) == Some(&'\'') => i + 3,
+                _ => {
+                    out.push(chars[i]);
+                    i += 1;
+                    continue;
+                }
+            };
+            out.extend(
+                chars[i..blank_to]
+                    .iter()
+                    .map(|&c| if c == '\n' { c } else { ' ' }),
+            );
+            i = blank_to;
+        }
+        assert!(out.is_ascii(), "non-ASCII outside comments and literals");
+        out
+    }
+
+    /// Index of the `}` closing the `{` at `open`.
+    fn matching_brace(code: &str, open: usize) -> usize {
+        let mut depth = 0_usize;
+        for (index, byte) in code.bytes().enumerate().skip(open) {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return index;
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced braces");
+    }
+
+    /// Blank every `#[cfg(test)]` item: up to the first `;`, or through the
+    /// first `{ .. }` block, after the attribute.
+    fn without_test_items(mut code: String) -> String {
+        const ATTRIBUTE: &str = "#[cfg(test)]";
+        while let Some(start) = code.find(ATTRIBUTE) {
+            let after = start + ATTRIBUTE.len();
+            let end = match code[after..].find(['{', ';']) {
+                Some(offset) if code.as_bytes()[after + offset] == b'{' => {
+                    matching_brace(&code, after + offset)
+                }
+                Some(offset) => after + offset,
+                None => code.len() - 1,
+            };
+            code.replace_range(start..=end, &" ".repeat(end + 1 - start));
+        }
+        code
+    }
+
+    /// Name and body (`{ .. }`) of every function in `code` that has one.
+    fn functions(code: &str) -> Vec<(&str, &str)> {
+        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        let mut found = Vec::new();
+        for (at, _) in code.match_indices("fn ") {
+            if code[..at].chars().next_back().is_some_and(is_word) {
+                continue;
+            }
+            let name_start = at + "fn ".len();
+            let name_end = code[name_start..]
+                .find(|c: char| !is_word(c))
+                .map_or(code.len(), |n| name_start + n);
+            let mut depth = 0_i32;
+            for (offset, byte) in code.bytes().enumerate().skip(name_end) {
+                match byte {
+                    b'(' | b'[' => depth += 1,
+                    b')' | b']' => depth -= 1,
+                    b'{' if depth == 0 => {
+                        let close = matching_brace(code, offset);
+                        found.push((&code[name_start..name_end], &code[offset..=close]));
+                        break;
+                    }
+                    b';' if depth == 0 => break,
+                    _ => {}
+                }
+            }
+        }
+        found
+    }
+
+    /// Check every function body of `source` outside `#[cfg(test)]` items.
+    /// `non_rt` lists the functions that never run on a callback or in the DSP
+    /// loop (setup, parameter validation, offline analysis), each with the
+    /// reason; an entry that no longer needs to be listed fails too.
+    pub(crate) fn assert_functions_rt_clean(file: &str, source: &str, non_rt: &[(&str, &str)]) {
+        let code = without_test_items(code_only(source));
+        let bodies = functions(&code);
+        assert!(
+            bodies.len() >= 3,
+            "{file}: found {} functions",
+            bodies.len()
+        );
+        let mut needed = vec![false; non_rt.len()];
+        for (name, body) in bodies {
+            let Some(pattern) = FORBIDDEN.iter().find(|pattern| body.contains(**pattern)) else {
+                continue;
+            };
+            let entry = non_rt.iter().position(|(listed, _)| *listed == name);
+            let entry = entry.unwrap_or_else(|| {
+                panic!("{file}: fn {name} contains forbidden RT pattern {pattern}; remove it, or list the function as non-RT with a reason")
+            });
+            needed[entry] = true;
+        }
+        for ((name, reason), needed) in non_rt.iter().zip(needed) {
+            assert!(!reason.is_empty(), "{file}: {name} needs a reason");
+            assert!(needed, "{file}: {name} no longer needs its non-RT entry");
+        }
+    }
 
     /// The body of the region `name` (between its marker lines).
     pub(crate) fn marked_region<'a>(source: &'a str, name: &str) -> &'a str {
@@ -258,9 +430,10 @@ pub(crate) mod rt_scan {
     }
 
     pub(crate) fn assert_rt_clean(label: &str, text: &str) {
+        let code = code_only(text);
         for pattern in FORBIDDEN {
             assert!(
-                !text.contains(pattern),
+                !code.contains(pattern),
                 "{label} contains forbidden RT pattern {pattern}"
             );
         }
@@ -278,9 +451,157 @@ pub(crate) mod rt_scan {
             })
             .collect();
         for name in &names {
-            assert_rt_clean(&format!("{file}:{name}"), marked_region(source, name));
+            let region = marked_region(source, name);
+            let lines = code_only(region)
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count();
+            assert!(
+                lines >= MIN_REGION_LINES,
+                "{file}:{name} has only {lines} lines of code"
+            );
+            assert_rt_clean(&format!("{file}:{name}"), region);
         }
         names
+    }
+
+    const SCANNED: &str = r#"
+        // format! in a comment, and "vec![]" in a string, are not code.
+        fn quiet(buffer: &mut [f32]) -> &'static str { buffer[0] = 'x' as u8 as f32; "vec![]" }
+        fn also_quiet<const N: usize>(a: [f32; N]) -> f32 where f32: Copy { a[0] }
+        fn third() {}
+        #[cfg(test)]
+        mod tests { fn fixture() { let _ = vec![1]; } }
+    "#;
+
+    #[test]
+    fn the_function_scan_ignores_comments_strings_and_test_items() {
+        assert_functions_rt_clean("sample", SCANNED, &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "fn offender contains forbidden RT pattern .to_vec(")]
+    fn the_function_scan_flags_an_allocating_function() {
+        let source = format!("{SCANNED} fn offender(x: &[f32]) -> usize {{ x.to_vec().len() }}");
+        assert_functions_rt_clean("sample", &source, &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "offender no longer needs its non-RT entry")]
+    fn the_function_scan_rejects_a_stale_non_rt_entry() {
+        assert_functions_rt_clean("sample", SCANNED, &[("offender", SETUP)]);
+    }
+
+    /// Setup, validation and offline code in the scanned sources, by function
+    /// name (all functions of that name in the file), with why the loop never
+    /// reaches it.
+    const SETUP: &str = "built once on the control thread before the stream starts";
+    const VALIDATION: &str = "setter validation; the loop applies snapshots that already passed it";
+    const OFFLINE: &str = "offline analysis or UI curve, never called from the loop";
+
+    #[test]
+    fn dsp_block_sources_hold_no_blocking_or_allocating_apis() {
+        for (file, source, non_rt) in [
+            ("dsp/biquad.rs", include_str!("dsp/biquad.rs"), &[][..]),
+            ("dsp/compressor.rs", include_str!("dsp/compressor.rs"), &[][..]),
+            (
+                "dsp/compressor/makeup.rs",
+                include_str!("dsp/compressor/makeup.rs"),
+                &[][..],
+            ),
+            ("dsp/deesser.rs", include_str!("dsp/deesser.rs"), &[][..]),
+            (
+                "dsp/eq.rs",
+                include_str!("dsp/eq.rs"),
+                &[
+                    ("validate", VALIDATION),
+                    ("eq_max_frequency_hz", VALIDATION),
+                    ("validate_eq_frequency_hz", VALIDATION),
+                    ("validate_eq_gain_db", VALIDATION),
+                    ("validate_eq_q", VALIDATION),
+                    ("validate_eq_slope", VALIDATION),
+                    ("magnitude_response_db", OFFLINE),
+                ][..],
+            ),
+            ("dsp/gate.rs", include_str!("dsp/gate.rs"), &[][..]),
+            #[cfg(feature = "deepfilter")]
+            (
+                "dsp/deepfilter_ffi.rs",
+                include_str!("dsp/deepfilter_ffi.rs"),
+                &[
+                    (
+                        "try_new",
+                        "runtime config validation; builds its error text on rejection",
+                    ),
+                    ("app_owned_paths", SETUP),
+                    ("canonical_app_owned_path", SETUP),
+                    ("configure_app_owned_paths", SETUP),
+                    ("configured_app_owned_paths", SETUP),
+                    ("find_model_path", SETUP),
+                    ("trusted_library_candidates", SETUP),
+                    ("load_symbols_from_path", SETUP),
+                    ("try_load", SETUP),
+                    ("new", SETUP),
+                    ("open", SETUP),
+                    ("new_with_config", SETUP),
+                    ("from_library", SETUP),
+                    ("default", SETUP),
+                ][..],
+            ),
+            (
+                "dsp/limiter.rs",
+                include_str!("dsp/limiter.rs"),
+                &[
+                    ("new_with_lookahead_ms", SETUP),
+                    (
+                        "set_lookahead_ms",
+                        "resizes the delay line and is documented as not realtime-safe; only the Python setup calls it",
+                    ),
+                ][..],
+            ),
+            (
+                "dsp/loudness.rs",
+                include_str!("dsp/loudness.rs"),
+                &[("new", SETUP), ("integrated_loudness_lufs", OFFLINE)][..],
+            ),
+            (
+                "dsp/noise_suppressor.rs",
+                include_str!("dsp/noise_suppressor.rs"),
+                &[(
+                    "new_controlled_noise_suppression_engine",
+                    "engine factory; engines are built on the control thread and queued to the loop",
+                )][..],
+            ),
+            (
+                "dsp/rnnoise.rs",
+                include_str!("dsp/rnnoise.rs"),
+                &[("default", SETUP)][..],
+            ),
+            (
+                "dsp/true_peak.rs",
+                include_str!("dsp/true_peak.rs"),
+                &[("generate_fir", SETUP)][..],
+            ),
+            ("dsp/util.rs", include_str!("dsp/util.rs"), &[][..]),
+            ("audio/rt.rs", include_str!("audio/rt.rs"), &[("new", SETUP)][..]),
+            (
+                "audio/buffer.rs",
+                include_str!("audio/buffer.rs"),
+                &[("split", SETUP)][..],
+            ),
+            (
+                "audio/processor/output_writer.rs",
+                include_str!("audio/processor/output_writer.rs"),
+                &[][..],
+            ),
+            (
+                "audio/processor/routing.rs",
+                include_str!("audio/processor/routing.rs"),
+                &[("static_input_pre_filter_response_db", OFFLINE)][..],
+            ),
+        ] {
+            assert_functions_rt_clean(file, source, non_rt);
+        }
     }
 }
 
@@ -570,7 +891,9 @@ fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Device enumeration
     m.add_class::<audio::DeviceInfo>()?;
+    m.add_class::<audio::InputFormats>()?;
     m.add_function(wrap_pyfunction!(audio::list_input_devices, m)?)?;
+    m.add_function(wrap_pyfunction!(audio::list_input_device_formats, m)?)?;
     m.add_function(wrap_pyfunction!(audio::list_output_devices, m)?)?;
     m.add_function(wrap_pyfunction!(
         audio::processor::simulate_auto_eq_chain,

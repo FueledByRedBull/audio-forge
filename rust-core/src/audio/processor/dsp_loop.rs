@@ -416,7 +416,7 @@ mod startup_tests {
         assert!(prime.contains("prod.write(&silence)"));
         assert!(!prime.contains("last_output_write_time") && !prime.contains("output_primed"));
         let recovery = include_str!("recovery.rs");
-        assert!(recovery.contains("self.start_with_device_ordinals_and_ids("));
+        assert!(recovery.contains("processor.start_with_device_ordinals_and_ids("));
     }
 
     #[test]
@@ -1181,6 +1181,8 @@ impl AudioProcessor {
             const SUPPRESSOR_STARVATION_MS: u64 = 400;
             const NON_FINITE_REBUILD_THRESHOLD: u32 = 3;
             const NON_FINITE_REBUILD_WINDOW_MS: u64 = 2000;
+            // Starvation is measured from the last suppressor output or from the
+            // last time the suppressor was not being fed (disabled, Bypass, Raw).
             let mut last_suppressor_output = Instant::now();
             let mut non_finite_window_started_at: Option<Instant> = None;
             let mut non_finite_window_count: u32 = 0;
@@ -1392,7 +1394,7 @@ impl AudioProcessor {
                     // filter state of the de-esser and EQs, muting the stream for good,
                     // and in the compressor's envelopes, which then never reduce gain
                     // again. Count it, zero it and clear those stages; the compressor
-                    // clears only its detector, because its full reset allocates. The
+                    // clears only its detector and keeps its makeup state. The
                     // limiter recovers on its own.
                     if contain_non_finite($buffer) {
                         downstream_non_finite_count.fetch_add(1, Ordering::Relaxed);
@@ -1982,6 +1984,7 @@ impl AudioProcessor {
                                 deesser_rt.reset();
                                 limiter_rt.reset();
                                 suppressor_rt.soft_reset();
+                                last_suppressor_output = Instant::now();
                                 if processing_path == ProcessingPath::Full
                                     && suppressor_enabled.load(Ordering::Acquire)
                                 {
@@ -2462,6 +2465,7 @@ impl AudioProcessor {
                                     }
                                 } else {
                                     // Suppressor disabled: clear buffer counter
+                                    last_suppressor_output = Instant::now();
                                     suppressor_buffer_len.store(0, Ordering::Relaxed);
                                     suppressor_latency_samples.store(0, Ordering::Relaxed);
                                     suppressor_successful_inference_frames

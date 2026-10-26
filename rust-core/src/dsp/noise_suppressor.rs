@@ -22,10 +22,10 @@ pub(crate) fn deepfilter_experimental_enabled() -> bool {
 pub enum NoiseModel {
     /// RNNoise: Low latency (~10ms), good quality
     RNNoise = 0,
-    /// DeepFilterNet Low Latency: Better quality than RNNoise, ~10ms latency (no lookahead)
+    /// DeepFilterNet Low Latency: Better quality than RNNoise, ~15ms latency (no lookahead, worker hand-off)
     #[cfg(feature = "deepfilter")]
     DeepFilterNetLL = 1,
-    /// DeepFilterNet Standard: stronger cleanup, ~30ms latency (2-frame lookahead)
+    /// DeepFilterNet Standard: stronger cleanup, ~35ms latency (2-frame lookahead, worker hand-off)
     #[cfg(feature = "deepfilter")]
     DeepFilterNet = 2,
 }

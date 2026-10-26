@@ -2,8 +2,8 @@ AudioForge 1.19.0 moves DeepFilterNet inference to a worker thread of its own,
 makes the audio engine the only watcher and restarter of the streams, and lets
 Voice Setup go on when the room-noise recording is questionable. The window
 shows the mute state more clearly, and a Windows sign-out or shutdown no longer
-waits on a dialog. DeepFilterNet stays on by default, and its latency labels now
-include the worker's hand-off, about 5 ms.
+waits on a dialog. DeepFilterNet stays available (RNNoise remains the default),
+and its latency labels now include the worker's hand-off, about 5 ms.
 
 **Settings format.** The settings file (`config.json`) stays at schema version 2
 and the preset format is unchanged. Presets saved by 1.19.0 are stamped 1.19.0,
@@ -55,16 +55,16 @@ AudioForge remains unsigned. Virtual audio cable setup is described in the
   unsaved-changes question or a failed save, and the setup dialogs close without
   asking. Quitting from the hidden tray runs the same shutdown as closing the
   window.
-- **Devices.** Labels start with the instance number and `(Default)`, as in
-  `[#2] (Default) Name`, so identical devices stay apart when a picker cuts off
-  the end. Saved device keys are unchanged.
+- **Devices.** Labels put the `[#n]` marker (shown only when devices share a
+  name) and `(Default)` before the name, as in `[#2] (Default) Name`, so
+  identical devices stay apart when a picker cuts off the end. Saved device keys are unchanged.
 - **Problems stay visible.** A failed save, a missing or broken startup preset
   and an unplugged saved device stay in the warning banner until resolved. The
   startup-failure dialog shows the log file in use, and the renderer failure
   screen says whether audio is still running and how to stop it. Open Presets
   Folder warns when the folder is missing.
-- **Accessibility.** Hints open on keyboard focus as well as hover and close on
-  Esc, and every control exposes its tooltip as its accessible description.
+- **Accessibility.** Every control's hint also opens on keyboard focus, and
+  every control exposes its tooltip as its accessible description.
   Control edges and switch and slider tracks keep at least 3.35:1 contrast. One
   focus ring marks every focusable control and the rail. Stage cards follow
   signal order for Tab and screen readers in every layout, and dialog buttons
@@ -110,9 +110,5 @@ Retaking the recording does not help while the sound keeps playing. It can also
 refuse a setup that would have been no worse than the settings it would
 replace. Its 35 ms latency budget compares the offline engine, not the live
 DeepFilterNet worker.
-
-The v1.15.0 audio timing exception remains: one component-event statistic was
-1.2151 ms against a 0.5 ms limit; every complete processing kernel in that study
-stayed below 10 ms.
 
 Windows 10 (1809 or later) and Windows 11, 64-bit.

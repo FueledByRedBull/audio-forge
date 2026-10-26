@@ -4,7 +4,7 @@
 
 ### Noise suppression and recovery
 
-- DeepFilterNet stays on by default and now runs its inference on a worker thread of its own, so a slow frame no longer stalls the audio path. RNNoise is unchanged.
+- DeepFilterNet and DeepFilterNet LL stay available (RNNoise remains the default model) and now run their inference on a worker thread of their own, so a slow frame no longer stalls the audio path. RNNoise is unchanged.
 - If the DeepFilterNet worker returns a bad frame, panics, exits or stops answering, audio passes through unsuppressed and the reason shows in diagnostics.
 - A corrupt DeepFilterNet model or a failing frame no longer ends the app: the bundled `df.dll` is rebuilt with panic unwinding and its exports return an error instead of aborting.
 - Each DeepFilterNet model is checked against its pinned size and SHA-256 before it loads, and non-finite input is zeroed.
@@ -38,13 +38,14 @@
 - A Windows sign-out or shutdown never waits on the unsaved-changes question or a failed save, and Voice Setup, Auto-EQ, latency calibration and the listening comparison close without asking. A cancelled sign-out leaves closing as it was.
 - Quitting from the hidden tray state runs the same shutdown as closing the window: window geometry and settings are saved and audio stops.
 - Changing one device picker saves only that picker, so the other picker's temporary fallback no longer overwrites the device the app said it would wait for.
-- Device labels start with the instance number and `(Default)`, as in `[#2] (Default) Name`, so identical devices stay apart when a picker cuts off the end. Saved device keys are unchanged.
+- Device labels put the `[#n]` marker (shown only when devices share a name) and `(Default)` before the name, as in `[#2] (Default) Name`, so identical devices stay apart when a picker cuts off the end. Saved device keys are unchanged.
 - A failed save, a missing or broken startup preset and an unplugged saved device stay in the warning banner until resolved, instead of flashing in the status line.
 - Undo and redo of a preset load restore that preset's name, file and saved state along with its settings.
 - After a failed configuration the engine stops on the engine worker, not the window thread; if that stop fails, the status bar says so until something replaces it.
 - Open Presets Folder warns when the folder is missing.
 - The startup-failure dialog shows the log file in use, and the renderer failure screen says whether audio is still running and how to stop it.
-- Hints open on keyboard focus as well as hover, Esc closes them, and every control exposes its tooltip as its accessible description.
+- Every control's hint also opens on keyboard focus, and every control exposes its tooltip as its accessible description.
+- The recovery chip reads "paused during setup" while a setup dialog is open.
 - Control edges and switch and slider tracks keep at least 3.35:1 contrast against their surfaces.
 - One focus ring marks every focusable control and the rail, and a focused rail button no longer looks hovered.
 - Stage cards follow signal order for Tab and screen readers in every layout, and dialog buttons follow their visual order.
@@ -66,7 +67,7 @@
 - Promote runs as two jobs. `verify-candidate` has a read-only token, no persisted credentials and runs everything that executes candidate code; `publish-release` alone can write, sits behind the `release` environment and re-hashes the staged files before publishing.
 - CI and Release package build `df.dll`, fetch the models and run the Rust tests with DeepFilter enabled; a skip line fails the job.
 - `package-check.yml` builds the bundle and MSI on pushes to master and on pull requests that touch packaging paths, then runs the package smoke checks. It publishes nothing.
-- Release packaging runs are grouped by tag or commit, so a run on one branch no longer cancels one on another.
+- Release packaging runs are grouped by release tag, or by commit when no tag is given, so runs for different tags no longer cancel each other.
 - `check_workflows.py` parses the workflows and checks that each gate exists, is unconditional, sits in the right job and runs in order.
 - Semgrep runs the Trail of Bits, elttam and Apiiro rule sets from clones at pinned commits.
 - The dev lock moves certifi, filelock and setuptools past their advisories, and `github/codeql-action/upload-sarif` moves to 4.39.0.

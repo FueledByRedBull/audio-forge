@@ -63,11 +63,7 @@ def test_a_recovery_service_that_fails_every_tick_is_logged_once_per_streak(
     window.processor = _BrokenProcessor(window.processor, "service_recovery")
     caplog.set_level(logging.INFO)
 
-    def tick() -> None:
-        window._service_stream_recovery(
-            diagnostics={}, input_rms=-60.0, output_rms=-60.0, output_buf=0
-        )
-
+    tick = window._service_stream_recovery
     for _ in range(5):
         tick()
     failures = [r for r in caplog.records if "recovery service failed" in r.getMessage()]

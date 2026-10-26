@@ -67,6 +67,9 @@ pub(super) fn update_backend_status_rt(
 pub(super) struct StreamRecoveryState {
     pub(super) last_error: Option<String>,
     pub(super) last_reason: Option<String>,
+    /// What `last_reason` was before the pending request replaced it, for a
+    /// request that is withdrawn without a restart.
+    pub(super) prior_reason: Option<String>,
     /// `last_reason` describes the pending restart request, so recovery must
     /// not replace it with a callback's error code.
     pub(super) reason_pending: bool,

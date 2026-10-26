@@ -645,6 +645,27 @@ def test_faulthandler_writes_next_to_the_app_log_and_leaves_no_empty_file(crash_
     assert crash_file.read_text(encoding="utf-8") == "Fatal Python error\n"
 
 
+def test_no_crash_file_is_opened_while_the_config_migration_is_pending(
+    crash_diagnostics, monkeypatch
+):
+    from mic_eq.config_parts import shared
+
+    # An open handle inside the config folder would make the migration's directory swap fail.
+    monkeypatch.setattr(shared, "migration_pending", lambda: True)
+    opened: list[str] = []
+    real_open = open
+    monkeypatch.setattr(
+        "builtins.open", lambda file, *args, **kwargs: opened.append(str(file)) or real_open(file, *args, **kwargs)
+    )
+
+    with app_bootstrap._crash_diagnostics():
+        pass
+
+    assert not any(Path(name).parent == get_log_file().parent for name in opened)
+    assert not get_log_file().with_name("crash.log").exists()
+    assert crash_diagnostics == []  # faulthandler was neither enabled nor disabled
+
+
 def test_exception_leaving_the_context_is_logged_once_and_reraised(crash_diagnostics, caplog):
     with pytest.raises(RuntimeError, match="exec failed"):
         with app_bootstrap._crash_diagnostics():

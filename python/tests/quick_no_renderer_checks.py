@@ -162,9 +162,11 @@ def _run_until_settled(qapp, window: MainWindow) -> tuple[int, dict]:
     state: dict = {}
 
     def settled() -> None:
-        # Read here: aboutToQuit, emitted as the loop ends, marks every window as quitting.
+        # Read here: aboutToQuit, emitted as the loop ends, shuts every window down.
+        tray = window._tray_icon
         state.update(
             visible=window.isVisible(), quitting=window._quitting,
+            tray_visible=tray is not None and tray.isVisible(),
             snapshot=window._interface_snapshot(),
         )
         qapp.exit(SURVIVED)
@@ -240,7 +242,7 @@ def test_a_spawn_that_fails_keeps_the_app_and_its_guard_and_shows_the_error_scre
     window = _window()
     events = _record_save_and_spawn(window, monkeypatch, spawn_error=spawn_error)
     guard, names = _guard(window, tmp_path)
-    tray = _visible_tray(window, close_to_tray=close_to_tray)
+    _visible_tray(window, close_to_tray=close_to_tray)
     window.config.mute_hotkey = "Ctrl+Alt+M"
     registered: list[str] = []
     monkeypatch.setattr(window, "_unregister_mute_hotkey", lambda: None)
@@ -250,10 +252,11 @@ def test_a_spawn_that_fails_keeps_the_app_and_its_guard_and_shows_the_error_scre
     code, state = _run_until_settled(qapp, window)
 
     assert code == SURVIVED  # nothing quit the app
-    assert events == ["closeEvent saved", "spawn"]
+    # The shown window is saved once more as the loop ends, which is what a real quit does.
+    assert events == ["closeEvent saved", "spawn", "closeEvent saved"]
     assert state["visible"] and not state["quitting"]
     assert state["snapshot"]["view"] == "error" and state["snapshot"]["classic_reason"] == "no_renderer"
-    assert tray.isVisible() and registered == ["Ctrl+Alt+M"]
+    assert state["tray_visible"] and registered == ["Ctrl+Alt+M"]
     shown = window.centralWidget().findChild(QPlainTextEdit)
     assert shown is not None and "could not restart itself with software rendering" in shown.toPlainText()
     rival = SingleInstanceCoordinator(**names)

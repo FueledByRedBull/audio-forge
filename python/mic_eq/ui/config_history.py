@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from ..config import Preset
@@ -34,6 +34,9 @@ class ConfigurationSnapshot:
     noise_reference_reliability: float = 0.0
     calibration_context_key: str | None = None
     processing_mode: str | None = None
+    # The preset the window showed with this sound. The entries of one load share it, so a later
+    # save shows through all of them; a different load is a different record.
+    preset_record: dict[str, Any] | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.processing_mode not in {None, "normal", "bypass", "raw"}:
@@ -49,6 +52,7 @@ class ConfigurationSnapshot:
         noise_reference_reliability: float = 0.0,
         calibration_context_key: str | None = None,
         processing_mode: str | None = None,
+        preset_record: dict[str, Any] | None = None,
     ) -> "ConfigurationSnapshot":
         preset = Preset.from_dict(preset.to_dict())
         payload_json = json.dumps(
@@ -60,7 +64,7 @@ class ConfigurationSnapshot:
         )
         snapshot = cls(
             payload_json, str(label), str(source),
-            noise_reference_reliability, calibration_context_key, processing_mode,
+            noise_reference_reliability, calibration_context_key, processing_mode, preset_record,
         )
         snapshot.to_preset()
         return snapshot
@@ -144,6 +148,7 @@ class BoundedConfigurationHistory:
         if current is not None and (
             current.payload_json == snapshot.payload_json
             and current.processing_mode == snapshot.processing_mode
+            and current.preset_record is snapshot.preset_record
         ):
             key, reliability = self._observed
             if snapshot.calibration_context_key != key:

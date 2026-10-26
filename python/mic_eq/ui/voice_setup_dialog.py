@@ -254,13 +254,6 @@ def _suppressor_settings(owner: Any) -> dict[str, Any] | None:
     return state.get_settings()
 
 
-def _apply_suppressor_settings(owner: Any, settings: Mapping[str, Any]) -> None:
-    state = getattr(owner, "noise_suppression_state", None)
-    if state is None:
-        raise ValueError("Suppression controls are unavailable")
-    state.set_settings(dict(settings))
-
-
 def _candidate_eq_settings_error(eq_settings: Any) -> str | None:
     if not isinstance(eq_settings, Mapping):
         return "candidate EQ settings are missing"

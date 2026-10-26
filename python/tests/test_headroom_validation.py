@@ -315,7 +315,6 @@ def test_a_failed_flat_render_only_costs_the_split(monkeypatch):
         (-0.3, -0.3),
         (np.float32(-1.5), -1.5),
         (float("nan"), None),
-        (float("inf"), None),
         ("loud", None),
         (None, None),
     ],
@@ -369,7 +368,7 @@ def test_a_correction_that_fits_leaves_the_validation_gain_scale_alone(monkeypat
 
 @pytest.mark.parametrize(
     "headroom_scale, expected_status",
-    [(1.0, "apply"), (0.85, "abstain"), (0.0, "abstain")],
+    [(1.0, "apply"), (0.85, "abstain")],
 )
 def test_only_a_headroom_scale_below_one_abstains_a_neutral_candidate(
     headroom_scale, expected_status

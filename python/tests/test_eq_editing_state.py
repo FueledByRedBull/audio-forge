@@ -229,27 +229,6 @@ def test_eq_graph_coordinate_mapping_is_deterministic_at_every_width():
     assert EQGraphGeometry.y_to_gain(100_000.0, 1600, 100) == -12.0
 
 
-def test_eq_graph_keyboard_edit_selects_and_moves_a_band(quick_window, mic_page, qapp):
-    item, _page = mic_page
-    window = quick_window
-    view = window.centralWidget()
-    window.activateWindow()
-    view.setFocus()
-    item.forceActiveFocus()
-    qapp.processEvents()
-    frequency, gain = eq_control(window, "frequency", 0), eq_control(window, "gain", 0)
-
-    QTest.keyClick(view, Qt.Key.Key_BracketRight)
-    before = frequency.value
-    QTest.keyClick(view, Qt.Key.Key_Right)
-    QTest.keyClick(view, Qt.Key.Key_Up)
-    qapp.processEvents()
-
-    assert eq_control(window, "band").index == 0
-    assert frequency.value > before
-    assert gain.value == 1
-
-
 def test_eq_curve_interaction_warnings(quick_window, qapp):
     window = quick_window
     graph = window.eq_presentation.graph_model

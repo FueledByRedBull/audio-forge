@@ -73,6 +73,7 @@ from .device_selection import (
     preferred_output_index,
     start_processor_for_route,
 )
+from .engine_tasks import EngineTasks, attempt
 from .stream_recovery import StreamRecoveryManager
 from .theme import contrast_theme_changed
 from .config_history import (
@@ -201,6 +202,8 @@ MINIMUM_WINDOW_HEIGHT = 640
 # The pages in navigation order; the shared page state and the page stack follow it.
 PAGE_NAMES = ("Mic", "Health", "Settings")
 NO_DESTINATION_WARNING = "Warning: No output device is selected. Choose one in the Output list, then press Start."
+ENGINE_CALL_WAIT_MS = 10_000
+SAVE_PROBLEM = "Settings could not be saved, so recent changes may be lost when AudioForge closes."
 
 
 # The engine reports this age until a device has made its first callback.
@@ -225,6 +228,20 @@ def _ago_text(age_ms: int | None, *, output: bool = False) -> str:
     if age_ms == NO_CALLBACK_YET:
         return "has not started playing sound yet" if output else "has not started sending sound yet"
     return f"{age_ms} ms ago"
+
+
+def _device_label(identity: DeviceIdentity, devices: list) -> str:
+    """A picker label; the pickers cut it off at the end, so the markers come before the name."""
+    ordinal = identity.name_ordinal
+    twin = f"[#{ordinal + 1}] " if ordinal is not None and sum(
+        item.name == identity.name for item in devices
+    ) > 1 else ""
+    return twin + ("(Default) " if identity.is_default else "") + identity.name
+
+
+def _list_devices() -> tuple[Any, Any]:
+    """Both device lists, or for each the exception that stopped it; the worker runs this."""
+    return attempt(list_input_devices), attempt(list_output_devices)
 
 
 def _output_muted(window) -> bool:
@@ -375,6 +392,9 @@ class MainWindow(QMainWindow):
         self._redo_action = None
         self._calibration_dialog_open = False
         self._stream_recovery = StreamRecoveryManager()
+        self._engine = EngineTasks(self)
+        self._engine_busy: str | None = None  # the call the Start, Stop and Refresh controls wait on
+        self._recovery_polling = False
         self._device_wait_since: float | None = None
         self._stream_health = RecentStreamHealth()
         self._last_backend_warning = None
@@ -388,7 +408,10 @@ class MainWindow(QMainWindow):
         self.quick_view_failure: str | None = None
         self.quick_view_graphics_api = "not_applicable"
         self.single_instance = None  # set by the app bootstrap; the relaunch releases it
+        self._problems: dict[str, str] = {}  # on the warning banner until resolved
         self._quitting = False
+        self._session_ending = False
+        self._shut_down = False
         self._quit_dont_ask = False
         self._tray_icon: QSystemTrayIcon | None = None
         self._tray_menu: QMenu | None = None
@@ -423,8 +446,12 @@ class MainWindow(QMainWindow):
         self._refresh_devices()
 
         # Connect device change signals for persistence
-        self.input_choice.currentIndexChanged.connect(self._on_device_changed)
-        self.output_choice.currentIndexChanged.connect(self._on_device_changed)
+        self.input_choice.currentIndexChanged.connect(
+            lambda _index: self._on_device_changed(self.input_choice)
+        )
+        self.output_choice.currentIndexChanged.connect(
+            lambda _index: self._on_device_changed(self.output_choice)
+        )
         self.input_channel_mode_choice.currentIndexChanged.connect(
             self._on_input_channel_mode_changed
         )
@@ -438,10 +465,9 @@ class MainWindow(QMainWindow):
         self._restore_from_config()
         self._initialize_configuration_history()
         self._connect_configuration_history_inputs()
+        self._show_config_banner()
         if self.config.load_warning:
             warning = self.config.load_warning
-            self.shell_texts["config_warning_banner"].update(text=warning)
-            self.shell_texts["config_warning_banner"].update(shown=True)
             QTimer.singleShot(
                 0,
                 lambda: self.status_message.showMessage(warning),
@@ -553,8 +579,8 @@ class MainWindow(QMainWindow):
         self.processing_mode_choice.currentIndexChanged.connect(self._on_processing_mode_changed)
 
         commands = {
-            "refresh_btn": self._refresh_devices, "start_btn": self._start_processing,
-            "stop_btn": self._stop_processing, "_undo_auto_eq_button": self.undo_configuration,
+            "refresh_btn": self._on_refresh_clicked, "start_btn": self._on_start_clicked,
+            "stop_btn": self._on_stop_clicked, "_undo_auto_eq_button": self.undo_configuration,
             "redo_button": self.redo_configuration, "test_sound_button": self._on_test_my_sound_clicked,
             "auto_eq_button": self._on_auto_eq_clicked,
             "auto_voice_setup_button": self._on_auto_voice_setup_clicked,
@@ -903,7 +929,33 @@ class MainWindow(QMainWindow):
                 self.config.last_preset = preset_id
             elif path is not None:
                 self.config.last_preset = str(path)
+        self._mirror_preset_record()
         self._set_preset_modified()
+
+    def _mirror_preset_record(self) -> dict[str, Any]:
+        """Copy the preset the window shows into the record that history snapshots share."""
+        record = self.__dict__.setdefault("_preset_record", {})
+        record.update(
+            name=self.current_preset_name,
+            description=self.__dict__.get("current_preset_description", ""),
+            path=self.current_preset_path,
+            saved_payload=self._saved_preset_payload,
+            saved_mode=self.__dict__.get("_saved_processing_mode", "normal"),
+            last_preset=self.config.last_preset,
+        )
+        return record
+
+    def _restore_preset_record(self, record: dict[str, Any]) -> None:
+        """Show the preset that went with a history snapshot, and remember it for the next launch."""
+        self._preset_record = record
+        self.current_preset_name = record["name"]
+        self.current_preset_description = record["description"]
+        self.current_preset_path = record["path"]
+        self._saved_preset_payload = record["saved_payload"]
+        self._saved_processing_mode = record["saved_mode"]
+        if self.config.last_preset != record["last_preset"]:
+            self.config.last_preset = record["last_preset"]
+            self._save_config_safely()
 
     @staticmethod
     def _preset_payload(preset: Preset) -> str:
@@ -939,10 +991,30 @@ class MainWindow(QMainWindow):
     def _save_config_safely(self) -> bool:
         """Persist config without letting a write failure disrupt the UI."""
         try:
-            return bool(save_config(self.config))
+            saved = bool(save_config(self.config))
         except Exception:
             logger.warning("Could not save AudioForge configuration", exc_info=True)
-            return False
+            saved = False
+        self._set_problem("save", None if saved else SAVE_PROBLEM)
+        return saved
+
+    def _set_problem(self, key: str, message: str | None) -> None:
+        """Keep a settings or startup problem on the warning banner until it is resolved."""
+        if "shell_texts" not in self.__dict__:  # the banner exists once _setup_shell_models has run
+            return
+        if message:
+            self._problems[key] = message
+        else:
+            self._problems.pop(key, None)
+        self._show_config_banner()
+
+    def _report_problem(self, key: str, message: str, timeout: int = 0) -> None:
+        self.status_message.showMessage(message, timeout)
+        self._set_problem(key, message)
+
+    def _show_config_banner(self) -> None:
+        text = "\n".join(filter(None, (self.config.load_warning, *self._problems.values())))
+        self.shell_texts["config_warning_banner"].update(text=text, shown=bool(text))
 
     def _save_ui_state(self) -> bool:
         saved = self._save_config_safely()
@@ -1127,12 +1199,12 @@ class MainWindow(QMainWindow):
 
         start_action = QAction("&Start Processing", self)
         start_action.setShortcut("Ctrl+Return")
-        start_action.triggered.connect(self._start_processing)
+        start_action.triggered.connect(self._on_start_clicked)
         file_menu.addAction(start_action)
 
         stop_action = QAction("S&top Processing", self)
         stop_action.setShortcut("Ctrl+.")
-        stop_action.triggered.connect(self._stop_processing)
+        stop_action.triggered.connect(self._on_stop_clicked)
         file_menu.addAction(stop_action)
 
         file_menu.addSeparator()
@@ -1523,13 +1595,12 @@ class MainWindow(QMainWindow):
         """Create the optional tray icon and register the configured hotkey."""
         app = QGuiApplication.instance()
         if app is not None and not tray_only:
-            app.aboutToQuit.connect(self._mark_quitting)
+            app.aboutToQuit.connect(self._on_about_to_quit)
             if isinstance(app, QGuiApplication):
-                # Direct, so the flag is set before Qt closes the windows for a Windows sign-out
-                # or shutdown; that close neither asks the live-audio question nor hides to
-                # the tray. Unsaved sound changes still ask, as they would on any quit.
+                # Direct, so the flags are set before Qt closes the windows for a Windows
+                # sign-out or shutdown; that close asks nothing, hides nothing and never refuses.
                 app.commitDataRequest.connect(
-                    self._mark_quitting, Qt.ConnectionType.DirectConnection
+                    self._on_commit_data, Qt.ConnectionType.DirectConnection
                 )
 
         configured_hotkey = str(getattr(self.config, "mute_hotkey", "") or "")
@@ -1584,8 +1655,15 @@ class MainWindow(QMainWindow):
         self._tray_icon.show()
         self._update_session_summary()
 
-    def _mark_quitting(self) -> None:
+    def _on_commit_data(self) -> None:
         self._quitting = True
+        self._session_ending = True
+
+    def _on_about_to_quit(self) -> None:
+        """Shut down a window Qt never closed: hidden in the tray, or the app quit without it."""
+        self._quitting = True
+        if not self._shut_down:
+            self._shutdown()
 
     def _show_from_tray(self) -> None:
         activate_window(self)
@@ -1750,6 +1828,7 @@ class MainWindow(QMainWindow):
             )
             self._update_startup_preset_menu(previous)
             return
+        self._set_problem("startup_preset", None)
 
         if preset_id:
             _normalized_id, custom_preset = _startup_preset_selection(
@@ -2231,12 +2310,22 @@ class MainWindow(QMainWindow):
         )
         return True
 
-    def _refresh_devices(self):
-        """Refresh the device lists."""
+    def _on_refresh_clicked(self) -> None:
+        """List the devices on the worker: the enumeration can take seconds."""
+        if self.__dict__.get("_engine_busy"):
+            return
+        if self.processor.is_running():
+            self._refresh_devices()  # says why it cannot refresh
+            return
+        self._run_engine("refresh", _list_devices, self._refresh_devices)
+
+    def _refresh_devices(self, listing: tuple[Any, Any] | None = None):
+        """Refresh the device lists; ``listing`` is the worker's, else they are listed here."""
         if self.processor.is_running():
             self.refresh_btn_action.setEnabled(False)
             self.status_message.showMessage("Stop processing before refreshing audio devices", 5000)
             return
+        input_devices, output_devices = _list_devices() if listing is None else listing
         previous_route = self._current_device_route_key()
         previous_capture_format = self._current_capture_format_context()
         previous_input = (
@@ -2267,22 +2356,13 @@ class MainWindow(QMainWindow):
 
             # Get input devices
             try:
-                input_devices = list_input_devices()
+                if isinstance(input_devices, Exception):
+                    raise input_devices
                 input_found = len(input_devices) > 0
                 for device in input_devices:
                     identity = self._identity_from_device_info(device, "input")
-                    duplicate_suffix = (
-                        f" [#{identity.name_ordinal + 1}]"
-                        if sum(item.name == identity.name for item in input_devices) > 1
-                        and identity.name_ordinal is not None
-                        else ""
-                    )
-                    label = f"{device.name}{duplicate_suffix}" + (
-                        " (Default)" if device.is_default else ""
-                    )
                     self.input_choice.addItem(
-                        label,
-                        identity,
+                        _device_label(identity, input_devices), identity
                     )
                 if previous_input is not None:
                     if not self._select_combo_identity(self.input_choice, previous_input):
@@ -2292,15 +2372,18 @@ class MainWindow(QMainWindow):
                         )
                         self.input_choice.setCurrentIndex(fallback_index)
                         if fallback_index >= 0:
-                            self.status_message.showMessage(
+                            self._report_problem(
+                                "input_device",
                                 f"Previous input device '{previous_input.name}' is disconnected; "
-                                "using the default until it returns"
+                                "using the default until it returns",
                             )
                         elif previous_input.name:
-                            self.status_message.showMessage(
-                                f"Saved input device '{previous_input.name}' is disconnected"
+                            self._report_problem(
+                                "input_device",
+                                f"Saved input device '{previous_input.name}' is disconnected",
                             )
                     else:
+                        self._set_problem("input_device", None)
                         resolved = self._combo_device_identity(self.input_choice)
                         if (
                             resolved is not None
@@ -2319,32 +2402,25 @@ class MainWindow(QMainWindow):
 
             # Get output devices
             try:
-                output_devices = list_output_devices()
+                if isinstance(output_devices, Exception):
+                    raise output_devices
                 output_found = len(output_devices) > 0
                 for device in output_devices:
                     identity = self._identity_from_device_info(device, "output")
-                    duplicate_suffix = (
-                        f" [#{identity.name_ordinal + 1}]"
-                        if sum(item.name == identity.name for item in output_devices) > 1
-                        and identity.name_ordinal is not None
-                        else ""
-                    )
-                    label = f"{device.name}{duplicate_suffix}" + (
-                        " (Default)" if device.is_default else ""
-                    )
                     self.output_choice.addItem(
-                        label,
-                        identity,
+                        _device_label(identity, output_devices), identity
                     )
                 if previous_output is not None:
                     if not self._select_combo_identity(self.output_choice, previous_output):
                         self.output_choice.setCurrentIndex(-1)
                         self.output_choice.setPlaceholderText("Select a replacement destination")
-                        self.status_message.showMessage(
+                        self._report_problem(
+                            "output_device",
                             f"Destination '{previous_output.name}' is disconnected; "
-                            "select a replacement or reconnect it before starting"
+                            "select a replacement or reconnect it before starting",
                         )
                     else:
+                        self._set_problem("output_device", None)
                         resolved = self._combo_device_identity(self.output_choice)
                         if (
                             resolved is not None
@@ -2555,8 +2631,8 @@ class MainWindow(QMainWindow):
                     "Startup preset %r not found; falling back to last used",
                     preset_name,
                 )
-                self.status_message.showMessage(
-                    f"Startup preset '{preset_name}' not found", 5000
+                self._report_problem(
+                    "startup_preset", f"Startup preset '{preset_name}' could not be loaded", 5000
                 )
 
         startup_preset_failed = bool(self.config.startup_preset) and not preset_loaded
@@ -2574,8 +2650,9 @@ class MainWindow(QMainWindow):
                             config_dirty = True
                         restored_count += int(preset_loaded)
                     else:
-                        self.status_message.showMessage(
-                            f"Previous preset '{preset_key}' not found, starting with defaults"
+                        self._report_problem(
+                            "last_preset",
+                            f"Previous preset '{preset_key}' not found, starting with defaults",
                         )
                         self.config.last_preset = ""
                         config_dirty = True
@@ -2590,8 +2667,8 @@ class MainWindow(QMainWindow):
                             config_dirty = True
                         restored_count += int(preset_loaded)
                     else:
-                        self.status_message.showMessage(
-                            "Previous preset file not found, starting with defaults"
+                        self._report_problem(
+                            "last_preset", "Previous preset file not found, starting with defaults"
                         )
                         self.config.last_preset = ""
                         config_dirty = True
@@ -2655,8 +2732,12 @@ class MainWindow(QMainWindow):
                     6000,
                 )
 
-    def _on_device_changed(self):
-        """Handle device selection change - save to config."""
+    def _on_device_changed(self, changed: ChoiceState | None = None):
+        """Save the route; only the picker the user changed, as the other may show a stand-in.
+
+        A saved device that is unplugged leaves its picker on the default device or on nothing,
+        and the saved one must still be there when it returns. No ``changed`` saves both.
+        """
         if self.__dict__.get("_login_startup_deadline") is not None:
             self._cancel_login_startup()
         self._login_startup = False
@@ -2664,16 +2745,16 @@ class MainWindow(QMainWindow):
         if banner.text == NO_DESTINATION_WARNING:
             banner.update(shown=False)
         if hasattr(self, "config"):  # Check config is initialized
-            input_identity = self._combo_device_identity(self.input_choice)
-            output_identity = self._combo_device_identity(self.output_choice)
-            self.config.last_input_device_identity = input_identity
-            self.config.last_output_device_identity = output_identity
-            self.config.last_input_device = self._device_name_from_identity(
-                input_identity
-            )
-            self.config.last_output_device = self._device_name_from_identity(
-                output_identity
-            )
+            if changed is not self.output_choice:
+                self._set_problem("input_device", None)
+                input_identity = self._combo_device_identity(self.input_choice)
+                self.config.last_input_device_identity = input_identity
+                self.config.last_input_device = self._device_name_from_identity(input_identity)
+            if changed is not self.input_choice:
+                self._set_problem("output_device", None)
+                output_identity = self._combo_device_identity(self.output_choice)
+                self.config.last_output_device_identity = output_identity
+                self.config.last_output_device = self._device_name_from_identity(output_identity)
             self._apply_input_preferences_for_current_route()
             saved = self._save_config_safely()
             self._apply_latency_compensation_for_current_devices()
@@ -2719,8 +2800,48 @@ class MainWindow(QMainWindow):
                 "Input settings applied for this session, but could not be saved", 6000
             )
 
+    def _run_engine(
+        self, name: str, call: Callable[[], Any], done: Callable[[Any], object]
+    ) -> None:
+        """Run a blocking engine call on the worker, with the engine controls locked until ``done`` ran."""
+        if self._engine.threaded:  # a call that returns at once would only cost the focus of a button
+            self._engine_busy = name
+            self._sync_processing_controls()
+
+        def finish(outcome: Any) -> None:
+            self._engine_busy = None
+            try:
+                done(outcome)
+            finally:
+                self._sync_processing_controls()
+
+        self._engine.submit(call, finish)
+
     def _start_processing(self, *, interactive: bool = True) -> bool:
-        """Start audio processing."""
+        """Start audio processing and wait for the engine; login and setup need the answer."""
+        route = self._prepare_start(interactive)
+        if isinstance(route, bool):
+            return route
+        return self._finish_start(
+            attempt(partial(start_processor_for_route, self.processor, *route)), interactive
+        )
+
+    def _on_start_clicked(self) -> None:
+        """Start from the button or menu; the engine starts on the worker, so the window stays alive."""
+        if self.__dict__.get("_engine_busy"):
+            return
+        route = self._prepare_start(True)
+        if not isinstance(route, bool):
+            self._run_engine(
+                "start",
+                partial(start_processor_for_route, self.processor, *route),
+                partial(self._finish_start, interactive=True),
+            )
+
+    def _prepare_start(
+        self, interactive: bool
+    ) -> bool | tuple[DeviceIdentity | None, DeviceIdentity | None]:
+        """The route to start, or the final answer when there is nothing to start."""
         if interactive:
             if self.__dict__.get("_login_startup_deadline") is not None:
                 self._cancel_login_startup()
@@ -2761,13 +2882,17 @@ class MainWindow(QMainWindow):
                 input_device or "(default)",
                 output_device or "(default)",
             )
+        return (
+            self._combo_device_identity(self.input_choice),
+            self._combo_device_identity(self.output_choice),
+        )
 
+    def _finish_start(self, outcome: Any, interactive: bool) -> bool:
+        """Show how the engine start went: ``outcome`` is its result or the exception it raised."""
         try:
-            result = start_processor_for_route(
-                self.processor,
-                self._combo_device_identity(self.input_choice),
-                self._combo_device_identity(self.output_choice),
-            )
+            if isinstance(outcome, Exception):
+                raise outcome
+            result = outcome
             self._apply_latency_compensation_for_current_devices()
             # Native start clears temporary mute state; restore both owners.
             if DEBUG:
@@ -2823,12 +2948,19 @@ class MainWindow(QMainWindow):
 
     def _sync_processing_controls(self) -> None:
         """Reflect the native processor state after recovery or a failed start."""
-        running = bool(self.processor.is_running())
-        self.start_btn_action.setEnabled(not running)
-        self.stop_btn_action.setEnabled(running or self.__dict__.get("_login_startup_deadline") is not None)
-        self.input_choice.setEnabled(not running)
-        self.output_choice.setEnabled(not running)
-        self.refresh_btn_action.setEnabled(not running)
+        # The engine is mid-call: nothing may be pressed, and the processor is not asked.
+        busy = self.__dict__.get("_engine_busy") is not None
+        running = not busy and bool(self.processor.is_running())
+        idle = not (busy or running)
+        self.start_btn_action.setEnabled(idle)
+        self.stop_btn_action.setEnabled(
+            not busy and (running or self.__dict__.get("_login_startup_deadline") is not None)
+        )
+        self.input_choice.setEnabled(idle)
+        self.output_choice.setEnabled(idle)
+        self.refresh_btn_action.setEnabled(idle)
+        if busy:
+            return
         update_summary = getattr(self, "_update_session_summary", None)
         if callable(update_summary):
             update_summary()
@@ -2837,20 +2969,34 @@ class MainWindow(QMainWindow):
             sync_meters()
 
     def _stop_processing(self):
-        """Stop audio processing."""
+        """Stop audio processing and wait for the engine."""
+        if self._prepare_stop():
+            self._finish_stop(attempt(self.processor.stop))
+
+    def _on_stop_clicked(self) -> None:
+        """Stop from the button or menu; the engine stops on the worker, so the window stays alive."""
+        if not self.__dict__.get("_engine_busy") and self._prepare_stop():
+            self._run_engine("stop", self.processor.stop, self._finish_stop)
+
+    def _prepare_stop(self) -> bool:
+        """Whether there is a running engine to stop."""
         if self.__dict__.get("_login_startup_deadline") is not None:
             self._cancel_login_startup()
         if not self.processor.is_running():
             self._sync_processing_controls()
             if DEBUG:
                 logger.debug("Stop processing clicked, but processor is not running")
-            return
+            return False
 
         if DEBUG:
             logger.debug("Stopping processing")
+        return True
 
+    def _finish_stop(self, outcome: Any) -> None:
+        """Show how the engine stop went: ``outcome`` is None or the exception it raised."""
         try:
-            self.processor.stop()
+            if isinstance(outcome, Exception):
+                raise outcome
             self.status_message.showMessage("Processing stopped")
             self.start_btn_action.setEnabled(True)
             self.stop_btn_action.setEnabled(False)
@@ -2935,6 +3081,12 @@ class MainWindow(QMainWindow):
     def _initialize_configuration_history(self) -> None:
         """Create the immutable baseline after startup restoration."""
         preset = self._get_current_preset()
+        if self._saved_preset_payload is None:
+            self.current_preset_name = "Default"
+            self.current_preset_path = None
+            self._saved_preset_payload = self._preset_payload(preset)
+            self._saved_processing_mode = self._processing_mode()
+            self.preset_modified = False
         snapshot = ConfigurationSnapshot.from_preset(
             preset,
             label="Startup configuration",
@@ -2944,15 +3096,10 @@ class MainWindow(QMainWindow):
             )["noise_reference_reliability"],
             calibration_context_key=self._calibration_context_key(),
             processing_mode=self._processing_mode(),
+            preset_record=self._mirror_preset_record(),
         )
         self._configuration_history.initialize(snapshot)
         self._current_value_provenance = dict(snapshot.to_preset().value_provenance)
-        if self._saved_preset_payload is None:
-            self.current_preset_name = "Default"
-            self.current_preset_path = None
-            self._saved_preset_payload = self._preset_payload(preset)
-            self._saved_processing_mode = self._processing_mode()
-            self.preset_modified = False
         self._history_ready = True
         self._sync_calibration_evidence()
         self._update_history_actions()
@@ -3055,6 +3202,7 @@ class MainWindow(QMainWindow):
                 )["noise_reference_reliability"],
                 calibration_context_key=self._calibration_context_key(),
                 processing_mode=self._processing_mode(),
+                preset_record=self.__dict__.get("_preset_record"),
             )
             recorded = self._configuration_history.record(snapshot)
         except (PresetValidationError, TypeError, ValueError) as error:
@@ -3094,6 +3242,8 @@ class MainWindow(QMainWindow):
                 ),
                 processing_mode=snapshot.processing_mode,
             )
+            if snapshot.preset_record is not None:
+                self._restore_preset_record(snapshot.preset_record)
             self._set_preset_modified()
         finally:
             self._history_replaying = False
@@ -3306,6 +3456,7 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self._shut_down = False  # a window shown again after a refused quit must shut down again
         self._sync_meter_timer()
 
     def hideEvent(self, event) -> None:
@@ -3327,7 +3478,7 @@ class MainWindow(QMainWindow):
 
     def _sync_meter_timer(self) -> None:
         timer = self.__dict__.get("meter_timer")
-        if timer is None:
+        if timer is None or self.__dict__.get("_engine_busy"):
             return
         try:
             running = self.processor.is_running()
@@ -3358,6 +3509,8 @@ class MainWindow(QMainWindow):
 
     def _update_meters(self):
         """Refresh available live measurements; keep recovery on its own timer."""
+        if self.__dict__.get("_engine_busy"):
+            return
         try:
             running = self.processor.is_running()
         except (AttributeError, OSError, RuntimeError):
@@ -3419,6 +3572,8 @@ class MainWindow(QMainWindow):
 
     def _update_diagnostics(self):
         """Update slower diagnostics and service recovery."""
+        if self.__dict__.get("_engine_busy"):
+            return
         if self.__dict__.get("_login_startup_deadline") is not None:
             try:
                 self._service_login_startup()
@@ -3955,7 +4110,9 @@ class MainWindow(QMainWindow):
         output_rms: float,
         output_buf: int,
     ) -> None:
-        """Service UI-side and Rust-side stream recovery."""
+        """Service UI-side and Rust-side stream recovery; the restarts run on the worker."""
+        if self._engine_busy or self._recovery_polling:
+            return
         gate_state = getattr(self, "gate_state", None)
         gate_mode = int(gate_state.get_settings()["gate_mode"]) if gate_state is not None else 0
         if self._stream_recovery.maybe_recover_output_stall(
@@ -3971,6 +4128,7 @@ class MainWindow(QMainWindow):
             ),
         ):
             self._recover_output_path()
+            return
 
         input_cb_age_ms = None
         output_cb_age_ms = None
@@ -3989,9 +4147,19 @@ class MainWindow(QMainWindow):
                 calibration_dialog_open=self._calibration_dialog_open,
             ):
                 self._recover_output_path()
+                return
 
+        # Not locked like a click: it asks the engine every tick and mostly has nothing to do.
+        self._recovery_polling = True
+        self._engine.submit(lambda: self.processor.service_recovery(), self._recovery_serviced)
+
+    def _recovery_serviced(self, outcome: Any) -> None:
+        """Show what the engine's own recovery did: ``outcome`` is its answer or the exception raised."""
+        self._recovery_polling = False
         try:
-            recovery_result = self.processor.service_recovery()
+            if isinstance(outcome, Exception):
+                raise outcome
+            recovery_result = outcome
             if recovery_result is not None:
                 if recovery_result:
                     self._apply_latency_compensation_for_current_devices()
@@ -4030,34 +4198,47 @@ class MainWindow(QMainWindow):
             self._recovery_service_failing = True
 
     def _recover_output_path(self):
-        """Best-effort output recovery while preserving both mute owners."""
+        """Best-effort output recovery while preserving both mute owners: stop, mute, start."""
+        self._run_engine("recover", self.processor.stop, self._restart_output_path)
+
+    def _restart_output_path(self, outcome: Any) -> None:
         try:
-            self.processor.stop()
+            if isinstance(outcome, Exception):
+                raise outcome
             self._apply_output_mute()
-            result = start_processor_for_route(
-                self.processor,
-                self._combo_device_identity(self.input_choice),
-                self._combo_device_identity(self.output_choice),
-            )
+        except Exception as e:
+            self._output_recovery_failed(e)
+            return
+        route = (
+            self._combo_device_identity(self.input_choice),
+            self._combo_device_identity(self.output_choice),
+        )
+        self._run_engine(
+            "recover",
+            partial(start_processor_for_route, self.processor, *route),
+            self._output_path_restarted,
+        )
+
+    def _output_path_restarted(self, outcome: Any) -> None:
+        try:
+            if isinstance(outcome, Exception):
+                raise outcome
             self._apply_latency_compensation_for_current_devices()
             self._apply_output_mute()
             self.status_message.showMessage(
-                f"The output stopped responding, so AudioForge restarted it ({result})",
+                f"The output stopped responding, so AudioForge restarted it ({outcome})",
                 4000,
             )
-            self._sync_processing_controls()
         except Exception as e:
-            logger.exception("Auto-recovery failed")
-            self.status_message.showMessage(
-                f"AudioForge could not restart the output automatically ({e}). "
-                "Check the device, then press Start.",
-                5000,
-            )
-            self.start_btn_action.setEnabled(True)
-            self.stop_btn_action.setEnabled(False)
-            self.input_choice.setEnabled(True)
-            self.output_choice.setEnabled(True)
-            self._update_session_summary()
+            self._output_recovery_failed(e)
+
+    def _output_recovery_failed(self, error: Exception) -> None:
+        logger.error("Auto-recovery failed", exc_info=error)
+        self.status_message.showMessage(
+            f"AudioForge could not restart the output automatically ({error}). "
+            "Check the device, then press Start.",
+            5000,
+        )
 
     def _export_diagnostics(self) -> None:
         """Export an allowlisted support snapshot off the realtime path."""
@@ -4371,6 +4552,7 @@ class MainWindow(QMainWindow):
         if persist_identity:
             previous_last_preset = self.config.last_preset
         if not history_replaying:
+            self._preset_record = {}  # a load starts a record of its own; a save keeps the loaded one
             self._set_preset_identity(
                 preset,
                 path=preset_path,
@@ -4378,6 +4560,8 @@ class MainWindow(QMainWindow):
                 persist_last_used=persist_last_used,
             )
         if history_ready and not history_replaying:
+            for key in ("startup_preset", "last_preset"):
+                self._set_problem(key, None)
             self._commit_pending_configuration_snapshot(
                 label=f"Loaded preset ({preset.name})",
                 source="preset",
@@ -4391,6 +4575,7 @@ class MainWindow(QMainWindow):
                 logger.warning("Could not remember loaded preset %s", preset.name)
             if not persisted:
                 self.config.last_preset = previous_last_preset
+                self._mirror_preset_record()
             self._last_preset_identity_persisted = bool(persisted)
 
         message = f"Loaded preset: {preset.name}"
@@ -4529,14 +4714,27 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
 
-        if not self._confirm_discard_changes():
+        # A Windows sign-out or shutdown waits on this close, so it never asks or refuses.
+        if not self._session_ending and not self._confirm_discard_changes():
             self._quitting = False
             self._quit_dont_ask = False
             event.ignore()
             return
         self._quitting = True
+        saved = self._shutdown()
+        if not saved and not self._session_ending:
+            QMessageBox.warning(
+                self,
+                "Settings Not Saved",
+                "Audio processing has stopped, but window settings could not be saved.",
+            )
+        event.accept()
+
+    def _shutdown(self) -> bool:
+        """Save the settings and stop audio; closeEvent and an app quit without a close share this."""
         if self._quit_dont_ask:
             self.config.confirm_quit_when_live = False
+        self._engine.wait(ENGINE_CALL_WAIT_MS)  # a call in flight owns the engine; the stop below follows it
         self._unregister_mute_hotkey()
         if self._tray_icon is not None:
             self._tray_icon.hide()
@@ -4556,13 +4754,8 @@ class MainWindow(QMainWindow):
         finally:
             if self.processor.is_running():
                 self.processor.stop()
-        if not saved:
-            QMessageBox.warning(
-                self,
-                "Settings Not Saved",
-                "Audio processing has stopped, but window settings could not be saved.",
-            )
-        event.accept()
+        self._shut_down = True
+        return saved
 
 
 def run_app():

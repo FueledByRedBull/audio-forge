@@ -226,3 +226,61 @@ def test_tray_quit_keep_running_hides_the_window(live_window, answers):
     live_window._quit_from_tray()
 
     assert live_window.isHidden() and live_window.processor.running and not live_window._quitting
+
+
+def _unsaved_change(window: Any) -> None:
+    window._set_preset_modified(False)
+    gain = eq_control(window, "gain", 4)
+    gain.setValue(gain.value + 6.0)
+    assert window.preset_modified
+
+
+def test_a_sign_out_with_unsaved_changes_never_asks_and_never_vetoes(
+    live_window, answers, qapp, monkeypatch
+):
+    asked: list[str] = []
+
+    def cancel(_parent, title, *_args, **_kwargs):
+        asked.append(title)
+        return QMessageBox.StandardButton.Cancel
+
+    monkeypatch.setattr(QMessageBox, "question", cancel)
+    _unsaved_change(live_window)
+    qapp.commitDataRequest.emit(None)
+
+    assert _close(live_window)
+    assert asked == [] and not live_window.processor.running
+
+
+def test_a_sign_out_whose_save_fails_stops_audio_without_a_dialog(
+    live_window, answers, qapp, monkeypatch
+):
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: False)
+    qapp.commitDataRequest.emit(None)
+
+    assert _close(live_window)
+    assert not live_window.processor.running
+
+
+def test_a_sign_out_while_hidden_in_the_tray_saves_and_stops_audio(
+    live_window, answers, qapp, monkeypatch
+):
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "mic_eq.ui.main_window.save_config",
+        lambda config: saved.append(dict(config.window_geometry or {})) or True,
+    )
+    tray = _tray(live_window, close_to_tray=True)
+    live_window.show()
+    live_window._hide_to_tray()
+    assert live_window.isHidden() and live_window.processor.running
+    qapp.commitDataRequest.emit(None)  # Qt closes visible windows only, so nothing closes this one
+
+    # Emitting the shared app's aboutToQuit would reach every other live object, so only
+    # check that the window is connected, then run its slot as Qt would.
+    assert qapp.aboutToQuit.disconnect(live_window._on_about_to_quit)
+    live_window._on_about_to_quit()
+
+    assert not live_window.processor.running and saved and saved[-1]["width"] > 0
+    tray.hide.assert_called()
+    assert answers.asked == []

@@ -122,6 +122,18 @@ def test_the_setup_analysis_refuses_sustained_clipping_but_not_a_stray_sample():
         )
 
 
+def test_the_setup_analysis_refuses_a_clipped_capture_whichever_raw_capture_it_is_given():
+    rate = 48_000
+    short = np.full(rate // 10, 0.01, dtype=np.float32)
+    sustained = short.copy()
+    sustained[100:106] = 1.0
+
+    with pytest.raises(ValueError, match="non-finite or clipped"):
+        voice_setup.analyze_voice_setup(short, short, rate, "broadcast", raw_noise_audio=sustained)
+    with pytest.raises(ValueError, match="non-finite or clipped"):
+        voice_setup.analyze_voice_setup(short, short, rate, "broadcast", raw_speech_audio=sustained)
+
+
 def test_the_verification_passage_is_refused_for_sustained_clipping_only():
     rate = 48_000
     audio = _speech(rate, 3.5) * 0.5

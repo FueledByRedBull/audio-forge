@@ -6,6 +6,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -52,6 +53,8 @@ def test_report_runs_end_to_end_and_compares_with_an_earlier_run(short_bench: Pa
     assert not numbers.with_name("bench.json.partial.jsonl").exists()  # a finished run leaves no partial file
     result = json.loads(numbers.read_text(encoding="utf-8"))
     entry = result["mixes"]["fan-short"]
+    assert result["decision"] == {"outcome": "measured", "reason": "The numbers are information; the maintainer decides.",
+                                  "decided": None, "by": None}
     assert result["build"]["vad"] == "unavailable"
     assert len(result["build"]["native_module_sha256"]) == 64
     assert "git_revision" in result["build"] and "manifest_sha256" in result["build"]
@@ -63,7 +66,7 @@ def test_report_runs_end_to_end_and_compares_with_an_earlier_run(short_bench: Pa
     assert all(v in bm.VETOES for v in voice["vetoes"])
     text = report.read_text(encoding="utf-8")
     assert "## Factory chain" in text and "## Voice Setup with Auto-EQ" in text and "fan-short" in text
-    assert "VAD: unavailable" in text
+    assert "VAD: unavailable" in text and "- Decision: measured;" in text
     # The suppressor each path used, and whether DeepFilter was enabled, are in the report and the numbers.
     assert factory["suppressor"]["model"] == "rnnoise" and voice["suppressor"]["model"] in {"rnnoise", "deepfilter-ll", "deepfilter"}
     assert "deepfilter_enabled" in result["build"]
@@ -80,6 +83,27 @@ def test_report_runs_end_to_end_and_compares_with_an_earlier_run(short_bench: Pa
     assert "# Bench comparison (after minus before)" in printed
     assert "| fan-short | +0.000 |" in printed
     assert "Voice Setup" not in printed.split("# Bench comparison")[1]
+
+
+def test_a_decision_given_on_the_command_line_is_recorded_with_its_date(short_bench: Path, tmp_path: Path):
+    numbers = tmp_path / "bench.json"
+    assert bench_report.main(["--bench-dir", str(short_bench), "--mixes", "fan-short", "--skip-voice-setup",
+                              "--json-output", str(numbers), "--decision", "retain", "--reason", "No gain over the factory chain.",
+                              "--by", "the maintainer", "--output", str(tmp_path / "bench.md")]) == 0
+    decision = json.loads(numbers.read_text(encoding="utf-8"))["decision"]
+
+    assert decision == {"outcome": "retain", "reason": "No gain over the factory chain.",
+                        "decided": date.today().isoformat(), "by": "the maintainer"}
+    assert "- Decision: retain; No gain over the factory chain." in (tmp_path / "bench.md").read_text(encoding="utf-8")
+
+
+def test_a_decision_needs_its_reason_and_who_made_it(short_bench: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(bench_report, "run", lambda *a, **k: pytest.fail("the mixes should not have run"))
+    for extra in ([], ["--reason", "Because."], ["--by", "the maintainer"], ["--reason", " ", "--by", "the maintainer"]):
+        with pytest.raises(SystemExit):
+            bench_report.main(["--bench-dir", str(short_bench), "--skip-voice-setup", "--decision", "adopt", *extra])
+    with pytest.raises(SystemExit):  # a reason without a decision
+        bench_report.main(["--bench-dir", str(short_bench), "--skip-voice-setup", "--reason", "Because."])
 
 
 def test_report_refuses_files_that_differ_from_the_manifest(short_bench: Path):

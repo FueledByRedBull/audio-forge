@@ -2,6 +2,8 @@
 
 from dataclasses import asdict
 from itertools import count
+import threading
+import time
 from typing import Any
 
 import numpy as np
@@ -206,3 +208,100 @@ def test_runtime_is_a_feasibility_gate_not_a_sound_preference(monkeypatch):
     assert all(c["gates"]["runtime"] for c in busy["candidates"])
     assert all(not c["gates"]["runtime"] for c in overloaded["candidates"])
     assert not overloaded["apply_recommended"]
+
+
+class _SlowSuppressor(_FakeSuppressor):
+    """Fails past a release time and takes long enough for concurrent candidates to overlap."""
+
+    def __init__(self, fail_release_ms: float = float("inf")) -> None:
+        super().__init__(returns_dry_audio=True)
+        self.fail_release_ms = fail_release_ms
+        self.renders: list[tuple[float, float, int]] = []
+
+    def __call__(self, audio, probabilities, before_gate, strength, settings):
+        self.renders.append(
+            (settings["gate_threshold_db"], settings["gate_release_ms"], len(audio))
+        )
+        time.sleep(0.02)
+        if settings["gate_release_ms"] > self.fail_release_ms:
+            raise RuntimeError(f"no render at {settings['gate_release_ms']:g} ms")
+        return super().__call__(audio, probabilities, before_gate, strength, settings)
+
+
+def _tune_with(monkeypatch, simulator, workers):
+    monkeypatch.setattr(joint_tuning, "_model_order", lambda _model: ["rnnoise"])
+    monkeypatch.setattr(joint_tuning, "simulate_candidate_chain", _downstream_metrics)
+    monkeypatch.setattr(joint_tuning, "_load_native_simulator", lambda: simulator)
+    monkeypatch.setattr(joint_tuning, "ANALYSIS_WORKERS", workers)
+    args = _args()
+    progress: list[tuple[str, int]] = []
+    result = joint_tuning.tune_gate_suppression_dynamics(
+        *args,
+        vad_probabilities=np.ones(100, dtype=np.float32),
+        noise_vad_probabilities=np.zeros(100, dtype=np.float32),
+        incumbent_settings={
+            "gate": dict(args[3]),
+            "suppressor": {"model": "rnnoise", "enabled": True, "strength": 0.5},
+        },
+        progress_callback=lambda stage, percent: progress.append((stage, percent)),
+    )
+    return result, progress
+
+
+def test_candidates_evaluated_together_give_the_serial_result_in_the_serial_order(monkeypatch):
+    # The gate's release is 100 ms; candidates at +35 and +70 ms fail to render.
+    serial, serial_progress = _tune_with(monkeypatch, _SlowSuppressor(fail_release_ms=120.0), 1)
+    together, together_progress = _tune_with(monkeypatch, _SlowSuppressor(fail_release_ms=120.0), 8)
+
+    assert len(serial["failure_reasons"]) == 2 and serial["candidates"]
+    assert serial["apply_recommended"]
+    for key in ("candidates", "failure_reasons", "model_evaluations", "reasons", "decision", "holdout_passed",
+                "holdout_gates", "gate_settings", "suppressor_settings", "selected_candidate"):
+        assert together[key] == serial[key], key
+    assert together_progress == serial_progress
+
+
+def test_candidates_that_need_the_same_render_wait_for_one_render(monkeypatch):
+    simulator = _SlowSuppressor()
+    result, _ = _tune_with(monkeypatch, simulator, 8)
+
+    assert result["holdout_evaluated"] and result["candidate_count"] == 10
+    # Candidates that differ only in strength share a render, however they overlap: 7 renders for the 10
+    # candidates, then one each for the selected candidate and the incumbent on the held-out half.
+    assert len(simulator.renders) == 7 + 2
+
+
+class _ContendedSuppressor(_SlowSuppressor):
+    """Reports a render time that grows with the renders running at once, as wall time does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.guard = threading.Lock()
+        self.active = 0
+        self.most_active = 0
+
+    def __call__(self, audio, probabilities, before_gate, strength, settings):
+        with self.guard:
+            self.active += 1
+            self.most_active = max(self.most_active, self.active)
+            sharing = self.active
+        try:
+            result = super().__call__(audio, probabilities, before_gate, strength, settings)
+        finally:
+            with self.guard:
+                self.active -= 1
+        # 5% of the audio's duration when alone, and longer for each render it shares the processors with.
+        result["runtime_ms"] = 0.05 * len(audio) / 48.0 * sharing
+        return result
+
+
+def test_the_runtime_gate_does_not_grow_with_the_candidates_evaluated_beside_it(monkeypatch):
+    alone, beside = _ContendedSuppressor(), _ContendedSuppressor()
+    serial, _ = _tune_with(monkeypatch, alone, 1)
+    together, _ = _tune_with(monkeypatch, beside, 8)
+
+    assert alone.most_active == 1 and beside.most_active > 1  # the second run really did share processors
+    factors = {candidate["metrics"]["runtime_factor"] for candidate in together["candidates"]}
+    assert factors == {candidate["metrics"]["runtime_factor"] for candidate in serial["candidates"]}
+    assert len(factors) == 1 and 0.045 < factors.pop() < 0.055
+    assert together["holdout_evaluated"] and together["holdout_gates"]["runtime"]

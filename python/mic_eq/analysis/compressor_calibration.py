@@ -13,6 +13,7 @@ import numpy as np
 from .auto_eq import simulate_candidate_chain
 from .auto_eq_parts.headroom import _is_headroom_safe
 from .cancellation import check_analysis_cancelled
+from .parallel import ANALYSIS_WORKERS
 from .vad import map_causal_vad_probabilities
 from ..config import LimiterSettings
 
@@ -336,10 +337,10 @@ class _CompressorCalibration:
         items = list(pending.items())[: _COMPRESSOR_SEARCH_BUDGET - 1 - len(self.evaluated)]
         # Native simulations release the GIL and own independent DSP state.
         # Small batches bound cancellation latency and concurrent CPU use.
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            for start in range(0, len(items), 4):
+        with ThreadPoolExecutor(max_workers=ANALYSIS_WORKERS) as pool:
+            for start in range(0, len(items), ANALYSIS_WORKERS):
                 check_analysis_cancelled(self.cancel_check)
-                batch = items[start : start + 4]
+                batch = items[start : start + ANALYSIS_WORKERS]
                 for (key, _), result in zip(
                     batch, pool.map(self.evaluate, [v for _, v in batch])
                 ):

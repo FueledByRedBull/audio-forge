@@ -1,6 +1,6 @@
 """Shared EQ graph data and menus, rendered by the Qt Quick view."""
 
-from PySide6.QtCore import QObject, QTimer
+from PySide6.QtCore import QObject, QTimer, Slot
 from PySide6.QtWidgets import QMenu, QWidget
 
 from .eq_graph import EQGraphModel
@@ -90,6 +90,7 @@ class EQPresentation(QObject):
             self.destroyed.connect(owned.deleteLater)
         self._render_curve()
 
+    @Slot()
     def _render_curve(self) -> None:
         settings = self.eq_state.get_eq_settings()
         self.graph_model.set_all_params(
@@ -99,6 +100,7 @@ class EQPresentation(QObject):
         )
         self._render_presentation()
 
+    @Slot()
     def sync_input_conditioning(self) -> None:
         """Draw what the processor runs: its processing mode, input filter cleanup mode and rate."""
         processor = self.eq_state.processor
@@ -113,6 +115,7 @@ class EQPresentation(QObject):
         if mode in INPUT_CLEANUP_MODES and isinstance(rate, int) and rate > 0:
             self.graph_model.set_input_conditioning(mode, float(rate))
 
+    @Slot()
     def _render_presentation(self) -> None:
         if self.eq_state.show_markers:
             self.graph_model.set_band_markers(

@@ -11,6 +11,7 @@ import AudioForge
 Rectangle {
     id: root
 
+    required property QuickBridge ui
     readonly property var m: ui.model
     readonly property var t: m.theme
     readonly property bool hasIcons: t.iconFont !== ""
@@ -29,12 +30,17 @@ Rectangle {
     readonly property int fsTitle: Math.round(20 * zoom)
     // When the last tooltip closed; the next one opens at once if it follows closely.
     property double tipClosedAt: 0
-    // Which sections the user opened, so a rebuilt card opens them again.
-    property var opened: ({})
 
     color: t.app_surface
 
     onPressingChanged: if (pressing) tip.close()
+    // Esc closes a tip that keyboard focus opened, as it closes one the help button opened.
+    Keys.onEscapePressed: event => {
+        if (tip.visible)
+            tip.close()
+        else
+            event.accepted = false
+    }
 
     // One shared tooltip, so long help text wraps and matches the theme.
     ToolTip {
@@ -48,6 +54,7 @@ Rectangle {
         onClosed: root.tipClosedAt = Date.now()
         contentItem: Text {
             text: tip.text
+            textFormat: Text.PlainText
             color: root.t.text_primary
             font.pixelSize: root.fsCaption
             wrapMode: Text.Wrap
@@ -82,15 +89,27 @@ Rectangle {
             tip.close()
     }
 
+    // Hovering the parent or moving keyboard focus onto it shows the help; a click does not.
     component Hint: HoverHandler {
         property string text: ""
-        onHoveredChanged: hovered ? root.showTip(parent, text) : root.hideTip(parent)
+        property bool focused: parent.visualFocus === true
+        onHoveredChanged: sync()
+        onFocusedChanged: sync()
+        function sync() {
+            if (hovered || focused)
+                root.showTip(parent, text)
+            else
+                root.hideTip(parent)
+        }
     }
 
+    // The one focus indicator: a ring that hover never draws. `outset` is how far it sits outside
+    // the control; a negative value draws it inside.
     component FocusRing: Rectangle {
         property T.Control control
+        property int outset: 3
         anchors.fill: parent
-        anchors.margins: -3
+        anchors.margins: -outset
         radius: height / 2 < 9 ? height / 2 : 9
         color: "transparent"
         border.width: 2
@@ -107,6 +126,7 @@ Rectangle {
 
     component Caption: Text {
         property string tip: ""
+        textFormat: Text.PlainText
         color: root.t.text_muted
         font.pixelSize: root.fsBody
         elide: Text.ElideRight
@@ -120,6 +140,7 @@ Rectangle {
     }
 
     component Title: Text {
+        textFormat: Text.PlainText
         color: root.t.text_primary
         font.pixelSize: root.fsBody
         font.weight: Font.DemiBold
@@ -191,6 +212,7 @@ Rectangle {
         onRequested: proxy.click()
         Accessible.role: Accessible.CheckBox
         Accessible.name: proxy && proxy.name !== "" ? proxy.name : text
+        Accessible.description: proxy ? proxy.toolTip : ""
         Hint { text: toggle.proxy ? toggle.proxy.toolTip : "" }
         background: null
         contentItem: Item {
@@ -200,7 +222,7 @@ Rectangle {
                 height: 22
                 radius: 11
                 color: !toggle.live ? root.t.action_disabled
-                       : toggle.on ? root.t.accent : root.t.border_strong
+                       : toggle.on ? root.t.accent : root.t.control_edge
                 Behavior on color { ColorAnimation { duration: root.t.motion } }
                 Rectangle {
                     width: 16
@@ -221,6 +243,7 @@ Rectangle {
                 anchors.leftMargin: 10
                 anchors.verticalCenter: track.verticalCenter
                 text: toggle.text
+                textFormat: Text.PlainText
                 color: toggle.enabled ? root.t.text_primary : root.t.action_disabled_text
                 font.pixelSize: root.fsBody
             }
@@ -241,6 +264,12 @@ Rectangle {
         implicitHeight: 24
         onMoved: proxy.setValue(value / unit)
         onPressedChanged: if (!pressed) proxy.released()
+        // Assistive technology (UI Automation RangeValue) sets `value` without `moved`. Dragging commits
+        // through onMoved, and a value the model already holds is only the binding following it.
+        onValueChanged: if (!pressed && proxy && Math.abs(value - proxy.value * unit) > 1e-9) {
+            proxy.setValue(value / unit)
+            proxy.released()
+        }
         Keys.onLeftPressed: nudge(-1)
         Keys.onRightPressed: nudge(1)
         Keys.onUpPressed: nudge(1)
@@ -250,6 +279,7 @@ Rectangle {
             proxy.released()
         }
         Accessible.name: proxy ? proxy.name : ""
+        Accessible.description: proxy ? proxy.toolTip : ""
         Hint { text: fader.proxy ? fader.proxy.toolTip : "" }
         background: Rectangle {
             x: fader.leftPadding
@@ -257,7 +287,7 @@ Rectangle {
             width: fader.availableWidth
             height: 4
             radius: 2
-            color: root.t.border_strong
+            color: root.t.control_edge
             Rectangle {
                 width: fader.visualPosition * parent.width
                 height: 4
@@ -287,8 +317,9 @@ Rectangle {
         implicitHeight: 30
         radius: root.t.radiusControl
         color: root.t.control_surface
-        border.color: input.activeFocus && !input.readOnly ? root.t.accent : root.t.border
-        Hint { text: box.proxy ? box.proxy.toolTip : "" }
+        border.color: root.t.control_edge
+        Hint { text: box.proxy ? box.proxy.toolTip : ""; focused: input.activeFocus && !input.readOnly }
+        FocusRing { visible: input.activeFocus && !input.readOnly }
         TextInput {
             id: input
             anchors.fill: parent
@@ -309,6 +340,7 @@ Rectangle {
             font.features: { "tnum": 1 }
             Accessible.role: Accessible.EditableText
             Accessible.name: box.proxy ? box.proxy.name : ""
+            Accessible.description: box.proxy ? box.proxy.toolTip : ""
             onEditingFinished: if (!readOnly && text !== box.source.text) box.proxy.setText(text)
             Keys.onUpPressed: step(1)
             Keys.onDownPressed: step(-1)
@@ -349,6 +381,10 @@ Rectangle {
     component Picker: ComboBox {
         id: picker
         property var proxy
+        // Set for a choice that changes what the sound does, so it does not read as the default.
+        // Colour is not the only cue (a contrast theme has one text colour): the edge is thicker
+        // and the text bolder.
+        property bool alert: false
         model: proxy ? proxy.items : []
         currentIndex: proxy ? proxy.index : -1
         enabled: proxy ? proxy.enabled : false
@@ -363,6 +399,7 @@ Rectangle {
         // A combo box has no value channel in QML, and a name change is spoken where a description
         // change often is not: the label stays first, so the visible text is still in the name.
         Accessible.name: proxy ? proxy.name + (shown.text !== "" ? ": " + shown.text : "") : ""
+        Accessible.description: proxy ? proxy.toolTip : ""
         // A name cut short by a narrow window is shown whole in the tooltip.
         Hint {
             text: {
@@ -375,10 +412,13 @@ Rectangle {
         contentItem: Text {
             id: shown
             text: picker.prompting ? (picker.proxy.placeholder ?? "") : picker.displayText
+            textFormat: Text.PlainText
             color: picker.hovered || picker.down ? root.t.hover_text
-                 : picker.prompting ? root.t.text_muted : root.t.text_primary
+                 : picker.prompting ? root.t.text_muted
+                 : picker.alert ? root.t.status_warn_text : root.t.text_primary
             font.pixelSize: root.fsBody
             font.italic: picker.prompting
+            font.weight: picker.alert ? Font.DemiBold : Font.Normal
             elide: Text.ElideRight
             verticalAlignment: Text.AlignVCenter
         }
@@ -386,6 +426,7 @@ Rectangle {
             x: picker.width - width - 11
             y: (picker.height - height) / 2
             text: root.m.glyphs.expand
+            textFormat: Text.PlainText
             font.family: root.t.iconFont
             font.pixelSize: root.fsCaption
             color: picker.hovered || picker.down ? root.t.hover_text : root.t.text_muted
@@ -393,8 +434,10 @@ Rectangle {
         background: Rectangle {
             radius: root.t.radiusControl
             color: picker.hovered || picker.down ? root.t.control_hover : root.t.control_surface
-            border.color: picker.visualFocus ? root.t.accent
-                        : picker.prompting ? root.t.status_warn_border : root.t.border
+            border.width: picker.alert ? 2 : 1
+            border.color: picker.prompting ? root.t.status_warn_border
+                        : picker.alert ? root.t.status_warn_text : root.t.control_edge
+            FocusRing { control: picker }
         }
         delegate: ItemDelegate {
             id: option
@@ -405,6 +448,7 @@ Rectangle {
             highlighted: picker.highlightedIndex === index
             contentItem: Text {
                 text: option.modelData
+                textFormat: Text.PlainText
                 color: option.highlighted ? root.t.hover_text : root.t.text_primary
                 font.pixelSize: root.fsBody
                 elide: Text.ElideRight
@@ -433,6 +477,7 @@ Rectangle {
                     height: picker.count === 0 ? 30 : 0
                     visible: picker.count === 0
                     text: "No choices available"
+                    textFormat: Text.PlainText
                     color: root.t.text_muted
                     font.pixelSize: root.fsBody
                     leftPadding: 8
@@ -452,6 +497,7 @@ Rectangle {
         property var proxy
         // "plain", "primary" or "danger"
         property string look: "plain"
+        property string help: proxy ? proxy.toolTip : ""
         text: proxy ? proxy.text : ""
         enabled: proxy ? proxy.enabled : false
         opacity: enabled ? 1 : 0.45
@@ -460,13 +506,14 @@ Rectangle {
         onClicked: if (proxy) root.press(this, proxy)
         Accessible.role: Accessible.Button
         Accessible.name: proxy && proxy.name !== "" ? proxy.name : text
-        Hint { text: btn.proxy ? btn.proxy.toolTip : "" }
+        Accessible.description: help
+        Hint { text: btn.help }
         background: Rectangle {
             radius: root.t.radiusControl
             color: btn.look === "primary" ? (btn.hovered ? root.t.accent_hover : root.t.accent)
                  : btn.look === "danger" ? root.t.action_destructive
                  : btn.hovered ? root.t.control_hover : root.t.control_surface
-            border.color: btn.look === "plain" ? root.t.border
+            border.color: btn.look === "plain" ? root.t.control_edge
                         : btn.look === "danger" ? root.t.action_destructive_border : "transparent"
             scale: btn.pressed ? 0.98 : 1
             FocusRing { control: btn }
@@ -474,6 +521,7 @@ Rectangle {
         contentItem: Text {
             id: caption
             text: btn.text
+            textFormat: Text.PlainText
             color: btn.look === "primary" ? root.t.text_on_accent
                  : btn.look === "danger" ? root.t.text_on_emphasis
                  : btn.hovered ? root.t.hover_text : root.t.text_primary
@@ -509,6 +557,7 @@ Rectangle {
         contentItem: Text {
             id: face
             text: root.hasIcons ? iconBtn.glyph : iconBtn.label
+            textFormat: Text.PlainText
             font.family: root.hasIcons ? root.t.iconFont : Application.font.family
             font.pixelSize: root.hasIcons ? root.fsLead : root.fsBody
             color: iconBtn.hovered ? root.t.hover_text : root.t.text_muted
@@ -537,6 +586,7 @@ Rectangle {
         }
         Text {
             id: chipText
+            textFormat: Text.PlainText
             anchors.centerIn: parent
             width: Math.min(implicitWidth, chip.width - 24)
             text: chip.proxy ? chip.proxy.text : ""
@@ -546,6 +596,7 @@ Rectangle {
             elide: Text.ElideRight
             Accessible.ignored: !chip.announced
             Accessible.name: chip.proxy && chip.proxy.name !== "" ? chip.proxy.name + ": " + text : text
+            Accessible.description: chip.proxy ? chip.proxy.toolTip : ""
         }
     }
 
@@ -597,6 +648,7 @@ Rectangle {
         Component {
             id: textRow
             Text {
+                textFormat: Text.PlainText
                 text: line.p.text
                 color: line.row.label !== "" ? root.t.text_primary : root.t.text_muted
                 font.pixelSize: root.fsBody
@@ -645,24 +697,24 @@ Rectangle {
     // A full-width row that opens the section under it.
     component Disclosure: KeyButton {
         id: disclosure
-        // Read when created, so a rebuilt section opens as the user left it.
-        property bool open: root.opened[subject] === true
+        property bool open: false
         property string subject: ""
         implicitHeight: 38
         onClicked: open = !open
-        onOpenChanged: root.opened[subject] = open
         Accessible.role: Accessible.Button
         Accessible.name: (open ? "Hide " : "Show ") + subject + " " + text.toLowerCase()
         background: Rectangle {
             radius: root.t.radiusControl
             color: disclosure.hovered || disclosure.open
                    ? root.t.control_surface : root.t.control_surface_alt
-            border.color: disclosure.visualFocus ? root.t.accent : root.t.border
+            border.color: root.t.control_edge
             Behavior on color { ColorAnimation { duration: root.t.motion } }
+            FocusRing { control: disclosure }
         }
         contentItem: RowLayout {
             spacing: 8
             Text {
+                textFormat: Text.PlainText
                 text: disclosure.text
                 color: root.t.text_primary
                 font.pixelSize: root.fsBody
@@ -671,11 +723,13 @@ Rectangle {
                 Layout.fillWidth: true
             }
             Text {
+                textFormat: Text.PlainText
                 text: disclosure.open ? "Hide" : "Show"
                 color: root.t.text_muted
                 font.pixelSize: root.fsCaption
             }
             Text {
+                textFormat: Text.PlainText
                 text: root.m.glyphs.expand
                 visible: root.hasIcons
                 font.family: root.t.iconFont
@@ -706,11 +760,11 @@ Rectangle {
             }
         }
         ColumnLayout {
-            visible: stage.card.trace && ui.levels.length > 1
+            visible: stage.card.trace && root.ui.levels.length > 1
             spacing: 6
             Layout.fillWidth: true
             LevelTrace {
-                points: ui.levels
+                points: root.ui.levels
                 Layout.fillWidth: true
                 implicitHeight: 52
                 Accessible.role: Accessible.Graphic
@@ -730,6 +784,7 @@ Rectangle {
                             anchors.verticalCenter: parent.verticalCenter
                         }
                         Text {
+                            textFormat: Text.PlainText
                             text: parent.modelData[0]
                             color: root.t.text_muted
                             font.pixelSize: root.fsCaption
@@ -772,16 +827,17 @@ Rectangle {
         onRequested: root.press(this, p)
         Accessible.role: isSwitch ? Accessible.CheckBox : Accessible.Button
         Accessible.name: p.text
+        Accessible.description: p.toolTip !== p.text ? p.toolTip : ""
         Hint { text: setting.p.toolTip !== setting.p.text ? setting.p.toolTip : "" }
         background: Rectangle {
             radius: root.t.radiusControl
             color: setting.hovered && setting.enabled ? root.t.control_surface_alt : "transparent"
-            border.width: setting.visualFocus ? 2 : 0
-            border.color: root.t.accent
+            FocusRing { control: setting; outset: 0 }
         }
         contentItem: RowLayout {
             spacing: 12
             Text {
+                textFormat: Text.PlainText
                 text: setting.p.text
                 color: setting.enabled ? root.t.text_primary : root.t.action_disabled_text
                 font.pixelSize: root.fsBody
@@ -800,6 +856,7 @@ Rectangle {
                 Layout.rightMargin: 10
             }
             Text {
+                textFormat: Text.PlainText
                 visible: !setting.isSwitch && setting.enabled && root.hasIcons
                 text: setting.row.kind === "menu" ? root.m.glyphs.expand : root.m.glyphs.next
                 Layout.rightMargin: 14
@@ -832,12 +889,14 @@ Rectangle {
             Layout.preferredWidth: 110
         }
         Text {
+            textFormat: Text.PlainText
             text: health.value.charAt(0).toUpperCase() + health.value.slice(1)
             color: root.t.text_primary
             font.pixelSize: root.fsBody
             wrapMode: Text.Wrap
             Layout.fillWidth: true
             Accessible.name: health.proxy.name + ": " + text
+            Accessible.description: health.proxy.toolTip
         }
     }
 
@@ -869,7 +928,7 @@ Rectangle {
             contentItem: Rectangle {
                 implicitWidth: 6
                 radius: 3
-                color: bar.pressed || bar.hovered ? root.t.text_muted : root.t.border_strong
+                color: bar.pressed || bar.hovered ? root.t.text_muted : root.t.control_edge
             }
         }
         ColumnLayout {
@@ -906,8 +965,7 @@ Rectangle {
                     Accessible.selectable: true
                     Accessible.selected: current
                     background: Rectangle {
-                        color: nav.current || nav.hovered || nav.visualFocus
-                               ? root.t.card_surface : "transparent"
+                        color: nav.current || nav.hovered ? root.t.card_surface : "transparent"
                         Behavior on color { ColorAnimation { duration: root.t.motion } }
                         Rectangle {
                             width: 3
@@ -919,11 +977,13 @@ Rectangle {
                                 NumberAnimation { duration: root.t.motion; easing.type: Easing.OutCubic }
                             }
                         }
+                        FocusRing { control: nav; outset: -4 }
                     }
                     contentItem: Column {
                         topPadding: 12
                         spacing: 6
                         Text {
+                            textFormat: Text.PlainText
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: nav.modelData[0]
                             visible: root.hasIcons
@@ -933,6 +993,7 @@ Rectangle {
                             font.pixelSize: root.fsTitle
                         }
                         Text {
+                            textFormat: Text.PlainText
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: nav.modelData[1]
                             color: nav.current || nav.hovered ? root.t.text_primary : root.t.text_muted
@@ -1002,6 +1063,7 @@ Rectangle {
             pad: 14
             // The route and the transport share a row when there is room, else the route is on top.
             GridLayout {
+                objectName: "topBar"
                 columns: root.wide ? 2 : 1
                 columnSpacing: 12
                 rowSpacing: 10
@@ -1013,9 +1075,12 @@ Rectangle {
                         proxy: root.m.top.input
                         Layout.fillWidth: true
                         Layout.preferredWidth: 200
-                        Layout.minimumWidth: 140
+                        // Beside the transport the pickers give up width first, so the Muted badge
+                        // and a large app font still fit; a cut name is whole in the tooltip.
+                        Layout.minimumWidth: root.wide ? 100 : 140
                     }
                     Text {
+                        textFormat: Text.PlainText
                         text: root.m.glyphs.next
                         visible: root.hasIcons
                         font.family: root.t.iconFont
@@ -1027,7 +1092,7 @@ Rectangle {
                         proxy: root.m.top.output
                         Layout.fillWidth: true
                         Layout.preferredWidth: 200
-                        Layout.minimumWidth: 140
+                        Layout.minimumWidth: root.wide ? 100 : 140
                     }
                     IconBtn { proxy: root.m.top.refresh; glyph: root.m.glyphs.refresh; label: "Refresh" }
                 }
@@ -1042,9 +1107,31 @@ Rectangle {
                         Layout.topMargin: 4
                         Layout.bottomMargin: 4
                     }
+                    // Said in words as well as by the switch: a mute nobody notices leaves the other
+                    // end hearing nothing.
+                    Rectangle {
+                        objectName: "mutedBadge"
+                        visible: root.m.top.mute.checked
+                        implicitWidth: mutedText.implicitWidth + 20
+                        implicitHeight: 26
+                        radius: 13
+                        color: root.t.status_warn_surface
+                        border.color: root.t.status_warn_border
+                        Text {
+                            id: mutedText
+                            anchors.centerIn: parent
+                            text: "Muted"
+                            textFormat: Text.PlainText
+                            color: root.t.status_warn_text
+                            font.pixelSize: root.fsBody
+                            font.weight: Font.DemiBold
+                            // The switch already says it, and the status line announces the change.
+                            Accessible.ignored: true
+                        }
+                    }
                     // The mode picker sits between Mute and Stop, so one slip cannot hit both.
                     Toggle { proxy: root.m.top.mute; text: "Mute" }
-                    Picker { proxy: root.m.top.mode; implicitWidth: 118 }
+                    Picker { proxy: root.m.top.mode; implicitWidth: 118; alert: root.m.top.mode.index > 0 }
                     Btn {
                         proxy: root.running ? root.m.top.stop : root.m.top.start
                         text: root.running ? "Stop" : "Start"
@@ -1073,6 +1160,7 @@ Rectangle {
                 border.color: root.t.status_warn_border
                 Text {
                     id: bannerText
+                    textFormat: Text.PlainText
                     anchors.fill: parent
                     anchors.margins: 8
                     text: banner.modelData.text
@@ -1109,6 +1197,7 @@ Rectangle {
                         spacing: 2
                         Layout.fillWidth: true
                         Text {
+                            textFormat: Text.PlainText
                             text: "PRESET"
                             color: root.t.text_muted
                             font.pixelSize: root.fsCaption
@@ -1119,6 +1208,7 @@ Rectangle {
                             spacing: 10
                             Text {
                                 objectName: "presetName"
+                                textFormat: Text.PlainText
                                 text: presetBar.preset.name
                                 color: root.t.text_primary
                                 font.pixelSize: root.fsHeading
@@ -1139,6 +1229,7 @@ Rectangle {
                                                                         : root.t.status_idle_border
                                 Text {
                                     id: stateText
+                                    textFormat: Text.PlainText
                                     anchors.centerIn: parent
                                     text: presetBar.preset.modified ? "Unsaved changes" : "Saved"
                                     color: presetBar.preset.modified ? root.t.status_warn_text
@@ -1213,13 +1304,13 @@ Rectangle {
                                 glyph: root.m.glyphs.previous
                                 label: "Prev"
                                 hint: "Previous EQ band"
-                                onClicked: ui.stepBand(-1)
+                                onClicked: root.ui.stepBand(-1)
                             }
                             IconBtn {
                                 glyph: root.m.glyphs.next
                                 label: "Next"
                                 hint: "Next EQ band"
-                                onClicked: ui.stepBand(1)
+                                onClicked: root.ui.stepBand(1)
                             }
                             // The band the editor shows; the graph prints this number on its handle once selected.
                             Rectangle {
@@ -1228,6 +1319,7 @@ Rectangle {
                                 radius: 10
                                 color: root.t.bandColors[eqCard.eq.band.index]
                                 Text {
+                                    textFormat: Text.PlainText
                                     anchors.centerIn: parent
                                     text: eqCard.eq.band.index + 1
                                     color: root.t.text_on_data_color
@@ -1236,6 +1328,7 @@ Rectangle {
                                 }
                             }
                             Text {
+                                textFormat: Text.PlainText
                                 text: eqCard.band.frequencyLabel.text
                                 color: root.t.text_primary
                                 font.pixelSize: root.fsLead
@@ -1274,27 +1367,36 @@ Rectangle {
                     }
                 }
 
-                RowLayout {
+                // Signal order reads left to right, then down. The cards are siblings in that order, so Tab
+                // and screen readers follow it; each sits under the card above it in its column.
+                Item {
+                    id: stageGrid
+                    objectName: "stageGrid"
+                    readonly property int lanes: root.wide ? 2 : 1
+                    readonly property int gap: 16
                     Layout.fillWidth: true
-                    spacing: 16
+                    implicitHeight: {
+                        let bottom = 0
+                        for (let i = 0; i < stageCards.count; ++i) {
+                            const card = stageCards.itemAt(i)
+                            if (card)
+                                bottom = Math.max(bottom, card.y + card.height)
+                        }
+                        return bottom
+                    }
                     Repeater {
-                        // Signal order reads left to right, then down.
-                        model: root.wide ? [[0, 2, 4], [1, 3]] : [[0, 1, 2, 3, 4]]
-                        delegate: ColumnLayout {
-                            id: lane
+                        id: stageCards
+                        model: root.m.stages
+                        delegate: StageCard {
+                            required property int index
                             required property var modelData
-                            spacing: 16
-                            Layout.alignment: Qt.AlignTop
-                            Layout.fillWidth: true
-                            Layout.preferredWidth: 1
-                            Repeater {
-                                model: lane.modelData
-                                delegate: StageCard {
-                                    required property int modelData
-                                    card: root.m.stages[modelData]
-                                    Layout.fillWidth: true
-                                }
-                            }
+                            readonly property Item above: index >= stageGrid.lanes
+                                                          ? stageCards.itemAt(index - stageGrid.lanes) : null
+                            card: modelData
+                            width: (stageGrid.width - (stageGrid.lanes - 1) * stageGrid.gap) / stageGrid.lanes
+                            height: implicitHeight
+                            x: (index % stageGrid.lanes) * (width + stageGrid.gap)
+                            y: above ? above.y + above.height + stageGrid.gap : 0
                         }
                     }
                 }
@@ -1305,6 +1407,7 @@ Rectangle {
                 Surface {
                     Layout.fillWidth: true
                     Text {
+                        textFormat: Text.PlainText
                         text: root.m.health.advice.text
                         color: root.t.text_primary
                         font.pixelSize: root.fsHeading
@@ -1357,14 +1460,15 @@ Rectangle {
                         FadeIn on opacity { id: fadeIn }
                         Btn {
                             text: "Export diagnostics"
+                            help: "Save a support snapshot without audio or device names (Ctrl+Shift+D)"
                             enabled: true
-                            Hint { text: "Save a support snapshot without audio or device names (Ctrl+Shift+D)" }
-                            onClicked: ui.exportDiagnostics()
+                            onClicked: root.ui.exportDiagnostics()
                         }
                         Btn {
                             text: "Reset drop counter"
+                            help: "Set the dropped-audio count back to zero."
                             enabled: true
-                            onClicked: ui.resetDrops()
+                            onClicked: root.ui.resetDrops()
                         }
                         Item { Layout.fillWidth: true }
                     }
@@ -1431,7 +1535,7 @@ Rectangle {
                 implicitHeight: 8
                 radius: 4
                 color: ({ ok: root.t.status_ok_text, warn: root.t.status_warn_text })[
-                    root.m.status.transmission.state] ?? root.t.border_strong
+                    root.m.status.transmission.state] ?? root.t.control_edge
             }
             StatusText {
                 objectName: "statusTransmission"

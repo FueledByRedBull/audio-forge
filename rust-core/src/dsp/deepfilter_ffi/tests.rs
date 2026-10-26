@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -387,6 +388,7 @@ mod tests {
                 DeepFilterRuntimeConfig::default(),
                 &app_paths,
                 false,
+                None,
             ) {
                 Ok(ffi) => ffi,
                 Err(error) => {
@@ -690,5 +692,339 @@ mod tests {
             DEEPFILTER_FRAME_SIZE
         );
         assert!(output.iter().all(|sample| sample.is_finite()));
+    }
+
+    // The pinned library aborts the whole process when it cannot load a model
+    // or process a frame, and nothing on this side can catch that. The failure
+    // paths are therefore driven through stand-in functions with the library's
+    // ABI: a failing load, a failing frame and a model that is not the pinned
+    // one must each leave the process alive, the audio passing through
+    // unchanged and the reason in `backend_error`.
+
+    #[derive(Clone, Copy, Default)]
+    struct FakeLibrary {
+        fail_create: bool,
+        frame_length: usize,
+        /// Frames from this call on return a NaN SNR.
+        fail_process_from: Option<u32>,
+        created: u32,
+        freed: u32,
+        processed: u32,
+        non_finite_input_seen: bool,
+    }
+
+    thread_local! {
+        static FAKE: Cell<FakeLibrary> = Cell::new(FakeLibrary::default());
+    }
+
+    fn fake_update<R>(update: impl FnOnce(&mut FakeLibrary) -> R) -> R {
+        FAKE.with(|cell| {
+            let mut fake = cell.get();
+            let result = update(&mut fake);
+            cell.set(fake);
+            result
+        })
+    }
+
+    unsafe extern "C" fn fake_create(
+        _path: *const i8,
+        _atten_lim: f32,
+        _log_level: *const i8,
+    ) -> *mut DFState {
+        if fake_update(|fake| {
+            fake.created += 1;
+            fake.fail_create
+        }) {
+            std::ptr::null_mut()
+        } else {
+            NonNull::<DFState>::dangling().as_ptr()
+        }
+    }
+
+    unsafe extern "C" fn fake_free(_state: *mut DFState) {
+        fake_update(|fake| fake.freed += 1);
+    }
+
+    unsafe extern "C" fn fake_frame_length(_state: *mut DFState) -> usize {
+        fake_update(|fake| fake.frame_length)
+    }
+
+    unsafe extern "C" fn fake_process(
+        _state: *mut DFState,
+        input: *mut f32,
+        output: *mut f32,
+    ) -> f32 {
+        let input = std::slice::from_raw_parts(input, DEEPFILTER_FRAME_SIZE);
+        let output = std::slice::from_raw_parts_mut(output, DEEPFILTER_FRAME_SIZE);
+        let fails = fake_update(|fake| {
+            fake.non_finite_input_seen |= input.iter().any(|sample| !sample.is_finite());
+            let call = fake.processed;
+            fake.processed += 1;
+            fake.fail_process_from.is_some_and(|from| call >= from)
+        });
+        for (out, sample) in output.iter_mut().zip(input) {
+            *out = sample * 0.5;
+        }
+        if fails {
+            f32::NAN
+        } else {
+            10.0
+        }
+    }
+
+    unsafe extern "C" fn fake_set(_state: *mut DFState, _value: f32) {}
+
+    fn fake_library() -> DeepFilterLib {
+        DeepFilterLib {
+            _library: None,
+            df_create: fake_create,
+            df_free: fake_free,
+            df_get_frame_length: fake_frame_length,
+            df_process_frame: fake_process,
+            df_set_atten_lim: fake_set,
+            df_set_post_filter_beta: fake_set,
+        }
+    }
+
+    fn healthy_fake() -> FakeLibrary {
+        let fake = FakeLibrary {
+            frame_length: DEEPFILTER_FRAME_SIZE,
+            ..FakeLibrary::default()
+        };
+        FAKE.with(|cell| cell.set(fake));
+        fake
+    }
+
+    /// A processor built on the stand-in library and a stand-in model file:
+    /// `pinned` resolves the file as the bundled model, so it must pass the
+    /// identity check; otherwise it is an external override, which skips it.
+    fn fake_backed_processor(name: &str, pinned: bool) -> DeepFilterProcessor {
+        let model = temp_test_dir(name).join("model.tar.gz");
+        fs::write(&model, b"not a DeepFilterNet model").unwrap();
+        let app_paths = AppOwnedDeepFilterPaths {
+            library: None,
+            model: pinned.then(|| model.clone()),
+        };
+        DeepFilterProcessor::from_library(
+            Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+            DeepFilterModel::LowLatency,
+            DeepFilterRuntimeConfig::default(),
+            Ok(fake_library()),
+            &app_paths,
+            !pinned,
+            (!pinned).then_some(model.as_path()),
+        )
+    }
+
+    /// Push `frames` constant frames (0.1, 0.2, ...) through the processor and
+    /// return everything that came out.
+    fn run_frames(processor: &mut DeepFilterProcessor, frames: usize) -> Vec<f32> {
+        let mut output = Vec::new();
+        for frame in 0..frames {
+            let input = [0.1 * (frame + 1) as f32; DEEPFILTER_FRAME_SIZE];
+            processor.push_samples(&input);
+            processor.process_frames();
+            let mut block = [0.0_f32; DEEPFILTER_FRAME_SIZE];
+            assert_eq!(
+                processor.pop_samples_into(&mut block),
+                DEEPFILTER_FRAME_SIZE
+            );
+            output.extend_from_slice(&block);
+        }
+        assert_eq!(processor.pending_input(), 0);
+        assert_eq!(processor.available_samples(), 0);
+        output
+    }
+
+    fn assert_dry_passthrough(output: &[f32]) {
+        for (frame, block) in output.chunks(DEEPFILTER_FRAME_SIZE).enumerate() {
+            let expected = 0.1 * (frame + 1) as f32;
+            assert!(block.iter().all(|sample| *sample == expected), "{frame}");
+        }
+    }
+
+    #[test]
+    fn a_model_that_is_not_the_pinned_one_never_reaches_the_library() {
+        healthy_fake();
+        let mut processor = fake_backed_processor("not-pinned", true);
+        assert_eq!(fake_update(|fake| fake.created), 0);
+        assert!(processor
+            .backend_error()
+            .is_some_and(|error| error.contains("is not the pinned model")));
+        assert!(!processor.is_ffi_available());
+        assert_dry_passthrough(&run_frames(&mut processor, 3));
+    }
+
+    #[test]
+    fn a_failing_model_load_leaves_dry_passthrough_and_says_why() {
+        let fake = healthy_fake();
+        FAKE.with(|cell| {
+            cell.set(FakeLibrary {
+                fail_create: true,
+                ..fake
+            })
+        });
+        let mut processor = fake_backed_processor("create-fails", false);
+        assert_eq!(fake_update(|fake| (fake.created, fake.freed)), (1, 0));
+        assert!(processor.backend_error().is_some_and(|error| error
+            .starts_with("DeepFilterNet init failed: Failed to create DeepFilterNet instance")));
+        assert!(!processor.is_ffi_available());
+        assert_dry_passthrough(&run_frames(&mut processor, 3));
+        assert_eq!(fake_update(|fake| fake.processed), 0);
+    }
+
+    #[test]
+    fn a_frame_size_mismatch_frees_the_state_and_falls_back() {
+        let fake = healthy_fake();
+        FAKE.with(|cell| {
+            cell.set(FakeLibrary {
+                frame_length: 0,
+                ..fake
+            })
+        });
+        let mut processor = fake_backed_processor("frame-size", false);
+        assert_eq!(fake_update(|fake| (fake.created, fake.freed)), (1, 1));
+        assert!(processor
+            .backend_error()
+            .is_some_and(|error| error.contains("frame size mismatch: expected 480, got 0")));
+        assert_dry_passthrough(&run_frames(&mut processor, 2));
+    }
+
+    #[test]
+    fn a_failing_inference_falls_back_without_losing_or_corrupting_samples() {
+        let fake = healthy_fake();
+        FAKE.with(|cell| {
+            cell.set(FakeLibrary {
+                fail_process_from: Some(2),
+                ..fake
+            })
+        });
+        let mut processor = fake_backed_processor("process-fails", false);
+        assert!(processor.is_ffi_available());
+        let output = run_frames(&mut processor, 6);
+
+        assert_eq!(output.len(), 6 * DEEPFILTER_FRAME_SIZE);
+        assert!(output.iter().all(|sample| sample.is_finite()));
+        assert!(processor.backend_failed());
+        assert!(!processor.is_ffi_available());
+        assert_eq!(
+            processor.backend_error(),
+            Some("DeepFilterNet processing failed with non-finite SNR")
+        );
+        assert_eq!(processor.successful_inference_frames(), 2);
+        let frames: Vec<&[f32]> = output.chunks(DEEPFILTER_FRAME_SIZE).collect();
+        // Frames the library handled are its (here, halved) output; once it
+        // failed, the dry input follows with the model's one-frame delay kept.
+        assert!(frames[0].iter().all(|sample| *sample == 0.1 * 0.5));
+        assert!(frames[1].iter().all(|sample| *sample == 0.2 * 0.5));
+        for (frame, block) in frames.iter().enumerate().skip(2) {
+            let delayed = 0.1 * frame as f32;
+            assert!(block.iter().all(|sample| *sample == delayed));
+        }
+        drop(processor);
+        assert_eq!(fake_update(|fake| fake.freed), 1);
+    }
+
+    #[test]
+    fn non_finite_input_is_zeroed_before_it_reaches_the_library() {
+        healthy_fake();
+        let mut processor = fake_backed_processor("non-finite-input", false);
+        let mut input = [0.2_f32; DEEPFILTER_FRAME_SIZE];
+        input[3] = f32::NAN;
+        input[7] = f32::INFINITY;
+        processor.push_samples(&input);
+        processor.process_frames();
+        let mut output = [0.0_f32; DEEPFILTER_FRAME_SIZE];
+        assert_eq!(
+            processor.pop_samples_into(&mut output),
+            DEEPFILTER_FRAME_SIZE
+        );
+        assert_eq!(fake_update(|fake| fake.processed), 1);
+        assert!(!fake_update(|fake| fake.non_finite_input_seen));
+        assert!(output.iter().all(|sample| sample.is_finite()));
+        assert!(processor.is_ffi_available());
+    }
+
+    /// The real library ends the process on a model file it cannot parse, so
+    /// a corrupt bundled model must be refused before the library is called.
+    #[test]
+    fn a_corrupt_bundled_model_is_refused_before_the_real_library_sees_it() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let library = repo_root.join("df.dll");
+        if !cfg!(all(windows, debug_assertions)) || !library.is_file() {
+            eprintln!(
+                "SKIPPED: {} absent or not a debug Windows build",
+                library.display()
+            );
+            return;
+        }
+        let model = temp_test_dir("corrupt-bundled-model").join("model.tar.gz");
+        fs::write(&model, b"truncated download").unwrap();
+        let app_paths = AppOwnedDeepFilterPaths {
+            library: Some(library),
+            model: Some(model),
+        };
+        for model_kind in [DeepFilterModel::LowLatency, DeepFilterModel::Standard] {
+            let mut processor = DeepFilterProcessor::from_library(
+                Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+                model_kind,
+                DeepFilterRuntimeConfig::default(),
+                DeepFilterLib::try_load(&app_paths, false),
+                &app_paths,
+                false,
+                None,
+            );
+            assert!(processor
+                .backend_error()
+                .is_some_and(|error| error.contains("is not the pinned model")));
+            assert!(!processor.is_ffi_available());
+            assert_dry_passthrough(&run_frames(&mut processor, 2));
+        }
+    }
+
+    /// The shipped library must answer a model it cannot load with a null
+    /// state. A library without the abort-free C API ends the process
+    /// instead, so the check runs in a child process: such a library fails
+    /// this test and leaves the rest of the run alone.
+    #[test]
+    fn the_real_library_reports_a_corrupt_model_instead_of_aborting() {
+        const CHILD: &str = "AUDIOFORGE_TEST_CORRUPT_MODEL_CHILD";
+        let library = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join(if cfg!(windows) { "df.dll" } else { "libdf.so" });
+        if std::env::var_os(CHILD).is_none() {
+            if !library.is_file() {
+                eprintln!("SKIPPED: {} is absent", library.display());
+                return;
+            }
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "--nocapture"])
+                .arg("dsp::deepfilter_ffi::tests::the_real_library_reports_a_corrupt_model_instead_of_aborting")
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "{} ended the process on a corrupt model ({status}); rebuild it with build_deepfilter.ps1",
+                library.display()
+            );
+            return;
+        }
+
+        let app_paths = AppOwnedDeepFilterPaths {
+            library: Some(library),
+            model: None,
+        };
+        let lib = Arc::new(DeepFilterLib::try_load(&app_paths, false).expect("the library loads"));
+        let corrupt = temp_test_dir("corrupt-model").join("DeepFilterNet3_ll_onnx.tar.gz");
+        fs::write(&corrupt, b"truncated download").unwrap();
+        let error = DeepFilterFFI::open(lib, DeepFilterRuntimeConfig::default(), &corrupt, None)
+            .err()
+            .expect("a corrupt model is an error");
+        assert!(
+            error.contains("Failed to create DeepFilterNet instance"),
+            "{error}"
+        );
     }
 }

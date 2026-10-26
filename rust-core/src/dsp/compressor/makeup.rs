@@ -393,11 +393,8 @@ impl MakeupController {
         self.auto_makeup_activity_reliability = 0.0;
         self.clear_auto_makeup_sample_window();
         if let Some(meter) = &mut self.loudness_meter {
-            if meter.reset().is_ok() {
-                self.current_lufs = -100.0;
-            }
-        } else {
-            self.current_lufs = -100.0;
+            meter.reset();
         }
+        self.current_lufs = -100.0;
     }
 }

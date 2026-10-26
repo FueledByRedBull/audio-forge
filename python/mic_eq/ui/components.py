@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QVariantAnimation
 from PySide6.QtGui import QFont, QFontDatabase, QPainter, QPen
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QFormLayout,
     QFrame,
@@ -122,10 +123,10 @@ class ToggleSwitch(QCheckBox):
             self.TRACK_WIDTH,
             self.TRACK_HEIGHT,
         )
-        off = qcolor(PALETTE.border_strong)
+        off = qcolor(PALETTE.control_edge)
         on = qcolor(PALETTE.accent)
         blend = self._position
-        color = qcolor(PALETTE.border_strong)
+        color = qcolor(PALETTE.control_edge)
         color.setRgbF(
             off.redF() + (on.redF() - off.redF()) * blend,
             off.greenF() + (on.greenF() - off.greenF()) * blend,
@@ -178,6 +179,13 @@ def live_output_muted_notice() -> QLabel:
     label.setWordWrap(True)
     label.setStyleSheet(status_chip_style("warn"))
     return label
+
+
+def session_is_ending() -> bool:
+    """Whether Windows is signing out or shutting down, which the main window says on the app."""
+
+    app = QApplication.instance()
+    return app is not None and app.property("audioforge_session_ending") is True
 
 
 def update_label(label: QLabel, text: str, style: str) -> None:

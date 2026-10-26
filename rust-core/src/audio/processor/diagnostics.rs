@@ -63,4 +63,6 @@ struct StreamRecoveryState {
     /// not replace it with a callback's error code.
     reason_pending: bool,
     restart_count: u64,
+    /// When the suppressor was last rebuilt (`now_micros`; 0 = never).
+    last_suppressor_rebuild_us: u64,
 }

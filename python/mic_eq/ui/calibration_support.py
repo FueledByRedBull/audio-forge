@@ -16,8 +16,17 @@ from ..config import EQSettings, Preset
 
 logger = logging.getLogger(__name__)
 
-RAINBOW_PASSAGE = """The Rainbow Passage
-The rainbow is a division of white light into many beautiful colors. These take the shape of a long round arch, with its path high above, and its two ends apparently beyond the horizon. There is, according to legend, a boiling pot of gold at one end. People look, but no one ever finds it. When a man looks for something beyond his reach, his friends say he is looking for the pot of gold at the end of the rainbow. Throughout the centuries, men have been fascinated by this spectacle of the sky. They have tried to find explanations for it. Scientists, however, have found that it is caused by the reflection and refraction of sunlight on drops of water in the air."""
+RAINBOW_PASSAGE = (
+    "The Rainbow Passage\n"
+    "The rainbow is a division of white light into many beautiful colors. These take the "
+    "shape of a long round arch, with its path high above, and its two ends apparently "
+    "beyond the horizon. There is, according to legend, a boiling pot of gold at one end. "
+    "People look, but no one ever finds it. When a man looks for something beyond his reach, "
+    "his friends say he is looking for the pot of gold at the end of the rainbow. Throughout "
+    "the centuries, men have been fascinated by this spectacle of the sky. They have tried "
+    "to find explanations for it. Scientists, however, have found that it is caused by the "
+    "reflection and refraction of sunlight on drops of water in the air."
+)
 
 TOO_QUIET_DB = -40.0
 TOO_LOUD_DB = -3.0

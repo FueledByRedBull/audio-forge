@@ -401,7 +401,10 @@ def test_bundle_runtime_pins_the_bundled_vad_model(tmp_path, monkeypatch) -> Non
         "module_from_spec",
         lambda _spec: module,
     )
-    monkeypatch.delenv("VAD_MODEL_PATH", raising=False)
+    # load_bundled_core writes the variable straight into os.environ; setting it
+    # first makes monkeypatch restore the original state (usually absent) afterwards.
+    monkeypatch.setenv("VAD_MODEL_PATH", "set so that monkeypatch restores it")
+    monkeypatch.delenv("VAD_MODEL_PATH")
 
     loaded = BUNDLE_RUNTIME.load_bundled_core(tmp_path)
 

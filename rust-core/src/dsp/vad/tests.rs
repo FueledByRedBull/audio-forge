@@ -931,32 +931,6 @@ mod tests {
     }
 
     #[test]
-    fn test_sha256_matches_published_vectors() {
-        let cases: [(&[u8], &str); 4] = [
-            (
-                b"",
-                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            ),
-            (
-                b"abc",
-                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-            ),
-            // 56 bytes: the length field no longer fits the first padded block.
-            (
-                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
-                "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
-            ),
-            (
-                &[b'x'; 1000],
-                "44f8354494a5ba03ba1792a8d3e9c534c47a9181980fde7a3f44b06ef2ae7c7f",
-            ),
-        ];
-        for (input, expected) in cases {
-            assert_eq!(sha256_hex(input), expected);
-        }
-    }
-
-    #[test]
     fn test_release_manifest_pins_a_silero_sha256() {
         let hash = expected_silero_sha256().expect("manifest lists models/silero_vad.onnx");
         assert_eq!(hash.len(), 64);

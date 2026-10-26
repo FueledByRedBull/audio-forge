@@ -20,17 +20,6 @@ class DeviceInfo:
     def __repr__(self) -> str: ...
 
 
-class InputFormats:
-    name: str
-    endpoint_id: str | None
-    is_default: bool
-    # (sample format, channels, sample rate)
-    default_config: tuple[str, int, int] | None
-    # (sample format, channels, lowest rate, highest rate) per supported range
-    supported: list[tuple[str, int, int, int]]
-    error: str | None
-
-
 class AudioProcessor:
     """Native audio engine.
 
@@ -241,7 +230,6 @@ class AudioProcessor:
 
 
 def list_input_devices() -> list[DeviceInfo]: ...
-def list_input_device_formats() -> list[InputFormats]: ...
 def list_output_devices() -> list[DeviceInfo]: ...
 def eq_magnitude_response(
     frequencies_hz: Sequence[float],

@@ -148,6 +148,8 @@ pub(super) struct WorkerLink {
     /// When each owed result was asked for, oldest first from `owed_head`.
     owed_since: [Instant; WORKER_QUEUE_FRAMES],
     owed_head: usize,
+    /// A test's own threshold for a late frame, in place of `WORKER_LATE_AFTER`.
+    #[cfg(test)]
     late_after: Duration,
 }
 
@@ -161,6 +163,7 @@ impl WorkerLink {
             last_look: None,
             owed_since: [Instant::now(); WORKER_QUEUE_FRAMES],
             owed_head: 0,
+            #[cfg(test)]
             late_after: WORKER_LATE_AFTER,
         }
     }
@@ -172,21 +175,29 @@ impl WorkerLink {
 
     /// A result came back.
     fn heard_from_worker(&mut self) {
-        self.silent_for = Duration::ZERO;
-        self.last_look = None;
+        self.forget_silence();
         self.owed_head = (self.owed_head + 1) % WORKER_QUEUE_FRAMES;
     }
 
+    fn forget_silence(&mut self) {
+        self.silent_for = Duration::ZERO;
+        self.last_look = None;
+    }
+
     /// How many of the results the worker owes were asked for longer ago than
-    /// `late_after`: the frames it is behind with, which the published latency
-    /// counts one by one. Frames offered together in one pass are not late
-    /// while the worker is working through them.
+    /// `WORKER_LATE_AFTER`: the frames it is behind with, which the published
+    /// latency counts one by one. Frames offered together in one pass are not
+    /// late while the worker is working through them.
     pub(super) fn late_frames(&self) -> usize {
+        #[cfg(test)]
+        let late_after = self.late_after;
+        #[cfg(not(test))]
+        let late_after = WORKER_LATE_AFTER;
         let now = Instant::now();
         (0..self.owed())
             .take_while(|index| {
                 let since = self.owed_since[(self.owed_head + index) % WORKER_QUEUE_FRAMES];
-                now.saturating_duration_since(since) > self.late_after
+                now.saturating_duration_since(since) > late_after
             })
             .count()
     }
@@ -195,8 +206,7 @@ impl WorkerLink {
     /// result and none is waiting to be collected.
     fn look_at_silence(&mut self) {
         if self.owed() == 0 || self.worker.has_result() {
-            self.silent_for = Duration::ZERO;
-            self.last_look = None;
+            self.forget_silence();
             return;
         }
         let now = Instant::now();

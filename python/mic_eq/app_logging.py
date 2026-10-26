@@ -3,31 +3,32 @@
 from __future__ import annotations
 
 import logging
-import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from .config_parts import shared
 
-LOG_DIR_NAME = "AudioForge"
+
+LOG_DIR_NAME = shared.APPDATA_DIR_NAME
 LOG_FILE_MAX_BYTES = 1_000_000
 LOG_FILE_BACKUP_COUNT = 3
 
 
-def _base_config_dir() -> Path:
-    if os.name == "nt":
-        return Path(os.environ.get("APPDATA", Path.home()))
-    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-
-
 def get_log_file() -> Path:
     """Return the desktop app log file path."""
-    return _base_config_dir() / LOG_DIR_NAME / "logs" / "app.log"
+    return shared._config_base_dir() / LOG_DIR_NAME / "logs" / "app.log"
 
 
 def configure_app_logging() -> Path:
     """Configure rotating file logging for the desktop app."""
     log_file = get_log_file()
     try:
+        # Resolving the config folder runs the legacy migration, so it must come
+        # before anything creates or opens files inside the folder being swapped.
+        shared.get_config_file()
+        if shared.migration_pending():
+            logging.getLogger(__name__).warning("File logging is off until the config migration completes")
+            return log_file
         log_file.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         # A read-only or locked profile must not stop the app from starting.

@@ -567,6 +567,12 @@ impl AudioProcessor {
             control.model,
             Arc::clone(&self.shared.suppressor.strength),
         );
+        // Before the stream is marked running: a model selected from now on has
+        // to reach the loop as a queued engine, and one selected earlier has.
+        self.shared
+            .suppressor
+            .engine_model
+            .store(control.model as u8, Ordering::Release);
         (control, engine)
     }
 

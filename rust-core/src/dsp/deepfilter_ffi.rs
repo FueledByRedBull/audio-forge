@@ -79,10 +79,13 @@ use std::sync::{Mutex, OnceLock};
 use std::vec::Vec;
 #[cfg(test)]
 pub(crate) use worker::WORKER_TRANSIT_SAMPLES as TEST_WORKER_TRANSIT_SAMPLES;
-use worker::{InferenceWorker, WorkerLink, WORKER_TRANSIT_SAMPLES};
+use worker::{InferenceWorker, WorkerLink, WORKER_QUEUE_FRAMES, WORKER_TRANSIT_SAMPLES};
 
 /// DeepFilterNet frame size (same as RNNoise: 10ms at 48kHz)
 pub const DEEPFILTER_FRAME_SIZE: usize = 480;
+/// The most a worker can hand back in one pass: every frame it may owe at once.
+/// The loop drains it into a fixed scratch buffer, which must hold it.
+pub const WORKER_OWED_SAMPLES: usize = WORKER_QUEUE_FRAMES * DEEPFILTER_FRAME_SIZE;
 /// What the input queue holds: the loop's backlog window (250 ms, read in at
 /// most two passes of 8192 samples) and one frame. A frame stays queued while it
 /// is at the worker, so a backlog read in two passes must find room for both.
@@ -1327,14 +1330,19 @@ impl NoiseSuppressor for DeepFilterProcessor {
 
     fn reported_latency_samples(&self) -> usize {
         match self.link.as_ref() {
-            // Frames at the worker are not counted one by one: they are back
-            // within `WORKER_TRANSIT_SAMPLES`, the same at every moment.
+            // A frame at the worker is back within `WORKER_TRANSIT_SAMPLES`, the
+            // same at every moment; only the frames it is late with are counted
+            // one by one, so a backlog shows. (Counting every frame it owes
+            // would let a pass that offers a few at once move the figure.)
             Some(link) if self.enabled && !self.backend_failed => {
                 let unoffered = self
                     .input_buffer
                     .len()
                     .saturating_sub(link.offered() * DEEPFILTER_FRAME_SIZE);
-                self.latency_samples() + unoffered + WORKER_TRANSIT_SAMPLES
+                self.latency_samples()
+                    + unoffered
+                    + WORKER_TRANSIT_SAMPLES
+                    + link.late_frames() * DEEPFILTER_FRAME_SIZE
             }
             _ => self.latency_samples() + self.pending_input(),
         }

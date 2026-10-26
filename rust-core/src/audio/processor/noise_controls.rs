@@ -150,6 +150,22 @@ impl AudioProcessor {
             );
         }
 
+        self.record_selected_model(model);
+        self.shared
+            .suppressor
+            .reset_requested
+            .store(true, Ordering::Release);
+        self.shared.suppressor.dirty.store(true, Ordering::Release);
+        // The stream can have started while the engine loaded (a model load
+        // takes a few hundred milliseconds) or while the selection was being
+        // recorded. `start` does not wait for this call.
+        if !running && self.shared.stream.running.load(Ordering::Acquire) {
+            return self.settle_selection_with_started_stream(model, build);
+        }
+        true
+    }
+
+    pub(super) fn record_selected_model(&self, model: NoiseModel) {
         if let Ok(mut control) = self.shared.suppressor.control.lock() {
             control.model = model;
         }
@@ -158,19 +174,24 @@ impl AudioProcessor {
             .suppressor
             .current_model
             .store(model as u8, Ordering::Release);
-        self.shared
-            .suppressor
-            .reset_requested
-            .store(true, Ordering::Release);
-        self.shared.suppressor.dirty.store(true, Ordering::Release);
-        // The stream can have started while the engine loaded (a model load
-        // takes a few hundred milliseconds) or while the selection was being
-        // recorded. It began on the model it found then, and only a queued
-        // engine moves it to this one. `start` does not wait for this call.
-        if !running && self.shared.stream.running.load(Ordering::Acquire) {
-            return self.rebuild_with(build);
+    }
+
+    /// The stream began on the model it found then, and only a queued engine
+    /// moves it to another. When it found `model` already, nothing is needed.
+    /// When the engine cannot be built the selection is undone, to the model the
+    /// loop runs, so the control and the loop agree and nothing waits for an
+    /// engine that will not come.
+    pub(super) fn settle_selection_with_started_stream(
+        &self,
+        model: NoiseModel,
+        build: impl Fn(NoiseModel, bool) -> NoiseSuppressionEngine,
+    ) -> bool {
+        let live = self.shared.suppressor.engine_model.load(Ordering::Acquire);
+        if live == model as u8 || self.rebuild_with(build) {
+            return true;
         }
-        true
+        self.record_selected_model(model_from_code(live));
+        false
     }
 
     pub(super) fn rebuild_noise_suppressor(&self) -> bool {
@@ -216,15 +237,7 @@ impl AudioProcessor {
 
     /// Get current noise suppression model
     pub fn get_noise_model(&self) -> NoiseModel {
-        let model_u8 = self.shared.suppressor.current_model.load(Ordering::Acquire);
-        match model_u8 {
-            0 => NoiseModel::RNNoise,
-            #[cfg(feature = "deepfilter")]
-            1 => NoiseModel::DeepFilterNetLL,
-            #[cfg(feature = "deepfilter")]
-            2 => NoiseModel::DeepFilterNet,
-            _ => NoiseModel::RNNoise,
-        }
+        model_from_code(self.shared.suppressor.current_model.load(Ordering::Acquire))
     }
 
     /// Get list of available noise models
@@ -262,5 +275,16 @@ impl AudioProcessor {
         }
 
         models
+    }
+}
+
+fn model_from_code(code: u8) -> NoiseModel {
+    match code {
+        0 => NoiseModel::RNNoise,
+        #[cfg(feature = "deepfilter")]
+        1 => NoiseModel::DeepFilterNetLL,
+        #[cfg(feature = "deepfilter")]
+        2 => NoiseModel::DeepFilterNet,
+        _ => NoiseModel::RNNoise,
     }
 }

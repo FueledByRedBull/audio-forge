@@ -638,6 +638,7 @@ struct RetireProbe {
     model: NoiseModel,
     retired: Arc<std::sync::atomic::AtomicBool>,
     enabled: bool,
+    available: bool,
 }
 
 impl RetireProbe {
@@ -646,6 +647,18 @@ impl RetireProbe {
             model,
             retired: Arc::clone(retired),
             enabled: true,
+            available: true,
+        })
+    }
+
+    /// An engine whose backend did not load.
+    #[cfg(feature = "deepfilter")]
+    fn unavailable(model: NoiseModel) -> Box<Self> {
+        Box::new(Self {
+            model,
+            retired: Arc::default(),
+            enabled: true,
+            available: false,
         })
     }
 }
@@ -682,7 +695,7 @@ impl NoiseSuppressor for RetireProbe {
         480
     }
     fn backend_available(&self) -> bool {
-        true
+        self.available
     }
     fn backend_error(&self) -> Option<&str> {
         None
@@ -1109,5 +1122,167 @@ mod worker_engine {
             .unwrap()
             .try_pop()
             .is_some());
+    }
+
+    #[test]
+    fn a_selection_the_started_stream_already_has_needs_no_second_engine() {
+        // `set_noise_model` recorded the model before `start` took the control,
+        // so the loop began on it; queueing another engine would only load it
+        // again and swap it in with a reset and a fade.
+        let processor = AudioProcessor::new();
+        processor.record_selected_model(NoiseModel::DeepFilterNetLL);
+        let first = Arc::new(AtomicBool::new(false));
+        let mut offline = OfflineLoop::new(
+            &processor,
+            OfflineLoopConfig {
+                suppressor: Some(RetireProbe::boxed(NoiseModel::DeepFilterNetLL, &first)),
+                ..OfflineLoopConfig::default()
+            },
+        );
+        let builds = Cell::new(0);
+        let settled =
+            processor.settle_selection_with_started_stream(NoiseModel::DeepFilterNetLL, |_, _| {
+                builds.set(builds.get() + 1);
+                RetireProbe::boxed(NoiseModel::DeepFilterNetLL, &first)
+            });
+
+        assert!(settled);
+        assert_eq!(builds.get(), 0);
+        offline.run_until_idle();
+        assert!(
+            !first.load(Ordering::SeqCst),
+            "the running engine was replaced"
+        );
+        assert!(processor
+            .shared
+            .suppressor
+            .retired_rx
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .try_pop()
+            .is_none());
+    }
+
+    #[test]
+    fn a_selection_whose_engine_cannot_be_built_is_undone_for_the_started_stream() {
+        // The stream began on RNNoise; the selection of another model was
+        // recorded after that; the engine for it does not load. The control must
+        // not go on saying the new model, with the loop waiting for an engine
+        // that never comes, and the caller must hear that it failed.
+        let processor = AudioProcessor::new();
+        let first = Arc::new(AtomicBool::new(false));
+        let mut offline = OfflineLoop::new(
+            &processor,
+            OfflineLoopConfig {
+                suppressor: Some(RetireProbe::boxed(NoiseModel::RNNoise, &first)),
+                ..OfflineLoopConfig::default()
+            },
+        );
+        processor.record_selected_model(NoiseModel::DeepFilterNetLL);
+        processor
+            .shared
+            .suppressor
+            .dirty
+            .store(true, Ordering::Release);
+
+        let settled = processor
+            .settle_selection_with_started_stream(NoiseModel::DeepFilterNetLL, |model, _| {
+                RetireProbe::unavailable(model)
+            });
+
+        assert!(!settled);
+        assert_eq!(processor.get_noise_model(), NoiseModel::RNNoise);
+        assert_eq!(
+            processor
+                .shared
+                .suppressor
+                .rt_control
+                .snapshot()
+                .unwrap()
+                .model,
+            NoiseModel::RNNoise
+        );
+        offline.run_until_idle();
+        assert!(!processor.shared.suppressor.dirty.load(Ordering::Acquire));
+        assert!(
+            !first.load(Ordering::SeqCst),
+            "the running engine was replaced"
+        );
+    }
+
+    #[test]
+    fn the_drift_estimate_steps_once_per_block_however_the_worker_delivers() {
+        // The estimate steers how the output is retimed. It is a smoothed
+        // queue-level error with its time constant set per block, as it was when
+        // every block wrote once. Two frames in one block come out of the worker
+        // 25 ms apart, on separate idle passes: two writes, one step.
+        let fake = Fake::new();
+        fake.delay_ms.store(25, Ordering::Release);
+        let (_processor, mut offline) = loop_with_worker(&fake);
+        let mut tone = Tone::new(440.0, 0.2);
+        let mut steps_per_block = Vec::new();
+        for _ in 0..2 {
+            assert_eq!(offline.push_input(&tone.block(2 * BLOCK)), 2 * BLOCK);
+            let mut last = offline.drift_error_ema();
+            let mut steps = 0;
+            let until = Instant::now() + Duration::from_millis(400);
+            while Instant::now() < until {
+                let _ = offline.pass();
+                let now = offline.drift_error_ema();
+                if now != last {
+                    steps += 1;
+                    last = now;
+                }
+                std::thread::sleep(Duration::from_micros(300));
+            }
+            steps_per_block.push(steps);
+        }
+        assert_eq!(steps_per_block, [1, 1]);
+    }
+
+    #[test]
+    fn work_done_on_an_idle_pass_is_processing_time_and_does_not_step_the_buffer_metric() {
+        let fake = Fake::new();
+        let (processor, mut offline) = loop_with_worker(&fake);
+        let mut tone = Tone::new(440.0, 0.2);
+        assert_eq!(offline.push_input(&tone.block(BLOCK)), BLOCK);
+        let _ = offline.pass(); // the block: its frame goes to the worker
+        let smoothed_after_block = processor
+            .shared
+            .suppressor
+            .smoothed_buffer_len
+            .load(Ordering::Relaxed);
+        assert!(smoothed_after_block > 0);
+        processor.shared.dsp.time_us.store(0, Ordering::Relaxed);
+        processor
+            .shared
+            .dsp
+            .time_smoothed_us
+            .store(0, Ordering::Relaxed);
+
+        // Only the idle passes that bring the frame out can add to either.
+        wait_for("the frame to come out on an idle pass", || {
+            let _ = offline.pass();
+            std::thread::sleep(Duration::from_micros(200));
+            processor.shared.dsp.time_us.load(Ordering::Relaxed) > 0
+        });
+        assert!(
+            processor
+                .shared
+                .dsp
+                .time_smoothed_us
+                .load(Ordering::Relaxed)
+                > 0
+        );
+        assert_eq!(
+            processor
+                .shared
+                .suppressor
+                .smoothed_buffer_len
+                .load(Ordering::Relaxed),
+            smoothed_after_block
+        );
     }
 }

@@ -428,11 +428,18 @@ fn the_published_latency_is_the_models_plus_what_waits_for_a_frame_plus_the_tran
         let fake = Fake::new();
         fake.hold.store(true, Ordering::Release);
         let mut worker = worker_processor(&fake, model, 1.0);
+        // Nothing here is slow; the frames held at the worker are not late.
+        worker
+            .link
+            .as_mut()
+            .unwrap()
+            .set_late_after(Duration::from_secs(3600));
         let mut inline = inline_processor(&Fake::new(), model, 1.0);
         let base = model.latency_samples();
         for remainder in [0_usize, 1, 100, 479] {
-            // A whole frame in flight at the worker does not move the figure.
-            for frames in [0_usize, 1] {
+            // Frames in flight at the worker, offered together or alone, do not
+            // move the figure while they are not late.
+            for frames in [0_usize, 1, 3] {
                 worker.soft_reset();
                 inline.soft_reset();
                 let samples = vec![0.1; frames * FRAME + remainder];
@@ -730,4 +737,61 @@ fn the_realtime_factory_puts_inference_at_a_worker_and_the_default_stays_inline(
         realtime.process_frames();
         realtime.available_samples() == FRAME
     });
+}
+
+#[test]
+fn frames_the_worker_is_late_with_are_counted_one_by_one() {
+    let fake = Fake::new();
+    fake.hold.store(true, Ordering::Release);
+    let mut worker = worker_processor(&fake, LL, 1.0);
+    worker
+        .link
+        .as_mut()
+        .unwrap()
+        .set_late_after(Duration::from_millis(20));
+    let base = LL.latency_samples() + WORKER_TRANSIT_SAMPLES;
+    assert_eq!(worker.reported_latency_samples(), base);
+    assert_eq!(worker.push_samples(&[0.1; 3 * FRAME]), 3 * FRAME);
+    worker.process_frames();
+    assert_eq!(link(&worker).owed_results(), 3);
+
+    std::thread::sleep(Duration::from_millis(60));
+    // All three have waited longer than a frame: the latency is the nominal one
+    // and the three frames that are late.
+    assert_eq!(worker.reported_latency_samples(), base + 3 * FRAME);
+
+    fake.hold.store(false, Ordering::Release);
+    collect_frames(&mut worker, 3);
+    wait_until("the answers to be taken", || {
+        worker.process_frames();
+        link(&worker).owed_results() == 0
+    });
+    assert_eq!(worker.reported_latency_samples(), base);
+}
+
+#[test]
+fn a_worker_that_falls_behind_pushes_the_published_latency_out_of_the_tools_window() {
+    // 30 ms a frame against a frame every 10 ms: the backlog grows. The window
+    // the release health check and the hardware validation accept is
+    // [base, base + 480) above the model's latency and the worker's transit.
+    let fake = Fake::new();
+    fake.delay_ms.store(30, Ordering::Release);
+    let mut worker = worker_processor(&fake, LL, 1.0);
+    let base = LL.latency_samples() + WORKER_TRANSIT_SAMPLES;
+    let mut published = Vec::new();
+    for n in 0..30 {
+        push_level(&mut worker, n);
+        std::thread::sleep(Duration::from_millis(10));
+        published.push(worker.reported_latency_samples());
+    }
+    assert!(
+        published.iter().any(|latency| *latency >= base + FRAME),
+        "a backlog of {} frames went unreported: {published:?}",
+        link(&worker).owed_results()
+    );
+    assert!(published.iter().all(|latency| *latency >= base));
+    // The growth is visible, not a blip: the last readings are well past it.
+    assert!(published[published.len() - 1] >= base + 3 * FRAME);
+    assert!(link(&worker).owed_results() > 3);
+    assert!(!worker.backend_failed());
 }

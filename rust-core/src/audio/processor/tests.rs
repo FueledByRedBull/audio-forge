@@ -5641,7 +5641,7 @@ fn suppressor_starvation_count_is_wired_to_the_feed_and_every_reset() {
     let output = drain_fn.find("if available > 0 {").unwrap();
     let check = drain_fn.find("starvation.starved()").unwrap();
     assert!(process < output && output < check);
-    let output_arm = source_between(drain_fn, "if available > 0 {", "} else if accepted > 0");
+    let output_arm = source_between(drain_fn, "if available > 0 {", "} else {");
     assert!(output_arm.contains("starvation.restart()"));
     // An idle pass feeds nothing, so it can never raise the starvation alarm.
     let idle_pass = source_between(

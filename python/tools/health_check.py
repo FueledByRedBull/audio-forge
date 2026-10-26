@@ -47,7 +47,9 @@ DEEPFILTER_WORKER_TRANSIT_SAMPLES = 240
 
 # What each suppressor publishes as `suppressor_latency_samples` when no input is
 # waiting for a frame: the model's latency, plus the worker's share for
-# DeepFilterNet. RNNoise runs inline.
+# DeepFilterNet. RNNoise runs inline. A worker that is behind adds a frame (480)
+# for each frame it has held longer than 10 ms, which takes the figure out of the
+# window of `_suppressor_latency_is_valid`: that is how the checks see a backlog.
 SUPPRESSOR_PUBLISHED_LATENCY_SAMPLES = {
     "rnnoise": 480,
     "deepfilter-ll": 480 + DEEPFILTER_WORKER_TRANSIT_SAMPLES,

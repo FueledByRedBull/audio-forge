@@ -31,6 +31,10 @@ const QUEUE_SAMPLES: usize = WORKER_QUEUE_FRAMES * DEEPFILTER_FRAME_SIZE;
 /// tools that check the published figure (`health_check.py`,
 /// `evaluate_hardware_validation.py`) mirror this value, and a test compares them.
 pub(crate) const WORKER_TRANSIT_SAMPLES: usize = 240;
+/// A frame that has been at the worker longer than this (a frame's own length)
+/// counts as a backlog in the published latency: the healthy transit is half of
+/// it at most, and the worker is behind if a frame outlasts the next one.
+const WORKER_LATE_AFTER: Duration = Duration::from_millis(10);
 /// The worker is stalled once it has owed a result for this long without
 /// sending one, as the loop saw it. The loop's backlog recovery keeps 100 ms
 /// of input, so a freeze of that length must never look like a stall.
@@ -141,6 +145,10 @@ pub(super) struct WorkerLink {
     /// the loop's looks, and when it last looked.
     silent_for: Duration,
     last_look: Option<Instant>,
+    /// When each owed result was asked for, oldest first from `owed_head`.
+    owed_since: [Instant; WORKER_QUEUE_FRAMES],
+    owed_head: usize,
+    late_after: Duration,
 }
 
 impl WorkerLink {
@@ -151,6 +159,9 @@ impl WorkerLink {
             stale: 0,
             silent_for: Duration::ZERO,
             last_look: None,
+            owed_since: [Instant::now(); WORKER_QUEUE_FRAMES],
+            owed_head: 0,
+            late_after: WORKER_LATE_AFTER,
         }
     }
 
@@ -163,13 +174,29 @@ impl WorkerLink {
     fn heard_from_worker(&mut self) {
         self.silent_for = Duration::ZERO;
         self.last_look = None;
+        self.owed_head = (self.owed_head + 1) % WORKER_QUEUE_FRAMES;
+    }
+
+    /// How many of the results the worker owes were asked for longer ago than
+    /// `late_after`: the frames it is behind with, which the published latency
+    /// counts one by one. Frames offered together in one pass are not late
+    /// while the worker is working through them.
+    pub(super) fn late_frames(&self) -> usize {
+        let now = Instant::now();
+        (0..self.owed())
+            .take_while(|index| {
+                let since = self.owed_since[(self.owed_head + index) % WORKER_QUEUE_FRAMES];
+                now.saturating_duration_since(since) > self.late_after
+            })
+            .count()
     }
 
     /// Add the time since the last look to the worker's silence, if it owes a
     /// result and none is waiting to be collected.
     fn look_at_silence(&mut self) {
         if self.owed() == 0 || self.worker.has_result() {
-            self.heard_from_worker();
+            self.silent_for = Duration::ZERO;
+            self.last_look = None;
             return;
         }
         let now = Instant::now();
@@ -248,6 +275,7 @@ impl WorkerLink {
         if !self.has_room() || !self.worker.offer(samples) {
             return false;
         }
+        self.owed_since[(self.owed_head + self.owed()) % WORKER_QUEUE_FRAMES] = Instant::now();
         self.offered += 1;
         true
     }
@@ -255,6 +283,12 @@ impl WorkerLink {
     #[cfg(test)]
     pub(super) fn worker(&self) -> &InferenceWorker {
         &self.worker
+    }
+
+    /// Count a frame late after `late_after` instead of the usual time.
+    #[cfg(test)]
+    pub(super) fn set_late_after(&mut self, late_after: Duration) {
+        self.late_after = late_after;
     }
 
     /// Results the worker still owes, stale ones included.

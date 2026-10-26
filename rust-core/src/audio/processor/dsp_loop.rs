@@ -451,6 +451,11 @@ struct OutputStage {
     true_peak_detector: TruePeakDetector,
     true_peak_limiter: TruePeakLimiter,
     drift_error_ema: f32,
+    /// Input blocks processed, and the one whose first write advanced
+    /// `drift_error_ema`: a block's later writes (a worker's results come out
+    /// on idle passes, one frame at a time) must not step the estimate again.
+    block_clock: u64,
+    drift_ema_block: u64,
     drift_retimer: DriftRetimer,
     /// Fade-in still owed after a discontinuity; shared by the pipeline and the writer.
     discontinuity_fade_remaining: Cell<usize>,
@@ -660,6 +665,8 @@ impl DspLoop {
             true_peak_detector: TruePeakDetector::new(),
             true_peak_limiter,
             drift_error_ema: 0.0,
+            block_clock: 0,
+            drift_ema_block: 0,
             drift_retimer: DriftRetimer::default(),
             discontinuity_fade_remaining: Cell::new(0),
             discontinuity_fade_samples,
@@ -744,6 +751,11 @@ impl DspLoop {
             },
             pipeline,
         }
+    }
+
+    #[cfg(all(test, feature = "deepfilter"))]
+    pub(super) fn drift_error_ema(&self) -> f32 {
+        self.pipeline.output.drift_error_ema
     }
 
     /// Run until `running` is cleared. A panic is caught and reported
@@ -1043,6 +1055,7 @@ impl Pipeline {
     /// false when the block overran the suppressor's input buffer; the caller
     /// then resets the input continuity.
     fn process_block(&mut self, shared: &Shared, buffer: &mut [f32]) -> bool {
+        self.output.block_clock += 1;
         // Closest tap to the converter in every processing path: after channel
         // mix-down and any resampling, before sanitizing, the pre-filter and
         // cleanup.
@@ -1557,7 +1570,7 @@ impl Pipeline {
                 return false;
             }
             self.suppressor.starvation.fed(accepted);
-            self.drain_suppressor(shared, accepted);
+            let _ = self.drain_suppressor(shared, accepted);
 
             // Record DSP processing time
             self.record_dsp_time(shared, dsp_start);
@@ -1616,9 +1629,9 @@ impl Pipeline {
     }
 
     /// Let the suppressor engine finish what it can, publish its state and send
-    /// the output it has down the chain. `accepted` is what this call fed it;
-    /// an idle pass, which feeds nothing, passes 0.
-    fn drain_suppressor(&mut self, shared: &Shared, accepted: usize) {
+    /// the output it has down the chain; true if there was output. `accepted` is
+    /// what this call fed it; an idle pass, which feeds nothing, passes 0.
+    fn drain_suppressor(&mut self, shared: &Shared, accepted: usize) -> bool {
         self.suppressor.engine.process_frames();
         shared.suppressor.successful_inference_frames.store(
             self.suppressor.engine.successful_inference_frames(),
@@ -1636,11 +1649,6 @@ impl Pipeline {
             self.suppressor.engine.pending_input() + self.suppressor.engine.available_samples();
         let suppressor_latency = self.suppressor.engine.reported_latency_samples();
         let raw_buffer = suppressor_buffered as u32;
-        let prev_smoothed = shared
-            .suppressor
-            .smoothed_buffer_len
-            .load(Ordering::Relaxed);
-        let smoothed = smooth_buffer(self.metric_alpha, raw_buffer, prev_smoothed);
         shared
             .suppressor
             .buffer_len
@@ -1649,10 +1657,19 @@ impl Pipeline {
             .suppressor
             .latency_samples
             .store(suppressor_latency as u32, Ordering::Relaxed);
-        shared
-            .suppressor
-            .smoothed_buffer_len
-            .store(smoothed, Ordering::Relaxed);
+        // The smoothing assumes one step per input block (its time constant is
+        // set for the block rate), so only a block that fed the engine steps it.
+        if accepted > 0 {
+            let prev_smoothed = shared
+                .suppressor
+                .smoothed_buffer_len
+                .load(Ordering::Relaxed);
+            let smoothed = smooth_buffer(self.metric_alpha, raw_buffer, prev_smoothed);
+            shared
+                .suppressor
+                .smoothed_buffer_len
+                .store(smoothed, Ordering::Relaxed);
+        }
 
         let available = self.suppressor.engine.available_samples();
         if available > 0 {
@@ -1719,27 +1736,46 @@ impl Pipeline {
 
             // Send processed samples to output
             self.output.write(shared, output_slice, false);
-        } else if accepted > 0
-            && !shared.recording.active.load(Ordering::Relaxed)
-            && self.suppressor.starvation.starved()
-        {
-            store_rt_error(
-                shared.dsp.rt_error_code.as_ref(),
-                RtErrorCode::SuppressorBackendFailed,
-            );
-            shared
-                .stream
-                .restart_requested
-                .store(true, Ordering::Release);
-            self.suppressor.starvation.restart();
+            true
+        } else {
+            if accepted > 0
+                && !shared.recording.active.load(Ordering::Relaxed)
+                && self.suppressor.starvation.starved()
+            {
+                store_rt_error(
+                    shared.dsp.rt_error_code.as_ref(),
+                    RtErrorCode::SuppressorBackendFailed,
+                );
+                shared
+                    .stream
+                    .restart_requested
+                    .store(true, Ordering::Release);
+                self.suppressor.starvation.restart();
+            }
+            false
         }
     }
 
     /// An idle pass: collect what a suppressor worker has finished since the
-    /// last block, so its frames do not wait for the next one.
+    /// last block, so its frames do not wait for the next one. The work it does
+    /// is part of that block's processing time.
     fn harvest_suppressor_output(&mut self, shared: &Shared) {
-        if self.suppressor.engine.has_pending_work() {
-            self.drain_suppressor(shared, 0);
+        if !self.suppressor.engine.has_pending_work() {
+            return;
+        }
+        let start = Instant::now();
+        if self.drain_suppressor(shared, 0) {
+            let extra_us = start.elapsed().as_micros() as u64;
+            let raw = shared.dsp.time_us.load(Ordering::Relaxed);
+            let smoothed = shared.dsp.time_smoothed_us.load(Ordering::Relaxed);
+            shared
+                .dsp
+                .time_us
+                .store(raw.saturating_add(extra_us), Ordering::Relaxed);
+            shared.dsp.time_smoothed_us.store(
+                smoothed.saturating_add((self.metric_alpha * extra_us as f32) as u64),
+                Ordering::Relaxed,
+            );
         }
     }
 
@@ -1840,6 +1876,10 @@ impl SuppressorStage {
                 if candidate_matches {
                     let mut retired = std::mem::replace(&mut self.engine, candidate);
                     retired.retire();
+                    shared
+                        .suppressor
+                        .engine_model
+                        .store(self.engine.model_type() as u8, Ordering::Release);
                     self.engine.soft_reset();
                     self.starvation.restart();
                     if in_use {
@@ -2184,6 +2224,20 @@ impl OutputStage {
             self.true_peak_limiter.set_release_ms(requested_release_ms);
             self.applied_limiter_release_ms = requested_release_ms;
         }
+        // The drift estimate is a smoothed queue-level error that steers the
+        // retiming of what is written. It advances once per input block, as it
+        // did when every block wrote once; a later write of the same block
+        // retimes with the estimate it would reach, and leaves it where it was.
+        let advance_drift = !clean_path && self.drift_ema_block != self.block_clock;
+        if advance_drift {
+            self.drift_ema_block = self.block_clock;
+        }
+        let mut tentative_drift = self.drift_error_ema;
+        let drift_error_ema = if advance_drift {
+            &mut self.drift_error_ema
+        } else {
+            &mut tentative_drift
+        };
         let mut writer = OutputWriteContext {
             output_producer: &mut self.producer,
             output_queue_control_scratch: &mut self.queue_control_scratch,
@@ -2191,7 +2245,7 @@ impl OutputStage {
             output_safety_scratch: &mut self.safety_scratch,
             true_peak_detector: &mut self.true_peak_detector,
             true_peak_limiter: &mut self.true_peak_limiter,
-            drift_error_ema: &mut self.drift_error_ema,
+            drift_error_ema,
             drift_retimer: &mut self.drift_retimer,
             discontinuity_fade_remaining: &self.discontinuity_fade_remaining,
             output_fade_remaining: self.output_fade_remaining,

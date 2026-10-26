@@ -17,6 +17,8 @@ pub(crate) struct Fake {
     pub(crate) non_finite_from: AtomicU32,
     /// While set, a frame waits inside the library.
     pub(crate) hold: AtomicBool,
+    /// Milliseconds every frame takes, for a worker that cannot keep up.
+    pub(crate) delay_ms: AtomicU32,
     pub(crate) started: AtomicU32,
     pub(crate) finished: AtomicU32,
     pub(crate) freed: AtomicBool,
@@ -28,6 +30,7 @@ impl Fake {
             fail_from: AtomicU32::new(u32::MAX),
             non_finite_from: AtomicU32::new(u32::MAX),
             hold: AtomicBool::new(false),
+            delay_ms: AtomicU32::new(0),
             started: AtomicU32::new(0),
             finished: AtomicU32::new(0),
             freed: AtomicBool::new(false),
@@ -64,6 +67,10 @@ unsafe extern "C" fn process(state: *mut DFState, input: *mut f32, output: *mut 
     let call = fake.started.fetch_add(1, Ordering::AcqRel);
     while fake.hold.load(Ordering::Acquire) {
         std::thread::sleep(Duration::from_millis(1));
+    }
+    let delay_ms = fake.delay_ms.load(Ordering::Acquire);
+    if delay_ms > 0 {
+        std::thread::sleep(Duration::from_millis(u64::from(delay_ms)));
     }
     let input = std::slice::from_raw_parts(input, DEEPFILTER_FRAME_SIZE);
     let output = std::slice::from_raw_parts_mut(output, DEEPFILTER_FRAME_SIZE);

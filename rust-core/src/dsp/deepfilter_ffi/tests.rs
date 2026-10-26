@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::fake::{processor_on, Fake};
+    use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 

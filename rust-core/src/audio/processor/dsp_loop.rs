@@ -1,6 +1,67 @@
+//! The DSP thread: pulls capture audio from the input ring, runs it through
+//! gate -> suppressor -> de-esser -> EQ -> compressor -> limiter and queues the
+//! result for the output stream. Setup (`DspLoop::new`) allocates everything;
+//! the per-block code between the `RT_REGION` markers never does.
+
+use super::control::{
+    apply_compressor_control, apply_deesser_control, apply_eq_control, apply_gate_control,
+    apply_limiter_control, apply_suppressor_control, apply_true_peak_limiter_control,
+    release_ms_to_tenth_ms, AtomicLimiterControlState, CompressorControlState, DeesserControlState,
+    EqControlSnapshot, GateControlState, LimiterControlState, SuppressorControlState,
+};
+use super::diagnostics::{update_backend_status_rt, StreamRecoveryState};
+use super::output_writer::{
+    OutputWriteContext, OutputWriteCounters, OutputWriteLimits, SuppressorRecoveryFade,
+};
+use super::raw_recording::record_raw_recording_block;
+use super::resampling::{
+    clear_resampler_output_samples, duration_samples, has_resampler_output_capacity,
+    next_process_idle_sleep_us, signal_input_resampler_failure, smoothing_coeff_for_block,
+    smoothing_coeff_for_time_constant, DriftRetimer, LatencyComponents,
+};
+use super::routing::{
+    apply_input_pre_filter, new_input_pre_filter, publish_input_cleanup_bypassed,
+    publish_input_cleanup_diagnostics, publish_reported_latency, record_level_extremes,
+    sanitize_and_clamp_input_inplace, sanitize_non_finite_inplace, select_processing_path,
+    update_decaying_peak_db, update_meter_block_stats, uses_clean_write_path,
+    AdaptiveInputCleanupState, InputCleanupMode, InputPreFilterState, MeterState, ProcessingPath,
+};
+use super::shared::Shared;
+#[cfg(feature = "vad")]
+use super::VAD_PROBABILITY_STALE_US;
+use super::{
+    COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, OUTPUT_HARD_BACKLOG_MS, OUTPUT_PRIME_MS,
+    OUTPUT_TARGET_HIGH_MS, RESAMPLER_CHUNK_SIZE, RT_INPUT_CHUNK_CAPACITY,
+    RT_OUTPUT_SCRATCH_CAPACITY, RT_PROCESS_BUFFER_CAPACITY, RT_RESAMPLE_QUEUE_CAPACITY,
+    RT_SUPPRESSOR_OUTPUT_CAPACITY,
+};
+use crate::audio::buffer::{AudioConsumer, AudioProducer};
+use crate::audio::clock::now_micros;
+use crate::audio::rt::{store_rt_error, FixedAudioBuffer, FixedAudioRing, RtErrorCode};
+use crate::dsp::biquad::Biquad;
+use crate::dsp::noise_suppressor::{
+    ControlledNoiseSuppressionEngine as NoiseSuppressionEngine, GateControl,
+};
+#[cfg(feature = "vad")]
+use crate::dsp::vad::VadAutoGate;
+#[cfg(feature = "vad")]
+use crate::dsp::AutoMakeupActivityInput;
+use crate::dsp::{
+    Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ, TruePeakDetector, TruePeakLimiter,
+};
+use ringbuf::traits::{Consumer, Observer, Producer};
+use ringbuf::{HeapCons, HeapProd};
+use rubato::{Resampler, SincFixedIn};
+use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+#[cfg(not(windows))]
+use thread_priority::{set_current_thread_priority, ThreadPriority};
+
 #[cfg(feature = "vad")]
 #[inline]
-fn publish_vad_processing_path_discontinuity(
+pub(super) fn publish_vad_processing_path_discontinuity(
     previous_path: ProcessingPath,
     current_path: ProcessingPath,
     source_discontinuity: &AtomicU64,
@@ -13,7 +74,7 @@ fn publish_vad_processing_path_discontinuity(
 /// Read a control snapshot before the loop starts. An unstable snapshot falls
 /// back to defaults but re-arms `dirty` (and counts the contention), so the
 /// first pass applies the real state instead of leaving the defaults in place.
-fn startup_control<T>(
+pub(super) fn startup_control<T>(
     snapshot: Option<T>,
     fallback: fn() -> T,
     dirty: &AtomicBool,
@@ -24,7 +85,7 @@ fn startup_control<T>(
 
 /// Pass a stable control snapshot through; for an unstable one (`None`)
 /// re-arm `dirty` and count the contention, so the next pass retries.
-fn rearm_unless_stable<T>(
+pub(super) fn rearm_unless_stable<T>(
     snapshot: Option<T>,
     dirty: &AtomicBool,
     contention: &AtomicU64,
@@ -39,7 +100,7 @@ fn rearm_unless_stable<T>(
 /// Consume a pending control change: swap `dirty` off and return a stable
 /// snapshot, or re-arm it (see `rearm_unless_stable`). `None` when nothing
 /// was pending or the snapshot was unstable.
-fn take_dirty<T>(
+pub(super) fn take_dirty<T>(
     dirty: &AtomicBool,
     snapshot: impl FnOnce() -> Option<T>,
     contention: &AtomicU64,
@@ -55,7 +116,7 @@ fn take_dirty<T>(
 /// path. Bypass and Raw monitor never run the lookahead limiter, but they still
 /// write through the output stage, which reads the ceiling and release
 /// published here. An unstable snapshot is re-armed and counted in `contention`.
-fn apply_pending_limiter_control(
+pub(super) fn apply_pending_limiter_control(
     limiter_dirty: &AtomicBool,
     limiter_rt_control: &AtomicLimiterControlState,
     limiter_rt: &mut Limiter,
@@ -85,7 +146,7 @@ struct ContiguousInputRead {
 }
 
 fn read_contiguous_input(
-    consumer: &mut super::buffer::AudioConsumer,
+    consumer: &mut AudioConsumer,
     capture_dropped: &AtomicU64,
     observed_dropped: &mut u64,
     buffer: &mut [f32],
@@ -148,7 +209,7 @@ fn read_contiguous_input(
 /// Zero non-finite samples left by the downstream chain. Returns whether any
 /// were found, so the caller can count the event and reset the stateful stages
 /// (a NaN in a biquad or envelope state would otherwise repeat forever).
-fn contain_non_finite(buffer: &mut [f32]) -> bool {
+pub(super) fn contain_non_finite(buffer: &mut [f32]) -> bool {
     let mut found = false;
     for sample in buffer {
         if !sample.is_finite() {
@@ -164,13 +225,13 @@ fn contain_non_finite(buffer: &mut [f32]) -> bool {
 /// starved once that is 0.4 s of audio. Counting audio instead of wall time
 /// makes it independent of the block cadence, and a quiet or disabled input
 /// feeds nothing, so it cannot add up to a false alarm.
-struct SuppressorStarvation {
+pub(super) struct SuppressorStarvation {
     fed_samples: usize,
     limit_samples: usize,
 }
 
 impl SuppressorStarvation {
-    fn new(sample_rate: u32) -> Self {
+    pub(super) fn new(sample_rate: u32) -> Self {
         Self {
             fed_samples: 0,
             limit_samples: duration_samples(sample_rate, 400),
@@ -178,22 +239,27 @@ impl SuppressorStarvation {
     }
 
     /// Output arrived, or the suppressor was reset or is not in use.
-    fn restart(&mut self) {
+    pub(super) fn restart(&mut self) {
         self.fed_samples = 0;
     }
 
     /// The suppressor was handed `samples`.
-    fn fed(&mut self, samples: usize) {
+    pub(super) fn fed(&mut self, samples: usize) {
         self.fed_samples = self.fed_samples.saturating_add(samples);
     }
 
-    fn starved(&self) -> bool {
+    pub(super) fn starved(&self) -> bool {
         self.fed_samples >= self.limit_samples
     }
 }
 
 /// Advance an exponential moving average by the wall time since its last update.
-fn advance_time_ema(state: &mut f32, sample: f32, elapsed_ms: f32, time_constant_ms: f32) {
+pub(super) fn advance_time_ema(
+    state: &mut f32,
+    sample: f32,
+    elapsed_ms: f32,
+    time_constant_ms: f32,
+) {
     let alpha = 1.0 - (-elapsed_ms / time_constant_ms).exp();
     *state += alpha * (sample - *state);
 }
@@ -201,7 +267,7 @@ fn advance_time_ema(state: &mut f32, sample: f32, elapsed_ms: f32, time_constant
 /// Keep why the DSP thread died where `last_restart_reason` reports it; the
 /// panic message otherwise goes to a stderr nobody reads in the windowed app.
 /// `requests_restart` marks the reason as the cause of the pending restart.
-fn record_dsp_thread_panic(
+pub(super) fn record_dsp_thread_panic(
     payload: &(dyn std::any::Any + Send),
     recovery_state: &Mutex<StreamRecoveryState>,
     requests_restart: bool,
@@ -216,7 +282,7 @@ fn record_dsp_thread_panic(
 /// Run the DSP loop body. A panic is recorded and answered with a restart
 /// request; otherwise the thread would die behind `is_running() == true` until
 /// the write-stall watchdog noticed several seconds later.
-fn run_guarded_dsp_loop(
+pub(super) fn run_guarded_dsp_loop(
     body: impl FnOnce(),
     recovery_state: &Mutex<StreamRecoveryState>,
     restart_requested: &AtomicBool,
@@ -230,7 +296,7 @@ fn run_guarded_dsp_loop(
 /// Real-time scheduling is an optimisation: without it the DSP thread runs at
 /// normal priority, which still works. Report the fallback through diagnostics.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn tolerate_scheduling_failure<G, E>(
+pub(super) fn tolerate_scheduling_failure<G, E>(
     registration: Result<G, E>,
     degraded: &AtomicBool,
 ) -> Option<G> {
@@ -240,7 +306,7 @@ fn tolerate_scheduling_failure<G, E>(
 
 /// The sinc resampler writes `output_frames_max` frames per call; a smaller
 /// scratch would drop every chunk and leave the stream silent.
-fn ensure_resampler_scratch_capacity(
+pub(super) fn ensure_resampler_scratch_capacity(
     resampler: &SincFixedIn<f64>,
     scratch_capacity: usize,
     direction: &str,
@@ -254,9 +320,1994 @@ fn ensure_resampler_scratch_capacity(
     Ok(())
 }
 
+/// Everything the DSP thread starts with. `start` builds it on the control
+/// thread; `DspLoop::new` then allocates the working buffers on the DSP thread.
+pub(super) struct DspLoopSetup {
+    pub(super) shared: Arc<Shared>,
+    /// Engine rate the whole chain runs at.
+    pub(super) sample_rate: u32,
+    pub(super) input_sample_rate: u32,
+    pub(super) output_sample_rate: u32,
+    pub(super) input: AudioConsumer,
+    /// Dropped-sample counter of the capture ring.
+    pub(super) input_dropped: Arc<AtomicU64>,
+    pub(super) output: AudioProducer,
+    /// Raw recording tap (calibration).
+    pub(super) recording: AudioProducer,
+    /// Queue feeding the VAD worker.
+    #[cfg(feature = "vad")]
+    pub(super) vad_queue: AudioProducer,
+    pub(super) input_resampler: Option<SincFixedIn<f64>>,
+    pub(super) output_resampler: Option<SincFixedIn<f64>>,
+    /// First suppressor engine; built on the control thread because a DLL or
+    /// model load must not run on the DSP thread.
+    pub(super) suppressor: NoiseSuppressionEngine,
+    pub(super) suppressor_control: SuppressorControlState,
+    /// Engines queued by `set_noise_model` / rebuild.
+    pub(super) suppressor_commands: HeapCons<NoiseSuppressionEngine>,
+    /// Retired engines go back here so they are dropped off the DSP thread.
+    pub(super) suppressor_retire: HeapProd<NoiseSuppressionEngine>,
+}
+
+/// What one pass over the input did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Pass {
+    /// A block was processed or an input gap was handled; go straight on.
+    Busy,
+    /// No usable input; sleep this long before the next pass.
+    Idle { sleep_us: u64 },
+}
+
+/// The DSP thread's state: input stage, processing pipeline and pacing. `new`
+/// does every allocation; `run` (or `pass`, in tests) never allocates.
+pub(super) struct DspLoop {
+    shared: Arc<Shared>,
+    input: InputStage,
+    pacing: Pacing,
+    pipeline: Pipeline,
+}
+
+/// Time constant of the block-rate and fill-level metrics.
+const TAU_MS: f32 = 200.0;
+const LATENCY_UPDATE_INTERVAL: Duration = Duration::from_millis(100);
+const NON_FINITE_REBUILD_THRESHOLD: u32 = 3;
+const NON_FINITE_REBUILD_WINDOW_MS: u64 = 2000;
+const OUTPUT_MAX_CATCHUP_RATIO: f32 = 1.03;
+const OUTPUT_MAX_EMERGENCY_CATCHUP_RATIO: f32 = 1.06;
+
+/// Capture side: ring consumer, gap detection and the optional resampler.
+struct InputStage {
+    consumer: AudioConsumer,
+    /// Dropped-sample counter of the capture ring and the value last acted on.
+    capture_dropped: Arc<AtomicU64>,
+    observed_capture_drops: u64,
+    /// Backlog thresholds in input-rate samples: drain above `.0` down to `.1`.
+    backlog_limits: (usize, usize),
+    /// Raw device-rate read buffer.
+    raw: FixedAudioBuffer<f32, RT_INPUT_CHUNK_CAPACITY>,
+    /// The engine-rate block handed to the pipeline.
+    block: FixedAudioBuffer<f32, RT_PROCESS_BUFFER_CAPACITY>,
+    resampler: Option<SincFixedIn<f64>>,
+    resampler_out: Option<Vec<Vec<f64>>>,
+    resample_queue: FixedAudioRing<f64, RT_RESAMPLE_QUEUE_CAPACITY>,
+    resampler_frame: [f64; RESAMPLER_CHUNK_SIZE],
+}
+
+/// Fill-level smoothing, latency publication and idle pacing.
+struct Pacing {
+    last_latency_update: Instant,
+    last_input_smoothing: Instant,
+    smoothed_input_len: f32,
+    consecutive_idle_wakeups: u32,
+    input_resampler_delay_samples: u64,
+    output_resampler_delay_samples: u64,
+    output_sample_rate: u32,
+    true_peak_lookahead_samples: u64,
+    sample_rate: u32,
+}
+
+/// Level meters of the input and output taps.
+struct LevelMeters {
+    input: MeterState,
+    output: MeterState,
+    output_short_term_power: f32,
+    coeff: f32,
+    sample_rate: u32,
+}
+
+/// De-esser, both EQ layers, compressor and the sample limiter.
+struct DownstreamChain {
+    deesser: DeEsser,
+    correction_eq: ParametricEQ,
+    tone_eq: ParametricEQ,
+    compressor: Compressor,
+    limiter: Limiter,
+    /// Converts the VAD result's source clock to microseconds.
+    #[cfg(feature = "vad")]
+    sample_rate: u32,
+}
+
+/// The suppressor engine with its hand-off queues and health tracking.
+struct SuppressorStage {
+    engine: NoiseSuppressionEngine,
+    commands: HeapCons<NoiseSuppressionEngine>,
+    retired: HeapProd<NoiseSuppressionEngine>,
+    /// Engine that could not be handed back yet because the retire queue was full.
+    deferred_retire: Option<NoiseSuppressionEngine>,
+    starvation: SuppressorStarvation,
+    recovery_fade: SuppressorRecoveryFade,
+    /// Samples popped from the engine for the current block.
+    output: FixedAudioBuffer<f32, RT_SUPPRESSOR_OUTPUT_CAPACITY>,
+    non_finite_window_started_at: Option<Instant>,
+    non_finite_window_count: u32,
+}
+
+/// Output side: jitter control, true-peak limiting, resampling and the queue write.
+struct OutputStage {
+    producer: AudioProducer,
+    queue_control_scratch: FixedAudioBuffer<f32, RT_OUTPUT_SCRATCH_CAPACITY>,
+    discontinuity_fade_scratch: FixedAudioBuffer<f32, RT_OUTPUT_SCRATCH_CAPACITY>,
+    safety_scratch: FixedAudioBuffer<f32, RT_OUTPUT_SCRATCH_CAPACITY>,
+    true_peak_detector: TruePeakDetector,
+    true_peak_limiter: TruePeakLimiter,
+    drift_error_ema: f32,
+    drift_retimer: DriftRetimer,
+    /// Fade-in still owed after a discontinuity; shared by the pipeline and the writer.
+    discontinuity_fade_remaining: Cell<usize>,
+    discontinuity_fade_samples: usize,
+    /// Fade-in owed after a short write dropped samples.
+    output_fade_remaining: usize,
+    ceiling_linear: Cell<f32>,
+    limiter_release_ms: Cell<f32>,
+    applied_limiter_release_ms: f32,
+    limits: OutputWriteLimits,
+    resampler: Option<SincFixedIn<f64>>,
+    resampler_out: Option<Vec<Vec<f64>>>,
+    resample_queue: FixedAudioRing<f64, RT_RESAMPLE_QUEUE_CAPACITY>,
+    resampler_frame: [f64; RESAMPLER_CHUNK_SIZE],
+    resampled_scratch: FixedAudioBuffer<f32, RT_OUTPUT_SCRATCH_CAPACITY>,
+}
+
+/// Everything that processes one block, whichever path it takes.
+struct Pipeline {
+    sample_rate: u32,
+    /// Alpha of the per-block metric EMAs (10 ms nominal block, `TAU_MS`).
+    metric_alpha: f32,
+    pre_filter_state: InputPreFilterState,
+    pre_filter: Biquad,
+    adaptive_cleanup: AdaptiveInputCleanupState,
+    recording: AudioProducer,
+    gate: NoiseGate,
+    gate_controls: FixedAudioBuffer<GateControl, RT_PROCESS_BUFFER_CAPACITY>,
+    suppressor: SuppressorStage,
+    chain: DownstreamChain,
+    meters: LevelMeters,
+    output: OutputStage,
+    limiter_lookahead_samples: AtomicU64,
+    previous_path: ProcessingPath,
+    #[cfg(feature = "vad")]
+    vad_queue: AudioProducer,
+    #[cfg(feature = "vad")]
+    vad_source_sample_clock: u64,
+}
+
+impl DspLoop {
+    /// Allocate every buffer and bring every stage to its configured state.
+    /// This is the setup half; nothing after it allocates.
+    pub(super) fn new(setup: DspLoopSetup) -> Self {
+        let DspLoopSetup {
+            shared,
+            sample_rate,
+            input_sample_rate,
+            output_sample_rate,
+            input,
+            input_dropped,
+            output,
+            recording,
+            #[cfg(feature = "vad")]
+            vad_queue,
+            input_resampler,
+            output_resampler,
+            suppressor,
+            suppressor_control,
+            suppressor_commands,
+            suppressor_retire,
+        } = setup;
+        let sample_rate_hz = f64::from(sample_rate);
+        let input_resampler_delay_samples = input_resampler
+            .as_ref()
+            .map(|resampler| resampler.output_delay() as u64)
+            .unwrap_or(0);
+        let output_resampler_delay_samples = output_resampler
+            .as_ref()
+            .map(|resampler| resampler.output_delay() as u64)
+            .unwrap_or(0);
+
+        let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, sample_rate_hz);
+        let gate_snapshot = startup_control(
+            shared.gate.rt_control.snapshot(),
+            GateControlState::new,
+            &shared.gate.dirty,
+            &shared.dsp.lock_contention_count,
+        );
+        #[cfg(feature = "vad")]
+        {
+            let vad_auto_gate =
+                VadAutoGate::without_backend(sample_rate, gate_snapshot.vad_threshold);
+            gate.set_vad_auto_gate(Some(vad_auto_gate));
+        }
+        let mut correction_eq = ParametricEQ::new(sample_rate_hz);
+        let mut tone_eq = ParametricEQ::new(sample_rate_hz);
+        let mut compressor = Compressor::default_voice(sample_rate_hz);
+        let mut deesser = DeEsser::new(sample_rate_hz);
+        let mut limiter = Limiter::default_settings(sample_rate_hz);
+        let mut suppressor_engine = suppressor;
+        let output_ceiling_linear = Cell::new(10.0_f32.powf(limiter.ceiling_db() as f32 / 20.0));
+        let limiter_lookahead_samples = AtomicU64::new(limiter.lookahead_samples() as u64);
+        apply_gate_control(&mut gate, &gate_snapshot);
+        #[cfg(feature = "vad")]
+        {
+            shared
+                .gate
+                .noise_floor_db
+                .store(gate.noise_floor().to_bits(), Ordering::Relaxed);
+            shared.vad.available.store(false, Ordering::Relaxed);
+        }
+        apply_suppressor_control(&mut suppressor_engine, &suppressor_control);
+        update_backend_status_rt(
+            &shared.suppressor.backend_available,
+            &shared.suppressor.backend_failed,
+            shared.dsp.rt_error_code.as_ref(),
+            &suppressor_engine,
+        );
+        let eq_snapshot = startup_control(
+            shared.eq.control.snapshot(),
+            EqControlSnapshot::new,
+            &shared.eq.dirty,
+            &shared.dsp.lock_contention_count,
+        );
+        apply_eq_control(&mut correction_eq, &mut tone_eq, &eq_snapshot);
+        let compressor_snapshot = startup_control(
+            shared.compressor.rt_control.snapshot(),
+            CompressorControlState::new,
+            &shared.compressor.dirty,
+            &shared.dsp.lock_contention_count,
+        );
+        apply_compressor_control(&mut compressor, &compressor_snapshot);
+        // Start in the configured state; enable ramps are for live changes.
+        compressor.finish_enable_transition();
+        correction_eq.reset();
+        tone_eq.reset();
+        let deesser_snapshot = startup_control(
+            shared.deesser.rt_control.snapshot(),
+            DeesserControlState::new,
+            &shared.deesser.dirty,
+            &shared.dsp.lock_contention_count,
+        );
+        apply_deesser_control(&mut deesser, &deesser_snapshot);
+        deesser.finish_enable_transition();
+        let limiter_snapshot = startup_control(
+            shared.limiter.rt_control.snapshot(),
+            LimiterControlState::new,
+            &shared.limiter.dirty,
+            &shared.dsp.lock_contention_count,
+        );
+        apply_limiter_control(&mut limiter, &limiter_snapshot);
+        output_ceiling_linear.set(10.0_f32.powf(limiter.ceiling_db() as f32 / 20.0));
+
+        // Keep the existing priority policy outside Windows.
+        #[cfg(not(windows))]
+        if let Err(_e) = set_current_thread_priority(ThreadPriority::Max) {
+            processor_debug_log!("Warning: Could not set audio thread priority: {:?}", _e);
+        }
+
+        // Jitter-buffer write control: keep output queue in a healthy range.
+        let output_target_low_samples = duration_samples(output_sample_rate, OUTPUT_PRIME_MS);
+        let output_target_high_samples =
+            duration_samples(output_sample_rate, OUTPUT_TARGET_HIGH_MS);
+        let output_target_center_samples =
+            (output_target_low_samples + output_target_high_samples).div_ceil(2);
+        let output_hard_backlog_samples =
+            duration_samples(output_sample_rate, OUTPUT_HARD_BACKLOG_MS);
+        let discontinuity_fade_samples = duration_samples(output_sample_rate, 6).max(1);
+        let mut true_peak_limiter = TruePeakLimiter::default_settings(output_sample_rate as f32);
+        apply_true_peak_limiter_control(&mut true_peak_limiter, &limiter_snapshot);
+        let true_peak_lookahead_samples = true_peak_limiter.lookahead_samples() as u64;
+
+        // Time-based EMA smoothing for metrics (200ms time constant). The
+        // per-block metrics assume one block per 10 ms (480 samples @ 48kHz).
+        let metric_alpha = 1.0 - (-10.0_f32 / TAU_MS).exp();
+
+        let previous_path = select_processing_path(
+            shared.mode.raw_monitor.load(Ordering::Acquire),
+            shared.mode.bypass.load(Ordering::SeqCst),
+        );
+        // Raw monitor and Bypass leave the suppressor latency at 0; the Full
+        // path would only store it after its first block, which the first
+        // latency tick can precede.
+        if previous_path == ProcessingPath::Full
+            && shared.suppressor.enabled.load(Ordering::Acquire)
+        {
+            shared.suppressor.latency_samples.store(
+                suppressor_engine.latency_samples() as u32,
+                Ordering::Relaxed,
+            );
+        }
+
+        let now = Instant::now();
+        let input_stage = InputStage {
+            consumer: input,
+            capture_dropped: input_dropped,
+            observed_capture_drops: 0,
+            backlog_limits: (
+                duration_samples(input_sample_rate, 250),
+                duration_samples(input_sample_rate, 100),
+            ),
+            raw: FixedAudioBuffer::new(),
+            block: FixedAudioBuffer::new(),
+            resampler_out: input_resampler
+                .as_ref()
+                .map(|r| r.output_buffer_allocate(true)),
+            resampler: input_resampler,
+            resample_queue: FixedAudioRing::new(),
+            resampler_frame: [0.0; RESAMPLER_CHUNK_SIZE],
+        };
+        let output_stage = OutputStage {
+            producer: output,
+            queue_control_scratch: FixedAudioBuffer::new(),
+            discontinuity_fade_scratch: FixedAudioBuffer::new(),
+            safety_scratch: FixedAudioBuffer::new(),
+            true_peak_detector: TruePeakDetector::new(),
+            true_peak_limiter,
+            drift_error_ema: 0.0,
+            drift_retimer: DriftRetimer::default(),
+            discontinuity_fade_remaining: Cell::new(0),
+            discontinuity_fade_samples,
+            output_fade_remaining: 0,
+            ceiling_linear: output_ceiling_linear,
+            limiter_release_ms: Cell::new(limiter_snapshot.release_ms as f32),
+            applied_limiter_release_ms: limiter_snapshot.release_ms as f32,
+            limits: OutputWriteLimits {
+                output_target_center_samples,
+                output_hard_backlog_samples,
+                discontinuity_fade_samples,
+                max_catchup_ratio: OUTPUT_MAX_CATCHUP_RATIO,
+                max_emergency_catchup_ratio: OUTPUT_MAX_EMERGENCY_CATCHUP_RATIO,
+            },
+            resampler_out: output_resampler
+                .as_ref()
+                .map(|r| r.output_buffer_allocate(true)),
+            resampler: output_resampler,
+            resample_queue: FixedAudioRing::new(),
+            resampler_frame: [0.0; RESAMPLER_CHUNK_SIZE],
+            resampled_scratch: FixedAudioBuffer::new(),
+        };
+        let pipeline = Pipeline {
+            sample_rate,
+            metric_alpha,
+            pre_filter_state: InputPreFilterState::default(),
+            // Pre-filter at 80Hz to remove rumble before gate/suppressor stages.
+            pre_filter: new_input_pre_filter(sample_rate_hz),
+            adaptive_cleanup: AdaptiveInputCleanupState::new(sample_rate as f32),
+            recording,
+            gate,
+            gate_controls: FixedAudioBuffer::new(),
+            suppressor: SuppressorStage {
+                engine: suppressor_engine,
+                commands: suppressor_commands,
+                retired: suppressor_retire,
+                deferred_retire: None,
+                starvation: SuppressorStarvation::new(sample_rate),
+                recovery_fade: SuppressorRecoveryFade::new(duration_samples(sample_rate, 6)),
+                output: FixedAudioBuffer::new(),
+                non_finite_window_started_at: None,
+                non_finite_window_count: 0,
+            },
+            chain: DownstreamChain {
+                deesser,
+                correction_eq,
+                tone_eq,
+                compressor,
+                limiter,
+                #[cfg(feature = "vad")]
+                sample_rate,
+            },
+            // Metering state (IIR smoothing for RMS)
+            meters: LevelMeters {
+                input: MeterState::default(),
+                output: MeterState::default(),
+                output_short_term_power: 0.0,
+                coeff: smoothing_coeff_for_time_constant(sample_rate as f32, 100.0),
+                sample_rate,
+            },
+            output: output_stage,
+            limiter_lookahead_samples,
+            previous_path,
+            #[cfg(feature = "vad")]
+            vad_queue,
+            #[cfg(feature = "vad")]
+            vad_source_sample_clock: 0,
+        };
+        Self {
+            shared,
+            input: input_stage,
+            pacing: Pacing {
+                last_latency_update: now,
+                last_input_smoothing: now,
+                smoothed_input_len: 0.0,
+                consecutive_idle_wakeups: 0,
+                input_resampler_delay_samples,
+                output_resampler_delay_samples,
+                output_sample_rate,
+                true_peak_lookahead_samples,
+                sample_rate,
+            },
+            pipeline,
+        }
+    }
+
+    /// Run until `running` is cleared. A panic is caught and reported
+    /// (recovery state plus a restart request) instead of leaving a dead
+    /// thread behind a running processor.
+    pub(super) fn run(mut self) {
+        let shared = Arc::clone(&self.shared);
+        // Run the whole loop with denormals flushed to zero so tiny values
+        // cannot stall the CPU.
+        // SAFETY: `no_denormals` sets the FTZ/DAZ bits of this thread's FP
+        // control register and restores them when the closure returns or
+        // unwinds. Its own documentation calls this technically undefined
+        // behaviour, because the compiler may assume the default FP
+        // environment. The risk is confined to this thread; the loop does
+        // not rely on exact results of denormal arithmetic.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        let dsp_loop = || unsafe { no_denormals::no_denormals(|| self.run_passes()) };
+        run_guarded_dsp_loop(
+            dsp_loop,
+            &shared.stream.recovery_state,
+            &shared.stream.restart_requested,
+        );
+    }
+}
+
+// RT_REGION_START: dsp_processing_loop
+impl DspLoop {
+    fn run_passes(&mut self) {
+        while self.shared.stream.running.load(Ordering::SeqCst) {
+            if let Pass::Idle { sleep_us } = self.pass() {
+                std::thread::sleep(Duration::from_micros(sleep_us));
+            }
+        }
+    }
+
+    /// One pass of the loop: housekeeping, then at most one block of input.
+    pub(super) fn pass(&mut self) -> Pass {
+        let shared = &*self.shared;
+        // Publish latency on every pass, before any path branch or early
+        // return, so Raw monitor, Bypass and idle wakeups all keep it current.
+        let pass_now = Instant::now();
+        self.pacing.publish_latency(
+            shared,
+            pass_now,
+            self.pipeline
+                .limiter_lookahead_samples
+                .load(Ordering::Relaxed),
+        );
+
+        // Installs engines queued by set_noise_model / rebuild and applies a
+        // pending suppressor control change. It runs at the top of every pass,
+        // whether or not the suppressor is in use and whether or not input
+        // arrived, so the bounded command queue cannot fill up behind a
+        // disabled suppressor and make later switches fail.
+        // `suppressor_in_use` is true only when this pass feeds the
+        // suppressor; otherwise the swap is silent (no fade), as the output
+        // carries no suppressor audio.
+        let suppressor_in_use = shared.suppressor.enabled.load(Ordering::Acquire)
+            && select_processing_path(
+                shared.mode.raw_monitor.load(Ordering::Acquire),
+                shared.mode.bypass.load(Ordering::SeqCst),
+            ) == ProcessingPath::Full;
+        self.pipeline
+            .suppressor
+            .install_pending(shared, suppressor_in_use, &self.pipeline.output);
+
+        // Record input buffer fill level (samples waiting to be processed)
+        self.pacing
+            .record_input_fill(shared, self.input.consumer.len() as u32, pass_now);
+
+        let input_read = self.input.read_block();
+        if input_read.discontinuity {
+            shared
+                .input
+                .backlog_recovery_count
+                .fetch_add(1, Ordering::Relaxed);
+            shared
+                .input
+                .backlog_dropped_samples
+                .fetch_add(input_read.discarded as u64, Ordering::Relaxed);
+            store_rt_error(
+                shared.dsp.rt_error_code.as_ref(),
+                RtErrorCode::InputBacklogDropped,
+            );
+            reset_input_continuity(&mut self.input, &mut self.pipeline, shared);
+        }
+        let n_raw = input_read.samples;
+        if n_raw == 0 {
+            return self.pacing.idle(shared);
+        }
+
+        if self.input.stage_block(shared, n_raw) == 0 {
+            return self.pacing.idle(shared);
+        }
+        self.pacing.consecutive_idle_wakeups = 0;
+
+        if !self
+            .pipeline
+            .process_block(shared, self.input.block.as_mut_slice())
+        {
+            reset_input_continuity(&mut self.input, &mut self.pipeline, shared);
+        }
+        Pass::Busy
+    }
+}
+
+/// An input discontinuity (capture gap, backlog drop, dropped chunk) leaves
+/// the resampler, gate and suppressor out of step with the audio: clear them.
+fn reset_input_continuity(input: &mut InputStage, pipeline: &mut Pipeline, shared: &Shared) {
+    input.reset();
+    pipeline.reset_after_input_gap(shared);
+}
+
+impl Pacing {
+    fn publish_latency(&mut self, shared: &Shared, now: Instant, limiter_lookahead_samples: u64) {
+        if now.duration_since(self.last_latency_update) < LATENCY_UPDATE_INTERVAL {
+            return;
+        }
+        self.last_latency_update = now;
+        let suppressor_latency_samples = if shared.suppressor.enabled.load(Ordering::Acquire) {
+            shared.suppressor.latency_samples.load(Ordering::Relaxed) as u64
+        } else {
+            0
+        };
+        publish_reported_latency(
+            &shared.dsp.latency_us,
+            LatencyComponents {
+                input_resampler_delay_samples: self.input_resampler_delay_samples,
+                output_buffer_samples: shared.output.buffer_len.load(Ordering::Relaxed) as u64,
+                output_sample_rate: self.output_sample_rate,
+                output_resampler_delay_samples: self.output_resampler_delay_samples,
+                suppressor_latency_samples,
+                limiter_lookahead_samples,
+                true_peak_lookahead_samples: self.true_peak_lookahead_samples,
+                processing_sample_rate: self.sample_rate,
+            },
+            select_processing_path(
+                shared.mode.raw_monitor.load(Ordering::Acquire),
+                shared.mode.bypass.load(Ordering::SeqCst),
+            ),
+            shared.dsp.latency_compensation_us.load(Ordering::Relaxed),
+        );
+    }
+
+    /// The input fill level advances by measured wall time on every loop pass.
+    fn record_input_fill(&mut self, shared: &Shared, raw_input_len: u32, now: Instant) {
+        shared
+            .input
+            .buffer_len
+            .store(raw_input_len, Ordering::Relaxed);
+        advance_time_ema(
+            &mut self.smoothed_input_len,
+            raw_input_len as f32,
+            now.duration_since(self.last_input_smoothing).as_secs_f32() * 1000.0,
+            TAU_MS,
+        );
+        self.last_input_smoothing = now;
+        shared
+            .input
+            .smoothed_buffer_len
+            .store(self.smoothed_input_len.round() as u32, Ordering::Relaxed);
+    }
+
+    /// No usable input: note the wakeup and choose how long to sleep.
+    fn idle(&mut self, shared: &Shared) -> Pass {
+        self.consecutive_idle_wakeups = self.consecutive_idle_wakeups.saturating_add(1);
+        let last_input_callback = shared.input.callback_time_us.load(Ordering::Relaxed);
+        let input_callback_age_us = if last_input_callback == 0 {
+            u64::MAX
+        } else {
+            now_micros().saturating_sub(last_input_callback)
+        };
+        let idle_sleep_us =
+            next_process_idle_sleep_us(self.consecutive_idle_wakeups, input_callback_age_us);
+        shared.dsp.idle_wakeup_count.fetch_add(1, Ordering::Relaxed);
+        shared
+            .dsp
+            .idle_sleep_us
+            .store(idle_sleep_us, Ordering::Relaxed);
+        Pass::Idle {
+            sleep_us: idle_sleep_us,
+        }
+    }
+}
+
+impl InputStage {
+    fn read_block(&mut self) -> ContiguousInputRead {
+        read_contiguous_input(
+            &mut self.consumer,
+            self.capture_dropped.as_ref(),
+            &mut self.observed_capture_drops,
+            self.raw.as_mut_capacity_slice(),
+            self.backlog_limits,
+        )
+    }
+
+    /// Turn the `n_raw` samples just read into an engine-rate block, resampling
+    /// when the device rate differs. Returns the block length.
+    fn stage_block(&mut self, shared: &Shared, n_raw: usize) -> usize {
+        let Some(resampler) = self.resampler.as_mut() else {
+            self.block.clear();
+            let written = self
+                .block
+                .extend_from_slice(&self.raw.as_mut_capacity_slice()[..n_raw]);
+            if written < n_raw {
+                shared
+                    .dsp
+                    .rt_buffer_overflow_count
+                    .fetch_add(1, Ordering::Relaxed);
+                store_rt_error(
+                    shared.dsp.rt_error_code.as_ref(),
+                    RtErrorCode::FixedBufferOverflow,
+                );
+            }
+            return written;
+        };
+        self.block.clear();
+        for &sample in self.raw.as_mut_capacity_slice()[..n_raw].iter() {
+            if !self.resample_queue.push(sample as f64) {
+                shared
+                    .dsp
+                    .rt_buffer_overflow_count
+                    .fetch_add(1, Ordering::Relaxed);
+                store_rt_error(
+                    shared.dsp.rt_error_code.as_ref(),
+                    RtErrorCode::FixedBufferOverflow,
+                );
+                break;
+            }
+        }
+
+        let input_frames_needed = resampler.input_frames_next();
+        while self.resample_queue.len() >= input_frames_needed
+            && input_frames_needed <= self.resampler_frame.len()
+        {
+            let Some(outbuf) = self.resampler_out.as_mut() else {
+                break;
+            };
+            if !has_resampler_output_capacity(&self.block, outbuf) {
+                break;
+            }
+            let read = self
+                .resample_queue
+                .pop_into(&mut self.resampler_frame[..input_frames_needed]);
+            if read != input_frames_needed {
+                break;
+            }
+            let in_slices = [&self.resampler_frame[..input_frames_needed]];
+            match resampler.process_into_buffer(&in_slices, outbuf, None) {
+                Ok((_nbr_in, nbr_out)) => {
+                    let channel_out = &outbuf[0];
+                    for &sample in channel_out.iter().take(nbr_out) {
+                        if !self.block.push(sample as f32) {
+                            shared
+                                .dsp
+                                .rt_buffer_overflow_count
+                                .fetch_add(1, Ordering::Relaxed);
+                            store_rt_error(
+                                shared.dsp.rt_error_code.as_ref(),
+                                RtErrorCode::FixedBufferOverflow,
+                            );
+                            break;
+                        }
+                    }
+                }
+                Err(_) => {
+                    signal_input_resampler_failure(
+                        shared.dsp.rt_error_code.as_ref(),
+                        shared.stream.restart_requested.as_ref(),
+                    );
+                    self.resample_queue.clear();
+                    self.block.clear();
+                    break;
+                }
+            }
+        }
+        self.block.len()
+    }
+
+    /// Drop everything buffered ahead of the resampler.
+    fn reset(&mut self) {
+        self.resample_queue.clear();
+        if let Some(resampler) = self.resampler.as_mut() {
+            resampler.reset();
+        }
+        if let Some(outbuf) = self.resampler_out.as_mut() {
+            clear_resampler_output_samples(outbuf);
+        }
+    }
+}
+
+impl Pipeline {
+    /// Process one engine-rate block in place and queue it for output. Returns
+    /// false when the block overran the suppressor's input buffer; the caller
+    /// then resets the input continuity.
+    fn process_block(&mut self, shared: &Shared, buffer: &mut [f32]) -> bool {
+        // Closest tap to the converter in every processing path: after channel
+        // mix-down and any resampling, before sanitizing, the pre-filter and
+        // cleanup.
+        record_level_extremes(
+            buffer,
+            &shared.input.peak_hold,
+            Some(&shared.input.full_scale_count),
+        );
+
+        // Start DSP timing
+        let dsp_start = Instant::now();
+        let processing_path = select_processing_path(
+            shared.mode.raw_monitor.load(Ordering::Acquire),
+            shared.mode.bypass.load(Ordering::SeqCst),
+        );
+        if processing_path != self.previous_path {
+            self.switch_path(shared, processing_path);
+        }
+
+        apply_pending_limiter_control(
+            &shared.limiter.dirty,
+            &shared.limiter.rt_control,
+            &mut self.chain.limiter,
+            &self.output.limiter_release_ms,
+            &self.output.ceiling_linear,
+            &self.limiter_lookahead_samples,
+            &shared.dsp.lock_contention_count,
+        );
+
+        if processing_path == ProcessingPath::RawMonitor {
+            self.process_raw_monitor(shared, buffer, dsp_start);
+            return true;
+        }
+
+        sanitize_and_clamp_input_inplace(
+            buffer,
+            &shared.input.clip_event_count,
+            &shared.input.clip_peak_db,
+        );
+        let cleanup_mode =
+            InputCleanupMode::from_u8(shared.input.cleanup_mode.load(Ordering::Acquire))
+                .unwrap_or_default();
+        let recording_active_now = shared.recording.active.load(Ordering::Relaxed);
+        let raw_tap_before_cleanup = shared.recording.before_cleanup.load(Ordering::Relaxed);
+        let adaptive_cleanup_enabled = processing_path == ProcessingPath::Full
+            && cleanup_mode.is_enabled()
+            && (!recording_active_now || raw_tap_before_cleanup);
+        self.adaptive_cleanup.set_mode(cleanup_mode);
+        if adaptive_cleanup_enabled {
+            self.adaptive_cleanup.analyze_input(buffer);
+        } else {
+            self.adaptive_cleanup.reset_dynamic_state();
+            publish_input_cleanup_bypassed(
+                &shared.input.cleanup_hum_detected,
+                &shared.input.cleanup_rumble_detected,
+                &shared.input.cleanup_high_pass_hz,
+            );
+        }
+        // An explicit pre-cleanup audition captures the sanitized microphone
+        // samples before either the fixed DC/80 Hz pre-filter or adaptive
+        // cleanup.
+        if recording_active_now && raw_tap_before_cleanup {
+            self.record_raw_tap(shared, buffer);
+        }
+        apply_input_pre_filter(
+            buffer,
+            &mut self.pre_filter_state,
+            &mut self.pre_filter,
+            !adaptive_cleanup_enabled,
+        );
+
+        // === RAW AUDIO RECORDING TAP (for calibration) ===
+        // Capture audio AFTER pre-filter, BEFORE noise gate
+        // This is the raw microphone response needed for EQ analysis
+        if recording_active_now && !raw_tap_before_cleanup {
+            self.record_raw_tap(shared, buffer);
+        }
+        // === END RECORDING TAP ===
+
+        if adaptive_cleanup_enabled {
+            self.adaptive_cleanup.process_block(buffer);
+            publish_input_cleanup_diagnostics(
+                &self.adaptive_cleanup,
+                &shared.input.cleanup_hum_detected,
+                &shared.input.cleanup_rumble_detected,
+                &shared.input.cleanup_high_pass_hz,
+            );
+        }
+
+        // Measure INPUT levels after fixed pre-filter and optional adaptive cleanup.
+        self.meters.measure_input(shared, buffer);
+
+        if processing_path == ProcessingPath::Bypass {
+            self.process_bypass(shared, buffer, dsp_start);
+            true
+        } else {
+            self.process_full(shared, buffer, dsp_start)
+        }
+    }
+
+    fn record_raw_tap(&mut self, shared: &Shared, buffer: &[f32]) {
+        record_raw_recording_block(
+            buffer,
+            self.sample_rate,
+            &mut self.recording,
+            &shared.recording.pos,
+            &shared.recording.target,
+            &shared.recording.level_db,
+        );
+    }
+
+    /// Publish how long the block took, raw and smoothed.
+    fn record_dsp_time(&self, shared: &Shared, dsp_start: Instant) {
+        let raw_dsp_us = dsp_start.elapsed().as_micros() as u64;
+        let prev_smoothed = shared.dsp.time_smoothed_us.load(Ordering::Relaxed);
+        let smoothed = smooth_dsp_time(self.metric_alpha, raw_dsp_us, prev_smoothed);
+        shared.dsp.time_us.store(raw_dsp_us, Ordering::Relaxed);
+        shared
+            .dsp
+            .time_smoothed_us
+            .store(smoothed, Ordering::Relaxed);
+    }
+
+    /// The processing path changed (Raw monitor, Bypass or Full): every stage
+    /// and meter restarts so nothing from the old path leaks into the new one.
+    fn switch_path(&mut self, shared: &Shared, processing_path: ProcessingPath) {
+        #[cfg(feature = "vad")]
+        publish_vad_processing_path_discontinuity(
+            self.previous_path,
+            processing_path,
+            &shared.vad.source_discontinuity,
+        );
+        #[cfg(feature = "vad")]
+        shared.vad.available.store(false, Ordering::Release);
+        self.pre_filter_state = InputPreFilterState::default();
+        self.adaptive_cleanup.reset_dynamic_state();
+        publish_input_cleanup_bypassed(
+            &shared.input.cleanup_hum_detected,
+            &shared.input.cleanup_rumble_detected,
+            &shared.input.cleanup_high_pass_hz,
+        );
+        self.meters.restart();
+        shared
+            .gate
+            .gain_meter
+            .store(1.0_f32.to_bits(), Ordering::Relaxed);
+        shared
+            .gate
+            .auto_relax_active
+            .store(false, Ordering::Relaxed);
+        shared
+            .compressor
+            .gain_reduction
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared
+            .deesser
+            .gain_reduction
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared
+            .deesser
+            .detector_confidence
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared
+            .compressor
+            .current_release_ms
+            .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed);
+        shared
+            .compressor
+            .current_lufs
+            .store((-100.0_f64).to_bits(), Ordering::Relaxed);
+        shared
+            .compressor
+            .current_makeup_gain
+            .store(0.0_f64.to_bits(), Ordering::Relaxed);
+        shared
+            .limiter
+            .gain_reduction_db
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared
+            .limiter
+            .peak_gain_reduction_db
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared
+            .limiter
+            .gain_reduction_history_db
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared
+            .output
+            .true_peak_gain_reduction_history_db
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared.suppressor.buffer_len.store(0, Ordering::Relaxed);
+        shared
+            .suppressor
+            .latency_samples
+            .store(0, Ordering::Relaxed);
+        shared
+            .suppressor
+            .successful_inference_frames
+            .store(0, Ordering::Relaxed);
+        shared
+            .suppressor
+            .smoothed_buffer_len
+            .store(0, Ordering::Relaxed);
+        self.output
+            .discontinuity_fade_remaining
+            .set(self.output.discontinuity_fade_samples);
+
+        self.gate.reset();
+        if let Some(control) = rearm_unless_stable(
+            shared.gate.rt_control.snapshot(),
+            &shared.gate.dirty,
+            &shared.dsp.lock_contention_count,
+        ) {
+            apply_gate_control(&mut self.gate, &control);
+        }
+        self.chain.correction_eq.reset();
+        self.chain.tone_eq.reset();
+        self.chain.compressor.reset();
+        self.chain.deesser.reset();
+        self.chain.limiter.reset();
+        self.suppressor.engine.soft_reset();
+        self.suppressor.starvation.restart();
+        if processing_path == ProcessingPath::Full
+            && shared.suppressor.enabled.load(Ordering::Acquire)
+        {
+            self.suppressor.restart_fade(&self.output);
+        } else {
+            self.suppressor.recovery_fade.restart(0);
+        }
+        update_backend_status_rt(
+            &shared.suppressor.backend_available,
+            &shared.suppressor.backend_failed,
+            shared.dsp.rt_error_code.as_ref(),
+            &self.suppressor.engine,
+        );
+        self.previous_path = processing_path;
+    }
+
+    /// Raw monitor: the sanitized input goes straight to the output writer.
+    fn process_raw_monitor(&mut self, shared: &Shared, buffer: &mut [f32], dsp_start: Instant) {
+        sanitize_non_finite_inplace(buffer);
+        self.adaptive_cleanup.reset_dynamic_state();
+        publish_input_cleanup_bypassed(
+            &shared.input.cleanup_hum_detected,
+            &shared.input.cleanup_rumble_detected,
+            &shared.input.cleanup_high_pass_hz,
+        );
+
+        self.meters.measure_input(shared, buffer);
+
+        if shared.recording.active.load(Ordering::Relaxed) {
+            self.record_raw_tap(shared, buffer);
+        }
+
+        self.meters.measure_output(shared, buffer);
+        shared
+            .compressor
+            .gain_reduction
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared
+            .deesser
+            .gain_reduction
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared
+            .deesser
+            .detector_confidence
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared
+            .gate
+            .gain_meter
+            .store(1.0_f32.to_bits(), Ordering::Relaxed);
+        shared
+            .gate
+            .auto_relax_active
+            .store(false, Ordering::Relaxed);
+        shared
+            .compressor
+            .current_release_ms
+            .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed);
+        shared
+            .compressor
+            .current_lufs
+            .store((-100.0_f64).to_bits(), Ordering::Relaxed);
+        shared
+            .compressor
+            .current_makeup_gain
+            .store(0.0_f64.to_bits(), Ordering::Relaxed);
+        shared
+            .limiter
+            .gain_reduction_db
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared
+            .limiter
+            .peak_gain_reduction_db
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        update_decaying_peak_db(0.0, &shared.limiter.gain_reduction_history_db, 0.15);
+        update_decaying_peak_db(
+            0.0,
+            &shared.output.true_peak_gain_reduction_history_db,
+            0.15,
+        );
+        shared.suppressor.buffer_len.store(0, Ordering::Relaxed);
+        shared
+            .suppressor
+            .latency_samples
+            .store(0, Ordering::Relaxed);
+        shared
+            .suppressor
+            .successful_inference_frames
+            .store(0, Ordering::Relaxed);
+        shared
+            .suppressor
+            .smoothed_buffer_len
+            .store(0, Ordering::Relaxed);
+
+        self.output.write(
+            shared,
+            buffer,
+            uses_clean_write_path(ProcessingPath::RawMonitor),
+        );
+        self.record_dsp_time(shared, dsp_start);
+    }
+
+    /// Bypass: measure output = input and send it directly.
+    fn process_bypass(&mut self, shared: &Shared, buffer: &mut [f32], dsp_start: Instant) {
+        self.meters.measure_output(shared, buffer);
+        shared
+            .compressor
+            .gain_reduction
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared
+            .deesser
+            .gain_reduction
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared
+            .deesser
+            .detector_confidence
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared
+            .gate
+            .auto_relax_active
+            .store(false, Ordering::Relaxed);
+        shared
+            .compressor
+            .current_release_ms
+            .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed); // Default 200ms
+        shared
+            .compressor
+            .current_lufs
+            .store((-100.0_f64).to_bits(), Ordering::Relaxed);
+        shared
+            .compressor
+            .current_makeup_gain
+            .store(0.0_f64.to_bits(), Ordering::Relaxed);
+        shared
+            .limiter
+            .gain_reduction_db
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared
+            .limiter
+            .peak_gain_reduction_db
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        update_decaying_peak_db(0.0, &shared.limiter.gain_reduction_history_db, 0.15);
+        update_decaying_peak_db(
+            0.0,
+            &shared.output.true_peak_gain_reduction_history_db,
+            0.15,
+        );
+        shared.suppressor.buffer_len.store(0, Ordering::Relaxed);
+
+        self.output.write(
+            shared,
+            buffer,
+            uses_clean_write_path(ProcessingPath::Bypass),
+        );
+        self.record_dsp_time(shared, dsp_start);
+    }
+
+    /// Full chain: gate, suppressor, then the downstream chain. Returns false
+    /// when the suppressor's input buffer overflowed.
+    fn process_full(&mut self, shared: &Shared, buffer: &mut [f32], dsp_start: Instant) -> bool {
+        #[cfg(feature = "vad")]
+        {
+            let written = enqueue_vad_block(
+                &mut self.vad_queue,
+                buffer,
+                &mut self.vad_source_sample_clock,
+                &shared.vad.source_discontinuity,
+            );
+            // Keep the source clock on samples the worker can actually
+            // consume. Dropped blocks are absent from this analysis timeline;
+            // the wall-clock watchdog still invalidates results if the worker
+            // stalls.
+            if written < buffer.len() {
+                shared
+                    .dsp
+                    .rt_buffer_overflow_count
+                    .fetch_add(1, Ordering::Relaxed);
+                store_rt_error(
+                    shared.dsp.rt_error_code.as_ref(),
+                    RtErrorCode::FixedBufferOverflow,
+                );
+            }
+        }
+
+        #[cfg(feature = "vad")]
+        let vad_snapshot = shared.vad.result().snapshot();
+        #[cfg(feature = "vad")]
+        let vad_worker_available = vad_snapshot
+            .and_then(|snapshot| {
+                snapshot
+                    .is_fresh(self.vad_source_sample_clock, now_micros(), self.sample_rate)
+                    .then_some(snapshot.backend_available)
+            })
+            .unwrap_or(false);
+        #[cfg(feature = "vad")]
+        shared
+            .vad
+            .available
+            .store(vad_worker_available, Ordering::Relaxed);
+        let gate_controls = &mut self.gate_controls.as_mut_capacity_slice()[..buffer.len()];
+        gate_controls.fill(GateControl::BYPASS);
+        if shared.gate.enabled.load(Ordering::Acquire) {
+            if let Some(control) = take_dirty(
+                &shared.gate.dirty,
+                || shared.gate.rt_control.snapshot(),
+                &shared.dsp.lock_contention_count,
+            ) {
+                apply_gate_control(&mut self.gate, &control);
+            }
+
+            #[cfg(feature = "vad")]
+            {
+                let latest_prob = vad_snapshot
+                    .map(|snapshot| snapshot.probability)
+                    .unwrap_or(0.0);
+                self.gate
+                    .set_external_vad_probability(latest_prob, vad_worker_available);
+            }
+            self.gate
+                .process_block_with_gate_control(buffer, gate_controls);
+            shared.gate.gain_meter.store(
+                self.gate.current_gain().clamp(0.0, 1.0).to_bits(),
+                Ordering::Relaxed,
+            );
+            shared
+                .gate
+                .chatter_event_count
+                .store(self.gate.chatter_event_count(), Ordering::Relaxed);
+            shared
+                .gate
+                .auto_relax_active
+                .store(self.gate.auto_relax_active(), Ordering::Relaxed);
+            #[cfg(feature = "vad")]
+            {
+                let prob = self.gate.get_vad_probability();
+                shared
+                    .vad
+                    .meter_probability
+                    .store(prob.to_bits(), Ordering::Relaxed);
+                shared
+                    .gate
+                    .noise_floor_db
+                    .store(self.gate.noise_floor().to_bits(), Ordering::Relaxed);
+                shared
+                    .gate
+                    .fused_score
+                    .store(self.gate.fused_gate_score().to_bits(), Ordering::Relaxed);
+            }
+        } else {
+            shared
+                .gate
+                .gain_meter
+                .store(1.0_f32.to_bits(), Ordering::Relaxed);
+            shared
+                .gate
+                .auto_relax_active
+                .store(false, Ordering::Relaxed);
+        }
+
+        // Stage 2: Noise Suppression (RNNoise or DeepFilterNet)
+        if shared.suppressor.enabled.load(Ordering::Acquire) {
+            if shared
+                .suppressor
+                .reset_requested
+                .swap(false, Ordering::AcqRel)
+            {
+                self.suppressor.engine.soft_reset();
+                self.suppressor.starvation.restart();
+                self.suppressor.restart_fade(&self.output);
+                update_backend_status_rt(
+                    &shared.suppressor.backend_available,
+                    &shared.suppressor.backend_failed,
+                    shared.dsp.rt_error_code.as_ref(),
+                    &self.suppressor.engine,
+                );
+            }
+            // Always feed suppressor first so frame accumulation is correct.
+            let accepted = self
+                .suppressor
+                .engine
+                .push_controlled_samples(buffer, gate_controls);
+            if accepted < buffer.len() {
+                shared
+                    .dsp
+                    .rt_buffer_overflow_count
+                    .fetch_add(1, Ordering::Relaxed);
+                store_rt_error(
+                    shared.dsp.rt_error_code.as_ref(),
+                    RtErrorCode::FixedBufferOverflow,
+                );
+                return false;
+            }
+            self.suppressor.starvation.fed(accepted);
+            self.suppressor.engine.process_frames();
+            shared.suppressor.successful_inference_frames.store(
+                self.suppressor.engine.successful_inference_frames(),
+                Ordering::Relaxed,
+            );
+            update_backend_status_rt(
+                &shared.suppressor.backend_available,
+                &shared.suppressor.backend_failed,
+                shared.dsp.rt_error_code.as_ref(),
+                &self.suppressor.engine,
+            );
+
+            // Track suppressor internal buffer fill level after processing.
+            let suppressor_buffered =
+                self.suppressor.engine.pending_input() + self.suppressor.engine.available_samples();
+            let suppressor_latency =
+                self.suppressor.engine.latency_samples() + self.suppressor.engine.pending_input();
+            let raw_buffer = suppressor_buffered as u32;
+            let prev_smoothed = shared
+                .suppressor
+                .smoothed_buffer_len
+                .load(Ordering::Relaxed);
+            let smoothed = smooth_buffer(self.metric_alpha, raw_buffer, prev_smoothed);
+            shared
+                .suppressor
+                .buffer_len
+                .store(raw_buffer, Ordering::Relaxed);
+            shared
+                .suppressor
+                .latency_samples
+                .store(suppressor_latency as u32, Ordering::Relaxed);
+            shared
+                .suppressor
+                .smoothed_buffer_len
+                .store(smoothed, Ordering::Relaxed);
+
+            let available = self.suppressor.engine.available_samples();
+            if available > 0 {
+                self.suppressor.starvation.restart();
+                self.suppressor.output.clear();
+                let count = available.min(self.suppressor.output.capacity());
+                let _ = self.suppressor.output.set_len_zeroed(count);
+                let processed = self
+                    .suppressor
+                    .engine
+                    .pop_samples_into(self.suppressor.output.as_mut_slice());
+                let _ = self.suppressor.output.set_len_zeroed(processed);
+                let output_slice = self.suppressor.output.as_mut_slice();
+
+                if contain_non_finite(output_slice) {
+                    shared
+                        .suppressor
+                        .non_finite_count
+                        .fetch_add(1, Ordering::Relaxed);
+                    store_rt_error(
+                        shared.dsp.rt_error_code.as_ref(),
+                        RtErrorCode::SuppressorNonFinite,
+                    );
+                    let now = Instant::now();
+                    match self.suppressor.non_finite_window_started_at {
+                        Some(start)
+                            if now.duration_since(start).as_millis() as u64
+                                <= NON_FINITE_REBUILD_WINDOW_MS => {}
+                        _ => {
+                            self.suppressor.non_finite_window_started_at = Some(now);
+                            self.suppressor.non_finite_window_count = 0;
+                        }
+                    }
+                    self.suppressor.non_finite_window_count =
+                        self.suppressor.non_finite_window_count.saturating_add(1);
+                    if self.suppressor.non_finite_window_count >= NON_FINITE_REBUILD_THRESHOLD {
+                        shared
+                            .stream
+                            .restart_requested
+                            .store(true, Ordering::Release);
+                        self.suppressor.non_finite_window_started_at = None;
+                        self.suppressor.non_finite_window_count = 0;
+                    }
+                    update_backend_status_rt(
+                        &shared.suppressor.backend_available,
+                        &shared.suppressor.backend_failed,
+                        shared.dsp.rt_error_code.as_ref(),
+                        &self.suppressor.engine,
+                    );
+                }
+
+                self.suppressor.recovery_fade.apply(output_slice);
+                self.chain.process(
+                    shared,
+                    output_slice,
+                    #[cfg(feature = "vad")]
+                    &self.gate,
+                    #[cfg(feature = "vad")]
+                    self.vad_source_sample_clock,
+                );
+
+                // Measure OUTPUT levels
+                self.meters.measure_output(shared, output_slice);
+
+                // Send processed samples to output
+                self.output.write(shared, output_slice, false);
+            } else if accepted > 0
+                && !shared.recording.active.load(Ordering::Relaxed)
+                && self.suppressor.starvation.starved()
+            {
+                store_rt_error(
+                    shared.dsp.rt_error_code.as_ref(),
+                    RtErrorCode::SuppressorBackendFailed,
+                );
+                shared
+                    .stream
+                    .restart_requested
+                    .store(true, Ordering::Release);
+                self.suppressor.starvation.restart();
+            }
+
+            // Record DSP processing time
+            self.record_dsp_time(shared, dsp_start);
+        } else {
+            // Suppressor disabled: clear buffer counter
+            self.suppressor.starvation.restart();
+            shared.suppressor.buffer_len.store(0, Ordering::Relaxed);
+            shared
+                .suppressor
+                .latency_samples
+                .store(0, Ordering::Relaxed);
+            shared
+                .suppressor
+                .successful_inference_frames
+                .store(0, Ordering::Relaxed);
+            shared
+                .suppressor
+                .smoothed_buffer_len
+                .store(0, Ordering::Relaxed);
+            if shared
+                .suppressor
+                .reset_requested
+                .swap(false, Ordering::AcqRel)
+            {
+                self.suppressor.engine.soft_reset();
+                self.suppressor.recovery_fade.restart(0);
+                self.output
+                    .discontinuity_fade_remaining
+                    .set(self.output.discontinuity_fade_samples);
+                update_backend_status_rt(
+                    &shared.suppressor.backend_available,
+                    &shared.suppressor.backend_failed,
+                    shared.dsp.rt_error_code.as_ref(),
+                    &self.suppressor.engine,
+                );
+            }
+            // Suppressor disabled: apply remaining stages directly
+            self.chain.process(
+                shared,
+                buffer,
+                #[cfg(feature = "vad")]
+                &self.gate,
+                #[cfg(feature = "vad")]
+                self.vad_source_sample_clock,
+            );
+
+            // Measure OUTPUT levels
+            self.meters.measure_output(shared, buffer);
+
+            // Send to output
+            self.output.write(shared, buffer, false);
+            // Record DSP processing time
+            self.record_dsp_time(shared, dsp_start);
+        }
+        true
+    }
+
+    /// Restart everything that depends on contiguous input after a gap.
+    fn reset_after_input_gap(&mut self, shared: &Shared) {
+        self.gate.reset();
+        self.suppressor.engine.soft_reset();
+        self.suppressor.output.clear();
+        shared.suppressor.buffer_len.store(0, Ordering::Relaxed);
+        shared
+            .suppressor
+            .smoothed_buffer_len
+            .store(0, Ordering::Relaxed);
+        shared.suppressor.latency_samples.store(
+            if shared.suppressor.enabled.load(Ordering::Acquire) {
+                self.suppressor.engine.latency_samples() as u32
+            } else {
+                0
+            },
+            Ordering::Relaxed,
+        );
+        shared.suppressor.successful_inference_frames.store(
+            self.suppressor.engine.successful_inference_frames(),
+            Ordering::Relaxed,
+        );
+        shared
+            .gate
+            .gain_meter
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared
+            .gate
+            .auto_relax_active
+            .store(false, Ordering::Relaxed);
+        self.suppressor.starvation.restart();
+        #[cfg(feature = "vad")]
+        {
+            shared
+                .vad
+                .source_discontinuity
+                .fetch_add(1, Ordering::Release);
+            shared.vad.available.store(false, Ordering::Release);
+        }
+        if !shared.mode.raw_monitor.load(Ordering::Acquire)
+            && !shared.mode.bypass.load(Ordering::SeqCst)
+            && shared.suppressor.enabled.load(Ordering::Acquire)
+        {
+            self.suppressor.restart_fade(&self.output);
+        } else {
+            self.suppressor.recovery_fade.restart(0);
+            if !shared.mode.raw_monitor.load(Ordering::Acquire) {
+                self.output
+                    .discontinuity_fade_remaining
+                    .set(self.output.discontinuity_fade_samples);
+            }
+        }
+    }
+}
+
+impl SuppressorStage {
+    /// Fade the suppressor back in after a reset or an engine swap.
+    fn restart_fade(&mut self, output: &OutputStage) {
+        self.recovery_fade.restart_for_suppressor(
+            &self.engine,
+            &output.discontinuity_fade_remaining,
+            output.discontinuity_fade_samples,
+        );
+    }
+
+    /// Install engines queued by `set_noise_model` / rebuild and apply a
+    /// pending suppressor control change. `in_use` is true only when this pass
+    /// feeds the suppressor; otherwise the swap is silent (no fade).
+    fn install_pending(&mut self, shared: &Shared, in_use: bool, output: &OutputStage) {
+        if let Some(retired) = self.deferred_retire.take() {
+            if let Err(retired) = self.retired.try_push(retired) {
+                self.deferred_retire = Some(retired);
+            }
+        }
+
+        if let Some(control) = take_dirty(
+            &shared.suppressor.dirty,
+            || shared.suppressor.rt_control.snapshot(),
+            &shared.dsp.lock_contention_count,
+        ) {
+            while self.deferred_retire.is_none() && !self.retired.is_full() {
+                let candidate_matches = match self.commands.iter().next() {
+                    Some(candidate) => candidate.model_type() == control.model,
+                    None => break,
+                };
+                let Some(candidate) = self.commands.try_pop() else {
+                    break;
+                };
+
+                if candidate_matches {
+                    let retired = std::mem::replace(&mut self.engine, candidate);
+                    self.engine.soft_reset();
+                    self.starvation.restart();
+                    if in_use {
+                        self.restart_fade(output);
+                    }
+                    if let Err(retired) = self.retired.try_push(retired) {
+                        self.deferred_retire = Some(retired);
+                        shared
+                            .dsp
+                            .rt_buffer_overflow_count
+                            .fetch_add(1, Ordering::Relaxed);
+                        store_rt_error(
+                            shared.dsp.rt_error_code.as_ref(),
+                            RtErrorCode::FixedBufferOverflow,
+                        );
+                        break;
+                    }
+                } else if let Err(candidate) = self.retired.try_push(candidate) {
+                    self.deferred_retire = Some(candidate);
+                    shared
+                        .dsp
+                        .rt_buffer_overflow_count
+                        .fetch_add(1, Ordering::Relaxed);
+                    store_rt_error(
+                        shared.dsp.rt_error_code.as_ref(),
+                        RtErrorCode::FixedBufferOverflow,
+                    );
+                    break;
+                }
+            }
+            if self.engine.model_type() == control.model {
+                apply_suppressor_control(&mut self.engine, &control);
+                update_backend_status_rt(
+                    &shared.suppressor.backend_available,
+                    &shared.suppressor.backend_failed,
+                    shared.dsp.rt_error_code.as_ref(),
+                    &self.engine,
+                );
+            } else {
+                shared.suppressor.dirty.store(true, Ordering::Release);
+            }
+        }
+    }
+}
+
+// RT_REGION_END: dsp_processing_loop
+
+// RT_REGION_START: dsp_level_meter
+impl LevelMeters {
+    fn restart(&mut self) {
+        self.input = MeterState::default();
+        self.output = MeterState::default();
+    }
+
+    fn measure_input(&mut self, shared: &Shared, buffer: &[f32]) {
+        let stats = update_meter_block_stats(buffer, &mut self.input, self.coeff);
+        shared
+            .input
+            .peak
+            .store(stats.peak_db.to_bits(), Ordering::Relaxed);
+        shared
+            .input
+            .rms
+            .store(stats.rms_db.to_bits(), Ordering::Relaxed);
+        shared
+            .input
+            .crest_factor_db
+            .store(stats.crest_factor_db.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The OUT tap: before the final true-peak limiter and clamp.
+    fn measure_output(&mut self, shared: &Shared, buffer: &[f32]) {
+        let stats = update_meter_block_stats(buffer, &mut self.output, self.coeff);
+        record_level_extremes(buffer, &shared.output.pre_limiter_peak_hold, None);
+        shared
+            .output
+            .peak
+            .store(stats.peak_db.to_bits(), Ordering::Relaxed);
+        shared
+            .output
+            .rms
+            .store(stats.rms_db.to_bits(), Ordering::Relaxed);
+        shared
+            .output
+            .crest_factor_db
+            .store(stats.crest_factor_db.to_bits(), Ordering::Relaxed);
+
+        let block_coeff = smoothing_coeff_for_block(self.sample_rate as f32, 3000.0, buffer.len());
+        self.output_short_term_power =
+            block_coeff * self.output_short_term_power + (1.0 - block_coeff) * stats.mean_power;
+        let loudness = if self.output_short_term_power > 1.0e-12 {
+            10.0 * self.output_short_term_power.log10() - 0.691
+        } else {
+            -120.0
+        };
+        shared
+            .output
+            .short_term_lufs
+            .store(loudness.to_bits(), Ordering::Relaxed);
+    }
+}
+
+// RT_REGION_END: dsp_level_meter
+
+// RT_REGION_START: dsp_downstream_chain
+impl DownstreamChain {
+    /// De-esser, EQ layers, compressor and limiter, in place. Pending control
+    /// changes are applied first; a non-finite result is contained and the
+    /// stateful stages are cleared.
+    fn process(
+        &mut self,
+        shared: &Shared,
+        buffer: &mut [f32],
+        #[cfg(feature = "vad")] gate: &NoiseGate,
+        #[cfg(feature = "vad")] vad_source_sample_clock: u64,
+    ) {
+        if let Some(control) = take_dirty(
+            &shared.deesser.dirty,
+            || shared.deesser.rt_control.snapshot(),
+            &shared.dsp.lock_contention_count,
+        ) {
+            apply_deesser_control(&mut self.deesser, &control);
+        }
+        if let Some(eq_snapshot) = take_dirty(
+            &shared.eq.dirty,
+            || shared.eq.control.snapshot(),
+            &shared.dsp.lock_contention_count,
+        ) {
+            apply_eq_control(&mut self.correction_eq, &mut self.tone_eq, &eq_snapshot);
+        }
+        if let Some(control) = take_dirty(
+            &shared.compressor.dirty,
+            || shared.compressor.rt_control.snapshot(),
+            &shared.dsp.lock_contention_count,
+        ) {
+            apply_compressor_control(&mut self.compressor, &control);
+        }
+
+        // The de-esser owns its enable ramp, like the compressor.
+        if self.deesser.is_active() {
+            self.deesser.process_block_inplace(buffer);
+            shared.deesser.gain_reduction.store(
+                self.deesser.current_gain_reduction_db().to_bits(),
+                Ordering::Relaxed,
+            );
+            shared.deesser.detector_confidence.store(
+                self.deesser.detector_confidence().to_bits(),
+                Ordering::Relaxed,
+            );
+        } else {
+            shared
+                .deesser
+                .gain_reduction
+                .store(0.0_f32.to_bits(), Ordering::Relaxed);
+            shared
+                .deesser
+                .detector_confidence
+                .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        }
+
+        self.correction_eq.process_block_inplace(buffer);
+        self.tone_eq.process_block_inplace(buffer);
+
+        // The compressor owns its enable ramp; keep processing
+        // until a disable has faded out.
+        if self.compressor.is_active() {
+            let true_peak_pressure = f32::from_bits(
+                shared
+                    .output
+                    .true_peak_gain_reduction_db
+                    .load(Ordering::Relaxed),
+            ) as f64;
+            self.compressor.set_limiter_feedback_gain_reduction_db(
+                self.limiter
+                    .current_gain_reduction()
+                    .abs()
+                    .max(true_peak_pressure),
+            );
+            #[cfg(feature = "vad")]
+            {
+                let vad_snapshot = shared.vad.result().snapshot();
+                let now_us = now_micros();
+                let (vad_probability, vad_reliability) =
+                    vad_snapshot.map_or((0.0, 0.0), |snapshot| {
+                        let wall_age_us = if snapshot.last_update_us > 0 {
+                            now_us.saturating_sub(snapshot.last_update_us)
+                        } else {
+                            u64::MAX
+                        };
+                        let source_age_us = if snapshot.last_update_us > 0 {
+                            vad_source_sample_clock
+                                .saturating_sub(snapshot.source_sample_end)
+                                .saturating_mul(1_000_000)
+                                / u64::from(self.sample_rate.max(1))
+                        } else {
+                            u64::MAX
+                        };
+                        // Source age reflects audio actually waiting
+                        // behind the worker; wall age remains a
+                        // watchdog for a stalled callback or worker.
+                        let age_us = source_age_us.max(wall_age_us);
+                        let reliability =
+                            if snapshot.backend_available && age_us <= VAD_PROBABILITY_STALE_US {
+                                let freshness = if age_us <= VAD_PROBABILITY_STALE_US / 2 {
+                                    1.0
+                                } else {
+                                    1.0 - (age_us - VAD_PROBABILITY_STALE_US / 2) as f64
+                                        / (VAD_PROBABILITY_STALE_US / 2) as f64
+                                };
+                                let t = freshness.clamp(0.0, 1.0);
+                                t * t * (3.0 - 2.0 * t)
+                            } else {
+                                0.0
+                            };
+                        (f64::from(snapshot.probability), reliability)
+                    });
+                let gate_is_enabled = shared.gate.enabled.load(Ordering::Acquire);
+                self.compressor.process_block_inplace_with_activity_control(
+                    buffer,
+                    Some(AutoMakeupActivityInput {
+                        vad_probability,
+                        vad_reliability,
+                        noise_floor_db: if gate_is_enabled {
+                            gate.noise_floor() as f64
+                        } else {
+                            -60.0
+                        },
+                        live_noise_reliability: if gate_is_enabled {
+                            gate.noise_floor_reliability() as f64
+                        } else {
+                            0.0
+                        },
+                    }),
+                );
+            }
+            #[cfg(not(feature = "vad"))]
+            self.compressor.process_block_inplace(buffer);
+            shared.compressor.gain_reduction.store(
+                (self.compressor.block_peak_gain_reduction() as f32).to_bits(),
+                Ordering::Relaxed,
+            );
+            let current_release = self.compressor.current_release_time();
+            shared
+                .compressor
+                .current_release_ms
+                .store(release_ms_to_tenth_ms(current_release), Ordering::Relaxed);
+            shared
+                .compressor
+                .current_lufs
+                .store(self.compressor.current_lufs().to_bits(), Ordering::Relaxed);
+            shared.compressor.current_makeup_gain.store(
+                self.compressor.current_makeup_gain().to_bits(),
+                Ordering::Relaxed,
+            );
+            shared
+                .compressor
+                .auto_makeup_error
+                .store(self.compressor.auto_makeup_error_code(), Ordering::Relaxed);
+        } else {
+            shared
+                .compressor
+                .gain_reduction
+                .store(0.0_f32.to_bits(), Ordering::Relaxed);
+            shared
+                .compressor
+                .current_release_ms
+                .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed);
+            shared
+                .compressor
+                .current_lufs
+                .store((-100.0_f64).to_bits(), Ordering::Relaxed);
+            shared
+                .compressor
+                .current_makeup_gain
+                .store(0.0_f64.to_bits(), Ordering::Relaxed);
+            shared
+                .compressor
+                .auto_makeup_error
+                .store(0, Ordering::Relaxed);
+        }
+
+        // Always run the limiter: disabled means unity gain through
+        // the same delay, so toggling never shifts the timeline.
+        self.limiter.process_block_inplace(buffer);
+        // Read the peak every block so a disabled limiter's release
+        // tail is not published when limiting is turned back on.
+        let limiter_peak_gr = self.limiter.peak_gain_reduction_and_reset() as f32;
+        if shared.limiter.enabled.load(Ordering::Acquire) {
+            shared.limiter.gain_reduction_db.store(
+                (self.limiter.current_gain_reduction().abs() as f32).to_bits(),
+                Ordering::Relaxed,
+            );
+            shared
+                .limiter
+                .peak_gain_reduction_db
+                .store(limiter_peak_gr.to_bits(), Ordering::Relaxed);
+            update_decaying_peak_db(
+                limiter_peak_gr,
+                &shared.limiter.gain_reduction_history_db,
+                0.15,
+            );
+        } else {
+            shared
+                .limiter
+                .gain_reduction_db
+                .store(0.0_f32.to_bits(), Ordering::Relaxed);
+            shared
+                .limiter
+                .peak_gain_reduction_db
+                .store(0.0_f32.to_bits(), Ordering::Relaxed);
+            update_decaying_peak_db(0.0, &shared.limiter.gain_reduction_history_db, 0.15);
+        }
+
+        // One non-finite sample would poison the meters and latch in the
+        // filter state of the de-esser and EQs, muting the stream for good,
+        // and in the compressor's envelopes, which then never reduce gain
+        // again. Count it, zero it and clear those stages; the compressor
+        // clears only its detector and keeps its makeup state. The
+        // limiter recovers on its own.
+        if contain_non_finite(buffer) {
+            shared
+                .dsp
+                .downstream_non_finite_count
+                .fetch_add(1, Ordering::Relaxed);
+            self.deesser.reset();
+            self.correction_eq.reset();
+            self.tone_eq.reset();
+            self.compressor.reset_detector_state();
+        }
+    }
+}
+
+// RT_REGION_END: dsp_downstream_chain
+
+// RT_REGION_START: dsp_output_writer
+impl OutputStage {
+    /// Queue `samples` for the output device, resampling to the device rate
+    /// when it differs from the engine rate.
+    fn write(&mut self, shared: &Shared, samples: &[f32], clean_path: bool) {
+        let requested_release_ms = self.limiter_release_ms.get();
+        if requested_release_ms != self.applied_limiter_release_ms {
+            self.true_peak_limiter.set_release_ms(requested_release_ms);
+            self.applied_limiter_release_ms = requested_release_ms;
+        }
+        let mut writer = OutputWriteContext {
+            output_producer: &mut self.producer,
+            output_queue_control_scratch: &mut self.queue_control_scratch,
+            discontinuity_fade_scratch: &mut self.discontinuity_fade_scratch,
+            output_safety_scratch: &mut self.safety_scratch,
+            true_peak_detector: &mut self.true_peak_detector,
+            true_peak_limiter: &mut self.true_peak_limiter,
+            drift_error_ema: &mut self.drift_error_ema,
+            drift_retimer: &mut self.drift_retimer,
+            discontinuity_fade_remaining: &self.discontinuity_fade_remaining,
+            output_fade_remaining: self.output_fade_remaining,
+            limiter_enabled: &shared.limiter.enabled,
+            output_ceiling_linear: &self.ceiling_linear,
+            counters: OutputWriteCounters::new(shared),
+            limits: self.limits,
+        };
+        if let Some(output_resampler) = self.resampler.as_mut() {
+            for &sample in samples {
+                if !self.resample_queue.push(sample as f64) {
+                    shared
+                        .dsp
+                        .rt_buffer_overflow_count
+                        .fetch_add(1, Ordering::Relaxed);
+                    store_rt_error(
+                        shared.dsp.rt_error_code.as_ref(),
+                        RtErrorCode::FixedBufferOverflow,
+                    );
+                    break;
+                }
+            }
+
+            loop {
+                self.resampled_scratch.clear();
+                let input_frames_needed = output_resampler.input_frames_next();
+                while self.resample_queue.len() >= input_frames_needed
+                    && input_frames_needed <= self.resampler_frame.len()
+                {
+                    let Some(outbuf) = self.resampler_out.as_mut() else {
+                        break;
+                    };
+                    if !has_resampler_output_capacity(&self.resampled_scratch, outbuf) {
+                        break;
+                    }
+                    let read = self
+                        .resample_queue
+                        .pop_into(&mut self.resampler_frame[..input_frames_needed]);
+                    if read != input_frames_needed {
+                        break;
+                    }
+                    let in_slices = [&self.resampler_frame[..input_frames_needed]];
+                    match output_resampler.process_into_buffer(&in_slices, outbuf, None) {
+                        Ok((_nbr_in, nbr_out)) => {
+                            for &sample in outbuf[0].iter().take(nbr_out) {
+                                if !self.resampled_scratch.push(sample as f32) {
+                                    shared
+                                        .dsp
+                                        .rt_buffer_overflow_count
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    store_rt_error(
+                                        shared.dsp.rt_error_code.as_ref(),
+                                        RtErrorCode::FixedBufferOverflow,
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // The dropped chunk is a hole in the output;
+                            // count it and rebuild the stream like the
+                            // input side does.
+                            shared
+                                .output
+                                .resampler_error_count
+                                .fetch_add(1, Ordering::Relaxed);
+                            shared
+                                .stream
+                                .restart_requested
+                                .store(true, Ordering::Release);
+                            self.resample_queue.clear();
+                            break;
+                        }
+                    }
+                }
+
+                if !writer.write_chunk(self.resampled_scratch.as_slice(), clean_path) {
+                    break;
+                }
+                if self.resample_queue.len() < input_frames_needed {
+                    break;
+                }
+            }
+        } else {
+            let _ = writer.write_chunk(samples, clean_path);
+        }
+        self.output_fade_remaining = writer.output_fade_remaining;
+    }
+}
+// RT_REGION_END: dsp_output_writer
+
+/// Exponential smoothing of a per-block `u64` metric.
+fn smooth_dsp_time(alpha: f32, raw_us: u64, prev_smoothed: u64) -> u64 {
+    let raw_f = raw_us as f32;
+    let prev_f = prev_smoothed as f32;
+    (alpha * raw_f + (1.0 - alpha) * prev_f) as u64
+}
+
+/// Exponential smoothing of a per-block `u32` metric.
+fn smooth_buffer(alpha: f32, raw: u32, prev_smoothed: u32) -> u32 {
+    let raw_f = raw as f32;
+    let prev_f = prev_smoothed as f32;
+    (alpha * raw_f + (1.0 - alpha) * prev_f) as u32
+}
+
+/// Queue a block for the VAD worker. A block that does not fit is dropped
+/// whole and the gap published, so the model never sees a bridged hole.
+#[cfg(feature = "vad")]
+#[inline]
+pub(super) fn enqueue_vad_block(
+    producer: &mut AudioProducer,
+    samples: &[f32],
+    source_sample_clock: &mut u64,
+    source_discontinuity: &AtomicU64,
+) -> usize {
+    // A partial write would make the next accepted sample look contiguous
+    // to Silero even though the dropped tail is a source gap. Drop the
+    // whole block and publish the boundary before any later write.
+    let queue_would_overflow = producer.free_len() < samples.len();
+    if queue_would_overflow {
+        source_discontinuity.fetch_add(1, Ordering::Release);
+        return 0;
+    }
+
+    let written = producer.write(samples);
+    *source_sample_clock = source_sample_clock.saturating_add(written as u64);
+    if written < samples.len() {
+        // The free-space check is conservative; preserve the marker if a
+        // short write is reported despite sufficient space.
+        source_discontinuity.fetch_add(1, Ordering::Release);
+    }
+    written
+}
+
 #[cfg(test)]
 mod input_continuity_tests {
     use super::*;
+    use crate::audio::buffer::AudioRingBuffer;
+    use crate::audio::processor::resampling::build_sinc_resampler;
 
     #[test]
     fn capture_gap_discards_only_observed_queue_and_invalidates_block() {
@@ -369,2318 +2420,5 @@ mod input_continuity_tests {
             assert!(output[0][..written].iter().all(|sample| *sample == 0.0));
             assert!(audio.iter().all(|sample| *sample == 0.0));
         });
-    }
-}
-
-#[cfg(test)]
-mod startup_tests {
-    use super::*;
-
-    #[test]
-    fn failed_dsp_readiness_stops_joins_and_clears_capture_state() {
-        for failure in ["registration", "disconnected", "timeout"] {
-            let mut processor = AudioProcessor::new();
-            processor.running.store(true, Ordering::SeqCst);
-            processor.recording_active.store(true, Ordering::Release);
-            processor.output_probe_active.store(true, Ordering::Release);
-            processor
-                .input_fixed_buffer_frames
-                .store(480, Ordering::Relaxed);
-            processor.restart_requested.store(true, Ordering::Release);
-            let running = Arc::clone(&processor.running);
-            let exited = Arc::new(AtomicBool::new(false));
-            let worker_exited = Arc::clone(&exited);
-            processor.process_thread = Some(std::thread::spawn(move || {
-                while running.load(Ordering::SeqCst) {
-                    std::thread::yield_now();
-                }
-                worker_exited.store(true, Ordering::Release);
-            }));
-            let (ready_tx, ready_rx) = mpsc::channel();
-            match failure {
-                "registration" => ready_tx
-                    .send(Err("MMCSS test startup failure".into()))
-                    .unwrap(),
-                "disconnected" => drop(ready_tx),
-                _ => {}
-            }
-            let error = processor
-                .check_dsp_startup(ready_rx.recv_timeout(Duration::ZERO))
-                .unwrap_err();
-            if failure == "registration" {
-                assert_eq!(error, "MMCSS test startup failure");
-            } else {
-                assert!(error.starts_with("DSP thread failed to become ready:"));
-            }
-            assert!(!processor.running.load(Ordering::SeqCst));
-            assert!(exited.load(Ordering::Acquire));
-            assert!(processor.process_thread.is_none());
-            assert!(!processor.recording_active.load(Ordering::Acquire));
-            assert!(!processor.output_probe_active.load(Ordering::Acquire));
-            assert_eq!(
-                processor.input_fixed_buffer_frames.load(Ordering::Relaxed),
-                0
-            );
-            assert!(!processor.restart_requested.load(Ordering::Acquire));
-            assert!(processor.audio_input.is_none());
-            assert!(processor.audio_output.is_none());
-        }
-    }
-
-    #[test]
-    fn every_start_re_enters_output_priming_before_the_stream_exists() {
-        // Restart and device-change recovery both go through this start function.
-        let source = include_str!("dsp_loop.rs");
-        let start = source.rfind("fn start_streams_unguarded(").unwrap();
-        let start = &source[start..];
-        let reset = start
-            .find("self.last_output_write_time.store(0, Ordering::Relaxed);")
-            .unwrap();
-        let primed_reset = start
-            .find("self.output_primed.store(false, Ordering::Relaxed);")
-            .unwrap();
-        let started_reset = start.find("self.output_priming_started_at_us").unwrap();
-        let build = start.find("AudioOutput::from_setup(").unwrap();
-        assert!(reset < build && primed_reset < build && started_reset < build);
-        // The silent prime goes straight to the producer: it must neither mark
-        // real audio as queued nor prime the stream.
-        let prime = &start[start.find("let output_prime_samples").unwrap()
-            ..start.find("let output_producer = prod;").unwrap()];
-        assert!(prime.contains("prod.write(&silence)"));
-        assert!(!prime.contains("last_output_write_time") && !prime.contains("output_primed"));
-        let recovery = include_str!("recovery.rs");
-        assert!(recovery.contains("processor.start_with_device_ordinals_and_ids("));
-    }
-
-    #[test]
-    fn startup_failure_check_precedes_both_stream_starts() {
-        let source = include_str!("dsp_loop.rs");
-        let worker_published = source.rfind("self.process_thread = Some(handle);").unwrap();
-        let startup = &source[worker_published..];
-        assert!(
-            startup.find("self.check_dsp_startup(").unwrap()
-                < startup.find("output.start()").unwrap()
-        );
-        assert!(startup.find("output.start()").unwrap() < startup.find("input.start()").unwrap());
-    }
-}
-
-impl AudioProcessor {
-    #[cfg(feature = "vad")]
-    #[inline]
-    fn enqueue_vad_block(
-        producer: &mut AudioProducer,
-        samples: &[f32],
-        source_sample_clock: &mut u64,
-        source_discontinuity: &AtomicU64,
-    ) -> usize {
-        // A partial write would make the next accepted sample look contiguous
-        // to Silero even though the dropped tail is a source gap. Drop the
-        // whole block and publish the boundary before any later write.
-        let queue_would_overflow = producer.free_len() < samples.len();
-        if queue_would_overflow {
-            source_discontinuity.fetch_add(1, Ordering::Release);
-            return 0;
-        }
-
-        let written = producer.write(samples);
-        *source_sample_clock = source_sample_clock.saturating_add(written as u64);
-        if written < samples.len() {
-            // The free-space check is conservative; preserve the marker if a
-            // short write is reported despite sufficient space.
-            source_discontinuity.fetch_add(1, Ordering::Release);
-        }
-        written
-    }
-
-    fn drain_retired_suppressors(&self) {
-        if let Ok(mut rx_guard) = self.retired_suppressor_rx.lock() {
-            if let Some(rx) = rx_guard.as_mut() {
-                while let Some(_engine) = rx.try_pop() {}
-            }
-        }
-    }
-
-    fn check_dsp_startup(
-        &mut self,
-        readiness: Result<Result<(), String>, mpsc::RecvTimeoutError>,
-    ) -> Result<(), String> {
-        let result = readiness
-            .unwrap_or_else(|error| Err(format!("DSP thread failed to become ready: {error}")));
-        if result.is_err() {
-            self.stop();
-        }
-        result
-    }
-
-    /// Start audio processing
-    ///
-    /// # Arguments
-    /// * `input_device` - Input device name (None for default)
-    /// * `output_device` - Output device name (None for default)
-    pub fn start(
-        &mut self,
-        input_device: Option<&str>,
-        output_device: Option<&str>,
-    ) -> Result<String, String> {
-        self.start_with_device_ordinals_and_ids(input_device, 0, None, output_device, 0, None)
-    }
-
-    /// Start audio processing using stable platform endpoint IDs when present.
-    ///
-    /// The friendly name and ordinal remain a compatibility fallback for
-    /// platforms without stable endpoint IDs.
-    #[allow(clippy::too_many_arguments)]
-    pub fn start_with_device_ordinals_and_ids(
-        &mut self,
-        input_device: Option<&str>,
-        input_device_name_ordinal: u32,
-        input_device_endpoint_id: Option<&str>,
-        output_device: Option<&str>,
-        output_device_name_ordinal: u32,
-        output_device_endpoint_id: Option<&str>,
-    ) -> Result<String, String> {
-        // A redundant start must not discard a pending restart or the back-off.
-        if self.running.load(Ordering::SeqCst) {
-            return Err("Already running".to_string());
-        }
-        self.ensure_supervisor();
-        self.restart_requested.store(false, Ordering::Release);
-        if !self.recovering.load(Ordering::Acquire) {
-            self.restart_backoff_index.store(0, Ordering::Release);
-        }
-
-        self.start_with_cleanup(|processor| {
-            processor.start_streams_unguarded(
-                input_device,
-                input_device_name_ordinal,
-                input_device_endpoint_id,
-                output_device,
-                output_device_name_ordinal,
-                output_device_endpoint_id,
-            )
-        })
-    }
-
-    /// Run a start attempt and, if it fails, leave the same clean stopped state
-    /// whatever step failed, instead of the half-built attempt's published
-    /// values (buffer sizes, recording ring, probe producer, streams).
-    fn start_with_cleanup(
-        &mut self,
-        attempt: impl FnOnce(&mut Self) -> Result<String, String>,
-    ) -> Result<String, String> {
-        let previous_output_rate = self.output_sample_rate.load(Ordering::Relaxed);
-        let started = attempt(self);
-        if started.is_err() {
-            self.stop();
-            self.output_sample_rate
-                .store(previous_output_rate, Ordering::Relaxed);
-        }
-        started
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn start_streams_unguarded(
-        &mut self,
-        input_device: Option<&str>,
-        input_device_name_ordinal: u32,
-        input_device_endpoint_id: Option<&str>,
-        output_device: Option<&str>,
-        output_device_name_ordinal: u32,
-        output_device_endpoint_id: Option<&str>,
-    ) -> Result<String, String> {
-        // Clear stale capture state; explicit output mute survives restarts.
-        self.recording_active.store(false, Ordering::Release);
-        self.raw_recording_before_cleanup
-            .store(false, Ordering::Release);
-        self.raw_recording_pos.store(0, Ordering::Release);
-        self.raw_recording_target.store(0, Ordering::Release);
-        self.recording_level_db
-            .store((-120.0_f32).to_bits(), Ordering::Relaxed);
-        if let Ok(mut consumer_guard) = self.raw_recording_consumer.lock() {
-            *consumer_guard = None;
-        }
-
-        // Create a dedicated raw recording tap buffer. Capacity is fixed so the DSP thread
-        // can write without locking during steady-state capture.
-        let recording_rb = AudioRingBuffer::new(self.sample_rate as usize * MAX_RECORDING_SECONDS);
-        let (mut recording_producer, recording_consumer) = recording_rb.split();
-        recording_producer.reset_dropped_count();
-        if let Ok(mut consumer_guard) = self.raw_recording_consumer.lock() {
-            *consumer_guard = Some(recording_consumer);
-        }
-
-        // The new input ring below brings a fresh dropped counter.
-        self.input_dropped_baseline.store(0, Ordering::Relaxed);
-        self.output_underrun_streak.store(0, Ordering::Relaxed);
-        self.output_underrun_total.store(0, Ordering::Relaxed);
-        self.output_priming_underrun_total
-            .store(0, Ordering::Relaxed);
-        self.jitter_dropped_samples.store(0, Ordering::Relaxed);
-        self.output_retime_adjustment_count
-            .store(0, Ordering::Relaxed);
-        self.output_recovery_event_count.store(0, Ordering::Relaxed);
-        self.output_short_write_dropped_samples
-            .store(0, Ordering::Relaxed);
-        self.dsp_idle_wakeup_count.store(0, Ordering::Relaxed);
-        self.dsp_idle_sleep_us
-            .store(PROCESS_IDLE_SLEEP_US, Ordering::Relaxed);
-        self.lock_contention_count.store(0, Ordering::Relaxed);
-        self.suppressor_non_finite_count.store(0, Ordering::Relaxed);
-        self.downstream_non_finite_count.store(0, Ordering::Relaxed);
-        self.output_resampler_error_count
-            .store(0, Ordering::Relaxed);
-        self.dsp_scheduling_degraded.store(false, Ordering::Relaxed);
-        self.compressor_auto_makeup_error
-            .store(0, Ordering::Relaxed);
-        self.input_backlog_recovery_count
-            .store(0, Ordering::Relaxed);
-        self.input_backlog_dropped_samples
-            .store(0, Ordering::Relaxed);
-        self.input_peak_hold.store(0, Ordering::Relaxed);
-        self.input_full_scale_count.store(0, Ordering::Relaxed);
-        self.output_pre_limiter_peak_hold
-            .store(0, Ordering::Relaxed);
-        self.output_final_peak_hold.store(0, Ordering::Relaxed);
-        self.output_full_scale_count.store(0, Ordering::Relaxed);
-        self.clip_event_count.store(0, Ordering::Relaxed);
-        self.clip_peak_db
-            .store((-120.0_f32).to_bits(), Ordering::Relaxed);
-        self.input_crest_factor_db
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        self.output_crest_factor_db
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        self.output_short_term_lufs
-            .store((-120.0_f32).to_bits(), Ordering::Relaxed);
-        self.output_clip_event_count.store(0, Ordering::Relaxed);
-        self.output_clip_peak_db
-            .store((-120.0_f32).to_bits(), Ordering::Relaxed);
-        self.output_true_peak_event_count
-            .store(0, Ordering::Relaxed);
-        self.output_true_peak_db
-            .store((-120.0_f32).to_bits(), Ordering::Relaxed);
-        self.output_true_peak_input_db
-            .store((-120.0_f32).to_bits(), Ordering::Relaxed);
-        self.output_true_peak_gain_reduction_db
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        self.output_true_peak_headroom_db
-            .store(120.0_f32.to_bits(), Ordering::Relaxed);
-        self.limiter_gain_reduction_db
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        self.limiter_peak_gain_reduction_db
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        self.limiter_gain_reduction_history_db
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        self.output_true_peak_gain_reduction_history_db
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        self.rt_error_code
-            .store(RtErrorCode::None as u32, Ordering::Relaxed);
-        self.input_callback_error_count.store(0, Ordering::Relaxed);
-        self.output_callback_error_count.store(0, Ordering::Relaxed);
-        self.rt_buffer_overflow_count.store(0, Ordering::Relaxed);
-        self.input_stereo_correlation
-            .store(1.0_f32.to_bits(), Ordering::Relaxed);
-        self.input_phase_warning_count.store(0, Ordering::Relaxed);
-        self.input_phase_rescue_strategy.store(0, Ordering::Relaxed);
-        self.input_phase_estimated_delay_samples
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        self.input_phase_polarity_flipped
-            .store(false, Ordering::Relaxed);
-        self.input_cleanup_hum_detected
-            .store(false, Ordering::Relaxed);
-        self.input_cleanup_rumble_detected
-            .store(false, Ordering::Relaxed);
-        self.input_cleanup_high_pass_hz
-            .store((INPUT_PREFILTER_HZ as f32).to_bits(), Ordering::Relaxed);
-        self.gate_chatter_event_count.store(0, Ordering::Relaxed);
-        self.gate_auto_relax_active.store(false, Ordering::Relaxed);
-        self.last_input_callback_time_us.store(0, Ordering::Relaxed);
-        self.last_output_callback_time_us
-            .store(0, Ordering::Relaxed);
-        self.last_output_write_time.store(0, Ordering::Relaxed);
-        self.output_primed.store(false, Ordering::Relaxed);
-        self.output_priming_started_at_us
-            .store(0, Ordering::Relaxed);
-
-        // Start audio input
-        let last_input_callback_time_us = Arc::clone(&self.last_input_callback_time_us);
-        let input_callback_error_count = Arc::clone(&self.input_callback_error_count);
-        let rt_error_code_for_input = Arc::clone(&self.rt_error_code);
-        let input_options = InputStreamOptions::new(
-            Arc::clone(&self.input_channel_mode),
-            Arc::clone(&self.input_stereo_correlation),
-            Arc::clone(&self.input_phase_warning_count),
-            Arc::clone(&self.input_phase_rescue_strategy),
-            Arc::clone(&self.input_phase_estimated_delay_samples),
-            Arc::clone(&self.input_phase_polarity_flipped),
-        );
-        let input_setup = match input_device {
-            Some(name) => AudioInput::from_named_device_identity_setup(
-                name,
-                input_device_name_ordinal,
-                input_device_endpoint_id,
-            ),
-            None => AudioInput::from_default_device_setup(),
-        }
-        .map_err(|e| format!("Failed to start audio input: {}", e))?;
-        let input_sample_rate_for_thread = input_setup.device_info.sample_rate;
-
-        // The ring carries device-rate samples, so its 2 second headroom and the
-        // backlog thresholds below scale with the device rate, not the engine rate.
-        let input_rb = AudioRingBuffer::new(input_sample_rate_for_thread as usize * 2);
-        let (input_producer, input_consumer) = input_rb.split();
-        self.input_dropped = input_producer.dropped_counter();
-        let input = AudioInput::from_setup(
-            input_setup,
-            input_producer,
-            last_input_callback_time_us,
-            input_callback_error_count,
-            rt_error_code_for_input,
-            Arc::clone(&self.restart_requested),
-            input_options,
-        )
-        .map_err(|e| format!("Failed to start audio input: {}", e))?;
-
-        self.input_fixed_buffer_frames
-            .store(input.fixed_buffer_frames().unwrap_or(0), Ordering::Relaxed);
-        let input_device_name = input.device_info().name.clone();
-
-        let output_setup = match output_device {
-            Some(name) => AudioOutput::from_named_device_identity_setup(
-                name,
-                output_device_name_ordinal,
-                output_device_endpoint_id,
-            ),
-            None => AudioOutput::from_default_device_setup(),
-        };
-        let output_setup = match output_setup {
-            Ok(setup) => setup,
-            Err(e) => {
-                return Err(format!("Failed to resolve audio output: {}", e));
-            }
-        };
-
-        let output_device_name = output_setup.device_info.name.clone();
-        let output_sample_rate_for_thread = output_setup.device_info.sample_rate;
-        self.output_sample_rate
-            .store(output_sample_rate_for_thread, Ordering::Relaxed);
-
-        // Create output ring buffer sized for the actual playback device rate.
-        let output_rb = AudioRingBuffer::new(output_sample_rate_for_thread as usize * 2);
-        let (output_producer, output_consumer) = output_rb.split();
-        let output_probe_rb =
-            AudioRingBuffer::new(output_sample_rate_for_thread as usize * MAX_OUTPUT_PROBE_SECONDS);
-        let (output_probe_producer, output_probe_consumer) = output_probe_rb.split();
-        {
-            let mut producer = self
-                .output_probe_producer
-                .lock()
-                .map_err(|_| "Failed to initialize output probe buffer".to_string())?;
-            *producer = Some(output_probe_producer);
-        }
-        self.output_probe_active.store(false, Ordering::Release);
-        self.output_probe_complete.store(true, Ordering::Release);
-        self.output_probe_cancel_requested
-            .store(false, Ordering::Release);
-        let output_probe = OutputProbeControl {
-            consumer: output_probe_consumer,
-            active: Arc::clone(&self.output_probe_active),
-            complete: Arc::clone(&self.output_probe_complete),
-            cancel_requested: Arc::clone(&self.output_probe_cancel_requested),
-        };
-
-        // Start audio output
-        let recording_active = Arc::clone(&self.recording_active);
-        let output_muted = Arc::clone(&self.output_muted);
-        let last_output_callback_time_us = Arc::clone(&self.last_output_callback_time_us);
-        let output_underruns = OutputUnderruns {
-            streak: Arc::clone(&self.output_underrun_streak),
-            total: Arc::clone(&self.output_underrun_total),
-            priming_total: Arc::clone(&self.output_priming_underrun_total),
-            audio_queued_at_us: Arc::clone(&self.last_output_write_time),
-            priming_started_at_us: Arc::clone(&self.output_priming_started_at_us),
-            primed: Arc::clone(&self.output_primed),
-        };
-        let output_callback_error_count = Arc::clone(&self.output_callback_error_count);
-        let rt_error_code_for_output = Arc::clone(&self.rt_error_code);
-        let output_result = AudioOutput::from_setup(
-            output_setup,
-            output_consumer,
-            recording_active.clone(),
-            output_muted.clone(),
-            last_output_callback_time_us,
-            output_underruns,
-            output_callback_error_count,
-            rt_error_code_for_output,
-            Arc::clone(&self.restart_requested),
-            Some(output_probe),
-        );
-        let output = match output_result {
-            Ok(output) => output,
-            Err(e) => {
-                return Err(format!("Failed to start audio output: {}", e));
-            }
-        };
-        self.output_fixed_buffer_frames
-            .store(output.fixed_buffer_frames().unwrap_or(0), Ordering::Relaxed);
-
-        let output_prime_samples = duration_samples(output_sample_rate_for_thread, OUTPUT_PRIME_MS);
-        let mut prod = output_producer;
-        let silence = vec![0.0f32; output_prime_samples];
-        prod.write(&silence);
-        self.output_buffer_len
-            .store(output_prime_samples as u32, Ordering::Relaxed);
-        let output_producer = prod;
-
-        self.input_device_name = Some(input_device_name.clone());
-        self.input_device_name_ordinal = input_device_name_ordinal;
-        // Bind recovery to the endpoints actually opened, including a user's
-        // initial default-device choice, even if another same-name device appears.
-        self.input_device_endpoint_id = input
-            .device_info()
-            .endpoint_id
-            .clone()
-            .or_else(|| input_device_endpoint_id.map(ToOwned::to_owned));
-        self.output_device_name = Some(output_device_name.clone());
-        self.output_device_name_ordinal = output_device_name_ordinal;
-        self.output_device_endpoint_id = output
-            .device_info()
-            .endpoint_id
-            .clone()
-            .or_else(|| output_device_endpoint_id.map(ToOwned::to_owned));
-        self.audio_input = Some(input);
-        self.audio_output = Some(output);
-
-        let input_resampler = if input_sample_rate_for_thread != self.sample_rate {
-            Some(
-                build_sinc_resampler(
-                    input_sample_rate_for_thread,
-                    self.sample_rate,
-                    RESAMPLER_CHUNK_SIZE,
-                )
-                .map_err(|e| {
-                    format!(
-                        "Failed to initialize input resampler ({} Hz -> {} Hz): {}",
-                        input_sample_rate_for_thread, self.sample_rate, e
-                    )
-                })?,
-            )
-        } else {
-            None
-        };
-        let output_resampler = if output_sample_rate_for_thread != self.sample_rate {
-            Some(
-                build_sinc_resampler(
-                    self.sample_rate,
-                    output_sample_rate_for_thread,
-                    RESAMPLER_CHUNK_SIZE,
-                )
-                .map_err(|e| {
-                    format!(
-                        "Failed to initialize output resampler ({} Hz -> {} Hz): {}",
-                        self.sample_rate, output_sample_rate_for_thread, e
-                    )
-                })?,
-            )
-        } else {
-            None
-        };
-        if let Some(resampler) = input_resampler.as_ref() {
-            ensure_resampler_scratch_capacity(resampler, RT_PROCESS_BUFFER_CAPACITY, "input")?;
-        }
-        if let Some(resampler) = output_resampler.as_ref() {
-            ensure_resampler_scratch_capacity(resampler, RT_OUTPUT_SCRATCH_CAPACITY, "output")?;
-        }
-        let output_resampler_delay_samples_for_latency = output_resampler
-            .as_ref()
-            .map(|resampler| resampler.output_delay() as u64)
-            .unwrap_or(0);
-        let input_resampler_delay_samples_for_latency = input_resampler
-            .as_ref()
-            .map(|resampler| resampler.output_delay() as u64)
-            .unwrap_or(0);
-        self.input_resampler_active
-            .store(input_resampler.is_some(), Ordering::Relaxed);
-        self.output_resampler_active
-            .store(output_resampler.is_some(), Ordering::Relaxed);
-
-        #[cfg(feature = "vad")]
-        let (mut vad_worker_producer, vad_worker_consumer) =
-            AudioRingBuffer::new(VAD_WORKER_MAX_BUFFER_SAMPLES).split();
-        #[cfg(feature = "vad")]
-        self.ensure_vad_worker(vad_worker_consumer);
-
-        let suppressor_queue =
-            RtCommandQueue::<NoiseSuppressionEngine, RT_SUPPRESSOR_COMMAND_CAPACITY>::new();
-        let (suppressor_tx, mut suppressor_rx) = suppressor_queue.split();
-        if let Ok(mut tx) = self.pending_suppressor_tx.lock() {
-            *tx = Some(suppressor_tx);
-        }
-        let retired_suppressor_queue =
-            RtCommandQueue::<NoiseSuppressionEngine, RT_SUPPRESSOR_RETIRE_CAPACITY>::new();
-        let (mut retired_suppressor_tx, retired_suppressor_rx) = retired_suppressor_queue.split();
-        if let Ok(mut rx) = self.retired_suppressor_rx.lock() {
-            *rx = Some(retired_suppressor_rx);
-        }
-
-        // Build the initial engine here: a DLL or model load must not run on the
-        // DSP thread, where a slow one would outlast the readiness timeout and
-        // stop() would then block joining it.
-        let suppressor_initial_control = startup_control(
-            self.suppressor_rt_control.snapshot(),
-            SuppressorControlState::new,
-            &self.suppressor_dirty,
-            &self.lock_contention_count,
-        );
-        let suppressor_initial_engine = new_noise_suppression_engine(
-            suppressor_initial_control.model,
-            Arc::clone(&self.suppressor_strength),
-        );
-
-        // Start processing thread
-        self.running.store(true, Ordering::SeqCst);
-        self.last_start_time_us
-            .store(now_micros(), Ordering::Release);
-
-        let gate_enabled = Arc::clone(&self.gate_enabled);
-        let gate_rt_control = Arc::clone(&self.gate_rt_control);
-        let gate_dirty = Arc::clone(&self.gate_dirty);
-        let suppressor_enabled = Arc::clone(&self.suppressor_enabled);
-        let suppressor_rt_control = Arc::clone(&self.suppressor_rt_control);
-        let suppressor_dirty = Arc::clone(&self.suppressor_dirty);
-        let suppressor_reset_requested = Arc::clone(&self.suppressor_reset_requested);
-        let restart_requested_for_dsp = Arc::clone(&self.restart_requested);
-        let recovery_state_for_dsp = Arc::clone(&self.recovery_state);
-        let lock_contention_count = Arc::clone(&self.lock_contention_count);
-        #[cfg(windows)]
-        let dsp_scheduling_degraded = Arc::clone(&self.dsp_scheduling_degraded);
-        let downstream_non_finite_count = Arc::clone(&self.downstream_non_finite_count);
-        let output_resampler_error_count = Arc::clone(&self.output_resampler_error_count);
-        let eq_control = Arc::clone(&self.eq_control);
-        let eq_dirty = Arc::clone(&self.eq_dirty);
-        let compressor_rt_control = Arc::clone(&self.compressor_rt_control);
-        let compressor_dirty = Arc::clone(&self.compressor_dirty);
-        let deesser_rt_control = Arc::clone(&self.deesser_rt_control);
-        let deesser_dirty = Arc::clone(&self.deesser_dirty);
-        let limiter_enabled = Arc::clone(&self.limiter_enabled);
-        let limiter_rt_control = Arc::clone(&self.limiter_rt_control);
-        let limiter_dirty = Arc::clone(&self.limiter_dirty);
-        let mut output_producer = output_producer;
-        let running = Arc::clone(&self.running);
-        let bypass = Arc::clone(&self.bypass);
-        let raw_monitor_enabled = Arc::clone(&self.raw_monitor_enabled);
-
-        // Clone metering atomics
-        let input_peak = Arc::clone(&self.input_peak);
-        let input_rms = Arc::clone(&self.input_rms);
-        let input_crest_factor_db = Arc::clone(&self.input_crest_factor_db);
-        let output_peak = Arc::clone(&self.output_peak);
-        let input_peak_hold = Arc::clone(&self.input_peak_hold);
-        let input_full_scale_count = Arc::clone(&self.input_full_scale_count);
-        let output_pre_limiter_peak_hold = Arc::clone(&self.output_pre_limiter_peak_hold);
-        let output_final_peak_hold = Arc::clone(&self.output_final_peak_hold);
-        let output_full_scale_count = Arc::clone(&self.output_full_scale_count);
-        let output_rms = Arc::clone(&self.output_rms);
-        let output_crest_factor_db = Arc::clone(&self.output_crest_factor_db);
-        let output_short_term_lufs = Arc::clone(&self.output_short_term_lufs);
-        let compressor_gain_reduction = Arc::clone(&self.compressor_gain_reduction);
-        let deesser_gain_reduction = Arc::clone(&self.deesser_gain_reduction);
-        let deesser_detector_confidence = Arc::clone(&self.deesser_detector_confidence);
-        let gate_gain_meter = Arc::clone(&self.gate_gain_meter);
-        #[cfg(feature = "vad")]
-        let vad_raw_probability = Arc::clone(&self.vad_raw_probability);
-        #[cfg(feature = "vad")]
-        let vad_meter_probability = Arc::clone(&self.vad_meter_probability);
-        #[cfg(feature = "vad")]
-        let gate_noise_floor_db = Arc::clone(&self.gate_noise_floor_db);
-        #[cfg(feature = "vad")]
-        let gate_fused_score = Arc::clone(&self.gate_fused_score);
-        let gate_auto_relax_active = Arc::clone(&self.gate_auto_relax_active);
-        let gate_chatter_event_count = Arc::clone(&self.gate_chatter_event_count);
-        #[cfg(feature = "vad")]
-        let vad_available = Arc::clone(&self.vad_available);
-        #[cfg(feature = "vad")]
-        let vad_backend_available = Arc::clone(&self.vad_backend_available);
-        #[cfg(feature = "vad")]
-        let vad_last_update_us = Arc::clone(&self.vad_last_update_us);
-        #[cfg(feature = "vad")]
-        let vad_source_sample_end = Arc::clone(&self.vad_source_sample_end);
-        #[cfg(feature = "vad")]
-        let vad_source_discontinuity = Arc::clone(&self.vad_source_discontinuity);
-        #[cfg(feature = "vad")]
-        let vad_result_sequence = Arc::clone(&self.vad_result_sequence);
-        #[cfg(feature = "vad")]
-        let vad_result_generation = Arc::clone(&self.vad_result_generation);
-        let compressor_current_release_ms = Arc::clone(&self.compressor_current_release_ms);
-        let compressor_current_lufs = Arc::clone(&self.compressor_current_lufs);
-        let compressor_current_makeup_gain = Arc::clone(&self.compressor_current_makeup_gain);
-        let compressor_auto_makeup_error = Arc::clone(&self.compressor_auto_makeup_error);
-        let latency_us = Arc::clone(&self.latency_us);
-        let latency_compensation_us = Arc::clone(&self.latency_compensation_us);
-        let sample_rate_for_latency = self.sample_rate;
-        let output_sample_rate_for_latency = output_sample_rate_for_thread;
-
-        // Clone DSP performance metric atomics
-        let dsp_time_us = Arc::clone(&self.dsp_time_us);
-        let input_buffer_len = Arc::clone(&self.input_buffer_len);
-        let input_capture_dropped = Arc::clone(&self.input_dropped);
-        let smoothed_input_buffer_len = Arc::clone(&self.smoothed_input_buffer_len);
-        let output_buffer_len = Arc::clone(&self.output_buffer_len);
-        let suppressor_buffer_len = Arc::clone(&self.suppressor_buffer_len);
-        let suppressor_latency_samples = Arc::clone(&self.suppressor_latency_samples);
-        let suppressor_successful_inference_frames =
-            Arc::clone(&self.suppressor_successful_inference_frames);
-        let last_output_write_time = Arc::clone(&self.last_output_write_time);
-        let last_input_callback_time_us_for_dsp = Arc::clone(&self.last_input_callback_time_us);
-        let dsp_time_smoothed_us = Arc::clone(&self.dsp_time_smoothed_us);
-        let smoothed_buffer_len = Arc::clone(&self.smoothed_buffer_len);
-        let jitter_dropped_samples = Arc::clone(&self.jitter_dropped_samples);
-        let output_retime_adjustment_count = Arc::clone(&self.output_retime_adjustment_count);
-        let output_recovery_event_count = Arc::clone(&self.output_recovery_event_count);
-        let output_short_write_dropped_samples =
-            Arc::clone(&self.output_short_write_dropped_samples);
-        let dsp_idle_wakeup_count = Arc::clone(&self.dsp_idle_wakeup_count);
-        let dsp_idle_sleep_us = Arc::clone(&self.dsp_idle_sleep_us);
-        let suppressor_non_finite_count = Arc::clone(&self.suppressor_non_finite_count);
-        let input_backlog_recovery_count = Arc::clone(&self.input_backlog_recovery_count);
-        let input_backlog_dropped_samples = Arc::clone(&self.input_backlog_dropped_samples);
-        let clip_event_count = Arc::clone(&self.clip_event_count);
-        let clip_peak_db = Arc::clone(&self.clip_peak_db);
-        let output_clip_event_count = Arc::clone(&self.output_clip_event_count);
-        let output_clip_peak_db = Arc::clone(&self.output_clip_peak_db);
-        let output_true_peak_event_count = Arc::clone(&self.output_true_peak_event_count);
-        let output_true_peak_db = Arc::clone(&self.output_true_peak_db);
-        let output_true_peak_input_db = Arc::clone(&self.output_true_peak_input_db);
-        let output_true_peak_gain_reduction_db =
-            Arc::clone(&self.output_true_peak_gain_reduction_db);
-        let output_true_peak_headroom_db = Arc::clone(&self.output_true_peak_headroom_db);
-        let limiter_gain_reduction_db = Arc::clone(&self.limiter_gain_reduction_db);
-        let limiter_peak_gain_reduction_db = Arc::clone(&self.limiter_peak_gain_reduction_db);
-        let limiter_gain_reduction_history_db = Arc::clone(&self.limiter_gain_reduction_history_db);
-        let output_true_peak_gain_reduction_history_db =
-            Arc::clone(&self.output_true_peak_gain_reduction_history_db);
-        let input_cleanup_mode = Arc::clone(&self.input_cleanup_mode);
-        let input_cleanup_hum_detected = Arc::clone(&self.input_cleanup_hum_detected);
-        let input_cleanup_rumble_detected = Arc::clone(&self.input_cleanup_rumble_detected);
-        let input_cleanup_high_pass_hz = Arc::clone(&self.input_cleanup_high_pass_hz);
-        let noise_backend_available = Arc::clone(&self.noise_backend_available);
-        let noise_backend_failed = Arc::clone(&self.noise_backend_failed);
-        let rt_error_code = Arc::clone(&self.rt_error_code);
-        let rt_buffer_overflow_count = Arc::clone(&self.rt_buffer_overflow_count);
-        let recording_active_thread = Arc::clone(&recording_active);
-        let raw_recording_before_cleanup = Arc::clone(&self.raw_recording_before_cleanup);
-
-        // Clone raw recording buffer atomics
-        let raw_recording_pos = Arc::clone(&self.raw_recording_pos);
-        let raw_recording_target = Arc::clone(&self.raw_recording_target);
-        let recording_level_db = Arc::clone(&self.recording_level_db);
-
-        let (dsp_ready_tx, dsp_ready_rx) = mpsc::channel();
-        let spawned = std::thread::Builder::new().spawn(move || {
-            let mut consumer = input_consumer;
-            let mut observed_capture_drops = 0;
-            #[cfg(feature = "vad")]
-            let vad_result = VadResultAtomics {
-                sequence: vad_result_sequence.as_ref(),
-                result_generation: vad_result_generation.as_ref(),
-                probability: vad_raw_probability.as_ref(),
-                backend_available: vad_backend_available.as_ref(),
-                last_update_us: vad_last_update_us.as_ref(),
-                source_sample_end: vad_source_sample_end.as_ref(),
-                source_discontinuity: vad_source_discontinuity.as_ref(),
-            };
-            let mut input_buffer = FixedAudioBuffer::<f32, RT_INPUT_CHUNK_CAPACITY>::new();
-            let mut temp_buffer = FixedAudioBuffer::<f32, RT_PROCESS_BUFFER_CAPACITY>::new();
-            let mut gate_control_scratch =
-                FixedAudioBuffer::<GateControl, RT_PROCESS_BUFFER_CAPACITY>::new();
-            let mut rnnoise_output = FixedAudioBuffer::<f32, RT_SUPPRESSOR_OUTPUT_CAPACITY>::new();
-            let mut resample_input =
-                crate::audio::rt::FixedAudioRing::<f64, RT_RESAMPLE_QUEUE_CAPACITY>::new();
-            let mut resampler_input_frame = [0.0f64; RESAMPLER_CHUNK_SIZE];
-            let mut resampler = input_resampler;
-            let mut resampler_out = resampler.as_ref().map(|r| r.output_buffer_allocate(true));
-            let mut output_resample_input =
-                crate::audio::rt::FixedAudioRing::<f64, RT_RESAMPLE_QUEUE_CAPACITY>::new();
-            let mut output_resampler_input_frame = [0.0f64; RESAMPLER_CHUNK_SIZE];
-            let mut output_resampler = output_resampler;
-            let mut output_resampler_out = output_resampler
-                .as_ref()
-                .map(|r| r.output_buffer_allocate(true));
-            let mut output_resampled_scratch =
-                FixedAudioBuffer::<f32, RT_OUTPUT_SCRATCH_CAPACITY>::new();
-            let mut output_queue_control_scratch =
-                FixedAudioBuffer::<f32, RT_OUTPUT_SCRATCH_CAPACITY>::new();
-            let mut discontinuity_fade_scratch =
-                FixedAudioBuffer::<f32, RT_OUTPUT_SCRATCH_CAPACITY>::new();
-            let mut output_safety_scratch =
-                FixedAudioBuffer::<f32, RT_OUTPUT_SCRATCH_CAPACITY>::new();
-            let mut gate_rt = NoiseGate::new(-40.0, 10.0, 100.0, sample_rate_for_latency as f64);
-            let gate_snapshot = startup_control(
-                gate_rt_control.snapshot(),
-                GateControlState::new,
-                &gate_dirty,
-                &lock_contention_count,
-            );
-            #[cfg(feature = "vad")]
-            {
-                let vad_auto_gate = VadAutoGate::without_backend(
-                    sample_rate_for_latency,
-                    gate_snapshot.vad_threshold,
-                );
-                gate_rt.set_vad_auto_gate(Some(vad_auto_gate));
-            }
-            let mut correction_eq_rt = ParametricEQ::new(sample_rate_for_latency as f64);
-            let mut tone_eq_rt = ParametricEQ::new(sample_rate_for_latency as f64);
-            let mut compressor_rt = Compressor::default_voice(sample_rate_for_latency as f64);
-            let mut deesser_rt = DeEsser::new(sample_rate_for_latency as f64);
-            let mut limiter_rt = Limiter::default_settings(sample_rate_for_latency as f64);
-            let mut suppressor_rt = suppressor_initial_engine;
-            let mut deferred_suppressor_retire: Option<NoiseSuppressionEngine> = None;
-            let output_ceiling_linear =
-                Cell::new(10.0_f32.powf(limiter_rt.ceiling_db() as f32 / 20.0));
-            let limiter_lookahead_samples =
-                Arc::new(AtomicU64::new(limiter_rt.lookahead_samples() as u64));
-            apply_gate_control(&mut gate_rt, &gate_snapshot);
-            #[cfg(feature = "vad")]
-            {
-                gate_noise_floor_db.store(gate_rt.noise_floor().to_bits(), Ordering::Relaxed);
-                vad_available.store(false, Ordering::Relaxed);
-            }
-            apply_suppressor_control(&mut suppressor_rt, &suppressor_initial_control);
-            update_backend_status_rt(
-                &noise_backend_available,
-                &noise_backend_failed,
-                rt_error_code.as_ref(),
-                &suppressor_rt,
-            );
-            let eq_snapshot = startup_control(
-                eq_control.snapshot(),
-                EqControlSnapshot::new,
-                &eq_dirty,
-                &lock_contention_count,
-            );
-            apply_eq_control(&mut correction_eq_rt, &mut tone_eq_rt, &eq_snapshot);
-            let compressor_snapshot = startup_control(
-                compressor_rt_control.snapshot(),
-                CompressorControlState::new,
-                &compressor_dirty,
-                &lock_contention_count,
-            );
-            apply_compressor_control(&mut compressor_rt, &compressor_snapshot);
-            // Start in the configured state; enable ramps are for live changes.
-            compressor_rt.finish_enable_transition();
-            correction_eq_rt.reset();
-            tone_eq_rt.reset();
-            let deesser_snapshot = startup_control(
-                deesser_rt_control.snapshot(),
-                DeesserControlState::new,
-                &deesser_dirty,
-                &lock_contention_count,
-            );
-            apply_deesser_control(&mut deesser_rt, &deesser_snapshot);
-            deesser_rt.finish_enable_transition();
-            let limiter_snapshot = startup_control(
-                limiter_rt_control.snapshot(),
-                LimiterControlState::new,
-                &limiter_dirty,
-                &lock_contention_count,
-            );
-            apply_limiter_control(&mut limiter_rt, &limiter_snapshot);
-            output_ceiling_linear.set(10.0_f32.powf(limiter_rt.ceiling_db() as f32 / 20.0));
-
-            // Keep the existing priority policy outside Windows.
-            #[cfg(not(windows))]
-            if let Err(_e) = set_current_thread_priority(ThreadPriority::Max) {
-                processor_debug_log!("Warning: Could not set audio thread priority: {:?}", _e);
-            }
-
-            let mut pre_filter_state = InputPreFilterState::default();
-
-            // Pre-filter at 80Hz to remove rumble before gate/suppressor stages.
-            let mut pre_filter = new_input_pre_filter(sample_rate_for_latency as f64);
-            let mut adaptive_cleanup_state =
-                AdaptiveInputCleanupState::new(sample_rate_for_latency as f32);
-
-            // Metering state (IIR smoothing for RMS)
-            let mut input_meter = MeterState::default();
-            let mut output_meter = MeterState::default();
-            let meter_coeff =
-                smoothing_coeff_for_time_constant(sample_rate_for_latency as f32, 100.0);
-            let mut output_short_term_power: f32 = 0.0;
-
-            // Latency tracking
-            let mut last_latency_update = Instant::now();
-            let latency_update_interval = std::time::Duration::from_millis(100); // Update every 100ms
-            const NON_FINITE_REBUILD_THRESHOLD: u32 = 3;
-            const NON_FINITE_REBUILD_WINDOW_MS: u64 = 2000;
-            let mut suppressor_starvation = SuppressorStarvation::new(sample_rate_for_latency);
-            let mut non_finite_window_started_at: Option<Instant> = None;
-            let mut non_finite_window_count: u32 = 0;
-            #[cfg(feature = "vad")]
-            let mut vad_source_sample_clock = 0_u64;
-
-            // Helper: compute peak and RMS from buffer, update atomics
-            // RT_REGION_START: dsp_level_meter
-            let measure_levels = |buffer: &[f32],
-                                  meter: &mut MeterState,
-                                  peak_atomic: &AtomicU32,
-                                  rms_atomic: &AtomicU32,
-                                  crest_atomic: &AtomicU32,
-                                  short_term: Option<(&mut f32, &AtomicU32)>,
-                                  peak_hold: Option<&AtomicU32>| {
-                let stats = update_meter_block_stats(buffer, meter, meter_coeff);
-                if let Some(peak_hold) = peak_hold {
-                    record_level_extremes(buffer, peak_hold, None);
-                }
-                peak_atomic.store(stats.peak_db.to_bits(), Ordering::Relaxed);
-                rms_atomic.store(stats.rms_db.to_bits(), Ordering::Relaxed);
-                crest_atomic.store(stats.crest_factor_db.to_bits(), Ordering::Relaxed);
-
-                if let Some((short_power, loudness_atomic)) = short_term {
-                    let block_coeff = smoothing_coeff_for_block(
-                        sample_rate_for_latency as f32,
-                        3000.0,
-                        buffer.len(),
-                    );
-                    *short_power =
-                        block_coeff * *short_power + (1.0 - block_coeff) * stats.mean_power;
-                    let loudness = if *short_power > 1.0e-12 {
-                        10.0 * (*short_power).log10() - 0.691
-                    } else {
-                        -120.0
-                    };
-                    loudness_atomic.store(loudness.to_bits(), Ordering::Relaxed);
-                }
-            };
-            // RT_REGION_END: dsp_level_meter
-
-            // RT_REGION_START: dsp_downstream_chain
-            macro_rules! apply_downstream_chain_rt {
-                ($buffer:expr) => {{
-                    if let Some(control) = take_dirty(
-                        &deesser_dirty,
-                        || deesser_rt_control.snapshot(),
-                        &lock_contention_count,
-                    ) {
-                        apply_deesser_control(&mut deesser_rt, &control);
-                    }
-                    if let Some(eq_snapshot) =
-                        take_dirty(&eq_dirty, || eq_control.snapshot(), &lock_contention_count)
-                    {
-                        apply_eq_control(&mut correction_eq_rt, &mut tone_eq_rt, &eq_snapshot);
-                    }
-                    if let Some(control) = take_dirty(
-                        &compressor_dirty,
-                        || compressor_rt_control.snapshot(),
-                        &lock_contention_count,
-                    ) {
-                        apply_compressor_control(&mut compressor_rt, &control);
-                    }
-
-                    // The de-esser owns its enable ramp, like the compressor.
-                    if deesser_rt.is_active() {
-                        deesser_rt.process_block_inplace($buffer);
-                        deesser_gain_reduction.store(
-                            deesser_rt.current_gain_reduction_db().to_bits(),
-                            Ordering::Relaxed,
-                        );
-                        deesser_detector_confidence.store(
-                            deesser_rt.detector_confidence().to_bits(),
-                            Ordering::Relaxed,
-                        );
-                    } else {
-                        deesser_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
-                        deesser_detector_confidence.store(0.0_f32.to_bits(), Ordering::Relaxed);
-                    }
-
-                    correction_eq_rt.process_block_inplace($buffer);
-                    tone_eq_rt.process_block_inplace($buffer);
-
-                    // The compressor owns its enable ramp; keep processing
-                    // until a disable has faded out.
-                    if compressor_rt.is_active() {
-                        let true_peak_pressure = f32::from_bits(
-                            output_true_peak_gain_reduction_db.load(Ordering::Relaxed),
-                        ) as f64;
-                        compressor_rt.set_limiter_feedback_gain_reduction_db(
-                            limiter_rt
-                                .current_gain_reduction()
-                                .abs()
-                                .max(true_peak_pressure),
-                        );
-                        #[cfg(feature = "vad")]
-                        {
-                            let vad_snapshot = vad_result.snapshot();
-                            let now_us = now_micros();
-                            let (vad_probability, vad_reliability) =
-                                vad_snapshot.map_or((0.0, 0.0), |snapshot| {
-                                    let wall_age_us = if snapshot.last_update_us > 0 {
-                                        now_us.saturating_sub(snapshot.last_update_us)
-                                    } else {
-                                        u64::MAX
-                                    };
-                                    let source_age_us = if snapshot.last_update_us > 0 {
-                                        vad_source_sample_clock
-                                            .saturating_sub(snapshot.source_sample_end)
-                                            .saturating_mul(1_000_000)
-                                            / u64::from(sample_rate_for_latency.max(1))
-                                    } else {
-                                        u64::MAX
-                                    };
-                                    // Source age reflects audio actually waiting
-                                    // behind the worker; wall age remains a
-                                    // watchdog for a stalled callback or worker.
-                                    let age_us = source_age_us.max(wall_age_us);
-                                    let reliability = if snapshot.backend_available
-                                        && age_us <= VAD_PROBABILITY_STALE_US
-                                    {
-                                        let freshness = if age_us <= VAD_PROBABILITY_STALE_US / 2 {
-                                            1.0
-                                        } else {
-                                            1.0 - (age_us - VAD_PROBABILITY_STALE_US / 2) as f64
-                                                / (VAD_PROBABILITY_STALE_US / 2) as f64
-                                        };
-                                        let t = freshness.clamp(0.0, 1.0);
-                                        t * t * (3.0 - 2.0 * t)
-                                    } else {
-                                        0.0
-                                    };
-                                    (f64::from(snapshot.probability), reliability)
-                                });
-                            let gate_is_enabled = gate_enabled.load(Ordering::Acquire);
-                            compressor_rt.process_block_inplace_with_activity_control(
-                                $buffer,
-                                Some(AutoMakeupActivityInput {
-                                    vad_probability,
-                                    vad_reliability,
-                                    noise_floor_db: if gate_is_enabled {
-                                        gate_rt.noise_floor() as f64
-                                    } else {
-                                        -60.0
-                                    },
-                                    live_noise_reliability: if gate_is_enabled {
-                                        gate_rt.noise_floor_reliability() as f64
-                                    } else {
-                                        0.0
-                                    },
-                                }),
-                            );
-                        }
-                        #[cfg(not(feature = "vad"))]
-                        compressor_rt.process_block_inplace($buffer);
-                        compressor_gain_reduction.store(
-                            (compressor_rt.block_peak_gain_reduction() as f32).to_bits(),
-                            Ordering::Relaxed,
-                        );
-                        let current_release = compressor_rt.current_release_time();
-                        compressor_current_release_ms
-                            .store(release_ms_to_tenth_ms(current_release), Ordering::Relaxed);
-                        compressor_current_lufs
-                            .store(compressor_rt.current_lufs().to_bits(), Ordering::Relaxed);
-                        compressor_current_makeup_gain.store(
-                            compressor_rt.current_makeup_gain().to_bits(),
-                            Ordering::Relaxed,
-                        );
-                        compressor_auto_makeup_error
-                            .store(compressor_rt.auto_makeup_error_code(), Ordering::Relaxed);
-                    } else {
-                        compressor_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
-                        compressor_current_release_ms
-                            .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed);
-                        compressor_current_lufs.store((-100.0_f64).to_bits(), Ordering::Relaxed);
-                        compressor_current_makeup_gain.store(0.0_f64.to_bits(), Ordering::Relaxed);
-                        compressor_auto_makeup_error.store(0, Ordering::Relaxed);
-                    }
-
-                    // Always run the limiter: disabled means unity gain through
-                    // the same delay, so toggling never shifts the timeline.
-                    limiter_rt.process_block_inplace($buffer);
-                    // Read the peak every block so a disabled limiter's release
-                    // tail is not published when limiting is turned back on.
-                    let limiter_peak_gr = limiter_rt.peak_gain_reduction_and_reset() as f32;
-                    if limiter_enabled.load(Ordering::Acquire) {
-                        limiter_gain_reduction_db.store(
-                            (limiter_rt.current_gain_reduction().abs() as f32).to_bits(),
-                            Ordering::Relaxed,
-                        );
-                        limiter_peak_gain_reduction_db
-                            .store(limiter_peak_gr.to_bits(), Ordering::Relaxed);
-                        update_decaying_peak_db(
-                            limiter_peak_gr,
-                            limiter_gain_reduction_history_db.as_ref(),
-                            0.15,
-                        );
-                    } else {
-                        limiter_gain_reduction_db.store(0.0_f32.to_bits(), Ordering::Relaxed);
-                        limiter_peak_gain_reduction_db.store(0.0_f32.to_bits(), Ordering::Relaxed);
-                        update_decaying_peak_db(
-                            0.0,
-                            limiter_gain_reduction_history_db.as_ref(),
-                            0.15,
-                        );
-                    }
-
-                    // One non-finite sample would poison the meters and latch in the
-                    // filter state of the de-esser and EQs, muting the stream for good,
-                    // and in the compressor's envelopes, which then never reduce gain
-                    // again. Count it, zero it and clear those stages; the compressor
-                    // clears only its detector and keeps its makeup state. The
-                    // limiter recovers on its own.
-                    if contain_non_finite($buffer) {
-                        downstream_non_finite_count.fetch_add(1, Ordering::Relaxed);
-                        deesser_rt.reset();
-                        correction_eq_rt.reset();
-                        tone_eq_rt.reset();
-                        compressor_rt.reset_detector_state();
-                    }
-                }};
-            }
-            // RT_REGION_END: dsp_downstream_chain
-
-            // Time-based EMA smoothing for metrics (200ms time constant).
-            // The input fill level advances by measured wall time on every loop pass;
-            // the per-block metrics below assume one block per 10 ms (480 samples
-            // @ 48kHz).
-            const TAU_MS: f32 = 200.0; // Time constant in milliseconds
-            let dt_ms = 10.0; // Nominal processing interval for per-block metrics
-            let alpha = 1.0 - (-dt_ms / TAU_MS).exp(); // Per-block smoothing factor
-            let mut smoothed_input_len = 0.0_f32;
-            let mut last_input_smoothing = Instant::now();
-
-            let smooth_dsp_time = |raw_us: u64, prev_smoothed: u64| -> u64 {
-                let raw_f = raw_us as f32;
-                let prev_f = prev_smoothed as f32;
-                (alpha * raw_f + (1.0 - alpha) * prev_f) as u64
-            };
-
-            let smooth_buffer = |raw: u32, prev_smoothed: u32| -> u32 {
-                let raw_f = raw as f32;
-                let prev_f = prev_smoothed as f32;
-                (alpha * raw_f + (1.0 - alpha) * prev_f) as u32
-            };
-
-            // Jitter-buffer write control: keep output queue in a healthy range.
-            let output_target_low_samples =
-                duration_samples(output_sample_rate_for_latency, OUTPUT_PRIME_MS);
-            let output_target_high_samples =
-                duration_samples(output_sample_rate_for_latency, OUTPUT_TARGET_HIGH_MS);
-            let output_target_center_samples =
-                (output_target_low_samples + output_target_high_samples).div_ceil(2);
-            let output_hard_backlog_samples =
-                duration_samples(output_sample_rate_for_latency, OUTPUT_HARD_BACKLOG_MS);
-            const OUTPUT_MAX_CATCHUP_RATIO: f32 = 1.03;
-            const OUTPUT_MAX_EMERGENCY_CATCHUP_RATIO: f32 = 1.06;
-            let input_backlog_high_samples = duration_samples(input_sample_rate_for_thread, 250);
-            let input_backlog_low_samples = duration_samples(input_sample_rate_for_thread, 100);
-            let discontinuity_fade_samples =
-                duration_samples(output_sample_rate_for_latency, 6).max(1);
-            let discontinuity_fade_remaining = Cell::new(0usize);
-            let mut suppressor_recovery_fade =
-                SuppressorRecoveryFade::new(duration_samples(sample_rate_for_latency, 6));
-            let mut output_true_peak_detector = TruePeakDetector::new();
-            let mut output_true_peak_limiter =
-                TruePeakLimiter::default_settings(output_sample_rate_for_latency as f32);
-            apply_true_peak_limiter_control(&mut output_true_peak_limiter, &limiter_snapshot);
-            let output_limiter_release_ms = Cell::new(limiter_snapshot.release_ms as f32);
-            let mut applied_output_limiter_release_ms = limiter_snapshot.release_ms as f32;
-            let true_peak_lookahead_samples = output_true_peak_limiter.lookahead_samples() as u64;
-            let mut output_drift_error_ema = 0.0_f32;
-            let mut output_drift_retimer = DriftRetimer::default();
-            let mut output_writer = OutputWriteContext {
-                output_producer: &mut output_producer,
-                output_queue_control_scratch: &mut output_queue_control_scratch,
-                discontinuity_fade_scratch: &mut discontinuity_fade_scratch,
-                output_safety_scratch: &mut output_safety_scratch,
-                true_peak_detector: &mut output_true_peak_detector,
-                true_peak_limiter: &mut output_true_peak_limiter,
-                drift_error_ema: &mut output_drift_error_ema,
-                drift_retimer: &mut output_drift_retimer,
-                discontinuity_fade_remaining: &discontinuity_fade_remaining,
-                output_fade_remaining: 0,
-                limiter_enabled: limiter_enabled.as_ref(),
-                output_ceiling_linear: &output_ceiling_linear,
-                counters: OutputWriteCounters {
-                    jitter_dropped_samples: jitter_dropped_samples.as_ref(),
-                    output_retime_adjustment_count: output_retime_adjustment_count.as_ref(),
-                    output_recovery_event_count: output_recovery_event_count.as_ref(),
-                    output_short_write_dropped_samples: output_short_write_dropped_samples.as_ref(),
-                    rt_buffer_overflow_count: rt_buffer_overflow_count.as_ref(),
-                    rt_error_code: rt_error_code.as_ref(),
-                    output_buffer_len: output_buffer_len.as_ref(),
-                    last_output_write_time: last_output_write_time.as_ref(),
-                    output_clip_event_count: output_clip_event_count.as_ref(),
-                    output_clip_peak_db: output_clip_peak_db.as_ref(),
-                    output_final_peak_hold: output_final_peak_hold.as_ref(),
-                    output_full_scale_count: output_full_scale_count.as_ref(),
-                    output_true_peak_event_count: output_true_peak_event_count.as_ref(),
-                    output_true_peak_db: output_true_peak_db.as_ref(),
-                    output_true_peak_input_db: output_true_peak_input_db.as_ref(),
-                    output_true_peak_gain_reduction_db: output_true_peak_gain_reduction_db.as_ref(),
-                    output_true_peak_gain_reduction_history_db:
-                        output_true_peak_gain_reduction_history_db.as_ref(),
-                    output_true_peak_headroom_db: output_true_peak_headroom_db.as_ref(),
-                },
-                limits: OutputWriteLimits {
-                    output_target_center_samples,
-                    output_hard_backlog_samples,
-                    discontinuity_fade_samples,
-                    max_catchup_ratio: OUTPUT_MAX_CATCHUP_RATIO,
-                    max_emergency_catchup_ratio: OUTPUT_MAX_EMERGENCY_CATCHUP_RATIO,
-                },
-            };
-            // RT_REGION_START: dsp_output_writer
-            let mut write_output = |samples: &[f32], clean_path: bool| {
-                let requested_release_ms = output_limiter_release_ms.get();
-                if requested_release_ms != applied_output_limiter_release_ms {
-                    output_writer
-                        .true_peak_limiter
-                        .set_release_ms(requested_release_ms);
-                    applied_output_limiter_release_ms = requested_release_ms;
-                }
-                if let Some(output_resampler) = output_resampler.as_mut() {
-                    for &sample in samples {
-                        if !output_resample_input.push(sample as f64) {
-                            rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
-                            store_rt_error(
-                                rt_error_code.as_ref(),
-                                RtErrorCode::FixedBufferOverflow,
-                            );
-                            break;
-                        }
-                    }
-
-                    loop {
-                        output_resampled_scratch.clear();
-                        let input_frames_needed = output_resampler.input_frames_next();
-                        while output_resample_input.len() >= input_frames_needed
-                            && input_frames_needed <= output_resampler_input_frame.len()
-                        {
-                            let Some(outbuf) = output_resampler_out.as_mut() else {
-                                break;
-                            };
-                            if !has_resampler_output_capacity(&output_resampled_scratch, outbuf) {
-                                break;
-                            }
-                            let read = output_resample_input
-                                .pop_into(&mut output_resampler_input_frame[..input_frames_needed]);
-                            if read != input_frames_needed {
-                                break;
-                            }
-                            let in_slices = [&output_resampler_input_frame[..input_frames_needed]];
-                            match output_resampler.process_into_buffer(&in_slices, outbuf, None) {
-                                Ok((_nbr_in, nbr_out)) => {
-                                    for &sample in outbuf[0].iter().take(nbr_out) {
-                                        if !output_resampled_scratch.push(sample as f32) {
-                                            rt_buffer_overflow_count
-                                                .fetch_add(1, Ordering::Relaxed);
-                                            store_rt_error(
-                                                rt_error_code.as_ref(),
-                                                RtErrorCode::FixedBufferOverflow,
-                                            );
-                                            break;
-                                        }
-                                    }
-                                }
-                                Err(_) => {
-                                    // The dropped chunk is a hole in the output;
-                                    // count it and rebuild the stream like the
-                                    // input side does.
-                                    output_resampler_error_count.fetch_add(1, Ordering::Relaxed);
-                                    restart_requested_for_dsp.store(true, Ordering::Release);
-                                    output_resample_input.clear();
-                                    break;
-                                }
-                            }
-                        }
-
-                        if !output_writer
-                            .write_chunk(output_resampled_scratch.as_slice(), clean_path)
-                        {
-                            break;
-                        }
-                        if output_resample_input.len() < input_frames_needed {
-                            break;
-                        }
-                    }
-                } else {
-                    let _ = output_writer.write_chunk(samples, clean_path);
-                }
-            };
-            // RT_REGION_END: dsp_output_writer
-            let mut previous_processing_path = select_processing_path(
-                raw_monitor_enabled.load(Ordering::Acquire),
-                bypass.load(Ordering::SeqCst),
-            );
-            // Raw monitor and Bypass leave the suppressor latency at 0; the Full
-            // path would only store it after its first block, which the first
-            // latency tick can precede.
-            if previous_processing_path == ProcessingPath::Full
-                && suppressor_enabled.load(Ordering::Acquire)
-            {
-                suppressor_latency_samples
-                    .store(suppressor_rt.latency_samples() as u32, Ordering::Relaxed);
-            }
-            macro_rules! reset_input_continuity {
-                () => {
-                    resample_input.clear();
-                    if let Some(resampler) = resampler.as_mut() {
-                        resampler.reset();
-                    }
-                    if let Some(outbuf) = resampler_out.as_mut() {
-                        clear_resampler_output_samples(outbuf);
-                    }
-                    gate_rt.reset();
-                    suppressor_rt.soft_reset();
-                    rnnoise_output.clear();
-                    suppressor_buffer_len.store(0, Ordering::Relaxed);
-                    smoothed_buffer_len.store(0, Ordering::Relaxed);
-                    suppressor_latency_samples.store(
-                        if suppressor_enabled.load(Ordering::Acquire) {
-                            suppressor_rt.latency_samples() as u32
-                        } else {
-                            0
-                        },
-                        Ordering::Relaxed,
-                    );
-                    suppressor_successful_inference_frames.store(
-                        suppressor_rt.successful_inference_frames(),
-                        Ordering::Relaxed,
-                    );
-                    gate_gain_meter.store(0.0_f32.to_bits(), Ordering::Relaxed);
-                    gate_auto_relax_active.store(false, Ordering::Relaxed);
-                    suppressor_starvation.restart();
-                    #[cfg(feature = "vad")]
-                    {
-                        vad_source_discontinuity.fetch_add(1, Ordering::Release);
-                        vad_available.store(false, Ordering::Release);
-                    }
-                    if !raw_monitor_enabled.load(Ordering::Acquire)
-                        && !bypass.load(Ordering::SeqCst)
-                        && suppressor_enabled.load(Ordering::Acquire)
-                    {
-                        suppressor_recovery_fade.restart_for_suppressor(
-                            &suppressor_rt,
-                            &discontinuity_fade_remaining,
-                            discontinuity_fade_samples,
-                        );
-                    } else {
-                        suppressor_recovery_fade.restart(0);
-                        if !raw_monitor_enabled.load(Ordering::Acquire) {
-                            discontinuity_fade_remaining.set(discontinuity_fade_samples);
-                        }
-                    }
-                };
-            }
-            let mut consecutive_idle_wakeups = 0u32;
-            // Register only after every worker buffer and DSP state is initialized.
-            // A missing or disabled MMCSS "Pro Audio" task only costs scheduling
-            // priority, so it degrades to normal priority and is reported.
-            #[cfg(windows)]
-            let scheduling = tolerate_scheduling_failure(
-                ProAudioThread::enter(),
-                dsp_scheduling_degraded.as_ref(),
-            );
-            let _ = dsp_ready_tx.send(Ok(()));
-
-            // Run the whole loop with denormals flushed to zero so tiny values
-            // cannot stall the CPU. A panic is caught and reported (recovery
-            // state plus a restart request) instead of leaving a dead thread
-            // behind a running processor.
-            // SAFETY: `no_denormals` sets the FTZ/DAZ bits of this thread's FP
-            // control register and restores them when the closure returns or
-            // unwinds. Its own documentation calls this technically undefined
-            // behaviour, because the compiler may assume the default FP
-            // environment. The risk is confined to this thread; the loop does
-            // not rely on exact results of denormal arithmetic.
-            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-            let dsp_loop = || unsafe {
-                no_denormals::no_denormals(|| {
-                    // RT_REGION_START: dsp_processing_loop
-                    while running.load(Ordering::SeqCst) {
-                        // Publish latency on every pass, before any path branch or
-                        // early `continue`, so Raw monitor, Bypass and idle wakeups
-                        // all keep it current.
-                        let pass_now = Instant::now();
-                        if pass_now.duration_since(last_latency_update) >= latency_update_interval {
-                            last_latency_update = pass_now;
-                            let suppressor_latency_samples =
-                                if suppressor_enabled.load(Ordering::Acquire) {
-                                    suppressor_latency_samples.load(Ordering::Relaxed) as u64
-                                } else {
-                                    0
-                                };
-                            publish_reported_latency(
-                                &latency_us,
-                                LatencyComponents {
-                                    input_resampler_delay_samples:
-                                        input_resampler_delay_samples_for_latency,
-                                    output_buffer_samples: output_buffer_len.load(Ordering::Relaxed)
-                                        as u64,
-                                    output_sample_rate: output_sample_rate_for_latency,
-                                    output_resampler_delay_samples:
-                                        output_resampler_delay_samples_for_latency,
-                                    suppressor_latency_samples,
-                                    limiter_lookahead_samples: limiter_lookahead_samples
-                                        .load(Ordering::Relaxed),
-                                    true_peak_lookahead_samples,
-                                    processing_sample_rate: sample_rate_for_latency,
-                                },
-                                select_processing_path(
-                                    raw_monitor_enabled.load(Ordering::Acquire),
-                                    bypass.load(Ordering::SeqCst),
-                                ),
-                                latency_compensation_us.load(Ordering::Relaxed),
-                            );
-                        }
-
-                        // Installs engines queued by set_noise_model / rebuild and applies a
-                        // pending suppressor control change. It runs at the top of every pass,
-                        // whether or not the suppressor is in use and whether or not input
-                        // arrived, so the bounded command queue cannot fill up behind a
-                        // disabled suppressor and make later switches fail.
-                        // `suppressor_in_use` is true only when this pass feeds the
-                        // suppressor; otherwise the swap is silent (no fade), as the output
-                        // carries no suppressor audio.
-                        let suppressor_in_use = suppressor_enabled.load(Ordering::Acquire)
-                            && select_processing_path(
-                                raw_monitor_enabled.load(Ordering::Acquire),
-                                bypass.load(Ordering::SeqCst),
-                            ) == ProcessingPath::Full;
-                        if let Some(retired) = deferred_suppressor_retire.take() {
-                            if let Err(retired) = retired_suppressor_tx.try_push(retired) {
-                                deferred_suppressor_retire = Some(retired);
-                            }
-                        }
-
-                        if let Some(control) = take_dirty(
-                            &suppressor_dirty,
-                            || suppressor_rt_control.snapshot(),
-                            &lock_contention_count,
-                        ) {
-                            while deferred_suppressor_retire.is_none()
-                                && !retired_suppressor_tx.is_full()
-                            {
-                                let candidate_matches = match suppressor_rx.iter().next() {
-                                    Some(candidate) => candidate.model_type() == control.model,
-                                    None => break,
-                                };
-                                let Some(candidate) = suppressor_rx.try_pop() else {
-                                    break;
-                                };
-
-                                if candidate_matches {
-                                    let retired = std::mem::replace(&mut suppressor_rt, candidate);
-                                    suppressor_rt.soft_reset();
-                                    suppressor_starvation.restart();
-                                    if suppressor_in_use {
-                                        suppressor_recovery_fade.restart_for_suppressor(
-                                            &suppressor_rt,
-                                            &discontinuity_fade_remaining,
-                                            discontinuity_fade_samples,
-                                        );
-                                    }
-                                    if let Err(retired) = retired_suppressor_tx.try_push(retired) {
-                                        deferred_suppressor_retire = Some(retired);
-                                        rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
-                                        store_rt_error(
-                                            rt_error_code.as_ref(),
-                                            RtErrorCode::FixedBufferOverflow,
-                                        );
-                                        break;
-                                    }
-                                } else if let Err(candidate) =
-                                    retired_suppressor_tx.try_push(candidate)
-                                {
-                                    deferred_suppressor_retire = Some(candidate);
-                                    rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
-                                    store_rt_error(
-                                        rt_error_code.as_ref(),
-                                        RtErrorCode::FixedBufferOverflow,
-                                    );
-                                    break;
-                                }
-                            }
-                            if suppressor_rt.model_type() == control.model {
-                                apply_suppressor_control(&mut suppressor_rt, &control);
-                                update_backend_status_rt(
-                                    &noise_backend_available,
-                                    &noise_backend_failed,
-                                    rt_error_code.as_ref(),
-                                    &suppressor_rt,
-                                );
-                            } else {
-                                suppressor_dirty.store(true, Ordering::Release);
-                            }
-                        }
-
-                        // Record input buffer fill level (samples waiting to be processed)
-                        let raw_input_len = consumer.len() as u32;
-                        input_buffer_len.store(raw_input_len, Ordering::Relaxed);
-                        advance_time_ema(
-                            &mut smoothed_input_len,
-                            raw_input_len as f32,
-                            pass_now.duration_since(last_input_smoothing).as_secs_f32() * 1000.0,
-                            TAU_MS,
-                        );
-                        last_input_smoothing = pass_now;
-                        smoothed_input_buffer_len
-                            .store(smoothed_input_len.round() as u32, Ordering::Relaxed);
-
-                        let input_read = read_contiguous_input(
-                            &mut consumer,
-                            input_capture_dropped.as_ref(),
-                            &mut observed_capture_drops,
-                            input_buffer.as_mut_capacity_slice(),
-                            (input_backlog_high_samples, input_backlog_low_samples),
-                        );
-                        if input_read.discontinuity {
-                            input_backlog_recovery_count.fetch_add(1, Ordering::Relaxed);
-                            input_backlog_dropped_samples
-                                .fetch_add(input_read.discarded as u64, Ordering::Relaxed);
-                            store_rt_error(
-                                rt_error_code.as_ref(),
-                                RtErrorCode::InputBacklogDropped,
-                            );
-                            reset_input_continuity!();
-                        }
-                        let n_raw = input_read.samples;
-
-                        if n_raw > 0 {
-                            let n = if let Some(resampler) = resampler.as_mut() {
-                                temp_buffer.clear();
-                                for &sample in input_buffer.as_mut_capacity_slice()[..n_raw].iter()
-                                {
-                                    if !resample_input.push(sample as f64) {
-                                        rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
-                                        store_rt_error(
-                                            rt_error_code.as_ref(),
-                                            RtErrorCode::FixedBufferOverflow,
-                                        );
-                                        break;
-                                    }
-                                }
-
-                                let input_frames_needed = resampler.input_frames_next();
-                                while resample_input.len() >= input_frames_needed
-                                    && input_frames_needed <= resampler_input_frame.len()
-                                {
-                                    let Some(outbuf) = resampler_out.as_mut() else {
-                                        break;
-                                    };
-                                    if !has_resampler_output_capacity(&temp_buffer, outbuf) {
-                                        break;
-                                    }
-                                    let read = resample_input.pop_into(
-                                        &mut resampler_input_frame[..input_frames_needed],
-                                    );
-                                    if read != input_frames_needed {
-                                        break;
-                                    }
-                                    let in_slices = [&resampler_input_frame[..input_frames_needed]];
-                                    match resampler.process_into_buffer(&in_slices, outbuf, None) {
-                                        Ok((_nbr_in, nbr_out)) => {
-                                            let channel_out = &outbuf[0];
-                                            for &sample in channel_out.iter().take(nbr_out) {
-                                                if !temp_buffer.push(sample as f32) {
-                                                    rt_buffer_overflow_count
-                                                        .fetch_add(1, Ordering::Relaxed);
-                                                    store_rt_error(
-                                                        rt_error_code.as_ref(),
-                                                        RtErrorCode::FixedBufferOverflow,
-                                                    );
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                        Err(_) => {
-                                            signal_input_resampler_failure(
-                                                rt_error_code.as_ref(),
-                                                restart_requested_for_dsp.as_ref(),
-                                            );
-                                            resample_input.clear();
-                                            temp_buffer.clear();
-                                            break;
-                                        }
-                                    }
-                                }
-                                temp_buffer.len()
-                            } else {
-                                temp_buffer.clear();
-                                let written = temp_buffer.extend_from_slice(
-                                    &input_buffer.as_mut_capacity_slice()[..n_raw],
-                                );
-                                if written < n_raw {
-                                    rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
-                                    store_rt_error(
-                                        rt_error_code.as_ref(),
-                                        RtErrorCode::FixedBufferOverflow,
-                                    );
-                                }
-                                written
-                            };
-
-                            if n == 0 {
-                                consecutive_idle_wakeups =
-                                    consecutive_idle_wakeups.saturating_add(1);
-                                let last_input_callback =
-                                    last_input_callback_time_us_for_dsp.load(Ordering::Relaxed);
-                                let input_callback_age_us = if last_input_callback == 0 {
-                                    u64::MAX
-                                } else {
-                                    now_micros().saturating_sub(last_input_callback)
-                                };
-                                let idle_sleep_us = next_process_idle_sleep_us(
-                                    consecutive_idle_wakeups,
-                                    input_callback_age_us,
-                                );
-                                dsp_idle_wakeup_count.fetch_add(1, Ordering::Relaxed);
-                                dsp_idle_sleep_us.store(idle_sleep_us, Ordering::Relaxed);
-                                std::thread::sleep(std::time::Duration::from_micros(idle_sleep_us));
-                                continue;
-                            }
-                            consecutive_idle_wakeups = 0;
-
-                            let buffer = temp_buffer.as_mut_slice();
-                            // Closest tap to the converter in every processing
-                            // path: after channel mix-down and any resampling,
-                            // before sanitizing, the pre-filter and cleanup.
-                            record_level_extremes(
-                                buffer,
-                                input_peak_hold.as_ref(),
-                                Some(input_full_scale_count.as_ref()),
-                            );
-
-                            // Start DSP timing
-                            let dsp_start = Instant::now();
-                            let processing_path = select_processing_path(
-                                raw_monitor_enabled.load(Ordering::Acquire),
-                                bypass.load(Ordering::SeqCst),
-                            );
-                            if processing_path != previous_processing_path {
-                                #[cfg(feature = "vad")]
-                                publish_vad_processing_path_discontinuity(
-                                    previous_processing_path,
-                                    processing_path,
-                                    vad_source_discontinuity.as_ref(),
-                                );
-                                #[cfg(feature = "vad")]
-                                vad_available.store(false, Ordering::Release);
-                                pre_filter_state = InputPreFilterState::default();
-                                adaptive_cleanup_state.reset_dynamic_state();
-                                publish_input_cleanup_bypassed(
-                                    input_cleanup_hum_detected.as_ref(),
-                                    input_cleanup_rumble_detected.as_ref(),
-                                    input_cleanup_high_pass_hz.as_ref(),
-                                );
-                                input_meter = MeterState::default();
-                                output_meter = MeterState::default();
-                                gate_gain_meter.store(1.0_f32.to_bits(), Ordering::Relaxed);
-                                gate_auto_relax_active.store(false, Ordering::Relaxed);
-                                compressor_gain_reduction
-                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                deesser_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                deesser_detector_confidence
-                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                compressor_current_release_ms
-                                    .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed);
-                                compressor_current_lufs
-                                    .store((-100.0_f64).to_bits(), Ordering::Relaxed);
-                                compressor_current_makeup_gain
-                                    .store(0.0_f64.to_bits(), Ordering::Relaxed);
-                                limiter_gain_reduction_db
-                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                limiter_peak_gain_reduction_db
-                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                limiter_gain_reduction_history_db
-                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                output_true_peak_gain_reduction_history_db
-                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                suppressor_buffer_len.store(0, Ordering::Relaxed);
-                                suppressor_latency_samples.store(0, Ordering::Relaxed);
-                                suppressor_successful_inference_frames.store(0, Ordering::Relaxed);
-                                smoothed_buffer_len.store(0, Ordering::Relaxed);
-                                discontinuity_fade_remaining.set(discontinuity_fade_samples);
-
-                                gate_rt.reset();
-                                if let Some(control) = rearm_unless_stable(
-                                    gate_rt_control.snapshot(),
-                                    &gate_dirty,
-                                    &lock_contention_count,
-                                ) {
-                                    apply_gate_control(&mut gate_rt, &control);
-                                }
-                                correction_eq_rt.reset();
-                                tone_eq_rt.reset();
-                                compressor_rt.reset();
-                                deesser_rt.reset();
-                                limiter_rt.reset();
-                                suppressor_rt.soft_reset();
-                                suppressor_starvation.restart();
-                                if processing_path == ProcessingPath::Full
-                                    && suppressor_enabled.load(Ordering::Acquire)
-                                {
-                                    suppressor_recovery_fade.restart_for_suppressor(
-                                        &suppressor_rt,
-                                        &discontinuity_fade_remaining,
-                                        discontinuity_fade_samples,
-                                    );
-                                } else {
-                                    suppressor_recovery_fade.restart(0);
-                                }
-                                update_backend_status_rt(
-                                    &noise_backend_available,
-                                    &noise_backend_failed,
-                                    rt_error_code.as_ref(),
-                                    &suppressor_rt,
-                                );
-                                previous_processing_path = processing_path;
-                            }
-
-                            apply_pending_limiter_control(
-                                &limiter_dirty,
-                                &limiter_rt_control,
-                                &mut limiter_rt,
-                                &output_limiter_release_ms,
-                                &output_ceiling_linear,
-                                &limiter_lookahead_samples,
-                                &lock_contention_count,
-                            );
-
-                            if processing_path == ProcessingPath::RawMonitor {
-                                sanitize_non_finite_inplace(buffer);
-                                adaptive_cleanup_state.reset_dynamic_state();
-                                publish_input_cleanup_bypassed(
-                                    input_cleanup_hum_detected.as_ref(),
-                                    input_cleanup_rumble_detected.as_ref(),
-                                    input_cleanup_high_pass_hz.as_ref(),
-                                );
-
-                                measure_levels(
-                                    buffer,
-                                    &mut input_meter,
-                                    &input_peak,
-                                    &input_rms,
-                                    input_crest_factor_db.as_ref(),
-                                    None,
-                                    None,
-                                );
-
-                                if recording_active.load(Ordering::Relaxed) {
-                                    record_raw_recording_block(
-                                        buffer,
-                                        sample_rate_for_latency,
-                                        &mut recording_producer,
-                                        raw_recording_pos.as_ref(),
-                                        raw_recording_target.as_ref(),
-                                        recording_level_db.as_ref(),
-                                    );
-                                }
-
-                                measure_levels(
-                                    buffer,
-                                    &mut output_meter,
-                                    &output_peak,
-                                    &output_rms,
-                                    output_crest_factor_db.as_ref(),
-                                    Some((
-                                        &mut output_short_term_power,
-                                        output_short_term_lufs.as_ref(),
-                                    )),
-                                    Some(&output_pre_limiter_peak_hold),
-                                );
-                                compressor_gain_reduction
-                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                deesser_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                deesser_detector_confidence
-                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                gate_gain_meter.store(1.0_f32.to_bits(), Ordering::Relaxed);
-                                gate_auto_relax_active.store(false, Ordering::Relaxed);
-                                compressor_current_release_ms
-                                    .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed);
-                                compressor_current_lufs
-                                    .store((-100.0_f64).to_bits(), Ordering::Relaxed);
-                                compressor_current_makeup_gain
-                                    .store(0.0_f64.to_bits(), Ordering::Relaxed);
-                                limiter_gain_reduction_db
-                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                limiter_peak_gain_reduction_db
-                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                update_decaying_peak_db(
-                                    0.0,
-                                    limiter_gain_reduction_history_db.as_ref(),
-                                    0.15,
-                                );
-                                update_decaying_peak_db(
-                                    0.0,
-                                    output_true_peak_gain_reduction_history_db.as_ref(),
-                                    0.15,
-                                );
-                                suppressor_buffer_len.store(0, Ordering::Relaxed);
-                                suppressor_latency_samples.store(0, Ordering::Relaxed);
-                                suppressor_successful_inference_frames.store(0, Ordering::Relaxed);
-                                smoothed_buffer_len.store(0, Ordering::Relaxed);
-
-                                write_output(buffer, uses_clean_write_path(processing_path));
-                                let raw_dsp_us = dsp_start.elapsed().as_micros() as u64;
-                                let prev_smoothed = dsp_time_smoothed_us.load(Ordering::Relaxed);
-                                let smoothed = smooth_dsp_time(raw_dsp_us, prev_smoothed);
-                                dsp_time_us.store(raw_dsp_us, Ordering::Relaxed);
-                                dsp_time_smoothed_us.store(smoothed, Ordering::Relaxed);
-                                continue;
-                            }
-
-                            sanitize_and_clamp_input_inplace(
-                                buffer,
-                                &clip_event_count,
-                                &clip_peak_db,
-                            );
-                            let cleanup_mode = InputCleanupMode::from_u8(
-                                input_cleanup_mode.load(Ordering::Acquire),
-                            )
-                            .unwrap_or_default();
-                            let recording_active_now = recording_active.load(Ordering::Relaxed);
-                            let raw_tap_before_cleanup =
-                                raw_recording_before_cleanup.load(Ordering::Relaxed);
-                            let adaptive_cleanup_enabled = processing_path == ProcessingPath::Full
-                                && cleanup_mode.is_enabled()
-                                && (!recording_active_now || raw_tap_before_cleanup);
-                            adaptive_cleanup_state.set_mode(cleanup_mode);
-                            if adaptive_cleanup_enabled {
-                                adaptive_cleanup_state.analyze_input(buffer);
-                            } else {
-                                adaptive_cleanup_state.reset_dynamic_state();
-                                publish_input_cleanup_bypassed(
-                                    input_cleanup_hum_detected.as_ref(),
-                                    input_cleanup_rumble_detected.as_ref(),
-                                    input_cleanup_high_pass_hz.as_ref(),
-                                );
-                            }
-                            // An explicit pre-cleanup audition captures the
-                            // sanitized microphone samples before either the
-                            // fixed DC/80 Hz pre-filter or adaptive cleanup.
-                            if recording_active_now && raw_tap_before_cleanup {
-                                record_raw_recording_block(
-                                    buffer,
-                                    sample_rate_for_latency,
-                                    &mut recording_producer,
-                                    raw_recording_pos.as_ref(),
-                                    raw_recording_target.as_ref(),
-                                    recording_level_db.as_ref(),
-                                );
-                            }
-                            apply_input_pre_filter(
-                                buffer,
-                                &mut pre_filter_state,
-                                &mut pre_filter,
-                                !adaptive_cleanup_enabled,
-                            );
-
-                            // === RAW AUDIO RECORDING TAP (for calibration) ===
-                            // Capture audio AFTER pre-filter, BEFORE noise gate
-                            // This is the raw microphone response needed for EQ analysis
-                            if recording_active_now && !raw_tap_before_cleanup {
-                                record_raw_recording_block(
-                                    buffer,
-                                    sample_rate_for_latency,
-                                    &mut recording_producer,
-                                    raw_recording_pos.as_ref(),
-                                    raw_recording_target.as_ref(),
-                                    recording_level_db.as_ref(),
-                                );
-                            }
-                            // === END RECORDING TAP ===
-
-                            if adaptive_cleanup_enabled {
-                                adaptive_cleanup_state.process_block(buffer);
-                                publish_input_cleanup_diagnostics(
-                                    &adaptive_cleanup_state,
-                                    input_cleanup_hum_detected.as_ref(),
-                                    input_cleanup_rumble_detected.as_ref(),
-                                    input_cleanup_high_pass_hz.as_ref(),
-                                );
-                            }
-
-                            // Measure INPUT levels after fixed pre-filter and optional adaptive cleanup.
-                            measure_levels(
-                                buffer,
-                                &mut input_meter,
-                                &input_peak,
-                                &input_rms,
-                                input_crest_factor_db.as_ref(),
-                                None,
-                                None,
-                            );
-
-                            if processing_path == ProcessingPath::Bypass {
-                                // Bypass mode: measure output = input, send directly
-                                measure_levels(
-                                    buffer,
-                                    &mut output_meter,
-                                    &output_peak,
-                                    &output_rms,
-                                    output_crest_factor_db.as_ref(),
-                                    Some((
-                                        &mut output_short_term_power,
-                                        output_short_term_lufs.as_ref(),
-                                    )),
-                                    Some(&output_pre_limiter_peak_hold),
-                                );
-                                compressor_gain_reduction
-                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                deesser_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                deesser_detector_confidence
-                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                gate_auto_relax_active.store(false, Ordering::Relaxed);
-                                compressor_current_release_ms
-                                    .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed); // Default 200ms
-                                compressor_current_lufs
-                                    .store((-100.0_f64).to_bits(), Ordering::Relaxed);
-                                compressor_current_makeup_gain
-                                    .store(0.0_f64.to_bits(), Ordering::Relaxed);
-                                limiter_gain_reduction_db
-                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                limiter_peak_gain_reduction_db
-                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                update_decaying_peak_db(
-                                    0.0,
-                                    limiter_gain_reduction_history_db.as_ref(),
-                                    0.15,
-                                );
-                                update_decaying_peak_db(
-                                    0.0,
-                                    output_true_peak_gain_reduction_history_db.as_ref(),
-                                    0.15,
-                                );
-                                suppressor_buffer_len.store(0, Ordering::Relaxed);
-
-                                write_output(buffer, uses_clean_write_path(processing_path));
-                                // Record DSP processing time
-                                let raw_dsp_us = dsp_start.elapsed().as_micros() as u64;
-                                let prev_smoothed = dsp_time_smoothed_us.load(Ordering::Relaxed);
-                                let smoothed = smooth_dsp_time(raw_dsp_us, prev_smoothed);
-                                dsp_time_us.store(raw_dsp_us, Ordering::Relaxed);
-                                dsp_time_smoothed_us.store(smoothed, Ordering::Relaxed);
-                            } else {
-                                #[cfg(feature = "vad")]
-                                {
-                                    let written = Self::enqueue_vad_block(
-                                        &mut vad_worker_producer,
-                                        buffer,
-                                        &mut vad_source_sample_clock,
-                                        vad_source_discontinuity.as_ref(),
-                                    );
-                                    // Keep the source clock on samples the worker
-                                    // can actually consume. Dropped blocks are
-                                    // absent from this analysis timeline; the
-                                    // wall-clock watchdog still invalidates
-                                    // results if the worker stalls.
-                                    if written < buffer.len() {
-                                        rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
-                                        store_rt_error(
-                                            rt_error_code.as_ref(),
-                                            RtErrorCode::FixedBufferOverflow,
-                                        );
-                                    }
-                                }
-
-                                #[cfg(feature = "vad")]
-                                let vad_snapshot = vad_result.snapshot();
-                                #[cfg(feature = "vad")]
-                                let vad_worker_available = vad_snapshot
-                                    .and_then(|snapshot| {
-                                        snapshot
-                                            .is_fresh(
-                                                vad_source_sample_clock,
-                                                now_micros(),
-                                                sample_rate_for_latency,
-                                            )
-                                            .then_some(snapshot.backend_available)
-                                    })
-                                    .unwrap_or(false);
-                                #[cfg(feature = "vad")]
-                                vad_available.store(vad_worker_available, Ordering::Relaxed);
-                                let gate_controls = &mut gate_control_scratch
-                                    .as_mut_capacity_slice()[..buffer.len()];
-                                gate_controls.fill(GateControl::BYPASS);
-                                if gate_enabled.load(Ordering::Acquire) {
-                                    if let Some(control) = take_dirty(
-                                        &gate_dirty,
-                                        || gate_rt_control.snapshot(),
-                                        &lock_contention_count,
-                                    ) {
-                                        apply_gate_control(&mut gate_rt, &control);
-                                    }
-
-                                    #[cfg(feature = "vad")]
-                                    {
-                                        let latest_prob = vad_snapshot
-                                            .map(|snapshot| snapshot.probability)
-                                            .unwrap_or(0.0);
-                                        gate_rt.set_external_vad_probability(
-                                            latest_prob,
-                                            vad_worker_available,
-                                        );
-                                    }
-                                    gate_rt.process_block_with_gate_control(buffer, gate_controls);
-                                    gate_gain_meter.store(
-                                        gate_rt.current_gain().clamp(0.0, 1.0).to_bits(),
-                                        Ordering::Relaxed,
-                                    );
-                                    gate_chatter_event_count
-                                        .store(gate_rt.chatter_event_count(), Ordering::Relaxed);
-                                    gate_auto_relax_active
-                                        .store(gate_rt.auto_relax_active(), Ordering::Relaxed);
-                                    #[cfg(feature = "vad")]
-                                    {
-                                        let prob = gate_rt.get_vad_probability();
-                                        vad_meter_probability
-                                            .store(prob.to_bits(), Ordering::Relaxed);
-                                        gate_noise_floor_db.store(
-                                            gate_rt.noise_floor().to_bits(),
-                                            Ordering::Relaxed,
-                                        );
-                                        gate_fused_score.store(
-                                            gate_rt.fused_gate_score().to_bits(),
-                                            Ordering::Relaxed,
-                                        );
-                                    }
-                                } else {
-                                    gate_gain_meter.store(1.0_f32.to_bits(), Ordering::Relaxed);
-                                    gate_auto_relax_active.store(false, Ordering::Relaxed);
-                                }
-
-                                // Stage 2: Noise Suppression (RNNoise or DeepFilterNet)
-                                let use_suppressor = suppressor_enabled.load(Ordering::Acquire);
-                                if use_suppressor {
-                                    if suppressor_reset_requested.swap(false, Ordering::AcqRel) {
-                                        suppressor_rt.soft_reset();
-                                        suppressor_starvation.restart();
-                                        suppressor_recovery_fade.restart_for_suppressor(
-                                            &suppressor_rt,
-                                            &discontinuity_fade_remaining,
-                                            discontinuity_fade_samples,
-                                        );
-                                        update_backend_status_rt(
-                                            &noise_backend_available,
-                                            &noise_backend_failed,
-                                            rt_error_code.as_ref(),
-                                            &suppressor_rt,
-                                        );
-                                    }
-                                    {
-                                        // Always feed suppressor first so frame accumulation is correct.
-                                        let accepted = suppressor_rt
-                                            .push_controlled_samples(buffer, gate_controls);
-                                        if accepted < buffer.len() {
-                                            rt_buffer_overflow_count
-                                                .fetch_add(1, Ordering::Relaxed);
-                                            store_rt_error(
-                                                rt_error_code.as_ref(),
-                                                RtErrorCode::FixedBufferOverflow,
-                                            );
-                                            reset_input_continuity!();
-                                            continue;
-                                        }
-                                        suppressor_starvation.fed(accepted);
-                                        suppressor_rt.process_frames();
-                                        suppressor_successful_inference_frames.store(
-                                            suppressor_rt.successful_inference_frames(),
-                                            Ordering::Relaxed,
-                                        );
-                                        update_backend_status_rt(
-                                            &noise_backend_available,
-                                            &noise_backend_failed,
-                                            rt_error_code.as_ref(),
-                                            &suppressor_rt,
-                                        );
-
-                                        // Track suppressor internal buffer fill level after processing.
-                                        let suppressor_buffered = suppressor_rt.pending_input()
-                                            + suppressor_rt.available_samples();
-                                        let suppressor_latency = suppressor_rt.latency_samples()
-                                            + suppressor_rt.pending_input();
-                                        let raw_buffer = suppressor_buffered as u32;
-                                        let prev_smoothed =
-                                            smoothed_buffer_len.load(Ordering::Relaxed);
-                                        let smoothed = smooth_buffer(raw_buffer, prev_smoothed);
-                                        suppressor_buffer_len.store(raw_buffer, Ordering::Relaxed);
-                                        suppressor_latency_samples
-                                            .store(suppressor_latency as u32, Ordering::Relaxed);
-                                        smoothed_buffer_len.store(smoothed, Ordering::Relaxed);
-
-                                        let available = suppressor_rt.available_samples();
-                                        if available > 0 {
-                                            suppressor_starvation.restart();
-                                            rnnoise_output.clear();
-                                            let count = available.min(rnnoise_output.capacity());
-                                            let _ = rnnoise_output.set_len_zeroed(count);
-                                            let processed = suppressor_rt
-                                                .pop_samples_into(rnnoise_output.as_mut_slice());
-                                            let _ = rnnoise_output.set_len_zeroed(processed);
-                                            let output_slice = rnnoise_output.as_mut_slice();
-
-                                            if contain_non_finite(output_slice) {
-                                                suppressor_non_finite_count
-                                                    .fetch_add(1, Ordering::Relaxed);
-                                                store_rt_error(
-                                                    rt_error_code.as_ref(),
-                                                    RtErrorCode::SuppressorNonFinite,
-                                                );
-                                                let now = Instant::now();
-                                                match non_finite_window_started_at {
-                                                    Some(start)
-                                                        if now.duration_since(start).as_millis()
-                                                            as u64
-                                                            <= NON_FINITE_REBUILD_WINDOW_MS => {}
-                                                    _ => {
-                                                        non_finite_window_started_at = Some(now);
-                                                        non_finite_window_count = 0;
-                                                    }
-                                                }
-                                                non_finite_window_count =
-                                                    non_finite_window_count.saturating_add(1);
-                                                if non_finite_window_count
-                                                    >= NON_FINITE_REBUILD_THRESHOLD
-                                                {
-                                                    restart_requested_for_dsp
-                                                        .store(true, Ordering::Release);
-                                                    non_finite_window_started_at = None;
-                                                    non_finite_window_count = 0;
-                                                }
-                                                update_backend_status_rt(
-                                                    &noise_backend_available,
-                                                    &noise_backend_failed,
-                                                    rt_error_code.as_ref(),
-                                                    &suppressor_rt,
-                                                );
-                                            }
-
-                                            suppressor_recovery_fade.apply(output_slice);
-                                            apply_downstream_chain_rt!(output_slice);
-
-                                            // Measure OUTPUT levels
-                                            measure_levels(
-                                                output_slice,
-                                                &mut output_meter,
-                                                &output_peak,
-                                                &output_rms,
-                                                output_crest_factor_db.as_ref(),
-                                                Some((
-                                                    &mut output_short_term_power,
-                                                    output_short_term_lufs.as_ref(),
-                                                )),
-                                                Some(&output_pre_limiter_peak_hold),
-                                            );
-
-                                            // Send processed samples to output
-                                            write_output(output_slice, false);
-                                        } else if accepted > 0
-                                            && !recording_active_thread.load(Ordering::Relaxed)
-                                            && suppressor_starvation.starved()
-                                        {
-                                            store_rt_error(
-                                                rt_error_code.as_ref(),
-                                                RtErrorCode::SuppressorBackendFailed,
-                                            );
-                                            restart_requested_for_dsp
-                                                .store(true, Ordering::Release);
-                                            suppressor_starvation.restart();
-                                        }
-
-                                        // Record DSP processing time
-                                        let raw_dsp_us = dsp_start.elapsed().as_micros() as u64;
-                                        let prev_smoothed =
-                                            dsp_time_smoothed_us.load(Ordering::Relaxed);
-                                        let smoothed = smooth_dsp_time(raw_dsp_us, prev_smoothed);
-                                        dsp_time_us.store(raw_dsp_us, Ordering::Relaxed);
-                                        dsp_time_smoothed_us.store(smoothed, Ordering::Relaxed);
-                                    }
-                                } else {
-                                    // Suppressor disabled: clear buffer counter
-                                    suppressor_starvation.restart();
-                                    suppressor_buffer_len.store(0, Ordering::Relaxed);
-                                    suppressor_latency_samples.store(0, Ordering::Relaxed);
-                                    suppressor_successful_inference_frames
-                                        .store(0, Ordering::Relaxed);
-                                    smoothed_buffer_len.store(0, Ordering::Relaxed);
-                                    if suppressor_reset_requested.swap(false, Ordering::AcqRel) {
-                                        suppressor_rt.soft_reset();
-                                        suppressor_recovery_fade.restart(0);
-                                        discontinuity_fade_remaining
-                                            .set(discontinuity_fade_samples);
-                                        update_backend_status_rt(
-                                            &noise_backend_available,
-                                            &noise_backend_failed,
-                                            rt_error_code.as_ref(),
-                                            &suppressor_rt,
-                                        );
-                                    }
-                                    // Suppressor disabled: apply remaining stages directly
-
-                                    apply_downstream_chain_rt!(buffer);
-
-                                    // Measure OUTPUT levels
-                                    measure_levels(
-                                        buffer,
-                                        &mut output_meter,
-                                        &output_peak,
-                                        &output_rms,
-                                        output_crest_factor_db.as_ref(),
-                                        Some((
-                                            &mut output_short_term_power,
-                                            output_short_term_lufs.as_ref(),
-                                        )),
-                                        Some(&output_pre_limiter_peak_hold),
-                                    );
-
-                                    // Send to output
-                                    write_output(buffer, false);
-                                    // Record DSP processing time
-                                    let raw_dsp_us = dsp_start.elapsed().as_micros() as u64;
-                                    let prev_smoothed =
-                                        dsp_time_smoothed_us.load(Ordering::Relaxed);
-                                    let smoothed = smooth_dsp_time(raw_dsp_us, prev_smoothed);
-                                    dsp_time_us.store(raw_dsp_us, Ordering::Relaxed);
-                                    dsp_time_smoothed_us.store(smoothed, Ordering::Relaxed);
-                                }
-                            }
-                        } else {
-                            // No data available, sleep briefly to avoid busy-wait
-                            consecutive_idle_wakeups = consecutive_idle_wakeups.saturating_add(1);
-                            let last_input_callback =
-                                last_input_callback_time_us_for_dsp.load(Ordering::Relaxed);
-                            let input_callback_age_us = if last_input_callback == 0 {
-                                u64::MAX
-                            } else {
-                                now_micros().saturating_sub(last_input_callback)
-                            };
-                            let idle_sleep_us = next_process_idle_sleep_us(
-                                consecutive_idle_wakeups,
-                                input_callback_age_us,
-                            );
-                            dsp_idle_wakeup_count.fetch_add(1, Ordering::Relaxed);
-                            dsp_idle_sleep_us.store(idle_sleep_us, Ordering::Relaxed);
-                            std::thread::sleep(std::time::Duration::from_micros(idle_sleep_us));
-                        }
-                    }
-                    // RT_REGION_END: dsp_processing_loop
-                })
-            };
-            run_guarded_dsp_loop(
-                dsp_loop,
-                recovery_state_for_dsp.as_ref(),
-                restart_requested_for_dsp.as_ref(),
-            );
-            #[cfg(windows)]
-            if let Some(Err(error)) = scheduling.map(ProAudioThread::finish) {
-                eprintln!("Failed to revert DSP thread Pro Audio scheduling: {error}");
-            }
-        });
-        let handle = spawned.map_err(|e| format!("Failed to spawn DSP thread: {e}"))?;
-
-        self.process_thread = Some(handle);
-        self.check_dsp_startup(
-            dsp_ready_rx.recv_timeout(Duration::from_millis(DSP_THREAD_READY_TIMEOUT_MS)),
-        )?;
-
-        if let Some(output) = self.audio_output.as_ref() {
-            if let Err(e) = output.start() {
-                self.stop();
-                return Err(format!("Failed to start output stream: {}", e));
-            }
-        }
-
-        if let Some(input) = self.audio_input.as_ref() {
-            if let Err(e) = input.start() {
-                self.stop();
-                return Err(format!("Failed to start input stream: {}", e));
-            }
-        }
-
-        Ok(format!(
-            "Started: {} -> {}",
-            input_device_name, output_device_name
-        ))
-    }
-
-    /// Stop audio processing
-    pub fn stop(&mut self) {
-        self.running.store(false, Ordering::SeqCst);
-        self.output_probe_active.store(false, Ordering::Release);
-        self.output_probe_complete.store(true, Ordering::Release);
-        self.output_probe_cancel_requested
-            .store(false, Ordering::Release);
-        self.input_fixed_buffer_frames.store(0, Ordering::Relaxed);
-        self.output_fixed_buffer_frames.store(0, Ordering::Relaxed);
-        if let Ok(mut producer) = self.output_probe_producer.lock() {
-            *producer = None;
-        }
-        self.last_start_time_us.store(0, Ordering::Release);
-
-        if let Some(handle) = self.process_thread.take() {
-            if let Err(payload) = handle.join() {
-                record_dsp_thread_panic(payload.as_ref(), self.recovery_state.as_ref(), false);
-            }
-        }
-        #[cfg(feature = "vad")]
-        self.stop_vad_worker();
-
-        if let Some(input) = &self.audio_input {
-            let _ = input.pause();
-        }
-
-        if let Some(output) = &self.audio_output {
-            let _ = output.pause();
-        }
-
-        self.audio_input = None;
-        self.audio_output = None;
-
-        // Clear the restart request only after the DSP thread has been joined and
-        // the streams dropped: either can still raise one while stopping, and a
-        // stale request would restart a processor the user just stopped.
-        self.restart_requested.store(false, Ordering::Release);
-        if let Ok(mut state) = self.recovery_state.lock() {
-            state.reason_pending = false;
-        }
-        self.recovering.store(false, Ordering::Release);
-
-        // Clear capture state without changing the caller's output mute.
-        self.recording_active.store(false, Ordering::Release);
-        self.raw_recording_before_cleanup
-            .store(false, Ordering::Release);
-        self.raw_recording_pos.store(0, Ordering::Release);
-        self.raw_recording_target.store(0, Ordering::Release);
-        self.recording_level_db
-            .store((-120.0_f32).to_bits(), Ordering::Relaxed);
-        self.suppressor_latency_samples.store(0, Ordering::Relaxed);
-        self.input_resampler_active.store(false, Ordering::Relaxed);
-        self.output_resampler_active.store(false, Ordering::Relaxed);
-        if let Ok(mut consumer_guard) = self.raw_recording_consumer.lock() {
-            *consumer_guard = None;
-        }
-        if let Ok(mut tx) = self.pending_suppressor_tx.lock() {
-            *tx = None;
-        }
-        if let Ok(mut rx) = self.retired_suppressor_rx.lock() {
-            *rx = None;
-        }
-
-        // Reset DSP state so stop/start can recover from stuck envelopes.
-        if let Ok(mut e) = self.correction_eq.lock() {
-            e.reset();
-        }
-        if let Ok(mut e) = self.eq.lock() {
-            e.reset();
-        }
-        if let Ok(mut c) = self.compressor.lock() {
-            c.reset();
-        }
-        if let Ok(mut d) = self.deesser.lock() {
-            d.reset();
-        }
-        if let Ok(mut l) = self.limiter.lock() {
-            l.reset();
-        }
     }
 }

@@ -1,3 +1,13 @@
+use super::routing::{sanitize_and_clamp_output_inplace, sanitize_non_finite_inplace};
+use crate::audio::rt::FixedAudioBuffer;
+use crate::dsp::eq::{EqBandConfig, NUM_BANDS};
+use crate::dsp::{
+    AutoMakeupActivityInput, Compressor, DeEsser, Limiter, ParametricEQ, TruePeakDetector,
+    TruePeakLimiter,
+};
+#[cfg(not(windows))]
+use thread_priority::{set_current_thread_priority, ThreadPriority};
+
 #[derive(Debug, Clone, Copy)]
 pub struct OfflineDspBlockStats {
     pub input_sample_peak: f32,
@@ -170,7 +180,7 @@ impl OfflineDspBlockProcessor {
     /// Process a block with the causal frontend evidence used by live
     /// auto-makeup control. `None` preserves the downstream-only simulator's
     /// historical RMS fallback and limiter behavior.
-    fn process_block_with_stats_and_activity_control<const N: usize>(
+    pub(super) fn process_block_with_stats_and_activity_control<const N: usize>(
         &mut self,
         input: &mut [f32],
         output: &mut FixedAudioBuffer<f32, N>,

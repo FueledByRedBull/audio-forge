@@ -2869,6 +2869,10 @@ class MainWindow(QMainWindow):
         """Start from the button or menu; the engine starts on the worker, so the window stays alive."""
         if self.__dict__.get("_engine_busy"):
             return
+        if self.__dict__.get("_recovery_polling"):
+            # Queued behind that call, the start would meet the streams a retry reopened.
+            self._start_after_recovery = True
+            return
         route = self._prepare_start(True)
         if not isinstance(route, bool):
             self._run_engine(
@@ -4196,6 +4200,7 @@ class MainWindow(QMainWindow):
     def _recovery_serviced(self, outcome: Any) -> None:
         """Show what the engine's own recovery did: ``outcome`` is its answer or the exception raised."""
         self._recovery_polling = False
+        start = self.__dict__.pop("_start_after_recovery", False)
         if self._shut_down:
             return
         try:
@@ -4238,6 +4243,8 @@ class MainWindow(QMainWindow):
             if not self._recovery_service_failing:
                 logger.warning("Rust recovery service failed", exc_info=True)
             self._recovery_service_failing = True
+        if start:
+            self._on_start_clicked()
 
     def _recover_output_path(self):
         """Best-effort output recovery while preserving both mute owners: stop, mute, start."""
@@ -4806,7 +4813,7 @@ class MainWindow(QMainWindow):
         try:
             saved = self._save_ui_state()
         finally:
-            # Not beside a call that is still out: the engine is not safe to enter twice.
+            # Not beside a call that is still out: this stop would wait behind it on the GUI thread.
             if engine_idle and self.processor.is_running():
                 self.processor.stop()
         return saved

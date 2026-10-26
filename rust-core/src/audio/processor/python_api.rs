@@ -1,3 +1,65 @@
+#[cfg(feature = "vad")]
+use super::routing::AdaptiveInputCleanupState;
+#[cfg(feature = "vad")]
+use super::GATE_ATTACK_MAX_MS;
+#[cfg(feature = "vad")]
+use super::GATE_ATTACK_MIN_MS;
+#[cfg(feature = "vad")]
+use super::GATE_RELEASE_MAX_MS;
+#[cfg(feature = "vad")]
+use super::GATE_RELEASE_MIN_MS;
+#[cfg(feature = "vad")]
+use super::GATE_THRESHOLD_MAX_DB;
+#[cfg(feature = "vad")]
+use super::GATE_THRESHOLD_MIN_DB;
+use super::{
+    block_processor::OfflineDspBlockProcessor,
+    control::{
+        effective_limiter_ceiling_db, CompressorControlState, DeesserControlState, GateControlState,
+    },
+    routing::{
+        apply_input_pre_filter, new_input_pre_filter, static_input_pre_filter_response_db,
+        InputCleanupMode, InputPreFilterState,
+    },
+};
+use super::{
+    AudioProcessor, COMPRESSOR_ATTACK_MAX_MS, COMPRESSOR_ATTACK_MIN_MS,
+    COMPRESSOR_BASE_RELEASE_MAX_MS, COMPRESSOR_BASE_RELEASE_MIN_MS, COMPRESSOR_MAKEUP_MAX_DB,
+    COMPRESSOR_MAKEUP_MIN_DB, COMPRESSOR_RATIO_MAX, COMPRESSOR_RATIO_MIN,
+    COMPRESSOR_RELEASE_MAX_MS, COMPRESSOR_RELEASE_MIN_MS, COMPRESSOR_TARGET_LUFS_MAX,
+    COMPRESSOR_TARGET_LUFS_MIN, COMPRESSOR_THRESHOLD_MAX_DB, COMPRESSOR_THRESHOLD_MIN_DB,
+    LIMITER_CEILING_MAX_DB, LIMITER_CEILING_MIN_DB, LIMITER_RELEASE_MAX_MS, LIMITER_RELEASE_MIN_MS,
+    RT_PROCESS_BUFFER_CAPACITY,
+};
+#[cfg(feature = "vad")]
+use super::{VAD_PRE_GAIN_MAX, VAD_PRE_GAIN_MIN, VAD_THRESHOLD_MAX, VAD_THRESHOLD_MIN};
+use crate::audio::input::InputChannelMode;
+use crate::audio::rt::FixedAudioBuffer;
+use crate::dsp::eq::{
+    validate_eq_frequency_hz, validate_eq_gain_db, validate_eq_q, EqBandConfig, NUM_BANDS,
+};
+#[cfg(feature = "vad")]
+use crate::dsp::noise_suppressor::new_controlled_noise_suppression_engine as new_noise_suppression_engine;
+#[cfg(feature = "vad")]
+use crate::dsp::noise_suppressor::GateControl;
+use crate::dsp::noise_suppressor::NoiseModel;
+#[cfg(feature = "vad")]
+use crate::dsp::rnnoise::RNNOISE_FRAME_SIZE;
+#[cfg(feature = "vad")]
+use crate::dsp::vad::{GateMode, SileroVAD, VadAutoGate};
+#[cfg(feature = "vad")]
+use crate::dsp::NoiseGate;
+use crate::dsp::{AutoMakeupActivityInput, Compressor};
+use pyo3::prelude::*;
+#[cfg(feature = "vad")]
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
+#[cfg(feature = "vad")]
+use std::sync::Arc;
+use std::time::Instant;
+#[cfg(not(windows))]
+use thread_priority::{set_current_thread_priority, ThreadPriority};
+
 /// Gate operating modes
 #[cfg(feature = "vad")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,16 +130,16 @@ fn py_dict_f64_in(
 /// A gate the offline simulators build from `settings` like the live gate,
 /// plus the VAD values they also hand to Silero.
 #[cfg(feature = "vad")]
-struct PyGate {
+pub(super) struct PyGate {
     gate: NoiseGate,
     mode: GateMode,
     enabled: bool,
-    vad_threshold: f32,
-    vad_pre_gain: f32,
+    pub(super) vad_threshold: f32,
+    pub(super) vad_pre_gain: f32,
 }
 
 #[cfg(feature = "vad")]
-fn py_gate(
+pub(super) fn py_gate(
     settings: Option<&Bound<'_, pyo3::types::PyDict>>,
     sample_rate: f64,
     default_mode: u8,
@@ -255,7 +317,7 @@ fn compressor_pumping_score(gr_trace_db: &[f32], cadence_hz: f32) -> f32 {
     robust_rms + percentile_f32(&mut deltas, 0.95)
 }
 
-fn ten_ms_control_block_size(sample_rate: f64) -> usize {
+pub(super) fn ten_ms_control_block_size(sample_rate: f64) -> usize {
     (sample_rate * 0.010).round().max(1.0) as usize
 }
 
@@ -367,14 +429,14 @@ fn gate_auto_makeup_activity(
 
 /// Frontend output plus the control evidence observed on its source timeline.
 #[cfg(feature = "vad")]
-struct SimulatedInputFrontend {
-    rendered: Vec<f32>,
-    suppressor_latency: usize,
-    activity_evidence: Vec<AutoMakeupActivityInput>,
+pub(super) struct SimulatedInputFrontend {
+    pub(super) rendered: Vec<f32>,
+    pub(super) suppressor_latency: usize,
+    pub(super) activity_evidence: Vec<AutoMakeupActivityInput>,
 }
 
 #[cfg(feature = "vad")]
-fn simulate_input_frontend_with_activity(
+pub(super) fn simulate_input_frontend_with_activity(
     py: Python<'_>,
     audio: Vec<f32>,
     sample_rate: f64,
@@ -1977,10 +2039,13 @@ mod compressor_metric_tests {
     }
 }
 
-/// Python-exposed audio processor
-#[pyclass(name = "AudioProcessor", unsendable)]
+/// Python-exposed audio processor.
+///
+/// Frozen: every method takes `&self`, so a worker thread can start, stop or
+/// recover the streams (without the GIL) while the GUI thread reads meters.
+#[pyclass(name = "AudioProcessor", frozen)]
 pub struct PyAudioProcessor {
-    processor: AudioProcessor,
+    pub(super) processor: AudioProcessor,
 }
 
 #[pymethods]
@@ -2001,8 +2066,10 @@ impl PyAudioProcessor {
         input_device_endpoint_id=None,
         output_device_endpoint_id=None,
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn start(
-        &mut self,
+        &self,
+        py: Python<'_>,
         input_device: Option<&str>,
         output_device: Option<&str>,
         input_device_name_ordinal: u32,
@@ -2010,25 +2077,31 @@ impl PyAudioProcessor {
         input_device_endpoint_id: Option<&str>,
         output_device_endpoint_id: Option<&str>,
     ) -> PyResult<String> {
-        crate::catch_panic(|| {
-            self.processor
-                .start_with_device_ordinals_and_ids(
-                    input_device,
-                    input_device_name_ordinal,
-                    input_device_endpoint_id,
-                    output_device,
-                    output_device_name_ordinal,
-                    output_device_endpoint_id,
-                )
-                .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
+        // Opening streams can take seconds; keep the GIL free meanwhile.
+        py.detach(|| {
+            crate::catch_panic(|| {
+                self.processor
+                    .start_with_device_ordinals_and_ids(
+                        input_device,
+                        input_device_name_ordinal,
+                        input_device_endpoint_id,
+                        output_device,
+                        output_device_name_ordinal,
+                        output_device_endpoint_id,
+                    )
+                    .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
+            })
         })
     }
 
     /// Stop audio processing
-    fn stop(&mut self) -> PyResult<()> {
-        crate::catch_panic(|| {
-            self.processor.stop();
-            Ok(())
+    fn stop(&self, py: Python<'_>) -> PyResult<()> {
+        // Joining the DSP thread and closing streams can take a moment.
+        py.detach(|| {
+            crate::catch_panic(|| {
+                self.processor.stop();
+                Ok(())
+            })
         })
     }
 
@@ -2277,7 +2350,10 @@ impl PyAudioProcessor {
     /// auto_amount, low_cut_hz, high_cut_hz, threshold_db, ratio, attack_ms,
     /// release_ms and max_reduction_db. Values are clamped like the single
     /// setters; the DSP thread never sees a partly applied combination.
-    fn apply_deesser_settings(&self, settings: &Bound<'_, pyo3::types::PyDict>) -> PyResult<()> {
+    pub(super) fn apply_deesser_settings(
+        &self,
+        settings: &Bound<'_, pyo3::types::PyDict>,
+    ) -> PyResult<()> {
         crate::catch_panic(|| {
             let requested = DeesserControlState {
                 enabled: py_required(settings, "enabled")?.extract()?,
@@ -2405,7 +2481,9 @@ impl PyAudioProcessor {
     fn get_compressor_current_release(&self) -> f64 {
         let release_raw = self
             .processor
-            .compressor_current_release_ms
+            .shared
+            .compressor
+            .current_release_ms
             .load(Ordering::Relaxed);
         release_raw as f64 / 10.0 // Convert back from 0.1ms resolution
     }
@@ -2531,13 +2609,22 @@ impl PyAudioProcessor {
 
     /// Get smoothed DSP processing time in milliseconds
     fn get_dsp_time_smoothed_ms(&self) -> f32 {
-        let us = self.processor.dsp_time_smoothed_us.load(Ordering::Relaxed);
+        let us = self
+            .processor
+            .shared
+            .dsp
+            .time_smoothed_us
+            .load(Ordering::Relaxed);
         us as f32 / 1000.0
     }
 
     /// Get smoothed suppressor buffer fill level in samples
     fn get_buffer_smoothed_samples(&self) -> u32 {
-        self.processor.smoothed_buffer_len.load(Ordering::Relaxed)
+        self.processor
+            .shared
+            .suppressor
+            .smoothed_buffer_len
+            .load(Ordering::Relaxed)
     }
 
     // === Dropped Sample Tracking ===
@@ -2570,7 +2657,7 @@ impl PyAudioProcessor {
         self.processor.is_recovery_suppressed()
     }
 
-    fn get_runtime_diagnostics(&self, py: Python) -> PyResult<Py<PyAny>> {
+    pub(super) fn get_runtime_diagnostics(&self, py: Python) -> PyResult<Py<PyAny>> {
         crate::catch_panic(|| {
             let diagnostics = pyo3::types::PyDict::new(py);
             let noise_model = self.processor.get_noise_model();
@@ -2606,13 +2693,17 @@ impl PyAudioProcessor {
             diagnostics.set_item(
                 "suppressor_latency_samples",
                 self.processor
-                    .suppressor_latency_samples
+                    .shared
+                    .suppressor
+                    .latency_samples
                     .load(Ordering::Relaxed),
             )?;
             diagnostics.set_item(
                 "suppressor_successful_inference_frames",
                 self.processor
-                    .suppressor_successful_inference_frames
+                    .shared
+                    .suppressor
+                    .successful_inference_frames
                     .load(Ordering::Relaxed),
             )?;
             diagnostics.set_item(
@@ -2622,13 +2713,17 @@ impl PyAudioProcessor {
             diagnostics.set_item(
                 "input_backlog_recovery_count",
                 self.processor
-                    .input_backlog_recovery_count
+                    .shared
+                    .input
+                    .backlog_recovery_count
                     .load(Ordering::Relaxed),
             )?;
             diagnostics.set_item(
                 "input_backlog_dropped_samples",
                 self.processor
-                    .input_backlog_dropped_samples
+                    .shared
+                    .input
+                    .backlog_dropped_samples
                     .load(Ordering::Relaxed),
             )?;
             diagnostics.set_item(
@@ -2690,7 +2785,9 @@ impl PyAudioProcessor {
             diagnostics.set_item(
                 "output_short_write_dropped_samples",
                 self.processor
-                    .output_short_write_dropped_samples
+                    .shared
+                    .output
+                    .short_write_dropped_samples
                     .load(Ordering::Relaxed),
             )?;
             diagnostics.set_item(
@@ -2704,20 +2801,26 @@ impl PyAudioProcessor {
             diagnostics.set_item(
                 "input_cleanup_hum_detected",
                 self.processor
-                    .input_cleanup_hum_detected
+                    .shared
+                    .input
+                    .cleanup_hum_detected
                     .load(Ordering::Relaxed),
             )?;
             diagnostics.set_item(
                 "input_cleanup_rumble_detected",
                 self.processor
-                    .input_cleanup_rumble_detected
+                    .shared
+                    .input
+                    .cleanup_rumble_detected
                     .load(Ordering::Relaxed),
             )?;
             diagnostics.set_item(
                 "input_cleanup_high_pass_hz",
                 f32::from_bits(
                     self.processor
-                        .input_cleanup_high_pass_hz
+                        .shared
+                        .input
+                        .cleanup_high_pass_hz
                         .load(Ordering::Relaxed),
                 ),
             )?;
@@ -2743,7 +2846,9 @@ impl PyAudioProcessor {
             )?;
             let phase_strategy = crate::audio::input::PhaseRescueStrategy::from_u8(
                 self.processor
-                    .input_phase_rescue_strategy
+                    .shared
+                    .input
+                    .phase_rescue_strategy
                     .load(Ordering::Relaxed),
             );
             diagnostics.set_item("input_phase_rescue_strategy", phase_strategy.name())?;
@@ -2751,14 +2856,18 @@ impl PyAudioProcessor {
                 "input_phase_estimated_delay_samples",
                 f32::from_bits(
                     self.processor
-                        .input_phase_estimated_delay_samples
+                        .shared
+                        .input
+                        .phase_estimated_delay_samples
                         .load(Ordering::Relaxed),
                 ),
             )?;
             diagnostics.set_item(
                 "input_phase_polarity_flipped",
                 self.processor
-                    .input_phase_polarity_flipped
+                    .shared
+                    .input
+                    .phase_polarity_flipped
                     .load(Ordering::Relaxed),
             )?;
             diagnostics.set_item(
@@ -2790,37 +2899,65 @@ impl PyAudioProcessor {
             )?;
             diagnostics.set_item(
                 "clip_event_count",
-                self.processor.clip_event_count.load(Ordering::Relaxed),
+                self.processor
+                    .shared
+                    .input
+                    .clip_event_count
+                    .load(Ordering::Relaxed),
             )?;
             diagnostics.set_item(
                 "clip_peak_db",
-                f32::from_bits(self.processor.clip_peak_db.load(Ordering::Relaxed)),
+                f32::from_bits(
+                    self.processor
+                        .shared
+                        .input
+                        .clip_peak_db
+                        .load(Ordering::Relaxed),
+                ),
             )?;
             diagnostics.set_item(
                 "output_clip_event_count",
                 self.processor
-                    .output_clip_event_count
+                    .shared
+                    .output
+                    .clip_event_count
                     .load(Ordering::Relaxed),
             )?;
             diagnostics.set_item(
                 "output_clip_peak_db",
-                f32::from_bits(self.processor.output_clip_peak_db.load(Ordering::Relaxed)),
+                f32::from_bits(
+                    self.processor
+                        .shared
+                        .output
+                        .clip_peak_db
+                        .load(Ordering::Relaxed),
+                ),
             )?;
             diagnostics.set_item(
                 "output_true_peak_event_count",
                 self.processor
-                    .output_true_peak_event_count
+                    .shared
+                    .output
+                    .true_peak_event_count
                     .load(Ordering::Relaxed),
             )?;
             diagnostics.set_item(
                 "output_true_peak_db",
-                f32::from_bits(self.processor.output_true_peak_db.load(Ordering::Relaxed)),
+                f32::from_bits(
+                    self.processor
+                        .shared
+                        .output
+                        .true_peak_db
+                        .load(Ordering::Relaxed),
+                ),
             )?;
             diagnostics.set_item(
                 "output_true_peak_input_db",
                 f32::from_bits(
                     self.processor
-                        .output_true_peak_input_db
+                        .shared
+                        .output
+                        .true_peak_input_db
                         .load(Ordering::Relaxed),
                 ),
             )?;
@@ -2828,7 +2965,9 @@ impl PyAudioProcessor {
                 "output_true_peak_gain_reduction_db",
                 f32::from_bits(
                     self.processor
-                        .output_true_peak_gain_reduction_db
+                        .shared
+                        .output
+                        .true_peak_gain_reduction_db
                         .load(Ordering::Relaxed),
                 ),
             )?;
@@ -2836,7 +2975,9 @@ impl PyAudioProcessor {
                 "output_true_peak_gain_reduction_history_db",
                 f32::from_bits(
                     self.processor
-                        .output_true_peak_gain_reduction_history_db
+                        .shared
+                        .output
+                        .true_peak_gain_reduction_history_db
                         .load(Ordering::Relaxed),
                 ),
             )?;
@@ -2844,7 +2985,9 @@ impl PyAudioProcessor {
                 "output_true_peak_headroom_db",
                 f32::from_bits(
                     self.processor
-                        .output_true_peak_headroom_db
+                        .shared
+                        .output
+                        .true_peak_headroom_db
                         .load(Ordering::Relaxed),
                 ),
             )?;
@@ -2852,7 +2995,9 @@ impl PyAudioProcessor {
                 "limiter_gain_reduction_db",
                 f32::from_bits(
                     self.processor
-                        .limiter_gain_reduction_db
+                        .shared
+                        .limiter
+                        .gain_reduction_db
                         .load(Ordering::Relaxed),
                 ),
             )?;
@@ -2860,7 +3005,9 @@ impl PyAudioProcessor {
                 "limiter_peak_gain_reduction_db",
                 f32::from_bits(
                     self.processor
-                        .limiter_peak_gain_reduction_db
+                        .shared
+                        .limiter
+                        .peak_gain_reduction_db
                         .load(Ordering::Relaxed),
                 ),
             )?;
@@ -2868,7 +3015,9 @@ impl PyAudioProcessor {
                 "limiter_gain_reduction_history_db",
                 f32::from_bits(
                     self.processor
-                        .limiter_gain_reduction_history_db
+                        .shared
+                        .limiter
+                        .gain_reduction_history_db
                         .load(Ordering::Relaxed),
                 ),
             )?;
@@ -2895,13 +3044,17 @@ impl PyAudioProcessor {
             diagnostics.set_item(
                 "input_resampler_active",
                 self.processor
-                    .input_resampler_active
+                    .shared
+                    .input
+                    .resampler_active
                     .load(Ordering::Relaxed),
             )?;
             diagnostics.set_item(
                 "output_resampler_active",
                 self.processor
-                    .output_resampler_active
+                    .shared
+                    .output
+                    .resampler_active
                     .load(Ordering::Relaxed),
             )?;
             diagnostics.set_item(
@@ -2929,7 +3082,7 @@ impl PyAudioProcessor {
             )?;
             diagnostics.set_item(
                 "output_muted",
-                self.processor.output_muted.load(Ordering::Acquire),
+                self.processor.shared.output.muted.load(Ordering::Acquire),
             )?;
             #[cfg(feature = "vad")]
             diagnostics.set_item("gate_fused_score", self.processor.get_gate_fused_score())?;
@@ -2940,8 +3093,9 @@ impl PyAudioProcessor {
     // === Stream Recovery Status ===
 
     /// Service pending recovery requests (returns None if no attempt).
-    fn service_recovery(&mut self) -> PyResult<Option<bool>> {
-        crate::catch_panic(|| Ok(self.processor.service_recovery()))
+    fn service_recovery(&self, py: Python<'_>) -> PyResult<Option<bool>> {
+        // A restart stops and reopens the streams.
+        py.detach(|| crate::catch_panic(|| Ok(self.processor.service_recovery())))
     }
 
     fn is_recovery_requested(&self) -> bool {
@@ -2972,7 +3126,7 @@ impl PyAudioProcessor {
     /// historical calibration capture after the fixed pre-filter and pauses
     /// adaptive cleanup while recording.
     #[pyo3(signature = (duration_secs, before_cleanup=false))]
-    fn start_raw_recording(&mut self, duration_secs: f64, before_cleanup: bool) -> PyResult<()> {
+    fn start_raw_recording(&self, duration_secs: f64, before_cleanup: bool) -> PyResult<()> {
         crate::catch_panic(|| {
             self.processor
                 .start_raw_recording_with_tap(duration_secs, before_cleanup)
@@ -2981,7 +3135,7 @@ impl PyAudioProcessor {
     }
 
     /// Stop recording and return audio data as NumPy array
-    fn stop_raw_recording(&mut self, py: Python) -> PyResult<Py<PyAny>> {
+    fn stop_raw_recording(&self, py: Python) -> PyResult<Py<PyAny>> {
         crate::catch_panic(|| {
             if let Some(audio) = self.processor.stop_raw_recording() {
                 // Zero-copy transfer to NumPy
@@ -2997,22 +3151,22 @@ impl PyAudioProcessor {
     }
 
     /// Check if recording is complete
-    fn is_recording_complete(&mut self) -> bool {
+    fn is_recording_complete(&self) -> bool {
         self.processor.is_recording_complete()
     }
 
     /// Get recording progress (0.0 to 1.0)
-    fn recording_progress(&mut self) -> f32 {
+    fn recording_progress(&self) -> f32 {
         self.processor.recording_progress()
     }
 
     /// Get current recording level as RMS in dB (for level meter visualization)
-    fn recording_level_db(&mut self) -> f32 {
+    fn recording_level_db(&self) -> f32 {
         self.processor.recording_level_db()
     }
 
     /// Manually set output mute state (useful for calibration workflow)
-    fn set_output_mute(&mut self, muted: bool) {
+    fn set_output_mute(&self, muted: bool) {
         self.processor.set_output_mute(muted);
     }
 

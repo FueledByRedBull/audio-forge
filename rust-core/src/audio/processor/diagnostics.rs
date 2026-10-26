@@ -1,10 +1,18 @@
-struct NoiseBackendDiagnostics {
-    available: bool,
+use crate::dsp::noise_suppressor::ControlledNoiseSuppressionEngine as NoiseSuppressionEngine;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Mutex;
+#[cfg(not(windows))]
+use thread_priority::{set_current_thread_priority, ThreadPriority};
+
+pub(super) struct NoiseBackendDiagnostics {
+    pub(super) available: bool,
     failed: bool,
     error: Option<String>,
 }
 
-fn noise_backend_diagnostics(suppressor: &NoiseSuppressionEngine) -> NoiseBackendDiagnostics {
+pub(super) fn noise_backend_diagnostics(
+    suppressor: &NoiseSuppressionEngine,
+) -> NoiseBackendDiagnostics {
     NoiseBackendDiagnostics {
         available: suppressor.backend_available(),
         failed: suppressor.backend_failed(),
@@ -12,7 +20,7 @@ fn noise_backend_diagnostics(suppressor: &NoiseSuppressionEngine) -> NoiseBacken
     }
 }
 
-fn store_backend_diagnostics(
+pub(super) fn store_backend_diagnostics(
     available: &AtomicBool,
     failed: &AtomicBool,
     error: &Mutex<Option<String>>,
@@ -25,7 +33,7 @@ fn store_backend_diagnostics(
     }
 }
 
-fn update_backend_diagnostics(
+pub(super) fn update_backend_diagnostics(
     available: &AtomicBool,
     failed: &AtomicBool,
     error: &Mutex<Option<String>>,
@@ -39,7 +47,7 @@ fn update_backend_diagnostics(
     );
 }
 
-fn update_backend_status_rt(
+pub(super) fn update_backend_status_rt(
     available: &AtomicBool,
     failed: &AtomicBool,
     rt_error_code: &AtomicU32,
@@ -56,13 +64,13 @@ fn update_backend_status_rt(
 }
 
 #[derive(Default)]
-struct StreamRecoveryState {
-    last_error: Option<String>,
-    last_reason: Option<String>,
+pub(super) struct StreamRecoveryState {
+    pub(super) last_error: Option<String>,
+    pub(super) last_reason: Option<String>,
     /// `last_reason` describes the pending restart request, so recovery must
     /// not replace it with a callback's error code.
-    reason_pending: bool,
-    restart_count: u64,
+    pub(super) reason_pending: bool,
+    pub(super) restart_count: u64,
     /// When the suppressor was last rebuilt (`now_micros`; 0 = never).
-    last_suppressor_rebuild_us: u64,
+    pub(super) last_suppressor_rebuild_us: u64,
 }

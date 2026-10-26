@@ -1,23 +1,41 @@
+use super::diagnostics::{
+    noise_backend_diagnostics, store_backend_diagnostics, update_backend_diagnostics,
+};
+use super::{AudioProcessor, RNNOISE_STRENGTH_MAX, RNNOISE_STRENGTH_MIN};
+use crate::dsp::noise_suppressor::{
+    new_controlled_noise_suppression_engine as new_noise_suppression_engine, NoiseModel,
+};
+use ringbuf::traits::Producer;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+#[cfg(not(windows))]
+use thread_priority::{set_current_thread_priority, ThreadPriority};
+
 impl AudioProcessor {
     // === Noise Suppression Controls ===
 
     /// Enable/disable noise suppression
     pub fn set_rnnoise_enabled(&self, enabled: bool) {
-        self.suppressor_enabled.store(enabled, Ordering::Release);
-        if let Ok(mut control) = self.suppressor_control.lock() {
+        self.shared
+            .suppressor
+            .enabled
+            .store(enabled, Ordering::Release);
+        if let Ok(mut control) = self.shared.suppressor.control.lock() {
             control.enabled = enabled;
         }
-        self.suppressor_rt_control.set_enabled(enabled);
+        self.shared.suppressor.rt_control.set_enabled(enabled);
         if !enabled {
-            self.suppressor_reset_requested
+            self.shared
+                .suppressor
+                .reset_requested
                 .store(true, Ordering::Release);
         }
-        self.suppressor_dirty.store(true, Ordering::Release);
+        self.shared.suppressor.dirty.store(true, Ordering::Release);
     }
 
     /// Check if noise suppression is enabled
     pub fn is_rnnoise_enabled(&self) -> bool {
-        self.suppressor_enabled.load(Ordering::Acquire)
+        self.shared.suppressor.enabled.load(Ordering::Acquire)
     }
 
     /// Set noise suppression wet/dry mix strength (0.0 = fully dry, 1.0 = fully wet)
@@ -28,12 +46,15 @@ impl AudioProcessor {
             return;
         };
         let bits = clamped.to_bits();
-        self.suppressor_strength.store(bits, Ordering::Relaxed);
+        self.shared
+            .suppressor
+            .strength
+            .store(bits, Ordering::Relaxed);
     }
 
     /// Get current noise suppression strength
     pub fn get_rnnoise_strength(&self) -> f32 {
-        f32::from_bits(self.suppressor_strength.load(Ordering::Relaxed))
+        f32::from_bits(self.shared.suppressor.strength.load(Ordering::Relaxed))
     }
 
     /// Set noise suppression model
@@ -57,7 +78,7 @@ impl AudioProcessor {
         }
 
         // Create new suppressor engine with current strength
-        let strength = Arc::clone(&self.suppressor_strength);
+        let strength = Arc::clone(&self.shared.suppressor.strength);
         let new_engine = new_noise_suppression_engine(model, strength);
         let backend_diagnostics = noise_backend_diagnostics(&new_engine);
 
@@ -66,17 +87,17 @@ impl AudioProcessor {
             // runtime fails. Reject selection so the UI does not mistake that
             // fallback for active suppression.
             store_backend_diagnostics(
-                &self.noise_backend_available,
-                &self.noise_backend_failed,
-                self.noise_backend_error.as_ref(),
+                &self.shared.suppressor.backend_available,
+                &self.shared.suppressor.backend_failed,
+                &self.shared.suppressor.backend_error,
                 backend_diagnostics,
             );
             return false;
         }
 
-        let running = self.running.load(Ordering::Acquire);
+        let running = self.shared.stream.running.load(Ordering::Acquire);
         if running {
-            let queued = if let Ok(mut tx_guard) = self.pending_suppressor_tx.lock() {
+            let queued = if let Ok(mut tx_guard) = self.shared.suppressor.pending_tx.lock() {
                 if let Some(tx) = tx_guard.as_mut() {
                     tx.try_push(new_engine).is_ok()
                 } else {
@@ -90,48 +111,56 @@ impl AudioProcessor {
                 return false;
             }
             store_backend_diagnostics(
-                &self.noise_backend_available,
-                &self.noise_backend_failed,
-                self.noise_backend_error.as_ref(),
+                &self.shared.suppressor.backend_available,
+                &self.shared.suppressor.backend_failed,
+                &self.shared.suppressor.backend_error,
                 backend_diagnostics,
             );
         } else {
             update_backend_diagnostics(
-                &self.noise_backend_available,
-                &self.noise_backend_failed,
-                self.noise_backend_error.as_ref(),
+                &self.shared.suppressor.backend_available,
+                &self.shared.suppressor.backend_failed,
+                &self.shared.suppressor.backend_error,
                 &new_engine,
             );
         }
 
-        if let Ok(mut control) = self.suppressor_control.lock() {
+        if let Ok(mut control) = self.shared.suppressor.control.lock() {
             control.model = model;
         }
-        self.suppressor_rt_control.set_model(model);
-        self.current_model.store(model as u8, Ordering::Release);
-        self.suppressor_reset_requested
+        self.shared.suppressor.rt_control.set_model(model);
+        self.shared
+            .suppressor
+            .current_model
+            .store(model as u8, Ordering::Release);
+        self.shared
+            .suppressor
+            .reset_requested
             .store(true, Ordering::Release);
-        self.suppressor_dirty.store(true, Ordering::Release);
+        self.shared.suppressor.dirty.store(true, Ordering::Release);
         true
     }
 
-    fn rebuild_noise_suppressor(&self) -> bool {
+    pub(super) fn rebuild_noise_suppressor(&self) -> bool {
         self.drain_retired_suppressors();
         let model = self.get_noise_model();
-        let engine = new_noise_suppression_engine(model, Arc::clone(&self.suppressor_strength));
+        let engine =
+            new_noise_suppression_engine(model, Arc::clone(&self.shared.suppressor.strength));
         let diagnostics = noise_backend_diagnostics(&engine);
         if model != NoiseModel::RNNoise && !diagnostics.available {
             store_backend_diagnostics(
-                &self.noise_backend_available,
-                &self.noise_backend_failed,
-                self.noise_backend_error.as_ref(),
+                &self.shared.suppressor.backend_available,
+                &self.shared.suppressor.backend_failed,
+                &self.shared.suppressor.backend_error,
                 diagnostics,
             );
             return false;
         }
 
         let queued = self
-            .pending_suppressor_tx
+            .shared
+            .suppressor
+            .pending_tx
             .lock()
             .ok()
             .and_then(|mut tx| tx.as_mut().map(|tx| tx.try_push(engine).is_ok()))
@@ -141,18 +170,18 @@ impl AudioProcessor {
         }
 
         store_backend_diagnostics(
-            &self.noise_backend_available,
-            &self.noise_backend_failed,
-            self.noise_backend_error.as_ref(),
+            &self.shared.suppressor.backend_available,
+            &self.shared.suppressor.backend_failed,
+            &self.shared.suppressor.backend_error,
             diagnostics,
         );
-        self.suppressor_dirty.store(true, Ordering::Release);
+        self.shared.suppressor.dirty.store(true, Ordering::Release);
         true
     }
 
     /// Get current noise suppression model
     pub fn get_noise_model(&self) -> NoiseModel {
-        let model_u8 = self.current_model.load(Ordering::Acquire);
+        let model_u8 = self.shared.suppressor.current_model.load(Ordering::Acquire);
         match model_u8 {
             0 => NoiseModel::RNNoise,
             #[cfg(feature = "deepfilter")]
@@ -174,7 +203,7 @@ impl AudioProcessor {
         #[cfg(feature = "deepfilter")]
         {
             if crate::dsp::noise_suppressor::deepfilter_experimental_enabled() {
-                let strength = Arc::clone(&self.suppressor_strength);
+                let strength = Arc::clone(&self.shared.suppressor.strength);
 
                 let ll = new_noise_suppression_engine(
                     NoiseModel::DeepFilterNetLL,

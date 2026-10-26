@@ -53,6 +53,7 @@ def quick_window(qapp, monkeypatch):
         else None
     )
     window = MainWindow()
+    window._engine.threaded = False  # the fake engines answer at once
     window.show()
     qapp.processEvents()
     qInstallMessageHandler(previous)

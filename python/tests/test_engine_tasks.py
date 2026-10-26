@@ -49,6 +49,8 @@ class _SlowEngine:
     def start(self, *_args, **_kwargs) -> str:
         self.calls.append("start")
         self._hang()
+        if self.running:
+            raise RuntimeError("Already running")
         if self.start_error is not None:
             raise self.start_error
         self.running = True
@@ -98,7 +100,6 @@ def engine_window(isolated_main_window, monkeypatch):
     window.diagnostics_timer.stop()
     engine = _SlowEngine(window.processor)
     window.processor = engine
-    window._engine.threaded = True  # the real engine cannot take this yet; see engine_tasks.py
     window.input_choice.addItem("Microphone", DeviceIdentity(name="Microphone", direction="input"))
     window.output_choice.addItem("Destination", DeviceIdentity(name="Destination", direction="output"))
     monkeypatch.setattr(window, "_apply_input_preferences_for_current_route", lambda: None)
@@ -366,7 +367,7 @@ def test_a_click_that_runs_at_once_does_not_flicker_the_controls(isolated_main_w
     window.input_choice.addItem("Microphone", DeviceIdentity(name="Microphone", direction="input"))
     window.output_choice.addItem("Destination", DeviceIdentity(name="Destination", direction="output"))
     monkeypatch.setattr(window, "_apply_input_preferences_for_current_route", lambda: None)
-    assert not window._engine.threaded  # the real engine cannot be called from a worker yet
+    window._engine.threaded = False  # the synchronous mode the controls must not flicker in
     changes: list[str] = []
     window.refresh_btn_action.changed.connect(lambda: changes.append("refresh"))
     window.start_btn_action.changed.connect(lambda: changes.append("start"))
@@ -493,3 +494,28 @@ def test_a_recovery_poll_holds_the_getters_off_the_engine_while_it_is_out(engine
     wait_until(qapp, lambda: not window._recovery_polling)
 
     assert reads == 0
+
+
+@pytest.mark.parametrize("reopened", [True, False])
+def test_a_start_click_during_a_recovery_poll_waits_for_its_answer(
+    engine_window, qapp, monkeypatch, reopened
+):
+    window, engine = engine_window
+    shown: list[str] = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda _parent, _title, text: shown.append(text))
+    engine.release.clear()
+    window._service_stream_recovery(diagnostics={}, input_rms=-60.0, output_rms=-60.0, output_buf=0)
+    assert engine.entered.wait(2.0)
+
+    window.start_btn_action.trigger()
+    engine.running = reopened  # what the retry that is out did to the streams
+    engine.recovery_result = reopened
+    engine.release.set()
+    wait_until(qapp, lambda: not window._recovery_polling and window._engine_busy is None)
+    window._engine.wait()
+    run_loop_for(qapp, 0.1)
+
+    expected = ["service_recovery"] if reopened else ["service_recovery", "start"]
+    assert engine.lifecycle() == expected
+    assert engine.running and not shown
+

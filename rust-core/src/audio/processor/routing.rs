@@ -1,12 +1,19 @@
+use super::resampling::{total_reported_latency_us, LatencyComponents};
+use super::{INPUT_DC_BLOCK_COEFF, INPUT_PREFILTER_HZ, INPUT_PREFILTER_Q};
+use crate::dsp::biquad::{Biquad, BiquadType};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+#[cfg(not(windows))]
+use thread_priority::{set_current_thread_priority, ThreadPriority};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProcessingPath {
+pub(super) enum ProcessingPath {
     RawMonitor,
     Bypass,
     Full,
 }
 
 #[derive(Default)]
-struct InputPreFilterState {
+pub(super) struct InputPreFilterState {
     dc_x1: f32,
     dc_y1: f32,
 }
@@ -20,7 +27,7 @@ pub enum InputCleanupMode {
 }
 
 impl InputCleanupMode {
-    fn from_u8(value: u8) -> Option<Self> {
+    pub(super) fn from_u8(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::Off),
             1 => Some(Self::Gentle),
@@ -29,7 +36,7 @@ impl InputCleanupMode {
         }
     }
 
-    fn from_id(value: &str) -> Option<Self> {
+    pub(super) fn from_id(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "off" => Some(Self::Off),
             "gentle" => Some(Self::Gentle),
@@ -38,7 +45,7 @@ impl InputCleanupMode {
         }
     }
 
-    fn id(self) -> &'static str {
+    pub(super) fn id(self) -> &'static str {
         match self {
             Self::Off => "off",
             Self::Gentle => "gentle",
@@ -46,7 +53,7 @@ impl InputCleanupMode {
         }
     }
 
-    fn is_enabled(self) -> bool {
+    pub(super) fn is_enabled(self) -> bool {
         !matches!(self, Self::Off)
     }
 }
@@ -229,7 +236,7 @@ impl SmoothNotch {
 ///
 /// When enabled, this state replaces the fixed 80 Hz filter so cleanup never
 /// cascades two independent high-pass responses.
-struct AdaptiveInputCleanupState {
+pub(super) struct AdaptiveInputCleanupState {
     sample_rate: f32,
     mode: InputCleanupMode,
     lowpass_state: f32,
@@ -239,31 +246,31 @@ struct AdaptiveInputCleanupState {
     rumble_hold_samples: u32,
     hum_bins: [HumBin; HUM_TRACK_BINS],
     hum_harmonic_bins: [HumBin; HUM_TRACK_BINS],
-    hum_window_samples: usize,
+    pub(super) hum_window_samples: usize,
     hum_window_pos: usize,
-    hum_windows_observed: u64,
+    pub(super) hum_windows_observed: u64,
     hum_candidate_windows: u8,
     hum_total_energy: f32,
     hum_hold_samples: u32,
-    hum_line_hz: f32,
+    pub(super) hum_line_hz: f32,
     /// Phase of the selected hum component in the last completed window.
     /// It is retained so frequency updates can use phase continuity rather
     /// than relying only on the 1 Hz analysis bank.
     hum_previous_absolute_phase: f32,
-    hum_phase_valid: bool,
+    pub(super) hum_phase_valid: bool,
     hum_strength: f32,
     harmonic_strength: f32,
     adaptive_highpass: Biquad,
     adaptive_highpass_hz: f32,
     hum_notch: SmoothNotch,
     harmonic_notch: SmoothNotch,
-    hum_detected: bool,
-    rumble_detected: bool,
-    selected_high_pass_hz: f32,
+    pub(super) hum_detected: bool,
+    pub(super) rumble_detected: bool,
+    pub(super) selected_high_pass_hz: f32,
 }
 
 impl AdaptiveInputCleanupState {
-    fn new(sample_rate: f32) -> Self {
+    pub(super) fn new(sample_rate: f32) -> Self {
         let notch_q = 36.0;
         Self {
             sample_rate,
@@ -303,7 +310,7 @@ impl AdaptiveInputCleanupState {
         }
     }
 
-    fn set_mode(&mut self, mode: InputCleanupMode) {
+    pub(super) fn set_mode(&mut self, mode: InputCleanupMode) {
         if self.mode == mode {
             return;
         }
@@ -313,7 +320,7 @@ impl AdaptiveInputCleanupState {
         }
     }
 
-    fn reset_dynamic_state(&mut self) {
+    pub(super) fn reset_dynamic_state(&mut self) {
         self.lowpass_state = 0.0;
         self.low_env = 0.0;
         self.slow_low_env = 0.0;
@@ -339,7 +346,7 @@ impl AdaptiveInputCleanupState {
         self.selected_high_pass_hz = INPUT_PREFILTER_HZ as f32;
     }
 
-    fn analyze_input(&mut self, buffer: &[f32]) {
+    pub(super) fn analyze_input(&mut self, buffer: &[f32]) {
         if !self.mode.is_enabled() {
             return;
         }
@@ -536,7 +543,7 @@ impl AdaptiveInputCleanupState {
         }
     }
 
-    fn process_block(&mut self, buffer: &mut [f32]) {
+    pub(super) fn process_block(&mut self, buffer: &mut [f32]) {
         if !self.mode.is_enabled() {
             return;
         }
@@ -886,14 +893,18 @@ fn smoothing_amount_for_samples(amount_per_10ms: f32, samples: usize, sample_rat
 }
 
 #[inline]
-fn update_decaying_peak_db(value_db: f32, history: &AtomicU32, decay_db_per_update: f32) {
+pub(super) fn update_decaying_peak_db(
+    value_db: f32,
+    history: &AtomicU32,
+    decay_db_per_update: f32,
+) {
     let previous = f32::from_bits(history.load(Ordering::Relaxed)).max(0.0);
     let decayed = (previous - decay_db_per_update.max(0.0)).max(0.0);
     history.store(value_db.max(decayed).to_bits(), Ordering::Relaxed);
 }
 
 #[inline]
-fn publish_input_cleanup_diagnostics(
+pub(super) fn publish_input_cleanup_diagnostics(
     state: &AdaptiveInputCleanupState,
     hum_detected: &AtomicBool,
     rumble_detected: &AtomicBool,
@@ -905,7 +916,7 @@ fn publish_input_cleanup_diagnostics(
 }
 
 #[inline]
-fn publish_input_cleanup_bypassed(
+pub(super) fn publish_input_cleanup_bypassed(
     hum_detected: &AtomicBool,
     rumble_detected: &AtomicBool,
     selected_high_pass_hz: &AtomicU32,
@@ -916,7 +927,10 @@ fn publish_input_cleanup_bypassed(
 }
 
 #[inline]
-fn select_processing_path(raw_monitor_enabled: bool, bypass_enabled: bool) -> ProcessingPath {
+pub(super) fn select_processing_path(
+    raw_monitor_enabled: bool,
+    bypass_enabled: bool,
+) -> ProcessingPath {
     if raw_monitor_enabled {
         ProcessingPath::RawMonitor
     } else if bypass_enabled {
@@ -930,7 +944,7 @@ fn select_processing_path(raw_monitor_enabled: bool, bypass_enabled: bool) -> Pr
 /// and Raw monitor never run the lookahead limiter, so only the full path
 /// counts its delay.
 #[inline]
-fn publish_reported_latency(
+pub(super) fn publish_reported_latency(
     latency_us: &AtomicU64,
     mut components: LatencyComponents,
     path: ProcessingPath,
@@ -946,12 +960,12 @@ fn publish_reported_latency(
 }
 
 #[inline]
-fn uses_clean_write_path(path: ProcessingPath) -> bool {
+pub(super) fn uses_clean_write_path(path: ProcessingPath) -> bool {
     matches!(path, ProcessingPath::RawMonitor)
 }
 
 #[inline]
-fn sanitize_non_finite_inplace(buffer: &mut [f32]) {
+pub(super) fn sanitize_non_finite_inplace(buffer: &mut [f32]) {
     for sample in buffer.iter_mut() {
         if !sample.is_finite() {
             *sample = 0.0;
@@ -960,22 +974,22 @@ fn sanitize_non_finite_inplace(buffer: &mut [f32]) {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct MeterBlockStats {
-    peak_db: f32,
-    rms_db: f32,
-    crest_factor_db: f32,
-    mean_power: f32,
+pub(super) struct MeterBlockStats {
+    pub(super) peak_db: f32,
+    pub(super) rms_db: f32,
+    pub(super) crest_factor_db: f32,
+    pub(super) mean_power: f32,
 }
 
 /// Per-sample IIR meter state; both fields are mean-square domain.
 #[derive(Debug, Default, Clone, Copy)]
-struct MeterState {
-    rms_acc: f32,
+pub(super) struct MeterState {
+    pub(super) rms_acc: f32,
     peak_sq_acc: f32,
 }
 
 #[inline]
-fn update_meter_block_stats(
+pub(super) fn update_meter_block_stats(
     buffer: &[f32],
     state: &mut MeterState,
     meter_coeff: f32,
@@ -1032,7 +1046,7 @@ fn update_meter_block_stats(
 /// touch is not clipping. The count rises by one per sample and cannot tell
 /// a run from separate touches, so the meter shows a clip once the count has
 /// risen by a flat top's worth of samples within its hold window.
-const FULL_SCALE_LINEAR: f32 = 0.999;
+pub(super) const FULL_SCALE_LINEAR: f32 = 0.999;
 
 /// Folds one block into a "peak since last read" atomic (f32 bits of a linear
 /// amplitude, 0.0 = nothing seen) and, when given, a cumulative count of
@@ -1040,7 +1054,7 @@ const FULL_SCALE_LINEAR: f32 = 0.999;
 /// them with silence, so they are neither a peak nor a clip. Non-negative f32
 /// bits order like the values, so `fetch_max` on the bits is a float max.
 #[inline]
-fn record_level_extremes(
+pub(super) fn record_level_extremes(
     buffer: &[f32],
     peak_hold: &AtomicU32,
     full_scale_count: Option<&AtomicU64>,
@@ -1068,7 +1082,7 @@ fn record_level_extremes(
 }
 
 #[inline]
-fn sanitize_and_clamp_output_inplace(buffer: &mut [f32], ceiling_linear: f32) {
+pub(super) fn sanitize_and_clamp_output_inplace(buffer: &mut [f32], ceiling_linear: f32) {
     let ceiling = ceiling_linear.clamp(0.0, 1.0);
     for sample in buffer.iter_mut() {
         if !sample.is_finite() {
@@ -1080,7 +1094,7 @@ fn sanitize_and_clamp_output_inplace(buffer: &mut [f32], ceiling_linear: f32) {
 }
 
 #[inline]
-fn sanitize_and_clamp_output_inplace_with_metrics(
+pub(super) fn sanitize_and_clamp_output_inplace_with_metrics(
     buffer: &mut [f32],
     ceiling_linear: f32,
     output_clip_event_count: &AtomicU64,
@@ -1114,7 +1128,7 @@ fn sanitize_and_clamp_output_inplace_with_metrics(
 }
 
 #[inline]
-fn sanitize_and_clamp_input_inplace(
+pub(super) fn sanitize_and_clamp_input_inplace(
     buffer: &mut [f32],
     clip_event_count: &AtomicU64,
     clip_peak_db: &AtomicU32,
@@ -1139,7 +1153,7 @@ fn sanitize_and_clamp_input_inplace(
 
 /// The fixed 80 Hz high-pass of the input pre-filter. Every place that runs it,
 /// and the response reported to the UI, builds it here.
-fn new_input_pre_filter(sample_rate: f64) -> Biquad {
+pub(super) fn new_input_pre_filter(sample_rate: f64) -> Biquad {
     Biquad::new(
         BiquadType::HighPass,
         INPUT_PREFILTER_HZ,
@@ -1150,7 +1164,7 @@ fn new_input_pre_filter(sample_rate: f64) -> Biquad {
 }
 
 #[inline]
-fn apply_input_pre_filter(
+pub(super) fn apply_input_pre_filter(
     buffer: &mut [f32],
     dc_state: &mut InputPreFilterState,
     pre_filter: &mut Biquad,
@@ -1171,7 +1185,7 @@ fn apply_input_pre_filter(
 
 /// Magnitude response, in dB, of the difference equation `apply_input_pre_filter`
 /// runs: `y[n] = x[n] - x[n-1] + a * y[n-1]`, with the same `a` it uses.
-fn dc_block_response_db(frequency_hz: f64, sample_rate: f64) -> f64 {
+pub(super) fn dc_block_response_db(frequency_hz: f64, sample_rate: f64) -> f64 {
     let omega = 2.0 * std::f64::consts::PI * frequency_hz / sample_rate;
     let a = INPUT_DC_BLOCK_COEFF as f64;
     let numerator = 2.0 - 2.0 * omega.cos();
@@ -1187,7 +1201,7 @@ fn dc_block_response_db(frequency_hz: f64, sample_rate: f64) -> f64 {
 /// 80 Hz and rises to 100 Hz (Gentle) or 120 Hz (Strong) while rumble is
 /// detected; the response is that default. The hum notches, which appear only
 /// while hum is detected, are not included.
-fn static_input_pre_filter_response_db(
+pub(super) fn static_input_pre_filter_response_db(
     frequencies_hz: &[f64],
     mode: InputCleanupMode,
     sample_rate: f64,

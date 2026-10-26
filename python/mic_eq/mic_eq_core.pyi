@@ -32,6 +32,13 @@ class InputFormats:
 
 
 class AudioProcessor:
+    """Native audio engine.
+
+    Safe to call from any thread: getters and setters never block on a start,
+    stop or recovery in progress, and start, stop and service_recovery release
+    the GIL while they run.
+    """
+
     def __init__(self) -> None: ...
     def start(
         self,

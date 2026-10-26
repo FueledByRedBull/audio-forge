@@ -1,27 +1,34 @@
+use super::AudioProcessor;
+use crate::dsp::eq::{EqBandConfig, NUM_BANDS};
+use pyo3::prelude::*;
+use std::sync::atomic::Ordering;
+#[cfg(not(windows))]
+use thread_priority::{set_current_thread_priority, ThreadPriority};
+
 impl AudioProcessor {
     // === EQ Controls ===
 
     /// Enable/disable EQ
     pub fn set_eq_enabled(&self, enabled: bool) {
-        self.eq_enabled.store(enabled, Ordering::Release);
-        if let Ok(mut e) = self.eq.lock() {
+        self.shared.eq.enabled.store(enabled, Ordering::Release);
+        if let Ok(mut e) = self.shared.eq.tone_shadow.lock() {
             e.set_enabled(enabled);
         }
-        if let Ok(mut e) = self.correction_eq.lock() {
+        if let Ok(mut e) = self.shared.eq.correction_shadow.lock() {
             e.set_enabled(enabled);
         }
-        self.eq_control.set_enabled(enabled);
-        self.eq_dirty.store(true, Ordering::Release);
+        self.shared.eq.control.set_enabled(enabled);
+        self.shared.eq.dirty.store(true, Ordering::Release);
     }
 
     /// Check if EQ is enabled
     pub fn is_eq_enabled(&self) -> bool {
-        self.eq_enabled.load(Ordering::Acquire)
+        self.shared.eq.enabled.load(Ordering::Acquire)
     }
 
     /// Get one complete typed EQ band configuration.
     pub fn get_eq_band_config(&self, band: usize) -> Option<EqBandConfig> {
-        if let Ok(e) = self.eq.lock() {
+        if let Ok(e) = self.shared.eq.tone_shadow.lock() {
             e.get_band_config(band)
         } else {
             None
@@ -46,7 +53,9 @@ impl AudioProcessor {
         // This complete typed API is the tone-layer update. Preserve measured
         // correction settings published by apply_eq_layers.
         let correction_bands = self
-            .eq_control
+            .shared
+            .eq
+            .control
             .snapshot()
             .ok_or_else(|| {
                 PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
@@ -54,14 +63,16 @@ impl AudioProcessor {
                 )
             })?
             .correction_bands;
-        if let Ok(mut eq) = self.eq.lock() {
+        if let Ok(mut eq) = self.shared.eq.tone_shadow.lock() {
             for (index, config) in snapshot_bands.iter().copied().enumerate() {
                 eq.set_band_config(index, config);
             }
         }
-        self.eq_control
+        self.shared
+            .eq
+            .control
             .set_layers(&correction_bands, &snapshot_bands);
-        self.eq_dirty.store(true, Ordering::Release);
+        self.shared.eq.dirty.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -90,19 +101,21 @@ impl AudioProcessor {
 
         let correction_snapshot = std::array::from_fn(|index| correction_bands[index]);
         let tone_snapshot = std::array::from_fn(|index| tone_bands[index]);
-        if let Ok(mut correction_eq) = self.correction_eq.lock() {
+        if let Ok(mut correction_eq) = self.shared.eq.correction_shadow.lock() {
             for (index, config) in correction_snapshot.iter().copied().enumerate() {
                 correction_eq.set_band_config(index, config);
             }
         }
-        if let Ok(mut eq) = self.eq.lock() {
+        if let Ok(mut eq) = self.shared.eq.tone_shadow.lock() {
             for (index, config) in tone_snapshot.iter().copied().enumerate() {
                 eq.set_band_config(index, config);
             }
         }
-        self.eq_control
+        self.shared
+            .eq
+            .control
             .set_layers(&correction_snapshot, &tone_snapshot);
-        self.eq_dirty.store(true, Ordering::Release);
+        self.shared.eq.dirty.store(true, Ordering::Release);
         Ok(())
     }
 }

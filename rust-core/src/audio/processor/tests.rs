@@ -1,183 +1,216 @@
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::dsp::noise_suppressor::NoiseSuppressor;
-    use crate::rt_scan::{assert_marked_regions_clean, assert_rt_clean, marked_region};
-    use pyo3::types::PyDict;
-    use pyo3::Python;
+// The shared imports serve tests gated on the default features.
+#![cfg_attr(
+    not(all(feature = "vad", feature = "deepfilter")),
+    allow(unused_imports)
+)]
 
-    #[test]
-    fn test_duration_samples_for_44k1_output() {
-        assert_eq!(duration_samples(44_100, OUTPUT_PRIME_MS), 1323);
-        assert_eq!(duration_samples(44_100, OUTPUT_TARGET_HIGH_MS), 1764);
-        assert_eq!(duration_samples(44_100, OUTPUT_HARD_BACKLOG_MS), 2646);
-    }
+use super::*;
+use super::{
+    block_processor::*, control::*, dsp_loop::*, output_writer::*, python_api::*, raw_recording::*,
+    recovery::*, resampling::*, routing::*, supervisor::*, vad_worker::*,
+};
+use crate::audio::buffer::AudioRingBuffer;
+use crate::audio::clock::now_micros;
+use crate::audio::input::TARGET_SAMPLE_RATE;
+use crate::audio::rt::{store_rt_error, FixedAudioBuffer, RtCommandQueue, RtErrorCode};
+use crate::dsp::biquad::{Biquad, BiquadType};
+use crate::dsp::eq::{EqBandConfig, EqFilterType, NUM_BANDS};
+use crate::dsp::noise_suppressor::NoiseSuppressor;
+use crate::dsp::noise_suppressor::{
+    new_controlled_noise_suppression_engine as new_noise_suppression_engine,
+    ControlledNoiseSuppressionEngine as NoiseSuppressionEngine, GateControl, NoiseModel,
+};
+use crate::dsp::rnnoise::RNNOISE_FRAME_SIZE;
+#[cfg(feature = "vad")]
+use crate::dsp::vad::{GateMode, VadAutoGate};
+use crate::dsp::{
+    AutoMakeupActivityInput, Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ,
+    TruePeakDetector, TruePeakLimiter,
+};
+use crate::rt_scan::{assert_marked_regions_clean, assert_rt_clean, marked_region};
+use pyo3::prelude::*;
+use pyo3::types::PyDict;
+use pyo3::Python;
+use ringbuf::traits::{Consumer, Producer};
+use rubato::{
+    calculate_cutoff, Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType,
+    WindowFunction,
+};
+use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+#[cfg(not(windows))]
+use thread_priority::{set_current_thread_priority, ThreadPriority};
 
-    #[test]
-    fn test_suppressor_recovery_fade_starts_after_model_delay() {
-        let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
-        for latency in [RNNOISE_FRAME_SIZE, 3 * RNNOISE_FRAME_SIZE] {
-            for partition in [1, 127, RNNOISE_FRAME_SIZE, 1024] {
-                let mut samples = vec![0.0; latency + fade_samples + 1];
-                samples[latency..].fill(0.25);
-                let mut recovery = SuppressorRecoveryFade::new(fade_samples);
-                recovery.restart(latency);
-                crate::test_alloc::assert_no_allocations("suppressor recovery fade", || {
-                    for block in samples.chunks_mut(partition) {
-                        recovery.apply(block);
-                    }
-                });
-                assert!(samples[..latency].iter().all(|sample| *sample == 0.0));
-                for index in 0..fade_samples {
-                    assert_eq!(
-                        samples[latency + index],
-                        0.25 * (index + 1) as f32 / fade_samples as f32
-                    );
+#[test]
+fn test_duration_samples_for_44k1_output() {
+    assert_eq!(duration_samples(44_100, OUTPUT_PRIME_MS), 1323);
+    assert_eq!(duration_samples(44_100, OUTPUT_TARGET_HIGH_MS), 1764);
+    assert_eq!(duration_samples(44_100, OUTPUT_HARD_BACKLOG_MS), 2646);
+}
+
+#[test]
+fn test_suppressor_recovery_fade_starts_after_model_delay() {
+    let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
+    for latency in [RNNOISE_FRAME_SIZE, 3 * RNNOISE_FRAME_SIZE] {
+        for partition in [1, 127, RNNOISE_FRAME_SIZE, 1024] {
+            let mut samples = vec![0.0; latency + fade_samples + 1];
+            samples[latency..].fill(0.25);
+            let mut recovery = SuppressorRecoveryFade::new(fade_samples);
+            recovery.restart(latency);
+            crate::test_alloc::assert_no_allocations("suppressor recovery fade", || {
+                for block in samples.chunks_mut(partition) {
+                    recovery.apply(block);
                 }
-                assert_eq!(samples[latency + fade_samples], 0.25);
+            });
+            assert!(samples[..latency].iter().all(|sample| *sample == 0.0));
+            for index in 0..fade_samples {
+                assert_eq!(
+                    samples[latency + index],
+                    0.25 * (index + 1) as f32 / fade_samples as f32
+                );
+            }
+            assert_eq!(samples[latency + fade_samples], 0.25);
+        }
+    }
+}
+
+#[cfg(feature = "deepfilter")]
+#[test]
+fn test_unavailable_suppressor_recovery_fades_first_valid_dry_sample() {
+    if crate::dsp::noise_suppressor::deepfilter_experimental_enabled() {
+        eprintln!("requires AUDIOFORGE_ENABLE_DEEPFILTER=0; enabled-backend recovery is tested separately");
+        return;
+    }
+    let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
+    for model in [
+        NoiseModel::RNNoise,
+        NoiseModel::DeepFilterNetLL,
+        NoiseModel::DeepFilterNet,
+    ] {
+        for strength in [0.0_f32, 0.37, 1.0] {
+            for pending in [0, 123] {
+                let mut processor = new_noise_suppression_engine(
+                    model,
+                    Arc::new(AtomicU32::new(strength.to_bits())),
+                );
+                if model == NoiseModel::RNNoise {
+                    processor.set_enabled(false);
+                } else {
+                    assert!(!processor.backend_available());
+                }
+                assert!(!processor.backend_failed());
+                assert_eq!(processor.latency_samples(), RNNOISE_FRAME_SIZE);
+                processor.push_samples(&[0.1; RNNOISE_FRAME_SIZE]);
+                processor.process_frames();
+                processor.push_samples(&[0.1; 123][..pending]);
+                processor.soft_reset();
+                let mut recovery = SuppressorRecoveryFade::new(fade_samples);
+                let writer_fade = Cell::new(0);
+                recovery.restart_for_suppressor(&processor, &writer_fade, fade_samples);
+                for frame in 0..2 {
+                    processor.push_samples(&[0.25; RNNOISE_FRAME_SIZE]);
+                    processor.process_frames();
+                    let mut output = [0.0; RNNOISE_FRAME_SIZE];
+                    assert_eq!(processor.pop_samples_into(&mut output), output.len());
+                    assert_eq!(output, [0.25; RNNOISE_FRAME_SIZE]);
+                    crate::test_alloc::assert_no_allocations("unavailable recovery fade", || {
+                        recovery.apply(&mut output);
+                        let mut remaining = writer_fade.get();
+                        fade_in(&mut output, &mut remaining, fade_samples);
+                        writer_fade.set(remaining);
+                    });
+                    for (index, sample) in output.iter().enumerate() {
+                        let elapsed = frame * RNNOISE_FRAME_SIZE + index;
+                        let factor = ((elapsed + 1) as f32 / fade_samples as f32).min(1.0);
+                        assert_eq!(*sample, 0.25 * factor);
+                    }
+                }
             }
         }
     }
+}
 
-    #[cfg(feature = "deepfilter")]
-    #[test]
-    fn test_unavailable_suppressor_recovery_fades_first_valid_dry_sample() {
-        if crate::dsp::noise_suppressor::deepfilter_experimental_enabled() {
-            eprintln!("requires AUDIOFORGE_ENABLE_DEEPFILTER=0; enabled-backend recovery is tested separately");
-            return;
+#[test]
+fn test_suppressor_recovery_fade_restarts_for_overlapping_resets_and_handoff() {
+    let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
+    let mut recovery = SuppressorRecoveryFade::new(fade_samples);
+    let mut direct = [0.3; 31];
+    recovery.apply(&mut direct);
+    assert_eq!(direct, [0.3; 31]);
+    for (latency, consumed) in [(480, 123), (1440, 1489), (480, 503)] {
+        recovery.restart(latency);
+        let mut samples = vec![0.0; consumed];
+        if consumed > latency {
+            samples[latency..].fill(0.2);
         }
-        let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
-        for model in [
-            NoiseModel::RNNoise,
-            NoiseModel::DeepFilterNetLL,
-            NoiseModel::DeepFilterNet,
-        ] {
-            for strength in [0.0_f32, 0.37, 1.0] {
-                for pending in [0, 123] {
-                    let mut processor = new_noise_suppression_engine(
-                        model,
-                        Arc::new(AtomicU32::new(strength.to_bits())),
-                    );
-                    if model == NoiseModel::RNNoise {
-                        processor.set_enabled(false);
-                    } else {
-                        assert!(!processor.backend_available());
-                    }
-                    assert!(!processor.backend_failed());
-                    assert_eq!(processor.latency_samples(), RNNOISE_FRAME_SIZE);
+        recovery.apply(&mut samples);
+        if consumed > latency {
+            assert_eq!(samples[latency], 0.2 * (1.0 / fade_samples as f32));
+        }
+        assert_eq!(recovery.invalid_samples, latency.saturating_sub(consumed));
+        assert_eq!(
+            recovery.remaining,
+            fade_samples - consumed.saturating_sub(latency)
+        );
+    }
+    recovery.restart(0);
+    recovery.apply(&mut direct);
+    assert_eq!(direct, [0.3; 31]);
+}
+
+#[test]
+fn test_suppressor_recovery_fade_preserves_aligned_wet_dry_mix() {
+    let models = [
+        NoiseModel::RNNoise,
+        #[cfg(feature = "deepfilter")]
+        NoiseModel::DeepFilterNetLL,
+        #[cfg(feature = "deepfilter")]
+        NoiseModel::DeepFilterNet,
+    ];
+    let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
+    for model in models {
+        for strength in [0.0_f32, 0.37, 1.0] {
+            for gain in [0.3_f32, 1.0] {
+                let mut processor = new_noise_suppression_engine(
+                    model,
+                    Arc::new(AtomicU32::new(strength.to_bits())),
+                );
+                if !processor.backend_available() {
+                    eprintln!("skipping {} recovery mix: backend unavailable", model.id());
+                    continue;
+                }
+                let latency = processor.latency_samples();
+                let mut output = [0.0; RNNOISE_FRAME_SIZE];
+                for _ in 0..4 {
                     processor.push_samples(&[0.1; RNNOISE_FRAME_SIZE]);
                     processor.process_frames();
-                    processor.push_samples(&[0.1; 123][..pending]);
-                    processor.soft_reset();
-                    let mut recovery = SuppressorRecoveryFade::new(fade_samples);
-                    let writer_fade = Cell::new(0);
-                    recovery.restart_for_suppressor(&processor, &writer_fade, fade_samples);
-                    for frame in 0..2 {
-                        processor.push_samples(&[0.25; RNNOISE_FRAME_SIZE]);
-                        processor.process_frames();
-                        let mut output = [0.0; RNNOISE_FRAME_SIZE];
-                        assert_eq!(processor.pop_samples_into(&mut output), output.len());
-                        assert_eq!(output, [0.25; RNNOISE_FRAME_SIZE]);
-                        crate::test_alloc::assert_no_allocations(
-                            "unavailable recovery fade",
-                            || {
-                                recovery.apply(&mut output);
-                                let mut remaining = writer_fade.get();
-                                fade_in(&mut output, &mut remaining, fade_samples);
-                                writer_fade.set(remaining);
-                            },
-                        );
-                        for (index, sample) in output.iter().enumerate() {
-                            let elapsed = frame * RNNOISE_FRAME_SIZE + index;
-                            let factor = ((elapsed + 1) as f32 / fade_samples as f32).min(1.0);
-                            assert_eq!(*sample, 0.25 * factor);
-                        }
-                    }
+                    assert_eq!(processor.pop_samples_into(&mut output), output.len());
                 }
-            }
-        }
-    }
-
-    #[test]
-    fn test_suppressor_recovery_fade_restarts_for_overlapping_resets_and_handoff() {
-        let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
-        let mut recovery = SuppressorRecoveryFade::new(fade_samples);
-        let mut direct = [0.3; 31];
-        recovery.apply(&mut direct);
-        assert_eq!(direct, [0.3; 31]);
-        for (latency, consumed) in [(480, 123), (1440, 1489), (480, 503)] {
-            recovery.restart(latency);
-            let mut samples = vec![0.0; consumed];
-            if consumed > latency {
-                samples[latency..].fill(0.2);
-            }
-            recovery.apply(&mut samples);
-            if consumed > latency {
-                assert_eq!(samples[latency], 0.2 * (1.0 / fade_samples as f32));
-            }
-            assert_eq!(recovery.invalid_samples, latency.saturating_sub(consumed));
-            assert_eq!(
-                recovery.remaining,
-                fade_samples - consumed.saturating_sub(latency)
-            );
-        }
-        recovery.restart(0);
-        recovery.apply(&mut direct);
-        assert_eq!(direct, [0.3; 31]);
-    }
-
-    #[test]
-    fn test_suppressor_recovery_fade_preserves_aligned_wet_dry_mix() {
-        let models = [
-            NoiseModel::RNNoise,
-            #[cfg(feature = "deepfilter")]
-            NoiseModel::DeepFilterNetLL,
-            #[cfg(feature = "deepfilter")]
-            NoiseModel::DeepFilterNet,
-        ];
-        let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
-        for model in models {
-            for strength in [0.0_f32, 0.37, 1.0] {
-                for gain in [0.3_f32, 1.0] {
-                    let mut processor = new_noise_suppression_engine(
-                        model,
-                        Arc::new(AtomicU32::new(strength.to_bits())),
-                    );
-                    if !processor.backend_available() {
-                        eprintln!("skipping {} recovery mix: backend unavailable", model.id());
-                        continue;
-                    }
-                    let latency = processor.latency_samples();
-                    let mut output = [0.0; RNNOISE_FRAME_SIZE];
-                    for _ in 0..4 {
-                        processor.push_samples(&[0.1; RNNOISE_FRAME_SIZE]);
-                        processor.process_frames();
-                        assert_eq!(processor.pop_samples_into(&mut output), output.len());
-                    }
-                    processor.push_samples(&[0.2; 123]);
-                    processor.soft_reset();
-                    let mut recovery = SuppressorRecoveryFade::new(fade_samples);
-                    let writer_fade = Cell::new(fade_samples);
-                    recovery.restart_for_suppressor(&processor, &writer_fade, fade_samples);
-                    assert_eq!(writer_fade.get(), 0, "loaded backend must not fade twice");
-                    for frame in 0..(latency / RNNOISE_FRAME_SIZE + 2) {
-                        let dry = [0.04 * gain; RNNOISE_FRAME_SIZE];
-                        assert_eq!(processor.push_samples(&dry), dry.len());
-                        processor.process_frames();
-                        assert_eq!(processor.pop_samples_into(&mut output), output.len());
-                        let unfaded = output;
-                        recovery.apply(&mut output);
-                        for index in 0..output.len() {
-                            let elapsed = frame * RNNOISE_FRAME_SIZE + index;
-                            if elapsed < latency {
-                                assert_eq!(output[index], 0.0);
-                            } else {
-                                let factor =
-                                    ((elapsed - latency + 1) as f32 / fade_samples as f32).min(1.0);
-                                assert_eq!(output[index], unfaded[index] * factor);
-                                if strength == 0.0 {
-                                    assert_eq!(unfaded[index], dry[index]);
-                                }
+                processor.push_samples(&[0.2; 123]);
+                processor.soft_reset();
+                let mut recovery = SuppressorRecoveryFade::new(fade_samples);
+                let writer_fade = Cell::new(fade_samples);
+                recovery.restart_for_suppressor(&processor, &writer_fade, fade_samples);
+                assert_eq!(writer_fade.get(), 0, "loaded backend must not fade twice");
+                for frame in 0..(latency / RNNOISE_FRAME_SIZE + 2) {
+                    let dry = [0.04 * gain; RNNOISE_FRAME_SIZE];
+                    assert_eq!(processor.push_samples(&dry), dry.len());
+                    processor.process_frames();
+                    assert_eq!(processor.pop_samples_into(&mut output), output.len());
+                    let unfaded = output;
+                    recovery.apply(&mut output);
+                    for index in 0..output.len() {
+                        let elapsed = frame * RNNOISE_FRAME_SIZE + index;
+                        if elapsed < latency {
+                            assert_eq!(output[index], 0.0);
+                        } else {
+                            let factor =
+                                ((elapsed - latency + 1) as f32 / fade_samples as f32).min(1.0);
+                            assert_eq!(output[index], unfaded[index] * factor);
+                            if strength == 0.0 {
+                                assert_eq!(unfaded[index], dry[index]);
                             }
                         }
                     }
@@ -185,4446 +218,4722 @@ mod tests {
             }
         }
     }
+}
 
-    #[cfg(feature = "deepfilter")]
-    #[test]
-    fn test_failed_suppressor_recovery_preserves_delayed_dry_and_single_fade() {
-        use crate::dsp::deepfilter_ffi::TEST_FAIL_PROCESS_AFTER;
+#[cfg(feature = "deepfilter")]
+#[test]
+fn test_failed_suppressor_recovery_preserves_delayed_dry_and_single_fade() {
+    use crate::dsp::deepfilter_ffi::TEST_FAIL_PROCESS_AFTER;
 
-        if !crate::dsp::noise_suppressor::deepfilter_experimental_enabled() {
-            eprintln!("requires enabled DeepFilter assets for failure recovery");
-            return;
-        }
-        let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
-        for model in [NoiseModel::DeepFilterNetLL, NoiseModel::DeepFilterNet] {
-            let mut processor =
-                new_noise_suppression_engine(model, Arc::new(AtomicU32::new(0.37_f32.to_bits())));
-            assert!(processor.backend_available());
-            TEST_FAIL_PROCESS_AFTER.with(|remaining| remaining.set(Some(0)));
-            processor.push_samples(&[0.1; RNNOISE_FRAME_SIZE]);
+    if !crate::dsp::noise_suppressor::deepfilter_experimental_enabled() {
+        eprintln!("requires enabled DeepFilter assets for failure recovery");
+        return;
+    }
+    let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
+    for model in [NoiseModel::DeepFilterNetLL, NoiseModel::DeepFilterNet] {
+        let mut processor =
+            new_noise_suppression_engine(model, Arc::new(AtomicU32::new(0.37_f32.to_bits())));
+        assert!(processor.backend_available());
+        TEST_FAIL_PROCESS_AFTER.with(|remaining| remaining.set(Some(0)));
+        processor.push_samples(&[0.1; RNNOISE_FRAME_SIZE]);
+        processor.process_frames();
+        assert!(processor.backend_failed());
+        assert!(!processor.backend_available());
+        processor.soft_reset();
+        let latency = processor.latency_samples();
+        let mut recovery = SuppressorRecoveryFade::new(fade_samples);
+        let writer_fade = Cell::new(fade_samples);
+        recovery.restart_for_suppressor(&processor, &writer_fade, fade_samples);
+        assert_eq!(writer_fade.get(), 0);
+        for frame in 0..(latency / RNNOISE_FRAME_SIZE + 2) {
+            processor.push_samples(&[0.25; RNNOISE_FRAME_SIZE]);
             processor.process_frames();
-            assert!(processor.backend_failed());
-            assert!(!processor.backend_available());
-            processor.soft_reset();
-            let latency = processor.latency_samples();
-            let mut recovery = SuppressorRecoveryFade::new(fade_samples);
-            let writer_fade = Cell::new(fade_samples);
-            recovery.restart_for_suppressor(&processor, &writer_fade, fade_samples);
-            assert_eq!(writer_fade.get(), 0);
-            for frame in 0..(latency / RNNOISE_FRAME_SIZE + 2) {
-                processor.push_samples(&[0.25; RNNOISE_FRAME_SIZE]);
-                processor.process_frames();
-                let mut output = [0.0; RNNOISE_FRAME_SIZE];
-                assert_eq!(processor.pop_samples_into(&mut output), output.len());
-                recovery.apply(&mut output);
-                for (index, sample) in output.iter().enumerate() {
-                    let elapsed = frame * RNNOISE_FRAME_SIZE + index;
-                    let valid = (elapsed + 1).saturating_sub(latency);
-                    assert_eq!(
-                        *sample,
-                        0.25 * (valid as f32 / fade_samples as f32).min(1.0)
-                    );
-                }
-                assert!(processor.backend_failed());
+            let mut output = [0.0; RNNOISE_FRAME_SIZE];
+            assert_eq!(processor.pop_samples_into(&mut output), output.len());
+            recovery.apply(&mut output);
+            for (index, sample) in output.iter().enumerate() {
+                let elapsed = frame * RNNOISE_FRAME_SIZE + index;
+                let valid = (elapsed + 1).saturating_sub(latency);
+                assert_eq!(
+                    *sample,
+                    0.25 * (valid as f32 / fade_samples as f32).min(1.0)
+                );
             }
+            assert!(processor.backend_failed());
         }
     }
+}
 
-    #[test]
-    fn test_suppressor_recovery_fade_follows_audio_through_downstream_delay_and_resampling() {
-        fn downstream(mut input: Vec<f32>, output_rate: u32) -> Vec<f32> {
-            let mut limiter = Limiter::default_settings(TARGET_SAMPLE_RATE as f64);
-            limiter.set_enabled(false);
-            for block in input.chunks_mut(127) {
-                limiter.process_block_inplace(block);
-            }
-            let mut output = if output_rate == TARGET_SAMPLE_RATE {
-                input
-            } else {
-                let mut resampler =
-                    build_sinc_resampler(TARGET_SAMPLE_RATE, output_rate, 1024).unwrap();
-                let mut outbuf = resampler.output_buffer_allocate(true);
-                let mut output = Vec::new();
-                for block in input.chunks_exact(1024) {
-                    let frame: Vec<f64> = block.iter().map(|sample| *sample as f64).collect();
-                    let (_, count) = resampler
-                        .process_into_buffer(&[frame.as_slice()], &mut outbuf, None)
-                        .unwrap();
-                    output.extend(outbuf[0][..count].iter().map(|sample| *sample as f32));
-                }
-                output
-            };
-            let mut true_peak = TruePeakLimiter::default_settings(output_rate as f32);
-            true_peak.set_enabled(false);
-            for block in output.chunks_mut(113) {
-                true_peak.process_block_inplace(block);
+#[test]
+fn test_suppressor_recovery_fade_follows_audio_through_downstream_delay_and_resampling() {
+    fn downstream(mut input: Vec<f32>, output_rate: u32) -> Vec<f32> {
+        let mut limiter = Limiter::default_settings(TARGET_SAMPLE_RATE as f64);
+        limiter.set_enabled(false);
+        for block in input.chunks_mut(127) {
+            limiter.process_block_inplace(block);
+        }
+        let mut output = if output_rate == TARGET_SAMPLE_RATE {
+            input
+        } else {
+            let mut resampler =
+                build_sinc_resampler(TARGET_SAMPLE_RATE, output_rate, 1024).unwrap();
+            let mut outbuf = resampler.output_buffer_allocate(true);
+            let mut output = Vec::new();
+            for block in input.chunks_exact(1024) {
+                let frame: Vec<f64> = block.iter().map(|sample| *sample as f64).collect();
+                let (_, count) = resampler
+                    .process_into_buffer(&[frame.as_slice()], &mut outbuf, None)
+                    .unwrap();
+                output.extend(outbuf[0][..count].iter().map(|sample| *sample as f32));
             }
             output
+        };
+        let mut true_peak = TruePeakLimiter::default_settings(output_rate as f32);
+        true_peak.set_enabled(false);
+        for block in output.chunks_mut(113) {
+            true_peak.process_block_inplace(block);
         }
-        let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
-        for latency in [480, 1440] {
-            let reset_sample = 137; // Leaves residue in both downstream block sizes.
-            let first_valid = reset_sample + latency;
-            let mut original = vec![0.0; 4096];
-            original[37] = -0.125; // Downstream state from the earlier stream is retained.
-            original[first_valid] = 0.25;
-            let mut expected = original.clone();
-            expected[first_valid] *= 1.0 / fade_samples as f32;
-            let mut actual = original.clone();
-            let mut recovery = SuppressorRecoveryFade::new(fade_samples);
-            recovery.restart(latency);
-            for block in actual[reset_sample..].chunks_mut(127) {
-                recovery.apply(block);
-            }
-            assert_eq!(actual, expected);
-            for output_rate in [16_000, 32_000, 44_100, 48_000, 96_000] {
-                let faded = downstream(actual.clone(), output_rate);
-                let reference = downstream(expected.clone(), output_rate);
-                let unfaded = downstream(original.clone(), output_rate);
-                let mut earlier_stream = original.clone();
-                earlier_stream[first_valid] = 0.0;
-                let earlier_output = downstream(earlier_stream, output_rate);
-                assert_eq!(faded, reference);
-                assert_eq!(faded.len(), unfaded.len());
-                let search_start = first_valid * output_rate as usize / TARGET_SAMPLE_RATE as usize;
-                let peak_index = |samples: &[f32]| {
-                    samples[search_start..]
-                        .iter()
-                        .zip(&earlier_output[search_start..])
-                        .map(|(sample, earlier)| (sample - earlier).abs())
-                        .enumerate()
-                        .max_by(|(_, left), (_, right)| left.total_cmp(right))
-                        .unwrap()
-                        .0
-                };
-                assert_eq!(peak_index(&faded), peak_index(&unfaded));
-            }
+        output
+    }
+    let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
+    for latency in [480, 1440] {
+        let reset_sample = 137; // Leaves residue in both downstream block sizes.
+        let first_valid = reset_sample + latency;
+        let mut original = vec![0.0; 4096];
+        original[37] = -0.125; // Downstream state from the earlier stream is retained.
+        original[first_valid] = 0.25;
+        let mut expected = original.clone();
+        expected[first_valid] *= 1.0 / fade_samples as f32;
+        let mut actual = original.clone();
+        let mut recovery = SuppressorRecoveryFade::new(fade_samples);
+        recovery.restart(latency);
+        for block in actual[reset_sample..].chunks_mut(127) {
+            recovery.apply(block);
+        }
+        assert_eq!(actual, expected);
+        for output_rate in [16_000, 32_000, 44_100, 48_000, 96_000] {
+            let faded = downstream(actual.clone(), output_rate);
+            let reference = downstream(expected.clone(), output_rate);
+            let unfaded = downstream(original.clone(), output_rate);
+            let mut earlier_stream = original.clone();
+            earlier_stream[first_valid] = 0.0;
+            let earlier_output = downstream(earlier_stream, output_rate);
+            assert_eq!(faded, reference);
+            assert_eq!(faded.len(), unfaded.len());
+            let search_start = first_valid * output_rate as usize / TARGET_SAMPLE_RATE as usize;
+            let peak_index = |samples: &[f32]| {
+                samples[search_start..]
+                    .iter()
+                    .zip(&earlier_output[search_start..])
+                    .map(|(sample, earlier)| (sample - earlier).abs())
+                    .enumerate()
+                    .max_by(|(_, left), (_, right)| left.total_cmp(right))
+                    .unwrap()
+                    .0
+            };
+            assert_eq!(peak_index(&faded), peak_index(&unfaded));
         }
     }
+}
 
-    #[cfg(all(feature = "deepfilter", feature = "vad"))]
-    #[test]
-    fn test_offline_simulators_reject_runtime_backend_failure() {
-        use crate::dsp::deepfilter_ffi::TEST_FAIL_PROCESS_AFTER;
-        use numpy::PyArrayMethods;
+#[cfg(all(feature = "deepfilter", feature = "vad"))]
+#[test]
+fn test_offline_simulators_reject_runtime_backend_failure() {
+    use crate::dsp::deepfilter_ffi::TEST_FAIL_PROCESS_AFTER;
+    use numpy::PyArrayMethods;
 
-        if !crate::dsp::noise_suppressor::deepfilter_experimental_enabled() {
-            eprintln!("skipping runtime backend failure: DeepFilter is not enabled");
-            return;
+    if !crate::dsp::noise_suppressor::deepfilter_experimental_enabled() {
+        eprintln!("skipping runtime backend failure: DeepFilter is not enabled");
+        return;
+    }
+    struct ClearInjectedFailure;
+    impl Drop for ClearInjectedFailure {
+        fn drop(&mut self) {
+            TEST_FAIL_PROCESS_AFTER.with(|remaining| remaining.set(None));
         }
-        struct ClearInjectedFailure;
-        impl Drop for ClearInjectedFailure {
-            fn drop(&mut self) {
-                TEST_FAIL_PROCESS_AFTER.with(|remaining| remaining.set(None));
-            }
-        }
-        let _clear_failure = ClearInjectedFailure;
-        Python::initialize();
-        Python::attach(|py| {
-            for model in [NoiseModel::DeepFilterNetLL, NoiseModel::DeepFilterNet] {
-                let processor = new_noise_suppression_engine(
-                    model,
-                    Arc::new(AtomicU32::new(1.0_f32.to_bits())),
-                );
-                assert!(
-                    processor.backend_available(),
-                    "{} assets are required",
-                    model.id()
-                );
-                let settings = PyDict::new(py);
-                settings.set_item("noise_model", model.id()).unwrap();
-                settings.set_item("gate_enabled", false).unwrap();
-                settings.set_item("vad_available", false).unwrap();
-                let audio = vec![0.02; RNNOISE_FRAME_SIZE * 4];
-                TEST_FAIL_PROCESS_AFTER.with(|remaining| remaining.set(Some(1)));
-                let input = numpy::PyArray1::from_vec(py, audio.clone());
-                let error = simulate_gate_suppressor_order(
-                    py,
-                    input.readonly(),
-                    vec![0.0; 4],
-                    false,
-                    1.0,
-                    Some(&settings),
-                )
-                .expect_err("the gate simulator must reject runtime dry fallback");
-                assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
-                assert!(error.to_string().contains("non-finite SNR"));
-                TEST_FAIL_PROCESS_AFTER.with(|remaining| remaining.set(Some(1)));
-                let error = match simulate_input_frontend_with_activity(
-                    py,
-                    audio,
-                    48_000.0,
-                    Some(&settings),
-                ) {
+    }
+    let _clear_failure = ClearInjectedFailure;
+    Python::initialize();
+    Python::attach(|py| {
+        for model in [NoiseModel::DeepFilterNetLL, NoiseModel::DeepFilterNet] {
+            let processor =
+                new_noise_suppression_engine(model, Arc::new(AtomicU32::new(1.0_f32.to_bits())));
+            assert!(
+                processor.backend_available(),
+                "{} assets are required",
+                model.id()
+            );
+            let settings = PyDict::new(py);
+            settings.set_item("noise_model", model.id()).unwrap();
+            settings.set_item("gate_enabled", false).unwrap();
+            settings.set_item("vad_available", false).unwrap();
+            let audio = vec![0.02; RNNOISE_FRAME_SIZE * 4];
+            TEST_FAIL_PROCESS_AFTER.with(|remaining| remaining.set(Some(1)));
+            let input = numpy::PyArray1::from_vec(py, audio.clone());
+            let error = simulate_gate_suppressor_order(
+                py,
+                input.readonly(),
+                vec![0.0; 4],
+                false,
+                1.0,
+                Some(&settings),
+            )
+            .expect_err("the gate simulator must reject runtime dry fallback");
+            assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+            assert!(error.to_string().contains("non-finite SNR"));
+            TEST_FAIL_PROCESS_AFTER.with(|remaining| remaining.set(Some(1)));
+            let error =
+                match simulate_input_frontend_with_activity(py, audio, 48_000.0, Some(&settings)) {
                     Err(error) => error,
                     Ok(_) => panic!("the frontend simulator must reject runtime dry fallback"),
                 };
-                assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
-                assert!(error.to_string().contains("non-finite SNR"));
-            }
-        });
-    }
-
-    #[test]
-    fn test_output_queue_target_preserves_qualified_callback_headroom() {
-        const QUALIFIED_MAX_CALLBACK_MS: u32 = 20;
-        const MIN_STARTUP_RESERVE_MS: u32 = 10;
-        const MIN_STEADY_STATE_RESERVE_MS: u32 = 15;
-
-        for sample_rate in [44_100, 48_000, 96_000] {
-            let prime = duration_samples(sample_rate, OUTPUT_PRIME_MS);
-            let high = duration_samples(sample_rate, OUTPUT_TARGET_HIGH_MS);
-            let center = (prime + high).div_ceil(2);
-            let callback = duration_samples(sample_rate, QUALIFIED_MAX_CALLBACK_MS);
-
-            assert!(prime >= callback + duration_samples(sample_rate, MIN_STARTUP_RESERVE_MS));
-            assert!(
-                center >= callback + duration_samples(sample_rate, MIN_STEADY_STATE_RESERVE_MS)
-            );
-            assert!(duration_samples(sample_rate, OUTPUT_HARD_BACKLOG_MS) > high);
+            assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+            assert!(error.to_string().contains("non-finite SNR"));
         }
-    }
+    });
+}
 
-    #[test]
-    fn test_samples_to_micros_uses_device_rate() {
-        assert_eq!(samples_to_micros(441, 44_100), 10_000);
-        assert_eq!(samples_to_micros(480, 48_000), 10_000);
-    }
+#[test]
+fn test_output_queue_target_preserves_qualified_callback_headroom() {
+    const QUALIFIED_MAX_CALLBACK_MS: u32 = 20;
+    const MIN_STARTUP_RESERVE_MS: u32 = 10;
+    const MIN_STEADY_STATE_RESERVE_MS: u32 = 15;
 
-    #[test]
-    fn test_total_reported_latency_includes_limiter_lookahead_across_sample_rates() {
-        for (sample_rate, expected_us) in [(44_100_u32, 498_u64), (48_000, 500), (96_000, 500)] {
-            let limiter = Limiter::default_settings(sample_rate as f64);
-            let lookahead_samples = limiter.lookahead_samples() as u64;
-            let total = total_reported_latency_us(
+    for sample_rate in [44_100, 48_000, 96_000] {
+        let prime = duration_samples(sample_rate, OUTPUT_PRIME_MS);
+        let high = duration_samples(sample_rate, OUTPUT_TARGET_HIGH_MS);
+        let center = (prime + high).div_ceil(2);
+        let callback = duration_samples(sample_rate, QUALIFIED_MAX_CALLBACK_MS);
+
+        assert!(prime >= callback + duration_samples(sample_rate, MIN_STARTUP_RESERVE_MS));
+        assert!(center >= callback + duration_samples(sample_rate, MIN_STEADY_STATE_RESERVE_MS));
+        assert!(duration_samples(sample_rate, OUTPUT_HARD_BACKLOG_MS) > high);
+    }
+}
+
+#[test]
+fn test_samples_to_micros_uses_device_rate() {
+    assert_eq!(samples_to_micros(441, 44_100), 10_000);
+    assert_eq!(samples_to_micros(480, 48_000), 10_000);
+}
+
+#[test]
+fn test_total_reported_latency_includes_limiter_lookahead_across_sample_rates() {
+    for (sample_rate, expected_us) in [(44_100_u32, 498_u64), (48_000, 500), (96_000, 500)] {
+        let limiter = Limiter::default_settings(sample_rate as f64);
+        let lookahead_samples = limiter.lookahead_samples() as u64;
+        let total = total_reported_latency_us(
+            LatencyComponents {
+                input_resampler_delay_samples: 0,
+                output_buffer_samples: 0,
+                output_sample_rate: sample_rate,
+                output_resampler_delay_samples: 0,
+                suppressor_latency_samples: 0,
+                limiter_lookahead_samples: lookahead_samples,
+                true_peak_lookahead_samples: 20,
+                processing_sample_rate: sample_rate,
+            },
+            0,
+        );
+        assert_eq!(total, expected_us + samples_to_micros(20, sample_rate));
+    }
+}
+
+#[test]
+fn test_published_latency_counts_lookahead_limiter_only_on_full_path() {
+    for sample_rate in [44_100_u32, 48_000, 96_000] {
+        let lookahead = Limiter::default_settings(sample_rate as f64).lookahead_samples() as u64;
+        let true_peak =
+            TruePeakLimiter::default_settings(sample_rate as f32).lookahead_samples() as u64;
+        let compensation_us = 7_000;
+        let published = AtomicU64::new(0);
+        let publish = |raw_monitor: bool, bypass: bool| {
+            publish_reported_latency(
+                &published,
                 LatencyComponents {
                     input_resampler_delay_samples: 0,
-                    output_buffer_samples: 0,
+                    output_buffer_samples: 480,
                     output_sample_rate: sample_rate,
                     output_resampler_delay_samples: 0,
                     suppressor_latency_samples: 0,
-                    limiter_lookahead_samples: lookahead_samples,
-                    true_peak_lookahead_samples: 20,
+                    limiter_lookahead_samples: lookahead,
+                    true_peak_lookahead_samples: true_peak,
                     processing_sample_rate: sample_rate,
                 },
-                0,
+                select_processing_path(raw_monitor, bypass),
+                compensation_us,
             );
-            assert_eq!(total, expected_us + samples_to_micros(20, sample_rate));
-        }
+            published.load(Ordering::Relaxed)
+        };
+        let without_limiter = samples_to_micros(480, sample_rate)
+            + samples_to_micros(true_peak, sample_rate)
+            + compensation_us;
+        let normal = without_limiter + samples_to_micros(lookahead, sample_rate);
+
+        // A processor started in Raw publishes the true figure at once.
+        assert_eq!(publish(true, false), without_limiter);
+        // Switching modes while running moves the value both ways.
+        assert_eq!(publish(false, false), normal);
+        assert_eq!(publish(false, true), without_limiter);
+        assert_eq!(publish(false, false), normal);
+        assert_eq!(publish(true, true), without_limiter);
+    }
+}
+
+#[test]
+fn test_dsp_loop_publishes_latency_before_any_path_branch_or_continue() {
+    // `dsp_loop::tests::latency_is_published_on_idle_and_in_every_path` drives
+    // the loop; this keeps the one-publisher rule and the pass order.
+    let region = marked_region(include_str!("dsp_loop.rs"), "dsp_processing_loop");
+    assert_eq!(region.matches("publish_reported_latency(").count(), 1);
+    assert_eq!(region.matches("latency_us.store(").count(), 0);
+    let pass = source_between(region, "fn pass(&mut self)", "fn reset_input_continuity(");
+    let publish = pass
+        .find(".publish_latency(")
+        .expect("every pass must publish reported latency");
+    let compact: String = pass[..publish]
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .flat_map(|line| line.split_whitespace())
+        .collect();
+    assert_eq!(
+        compact,
+        "fnpass(&mutself)->Pass{letshared=&*self.shared;letpass_now=Instant::now();self.pacing"
+    );
+    assert!(
+        publish < pass.find("self.input.read_block()").unwrap(),
+        "publish must precede the input read"
+    );
+    assert!(
+        pass.matches("return self.pacing.idle(").count() == 2
+            && publish < pass.find("return self.pacing.idle(").unwrap(),
+        "publish must precede every early return"
+    );
+    // Only the 100 ms tick gates the publish: not the path or the input queue.
+    let publisher = source_between(region, "fn publish_latency(", "fn record_input_fill(");
+    assert!(publisher.contains("LATENCY_UPDATE_INTERVAL"));
+    assert!(
+        publisher.contains("select_processing_path(")
+            && publisher.contains("raw_monitor.load(")
+            && publisher.contains("bypass.load("),
+        "publish must use the live Raw monitor and Bypass flags"
+    );
+}
+
+#[test]
+fn test_limiter_control_updates_final_true_peak_release() {
+    let mut control = LimiterControlState::new();
+    control.release_ms = 10.0;
+    let mut final_limiter = TruePeakLimiter::default_settings(48_000.0);
+    let default_coefficient = final_limiter.release_coefficient();
+
+    apply_true_peak_limiter_control(&mut final_limiter, &control);
+
+    assert_ne!(final_limiter.release_coefficient(), default_coefficient);
+    let expected = TruePeakLimiter::new(48_000.0, -1.5, control.release_ms as f32);
+    assert_eq!(
+        final_limiter.release_coefficient(),
+        expected.release_coefficient()
+    );
+}
+
+#[cfg(feature = "vad")]
+#[test]
+fn test_vad_worker_state_is_separate_from_dsp_meter_state() {
+    let processor = AudioProcessor::new();
+    processor
+        .shared
+        .vad
+        .raw_probability
+        .store(0.9_f32.to_bits(), Ordering::Release);
+    processor
+        .shared
+        .vad
+        .meter_probability
+        .store(0.4_f32.to_bits(), Ordering::Release);
+    processor
+        .shared
+        .vad
+        .backend_available
+        .store(true, Ordering::Release);
+    processor
+        .shared
+        .vad
+        .available
+        .store(false, Ordering::Release);
+
+    assert_eq!(
+        f32::from_bits(processor.shared.vad.raw_probability.load(Ordering::Acquire)),
+        0.9
+    );
+    assert_eq!(processor.get_vad_probability(), 0.4);
+    assert!(processor
+        .shared
+        .vad
+        .backend_available
+        .load(Ordering::Acquire));
+    assert!(!processor.is_vad_available());
+}
+
+#[cfg(feature = "vad")]
+#[test]
+fn test_vad_publication_rejects_discontinuity_after_final_generation_check() {
+    let sequence = AtomicU64::new(0);
+    let result_generation = AtomicU64::new(0);
+    let probability = AtomicU32::new(0.0_f32.to_bits());
+    let backend_available = AtomicBool::new(false);
+    let last_update_us = AtomicU64::new(0);
+    let source_sample_end = AtomicU64::new(0);
+    let source_discontinuity = AtomicU64::new(0);
+    let result = VadResultAtomics {
+        sequence: &sequence,
+        result_generation: &result_generation,
+        probability: &probability,
+        backend_available: &backend_available,
+        last_update_us: &last_update_us,
+        source_sample_end: &source_sample_end,
+        source_discontinuity: &source_discontinuity,
+    };
+
+    assert!(result.publish_vad_inference_result(0, 0.91, 48_000, 1_000, true));
+    let fresh = result.snapshot().expect("initial VAD result");
+    assert!(fresh.is_fresh(48_480, 1_010, 48_000));
+
+    source_discontinuity.fetch_add(1, Ordering::Release);
+    assert!(!result.publish_vad_inference_result(0, 0.33, 48_500, 1_015, true));
+    assert!(result.snapshot().is_none());
+    result.invalidate(true);
+    assert!(result.snapshot().is_some());
+
+    VAD_WORKER_FORCE_DISCONTINUITY_AFTER_FINAL_CHECK.with(|flag| flag.set(true));
+    assert!(result.publish_vad_inference_result(1, 0.12, 49_000, 1_020, true));
+    assert!(
+        result.snapshot().is_none(),
+        "a fresh source-age result must be rejected after its generation changes"
+    );
+
+    result.invalidate(true);
+    let reset = result.snapshot().expect("reset backend state");
+    assert!(reset.backend_available);
+    assert!(!reset.is_fresh(49_000, 1_020, 48_000));
+    VAD_WORKER_FORCE_DISCONTINUITY_AFTER_FINAL_CHECK.with(|flag| flag.set(false));
+}
+
+#[cfg(feature = "vad")]
+#[test]
+#[ignore = "requires the local speech corpus and Silero model"]
+fn test_full_chain_vad_pre_gain_changes_gate_decision_on_cleaned_input() {
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../models/vad_eval_silero_test.wav");
+    let wav = std::fs::read(fixture).expect("local speech fixture is required");
+    let start_frame = 17 * 16_000;
+    let frame_count = 16_000;
+    let start = 44 + start_frame * 2;
+    let end = start + frame_count * 2;
+    let mut audio = Vec::with_capacity(frame_count * 3);
+    for sample in wav[start..end].chunks_exact(2) {
+        let sample =
+            f32::from(i16::from_le_bytes([sample[0], sample[1]])) / f32::from(i16::MAX) * 0.03;
+        audio.extend([sample, sample, sample]);
     }
 
-    #[test]
-    fn test_published_latency_counts_lookahead_limiter_only_on_full_path() {
-        for sample_rate in [44_100_u32, 48_000, 96_000] {
-            let lookahead =
-                Limiter::default_settings(sample_rate as f64).lookahead_samples() as u64;
-            let true_peak =
-                TruePeakLimiter::default_settings(sample_rate as f32).lookahead_samples() as u64;
-            let compensation_us = 7_000;
-            let published = AtomicU64::new(0);
-            let publish = |raw_monitor: bool, bypass: bool| {
-                publish_reported_latency(
-                    &published,
-                    LatencyComponents {
-                        input_resampler_delay_samples: 0,
-                        output_buffer_samples: 480,
-                        output_sample_rate: sample_rate,
-                        output_resampler_delay_samples: 0,
-                        suppressor_latency_samples: 0,
-                        limiter_lookahead_samples: lookahead,
-                        true_peak_lookahead_samples: true_peak,
-                        processing_sample_rate: sample_rate,
-                    },
-                    select_processing_path(raw_monitor, bypass),
-                    compensation_us,
-                );
-                published.load(Ordering::Relaxed)
-            };
-            let without_limiter = samples_to_micros(480, sample_rate)
-                + samples_to_micros(true_peak, sample_rate)
-                + compensation_us;
-            let normal = without_limiter + samples_to_micros(lookahead, sample_rate);
-
-            // A processor started in Raw publishes the true figure at once.
-            assert_eq!(publish(true, false), without_limiter);
-            // Switching modes while running moves the value both ways.
-            assert_eq!(publish(false, false), normal);
-            assert_eq!(publish(false, true), without_limiter);
-            assert_eq!(publish(false, false), normal);
-            assert_eq!(publish(true, true), without_limiter);
-        }
-    }
-
-    #[test]
-    fn test_dsp_loop_publishes_latency_before_any_path_branch_or_continue() {
-        let region = marked_region(include_str!("dsp_loop.rs"), "dsp_processing_loop");
-        let publish = region
-            .find("publish_reported_latency(")
-            .expect("DSP loop must publish reported latency");
-        assert_eq!(region.matches("publish_reported_latency(").count(), 1);
-        assert_eq!(region.matches("latency_us.store(").count(), 0);
-        // Raw monitor, Bypass and the early `continue;`s all sit after this
-        // point, so none of them can skip the periodic publish.
-        let first_continue = region.find("continue;").expect("loop has early continues");
-        assert!(
-            publish < first_continue,
-            "publish must precede every continue"
-        );
-        // Nothing but the 100 ms tick may gate the publish: not the path, the
-        // input queue, nor a constant condition.
-        let head: String = region[..publish]
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .flat_map(|line| line.split_whitespace())
-            .collect();
-        assert_eq!(
-            head,
-            "whilerunning.load(Ordering::SeqCst){\
-             letpass_now=Instant::now();\
-             ifpass_now.duration_since(last_latency_update)>=latency_update_interval{\
-             last_latency_update=pass_now;\
-             letsuppressor_latency_samples=\
-             ifsuppressor_enabled.load(Ordering::Acquire){\
-             suppressor_latency_samples.load(Ordering::Relaxed)asu64}else{0};"
-        );
-        let call = &region[publish..first_continue];
-        assert!(
-            call.contains("select_processing_path(")
-                && call.contains("raw_monitor_enabled.load(")
-                && call.contains("bypass.load("),
-            "publish must use the live Raw monitor and Bypass flags"
-        );
-        assert!(
-            publish < region.find("read_contiguous_input(").unwrap(),
-            "publish must precede the input read"
-        );
-    }
-
-    #[test]
-    fn test_limiter_control_updates_final_true_peak_release() {
-        let mut control = LimiterControlState::new();
-        control.release_ms = 10.0;
-        let mut final_limiter = TruePeakLimiter::default_settings(48_000.0);
-        let default_coefficient = final_limiter.release_coefficient();
-
-        apply_true_peak_limiter_control(&mut final_limiter, &control);
-
-        assert_ne!(final_limiter.release_coefficient(), default_coefficient);
-        let expected = TruePeakLimiter::new(48_000.0, -1.5, control.release_ms as f32);
-        assert_eq!(
-            final_limiter.release_coefficient(),
-            expected.release_coefficient()
-        );
-    }
-
-    #[cfg(feature = "vad")]
-    #[test]
-    fn test_vad_worker_state_is_separate_from_dsp_meter_state() {
-        let processor = AudioProcessor::new();
-        processor
-            .vad_raw_probability
-            .store(0.9_f32.to_bits(), Ordering::Release);
-        processor
-            .vad_meter_probability
-            .store(0.4_f32.to_bits(), Ordering::Release);
-        processor
-            .vad_backend_available
-            .store(true, Ordering::Release);
-        processor.vad_available.store(false, Ordering::Release);
-
-        assert_eq!(
-            f32::from_bits(processor.vad_raw_probability.load(Ordering::Acquire)),
-            0.9
-        );
-        assert_eq!(processor.get_vad_probability(), 0.4);
-        assert!(processor.vad_backend_available.load(Ordering::Acquire));
-        assert!(!processor.is_vad_available());
-    }
-
-    #[cfg(feature = "vad")]
-    #[test]
-    fn test_vad_publication_rejects_discontinuity_after_final_generation_check() {
-        let sequence = AtomicU64::new(0);
-        let result_generation = AtomicU64::new(0);
-        let probability = AtomicU32::new(0.0_f32.to_bits());
-        let backend_available = AtomicBool::new(false);
-        let last_update_us = AtomicU64::new(0);
-        let source_sample_end = AtomicU64::new(0);
-        let source_discontinuity = AtomicU64::new(0);
-        let result = VadResultAtomics {
-            sequence: &sequence,
-            result_generation: &result_generation,
-            probability: &probability,
-            backend_available: &backend_available,
-            last_update_us: &last_update_us,
-            source_sample_end: &source_sample_end,
-            source_discontinuity: &source_discontinuity,
+    Python::initialize();
+    Python::attach(|py| {
+        let settings = |pre_gain: f64| {
+            let settings = PyDict::new(py);
+            settings.set_item("input_cleanup_mode", "off").unwrap();
+            settings.set_item("input_pre_filtered", false).unwrap();
+            settings.set_item("gate_enabled", true).unwrap();
+            settings.set_item("gate_mode", 2_u8).unwrap();
+            settings.set_item("gate_vad_threshold", 0.48_f64).unwrap();
+            settings.set_item("gate_vad_hold_time_ms", 0.0_f64).unwrap();
+            settings.set_item("gate_vad_pre_gain", pre_gain).unwrap();
+            settings
         };
 
-        assert!(result.publish_vad_inference_result(0, 0.91, 48_000, 1_000, true));
-        let fresh = result.snapshot().expect("initial VAD result");
-        assert!(fresh.is_fresh(48_480, 1_010, 48_000));
+        let low_settings = settings(1.0);
+        let high_settings = settings(10.0);
+        let low_gain =
+            simulate_input_frontend_with_activity(py, audio.clone(), 48_000.0, Some(&low_settings))
+                .expect("native VAD should process the fixture")
+                .rendered;
+        let high_gain =
+            simulate_input_frontend_with_activity(py, audio, 48_000.0, Some(&high_settings))
+                .expect("native VAD should process the fixture")
+                .rendered;
 
-        source_discontinuity.fetch_add(1, Ordering::Release);
-        assert!(!result.publish_vad_inference_result(0, 0.33, 48_500, 1_015, true));
-        assert!(result.snapshot().is_none());
-        result.invalidate(true);
-        assert!(result.snapshot().is_some());
-
-        VAD_WORKER_FORCE_DISCONTINUITY_AFTER_FINAL_CHECK.with(|flag| flag.set(true));
-        assert!(result.publish_vad_inference_result(1, 0.12, 49_000, 1_020, true));
+        let low_energy = low_gain.iter().map(|sample| sample.abs()).sum::<f32>();
+        let high_energy = high_gain.iter().map(|sample| sample.abs()).sum::<f32>();
         assert!(
-            result.snapshot().is_none(),
-            "a fresh source-age result must be rejected after its generation changes"
+            high_energy > low_energy * 1.5,
+            "VAD pre-gain did not change the cleaned-input gate decision: low={low_energy:.3}, high={high_energy:.3}"
         );
+    });
+}
 
-        result.invalidate(true);
-        let reset = result.snapshot().expect("reset backend state");
-        assert!(reset.backend_available);
-        assert!(!reset.is_fresh(49_000, 1_020, 48_000));
-        VAD_WORKER_FORCE_DISCONTINUITY_AFTER_FINAL_CHECK.with(|flag| flag.set(false));
-    }
-
-    #[cfg(feature = "vad")]
-    #[test]
-    #[ignore = "requires the local speech corpus and Silero model"]
-    fn test_full_chain_vad_pre_gain_changes_gate_decision_on_cleaned_input() {
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../models/vad_eval_silero_test.wav");
-        let wav = std::fs::read(fixture).expect("local speech fixture is required");
-        let start_frame = 17 * 16_000;
-        let frame_count = 16_000;
-        let start = 44 + start_frame * 2;
-        let end = start + frame_count * 2;
-        let mut audio = Vec::with_capacity(frame_count * 3);
-        for sample in wav[start..end].chunks_exact(2) {
-            let sample =
-                f32::from(i16::from_le_bytes([sample[0], sample[1]])) / f32::from(i16::MAX) * 0.03;
-            audio.extend([sample, sample, sample]);
-        }
-
-        Python::initialize();
-        Python::attach(|py| {
-            let settings = |pre_gain: f64| {
-                let settings = PyDict::new(py);
-                settings.set_item("input_cleanup_mode", "off").unwrap();
-                settings.set_item("input_pre_filtered", false).unwrap();
-                settings.set_item("gate_enabled", true).unwrap();
-                settings.set_item("gate_mode", 2_u8).unwrap();
-                settings.set_item("gate_vad_threshold", 0.48_f64).unwrap();
-                settings.set_item("gate_vad_hold_time_ms", 0.0_f64).unwrap();
-                settings.set_item("gate_vad_pre_gain", pre_gain).unwrap();
-                settings
-            };
-
-            let low_settings = settings(1.0);
-            let high_settings = settings(10.0);
-            let low_gain = simulate_input_frontend_with_activity(
-                py,
-                audio.clone(),
-                48_000.0,
-                Some(&low_settings),
-            )
-            .expect("native VAD should process the fixture")
-            .rendered;
-            let high_gain =
-                simulate_input_frontend_with_activity(py, audio, 48_000.0, Some(&high_settings))
-                    .expect("native VAD should process the fixture")
-                    .rendered;
-
-            let low_energy = low_gain.iter().map(|sample| sample.abs()).sum::<f32>();
-            let high_energy = high_gain.iter().map(|sample| sample.abs()).sum::<f32>();
-            assert!(
-                high_energy > low_energy * 1.5,
-                "VAD pre-gain did not change the cleaned-input gate decision: low={low_energy:.3}, high={high_energy:.3}"
-            );
-        });
-    }
-
-    #[cfg(feature = "vad")]
-    #[test]
-    fn controlled_simulators_match_original_neural_input_and_independent_wet_compensation() {
-        use numpy::PyArrayMethods;
-        let audio: Vec<_> = (0..13_157)
-            .map(|index| {
-                (index as f32 * 0.033).sin()
-                    * if (2400..9600).contains(&index) {
-                        0.08
-                    } else {
-                        0.001
-                    }
-            })
-            .collect();
-        let probabilities: Vec<_> = (0..audio.len().div_ceil(480))
-            .map(|index| if (5..20).contains(&index) { 0.9 } else { 0.1 })
-            .collect();
-        let models = [
-            NoiseModel::RNNoise,
-            #[cfg(feature = "deepfilter")]
-            NoiseModel::DeepFilterNetLL,
-            #[cfg(feature = "deepfilter")]
-            NoiseModel::DeepFilterNet,
-        ];
-        Python::initialize();
-        Python::attach(|py| {
-            for model in models {
-                for mode in [
-                    GateMode::ThresholdOnly,
-                    GateMode::VadAssisted,
-                    GateMode::VadOnly,
-                ] {
-                    for available in [false, true] {
-                        for frontend in [false, true] {
-                            let make_gate = || {
-                                let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, 48_000.0);
-                                gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(
-                                    48_000, 0.48,
-                                )));
-                                gate.set_gate_mode(mode);
-                                gate.set_hold_time(200.0);
-                                gate.set_auto_threshold(true);
-                                gate.set_margin(10.0);
-                                gate
-                            };
-                            let mut original_gate = make_gate();
-                            let mut observing_gate = make_gate();
-                            let mut original_engine =
-                                crate::dsp::noise_suppressor::new_noise_suppression_engine(
-                                    model,
-                                    Arc::new(AtomicU32::new(1.0_f32.to_bits())),
-                                );
-                            if !original_engine.backend_available() {
-                                #[cfg(feature = "deepfilter")]
-                                assert!(
-                                    !crate::dsp::noise_suppressor::deepfilter_experimental_enabled(
-                                    )
-                                );
-                                continue;
-                            }
-                            let latency = original_engine.latency_samples();
-                            let mut controls = Vec::new();
-                            let mut original_dry = Vec::new();
-                            let mut original_wet = Vec::new();
-                            for (block, chunk) in audio.chunks(480).enumerate() {
-                                let mut original = [0.0; 480];
-                                original[..chunk.len()].copy_from_slice(chunk);
-                                let mut observed = original;
-                                let mut control = [GateControl::BYPASS; 480];
-                                original_gate
-                                    .set_external_vad_probability(probabilities[block], available);
-                                observing_gate
-                                    .set_external_vad_probability(probabilities[block], available);
-                                let count = if frontend { chunk.len() } else { 480 };
-                                original_gate.process_block_inplace(&mut original[..count]);
-                                observing_gate.process_block_with_gate_control(
-                                    &mut observed[..count],
-                                    &mut control[..count],
-                                );
-                                assert_eq!(original, observed, "original neural input changed");
-                                if count < 480 {
-                                    observing_gate.process_block_with_gate_control(
-                                        &mut observed[count..],
-                                        &mut control[count..],
-                                    );
-                                }
-                                controls.extend_from_slice(&control);
-                                original_dry.extend_from_slice(&original);
-                                assert_eq!(original_engine.push_samples(&original), 480);
-                                original_engine.process_frames();
-                                let mut wet = [0.0; 480];
-                                assert_eq!(original_engine.pop_samples_into(&mut wet), 480);
-                                original_wet.extend_from_slice(&wet);
-                            }
-                            for _ in 0..latency / 480 {
-                                let mut silence = [0.0; 480];
-                                let mut control = [GateControl::BYPASS; 480];
-                                observing_gate
-                                    .process_block_with_gate_control(&mut silence, &mut control);
-                                controls.extend_from_slice(&control);
-                                assert_eq!(original_engine.push_samples(&[0.0; 480]), 480);
-                                original_engine.process_frames();
-                                let mut wet = [0.0; 480];
-                                assert_eq!(original_engine.pop_samples_into(&mut wet), 480);
-                                original_wet.extend_from_slice(&wet);
-                            }
-                            assert!(!original_engine.backend_failed());
-                            let mut counter = 0usize;
-                            let expected: Vec<_> = (latency..latency + audio.len())
-                                .map(|index| {
-                                    let mut ratio = 1.0_f32;
-                                    if model.id() != "deepfilter" {
-                                        let current = controls[index - latency];
-                                        let future = controls[index];
-                                        let raw_ratio = (current.gain.max(future.gain)
-                                            / current.gain.max(0.015_848_933))
-                                        .max(1.0);
-                                        ratio +=
-                                            (counter as f32 / latency as f32) * (raw_ratio - 1.0);
-                                        counter = if future.open {
-                                            (counter + 1).min(latency)
-                                        } else {
-                                            counter.saturating_sub(1)
-                                        };
-                                    }
-                                    original_wet[index] * ratio
-                                })
-                                .collect();
-                            let settings = PyDict::new(py);
-                            settings.set_item("noise_model", model.id()).unwrap();
-                            settings.set_item("input_pre_filtered", true).unwrap();
-                            settings.set_item("gate_enabled", true).unwrap();
-                            settings.set_item("gate_mode", mode as u8).unwrap();
-                            settings.set_item("gate_vad_threshold", 0.48).unwrap();
-                            settings.set_item("gate_vad_hold_time_ms", 200.0).unwrap();
-                            settings.set_item("gate_vad_pre_gain", 1.0).unwrap();
-                            settings
-                                .set_item("gate_auto_threshold_enabled", true)
-                                .unwrap();
-                            settings.set_item("gate_margin_db", 10.0).unwrap();
-                            settings.set_item("vad_available", available).unwrap();
-                            settings
-                                .set_item("vad_probabilities", &probabilities)
-                                .unwrap();
-                            settings.set_item("return_dry_audio", true).unwrap();
-                            let actual = if frontend {
-                                let result = simulate_input_frontend_with_activity(
-                                    py,
-                                    audio.clone(),
-                                    48_000.0,
-                                    Some(&settings),
-                                )
-                                .unwrap();
-                                assert_eq!(result.suppressor_latency, latency);
-                                result.rendered
-                            } else {
-                                let numpy_audio = numpy::PyArray1::from_vec(py, audio.clone());
-                                let result = simulate_gate_suppressor_order(
-                                    py,
-                                    numpy_audio.readonly(),
-                                    probabilities.clone(),
-                                    false,
-                                    1.0,
-                                    Some(&settings),
-                                )
-                                .unwrap();
-                                let result = result.bind(py);
-                                let dry: Vec<f32> =
-                                    result.get_item("dry_audio").unwrap().extract().unwrap();
-                                assert_eq!(
-                                    dry,
-                                    original_dry[..audio.len()],
-                                    "original gated dry changed"
-                                );
-                                assert_eq!(
-                                    result
-                                        .get_item("suppressor_latency_samples")
-                                        .unwrap()
-                                        .extract::<usize>()
-                                        .unwrap(),
-                                    latency
-                                );
-                                result
-                                    .get_item("output_audio")
-                                    .unwrap()
-                                    .extract::<Vec<f32>>()
-                                    .unwrap()
-                            };
-                            for (index, (actual, expected)) in
-                                actual.iter().zip(&expected).enumerate()
-                            {
-                                assert_eq!(actual, expected, "{model:?}, {mode:?}, available={available}, frontend={frontend}, sample={index}");
-                            }
-                            assert_eq!(actual.len(), expected.len());
+#[cfg(feature = "vad")]
+#[test]
+fn controlled_simulators_match_original_neural_input_and_independent_wet_compensation() {
+    use numpy::PyArrayMethods;
+    let audio: Vec<_> = (0..13_157)
+        .map(|index| {
+            (index as f32 * 0.033).sin()
+                * if (2400..9600).contains(&index) {
+                    0.08
+                } else {
+                    0.001
+                }
+        })
+        .collect();
+    let probabilities: Vec<_> = (0..audio.len().div_ceil(480))
+        .map(|index| if (5..20).contains(&index) { 0.9 } else { 0.1 })
+        .collect();
+    let models = [
+        NoiseModel::RNNoise,
+        #[cfg(feature = "deepfilter")]
+        NoiseModel::DeepFilterNetLL,
+        #[cfg(feature = "deepfilter")]
+        NoiseModel::DeepFilterNet,
+    ];
+    Python::initialize();
+    Python::attach(|py| {
+        for model in models {
+            for mode in [
+                GateMode::ThresholdOnly,
+                GateMode::VadAssisted,
+                GateMode::VadOnly,
+            ] {
+                for available in [false, true] {
+                    for frontend in [false, true] {
+                        let make_gate = || {
+                            let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, 48_000.0);
+                            gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(
+                                48_000, 0.48,
+                            )));
+                            gate.set_gate_mode(mode);
+                            gate.set_hold_time(200.0);
+                            gate.set_auto_threshold(true);
+                            gate.set_margin(10.0);
+                            gate
+                        };
+                        let mut original_gate = make_gate();
+                        let mut observing_gate = make_gate();
+                        let mut original_engine =
+                            crate::dsp::noise_suppressor::new_noise_suppression_engine(
+                                model,
+                                Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+                            );
+                        if !original_engine.backend_available() {
+                            #[cfg(feature = "deepfilter")]
+                            assert!(
+                                !crate::dsp::noise_suppressor::deepfilter_experimental_enabled()
+                            );
+                            continue;
                         }
+                        let latency = original_engine.latency_samples();
+                        let mut controls = Vec::new();
+                        let mut original_dry = Vec::new();
+                        let mut original_wet = Vec::new();
+                        for (block, chunk) in audio.chunks(480).enumerate() {
+                            let mut original = [0.0; 480];
+                            original[..chunk.len()].copy_from_slice(chunk);
+                            let mut observed = original;
+                            let mut control = [GateControl::BYPASS; 480];
+                            original_gate
+                                .set_external_vad_probability(probabilities[block], available);
+                            observing_gate
+                                .set_external_vad_probability(probabilities[block], available);
+                            let count = if frontend { chunk.len() } else { 480 };
+                            original_gate.process_block_inplace(&mut original[..count]);
+                            observing_gate.process_block_with_gate_control(
+                                &mut observed[..count],
+                                &mut control[..count],
+                            );
+                            assert_eq!(original, observed, "original neural input changed");
+                            if count < 480 {
+                                observing_gate.process_block_with_gate_control(
+                                    &mut observed[count..],
+                                    &mut control[count..],
+                                );
+                            }
+                            controls.extend_from_slice(&control);
+                            original_dry.extend_from_slice(&original);
+                            assert_eq!(original_engine.push_samples(&original), 480);
+                            original_engine.process_frames();
+                            let mut wet = [0.0; 480];
+                            assert_eq!(original_engine.pop_samples_into(&mut wet), 480);
+                            original_wet.extend_from_slice(&wet);
+                        }
+                        for _ in 0..latency / 480 {
+                            let mut silence = [0.0; 480];
+                            let mut control = [GateControl::BYPASS; 480];
+                            observing_gate
+                                .process_block_with_gate_control(&mut silence, &mut control);
+                            controls.extend_from_slice(&control);
+                            assert_eq!(original_engine.push_samples(&[0.0; 480]), 480);
+                            original_engine.process_frames();
+                            let mut wet = [0.0; 480];
+                            assert_eq!(original_engine.pop_samples_into(&mut wet), 480);
+                            original_wet.extend_from_slice(&wet);
+                        }
+                        assert!(!original_engine.backend_failed());
+                        let mut counter = 0usize;
+                        let expected: Vec<_> = (latency..latency + audio.len())
+                            .map(|index| {
+                                let mut ratio = 1.0_f32;
+                                if model.id() != "deepfilter" {
+                                    let current = controls[index - latency];
+                                    let future = controls[index];
+                                    let raw_ratio = (current.gain.max(future.gain)
+                                        / current.gain.max(0.015_848_933))
+                                    .max(1.0);
+                                    ratio += (counter as f32 / latency as f32) * (raw_ratio - 1.0);
+                                    counter = if future.open {
+                                        (counter + 1).min(latency)
+                                    } else {
+                                        counter.saturating_sub(1)
+                                    };
+                                }
+                                original_wet[index] * ratio
+                            })
+                            .collect();
+                        let settings = PyDict::new(py);
+                        settings.set_item("noise_model", model.id()).unwrap();
+                        settings.set_item("input_pre_filtered", true).unwrap();
+                        settings.set_item("gate_enabled", true).unwrap();
+                        settings.set_item("gate_mode", mode as u8).unwrap();
+                        settings.set_item("gate_vad_threshold", 0.48).unwrap();
+                        settings.set_item("gate_vad_hold_time_ms", 200.0).unwrap();
+                        settings.set_item("gate_vad_pre_gain", 1.0).unwrap();
+                        settings
+                            .set_item("gate_auto_threshold_enabled", true)
+                            .unwrap();
+                        settings.set_item("gate_margin_db", 10.0).unwrap();
+                        settings.set_item("vad_available", available).unwrap();
+                        settings
+                            .set_item("vad_probabilities", &probabilities)
+                            .unwrap();
+                        settings.set_item("return_dry_audio", true).unwrap();
+                        let actual = if frontend {
+                            let result = simulate_input_frontend_with_activity(
+                                py,
+                                audio.clone(),
+                                48_000.0,
+                                Some(&settings),
+                            )
+                            .unwrap();
+                            assert_eq!(result.suppressor_latency, latency);
+                            result.rendered
+                        } else {
+                            let numpy_audio = numpy::PyArray1::from_vec(py, audio.clone());
+                            let result = simulate_gate_suppressor_order(
+                                py,
+                                numpy_audio.readonly(),
+                                probabilities.clone(),
+                                false,
+                                1.0,
+                                Some(&settings),
+                            )
+                            .unwrap();
+                            let result = result.bind(py);
+                            let dry: Vec<f32> =
+                                result.get_item("dry_audio").unwrap().extract().unwrap();
+                            assert_eq!(
+                                dry,
+                                original_dry[..audio.len()],
+                                "original gated dry changed"
+                            );
+                            assert_eq!(
+                                result
+                                    .get_item("suppressor_latency_samples")
+                                    .unwrap()
+                                    .extract::<usize>()
+                                    .unwrap(),
+                                latency
+                            );
+                            result
+                                .get_item("output_audio")
+                                .unwrap()
+                                .extract::<Vec<f32>>()
+                                .unwrap()
+                        };
+                        for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate()
+                        {
+                            assert_eq!(actual, expected, "{model:?}, {mode:?}, available={available}, frontend={frontend}, sample={index}");
+                        }
+                        assert_eq!(actual.len(), expected.len());
                     }
                 }
             }
-        });
-    }
-
-    #[cfg(feature = "vad")]
-    #[test]
-    fn test_full_chain_gates_each_block_with_a_vad_result_finished_before_it() {
-        // The first 32 ms window ends at sample 1536, inside block 3
-        // [1440, 1920). Live, block 3 cannot use it; block 4 can.
-        let audio = vec![0.01_f32; RNNOISE_FRAME_SIZE * 8];
-        Python::initialize();
-        Python::attach(|py| {
-            let settings = PyDict::new(py);
-            settings.set_item("gate_mode", 2_u8).unwrap();
-            let evidence =
-                simulate_input_frontend_with_activity(py, audio, 48_000.0, Some(&settings))
-                    .expect("native VAD should process the fixture")
-                    .activity_evidence;
-            assert!(evidence[..4]
-                .iter()
-                .all(|block| block.vad_reliability == 0.0));
-            assert_eq!(evidence[4].vad_reliability, 1.0);
-        });
-    }
-
-    #[test]
-    fn test_total_reported_latency_respects_output_vs_processing_rates() {
-        let total = total_reported_latency_us(
-            LatencyComponents {
-                input_resampler_delay_samples: 96,
-                output_buffer_samples: 882,
-                output_sample_rate: 44_100,
-                output_resampler_delay_samples: 64,
-                suppressor_latency_samples: 480,
-                limiter_lookahead_samples: 96,
-                true_peak_lookahead_samples: 20,
-                processing_sample_rate: 48_000,
-            },
-            500,
-        );
-        assert_eq!(
-            total,
-            20_000
-                + 2_000
-                + samples_to_micros(64, 44_100)
-                + 10_000
-                + 2_000
-                + samples_to_micros(20, 44_100)
-                + 500
-        );
-    }
-
-    #[test]
-    fn test_engine_latency_excludes_route_compensation() {
-        let processor = AudioProcessor::new();
-        processor.latency_us.store(42_500, Ordering::Relaxed);
-        processor
-            .latency_compensation_us
-            .store(17_250, Ordering::Relaxed);
-
-        assert_eq!(processor.get_latency_ms(), 42.5);
-        assert_eq!(processor.get_engine_latency_ms(), 25.25);
-    }
-
-    #[test]
-    fn test_user_mute_does_not_disable_stall_recovery() {
-        let mut processor = AudioProcessor::new();
-        processor.set_output_mute(true);
-        processor.running.store(true, Ordering::Release);
-        processor.ensure_supervisor();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        while !processor.restart_requested.load(Ordering::Acquire)
-            && std::time::Instant::now() < deadline
-        {
-            std::thread::sleep(std::time::Duration::from_millis(25));
         }
-        assert!(processor.restart_requested.load(Ordering::Acquire));
-        assert!(processor.output_muted.load(Ordering::Acquire));
-        processor.stop();
+    });
+}
+
+#[cfg(feature = "vad")]
+#[test]
+fn test_full_chain_gates_each_block_with_a_vad_result_finished_before_it() {
+    // The first 32 ms window ends at sample 1536, inside block 3
+    // [1440, 1920). Live, block 3 cannot use it; block 4 can.
+    let audio = vec![0.01_f32; RNNOISE_FRAME_SIZE * 8];
+    Python::initialize();
+    Python::attach(|py| {
+        let settings = PyDict::new(py);
+        settings.set_item("gate_mode", 2_u8).unwrap();
+        let evidence = simulate_input_frontend_with_activity(py, audio, 48_000.0, Some(&settings))
+            .expect("native VAD should process the fixture")
+            .activity_evidence;
+        assert!(evidence[..4]
+            .iter()
+            .all(|block| block.vad_reliability == 0.0));
+        assert_eq!(evidence[4].vad_reliability, 1.0);
+    });
+}
+
+#[test]
+fn test_total_reported_latency_respects_output_vs_processing_rates() {
+    let total = total_reported_latency_us(
+        LatencyComponents {
+            input_resampler_delay_samples: 96,
+            output_buffer_samples: 882,
+            output_sample_rate: 44_100,
+            output_resampler_delay_samples: 64,
+            suppressor_latency_samples: 480,
+            limiter_lookahead_samples: 96,
+            true_peak_lookahead_samples: 20,
+            processing_sample_rate: 48_000,
+        },
+        500,
+    );
+    assert_eq!(
+        total,
+        20_000
+            + 2_000
+            + samples_to_micros(64, 44_100)
+            + 10_000
+            + 2_000
+            + samples_to_micros(20, 44_100)
+            + 500
+    );
+}
+
+#[test]
+fn test_engine_latency_excludes_route_compensation() {
+    let processor = AudioProcessor::new();
+    processor
+        .shared
+        .dsp
+        .latency_us
+        .store(42_500, Ordering::Relaxed);
+    processor
+        .shared
+        .dsp
+        .latency_compensation_us
+        .store(17_250, Ordering::Relaxed);
+
+    assert_eq!(processor.get_latency_ms(), 42.5);
+    assert_eq!(processor.get_engine_latency_ms(), 25.25);
+}
+
+#[test]
+fn test_user_mute_does_not_disable_stall_recovery() {
+    let processor = AudioProcessor::new();
+    processor.set_output_mute(true);
+    processor
+        .shared
+        .stream
+        .running
+        .store(true, Ordering::Release);
+    processor.ensure_supervisor(&mut processor.lock_streams());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !processor
+        .shared
+        .stream
+        .restart_requested
+        .load(Ordering::Acquire)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(25));
     }
+    assert!(processor
+        .shared
+        .stream
+        .restart_requested
+        .load(Ordering::Acquire));
+    assert!(processor.shared.output.muted.load(Ordering::Acquire));
+    processor.stop();
+}
 
-    #[test]
-    fn test_stop_preserves_explicit_output_mute() {
-        let mut processor = AudioProcessor::new();
-        processor.set_output_mute(true);
-        processor.stop();
-        assert!(processor.output_muted.load(Ordering::Acquire));
-        processor.set_output_mute(false);
-        processor.stop();
-        assert!(!processor.output_muted.load(Ordering::Acquire));
-    }
+#[test]
+fn test_stop_preserves_explicit_output_mute() {
+    let processor = AudioProcessor::new();
+    processor.set_output_mute(true);
+    processor.stop();
+    assert!(processor.shared.output.muted.load(Ordering::Acquire));
+    processor.set_output_mute(false);
+    processor.stop();
+    assert!(!processor.shared.output.muted.load(Ordering::Acquire));
+}
 
-    #[test]
-    fn test_output_probe_queue_validates_and_publishes_state() {
-        let processor = AudioProcessor::new();
-        let rb = AudioRingBuffer::new(16);
-        let (producer, mut consumer) = rb.split();
-        *processor.output_probe_producer.lock().unwrap() = Some(producer);
-        processor.running.store(true, Ordering::Release);
-        processor.output_sample_rate.store(8, Ordering::Relaxed);
+#[test]
+fn test_output_probe_queue_validates_and_publishes_state() {
+    let processor = AudioProcessor::new();
+    let rb = AudioRingBuffer::new(16);
+    let (producer, mut consumer) = rb.split();
+    *processor.shared.output.probe_producer.lock().unwrap() = Some(producer);
+    processor
+        .shared
+        .stream
+        .running
+        .store(true, Ordering::Release);
+    processor
+        .shared
+        .output
+        .sample_rate
+        .store(8, Ordering::Relaxed);
 
-        processor.set_output_mute(true);
-        assert!(processor
-            .queue_output_probe(&[0.1])
-            .unwrap_err()
-            .contains("Unmute"));
-        assert_eq!(consumer.read(&mut [0.0]), 0);
-        processor.set_output_mute(false);
-        assert!(processor.queue_output_probe(&[]).is_err());
-        assert!(processor.queue_output_probe(&[f32::NAN]).is_err());
-        processor.queue_output_probe(&[0.1, -0.2, 0.3]).unwrap();
-        assert!(processor.output_probe_active.load(Ordering::Acquire));
-        assert!(!processor.is_output_probe_complete());
-        assert!(processor.queue_output_probe(&[0.4]).is_err());
+    processor.set_output_mute(true);
+    assert!(processor
+        .queue_output_probe(&[0.1])
+        .unwrap_err()
+        .contains("Unmute"));
+    assert_eq!(consumer.read(&mut [0.0]), 0);
+    processor.set_output_mute(false);
+    assert!(processor.queue_output_probe(&[]).is_err());
+    assert!(processor.queue_output_probe(&[f32::NAN]).is_err());
+    processor.queue_output_probe(&[0.1, -0.2, 0.3]).unwrap();
+    assert!(processor.shared.output.probe_active.load(Ordering::Acquire));
+    assert!(!processor.is_output_probe_complete());
+    assert!(processor.queue_output_probe(&[0.4]).is_err());
 
-        let mut rendered = [0.0_f32; 3];
-        assert_eq!(consumer.read(&mut rendered), 3);
-        assert_eq!(rendered, [0.1, -0.2, 0.3]);
+    let mut rendered = [0.0_f32; 3];
+    assert_eq!(consumer.read(&mut rendered), 3);
+    assert_eq!(rendered, [0.1, -0.2, 0.3]);
 
-        processor.running.store(false, Ordering::Release);
-    }
+    processor
+        .shared
+        .stream
+        .running
+        .store(false, Ordering::Release);
+}
 
-    #[test]
-    fn test_output_probe_cancel_only_requests_callback_drain_when_active() {
-        let processor = AudioProcessor::new();
-        processor.cancel_output_probe();
-        assert!(!processor
-            .output_probe_cancel_requested
-            .load(Ordering::Acquire));
+#[test]
+fn test_output_probe_cancel_only_requests_callback_drain_when_active() {
+    let processor = AudioProcessor::new();
+    processor.cancel_output_probe();
+    assert!(!processor
+        .shared
+        .output
+        .probe_cancel_requested
+        .load(Ordering::Acquire));
 
-        processor.output_probe_active.store(true, Ordering::Release);
-        processor.cancel_output_probe();
-        assert!(processor
-            .output_probe_cancel_requested
-            .load(Ordering::Acquire));
-    }
+    processor
+        .shared
+        .output
+        .probe_active
+        .store(true, Ordering::Release);
+    processor.cancel_output_probe();
+    assert!(processor
+        .shared
+        .output
+        .probe_cancel_requested
+        .load(Ordering::Acquire));
+}
 
-    #[test]
-    fn test_next_process_idle_sleep_stays_fast_when_input_is_recent() {
-        assert_eq!(next_process_idle_sleep_us(0, 500), PROCESS_IDLE_SLEEP_US);
-        assert_eq!(next_process_idle_sleep_us(8, 1_500), PROCESS_IDLE_SLEEP_US);
-    }
+#[test]
+fn test_next_process_idle_sleep_stays_fast_when_input_is_recent() {
+    assert_eq!(next_process_idle_sleep_us(0, 500), PROCESS_IDLE_SLEEP_US);
+    assert_eq!(next_process_idle_sleep_us(8, 1_500), PROCESS_IDLE_SLEEP_US);
+}
 
-    #[test]
-    fn test_next_process_idle_sleep_uses_bounded_backoff_when_idle() {
-        assert_eq!(next_process_idle_sleep_us(0, u64::MAX), 100);
-        assert_eq!(next_process_idle_sleep_us(1, u64::MAX), 200);
-        assert_eq!(next_process_idle_sleep_us(2, u64::MAX), 400);
-        assert_eq!(next_process_idle_sleep_us(3, u64::MAX), 800);
-        assert_eq!(
-            next_process_idle_sleep_us(10, u64::MAX),
-            PROCESS_IDLE_MAX_SLEEP_US
-        );
-    }
+#[test]
+fn test_next_process_idle_sleep_uses_bounded_backoff_when_idle() {
+    assert_eq!(next_process_idle_sleep_us(0, u64::MAX), 100);
+    assert_eq!(next_process_idle_sleep_us(1, u64::MAX), 200);
+    assert_eq!(next_process_idle_sleep_us(2, u64::MAX), 400);
+    assert_eq!(next_process_idle_sleep_us(3, u64::MAX), 800);
+    assert_eq!(
+        next_process_idle_sleep_us(10, u64::MAX),
+        PROCESS_IDLE_MAX_SLEEP_US
+    );
+}
 
-    #[test]
-    fn test_build_sinc_resampler_for_valid_rates() {
-        let resampler = build_sinc_resampler(44_100, 48_000, 1024);
-        assert!(resampler.is_ok());
-    }
+#[test]
+fn test_build_sinc_resampler_for_valid_rates() {
+    let resampler = build_sinc_resampler(44_100, 48_000, 1024);
+    assert!(resampler.is_ok());
+}
 
-    #[test]
-    fn product_resampler_offline_hook_reports_delay_count_and_timings() {
-        let input = vec![0.0; 44_100];
-        let (output, delay, expected, timings) =
-            simulate_product_resampler(input, 44_100, 48_000, 1024, None, None).unwrap();
-        let native_delay = build_sinc_resampler(44_100, 48_000, 1024)
-            .unwrap()
-            .output_delay();
+#[test]
+fn product_resampler_offline_hook_reports_delay_count_and_timings() {
+    let input = vec![0.0; 44_100];
+    let (output, delay, expected, timings) =
+        simulate_product_resampler(input, 44_100, 48_000, 1024, None, None).unwrap();
+    let native_delay = build_sinc_resampler(44_100, 48_000, 1024)
+        .unwrap()
+        .output_delay();
 
-        assert_eq!(expected, 48_000);
-        assert_eq!(delay, native_delay);
-        assert!(output.len() >= delay + expected);
-        assert!(!timings.is_empty());
-    }
+    assert_eq!(expected, 48_000);
+    assert_eq!(delay, native_delay);
+    assert!(output.len() >= delay + expected);
+    assert!(!timings.is_empty());
+}
 
-    #[test]
-    fn product_resampler_metadata_matches_native_defaults() {
-        assert_eq!(
-            product_resampler_configuration().unwrap(),
-            (
-                PRODUCT_RESAMPLER_SINC_LEN,
-                PRODUCT_RESAMPLER_WINDOW_NAME.to_string(),
-                "cubic".to_string(),
-                256,
-                RESAMPLER_CHUNK_SIZE,
-            )
-        );
-    }
-
-    #[test]
-    fn product_resampler_offline_hook_rejects_invalid_inputs() {
-        assert!(simulate_product_resampler(vec![0.0], 0, 48_000, 1024, None, None).is_err());
-        assert!(
-            simulate_product_resampler(vec![f64::NAN], 48_000, 44_100, 1024, None, None).is_err()
-        );
-        assert!(simulate_product_resampler(vec![0.0], 48_000, 44_100, 0, None, None).is_err());
-        assert!(simulate_product_resampler(
-            vec![0.0],
-            48_000,
-            44_100,
-            RESAMPLER_CHUNK_SIZE + 1,
-            None,
-            None
+#[test]
+fn product_resampler_metadata_matches_native_defaults() {
+    assert_eq!(
+        product_resampler_configuration().unwrap(),
+        (
+            PRODUCT_RESAMPLER_SINC_LEN,
+            PRODUCT_RESAMPLER_WINDOW_NAME.to_string(),
+            "cubic".to_string(),
+            256,
+            RESAMPLER_CHUNK_SIZE,
         )
-        .is_err());
-        assert!(
-            simulate_product_resampler(vec![0.0], 48_000, 44_100, 1024, Some(96), None).is_err()
-        );
-        assert!(
-            simulate_product_resampler(vec![0.0], 48_000, 44_100, 1024, None, Some("unknown"))
-                .is_err()
-        );
+    );
+}
+
+#[test]
+fn product_resampler_offline_hook_rejects_invalid_inputs() {
+    assert!(simulate_product_resampler(vec![0.0], 0, 48_000, 1024, None, None).is_err());
+    assert!(simulate_product_resampler(vec![f64::NAN], 48_000, 44_100, 1024, None, None).is_err());
+    assert!(simulate_product_resampler(vec![0.0], 48_000, 44_100, 0, None, None).is_err());
+    assert!(simulate_product_resampler(
+        vec![0.0],
+        48_000,
+        44_100,
+        RESAMPLER_CHUNK_SIZE + 1,
+        None,
+        None
+    )
+    .is_err());
+    assert!(simulate_product_resampler(vec![0.0], 48_000, 44_100, 1024, Some(96), None).is_err());
+    assert!(
+        simulate_product_resampler(vec![0.0], 48_000, 44_100, 1024, None, Some("unknown")).is_err()
+    );
+}
+
+#[test]
+fn test_active_device_identity_only_reports_when_running() {
+    let processor = AudioProcessor::new();
+    {
+        let mut devices = processor.lock_devices();
+        devices.input_name = Some("Mic A".to_string());
+        devices.input_name_ordinal = 1;
+        devices.output_name = Some("Out B".to_string());
+        devices.output_name_ordinal = 2;
     }
 
-    #[test]
-    fn test_active_device_identity_only_reports_when_running() {
-        let mut processor = AudioProcessor::new();
-        processor.input_device_name = Some("Mic A".to_string());
-        processor.input_device_name_ordinal = 1;
-        processor.output_device_name = Some("Out B".to_string());
-        processor.output_device_name_ordinal = 2;
+    assert_eq!(processor.active_input_device_name(), None);
+    assert_eq!(processor.active_input_device_endpoint_id(), None);
+    assert_eq!(processor.active_input_device_name_ordinal(), None);
+    assert_eq!(processor.active_output_device_name(), None);
+    assert_eq!(processor.active_output_device_endpoint_id(), None);
+    assert_eq!(processor.active_output_device_name_ordinal(), None);
 
-        assert_eq!(processor.active_input_device_name(), None);
-        assert_eq!(processor.active_input_device_endpoint_id(), None);
-        assert_eq!(processor.active_input_device_name_ordinal(), None);
-        assert_eq!(processor.active_output_device_name(), None);
-        assert_eq!(processor.active_output_device_endpoint_id(), None);
-        assert_eq!(processor.active_output_device_name_ordinal(), None);
+    processor
+        .shared
+        .stream
+        .running
+        .store(true, Ordering::SeqCst);
+    assert_eq!(
+        processor.active_input_device_name().as_deref(),
+        Some("Mic A")
+    );
+    assert_eq!(processor.active_input_device_endpoint_id(), None);
+    assert_eq!(processor.active_input_device_name_ordinal(), Some(1));
+    assert_eq!(
+        processor.active_output_device_name().as_deref(),
+        Some("Out B")
+    );
+    assert_eq!(processor.active_output_device_endpoint_id(), None);
+    assert_eq!(processor.active_output_device_name_ordinal(), Some(2));
+}
 
-        processor.running.store(true, Ordering::SeqCst);
-        assert_eq!(
-            processor.active_input_device_name().as_deref(),
-            Some("Mic A")
-        );
-        assert_eq!(processor.active_input_device_endpoint_id(), None);
-        assert_eq!(processor.active_input_device_name_ordinal(), Some(1));
-        assert_eq!(
-            processor.active_output_device_name().as_deref(),
-            Some("Out B")
-        );
-        assert_eq!(processor.active_output_device_endpoint_id(), None);
-        assert_eq!(processor.active_output_device_name_ordinal(), Some(2));
-    }
+#[test]
+fn test_raw_monitor_toggle_round_trip() {
+    let processor = AudioProcessor::new();
+    assert!(!processor.is_raw_monitor_enabled());
+    processor.set_raw_monitor_enabled(true);
+    assert!(processor.is_raw_monitor_enabled());
+    processor.set_raw_monitor_enabled(false);
+    assert!(!processor.is_raw_monitor_enabled());
+}
 
-    #[test]
-    fn test_raw_monitor_toggle_round_trip() {
+#[test]
+fn test_same_noise_model_selection_is_noop_while_running() {
+    let processor = AudioProcessor::new();
+    processor
+        .shared
+        .stream
+        .running
+        .store(true, Ordering::SeqCst);
+
+    assert!(processor.set_noise_model(NoiseModel::RNNoise));
+    assert_eq!(processor.get_noise_model(), NoiseModel::RNNoise);
+    assert!(processor
+        .shared
+        .suppressor
+        .pending_tx
+        .lock()
+        .map(|tx| tx.is_none())
+        .unwrap_or(false));
+}
+
+#[test]
+fn test_suppressor_failure_rebuilds_same_model_without_stream_restart() {
+    let processor = AudioProcessor::new();
+    let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
+    let (tx, mut rx) = queue.split();
+    *processor.shared.suppressor.pending_tx.lock().unwrap() = Some(tx);
+    processor
+        .shared
+        .stream
+        .restart_requested
+        .store(true, Ordering::Release);
+    store_rt_error(
+        processor.shared.dsp.rt_error_code.as_ref(),
+        RtErrorCode::SuppressorNonFinite,
+    );
+
+    assert_eq!(processor.service_recovery(), Some(true));
+    assert!(!processor
+        .shared
+        .stream
+        .restart_requested
+        .load(Ordering::Acquire));
+    assert!(processor.shared.suppressor.dirty.load(Ordering::Acquire));
+    assert_eq!(
+        rx.try_pop().expect("rebuilt suppressor").model_type(),
+        NoiseModel::RNNoise
+    );
+    assert_eq!(processor.get_stream_restart_count(), 0);
+    assert!(processor
+        .get_last_restart_reason()
+        .is_some_and(|reason| reason.contains("suppressor engine rebuilt")));
+}
+
+/// Hold a pending restart in the back-off so `service_recovery` reaches the
+/// full restart path without opening a device.
+fn hold_restart_in_backoff(processor: &AudioProcessor) {
+    processor
+        .shared
+        .stream
+        .restart_backoff_index
+        .store(1, Ordering::Release);
+    processor
+        .shared
+        .stream
+        .last_restart_attempt_us
+        .store(now_micros(), Ordering::Release);
+}
+
+#[test]
+fn a_rebuilt_suppressor_does_not_claim_a_later_dsp_panic() {
+    let processor = AudioProcessor::new();
+    let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
+    let (tx, mut rx) = queue.split();
+    *processor.shared.suppressor.pending_tx.lock().unwrap() = Some(tx);
+    processor
+        .shared
+        .stream
+        .restart_requested
+        .store(true, Ordering::Release);
+    store_rt_error(
+        processor.shared.dsp.rt_error_code.as_ref(),
+        RtErrorCode::SuppressorBackendFailed,
+    );
+    assert_eq!(processor.service_recovery(), Some(true));
+    assert!(rx.try_pop().is_some());
+    assert_eq!(processor.get_rt_error_code(), RtErrorCode::None as u32);
+
+    run_guarded_dsp_loop(
+        || panic!("late fault"),
+        &processor.shared.stream.recovery_state,
+        &processor.shared.stream.restart_requested,
+    );
+    hold_restart_in_backoff(&processor);
+    assert_eq!(
+        processor.service_recovery(),
+        None,
+        "the panic must take the full restart path, not another rebuild"
+    );
+    assert!(processor
+        .shared
+        .stream
+        .restart_requested
+        .load(Ordering::Acquire));
+    assert!(rx.try_pop().is_none());
+    assert_eq!(
+        processor.get_last_restart_reason().as_deref(),
+        Some("DSP thread panicked: late fault")
+    );
+}
+
+/// A single non-finite suppressor block stores its code without asking for
+/// a restart, so the code is still set when something else does.
+#[test]
+fn a_sticky_suppressor_code_does_not_claim_a_later_restart() {
+    for panic_restart in [true, false] {
         let processor = AudioProcessor::new();
-        assert!(!processor.is_raw_monitor_enabled());
-        processor.set_raw_monitor_enabled(true);
-        assert!(processor.is_raw_monitor_enabled());
-        processor.set_raw_monitor_enabled(false);
-        assert!(!processor.is_raw_monitor_enabled());
-    }
-
-    #[test]
-    fn test_same_noise_model_selection_is_noop_while_running() {
-        let processor = AudioProcessor::new();
-        processor.running.store(true, Ordering::SeqCst);
-
-        assert!(processor.set_noise_model(NoiseModel::RNNoise));
-        assert_eq!(processor.get_noise_model(), NoiseModel::RNNoise);
-        assert!(processor
-            .pending_suppressor_tx
-            .lock()
-            .map(|tx| tx.is_none())
-            .unwrap_or(false));
-    }
-
-    #[test]
-    fn test_suppressor_failure_rebuilds_same_model_without_stream_restart() {
-        let mut processor = AudioProcessor::new();
         let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
         let (tx, mut rx) = queue.split();
-        *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
-        processor.restart_requested.store(true, Ordering::Release);
+        *processor.shared.suppressor.pending_tx.lock().unwrap() = Some(tx);
         store_rt_error(
-            processor.rt_error_code.as_ref(),
+            processor.shared.dsp.rt_error_code.as_ref(),
             RtErrorCode::SuppressorNonFinite,
         );
-
-        assert_eq!(processor.service_recovery(), Some(true));
-        assert!(!processor.restart_requested.load(Ordering::Acquire));
-        assert!(processor.suppressor_dirty.load(Ordering::Acquire));
-        assert_eq!(
-            rx.try_pop().expect("rebuilt suppressor").model_type(),
-            NoiseModel::RNNoise
-        );
-        assert_eq!(processor.get_stream_restart_count(), 0);
-        assert!(processor
-            .get_last_restart_reason()
-            .is_some_and(|reason| reason.contains("suppressor engine rebuilt")));
-    }
-
-    /// Hold a pending restart in the back-off so `service_recovery` reaches the
-    /// full restart path without opening a device.
-    fn hold_restart_in_backoff(processor: &AudioProcessor) {
-        processor.restart_backoff_index.store(1, Ordering::Release);
-        processor
-            .last_restart_attempt_us
-            .store(now_micros(), Ordering::Release);
-    }
-
-    #[test]
-    fn a_rebuilt_suppressor_does_not_claim_a_later_dsp_panic() {
-        let mut processor = AudioProcessor::new();
-        let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
-        let (tx, mut rx) = queue.split();
-        *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
-        processor.restart_requested.store(true, Ordering::Release);
-        store_rt_error(
-            processor.rt_error_code.as_ref(),
-            RtErrorCode::SuppressorBackendFailed,
-        );
-        assert_eq!(processor.service_recovery(), Some(true));
-        assert!(rx.try_pop().is_some());
-        assert_eq!(processor.get_rt_error_code(), RtErrorCode::None as u32);
-
-        run_guarded_dsp_loop(
-            || panic!("late fault"),
-            &processor.recovery_state,
-            &processor.restart_requested,
-        );
+        let expected = if panic_restart {
+            run_guarded_dsp_loop(
+                || panic!("late fault"),
+                &processor.shared.stream.recovery_state,
+                &processor.shared.stream.restart_requested,
+            );
+            "DSP thread panicked: late fault"
+        } else {
+            processor
+                .shared
+                .output
+                .resampler_error_count
+                .store(1, Ordering::Relaxed);
+            processor
+                .shared
+                .stream
+                .restart_requested
+                .store(true, Ordering::Release);
+            "output resampler failed"
+        };
         hold_restart_in_backoff(&processor);
         assert_eq!(
             processor.service_recovery(),
             None,
-            "the panic must take the full restart path, not another rebuild"
+            "the full restart path, not a suppressor rebuild"
         );
-        assert!(processor.restart_requested.load(Ordering::Acquire));
+        assert!(processor
+            .shared
+            .stream
+            .restart_requested
+            .load(Ordering::Acquire));
+        assert!(rx.try_pop().is_none(), "no engine for a dying DSP thread");
+        assert_eq!(
+            processor.get_last_restart_reason().as_deref(),
+            Some(expected)
+        );
+    }
+}
+
+/// A restart that fails to open the devices retries for the same cause: a
+/// counter left over afterwards must not rename it.
+#[test]
+fn a_failed_restart_retries_under_its_recorded_cause() {
+    let processor = AudioProcessor::new();
+    {
+        let mut devices = processor.lock_devices();
+        devices.input_name = Some("AudioForge test: no such input".to_string());
+        devices.input_endpoint_id = Some("wasapi:audioforge-test-missing".to_string());
+    }
+    store_rt_error(
+        processor.shared.dsp.rt_error_code.as_ref(),
+        RtErrorCode::InputStreamError,
+    );
+    processor
+        .shared
+        .stream
+        .restart_requested
+        .store(true, Ordering::Release);
+    assert_eq!(processor.service_recovery(), Some(false));
+    assert!(processor
+        .shared
+        .stream
+        .restart_requested
+        .load(Ordering::Acquire));
+    assert!(processor.get_last_stream_error().is_some());
+    assert_eq!(
+        processor.get_last_restart_reason().as_deref(),
+        Some("input stream error")
+    );
+
+    processor
+        .shared
+        .output
+        .resampler_error_count
+        .store(1, Ordering::Relaxed);
+    hold_restart_in_backoff(&processor);
+    assert_eq!(processor.service_recovery(), None);
+    assert_eq!(
+        processor.get_last_restart_reason().as_deref(),
+        Some("input stream error")
+    );
+}
+
+#[test]
+fn a_stream_or_resampler_restart_records_its_cause() {
+    for (code, output_resampler_failed, reason) in [
+        (RtErrorCode::InputStreamError, false, "input stream error"),
+        (RtErrorCode::OutputStreamError, false, "output stream error"),
+        (
+            RtErrorCode::InputResamplerFailed,
+            false,
+            "input resampler failed",
+        ),
+        (RtErrorCode::None, true, "output resampler failed"),
+    ] {
+        let processor = AudioProcessor::new();
+        processor
+            .shared
+            .stream
+            .recovery_state
+            .lock()
+            .unwrap()
+            .last_reason = Some("stale".to_string());
+        store_rt_error(processor.shared.dsp.rt_error_code.as_ref(), code);
+        if output_resampler_failed {
+            processor
+                .shared
+                .output
+                .resampler_error_count
+                .store(1, Ordering::Relaxed);
+        }
+        processor
+            .shared
+            .stream
+            .restart_requested
+            .store(true, Ordering::Release);
+        hold_restart_in_backoff(&processor);
+        assert_eq!(processor.service_recovery(), None);
+        assert_eq!(
+            processor.get_last_restart_reason().as_deref(),
+            Some(reason),
+            "{code:?}"
+        );
+    }
+
+    // A panic or stall records its own reason, which a stale stream error
+    // must not overwrite.
+    let processor = AudioProcessor::new();
+    store_rt_error(
+        processor.shared.dsp.rt_error_code.as_ref(),
+        RtErrorCode::InputStreamError,
+    );
+    run_guarded_dsp_loop(
+        || panic!("boom"),
+        &processor.shared.stream.recovery_state,
+        &processor.shared.stream.restart_requested,
+    );
+    hold_restart_in_backoff(&processor);
+    assert_eq!(processor.service_recovery(), None);
+    assert_eq!(
+        processor.get_last_restart_reason().as_deref(),
+        Some("DSP thread panicked: boom")
+    );
+}
+
+/// Seconds on the fake clock `service_recovery_at` runs on.
+fn at(seconds: u64) -> u64 {
+    100_000_000 + seconds * 1_000_000
+}
+
+fn streams_open(_: &AudioProcessor, _: &mut Streams) -> Result<String, String> {
+    Ok("Started".to_string())
+}
+
+/// A stop or a suppression that wins the lifecycle lock while a recovery
+/// attempt waits for it stands: the attempt must not reopen the devices.
+#[test]
+fn a_stop_or_suppression_that_wins_the_lock_cancels_a_waiting_recovery() {
+    for suppress in [false, true] {
+        let processor = AudioProcessor::new();
+        processor
+            .shared
+            .stream
+            .restart_requested
+            .store(true, Ordering::Release);
+        let started = AtomicBool::new(false);
+        let outcome = std::thread::scope(|scope| {
+            let mut streams = processor.lock_streams();
+            let recovery = scope.spawn(|| {
+                processor.service_recovery_at(at(10), |_: &AudioProcessor, _: &mut Streams| {
+                    started.store(true, Ordering::SeqCst);
+                    Ok("Started".to_string())
+                })
+            });
+            // Raised right before the attempt takes the lock, which this holds.
+            while !processor.shared.stream.recovering.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            if suppress {
+                processor.set_recovery_suppressed(true);
+            } else {
+                processor.stop_locked(&mut streams); // what `stop()` does once it has the lock
+            }
+            drop(streams);
+            recovery.join().unwrap()
+        });
+        assert_eq!(outcome, None, "suppress={suppress}");
+        assert!(!started.load(Ordering::SeqCst), "suppress={suppress}");
+        assert!(!processor.shared.stream.recovering.load(Ordering::Acquire));
+        // A suppressed request is kept for later; a stop cleared it.
+        assert_eq!(
+            processor
+                .shared
+                .stream
+                .restart_requested
+                .load(Ordering::Acquire),
+            suppress
+        );
+    }
+}
+
+/// An error code left set by an earlier suppressor fault must not turn a
+/// later callback stall into a suppressor rebuild: that would clear the
+/// request and leave the stalled streams as they are.
+#[test]
+fn a_stall_restart_is_not_mistaken_for_a_stale_suppressor_fault() {
+    let processor = AudioProcessor::new();
+    let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
+    let (tx, mut rx) = queue.split();
+    *processor.shared.suppressor.pending_tx.lock().unwrap() = Some(tx);
+
+    for (round, stale) in [
+        RtErrorCode::SuppressorBackendFailed,
+        RtErrorCode::SuppressorNonFinite,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let reason = "input_cb_age_ms=9000, output_cb_age_ms=9000, output_write_age_ms=9000";
+        store_rt_error(processor.shared.dsp.rt_error_code.as_ref(), stale);
+        request_stall_restart(
+            &processor.shared.stream.recovery_state,
+            &processor.shared.stream.restart_requested,
+            reason.to_string(),
+        );
+        let first = at(round as u64 * 100);
+        // Inside the back-off the request waits; it is not rebuilt away.
+        processor
+            .shared
+            .stream
+            .restart_backoff_index
+            .store(1, Ordering::Release);
+        processor
+            .shared
+            .stream
+            .last_restart_attempt_us
+            .store(first, Ordering::Release);
+        assert_eq!(
+            processor.service_recovery_at(first + 1_000_000, streams_open),
+            None
+        );
+        assert!(processor
+            .shared
+            .stream
+            .restart_requested
+            .load(Ordering::Acquire));
+        // Once it is due the streams restart.
+        assert_eq!(
+            processor.service_recovery_at(first + 2_000_000, streams_open),
+            Some(true)
+        );
+        assert_eq!(processor.get_stream_restart_count(), round as u64 + 1);
+        assert!(rx.try_pop().is_none(), "no engine for a stalled stream");
+        assert_eq!(processor.get_last_restart_reason().as_deref(), Some(reason));
+    }
+}
+
+/// A restart whose streams open but never deliver must not reset the
+/// back-off: the stall watchdog would restart them every ~6 s forever.
+#[test]
+fn restarts_of_streams_that_open_but_stay_silent_back_off_to_the_cap() {
+    let processor = AudioProcessor::new();
+    let mut restarted = Vec::new();
+    // The supervisor flags a stall about 6 s after each restart.
+    for second in 0..=140 {
+        let due = restarted.last().is_none_or(|last| second >= last + 6);
+        if due
+            && !processor
+                .shared
+                .stream
+                .restart_requested
+                .load(Ordering::Acquire)
+        {
+            request_stall_restart(
+                &processor.shared.stream.recovery_state,
+                &processor.shared.stream.restart_requested,
+                "stalled".to_string(),
+            );
+        }
+        if processor.service_recovery_at(at(second), streams_open) == Some(true) {
+            restarted.push(second);
+        }
+    }
+    assert_eq!(restarted, [0, 6, 12, 22, 42, 72, 102, 132]);
+    assert_eq!(
+        processor
+            .shared
+            .stream
+            .restart_backoff_index
+            .load(Ordering::Acquire) as usize,
+        RESTART_BACKOFF_MS.len() - 1
+    );
+    assert_eq!(*RESTART_BACKOFF_MS.last().unwrap(), 30_000);
+}
+
+#[test]
+fn the_restart_backoff_resets_only_after_both_streams_keep_delivering() {
+    let processor = AudioProcessor::new();
+    processor
+        .shared
+        .stream
+        .restart_backoff_index
+        .store(5, Ordering::Release);
+    processor
+        .shared
+        .stream
+        .last_restart_attempt_us
+        .store(at(0), Ordering::Release);
+    let set = |processor: &AudioProcessor, input: u64, output: u64| {
+        processor
+            .shared
+            .input
+            .callback_time_us
+            .store(input, Ordering::Relaxed);
+        processor
+            .shared
+            .output
+            .last_write_time_us
+            .store(output, Ordering::Relaxed);
+    };
+    let backoff = |processor: &AudioProcessor| {
+        processor
+            .shared
+            .stream
+            .restart_backoff_index
+            .load(Ordering::Acquire)
+    };
+    // (input callback, output write, now): none of these is a recovery.
+    for (input, output, now) in [
+        (at(5), at(5), at(9)),       // delivering, but for under 10 s
+        (at(0) - 1, at(11), at(11)), // input callback from before the restart
+        (at(11), 0, at(11)),         // nothing written to the output yet
+        (at(8), at(11), at(11)),     // input callbacks stopped 3 s ago
+    ] {
+        set(&processor, input, output);
+        assert_eq!(processor.service_recovery_at(now, streams_open), None);
+        assert_eq!(backoff(&processor), 5, "{input} {output} {now}");
+    }
+    set(&processor, at(11), at(11));
+    assert_eq!(processor.service_recovery_at(at(12), streams_open), None);
+    assert_eq!(backoff(&processor), 0);
+
+    // After that, the next stall restarts at once.
+    request_stall_restart(
+        &processor.shared.stream.recovery_state,
+        &processor.shared.stream.restart_requested,
+        "stalled".to_string(),
+    );
+    assert_eq!(
+        processor.service_recovery_at(at(13), streams_open),
+        Some(true)
+    );
+}
+
+#[test]
+fn suppressor_rebuilds_are_rate_limited() {
+    let processor = AudioProcessor::new();
+    let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
+    let (tx, mut rx) = queue.split();
+    *processor.shared.suppressor.pending_tx.lock().unwrap() = Some(tx);
+    let fault = |processor: &AudioProcessor| {
+        store_rt_error(
+            processor.shared.dsp.rt_error_code.as_ref(),
+            RtErrorCode::SuppressorNonFinite,
+        );
+        processor
+            .shared
+            .stream
+            .restart_requested
+            .store(true, Ordering::Release);
+    };
+
+    fault(&processor);
+    assert_eq!(
+        processor.service_recovery_at(at(0), streams_open),
+        Some(true)
+    );
+    assert!(rx.try_pop().is_some());
+
+    // The fault returns: requests inside the interval are skipped and the
+    // streams are left alone; the DSP thread asks again while it lasts.
+    for second in [1, 5, 9] {
+        fault(&processor);
+        assert_eq!(
+            processor.service_recovery_at(at(second), streams_open),
+            None
+        );
+        assert!(
+            !processor
+                .shared
+                .stream
+                .restart_requested
+                .load(Ordering::Acquire),
+            "a skipped request must not hold the supervisor back"
+        );
         assert!(rx.try_pop().is_none());
         assert_eq!(
-            processor.get_last_restart_reason().as_deref(),
-            Some("DSP thread panicked: late fault")
+            processor.get_rt_error_code(),
+            RtErrorCode::SuppressorNonFinite as u32,
+            "the fault stays visible"
         );
     }
+    assert_eq!(processor.get_stream_restart_count(), 0);
+    fault(&processor);
+    assert_eq!(
+        processor.service_recovery_at(at(10), streams_open),
+        Some(true)
+    );
+    assert!(rx.try_pop().is_some());
+    assert!(!processor
+        .shared
+        .stream
+        .restart_requested
+        .load(Ordering::Acquire));
+}
 
-    /// A single non-finite suppressor block stores its code without asking for
-    /// a restart, so the code is still set when something else does.
-    #[test]
-    fn a_sticky_suppressor_code_does_not_claim_a_later_restart() {
-        for panic_restart in [true, false] {
-            let mut processor = AudioProcessor::new();
-            let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
-            let (tx, mut rx) = queue.split();
-            *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
-            store_rt_error(
-                processor.rt_error_code.as_ref(),
-                RtErrorCode::SuppressorNonFinite,
-            );
-            let expected = if panic_restart {
-                run_guarded_dsp_loop(
-                    || panic!("late fault"),
-                    &processor.recovery_state,
-                    &processor.restart_requested,
-                );
-                "DSP thread panicked: late fault"
-            } else {
-                processor
-                    .output_resampler_error_count
-                    .store(1, Ordering::Relaxed);
-                processor.restart_requested.store(true, Ordering::Release);
-                "output resampler failed"
-            };
-            hold_restart_in_backoff(&processor);
-            assert_eq!(
-                processor.service_recovery(),
-                None,
-                "the full restart path, not a suppressor rebuild"
-            );
-            assert!(processor.restart_requested.load(Ordering::Acquire));
-            assert!(rx.try_pop().is_none(), "no engine for a dying DSP thread");
-            assert_eq!(
-                processor.get_last_restart_reason().as_deref(),
-                Some(expected)
-            );
-        }
-    }
-
-    /// A restart that fails to open the devices retries for the same cause: a
-    /// counter left over afterwards must not rename it.
-    #[test]
-    fn a_failed_restart_retries_under_its_recorded_cause() {
-        let mut processor = AudioProcessor::new();
-        processor.input_device_name = Some("AudioForge test: no such input".to_string());
-        processor.input_device_endpoint_id = Some("wasapi:audioforge-test-missing".to_string());
-        store_rt_error(
-            processor.rt_error_code.as_ref(),
-            RtErrorCode::InputStreamError,
-        );
-        processor.restart_requested.store(true, Ordering::Release);
-        assert_eq!(processor.service_recovery(), Some(false));
-        assert!(processor.restart_requested.load(Ordering::Acquire));
-        assert!(processor.get_last_stream_error().is_some());
-        assert_eq!(
-            processor.get_last_restart_reason().as_deref(),
-            Some("input stream error")
-        );
-
-        processor
-            .output_resampler_error_count
-            .store(1, Ordering::Relaxed);
-        hold_restart_in_backoff(&processor);
-        assert_eq!(processor.service_recovery(), None);
-        assert_eq!(
-            processor.get_last_restart_reason().as_deref(),
-            Some("input stream error")
-        );
-    }
-
-    #[test]
-    fn a_stream_or_resampler_restart_records_its_cause() {
-        for (code, output_resampler_failed, reason) in [
-            (RtErrorCode::InputStreamError, false, "input stream error"),
-            (RtErrorCode::OutputStreamError, false, "output stream error"),
-            (
-                RtErrorCode::InputResamplerFailed,
-                false,
-                "input resampler failed",
-            ),
-            (RtErrorCode::None, true, "output resampler failed"),
-        ] {
-            let mut processor = AudioProcessor::new();
-            processor.recovery_state.lock().unwrap().last_reason = Some("stale".to_string());
-            store_rt_error(processor.rt_error_code.as_ref(), code);
-            if output_resampler_failed {
-                processor
-                    .output_resampler_error_count
-                    .store(1, Ordering::Relaxed);
-            }
-            processor.restart_requested.store(true, Ordering::Release);
-            hold_restart_in_backoff(&processor);
-            assert_eq!(processor.service_recovery(), None);
-            assert_eq!(
-                processor.get_last_restart_reason().as_deref(),
-                Some(reason),
-                "{code:?}"
-            );
-        }
-
-        // A panic or stall records its own reason, which a stale stream error
-        // must not overwrite.
-        let mut processor = AudioProcessor::new();
-        store_rt_error(
-            processor.rt_error_code.as_ref(),
-            RtErrorCode::InputStreamError,
-        );
-        run_guarded_dsp_loop(
-            || panic!("boom"),
-            &processor.recovery_state,
-            &processor.restart_requested,
-        );
-        hold_restart_in_backoff(&processor);
-        assert_eq!(processor.service_recovery(), None);
-        assert_eq!(
-            processor.get_last_restart_reason().as_deref(),
-            Some("DSP thread panicked: boom")
-        );
-    }
-
-    /// Seconds on the fake clock `service_recovery_at` runs on.
-    fn at(seconds: u64) -> u64 {
-        100_000_000 + seconds * 1_000_000
-    }
-
-    fn streams_open(_: &mut AudioProcessor) -> Result<String, String> {
-        Ok("Started".to_string())
-    }
-
-    /// An error code left set by an earlier suppressor fault must not turn a
-    /// later callback stall into a suppressor rebuild: that would clear the
-    /// request and leave the stalled streams as they are.
-    #[test]
-    fn a_stall_restart_is_not_mistaken_for_a_stale_suppressor_fault() {
-        let mut processor = AudioProcessor::new();
-        let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
-        let (tx, mut rx) = queue.split();
-        *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
-
-        for (round, stale) in [
-            RtErrorCode::SuppressorBackendFailed,
-            RtErrorCode::SuppressorNonFinite,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let reason = "input_cb_age_ms=9000, output_cb_age_ms=9000, output_write_age_ms=9000";
-            store_rt_error(processor.rt_error_code.as_ref(), stale);
-            request_stall_restart(
-                &processor.recovery_state,
-                &processor.restart_requested,
-                reason.to_string(),
-            );
-            let first = at(round as u64 * 100);
-            // Inside the back-off the request waits; it is not rebuilt away.
-            processor.restart_backoff_index.store(1, Ordering::Release);
-            processor
-                .last_restart_attempt_us
-                .store(first, Ordering::Release);
-            assert_eq!(
-                processor.service_recovery_at(first + 1_000_000, streams_open),
-                None
-            );
-            assert!(processor.restart_requested.load(Ordering::Acquire));
-            // Once it is due the streams restart.
-            assert_eq!(
-                processor.service_recovery_at(first + 2_000_000, streams_open),
-                Some(true)
-            );
-            assert_eq!(processor.get_stream_restart_count(), round as u64 + 1);
-            assert!(rx.try_pop().is_none(), "no engine for a stalled stream");
-            assert_eq!(processor.get_last_restart_reason().as_deref(), Some(reason));
-        }
-    }
-
-    /// A restart whose streams open but never deliver must not reset the
-    /// back-off: the stall watchdog would restart them every ~6 s forever.
-    #[test]
-    fn restarts_of_streams_that_open_but_stay_silent_back_off_to_the_cap() {
-        let mut processor = AudioProcessor::new();
-        let mut restarted = Vec::new();
-        // The supervisor flags a stall about 6 s after each restart.
-        for second in 0..=140 {
-            let due = restarted.last().is_none_or(|last| second >= last + 6);
-            if due && !processor.restart_requested.load(Ordering::Acquire) {
-                request_stall_restart(
-                    &processor.recovery_state,
-                    &processor.restart_requested,
-                    "stalled".to_string(),
-                );
-            }
-            if processor.service_recovery_at(at(second), streams_open) == Some(true) {
-                restarted.push(second);
-            }
-        }
-        assert_eq!(restarted, [0, 6, 12, 22, 42, 72, 102, 132]);
-        assert_eq!(
-            processor.restart_backoff_index.load(Ordering::Acquire) as usize,
-            RESTART_BACKOFF_MS.len() - 1
-        );
-        assert_eq!(*RESTART_BACKOFF_MS.last().unwrap(), 30_000);
-    }
-
-    #[test]
-    fn the_restart_backoff_resets_only_after_both_streams_keep_delivering() {
-        let mut processor = AudioProcessor::new();
-        processor.restart_backoff_index.store(5, Ordering::Release);
-        processor
-            .last_restart_attempt_us
-            .store(at(0), Ordering::Release);
-        let set = |processor: &AudioProcessor, input: u64, output: u64| {
-            processor
-                .last_input_callback_time_us
-                .store(input, Ordering::Relaxed);
-            processor
-                .last_output_write_time
-                .store(output, Ordering::Relaxed);
-        };
-        let backoff =
-            |processor: &AudioProcessor| processor.restart_backoff_index.load(Ordering::Acquire);
-        // (input callback, output write, now): none of these is a recovery.
-        for (input, output, now) in [
-            (at(5), at(5), at(9)),       // delivering, but for under 10 s
-            (at(0) - 1, at(11), at(11)), // input callback from before the restart
-            (at(11), 0, at(11)),         // nothing written to the output yet
-            (at(8), at(11), at(11)),     // input callbacks stopped 3 s ago
-        ] {
-            set(&processor, input, output);
-            assert_eq!(processor.service_recovery_at(now, streams_open), None);
-            assert_eq!(backoff(&processor), 5, "{input} {output} {now}");
-        }
-        set(&processor, at(11), at(11));
-        assert_eq!(processor.service_recovery_at(at(12), streams_open), None);
-        assert_eq!(backoff(&processor), 0);
-
-        // After that, the next stall restarts at once.
-        request_stall_restart(
-            &processor.recovery_state,
-            &processor.restart_requested,
-            "stalled".to_string(),
-        );
-        assert_eq!(
-            processor.service_recovery_at(at(13), streams_open),
-            Some(true)
-        );
-    }
-
-    #[test]
-    fn suppressor_rebuilds_are_rate_limited() {
-        let mut processor = AudioProcessor::new();
-        let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
-        let (tx, mut rx) = queue.split();
-        *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
-        let fault = |processor: &AudioProcessor| {
-            store_rt_error(
-                processor.rt_error_code.as_ref(),
-                RtErrorCode::SuppressorNonFinite,
-            );
-            processor.restart_requested.store(true, Ordering::Release);
-        };
-
-        fault(&processor);
-        assert_eq!(
-            processor.service_recovery_at(at(0), streams_open),
-            Some(true)
-        );
-        assert!(rx.try_pop().is_some());
-
-        // The fault returns: requests inside the interval are skipped and the
-        // streams are left alone; the DSP thread asks again while it lasts.
-        for second in [1, 5, 9] {
-            fault(&processor);
-            assert_eq!(
-                processor.service_recovery_at(at(second), streams_open),
-                None
-            );
-            assert!(
-                !processor.restart_requested.load(Ordering::Acquire),
-                "a skipped request must not hold the supervisor back"
-            );
-            assert!(rx.try_pop().is_none());
-            assert_eq!(
-                processor.get_rt_error_code(),
-                RtErrorCode::SuppressorNonFinite as u32,
-                "the fault stays visible"
-            );
-        }
-        assert_eq!(processor.get_stream_restart_count(), 0);
-        fault(&processor);
-        assert_eq!(
-            processor.service_recovery_at(at(10), streams_open),
-            Some(true)
-        );
-        assert!(rx.try_pop().is_some());
-        assert!(!processor.restart_requested.load(Ordering::Acquire));
-    }
-
-    /// Between reading a suppressor request and clearing it, a stream error,
-    /// a stall or an output-resampler failure may ask for a restart of its
-    /// own. Clearing the flag must not erase that request.
-    #[test]
-    fn clearing_a_suppressor_request_keeps_one_that_arrived_meanwhile() {
-        let fault = RtErrorCode::SuppressorNonFinite;
-        for (clear_code, interleaved) in [
-            (false, "none"),
-            (true, "none"),
-            (false, "device lost"),
-            (true, "device lost"),
-            (false, "stall"),
-            (true, "stall"),
-            (false, "output resampler"),
-            (true, "output resampler"),
-        ] {
-            let processor = AudioProcessor::new();
-            // The request as service_recovery read it.
-            store_rt_error(processor.rt_error_code.as_ref(), fault);
-            processor.restart_requested.store(true, Ordering::Release);
-            // What the other thread did before the request is cleared.
-            match interleaved {
-                "device lost" => store_rt_error(
-                    processor.rt_error_code.as_ref(),
-                    RtErrorCode::InputStreamError,
-                ),
-                "stall" => request_stall_restart(
-                    &processor.recovery_state,
-                    &processor.restart_requested,
-                    "stalled".to_string(),
-                ),
-                "output resampler" => {
-                    processor
-                        .output_resampler_error_count
-                        .store(1, Ordering::Relaxed);
-                }
-                _ => {}
-            }
-            processor.finish_suppressor_request(fault, clear_code);
-            assert_eq!(
-                processor.restart_requested.load(Ordering::Acquire),
-                interleaved != "none",
-                "{interleaved}, clear_code {clear_code}"
-            );
-            let code = processor.get_rt_error_code();
-            match (interleaved, clear_code) {
-                ("device lost", _) => assert_eq!(code, RtErrorCode::InputStreamError as u32),
-                (_, true) => assert_eq!(code, RtErrorCode::None as u32),
-                (_, false) => assert_eq!(code, fault as u32),
-            }
-        }
-    }
-
-    /// A stall inside the rebuild interval still restarts the streams: the
-    /// supervisor keeps watching while a rebuild is being held back.
-    #[test]
-    fn a_stall_during_the_rebuild_interval_restarts_the_streams() {
-        let mut processor = AudioProcessor::new();
-        let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
-        let (tx, mut rx) = queue.split();
-        *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
-        let fault = |processor: &AudioProcessor| {
-            store_rt_error(
-                processor.rt_error_code.as_ref(),
-                RtErrorCode::SuppressorBackendFailed,
-            );
-            processor.restart_requested.store(true, Ordering::Release);
-        };
-        fault(&processor);
-        assert_eq!(
-            processor.service_recovery_at(at(0), streams_open),
-            Some(true)
-        );
-        assert!(rx.try_pop().is_some());
-
-        fault(&processor);
-        assert_eq!(processor.service_recovery_at(at(2), streams_open), None);
-        // The supervisor only checks for a stall while no restart is pending.
-        assert!(!processor.restart_requested.load(Ordering::Acquire));
-        request_stall_restart(
-            &processor.recovery_state,
-            &processor.restart_requested,
-            "input_cb_age_ms=9000, output_cb_age_ms=9000, output_write_age_ms=9000".to_string(),
-        );
-        assert_eq!(
-            processor.service_recovery_at(at(3), streams_open),
-            Some(true)
-        );
-        assert_eq!(processor.get_stream_restart_count(), 1);
-        assert!(
-            rx.try_pop().is_none(),
-            "the stall is not answered with a rebuild"
-        );
-    }
-
-    #[test]
-    fn test_start_publishes_processing_thread_before_starting_streams() {
-        let source = include_str!("dsp_loop.rs");
-        let start_fn = source_between(source, "    pub fn start(", "    /// Stop audio processing");
-        let process_thread_published = start_fn
-            .find("self.process_thread = Some(handle);")
-            .expect("start must publish the processing thread handle");
-        let before_thread_publish = &start_fn[..process_thread_published];
-
-        assert!(
-            !before_thread_publish.contains(".start()"),
-            "audio streams must not be started before the DSP thread handle is published"
-        );
-
-        let ready_wait = start_fn[process_thread_published..]
-            .find("dsp_ready_rx.recv_timeout")
-            .map(|offset| process_thread_published + offset)
-            .expect("start must wait for the DSP thread to finish initialization");
-        let output_start = start_fn[process_thread_published..]
-            .find("output.start()")
-            .map(|offset| process_thread_published + offset)
-            .expect("start must start the output stream after publishing the DSP thread");
-        let input_start = start_fn[process_thread_published..]
-            .find("input.start()")
-            .map(|offset| process_thread_published + offset)
-            .expect("start must start the input stream after publishing the DSP thread");
-
-        assert!(
-            ready_wait < output_start,
-            "audio streams must not start before DSP pre-loop initialization is complete"
-        );
-        assert!(
-            output_start < input_start,
-            "input stream must start last to avoid accumulating startup backlog"
-        );
-    }
-
-    #[cfg(feature = "deepfilter")]
-    #[test]
-    fn test_failed_running_noise_model_queue_preserves_backend_diagnostics() {
+/// Between reading a suppressor request and clearing it, a stream error,
+/// a stall or an output-resampler failure may ask for a restart of its
+/// own. Clearing the flag must not erase that request.
+#[test]
+fn clearing_a_suppressor_request_keeps_one_that_arrived_meanwhile() {
+    let fault = RtErrorCode::SuppressorNonFinite;
+    for (clear_code, interleaved) in [
+        (false, "none"),
+        (true, "none"),
+        (false, "device lost"),
+        (true, "device lost"),
+        (false, "stall"),
+        (true, "stall"),
+        (false, "output resampler"),
+        (true, "output resampler"),
+    ] {
         let processor = AudioProcessor::new();
-        processor.running.store(true, Ordering::SeqCst);
+        // The request as service_recovery read it.
+        store_rt_error(processor.shared.dsp.rt_error_code.as_ref(), fault);
         processor
-            .current_model
-            .store(NoiseModel::DeepFilterNetLL as u8, Ordering::Release);
-        processor
-            .noise_backend_available
-            .store(false, Ordering::Relaxed);
-        processor
-            .noise_backend_failed
-            .store(true, Ordering::Relaxed);
-        *processor.noise_backend_error.lock().unwrap() = Some("previous backend".to_string());
-
-        let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
-        let (mut tx, _rx) = queue.split();
-        let queued_engine = new_noise_suppression_engine(
-            NoiseModel::RNNoise,
-            Arc::clone(&processor.suppressor_strength),
-        );
-        assert!(tx.try_push(queued_engine).is_ok());
-        *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
-
-        assert!(!processor.set_noise_model(NoiseModel::RNNoise));
-        assert_eq!(processor.get_noise_model(), NoiseModel::DeepFilterNetLL);
-        assert!(!processor.is_noise_backend_available());
-        assert!(processor.noise_backend_failed());
-        assert_eq!(
-            processor.noise_backend_error().as_deref(),
-            Some("previous backend")
-        );
-    }
-
-    #[test]
-    fn test_control_snapshot_reports_unstable_odd_sequence() {
-        let control = AtomicSuppressorControlState::new();
-        control.seq.store(1, Ordering::Release);
-
-        let snapshot = control.snapshot();
-
-        assert!(snapshot.is_none());
-    }
-
-    #[test]
-    fn test_control_snapshot_reads_stable_sequence() {
-        let control = AtomicSuppressorControlState::new();
-
-        let snapshot = control.snapshot().expect("stable snapshot");
-
-        assert_eq!(snapshot.model, NoiseModel::RNNoise);
-        assert!(snapshot.enabled);
-    }
-
-    #[cfg(feature = "vad")]
-    #[test]
-    fn test_vad_worker_restarts_after_exit_and_inference_error() {
-        let mut processor = AudioProcessor::new();
-        processor.set_vad_pre_gain(3.5);
-        VAD_WORKER_LAST_PRE_GAIN_BITS.store(0.0_f32.to_bits(), Ordering::Release);
-        let finished = std::thread::spawn(|| {});
-        let finished_id = finished.thread().id();
-        while !finished.is_finished() {
-            std::thread::yield_now();
-        }
-        processor.vad_worker_thread = Some(finished);
-
-        let (mut producer, consumer) = AudioRingBuffer::new(VAD_WORKER_MAX_BUFFER_SAMPLES).split();
-        processor.ensure_vad_worker(consumer);
-        let replacement_id = processor
-            .vad_worker_thread
-            .as_ref()
-            .expect("replacement VAD worker")
-            .thread()
-            .id();
-        assert_ne!(finished_id, replacement_id);
-
-        let wait_until = |predicate: &dyn Fn() -> bool| {
-            let deadline = Instant::now() + Duration::from_secs(3);
-            while Instant::now() < deadline {
-                if predicate() {
-                    return true;
-                }
-                std::thread::sleep(Duration::from_millis(2));
+            .shared
+            .stream
+            .restart_requested
+            .store(true, Ordering::Release);
+        // What the other thread did before the request is cleared.
+        match interleaved {
+            "device lost" => store_rt_error(
+                processor.shared.dsp.rt_error_code.as_ref(),
+                RtErrorCode::InputStreamError,
+            ),
+            "stall" => request_stall_restart(
+                &processor.shared.stream.recovery_state,
+                &processor.shared.stream.restart_requested,
+                "stalled".to_string(),
+            ),
+            "output resampler" => {
+                processor
+                    .shared
+                    .output
+                    .resampler_error_count
+                    .store(1, Ordering::Relaxed);
             }
-            false
-        };
-        assert!(wait_until(&|| processor
-            .vad_backend_available
-            .load(Ordering::Acquire)));
-
-        assert_eq!(producer.write(&[0.1; 4096]), 4096);
-        assert!(wait_until(&|| {
-            f32::from_bits(VAD_WORKER_LAST_PRE_GAIN_BITS.load(Ordering::Acquire)) == 3.5
-        }));
-
-        VAD_WORKER_FORCE_INFERENCE_ERROR.store(true, Ordering::Release);
-        assert_eq!(producer.write(&[0.1; 4096]), 4096);
-        assert!(wait_until(&|| !processor
-            .vad_backend_available
-            .load(Ordering::Acquire)));
-        assert!(wait_until(&|| processor
-            .vad_backend_available
-            .load(Ordering::Acquire)));
-
-        processor.set_vad_pre_gain(2.0);
-        assert_eq!(producer.write(&[0.1; 4096]), 4096);
-        assert!(wait_until(&|| {
-            f32::from_bits(VAD_WORKER_LAST_PRE_GAIN_BITS.load(Ordering::Acquire)) == 2.0
-        }));
-        assert!(processor
-            .vad_worker_thread
-            .as_ref()
-            .is_some_and(|worker| !worker.is_finished()));
-        assert!(processor.vad_backend_available.load(Ordering::Acquire));
-
-        let model_inits = VAD_WORKER_MODEL_INITS.load(Ordering::Acquire);
-        let reset_count = VAD_WORKER_DISCONTINUITY_RESETS.load(Ordering::Acquire);
-        processor
-            .vad_source_discontinuity
-            .fetch_add(1, Ordering::Release);
-        assert!(wait_until(&|| {
-            VAD_WORKER_DISCONTINUITY_RESETS.load(Ordering::Acquire) > reset_count
-        }));
-        assert_eq!(producer.write(&[0.1; 4096]), 4096);
-        assert!(wait_until(&|| processor
-            .vad_backend_available
-            .load(Ordering::Acquire)));
-        assert_eq!(VAD_WORKER_MODEL_INITS.load(Ordering::Acquire), model_inits);
-
-        // Hold the worker in its existing error backoff, fill the queue, then
-        // publish a gap. The worker must flush the accepted queue before it
-        // resets the recurrent state.
-        VAD_WORKER_FORCE_INFERENCE_ERROR.store(true, Ordering::Release);
-        assert_eq!(producer.write(&[0.1; 4096]), 4096);
-        assert!(wait_until(&|| !processor
-            .vad_backend_available
-            .load(Ordering::Acquire)));
-        let reset_count = VAD_WORKER_DISCONTINUITY_RESETS.load(Ordering::Acquire);
-        let flushed_count = VAD_WORKER_DISCONTINUITY_FLUSHED_SAMPLES.load(Ordering::Acquire);
+            _ => {}
+        }
+        processor.finish_suppressor_request(fault, clear_code);
         assert_eq!(
-            producer.write(&[0.2; VAD_WORKER_MAX_BUFFER_SAMPLES]),
-            VAD_WORKER_MAX_BUFFER_SAMPLES
+            processor
+                .shared
+                .stream
+                .restart_requested
+                .load(Ordering::Acquire),
+            interleaved != "none",
+            "{interleaved}, clear_code {clear_code}"
         );
-        processor
-            .vad_source_discontinuity
-            .fetch_add(1, Ordering::Release);
-        assert!(wait_until(&|| {
-            VAD_WORKER_DISCONTINUITY_RESETS.load(Ordering::Acquire) > reset_count
-        }));
-        assert!(wait_until(&|| processor
-            .vad_backend_available
-            .load(Ordering::Acquire)));
-        assert!(
-            VAD_WORKER_DISCONTINUITY_FLUSHED_SAMPLES.load(Ordering::Acquire)
-                >= flushed_count + VAD_WORKER_MAX_BUFFER_SAMPLES as u64
-        );
-
-        processor.stop_vad_worker();
-    }
-
-    fn install_raw_recording_consumer(processor: &AudioProcessor) {
-        let rb = crate::audio::AudioRingBuffer::new(processor.sample_rate as usize);
-        let (_producer, consumer) = rb.split();
-        *processor.raw_recording_consumer.lock().unwrap() = Some(consumer);
-    }
-
-    #[test]
-    fn test_raw_recording_rejects_invalid_durations_without_activating() {
-        for duration in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let mut processor = AudioProcessor::new();
-            install_raw_recording_consumer(&processor);
-
-            let err = processor.start_raw_recording(duration).unwrap_err();
-
-            assert!(err.contains("finite positive"));
-            assert!(!processor.recording_active.load(Ordering::Acquire));
-            assert_eq!(processor.raw_recording_target.load(Ordering::Acquire), 0);
+        let code = processor.get_rt_error_code();
+        match (interleaved, clear_code) {
+            ("device lost", _) => assert_eq!(code, RtErrorCode::InputStreamError as u32),
+            (_, true) => assert_eq!(code, RtErrorCode::None as u32),
+            (_, false) => assert_eq!(code, fault as u32),
         }
     }
+}
 
-    #[test]
-    fn test_raw_recording_rejects_too_short_duration_without_activating() {
-        let mut processor = AudioProcessor::new();
+/// A stall inside the rebuild interval still restarts the streams: the
+/// supervisor keeps watching while a rebuild is being held back.
+#[test]
+fn a_stall_during_the_rebuild_interval_restarts_the_streams() {
+    let processor = AudioProcessor::new();
+    let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
+    let (tx, mut rx) = queue.split();
+    *processor.shared.suppressor.pending_tx.lock().unwrap() = Some(tx);
+    let fault = |processor: &AudioProcessor| {
+        store_rt_error(
+            processor.shared.dsp.rt_error_code.as_ref(),
+            RtErrorCode::SuppressorBackendFailed,
+        );
+        processor
+            .shared
+            .stream
+            .restart_requested
+            .store(true, Ordering::Release);
+    };
+    fault(&processor);
+    assert_eq!(
+        processor.service_recovery_at(at(0), streams_open),
+        Some(true)
+    );
+    assert!(rx.try_pop().is_some());
+
+    fault(&processor);
+    assert_eq!(processor.service_recovery_at(at(2), streams_open), None);
+    // The supervisor only checks for a stall while no restart is pending.
+    assert!(!processor
+        .shared
+        .stream
+        .restart_requested
+        .load(Ordering::Acquire));
+    request_stall_restart(
+        &processor.shared.stream.recovery_state,
+        &processor.shared.stream.restart_requested,
+        "input_cb_age_ms=9000, output_cb_age_ms=9000, output_write_age_ms=9000".to_string(),
+    );
+    assert_eq!(
+        processor.service_recovery_at(at(3), streams_open),
+        Some(true)
+    );
+    assert_eq!(processor.get_stream_restart_count(), 1);
+    assert!(
+        rx.try_pop().is_none(),
+        "the stall is not answered with a rebuild"
+    );
+}
+
+#[test]
+fn test_start_publishes_processing_thread_before_starting_streams() {
+    let source = include_str!("lifecycle.rs");
+    let start_fn = source_between(
+        source,
+        "fn start_streams_unguarded(",
+        "    /// Stop audio processing",
+    );
+    let process_thread_published = start_fn
+        .find("streams.process_thread = Some(handle);")
+        .expect("start must publish the processing thread handle");
+    let before_thread_publish = &start_fn[..process_thread_published];
+
+    assert!(
+        !before_thread_publish.contains(".start()"),
+        "audio streams must not be started before the DSP thread handle is published"
+    );
+
+    let ready_wait = start_fn[process_thread_published..]
+        .find("dsp_ready_rx.recv_timeout")
+        .map(|offset| process_thread_published + offset)
+        .expect("start must wait for the DSP thread to finish initialization");
+    let output_start = start_fn[process_thread_published..]
+        .find("output.start()")
+        .map(|offset| process_thread_published + offset)
+        .expect("start must start the output stream after publishing the DSP thread");
+    let input_start = start_fn[process_thread_published..]
+        .find("input.start()")
+        .map(|offset| process_thread_published + offset)
+        .expect("start must start the input stream after publishing the DSP thread");
+
+    assert!(
+        ready_wait < output_start,
+        "audio streams must not start before DSP pre-loop initialization is complete"
+    );
+    assert!(
+        output_start < input_start,
+        "input stream must start last to avoid accumulating startup backlog"
+    );
+}
+
+#[cfg(feature = "deepfilter")]
+#[test]
+fn test_failed_running_noise_model_queue_preserves_backend_diagnostics() {
+    let processor = AudioProcessor::new();
+    processor
+        .shared
+        .stream
+        .running
+        .store(true, Ordering::SeqCst);
+    processor
+        .shared
+        .suppressor
+        .current_model
+        .store(NoiseModel::DeepFilterNetLL as u8, Ordering::Release);
+    processor
+        .shared
+        .suppressor
+        .backend_available
+        .store(false, Ordering::Relaxed);
+    processor
+        .shared
+        .suppressor
+        .backend_failed
+        .store(true, Ordering::Relaxed);
+    *processor.shared.suppressor.backend_error.lock().unwrap() =
+        Some("previous backend".to_string());
+
+    let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
+    let (mut tx, _rx) = queue.split();
+    let queued_engine = new_noise_suppression_engine(
+        NoiseModel::RNNoise,
+        Arc::clone(&processor.shared.suppressor.strength),
+    );
+    assert!(tx.try_push(queued_engine).is_ok());
+    *processor.shared.suppressor.pending_tx.lock().unwrap() = Some(tx);
+
+    assert!(!processor.set_noise_model(NoiseModel::RNNoise));
+    assert_eq!(processor.get_noise_model(), NoiseModel::DeepFilterNetLL);
+    assert!(!processor.is_noise_backend_available());
+    assert!(processor.noise_backend_failed());
+    assert_eq!(
+        processor.noise_backend_error().as_deref(),
+        Some("previous backend")
+    );
+}
+
+#[test]
+fn test_control_snapshot_reports_unstable_odd_sequence() {
+    let control = AtomicSuppressorControlState::new();
+    control.seq.store(1, Ordering::Release);
+
+    let snapshot = control.snapshot();
+
+    assert!(snapshot.is_none());
+}
+
+#[test]
+fn test_control_snapshot_reads_stable_sequence() {
+    let control = AtomicSuppressorControlState::new();
+
+    let snapshot = control.snapshot().expect("stable snapshot");
+
+    assert_eq!(snapshot.model, NoiseModel::RNNoise);
+    assert!(snapshot.enabled);
+}
+
+#[cfg(feature = "vad")]
+#[test]
+fn test_vad_worker_restarts_after_exit_and_inference_error() {
+    let processor = AudioProcessor::new();
+    processor.set_vad_pre_gain(3.5);
+    VAD_WORKER_LAST_PRE_GAIN_BITS.store(0.0_f32.to_bits(), Ordering::Release);
+    let finished = std::thread::spawn(|| {});
+    let finished_id = finished.thread().id();
+    while !finished.is_finished() {
+        std::thread::yield_now();
+    }
+    processor.lock_streams().vad_worker_thread = Some(finished);
+
+    let (mut producer, consumer) = AudioRingBuffer::new(VAD_WORKER_MAX_BUFFER_SAMPLES).split();
+    processor.ensure_vad_worker(&mut processor.lock_streams(), consumer);
+    let replacement_id = processor
+        .lock_streams()
+        .vad_worker_thread
+        .as_ref()
+        .expect("replacement VAD worker")
+        .thread()
+        .id();
+    assert_ne!(finished_id, replacement_id);
+
+    let wait_until = |predicate: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if predicate() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        false
+    };
+    assert!(wait_until(&|| processor
+        .shared
+        .vad
+        .backend_available
+        .load(Ordering::Acquire)));
+
+    assert_eq!(producer.write(&[0.1; 4096]), 4096);
+    assert!(wait_until(&|| {
+        f32::from_bits(VAD_WORKER_LAST_PRE_GAIN_BITS.load(Ordering::Acquire)) == 3.5
+    }));
+
+    VAD_WORKER_FORCE_INFERENCE_ERROR.store(true, Ordering::Release);
+    assert_eq!(producer.write(&[0.1; 4096]), 4096);
+    assert!(wait_until(&|| !processor
+        .shared
+        .vad
+        .backend_available
+        .load(Ordering::Acquire)));
+    assert!(wait_until(&|| processor
+        .shared
+        .vad
+        .backend_available
+        .load(Ordering::Acquire)));
+
+    processor.set_vad_pre_gain(2.0);
+    assert_eq!(producer.write(&[0.1; 4096]), 4096);
+    assert!(wait_until(&|| {
+        f32::from_bits(VAD_WORKER_LAST_PRE_GAIN_BITS.load(Ordering::Acquire)) == 2.0
+    }));
+    assert!(processor
+        .lock_streams()
+        .vad_worker_thread
+        .as_ref()
+        .is_some_and(|worker| !worker.is_finished()));
+    assert!(processor
+        .shared
+        .vad
+        .backend_available
+        .load(Ordering::Acquire));
+
+    let model_inits = VAD_WORKER_MODEL_INITS.load(Ordering::Acquire);
+    let reset_count = VAD_WORKER_DISCONTINUITY_RESETS.load(Ordering::Acquire);
+    processor
+        .shared
+        .vad
+        .source_discontinuity
+        .fetch_add(1, Ordering::Release);
+    assert!(wait_until(&|| {
+        VAD_WORKER_DISCONTINUITY_RESETS.load(Ordering::Acquire) > reset_count
+    }));
+    assert_eq!(producer.write(&[0.1; 4096]), 4096);
+    assert!(wait_until(&|| processor
+        .shared
+        .vad
+        .backend_available
+        .load(Ordering::Acquire)));
+    assert_eq!(VAD_WORKER_MODEL_INITS.load(Ordering::Acquire), model_inits);
+
+    // Hold the worker in its existing error backoff, fill the queue, then
+    // publish a gap. The worker must flush the accepted queue before it
+    // resets the recurrent state.
+    VAD_WORKER_FORCE_INFERENCE_ERROR.store(true, Ordering::Release);
+    assert_eq!(producer.write(&[0.1; 4096]), 4096);
+    assert!(wait_until(&|| !processor
+        .shared
+        .vad
+        .backend_available
+        .load(Ordering::Acquire)));
+    let reset_count = VAD_WORKER_DISCONTINUITY_RESETS.load(Ordering::Acquire);
+    let flushed_count = VAD_WORKER_DISCONTINUITY_FLUSHED_SAMPLES.load(Ordering::Acquire);
+    assert_eq!(
+        producer.write(&[0.2; VAD_WORKER_MAX_BUFFER_SAMPLES]),
+        VAD_WORKER_MAX_BUFFER_SAMPLES
+    );
+    processor
+        .shared
+        .vad
+        .source_discontinuity
+        .fetch_add(1, Ordering::Release);
+    assert!(wait_until(&|| {
+        VAD_WORKER_DISCONTINUITY_RESETS.load(Ordering::Acquire) > reset_count
+    }));
+    assert!(wait_until(&|| processor
+        .shared
+        .vad
+        .backend_available
+        .load(Ordering::Acquire)));
+    assert!(
+        VAD_WORKER_DISCONTINUITY_FLUSHED_SAMPLES.load(Ordering::Acquire)
+            >= flushed_count + VAD_WORKER_MAX_BUFFER_SAMPLES as u64
+    );
+
+    processor.stop_vad_worker(&mut processor.lock_streams());
+}
+
+fn install_raw_recording_consumer(processor: &AudioProcessor) {
+    let rb = crate::audio::AudioRingBuffer::new(processor.sample_rate as usize);
+    let (_producer, consumer) = rb.split();
+    *processor.shared.recording.consumer.lock().unwrap() = Some(consumer);
+}
+
+#[test]
+fn test_raw_recording_rejects_invalid_durations_without_activating() {
+    for duration in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let processor = AudioProcessor::new();
         install_raw_recording_consumer(&processor);
 
-        let err = processor.start_raw_recording(0.25 / processor.sample_rate as f64);
+        let err = processor.start_raw_recording(duration).unwrap_err();
 
-        assert_eq!(err.unwrap_err(), "Recording duration is too short");
-        assert!(!processor.recording_active.load(Ordering::Acquire));
-        assert_eq!(processor.raw_recording_target.load(Ordering::Acquire), 0);
+        assert!(err.contains("finite positive"));
+        assert!(!processor.shared.recording.active.load(Ordering::Acquire));
+        assert_eq!(processor.shared.recording.target.load(Ordering::Acquire), 0);
     }
+}
 
-    #[test]
-    fn test_raw_recording_accepts_valid_duration_with_nonzero_target() {
-        let mut processor = AudioProcessor::new();
-        install_raw_recording_consumer(&processor);
+#[test]
+fn test_raw_recording_rejects_too_short_duration_without_activating() {
+    let processor = AudioProcessor::new();
+    install_raw_recording_consumer(&processor);
 
-        processor.start_raw_recording(0.01).unwrap();
+    let err = processor.start_raw_recording(0.25 / processor.sample_rate as f64);
 
-        assert!(processor.recording_active.load(Ordering::Acquire));
-        assert!(processor.raw_recording_target.load(Ordering::Acquire) > 0);
-    }
+    assert_eq!(err.unwrap_err(), "Recording duration is too short");
+    assert!(!processor.shared.recording.active.load(Ordering::Acquire));
+    assert_eq!(processor.shared.recording.target.load(Ordering::Acquire), 0);
+}
 
-    #[test]
-    fn test_raw_recording_before_cleanup_is_opt_in_and_cleared_on_stop() {
-        let mut processor = AudioProcessor::new();
-        install_raw_recording_consumer(&processor);
+#[test]
+fn test_raw_recording_accepts_valid_duration_with_nonzero_target() {
+    let processor = AudioProcessor::new();
+    install_raw_recording_consumer(&processor);
 
-        processor.start_raw_recording_with_tap(0.01, true).unwrap();
-        assert!(processor
-            .raw_recording_before_cleanup
-            .load(Ordering::Acquire));
+    processor.start_raw_recording(0.01).unwrap();
 
-        processor.stop_raw_recording();
-        assert!(!processor
-            .raw_recording_before_cleanup
-            .load(Ordering::Acquire));
+    assert!(processor.shared.recording.active.load(Ordering::Acquire));
+    assert!(processor.shared.recording.target.load(Ordering::Acquire) > 0);
+}
 
-        processor.start_raw_recording(0.01).unwrap();
-        assert!(!processor
-            .raw_recording_before_cleanup
-            .load(Ordering::Acquire));
-    }
+#[test]
+fn test_raw_recording_before_cleanup_is_opt_in_and_cleared_on_stop() {
+    let processor = AudioProcessor::new();
+    install_raw_recording_consumer(&processor);
 
-    #[test]
-    fn test_raw_monitor_path_selection_and_clean_write_mode() {
-        let raw = select_processing_path(true, false);
-        let bypass = select_processing_path(false, true);
-        let full = select_processing_path(false, false);
+    processor.start_raw_recording_with_tap(0.01, true).unwrap();
+    assert!(processor
+        .shared
+        .recording
+        .before_cleanup
+        .load(Ordering::Acquire));
 
-        assert_eq!(raw, ProcessingPath::RawMonitor);
-        assert_eq!(bypass, ProcessingPath::Bypass);
-        assert_eq!(full, ProcessingPath::Full);
+    processor.stop_raw_recording();
+    assert!(!processor
+        .shared
+        .recording
+        .before_cleanup
+        .load(Ordering::Acquire));
 
-        assert!(uses_clean_write_path(raw));
-        assert!(!uses_clean_write_path(bypass));
-        assert!(!uses_clean_write_path(full));
-    }
+    processor.start_raw_recording(0.01).unwrap();
+    assert!(!processor
+        .shared
+        .recording
+        .before_cleanup
+        .load(Ordering::Acquire));
+}
 
-    #[cfg(feature = "vad")]
-    #[test]
-    fn test_full_path_transitions_publish_vad_discontinuity() {
-        let discontinuity = AtomicU64::new(0);
+#[test]
+fn test_raw_monitor_path_selection_and_clean_write_mode() {
+    let raw = select_processing_path(true, false);
+    let bypass = select_processing_path(false, true);
+    let full = select_processing_path(false, false);
 
-        publish_vad_processing_path_discontinuity(
-            ProcessingPath::Full,
-            ProcessingPath::Bypass,
-            &discontinuity,
-        );
-        assert_eq!(discontinuity.load(Ordering::Acquire), 1);
+    assert_eq!(raw, ProcessingPath::RawMonitor);
+    assert_eq!(bypass, ProcessingPath::Bypass);
+    assert_eq!(full, ProcessingPath::Full);
 
-        publish_vad_processing_path_discontinuity(
-            ProcessingPath::Bypass,
-            ProcessingPath::Full,
-            &discontinuity,
-        );
-        assert_eq!(discontinuity.load(Ordering::Acquire), 2);
+    assert!(uses_clean_write_path(raw));
+    assert!(!uses_clean_write_path(bypass));
+    assert!(!uses_clean_write_path(full));
+}
 
-        // Raw↔Bypass never feeds the VAD and therefore does not need a
-        // recurrent-state boundary of its own.
-        publish_vad_processing_path_discontinuity(
-            ProcessingPath::RawMonitor,
-            ProcessingPath::Bypass,
-            &discontinuity,
-        );
-        publish_vad_processing_path_discontinuity(
-            ProcessingPath::Bypass,
-            ProcessingPath::RawMonitor,
-            &discontinuity,
-        );
-        assert_eq!(discontinuity.load(Ordering::Acquire), 2);
+#[cfg(feature = "vad")]
+#[test]
+fn test_full_path_transitions_publish_vad_discontinuity() {
+    let discontinuity = AtomicU64::new(0);
 
-        publish_vad_processing_path_discontinuity(
-            ProcessingPath::RawMonitor,
-            ProcessingPath::Full,
-            &discontinuity,
-        );
-        assert_eq!(discontinuity.load(Ordering::Acquire), 3);
-    }
+    publish_vad_processing_path_discontinuity(
+        ProcessingPath::Full,
+        ProcessingPath::Bypass,
+        &discontinuity,
+    );
+    assert_eq!(discontinuity.load(Ordering::Acquire), 1);
 
-    #[test]
-    fn test_raw_monitor_sanitizes_but_skips_prefilter_shaping() {
-        let mut non_finite = vec![f32::NAN, f32::INFINITY, -f32::INFINITY];
-        sanitize_non_finite_inplace(&mut non_finite);
-        assert_eq!(non_finite, vec![0.0, 0.0, 0.0]);
+    publish_vad_processing_path_discontinuity(
+        ProcessingPath::Bypass,
+        ProcessingPath::Full,
+        &discontinuity,
+    );
+    assert_eq!(discontinuity.load(Ordering::Acquire), 2);
 
-        let mut raw_buffer = vec![0.25_f32; 256];
-        let mut normal_buffer = raw_buffer.clone();
+    // Raw↔Bypass never feeds the VAD and therefore does not need a
+    // recurrent-state boundary of its own.
+    publish_vad_processing_path_discontinuity(
+        ProcessingPath::RawMonitor,
+        ProcessingPath::Bypass,
+        &discontinuity,
+    );
+    publish_vad_processing_path_discontinuity(
+        ProcessingPath::Bypass,
+        ProcessingPath::RawMonitor,
+        &discontinuity,
+    );
+    assert_eq!(discontinuity.load(Ordering::Acquire), 2);
 
-        sanitize_non_finite_inplace(&mut raw_buffer);
-        let mut pre_filter_state = InputPreFilterState::default();
-        let mut pre_filter = Biquad::new(
-            BiquadType::HighPass,
-            INPUT_PREFILTER_HZ,
-            0.0,
-            INPUT_PREFILTER_Q,
-            48_000.0,
-        );
+    publish_vad_processing_path_discontinuity(
+        ProcessingPath::RawMonitor,
+        ProcessingPath::Full,
+        &discontinuity,
+    );
+    assert_eq!(discontinuity.load(Ordering::Acquire), 3);
+}
+
+#[test]
+fn test_raw_monitor_sanitizes_but_skips_prefilter_shaping() {
+    let mut non_finite = vec![f32::NAN, f32::INFINITY, -f32::INFINITY];
+    sanitize_non_finite_inplace(&mut non_finite);
+    assert_eq!(non_finite, vec![0.0, 0.0, 0.0]);
+
+    let mut raw_buffer = vec![0.25_f32; 256];
+    let mut normal_buffer = raw_buffer.clone();
+
+    sanitize_non_finite_inplace(&mut raw_buffer);
+    let mut pre_filter_state = InputPreFilterState::default();
+    let mut pre_filter = Biquad::new(
+        BiquadType::HighPass,
+        INPUT_PREFILTER_HZ,
+        0.0,
+        INPUT_PREFILTER_Q,
+        48_000.0,
+    );
+    apply_input_pre_filter(
+        &mut normal_buffer,
+        &mut pre_filter_state,
+        &mut pre_filter,
+        true,
+    );
+
+    let max_abs_diff = normal_buffer
+        .iter()
+        .zip(raw_buffer.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(max_abs_diff > 0.05);
+}
+
+fn process_fixed_input_prefilter(input: &[f32], sample_rate: f32) -> Vec<f32> {
+    let mut output = input.to_vec();
+    let mut pre_filter_state = InputPreFilterState::default();
+    let mut pre_filter = Biquad::new(
+        BiquadType::HighPass,
+        INPUT_PREFILTER_HZ,
+        0.0,
+        INPUT_PREFILTER_Q,
+        sample_rate as f64,
+    );
+    apply_input_pre_filter(&mut output, &mut pre_filter_state, &mut pre_filter, true);
+    output
+}
+
+/// Gain of the real input conditioning for one sine tone, run as the DSP
+/// thread runs it: the DC blocker (with the fixed high-pass only when
+/// adaptive cleanup is off), then `AdaptiveInputCleanupState::process_block`
+/// when it is on. `analyze_input` is not called, so no hum or rumble is
+/// detected and cleanup stays in its default state; fed a 60 Hz or 40 Hz
+/// tone it would otherwise notch the hum or raise the high-pass. The gain
+/// is read by lock-in detection over the last second, a whole number of
+/// cycles for an integer frequency, so the settling transient is excluded.
+fn measured_input_conditioning_gain_db(
+    frequency_hz: f64,
+    sample_rate: f64,
+    mode: InputCleanupMode,
+) -> f64 {
+    const AMPLITUDE: f64 = 0.25;
+    let omega = 2.0 * std::f64::consts::PI * frequency_hz / sample_rate;
+    let total = sample_rate as usize * 3;
+    let mut audio: Vec<f32> = (0..total)
+        .map(|n| (AMPLITUDE * (omega * n as f64).sin()) as f32)
+        .collect();
+    let mut pre_filter_state = InputPreFilterState::default();
+    let mut pre_filter = new_input_pre_filter(sample_rate);
+    let mut cleanup = AdaptiveInputCleanupState::new(sample_rate as f32);
+    cleanup.set_mode(mode);
+    for block in audio.chunks_mut(480) {
         apply_input_pre_filter(
-            &mut normal_buffer,
+            block,
             &mut pre_filter_state,
             &mut pre_filter,
-            true,
+            !mode.is_enabled(),
         );
-
-        let max_abs_diff = normal_buffer
-            .iter()
-            .zip(raw_buffer.iter())
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0_f32, f32::max);
-        assert!(max_abs_diff > 0.05);
-    }
-
-    fn process_fixed_input_prefilter(input: &[f32], sample_rate: f32) -> Vec<f32> {
-        let mut output = input.to_vec();
-        let mut pre_filter_state = InputPreFilterState::default();
-        let mut pre_filter = Biquad::new(
-            BiquadType::HighPass,
-            INPUT_PREFILTER_HZ,
-            0.0,
-            INPUT_PREFILTER_Q,
-            sample_rate as f64,
-        );
-        apply_input_pre_filter(&mut output, &mut pre_filter_state, &mut pre_filter, true);
-        output
-    }
-
-    /// Gain of the real input conditioning for one sine tone, run as the DSP
-    /// thread runs it: the DC blocker (with the fixed high-pass only when
-    /// adaptive cleanup is off), then `AdaptiveInputCleanupState::process_block`
-    /// when it is on. `analyze_input` is not called, so no hum or rumble is
-    /// detected and cleanup stays in its default state; fed a 60 Hz or 40 Hz
-    /// tone it would otherwise notch the hum or raise the high-pass. The gain
-    /// is read by lock-in detection over the last second, a whole number of
-    /// cycles for an integer frequency, so the settling transient is excluded.
-    fn measured_input_conditioning_gain_db(
-        frequency_hz: f64,
-        sample_rate: f64,
-        mode: InputCleanupMode,
-    ) -> f64 {
-        const AMPLITUDE: f64 = 0.25;
-        let omega = 2.0 * std::f64::consts::PI * frequency_hz / sample_rate;
-        let total = sample_rate as usize * 3;
-        let mut audio: Vec<f32> = (0..total)
-            .map(|n| (AMPLITUDE * (omega * n as f64).sin()) as f32)
-            .collect();
-        let mut pre_filter_state = InputPreFilterState::default();
-        let mut pre_filter = new_input_pre_filter(sample_rate);
-        let mut cleanup = AdaptiveInputCleanupState::new(sample_rate as f32);
-        cleanup.set_mode(mode);
-        for block in audio.chunks_mut(480) {
-            apply_input_pre_filter(
-                block,
-                &mut pre_filter_state,
-                &mut pre_filter,
-                !mode.is_enabled(),
-            );
-            if mode.is_enabled() {
-                cleanup.process_block(block);
-            }
+        if mode.is_enabled() {
+            cleanup.process_block(block);
         }
-        let window = total - sample_rate as usize..total;
-        let (mut in_phase, mut quadrature) = (0.0_f64, 0.0_f64);
-        for n in window.clone() {
-            in_phase += audio[n] as f64 * (omega * n as f64).sin();
-            quadrature += audio[n] as f64 * (omega * n as f64).cos();
-        }
-        let amplitude = 2.0 * in_phase.hypot(quadrature) / window.len() as f64;
-        20.0 * (amplitude / AMPLITUDE).log10()
     }
+    let window = total - sample_rate as usize..total;
+    let (mut in_phase, mut quadrature) = (0.0_f64, 0.0_f64);
+    for n in window.clone() {
+        in_phase += audio[n] as f64 * (omega * n as f64).sin();
+        quadrature += audio[n] as f64 * (omega * n as f64).cos();
+    }
+    let amplitude = 2.0 * in_phase.hypot(quadrature) / window.len() as f64;
+    20.0 * (amplitude / AMPLITUDE).log10()
+}
 
-    #[test]
-    fn test_input_prefilter_response_matches_the_real_conditioning() {
-        let frequencies = [20.0, 40.0, 60.0, 80.0, 160.0, 1000.0];
-        for sample_rate in [48_000.0, 44_100.0, 96_000.0] {
-            for mode in [
-                InputCleanupMode::Off,
-                InputCleanupMode::Gentle,
-                InputCleanupMode::Strong,
-            ] {
-                let reported = static_input_pre_filter_response_db(&frequencies, mode, sample_rate);
-                for (frequency_hz, reported_db) in frequencies.iter().zip(reported) {
-                    let measured_db =
-                        measured_input_conditioning_gain_db(*frequency_hz, sample_rate, mode);
-                    assert!(
-                        (measured_db - reported_db).abs() < 0.01,
-                        "{mode:?} at {frequency_hz} Hz, {sample_rate} Hz: \
-                         measured {measured_db:.4} dB, reported {reported_db:.4} dB"
-                    );
-                }
+#[test]
+fn test_input_prefilter_response_matches_the_real_conditioning() {
+    let frequencies = [20.0, 40.0, 60.0, 80.0, 160.0, 1000.0];
+    for sample_rate in [48_000.0, 44_100.0, 96_000.0] {
+        for mode in [
+            InputCleanupMode::Off,
+            InputCleanupMode::Gentle,
+            InputCleanupMode::Strong,
+        ] {
+            let reported = static_input_pre_filter_response_db(&frequencies, mode, sample_rate);
+            for (frequency_hz, reported_db) in frequencies.iter().zip(reported) {
+                let measured_db =
+                    measured_input_conditioning_gain_db(*frequency_hz, sample_rate, mode);
+                assert!(
+                    (measured_db - reported_db).abs() < 0.01,
+                    "{mode:?} at {frequency_hz} Hz, {sample_rate} Hz: \
+                     measured {measured_db:.4} dB, reported {reported_db:.4} dB"
+                );
             }
         }
     }
+}
 
-    #[test]
-    fn test_input_prefilter_response_is_the_same_high_pass_in_every_cleanup_mode() {
-        let frequencies = [0.0, 20.0, 80.0, 1000.0, 20_000.0];
-        let off =
-            static_input_pre_filter_response_db(&frequencies, InputCleanupMode::Off, 48_000.0);
-        let gentle =
-            static_input_pre_filter_response_db(&frequencies, InputCleanupMode::Gentle, 48_000.0);
-        let strong =
-            static_input_pre_filter_response_db(&frequencies, InputCleanupMode::Strong, 48_000.0);
+#[test]
+fn test_input_prefilter_response_is_the_same_high_pass_in_every_cleanup_mode() {
+    let frequencies = [0.0, 20.0, 80.0, 1000.0, 20_000.0];
+    let off = static_input_pre_filter_response_db(&frequencies, InputCleanupMode::Off, 48_000.0);
+    let gentle =
+        static_input_pre_filter_response_db(&frequencies, InputCleanupMode::Gentle, 48_000.0);
+    let strong =
+        static_input_pre_filter_response_db(&frequencies, InputCleanupMode::Strong, 48_000.0);
 
-        assert!(off.iter().all(|value| value.is_finite()));
-        assert!(off[0] < -100.0, "DC must be blocked, got {} dB", off[0]);
-        // Cleanup keeps an 80 Hz high-pass by default, so no mode differs.
-        assert_eq!(off, gentle);
-        assert_eq!(gentle, strong);
-        // The high-pass is -3 dB at its corner, on top of the DC blocker, and
-        // cuts the bass below it.
-        let corner_db = off[2] - dc_block_response_db(80.0, 48_000.0);
-        assert!(
-            corner_db < -2.9 && corner_db > -3.1,
-            "corner {corner_db} dB"
-        );
-        assert!(off[1] < -20.0);
-        assert!(off[3].abs() < 0.05 && off[4].abs() < 0.05);
-    }
+    assert!(off.iter().all(|value| value.is_finite()));
+    assert!(off[0] < -100.0, "DC must be blocked, got {} dB", off[0]);
+    // Cleanup keeps an 80 Hz high-pass by default, so no mode differs.
+    assert_eq!(off, gentle);
+    assert_eq!(gentle, strong);
+    // The high-pass is -3 dB at its corner, on top of the DC blocker, and
+    // cuts the bass below it.
+    let corner_db = off[2] - dc_block_response_db(80.0, 48_000.0);
+    assert!(
+        corner_db < -2.9 && corner_db > -3.1,
+        "corner {corner_db} dB"
+    );
+    assert!(off[1] < -20.0);
+    assert!(off[3].abs() < 0.05 && off[4].abs() < 0.05);
+}
 
-    fn process_adaptive_input_cleanup(
-        input: &[f32],
-        mode: InputCleanupMode,
-        sample_rate: f32,
-        chunk_size: usize,
-    ) -> (Vec<f32>, bool, bool, f32, f32) {
-        let mut pre_filter_state = InputPreFilterState::default();
-        let mut pre_filter = Biquad::new(
-            BiquadType::HighPass,
-            INPUT_PREFILTER_HZ,
-            0.0,
-            INPUT_PREFILTER_Q,
-            sample_rate as f64,
-        );
-        let mut cleanup = AdaptiveInputCleanupState::new(sample_rate);
-        cleanup.set_mode(mode);
+fn process_adaptive_input_cleanup(
+    input: &[f32],
+    mode: InputCleanupMode,
+    sample_rate: f32,
+    chunk_size: usize,
+) -> (Vec<f32>, bool, bool, f32, f32) {
+    let mut pre_filter_state = InputPreFilterState::default();
+    let mut pre_filter = Biquad::new(
+        BiquadType::HighPass,
+        INPUT_PREFILTER_HZ,
+        0.0,
+        INPUT_PREFILTER_Q,
+        sample_rate as f64,
+    );
+    let mut cleanup = AdaptiveInputCleanupState::new(sample_rate);
+    cleanup.set_mode(mode);
 
-        let mut output = Vec::with_capacity(input.len());
-        let mut ever_hum = false;
-        let mut ever_rumble = false;
-        let mut max_high_pass_hz = INPUT_PREFILTER_HZ as f32;
+    let mut output = Vec::with_capacity(input.len());
+    let mut ever_hum = false;
+    let mut ever_rumble = false;
+    let mut max_high_pass_hz = INPUT_PREFILTER_HZ as f32;
 
-        for chunk in input.chunks(chunk_size) {
-            let mut block = chunk.to_vec();
-            if mode.is_enabled() {
-                cleanup.analyze_input(&block);
-            }
-            apply_input_pre_filter(
-                &mut block,
-                &mut pre_filter_state,
-                &mut pre_filter,
-                !mode.is_enabled(),
-            );
-            if mode.is_enabled() {
-                cleanup.process_block(&mut block);
-            }
-            ever_hum |= cleanup.hum_detected;
-            ever_rumble |= cleanup.rumble_detected;
-            max_high_pass_hz = max_high_pass_hz.max(cleanup.selected_high_pass_hz);
-            output.extend_from_slice(&block);
+    for chunk in input.chunks(chunk_size) {
+        let mut block = chunk.to_vec();
+        if mode.is_enabled() {
+            cleanup.analyze_input(&block);
         }
-
-        (
-            output,
-            ever_hum,
-            ever_rumble,
-            max_high_pass_hz,
-            cleanup.hum_line_hz,
-        )
-    }
-
-    #[test]
-    fn test_input_cleanup_off_matches_existing_prefilter_bit_exactly() {
-        let sample_rate = 48_000.0;
-        let len = 4096;
-        let input: Vec<f32> = (0..len)
-            .map(|index| {
-                let t = index as f32 / sample_rate;
-                0.15 * (2.0 * std::f32::consts::PI * 60.0 * t).sin()
-                    + 0.08 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
-                    + 0.04 * (2.0 * std::f32::consts::PI * 1200.0 * t).sin()
-            })
-            .collect();
-
-        let fixed = process_fixed_input_prefilter(&input, sample_rate);
-        let (adaptive_off, hum, rumble, high_pass_hz, _) =
-            process_adaptive_input_cleanup(&input, InputCleanupMode::Off, sample_rate, 480);
-
-        assert_eq!(adaptive_off, fixed);
-        assert!(!hum);
-        assert!(!rumble);
-        assert_eq!(high_pass_hz, INPUT_PREFILTER_HZ as f32);
-    }
-
-    #[test]
-    fn test_adaptive_input_cleanup_reduces_synthetic_line_hum() {
-        let sample_rate = 48_000.0;
-        let len = sample_rate as usize;
-        let input: Vec<f32> = (0..len)
-            .map(|index| {
-                let t = index as f32 / sample_rate;
-                0.14 * (2.0 * std::f32::consts::PI * 60.0 * t).sin()
-                    + 0.08 * (2.0 * std::f32::consts::PI * 120.0 * t).sin()
-                    + 0.05 * (2.0 * std::f32::consts::PI * 1000.0 * t).sin()
-            })
-            .collect();
-
-        let fixed = process_fixed_input_prefilter(&input, sample_rate);
-        let (cleaned, hum, _rumble, high_pass_hz, _) =
-            process_adaptive_input_cleanup(&input, InputCleanupMode::Strong, sample_rate, 480);
-        let tail = len / 2;
-        let fixed_hum = tone_amplitude(&fixed[tail..], sample_rate, 60.0);
-        let cleaned_hum = tone_amplitude(&cleaned[tail..], sample_rate, 60.0);
-        let fixed_voice = tone_amplitude(&fixed[tail..], sample_rate, 1000.0);
-        let cleaned_voice = tone_amplitude(&cleaned[tail..], sample_rate, 1000.0);
-
-        assert!(hum);
-        assert!(cleaned_hum < fixed_hum * 0.65);
-        assert!(cleaned_voice > fixed_voice * 0.94);
-        assert_eq!(high_pass_hz, INPUT_PREFILTER_HZ as f32);
-    }
-
-    #[test]
-    fn test_adaptive_input_cleanup_raises_highpass_for_plosive_not_sustained_voice() {
-        let sample_rate = 48_000.0;
-        let len = sample_rate as usize;
-        let input: Vec<f32> = (0..len)
-            .map(|index| {
-                let t = index as f32 / sample_rate;
-                let voice = 0.08 * (2.0 * std::f32::consts::PI * 180.0 * t).sin()
-                    + 0.05 * (2.0 * std::f32::consts::PI * 1200.0 * t).sin();
-                let plosive = if t < 0.05 {
-                    let env = (1.0 - t / 0.05).max(0.0);
-                    0.65 * env * (2.0 * std::f32::consts::PI * 38.0 * t).sin()
-                } else {
-                    0.0
-                };
-                voice + plosive
-            })
-            .collect();
-
-        let fixed = process_fixed_input_prefilter(&input, sample_rate);
-        let (cleaned, _hum, rumble, high_pass_hz, _) =
-            process_adaptive_input_cleanup(&input, InputCleanupMode::Gentle, sample_rate, 480);
-        let tail = len * 3 / 4;
-        let fixed_voice = tone_amplitude(&fixed[tail..], sample_rate, 180.0);
-        let cleaned_voice = tone_amplitude(&cleaned[tail..], sample_rate, 180.0);
-
-        assert!(rumble);
-        assert!(high_pass_hz >= 100.0);
-        assert!(cleaned_voice > fixed_voice * 0.94);
-    }
-
-    #[test]
-    fn test_adaptive_cleanup_tracks_49_to_61_hz_drift_and_retunes_smoothly() {
-        let sample_rate = 48_000.0_f32;
-        let len = sample_rate as usize * 2;
-        let mut phase = 0.0_f32;
-        let mut input = Vec::with_capacity(len);
-        let mut voice_only = Vec::with_capacity(len);
-        for index in 0..len {
-            let time = index as f32 / sample_rate;
-            let frequency = 49.0 + 12.0 * index as f32 / (len - 1) as f32;
-            phase += 2.0 * std::f32::consts::PI * frequency / sample_rate;
-            let voice = 0.045 * (2.0 * std::f32::consts::PI * 1000.0 * time).sin();
-            voice_only.push(voice);
-            input.push(voice + 0.13 * phase.sin() + 0.065 * (2.0 * phase).sin());
+        apply_input_pre_filter(
+            &mut block,
+            &mut pre_filter_state,
+            &mut pre_filter,
+            !mode.is_enabled(),
+        );
+        if mode.is_enabled() {
+            cleanup.process_block(&mut block);
         }
-
-        let (cleaned, hum, _, _, tracked_hz) =
-            process_adaptive_input_cleanup(&input, InputCleanupMode::Strong, sample_rate, 480);
-        let (clean_voice, _, _, _, _) =
-            process_adaptive_input_cleanup(&voice_only, InputCleanupMode::Strong, sample_rate, 480);
-        let tail = len / 2;
-        let input_residual = input[tail..]
-            .iter()
-            .zip(voice_only[tail..].iter())
-            .map(|(mixed, voice)| (mixed - voice).powi(2))
-            .sum::<f32>();
-        let cleaned_residual = cleaned[tail..]
-            .iter()
-            .zip(clean_voice[tail..].iter())
-            .map(|(mixed, voice)| (mixed - voice).powi(2))
-            .sum::<f32>();
-        let max_step = cleaned
-            .windows(2)
-            .map(|window| (window[1] - window[0]).abs())
-            .fold(0.0_f32, f32::max);
-
-        assert!(hum);
-        assert!(
-            (57.0..=61.0).contains(&tracked_hz),
-            "tracked_hz={tracked_hz}"
-        );
-        assert!(
-            cleaned_residual < input_residual * 0.72,
-            "cleaned_residual={cleaned_residual} input_residual={input_residual}"
-        );
-        assert!(max_step < 0.20, "retune max_step={max_step}");
+        ever_hum |= cleanup.hum_detected;
+        ever_rumble |= cleanup.rumble_detected;
+        max_high_pass_hz = max_high_pass_hz.max(cleanup.selected_high_pass_hz);
+        output.extend_from_slice(&block);
     }
 
-    #[test]
-    fn test_adaptive_cleanup_uses_harmonic_to_track_off_nominal_hum() {
-        let sample_rate = 48_000.0_f32;
-        let len = sample_rate as usize * 2;
-        let fundamental = 51.5_f32;
-        let input: Vec<f32> = (0..len)
-            .map(|index| {
-                let time = index as f32 / sample_rate;
-                0.025 * (2.0 * std::f32::consts::PI * fundamental * time).sin()
-                    + 0.14 * (2.0 * std::f32::consts::PI * fundamental * 2.0 * time).sin()
-                    + 0.04 * (2.0 * std::f32::consts::PI * 1200.0 * time).sin()
-            })
-            .collect();
-        let fixed = process_fixed_input_prefilter(&input, sample_rate);
-        let (cleaned, hum, _, _, tracked_hz) =
-            process_adaptive_input_cleanup(&input, InputCleanupMode::Strong, sample_rate, 480);
-        let tail = len / 2;
-        let fixed_harmonic = tone_amplitude(&fixed[tail..], sample_rate, fundamental * 2.0);
-        let cleaned_harmonic = tone_amplitude(&cleaned[tail..], sample_rate, fundamental * 2.0);
+    (
+        output,
+        ever_hum,
+        ever_rumble,
+        max_high_pass_hz,
+        cleanup.hum_line_hz,
+    )
+}
 
-        assert!(hum);
-        assert!(
-            (tracked_hz - fundamental).abs() < 1.5,
-            "tracked_hz={tracked_hz}"
-        );
-        assert!(cleaned_harmonic < fixed_harmonic * 0.72);
-    }
-
-    #[test]
-    fn test_adaptive_cleanup_does_not_classify_plosive_or_low_voice_as_hum() {
-        let sample_rate = 48_000.0_f32;
-        let len = sample_rate as usize;
-        let plosive: Vec<f32> = (0..len)
-            .map(|index| {
-                let time = index as f32 / sample_rate;
-                if time < 0.055 {
-                    0.7 * (1.0 - time / 0.055) * (2.0 * std::f32::consts::PI * 52.0 * time).sin()
-                } else {
-                    0.0
-                }
-            })
-            .collect();
-        let low_voice: Vec<f32> = (0..len)
-            .map(|index| {
-                let time = index as f32 / sample_rate;
-                0.12 * (2.0 * std::f32::consts::PI * 90.0 * time).sin()
-                    + 0.06 * (2.0 * std::f32::consts::PI * 180.0 * time).sin()
-                    + 0.03 * (2.0 * std::f32::consts::PI * 270.0 * time).sin()
-            })
-            .collect();
-
-        let (_, plosive_hum, plosive_rumble, _, _) =
-            process_adaptive_input_cleanup(&plosive, InputCleanupMode::Strong, sample_rate, 480);
-        let (_, voice_hum, _, voice_highpass, _) =
-            process_adaptive_input_cleanup(&low_voice, InputCleanupMode::Strong, sample_rate, 480);
-
-        assert!(!plosive_hum);
-        assert!(plosive_rumble);
-        assert!(!voice_hum);
-        assert_eq!(voice_highpass, INPUT_PREFILTER_HZ as f32);
-    }
-
-    #[test]
-    fn test_adaptive_cleanup_selects_one_highpass_instead_of_cascading() {
-        let sample_rate = 48_000.0_f32;
-        let input: Vec<f32> = (0..8192)
-            .map(|index| {
-                let time = index as f32 / sample_rate;
-                0.05 * (2.0 * std::f32::consts::PI * 300.0 * time).sin()
-                    + 0.03 * (2.0 * std::f32::consts::PI * 2000.0 * time).sin()
-            })
-            .collect();
-        let fixed = process_fixed_input_prefilter(&input, sample_rate);
-        let (adaptive, hum, rumble, highpass, _) =
-            process_adaptive_input_cleanup(&input, InputCleanupMode::Gentle, sample_rate, 480);
-        let max_difference = fixed
-            .iter()
-            .zip(adaptive.iter())
-            .map(|(left, right)| (left - right).abs())
-            .fold(0.0_f32, f32::max);
-
-        assert!(!hum);
-        assert!(!rumble);
-        assert_eq!(highpass, INPUT_PREFILTER_HZ as f32);
-        assert!(max_difference < 1.0e-5, "max_difference={max_difference}");
-    }
-
-    #[test]
-    fn test_final_output_sanitizer_rejects_non_finite_and_limits_ceiling() {
-        let mut buffer = vec![f32::NAN, f32::INFINITY, -f32::INFINITY, 0.75, -0.75];
-        sanitize_and_clamp_output_inplace(&mut buffer, 0.5);
-        assert_eq!(buffer, vec![0.0, 0.0, 0.0, 0.5, -0.5]);
-    }
-
-    #[test]
-    fn test_final_output_sanitizer_records_clip_events() {
-        let output_clip_event_count = AtomicU64::new(0);
-        let output_clip_peak_db = AtomicU32::new((-120.0_f32).to_bits());
-        let mut buffer = vec![0.25, 0.75, -0.8, f32::NAN];
-
-        sanitize_and_clamp_output_inplace_with_metrics(
-            &mut buffer,
-            0.5,
-            &output_clip_event_count,
-            &output_clip_peak_db,
-        );
-
-        assert_eq!(buffer, vec![0.25, 0.5, -0.5, 0.0]);
-        assert_eq!(output_clip_event_count.load(Ordering::Relaxed), 2);
-        let peak_db = f32::from_bits(output_clip_peak_db.load(Ordering::Relaxed));
-        assert!((peak_db - (20.0_f32 * 0.8_f32.log10())).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_peak_hold_keeps_a_transient_until_read_and_take_resets() {
-        let processor = AudioProcessor::new();
-        let record = |block: &[f32]| {
-            record_level_extremes(
-                block,
-                &processor.input_peak_hold,
-                Some(&processor.input_full_scale_count),
-            );
-        };
-        let quiet = [0.01_f32; 480];
-        let mut transient = quiet;
-        transient[200] = -1.0;
-
-        record(&transient);
-        record(&quiet);
-        record(&quiet);
-        assert_eq!(processor.take_input_peak_since_read(), 1.0);
-
-        // The take reset the hold; the next one only sees what arrived since.
-        assert_eq!(processor.take_input_peak_since_read(), 0.0);
-        record(&quiet);
-        assert_eq!(processor.take_input_peak_since_read(), 0.01);
-
-        // Amplitudes above full scale are reported as delivered, not clamped.
-        record(&[0.2, -1.5]);
-        assert_eq!(processor.take_input_peak_since_read(), 1.5);
-    }
-
-    #[test]
-    fn test_peak_hold_take_loses_no_peak_published_during_a_read() {
-        let hold = std::sync::Arc::new(AtomicU32::new(0));
-        let writer_hold = std::sync::Arc::clone(&hold);
-        let writer = std::thread::spawn(move || {
-            let mut maximum = 0.0_f32;
-            for index in 0..50_000_u32 {
-                // Deterministic scatter of peaks in (0, 1); the largest lands mid-run.
-                let value = (index.wrapping_mul(2_654_435_761) % 99_991) as f32 / 100_000.0;
-                maximum = maximum.max(value);
-                record_level_extremes(&[value], &writer_hold, None);
-            }
-            maximum
-        });
-        let mut seen = 0.0_f32;
-        while !writer.is_finished() {
-            seen = seen.max(f32::from_bits(hold.swap(0, Ordering::Relaxed)));
-        }
-        let written_maximum = writer.join().unwrap();
-        seen = seen.max(f32::from_bits(hold.swap(0, Ordering::Relaxed)));
-        assert_eq!(seen, written_maximum);
-    }
-
-    #[test]
-    fn test_full_scale_count_includes_exactly_full_scale_and_excludes_below() {
-        let processor = AudioProcessor::new();
-        let record = |block: &[f32]| {
-            record_level_extremes(
-                block,
-                &processor.input_peak_hold,
-                Some(&processor.input_full_scale_count),
-            );
-        };
-
-        record(&[0.99, -0.9989, 0.5]);
-        assert_eq!(processor.get_input_full_scale_count(), 0);
-        assert_eq!(processor.take_input_peak_since_read(), 0.9989);
-
-        // 1.0 and -1.0 (a saturated converter), the 0.999 threshold, and an
-        // over-range float sample all count; the count is cumulative.
-        record(&[1.0, -1.0, 0.999, 1.2, 0.0]);
-        assert_eq!(processor.get_input_full_scale_count(), 4);
-        record(&[1.0]);
-        assert_eq!(processor.get_input_full_scale_count(), 5);
-        // Reading the peak does not touch the cumulative count.
-        assert_eq!(processor.take_input_peak_since_read(), 1.2);
-        assert_eq!(processor.get_input_full_scale_count(), 5);
-    }
-
-    #[test]
-    fn test_peak_hold_ignores_non_finite_samples() {
-        let hold = AtomicU32::new(0);
-        let count = AtomicU64::new(0);
-
-        record_level_extremes(
-            &[f32::NAN, f32::INFINITY, f32::NEG_INFINITY],
-            &hold,
-            Some(&count),
-        );
-        assert_eq!(hold.load(Ordering::Relaxed), 0);
-        assert_eq!(count.load(Ordering::Relaxed), 0);
-
-        // Non-finite samples in a block do not hide or inflate its finite peak.
-        record_level_extremes(&[f32::NAN, 0.5, f32::INFINITY, -0.25], &hold, Some(&count));
-        assert_eq!(f32::from_bits(hold.load(Ordering::Relaxed)), 0.5);
-        assert_eq!(count.load(Ordering::Relaxed), 0);
-    }
-
-    /// Writes one chunk through the production output writer and returns what
-    /// reached the output queue with the final peak and full-scale count.
-    fn run_final_output_writer(
-        limiter_on: bool,
-        ceiling: f32,
-        input: &[f32],
-    ) -> (Vec<f32>, f32, u64) {
-        run_output_writer_with(limiter_on, ceiling, input, |writer, chunk| {
-            writer.write_chunk(chunk, true)
+#[test]
+fn test_input_cleanup_off_matches_existing_prefilter_bit_exactly() {
+    let sample_rate = 48_000.0;
+    let len = 4096;
+    let input: Vec<f32> = (0..len)
+        .map(|index| {
+            let t = index as f32 / sample_rate;
+            0.15 * (2.0 * std::f32::consts::PI * 60.0 * t).sin()
+                + 0.08 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+                + 0.04 * (2.0 * std::f32::consts::PI * 1200.0 * t).sin()
         })
-    }
+        .collect();
 
-    /// Like `run_final_output_writer`, with the caller driving the writer.
-    fn run_output_writer_with(
-        limiter_on: bool,
-        ceiling: f32,
-        input: &[f32],
-        drive: impl FnOnce(&mut OutputWriteContext<'_, 1024, 1024, 1024>, &[f32]) -> bool,
-    ) -> (Vec<f32>, f32, u64) {
-        let rb = AudioRingBuffer::new(4096);
-        let (mut producer, mut consumer) = rb.split();
-        let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut true_peak_detector = TruePeakDetector::new();
-        let mut true_peak_limiter = TruePeakLimiter::default();
-        let mut drift_error_ema = 0.0_f32;
-        let mut drift_retimer = DriftRetimer::default();
-        let fade_remaining = Cell::new(0usize);
-        let limiter_enabled = AtomicBool::new(limiter_on);
-        let output_ceiling_linear = Cell::new(ceiling);
-        let jitter_dropped_samples = AtomicU64::new(0);
-        let output_retime_adjustment_count = AtomicU64::new(0);
-        let output_recovery_event_count = AtomicU64::new(0);
-        let output_short_write_dropped_samples = AtomicU64::new(0);
-        let rt_buffer_overflow_count = AtomicU64::new(0);
-        let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
-        let output_buffer_len = AtomicU32::new(0);
-        let last_output_write_time = AtomicU64::new(0);
-        let final_peak = AtomicU32::new(0);
-        let full_scale_count = AtomicU64::new(0);
-        let mut writer = OutputWriteContext {
-            output_producer: &mut producer,
-            output_queue_control_scratch: &mut control_scratch,
-            discontinuity_fade_scratch: &mut fade_scratch,
-            output_safety_scratch: &mut safety_scratch,
-            true_peak_detector: &mut true_peak_detector,
-            true_peak_limiter: &mut true_peak_limiter,
-            drift_error_ema: &mut drift_error_ema,
-            drift_retimer: &mut drift_retimer,
-            discontinuity_fade_remaining: &fade_remaining,
-            output_fade_remaining: 0,
-            limiter_enabled: &limiter_enabled,
-            output_ceiling_linear: &output_ceiling_linear,
-            counters: OutputWriteCounters {
-                output_final_peak_hold: &final_peak,
-                output_full_scale_count: &full_scale_count,
-                ..output_writer_counters(
-                    (
-                        &jitter_dropped_samples,
-                        &output_retime_adjustment_count,
-                        &output_recovery_event_count,
-                    ),
-                    &output_short_write_dropped_samples,
-                    &rt_buffer_overflow_count,
-                    &rt_error_code,
-                    &output_buffer_len,
-                    &last_output_write_time,
-                )
-            },
-            limits: test_output_writer_limits(4, 8, 4),
-        };
-        assert!(drive(&mut writer, input));
-        let mut queued = vec![0.0_f32; input.len()];
-        assert_eq!(consumer.read(&mut queued), input.len());
-        (
-            queued,
-            f32::from_bits(final_peak.load(Ordering::Relaxed)),
-            full_scale_count.load(Ordering::Relaxed),
-        )
-    }
+    let fixed = process_fixed_input_prefilter(&input, sample_rate);
+    let (adaptive_off, hum, rumble, high_pass_hz, _) =
+        process_adaptive_input_cleanup(&input, InputCleanupMode::Off, sample_rate, 480);
 
-    #[test]
-    fn test_level_extremes_and_output_writer_do_not_allocate() {
-        let hold = AtomicU32::new(0);
-        let count = AtomicU64::new(0);
-        let block = [0.25_f32, -1.0, 0.999, f32::NAN, 1.4];
-        record_level_extremes(&block, &hold, Some(&count));
-        crate::test_alloc::assert_no_allocations("level extremes with a count", || {
-            record_level_extremes(&block, &hold, Some(&count));
-        });
-        crate::test_alloc::assert_no_allocations("level extremes without a count", || {
-            record_level_extremes(&block, &hold, None);
-        });
+    assert_eq!(adaptive_off, fixed);
+    assert!(!hum);
+    assert!(!rumble);
+    assert_eq!(high_pass_hz, INPUT_PREFILTER_HZ as f32);
+}
 
-        let mut input = [0.0_f32; 512];
-        input[100..140].fill(0.9);
-        input[200] = f32::NAN;
-        for clean_path in [true, false] {
-            run_output_writer_with(true, 0.5, &input, |writer, chunk| {
-                // The first write warms the writer up; the second is measured.
-                assert!(writer.write_chunk(chunk, clean_path));
-                let mut written = false;
-                crate::test_alloc::assert_no_allocations("output writer", || {
-                    written = writer.write_chunk(chunk, clean_path);
-                });
-                written
-            });
-        }
-    }
+#[test]
+fn test_adaptive_input_cleanup_reduces_synthetic_line_hum() {
+    let sample_rate = 48_000.0;
+    let len = sample_rate as usize;
+    let input: Vec<f32> = (0..len)
+        .map(|index| {
+            let t = index as f32 / sample_rate;
+            0.14 * (2.0 * std::f32::consts::PI * 60.0 * t).sin()
+                + 0.08 * (2.0 * std::f32::consts::PI * 120.0 * t).sin()
+                + 0.05 * (2.0 * std::f32::consts::PI * 1000.0 * t).sin()
+        })
+        .collect();
 
-    #[test]
-    fn test_final_output_peak_is_measured_after_the_limiter() {
-        let mut input = [0.0_f32; 1024];
-        input[300..340].fill(0.9);
-        let input_peak = 0.9_f32;
+    let fixed = process_fixed_input_prefilter(&input, sample_rate);
+    let (cleaned, hum, _rumble, high_pass_hz, _) =
+        process_adaptive_input_cleanup(&input, InputCleanupMode::Strong, sample_rate, 480);
+    let tail = len / 2;
+    let fixed_hum = tone_amplitude(&fixed[tail..], sample_rate, 60.0);
+    let cleaned_hum = tone_amplitude(&cleaned[tail..], sample_rate, 60.0);
+    let fixed_voice = tone_amplitude(&fixed[tail..], sample_rate, 1000.0);
+    let cleaned_voice = tone_amplitude(&cleaned[tail..], sample_rate, 1000.0);
 
-        let (queued, final_peak, full_scale) = run_final_output_writer(true, 0.5, &input);
+    assert!(hum);
+    assert!(cleaned_hum < fixed_hum * 0.65);
+    assert!(cleaned_voice > fixed_voice * 0.94);
+    assert_eq!(high_pass_hz, INPUT_PREFILTER_HZ as f32);
+}
 
-        let queued_peak = queued.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
-        assert_eq!(final_peak, queued_peak, "must equal what was queued");
-        assert!(final_peak > 0.1, "the burst must reach the output");
-        assert!(
-            final_peak <= 0.5 + 1e-6,
-            "limited to the ceiling: {final_peak}"
-        );
-        assert!(
-            final_peak < input_peak - 0.3,
-            "post-limiter must differ from the input"
-        );
-        assert_eq!(full_scale, 0);
-    }
-
-    #[test]
-    fn test_final_output_reports_full_scale_after_clamp_with_limiter_off() {
-        let mut input = [0.0_f32; 1024];
-        input[300..340].fill(1.4);
-        input[400] = f32::NAN;
-
-        let (queued, final_peak, full_scale) = run_final_output_writer(false, 0.5, &input);
-
-        // Limiter off: the ceiling is 1.0 whatever the setting, the clamp holds
-        // the over-range burst at full scale, and the NaN became silence.
-        assert!(queued
-            .iter()
-            .all(|sample| sample.is_finite() && sample.abs() <= 1.0));
-        assert_eq!(final_peak, 1.0);
-        assert!(full_scale >= 40, "full_scale={full_scale}");
-    }
-
-    /// Feeds `input` to the production output writer in 480-sample blocks the
-    /// way the DSP loop's Bypass (`clean_path` false) and Raw monitor (true)
-    /// branches do, draining the queue after every write. Returns everything
-    /// queued, the output full-scale count and the final clamp's clip-event
-    /// count (the clamp counts only samples still above the ceiling). The ceiling is set before the
-    /// first block, as the loop does at startup.
-    fn run_live_path_writer(
-        limiter_on: bool,
-        ceiling_db: f32,
-        clean_path: bool,
-        input: &[f32],
-    ) -> (Vec<f32>, u64, u64) {
-        run_live_path_writer_with(limiter_on, ceiling_db, clean_path, input, |_, _, _, _| {})
-    }
-
-    /// `run_live_path_writer` with a hook that runs before every block, where
-    /// the loop consumes pending control changes. It gets the block index, the
-    /// number of samples queued so far, the limiter-enabled flag and the ceiling cell.
-    fn run_live_path_writer_with(
-        limiter_on: bool,
-        ceiling_db: f32,
-        clean_path: bool,
-        input: &[f32],
-        mut before_block: impl FnMut(usize, usize, &AtomicBool, &Cell<f32>),
-    ) -> (Vec<f32>, u64, u64) {
-        let rb = AudioRingBuffer::new(4096);
-        let (mut producer, mut consumer) = rb.split();
-        let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut true_peak_detector = TruePeakDetector::new();
-        let mut true_peak_limiter = TruePeakLimiter::default();
-        let mut drift_error_ema = 0.0_f32;
-        let mut drift_retimer = DriftRetimer::default();
-        let fade_remaining = Cell::new(0usize);
-        let limiter_enabled = AtomicBool::new(limiter_on);
-        let output_ceiling_linear = Cell::new(10.0_f32.powf(ceiling_db / 20.0));
-        let jitter_dropped_samples = AtomicU64::new(0);
-        let output_retime_adjustment_count = AtomicU64::new(0);
-        let output_recovery_event_count = AtomicU64::new(0);
-        let output_short_write_dropped_samples = AtomicU64::new(0);
-        let rt_buffer_overflow_count = AtomicU64::new(0);
-        let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
-        let output_buffer_len = AtomicU32::new(0);
-        let last_output_write_time = AtomicU64::new(0);
-        let final_peak = AtomicU32::new(0);
-        let full_scale_count = AtomicU64::new(0);
-        let clip_event_count = AtomicU64::new(0);
-        let mut writer = OutputWriteContext {
-            output_producer: &mut producer,
-            output_queue_control_scratch: &mut control_scratch,
-            discontinuity_fade_scratch: &mut fade_scratch,
-            output_safety_scratch: &mut safety_scratch,
-            true_peak_detector: &mut true_peak_detector,
-            true_peak_limiter: &mut true_peak_limiter,
-            drift_error_ema: &mut drift_error_ema,
-            drift_retimer: &mut drift_retimer,
-            discontinuity_fade_remaining: &fade_remaining,
-            output_fade_remaining: 0,
-            limiter_enabled: &limiter_enabled,
-            output_ceiling_linear: &output_ceiling_linear,
-            counters: OutputWriteCounters {
-                output_final_peak_hold: &final_peak,
-                output_full_scale_count: &full_scale_count,
-                output_clip_event_count: &clip_event_count,
-                ..output_writer_counters(
-                    (
-                        &jitter_dropped_samples,
-                        &output_retime_adjustment_count,
-                        &output_recovery_event_count,
-                    ),
-                    &output_short_write_dropped_samples,
-                    &rt_buffer_overflow_count,
-                    &rt_error_code,
-                    &output_buffer_len,
-                    &last_output_write_time,
-                )
-            },
-            limits: test_output_writer_limits(4, 8, 4),
-        };
-        let mut queued = Vec::new();
-        let mut drained = [0.0_f32; 1024];
-        for (index, block) in input.chunks(480).enumerate() {
-            before_block(
-                index,
-                queued.len(),
-                &limiter_enabled,
-                &output_ceiling_linear,
-            );
-            assert!(writer.write_chunk(block, clean_path));
-            let read = consumer.read(&mut drained);
-            queued.extend_from_slice(&drained[..read]);
-        }
-        assert_eq!(
-            output_short_write_dropped_samples.load(Ordering::Relaxed),
-            0
-        );
-        assert_eq!(rt_buffer_overflow_count.load(Ordering::Relaxed), 0);
-        (
-            queued,
-            full_scale_count.load(Ordering::Relaxed),
-            clip_event_count.load(Ordering::Relaxed),
-        )
-    }
-
-    /// Hot 1 kHz-ish signals that reach the writer well above any ceiling:
-    /// a sine at +6 dB over full scale and a full-scale square, each followed
-    /// by silence so the limiter's delayed tail is written too.
-    fn hot_live_path_signals() -> [(&'static str, Vec<f32>); 2] {
-        const TAIL: usize = 2048;
-        let sine = (0..9600)
-            .map(|i| 2.0 * (std::f64::consts::TAU * 997.0 * i as f64 / 48_000.0).sin() as f32)
-            .chain(std::iter::repeat_n(0.0, TAIL))
-            .collect();
-        let square = (0..9600)
-            .map(|i| if (i / 24) % 2 == 0 { 1.0 } else { -1.0 })
-            .chain(std::iter::repeat_n(0.0, TAIL))
-            .collect();
-        [("sine +6 dB", sine), ("square 0 dBFS", square)]
-    }
-
-    /// Longest run of consecutive samples sitting at the ceiling (within the
-    /// limiter's 0.999 target margin), the flat top of a hard clamp.
-    fn longest_run_at_ceiling(samples: &[f32], ceiling: f32) -> usize {
-        let (mut longest, mut run) = (0, 0);
-        for s in samples {
-            run = if s.abs() >= ceiling * 0.9995 {
-                run + 1
+#[test]
+fn test_adaptive_input_cleanup_raises_highpass_for_plosive_not_sustained_voice() {
+    let sample_rate = 48_000.0;
+    let len = sample_rate as usize;
+    let input: Vec<f32> = (0..len)
+        .map(|index| {
+            let t = index as f32 / sample_rate;
+            let voice = 0.08 * (2.0 * std::f32::consts::PI * 180.0 * t).sin()
+                + 0.05 * (2.0 * std::f32::consts::PI * 1200.0 * t).sin();
+            let plosive = if t < 0.05 {
+                let env = (1.0 - t / 0.05).max(0.0);
+                0.65 * env * (2.0 * std::f32::consts::PI * 38.0 * t).sin()
             } else {
-                0
+                0.0
             };
-            longest = longest.max(run);
-        }
-        longest
+            voice + plosive
+        })
+        .collect();
+
+    let fixed = process_fixed_input_prefilter(&input, sample_rate);
+    let (cleaned, _hum, rumble, high_pass_hz, _) =
+        process_adaptive_input_cleanup(&input, InputCleanupMode::Gentle, sample_rate, 480);
+    let tail = len * 3 / 4;
+    let fixed_voice = tone_amplitude(&fixed[tail..], sample_rate, 180.0);
+    let cleaned_voice = tone_amplitude(&cleaned[tail..], sample_rate, 180.0);
+
+    assert!(rumble);
+    assert!(high_pass_hz >= 100.0);
+    assert!(cleaned_voice > fixed_voice * 0.94);
+}
+
+#[test]
+fn test_adaptive_cleanup_tracks_49_to_61_hz_drift_and_retunes_smoothly() {
+    let sample_rate = 48_000.0_f32;
+    let len = sample_rate as usize * 2;
+    let mut phase = 0.0_f32;
+    let mut input = Vec::with_capacity(len);
+    let mut voice_only = Vec::with_capacity(len);
+    for index in 0..len {
+        let time = index as f32 / sample_rate;
+        let frequency = 49.0 + 12.0 * index as f32 / (len - 1) as f32;
+        phase += 2.0 * std::f32::consts::PI * frequency / sample_rate;
+        let voice = 0.045 * (2.0 * std::f32::consts::PI * 1000.0 * time).sin();
+        voice_only.push(voice);
+        input.push(voice + 0.13 * phase.sin() + 0.065 * (2.0 * phase).sin());
     }
 
-    #[test]
-    fn test_bypass_and_raw_monitor_hold_the_output_ceiling_with_the_limiter_on() {
-        for (signal_name, signal) in hot_live_path_signals() {
-            for (mode, clean_path) in [("bypass", false), ("raw monitor", true)] {
-                for ceiling_db in [-1.0_f32, 0.0] {
-                    let label = format!("{signal_name}, {mode}, ceiling {ceiling_db} dB");
-                    let ceiling = 10.0_f32.powf(ceiling_db / 20.0);
+    let (cleaned, hum, _, _, tracked_hz) =
+        process_adaptive_input_cleanup(&input, InputCleanupMode::Strong, sample_rate, 480);
+    let (clean_voice, _, _, _, _) =
+        process_adaptive_input_cleanup(&voice_only, InputCleanupMode::Strong, sample_rate, 480);
+    let tail = len / 2;
+    let input_residual = input[tail..]
+        .iter()
+        .zip(voice_only[tail..].iter())
+        .map(|(mixed, voice)| (mixed - voice).powi(2))
+        .sum::<f32>();
+    let cleaned_residual = cleaned[tail..]
+        .iter()
+        .zip(clean_voice[tail..].iter())
+        .map(|(mixed, voice)| (mixed - voice).powi(2))
+        .sum::<f32>();
+    let max_step = cleaned
+        .windows(2)
+        .map(|window| (window[1] - window[0]).abs())
+        .fold(0.0_f32, f32::max);
 
-                    let (queued, full_scale, clip_events) =
-                        run_live_path_writer(true, ceiling_db, clean_path, &signal);
+    assert!(hum);
+    assert!(
+        (57.0..=61.0).contains(&tracked_hz),
+        "tracked_hz={tracked_hz}"
+    );
+    assert!(
+        cleaned_residual < input_residual * 0.72,
+        "cleaned_residual={cleaned_residual} input_residual={input_residual}"
+    );
+    assert!(max_step < 0.20, "retune max_step={max_step}");
+}
 
-                    assert!(queued.len() >= signal.len(), "{label}: output too short");
-                    assert!(queued.iter().all(|s| s.is_finite()), "{label}: non-finite");
-                    let peak = queued.iter().fold(0.0_f32, |p, s| p.max(s.abs()));
-                    assert!(peak <= ceiling + 1e-6, "{label}: peak {peak} > {ceiling}");
-                    assert!(peak >= 0.5 * ceiling, "{label}: signal lost, peak {peak}");
-                    // The counter sees only what was queued, after the limiter.
-                    let queued_full_scale = queued
-                        .iter()
-                        .filter(|s| s.abs() >= FULL_SCALE_LINEAR)
-                        .count() as u64;
-                    assert_eq!(full_scale, queued_full_scale, "{label}");
-                    if ceiling < FULL_SCALE_LINEAR {
-                        assert_eq!(full_scale, 0, "{label}: full-scale above the ceiling");
-                    }
-                    // Only a working true-peak limiter passes these: its gain
-                    // plan keeps the peaks at 0.999 of the ceiling, so the
-                    // final clamp never has work and nothing sits flat at the
-                    // ceiling. Without the limiter (or with only its sample
-                    // backstop) the top is clamped flat at the ceiling.
-                    assert_eq!(clip_events, 0, "{label}: the final clamp had to clip");
-                    let run = longest_run_at_ceiling(&queued, ceiling);
-                    assert!(run < 6, "{label}: {run} samples flat at the ceiling");
-                }
+#[test]
+fn test_adaptive_cleanup_uses_harmonic_to_track_off_nominal_hum() {
+    let sample_rate = 48_000.0_f32;
+    let len = sample_rate as usize * 2;
+    let fundamental = 51.5_f32;
+    let input: Vec<f32> = (0..len)
+        .map(|index| {
+            let time = index as f32 / sample_rate;
+            0.025 * (2.0 * std::f32::consts::PI * fundamental * time).sin()
+                + 0.14 * (2.0 * std::f32::consts::PI * fundamental * 2.0 * time).sin()
+                + 0.04 * (2.0 * std::f32::consts::PI * 1200.0 * time).sin()
+        })
+        .collect();
+    let fixed = process_fixed_input_prefilter(&input, sample_rate);
+    let (cleaned, hum, _, _, tracked_hz) =
+        process_adaptive_input_cleanup(&input, InputCleanupMode::Strong, sample_rate, 480);
+    let tail = len / 2;
+    let fixed_harmonic = tone_amplitude(&fixed[tail..], sample_rate, fundamental * 2.0);
+    let cleaned_harmonic = tone_amplitude(&cleaned[tail..], sample_rate, fundamental * 2.0);
+
+    assert!(hum);
+    assert!(
+        (tracked_hz - fundamental).abs() < 1.5,
+        "tracked_hz={tracked_hz}"
+    );
+    assert!(cleaned_harmonic < fixed_harmonic * 0.72);
+}
+
+#[test]
+fn test_adaptive_cleanup_does_not_classify_plosive_or_low_voice_as_hum() {
+    let sample_rate = 48_000.0_f32;
+    let len = sample_rate as usize;
+    let plosive: Vec<f32> = (0..len)
+        .map(|index| {
+            let time = index as f32 / sample_rate;
+            if time < 0.055 {
+                0.7 * (1.0 - time / 0.055) * (2.0 * std::f32::consts::PI * 52.0 * time).sin()
+            } else {
+                0.0
             }
-        }
-    }
+        })
+        .collect();
+    let low_voice: Vec<f32> = (0..len)
+        .map(|index| {
+            let time = index as f32 / sample_rate;
+            0.12 * (2.0 * std::f32::consts::PI * 90.0 * time).sin()
+                + 0.06 * (2.0 * std::f32::consts::PI * 180.0 * time).sin()
+                + 0.03 * (2.0 * std::f32::consts::PI * 270.0 * time).sin()
+        })
+        .collect();
 
-    /// Contrast for the test above: with the limiter off the same hot signals
-    /// pass the -1 dB ceiling and reach full scale, so that test can fail.
-    #[test]
-    fn test_bypass_and_raw_monitor_exceed_the_ceiling_with_the_limiter_off() {
-        let ceiling = 10.0_f32.powf(-1.0 / 20.0);
-        for (signal_name, signal) in hot_live_path_signals() {
-            for (mode, clean_path) in [("bypass", false), ("raw monitor", true)] {
-                let label = format!("{signal_name}, {mode}");
+    let (_, plosive_hum, plosive_rumble, _, _) =
+        process_adaptive_input_cleanup(&plosive, InputCleanupMode::Strong, sample_rate, 480);
+    let (_, voice_hum, _, voice_highpass, _) =
+        process_adaptive_input_cleanup(&low_voice, InputCleanupMode::Strong, sample_rate, 480);
+
+    assert!(!plosive_hum);
+    assert!(plosive_rumble);
+    assert!(!voice_hum);
+    assert_eq!(voice_highpass, INPUT_PREFILTER_HZ as f32);
+}
+
+#[test]
+fn test_adaptive_cleanup_selects_one_highpass_instead_of_cascading() {
+    let sample_rate = 48_000.0_f32;
+    let input: Vec<f32> = (0..8192)
+        .map(|index| {
+            let time = index as f32 / sample_rate;
+            0.05 * (2.0 * std::f32::consts::PI * 300.0 * time).sin()
+                + 0.03 * (2.0 * std::f32::consts::PI * 2000.0 * time).sin()
+        })
+        .collect();
+    let fixed = process_fixed_input_prefilter(&input, sample_rate);
+    let (adaptive, hum, rumble, highpass, _) =
+        process_adaptive_input_cleanup(&input, InputCleanupMode::Gentle, sample_rate, 480);
+    let max_difference = fixed
+        .iter()
+        .zip(adaptive.iter())
+        .map(|(left, right)| (left - right).abs())
+        .fold(0.0_f32, f32::max);
+
+    assert!(!hum);
+    assert!(!rumble);
+    assert_eq!(highpass, INPUT_PREFILTER_HZ as f32);
+    assert!(max_difference < 1.0e-5, "max_difference={max_difference}");
+}
+
+#[test]
+fn test_final_output_sanitizer_rejects_non_finite_and_limits_ceiling() {
+    let mut buffer = vec![f32::NAN, f32::INFINITY, -f32::INFINITY, 0.75, -0.75];
+    sanitize_and_clamp_output_inplace(&mut buffer, 0.5);
+    assert_eq!(buffer, vec![0.0, 0.0, 0.0, 0.5, -0.5]);
+}
+
+#[test]
+fn test_final_output_sanitizer_records_clip_events() {
+    let output_clip_event_count = AtomicU64::new(0);
+    let output_clip_peak_db = AtomicU32::new((-120.0_f32).to_bits());
+    let mut buffer = vec![0.25, 0.75, -0.8, f32::NAN];
+
+    sanitize_and_clamp_output_inplace_with_metrics(
+        &mut buffer,
+        0.5,
+        &output_clip_event_count,
+        &output_clip_peak_db,
+    );
+
+    assert_eq!(buffer, vec![0.25, 0.5, -0.5, 0.0]);
+    assert_eq!(output_clip_event_count.load(Ordering::Relaxed), 2);
+    let peak_db = f32::from_bits(output_clip_peak_db.load(Ordering::Relaxed));
+    assert!((peak_db - (20.0_f32 * 0.8_f32.log10())).abs() < 1e-6);
+}
+
+#[test]
+fn test_peak_hold_keeps_a_transient_until_read_and_take_resets() {
+    let processor = AudioProcessor::new();
+    let record = |block: &[f32]| {
+        record_level_extremes(
+            block,
+            &processor.shared.input.peak_hold,
+            Some(&processor.shared.input.full_scale_count),
+        );
+    };
+    let quiet = [0.01_f32; 480];
+    let mut transient = quiet;
+    transient[200] = -1.0;
+
+    record(&transient);
+    record(&quiet);
+    record(&quiet);
+    assert_eq!(processor.take_input_peak_since_read(), 1.0);
+
+    // The take reset the hold; the next one only sees what arrived since.
+    assert_eq!(processor.take_input_peak_since_read(), 0.0);
+    record(&quiet);
+    assert_eq!(processor.take_input_peak_since_read(), 0.01);
+
+    // Amplitudes above full scale are reported as delivered, not clamped.
+    record(&[0.2, -1.5]);
+    assert_eq!(processor.take_input_peak_since_read(), 1.5);
+}
+
+#[test]
+fn test_peak_hold_take_loses_no_peak_published_during_a_read() {
+    let hold = std::sync::Arc::new(AtomicU32::new(0));
+    let writer_hold = std::sync::Arc::clone(&hold);
+    let writer = std::thread::spawn(move || {
+        let mut maximum = 0.0_f32;
+        for index in 0..50_000_u32 {
+            // Deterministic scatter of peaks in (0, 1); the largest lands mid-run.
+            let value = (index.wrapping_mul(2_654_435_761) % 99_991) as f32 / 100_000.0;
+            maximum = maximum.max(value);
+            record_level_extremes(&[value], &writer_hold, None);
+        }
+        maximum
+    });
+    let mut seen = 0.0_f32;
+    while !writer.is_finished() {
+        seen = seen.max(f32::from_bits(hold.swap(0, Ordering::Relaxed)));
+    }
+    let written_maximum = writer.join().unwrap();
+    seen = seen.max(f32::from_bits(hold.swap(0, Ordering::Relaxed)));
+    assert_eq!(seen, written_maximum);
+}
+
+#[test]
+fn test_full_scale_count_includes_exactly_full_scale_and_excludes_below() {
+    let processor = AudioProcessor::new();
+    let record = |block: &[f32]| {
+        record_level_extremes(
+            block,
+            &processor.shared.input.peak_hold,
+            Some(&processor.shared.input.full_scale_count),
+        );
+    };
+
+    record(&[0.99, -0.9989, 0.5]);
+    assert_eq!(processor.get_input_full_scale_count(), 0);
+    assert_eq!(processor.take_input_peak_since_read(), 0.9989);
+
+    // 1.0 and -1.0 (a saturated converter), the 0.999 threshold, and an
+    // over-range float sample all count; the count is cumulative.
+    record(&[1.0, -1.0, 0.999, 1.2, 0.0]);
+    assert_eq!(processor.get_input_full_scale_count(), 4);
+    record(&[1.0]);
+    assert_eq!(processor.get_input_full_scale_count(), 5);
+    // Reading the peak does not touch the cumulative count.
+    assert_eq!(processor.take_input_peak_since_read(), 1.2);
+    assert_eq!(processor.get_input_full_scale_count(), 5);
+}
+
+#[test]
+fn test_peak_hold_ignores_non_finite_samples() {
+    let hold = AtomicU32::new(0);
+    let count = AtomicU64::new(0);
+
+    record_level_extremes(
+        &[f32::NAN, f32::INFINITY, f32::NEG_INFINITY],
+        &hold,
+        Some(&count),
+    );
+    assert_eq!(hold.load(Ordering::Relaxed), 0);
+    assert_eq!(count.load(Ordering::Relaxed), 0);
+
+    // Non-finite samples in a block do not hide or inflate its finite peak.
+    record_level_extremes(&[f32::NAN, 0.5, f32::INFINITY, -0.25], &hold, Some(&count));
+    assert_eq!(f32::from_bits(hold.load(Ordering::Relaxed)), 0.5);
+    assert_eq!(count.load(Ordering::Relaxed), 0);
+}
+
+/// Writes one chunk through the production output writer and returns what
+/// reached the output queue with the final peak and full-scale count.
+fn run_final_output_writer(limiter_on: bool, ceiling: f32, input: &[f32]) -> (Vec<f32>, f32, u64) {
+    run_output_writer_with(limiter_on, ceiling, input, |writer, chunk| {
+        writer.write_chunk(chunk, true)
+    })
+}
+
+/// Like `run_final_output_writer`, with the caller driving the writer.
+fn run_output_writer_with(
+    limiter_on: bool,
+    ceiling: f32,
+    input: &[f32],
+    drive: impl FnOnce(&mut OutputWriteContext<'_, 1024, 1024, 1024>, &[f32]) -> bool,
+) -> (Vec<f32>, f32, u64) {
+    let rb = AudioRingBuffer::new(4096);
+    let (mut producer, mut consumer) = rb.split();
+    let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut true_peak_detector = TruePeakDetector::new();
+    let mut true_peak_limiter = TruePeakLimiter::default();
+    let mut drift_error_ema = 0.0_f32;
+    let mut drift_retimer = DriftRetimer::default();
+    let fade_remaining = Cell::new(0usize);
+    let limiter_enabled = AtomicBool::new(limiter_on);
+    let output_ceiling_linear = Cell::new(ceiling);
+    let jitter_dropped_samples = AtomicU64::new(0);
+    let output_retime_adjustment_count = AtomicU64::new(0);
+    let output_recovery_event_count = AtomicU64::new(0);
+    let output_short_write_dropped_samples = AtomicU64::new(0);
+    let rt_buffer_overflow_count = AtomicU64::new(0);
+    let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+    let output_buffer_len = AtomicU32::new(0);
+    let last_output_write_time = AtomicU64::new(0);
+    let final_peak = AtomicU32::new(0);
+    let full_scale_count = AtomicU64::new(0);
+    let mut writer = OutputWriteContext {
+        output_producer: &mut producer,
+        output_queue_control_scratch: &mut control_scratch,
+        discontinuity_fade_scratch: &mut fade_scratch,
+        output_safety_scratch: &mut safety_scratch,
+        true_peak_detector: &mut true_peak_detector,
+        true_peak_limiter: &mut true_peak_limiter,
+        drift_error_ema: &mut drift_error_ema,
+        drift_retimer: &mut drift_retimer,
+        discontinuity_fade_remaining: &fade_remaining,
+        output_fade_remaining: 0,
+        limiter_enabled: &limiter_enabled,
+        output_ceiling_linear: &output_ceiling_linear,
+        counters: OutputWriteCounters {
+            output_final_peak_hold: &final_peak,
+            output_full_scale_count: &full_scale_count,
+            ..output_writer_counters(
+                (
+                    &jitter_dropped_samples,
+                    &output_retime_adjustment_count,
+                    &output_recovery_event_count,
+                ),
+                &output_short_write_dropped_samples,
+                &rt_buffer_overflow_count,
+                &rt_error_code,
+                &output_buffer_len,
+                &last_output_write_time,
+            )
+        },
+        limits: test_output_writer_limits(4, 8, 4),
+    };
+    assert!(drive(&mut writer, input));
+    let mut queued = vec![0.0_f32; input.len()];
+    assert_eq!(consumer.read(&mut queued), input.len());
+    (
+        queued,
+        f32::from_bits(final_peak.load(Ordering::Relaxed)),
+        full_scale_count.load(Ordering::Relaxed),
+    )
+}
+
+#[test]
+fn test_level_extremes_and_output_writer_do_not_allocate() {
+    let hold = AtomicU32::new(0);
+    let count = AtomicU64::new(0);
+    let block = [0.25_f32, -1.0, 0.999, f32::NAN, 1.4];
+    record_level_extremes(&block, &hold, Some(&count));
+    crate::test_alloc::assert_no_allocations("level extremes with a count", || {
+        record_level_extremes(&block, &hold, Some(&count));
+    });
+    crate::test_alloc::assert_no_allocations("level extremes without a count", || {
+        record_level_extremes(&block, &hold, None);
+    });
+
+    let mut input = [0.0_f32; 512];
+    input[100..140].fill(0.9);
+    input[200] = f32::NAN;
+    for clean_path in [true, false] {
+        run_output_writer_with(true, 0.5, &input, |writer, chunk| {
+            // The first write warms the writer up; the second is measured.
+            assert!(writer.write_chunk(chunk, clean_path));
+            let mut written = false;
+            crate::test_alloc::assert_no_allocations("output writer", || {
+                written = writer.write_chunk(chunk, clean_path);
+            });
+            written
+        });
+    }
+}
+
+#[test]
+fn test_final_output_peak_is_measured_after_the_limiter() {
+    let mut input = [0.0_f32; 1024];
+    input[300..340].fill(0.9);
+    let input_peak = 0.9_f32;
+
+    let (queued, final_peak, full_scale) = run_final_output_writer(true, 0.5, &input);
+
+    let queued_peak = queued.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
+    assert_eq!(final_peak, queued_peak, "must equal what was queued");
+    assert!(final_peak > 0.1, "the burst must reach the output");
+    assert!(
+        final_peak <= 0.5 + 1e-6,
+        "limited to the ceiling: {final_peak}"
+    );
+    assert!(
+        final_peak < input_peak - 0.3,
+        "post-limiter must differ from the input"
+    );
+    assert_eq!(full_scale, 0);
+}
+
+#[test]
+fn test_final_output_reports_full_scale_after_clamp_with_limiter_off() {
+    let mut input = [0.0_f32; 1024];
+    input[300..340].fill(1.4);
+    input[400] = f32::NAN;
+
+    let (queued, final_peak, full_scale) = run_final_output_writer(false, 0.5, &input);
+
+    // Limiter off: the ceiling is 1.0 whatever the setting, the clamp holds
+    // the over-range burst at full scale, and the NaN became silence.
+    assert!(queued
+        .iter()
+        .all(|sample| sample.is_finite() && sample.abs() <= 1.0));
+    assert_eq!(final_peak, 1.0);
+    assert!(full_scale >= 40, "full_scale={full_scale}");
+}
+
+/// Feeds `input` to the production output writer in 480-sample blocks the
+/// way the DSP loop's Bypass (`clean_path` false) and Raw monitor (true)
+/// branches do, draining the queue after every write. Returns everything
+/// queued, the output full-scale count and the final clamp's clip-event
+/// count (the clamp counts only samples still above the ceiling). The ceiling is set before the
+/// first block, as the loop does at startup.
+fn run_live_path_writer(
+    limiter_on: bool,
+    ceiling_db: f32,
+    clean_path: bool,
+    input: &[f32],
+) -> (Vec<f32>, u64, u64) {
+    run_live_path_writer_with(limiter_on, ceiling_db, clean_path, input, |_, _, _, _| {})
+}
+
+/// `run_live_path_writer` with a hook that runs before every block, where
+/// the loop consumes pending control changes. It gets the block index, the
+/// number of samples queued so far, the limiter-enabled flag and the ceiling cell.
+fn run_live_path_writer_with(
+    limiter_on: bool,
+    ceiling_db: f32,
+    clean_path: bool,
+    input: &[f32],
+    mut before_block: impl FnMut(usize, usize, &AtomicBool, &Cell<f32>),
+) -> (Vec<f32>, u64, u64) {
+    let rb = AudioRingBuffer::new(4096);
+    let (mut producer, mut consumer) = rb.split();
+    let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut true_peak_detector = TruePeakDetector::new();
+    let mut true_peak_limiter = TruePeakLimiter::default();
+    let mut drift_error_ema = 0.0_f32;
+    let mut drift_retimer = DriftRetimer::default();
+    let fade_remaining = Cell::new(0usize);
+    let limiter_enabled = AtomicBool::new(limiter_on);
+    let output_ceiling_linear = Cell::new(10.0_f32.powf(ceiling_db / 20.0));
+    let jitter_dropped_samples = AtomicU64::new(0);
+    let output_retime_adjustment_count = AtomicU64::new(0);
+    let output_recovery_event_count = AtomicU64::new(0);
+    let output_short_write_dropped_samples = AtomicU64::new(0);
+    let rt_buffer_overflow_count = AtomicU64::new(0);
+    let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+    let output_buffer_len = AtomicU32::new(0);
+    let last_output_write_time = AtomicU64::new(0);
+    let final_peak = AtomicU32::new(0);
+    let full_scale_count = AtomicU64::new(0);
+    let clip_event_count = AtomicU64::new(0);
+    let mut writer = OutputWriteContext {
+        output_producer: &mut producer,
+        output_queue_control_scratch: &mut control_scratch,
+        discontinuity_fade_scratch: &mut fade_scratch,
+        output_safety_scratch: &mut safety_scratch,
+        true_peak_detector: &mut true_peak_detector,
+        true_peak_limiter: &mut true_peak_limiter,
+        drift_error_ema: &mut drift_error_ema,
+        drift_retimer: &mut drift_retimer,
+        discontinuity_fade_remaining: &fade_remaining,
+        output_fade_remaining: 0,
+        limiter_enabled: &limiter_enabled,
+        output_ceiling_linear: &output_ceiling_linear,
+        counters: OutputWriteCounters {
+            output_final_peak_hold: &final_peak,
+            output_full_scale_count: &full_scale_count,
+            output_clip_event_count: &clip_event_count,
+            ..output_writer_counters(
+                (
+                    &jitter_dropped_samples,
+                    &output_retime_adjustment_count,
+                    &output_recovery_event_count,
+                ),
+                &output_short_write_dropped_samples,
+                &rt_buffer_overflow_count,
+                &rt_error_code,
+                &output_buffer_len,
+                &last_output_write_time,
+            )
+        },
+        limits: test_output_writer_limits(4, 8, 4),
+    };
+    let mut queued = Vec::new();
+    let mut drained = [0.0_f32; 1024];
+    for (index, block) in input.chunks(480).enumerate() {
+        before_block(
+            index,
+            queued.len(),
+            &limiter_enabled,
+            &output_ceiling_linear,
+        );
+        assert!(writer.write_chunk(block, clean_path));
+        let read = consumer.read(&mut drained);
+        queued.extend_from_slice(&drained[..read]);
+    }
+    assert_eq!(
+        output_short_write_dropped_samples.load(Ordering::Relaxed),
+        0
+    );
+    assert_eq!(rt_buffer_overflow_count.load(Ordering::Relaxed), 0);
+    (
+        queued,
+        full_scale_count.load(Ordering::Relaxed),
+        clip_event_count.load(Ordering::Relaxed),
+    )
+}
+
+/// Hot 1 kHz-ish signals that reach the writer well above any ceiling:
+/// a sine at +6 dB over full scale and a full-scale square, each followed
+/// by silence so the limiter's delayed tail is written too.
+fn hot_live_path_signals() -> [(&'static str, Vec<f32>); 2] {
+    const TAIL: usize = 2048;
+    let sine = (0..9600)
+        .map(|i| 2.0 * (std::f64::consts::TAU * 997.0 * i as f64 / 48_000.0).sin() as f32)
+        .chain(std::iter::repeat_n(0.0, TAIL))
+        .collect();
+    let square = (0..9600)
+        .map(|i| if (i / 24) % 2 == 0 { 1.0 } else { -1.0 })
+        .chain(std::iter::repeat_n(0.0, TAIL))
+        .collect();
+    [("sine +6 dB", sine), ("square 0 dBFS", square)]
+}
+
+/// Longest run of consecutive samples sitting at the ceiling (within the
+/// limiter's 0.999 target margin), the flat top of a hard clamp.
+fn longest_run_at_ceiling(samples: &[f32], ceiling: f32) -> usize {
+    let (mut longest, mut run) = (0, 0);
+    for s in samples {
+        run = if s.abs() >= ceiling * 0.9995 {
+            run + 1
+        } else {
+            0
+        };
+        longest = longest.max(run);
+    }
+    longest
+}
+
+#[test]
+fn test_bypass_and_raw_monitor_hold_the_output_ceiling_with_the_limiter_on() {
+    for (signal_name, signal) in hot_live_path_signals() {
+        for (mode, clean_path) in [("bypass", false), ("raw monitor", true)] {
+            for ceiling_db in [-1.0_f32, 0.0] {
+                let label = format!("{signal_name}, {mode}, ceiling {ceiling_db} dB");
+                let ceiling = 10.0_f32.powf(ceiling_db / 20.0);
 
                 let (queued, full_scale, clip_events) =
-                    run_live_path_writer(false, -1.0, clean_path, &signal);
-                // The checks of the limiter-on test see the clamp at work.
-                let run = longest_run_at_ceiling(&queued, 1.0);
-                assert!(run >= 6, "{label}: no flat top, run {run}");
-                if signal_name.starts_with("sine") {
-                    assert!(clip_events > 0, "{label}: the clamp never clipped");
-                }
+                    run_live_path_writer(true, ceiling_db, clean_path, &signal);
 
-                assert!(
-                    queued.iter().all(|s| s.is_finite() && s.abs() <= 1.0),
-                    "{label}"
-                );
+                assert!(queued.len() >= signal.len(), "{label}: output too short");
+                assert!(queued.iter().all(|s| s.is_finite()), "{label}: non-finite");
                 let peak = queued.iter().fold(0.0_f32, |p, s| p.max(s.abs()));
-                assert!(
-                    peak > ceiling + 0.05,
-                    "{label}: peak {peak} stayed under {ceiling}"
-                );
-                assert!(full_scale > 0, "{label}: no full-scale samples");
+                assert!(peak <= ceiling + 1e-6, "{label}: peak {peak} > {ceiling}");
+                assert!(peak >= 0.5 * ceiling, "{label}: signal lost, peak {peak}");
+                // The counter sees only what was queued, after the limiter.
+                let queued_full_scale = queued
+                    .iter()
+                    .filter(|s| s.abs() >= FULL_SCALE_LINEAR)
+                    .count() as u64;
+                assert_eq!(full_scale, queued_full_scale, "{label}");
+                if ceiling < FULL_SCALE_LINEAR {
+                    assert_eq!(full_scale, 0, "{label}: full-scale above the ceiling");
+                }
+                // Only a working true-peak limiter passes these: its gain
+                // plan keeps the peaks at 0.999 of the ceiling, so the
+                // final clamp never has work and nothing sits flat at the
+                // ceiling. Without the limiter (or with only its sample
+                // backstop) the top is clamped flat at the ceiling.
+                assert_eq!(clip_events, 0, "{label}: the final clamp had to clip");
+                let run = longest_run_at_ceiling(&queued, ceiling);
+                assert!(run < 6, "{label}: {run} samples flat at the ceiling");
             }
         }
     }
+}
 
-    /// Runs a hot sine through the production writer while the control side
-    /// lowers the ceiling to -6 dB and the release to 120 ms at block 10. With
-    /// `consume` the per-block hook is the loop's own pending-change step;
-    /// without it, a path that never reaches that step. Returns the peak of
-    /// everything queued before the change, the peak of everything queued
-    /// from the change on, and the release published for the writer.
-    fn run_live_path_with_ceiling_change(clean_path: bool, consume: bool) -> (f32, f32, f32) {
-        const CHANGE_BLOCK: usize = 10;
-        let signal: Vec<f32> = (0..9600)
-            .map(|i| 2.0 * (std::f64::consts::TAU * 997.0 * i as f64 / 48_000.0).sin() as f32)
-            .chain(std::iter::repeat_n(0.0, 2048))
-            .collect();
-        let control = AtomicLimiterControlState::new();
-        control.set_careful_output_enabled(false);
-        control.set_ceiling_db(0.0);
-        let dirty = AtomicBool::new(false);
-        let mut limiter_rt = Limiter::default_settings(48_000.0);
-        let release_ms = Cell::new(50.0_f32);
-        let lookahead_samples = AtomicU64::new(0);
+/// Contrast for the test above: with the limiter off the same hot signals
+/// pass the -1 dB ceiling and reach full scale, so that test can fail.
+#[test]
+fn test_bypass_and_raw_monitor_exceed_the_ceiling_with_the_limiter_off() {
+    let ceiling = 10.0_f32.powf(-1.0 / 20.0);
+    for (signal_name, signal) in hot_live_path_signals() {
+        for (mode, clean_path) in [("bypass", false), ("raw monitor", true)] {
+            let label = format!("{signal_name}, {mode}");
+
+            let (queued, full_scale, clip_events) =
+                run_live_path_writer(false, -1.0, clean_path, &signal);
+            // The checks of the limiter-on test see the clamp at work.
+            let run = longest_run_at_ceiling(&queued, 1.0);
+            assert!(run >= 6, "{label}: no flat top, run {run}");
+            if signal_name.starts_with("sine") {
+                assert!(clip_events > 0, "{label}: the clamp never clipped");
+            }
+
+            assert!(
+                queued.iter().all(|s| s.is_finite() && s.abs() <= 1.0),
+                "{label}"
+            );
+            let peak = queued.iter().fold(0.0_f32, |p, s| p.max(s.abs()));
+            assert!(
+                peak > ceiling + 0.05,
+                "{label}: peak {peak} stayed under {ceiling}"
+            );
+            assert!(full_scale > 0, "{label}: no full-scale samples");
+        }
+    }
+}
+
+/// Runs a hot sine through the production writer while the control side
+/// lowers the ceiling to -6 dB and the release to 120 ms at block 10. With
+/// `consume` the per-block hook is the loop's own pending-change step;
+/// without it, a path that never reaches that step. Returns the peak of
+/// everything queued before the change, the peak of everything queued
+/// from the change on, and the release published for the writer.
+fn run_live_path_with_ceiling_change(clean_path: bool, consume: bool) -> (f32, f32, f32) {
+    const CHANGE_BLOCK: usize = 10;
+    let signal: Vec<f32> = (0..9600)
+        .map(|i| 2.0 * (std::f64::consts::TAU * 997.0 * i as f64 / 48_000.0).sin() as f32)
+        .chain(std::iter::repeat_n(0.0, 2048))
+        .collect();
+    let control = AtomicLimiterControlState::new();
+    control.set_careful_output_enabled(false);
+    control.set_ceiling_db(0.0);
+    let dirty = AtomicBool::new(false);
+    let mut limiter_rt = Limiter::default_settings(48_000.0);
+    let release_ms = Cell::new(50.0_f32);
+    let lookahead_samples = AtomicU64::new(0);
+    let mut changed_at = None;
+
+    let (queued, _, clip_events) = run_live_path_writer_with(
+        true,
+        0.0,
+        clean_path,
+        &signal,
+        |block, queued_len, _, ceiling| {
+            if block == CHANGE_BLOCK {
+                control.set_ceiling_db(-6.0);
+                control.set_release_ms(120.0);
+                dirty.store(true, Ordering::Release);
+                changed_at = Some(queued_len);
+            }
+            if consume {
+                apply_pending_limiter_control(
+                    &dirty,
+                    &control,
+                    &mut limiter_rt,
+                    &release_ms,
+                    ceiling,
+                    &lookahead_samples,
+                    &AtomicU64::new(0),
+                );
+            }
+        },
+    );
+    let changed_at = changed_at.expect("the change block must run");
+    let peak = |samples: &[f32]| samples.iter().fold(0.0_f32, |p, s| p.max(s.abs()));
+    if consume {
+        assert_eq!(
+            clip_events, 0,
+            "the limiter, not the clamp, must hold the new ceiling"
+        );
+        assert!(
+            !dirty.load(Ordering::Acquire),
+            "the change must be consumed"
+        );
+    }
+    (
+        peak(&queued[..changed_at]),
+        peak(&queued[changed_at..]),
+        release_ms.get(),
+    )
+}
+
+#[test]
+fn test_bypass_and_raw_monitor_apply_a_limiter_change_made_while_they_run() {
+    let new_ceiling = 10.0_f32.powf(-6.0 / 20.0);
+    for (mode, clean_path) in [("bypass", false), ("raw monitor", true)] {
+        let (before, after, release) = run_live_path_with_ceiling_change(clean_path, true);
+        assert!(
+            before > 0.9,
+            "{mode}: the 0 dB ceiling must pass the hot sine, got {before}"
+        );
+        assert!(
+            after <= new_ceiling + 1e-6,
+            "{mode}: peak {after} > {new_ceiling}"
+        );
+        assert!(
+            after >= 0.5 * new_ceiling,
+            "{mode}: signal lost, peak {after}"
+        );
+        assert_eq!(release, 120.0, "{mode}: release was not published");
+
+        // Contrast: a path that never consumes the change keeps the old
+        // ceiling, which is what Bypass and Raw monitor did.
+        let (_, stale_after, stale_release) = run_live_path_with_ceiling_change(clean_path, false);
+        assert!(
+            stale_after > 0.9,
+            "{mode}: stale ceiling should still pass, got {stale_after}"
+        );
+        assert_eq!(stale_release, 50.0, "{mode}");
+    }
+}
+
+#[test]
+fn test_pending_limiter_change_is_rearmed_while_the_snapshot_is_unstable() {
+    let control = AtomicLimiterControlState::new();
+    let dirty = AtomicBool::new(true);
+    let mut limiter_rt = Limiter::default_settings(48_000.0);
+    let release_ms = Cell::new(50.0_f32);
+    let ceiling = Cell::new(1.0_f32);
+    let lookahead_samples = AtomicU64::new(0);
+    let consume = |limiter_rt: &mut Limiter| {
+        apply_pending_limiter_control(
+            &dirty,
+            &control,
+            limiter_rt,
+            &release_ms,
+            &ceiling,
+            &lookahead_samples,
+            &AtomicU64::new(0),
+        )
+    };
+
+    control.seq.store(1, Ordering::Release);
+    consume(&mut limiter_rt);
+    assert!(
+        dirty.load(Ordering::Acquire),
+        "an unstable snapshot must re-arm"
+    );
+    assert_eq!(ceiling.get(), 1.0);
+
+    control.seq.store(2, Ordering::Release);
+    control.set_careful_output_enabled(false);
+    control.set_ceiling_db(-6.0);
+    consume(&mut limiter_rt);
+    assert!(!dirty.load(Ordering::Acquire));
+    assert!((ceiling.get() - 10.0_f32.powf(-6.0 / 20.0)).abs() < 1e-6);
+    assert!(lookahead_samples.load(Ordering::Relaxed) > 0);
+}
+
+/// The limiter-enabled flag is read from its own atomic on every write,
+/// so toggling it needs no pending-change step in any path.
+#[test]
+fn test_bypass_and_raw_monitor_follow_the_limiter_enabled_flag_immediately() {
+    let signal: Vec<f32> = (0..9600)
+        .map(|i| 2.0 * (std::f64::consts::TAU * 997.0 * i as f64 / 48_000.0).sin() as f32)
+        .chain(std::iter::repeat_n(0.0, 2048))
+        .collect();
+    let ceiling = 10.0_f32.powf(-6.0 / 20.0);
+    for (mode, clean_path) in [("bypass", false), ("raw monitor", true)] {
         let mut changed_at = None;
-
-        let (queued, _, clip_events) = run_live_path_writer_with(
-            true,
-            0.0,
+        let (queued, _, _) = run_live_path_writer_with(
+            false,
+            -6.0,
             clean_path,
             &signal,
-            |block, queued_len, _, ceiling| {
-                if block == CHANGE_BLOCK {
-                    control.set_ceiling_db(-6.0);
-                    control.set_release_ms(120.0);
-                    dirty.store(true, Ordering::Release);
+            |block, queued_len, enabled, _| {
+                if block == 10 {
+                    enabled.store(true, Ordering::Release);
                     changed_at = Some(queued_len);
-                }
-                if consume {
-                    apply_pending_limiter_control(
-                        &dirty,
-                        &control,
-                        &mut limiter_rt,
-                        &release_ms,
-                        ceiling,
-                        &lookahead_samples,
-                        &AtomicU64::new(0),
-                    );
                 }
             },
         );
-        let changed_at = changed_at.expect("the change block must run");
-        let peak = |samples: &[f32]| samples.iter().fold(0.0_f32, |p, s| p.max(s.abs()));
-        if consume {
-            assert_eq!(
-                clip_events, 0,
-                "the limiter, not the clamp, must hold the new ceiling"
-            );
-            assert!(
-                !dirty.load(Ordering::Acquire),
-                "the change must be consumed"
-            );
-        }
-        (
-            peak(&queued[..changed_at]),
-            peak(&queued[changed_at..]),
-            release_ms.get(),
-        )
-    }
-
-    #[test]
-    fn test_bypass_and_raw_monitor_apply_a_limiter_change_made_while_they_run() {
-        let new_ceiling = 10.0_f32.powf(-6.0 / 20.0);
-        for (mode, clean_path) in [("bypass", false), ("raw monitor", true)] {
-            let (before, after, release) = run_live_path_with_ceiling_change(clean_path, true);
-            assert!(
-                before > 0.9,
-                "{mode}: the 0 dB ceiling must pass the hot sine, got {before}"
-            );
-            assert!(
-                after <= new_ceiling + 1e-6,
-                "{mode}: peak {after} > {new_ceiling}"
-            );
-            assert!(
-                after >= 0.5 * new_ceiling,
-                "{mode}: signal lost, peak {after}"
-            );
-            assert_eq!(release, 120.0, "{mode}: release was not published");
-
-            // Contrast: a path that never consumes the change keeps the old
-            // ceiling, which is what Bypass and Raw monitor did.
-            let (_, stale_after, stale_release) =
-                run_live_path_with_ceiling_change(clean_path, false);
-            assert!(
-                stale_after > 0.9,
-                "{mode}: stale ceiling should still pass, got {stale_after}"
-            );
-            assert_eq!(stale_release, 50.0, "{mode}");
-        }
-    }
-
-    #[test]
-    fn test_pending_limiter_change_is_rearmed_while_the_snapshot_is_unstable() {
-        let control = AtomicLimiterControlState::new();
-        let dirty = AtomicBool::new(true);
-        let mut limiter_rt = Limiter::default_settings(48_000.0);
-        let release_ms = Cell::new(50.0_f32);
-        let ceiling = Cell::new(1.0_f32);
-        let lookahead_samples = AtomicU64::new(0);
-        let consume = |limiter_rt: &mut Limiter| {
-            apply_pending_limiter_control(
-                &dirty,
-                &control,
-                limiter_rt,
-                &release_ms,
-                &ceiling,
-                &lookahead_samples,
-                &AtomicU64::new(0),
-            )
-        };
-
-        control.seq.store(1, Ordering::Release);
-        consume(&mut limiter_rt);
-        assert!(
-            dirty.load(Ordering::Acquire),
-            "an unstable snapshot must re-arm"
-        );
-        assert_eq!(ceiling.get(), 1.0);
-
-        control.seq.store(2, Ordering::Release);
-        control.set_careful_output_enabled(false);
-        control.set_ceiling_db(-6.0);
-        consume(&mut limiter_rt);
-        assert!(!dirty.load(Ordering::Acquire));
-        assert!((ceiling.get() - 10.0_f32.powf(-6.0 / 20.0)).abs() < 1e-6);
-        assert!(lookahead_samples.load(Ordering::Relaxed) > 0);
-    }
-
-    /// The limiter-enabled flag is read from its own atomic on every write,
-    /// so toggling it needs no pending-change step in any path.
-    #[test]
-    fn test_bypass_and_raw_monitor_follow_the_limiter_enabled_flag_immediately() {
-        let signal: Vec<f32> = (0..9600)
-            .map(|i| 2.0 * (std::f64::consts::TAU * 997.0 * i as f64 / 48_000.0).sin() as f32)
-            .chain(std::iter::repeat_n(0.0, 2048))
-            .collect();
-        let ceiling = 10.0_f32.powf(-6.0 / 20.0);
-        for (mode, clean_path) in [("bypass", false), ("raw monitor", true)] {
-            let mut changed_at = None;
-            let (queued, _, _) = run_live_path_writer_with(
-                false,
-                -6.0,
-                clean_path,
-                &signal,
-                |block, queued_len, enabled, _| {
-                    if block == 10 {
-                        enabled.store(true, Ordering::Release);
-                        changed_at = Some(queued_len);
-                    }
-                },
-            );
-            let changed_at = changed_at.unwrap();
-            let before = queued[..changed_at]
-                .iter()
-                .fold(0.0_f32, |p, s| p.max(s.abs()));
-            let after = queued[changed_at..]
-                .iter()
-                .fold(0.0_f32, |p, s| p.max(s.abs()));
-            assert!(
-                before > 0.9,
-                "{mode}: limiter off must pass the hot sine, got {before}"
-            );
-            assert!(after <= ceiling + 1e-6, "{mode}: peak {after} > {ceiling}");
-        }
-    }
-
-    #[test]
-    fn test_dsp_loop_publishes_peak_holds_in_every_path() {
-        let source = include_str!("dsp_loop.rs");
-        let region = marked_region(source, "dsp_processing_loop");
-        // Input: once, on the raw block, before the processing paths split.
-        assert_eq!(region.matches("record_level_extremes(").count(), 1);
-        assert!(region.contains("input_peak_hold.as_ref()"));
-        // OUT meter tap (before the final limiter): raw monitor, bypass and the
-        // two normal-path sites. Input sites pass no hold.
-        assert_eq!(
-            region
-                .matches("Some(&output_pre_limiter_peak_hold)")
-                .count(),
-            4
-        );
-    }
-
-    #[test]
-    fn test_careful_output_mode_lowers_effective_limiter_ceiling() {
-        let processor = AudioProcessor::new();
-
-        assert!(processor.is_limiter_careful_output_enabled());
-        assert_eq!(
-            processor.limiter_effective_ceiling_db(),
-            CAREFUL_OUTPUT_CEILING_DB
-        );
-
-        processor.set_limiter_ceiling(-0.25);
-        assert_eq!(
-            processor.limiter_effective_ceiling_db(),
-            CAREFUL_OUTPUT_CEILING_DB
-        );
-
-        processor.set_limiter_careful_output_enabled(false);
-        assert_eq!(processor.limiter_effective_ceiling_db(), -0.25);
-
-        processor.set_limiter_ceiling(-3.0);
-        processor.set_limiter_careful_output_enabled(true);
-        assert_eq!(processor.limiter_effective_ceiling_db(), -3.0);
-    }
-
-    #[test]
-    fn test_retime_audio_block_can_expand_and_compress() {
-        let input = [0.0_f32, 0.25, 0.5, 0.75, 1.0, 0.5];
-        let mut scratch = FixedAudioBuffer::<f32, 32>::new();
-        let mut state = DriftRetimer::default();
-
-        let expanded = retime_audio_block(&input, 0.5, 32, &mut scratch, &mut state);
-        assert!(expanded.len() > input.len());
-
-        state.reset();
-        let compressed = retime_audio_block(&input, 2.0, 32, &mut scratch, &mut state);
-        assert!(compressed.len() < input.len());
-    }
-
-    #[test]
-    fn test_retime_audio_block_linear_interpolation_does_not_overshoot_neighbors() {
-        let input = [0.0_f32, 0.5, 1.0, 0.5, 0.0];
-        let mut scratch = FixedAudioBuffer::<f32, 32>::new();
-        let mut state = DriftRetimer::default();
-
-        let expanded = retime_audio_block(&input, 0.7, 32, &mut scratch, &mut state);
-
-        for sample in expanded {
-            assert!((*sample >= 0.0) && (*sample <= 1.0));
-        }
-    }
-
-    #[test]
-    fn test_retime_audio_block_is_chunk_invariant() {
-        let input = (0..257)
-            .map(|index| (index as f32 * 0.071).sin())
-            .collect::<Vec<_>>();
-        let mut whole_scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut whole_state = DriftRetimer::default();
-        let whole =
-            retime_audio_block(&input, 1.008, 1024, &mut whole_scratch, &mut whole_state).to_vec();
-
-        let mut chunk_scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut chunk_state = DriftRetimer::default();
-        let mut chunked = Vec::new();
-        for chunk in input.chunks(37) {
-            chunked.extend_from_slice(retime_audio_block(
-                chunk,
-                1.008,
-                1024,
-                &mut chunk_scratch,
-                &mut chunk_state,
-            ));
-        }
-
-        assert_eq!(chunked.len(), whole.len());
-        assert!(chunked
+        let changed_at = changed_at.unwrap();
+        let before = queued[..changed_at]
             .iter()
-            .zip(&whole)
-            .all(|(chunked, whole)| (chunked - whole).abs() < 1.0e-5));
+            .fold(0.0_f32, |p, s| p.max(s.abs()));
+        let after = queued[changed_at..]
+            .iter()
+            .fold(0.0_f32, |p, s| p.max(s.abs()));
+        assert!(
+            before > 0.9,
+            "{mode}: limiter off must pass the hot sine, got {before}"
+        );
+        assert!(after <= ceiling + 1e-6, "{mode}: peak {after} > {ceiling}");
+    }
+}
+
+#[test]
+fn test_dsp_loop_publishes_peak_holds_in_every_path() {
+    let source = include_str!("dsp_loop.rs");
+    let region = marked_region(source, "dsp_processing_loop");
+    // Input: once, on the raw block, before the processing paths split.
+    assert_eq!(region.matches("record_level_extremes(").count(), 1);
+    assert!(region.contains("&shared.input.peak_hold"));
+    // OUT meter tap (before the final limiter): raw monitor, bypass and the
+    // two normal-path sites all measure through `measure_output`, which
+    // records the hold; the input meter takes none.
+    assert_eq!(region.matches(".measure_output(").count(), 4);
+    let meters = marked_region(source, "dsp_level_meter");
+    let output = source_between(meters, "fn measure_output(", "}\n}\n");
+    assert!(output
+        .contains("record_level_extremes(buffer, &shared.output.pre_limiter_peak_hold, None)"));
+    assert!(
+        !source_between(meters, "fn measure_input(", "fn measure_output(")
+            .contains("record_level_extremes(")
+    );
+}
+
+#[test]
+fn test_careful_output_mode_lowers_effective_limiter_ceiling() {
+    let processor = AudioProcessor::new();
+
+    assert!(processor.is_limiter_careful_output_enabled());
+    assert_eq!(
+        processor.limiter_effective_ceiling_db(),
+        CAREFUL_OUTPUT_CEILING_DB
+    );
+
+    processor.set_limiter_ceiling(-0.25);
+    assert_eq!(
+        processor.limiter_effective_ceiling_db(),
+        CAREFUL_OUTPUT_CEILING_DB
+    );
+
+    processor.set_limiter_careful_output_enabled(false);
+    assert_eq!(processor.limiter_effective_ceiling_db(), -0.25);
+
+    processor.set_limiter_ceiling(-3.0);
+    processor.set_limiter_careful_output_enabled(true);
+    assert_eq!(processor.limiter_effective_ceiling_db(), -3.0);
+}
+
+#[test]
+fn test_retime_audio_block_can_expand_and_compress() {
+    let input = [0.0_f32, 0.25, 0.5, 0.75, 1.0, 0.5];
+    let mut scratch = FixedAudioBuffer::<f32, 32>::new();
+    let mut state = DriftRetimer::default();
+
+    let expanded = retime_audio_block(&input, 0.5, 32, &mut scratch, &mut state);
+    assert!(expanded.len() > input.len());
+
+    state.reset();
+    let compressed = retime_audio_block(&input, 2.0, 32, &mut scratch, &mut state);
+    assert!(compressed.len() < input.len());
+}
+
+#[test]
+fn test_retime_audio_block_linear_interpolation_does_not_overshoot_neighbors() {
+    let input = [0.0_f32, 0.5, 1.0, 0.5, 0.0];
+    let mut scratch = FixedAudioBuffer::<f32, 32>::new();
+    let mut state = DriftRetimer::default();
+
+    let expanded = retime_audio_block(&input, 0.7, 32, &mut scratch, &mut state);
+
+    for sample in expanded {
+        assert!((*sample >= 0.0) && (*sample <= 1.0));
+    }
+}
+
+#[test]
+fn test_retime_audio_block_is_chunk_invariant() {
+    let input = (0..257)
+        .map(|index| (index as f32 * 0.071).sin())
+        .collect::<Vec<_>>();
+    let mut whole_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut whole_state = DriftRetimer::default();
+    let whole =
+        retime_audio_block(&input, 1.008, 1024, &mut whole_scratch, &mut whole_state).to_vec();
+
+    let mut chunk_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut chunk_state = DriftRetimer::default();
+    let mut chunked = Vec::new();
+    for chunk in input.chunks(37) {
+        chunked.extend_from_slice(retime_audio_block(
+            chunk,
+            1.008,
+            1024,
+            &mut chunk_scratch,
+            &mut chunk_state,
+        ));
     }
 
-    fn warmed_meter_stats(buffer: &[f32]) -> MeterBlockStats {
-        let coeff = smoothing_coeff_for_time_constant(TARGET_SAMPLE_RATE as f32, 100.0);
-        let mut meter = MeterState::default();
-        let mut stats = MeterBlockStats {
-            peak_db: -120.0,
-            rms_db: -120.0,
-            crest_factor_db: 0.0,
-            mean_power: 0.0,
-        };
-        for _ in 0..4 {
-            stats = update_meter_block_stats(buffer, &mut meter, coeff);
+    assert_eq!(chunked.len(), whole.len());
+    assert!(chunked
+        .iter()
+        .zip(&whole)
+        .all(|(chunked, whole)| (chunked - whole).abs() < 1.0e-5));
+}
+
+fn warmed_meter_stats(buffer: &[f32]) -> MeterBlockStats {
+    let coeff = smoothing_coeff_for_time_constant(TARGET_SAMPLE_RATE as f32, 100.0);
+    let mut meter = MeterState::default();
+    let mut stats = MeterBlockStats {
+        peak_db: -120.0,
+        rms_db: -120.0,
+        crest_factor_db: 0.0,
+        mean_power: 0.0,
+    };
+    for _ in 0..4 {
+        stats = update_meter_block_stats(buffer, &mut meter, coeff);
+    }
+    stats
+}
+
+#[test]
+fn test_meter_stats_are_stable_for_silence_sine_noise_and_speech_like_input() {
+    let sample_rate = TARGET_SAMPLE_RATE as f32;
+    let len = TARGET_SAMPLE_RATE as usize;
+
+    let silence = vec![0.0_f32; len];
+    let silence_stats = warmed_meter_stats(&silence);
+    assert_eq!(silence_stats.peak_db, -120.0);
+    assert_eq!(silence_stats.rms_db, -120.0);
+    assert_eq!(silence_stats.crest_factor_db, 0.0);
+
+    let sine = generate_sine(sample_rate, 1000.0, len);
+    let sine_stats = warmed_meter_stats(&sine);
+    assert!((-2.5..=-1.5).contains(&sine_stats.peak_db));
+    assert!((-5.6..=-4.4).contains(&sine_stats.rms_db));
+    assert!((2.5..=3.6).contains(&sine_stats.crest_factor_db));
+
+    let noise_like: Vec<f32> = (0..len)
+        .map(|index| {
+            let n = ((index as u32)
+                .wrapping_mul(1_664_525)
+                .wrapping_add(1_013_904_223)
+                & 0xffff) as f32
+                / 32768.0
+                - 1.0;
+            0.16 * n
+        })
+        .collect();
+    let noise_stats = warmed_meter_stats(&noise_like);
+    assert!(noise_stats.rms_db < noise_stats.peak_db);
+    assert!((4.0..=6.5).contains(&noise_stats.crest_factor_db));
+
+    let speech_like: Vec<f32> = (0..len)
+        .map(|index| {
+            let t = index as f32 / sample_rate;
+            let envelope = 0.35 + 0.65 * (2.0 * std::f32::consts::PI * 3.0 * t).sin().max(0.0);
+            envelope
+                * (0.12 * (2.0 * std::f32::consts::PI * 140.0 * t).sin()
+                    + 0.06 * (2.0 * std::f32::consts::PI * 280.0 * t).sin()
+                    + 0.03 * (2.0 * std::f32::consts::PI * 1120.0 * t).sin())
+        })
+        .collect();
+    let speech_stats = warmed_meter_stats(&speech_like);
+    assert!(speech_stats.rms_db < -12.0);
+    assert!((5.0..=14.0).contains(&speech_stats.crest_factor_db));
+}
+
+/// Deterministic Gaussian-ish noise (Irwin-Hall sum of 12 xorshift32 uniforms).
+fn seeded_gaussian_noise(seed: u32, rms: f32, len: usize) -> Vec<f32> {
+    let mut state = seed;
+    let mut uniform = || {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        state as f32 / u32::MAX as f32
+    };
+    (0..len)
+        .map(|_| rms * ((0..12).map(|_| uniform()).sum::<f32>() - 6.0))
+        .collect()
+}
+
+/// Per-block crest factors from the real meter, feeding `block_lens` cyclically.
+fn crest_trace(signal: &[f32], block_lens: &[usize]) -> Vec<(usize, f32)> {
+    let coeff = smoothing_coeff_for_time_constant(TARGET_SAMPLE_RATE as f32, 100.0);
+    let mut meter = MeterState::default();
+    let mut start = 0;
+    let mut trace = Vec::new();
+    for &len in block_lens.iter().cycle() {
+        if start >= signal.len() {
+            break;
         }
-        stats
+        let end = (start + len).min(signal.len());
+        let stats = update_meter_block_stats(&signal[start..end], &mut meter, coeff);
+        trace.push((end, stats.crest_factor_db));
+        start = end;
     }
+    trace
+}
 
-    #[test]
-    fn test_meter_stats_are_stable_for_silence_sine_noise_and_speech_like_input() {
-        let sample_rate = TARGET_SAMPLE_RATE as f32;
-        let len = TARGET_SAMPLE_RATE as usize;
-
-        let silence = vec![0.0_f32; len];
-        let silence_stats = warmed_meter_stats(&silence);
-        assert_eq!(silence_stats.peak_db, -120.0);
-        assert_eq!(silence_stats.rms_db, -120.0);
-        assert_eq!(silence_stats.crest_factor_db, 0.0);
-
-        let sine = generate_sine(sample_rate, 1000.0, len);
-        let sine_stats = warmed_meter_stats(&sine);
-        assert!((-2.5..=-1.5).contains(&sine_stats.peak_db));
-        assert!((-5.6..=-4.4).contains(&sine_stats.rms_db));
-        assert!((2.5..=3.6).contains(&sine_stats.crest_factor_db));
-
-        let noise_like: Vec<f32> = (0..len)
-            .map(|index| {
-                let n = ((index as u32)
-                    .wrapping_mul(1_664_525)
-                    .wrapping_add(1_013_904_223)
-                    & 0xffff) as f32
-                    / 32768.0
-                    - 1.0;
-                0.16 * n
-            })
-            .collect();
-        let noise_stats = warmed_meter_stats(&noise_like);
-        assert!(noise_stats.rms_db < noise_stats.peak_db);
-        assert!((4.0..=6.5).contains(&noise_stats.crest_factor_db));
-
-        let speech_like: Vec<f32> = (0..len)
-            .map(|index| {
-                let t = index as f32 / sample_rate;
-                let envelope = 0.35 + 0.65 * (2.0 * std::f32::consts::PI * 3.0 * t).sin().max(0.0);
-                envelope
-                    * (0.12 * (2.0 * std::f32::consts::PI * 140.0 * t).sin()
-                        + 0.06 * (2.0 * std::f32::consts::PI * 280.0 * t).sin()
-                        + 0.03 * (2.0 * std::f32::consts::PI * 1120.0 * t).sin())
-            })
-            .collect();
-        let speech_stats = warmed_meter_stats(&speech_like);
-        assert!(speech_stats.rms_db < -12.0);
-        assert!((5.0..=14.0).contains(&speech_stats.crest_factor_db));
-    }
-
-    /// Deterministic Gaussian-ish noise (Irwin-Hall sum of 12 xorshift32 uniforms).
-    fn seeded_gaussian_noise(seed: u32, rms: f32, len: usize) -> Vec<f32> {
-        let mut state = seed;
-        let mut uniform = || {
-            state ^= state << 13;
-            state ^= state >> 17;
-            state ^= state << 5;
-            state as f32 / u32::MAX as f32
-        };
-        (0..len)
-            .map(|_| rms * ((0..12).map(|_| uniform()).sum::<f32>() - 6.0))
-            .collect()
-    }
-
-    /// Per-block crest factors from the real meter, feeding `block_lens` cyclically.
-    fn crest_trace(signal: &[f32], block_lens: &[usize]) -> Vec<(usize, f32)> {
-        let coeff = smoothing_coeff_for_time_constant(TARGET_SAMPLE_RATE as f32, 100.0);
-        let mut meter = MeterState::default();
-        let mut start = 0;
-        let mut trace = Vec::new();
-        for &len in block_lens.iter().cycle() {
-            if start >= signal.len() {
-                break;
-            }
-            let end = (start + len).min(signal.len());
-            let stats = update_meter_block_stats(&signal[start..end], &mut meter, coeff);
-            trace.push((end, stats.crest_factor_db));
-            start = end;
-        }
-        trace
-    }
-
-    #[test]
-    fn test_meter_crest_of_room_noise_survives_small_blocks() {
-        let sample_rate = TARGET_SAMPLE_RATE as usize;
-        let noise = seeded_gaussian_noise(0x1234_5678, 0.007_94, sample_rate * 6 / 5);
-        let warm_up = sample_rate * 3 / 10;
-        for block_lens in [&[16_usize][..], &[1, 2, 3, 4]] {
-            let trace = crest_trace(&noise, block_lens);
-            let worst = trace
-                .iter()
-                .filter(|(end, _)| *end > warm_up)
-                .map(|&(_, crest)| crest)
-                .fold(f32::INFINITY, f32::min);
-            assert!(
-                worst >= 4.0,
-                "blocks {block_lens:?}: worst crest {worst} dB for -42 dBFS noise"
-            );
-        }
-    }
-
-    #[test]
-    fn test_meter_crest_after_loud_burst_never_collapses_to_zero() {
-        let sample_rate = TARGET_SAMPLE_RATE as usize;
-        let lead_in = sample_rate * 3 / 10;
-        let burst = sample_rate / 20;
-        let mut signal = seeded_gaussian_noise(7, 0.007_94, lead_in);
-        signal.extend(seeded_gaussian_noise(99, 0.1, burst));
-        signal.extend(seeded_gaussian_noise(5, 0.007_94, sample_rate));
-        let burst_end = lead_in + burst;
-        let trace = crest_trace(&signal, &[16]);
+#[test]
+fn test_meter_crest_of_room_noise_survives_small_blocks() {
+    let sample_rate = TARGET_SAMPLE_RATE as usize;
+    let noise = seeded_gaussian_noise(0x1234_5678, 0.007_94, sample_rate * 6 / 5);
+    let warm_up = sample_rate * 3 / 10;
+    for block_lens in [&[16_usize][..], &[1, 2, 3, 4]] {
+        let trace = crest_trace(&noise, block_lens);
         let worst = trace
             .iter()
-            .filter(|(end, _)| *end > burst_end)
+            .filter(|(end, _)| *end > warm_up)
             .map(|&(_, crest)| crest)
             .fold(f32::INFINITY, f32::min);
         assert!(
-            worst >= 3.0,
-            "worst crest {worst} dB on quiet blocks after a burst"
+            worst >= 4.0,
+            "blocks {block_lens:?}: worst crest {worst} dB for -42 dBFS noise"
         );
     }
+}
 
-    fn generate_sine(sample_rate: f32, frequency_hz: f32, len: usize) -> Vec<f32> {
-        (0..len)
-            .map(|index| {
-                let phase = 2.0 * std::f32::consts::PI * frequency_hz * index as f32 / sample_rate;
-                0.8 * phase.sin()
-            })
-            .collect()
+#[test]
+fn test_meter_crest_after_loud_burst_never_collapses_to_zero() {
+    let sample_rate = TARGET_SAMPLE_RATE as usize;
+    let lead_in = sample_rate * 3 / 10;
+    let burst = sample_rate / 20;
+    let mut signal = seeded_gaussian_noise(7, 0.007_94, lead_in);
+    signal.extend(seeded_gaussian_noise(99, 0.1, burst));
+    signal.extend(seeded_gaussian_noise(5, 0.007_94, sample_rate));
+    let burst_end = lead_in + burst;
+    let trace = crest_trace(&signal, &[16]);
+    let worst = trace
+        .iter()
+        .filter(|(end, _)| *end > burst_end)
+        .map(|&(_, crest)| crest)
+        .fold(f32::INFINITY, f32::min);
+    assert!(
+        worst >= 3.0,
+        "worst crest {worst} dB on quiet blocks after a burst"
+    );
+}
+
+fn generate_sine(sample_rate: f32, frequency_hz: f32, len: usize) -> Vec<f32> {
+    (0..len)
+        .map(|index| {
+            let phase = 2.0 * std::f32::consts::PI * frequency_hz * index as f32 / sample_rate;
+            0.8 * phase.sin()
+        })
+        .collect()
+}
+
+fn tone_components(signal: &[f32], sample_rate: f32, frequency_hz: f32) -> (f64, f64) {
+    let omega = 2.0 * std::f64::consts::PI * frequency_hz as f64 / sample_rate as f64;
+    let mut cos_sum = 0.0_f64;
+    let mut sin_sum = 0.0_f64;
+    for (index, sample) in signal.iter().copied().enumerate() {
+        let phase = omega * index as f64;
+        cos_sum += sample as f64 * phase.cos();
+        sin_sum += sample as f64 * phase.sin();
     }
+    let scale = 2.0 / signal.len().max(1) as f64;
+    (cos_sum * scale, sin_sum * scale)
+}
 
-    fn tone_components(signal: &[f32], sample_rate: f32, frequency_hz: f32) -> (f64, f64) {
-        let omega = 2.0 * std::f64::consts::PI * frequency_hz as f64 / sample_rate as f64;
-        let mut cos_sum = 0.0_f64;
-        let mut sin_sum = 0.0_f64;
-        for (index, sample) in signal.iter().copied().enumerate() {
+fn tone_amplitude(signal: &[f32], sample_rate: f32, frequency_hz: f32) -> f32 {
+    let (cos_coeff, sin_coeff) = tone_components(signal, sample_rate, frequency_hz);
+    (cos_coeff.hypot(sin_coeff)) as f32
+}
+
+fn max_harmonic_db(signal: &[f32], sample_rate: f32, frequency_hz: f32) -> f32 {
+    let nyquist = sample_rate / 2.0;
+    let mut max_harmonic = 0.0_f32;
+    for harmonic in 2..=5 {
+        let harmonic_hz = frequency_hz * harmonic as f32;
+        if harmonic_hz >= nyquist {
+            break;
+        }
+        max_harmonic = max_harmonic.max(tone_amplitude(signal, sample_rate, harmonic_hz));
+    }
+    dbfs(max_harmonic)
+}
+
+fn subtract_fitted_fundamental(signal: &[f32], sample_rate: f32, frequency_hz: f32) -> Vec<f32> {
+    let (cos_coeff, sin_coeff) = tone_components(signal, sample_rate, frequency_hz);
+    let omega = 2.0 * std::f64::consts::PI * frequency_hz as f64 / sample_rate as f64;
+    signal
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, sample)| {
             let phase = omega * index as f64;
-            cos_sum += sample as f64 * phase.cos();
-            sin_sum += sample as f64 * phase.sin();
-        }
-        let scale = 2.0 / signal.len().max(1) as f64;
-        (cos_sum * scale, sin_sum * scale)
-    }
+            let fitted = cos_coeff * phase.cos() + sin_coeff * phase.sin();
+            sample - fitted as f32
+        })
+        .collect()
+}
 
-    fn tone_amplitude(signal: &[f32], sample_rate: f32, frequency_hz: f32) -> f32 {
-        let (cos_coeff, sin_coeff) = tone_components(signal, sample_rate, frequency_hz);
-        (cos_coeff.hypot(sin_coeff)) as f32
+fn rms_db(signal: &[f32]) -> f32 {
+    if signal.is_empty() {
+        return -120.0;
     }
+    let power = signal
+        .iter()
+        .map(|sample| {
+            let sample = *sample as f64;
+            sample * sample
+        })
+        .sum::<f64>()
+        / signal.len() as f64;
+    dbfs(power.sqrt() as f32)
+}
 
-    fn max_harmonic_db(signal: &[f32], sample_rate: f32, frequency_hz: f32) -> f32 {
-        let nyquist = sample_rate / 2.0;
-        let mut max_harmonic = 0.0_f32;
-        for harmonic in 2..=5 {
-            let harmonic_hz = frequency_hz * harmonic as f32;
-            if harmonic_hz >= nyquist {
-                break;
+fn dbfs(value: f32) -> f32 {
+    (value.max(1e-12)).log10() * 20.0
+}
+
+fn rms_error_db(left: &[f32], right: &[f32]) -> f32 {
+    let len = left.len().min(right.len());
+    if len == 0 {
+        return -120.0;
+    }
+    let power = left
+        .iter()
+        .zip(right.iter())
+        .take(len)
+        .map(|(l, r)| {
+            let diff = *l as f64 - *r as f64;
+            diff * diff
+        })
+        .sum::<f64>()
+        / len as f64;
+    dbfs(power.sqrt() as f32)
+}
+
+fn sinc_reference_retime(input: &[f32], speed_ratio: f32) -> Vec<f32> {
+    let params = SincInterpolationParameters {
+        sinc_len: 128,
+        f_cutoff: calculate_cutoff(128, WindowFunction::BlackmanHarris2),
+        interpolation: SincInterpolationType::Cubic,
+        oversampling_factor: 256,
+        window: WindowFunction::BlackmanHarris2,
+    };
+    let mut resampler =
+        SincFixedIn::<f64>::new(1.0 / speed_ratio as f64, 1.2, params, input.len(), 1).unwrap();
+    let input_f64: Vec<f64> = input.iter().map(|sample| *sample as f64).collect();
+    let in_slices = [&input_f64[..]];
+    let mut outbuf = resampler.output_buffer_allocate(true);
+    let (_nbr_in, nbr_out) = resampler
+        .process_into_buffer(&in_slices, &mut outbuf, None)
+        .unwrap();
+    outbuf[0]
+        .iter()
+        .take(nbr_out)
+        .map(|sample| *sample as f32)
+        .collect()
+}
+
+#[test]
+fn test_retime_audio_block_quality_stays_within_measured_reference_bounds() {
+    let sample_rate = TARGET_SAMPLE_RATE as f32;
+    let input = generate_sine(sample_rate, 10_000.0, TARGET_SAMPLE_RATE as usize);
+    let cases = [
+        (0.995_f32, -20.0_f32, 1.5_f32),
+        (1.003_f32, -20.0_f32, 1.5_f32),
+        (1.03_f32, -16.0_f32, 2.0_f32),
+        (1.06_f32, -12.0_f32, 2.5_f32),
+    ];
+    let mut scratch = FixedAudioBuffer::<f32, 96_000>::new();
+
+    for (speed_ratio, max_error_db, max_fundamental_delta_db) in cases {
+        let mut state = DriftRetimer::default();
+        let linear =
+            retime_audio_block(&input, speed_ratio, 96_000, &mut scratch, &mut state).to_vec();
+        let reference = sinc_reference_retime(&input, speed_ratio);
+        let compare_len = linear.len().min(reference.len());
+        let linear = &linear[..compare_len];
+        let reference = &reference[..compare_len];
+        let expected_fundamental_hz = 10_000.0 * speed_ratio;
+        let linear_fundamental_db =
+            dbfs(tone_amplitude(linear, sample_rate, expected_fundamental_hz));
+        let reference_fundamental_db = dbfs(tone_amplitude(
+            reference,
+            sample_rate,
+            expected_fundamental_hz,
+        ));
+        let linear_harmonic_db = max_harmonic_db(linear, sample_rate, expected_fundamental_hz);
+        let linear_residual_db = rms_db(&subtract_fitted_fundamental(
+            linear,
+            sample_rate,
+            expected_fundamental_hz,
+        ));
+        let reference_residual_db = rms_db(&subtract_fitted_fundamental(
+            reference,
+            sample_rate,
+            expected_fundamental_hz,
+        ));
+        let error_db = rms_error_db(linear, reference);
+
+        assert!(
+            (linear_fundamental_db - reference_fundamental_db).abs()
+                <= max_fundamental_delta_db,
+            "ratio={speed_ratio} linear_fundamental_db={linear_fundamental_db} reference_fundamental_db={reference_fundamental_db}",
+        );
+        assert!(
+            error_db <= max_error_db,
+            "ratio={speed_ratio} error_db={error_db} max_error_db={max_error_db}",
+        );
+        assert!(
+            linear_harmonic_db <= linear_fundamental_db - 12.0,
+            "ratio={speed_ratio} linear_harmonic_db={linear_harmonic_db} linear_fundamental_db={linear_fundamental_db}",
+        );
+        assert!(
+            linear_residual_db <= reference_residual_db + 40.0,
+            "ratio={speed_ratio} linear_residual_db={linear_residual_db} reference_residual_db={reference_residual_db}",
+        );
+    }
+}
+
+fn test_output_writer_limits(
+    output_target_center_samples: usize,
+    output_hard_backlog_samples: usize,
+    discontinuity_fade_samples: usize,
+) -> OutputWriteLimits {
+    OutputWriteLimits {
+        output_target_center_samples,
+        output_hard_backlog_samples,
+        discontinuity_fade_samples,
+        max_catchup_ratio: 1.03,
+        max_emergency_catchup_ratio: 1.06,
+    }
+}
+
+fn output_writer_counters<'a>(
+    output_counts: (&'a AtomicU64, &'a AtomicU64, &'a AtomicU64),
+    output_short_write_dropped_samples: &'a AtomicU64,
+    rt_buffer_overflow_count: &'a AtomicU64,
+    rt_error_code: &'a AtomicU32,
+    output_buffer_len: &'a AtomicU32,
+    last_output_write_time: &'a AtomicU64,
+) -> OutputWriteCounters<'a> {
+    static OUTPUT_CLIP_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
+    static OUTPUT_CLIP_PEAK_DB: AtomicU32 = AtomicU32::new((-120.0_f32).to_bits());
+    static OUTPUT_FINAL_PEAK_HOLD: AtomicU32 = AtomicU32::new(0);
+    static OUTPUT_FULL_SCALE_COUNT: AtomicU64 = AtomicU64::new(0);
+    static OUTPUT_TRUE_PEAK_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
+    static OUTPUT_TRUE_PEAK_DB: AtomicU32 = AtomicU32::new((-120.0_f32).to_bits());
+    static OUTPUT_TRUE_PEAK_INPUT_DB: AtomicU32 = AtomicU32::new((-120.0_f32).to_bits());
+    static OUTPUT_TRUE_PEAK_GAIN_REDUCTION_DB: AtomicU32 = AtomicU32::new(0.0_f32.to_bits());
+    static OUTPUT_TRUE_PEAK_GAIN_REDUCTION_HISTORY_DB: AtomicU32 =
+        AtomicU32::new(0.0_f32.to_bits());
+    static OUTPUT_TRUE_PEAK_HEADROOM_DB: AtomicU32 = AtomicU32::new(120.0_f32.to_bits());
+    let (jitter_dropped_samples, output_retime_adjustment_count, output_recovery_event_count) =
+        output_counts;
+    OutputWriteCounters {
+        jitter_dropped_samples,
+        output_retime_adjustment_count,
+        output_recovery_event_count,
+        output_short_write_dropped_samples,
+        rt_buffer_overflow_count,
+        rt_error_code,
+        output_buffer_len,
+        last_output_write_time,
+        output_clip_event_count: &OUTPUT_CLIP_EVENT_COUNT,
+        output_clip_peak_db: &OUTPUT_CLIP_PEAK_DB,
+        output_final_peak_hold: &OUTPUT_FINAL_PEAK_HOLD,
+        output_full_scale_count: &OUTPUT_FULL_SCALE_COUNT,
+        output_true_peak_event_count: &OUTPUT_TRUE_PEAK_EVENT_COUNT,
+        output_true_peak_db: &OUTPUT_TRUE_PEAK_DB,
+        output_true_peak_input_db: &OUTPUT_TRUE_PEAK_INPUT_DB,
+        output_true_peak_gain_reduction_db: &OUTPUT_TRUE_PEAK_GAIN_REDUCTION_DB,
+        output_true_peak_gain_reduction_history_db: &OUTPUT_TRUE_PEAK_GAIN_REDUCTION_HISTORY_DB,
+        output_true_peak_headroom_db: &OUTPUT_TRUE_PEAK_HEADROOM_DB,
+    }
+}
+
+fn run_production_output_harness(input_rate: u32, release_ms: f32) -> (Vec<f32>, u64) {
+    const PREFILL: usize = 140;
+    let input_len = input_rate as usize / 4;
+    let source: Vec<f32> = (0..input_len)
+        .map(|index| {
+            if index < input_rate as usize / 100 {
+                1.0
+            } else {
+                0.2
             }
-            max_harmonic = max_harmonic.max(tone_amplitude(signal, sample_rate, harmonic_hz));
-        }
-        dbfs(max_harmonic)
-    }
-
-    fn subtract_fitted_fundamental(
-        signal: &[f32],
-        sample_rate: f32,
-        frequency_hz: f32,
-    ) -> Vec<f32> {
-        let (cos_coeff, sin_coeff) = tone_components(signal, sample_rate, frequency_hz);
-        let omega = 2.0 * std::f64::consts::PI * frequency_hz as f64 / sample_rate as f64;
-        signal
+        })
+        .collect();
+    let product_output = if input_rate == TARGET_SAMPLE_RATE {
+        source
+    } else {
+        let (resampled, delay, expected, _) = simulate_product_resampler(
+            source.into_iter().map(f64::from).collect(),
+            input_rate,
+            TARGET_SAMPLE_RATE,
+            RESAMPLER_CHUNK_SIZE,
+            None,
+            None,
+        )
+        .unwrap();
+        resampled[delay..delay + expected]
             .iter()
-            .copied()
-            .enumerate()
-            .map(|(index, sample)| {
-                let phase = omega * index as f64;
-                let fitted = cos_coeff * phase.cos() + sin_coeff * phase.sin();
-                sample - fitted as f32
-            })
-            .collect()
-    }
-
-    fn rms_db(signal: &[f32]) -> f32 {
-        if signal.is_empty() {
-            return -120.0;
-        }
-        let power = signal
-            .iter()
-            .map(|sample| {
-                let sample = *sample as f64;
-                sample * sample
-            })
-            .sum::<f64>()
-            / signal.len() as f64;
-        dbfs(power.sqrt() as f32)
-    }
-
-    fn dbfs(value: f32) -> f32 {
-        (value.max(1e-12)).log10() * 20.0
-    }
-
-    fn rms_error_db(left: &[f32], right: &[f32]) -> f32 {
-        let len = left.len().min(right.len());
-        if len == 0 {
-            return -120.0;
-        }
-        let power = left
-            .iter()
-            .zip(right.iter())
-            .take(len)
-            .map(|(l, r)| {
-                let diff = *l as f64 - *r as f64;
-                diff * diff
-            })
-            .sum::<f64>()
-            / len as f64;
-        dbfs(power.sqrt() as f32)
-    }
-
-    fn sinc_reference_retime(input: &[f32], speed_ratio: f32) -> Vec<f32> {
-        let params = SincInterpolationParameters {
-            sinc_len: 128,
-            f_cutoff: calculate_cutoff(128, WindowFunction::BlackmanHarris2),
-            interpolation: SincInterpolationType::Cubic,
-            oversampling_factor: 256,
-            window: WindowFunction::BlackmanHarris2,
-        };
-        let mut resampler =
-            SincFixedIn::<f64>::new(1.0 / speed_ratio as f64, 1.2, params, input.len(), 1).unwrap();
-        let input_f64: Vec<f64> = input.iter().map(|sample| *sample as f64).collect();
-        let in_slices = [&input_f64[..]];
-        let mut outbuf = resampler.output_buffer_allocate(true);
-        let (_nbr_in, nbr_out) = resampler
-            .process_into_buffer(&in_slices, &mut outbuf, None)
-            .unwrap();
-        outbuf[0]
-            .iter()
-            .take(nbr_out)
             .map(|sample| *sample as f32)
             .collect()
-    }
+    };
 
-    #[test]
-    fn test_retime_audio_block_quality_stays_within_measured_reference_bounds() {
-        let sample_rate = TARGET_SAMPLE_RATE as f32;
-        let input = generate_sine(sample_rate, 10_000.0, TARGET_SAMPLE_RATE as usize);
-        let cases = [
-            (0.995_f32, -20.0_f32, 1.5_f32),
-            (1.003_f32, -20.0_f32, 1.5_f32),
-            (1.03_f32, -16.0_f32, 2.0_f32),
-            (1.06_f32, -12.0_f32, 2.5_f32),
-        ];
-        let mut scratch = FixedAudioBuffer::<f32, 96_000>::new();
-
-        for (speed_ratio, max_error_db, max_fundamental_delta_db) in cases {
-            let mut state = DriftRetimer::default();
-            let linear =
-                retime_audio_block(&input, speed_ratio, 96_000, &mut scratch, &mut state).to_vec();
-            let reference = sinc_reference_retime(&input, speed_ratio);
-            let compare_len = linear.len().min(reference.len());
-            let linear = &linear[..compare_len];
-            let reference = &reference[..compare_len];
-            let expected_fundamental_hz = 10_000.0 * speed_ratio;
-            let linear_fundamental_db =
-                dbfs(tone_amplitude(linear, sample_rate, expected_fundamental_hz));
-            let reference_fundamental_db = dbfs(tone_amplitude(
-                reference,
-                sample_rate,
-                expected_fundamental_hz,
-            ));
-            let linear_harmonic_db = max_harmonic_db(linear, sample_rate, expected_fundamental_hz);
-            let linear_residual_db = rms_db(&subtract_fitted_fundamental(
-                linear,
-                sample_rate,
-                expected_fundamental_hz,
-            ));
-            let reference_residual_db = rms_db(&subtract_fitted_fundamental(
-                reference,
-                sample_rate,
-                expected_fundamental_hz,
-            ));
-            let error_db = rms_error_db(linear, reference);
-
-            assert!(
-                (linear_fundamental_db - reference_fundamental_db).abs()
-                    <= max_fundamental_delta_db,
-                "ratio={speed_ratio} linear_fundamental_db={linear_fundamental_db} reference_fundamental_db={reference_fundamental_db}",
-            );
-            assert!(
-                error_db <= max_error_db,
-                "ratio={speed_ratio} error_db={error_db} max_error_db={max_error_db}",
-            );
-            assert!(
-                linear_harmonic_db <= linear_fundamental_db - 12.0,
-                "ratio={speed_ratio} linear_harmonic_db={linear_harmonic_db} linear_fundamental_db={linear_fundamental_db}",
-            );
-            assert!(
-                linear_residual_db <= reference_residual_db + 40.0,
-                "ratio={speed_ratio} linear_residual_db={linear_residual_db} reference_residual_db={reference_residual_db}",
-            );
-        }
-    }
-
-    fn test_output_writer_limits(
-        output_target_center_samples: usize,
-        output_hard_backlog_samples: usize,
-        discontinuity_fade_samples: usize,
-    ) -> OutputWriteLimits {
-        OutputWriteLimits {
-            output_target_center_samples,
-            output_hard_backlog_samples,
-            discontinuity_fade_samples,
-            max_catchup_ratio: 1.03,
-            max_emergency_catchup_ratio: 1.06,
-        }
-    }
-
-    fn output_writer_counters<'a>(
-        output_counts: (&'a AtomicU64, &'a AtomicU64, &'a AtomicU64),
-        output_short_write_dropped_samples: &'a AtomicU64,
-        rt_buffer_overflow_count: &'a AtomicU64,
-        rt_error_code: &'a AtomicU32,
-        output_buffer_len: &'a AtomicU32,
-        last_output_write_time: &'a AtomicU64,
-    ) -> OutputWriteCounters<'a> {
-        static OUTPUT_CLIP_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
-        static OUTPUT_CLIP_PEAK_DB: AtomicU32 = AtomicU32::new((-120.0_f32).to_bits());
-        static OUTPUT_FINAL_PEAK_HOLD: AtomicU32 = AtomicU32::new(0);
-        static OUTPUT_FULL_SCALE_COUNT: AtomicU64 = AtomicU64::new(0);
-        static OUTPUT_TRUE_PEAK_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
-        static OUTPUT_TRUE_PEAK_DB: AtomicU32 = AtomicU32::new((-120.0_f32).to_bits());
-        static OUTPUT_TRUE_PEAK_INPUT_DB: AtomicU32 = AtomicU32::new((-120.0_f32).to_bits());
-        static OUTPUT_TRUE_PEAK_GAIN_REDUCTION_DB: AtomicU32 = AtomicU32::new(0.0_f32.to_bits());
-        static OUTPUT_TRUE_PEAK_GAIN_REDUCTION_HISTORY_DB: AtomicU32 =
-            AtomicU32::new(0.0_f32.to_bits());
-        static OUTPUT_TRUE_PEAK_HEADROOM_DB: AtomicU32 = AtomicU32::new(120.0_f32.to_bits());
-        let (jitter_dropped_samples, output_retime_adjustment_count, output_recovery_event_count) =
-            output_counts;
-        OutputWriteCounters {
-            jitter_dropped_samples,
-            output_retime_adjustment_count,
-            output_recovery_event_count,
-            output_short_write_dropped_samples,
-            rt_buffer_overflow_count,
-            rt_error_code,
-            output_buffer_len,
-            last_output_write_time,
-            output_clip_event_count: &OUTPUT_CLIP_EVENT_COUNT,
-            output_clip_peak_db: &OUTPUT_CLIP_PEAK_DB,
-            output_final_peak_hold: &OUTPUT_FINAL_PEAK_HOLD,
-            output_full_scale_count: &OUTPUT_FULL_SCALE_COUNT,
-            output_true_peak_event_count: &OUTPUT_TRUE_PEAK_EVENT_COUNT,
-            output_true_peak_db: &OUTPUT_TRUE_PEAK_DB,
-            output_true_peak_input_db: &OUTPUT_TRUE_PEAK_INPUT_DB,
-            output_true_peak_gain_reduction_db: &OUTPUT_TRUE_PEAK_GAIN_REDUCTION_DB,
-            output_true_peak_gain_reduction_history_db: &OUTPUT_TRUE_PEAK_GAIN_REDUCTION_HISTORY_DB,
-            output_true_peak_headroom_db: &OUTPUT_TRUE_PEAK_HEADROOM_DB,
-        }
-    }
-
-    fn run_production_output_harness(input_rate: u32, release_ms: f32) -> (Vec<f32>, u64) {
-        const PREFILL: usize = 140;
-        let input_len = input_rate as usize / 4;
-        let source: Vec<f32> = (0..input_len)
-            .map(|index| {
-                if index < input_rate as usize / 100 {
-                    1.0
-                } else {
-                    0.2
-                }
-            })
-            .collect();
-        let product_output = if input_rate == TARGET_SAMPLE_RATE {
-            source
-        } else {
-            let (resampled, delay, expected, _) = simulate_product_resampler(
-                source.into_iter().map(f64::from).collect(),
-                input_rate,
-                TARGET_SAMPLE_RATE,
-                RESAMPLER_CHUNK_SIZE,
-                None,
-                None,
-            )
-            .unwrap();
-            resampled[delay..delay + expected]
-                .iter()
-                .map(|sample| *sample as f32)
-                .collect()
-        };
-
-        let rb = AudioRingBuffer::new(4096);
-        let (mut producer, mut consumer) = rb.split();
-        assert_eq!(producer.write(&[0.0; PREFILL]), PREFILL);
-        let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut drift_error_ema = 0.0_f32;
-        let mut drift_retimer = DriftRetimer::default();
-        let fade_remaining = Cell::new(0usize);
-        let limiter_enabled = AtomicBool::new(true);
-        let output_ceiling_linear = Cell::new(0.5_f32);
-        let jitter_dropped_samples = AtomicU64::new(0);
-        let output_retime_adjustment_count = AtomicU64::new(0);
-        let output_recovery_event_count = AtomicU64::new(0);
-        let output_short_write_dropped_samples = AtomicU64::new(0);
-        let rt_buffer_overflow_count = AtomicU64::new(0);
-        let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
-        let output_buffer_len = AtomicU32::new(PREFILL as u32);
-        let last_output_write_time = AtomicU64::new(0);
-        let mut true_peak_detector = TruePeakDetector::new();
-        let mut true_peak_limiter = TruePeakLimiter::default_settings(TARGET_SAMPLE_RATE as f32);
-        true_peak_limiter.set_release_ms(release_ms);
-        let mut writer = OutputWriteContext {
-            output_producer: &mut producer,
-            output_queue_control_scratch: &mut control_scratch,
-            discontinuity_fade_scratch: &mut fade_scratch,
-            output_safety_scratch: &mut safety_scratch,
-            true_peak_detector: &mut true_peak_detector,
-            true_peak_limiter: &mut true_peak_limiter,
-            drift_error_ema: &mut drift_error_ema,
-            drift_retimer: &mut drift_retimer,
-            discontinuity_fade_remaining: &fade_remaining,
-            output_fade_remaining: 0,
-            limiter_enabled: &limiter_enabled,
-            output_ceiling_linear: &output_ceiling_linear,
-            counters: output_writer_counters(
-                (
-                    &jitter_dropped_samples,
-                    &output_retime_adjustment_count,
-                    &output_recovery_event_count,
-                ),
-                &output_short_write_dropped_samples,
-                &rt_buffer_overflow_count,
-                &rt_error_code,
-                &output_buffer_len,
-                &last_output_write_time,
+    let rb = AudioRingBuffer::new(4096);
+    let (mut producer, mut consumer) = rb.split();
+    assert_eq!(producer.write(&[0.0; PREFILL]), PREFILL);
+    let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut drift_error_ema = 0.0_f32;
+    let mut drift_retimer = DriftRetimer::default();
+    let fade_remaining = Cell::new(0usize);
+    let limiter_enabled = AtomicBool::new(true);
+    let output_ceiling_linear = Cell::new(0.5_f32);
+    let jitter_dropped_samples = AtomicU64::new(0);
+    let output_retime_adjustment_count = AtomicU64::new(0);
+    let output_recovery_event_count = AtomicU64::new(0);
+    let output_short_write_dropped_samples = AtomicU64::new(0);
+    let rt_buffer_overflow_count = AtomicU64::new(0);
+    let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+    let output_buffer_len = AtomicU32::new(PREFILL as u32);
+    let last_output_write_time = AtomicU64::new(0);
+    let mut true_peak_detector = TruePeakDetector::new();
+    let mut true_peak_limiter = TruePeakLimiter::default_settings(TARGET_SAMPLE_RATE as f32);
+    true_peak_limiter.set_release_ms(release_ms);
+    let mut writer = OutputWriteContext {
+        output_producer: &mut producer,
+        output_queue_control_scratch: &mut control_scratch,
+        discontinuity_fade_scratch: &mut fade_scratch,
+        output_safety_scratch: &mut safety_scratch,
+        true_peak_detector: &mut true_peak_detector,
+        true_peak_limiter: &mut true_peak_limiter,
+        drift_error_ema: &mut drift_error_ema,
+        drift_retimer: &mut drift_retimer,
+        discontinuity_fade_remaining: &fade_remaining,
+        output_fade_remaining: 0,
+        limiter_enabled: &limiter_enabled,
+        output_ceiling_linear: &output_ceiling_linear,
+        counters: output_writer_counters(
+            (
+                &jitter_dropped_samples,
+                &output_retime_adjustment_count,
+                &output_recovery_event_count,
             ),
-            limits: test_output_writer_limits(128, 256, 4),
-        };
+            &output_short_write_dropped_samples,
+            &rt_buffer_overflow_count,
+            &rt_error_code,
+            &output_buffer_len,
+            &last_output_write_time,
+        ),
+        limits: test_output_writer_limits(128, 256, 4),
+    };
 
-        let mut rendered = Vec::with_capacity(product_output.len());
-        let mut drained = [0.0_f32; 4096];
-        for chunk in product_output.chunks(137) {
-            assert!(writer.write_chunk(chunk, false));
-            let read = consumer.read(&mut drained);
-            assert!(read >= PREFILL);
-            rendered.extend_from_slice(&drained[PREFILL..read]);
-            assert_eq!(writer.output_producer.write(&[0.0; PREFILL]), PREFILL);
-        }
-
-        assert_eq!(
-            output_short_write_dropped_samples.load(Ordering::Relaxed),
-            0
-        );
-        assert_eq!(rt_buffer_overflow_count.load(Ordering::Relaxed), 0);
-        (
-            rendered,
-            output_retime_adjustment_count.load(Ordering::Relaxed),
-        )
+    let mut rendered = Vec::with_capacity(product_output.len());
+    let mut drained = [0.0_f32; 4096];
+    for chunk in product_output.chunks(137) {
+        assert!(writer.write_chunk(chunk, false));
+        let read = consumer.read(&mut drained);
+        assert!(read >= PREFILL);
+        rendered.extend_from_slice(&drained[PREFILL..read]);
+        assert_eq!(writer.output_producer.write(&[0.0; PREFILL]), PREFILL);
     }
 
-    #[test]
-    fn production_output_harness_covers_resampling_retiming_and_limiter_release() {
-        for input_rate in [44_100, TARGET_SAMPLE_RATE] {
-            let (rendered, retime_adjustments) = run_production_output_harness(input_rate, 50.0);
-            assert!(rendered.iter().all(|sample| sample.is_finite()));
-            assert!(rendered.iter().all(|sample| sample.abs() <= 0.500_001));
-            assert!(retime_adjustments > 0);
-        }
+    assert_eq!(
+        output_short_write_dropped_samples.load(Ordering::Relaxed),
+        0
+    );
+    assert_eq!(rt_buffer_overflow_count.load(Ordering::Relaxed), 0);
+    (
+        rendered,
+        output_retime_adjustment_count.load(Ordering::Relaxed),
+    )
+}
 
-        let (fast_release, _) = run_production_output_harness(TARGET_SAMPLE_RATE, 5.0);
-        let (slow_release, _) = run_production_output_harness(TARGET_SAMPLE_RATE, 500.0);
-        let probe = fast_release.len().min(slow_release.len()) * 3 / 4;
-        assert!(fast_release[probe].abs() > slow_release[probe].abs() + 0.04);
+#[test]
+fn production_output_harness_covers_resampling_retiming_and_limiter_release() {
+    for input_rate in [44_100, TARGET_SAMPLE_RATE] {
+        let (rendered, retime_adjustments) = run_production_output_harness(input_rate, 50.0);
+        assert!(rendered.iter().all(|sample| sample.is_finite()));
+        assert!(rendered.iter().all(|sample| sample.abs() <= 0.500_001));
+        assert!(retime_adjustments > 0);
     }
 
-    #[test]
-    fn test_output_writer_noop_write_returns_false() {
-        let rb = AudioRingBuffer::new(32);
-        let (mut producer, consumer) = rb.split();
-        let mut control_scratch = FixedAudioBuffer::<f32, 64>::new();
-        let mut fade_scratch = FixedAudioBuffer::<f32, 64>::new();
-        let mut safety_scratch = FixedAudioBuffer::<f32, 64>::new();
-        let mut drift_error_ema = 0.0_f32;
-        let mut drift_retimer = DriftRetimer::default();
-        let fade_remaining = Cell::new(0usize);
-        let limiter_enabled = AtomicBool::new(true);
-        let output_ceiling_linear = Cell::new(1.0_f32);
-        let jitter_dropped_samples = AtomicU64::new(0);
-        let output_retime_adjustment_count = AtomicU64::new(0);
-        let output_recovery_event_count = AtomicU64::new(0);
-        let output_short_write_dropped_samples = AtomicU64::new(0);
-        let rt_buffer_overflow_count = AtomicU64::new(0);
-        let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
-        let output_buffer_len = AtomicU32::new(0);
-        let last_output_write_time = AtomicU64::new(0);
-        let mut true_peak_detector = TruePeakDetector::new();
-        let mut true_peak_limiter = TruePeakLimiter::default();
+    let (fast_release, _) = run_production_output_harness(TARGET_SAMPLE_RATE, 5.0);
+    let (slow_release, _) = run_production_output_harness(TARGET_SAMPLE_RATE, 500.0);
+    let probe = fast_release.len().min(slow_release.len()) * 3 / 4;
+    assert!(fast_release[probe].abs() > slow_release[probe].abs() + 0.04);
+}
 
-        let mut writer = OutputWriteContext {
-            output_producer: &mut producer,
-            output_queue_control_scratch: &mut control_scratch,
-            discontinuity_fade_scratch: &mut fade_scratch,
-            output_safety_scratch: &mut safety_scratch,
-            true_peak_detector: &mut true_peak_detector,
-            true_peak_limiter: &mut true_peak_limiter,
-            drift_error_ema: &mut drift_error_ema,
-            drift_retimer: &mut drift_retimer,
-            discontinuity_fade_remaining: &fade_remaining,
-            output_fade_remaining: 0,
-            limiter_enabled: &limiter_enabled,
-            output_ceiling_linear: &output_ceiling_linear,
-            counters: output_writer_counters(
-                (
-                    &jitter_dropped_samples,
-                    &output_retime_adjustment_count,
-                    &output_recovery_event_count,
-                ),
-                &output_short_write_dropped_samples,
-                &rt_buffer_overflow_count,
-                &rt_error_code,
-                &output_buffer_len,
-                &last_output_write_time,
+#[test]
+fn test_output_writer_noop_write_returns_false() {
+    let rb = AudioRingBuffer::new(32);
+    let (mut producer, consumer) = rb.split();
+    let mut control_scratch = FixedAudioBuffer::<f32, 64>::new();
+    let mut fade_scratch = FixedAudioBuffer::<f32, 64>::new();
+    let mut safety_scratch = FixedAudioBuffer::<f32, 64>::new();
+    let mut drift_error_ema = 0.0_f32;
+    let mut drift_retimer = DriftRetimer::default();
+    let fade_remaining = Cell::new(0usize);
+    let limiter_enabled = AtomicBool::new(true);
+    let output_ceiling_linear = Cell::new(1.0_f32);
+    let jitter_dropped_samples = AtomicU64::new(0);
+    let output_retime_adjustment_count = AtomicU64::new(0);
+    let output_recovery_event_count = AtomicU64::new(0);
+    let output_short_write_dropped_samples = AtomicU64::new(0);
+    let rt_buffer_overflow_count = AtomicU64::new(0);
+    let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+    let output_buffer_len = AtomicU32::new(0);
+    let last_output_write_time = AtomicU64::new(0);
+    let mut true_peak_detector = TruePeakDetector::new();
+    let mut true_peak_limiter = TruePeakLimiter::default();
+
+    let mut writer = OutputWriteContext {
+        output_producer: &mut producer,
+        output_queue_control_scratch: &mut control_scratch,
+        discontinuity_fade_scratch: &mut fade_scratch,
+        output_safety_scratch: &mut safety_scratch,
+        true_peak_detector: &mut true_peak_detector,
+        true_peak_limiter: &mut true_peak_limiter,
+        drift_error_ema: &mut drift_error_ema,
+        drift_retimer: &mut drift_retimer,
+        discontinuity_fade_remaining: &fade_remaining,
+        output_fade_remaining: 0,
+        limiter_enabled: &limiter_enabled,
+        output_ceiling_linear: &output_ceiling_linear,
+        counters: output_writer_counters(
+            (
+                &jitter_dropped_samples,
+                &output_retime_adjustment_count,
+                &output_recovery_event_count,
             ),
-            limits: test_output_writer_limits(8, 16, 4),
-        };
+            &output_short_write_dropped_samples,
+            &rt_buffer_overflow_count,
+            &rt_error_code,
+            &output_buffer_len,
+            &last_output_write_time,
+        ),
+        limits: test_output_writer_limits(8, 16, 4),
+    };
 
-        assert!(!writer.write_chunk(&[], false));
-        assert!(consumer.is_empty());
-        assert_eq!(output_buffer_len.load(Ordering::Relaxed), 0);
-        // Nothing queued yet: the output callback must still treat an empty queue as priming.
-        assert_eq!(last_output_write_time.load(Ordering::Relaxed), 0);
-    }
+    assert!(!writer.write_chunk(&[], false));
+    assert!(consumer.is_empty());
+    assert_eq!(output_buffer_len.load(Ordering::Relaxed), 0);
+    // Nothing queued yet: the output callback must still treat an empty queue as priming.
+    assert_eq!(last_output_write_time.load(Ordering::Relaxed), 0);
+}
 
-    #[test]
-    fn test_output_writer_accounts_for_queue_full_short_write() {
-        let rb = AudioRingBuffer::new(4);
-        let (mut producer, mut consumer) = rb.split();
-        producer.write(&[0.0, 0.0, 0.0]);
-        let mut control_scratch = FixedAudioBuffer::<f32, 64>::new();
-        let mut fade_scratch = FixedAudioBuffer::<f32, 64>::new();
-        let mut safety_scratch = FixedAudioBuffer::<f32, 64>::new();
-        let mut drift_error_ema = 0.0_f32;
-        let mut drift_retimer = DriftRetimer::default();
-        let fade_remaining = Cell::new(0usize);
-        let limiter_enabled = AtomicBool::new(true);
-        let output_ceiling_linear = Cell::new(1.0_f32);
-        let jitter_dropped_samples = AtomicU64::new(0);
-        let output_retime_adjustment_count = AtomicU64::new(0);
-        let output_recovery_event_count = AtomicU64::new(0);
-        let output_short_write_dropped_samples = AtomicU64::new(0);
-        let rt_buffer_overflow_count = AtomicU64::new(0);
-        // A suppressor failure is already recorded when the queue overflows.
-        let rt_error_code = AtomicU32::new(RtErrorCode::SuppressorBackendFailed as u32);
-        let output_buffer_len = AtomicU32::new(3);
-        let last_output_write_time = AtomicU64::new(0);
-        let mut true_peak_detector = TruePeakDetector::new();
-        let mut true_peak_limiter = TruePeakLimiter::default();
+#[test]
+fn test_output_writer_accounts_for_queue_full_short_write() {
+    let rb = AudioRingBuffer::new(4);
+    let (mut producer, mut consumer) = rb.split();
+    producer.write(&[0.0, 0.0, 0.0]);
+    let mut control_scratch = FixedAudioBuffer::<f32, 64>::new();
+    let mut fade_scratch = FixedAudioBuffer::<f32, 64>::new();
+    let mut safety_scratch = FixedAudioBuffer::<f32, 64>::new();
+    let mut drift_error_ema = 0.0_f32;
+    let mut drift_retimer = DriftRetimer::default();
+    let fade_remaining = Cell::new(0usize);
+    let limiter_enabled = AtomicBool::new(true);
+    let output_ceiling_linear = Cell::new(1.0_f32);
+    let jitter_dropped_samples = AtomicU64::new(0);
+    let output_retime_adjustment_count = AtomicU64::new(0);
+    let output_recovery_event_count = AtomicU64::new(0);
+    let output_short_write_dropped_samples = AtomicU64::new(0);
+    let rt_buffer_overflow_count = AtomicU64::new(0);
+    // A suppressor failure is already recorded when the queue overflows.
+    let rt_error_code = AtomicU32::new(RtErrorCode::SuppressorBackendFailed as u32);
+    let output_buffer_len = AtomicU32::new(3);
+    let last_output_write_time = AtomicU64::new(0);
+    let mut true_peak_detector = TruePeakDetector::new();
+    let mut true_peak_limiter = TruePeakLimiter::default();
 
-        let mut writer = OutputWriteContext {
-            output_producer: &mut producer,
-            output_queue_control_scratch: &mut control_scratch,
-            discontinuity_fade_scratch: &mut fade_scratch,
-            output_safety_scratch: &mut safety_scratch,
-            true_peak_detector: &mut true_peak_detector,
-            true_peak_limiter: &mut true_peak_limiter,
-            drift_error_ema: &mut drift_error_ema,
-            drift_retimer: &mut drift_retimer,
-            discontinuity_fade_remaining: &fade_remaining,
-            output_fade_remaining: 0,
-            limiter_enabled: &limiter_enabled,
-            output_ceiling_linear: &output_ceiling_linear,
-            counters: output_writer_counters(
-                (
-                    &jitter_dropped_samples,
-                    &output_retime_adjustment_count,
-                    &output_recovery_event_count,
-                ),
-                &output_short_write_dropped_samples,
-                &rt_buffer_overflow_count,
-                &rt_error_code,
-                &output_buffer_len,
-                &last_output_write_time,
+    let mut writer = OutputWriteContext {
+        output_producer: &mut producer,
+        output_queue_control_scratch: &mut control_scratch,
+        discontinuity_fade_scratch: &mut fade_scratch,
+        output_safety_scratch: &mut safety_scratch,
+        true_peak_detector: &mut true_peak_detector,
+        true_peak_limiter: &mut true_peak_limiter,
+        drift_error_ema: &mut drift_error_ema,
+        drift_retimer: &mut drift_retimer,
+        discontinuity_fade_remaining: &fade_remaining,
+        output_fade_remaining: 0,
+        limiter_enabled: &limiter_enabled,
+        output_ceiling_linear: &output_ceiling_linear,
+        counters: output_writer_counters(
+            (
+                &jitter_dropped_samples,
+                &output_retime_adjustment_count,
+                &output_recovery_event_count,
             ),
-            limits: test_output_writer_limits(2, 4, 4),
-        };
+            &output_short_write_dropped_samples,
+            &rt_buffer_overflow_count,
+            &rt_error_code,
+            &output_buffer_len,
+            &last_output_write_time,
+        ),
+        limits: test_output_writer_limits(2, 4, 4),
+    };
 
-        assert!(writer.write_chunk(&[0.1, 0.2, 0.3, 0.4], true));
+    assert!(writer.write_chunk(&[0.1, 0.2, 0.3, 0.4], true));
 
-        assert_eq!(
-            output_short_write_dropped_samples.load(Ordering::Relaxed),
-            3
-        );
-        assert_eq!(output_retime_adjustment_count.load(Ordering::Relaxed), 0);
-        assert_eq!(output_recovery_event_count.load(Ordering::Relaxed), 1);
-        assert_eq!(writer.output_fade_remaining, 4);
-        assert_eq!(fade_remaining.get(), 0);
-        assert_eq!(output_buffer_len.load(Ordering::Relaxed), 4);
-        // The overflow is counted, and it must not overwrite the failure code.
-        assert_eq!(
-            RtErrorCode::from_u32(rt_error_code.load(Ordering::Relaxed)),
-            RtErrorCode::SuppressorBackendFailed
-        );
-        // The first queued audio ends start-up priming for the output callback.
-        assert_ne!(last_output_write_time.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        output_short_write_dropped_samples.load(Ordering::Relaxed),
+        3
+    );
+    assert_eq!(output_retime_adjustment_count.load(Ordering::Relaxed), 0);
+    assert_eq!(output_recovery_event_count.load(Ordering::Relaxed), 1);
+    assert_eq!(writer.output_fade_remaining, 4);
+    assert_eq!(fade_remaining.get(), 0);
+    assert_eq!(output_buffer_len.load(Ordering::Relaxed), 4);
+    // The overflow is counted, and it must not overwrite the failure code.
+    assert_eq!(
+        RtErrorCode::from_u32(rt_error_code.load(Ordering::Relaxed)),
+        RtErrorCode::SuppressorBackendFailed
+    );
+    // The first queued audio ends start-up priming for the output callback.
+    assert_ne!(last_output_write_time.load(Ordering::Relaxed), 0);
 
-        let mut drained = [0.0_f32; 4];
-        assert_eq!(consumer.read(&mut drained), 4);
-    }
+    let mut drained = [0.0_f32; 4];
+    assert_eq!(consumer.read(&mut drained), 4);
+}
 
-    #[test]
-    fn test_output_writer_retime_can_expand_and_compress_output() {
-        let input: Vec<f32> = (0..256).map(|i| i as f32 / 255.0).collect();
+#[test]
+fn test_output_writer_retime_can_expand_and_compress_output() {
+    let input: Vec<f32> = (0..256).map(|i| i as f32 / 255.0).collect();
 
-        let expand_rb = AudioRingBuffer::new(1024);
-        let (mut expand_producer, mut expand_consumer) = expand_rb.split();
-        let mut expand_control_scratch = FixedAudioBuffer::<f32, 512>::new();
-        let mut expand_fade_scratch = FixedAudioBuffer::<f32, 512>::new();
-        let mut expand_safety_scratch = FixedAudioBuffer::<f32, 512>::new();
-        let mut expand_drift_error_ema = -10_000.0_f32;
-        let mut expand_drift_retimer = DriftRetimer::default();
-        let expand_fade_remaining = Cell::new(0usize);
-        let limiter_enabled = AtomicBool::new(false);
-        let output_ceiling_linear = Cell::new(1.0_f32);
-        let expand_jitter_dropped_samples = AtomicU64::new(0);
-        let expand_output_retime_adjustment_count = AtomicU64::new(0);
-        let expand_output_recovery_event_count = AtomicU64::new(0);
-        let expand_output_short_write_dropped_samples = AtomicU64::new(0);
-        let expand_rt_buffer_overflow_count = AtomicU64::new(0);
-        let expand_rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
-        let expand_output_buffer_len = AtomicU32::new(0);
-        let expand_last_output_write_time = AtomicU64::new(0);
-        let mut expand_true_peak_detector = TruePeakDetector::new();
-        let mut expand_true_peak_limiter = TruePeakLimiter::default();
-        let mut expand_writer = OutputWriteContext {
-            output_producer: &mut expand_producer,
-            output_queue_control_scratch: &mut expand_control_scratch,
-            discontinuity_fade_scratch: &mut expand_fade_scratch,
-            output_safety_scratch: &mut expand_safety_scratch,
-            true_peak_detector: &mut expand_true_peak_detector,
-            true_peak_limiter: &mut expand_true_peak_limiter,
-            drift_error_ema: &mut expand_drift_error_ema,
-            drift_retimer: &mut expand_drift_retimer,
-            discontinuity_fade_remaining: &expand_fade_remaining,
-            output_fade_remaining: 0,
-            limiter_enabled: &limiter_enabled,
-            output_ceiling_linear: &output_ceiling_linear,
-            counters: output_writer_counters(
-                (
-                    &expand_jitter_dropped_samples,
-                    &expand_output_retime_adjustment_count,
-                    &expand_output_recovery_event_count,
-                ),
-                &expand_output_short_write_dropped_samples,
-                &expand_rt_buffer_overflow_count,
-                &expand_rt_error_code,
-                &expand_output_buffer_len,
-                &expand_last_output_write_time,
+    let expand_rb = AudioRingBuffer::new(1024);
+    let (mut expand_producer, mut expand_consumer) = expand_rb.split();
+    let mut expand_control_scratch = FixedAudioBuffer::<f32, 512>::new();
+    let mut expand_fade_scratch = FixedAudioBuffer::<f32, 512>::new();
+    let mut expand_safety_scratch = FixedAudioBuffer::<f32, 512>::new();
+    let mut expand_drift_error_ema = -10_000.0_f32;
+    let mut expand_drift_retimer = DriftRetimer::default();
+    let expand_fade_remaining = Cell::new(0usize);
+    let limiter_enabled = AtomicBool::new(false);
+    let output_ceiling_linear = Cell::new(1.0_f32);
+    let expand_jitter_dropped_samples = AtomicU64::new(0);
+    let expand_output_retime_adjustment_count = AtomicU64::new(0);
+    let expand_output_recovery_event_count = AtomicU64::new(0);
+    let expand_output_short_write_dropped_samples = AtomicU64::new(0);
+    let expand_rt_buffer_overflow_count = AtomicU64::new(0);
+    let expand_rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+    let expand_output_buffer_len = AtomicU32::new(0);
+    let expand_last_output_write_time = AtomicU64::new(0);
+    let mut expand_true_peak_detector = TruePeakDetector::new();
+    let mut expand_true_peak_limiter = TruePeakLimiter::default();
+    let mut expand_writer = OutputWriteContext {
+        output_producer: &mut expand_producer,
+        output_queue_control_scratch: &mut expand_control_scratch,
+        discontinuity_fade_scratch: &mut expand_fade_scratch,
+        output_safety_scratch: &mut expand_safety_scratch,
+        true_peak_detector: &mut expand_true_peak_detector,
+        true_peak_limiter: &mut expand_true_peak_limiter,
+        drift_error_ema: &mut expand_drift_error_ema,
+        drift_retimer: &mut expand_drift_retimer,
+        discontinuity_fade_remaining: &expand_fade_remaining,
+        output_fade_remaining: 0,
+        limiter_enabled: &limiter_enabled,
+        output_ceiling_linear: &output_ceiling_linear,
+        counters: output_writer_counters(
+            (
+                &expand_jitter_dropped_samples,
+                &expand_output_retime_adjustment_count,
+                &expand_output_recovery_event_count,
             ),
-            limits: test_output_writer_limits(128, 256, 4),
-        };
+            &expand_output_short_write_dropped_samples,
+            &expand_rt_buffer_overflow_count,
+            &expand_rt_error_code,
+            &expand_output_buffer_len,
+            &expand_last_output_write_time,
+        ),
+        limits: test_output_writer_limits(128, 256, 4),
+    };
 
-        assert!(expand_writer.write_chunk(&input, false));
-        let mut expanded = vec![0.0_f32; 512];
-        let expanded_len = expand_consumer.read(&mut expanded);
-        assert!(expanded_len > input.len());
-        assert_eq!(
-            expand_output_retime_adjustment_count.load(Ordering::Relaxed),
-            1
-        );
-        assert_eq!(
-            expand_output_recovery_event_count.load(Ordering::Relaxed),
-            0
-        );
+    assert!(expand_writer.write_chunk(&input, false));
+    let mut expanded = vec![0.0_f32; 512];
+    let expanded_len = expand_consumer.read(&mut expanded);
+    assert!(expanded_len > input.len());
+    assert_eq!(
+        expand_output_retime_adjustment_count.load(Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        expand_output_recovery_event_count.load(Ordering::Relaxed),
+        0
+    );
 
-        let compress_rb = AudioRingBuffer::new(1024);
-        let (mut compress_producer, mut compress_consumer) = compress_rb.split();
-        compress_producer.write(&vec![0.0_f32; 256]);
-        let mut compress_control_scratch = FixedAudioBuffer::<f32, 512>::new();
-        let mut compress_fade_scratch = FixedAudioBuffer::<f32, 512>::new();
-        let mut compress_safety_scratch = FixedAudioBuffer::<f32, 512>::new();
-        let mut compress_drift_error_ema = 10_000.0_f32;
-        let mut compress_drift_retimer = DriftRetimer::default();
-        let compress_fade_remaining = Cell::new(0usize);
-        let compress_jitter_dropped_samples = AtomicU64::new(0);
-        let compress_output_retime_adjustment_count = AtomicU64::new(0);
-        let compress_output_recovery_event_count = AtomicU64::new(0);
-        let compress_output_short_write_dropped_samples = AtomicU64::new(0);
-        let compress_rt_buffer_overflow_count = AtomicU64::new(0);
-        let compress_rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
-        let compress_output_buffer_len = AtomicU32::new(256);
-        let compress_last_output_write_time = AtomicU64::new(0);
-        let mut compress_true_peak_detector = TruePeakDetector::new();
-        let mut compress_true_peak_limiter = TruePeakLimiter::default();
-        let mut compress_writer = OutputWriteContext {
-            output_producer: &mut compress_producer,
-            output_queue_control_scratch: &mut compress_control_scratch,
-            discontinuity_fade_scratch: &mut compress_fade_scratch,
-            output_safety_scratch: &mut compress_safety_scratch,
-            true_peak_detector: &mut compress_true_peak_detector,
-            true_peak_limiter: &mut compress_true_peak_limiter,
-            drift_error_ema: &mut compress_drift_error_ema,
-            drift_retimer: &mut compress_drift_retimer,
-            discontinuity_fade_remaining: &compress_fade_remaining,
-            output_fade_remaining: 0,
-            limiter_enabled: &limiter_enabled,
-            output_ceiling_linear: &output_ceiling_linear,
-            counters: output_writer_counters(
-                (
-                    &compress_jitter_dropped_samples,
-                    &compress_output_retime_adjustment_count,
-                    &compress_output_recovery_event_count,
-                ),
-                &compress_output_short_write_dropped_samples,
-                &compress_rt_buffer_overflow_count,
-                &compress_rt_error_code,
-                &compress_output_buffer_len,
-                &compress_last_output_write_time,
+    let compress_rb = AudioRingBuffer::new(1024);
+    let (mut compress_producer, mut compress_consumer) = compress_rb.split();
+    compress_producer.write(&vec![0.0_f32; 256]);
+    let mut compress_control_scratch = FixedAudioBuffer::<f32, 512>::new();
+    let mut compress_fade_scratch = FixedAudioBuffer::<f32, 512>::new();
+    let mut compress_safety_scratch = FixedAudioBuffer::<f32, 512>::new();
+    let mut compress_drift_error_ema = 10_000.0_f32;
+    let mut compress_drift_retimer = DriftRetimer::default();
+    let compress_fade_remaining = Cell::new(0usize);
+    let compress_jitter_dropped_samples = AtomicU64::new(0);
+    let compress_output_retime_adjustment_count = AtomicU64::new(0);
+    let compress_output_recovery_event_count = AtomicU64::new(0);
+    let compress_output_short_write_dropped_samples = AtomicU64::new(0);
+    let compress_rt_buffer_overflow_count = AtomicU64::new(0);
+    let compress_rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+    let compress_output_buffer_len = AtomicU32::new(256);
+    let compress_last_output_write_time = AtomicU64::new(0);
+    let mut compress_true_peak_detector = TruePeakDetector::new();
+    let mut compress_true_peak_limiter = TruePeakLimiter::default();
+    let mut compress_writer = OutputWriteContext {
+        output_producer: &mut compress_producer,
+        output_queue_control_scratch: &mut compress_control_scratch,
+        discontinuity_fade_scratch: &mut compress_fade_scratch,
+        output_safety_scratch: &mut compress_safety_scratch,
+        true_peak_detector: &mut compress_true_peak_detector,
+        true_peak_limiter: &mut compress_true_peak_limiter,
+        drift_error_ema: &mut compress_drift_error_ema,
+        drift_retimer: &mut compress_drift_retimer,
+        discontinuity_fade_remaining: &compress_fade_remaining,
+        output_fade_remaining: 0,
+        limiter_enabled: &limiter_enabled,
+        output_ceiling_linear: &output_ceiling_linear,
+        counters: output_writer_counters(
+            (
+                &compress_jitter_dropped_samples,
+                &compress_output_retime_adjustment_count,
+                &compress_output_recovery_event_count,
             ),
-            limits: test_output_writer_limits(128, 256, 4),
-        };
+            &compress_output_short_write_dropped_samples,
+            &compress_rt_buffer_overflow_count,
+            &compress_rt_error_code,
+            &compress_output_buffer_len,
+            &compress_last_output_write_time,
+        ),
+        limits: test_output_writer_limits(128, 256, 4),
+    };
 
-        assert!(compress_writer.write_chunk(&input, false));
-        let mut compressed = vec![0.0_f32; 1024];
-        let compressed_len = compress_consumer.read(&mut compressed);
-        assert!(compressed_len < input.len() + 256);
-        assert!(compressed_len > 256);
-        assert!(compress_jitter_dropped_samples.load(Ordering::Relaxed) > 0);
-        assert_eq!(
-            compress_output_retime_adjustment_count.load(Ordering::Relaxed),
-            1
-        );
-        assert_eq!(
-            compress_output_recovery_event_count.load(Ordering::Relaxed),
-            0
-        );
-    }
+    assert!(compress_writer.write_chunk(&input, false));
+    let mut compressed = vec![0.0_f32; 1024];
+    let compressed_len = compress_consumer.read(&mut compressed);
+    assert!(compressed_len < input.len() + 256);
+    assert!(compressed_len > 256);
+    assert!(compress_jitter_dropped_samples.load(Ordering::Relaxed) > 0);
+    assert_eq!(
+        compress_output_retime_adjustment_count.load(Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        compress_output_recovery_event_count.load(Ordering::Relaxed),
+        0
+    );
+}
 
-    #[test]
-    fn test_output_writer_applies_discontinuity_fade_after_short_write_drop() {
-        let rb = AudioRingBuffer::new(8);
-        let (mut producer, mut consumer) = rb.split();
-        producer.write(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
-        let mut control_scratch = FixedAudioBuffer::<f32, 64>::new();
-        let mut fade_scratch = FixedAudioBuffer::<f32, 64>::new();
-        let mut safety_scratch = FixedAudioBuffer::<f32, 64>::new();
-        let mut drift_error_ema = 0.0_f32;
-        let mut drift_retimer = DriftRetimer::default();
-        let fade_remaining = Cell::new(0usize);
-        let limiter_enabled = AtomicBool::new(false);
-        let output_ceiling_linear = Cell::new(1.0_f32);
-        let jitter_dropped_samples = AtomicU64::new(0);
-        let output_retime_adjustment_count = AtomicU64::new(0);
-        let output_recovery_event_count = AtomicU64::new(0);
-        let output_short_write_dropped_samples = AtomicU64::new(0);
-        let rt_buffer_overflow_count = AtomicU64::new(0);
-        let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
-        let output_buffer_len = AtomicU32::new(6);
-        let last_output_write_time = AtomicU64::new(0);
-        let mut true_peak_detector = TruePeakDetector::new();
-        let mut true_peak_limiter = TruePeakLimiter::default();
-        let mut writer = OutputWriteContext {
-            output_producer: &mut producer,
-            output_queue_control_scratch: &mut control_scratch,
-            discontinuity_fade_scratch: &mut fade_scratch,
-            output_safety_scratch: &mut safety_scratch,
-            true_peak_detector: &mut true_peak_detector,
-            true_peak_limiter: &mut true_peak_limiter,
-            drift_error_ema: &mut drift_error_ema,
-            drift_retimer: &mut drift_retimer,
-            discontinuity_fade_remaining: &fade_remaining,
-            output_fade_remaining: 0,
-            limiter_enabled: &limiter_enabled,
-            output_ceiling_linear: &output_ceiling_linear,
-            counters: output_writer_counters(
-                (
-                    &jitter_dropped_samples,
-                    &output_retime_adjustment_count,
-                    &output_recovery_event_count,
-                ),
-                &output_short_write_dropped_samples,
-                &rt_buffer_overflow_count,
-                &rt_error_code,
-                &output_buffer_len,
-                &last_output_write_time,
+#[test]
+fn test_output_writer_applies_discontinuity_fade_after_short_write_drop() {
+    let rb = AudioRingBuffer::new(8);
+    let (mut producer, mut consumer) = rb.split();
+    producer.write(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    let mut control_scratch = FixedAudioBuffer::<f32, 64>::new();
+    let mut fade_scratch = FixedAudioBuffer::<f32, 64>::new();
+    let mut safety_scratch = FixedAudioBuffer::<f32, 64>::new();
+    let mut drift_error_ema = 0.0_f32;
+    let mut drift_retimer = DriftRetimer::default();
+    let fade_remaining = Cell::new(0usize);
+    let limiter_enabled = AtomicBool::new(false);
+    let output_ceiling_linear = Cell::new(1.0_f32);
+    let jitter_dropped_samples = AtomicU64::new(0);
+    let output_retime_adjustment_count = AtomicU64::new(0);
+    let output_recovery_event_count = AtomicU64::new(0);
+    let output_short_write_dropped_samples = AtomicU64::new(0);
+    let rt_buffer_overflow_count = AtomicU64::new(0);
+    let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+    let output_buffer_len = AtomicU32::new(6);
+    let last_output_write_time = AtomicU64::new(0);
+    let mut true_peak_detector = TruePeakDetector::new();
+    let mut true_peak_limiter = TruePeakLimiter::default();
+    let mut writer = OutputWriteContext {
+        output_producer: &mut producer,
+        output_queue_control_scratch: &mut control_scratch,
+        discontinuity_fade_scratch: &mut fade_scratch,
+        output_safety_scratch: &mut safety_scratch,
+        true_peak_detector: &mut true_peak_detector,
+        true_peak_limiter: &mut true_peak_limiter,
+        drift_error_ema: &mut drift_error_ema,
+        drift_retimer: &mut drift_retimer,
+        discontinuity_fade_remaining: &fade_remaining,
+        output_fade_remaining: 0,
+        limiter_enabled: &limiter_enabled,
+        output_ceiling_linear: &output_ceiling_linear,
+        counters: output_writer_counters(
+            (
+                &jitter_dropped_samples,
+                &output_retime_adjustment_count,
+                &output_recovery_event_count,
             ),
-            limits: test_output_writer_limits(4, 8, 4),
-        };
+            &output_short_write_dropped_samples,
+            &rt_buffer_overflow_count,
+            &rt_error_code,
+            &output_buffer_len,
+            &last_output_write_time,
+        ),
+        limits: test_output_writer_limits(4, 8, 4),
+    };
 
-        // Fill the true-peak delay so the output stream carries the signal.
-        let mut drain = [0.0_f32; 8];
+    // Fill the true-peak delay so the output stream carries the signal.
+    let mut drain = [0.0_f32; 8];
+    consumer.read(&mut drain);
+    for _ in 0..(TruePeakLimiter::default().lookahead_samples() / 4 + 4) {
+        assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], true));
         consumer.read(&mut drain);
-        for _ in 0..(TruePeakLimiter::default().lookahead_samples() / 4 + 4) {
-            assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], true));
-            consumer.read(&mut drain);
-        }
-        assert_eq!(writer.output_fade_remaining, 0);
-        assert_eq!(writer.output_producer.write(&[0.0; 6]), 6);
-
-        assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], true));
-        let mut first_drain = [0.0_f32; 8];
-        assert_eq!(consumer.read(&mut first_drain), 8);
-        // The dropout is in the output stream, after the true-peak delay, so
-        // its fade-in is owed there rather than to the upstream timeline.
-        assert_eq!(writer.output_fade_remaining, 4);
-        assert_eq!(fade_remaining.get(), 0);
-
-        assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], true));
-        let mut faded = [0.0_f32; 4];
-        assert_eq!(consumer.read(&mut faded), 4);
-        assert!(faded[0] > 0.0);
-        assert!(faded[0] < faded[1]);
-        assert!(faded[1] < faded[2]);
-        assert!(faded[2] < faded[3]);
-        assert!((faded[3] - 1.0).abs() < 1e-6);
     }
+    assert_eq!(writer.output_fade_remaining, 0);
+    assert_eq!(writer.output_producer.write(&[0.0; 6]), 6);
 
-    #[test]
-    fn test_output_writer_still_applies_limiter_ceiling_clamp() {
-        let rb = AudioRingBuffer::new(2048);
-        let (mut producer, mut consumer) = rb.split();
-        let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut drift_error_ema = 0.0_f32;
-        let mut drift_retimer = DriftRetimer::default();
-        let fade_remaining = Cell::new(0usize);
-        let limiter_enabled = AtomicBool::new(true);
-        let output_ceiling_linear = Cell::new(0.5_f32);
-        let jitter_dropped_samples = AtomicU64::new(0);
-        let output_retime_adjustment_count = AtomicU64::new(0);
-        let output_recovery_event_count = AtomicU64::new(0);
-        let output_short_write_dropped_samples = AtomicU64::new(0);
-        let rt_buffer_overflow_count = AtomicU64::new(0);
-        let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
-        let output_buffer_len = AtomicU32::new(0);
-        let last_output_write_time = AtomicU64::new(0);
-        let mut true_peak_detector = TruePeakDetector::new();
-        let mut true_peak_limiter = TruePeakLimiter::default();
-        let mut writer = OutputWriteContext {
-            output_producer: &mut producer,
-            output_queue_control_scratch: &mut control_scratch,
-            discontinuity_fade_scratch: &mut fade_scratch,
-            output_safety_scratch: &mut safety_scratch,
-            true_peak_detector: &mut true_peak_detector,
-            true_peak_limiter: &mut true_peak_limiter,
-            drift_error_ema: &mut drift_error_ema,
-            drift_retimer: &mut drift_retimer,
-            discontinuity_fade_remaining: &fade_remaining,
-            output_fade_remaining: 0,
-            limiter_enabled: &limiter_enabled,
-            output_ceiling_linear: &output_ceiling_linear,
-            counters: output_writer_counters(
-                (
-                    &jitter_dropped_samples,
-                    &output_retime_adjustment_count,
-                    &output_recovery_event_count,
-                ),
-                &output_short_write_dropped_samples,
-                &rt_buffer_overflow_count,
-                &rt_error_code,
-                &output_buffer_len,
-                &last_output_write_time,
+    assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], true));
+    let mut first_drain = [0.0_f32; 8];
+    assert_eq!(consumer.read(&mut first_drain), 8);
+    // The dropout is in the output stream, after the true-peak delay, so
+    // its fade-in is owed there rather than to the upstream timeline.
+    assert_eq!(writer.output_fade_remaining, 4);
+    assert_eq!(fade_remaining.get(), 0);
+
+    assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], true));
+    let mut faded = [0.0_f32; 4];
+    assert_eq!(consumer.read(&mut faded), 4);
+    assert!(faded[0] > 0.0);
+    assert!(faded[0] < faded[1]);
+    assert!(faded[1] < faded[2]);
+    assert!(faded[2] < faded[3]);
+    assert!((faded[3] - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn test_output_writer_still_applies_limiter_ceiling_clamp() {
+    let rb = AudioRingBuffer::new(2048);
+    let (mut producer, mut consumer) = rb.split();
+    let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut drift_error_ema = 0.0_f32;
+    let mut drift_retimer = DriftRetimer::default();
+    let fade_remaining = Cell::new(0usize);
+    let limiter_enabled = AtomicBool::new(true);
+    let output_ceiling_linear = Cell::new(0.5_f32);
+    let jitter_dropped_samples = AtomicU64::new(0);
+    let output_retime_adjustment_count = AtomicU64::new(0);
+    let output_recovery_event_count = AtomicU64::new(0);
+    let output_short_write_dropped_samples = AtomicU64::new(0);
+    let rt_buffer_overflow_count = AtomicU64::new(0);
+    let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+    let output_buffer_len = AtomicU32::new(0);
+    let last_output_write_time = AtomicU64::new(0);
+    let mut true_peak_detector = TruePeakDetector::new();
+    let mut true_peak_limiter = TruePeakLimiter::default();
+    let mut writer = OutputWriteContext {
+        output_producer: &mut producer,
+        output_queue_control_scratch: &mut control_scratch,
+        discontinuity_fade_scratch: &mut fade_scratch,
+        output_safety_scratch: &mut safety_scratch,
+        true_peak_detector: &mut true_peak_detector,
+        true_peak_limiter: &mut true_peak_limiter,
+        drift_error_ema: &mut drift_error_ema,
+        drift_retimer: &mut drift_retimer,
+        discontinuity_fade_remaining: &fade_remaining,
+        output_fade_remaining: 0,
+        limiter_enabled: &limiter_enabled,
+        output_ceiling_linear: &output_ceiling_linear,
+        counters: output_writer_counters(
+            (
+                &jitter_dropped_samples,
+                &output_retime_adjustment_count,
+                &output_recovery_event_count,
             ),
-            limits: test_output_writer_limits(4, 8, 4),
-        };
+            &output_short_write_dropped_samples,
+            &rt_buffer_overflow_count,
+            &rt_error_code,
+            &output_buffer_len,
+            &last_output_write_time,
+        ),
+        limits: test_output_writer_limits(4, 8, 4),
+    };
 
-        assert!(writer.write_chunk(&[2.0, -2.0, 0.5, 0.0, 0.0, 0.0, 0.0], true));
-        assert!(writer.write_chunk(&[0.0; 1024], true));
-        let mut limited = [0.0_f32; 1031];
-        assert_eq!(consumer.read(&mut limited), limited.len());
-        assert!(limited.iter().all(|sample| sample.abs() <= 0.5 + 1e-6));
-        assert!(limited.iter().any(|sample| sample.abs() > 0.1));
+    assert!(writer.write_chunk(&[2.0, -2.0, 0.5, 0.0, 0.0, 0.0, 0.0], true));
+    assert!(writer.write_chunk(&[0.0; 1024], true));
+    let mut limited = [0.0_f32; 1031];
+    assert_eq!(consumer.read(&mut limited), limited.len());
+    assert!(limited.iter().all(|sample| sample.abs() <= 0.5 + 1e-6));
+    assert!(limited.iter().any(|sample| sample.abs() > 0.1));
+}
+
+#[test]
+fn test_output_writer_limits_true_peak_without_sample_clip() {
+    let rb = AudioRingBuffer::new(2048);
+    let (mut producer, mut consumer) = rb.split();
+    let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut true_peak_detector = TruePeakDetector::new();
+    let mut drift_error_ema = 0.0_f32;
+    let mut drift_retimer = DriftRetimer::default();
+    let fade_remaining = Cell::new(0usize);
+    let limiter_enabled = AtomicBool::new(true);
+    let output_ceiling_linear = Cell::new(1.0_f32);
+    let jitter_dropped_samples = AtomicU64::new(0);
+    let output_retime_adjustment_count = AtomicU64::new(0);
+    let output_recovery_event_count = AtomicU64::new(0);
+    let output_short_write_dropped_samples = AtomicU64::new(0);
+    let rt_buffer_overflow_count = AtomicU64::new(0);
+    let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+    let output_buffer_len = AtomicU32::new(0);
+    let last_output_write_time = AtomicU64::new(0);
+    let output_clip_event_count = AtomicU64::new(0);
+    let output_clip_peak_db = AtomicU32::new((-120.0_f32).to_bits());
+    let output_final_peak_hold = AtomicU32::new(0);
+    let output_full_scale_count = AtomicU64::new(0);
+    let output_true_peak_event_count = AtomicU64::new(0);
+    let output_true_peak_db = AtomicU32::new((-120.0_f32).to_bits());
+    let output_true_peak_input_db = AtomicU32::new((-120.0_f32).to_bits());
+    let output_true_peak_gain_reduction_db = AtomicU32::new(0.0_f32.to_bits());
+    let output_true_peak_gain_reduction_history_db = AtomicU32::new(0.0_f32.to_bits());
+    let output_true_peak_headroom_db = AtomicU32::new(120.0_f32.to_bits());
+    let mut true_peak_limiter = TruePeakLimiter::default();
+    let mut writer = OutputWriteContext {
+        output_producer: &mut producer,
+        output_queue_control_scratch: &mut control_scratch,
+        discontinuity_fade_scratch: &mut fade_scratch,
+        output_safety_scratch: &mut safety_scratch,
+        true_peak_detector: &mut true_peak_detector,
+        true_peak_limiter: &mut true_peak_limiter,
+        drift_error_ema: &mut drift_error_ema,
+        drift_retimer: &mut drift_retimer,
+        discontinuity_fade_remaining: &fade_remaining,
+        output_fade_remaining: 0,
+        limiter_enabled: &limiter_enabled,
+        output_ceiling_linear: &output_ceiling_linear,
+        counters: OutputWriteCounters {
+            jitter_dropped_samples: &jitter_dropped_samples,
+            output_retime_adjustment_count: &output_retime_adjustment_count,
+            output_recovery_event_count: &output_recovery_event_count,
+            output_short_write_dropped_samples: &output_short_write_dropped_samples,
+            rt_buffer_overflow_count: &rt_buffer_overflow_count,
+            rt_error_code: &rt_error_code,
+            output_buffer_len: &output_buffer_len,
+            last_output_write_time: &last_output_write_time,
+            output_clip_event_count: &output_clip_event_count,
+            output_clip_peak_db: &output_clip_peak_db,
+            output_final_peak_hold: &output_final_peak_hold,
+            output_full_scale_count: &output_full_scale_count,
+            output_true_peak_event_count: &output_true_peak_event_count,
+            output_true_peak_db: &output_true_peak_db,
+            output_true_peak_input_db: &output_true_peak_input_db,
+            output_true_peak_gain_reduction_db: &output_true_peak_gain_reduction_db,
+            output_true_peak_gain_reduction_history_db: &output_true_peak_gain_reduction_history_db,
+            output_true_peak_headroom_db: &output_true_peak_headroom_db,
+        },
+        limits: test_output_writer_limits(4, 8, 4),
+    };
+
+    // Include the limiter delay and detector tails in the same measured
+    // block; a short all-zero output could otherwise satisfy the peak check.
+    let mut input = [0.0_f32; 1024];
+    input[1] = 1.0;
+    input[2] = 1.0;
+    assert!(writer.write_chunk(&input, true));
+    let mut output = [0.0_f32; 1024];
+    assert_eq!(consumer.read(&mut output), output.len());
+    assert!(output.iter().any(|sample| sample.abs() > 0.1));
+    assert_eq!(
+        output_short_write_dropped_samples.load(Ordering::Relaxed),
+        0
+    );
+    assert_eq!(rt_buffer_overflow_count.load(Ordering::Relaxed), 0);
+
+    assert_eq!(output_clip_event_count.load(Ordering::Relaxed), 0);
+    assert_eq!(output_true_peak_event_count.load(Ordering::Relaxed), 1);
+    assert!(f32::from_bits(output_true_peak_db.load(Ordering::Relaxed)) <= 0.01);
+    assert!(f32::from_bits(output_true_peak_input_db.load(Ordering::Relaxed)) > 0.0);
+    assert!(f32::from_bits(output_true_peak_gain_reduction_db.load(Ordering::Relaxed)) > 0.0);
+}
+
+fn fill_probe_block(buffer: &mut [f32]) {
+    for (index, sample) in buffer.iter_mut().enumerate() {
+        let phase = index as f32 * 0.037;
+        *sample = (phase.sin() * 0.35).clamp(-0.8, 0.8);
     }
+}
 
-    #[test]
-    fn test_output_writer_limits_true_peak_without_sample_clip() {
-        let rb = AudioRingBuffer::new(2048);
-        let (mut producer, mut consumer) = rb.split();
-        let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut true_peak_detector = TruePeakDetector::new();
-        let mut drift_error_ema = 0.0_f32;
-        let mut drift_retimer = DriftRetimer::default();
-        let fade_remaining = Cell::new(0usize);
-        let limiter_enabled = AtomicBool::new(true);
-        let output_ceiling_linear = Cell::new(1.0_f32);
-        let jitter_dropped_samples = AtomicU64::new(0);
-        let output_retime_adjustment_count = AtomicU64::new(0);
-        let output_recovery_event_count = AtomicU64::new(0);
-        let output_short_write_dropped_samples = AtomicU64::new(0);
-        let rt_buffer_overflow_count = AtomicU64::new(0);
-        let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
-        let output_buffer_len = AtomicU32::new(0);
-        let last_output_write_time = AtomicU64::new(0);
-        let output_clip_event_count = AtomicU64::new(0);
-        let output_clip_peak_db = AtomicU32::new((-120.0_f32).to_bits());
-        let output_final_peak_hold = AtomicU32::new(0);
-        let output_full_scale_count = AtomicU64::new(0);
-        let output_true_peak_event_count = AtomicU64::new(0);
-        let output_true_peak_db = AtomicU32::new((-120.0_f32).to_bits());
-        let output_true_peak_input_db = AtomicU32::new((-120.0_f32).to_bits());
-        let output_true_peak_gain_reduction_db = AtomicU32::new(0.0_f32.to_bits());
-        let output_true_peak_gain_reduction_history_db = AtomicU32::new(0.0_f32.to_bits());
-        let output_true_peak_headroom_db = AtomicU32::new(120.0_f32.to_bits());
-        let mut true_peak_limiter = TruePeakLimiter::default();
-        let mut writer = OutputWriteContext {
-            output_producer: &mut producer,
-            output_queue_control_scratch: &mut control_scratch,
-            discontinuity_fade_scratch: &mut fade_scratch,
-            output_safety_scratch: &mut safety_scratch,
-            true_peak_detector: &mut true_peak_detector,
-            true_peak_limiter: &mut true_peak_limiter,
-            drift_error_ema: &mut drift_error_ema,
-            drift_retimer: &mut drift_retimer,
-            discontinuity_fade_remaining: &fade_remaining,
-            output_fade_remaining: 0,
-            limiter_enabled: &limiter_enabled,
-            output_ceiling_linear: &output_ceiling_linear,
-            counters: OutputWriteCounters {
-                jitter_dropped_samples: &jitter_dropped_samples,
-                output_retime_adjustment_count: &output_retime_adjustment_count,
-                output_recovery_event_count: &output_recovery_event_count,
-                output_short_write_dropped_samples: &output_short_write_dropped_samples,
-                rt_buffer_overflow_count: &rt_buffer_overflow_count,
-                rt_error_code: &rt_error_code,
-                output_buffer_len: &output_buffer_len,
-                last_output_write_time: &last_output_write_time,
-                output_clip_event_count: &output_clip_event_count,
-                output_clip_peak_db: &output_clip_peak_db,
-                output_final_peak_hold: &output_final_peak_hold,
-                output_full_scale_count: &output_full_scale_count,
-                output_true_peak_event_count: &output_true_peak_event_count,
-                output_true_peak_db: &output_true_peak_db,
-                output_true_peak_input_db: &output_true_peak_input_db,
-                output_true_peak_gain_reduction_db: &output_true_peak_gain_reduction_db,
-                output_true_peak_gain_reduction_history_db:
-                    &output_true_peak_gain_reduction_history_db,
-                output_true_peak_headroom_db: &output_true_peak_headroom_db,
-            },
-            limits: test_output_writer_limits(4, 8, 4),
-        };
+#[test]
+fn test_steady_state_dsp_blocks_do_not_allocate() {
+    let mut block = [0.0_f32; 512];
+    fill_probe_block(&mut block);
 
-        // Include the limiter delay and detector tails in the same measured
-        // block; a short all-zero output could otherwise satisfy the peak check.
-        let mut input = [0.0_f32; 1024];
-        input[1] = 1.0;
-        input[2] = 1.0;
-        assert!(writer.write_chunk(&input, true));
-        let mut output = [0.0_f32; 1024];
-        assert_eq!(consumer.read(&mut output), output.len());
-        assert!(output.iter().any(|sample| sample.abs() > 0.1));
-        assert_eq!(
-            output_short_write_dropped_samples.load(Ordering::Relaxed),
-            0
-        );
-        assert_eq!(rt_buffer_overflow_count.load(Ordering::Relaxed), 0);
-
-        assert_eq!(output_clip_event_count.load(Ordering::Relaxed), 0);
-        assert_eq!(output_true_peak_event_count.load(Ordering::Relaxed), 1);
-        assert!(f32::from_bits(output_true_peak_db.load(Ordering::Relaxed)) <= 0.01);
-        assert!(f32::from_bits(output_true_peak_input_db.load(Ordering::Relaxed)) > 0.0);
-        assert!(f32::from_bits(output_true_peak_gain_reduction_db.load(Ordering::Relaxed)) > 0.0);
-    }
-
-    fn fill_probe_block(buffer: &mut [f32]) {
-        for (index, sample) in buffer.iter_mut().enumerate() {
-            let phase = index as f32 * 0.037;
-            *sample = (phase.sin() * 0.35).clamp(-0.8, 0.8);
-        }
-    }
-
-    #[test]
-    fn test_steady_state_dsp_blocks_do_not_allocate() {
-        let mut block = [0.0_f32; 512];
-        fill_probe_block(&mut block);
-
-        let mut biquad = Biquad::new(
-            BiquadType::Peaking,
-            1_000.0,
-            3.0,
-            crate::dsp::eq::DEFAULT_Q,
-            TARGET_SAMPLE_RATE as f64,
-        );
+    let mut biquad = Biquad::new(
+        BiquadType::Peaking,
+        1_000.0,
+        3.0,
+        crate::dsp::eq::DEFAULT_Q,
+        TARGET_SAMPLE_RATE as f64,
+    );
+    biquad.process_block_inplace(&mut block);
+    crate::test_alloc::assert_no_allocations("biquad block", || {
         biquad.process_block_inplace(&mut block);
-        crate::test_alloc::assert_no_allocations("biquad block", || {
-            biquad.process_block_inplace(&mut block);
-        });
+    });
 
-        let mut eq = ParametricEQ::new(TARGET_SAMPLE_RATE as f64);
-        eq.set_band_gain(4, 3.0);
+    let mut eq = ParametricEQ::new(TARGET_SAMPLE_RATE as f64);
+    eq.set_band_gain(4, 3.0);
+    eq.process_block_inplace(&mut block);
+    crate::test_alloc::assert_no_allocations("eq block", || {
         eq.process_block_inplace(&mut block);
-        crate::test_alloc::assert_no_allocations("eq block", || {
-            eq.process_block_inplace(&mut block);
-        });
+    });
 
-        let mut steep_eq = ParametricEQ::new(TARGET_SAMPLE_RATE as f64);
-        let mut steep = steep_eq.get_band_config(0).unwrap();
-        steep.filter_type = EqFilterType::HighPass;
-        steep.slope_db_per_octave = 48;
-        steep_eq.set_band_config(0, steep);
-        steep_eq.reset();
+    let mut steep_eq = ParametricEQ::new(TARGET_SAMPLE_RATE as f64);
+    let mut steep = steep_eq.get_band_config(0).unwrap();
+    steep.filter_type = EqFilterType::HighPass;
+    steep.slope_db_per_octave = 48;
+    steep_eq.set_band_config(0, steep);
+    steep_eq.reset();
+    steep_eq.process_block_inplace(&mut block);
+    crate::test_alloc::assert_no_allocations("steep EQ block", || {
         steep_eq.process_block_inplace(&mut block);
-        crate::test_alloc::assert_no_allocations("steep EQ block", || {
-            steep_eq.process_block_inplace(&mut block);
-        });
+    });
 
-        let mut gate = NoiseGate::new(-45.0, 5.0, 80.0, TARGET_SAMPLE_RATE as f64);
+    let mut gate = NoiseGate::new(-45.0, 5.0, 80.0, TARGET_SAMPLE_RATE as f64);
+    gate.process_block_inplace(&mut block);
+    crate::test_alloc::assert_no_allocations("gate block", || {
         gate.process_block_inplace(&mut block);
-        crate::test_alloc::assert_no_allocations("gate block", || {
-            gate.process_block_inplace(&mut block);
-        });
+    });
 
-        let mut compressor = Compressor::default_voice(TARGET_SAMPLE_RATE as f64);
+    let mut compressor = Compressor::default_voice(TARGET_SAMPLE_RATE as f64);
+    compressor.process_block_inplace(&mut block);
+    crate::test_alloc::assert_no_allocations("compressor block", || {
         compressor.process_block_inplace(&mut block);
-        crate::test_alloc::assert_no_allocations("compressor block", || {
-            compressor.process_block_inplace(&mut block);
-        });
-        compressor.set_auto_makeup_enabled(true);
-        compressor.set_noise_reference_reliability(1.0);
-        let auto_makeup_evidence = AutoMakeupActivityInput {
-            vad_probability: 0.92,
-            vad_reliability: 1.0,
-            noise_floor_db: -58.0,
-            live_noise_reliability: 0.9,
-        };
+    });
+    compressor.set_auto_makeup_enabled(true);
+    compressor.set_noise_reference_reliability(1.0);
+    let auto_makeup_evidence = AutoMakeupActivityInput {
+        vad_probability: 0.92,
+        vad_reliability: 1.0,
+        noise_floor_db: -58.0,
+        live_noise_reliability: 0.9,
+    };
+    compressor.process_block_inplace_with_activity_control(&mut block, Some(auto_makeup_evidence));
+    crate::test_alloc::assert_no_allocations("compressor activity-control block", || {
         compressor
             .process_block_inplace_with_activity_control(&mut block, Some(auto_makeup_evidence));
-        crate::test_alloc::assert_no_allocations("compressor activity-control block", || {
-            compressor.process_block_inplace_with_activity_control(
-                &mut block,
-                Some(auto_makeup_evidence),
-            );
-        });
+    });
 
-        let mut deesser = DeEsser::new(TARGET_SAMPLE_RATE as f64);
-        deesser.set_enabled(true);
+    let mut deesser = DeEsser::new(TARGET_SAMPLE_RATE as f64);
+    deesser.set_enabled(true);
+    deesser.process_block_inplace(&mut block);
+    crate::test_alloc::assert_no_allocations("deesser block", || {
         deesser.process_block_inplace(&mut block);
-        crate::test_alloc::assert_no_allocations("deesser block", || {
-            deesser.process_block_inplace(&mut block);
-        });
+    });
 
-        let mut limiter = Limiter::default_settings(TARGET_SAMPLE_RATE as f64);
+    let mut limiter = Limiter::default_settings(TARGET_SAMPLE_RATE as f64);
+    limiter.process_block_inplace(&mut block);
+    crate::test_alloc::assert_no_allocations("limiter block", || {
         limiter.process_block_inplace(&mut block);
-        crate::test_alloc::assert_no_allocations("limiter block", || {
-            limiter.process_block_inplace(&mut block);
-        });
+    });
 
-        let mut true_peak_limiter = TruePeakLimiter::default_settings(TARGET_SAMPLE_RATE as f32);
+    let mut true_peak_limiter = TruePeakLimiter::default_settings(TARGET_SAMPLE_RATE as f32);
+    true_peak_limiter.process_block_inplace(&mut block);
+    crate::test_alloc::assert_no_allocations("true peak limiter block", || {
         true_peak_limiter.process_block_inplace(&mut block);
-        crate::test_alloc::assert_no_allocations("true peak limiter block", || {
-            true_peak_limiter.process_block_inplace(&mut block);
-        });
+    });
 
-        let mut scratch = FixedAudioBuffer::<f32, 1024>::new();
-        let mut retime_state = DriftRetimer::default();
-        let retime_input = [0.1_f32; 256];
-        let _ = retime_audio_block(&retime_input, 0.98, 512, &mut scratch, &mut retime_state);
-        crate::test_alloc::assert_no_allocations("retime block", || {
-            let output =
-                retime_audio_block(&retime_input, 0.98, 512, &mut scratch, &mut retime_state);
-            assert!(!output.is_empty());
-        });
+    let mut scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut retime_state = DriftRetimer::default();
+    let retime_input = [0.1_f32; 256];
+    let _ = retime_audio_block(&retime_input, 0.98, 512, &mut scratch, &mut retime_state);
+    crate::test_alloc::assert_no_allocations("retime block", || {
+        let output = retime_audio_block(&retime_input, 0.98, 512, &mut scratch, &mut retime_state);
+        assert!(!output.is_empty());
+    });
 
-        let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
-        let mut suppressor = new_noise_suppression_engine(NoiseModel::RNNoise, strength);
-        let rnnoise_frame = [0.0_f32; RNNOISE_FRAME_SIZE];
-        let mut suppressor_output = [0.0_f32; RNNOISE_FRAME_SIZE];
+    let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+    let mut suppressor = new_noise_suppression_engine(NoiseModel::RNNoise, strength);
+    let rnnoise_frame = [0.0_f32; RNNOISE_FRAME_SIZE];
+    let mut suppressor_output = [0.0_f32; RNNOISE_FRAME_SIZE];
+    suppressor.push_samples(&rnnoise_frame);
+    suppressor.process_frames();
+    assert_eq!(
+        suppressor.pop_samples_into(&mut suppressor_output),
+        RNNOISE_FRAME_SIZE
+    );
+    crate::test_alloc::assert_no_allocations("rnnoise wrapper block", || {
         suppressor.push_samples(&rnnoise_frame);
         suppressor.process_frames();
         assert_eq!(
             suppressor.pop_samples_into(&mut suppressor_output),
             RNNOISE_FRAME_SIZE
         );
-        crate::test_alloc::assert_no_allocations("rnnoise wrapper block", || {
-            suppressor.push_samples(&rnnoise_frame);
-            suppressor.process_frames();
-            assert_eq!(
-                suppressor.pop_samples_into(&mut suppressor_output),
-                RNNOISE_FRAME_SIZE
-            );
-        });
+    });
 
-        #[cfg(feature = "deepfilter")]
-        {
-            use crate::dsp::deepfilter_ffi::{
-                DeepFilterModel, DeepFilterProcessor, DEEPFILTER_FRAME_SIZE,
-            };
+    #[cfg(feature = "deepfilter")]
+    {
+        use crate::dsp::deepfilter_ffi::{
+            DeepFilterModel, DeepFilterProcessor, DEEPFILTER_FRAME_SIZE,
+        };
 
-            let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
-            let mut deepfilter = DeepFilterProcessor::new(strength, DeepFilterModel::LowLatency);
-            deepfilter.set_enabled(false);
-            let deepfilter_frame = [0.0_f32; DEEPFILTER_FRAME_SIZE];
-            let mut deepfilter_output = [0.0_f32; DEEPFILTER_FRAME_SIZE];
+        let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+        let mut deepfilter = DeepFilterProcessor::new(strength, DeepFilterModel::LowLatency);
+        deepfilter.set_enabled(false);
+        let deepfilter_frame = [0.0_f32; DEEPFILTER_FRAME_SIZE];
+        let mut deepfilter_output = [0.0_f32; DEEPFILTER_FRAME_SIZE];
+        deepfilter.push_samples(&deepfilter_frame);
+        deepfilter.process_frames();
+        assert_eq!(
+            deepfilter.pop_samples_into(&mut deepfilter_output),
+            DEEPFILTER_FRAME_SIZE
+        );
+        crate::test_alloc::assert_no_allocations("deepfilter passthrough block", || {
             deepfilter.push_samples(&deepfilter_frame);
             deepfilter.process_frames();
             assert_eq!(
                 deepfilter.pop_samples_into(&mut deepfilter_output),
                 DEEPFILTER_FRAME_SIZE
             );
-            crate::test_alloc::assert_no_allocations("deepfilter passthrough block", || {
-                deepfilter.push_samples(&deepfilter_frame);
-                deepfilter.process_frames();
-                assert_eq!(
-                    deepfilter.pop_samples_into(&mut deepfilter_output),
-                    DEEPFILTER_FRAME_SIZE
-                );
-            });
-        }
-    }
-
-    /// Bypass and Raw monitor toggles reset every stage on the DSP thread.
-    #[test]
-    fn a_processing_path_change_resets_every_stage_without_allocating() {
-        let mut block = [0.0_f32; 512];
-        fill_probe_block(&mut block);
-        let rate = TARGET_SAMPLE_RATE as f64;
-        let mut gate = NoiseGate::new(-45.0, 5.0, 80.0, rate);
-        let mut eq = ParametricEQ::new(rate);
-        eq.set_band_gain(4, 3.0);
-        let mut compressor = Compressor::default_voice(rate);
-        compressor.set_auto_makeup_enabled(true);
-        let mut deesser = DeEsser::new(rate);
-        deesser.set_enabled(true);
-        let mut limiter = Limiter::default_settings(rate);
-        let mut suppressor =
-            new_noise_suppression_engine(NoiseModel::RNNoise, Arc::new(AtomicU32::new(0)));
-        let mut cleanup = AdaptiveInputCleanupState::new(TARGET_SAMPLE_RATE as f32);
-        // Leave state behind in every stage, including the loudness meter.
-        for _ in 0..8 {
-            gate.process_block_inplace(&mut block);
-            eq.process_block_inplace(&mut block);
-            compressor.process_block_inplace(&mut block);
-            deesser.process_block_inplace(&mut block);
-            limiter.process_block_inplace(&mut block);
-            suppressor.push_samples(&block);
-            suppressor.process_frames();
-            cleanup.analyze_input(&block);
-        }
-
-        crate::test_alloc::assert_no_allocations("processing path change resets", || {
-            gate.reset();
-            eq.reset();
-            compressor.reset();
-            deesser.reset();
-            limiter.reset();
-            suppressor.soft_reset();
-            cleanup.reset_dynamic_state();
         });
+    }
+}
 
-        // The scan below keeps this list equal to the production reset block.
-        let source = include_str!("dsp_loop.rs");
-        let path_change = source_between(
-            source,
-            "if processing_path != previous_processing_path {",
-            "previous_processing_path = processing_path;",
-        );
-        assert_eq!(
-            path_change.matches(".reset()").count(),
-            6,
-            "a stage reset was added to or removed from the path change: update this test"
-        );
-        assert_eq!(path_change.matches(".soft_reset()").count(), 1);
-        assert_eq!(path_change.matches("reset_dynamic_state()").count(), 1);
+/// Bypass and Raw monitor toggles reset every stage on the DSP thread.
+#[test]
+fn a_processing_path_change_resets_every_stage_without_allocating() {
+    let mut block = [0.0_f32; 512];
+    fill_probe_block(&mut block);
+    let rate = TARGET_SAMPLE_RATE as f64;
+    let mut gate = NoiseGate::new(-45.0, 5.0, 80.0, rate);
+    let mut eq = ParametricEQ::new(rate);
+    eq.set_band_gain(4, 3.0);
+    let mut compressor = Compressor::default_voice(rate);
+    compressor.set_auto_makeup_enabled(true);
+    let mut deesser = DeEsser::new(rate);
+    deesser.set_enabled(true);
+    let mut limiter = Limiter::default_settings(rate);
+    let mut suppressor =
+        new_noise_suppression_engine(NoiseModel::RNNoise, Arc::new(AtomicU32::new(0)));
+    let mut cleanup = AdaptiveInputCleanupState::new(TARGET_SAMPLE_RATE as f32);
+    // Leave state behind in every stage, including the loudness meter.
+    for _ in 0..8 {
+        gate.process_block_inplace(&mut block);
+        eq.process_block_inplace(&mut block);
+        compressor.process_block_inplace(&mut block);
+        deesser.process_block_inplace(&mut block);
+        limiter.process_block_inplace(&mut block);
+        suppressor.push_samples(&block);
+        suppressor.process_frames();
+        cleanup.analyze_input(&block);
     }
 
-    #[test]
-    fn test_offline_block_processor_processes_without_live_stream_state() {
-        let mut processor = OfflineDspBlockProcessor::new(TARGET_SAMPLE_RATE as f64);
-        processor.set_deesser_enabled(false);
+    crate::test_alloc::assert_no_allocations("processing path change resets", || {
+        gate.reset();
+        eq.reset();
+        compressor.reset();
+        deesser.reset();
+        limiter.reset();
+        suppressor.soft_reset();
+        cleanup.reset_dynamic_state();
+    });
+
+    // The scan below keeps this list equal to the production reset block.
+    let source = include_str!("dsp_loop.rs");
+    let path_change = source_between(
+        source,
+        "fn switch_path(",
+        "self.previous_path = processing_path;",
+    );
+    assert_eq!(
+        path_change.matches(".reset()").count(),
+        6,
+        "a stage reset was added to or removed from the path change: update this test"
+    );
+    assert_eq!(path_change.matches(".soft_reset()").count(), 1);
+    assert_eq!(path_change.matches("reset_dynamic_state()").count(), 1);
+}
+
+#[test]
+fn test_offline_block_processor_processes_without_live_stream_state() {
+    let mut processor = OfflineDspBlockProcessor::new(TARGET_SAMPLE_RATE as f64);
+    processor.set_deesser_enabled(false);
+    processor.set_eq_enabled(false);
+    processor.eq_mut().reset();
+    processor.set_compressor_enabled(false);
+    processor.set_limiter_enabled(false);
+
+    let mut input = [0.0_f32; 8];
+    fill_probe_block(&mut input);
+    let mut output = FixedAudioBuffer::<f32, 4>::new();
+
+    processor.process_block(&mut input, &mut output);
+    assert_eq!(output.len(), 4);
+
+    // Disabled limiting keeps both limiter delays, so the probe returns
+    // unchanged after the constant chain latency.
+    let latency = processor.latency_samples();
+    let mut emitted = output.as_slice().to_vec();
+    while emitted.len() < latency + 4 {
+        let mut silence = [0.0_f32; 4];
+        processor.process_block(&mut silence, &mut output);
+        emitted.extend_from_slice(output.as_slice());
+    }
+    assert_eq!(&emitted[latency..latency + 4], &input[..4]);
+}
+
+#[test]
+fn test_offline_output_safety_matches_live_writer() {
+    let count = AtomicU64::new(0);
+    let state = AtomicU32::new(0);
+    let counters = output_writer_counters(
+        (&count, &count, &count),
+        &count,
+        &count,
+        &state,
+        &state,
+        &count,
+    );
+    for enabled in [false, true] {
+        let mut processor = OfflineDspBlockProcessor::new(48_000.0);
         processor.set_eq_enabled(false);
         processor.eq_mut().reset();
-        processor.set_compressor_enabled(false);
-        processor.set_limiter_enabled(false);
-
-        let mut input = [0.0_f32; 8];
-        fill_probe_block(&mut input);
-        let mut output = FixedAudioBuffer::<f32, 4>::new();
-
-        processor.process_block(&mut input, &mut output);
-        assert_eq!(output.len(), 4);
-
-        // Disabled limiting keeps both limiter delays, so the probe returns
-        // unchanged after the constant chain latency.
-        let latency = processor.latency_samples();
-        let mut emitted = output.as_slice().to_vec();
-        while emitted.len() < latency + 4 {
-            let mut silence = [0.0_f32; 4];
-            processor.process_block(&mut silence, &mut output);
-            emitted.extend_from_slice(output.as_slice());
-        }
-        assert_eq!(&emitted[latency..latency + 4], &input[..4]);
-    }
-
-    #[test]
-    fn test_offline_output_safety_matches_live_writer() {
-        let count = AtomicU64::new(0);
-        let state = AtomicU32::new(0);
-        let counters = output_writer_counters(
-            (&count, &count, &count),
-            &count,
-            &count,
-            &state,
-            &state,
-            &count,
-        );
-        for enabled in [false, true] {
-            let mut processor = OfflineDspBlockProcessor::new(48_000.0);
-            processor.set_eq_enabled(false);
-            processor.eq_mut().reset();
-            processor.correction_eq_mut().reset();
-            processor.set_limiter_enabled(enabled);
-            processor.set_normal_limiter_enabled(false);
-            processor.limiter_mut().set_ceiling(-1.5);
-            let mut output = FixedAudioBuffer::<f32, 128>::new();
-            let mut safety = FixedAudioBuffer::<f32, 128>::new();
-            let mut detector = TruePeakDetector::new();
-            let mut limiter = TruePeakLimiter::default_settings(48_000.0);
-            let enable_control = AtomicBool::new(enabled);
-            let ceiling = Cell::new(10.0_f32.powf(-1.5 / 20.0));
-            // Cross block boundaries and include the limiter's delayed tail.
-            for value in [0.95, -1.5, 0.3, 0.0, 0.0] {
-                let mut input = [value; 128];
-                let live = OutputWriteContext::<128, 128, 128>::sanitize_and_limit(
-                    &input,
-                    &mut safety,
-                    &mut detector,
-                    &mut limiter,
-                    &enable_control,
-                    &ceiling,
-                    &counters,
-                );
-                processor.process_block(&mut input, &mut output);
-                assert_eq!(output.as_slice(), live, "enabled={enabled}, value={value}");
-            }
-        }
-    }
-
-    #[test]
-    fn test_offline_bypass_keeps_output_safety_without_normal_limiter() {
-        let sample_rate = TARGET_SAMPLE_RATE as f64;
-        let mut processor = OfflineDspBlockProcessor::new(sample_rate);
-        processor.set_eq_enabled(false);
-        processor.set_deesser_enabled(false);
-        processor.set_compressor_enabled(false);
-        processor.set_limiter_enabled(true);
+        processor.correction_eq_mut().reset();
+        processor.set_limiter_enabled(enabled);
         processor.set_normal_limiter_enabled(false);
-        processor.limiter_mut().set_ceiling(-6.0);
+        processor.limiter_mut().set_ceiling(-1.5);
+        let mut output = FixedAudioBuffer::<f32, 128>::new();
+        let mut safety = FixedAudioBuffer::<f32, 128>::new();
+        let mut detector = TruePeakDetector::new();
+        let mut limiter = TruePeakLimiter::default_settings(48_000.0);
+        let enable_control = AtomicBool::new(enabled);
+        let ceiling = Cell::new(10.0_f32.powf(-1.5 / 20.0));
+        // Cross block boundaries and include the limiter's delayed tail.
+        for value in [0.95, -1.5, 0.3, 0.0, 0.0] {
+            let mut input = [value; 128];
+            let live = OutputWriteContext::<128, 128, 128>::sanitize_and_limit(
+                &input,
+                &mut safety,
+                &mut detector,
+                &mut limiter,
+                &enable_control,
+                &ceiling,
+                &counters,
+            );
+            processor.process_block(&mut input, &mut output);
+            assert_eq!(output.as_slice(), live, "enabled={enabled}, value={value}");
+        }
+    }
+}
 
-        let true_peak_latency = processor.true_peak_limiter_mut().lookahead_samples();
-        assert_eq!(processor.latency_samples(), true_peak_latency);
+#[test]
+fn test_offline_bypass_keeps_output_safety_without_normal_limiter() {
+    let sample_rate = TARGET_SAMPLE_RATE as f64;
+    let mut processor = OfflineDspBlockProcessor::new(sample_rate);
+    processor.set_eq_enabled(false);
+    processor.set_deesser_enabled(false);
+    processor.set_compressor_enabled(false);
+    processor.set_limiter_enabled(true);
+    processor.set_normal_limiter_enabled(false);
+    processor.limiter_mut().set_ceiling(-6.0);
 
-        let mut input = [0.0_f32; 512];
-        input.fill(1.0);
-        let mut output = FixedAudioBuffer::<f32, 512>::new();
+    let true_peak_latency = processor.true_peak_limiter_mut().lookahead_samples();
+    assert_eq!(processor.latency_samples(), true_peak_latency);
+
+    let mut input = [0.0_f32; 512];
+    input.fill(1.0);
+    let mut output = FixedAudioBuffer::<f32, 512>::new();
+    let stats = processor.process_block_with_stats(&mut input, &mut output);
+
+    assert_eq!(stats.limiter_peak_gain_reduction_db, 0.0);
+    assert!(stats.true_peak_limiter_gain_reduction_db > 0.0);
+    assert!(output
+        .as_slice()
+        .iter()
+        .all(|sample| sample.is_finite() && sample.abs() <= 1.0));
+}
+
+#[test]
+fn test_offline_block_processor_runs_eq_bypass_transition() {
+    let sample_rate = TARGET_SAMPLE_RATE as f64;
+    let mut processor = OfflineDspBlockProcessor::new(sample_rate);
+    processor.set_deesser_enabled(false);
+    processor.set_compressor_enabled(false);
+    processor.set_limiter_enabled(false);
+    processor.eq_mut().set_band_gain(0, 12.0);
+    processor.eq_mut().reset();
+
+    let input_sample = |sample_index: usize| {
+        (0.01 * (2.0 * std::f64::consts::PI * 80.0 * sample_index as f64 / sample_rate).sin())
+            as f32
+    };
+    let mut output = FixedAudioBuffer::<f32, 512>::new();
+    for block_index in 0..8 {
+        let mut block = [0.0_f32; 512];
+        for (index, sample) in block.iter_mut().enumerate() {
+            *sample = input_sample(block_index * 512 + index);
+        }
+        processor.process_block(&mut block, &mut output);
+    }
+
+    processor.set_eq_enabled(false);
+    let mut disabled_block = [0.0_f32; 512];
+    for (index, sample) in disabled_block.iter_mut().enumerate() {
+        *sample = input_sample(8 * 512 + index);
+    }
+    processor.process_block(&mut disabled_block, &mut output);
+    let before_enable = output.as_slice()[output.len() - 1];
+
+    processor.set_eq_enabled(true);
+    let mut enabled_block = [0.0_f32; 512];
+    for (index, sample) in enabled_block.iter_mut().enumerate() {
+        *sample = input_sample(9 * 512 + index);
+    }
+    processor.process_block(&mut enabled_block, &mut output);
+
+    assert!(
+        (output.as_slice()[0] - before_enable).abs() < 0.002,
+        "offline EQ re-enable boundary jump was {:.6}",
+        (output.as_slice()[0] - before_enable).abs()
+    );
+}
+
+#[test]
+fn test_offline_block_processor_matches_deterministic_live_stages() {
+    let sample_rate = TARGET_SAMPLE_RATE as f64;
+    let mut offline = OfflineDspBlockProcessor::new(sample_rate);
+    offline.set_deesser_enabled(false);
+    offline.set_eq_enabled(true);
+    offline.set_compressor_enabled(false);
+    offline.set_limiter_enabled(true);
+    offline.eq_mut().set_band_frequency(5, 2500.0);
+    offline.eq_mut().set_band_gain(5, 4.0);
+    offline.eq_mut().set_band_q(5, 1.8);
+    offline.limiter_mut().set_ceiling(-1.5);
+
+    let mut input = [0.0_f32; 512];
+    for (index, sample) in input.iter_mut().enumerate() {
+        let t = index as f64 / sample_rate;
+        *sample = (0.38 * (2.0 * std::f64::consts::PI * 2500.0 * t).sin()
+            + 0.22 * (2.0 * std::f64::consts::PI * 180.0 * t).sin()) as f32;
+    }
+    let mut manual = input;
+    let mut eq = ParametricEQ::new(sample_rate);
+    eq.set_band_frequency(5, 2500.0);
+    eq.set_band_gain(5, 4.0);
+    eq.set_band_q(5, 1.8);
+    eq.process_block_inplace(&mut manual);
+    let mut limiter = Limiter::default_settings(sample_rate);
+    limiter.set_ceiling(-1.5);
+    limiter.process_block_inplace(&mut manual);
+    let mut true_peak_limiter = TruePeakLimiter::default_settings(sample_rate as f32);
+    true_peak_limiter.set_ceiling_linear(10.0_f32.powf(-1.5 / 20.0));
+    true_peak_limiter.process_block_inplace(&mut manual);
+
+    let mut offline_input = input;
+    let mut output = FixedAudioBuffer::<f32, 1024>::new();
+    let stats = offline.process_block_with_stats(&mut offline_input, &mut output);
+
+    assert_eq!(output.len(), manual.len());
+    assert!(rms_error_db(output.as_slice(), &manual) < -100.0);
+    assert!(stats.output_true_peak.is_finite());
+    assert!(stats.true_peak_limiter_input_peak.is_finite());
+}
+
+#[test]
+fn test_offline_block_processor_reports_flushable_chain_latency() {
+    let mut processor = OfflineDspBlockProcessor::new(TARGET_SAMPLE_RATE as f64);
+    processor.set_deesser_enabled(false);
+    processor.set_eq_enabled(false);
+    processor.eq_mut().reset();
+    processor.set_compressor_enabled(false);
+    processor.set_limiter_enabled(true);
+    let latency = processor.latency_samples();
+    assert!(latency > 0);
+
+    let mut input = [0.0_f32; 128];
+    input[0] = 0.25;
+    let mut output = FixedAudioBuffer::<f32, 512>::new();
+    processor.process_block(&mut input, &mut output);
+    let mut rendered = output.as_slice().to_vec();
+
+    let mut flush = vec![0.0_f32; latency];
+    processor.process_block(&mut flush, &mut output);
+    rendered.extend_from_slice(output.as_slice());
+
+    let peak_index = rendered
+        .iter()
+        .enumerate()
+        .max_by(|left, right| left.1.abs().total_cmp(&right.1.abs()))
+        .map(|(index, _)| index)
+        .unwrap();
+    assert_eq!(peak_index, latency);
+    assert!((rendered[peak_index] - 0.25).abs() < 1e-4);
+}
+
+#[test]
+fn test_full_downstream_chain_matches_golden_tolerance() {
+    let sample_rate = TARGET_SAMPLE_RATE as f64;
+    let mut processor = OfflineDspBlockProcessor::new(sample_rate);
+    processor.set_deesser_enabled(true);
+    processor.set_eq_enabled(true);
+    processor.set_compressor_enabled(true);
+    processor.set_limiter_enabled(true);
+    processor.deesser_mut().set_auto_enabled(true);
+    processor.deesser_mut().set_auto_amount(0.85);
+    processor.deesser_mut().set_max_reduction_db(10.0);
+    processor.eq_mut().set_band_frequency(2, 180.0);
+    processor.eq_mut().set_band_gain(2, -2.5);
+    processor.eq_mut().set_band_q(2, 0.8);
+    processor.eq_mut().set_band_frequency(6, 2_800.0);
+    processor.eq_mut().set_band_gain(6, 3.0);
+    processor.eq_mut().set_band_q(6, 1.2);
+    processor.eq_mut().set_band_frequency(8, 7_200.0);
+    processor.eq_mut().set_band_gain(8, 1.5);
+    processor.eq_mut().set_band_q(8, 1.0);
+    processor.compressor_mut().set_threshold(-22.0);
+    processor.compressor_mut().set_ratio(3.5);
+    processor.compressor_mut().set_attack_time(8.0);
+    processor.compressor_mut().set_release_time(160.0);
+    processor.compressor_mut().set_makeup_gain(8.0);
+    processor.compressor_mut().set_adaptive_release(true);
+    processor.limiter_mut().set_ceiling(-6.0);
+    processor.limiter_mut().set_release_time(55.0);
+    assert_eq!(processor.latency_samples(), 344);
+
+    let mut noise_state = 0x6a09_e667_f3bc_c909_u64;
+    let mut output = FixedAudioBuffer::<f32, 960>::new();
+    let mut square_sum = 0.0_f64;
+    let mut weighted_sum = 0.0_f64;
+    let mut peak = 0.0_f32;
+    let mut max_compressor_gr = 0.0_f32;
+    let mut max_deesser_gr = 0.0_f32;
+    let mut max_limiter_gr = 0.0_f32;
+    let mut limited_events = 0_u64;
+    let mut sample_count = 0_usize;
+    let mut checkpoints = Vec::new();
+
+    for block_index in 0..300 {
+        let mut input = [0.0_f32; 480];
+        for (local_index, sample) in input.iter_mut().enumerate() {
+            let index = block_index * 480 + local_index;
+            let time = index as f64 / sample_rate;
+            let phrase = 0.25 + 0.75 * (2.0 * std::f64::consts::PI * 1.7 * time).sin().abs();
+            let sibilant_gate = if (block_index / 12) % 5 == 2 {
+                1.0
+            } else {
+                0.0
+            };
+            noise_state = noise_state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let noise = (((noise_state >> 40) as u32) as f64 / ((1_u32 << 24) - 1) as f64 * 2.0
+                - 1.0)
+                * 0.012;
+            *sample = (phrase
+                * (0.30 * (2.0 * std::f64::consts::PI * 180.0 * time).sin()
+                    + 0.14 * (2.0 * std::f64::consts::PI * 360.0 * time).sin()
+                    + 0.08 * (2.0 * std::f64::consts::PI * 2_700.0 * time).sin())
+                + sibilant_gate * 0.35 * (2.0 * std::f64::consts::PI * 7_200.0 * time).sin()
+                + noise) as f32;
+        }
+
         let stats = processor.process_block_with_stats(&mut input, &mut output);
-
-        assert_eq!(stats.limiter_peak_gain_reduction_db, 0.0);
-        assert!(stats.true_peak_limiter_gain_reduction_db > 0.0);
-        assert!(output
-            .as_slice()
-            .iter()
-            .all(|sample| sample.is_finite() && sample.abs() <= 1.0));
-    }
-
-    #[test]
-    fn test_offline_block_processor_runs_eq_bypass_transition() {
-        let sample_rate = TARGET_SAMPLE_RATE as f64;
-        let mut processor = OfflineDspBlockProcessor::new(sample_rate);
-        processor.set_deesser_enabled(false);
-        processor.set_compressor_enabled(false);
-        processor.set_limiter_enabled(false);
-        processor.eq_mut().set_band_gain(0, 12.0);
-        processor.eq_mut().reset();
-
-        let input_sample = |sample_index: usize| {
-            (0.01 * (2.0 * std::f64::consts::PI * 80.0 * sample_index as f64 / sample_rate).sin())
-                as f32
-        };
-        let mut output = FixedAudioBuffer::<f32, 512>::new();
-        for block_index in 0..8 {
-            let mut block = [0.0_f32; 512];
-            for (index, sample) in block.iter_mut().enumerate() {
-                *sample = input_sample(block_index * 512 + index);
+        assert_eq!(output.len(), input.len());
+        max_compressor_gr = max_compressor_gr.max(stats.compressor_gain_reduction_db);
+        max_deesser_gr = max_deesser_gr.max(stats.deesser_gain_reduction_db);
+        max_limiter_gr = max_limiter_gr
+            .max(stats.limiter_peak_gain_reduction_db)
+            .max(stats.true_peak_limiter_gain_reduction_db);
+        limited_events = limited_events.saturating_add(stats.true_peak_limited_events);
+        for &sample in output.as_slice() {
+            peak = peak.max(sample.abs());
+            square_sum += (sample as f64) * (sample as f64);
+            weighted_sum += sample as f64 * ((sample_count % 997) + 1) as f64;
+            if matches!(sample_count, 1_000 | 10_000 | 50_000 | 100_000) {
+                checkpoints.push(sample);
             }
-            processor.process_block(&mut block, &mut output);
-        }
-
-        processor.set_eq_enabled(false);
-        let mut disabled_block = [0.0_f32; 512];
-        for (index, sample) in disabled_block.iter_mut().enumerate() {
-            *sample = input_sample(8 * 512 + index);
-        }
-        processor.process_block(&mut disabled_block, &mut output);
-        let before_enable = output.as_slice()[output.len() - 1];
-
-        processor.set_eq_enabled(true);
-        let mut enabled_block = [0.0_f32; 512];
-        for (index, sample) in enabled_block.iter_mut().enumerate() {
-            *sample = input_sample(9 * 512 + index);
-        }
-        processor.process_block(&mut enabled_block, &mut output);
-
-        assert!(
-            (output.as_slice()[0] - before_enable).abs() < 0.002,
-            "offline EQ re-enable boundary jump was {:.6}",
-            (output.as_slice()[0] - before_enable).abs()
-        );
-    }
-
-    #[test]
-    fn test_offline_block_processor_matches_deterministic_live_stages() {
-        let sample_rate = TARGET_SAMPLE_RATE as f64;
-        let mut offline = OfflineDspBlockProcessor::new(sample_rate);
-        offline.set_deesser_enabled(false);
-        offline.set_eq_enabled(true);
-        offline.set_compressor_enabled(false);
-        offline.set_limiter_enabled(true);
-        offline.eq_mut().set_band_frequency(5, 2500.0);
-        offline.eq_mut().set_band_gain(5, 4.0);
-        offline.eq_mut().set_band_q(5, 1.8);
-        offline.limiter_mut().set_ceiling(-1.5);
-
-        let mut input = [0.0_f32; 512];
-        for (index, sample) in input.iter_mut().enumerate() {
-            let t = index as f64 / sample_rate;
-            *sample = (0.38 * (2.0 * std::f64::consts::PI * 2500.0 * t).sin()
-                + 0.22 * (2.0 * std::f64::consts::PI * 180.0 * t).sin())
-                as f32;
-        }
-        let mut manual = input;
-        let mut eq = ParametricEQ::new(sample_rate);
-        eq.set_band_frequency(5, 2500.0);
-        eq.set_band_gain(5, 4.0);
-        eq.set_band_q(5, 1.8);
-        eq.process_block_inplace(&mut manual);
-        let mut limiter = Limiter::default_settings(sample_rate);
-        limiter.set_ceiling(-1.5);
-        limiter.process_block_inplace(&mut manual);
-        let mut true_peak_limiter = TruePeakLimiter::default_settings(sample_rate as f32);
-        true_peak_limiter.set_ceiling_linear(10.0_f32.powf(-1.5 / 20.0));
-        true_peak_limiter.process_block_inplace(&mut manual);
-
-        let mut offline_input = input;
-        let mut output = FixedAudioBuffer::<f32, 1024>::new();
-        let stats = offline.process_block_with_stats(&mut offline_input, &mut output);
-
-        assert_eq!(output.len(), manual.len());
-        assert!(rms_error_db(output.as_slice(), &manual) < -100.0);
-        assert!(stats.output_true_peak.is_finite());
-        assert!(stats.true_peak_limiter_input_peak.is_finite());
-    }
-
-    #[test]
-    fn test_offline_block_processor_reports_flushable_chain_latency() {
-        let mut processor = OfflineDspBlockProcessor::new(TARGET_SAMPLE_RATE as f64);
-        processor.set_deesser_enabled(false);
-        processor.set_eq_enabled(false);
-        processor.eq_mut().reset();
-        processor.set_compressor_enabled(false);
-        processor.set_limiter_enabled(true);
-        let latency = processor.latency_samples();
-        assert!(latency > 0);
-
-        let mut input = [0.0_f32; 128];
-        input[0] = 0.25;
-        let mut output = FixedAudioBuffer::<f32, 512>::new();
-        processor.process_block(&mut input, &mut output);
-        let mut rendered = output.as_slice().to_vec();
-
-        let mut flush = vec![0.0_f32; latency];
-        processor.process_block(&mut flush, &mut output);
-        rendered.extend_from_slice(output.as_slice());
-
-        let peak_index = rendered
-            .iter()
-            .enumerate()
-            .max_by(|left, right| left.1.abs().total_cmp(&right.1.abs()))
-            .map(|(index, _)| index)
-            .unwrap();
-        assert_eq!(peak_index, latency);
-        assert!((rendered[peak_index] - 0.25).abs() < 1e-4);
-    }
-
-    #[test]
-    fn test_full_downstream_chain_matches_golden_tolerance() {
-        let sample_rate = TARGET_SAMPLE_RATE as f64;
-        let mut processor = OfflineDspBlockProcessor::new(sample_rate);
-        processor.set_deesser_enabled(true);
-        processor.set_eq_enabled(true);
-        processor.set_compressor_enabled(true);
-        processor.set_limiter_enabled(true);
-        processor.deesser_mut().set_auto_enabled(true);
-        processor.deesser_mut().set_auto_amount(0.85);
-        processor.deesser_mut().set_max_reduction_db(10.0);
-        processor.eq_mut().set_band_frequency(2, 180.0);
-        processor.eq_mut().set_band_gain(2, -2.5);
-        processor.eq_mut().set_band_q(2, 0.8);
-        processor.eq_mut().set_band_frequency(6, 2_800.0);
-        processor.eq_mut().set_band_gain(6, 3.0);
-        processor.eq_mut().set_band_q(6, 1.2);
-        processor.eq_mut().set_band_frequency(8, 7_200.0);
-        processor.eq_mut().set_band_gain(8, 1.5);
-        processor.eq_mut().set_band_q(8, 1.0);
-        processor.compressor_mut().set_threshold(-22.0);
-        processor.compressor_mut().set_ratio(3.5);
-        processor.compressor_mut().set_attack_time(8.0);
-        processor.compressor_mut().set_release_time(160.0);
-        processor.compressor_mut().set_makeup_gain(8.0);
-        processor.compressor_mut().set_adaptive_release(true);
-        processor.limiter_mut().set_ceiling(-6.0);
-        processor.limiter_mut().set_release_time(55.0);
-        assert_eq!(processor.latency_samples(), 344);
-
-        let mut noise_state = 0x6a09_e667_f3bc_c909_u64;
-        let mut output = FixedAudioBuffer::<f32, 960>::new();
-        let mut square_sum = 0.0_f64;
-        let mut weighted_sum = 0.0_f64;
-        let mut peak = 0.0_f32;
-        let mut max_compressor_gr = 0.0_f32;
-        let mut max_deesser_gr = 0.0_f32;
-        let mut max_limiter_gr = 0.0_f32;
-        let mut limited_events = 0_u64;
-        let mut sample_count = 0_usize;
-        let mut checkpoints = Vec::new();
-
-        for block_index in 0..300 {
-            let mut input = [0.0_f32; 480];
-            for (local_index, sample) in input.iter_mut().enumerate() {
-                let index = block_index * 480 + local_index;
-                let time = index as f64 / sample_rate;
-                let phrase = 0.25 + 0.75 * (2.0 * std::f64::consts::PI * 1.7 * time).sin().abs();
-                let sibilant_gate = if (block_index / 12) % 5 == 2 {
-                    1.0
-                } else {
-                    0.0
-                };
-                noise_state = noise_state
-                    .wrapping_mul(6_364_136_223_846_793_005)
-                    .wrapping_add(1_442_695_040_888_963_407);
-                let noise =
-                    (((noise_state >> 40) as u32) as f64 / ((1_u32 << 24) - 1) as f64 * 2.0 - 1.0)
-                        * 0.012;
-                *sample = (phrase
-                    * (0.30 * (2.0 * std::f64::consts::PI * 180.0 * time).sin()
-                        + 0.14 * (2.0 * std::f64::consts::PI * 360.0 * time).sin()
-                        + 0.08 * (2.0 * std::f64::consts::PI * 2_700.0 * time).sin())
-                    + sibilant_gate * 0.35 * (2.0 * std::f64::consts::PI * 7_200.0 * time).sin()
-                    + noise) as f32;
-            }
-
-            let stats = processor.process_block_with_stats(&mut input, &mut output);
-            assert_eq!(output.len(), input.len());
-            max_compressor_gr = max_compressor_gr.max(stats.compressor_gain_reduction_db);
-            max_deesser_gr = max_deesser_gr.max(stats.deesser_gain_reduction_db);
-            max_limiter_gr = max_limiter_gr
-                .max(stats.limiter_peak_gain_reduction_db)
-                .max(stats.true_peak_limiter_gain_reduction_db);
-            limited_events = limited_events.saturating_add(stats.true_peak_limited_events);
-            for &sample in output.as_slice() {
-                peak = peak.max(sample.abs());
-                square_sum += (sample as f64) * (sample as f64);
-                weighted_sum += sample as f64 * ((sample_count % 997) + 1) as f64;
-                if matches!(sample_count, 1_000 | 10_000 | 50_000 | 100_000) {
-                    checkpoints.push(sample);
-                }
-                sample_count += 1;
-            }
-        }
-
-        let rms = (square_sum / sample_count as f64).sqrt();
-        // Deterministic multi-block integration fingerprint; component tests
-        // independently check envelope timing, spectral response, and ceilings.
-        assert!(
-            (rms - 0.141_311_179_443).abs() <= 1.0e-6,
-            "rms={rms:.12} peak={peak:.9} weighted={weighted_sum:.12} compressor={max_compressor_gr:.9} deesser={max_deesser_gr:.9} limiter={max_limiter_gr:.9} events={limited_events} checkpoints={checkpoints:?}"
-        );
-        assert!((peak - 0.493_321_36).abs() <= 2.0e-6);
-        assert!((weighted_sum - 1_565.372_487_073).abs() <= 0.05);
-        assert!((max_compressor_gr - 9.894_508).abs() <= 0.001);
-        assert!((max_deesser_gr - 9.932_909).abs() <= 0.001);
-        assert!((max_limiter_gr - 1.139_794_8).abs() <= 0.001);
-        assert!((2..=6).contains(&limited_events));
-        let expected = [-0.012_534_169, 0.209_899_89, 0.296_986_37, 0.021_112_22];
-        assert_eq!(checkpoints.len(), expected.len());
-        for (actual, expected) in checkpoints.into_iter().zip(expected) {
-            assert!((actual - expected).abs() <= 2.0e-5);
+            sample_count += 1;
         }
     }
 
-    #[test]
-    fn test_rnnoise_accepts_full_rt_block_without_short_write() {
-        let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
-        let mut suppressor = new_noise_suppression_engine(NoiseModel::RNNoise, strength);
-        let input = [0.0_f32; RT_PROCESS_BUFFER_CAPACITY];
-        let accepted = suppressor.push_samples(&input);
+    let rms = (square_sum / sample_count as f64).sqrt();
+    // Deterministic multi-block integration fingerprint; component tests
+    // independently check envelope timing, spectral response, and ceilings.
+    assert!(
+        (rms - 0.141_311_179_443).abs() <= 1.0e-6,
+        "rms={rms:.12} peak={peak:.9} weighted={weighted_sum:.12} compressor={max_compressor_gr:.9} deesser={max_deesser_gr:.9} limiter={max_limiter_gr:.9} events={limited_events} checkpoints={checkpoints:?}"
+    );
+    assert!((peak - 0.493_321_36).abs() <= 2.0e-6);
+    assert!((weighted_sum - 1_565.372_487_073).abs() <= 0.05);
+    assert!((max_compressor_gr - 9.894_508).abs() <= 0.001);
+    assert!((max_deesser_gr - 9.932_909).abs() <= 0.001);
+    assert!((max_limiter_gr - 1.139_794_8).abs() <= 0.001);
+    assert!((2..=6).contains(&limited_events));
+    let expected = [-0.012_534_169, 0.209_899_89, 0.296_986_37, 0.021_112_22];
+    assert_eq!(checkpoints.len(), expected.len());
+    for (actual, expected) in checkpoints.into_iter().zip(expected) {
+        assert!((actual - expected).abs() <= 2.0e-5);
+    }
+}
 
-        assert_eq!(accepted, input.len());
+#[test]
+fn test_rnnoise_accepts_full_rt_block_without_short_write() {
+    let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+    let mut suppressor = new_noise_suppression_engine(NoiseModel::RNNoise, strength);
+    let input = [0.0_f32; RT_PROCESS_BUFFER_CAPACITY];
+    let accepted = suppressor.push_samples(&input);
 
-        suppressor.process_frames();
-        let expected_frames = input.len() / RNNOISE_FRAME_SIZE;
-        let expected_processed = expected_frames * RNNOISE_FRAME_SIZE;
-        assert_eq!(suppressor.available_samples(), expected_processed);
-        assert_eq!(suppressor.pending_input(), input.len() - expected_processed);
+    assert_eq!(accepted, input.len());
 
-        let mut output = [0.0_f32; RT_SUPPRESSOR_OUTPUT_CAPACITY];
+    suppressor.process_frames();
+    let expected_frames = input.len() / RNNOISE_FRAME_SIZE;
+    let expected_processed = expected_frames * RNNOISE_FRAME_SIZE;
+    assert_eq!(suppressor.available_samples(), expected_processed);
+    assert_eq!(suppressor.pending_input(), input.len() - expected_processed);
+
+    let mut output = [0.0_f32; RT_SUPPRESSOR_OUTPUT_CAPACITY];
+    assert_eq!(
+        suppressor.pop_samples_into(&mut output[..expected_processed]),
+        expected_processed
+    );
+}
+
+#[test]
+fn test_output_scratch_covers_max_suppressor_output() {
+    let scratch = FixedAudioBuffer::<f32, RT_OUTPUT_SCRATCH_CAPACITY>::new();
+    assert!(scratch.capacity() >= RT_SUPPRESSOR_OUTPUT_CAPACITY);
+}
+
+#[test]
+fn test_disabled_rnnoise_accepts_full_rt_block_without_short_write() {
+    let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+    let mut suppressor = new_noise_suppression_engine(NoiseModel::RNNoise, strength);
+    suppressor.set_enabled(false);
+    let input = [0.0_f32; RT_PROCESS_BUFFER_CAPACITY];
+    let accepted = suppressor.push_samples(&input);
+
+    assert_eq!(accepted, input.len());
+
+    suppressor.process_frames();
+    assert_eq!(suppressor.available_samples(), input.len());
+    assert_eq!(suppressor.pending_input(), 0);
+}
+
+#[cfg(feature = "deepfilter")]
+#[test]
+fn test_deepfilter_accepts_full_rt_block_without_short_write() {
+    use crate::dsp::deepfilter_ffi::{DeepFilterModel, DeepFilterProcessor, DEEPFILTER_FRAME_SIZE};
+
+    let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+    let mut suppressor = DeepFilterProcessor::new(strength, DeepFilterModel::LowLatency);
+    suppressor.set_enabled(false);
+    let input = [0.0_f32; RT_PROCESS_BUFFER_CAPACITY];
+    let accepted = suppressor.push_samples(&input);
+
+    assert_eq!(accepted, input.len());
+
+    suppressor.process_frames();
+    let expected_frames = input.len() / DEEPFILTER_FRAME_SIZE;
+    let expected_processed = expected_frames * DEEPFILTER_FRAME_SIZE;
+    assert_eq!(suppressor.available_samples(), expected_processed);
+    assert_eq!(suppressor.pending_input(), input.len() - expected_processed);
+}
+
+#[test]
+fn test_input_resampler_keeps_pending_input_when_output_scratch_fills() {
+    let mut resampler = build_sinc_resampler(44_100, TARGET_SAMPLE_RATE, 1024).unwrap();
+    let mut resample_input =
+        crate::audio::rt::FixedAudioRing::<f64, RT_RESAMPLE_QUEUE_CAPACITY>::new();
+    let mut input_frame = [0.0_f64; 1024];
+    let mut outbuf = resampler.output_buffer_allocate(true);
+    let mut scratch = FixedAudioBuffer::<f32, 2048>::new();
+
+    for i in 0..RT_PROCESS_BUFFER_CAPACITY {
+        assert!(resample_input.push((i as f64 * 0.001).sin()));
+    }
+
+    let input_frames_needed = resampler.input_frames_next();
+    while resample_input.len() >= input_frames_needed && input_frames_needed <= input_frame.len() {
+        if !has_resampler_output_capacity(&scratch, &outbuf) {
+            break;
+        }
         assert_eq!(
-            suppressor.pop_samples_into(&mut output[..expected_processed]),
-            expected_processed
+            resample_input.pop_into(&mut input_frame[..input_frames_needed]),
+            input_frames_needed
         );
-    }
-
-    #[test]
-    fn test_output_scratch_covers_max_suppressor_output() {
-        let scratch = FixedAudioBuffer::<f32, RT_OUTPUT_SCRATCH_CAPACITY>::new();
-        assert!(scratch.capacity() >= RT_SUPPRESSOR_OUTPUT_CAPACITY);
-    }
-
-    #[test]
-    fn test_disabled_rnnoise_accepts_full_rt_block_without_short_write() {
-        let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
-        let mut suppressor = new_noise_suppression_engine(NoiseModel::RNNoise, strength);
-        suppressor.set_enabled(false);
-        let input = [0.0_f32; RT_PROCESS_BUFFER_CAPACITY];
-        let accepted = suppressor.push_samples(&input);
-
-        assert_eq!(accepted, input.len());
-
-        suppressor.process_frames();
-        assert_eq!(suppressor.available_samples(), input.len());
-        assert_eq!(suppressor.pending_input(), 0);
-    }
-
-    #[cfg(feature = "deepfilter")]
-    #[test]
-    fn test_deepfilter_accepts_full_rt_block_without_short_write() {
-        use crate::dsp::deepfilter_ffi::{
-            DeepFilterModel, DeepFilterProcessor, DEEPFILTER_FRAME_SIZE,
-        };
-
-        let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
-        let mut suppressor = DeepFilterProcessor::new(strength, DeepFilterModel::LowLatency);
-        suppressor.set_enabled(false);
-        let input = [0.0_f32; RT_PROCESS_BUFFER_CAPACITY];
-        let accepted = suppressor.push_samples(&input);
-
-        assert_eq!(accepted, input.len());
-
-        suppressor.process_frames();
-        let expected_frames = input.len() / DEEPFILTER_FRAME_SIZE;
-        let expected_processed = expected_frames * DEEPFILTER_FRAME_SIZE;
-        assert_eq!(suppressor.available_samples(), expected_processed);
-        assert_eq!(suppressor.pending_input(), input.len() - expected_processed);
-    }
-
-    #[test]
-    fn test_input_resampler_keeps_pending_input_when_output_scratch_fills() {
-        let mut resampler = build_sinc_resampler(44_100, TARGET_SAMPLE_RATE, 1024).unwrap();
-        let mut resample_input =
-            crate::audio::rt::FixedAudioRing::<f64, RT_RESAMPLE_QUEUE_CAPACITY>::new();
-        let mut input_frame = [0.0_f64; 1024];
-        let mut outbuf = resampler.output_buffer_allocate(true);
-        let mut scratch = FixedAudioBuffer::<f32, 2048>::new();
-
-        for i in 0..RT_PROCESS_BUFFER_CAPACITY {
-            assert!(resample_input.push((i as f64 * 0.001).sin()));
+        let in_slices = [&input_frame[..input_frames_needed]];
+        let (_nbr_in, nbr_out) = resampler
+            .process_into_buffer(&in_slices, &mut outbuf, None)
+            .unwrap();
+        for &sample in outbuf[0].iter().take(nbr_out) {
+            assert!(scratch.push(sample as f32));
         }
+    }
 
+    assert!(scratch.remaining() < outbuf[0].len());
+    assert!(resample_input.len() >= input_frames_needed);
+}
+
+#[test]
+fn test_output_resampler_drains_large_block_in_bounded_chunks() {
+    let mut resampler = build_sinc_resampler(TARGET_SAMPLE_RATE, 96_000, 1024).unwrap();
+    let mut resample_input =
+        crate::audio::rt::FixedAudioRing::<f64, RT_RESAMPLE_QUEUE_CAPACITY>::new();
+    let mut input_frame = [0.0_f64; 1024];
+    let mut outbuf = resampler.output_buffer_allocate(true);
+    let mut scratch = FixedAudioBuffer::<f32, RT_OUTPUT_SCRATCH_CAPACITY>::new();
+
+    for i in 0..RT_PROCESS_BUFFER_CAPACITY {
+        assert!(resample_input.push((i as f64 * 0.001).sin()));
+    }
+
+    let mut chunks = 0usize;
+    let mut total_generated = 0usize;
+    loop {
+        scratch.clear();
         let input_frames_needed = resampler.input_frames_next();
         while resample_input.len() >= input_frames_needed
             && input_frames_needed <= input_frame.len()
@@ -4645,1173 +4954,1156 @@ mod tests {
             }
         }
 
-        assert!(scratch.remaining() < outbuf[0].len());
-        assert!(resample_input.len() >= input_frames_needed);
-    }
-
-    #[test]
-    fn test_output_resampler_drains_large_block_in_bounded_chunks() {
-        let mut resampler = build_sinc_resampler(TARGET_SAMPLE_RATE, 96_000, 1024).unwrap();
-        let mut resample_input =
-            crate::audio::rt::FixedAudioRing::<f64, RT_RESAMPLE_QUEUE_CAPACITY>::new();
-        let mut input_frame = [0.0_f64; 1024];
-        let mut outbuf = resampler.output_buffer_allocate(true);
-        let mut scratch = FixedAudioBuffer::<f32, RT_OUTPUT_SCRATCH_CAPACITY>::new();
-
-        for i in 0..RT_PROCESS_BUFFER_CAPACITY {
-            assert!(resample_input.push((i as f64 * 0.001).sin()));
+        if scratch.is_empty() {
+            break;
         }
-
-        let mut chunks = 0usize;
-        let mut total_generated = 0usize;
-        loop {
-            scratch.clear();
-            let input_frames_needed = resampler.input_frames_next();
-            while resample_input.len() >= input_frames_needed
-                && input_frames_needed <= input_frame.len()
-            {
-                if !has_resampler_output_capacity(&scratch, &outbuf) {
-                    break;
-                }
-                assert_eq!(
-                    resample_input.pop_into(&mut input_frame[..input_frames_needed]),
-                    input_frames_needed
-                );
-                let in_slices = [&input_frame[..input_frames_needed]];
-                let (_nbr_in, nbr_out) = resampler
-                    .process_into_buffer(&in_slices, &mut outbuf, None)
-                    .unwrap();
-                for &sample in outbuf[0].iter().take(nbr_out) {
-                    assert!(scratch.push(sample as f32));
-                }
-            }
-
-            if scratch.is_empty() {
-                break;
-            }
-            chunks += 1;
-            total_generated += scratch.len();
-            if resample_input.len() < input_frames_needed {
-                break;
-            }
+        chunks += 1;
+        total_generated += scratch.len();
+        if resample_input.len() < input_frames_needed {
+            break;
         }
-
-        assert!(chunks > 1);
-        assert!(total_generated > RT_OUTPUT_SCRATCH_CAPACITY);
-        assert!(resample_input.len() < resampler.input_frames_next());
     }
 
-    #[test]
-    fn test_typed_eq_rejects_odd_order_slope_without_mutating_state() {
-        let processor = AudioProcessor::new();
-        let original = processor.get_eq_band_config(4).unwrap();
-        let mut bands: Vec<EqBandConfig> = (0..NUM_BANDS)
-            .map(EqBandConfig::default_for_index)
-            .collect();
-        bands[4].slope_db_per_octave = 18;
+    assert!(chunks > 1);
+    assert!(total_generated > RT_OUTPUT_SCRATCH_CAPACITY);
+    assert!(resample_input.len() < resampler.input_frames_next());
+}
 
-        Python::initialize();
-        let error = processor.apply_eq_settings_v2(bands).unwrap_err();
+#[test]
+fn test_typed_eq_rejects_odd_order_slope_without_mutating_state() {
+    let processor = AudioProcessor::new();
+    let original = processor.get_eq_band_config(4).unwrap();
+    let mut bands: Vec<EqBandConfig> = (0..NUM_BANDS)
+        .map(EqBandConfig::default_for_index)
+        .collect();
+    bands[4].slope_db_per_octave = 18;
 
-        assert!(error.to_string().contains("expected one of"));
-        assert_eq!(processor.get_eq_band_config(4).unwrap(), original);
+    Python::initialize();
+    let error = processor.apply_eq_settings_v2(bands).unwrap_err();
+
+    assert!(error.to_string().contains("expected one of"));
+    assert_eq!(processor.get_eq_band_config(4).unwrap(), original);
+}
+
+#[test]
+fn test_typed_batch_eq_api_preserves_every_band_field() {
+    let processor = AudioProcessor::new();
+    let configs: Vec<_> = (0..NUM_BANDS)
+        .map(|index| {
+            let mut config = EqBandConfig::default_for_index(index);
+            if index == 0 {
+                config.filter_type = EqFilterType::HighPass;
+                config.frequency_hz = 70.0;
+                config.slope_db_per_octave = 36;
+            } else if index == 4 {
+                config.filter_type = EqFilterType::Notch;
+                config.frequency_hz = 2_100.0;
+                config.q = 7.5;
+            } else if index == 9 {
+                config.enabled = false;
+            }
+            config
+        })
+        .collect();
+
+    processor.apply_eq_settings_v2(configs.clone()).unwrap();
+
+    for (index, expected) in configs.into_iter().enumerate() {
+        assert_eq!(processor.get_eq_band_config(index), Some(expected));
     }
+}
 
-    #[test]
-    fn test_typed_batch_eq_api_preserves_every_band_field() {
-        let processor = AudioProcessor::new();
-        let configs: Vec<_> = (0..NUM_BANDS)
+#[test]
+fn test_tone_batch_updates_preserve_measured_correction_layer() {
+    let processor = AudioProcessor::new();
+    let mut correction: [EqBandConfig; NUM_BANDS] =
+        std::array::from_fn(EqBandConfig::default_for_index);
+    correction[1].gain_db = 4.5;
+    correction[1].frequency_hz = 850.0;
+    let tone: [EqBandConfig; NUM_BANDS] = std::array::from_fn(EqBandConfig::default_for_index);
+
+    processor
+        .apply_eq_layers(correction.to_vec(), tone.to_vec())
+        .unwrap();
+
+    let mut updated_tone = tone;
+    updated_tone[6].gain_db = -3.0;
+    updated_tone[6].q = 1.7;
+    processor
+        .apply_eq_settings_v2(updated_tone.to_vec())
+        .unwrap();
+
+    let snapshot = processor
+        .shared
+        .eq
+        .control
+        .snapshot()
+        .expect("stable EQ state");
+    assert_eq!(snapshot.correction_bands, correction);
+    assert_eq!(snapshot.tone_bands, updated_tone);
+}
+
+#[test]
+fn test_invalid_eq_layer_update_leaves_both_layers_unchanged() {
+    let processor = AudioProcessor::new();
+    let mut correction: [EqBandConfig; NUM_BANDS] =
+        std::array::from_fn(EqBandConfig::default_for_index);
+    correction[0].gain_db = 3.0;
+    let mut tone: [EqBandConfig; NUM_BANDS] = std::array::from_fn(EqBandConfig::default_for_index);
+    tone[4].gain_db = -2.0;
+    processor
+        .apply_eq_layers(correction.to_vec(), tone.to_vec())
+        .unwrap();
+    let before = processor
+        .shared
+        .eq
+        .control
+        .snapshot()
+        .expect("stable EQ state");
+
+    let mut invalid_tone = tone;
+    invalid_tone[4].q = 11.0;
+    assert!(processor
+        .apply_eq_layers(correction.to_vec(), invalid_tone.to_vec())
+        .is_err());
+
+    invalid_tone[4].q = 0.01;
+    assert!(processor
+        .apply_eq_layers(correction.to_vec(), invalid_tone.to_vec())
+        .is_err());
+    assert!(processor
+        .apply_eq_settings_v2(invalid_tone.to_vec())
+        .is_err());
+
+    invalid_tone[4].q = tone[4].q;
+    invalid_tone[4].gain_db = f64::NAN;
+    assert!(processor
+        .apply_eq_layers(correction.to_vec(), invalid_tone.to_vec())
+        .is_err());
+
+    let mut invalid_correction = correction;
+    invalid_correction[0].frequency_hz = 1.0;
+    assert!(processor
+        .apply_eq_layers(invalid_correction.to_vec(), tone.to_vec())
+        .is_err());
+
+    let after = processor
+        .shared
+        .eq
+        .control
+        .snapshot()
+        .expect("stable EQ state");
+    assert_eq!(after.correction_bands, before.correction_bands);
+    assert_eq!(after.tone_bands, before.tone_bands);
+}
+
+#[test]
+fn test_gate_control_validation_rejects_non_finite_and_clamps_ranges() {
+    let processor = AudioProcessor::new();
+    let gate = |threshold_db, attack_ms, release_ms| GateControlState {
+        threshold_db,
+        attack_ms,
+        release_ms,
+        ..GateControlState::new()
+    };
+    processor.apply_gate_settings(&gate(f64::NAN, f64::INFINITY, f64::NEG_INFINITY));
+
+    let control = processor
+        .shared
+        .gate
+        .rt_control
+        .snapshot()
+        .expect("stable gate state");
+    assert_eq!(control.threshold_db, -40.0);
+    assert_eq!(control.attack_ms, 10.0);
+    assert_eq!(control.release_ms, 100.0);
+
+    processor.apply_gate_settings(&gate(-120.0, 0.01, 5000.0));
+
+    let control = processor
+        .shared
+        .gate
+        .rt_control
+        .snapshot()
+        .expect("stable gate state");
+    assert_eq!(control.threshold_db, GATE_THRESHOLD_MIN_DB);
+    assert_eq!(control.attack_ms, GATE_ATTACK_MIN_MS);
+    assert_eq!(control.release_ms, GATE_RELEASE_MAX_MS);
+}
+
+#[test]
+fn test_rnnoise_strength_validation_rejects_non_finite_and_clamps_ranges() {
+    let processor = AudioProcessor::new();
+    let original = processor.get_rnnoise_strength();
+
+    processor.set_rnnoise_strength(f32::NAN);
+    assert_eq!(processor.get_rnnoise_strength(), original);
+
+    processor.set_rnnoise_strength(2.0);
+    assert_eq!(processor.get_rnnoise_strength(), RNNOISE_STRENGTH_MAX);
+
+    processor.set_rnnoise_strength(-1.0);
+    assert_eq!(processor.get_rnnoise_strength(), RNNOISE_STRENGTH_MIN);
+}
+
+#[test]
+fn test_deesser_control_validation_rejects_non_finite_and_clamps_ranges() {
+    let processor = AudioProcessor::new();
+    let deesser =
+        |low, high, threshold, ratio, attack, release, max_reduction, amount| DeesserControlState {
+            low_cut_hz: low,
+            high_cut_hz: high,
+            threshold_db: threshold,
+            ratio,
+            attack_ms: attack,
+            release_ms: release,
+            max_reduction_db: max_reduction,
+            auto_amount: amount,
+            ..DeesserControlState::new()
+        };
+    let nan = f64::NAN;
+    processor.apply_deesser_settings(&deesser(
+        nan,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        nan,
+        nan,
+        nan,
+        nan,
+        nan,
+    ));
+
+    assert_eq!(processor.get_deesser_low_cut_hz(), 4000.0);
+    assert_eq!(processor.get_deesser_high_cut_hz(), 11_000.0);
+    assert_eq!(processor.get_deesser_threshold_db(), -28.0);
+    assert_eq!(processor.get_deesser_ratio(), 4.0);
+    assert_eq!(processor.get_deesser_max_reduction_db(), 6.0);
+    assert_eq!(processor.get_deesser_auto_amount(), 0.5);
+
+    processor.apply_deesser_settings(&deesser(
+        100.0, 80_000.0, -100.0, 100.0, 0.01, 10_000.0, 100.0, 2.0,
+    ));
+
+    assert_eq!(processor.get_deesser_low_cut_hz(), DEESSER_LOW_CUT_MIN_HZ);
+    assert_eq!(processor.get_deesser_high_cut_hz(), DEESSER_HIGH_CUT_MAX_HZ);
+    assert_eq!(
+        processor.get_deesser_threshold_db(),
+        DEESSER_THRESHOLD_MIN_DB
+    );
+    assert_eq!(processor.get_deesser_ratio(), DEESSER_RATIO_MAX);
+    assert_eq!(
+        processor.get_deesser_max_reduction_db(),
+        DEESSER_MAX_REDUCTION_MAX_DB
+    );
+    assert_eq!(processor.get_deesser_auto_amount(), DEESSER_AUTO_AMOUNT_MAX);
+}
+
+#[test]
+fn test_compressor_runtime_meter_getters_read_rt_atomically() {
+    let processor = AudioProcessor::new();
+    let apply = |sidechain_highpass_enabled, makeup_gain_db| {
+        processor.apply_compressor_settings(&CompressorControlState {
+            sidechain_highpass_enabled,
+            makeup_gain_db,
+            ..CompressorControlState::new()
+        })
+    };
+
+    assert!(processor.get_compressor_sidechain_highpass_enabled());
+    apply(false, 0.0);
+    assert!(!processor.get_compressor_sidechain_highpass_enabled());
+    apply(true, 0.0);
+    assert!(processor.get_compressor_sidechain_highpass_enabled());
+
+    processor
+        .shared
+        .compressor
+        .current_lufs
+        .store((-23.5_f64).to_bits(), Ordering::Relaxed);
+    processor
+        .shared
+        .compressor
+        .current_makeup_gain
+        .store(4.25_f64.to_bits(), Ordering::Relaxed);
+
+    assert_eq!(processor.get_compressor_current_lufs(), -23.5);
+    assert_eq!(processor.get_compressor_current_makeup_gain(), 4.25);
+
+    apply(true, 6.0);
+    assert_eq!(processor.get_compressor_current_makeup_gain(), 6.0);
+}
+
+#[test]
+fn test_apply_eq_settings_v2_rejects_above_nyquist() {
+    let processor = AudioProcessor::new();
+    let mut bands: Vec<EqBandConfig> = (0..NUM_BANDS)
+        .map(EqBandConfig::default_for_index)
+        .collect();
+    bands[NUM_BANDS - 1].frequency_hz =
+        crate::dsp::eq::eq_max_frequency_hz(processor.sample_rate as f64).unwrap() + 100.0;
+
+    Python::initialize();
+    let err = processor.apply_eq_settings_v2(bands).unwrap_err();
+    assert!(err.to_string().contains("out of range"));
+}
+
+#[test]
+fn test_release_ms_to_tenth_ms_rounds_expected_values() {
+    assert_eq!(release_ms_to_tenth_ms(200.0), 2000);
+    assert_eq!(release_ms_to_tenth_ms(12.34), 123);
+    assert_eq!(release_ms_to_tenth_ms(12.35), 124);
+    assert_eq!(release_ms_to_tenth_ms(-5.0), 0);
+    assert_eq!(release_ms_to_tenth_ms(f64::NAN), 0);
+}
+
+#[test]
+fn test_smoothing_coeff_for_time_constant_matches_100ms_meter_target() {
+    let coeff = smoothing_coeff_for_time_constant(48_000.0, 100.0);
+    assert!((coeff - 0.999_791_7).abs() < 1e-6);
+
+    let invalid = smoothing_coeff_for_time_constant(0.0, 100.0);
+    assert_eq!(invalid, 0.0);
+}
+
+#[test]
+fn native_audit_02_backlog_reset_keeps_resampler_output_writable() {
+    for input_rate in [44_100, 96_000] {
+        let mut resampler = build_sinc_resampler(input_rate, TARGET_SAMPLE_RATE, 1024).unwrap();
+        let mut output = resampler.output_buffer_allocate(true);
+        let output_len = output[0].len();
+
+        // Backlog recovery resets scratch contents without changing the
+        // output slice length required by Rubato.
+        clear_resampler_output_samples(&mut output);
+        assert_eq!(output[0].len(), output_len);
+
+        let frame_len = resampler.input_frames_next();
+        let input = vec![0.25; frame_len];
+        let input_slices = [input.as_slice()];
+        assert!(resampler
+            .process_into_buffer(&input_slices, &mut output, None)
+            .is_ok());
+    }
+}
+
+#[test]
+fn native_audit_02_input_resampler_errors_request_observable_recovery() {
+    let source = include_str!("dsp_loop.rs");
+    assert!(source.contains("signal_input_resampler_failure("));
+    assert!(include_str!("resampling.rs").contains("RtErrorCode::InputResamplerFailed"));
+
+    let error = AtomicU32::new(RtErrorCode::None as u32);
+    let restart = AtomicBool::new(false);
+    signal_input_resampler_failure(&error, &restart);
+    assert_eq!(
+        RtErrorCode::from_u32(error.load(Ordering::Acquire)),
+        RtErrorCode::InputResamplerFailed
+    );
+    assert!(restart.load(Ordering::Acquire));
+}
+
+#[test]
+fn native_audit_03_recovery_never_falls_back_to_default_devices() {
+    let source = include_str!("recovery.rs");
+    let service = source_between(
+        source,
+        "pub fn service_recovery(",
+        "/// Whether a restart has been requested",
+    );
+    assert!(service.contains("input_endpoint_id.as_deref()"));
+    assert!(service.contains("output_endpoint_id.as_deref()"));
+    assert!(!service.contains("start(None, None)"));
+}
+
+#[test]
+fn native_audit_01_hum_tracker_keeps_50_and_60_hz_inputs_finite() {
+    for frequency_hz in [50.0_f32, 60.0] {
+        let sample_rate = 48_000.0_f32;
+        let mut state = AdaptiveInputCleanupState::new(sample_rate);
+        state.set_mode(InputCleanupMode::Gentle);
+        let sample_count = state.hum_window_samples * 4;
+        let input: Vec<f32> = (0..sample_count)
             .map(|index| {
-                let mut config = EqBandConfig::default_for_index(index);
-                if index == 0 {
-                    config.filter_type = EqFilterType::HighPass;
-                    config.frequency_hz = 70.0;
-                    config.slope_db_per_octave = 36;
-                } else if index == 4 {
-                    config.filter_type = EqFilterType::Notch;
-                    config.frequency_hz = 2_100.0;
-                    config.q = 7.5;
-                } else if index == 9 {
-                    config.enabled = false;
-                }
-                config
+                0.08 * (2.0 * std::f32::consts::PI * frequency_hz * index as f32 / sample_rate)
+                    .sin()
             })
             .collect();
 
-        processor.apply_eq_settings_v2(configs.clone()).unwrap();
+        state.analyze_input(&input);
 
-        for (index, expected) in configs.into_iter().enumerate() {
-            assert_eq!(processor.get_eq_band_config(index), Some(expected));
-        }
-    }
-
-    #[test]
-    fn test_tone_batch_updates_preserve_measured_correction_layer() {
-        let processor = AudioProcessor::new();
-        let mut correction: [EqBandConfig; NUM_BANDS] =
-            std::array::from_fn(EqBandConfig::default_for_index);
-        correction[1].gain_db = 4.5;
-        correction[1].frequency_hz = 850.0;
-        let tone: [EqBandConfig; NUM_BANDS] = std::array::from_fn(EqBandConfig::default_for_index);
-
-        processor
-            .apply_eq_layers(correction.to_vec(), tone.to_vec())
-            .unwrap();
-
-        let mut updated_tone = tone;
-        updated_tone[6].gain_db = -3.0;
-        updated_tone[6].q = 1.7;
-        processor
-            .apply_eq_settings_v2(updated_tone.to_vec())
-            .unwrap();
-
-        let snapshot = processor.eq_control.snapshot().expect("stable EQ state");
-        assert_eq!(snapshot.correction_bands, correction);
-        assert_eq!(snapshot.tone_bands, updated_tone);
-    }
-
-    #[test]
-    fn test_invalid_eq_layer_update_leaves_both_layers_unchanged() {
-        let processor = AudioProcessor::new();
-        let mut correction: [EqBandConfig; NUM_BANDS] =
-            std::array::from_fn(EqBandConfig::default_for_index);
-        correction[0].gain_db = 3.0;
-        let mut tone: [EqBandConfig; NUM_BANDS] =
-            std::array::from_fn(EqBandConfig::default_for_index);
-        tone[4].gain_db = -2.0;
-        processor
-            .apply_eq_layers(correction.to_vec(), tone.to_vec())
-            .unwrap();
-        let before = processor.eq_control.snapshot().expect("stable EQ state");
-
-        let mut invalid_tone = tone;
-        invalid_tone[4].q = 11.0;
-        assert!(processor
-            .apply_eq_layers(correction.to_vec(), invalid_tone.to_vec())
-            .is_err());
-
-        invalid_tone[4].q = 0.01;
-        assert!(processor
-            .apply_eq_layers(correction.to_vec(), invalid_tone.to_vec())
-            .is_err());
-        assert!(processor
-            .apply_eq_settings_v2(invalid_tone.to_vec())
-            .is_err());
-
-        invalid_tone[4].q = tone[4].q;
-        invalid_tone[4].gain_db = f64::NAN;
-        assert!(processor
-            .apply_eq_layers(correction.to_vec(), invalid_tone.to_vec())
-            .is_err());
-
-        let mut invalid_correction = correction;
-        invalid_correction[0].frequency_hz = 1.0;
-        assert!(processor
-            .apply_eq_layers(invalid_correction.to_vec(), tone.to_vec())
-            .is_err());
-
-        let after = processor.eq_control.snapshot().expect("stable EQ state");
-        assert_eq!(after.correction_bands, before.correction_bands);
-        assert_eq!(after.tone_bands, before.tone_bands);
-    }
-
-    #[test]
-    fn test_gate_control_validation_rejects_non_finite_and_clamps_ranges() {
-        let processor = AudioProcessor::new();
-        let gate = |threshold_db, attack_ms, release_ms| GateControlState {
-            threshold_db,
-            attack_ms,
-            release_ms,
-            ..GateControlState::new()
-        };
-        processor.apply_gate_settings(&gate(f64::NAN, f64::INFINITY, f64::NEG_INFINITY));
-
-        let control = processor
-            .gate_rt_control
-            .snapshot()
-            .expect("stable gate state");
-        assert_eq!(control.threshold_db, -40.0);
-        assert_eq!(control.attack_ms, 10.0);
-        assert_eq!(control.release_ms, 100.0);
-
-        processor.apply_gate_settings(&gate(-120.0, 0.01, 5000.0));
-
-        let control = processor
-            .gate_rt_control
-            .snapshot()
-            .expect("stable gate state");
-        assert_eq!(control.threshold_db, GATE_THRESHOLD_MIN_DB);
-        assert_eq!(control.attack_ms, GATE_ATTACK_MIN_MS);
-        assert_eq!(control.release_ms, GATE_RELEASE_MAX_MS);
-    }
-
-    #[test]
-    fn test_rnnoise_strength_validation_rejects_non_finite_and_clamps_ranges() {
-        let processor = AudioProcessor::new();
-        let original = processor.get_rnnoise_strength();
-
-        processor.set_rnnoise_strength(f32::NAN);
-        assert_eq!(processor.get_rnnoise_strength(), original);
-
-        processor.set_rnnoise_strength(2.0);
-        assert_eq!(processor.get_rnnoise_strength(), RNNOISE_STRENGTH_MAX);
-
-        processor.set_rnnoise_strength(-1.0);
-        assert_eq!(processor.get_rnnoise_strength(), RNNOISE_STRENGTH_MIN);
-    }
-
-    #[test]
-    fn test_deesser_control_validation_rejects_non_finite_and_clamps_ranges() {
-        let processor = AudioProcessor::new();
-        let deesser = |low, high, threshold, ratio, attack, release, max_reduction, amount| {
-            DeesserControlState {
-                low_cut_hz: low,
-                high_cut_hz: high,
-                threshold_db: threshold,
-                ratio,
-                attack_ms: attack,
-                release_ms: release,
-                max_reduction_db: max_reduction,
-                auto_amount: amount,
-                ..DeesserControlState::new()
-            }
-        };
-        let nan = f64::NAN;
-        processor.apply_deesser_settings(&deesser(
-            nan,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            nan,
-            nan,
-            nan,
-            nan,
-            nan,
-        ));
-
-        assert_eq!(processor.get_deesser_low_cut_hz(), 4000.0);
-        assert_eq!(processor.get_deesser_high_cut_hz(), 11_000.0);
-        assert_eq!(processor.get_deesser_threshold_db(), -28.0);
-        assert_eq!(processor.get_deesser_ratio(), 4.0);
-        assert_eq!(processor.get_deesser_max_reduction_db(), 6.0);
-        assert_eq!(processor.get_deesser_auto_amount(), 0.5);
-
-        processor.apply_deesser_settings(&deesser(
-            100.0, 80_000.0, -100.0, 100.0, 0.01, 10_000.0, 100.0, 2.0,
-        ));
-
-        assert_eq!(processor.get_deesser_low_cut_hz(), DEESSER_LOW_CUT_MIN_HZ);
-        assert_eq!(processor.get_deesser_high_cut_hz(), DEESSER_HIGH_CUT_MAX_HZ);
-        assert_eq!(
-            processor.get_deesser_threshold_db(),
-            DEESSER_THRESHOLD_MIN_DB
-        );
-        assert_eq!(processor.get_deesser_ratio(), DEESSER_RATIO_MAX);
-        assert_eq!(
-            processor.get_deesser_max_reduction_db(),
-            DEESSER_MAX_REDUCTION_MAX_DB
-        );
-        assert_eq!(processor.get_deesser_auto_amount(), DEESSER_AUTO_AMOUNT_MAX);
-    }
-
-    #[test]
-    fn test_compressor_runtime_meter_getters_read_rt_atomically() {
-        let processor = AudioProcessor::new();
-        let apply = |sidechain_highpass_enabled, makeup_gain_db| {
-            processor.apply_compressor_settings(&CompressorControlState {
-                sidechain_highpass_enabled,
-                makeup_gain_db,
-                ..CompressorControlState::new()
-            })
-        };
-
-        assert!(processor.get_compressor_sidechain_highpass_enabled());
-        apply(false, 0.0);
-        assert!(!processor.get_compressor_sidechain_highpass_enabled());
-        apply(true, 0.0);
-        assert!(processor.get_compressor_sidechain_highpass_enabled());
-
-        processor
-            .compressor_current_lufs
-            .store((-23.5_f64).to_bits(), Ordering::Relaxed);
-        processor
-            .compressor_current_makeup_gain
-            .store(4.25_f64.to_bits(), Ordering::Relaxed);
-
-        assert_eq!(processor.get_compressor_current_lufs(), -23.5);
-        assert_eq!(processor.get_compressor_current_makeup_gain(), 4.25);
-
-        apply(true, 6.0);
-        assert_eq!(processor.get_compressor_current_makeup_gain(), 6.0);
-    }
-
-    #[test]
-    fn test_apply_eq_settings_v2_rejects_above_nyquist() {
-        let processor = AudioProcessor::new();
-        let mut bands: Vec<EqBandConfig> = (0..NUM_BANDS)
-            .map(EqBandConfig::default_for_index)
-            .collect();
-        bands[NUM_BANDS - 1].frequency_hz =
-            crate::dsp::eq::eq_max_frequency_hz(processor.sample_rate as f64).unwrap() + 100.0;
-
-        Python::initialize();
-        let err = processor.apply_eq_settings_v2(bands).unwrap_err();
-        assert!(err.to_string().contains("out of range"));
-    }
-
-    #[test]
-    fn test_release_ms_to_tenth_ms_rounds_expected_values() {
-        assert_eq!(release_ms_to_tenth_ms(200.0), 2000);
-        assert_eq!(release_ms_to_tenth_ms(12.34), 123);
-        assert_eq!(release_ms_to_tenth_ms(12.35), 124);
-        assert_eq!(release_ms_to_tenth_ms(-5.0), 0);
-        assert_eq!(release_ms_to_tenth_ms(f64::NAN), 0);
-    }
-
-    #[test]
-    fn test_smoothing_coeff_for_time_constant_matches_100ms_meter_target() {
-        let coeff = smoothing_coeff_for_time_constant(48_000.0, 100.0);
-        assert!((coeff - 0.999_791_7).abs() < 1e-6);
-
-        let invalid = smoothing_coeff_for_time_constant(0.0, 100.0);
-        assert_eq!(invalid, 0.0);
-    }
-
-    #[test]
-    fn native_audit_02_backlog_reset_keeps_resampler_output_writable() {
-        for input_rate in [44_100, 96_000] {
-            let mut resampler = build_sinc_resampler(input_rate, TARGET_SAMPLE_RATE, 1024).unwrap();
-            let mut output = resampler.output_buffer_allocate(true);
-            let output_len = output[0].len();
-
-            // Backlog recovery resets scratch contents without changing the
-            // output slice length required by Rubato.
-            clear_resampler_output_samples(&mut output);
-            assert_eq!(output[0].len(), output_len);
-
-            let frame_len = resampler.input_frames_next();
-            let input = vec![0.25; frame_len];
-            let input_slices = [input.as_slice()];
-            assert!(resampler
-                .process_into_buffer(&input_slices, &mut output, None)
-                .is_ok());
-        }
-    }
-
-    #[test]
-    fn native_audit_02_input_resampler_errors_request_observable_recovery() {
-        let source = include_str!("dsp_loop.rs");
-        assert!(source.contains("signal_input_resampler_failure("));
-        assert!(include_str!("resampling.rs").contains("RtErrorCode::InputResamplerFailed"));
-
-        let error = AtomicU32::new(RtErrorCode::None as u32);
-        let restart = AtomicBool::new(false);
-        signal_input_resampler_failure(&error, &restart);
-        assert_eq!(
-            RtErrorCode::from_u32(error.load(Ordering::Acquire)),
-            RtErrorCode::InputResamplerFailed
-        );
-        assert!(restart.load(Ordering::Acquire));
-    }
-
-    #[test]
-    fn native_audit_03_recovery_never_falls_back_to_default_devices() {
-        let source = include_str!("recovery.rs");
-        let service = source_between(
-            source,
-            "pub fn service_recovery(",
-            "/// Whether a restart has been requested",
-        );
-        assert!(service.contains("input_endpoint_id.as_deref()"));
-        assert!(service.contains("output_endpoint_id.as_deref()"));
-        assert!(!service.contains("start(None, None)"));
-    }
-
-    #[test]
-    fn native_audit_01_hum_tracker_keeps_50_and_60_hz_inputs_finite() {
-        for frequency_hz in [50.0_f32, 60.0] {
-            let sample_rate = 48_000.0_f32;
-            let mut state = AdaptiveInputCleanupState::new(sample_rate);
-            state.set_mode(InputCleanupMode::Gentle);
-            let sample_count = state.hum_window_samples * 4;
-            let input: Vec<f32> = (0..sample_count)
-                .map(|index| {
-                    0.08 * (2.0 * std::f32::consts::PI * frequency_hz * index as f32 / sample_rate)
-                        .sin()
-                })
-                .collect();
-
-            state.analyze_input(&input);
-
-            assert!(state.hum_phase_valid);
-            assert!(state.hum_line_hz.is_finite());
-            assert!(
-                (state.hum_line_hz - frequency_hz).abs() < 1.0,
-                "tracked={} expected={frequency_hz}",
-                state.hum_line_hz
-            );
-            state.reset_dynamic_state();
-            assert!(!state.hum_phase_valid);
-            assert_eq!(state.hum_windows_observed, 0);
-        }
-    }
-
-    #[test]
-    fn native_audit_11_output_meter_uses_the_processed_block_duration() {
-        let source = include_str!("dsp_loop.rs");
-        assert!(source.contains("smoothing_coeff_for_block"));
-
-        let meter_after_three_seconds = |blocks: &[usize]| {
-            let mut power = 0.0_f32;
-            let mut samples_left = 3 * 48_000;
-            for requested in blocks {
-                let block = (*requested).min(samples_left);
-                let coefficient = smoothing_coeff_for_block(48_000.0, 3_000.0, block);
-                power = coefficient * power + (1.0 - coefficient);
-                samples_left -= block;
-                if samples_left == 0 {
-                    break;
-                }
-            }
-            assert_eq!(samples_left, 0);
-            power
-        };
-
-        let regular_240 = meter_after_three_seconds(&vec![240; 600]);
-        let regular_480 = meter_after_three_seconds(&vec![480; 300]);
-        let pattern = [137, 503, 1_081, 29, 240, 900];
-        let mut irregular = Vec::new();
-        let mut samples = 0;
-        while samples < 3 * 48_000 {
-            let next = pattern[irregular.len() % pattern.len()].min(3 * 48_000 - samples);
-            irregular.push(next);
-            samples += next;
-        }
-        let irregular = meter_after_three_seconds(&irregular);
-        let expected = 1.0 - (-1.0_f32).exp();
-        assert!((regular_240 - expected).abs() < 1.0e-5);
-        assert!((regular_480 - expected).abs() < 1.0e-5);
-        assert!((irregular - expected).abs() < 1.0e-5);
-    }
-
-    #[test]
-    fn native_audit_22_stop_does_not_rebuild_the_shadow_noise_engine() {
-        let source = include_str!("dsp_loop.rs");
-        let stop = source_between(source, "pub fn stop(", "// Reset DSP state");
-        assert!(!stop.contains("new_noise_suppression_engine"));
-        assert_eq!(source.matches("new_noise_suppression_engine(").count(), 1);
-
-        let processor = include_str!("../processor.rs");
-        let constructor = source_between(
-            processor,
-            "pub fn new() -> Self {",
-            "impl Default for AudioProcessor",
-        );
-        assert!(!constructor.contains("new_noise_suppression_engine"));
-    }
-
-    #[test]
-    fn native_audit_28_capture_partial_completion_progress_level_and_restart() {
-        let rb = AudioRingBuffer::new(16);
-        let (mut producer, mut consumer) = rb.split();
-        let pos = AtomicUsize::new(0);
-        let target = AtomicUsize::new(5);
-        let level = AtomicU32::new((-120.0_f32).to_bits());
-
-        assert_eq!(
-            record_raw_recording_block(
-                &[0.1, 0.2, 0.3, 0.4],
-                20,
-                &mut producer,
-                &pos,
-                &target,
-                &level,
-            ),
-            4
-        );
-        assert_eq!(pos.load(Ordering::Acquire), 4);
+        assert!(state.hum_phase_valid);
+        assert!(state.hum_line_hz.is_finite());
         assert!(
-            (pos.load(Ordering::Acquire) as f32 / target.load(Ordering::Acquire) as f32 - 0.8)
-                .abs()
-                < 1e-6
+            (state.hum_line_hz - frequency_hz).abs() < 1.0,
+            "tracked={} expected={frequency_hz}",
+            state.hum_line_hz
         );
-        let expected_level = 20.0 * ((0.3_f32.powi(2) + 0.4_f32.powi(2)) / 2.0).sqrt().log10();
-        assert!((f32::from_bits(level.load(Ordering::Relaxed)) - expected_level).abs() < 1e-5);
+        state.reset_dynamic_state();
+        assert!(!state.hum_phase_valid);
+        assert_eq!(state.hum_windows_observed, 0);
+    }
+}
 
-        assert_eq!(
-            record_raw_recording_block(&[0.8, 0.9, 1.0], 20, &mut producer, &pos, &target, &level,),
-            1
+#[test]
+fn native_audit_11_output_meter_uses_the_processed_block_duration() {
+    let source = include_str!("dsp_loop.rs");
+    assert!(source.contains("smoothing_coeff_for_block"));
+
+    let meter_after_three_seconds = |blocks: &[usize]| {
+        let mut power = 0.0_f32;
+        let mut samples_left = 3 * 48_000;
+        for requested in blocks {
+            let block = (*requested).min(samples_left);
+            let coefficient = smoothing_coeff_for_block(48_000.0, 3_000.0, block);
+            power = coefficient * power + (1.0 - coefficient);
+            samples_left -= block;
+            if samples_left == 0 {
+                break;
+            }
+        }
+        assert_eq!(samples_left, 0);
+        power
+    };
+
+    let regular_240 = meter_after_three_seconds(&vec![240; 600]);
+    let regular_480 = meter_after_three_seconds(&vec![480; 300]);
+    let pattern = [137, 503, 1_081, 29, 240, 900];
+    let mut irregular = Vec::new();
+    let mut samples = 0;
+    while samples < 3 * 48_000 {
+        let next = pattern[irregular.len() % pattern.len()].min(3 * 48_000 - samples);
+        irregular.push(next);
+        samples += next;
+    }
+    let irregular = meter_after_three_seconds(&irregular);
+    let expected = 1.0 - (-1.0_f32).exp();
+    assert!((regular_240 - expected).abs() < 1.0e-5);
+    assert!((regular_480 - expected).abs() < 1.0e-5);
+    assert!((irregular - expected).abs() < 1.0e-5);
+}
+
+#[test]
+fn native_audit_22_stop_does_not_rebuild_the_shadow_noise_engine() {
+    let source = include_str!("lifecycle.rs");
+    let stop = source_between(source, "pub fn stop(", "// Reset DSP state");
+    assert!(!stop.contains("new_noise_suppression_engine"));
+    assert_eq!(source.matches("new_noise_suppression_engine(").count(), 1);
+
+    let processor = include_str!("../processor.rs");
+    let constructor = source_between(
+        processor,
+        "pub fn new() -> Self {",
+        "impl Default for AudioProcessor",
+    );
+    assert!(!constructor.contains("new_noise_suppression_engine"));
+}
+
+#[test]
+fn native_audit_28_capture_partial_completion_progress_level_and_restart() {
+    let rb = AudioRingBuffer::new(16);
+    let (mut producer, mut consumer) = rb.split();
+    let pos = AtomicUsize::new(0);
+    let target = AtomicUsize::new(5);
+    let level = AtomicU32::new((-120.0_f32).to_bits());
+
+    assert_eq!(
+        record_raw_recording_block(
+            &[0.1, 0.2, 0.3, 0.4],
+            20,
+            &mut producer,
+            &pos,
+            &target,
+            &level,
+        ),
+        4
+    );
+    assert_eq!(pos.load(Ordering::Acquire), 4);
+    assert!(
+        (pos.load(Ordering::Acquire) as f32 / target.load(Ordering::Acquire) as f32 - 0.8).abs()
+            < 1e-6
+    );
+    let expected_level = 20.0 * ((0.3_f32.powi(2) + 0.4_f32.powi(2)) / 2.0).sqrt().log10();
+    assert!((f32::from_bits(level.load(Ordering::Relaxed)) - expected_level).abs() < 1e-5);
+
+    assert_eq!(
+        record_raw_recording_block(&[0.8, 0.9, 1.0], 20, &mut producer, &pos, &target, &level,),
+        1
+    );
+    assert_eq!(pos.load(Ordering::Acquire), target.load(Ordering::Acquire));
+    let mut captured = [0.0; 5];
+    assert_eq!(consumer.read(&mut captured), 5);
+    assert_eq!(captured, [0.1, 0.2, 0.3, 0.4, 0.8]);
+
+    // A canceled/restarted capture begins at zero and contains only its
+    // new tap samples.
+    pos.store(0, Ordering::Release);
+    target.store(2, Ordering::Release);
+    assert_eq!(
+        record_raw_recording_block(
+            &[-0.5, -0.25, 0.25],
+            20,
+            &mut producer,
+            &pos,
+            &target,
+            &level,
+        ),
+        2
+    );
+    let mut restarted = [0.0; 2];
+    assert_eq!(consumer.read(&mut restarted), 2);
+    assert_eq!(restarted, [-0.5, -0.25]);
+}
+
+#[test]
+fn native_audit_31_dsp_loop_has_no_inert_heartbeat_timer() {
+    let source = include_str!("dsp_loop.rs");
+    assert!(!source.contains("last_heartbeat"));
+    assert!(!source.contains("HEARTBEAT_INTERVAL"));
+}
+
+fn source_between<'a>(source: &'a str, start_marker: &str, end_marker: &str) -> &'a str {
+    let start = source
+        .find(start_marker)
+        .unwrap_or_else(|| panic!("missing {start_marker}"));
+    let end = source[start..]
+        .find(end_marker)
+        .map(|offset| start + offset)
+        .unwrap_or_else(|| panic!("missing {end_marker}"));
+    &source[start..end]
+}
+
+#[test]
+fn test_marked_rt_regions_reject_blocking_or_allocating_apis() {
+    for (file, source, expected) in [
+        (
+            "processor/dsp_loop.rs",
+            include_str!("dsp_loop.rs"),
+            &[
+                "dsp_level_meter",
+                "dsp_downstream_chain",
+                "dsp_output_writer",
+                "dsp_processing_loop",
+            ][..],
+        ),
+        (
+            "input.rs",
+            include_str!("../input.rs"),
+            &["cpal_input_mixers", "cpal_input_callback"][..],
+        ),
+        (
+            "output.rs",
+            include_str!("../output.rs"),
+            &["cpal_output_callback", "cpal_output_renderer"][..],
+        ),
+    ] {
+        let mut names = assert_marked_regions_clean(file, source);
+        names.sort_unstable();
+        let mut expected = expected.to_vec();
+        expected.sort_unstable();
+        assert_eq!(names, expected, "{file}");
+    }
+}
+
+#[test]
+fn test_level_meter_and_output_writer_sources_reject_blocking_or_allocating_apis() {
+    // These files carry no RT_REGION markers, so the functions are cut out by name.
+    let writer = include_str!("output_writer.rs");
+    assert_rt_clean(
+        "output_writer.rs:OutputWriteContext",
+        source_between(writer, "fn write_chunk(", "fn new(total: usize)"),
+    );
+    let routing = include_str!("routing.rs");
+    assert_rt_clean(
+        "routing.rs:record_level_extremes",
+        source_between(
+            routing,
+            "fn record_level_extremes(",
+            "fn sanitize_and_clamp_output_inplace(",
+        ),
+    );
+}
+
+#[test]
+fn test_downstream_rt_macro_rejects_blocking_or_allocating_apis() {
+    let source = include_str!("dsp_loop.rs");
+    let region = marked_region(source, "dsp_downstream_chain");
+
+    assert_rt_clean("processor/dsp_loop.rs:DownstreamChain", region);
+}
+
+#[test]
+fn test_dsp_loop_uses_caller_provided_suppressor_output_buffers() {
+    let source = include_str!("dsp_loop.rs");
+    let region = marked_region(source, "dsp_processing_loop");
+    for pattern in ["pop_samples(", "pop_all_samples(", "drain_pending_input("] {
+        assert!(
+            !region.contains(pattern),
+            "DSP RT loop must not call Vec-returning suppressor API {pattern}"
         );
-        assert_eq!(pos.load(Ordering::Acquire), target.load(Ordering::Acquire));
-        let mut captured = [0.0; 5];
-        assert_eq!(consumer.read(&mut captured), 5);
-        assert_eq!(captured, [0.1, 0.2, 0.3, 0.4, 0.8]);
+    }
+    assert!(region.contains("pop_samples_into("));
+}
 
-        // A canceled/restarted capture begins at zero and contains only its
-        // new tap samples.
-        pos.store(0, Ordering::Release);
-        target.store(2, Ordering::Release);
+#[test]
+fn test_dsp_loop_diagnoses_suppressor_short_writes() {
+    let source = include_str!("dsp_loop.rs");
+    let region = marked_region(source, "dsp_processing_loop");
+
+    let compact: String = region.split_whitespace().collect();
+    assert!(compact.contains("engine.push_controlled_samples(buffer,gate_controls)"));
+    assert!(region.contains("if accepted < buffer.len()"));
+    assert!(region.contains("RtErrorCode::FixedBufferOverflow"));
+}
+
+#[test]
+fn suppressor_starvation_counts_audio_fed_without_output() {
+    let rate = TARGET_SAMPLE_RATE;
+    let limit = rate as usize * 4 / 10;
+    // Whatever the block cadence (a 5 ms period, a 100 ms resampler chunk,
+    // an 8 kHz input's 128 ms, an 8192-frame buffer's 171 ms), the
+    // suppressor counts as starved once 0.4 s of audio went in without
+    // output, and not before.
+    for block_ms in [5_usize, 100, 128, 171] {
+        let block = rate as usize * block_ms / 1000;
+        let mut watch = SuppressorStarvation::new(rate);
+        let mut fed = 0;
+        while fed + block < limit {
+            watch.fed(block);
+            fed += block;
+            assert!(!watch.starved(), "{block_ms} ms blocks, {fed} samples");
+        }
+        watch.fed(block);
+        assert!(watch.starved(), "{block_ms} ms blocks");
+    }
+
+    // Output ends the run, however long the suppressor had been fed.
+    let mut watch = SuppressorStarvation::new(rate);
+    watch.fed(limit - 1);
+    assert!(!watch.starved());
+    watch.restart();
+    watch.fed(limit - 1);
+    assert!(!watch.starved());
+    watch.fed(1);
+    assert!(watch.starved());
+
+    // Nothing is counted while nothing is fed: a quiet input, however
+    // long, leaves the count alone, so the first block after it (too
+    // small to give output yet) is not starvation.
+    let mut watch = SuppressorStarvation::new(rate);
+    watch.fed(480);
+    watch.restart(); // the last output
+    assert!(!watch.starved());
+    watch.fed(128);
+    assert!(!watch.starved());
+}
+
+/// An engine that gives a frame of output for every 480 samples it has
+/// received is never starved, whatever the block size.
+#[test]
+fn a_healthy_suppressor_is_never_starved() {
+    let rate = TARGET_SAMPLE_RATE;
+    for block in [1_usize, 37, 128, 240, 480, 1024, 4096, 8192] {
+        let mut watch = SuppressorStarvation::new(rate);
+        let mut pending = 0;
+        for _ in 0..(10 * rate as usize / block).max(1) {
+            watch.fed(block);
+            pending += block;
+            if pending >= 480 {
+                pending %= 480;
+                watch.restart();
+            } else {
+                assert!(!watch.starved(), "{block}-sample blocks");
+            }
+        }
+    }
+}
+
+/// The count only helps if the loop feeds it where the suppressor is fed
+/// and starts it over where output arrives or the suppressor is reset,
+/// switched off or swapped.
+#[test]
+fn suppressor_starvation_count_is_wired_to_the_feed_and_every_reset() {
+    let source = include_str!("dsp_loop.rs");
+    let enabled_branch = source_between(
+        source,
+        "// Always feed suppressor first so frame accumulation is correct.",
+        "// Record DSP processing time",
+    );
+    let feed = enabled_branch.find("starvation.fed(accepted)").unwrap();
+    let process = enabled_branch.find("engine.process_frames()").unwrap();
+    let output = enabled_branch.find("if available > 0 {").unwrap();
+    let check = enabled_branch.find("starvation.starved()").unwrap();
+    assert!(feed < process && process < output && output < check);
+    let output_arm = source_between(
+        enabled_branch,
+        "if available > 0 {",
+        "} else if accepted > 0",
+    );
+    assert!(output_arm.contains("starvation.restart()"));
+    let reset = source_between(
+        source,
+        "fn reset_after_input_gap(",
+        "/// Fade the suppressor back in",
+    );
+    assert!(reset.contains("starvation.restart()"));
+    // The engine swap, the path change and the reset request of an enabled
+    // suppressor each start the count over right after the reset; the
+    // disabled branch does it on every pass, checked below.
+    let region = marked_region(source, "dsp_processing_loop");
+    // The fifth reset is the input-gap reset checked above.
+    assert_eq!(region.matches("engine.soft_reset()").count(), 5);
+    let restarted_after_reset = region
+        .match_indices("engine.soft_reset()")
+        .filter(|(at, _)| {
+            region[*at..]
+                .lines()
+                .take(3)
+                .any(|line| line.contains("starvation.restart()"))
+        })
+        .count();
+    assert_eq!(restarted_after_reset, 3);
+    let disabled = source_between(
+        source,
+        "// Suppressor disabled: clear buffer counter",
+        "// Suppressor disabled: apply remaining stages directly",
+    );
+    assert!(disabled.contains("starvation.restart()"));
+    assert!(!source.contains("last_suppressor_output"));
+}
+
+#[test]
+fn test_dsp_loop_uses_swap_dirty_flags_to_preserve_racing_updates() {
+    let source = include_str!("dsp_loop.rs");
+    let take = source_between(source, "fn take_dirty<", "/// Consume a pending limiter");
+    assert!(take.contains("dirty.swap(false, Ordering::AcqRel)"));
+    let compact: String = source.split_whitespace().collect();
+
+    for dirty_flag in [
+        "gate.dirty",
+        "suppressor.dirty",
+        "eq.dirty",
+        "deesser.dirty",
+        "compressor.dirty",
+        "limiter.dirty",
+    ] {
+        // The limiter's flag is consumed by `apply_pending_limiter_control`,
+        // which hands its `limiter_dirty` parameter to `take_dirty`.
+        let consumed = format!("take_dirty(&shared.{dirty_flag},");
+        assert!(
+            compact.contains(&consumed) || compact.contains("take_dirty(limiter_dirty,"),
+            "{dirty_flag} must be consumed through take_dirty (swap(false)) in the RT loop"
+        );
+        assert!(
+            !source.contains(&format!("shared.{dirty_flag}.load(Ordering::Acquire)")),
+            "{dirty_flag} must not use load/apply/store(false) in the RT loop"
+        );
+    }
+}
+
+#[test]
+fn test_dsp_loop_rearms_dirty_flags_on_unstable_snapshots() {
+    let dirty = AtomicBool::new(true);
+    let contention = AtomicU64::new(0);
+    crate::test_alloc::assert_no_allocations("take_dirty", || {
+        assert_eq!(take_dirty(&dirty, || None::<u8>, &contention), None);
+    });
+    assert!(
+        dirty.load(Ordering::Acquire),
+        "an unstable snapshot must re-arm"
+    );
+    assert_eq!(contention.load(Ordering::Relaxed), 1);
+
+    assert_eq!(take_dirty(&dirty, || Some(3_u8), &contention), Some(3));
+    assert!(!dirty.load(Ordering::Acquire));
+    let unread = || -> Option<u8> { panic!("snapshot read without a pending change") };
+    assert_eq!(take_dirty(&dirty, unread, &contention), None);
+    assert_eq!(contention.load(Ordering::Relaxed), 1);
+
+    assert_eq!(
+        rearm_unless_stable(Some(4_u8), &dirty, &contention),
+        Some(4)
+    );
+    assert!(!dirty.load(Ordering::Acquire));
+    assert_eq!(rearm_unless_stable(None::<u8>, &dirty, &contention), None);
+    assert!(dirty.load(Ordering::Acquire));
+    assert_eq!(contention.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn test_dsp_loop_consumes_limiter_changes_before_the_processing_paths_split() {
+    let source = include_str!("dsp_loop.rs");
+    // The downstream macro runs only in the Full path, yet Bypass and Raw
+    // monitor write through the same output limiter and ceiling clamp.
+    let downstream = marked_region(source, "dsp_downstream_chain");
+    assert!(
+        !downstream.contains("limiter.dirty"),
+        "a limiter change must not wait for the Full path"
+    );
+
+    let region = marked_region(source, "dsp_processing_loop");
+    assert_eq!(region.matches("apply_pending_limiter_control(").count(), 1);
+    let consume = region.find("apply_pending_limiter_control(").unwrap();
+    let split = region
+        .find("if processing_path == ProcessingPath::RawMonitor")
+        .expect("the Raw monitor branch must exist");
+    assert!(
+        consume < split,
+        "limiter changes must be consumed before the Raw monitor, Bypass and Full paths split"
+    );
+
+    assert_rt_clean(
+        "processor/dsp_loop.rs:apply_pending_limiter_control",
+        source_between(source, "fn apply_pending_limiter_control(", "thread_local!"),
+    );
+}
+
+#[cfg(feature = "deepfilter")]
+#[test]
+fn test_deepfilter_rt_failure_path_does_not_allocate_error_strings() {
+    let source = include_str!("../../dsp/deepfilter_ffi.rs");
+    let start = source
+        .find("fn process_into(")
+        .expect("DeepFilter process_into must exist");
+    let end = source[start..]
+        .find("    /// Set attenuation")
+        .map(|offset| start + offset)
+        .expect("DeepFilter process_into end marker must exist");
+    let region = &source[start..end];
+
+    for pattern in ["format!", ".to_string()", "String"] {
+        assert!(
+            !region.contains(pattern),
+            "DeepFilter RT process error path must not allocate via {pattern}"
+        );
+    }
+}
+
+#[test]
+fn test_dsp_loop_defers_suppressor_drops_out_of_rt_region() {
+    let source = include_str!("dsp_loop.rs");
+    let region = marked_region(source, "dsp_processing_loop");
+
+    assert!(region.contains("self.retired.try_push"));
+    assert!(region.contains("deferred_retire"));
+    assert!(!region.contains("engine = candidate"));
+    assert!(!region.contains("std::mem::forget"));
+}
+
+#[cfg(feature = "vad")]
+#[test]
+fn test_dsp_loop_diagnoses_vad_worker_short_writes() {
+    let source = include_str!("dsp_loop.rs");
+    let region = marked_region(source, "dsp_processing_loop");
+
+    assert!(region.contains("enqueue_vad_block("));
+    assert!(region.contains("if written < buffer.len()"));
+    assert!(region.contains("store_rt_error("));
+    assert!(region.contains("RtErrorCode::FixedBufferOverflow"));
+}
+
+#[cfg(feature = "vad")]
+#[test]
+fn test_vad_enqueue_overflow_drops_whole_block_and_recovers() {
+    let block = vec![0.2_f32; 1024];
+    let rb = AudioRingBuffer::new(VAD_WORKER_MAX_BUFFER_SAMPLES);
+    let (mut producer, mut consumer) = rb.split();
+    let fill = vec![0.1_f32; VAD_WORKER_MAX_BUFFER_SAMPLES - block.len() + 1];
+    assert_eq!(producer.write(&fill), fill.len());
+
+    let queue_len_before = consumer.len();
+    let mut source_clock = 123_u64;
+    let discontinuities = AtomicU64::new(0);
+    assert_eq!(
+        enqueue_vad_block(&mut producer, &block, &mut source_clock, &discontinuities,),
+        0
+    );
+    assert_eq!(consumer.len(), queue_len_before);
+    assert_eq!(source_clock, 123);
+    assert_eq!(discontinuities.load(Ordering::Acquire), 1);
+
+    let mut drained = vec![0.0_f32; queue_len_before];
+    assert_eq!(consumer.read(&mut drained), queue_len_before);
+    assert_eq!(
+        enqueue_vad_block(&mut producer, &block, &mut source_clock, &discontinuities,),
+        block.len()
+    );
+    assert_eq!(source_clock, 123 + block.len() as u64);
+    assert_eq!(consumer.len(), block.len());
+}
+
+#[test]
+fn test_runtime_diagnostics_split_retime_adjustments_from_recovery_events() {
+    let wrapper = PyAudioProcessor {
+        processor: AudioProcessor::new(),
+    };
+    wrapper
+        .processor
+        .shared
+        .output
+        .retime_adjustment_count
+        .store(11, Ordering::Relaxed);
+    wrapper
+        .processor
+        .shared
+        .output
+        .recovery_event_count
+        .store(7, Ordering::Relaxed);
+    wrapper
+        .processor
+        .shared
+        .output
+        .underrun_streak
+        .store(3, Ordering::Relaxed);
+    wrapper
+        .processor
+        .shared
+        .output
+        .clip_event_count
+        .store(2, Ordering::Relaxed);
+    wrapper
+        .processor
+        .shared
+        .output
+        .clip_peak_db
+        .store((-0.75_f32).to_bits(), Ordering::Relaxed);
+    wrapper
+        .processor
+        .shared
+        .output
+        .true_peak_event_count
+        .store(3, Ordering::Relaxed);
+    wrapper
+        .processor
+        .shared
+        .output
+        .true_peak_db
+        .store(0.5_f32.to_bits(), Ordering::Relaxed);
+    wrapper
+        .processor
+        .shared
+        .gate
+        .chatter_event_count
+        .store(4, Ordering::Relaxed);
+    wrapper
+        .processor
+        .shared
+        .deesser
+        .detector_confidence
+        .store(0.62_f32.to_bits(), Ordering::Relaxed);
+    wrapper.processor.shared.input.phase_rescue_strategy.store(
+        crate::audio::input::PhaseRescueStrategy::FractionalDelay as u8,
+        Ordering::Relaxed,
+    );
+    wrapper
+        .processor
+        .shared
+        .input
+        .phase_estimated_delay_samples
+        .store(2.25_f32.to_bits(), Ordering::Relaxed);
+    wrapper
+        .processor
+        .shared
+        .input
+        .phase_polarity_flipped
+        .store(true, Ordering::Relaxed);
+    wrapper.processor.set_limiter_careful_output_enabled(false);
+    wrapper.processor.set_limiter_ceiling(-0.25);
+
+    Python::initialize();
+    Python::attach(|py| {
+        let diagnostics = wrapper.get_runtime_diagnostics(py).unwrap();
+        let diagnostics = diagnostics.bind(py);
+        let diagnostics = diagnostics.cast::<PyDict>().unwrap();
+        assert!(diagnostics
+            .get_item("noise_attenuation_limit_db")
+            .unwrap()
+            .unwrap()
+            .is_none());
+        assert!(diagnostics
+            .get_item("noise_post_filter_beta")
+            .unwrap()
+            .unwrap()
+            .is_none());
         assert_eq!(
-            record_raw_recording_block(
-                &[-0.5, -0.25, 0.25],
-                20,
-                &mut producer,
-                &pos,
-                &target,
-                &level,
-            ),
+            diagnostics
+                .get_item("output_retime_adjustment_count")
+                .unwrap()
+                .unwrap()
+                .extract::<u64>()
+                .unwrap(),
+            11
+        );
+        assert_eq!(
+            diagnostics
+                .get_item("output_recovery_event_count")
+                .unwrap()
+                .unwrap()
+                .extract::<u64>()
+                .unwrap(),
+            7
+        );
+        assert_eq!(
+            diagnostics
+                .get_item("output_recovery_count")
+                .unwrap()
+                .unwrap()
+                .extract::<u64>()
+                .unwrap(),
+            7
+        );
+        assert_eq!(
+            diagnostics
+                .get_item("output_underrun_streak")
+                .unwrap()
+                .unwrap()
+                .extract::<u32>()
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            diagnostics
+                .get_item("output_clip_event_count")
+                .unwrap()
+                .unwrap()
+                .extract::<u64>()
+                .unwrap(),
             2
         );
-        let mut restarted = [0.0; 2];
-        assert_eq!(consumer.read(&mut restarted), 2);
-        assert_eq!(restarted, [-0.5, -0.25]);
-    }
-
-    #[test]
-    fn native_audit_31_dsp_loop_has_no_inert_heartbeat_timer() {
-        let source = include_str!("dsp_loop.rs");
-        assert!(!source.contains("last_heartbeat"));
-        assert!(!source.contains("HEARTBEAT_INTERVAL"));
-    }
-
-    fn source_between<'a>(source: &'a str, start_marker: &str, end_marker: &str) -> &'a str {
-        let start = source
-            .find(start_marker)
-            .unwrap_or_else(|| panic!("missing {start_marker}"));
-        let end = source[start..]
-            .find(end_marker)
-            .map(|offset| start + offset)
-            .unwrap_or_else(|| panic!("missing {end_marker}"));
-        &source[start..end]
-    }
-
-    #[test]
-    fn test_marked_rt_regions_reject_blocking_or_allocating_apis() {
-        for (file, source, expected) in [
-            (
-                "processor/dsp_loop.rs",
-                include_str!("dsp_loop.rs"),
-                &[
-                    "dsp_level_meter",
-                    "dsp_downstream_chain",
-                    "dsp_output_writer",
-                    "dsp_processing_loop",
-                ][..],
-            ),
-            (
-                "input.rs",
-                include_str!("../input.rs"),
-                &["cpal_input_mixers", "cpal_input_callback"][..],
-            ),
-            (
-                "output.rs",
-                include_str!("../output.rs"),
-                &["cpal_output_callback", "cpal_output_renderer"][..],
-            ),
-        ] {
-            let mut names = assert_marked_regions_clean(file, source);
-            names.sort_unstable();
-            let mut expected = expected.to_vec();
-            expected.sort_unstable();
-            assert_eq!(names, expected, "{file}");
-        }
-    }
-
-    #[test]
-    fn test_level_meter_and_output_writer_sources_reject_blocking_or_allocating_apis() {
-        // These files carry no RT_REGION markers, so the functions are cut out by name.
-        let writer = include_str!("output_writer.rs");
-        assert_rt_clean(
-            "output_writer.rs:OutputWriteContext",
-            source_between(writer, "fn write_chunk(", "fn new(total: usize)"),
-        );
-        let routing = include_str!("routing.rs");
-        assert_rt_clean(
-            "routing.rs:record_level_extremes",
-            source_between(
-                routing,
-                "fn record_level_extremes(",
-                "fn sanitize_and_clamp_output_inplace(",
-            ),
-        );
-    }
-
-    #[test]
-    fn test_downstream_rt_macro_rejects_blocking_or_allocating_apis() {
-        let source = include_str!("dsp_loop.rs");
-        let region = source_between(
-            source,
-            "macro_rules! apply_downstream_chain_rt",
-            "// Time-based EMA smoothing",
-        );
-
-        assert_rt_clean("processor/dsp_loop.rs:apply_downstream_chain_rt", region);
-    }
-
-    #[test]
-    fn test_dsp_loop_uses_caller_provided_suppressor_output_buffers() {
-        let source = include_str!("dsp_loop.rs");
-        let region = marked_region(source, "dsp_processing_loop");
-        for pattern in ["pop_samples(", "pop_all_samples(", "drain_pending_input("] {
-            assert!(
-                !region.contains(pattern),
-                "DSP RT loop must not call Vec-returning suppressor API {pattern}"
-            );
-        }
-        assert!(region.contains("pop_samples_into("));
-    }
-
-    #[test]
-    fn test_dsp_loop_diagnoses_suppressor_short_writes() {
-        let source = include_str!("dsp_loop.rs");
-        let region = marked_region(source, "dsp_processing_loop");
-
-        let compact: String = region.split_whitespace().collect();
-        assert!(compact.contains("suppressor_rt.push_controlled_samples(buffer,gate_controls)"));
-        assert!(region.contains("if accepted < buffer.len()"));
-        assert!(region.contains("RtErrorCode::FixedBufferOverflow"));
-    }
-
-    #[test]
-    fn suppressor_starvation_counts_audio_fed_without_output() {
-        let rate = TARGET_SAMPLE_RATE;
-        let limit = rate as usize * 4 / 10;
-        // Whatever the block cadence (a 5 ms period, a 100 ms resampler chunk,
-        // an 8 kHz input's 128 ms, an 8192-frame buffer's 171 ms), the
-        // suppressor counts as starved once 0.4 s of audio went in without
-        // output, and not before.
-        for block_ms in [5_usize, 100, 128, 171] {
-            let block = rate as usize * block_ms / 1000;
-            let mut watch = SuppressorStarvation::new(rate);
-            let mut fed = 0;
-            while fed + block < limit {
-                watch.fed(block);
-                fed += block;
-                assert!(!watch.starved(), "{block_ms} ms blocks, {fed} samples");
-            }
-            watch.fed(block);
-            assert!(watch.starved(), "{block_ms} ms blocks");
-        }
-
-        // Output ends the run, however long the suppressor had been fed.
-        let mut watch = SuppressorStarvation::new(rate);
-        watch.fed(limit - 1);
-        assert!(!watch.starved());
-        watch.restart();
-        watch.fed(limit - 1);
-        assert!(!watch.starved());
-        watch.fed(1);
-        assert!(watch.starved());
-
-        // Nothing is counted while nothing is fed: a quiet input, however
-        // long, leaves the count alone, so the first block after it (too
-        // small to give output yet) is not starvation.
-        let mut watch = SuppressorStarvation::new(rate);
-        watch.fed(480);
-        watch.restart(); // the last output
-        assert!(!watch.starved());
-        watch.fed(128);
-        assert!(!watch.starved());
-    }
-
-    /// An engine that gives a frame of output for every 480 samples it has
-    /// received is never starved, whatever the block size.
-    #[test]
-    fn a_healthy_suppressor_is_never_starved() {
-        let rate = TARGET_SAMPLE_RATE;
-        for block in [1_usize, 37, 128, 240, 480, 1024, 4096, 8192] {
-            let mut watch = SuppressorStarvation::new(rate);
-            let mut pending = 0;
-            for _ in 0..(10 * rate as usize / block).max(1) {
-                watch.fed(block);
-                pending += block;
-                if pending >= 480 {
-                    pending %= 480;
-                    watch.restart();
-                } else {
-                    assert!(!watch.starved(), "{block}-sample blocks");
-                }
-            }
-        }
-    }
-
-    /// The count only helps if the loop feeds it where the suppressor is fed
-    /// and starts it over where output arrives or the suppressor is reset,
-    /// switched off or swapped.
-    #[test]
-    fn suppressor_starvation_count_is_wired_to_the_feed_and_every_reset() {
-        let source = include_str!("dsp_loop.rs");
-        let enabled_branch = source_between(
-            source,
-            "// Always feed suppressor first so frame accumulation is correct.",
-            "// Record DSP processing time",
-        );
-        let feed = enabled_branch
-            .find("suppressor_starvation.fed(accepted)")
-            .unwrap();
-        let process = enabled_branch
-            .find("suppressor_rt.process_frames()")
-            .unwrap();
-        let output = enabled_branch.find("if available > 0 {").unwrap();
-        let check = enabled_branch
-            .find("suppressor_starvation.starved()")
-            .unwrap();
-        assert!(feed < process && process < output && output < check);
-        let output_arm = source_between(
-            enabled_branch,
-            "if available > 0 {",
-            "} else if accepted > 0",
-        );
-        assert!(output_arm.contains("suppressor_starvation.restart()"));
-        let reset = source_between(
-            source,
-            "macro_rules! reset_input_continuity",
-            "let mut consecutive_idle_wakeups",
-        );
-        assert!(reset.contains("suppressor_starvation.restart()"));
-        // The engine swap, the path change and the reset request of an enabled
-        // suppressor each start the count over right after the reset; the
-        // disabled branch does it on every pass, checked below.
-        let region = marked_region(source, "dsp_processing_loop");
-        assert_eq!(region.matches("suppressor_rt.soft_reset()").count(), 4);
-        let restarted_after_reset = region
-            .match_indices("suppressor_rt.soft_reset()")
-            .filter(|(at, _)| {
-                region[*at..]
-                    .lines()
-                    .take(3)
-                    .any(|line| line.contains("suppressor_starvation.restart()"))
-            })
-            .count();
-        assert_eq!(restarted_after_reset, 3);
-        let disabled = source_between(
-            source,
-            "// Suppressor disabled: clear buffer counter",
-            "// Suppressor disabled: apply remaining stages directly",
-        );
-        assert!(disabled.contains("suppressor_starvation.restart()"));
-        assert!(!source.contains("last_suppressor_output"));
-    }
-
-    #[test]
-    fn test_dsp_loop_uses_swap_dirty_flags_to_preserve_racing_updates() {
-        let source = include_str!("dsp_loop.rs");
-        let take = source_between(source, "fn take_dirty<", "/// Consume a pending limiter");
-        assert!(take.contains("dirty.swap(false, Ordering::AcqRel)"));
-        let compact: String = source.split_whitespace().collect();
-
-        for dirty_flag in [
-            "gate_dirty",
-            "suppressor_dirty",
-            "eq_dirty",
-            "deesser_dirty",
-            "compressor_dirty",
-            "limiter_dirty",
-        ] {
-            assert!(
-                compact.contains(&format!("take_dirty(&{dirty_flag},"))
-                    || compact.contains(&format!("take_dirty({dirty_flag},")),
-                "{dirty_flag} must be consumed through take_dirty (swap(false)) in the RT loop"
-            );
-            assert!(
-                !source.contains(&format!("{dirty_flag}.load(Ordering::Acquire)")),
-                "{dirty_flag} must not use load/apply/store(false) in the RT loop"
-            );
-        }
-    }
-
-    #[test]
-    fn test_dsp_loop_rearms_dirty_flags_on_unstable_snapshots() {
-        let dirty = AtomicBool::new(true);
-        let contention = AtomicU64::new(0);
-        crate::test_alloc::assert_no_allocations("take_dirty", || {
-            assert_eq!(take_dirty(&dirty, || None::<u8>, &contention), None);
-        });
         assert!(
-            dirty.load(Ordering::Acquire),
-            "an unstable snapshot must re-arm"
-        );
-        assert_eq!(contention.load(Ordering::Relaxed), 1);
-
-        assert_eq!(take_dirty(&dirty, || Some(3_u8), &contention), Some(3));
-        assert!(!dirty.load(Ordering::Acquire));
-        let unread = || -> Option<u8> { panic!("snapshot read without a pending change") };
-        assert_eq!(take_dirty(&dirty, unread, &contention), None);
-        assert_eq!(contention.load(Ordering::Relaxed), 1);
-
-        assert_eq!(
-            rearm_unless_stable(Some(4_u8), &dirty, &contention),
-            Some(4)
-        );
-        assert!(!dirty.load(Ordering::Acquire));
-        assert_eq!(rearm_unless_stable(None::<u8>, &dirty, &contention), None);
-        assert!(dirty.load(Ordering::Acquire));
-        assert_eq!(contention.load(Ordering::Relaxed), 2);
-    }
-
-    #[test]
-    fn test_dsp_loop_consumes_limiter_changes_before_the_processing_paths_split() {
-        let source = include_str!("dsp_loop.rs");
-        // The downstream macro runs only in the Full path, yet Bypass and Raw
-        // monitor write through the same output limiter and ceiling clamp.
-        let downstream = source_between(
-            source,
-            "macro_rules! apply_downstream_chain_rt",
-            "// Time-based EMA smoothing",
-        );
-        assert!(
-            !downstream.contains("limiter_dirty"),
-            "a limiter change must not wait for the Full path"
-        );
-
-        let region = marked_region(source, "dsp_processing_loop");
-        assert_eq!(region.matches("apply_pending_limiter_control(").count(), 1);
-        let consume = region.find("apply_pending_limiter_control(").unwrap();
-        let split = region
-            .find("if processing_path == ProcessingPath::RawMonitor")
-            .expect("the Raw monitor branch must exist");
-        assert!(
-            consume < split,
-            "limiter changes must be consumed before the Raw monitor, Bypass and Full paths split"
-        );
-
-        assert_rt_clean(
-            "processor/dsp_loop.rs:apply_pending_limiter_control",
-            source_between(source, "fn apply_pending_limiter_control(", "thread_local!"),
-        );
-    }
-
-    #[cfg(feature = "deepfilter")]
-    #[test]
-    fn test_deepfilter_rt_failure_path_does_not_allocate_error_strings() {
-        let source = include_str!("../../dsp/deepfilter_ffi.rs");
-        let start = source
-            .find("fn process_into(")
-            .expect("DeepFilter process_into must exist");
-        let end = source[start..]
-            .find("    /// Set attenuation")
-            .map(|offset| start + offset)
-            .expect("DeepFilter process_into end marker must exist");
-        let region = &source[start..end];
-
-        for pattern in ["format!", ".to_string()", "String"] {
-            assert!(
-                !region.contains(pattern),
-                "DeepFilter RT process error path must not allocate via {pattern}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_dsp_loop_defers_suppressor_drops_out_of_rt_region() {
-        let source = include_str!("dsp_loop.rs");
-        let region = marked_region(source, "dsp_processing_loop");
-
-        assert!(region.contains("retired_suppressor_tx"));
-        assert!(region.contains("deferred_suppressor_retire"));
-        assert!(!region.contains("suppressor_rt = candidate"));
-        assert!(!region.contains("std::mem::forget"));
-    }
-
-    #[cfg(feature = "vad")]
-    #[test]
-    fn test_dsp_loop_diagnoses_vad_worker_short_writes() {
-        let source = include_str!("dsp_loop.rs");
-        let region = marked_region(source, "dsp_processing_loop");
-
-        assert!(region.contains("Self::enqueue_vad_block"));
-        assert!(region.contains("if written < buffer.len()"));
-        assert!(region.contains("store_rt_error("));
-        assert!(region.contains("RtErrorCode::FixedBufferOverflow"));
-    }
-
-    #[cfg(feature = "vad")]
-    #[test]
-    fn test_vad_enqueue_overflow_drops_whole_block_and_recovers() {
-        let block = vec![0.2_f32; 1024];
-        let rb = AudioRingBuffer::new(VAD_WORKER_MAX_BUFFER_SAMPLES);
-        let (mut producer, mut consumer) = rb.split();
-        let fill = vec![0.1_f32; VAD_WORKER_MAX_BUFFER_SAMPLES - block.len() + 1];
-        assert_eq!(producer.write(&fill), fill.len());
-
-        let queue_len_before = consumer.len();
-        let mut source_clock = 123_u64;
-        let discontinuities = AtomicU64::new(0);
-        assert_eq!(
-            AudioProcessor::enqueue_vad_block(
-                &mut producer,
-                &block,
-                &mut source_clock,
-                &discontinuities,
-            ),
-            0
-        );
-        assert_eq!(consumer.len(), queue_len_before);
-        assert_eq!(source_clock, 123);
-        assert_eq!(discontinuities.load(Ordering::Acquire), 1);
-
-        let mut drained = vec![0.0_f32; queue_len_before];
-        assert_eq!(consumer.read(&mut drained), queue_len_before);
-        assert_eq!(
-            AudioProcessor::enqueue_vad_block(
-                &mut producer,
-                &block,
-                &mut source_clock,
-                &discontinuities,
-            ),
-            block.len()
-        );
-        assert_eq!(source_clock, 123 + block.len() as u64);
-        assert_eq!(consumer.len(), block.len());
-    }
-
-    #[test]
-    fn test_runtime_diagnostics_split_retime_adjustments_from_recovery_events() {
-        let wrapper = PyAudioProcessor {
-            processor: AudioProcessor::new(),
-        };
-        wrapper
-            .processor
-            .output_retime_adjustment_count
-            .store(11, Ordering::Relaxed);
-        wrapper
-            .processor
-            .output_recovery_event_count
-            .store(7, Ordering::Relaxed);
-        wrapper
-            .processor
-            .output_underrun_streak
-            .store(3, Ordering::Relaxed);
-        wrapper
-            .processor
-            .output_clip_event_count
-            .store(2, Ordering::Relaxed);
-        wrapper
-            .processor
-            .output_clip_peak_db
-            .store((-0.75_f32).to_bits(), Ordering::Relaxed);
-        wrapper
-            .processor
-            .output_true_peak_event_count
-            .store(3, Ordering::Relaxed);
-        wrapper
-            .processor
-            .output_true_peak_db
-            .store(0.5_f32.to_bits(), Ordering::Relaxed);
-        wrapper
-            .processor
-            .gate_chatter_event_count
-            .store(4, Ordering::Relaxed);
-        wrapper
-            .processor
-            .deesser_detector_confidence
-            .store(0.62_f32.to_bits(), Ordering::Relaxed);
-        wrapper.processor.input_phase_rescue_strategy.store(
-            crate::audio::input::PhaseRescueStrategy::FractionalDelay as u8,
-            Ordering::Relaxed,
-        );
-        wrapper
-            .processor
-            .input_phase_estimated_delay_samples
-            .store(2.25_f32.to_bits(), Ordering::Relaxed);
-        wrapper
-            .processor
-            .input_phase_polarity_flipped
-            .store(true, Ordering::Relaxed);
-        wrapper.processor.set_limiter_careful_output_enabled(false);
-        wrapper.processor.set_limiter_ceiling(-0.25);
-
-        Python::initialize();
-        Python::attach(|py| {
-            let diagnostics = wrapper.get_runtime_diagnostics(py).unwrap();
-            let diagnostics = diagnostics.bind(py);
-            let diagnostics = diagnostics.cast::<PyDict>().unwrap();
-            assert!(diagnostics
-                .get_item("noise_attenuation_limit_db")
-                .unwrap()
-                .unwrap()
-                .is_none());
-            assert!(diagnostics
-                .get_item("noise_post_filter_beta")
-                .unwrap()
-                .unwrap()
-                .is_none());
-            assert_eq!(
-                diagnostics
-                    .get_item("output_retime_adjustment_count")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<u64>()
-                    .unwrap(),
-                11
-            );
-            assert_eq!(
-                diagnostics
-                    .get_item("output_recovery_event_count")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<u64>()
-                    .unwrap(),
-                7
-            );
-            assert_eq!(
-                diagnostics
-                    .get_item("output_recovery_count")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<u64>()
-                    .unwrap(),
-                7
-            );
-            assert_eq!(
-                diagnostics
-                    .get_item("output_underrun_streak")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<u32>()
-                    .unwrap(),
-                3
-            );
-            assert_eq!(
-                diagnostics
-                    .get_item("output_clip_event_count")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<u64>()
-                    .unwrap(),
-                2
-            );
-            assert!(
-                (diagnostics
-                    .get_item("output_clip_peak_db")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<f32>()
-                    .unwrap()
-                    + 0.75)
-                    .abs()
-                    < 1e-6
-            );
-            assert_eq!(
-                diagnostics
-                    .get_item("output_true_peak_event_count")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<u64>()
-                    .unwrap(),
-                3
-            );
-            assert!(
-                (diagnostics
-                    .get_item("output_true_peak_db")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<f32>()
-                    .unwrap()
-                    - 0.5)
-                    .abs()
-                    < 1e-6
-            );
-            assert!(!diagnostics
-                .get_item("limiter_careful_output_enabled")
-                .unwrap()
-                .unwrap()
-                .extract::<bool>()
-                .unwrap());
-            assert!(
-                (diagnostics
-                    .get_item("limiter_effective_ceiling_db")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<f64>()
-                    .unwrap()
-                    + 0.25)
-                    .abs()
-                    < 1e-6
-            );
-            assert_eq!(
-                diagnostics
-                    .get_item("gate_chatter_event_count")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<u64>()
-                    .unwrap(),
-                4
-            );
-            assert!(
-                (diagnostics
-                    .get_item("deesser_detector_confidence")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<f32>()
-                    .unwrap()
-                    - 0.62)
-                    .abs()
-                    < 1e-6
-            );
-            assert_eq!(
-                diagnostics
-                    .get_item("input_phase_rescue_strategy")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<String>()
-                    .unwrap(),
-                "fractional_delay"
-            );
-            assert!(
-                (diagnostics
-                    .get_item("input_phase_estimated_delay_samples")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<f32>()
-                    .unwrap()
-                    - 2.25)
-                    .abs()
-                    < 1e-6
-            );
-            assert!(diagnostics
-                .get_item("input_phase_polarity_flipped")
-                .unwrap()
-                .unwrap()
-                .extract::<bool>()
-                .unwrap());
-        });
-    }
-
-    #[cfg(feature = "vad")]
-    #[test]
-    fn test_runtime_diagnostics_include_gate_fused_score() {
-        let wrapper = PyAudioProcessor {
-            processor: AudioProcessor::new(),
-        };
-        wrapper
-            .processor
-            .gate_fused_score
-            .store(0.42_f32.to_bits(), Ordering::Relaxed);
-        wrapper
-            .processor
-            .gate_auto_relax_active
-            .store(true, Ordering::Relaxed);
-
-        Python::initialize();
-        Python::attach(|py| {
-            let diagnostics = wrapper.get_runtime_diagnostics(py).unwrap();
-            let diagnostics = diagnostics.bind(py);
-            let diagnostics = diagnostics.cast::<PyDict>().unwrap();
-            let score = diagnostics
-                .get_item("gate_fused_score")
+            (diagnostics
+                .get_item("output_clip_peak_db")
                 .unwrap()
                 .unwrap()
                 .extract::<f32>()
-                .unwrap();
-            assert!((score - 0.42).abs() < 1e-6);
-            assert!(diagnostics
-                .get_item("gate_auto_relax_active")
+                .unwrap()
+                + 0.75)
+                .abs()
+                < 1e-6
+        );
+        assert_eq!(
+            diagnostics
+                .get_item("output_true_peak_event_count")
                 .unwrap()
                 .unwrap()
-                .extract::<bool>()
-                .unwrap());
-        });
-    }
+                .extract::<u64>()
+                .unwrap(),
+            3
+        );
+        assert!(
+            (diagnostics
+                .get_item("output_true_peak_db")
+                .unwrap()
+                .unwrap()
+                .extract::<f32>()
+                .unwrap()
+                - 0.5)
+                .abs()
+                < 1e-6
+        );
+        assert!(!diagnostics
+            .get_item("limiter_careful_output_enabled")
+            .unwrap()
+            .unwrap()
+            .extract::<bool>()
+            .unwrap());
+        assert!(
+            (diagnostics
+                .get_item("limiter_effective_ceiling_db")
+                .unwrap()
+                .unwrap()
+                .extract::<f64>()
+                .unwrap()
+                + 0.25)
+                .abs()
+                < 1e-6
+        );
+        assert_eq!(
+            diagnostics
+                .get_item("gate_chatter_event_count")
+                .unwrap()
+                .unwrap()
+                .extract::<u64>()
+                .unwrap(),
+            4
+        );
+        assert!(
+            (diagnostics
+                .get_item("deesser_detector_confidence")
+                .unwrap()
+                .unwrap()
+                .extract::<f32>()
+                .unwrap()
+                - 0.62)
+                .abs()
+                < 1e-6
+        );
+        assert_eq!(
+            diagnostics
+                .get_item("input_phase_rescue_strategy")
+                .unwrap()
+                .unwrap()
+                .extract::<String>()
+                .unwrap(),
+            "fractional_delay"
+        );
+        assert!(
+            (diagnostics
+                .get_item("input_phase_estimated_delay_samples")
+                .unwrap()
+                .unwrap()
+                .extract::<f32>()
+                .unwrap()
+                - 2.25)
+                .abs()
+                < 1e-6
+        );
+        assert!(diagnostics
+            .get_item("input_phase_polarity_flipped")
+            .unwrap()
+            .unwrap()
+            .extract::<bool>()
+            .unwrap());
+    });
+}
+
+#[cfg(feature = "vad")]
+#[test]
+fn test_runtime_diagnostics_include_gate_fused_score() {
+    let wrapper = PyAudioProcessor {
+        processor: AudioProcessor::new(),
+    };
+    wrapper
+        .processor
+        .shared
+        .gate
+        .fused_score
+        .store(0.42_f32.to_bits(), Ordering::Relaxed);
+    wrapper
+        .processor
+        .shared
+        .gate
+        .auto_relax_active
+        .store(true, Ordering::Relaxed);
+
+    Python::initialize();
+    Python::attach(|py| {
+        let diagnostics = wrapper.get_runtime_diagnostics(py).unwrap();
+        let diagnostics = diagnostics.bind(py);
+        let diagnostics = diagnostics.cast::<PyDict>().unwrap();
+        let score = diagnostics
+            .get_item("gate_fused_score")
+            .unwrap()
+            .unwrap()
+            .extract::<f32>()
+            .unwrap();
+        assert!((score - 0.42).abs() < 1e-6);
+        assert!(diagnostics
+            .get_item("gate_auto_relax_active")
+            .unwrap()
+            .unwrap()
+            .extract::<bool>()
+            .unwrap());
+    });
 }
 
 #[test]
@@ -5824,994 +6116,46 @@ fn test_auto_makeup_control_block_is_ten_ms_at_supported_rates() {
 #[test]
 fn test_dropped_sample_reset_keeps_the_capture_gap_counter() {
     let processor = AudioProcessor::new();
-    processor.input_dropped.store(5, Ordering::Relaxed);
+    processor
+        .shared
+        .input
+        .dropped_counter()
+        .store(5, Ordering::Relaxed);
     processor.reset_dropped_samples();
     assert_eq!(processor.get_dropped_samples(), 0);
     // The DSP loop compares this counter with the last value it saw; a
     // rewind would read as a capture gap and discard the input queue.
-    assert_eq!(processor.input_dropped.load(Ordering::Relaxed), 5);
-    processor.input_dropped.fetch_add(2, Ordering::Relaxed);
-    assert_eq!(processor.get_dropped_samples(), 2);
-}
-
-/// Regression tests for the 1.18.1 realtime audit (RB-003/004/005/012, RT-004..RT-027).
-#[cfg(test)]
-mod rt_audit_tests {
-    use super::*;
-    use crate::rt_scan::{assert_rt_clean, marked_region};
-
-    fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
-        let from = source
-            .find(start)
-            .unwrap_or_else(|| panic!("missing {start}"));
-        let to = source[from..]
-            .find(end)
-            .map(|offset| from + offset)
-            .unwrap_or_else(|| panic!("missing {end}"));
-        &source[from..to]
-    }
-
-    /// The production part of dsp_loop.rs: everything but its inline test modules.
-    fn dsp_loop_production() -> String {
-        let source = include_str!("dsp_loop.rs");
-        let tests_start = source
-            .find("#[cfg(test)]\nmod input_continuity_tests")
-            .unwrap();
-        let impl_start = source.find("impl AudioProcessor {").unwrap();
-        format!("{}{}", &source[..tests_start], &source[impl_start..])
-    }
-
-    // --- RB-003 / RT-022: every snapshot site re-arms ------------------------
-
-    #[test]
-    fn every_dsp_loop_control_snapshot_site_rearms_or_goes_through_startup_control() {
-        let production = dsp_loop_production();
-        let sites: Vec<usize> = production
-            .match_indices(".snapshot()")
-            .map(|(i, _)| i)
-            .collect();
-        assert!(
-            sites.len() >= 10,
-            "expected the loop and start-up snapshot sites"
-        );
-        for &site in &sites {
-            let before = &production[site.saturating_sub(60)..site];
-            // The VAD snapshot is the lock-free result seqlock, not a control state.
-            if before.contains("vad_result") || before.contains("vad_snapshot") {
-                continue;
-            }
-            // The statement holding this snapshot, up to it, must hand the
-            // snapshot to a helper that re-arms an unstable one.
-            let statement_start = production[..site]
-                .rfind([';', '{', '}'])
-                .map_or(0, |index| index + 1);
-            let statement = &production[statement_start..site];
-            assert!(
-                ["startup_control(", "take_dirty(", "rearm_unless_stable("]
-                    .iter()
-                    .any(|helper| statement.contains(helper)),
-                "snapshot site without a re-arm: ...{statement}"
-            );
-        }
-        assert!(!production.contains("unwrap_or_else(GateControlState::new)"));
-    }
-
-    #[test]
-    fn unstable_start_up_snapshot_rearms_dirty_and_counts_contention() {
-        let dirty = AtomicBool::new(false);
-        let contention = AtomicU64::new(0);
-        let stable = startup_control(Some(7_u32), || 0, &dirty, &contention);
-        assert_eq!(stable, 7);
-        assert!(!dirty.load(Ordering::Acquire));
-        assert_eq!(contention.load(Ordering::Relaxed), 0);
-
-        let fallback = startup_control(None, || 42_u32, &dirty, &contention);
-        assert_eq!(fallback, 42);
-        assert!(
-            dirty.load(Ordering::Acquire),
-            "defaults must not outlive the first pass"
-        );
-        assert_eq!(contention.load(Ordering::Relaxed), 1);
-    }
-
-    // --- RT-011: contention is measured, limiter reports instability -----------
-
-    #[test]
-    fn limiter_consume_counts_an_unstable_snapshot_as_contention() {
-        let control = AtomicLimiterControlState::new();
-        let dirty = AtomicBool::new(true);
-        let mut limiter = Limiter::default_settings(48_000.0);
-        let release = Cell::new(50.0_f32);
-        let ceiling = Cell::new(1.0_f32);
-        let lookahead = AtomicU64::new(0);
-        let contention = AtomicU64::new(0);
-        let mut consume = || {
-            apply_pending_limiter_control(
-                &dirty,
-                &control,
-                &mut limiter,
-                &release,
-                &ceiling,
-                &lookahead,
-                &contention,
-            )
-        };
-        control.seq.store(1, Ordering::Release);
-        consume();
-        control.seq.store(2, Ordering::Release);
-        consume();
-        assert!(!dirty.load(Ordering::Acquire));
-        assert_eq!(contention.load(Ordering::Relaxed), 1);
-
-        // The loop feeds its own contention counter.
-        let region = marked_region(include_str!("dsp_loop.rs"), "dsp_processing_loop");
-        let call = &region[region.find("apply_pending_limiter_control(").unwrap()..];
-        let call = &call[..call.find(");").unwrap()];
-        assert!(call.contains("&lock_contention_count"), "{call}");
-    }
-
-    // --- RB-004: seqlock fences ------------------------------------------------
-
-    #[test]
-    fn control_seqlock_orders_its_relaxed_data_with_fences() {
-        let source = include_str!("control.rs");
-        let writer = between(
-            source,
-            "fn locked_control_update",
-            "fn stable_control_snapshot",
-        );
-        let first = writer.find("fetch_add(1, Ordering::Relaxed)").unwrap();
-        let fence = writer.find("fence(Ordering::Release)").unwrap();
-        let apply = writer.find("apply();").unwrap();
-        assert!(first < fence && fence < apply);
-        let reader = between(
-            source,
-            "fn stable_control_snapshot",
-            "fn release_ms_to_tenth_ms",
-        );
-        let read = reader.find("read();").unwrap();
-        let fence = reader.find("fence(Ordering::Acquire)").unwrap();
-        let second = reader.rfind("seq.load(").unwrap();
-        assert!(read < fence && fence < second);
-
-        let vad = include_str!("vad_worker.rs");
-        let begin = between(vad, "fn begin_write", "fn invalidate");
-        assert!(begin.contains("fence(Ordering::Release)"));
-        assert_eq!(vad.matches("self.begin_write()").count(), 2);
-        assert!(!vad.contains("sequence.fetch_add(1, Ordering::AcqRel)"));
-    }
-
-    #[test]
-    fn control_seqlock_never_returns_a_torn_pair() {
-        let writer = Mutex::new(());
-        let seq = AtomicU64::new(0);
-        let (a, b) = (AtomicU64::new(0), AtomicU64::new(0));
-        let done = AtomicBool::new(false);
-        std::thread::scope(|scope| {
-            scope.spawn(|| {
-                for value in 1..=100_000_u64 {
-                    locked_control_update(&writer, &seq, || {
-                        a.store(value, Ordering::Relaxed);
-                        b.store(value, Ordering::Relaxed);
-                    });
-                }
-                done.store(true, Ordering::Release);
-            });
-            let mut seen = 0_u64;
-            while !done.load(Ordering::Acquire) {
-                if let Some((x, y)) = stable_control_snapshot(&seq, || {
-                    (a.load(Ordering::Relaxed), b.load(Ordering::Relaxed))
-                }) {
-                    assert_eq!(x, y, "torn snapshot");
-                    seen += 1;
-                }
-            }
-            assert!(seen > 0);
-        });
-    }
-
-    // --- RB-005 / RT-012: start lifecycle --------------------------------------
-
-    #[test]
-    fn redundant_start_keeps_the_pending_restart_and_the_backoff() {
-        let mut processor = AudioProcessor::new();
-        processor.running.store(true, Ordering::SeqCst);
-        processor.restart_requested.store(true, Ordering::Release);
-        processor.restart_backoff_index.store(2, Ordering::Release);
-
-        assert_eq!(
-            processor.start(None, None),
-            Err("Already running".to_string())
-        );
-
-        assert!(processor.restart_requested.load(Ordering::Acquire));
-        assert_eq!(processor.restart_backoff_index.load(Ordering::Acquire), 2);
-        assert!(processor.supervisor_thread.is_none());
-        processor.running.store(false, Ordering::SeqCst);
-    }
-
-    #[test]
-    fn failed_start_attempt_leaves_the_clean_stopped_state() {
-        let mut processor = AudioProcessor::new();
+    assert_eq!(
         processor
-            .output_sample_rate
-            .store(96_000, Ordering::Relaxed);
-        let result = processor.start_with_cleanup(|processor| {
-            // What a half-built attempt has published when the output step fails.
-            processor
-                .input_fixed_buffer_frames
-                .store(480, Ordering::Relaxed);
-            processor
-                .output_fixed_buffer_frames
-                .store(480, Ordering::Relaxed);
-            processor
-                .output_sample_rate
-                .store(44_100, Ordering::Relaxed);
-            processor.running.store(true, Ordering::SeqCst);
-            processor.restart_requested.store(true, Ordering::Release);
-            let (_producer, consumer) = AudioRingBuffer::new(16).split();
-            *processor.raw_recording_consumer.lock().unwrap() = Some(consumer);
-            let (probe, _consumer) = AudioRingBuffer::new(16).split();
-            *processor.output_probe_producer.lock().unwrap() = Some(probe);
-            processor.output_probe_active.store(true, Ordering::Release);
-            Err("Failed to resolve audio output: test".to_string())
-        });
-
-        assert_eq!(
-            result,
-            Err("Failed to resolve audio output: test".to_string())
-        );
-        assert!(!processor.is_running());
-        assert_eq!(processor.input_fixed_buffer_frames(), 0);
-        assert_eq!(processor.output_fixed_buffer_frames(), 0);
-        assert_eq!(
-            processor.output_sample_rate(),
-            96_000,
-            "the failed attempt's rate must not stay"
-        );
-        assert!(processor.raw_recording_consumer.lock().unwrap().is_none());
-        assert!(processor.output_probe_producer.lock().unwrap().is_none());
-        assert!(!processor.output_probe_active.load(Ordering::Acquire));
-        assert!(!processor.restart_requested.load(Ordering::Acquire));
-    }
-
-    #[test]
-    fn successful_start_attempt_is_not_cleaned_up() {
-        let mut processor = AudioProcessor::new();
-        let result = processor.start_with_cleanup(|processor| {
-            processor
-                .input_fixed_buffer_frames
-                .store(480, Ordering::Relaxed);
-            Ok("started".to_string())
-        });
-        assert_eq!(result, Ok("started".to_string()));
-        assert_eq!(processor.input_fixed_buffer_frames(), 480);
-    }
-
-    #[test]
-    fn dsp_thread_spawn_failure_is_an_error_not_a_panic() {
-        let production = dsp_loop_production();
-        let start = between(
-            &production,
-            "fn start_streams_unguarded(",
-            "/// Stop audio processing",
-        );
-        assert!(!start.contains("std::thread::spawn("));
-        assert!(start.contains("std::thread::Builder::new().spawn("));
-        let public = between(
-            &production,
-            "pub fn start_with_device_ordinals_and_ids(",
-            "fn start_with_cleanup(",
-        );
-        assert!(public.contains("self.start_with_cleanup("));
-        assert!(
-            public.find("\"Already running\"").unwrap() < public.find("ensure_supervisor").unwrap(),
-            "the running check must precede any state change"
-        );
-    }
-
-    // --- RT-023: a late fault cannot restart a stopped processor ---------------
-
-    #[test]
-    fn stop_clears_a_restart_request_raised_while_the_dsp_thread_winds_down() {
-        let mut processor = AudioProcessor::new();
-        processor.running.store(true, Ordering::SeqCst);
-        processor.restart_requested.store(true, Ordering::Release);
-        let running = Arc::clone(&processor.running);
-        let restart_requested = Arc::clone(&processor.restart_requested);
-        processor.process_thread = Some(std::thread::spawn(move || {
-            while running.load(Ordering::SeqCst) {
-                std::thread::yield_now();
-            }
-            // A fault in the pass after running=false raises its request only
-            // once stop() has cleared the earlier one. Wait (bounded) for that
-            // clear: the fixed stop() clears after the join, so this times out.
-            let deadline = Instant::now() + Duration::from_millis(100);
-            while restart_requested.load(Ordering::Acquire) && Instant::now() < deadline {
-                std::thread::yield_now();
-            }
-            restart_requested.store(true, Ordering::Release);
-        }));
-
-        processor.stop();
-
-        assert!(
-            !processor.restart_requested.load(Ordering::Acquire),
-            "a request raised during shutdown survived stop()"
-        );
-        assert_eq!(processor.service_recovery(), None);
-    }
-
-    // --- RT-006: DSP thread panic ----------------------------------------------
-
-    #[test]
-    fn dsp_loop_panic_is_recorded_and_requests_a_restart() {
-        let state = Mutex::new(StreamRecoveryState::default());
-        let restart = AtomicBool::new(false);
-        run_guarded_dsp_loop(|| panic!("index out of bounds"), &state, &restart);
-        assert!(restart.load(Ordering::Acquire));
-        assert_eq!(
-            state.lock().unwrap().last_reason.as_deref(),
-            Some("DSP thread panicked: index out of bounds")
-        );
-
-        let state = Mutex::new(StreamRecoveryState::default());
-        let restart = AtomicBool::new(false);
-        run_guarded_dsp_loop(|| {}, &state, &restart);
-        assert!(!restart.load(Ordering::Acquire));
-        assert!(state.lock().unwrap().last_reason.is_none());
-
-        let source = include_str!("dsp_loop.rs");
-        assert!(!marked_region(source, "dsp_processing_loop").contains("catch_unwind"));
-        assert!(source.contains("run_guarded_dsp_loop(\n                dsp_loop,"));
-    }
-
-    #[test]
-    fn stop_records_a_dsp_thread_that_ended_in_a_panic() {
-        let mut processor = AudioProcessor::new();
-        let thread = std::thread::spawn(|| panic!("late failure"));
-        while !thread.is_finished() {
-            std::thread::yield_now();
-        }
-        processor.process_thread = Some(thread);
-        processor.stop();
-        assert!(processor
-            .get_last_restart_reason()
-            .is_some_and(|reason| reason.contains("DSP thread panicked: late failure")));
-        assert!(!processor.restart_requested.load(Ordering::Acquire));
-    }
-
-    // --- RT-007: start path ----------------------------------------------------
-
-    #[test]
-    fn missing_pro_audio_registration_degrades_instead_of_failing_start() {
-        let degraded = AtomicBool::new(false);
-        let guard = tolerate_scheduling_failure(Err::<u8, _>("no MMCSS task"), &degraded);
-        assert!(guard.is_none());
-        assert!(degraded.load(Ordering::Relaxed));
-        let guard = tolerate_scheduling_failure(Ok::<_, &str>(5_u8), &degraded);
-        assert_eq!(guard, Some(5));
-        assert!(!degraded.load(Ordering::Relaxed));
-        assert!(!dsp_loop_production().contains("Failed to register DSP thread with Pro Audio"));
-        assert!(!AudioProcessor::new().is_dsp_scheduling_degraded());
-    }
-
-    #[test]
-    fn initial_suppressor_engine_is_built_before_the_dsp_thread_exists() {
-        let production = dsp_loop_production();
-        let start = between(
-            &production,
-            "fn start_streams_unguarded(",
-            "/// Stop audio processing",
-        );
-        let spawn = start.find("std::thread::Builder::new().spawn(").unwrap();
-        let build = start.find("new_noise_suppression_engine(").unwrap();
-        assert!(
-            build < spawn,
-            "a model or DLL load must not delay DSP readiness"
-        );
-        assert!(!start[spawn..].contains("new_noise_suppression_engine("));
-    }
-
-    // --- RT-004: suppressor command queue ----------------------------------------
-
-    #[test]
-    fn suppressor_queue_is_drained_at_the_top_of_every_pass() {
-        let source = include_str!("dsp_loop.rs");
-        let rt = marked_region(source, "dsp_processing_loop");
-        let call = rt.find("let suppressor_in_use =").unwrap();
-        let input_read = rt.find("read_contiguous_input(").unwrap();
-        let first_branch = rt.find("if n_raw > 0").unwrap();
-        assert!(call < input_read && call < first_branch);
-        // The old drain lived inside `if use_suppressor`, in the Full path only.
-        let full_path = between(
-            rt,
-            "let use_suppressor =",
-            "// Suppressor disabled: clear buffer counter",
-        );
-        let compact = |text: &str| text.split_whitespace().collect::<String>();
-        assert!(!full_path.contains("suppressor_rx"));
-        assert!(!compact(full_path).contains("take_dirty(&suppressor_dirty"));
-        let drain = between(
-            rt,
-            "let suppressor_in_use =",
-            "// Record input buffer fill level",
-        );
-        assert!(compact(drain).contains("take_dirty(&suppressor_dirty,"));
-        assert!(drain.contains("retired_suppressor_tx"));
-        assert!(
-            drain.contains("if suppressor_in_use"),
-            "a swap with no suppressor audio must stay silent"
-        );
-    }
-
-    #[test]
-    fn suppressor_queue_has_room_for_only_two_engines() {
-        // Why the drain above must not depend on the suppressor being in use.
-        let processor = AudioProcessor::new();
-        let (tx, _rx) =
-            RtCommandQueue::<NoiseSuppressionEngine, RT_SUPPRESSOR_COMMAND_CAPACITY>::new().split();
-        *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
-        assert!(processor.rebuild_noise_suppressor());
-        assert!(processor.rebuild_noise_suppressor());
-        assert!(
-            !processor.rebuild_noise_suppressor(),
-            "nothing drains the queue here"
-        );
-    }
-
-    #[cfg(feature = "vad")]
-    #[test]
-    fn offline_gate_clamps_vad_threshold_and_pre_gain_like_the_live_setters() {
-        Python::initialize();
-        Python::attach(|py| {
-            let settings = pyo3::types::PyDict::new(py);
-            for (threshold, pre_gain, expected) in [
-                (5.0, 1e6, (VAD_THRESHOLD_MAX, VAD_PRE_GAIN_MAX)),
-                (-1.0, 0.0, (VAD_THRESHOLD_MIN, VAD_PRE_GAIN_MIN)),
-                (0.55, 2.5, (0.55, 2.5)),
-            ] {
-                settings.set_item("gate_vad_threshold", threshold).unwrap();
-                settings.set_item("gate_vad_pre_gain", pre_gain).unwrap();
-                let gate = py_gate(Some(&settings), 48_000.0, 1).unwrap();
-                assert_eq!((gate.vad_threshold, gate.vad_pre_gain), expected);
-            }
-        });
-    }
-
-    // --- RT-008: non-finite downstream output ------------------------------------
-
-    #[test]
-    fn non_finite_samples_are_zeroed_and_reported() {
-        let mut block = [0.25_f32, f32::NAN, -0.5, f32::INFINITY, f32::NEG_INFINITY];
-        assert!(contain_non_finite(&mut block));
-        assert_eq!(block, [0.25, 0.0, -0.5, 0.0, 0.0]);
-        let mut clean = [0.25_f32, -0.5, 1.0e-30];
-        let expected = clean;
-        assert!(!contain_non_finite(&mut clean));
-        assert_eq!(clean, expected, "finite input must stay bit-identical");
-        crate::test_alloc::assert_no_allocations("contain_non_finite", || {
-            contain_non_finite(&mut block);
-        });
-    }
-
-    /// A Bypass/Raw -> Full transition resets both EQs (now clearing their
-    /// memory) and starts the output's discontinuity fade. The faded result must
-    /// not step harder than the settled signal itself.
-    #[test]
-    fn an_eq_reset_at_a_path_transition_stays_inside_the_discontinuity_fade() {
-        let sample_rate = 48_000.0;
-        let fade_samples = duration_samples(48_000, 6).max(1);
-        let make_eq = || {
-            let mut eq = ParametricEQ::new(sample_rate);
-            for (index, frequency_hz, gain_db) in [(2, 200.0, 6.0), (5, 1_500.0, -4.0)] {
-                let mut config = eq.get_band_config(index).unwrap();
-                config.frequency_hz = frequency_hz;
-                config.gain_db = gain_db;
-                eq.set_band_config(index, config);
-            }
-            eq.reset();
-            eq
-        };
-        let tone = |range: std::ops::Range<usize>| -> Vec<f32> {
-            range
-                .map(|n| {
-                    0.5 * (2.0 * std::f64::consts::PI * 200.0 * n as f64 / sample_rate).sin() as f32
-                })
-                .collect()
-        };
-        let max_step = |samples: &[f32]| {
-            samples
-                .windows(2)
-                .fold(0.0_f32, |worst, pair| worst.max((pair[1] - pair[0]).abs()))
-        };
-
-        // The settled signal: an EQ that has run on the tone the whole time.
-        let mut steady = make_eq();
-        steady.process_block_inplace(&mut tone(0..24_000));
-        let mut reference = tone(24_060..26_108);
-        steady.process_block_inplace(&mut reference);
-        let settled_step = max_step(&reference);
-
-        // The transition: the same EQ is reset on the way into the Full path.
-        let mut eq = make_eq();
-        eq.process_block_inplace(&mut tone(0..24_000));
-        eq.reset();
-        let mut settled = tone(24_060..26_108);
-        eq.process_block_inplace(&mut settled);
-        // The output starts from silence, so the first sample is a step too.
-        let from_silence = |samples: &[f32]| max_step(&[&[0.0_f32][..], samples].concat());
-        let unfaded_step = from_silence(&settled);
-        // Without the fade the restart is a hard step, so the fade is what bounds it.
-        assert!(
-            unfaded_step > settled_step * 5.0,
-            "premise: an unfaded restart steps {unfaded_step}"
-        );
-        let mut remaining = fade_samples;
-        fade_in(&mut settled, &mut remaining, fade_samples);
-        assert_eq!(remaining, 0);
-        let faded_step = from_silence(&settled);
-        assert!(
-            faded_step <= settled_step * 1.5,
-            "faded transition stepped {faded_step}, settled signal steps {settled_step}"
-        );
-    }
-
-    #[test]
-    fn a_nan_latches_the_stages_and_meters_unless_contained_and_cleared() {
-        let poison = |buffer: &mut [f32; 64]| {
-            buffer.fill(0.1);
-            buffer[10] = f32::NAN;
-        };
-        let mut eq = ParametricEQ::new(48_000.0);
-        eq.set_band_gain(4, 6.0);
-        let mut poisoned = [0.0_f32; 64];
-        poison(&mut poisoned);
-        eq.process_block_inplace(&mut poisoned);
-        let mut next = [0.1_f32; 64];
-        eq.process_block_inplace(&mut next);
-        assert!(
-            next.iter().any(|s| !s.is_finite()),
-            "premise: filter state latches NaN"
-        );
-        eq.reset();
-        let mut recovered = [0.1_f32; 64];
-        eq.process_block_inplace(&mut recovered);
-        assert!(
-            recovered.iter().all(|s| s.is_finite()),
-            "the EQ must recover"
-        );
-        assert!(eq.is_enabled(), "a recovery must not leave the EQ disabled");
-        let mut disabled = ParametricEQ::new(48_000.0);
-        disabled.set_enabled(false);
-        disabled.reset();
-        assert!(!disabled.is_enabled(), "a user-disabled EQ stays disabled");
-
-        let mut deesser = DeEsser::new(48_000.0);
-        deesser.set_enabled(true);
-        let mut block = [0.0_f32; 64];
-        poison(&mut block);
-        deesser.process_block_inplace(&mut block);
-        deesser.reset();
-        let mut recovered = [0.1_f32; 64];
-        deesser.process_block_inplace(&mut recovered);
-        assert!(
-            recovered.iter().all(|s| s.is_finite()),
-            "the de-esser must recover"
-        );
-
-        // The compressor's output stays finite after a NaN, but its envelopes
-        // latch it and it never reduces gain again; clearing the detector
-        // (field zeroing, no allocation) restores it.
-        let loud_gain_reduction = |compressor: &mut Compressor| {
-            let mut loud = [0.9_f32; 480];
-            compressor.process_block_inplace(&mut loud);
-            assert!(loud.iter().all(|s| s.is_finite()));
-            compressor.current_gain_reduction()
-        };
-        // The release path after the loud block: gain reduction must fall back
-        // smoothly, which a NaN release time or coefficient prevents.
-        let release_trace = |compressor: &mut Compressor| -> Vec<f64> {
-            (0..20)
-                .map(|_| {
-                    let mut quiet = [0.001_f32; 480];
-                    compressor.process_block_inplace(&mut quiet);
-                    assert!(quiet.iter().all(|s| s.is_finite()));
-                    compressor.current_gain_reduction()
-                })
-                .collect()
-        };
-        let mut compressor = Compressor::default_voice(48_000.0);
-        compressor.set_adaptive_release(true);
-        poison(&mut block);
-        compressor.process_block_inplace(&mut block);
-        let latched = loud_gain_reduction(&mut compressor);
-        assert!(
-            latched.is_nan() || latched <= 0.0,
-            "premise: a latched NaN stops gain reduction, got {latched}"
-        );
-        // The adaptive release never sees the NaN: the detector reads a NaN
-        // envelope as its -200 dB floor.
-        assert!(compressor.current_release_time().is_finite());
-        poison(&mut block);
-        compressor.process_block_inplace(&mut block);
-        crate::test_alloc::assert_no_allocations("compressor detector reset", || {
-            compressor.reset_detector_state();
-        });
-        let reduced = loud_gain_reduction(&mut compressor);
-        assert!(reduced > 0.0);
-        let release = release_trace(&mut compressor);
-        assert!(compressor.current_release_time().is_finite());
-        assert!(
-            release.windows(2).all(|pair| pair[1] <= pair[0]) && release[19] < 0.5 * reduced,
-            "the release must fall back from {reduced} dB: {release:?}"
-        );
-
-        // The limiter sheds a NaN without help.
-        let mut limiter = Limiter::default_settings(48_000.0);
-        for _ in 0..2 {
-            poison(&mut block);
-            limiter.process_block_inplace(&mut block);
-            let mut clean = [0.1_f32; 64];
-            limiter.process_block_inplace(&mut clean);
-            assert!(clean.iter().all(|s| s.is_finite()));
-        }
-
-        let coeff = smoothing_coeff_for_time_constant(48_000.0, 100.0);
-        let mut meter = MeterState::default();
-        poison(&mut poisoned);
-        update_meter_block_stats(&poisoned, &mut meter, coeff);
-        assert!(
-            meter.rms_acc.is_nan(),
-            "premise: an unsanitized NaN latches the meter"
-        );
-        let mut meter = MeterState::default();
-        contain_non_finite(&mut poisoned);
-        let stats = update_meter_block_stats(&poisoned, &mut meter, coeff);
-        assert!(meter.rms_acc.is_finite() && stats.rms_db.is_finite());
-
-        // The chain must contain, count and clear before anything measures.
-        let source = include_str!("dsp_loop.rs");
-        let chain = between(
-            source,
-            "macro_rules! apply_downstream_chain_rt",
-            "// Time-based EMA smoothing",
-        );
-        let contain = chain.find("if contain_non_finite($buffer)").unwrap();
-        let tail = &chain[contain..];
-        for step in [
-            "deesser_rt.reset()",
-            "correction_eq_rt.reset()",
-            "tone_eq_rt.reset()",
-            "compressor_rt.reset_detector_state()",
-            "downstream_non_finite_count.fetch_add",
-        ] {
-            assert!(tail.contains(step), "{step} missing from the NaN recovery");
-        }
-        assert_eq!(AudioProcessor::new().get_downstream_non_finite_count(), 0);
-    }
-
-    // --- RT-009 ---------------------------------------------------------------------
-
-    #[test]
-    fn input_ring_is_sized_from_the_device_rate_after_the_device_is_selected() {
-        let production = dsp_loop_production();
-        let start = between(
-            &production,
-            "fn start_streams_unguarded(",
-            "/// Stop audio processing",
-        );
-        assert!(!start.contains("AudioRingBuffer::new(self.sample_rate as usize * 2)"));
-        let select = start.find("from_named_device_identity_setup(").unwrap();
-        let ring = start
-            .find("AudioRingBuffer::new(input_sample_rate_for_thread as usize * 2)")
-            .unwrap();
-        let open = start.find("AudioInput::from_setup(").unwrap();
-        assert!(select < ring && ring < open);
-    }
-
-    // --- RT-013 --------------------------------------------------------------------
-
-    #[test]
-    fn no_denormals_safety_comment_states_the_documented_caveat() {
-        let source = include_str!("dsp_loop.rs");
-        let comment = between(
-            source,
-            "// SAFETY: `no_denormals`",
-            "let dsp_loop = || unsafe",
-        );
-        assert!(comment.contains("technically undefined"));
-        assert!(comment.contains("restores them when the closure returns or"));
-    }
-
-    // --- RT-020 ---------------------------------------------------------------------
-
-    #[test]
-    fn output_rates_beyond_the_scratch_capacity_are_rejected_at_start() {
-        for (rate, fits) in [
-            (96_000, true),
-            (192_000, true),
-            (352_800, false),
-            (384_000, false),
-        ] {
-            let resampler = build_sinc_resampler(48_000, rate, RESAMPLER_CHUNK_SIZE).unwrap();
-            let checked =
-                ensure_resampler_scratch_capacity(&resampler, RT_OUTPUT_SCRATCH_CAPACITY, "output");
-            assert_eq!(checked.is_ok(), fits, "{rate} Hz: {checked:?}");
-            if let Err(message) = checked {
-                assert!(message.contains("output"));
-            }
-        }
-        let writer = marked_region(include_str!("dsp_loop.rs"), "dsp_output_writer");
-        assert!(
-            writer.contains("output_resampler_error_count"),
-            "output resampler errors must be counted"
-        );
-        assert_eq!(AudioProcessor::new().get_output_resampler_error_count(), 0);
-    }
-
-    // --- RT-021 -----------------------------------------------------------------------
-
-    #[test]
-    fn input_fill_smoothing_follows_wall_time_not_pass_count() {
-        let settle = |pass_ms: f32| {
-            let mut state = 0.0_f32;
-            let mut elapsed = 0.0_f32;
-            while elapsed < 200.0 - 1e-3 {
-                advance_time_ema(&mut state, 1000.0, pass_ms, 200.0);
-                elapsed += pass_ms;
-            }
-            state
-        };
-        let expected = 1000.0 * (1.0 - (-1.0_f32).exp());
-        for pass_ms in [0.1_f32, 1.6, 10.0, 20.0] {
-            let value = settle(pass_ms);
-            assert!(
-                (value - expected).abs() < 2.0,
-                "{pass_ms} ms passes gave {value}"
-            );
-        }
-        let rt = marked_region(include_str!("dsp_loop.rs"), "dsp_processing_loop");
-        let compact: String = rt.split_whitespace().collect();
-        assert!(!compact.contains("smooth_buffer(raw_input_len"));
-        assert!(compact.contains("advance_time_ema(&mutsmoothed_input_len"));
-    }
-
-    // --- RT-025 -------------------------------------------------------------------------
-
-    #[test]
-    fn control_apply_and_stage_resets_do_not_allocate() {
-        let sample_rate = TARGET_SAMPLE_RATE as f64;
-        let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, sample_rate);
-        let mut correction_eq = ParametricEQ::new(sample_rate);
-        let mut tone_eq = ParametricEQ::new(sample_rate);
-        let mut compressor = Compressor::default_voice(sample_rate);
-        let mut deesser = DeEsser::new(sample_rate);
-        let mut limiter = Limiter::default_settings(sample_rate);
-        let mut suppressor = new_noise_suppression_engine(
-            NoiseModel::RNNoise,
-            Arc::new(AtomicU32::new(1.0_f32.to_bits())),
-        );
-        let gate_control = GateControlState::new();
-        let eq_control = EqControlSnapshot::new();
-        let compressor_control = CompressorControlState::new();
-        let deesser_control = DeesserControlState::new();
-        let limiter_control = LimiterControlState::new();
-        let suppressor_control = SuppressorControlState::new();
-        let mut block = [0.1_f32; 480];
-        for (index, sample) in block.iter_mut().enumerate() {
-            *sample = (index as f32 * 0.037).sin() * 0.35;
-        }
-
-        // One pass through every path warms any lazily built state.
-        gate.process_block_inplace(&mut block);
-        correction_eq.process_block_inplace(&mut block);
-        compressor.process_block_inplace(&mut block);
-        deesser.process_block_inplace(&mut block);
-        limiter.process_block_inplace(&mut block);
-        let mut apply = || {
-            apply_gate_control(&mut gate, &gate_control);
-            apply_eq_control(&mut correction_eq, &mut tone_eq, &eq_control);
-            apply_compressor_control(&mut compressor, &compressor_control);
-            apply_deesser_control(&mut deesser, &deesser_control);
-            apply_limiter_control(&mut limiter, &limiter_control);
-            apply_suppressor_control(&mut suppressor, &suppressor_control);
-        };
-        apply();
-        crate::test_alloc::assert_no_allocations("steady-state apply_*_control", apply);
-
-        let counted =
-            |function: &mut dyn FnMut()| crate::test_alloc::allocation_count_during(function);
-        assert_eq!(counted(&mut || gate.reset()), 0, "gate reset");
-        assert_eq!(counted(&mut || correction_eq.reset()), 0, "eq reset");
-        assert_eq!(counted(&mut || deesser.reset()), 0, "deesser reset");
-        assert_eq!(counted(&mut || limiter.reset()), 0, "limiter reset");
-        assert_eq!(
-            counted(&mut || suppressor.soft_reset()),
-            0,
-            "suppressor soft_reset"
-        );
-    }
-
-    // RD-003: `Compressor::reset` rebuilds its EBU R128 meter (9 allocations), and the
-    // DSP loop calls it on every processing-path change. The fix is in src/dsp.
-    #[test]
-    #[ignore = "RD-003: Compressor::reset allocates; src/dsp/compressor is outside this change"]
-    fn compressor_reset_does_not_allocate() {
-        let mut compressor = Compressor::default_voice(TARGET_SAMPLE_RATE as f64);
-        compressor.reset();
-        assert_eq!(
-            crate::test_alloc::allocation_count_during(|| compressor.reset()),
-            0
-        );
-    }
-
-    #[test]
-    fn dsp_loop_meters_cleanup_and_sanitizers_do_not_allocate() {
-        let mut block = [0.0_f32; 480];
-        for (index, sample) in block.iter_mut().enumerate() {
-            *sample = (index as f32 * 0.037).sin() * 0.35;
-        }
-        block[9] = 1.5;
-        let coeff = smoothing_coeff_for_time_constant(48_000.0, 100.0);
-        let mut meter = MeterState::default();
-        let clip_count = AtomicU64::new(0);
-        let clip_peak = AtomicU32::new((-120.0_f32).to_bits());
-        let mut pre_state = InputPreFilterState::default();
-        let mut pre_filter = new_input_pre_filter(48_000.0);
-        let mut cleanup = AdaptiveInputCleanupState::new(48_000.0);
-        cleanup.set_mode(InputCleanupMode::Gentle);
-        let long: Vec<f32> = (0..cleanup.hum_window_samples * 2)
-            .map(|n| 0.05 * (2.0 * std::f32::consts::PI * 50.0 * n as f32 / 48_000.0).sin())
-            .collect();
-
-        let mut run = |block: &mut [f32; 480]| {
-            block[7] = f32::NAN;
-            sanitize_and_clamp_input_inplace(block, &clip_count, &clip_peak);
-            block[7] = f32::NAN;
-            sanitize_and_clamp_output_inplace(block, 0.9);
-            apply_input_pre_filter(block, &mut pre_state, &mut pre_filter, true);
-            update_meter_block_stats(block, &mut meter, coeff);
-            cleanup.analyze_input(&long);
-            cleanup.process_block(block);
-        };
-        // Warm-up pass, then the measured pass over every listed function.
-        run(&mut block);
-        crate::test_alloc::assert_no_allocations("meters, cleanup and sanitizers", || {
-            run(&mut block)
-        });
-
-        let source = include_str!("dsp_loop.rs");
-        for (label, start, end) in [
-            (
-                "contain_non_finite",
-                "fn contain_non_finite(",
-                "/// Advance an exponential",
-            ),
-            (
-                "advance_time_ema",
-                "fn advance_time_ema(",
-                "/// Keep why the DSP thread died",
-            ),
-            (
-                "startup_control",
-                "fn startup_control<",
-                "/// Consume a pending limiter",
-            ),
-        ] {
-            assert_rt_clean(label, between(source, start, end));
-        }
-        let routing = include_str!("routing.rs");
-        assert_rt_clean(
-            "routing.rs meters",
-            between(
-                routing,
-                "fn update_meter_block_stats(",
-                "fn record_level_extremes(",
-            ),
-        );
-        assert_rt_clean(
-            "routing.rs sanitizers",
-            between(
-                routing,
-                "fn sanitize_and_clamp_output_inplace(",
-                "fn new_input_pre_filter(",
-            ),
-        );
-        assert_rt_clean(
-            "routing.rs adaptive cleanup",
-            between(routing, "    fn analyze_input(", "fn wrap_phase("),
-        );
-        let control = include_str!("control.rs");
-        assert_rt_clean(
-            "control.rs apply_*_control",
-            between(
-                control,
-                "fn apply_eq_control(",
-                "#[cfg(test)]\nmod compressor_control_tests",
-            ),
-        );
-    }
-
-    // --- RT-027 ---------------------------------------------------------------------------
-
-    #[cfg(feature = "vad")]
-    #[test]
-    fn vad_load_retries_back_off_and_the_last_error_is_published() {
-        let mut retry = VadRetryBackoff::default();
-        let delays: Vec<u64> = (0..9)
-            .map(|_| retry.next_delay().as_millis() as u64)
-            .collect();
-        assert_eq!(delays, [50, 100, 200, 400, 800, 1_600, 3_200, 5_000, 5_000]);
-        retry.reset();
-        assert_eq!(retry.next_delay().as_millis(), 50);
-
-        let slot = Mutex::new(None);
-        let error = crate::dsp::vad::VadError::InvalidSampleRate(44_100);
-        publish_vad_worker_error(&slot, Some(error.to_string()));
-        assert_eq!(
-            slot.lock().unwrap().as_deref(),
-            Some("Unsupported VAD sample rate: 44100 Hz")
-        );
-        publish_vad_worker_error(&slot, None);
-        assert!(AudioProcessor::new().get_vad_worker_error().is_none());
-
-        let worker = include_str!("vad_worker.rs");
-        assert!(
-            !worker.contains("from_millis(50)"),
-            "fixed 50 ms retry loops are gone"
-        );
-    }
-
-    #[cfg(feature = "vad")]
-    #[test]
-    fn a_stopped_vad_worker_does_not_wait_out_its_maximum_back_off() {
-        let running = Arc::new(AtomicBool::new(true));
-        let mut retry = VadRetryBackoff::default();
-        let max_delay = (0..9).map(|_| retry.next_delay()).last().unwrap();
-        assert_eq!(max_delay, Duration::from_millis(5_000));
-
-        let worker_running = Arc::clone(&running);
-        let worker = std::thread::spawn(move || sleep_while_running(&worker_running, max_delay));
-        std::thread::sleep(Duration::from_millis(30));
-        let started = Instant::now();
-        running.store(false, Ordering::Release);
-        worker.join().unwrap();
-        assert!(
-            started.elapsed() < Duration::from_millis(100),
-            "stop waited {:?}",
-            started.elapsed()
-        );
-
-        // An unmolested back-off still waits its full delay.
-        let started = Instant::now();
-        sleep_while_running(&AtomicBool::new(true), Duration::from_millis(60));
-        assert!(started.elapsed() >= Duration::from_millis(60));
-    }
-
-    // --- RB-012 -----------------------------------------------------------------------------
-
-    #[test]
-    fn processor_keeps_no_write_only_gate_shadow() {
-        let source = include_str!("../processor.rs");
-        let fields = between(
-            source,
-            "pub struct AudioProcessor {",
-            "impl AudioProcessor {",
-        );
-        assert!(!fields.contains("gate: Arc<Mutex<NoiseGate>>"));
-        let stop = between(include_str!("dsp_loop.rs"), "pub fn stop(", "\n    }\n}\n");
-        assert!(!stop.contains("self.gate.lock()"));
-    }
+            .shared
+            .input
+            .dropped_counter()
+            .load(Ordering::Relaxed),
+        5
+    );
+    processor
+        .shared
+        .input
+        .dropped_counter()
+        .fetch_add(2, Ordering::Relaxed);
+    assert_eq!(processor.get_dropped_samples(), 2);
 }
 
 #[test]
 fn test_output_probe_is_scaled_to_the_effective_limiter_ceiling() {
     let processor = AudioProcessor::new();
     let (producer, mut consumer) = AudioRingBuffer::new(16).split();
-    *processor.output_probe_producer.lock().unwrap() = Some(producer);
-    processor.running.store(true, Ordering::Release);
-    processor.output_sample_rate.store(8, Ordering::Relaxed);
+    *processor.shared.output.probe_producer.lock().unwrap() = Some(producer);
+    processor
+        .shared
+        .stream
+        .running
+        .store(true, Ordering::Release);
+    processor
+        .shared
+        .output
+        .sample_rate
+        .store(8, Ordering::Relaxed);
     processor.set_limiter_ceiling(-6.0);
     let ceiling = 10.0_f32.powf(processor.limiter_effective_ceiling_db() as f32 / 20.0);
 
@@ -6821,7 +6165,11 @@ fn test_output_probe_is_scaled_to_the_effective_limiter_ceiling() {
     assert_eq!(consumer.read(&mut rendered), 2);
     assert!((rendered[0] - ceiling).abs() < 1.0e-6, "{rendered:?}");
     assert!((rendered[1] + 0.5 * ceiling).abs() < 1.0e-6, "{rendered:?}");
-    processor.running.store(false, Ordering::Release);
+    processor
+        .shared
+        .stream
+        .running
+        .store(false, Ordering::Release);
 }
 
 #[test]
@@ -6838,8 +6186,15 @@ fn test_product_resampler_offline_hook_bounds_the_rate_ratio() {
 #[test]
 fn test_compressor_release_settings_keep_adaptive_base_in_its_range() {
     let processor = AudioProcessor::new();
-    let stored_release =
-        |processor: &AudioProcessor| processor.compressor_control.lock().unwrap().base_release_ms;
+    let stored_release = |processor: &AudioProcessor| {
+        processor
+            .shared
+            .compressor
+            .control
+            .lock()
+            .unwrap()
+            .base_release_ms
+    };
     let apply = |adaptive_release, base_release_ms| {
         processor.apply_compressor_settings(&CompressorControlState {
             adaptive_release,
@@ -6922,7 +6277,7 @@ fn test_live_setters_count_rejected_non_finite_values() {
     ratio(1.0e9);
     assert_eq!(processor.get_rejected_control_value_count(), 5);
     assert_eq!(
-        processor.compressor_control.lock().unwrap().ratio,
+        processor.shared.compressor.control.lock().unwrap().ratio,
         COMPRESSOR_RATIO_MAX
     );
 
@@ -6949,19 +6304,27 @@ fn test_runtime_diagnostics_report_rt_failure_counters() {
     };
     wrapper
         .processor
+        .shared
+        .dsp
         .downstream_non_finite_count
         .store(2, Ordering::Relaxed);
     wrapper
         .processor
-        .output_resampler_error_count
+        .shared
+        .output
+        .resampler_error_count
         .store(3, Ordering::Relaxed);
     wrapper
         .processor
-        .dsp_scheduling_degraded
+        .shared
+        .dsp
+        .scheduling_degraded
         .store(true, Ordering::Relaxed);
     wrapper
         .processor
-        .compressor_auto_makeup_error
+        .shared
+        .compressor
+        .auto_makeup_error
         .store(1, Ordering::Relaxed);
 
     Python::initialize();
@@ -7055,7 +6418,7 @@ fn test_deesser_settings_publish_the_cut_pair_atomically() {
     assert_snapshots_stay_whole(
         |narrow| processor.apply_deesser_settings(&settings(narrow)),
         || {
-            processor.deesser_rt_control.snapshot().map(|state| {
+            processor.shared.deesser.rt_control.snapshot().map(|state| {
                 let (low, high) = (state.low_cut_hz, state.high_cut_hz);
                 low + DEESSER_MIN_BANDWIDTH_HZ < high
                     && [true, false]
@@ -7076,7 +6439,7 @@ fn test_deesser_settings_resolve_an_invalid_cut_pair_and_clamp() {
         threshold_db: f64::NAN,
         ..DeesserControlState::new()
     });
-    let state = processor.deesser_rt_control.snapshot().unwrap();
+    let state = processor.shared.deesser.rt_control.snapshot().unwrap();
     assert_eq!(state.high_cut_hz, 5_000.0);
     assert_eq!(state.low_cut_hz, 5_000.0 - DEESSER_MIN_BANDWIDTH_HZ);
     assert_eq!(state.ratio, DEESSER_RATIO_MAX);
@@ -7099,11 +6462,16 @@ fn test_compressor_settings_publish_mode_and_release_together() {
     assert_snapshots_stay_whole(
         |adaptive| processor.apply_compressor_settings(&settings(adaptive)),
         || {
-            processor.compressor_rt_control.snapshot().map(|state| {
-                let adaptive = state.adaptive_release;
-                state.base_release_ms == if adaptive { 50.0 } else { 500.0 }
-                    && state.ratio == if adaptive { 2.0 } else { 8.0 }
-            })
+            processor
+                .shared
+                .compressor
+                .rt_control
+                .snapshot()
+                .map(|state| {
+                    let adaptive = state.adaptive_release;
+                    state.base_release_ms == if adaptive { 50.0 } else { 500.0 }
+                        && state.ratio == if adaptive { 2.0 } else { 8.0 }
+                })
         },
     );
 
@@ -7115,7 +6483,9 @@ fn test_compressor_settings_publish_mode_and_release_together() {
     });
     assert_eq!(
         processor
-            .compressor_rt_control
+            .shared
+            .compressor
+            .rt_control
             .snapshot()
             .unwrap()
             .base_release_ms,
@@ -7141,7 +6511,7 @@ fn test_gate_settings_publish_all_fields_together() {
     assert_snapshots_stay_whole(
         |loose| processor.apply_gate_settings(&settings(loose)),
         || {
-            processor.gate_rt_control.snapshot().map(|state| {
+            processor.shared.gate.rt_control.snapshot().map(|state| {
                 let loose = state.threshold_db == -30.0;
                 state.attack_ms == if loose { 5.0 } else { 50.0 }
                     && state.release_ms == if loose { 50.0 } else { 500.0 }

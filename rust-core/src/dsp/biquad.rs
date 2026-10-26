@@ -78,7 +78,7 @@ pub enum BiquadType {
 
 /// IIR Biquad filter using Direct Form II Transposed
 ///
-/// Transfer function: H(z) = (b0 + b1*z^-1 + b2*z^-2) / (1 + a1*z^-1 + a2*z^-2)
+/// Transfer function: `H(z) = (b0 + b1*z^-1 + b2*z^-2) / (1 + a1*z^-1 + a2*z^-2)`
 ///
 /// Uses f64 internally for coefficient precision to avoid numerical issues,
 /// but processes f32 audio samples for compatibility with audio drivers.

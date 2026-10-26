@@ -61,6 +61,7 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13.15"
@@ -81,7 +82,11 @@ jobs:
           # semgrep pins mcp==1.29.0 exactly, so the dev lock cannot move off
           # CVE-2026-59951. Only semgrep's MCP server uses mcp and nothing here
           # runs it. Remove the ignore when semgrep allows mcp>=1.30.0.
-          python -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951
+          # semgrep also pins opentelemetry-api~=1.37.0, so the lock cannot move
+          # off CVE-2026-114603, a ReDoS in TraceState.from_header for inbound
+          # tracestate headers. semgrep only exports telemetry. Remove the ignore
+          # when semgrep allows opentelemetry-api>=1.45.1.
+          python -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951 --ignore-vuln CVE-2026-114603
           if ($LASTEXITCODE -ne 0) { throw "Development dependency audit failed with exit code $LASTEXITCODE." }
       - name: Ruff
         run: python -m ruff check python/mic_eq python/tests python/tools
@@ -124,6 +129,7 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
+          persist-credentials: false
       - id: python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -198,6 +204,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13.15"
@@ -216,7 +224,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target/debug
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-rust-test-v1-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'rust-core/Cargo.toml') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-rust-test-v1-py313-${{ hashFiles('Cargo.lock', 'build-support/deepfilter/Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'rust-core/Cargo.toml') }}
       - name: Hydrate pinned CPU ONNX Runtime
         run: |
           python python/tools/fetch_release_assets.py --only-cpu-runtime --force
@@ -275,10 +283,30 @@ jobs:
           if ($actualHash -ne $asset.sha256) {
             throw "Silero model hash mismatch: $actualHash"
           }
+      # df.dll is built from the pinned DeepFilter source and the models come
+      # from the pinned release (the ONNX Runtime and Silero files above are
+      # kept). Without them the DeepFilter tests print "skipping" and pass.
+      - name: Build and verify the pinned DeepFilter runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python python/tools/fetch_release_assets.py
+          if ($LASTEXITCODE -ne 0) { throw "DeepFilter runtime hydration failed with exit code $LASTEXITCODE." }
+          python python/tools/verify_release_assets.py
+          if ($LASTEXITCODE -ne 0) { throw "Runtime asset verification failed with exit code $LASTEXITCODE." }
       # The seeded contention stress test runs in the rust-stress job, in
-      # release mode; this debug run skips only that one test.
+      # release mode; this debug run skips only that one test. --nocapture shows
+      # the "skipping" lines, and any of them fails the step.
       - name: Rust tests
-        run: cargo test --locked -p mic_eq_core -- --skip seeded_control_and_dsp_loops_remain_finite_under_contention --exact
+        env:
+          AUDIOFORGE_ENABLE_DEEPFILTER: "1"
+        run: |
+          $ErrorActionPreference = "Continue"
+          $log = Join-Path $env:RUNNER_TEMP "rust-tests.log"
+          cargo test --locked -p mic_eq_core -- --skip seeded_control_and_dsp_loops_remain_finite_under_contention --exact --nocapture 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw "Rust tests failed with exit code $LASTEXITCODE." }
+          $skipped = @(Select-String -Path $log -Pattern '\b(skipped|skipping)\b' | ForEach-Object { $_.Line.Trim() })
+          if ($skipped.Count -gt 0) { throw "Rust tests skipped coverage:`n$($skipped -join "`n")" }
       - name: Clippy
         run: cargo clippy --locked -p mic_eq_core --all-targets -- -D warnings
       # Default features hide the cfg(not(feature = ...)) branches; compile each
@@ -294,6 +322,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13.15"

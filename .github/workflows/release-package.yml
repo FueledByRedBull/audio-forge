@@ -46,6 +46,7 @@ jobs:
           ref: ${{ inputs.release_tag || github.sha }}
           fetch-depth: 0
           filter: blob:none
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -71,7 +72,11 @@ jobs:
           # semgrep pins mcp==1.29.0 exactly, so the dev lock cannot move off
           # CVE-2026-59951. Only semgrep's MCP server uses mcp and nothing here
           # runs it. Remove the ignore when semgrep allows mcp>=1.30.0.
-          python -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951
+          # semgrep also pins opentelemetry-api~=1.37.0, so the lock cannot move
+          # off CVE-2026-114603, a ReDoS in TraceState.from_header for inbound
+          # tracestate headers. semgrep only exports telemetry. Remove the ignore
+          # when semgrep allows opentelemetry-api>=1.45.1.
+          python -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951 --ignore-vuln CVE-2026-114603
           if ($LASTEXITCODE -ne 0) { throw "Development dependency audit failed with exit code $LASTEXITCODE." }
 
       - name: Ruff
@@ -180,6 +185,7 @@ jobs:
           ref: ${{ inputs.release_tag || github.sha }}
           fetch-depth: 0
           filter: blob:none
+          persist-credentials: false
 
       - name: Bind source revision to checked-out release ref
         run: |
@@ -627,6 +633,7 @@ jobs:
           ref: ${{ needs.package-windows.outputs.source_revision }}
           fetch-depth: 0
           filter: blob:none
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -689,6 +696,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.package-windows.outputs.source_revision }}
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -709,7 +717,8 @@ jobs:
         with:
           toolchain: 1.94.0
 
-      # Test binaries are not shipped, so this cache may share ci.yml's key.
+      # Test binaries are not shipped, so this cache is safe to restore. Its key
+      # is not ci.yml's rust-tests key, which also covers the DeepFilter lock.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -735,11 +744,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Runtime asset verification failed with exit code $LASTEXITCODE." }
 
       # The seeded contention stress test runs in the rust-stress job, in
-      # release mode; this debug run skips only that one test.
+      # release mode; this debug run skips only that one test. The DeepFilter and
+      # Silero tests print "skipping" and pass when an asset or the DeepFilter
+      # switch is missing; --nocapture shows those lines and any of them fails
+      # the step.
       - name: Rust tests
         env:
+          AUDIOFORGE_ENABLE_DEEPFILTER: "1"
           PYTHONPATH: ${{ github.workspace }}\.venv\Lib\site-packages;${{ github.workspace }}\python
-        run: cargo test --locked -p mic_eq_core -- --skip seeded_control_and_dsp_loops_remain_finite_under_contention --exact
+        run: |
+          $ErrorActionPreference = "Continue"
+          $log = Join-Path $env:RUNNER_TEMP "rust-tests.log"
+          cargo test --locked -p mic_eq_core -- --skip seeded_control_and_dsp_loops_remain_finite_under_contention --exact --nocapture 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw "Rust tests failed with exit code $LASTEXITCODE." }
+          $skipped = @(Select-String -Path $log -Pattern '\b(skipped|skipping)\b' | ForEach-Object { $_.Line.Trim() })
+          if ($skipped.Count -gt 0) { throw "Rust tests skipped coverage:`n$($skipped -join "`n")" }
 
       - name: Clippy
         run: cargo clippy --locked -p mic_eq_core --all-targets -- -D warnings
@@ -754,6 +773,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.package-windows.outputs.source_revision }}
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -763,7 +783,8 @@ jobs:
         with:
           toolchain: 1.94.0
 
-      # Test binaries are not shipped, so this cache may share ci.yml's key.
+      # Test binaries are not shipped, so this cache uses the same key as
+      # ci.yml's rust-stress job; keep the two keys equal.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -803,6 +824,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.package-windows.outputs.source_revision }}
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:

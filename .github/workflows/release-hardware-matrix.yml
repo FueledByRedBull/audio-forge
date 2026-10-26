@@ -28,6 +28,9 @@ jobs:
     name: Verify digest-bound automated hardware baseline
     runs-on: windows-latest
     timeout-minutes: 15
+    # Repository settings limit this environment to master, which also binds a
+    # copy of this file that drops the first step.
+    environment: release
     permissions:
       actions: read
       contents: read
@@ -35,9 +38,25 @@ jobs:
       run:
         shell: pwsh
     steps:
+      - name: Authorize the dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCHER: ${{ github.triggering_actor }}
+        run: |
+          if ($env:GITHUB_REF -ne "refs/heads/master") {
+            throw "This workflow runs only from refs/heads/master, not $env:GITHUB_REF."
+          }
+          $permission = Invoke-RestMethod `
+            -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" } `
+            -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/collaborators/$([uri]::EscapeDataString($env:DISPATCHER))/permission"
+          if ($permission.role_name -notin @("admin", "maintain")) {
+            throw "$env:DISPATCHER needs the admin or maintain role to run this workflow, but has '$($permission.role_name)'."
+          }
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ inputs.release_tag }}
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:

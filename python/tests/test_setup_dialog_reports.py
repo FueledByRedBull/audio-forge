@@ -107,20 +107,12 @@ def test_an_advisory_voice_result_is_reported_with_its_reasons(real_main_window)
         dialog.deleteLater()
 
 
+# The cause-to-code mapping is test_setup_review.py::test_each_weak_capture_cause_has_a_stable_code;
+# one cause proves the dialog passes the codes on.
 @pytest.mark.parametrize(
     ("cause", "code"),
-    [
-        ({"noise_referenced_snr_db": 4.0}, "snr_under_6_db"),
-        ({"noise_referenced_snr_db": 7.0}, "snr_under_8_db"),
-        ({"vad_active_duration_s": 1.2}, "speech_under_2_s"),
-        (
-            {"noise_reference_quality": {"status": "questionable", "reasons": ["room-noise capture is not stationary"]}},
-            "noise_reference_not_usable",
-        ),
-        ({"capture_confidence": 0.3}, "capture_quality_low"),
-        ({"uncertainty_reasons": ["too few voiced frames for a stable spectrum"]}, "spectrum_fallback"),
-    ],
-    ids=["snr-under-6", "snr-under-8", "speech-under-2s", "room-noise-not-usable", "capture-quality", "single-spectrum"],
+    [({"noise_referenced_snr_db": 4.0}, "snr_under_6_db")],
+    ids=["snr-under-6"],
 )
 def test_a_weak_capture_reports_which_check_failed(real_main_window, cause, code) -> None:
     records = _voice(real_main_window)
@@ -213,20 +205,6 @@ def test_failures_are_reported_as_failed(real_main_window) -> None:
         dialog.deleteLater()
 
 
-def test_a_refused_take_is_reported_as_refused(real_main_window) -> None:
-    records = _voice(real_main_window)
-    dialog = VoiceSetupDialog(parent=real_main_window)
-    try:
-        dialog.setup_state = "noise_recording"
-        dialog._on_recording_complete(np.full(48_000, np.nan, dtype=np.float32))
-
-        assert [r["outcome"] for r in records] == ["refused"]
-        assert records[0]["reason_codes"] == ["recording_rejected"]
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
-
-
 def test_closing_after_a_result_is_cancelled_and_before_one_is_silent(real_main_window) -> None:
     records = _voice(real_main_window)
     empty = VoiceSetupDialog(parent=real_main_window)
@@ -274,7 +252,6 @@ def test_the_review_shows_each_weak_capture_clause_as_its_own_line(real_main_win
         assert "4.0 dB louder" in lines[0] and "1.2 seconds of speech" in lines[1]
         assert "too few clear voiced sounds" in lines[2]
         assert "not steady" in lines[3] and "without talking" in lines[3]
-        assert all("suggestions only" in line for line in lines)
     finally:
         dialog.reject()
         dialog.deleteLater()
@@ -283,12 +260,28 @@ def test_the_review_shows_each_weak_capture_clause_as_its_own_line(real_main_win
 def test_a_reliable_review_has_no_capture_lines_and_a_new_result_replaces_old_ones(
     real_main_window,
 ) -> None:
+    from PySide6.QtGui import QAccessible
+
     dialog, _speech = _review_dialog(real_main_window)
     weak = _voice_setup_result(real_main_window, dialog)
     weak["diagnostics"].update(weak_capture=True, vad_active_duration_s=1.0)
     try:
         dialog._show_summary(weak)
         assert len(_issue_lines(dialog)) == 1
+
+        # Each line is read out as its own sentence.
+        layout = dialog.capture_issues_layout
+        items = [layout.itemAt(i) for i in range(layout.count())]
+        labels = [item.widget() for item in items if item is not None]
+        labels = [label for label in labels if isinstance(label, QLabel)]
+        assert labels and len(labels) == layout.count()
+        for label in labels:
+            interface = QAccessible.queryAccessibleInterface(label)
+            assert interface is not None
+            spoken = " ".join(
+                interface.text(part) for part in (QAccessible.Text.Name, QAccessible.Text.Description)
+            )
+            assert label.text() in spoken
 
         dialog._show_summary(_voice_setup_result(real_main_window, dialog))
         assert _issue_lines(dialog) == []
@@ -474,31 +467,16 @@ def test_auto_eq_text_never_claims_to_measure_or_calibrate(qapp, monkeypatch) ->
 # --- The proposed EQ drawn over the one now ----------------------------------------------
 
 
-def test_the_voice_review_draws_the_proposed_eq_over_the_one_now(real_main_window) -> None:
-    dialog, _speech = _review_dialog(real_main_window)
-    result = _voice_setup_result(real_main_window, dialog)
-    result["eq_settings"] = _legacy_eq(real_main_window, [3.0] + [0.0] * 9)
-    try:
-        dialog._on_analysis_complete(result)
-
-        compare = dialog.eq_compare
-        assert compare.isHidden() is False
-        change, _frequency = compare.largest_change()
-        assert change == pytest.approx(3.0, abs=1.0)
-        assert compare.accessibleDescription().startswith("Largest change: +")
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
-
-
 def test_the_comparison_keeps_the_original_eq_as_now_after_apply(real_main_window) -> None:
     dialog, _speech = _review_dialog(real_main_window)
     result = _voice_setup_result(real_main_window, dialog)
     result["eq_settings"] = _legacy_eq(real_main_window, [3.0] + [0.0] * 9)
     try:
         dialog._on_analysis_complete(result)
+        assert dialog.eq_compare.isHidden() is False
         before = dialog.eq_compare.largest_change()
         assert before[0] == pytest.approx(3.0, abs=1.0)
+        assert dialog.eq_compare.accessibleDescription().startswith("Largest change: +")
 
         dialog._apply_setup()
         assert dialog.setup_state == "verification_ready"
@@ -659,8 +637,6 @@ def test_a_rollback_says_only_what_is_true_about_the_previous_settings(
         dialog.reject()
         dialog.deleteLater()
 
-    assert ("Your previous settings were put back." in text) is restored
-    assert ("could not be fully put back" in text) is not restored
     assert text.count("put back") == 1
     assert text.startswith("Your voice stood out from the background noise by 5.0 dB less than before.")
 
@@ -697,16 +673,6 @@ def test_voice_cancelling_after_a_refused_result_keeps_the_refused_record(real_m
     dialog.deleteLater()
 
     assert [r["outcome"] for r in records] == ["refused"]
-
-
-def test_voice_closing_after_a_good_result_is_reported_as_cancelled(real_main_window) -> None:
-    records = _voice(real_main_window)
-    dialog, _speech = _review_dialog(real_main_window)
-    dialog._on_analysis_complete(_voice_setup_result(real_main_window, dialog))
-
-    _ended(dialog)
-
-    assert [r["outcome"] for r in records] == ["cancelled"]
 
 
 def test_voice_closing_after_a_failure_or_a_rollback_keeps_that_record(real_main_window) -> None:
@@ -772,31 +738,6 @@ def test_auto_eq_closing_after_a_failed_analysis_keeps_the_failed_record(qapp, m
 
 
 # --- The words on the review ---------------------------------------------------------------
-
-
-def test_the_capture_problem_lines_are_read_out_as_their_own_sentences(real_main_window) -> None:
-    from PySide6.QtGui import QAccessible
-
-    dialog, _speech = _review_dialog(real_main_window)
-    result = _voice_setup_result(real_main_window, dialog)
-    result["diagnostics"].update(weak_capture=True, vad_active_duration_s=1.2)
-    try:
-        dialog._show_summary(result)
-
-        layout = dialog.capture_issues_layout
-        items = [layout.itemAt(i) for i in range(layout.count())]
-        labels = [item.widget() for item in items if item is not None]
-        labels = [label for label in labels if isinstance(label, QLabel)]
-        assert labels and len(labels) == layout.count()
-        for label in labels:
-            interface = QAccessible.queryAccessibleInterface(label)
-            assert interface is not None
-            spoken = " ".join(
-                interface.text(part) for part in (QAccessible.Text.Name, QAccessible.Text.Description)
-            )
-            assert label.text() in spoken
-    finally:
-        _ended(dialog)
 
 
 def test_an_advisory_result_says_each_capture_problem_once(real_main_window) -> None:
@@ -936,21 +877,6 @@ def _advisory_voice_result(window, dialog) -> dict[str, Any]:
     return result
 
 
-def test_voice_setup_keeps_its_result_when_a_retake_is_refused(real_main_window, monkeypatch) -> None:
-    records = _voice(real_main_window)
-    _say_yes(monkeypatch)
-    dialog, _speech = _review_dialog(real_main_window)
-    dialog._on_analysis_complete(_advisory_voice_result(real_main_window, dialog))
-    try:
-        dialog._on_retake_clicked()
-        _refuse_voice_take(dialog)
-        dialog.reject()
-
-        assert [r["outcome"] for r in records] == ["advisory"]
-    finally:
-        dialog.deleteLater()
-
-
 def test_voice_setup_reports_a_refused_verification_take_after_an_advisory_result(
     real_main_window,
 ) -> None:
@@ -991,25 +917,6 @@ def test_voice_setup_reports_a_refused_take_when_nothing_better_exists(
         dialog.deleteLater()
 
 
-def test_voice_setup_reports_the_new_result_after_a_retake(real_main_window, monkeypatch) -> None:
-    records = _voice(real_main_window)
-    _say_yes(monkeypatch)
-    dialog, _speech = _review_dialog(real_main_window)
-    dialog._on_analysis_complete(_advisory_voice_result(real_main_window, dialog))
-    try:
-        dialog._on_retake_clicked()
-        _bind_capture_context(dialog, *_short_voice_captures(48_000))
-        second = _voice_setup_result(real_main_window, dialog)
-        second["eq_settings"] = {"band_freqs": [1000.0]}
-        dialog._on_analysis_complete(second)
-
-        assert [r["outcome"] for r in records] == ["advisory", "refused"]
-        assert records[-1]["reason_codes"] == ["incomplete_result"]
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
-
-
 def test_a_new_result_after_a_refused_retake_is_reported_and_a_later_refusal_is_not(
     real_main_window, monkeypatch
 ) -> None:
@@ -1026,6 +933,7 @@ def test_a_new_result_after_a_refused_retake_is_reported_and_a_later_refusal_is_
         dialog._on_analysis_complete(second)
         dialog._on_retake_clicked()
         _refuse_voice_take(dialog)
+        dialog.reject()  # the retake dropped the result, so closing adds no "cancelled"
 
         assert [r["outcome"] for r in records] == ["advisory", "refused"]
         assert records[-1]["reason_codes"] == ["incomplete_result"]

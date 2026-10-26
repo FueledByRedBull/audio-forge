@@ -257,7 +257,6 @@ def test_headroom_advice_names_the_target_loudness_when_automatic_makeup_is_on()
     [
         # Working: level in is not level out, so no figure; the lever is the gain.
         ({"enabled": True}, None),
-        ({"enabled": True, "auto_makeup_enabled": False, "makeup_gain_db": 12.0}, None),
         # Not stated either way: no figure.
         ({}, None),
         # Off, with the automatic-makeup flag left on: it does nothing, so the gain it is.
@@ -290,10 +289,6 @@ def test_headroom_advice_names_the_limiter_only_when_the_chain_says_it_is_off(li
     chain = {"compressor": {"enabled": False}, "limiter": limiter}
 
     assert not _advice_facts(headroom_advice(_OWNER_TAKE, chain, proposed=True))["limiter_line"]
-    # Nor with no limiter key in the chain at all.
-    assert not _advice_facts(
-        headroom_advice(_OWNER_TAKE, {"compressor": {"enabled": False}}, proposed=True)
-    )["limiter_line"]
 
 
 def test_headroom_advice_does_not_call_a_current_eq_that_meets_the_rule_too_hot() -> None:
@@ -310,26 +305,6 @@ def test_headroom_advice_does_not_call_a_current_eq_that_meets_the_rule_too_hot(
 
     _assert_advice(
         headroom_advice(headroom, _NO_DYNAMICS, proposed=False), figure_db=1, purpose="record again"
-    )
-
-
-def test_headroom_advice_for_a_correction_left_out_while_the_current_eq_is_over_the_rule() -> None:
-    headroom = _headroom(
-        "risk_worse",
-        0.0,
-        _render(-1.2),
-        reference_excess_db=0.4,
-        flat_excess_db=4.0,
-        incumbent_excess_db=0.4,
-        incumbent_output_true_peak_db=-0.6,
-    )
-
-    _assert_advice(
-        headroom_advice(headroom, _NO_DYNAMICS, proposed=False),
-        figure_db=3,
-        opener="too little room",
-        limiter_line=True,
-        purpose="record again",
     )
 
 

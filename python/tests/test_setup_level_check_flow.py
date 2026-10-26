@@ -84,14 +84,10 @@ def test_voice_setup_opens_with_a_three_second_level_check(voice) -> None:
     assert voice.voice_group.isHidden() is False  # the passage to speak from
     assert voice.noise_group.isHidden()
 
-
-def test_the_check_is_captured_like_a_take(voice) -> None:
-    voice._on_start_clicked()
     voice._capture_start_timer.stop()
     voice._begin_recording_capture()
     voice.recording_timer.stop()
-
-    assert _Session.instances[-1].started == [3.0]
+    assert _Session.instances[-1].started == [3.0]  # the check is captured like a take
 
 
 def test_a_good_level_goes_on_to_the_room_noise_with_one_click(voice) -> None:
@@ -452,23 +448,6 @@ def _says_live_output_is_muted(label) -> bool:
     return label.isVisibleTo(label.window()) and read_aloud and "muted" in text and "call" in text
 
 
-def test_voice_setup_says_the_live_output_is_muted_while_it_records(voice) -> None:
-    assert not _says_live_output_is_muted(voice.mute_notice)
-
-    voice._on_start_clicked()
-
-    assert _says_live_output_is_muted(voice.mute_notice)
-
-
-def test_auto_eq_says_the_live_output_is_muted_while_it_records(auto_eq) -> None:
-    assert not _says_live_output_is_muted(auto_eq.mute_notice)
-
-    auto_eq._on_start_clicked()
-    auto_eq._capture_start_timer.stop()
-
-    assert _says_live_output_is_muted(auto_eq.mute_notice)
-
-
 def test_the_mute_notice_is_a_warning_chip_shown_only_while_a_recording_mutes_the_output(
     voice, auto_eq
 ) -> None:
@@ -483,9 +462,10 @@ def test_the_mute_notice_is_a_warning_chip_shown_only_while_a_recording_mutes_th
     ):
         attribute = "setup_state" if dialog is voice else "recording_state"
         assert dialog.mute_notice.styleSheet() == status_chip_style("warn")
+        assert not _says_live_output_is_muted(dialog.mute_notice)  # hidden before anything records
         for state in recording_states:
             setattr(dialog, attribute, state)
-            assert dialog.mute_notice.isVisibleTo(dialog), state
+            assert _says_live_output_is_muted(dialog.mute_notice), state
         for state in other_states:
             setattr(dialog, attribute, state)
             assert not dialog.mute_notice.isVisibleTo(dialog), state

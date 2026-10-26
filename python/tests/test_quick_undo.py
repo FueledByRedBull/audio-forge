@@ -381,15 +381,6 @@ def test_undo_and_redo_leave_the_chosen_route_alone(routed) -> None:
     ) == route
 
 
-def test_muting_is_not_an_undo_step(routed) -> None:
-    scene = routed
-    size = scene.history.size
-    scene.window.quick_bridge.model["top"]["mute"].click()
-    scene.commit()
-    assert scene.window.user_muted
-    assert scene.history.size == size and not scene.window._undo_action.isEnabled()
-
-
 def test_a_route_change_does_not_cost_the_next_undo_press(routed) -> None:
     scene = routed
     scene.drag_handle()

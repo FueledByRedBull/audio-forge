@@ -64,8 +64,15 @@ def _call_typed_eq_boundary(entrypoint, bands):
         del processor
 
 
-@pytest.mark.parametrize("entrypoint", ["response", "render", "chain", "chain_layers", "live", "live_layers"])
-@pytest.mark.parametrize("invalid", ["type", "slope", "nan", "infinite_gain", "q", "nyquist", "length"])
+# Every entrypoint validates through the one native parse_eq_v2_bands: each kind runs on the
+# cheapest entrypoint, and one kind on each of the others proves it reaches that parser.
+@pytest.mark.parametrize(
+    ("invalid", "entrypoint"),
+    [
+        *((kind, "response") for kind in ("type", "slope", "nan", "infinite_gain", "q", "nyquist", "length")),
+        *(("type", entrypoint) for entrypoint in ("render", "chain", "chain_layers", "live", "live_layers")),
+    ],
+)
 def test_typed_eq_entrypoints_share_rejection_contract(entrypoint, invalid):
     bands = _typed_default_bands()
     band = ["bell", 1000.0, 0.0, 1.0, 12, False]
@@ -88,15 +95,23 @@ def test_typed_eq_entrypoints_share_rejection_contract(entrypoint, invalid):
         _call_typed_eq_boundary(entrypoint, bands)
 
 
-@pytest.mark.parametrize("entrypoint", ["response", "render", "chain", "chain_layers", "live", "live_layers"])
-@pytest.mark.parametrize("filter_type", ["bell", "notch", "high_pass", "low_pass", "high_shelf", "low_shelf"])
+# Every filter type through the response (pass types: see the cutoff test below) and the live
+# round trip; the silent renders only prove each entrypoint accepts a typed band, so bell is enough.
+@pytest.mark.parametrize(
+    ("filter_type", "entrypoint"),
+    [
+        *((filter_type, "response") for filter_type in ("bell", "notch", "high_shelf", "low_shelf")),
+        *((filter_type, "live") for filter_type in ("bell", "notch", "high_pass", "low_pass", "high_shelf", "low_shelf")),
+        *(("bell", entrypoint) for entrypoint in ("render", "chain", "chain_layers", "live_layers")),
+    ],
+)
 def test_typed_eq_entrypoints_accept_every_filter(entrypoint, filter_type):
     bands = _typed_default_bands()
     bands[4] = (filter_type, 1000.0, 0.0, 1.0, 12, True)
     result: Any = _call_typed_eq_boundary(entrypoint, bands)
     if entrypoint == "response":
-        # Unity-Q cutoff of a pass filter is -3 dB, a notch nulls its centre, others are flat at zero gain.
-        expected = {"high_pass": -3.0103, "low_pass": -3.0103, "notch": -200.0}.get(filter_type, 0.0)
+        # A notch nulls its centre, the others are flat at zero gain.
+        expected = {"notch": -200.0}.get(filter_type, 0.0)
         assert result == [pytest.approx(expected, abs=1e-3)]
     elif entrypoint == "render":
         assert result["sample_count"] == 480

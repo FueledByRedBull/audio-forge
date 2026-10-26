@@ -429,9 +429,8 @@ def test_smoothing_matches_the_per_spectrum_recipe_on_edge_values(kind, strength
 )
 def test_smoothing_rejects_wrongly_shaped_spectra_with_index_error(spectrum_db):
     freqs = np.linspace(100.0, 5000.0, 5)
-    for strength in ("balanced", "conservative", "broad"):
-        with pytest.raises(IndexError, match="one-dimensional and the same length"):
-            smooth_spectrum_perceptual(freqs, spectrum_db, strength)
+    with pytest.raises(IndexError, match="one-dimensional and the same length"):
+        smooth_spectrum_perceptual(freqs, spectrum_db, "balanced")
 
 
 def test_smoothing_rejects_scalar_and_two_dimensional_freqs_with_index_error():

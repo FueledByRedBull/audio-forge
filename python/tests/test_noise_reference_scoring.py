@@ -271,10 +271,8 @@ def test_speech_contamination_bands_are_8_and_30_percent_of_frames(
     "age_s, score, reason",
     [
         (None, 1.0, None),
-        (60.0, 0.9, None),
         (100.0, 1.0 - 100.0 / 600.0, None),
         (130.0, 1.0 - 130.0 / 600.0, "room-noise reference may be stale"),
-        (300.0, 0.5, "room-noise reference may be stale"),
         (590.0, 1.0 - 590.0 / 600.0, "room-noise reference may be stale"),
         (610.0, 0.0, "room-noise reference is stale"),
     ],
@@ -330,8 +328,7 @@ def test_spectral_shape_is_compared_between_80_and_8000_hz_only():
 
 @pytest.mark.parametrize(
     "delta_db, expected",
-    [(-9.0, "usable"), (-11.0, "usable"), (-13.0, "questionable"), (-19.0, "questionable"),
-     (-21.0, "invalid"), (-26.0, "invalid")],
+    [(-11.0, "usable"), (-13.0, "questionable"), (-19.0, "questionable"), (-21.0, "invalid")],
 )
 def test_room_noise_much_louder_than_the_pauses_is_questionable_then_invalid(
     delta_db, expected

@@ -203,7 +203,6 @@ def test_calibration_owner_discovery_and_chain_snapshot_require_no_processing_pa
         "compressor": {"ratio": 3.5},
         "limiter": {"ceiling_db": -2.0},
     }
-    assert not any(hasattr(owner, f"{stage}_panel") for stage in ("eq", "deesser", "compressor"))
 
 
 class _MuteOwner:

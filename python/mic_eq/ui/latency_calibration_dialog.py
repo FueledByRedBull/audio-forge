@@ -35,7 +35,6 @@ from .capture_session import (
     CaptureSession,
     active_device_identities as _active_device_identities,
     capture_route_context,
-    device_name,
     known_capture_format_context as _known_capture_format_context,
     processor_output_sample_rate as _output_sample_rate,
     processor_sample_rate as _capture_sample_rate,
@@ -57,7 +56,6 @@ logger = logging.getLogger(__name__)
 
 
 DEBUG = False
-_device_name = device_name
 
 
 def _resample_probe(

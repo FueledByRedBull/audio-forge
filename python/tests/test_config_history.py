@@ -728,3 +728,73 @@ def test_real_eq_only_apply_changes_eq_and_preserves_other_sections(
         window.close()
         window.deleteLater()
         qapp.processEvents()
+
+
+def _load(window, name: str, path, *, gate_change: float):
+    preset = window._get_current_preset()
+    preset.name = name
+    preset.gate.threshold_db += gate_change
+    assert window._apply_preset(preset, preset_path=path)
+
+
+def _identity(window):
+    return (
+        window.current_preset_name, window.current_preset_path, window.config.last_preset,
+        window.preset_modified, window.shell_texts["preset_status_label"].text,
+    )
+
+
+def test_undoing_and_redoing_a_preset_load_brings_back_the_preset_that_went_with_it(
+    window, tmp_path
+) -> None:
+    before = _identity(window)
+    assert before[0] == "Default" and before[1] is None
+    loud_path = tmp_path / "Loud.json"
+    _load(window, "Loud", loud_path, gate_change=5.0)
+    loaded = _identity(window)
+    assert loaded[:4] == ("Loud", loud_path, str(loud_path), False)
+
+    window.undo_configuration()
+    assert _identity(window) == before
+
+    window.redo_configuration()
+    assert _identity(window) == loaded
+
+
+def test_a_load_that_changes_no_sound_is_still_one_undo_step(window, tmp_path) -> None:
+    before = _identity(window)
+    _load(window, "Same Sound", tmp_path / "Same.json", gate_change=0.0)
+    assert window._configuration_history.can_undo
+
+    window.undo_configuration()
+
+    assert _identity(window) == before
+
+
+def test_undoing_an_edit_keeps_the_loaded_preset(window, tmp_path) -> None:
+    _load(window, "Loud", tmp_path / "Loud.json", gate_change=5.0)
+    window.gate_state.set_settings({"threshold_db": window.gate_state.get_settings()["threshold_db"] + 3})
+    assert window._commit_pending_configuration_snapshot()
+    assert window.preset_modified
+
+    window.undo_configuration()
+
+    assert window.current_preset_name == "Loud" and not window.preset_modified
+
+
+def test_saving_a_loaded_preset_under_a_new_name_survives_undo_and_redo(window, tmp_path) -> None:
+    loud_path = tmp_path / "Loud.json"
+    _load(window, "Loud", loud_path, gate_change=5.0)
+    renamed = window._get_current_preset()
+    renamed.name = "Renamed"
+    saved_path = window._save_preset_file(renamed)
+    assert saved_path is not None and window.current_preset_name == "Renamed"
+
+    window.undo_configuration()
+    assert window.current_preset_name == "Default"
+    window.redo_configuration()
+
+    # The load was saved as Renamed; going back to it must not hand the next Save the old file.
+    assert window.current_preset_name == "Renamed"
+    assert window.current_preset_path == saved_path != loud_path
+    assert not window.preset_modified

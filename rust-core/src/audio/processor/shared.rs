@@ -406,6 +406,10 @@ pub(super) struct StreamShared {
     pub(super) restart_backoff_index: AtomicU32,
     pub(super) last_restart_attempt_us: AtomicU64,
     pub(super) last_start_time_us: AtomicU64,
+    /// When the supervisor last saw the output silent under a live microphone
+    /// (`now_micros`; 0 = never). A restart only counts as recovered once this
+    /// is as old as the healthy-stream time.
+    pub(super) silent_output_seen_us: AtomicU64,
     pub(super) recovery_state: Mutex<StreamRecoveryState>,
     /// Running flag
     pub(super) running: AtomicBool,
@@ -662,6 +666,7 @@ impl Shared {
                 restart_backoff_index: AtomicU32::new(0),
                 last_restart_attempt_us: AtomicU64::new(0),
                 last_start_time_us: AtomicU64::new(0),
+                silent_output_seen_us: AtomicU64::new(0),
                 recovery_state: Mutex::new(StreamRecoveryState::default()),
                 running: AtomicBool::new(false),
                 recovery_suppressed: AtomicBool::new(false),

@@ -4090,7 +4090,7 @@ class MainWindow(QMainWindow):
                 plural(output_recovery_count, "output recovery", "output recoveries"),
             ]
             if suppressed:
-                recovery_bits.append("paused while a setup records")
+                recovery_bits.append("paused during setup")
             reason = diagnostics.get("last_restart_reason")
             recent_recovery = bool(recent_events & {
                 "stream_restart_count", "output_recovery_count", "output_recovery_event_count",

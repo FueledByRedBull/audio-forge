@@ -1,5 +1,5 @@
 use super::lifecycle::Streams;
-use super::supervisor::output_silent_under_signal;
+use super::supervisor::{output_silent_under_signal, SILENT_OUTPUT_REASON};
 use super::AudioProcessor;
 use crate::audio::clock::now_micros;
 use crate::audio::rt::RtErrorCode;
@@ -61,30 +61,67 @@ impl AudioProcessor {
     }
 
     /// A restart that opened the streams only counts as successful once both
-    /// keep delivering and the output is not silent under a live microphone: a
-    /// device that opens but stays silent must keep growing the back-off, which
-    /// the start result alone cannot show.
+    /// keep delivering for `HEALTHY_STREAM_MS` with no silent output seen under
+    /// a live microphone in that time: a device that opens but stays silent must
+    /// keep growing the back-off, which the start result alone cannot show, and
+    /// one pause in speech must not clear it. A request still pending means the
+    /// last restart did not cure it, whatever the streams deliver.
     fn reset_backoff_after_healthy_streams(&self, now: u64) {
         let attempt = self
             .shared
             .stream
             .last_restart_attempt_us
             .load(Ordering::Acquire);
+        let silent_seen = self
+            .shared
+            .stream
+            .silent_output_seen_us
+            .load(Ordering::Relaxed);
         let delivering = |last_us: &AtomicU64| {
             let last_us = last_us.load(Ordering::Relaxed);
             last_us > attempt && now.saturating_sub(last_us) < FRESH_CALLBACK_MS * 1000
         };
         if attempt > 0
-            && now.saturating_sub(attempt) >= HEALTHY_STREAM_MS * 1000
+            && now.saturating_sub(attempt.max(silent_seen)) >= HEALTHY_STREAM_MS * 1000
             && delivering(&self.shared.input.callback_time_us)
             && delivering(&self.shared.output.last_write_time_us)
-            && !output_silent_under_signal(&self.shared)
+            && !self.shared.stream.restart_requested.load(Ordering::Acquire)
         {
             self.shared
                 .stream
                 .restart_backoff_index
                 .store(0, Ordering::Release);
         }
+    }
+
+    /// Drop a pending restart that was asked for because the output went silent
+    /// under a live microphone once that has ended by itself. Another cause that
+    /// asked too keeps the request, and so does a stopped stream: that is the
+    /// retry of a restart that failed.
+    fn withdraw_stale_silent_output_request(&self) -> bool {
+        let stream = &self.shared.stream;
+        let silent_output_pending = stream.recovery_state.lock().is_ok_and(|state| {
+            state.reason_pending && state.last_reason.as_deref() == Some(SILENT_OUTPUT_REASON)
+        });
+        if !silent_output_pending
+            || !stream.running.load(Ordering::Acquire)
+            || self.shared.dsp.rt_error_code.load(Ordering::Acquire) != RtErrorCode::None as u32
+            || self
+                .shared
+                .output
+                .resampler_error_count
+                .load(Ordering::Relaxed)
+                > 0
+            || output_silent_under_signal(&self.shared)
+        {
+            return false;
+        }
+        if let Ok(mut state) = stream.recovery_state.lock() {
+            state.reason_pending = false;
+        }
+        // A cause that arrived meanwhile puts its request back.
+        self.finish_suppressor_request(RtErrorCode::None, false);
+        true
     }
 
     /// Clear the restart request once a suppressor fault has been dealt with
@@ -152,7 +189,9 @@ impl AudioProcessor {
 
         self.reset_backoff_after_healthy_streams(now);
 
-        if !self.shared.stream.restart_requested.load(Ordering::Acquire) {
+        if !self.shared.stream.restart_requested.load(Ordering::Acquire)
+            || self.withdraw_stale_silent_output_request()
+        {
             return None;
         }
 
@@ -243,6 +282,14 @@ impl AudioProcessor {
                 .recovery_suppressed
                 .load(Ordering::Acquire)
         {
+            self.shared
+                .stream
+                .recovering
+                .store(false, Ordering::Release);
+            return None;
+        }
+        // The wait for the lock can outlast the condition that asked.
+        if self.withdraw_stale_silent_output_request() {
             self.shared
                 .stream
                 .recovering

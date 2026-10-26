@@ -211,6 +211,16 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
     assert texts["health_summary_label"].state == "warn"
 
 
+def test_recovery_chip_says_the_restarts_are_paused_during_setup(qapp):
+    window, _processor, args = _diagnostic_window({"recovery_suppressed": True})
+
+    MainWindow._update_diagnostic_labels(window, **args)
+
+    chip = window.shell_texts["recovery_diag_label"]
+    assert chip.text == "Recovery: 0 restarts, 0 output recoveries, paused during setup"
+    assert chip.state == "info"
+
+
 def test_output_drift_retiming_is_not_an_engine_fault(qapp, monkeypatch):
     # Two devices on separate clocks are kept in step by trimming samples; that is not a dropout.
     clock = [10.0]

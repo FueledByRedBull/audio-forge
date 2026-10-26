@@ -1636,10 +1636,8 @@ fn the_restart_backoff_resets_only_after_both_streams_keep_delivering() {
     );
 }
 
-const SILENT_REASON: &str = "output went silent while the microphone had signal";
-
-/// A running processor whose callbacks beat on a fake clock while the output
-/// carries no signal under a microphone that has some.
+/// A running processor whose callbacks beat on a fake clock while the loop
+/// writes digital silence under a microphone that has signal.
 fn silent_output_rig() -> (AudioProcessor, Supervisor) {
     let processor = AudioProcessor::new();
     let shared = &processor.shared;
@@ -1658,6 +1656,18 @@ fn silent_output_rig() -> (AudioProcessor, Supervisor) {
         .store((-120.0_f32).to_bits(), Ordering::Relaxed);
     let supervisor = Supervisor::new(Arc::clone(&processor.shared));
     (processor, supervisor)
+}
+
+fn set_levels(processor: &AudioProcessor, input_db: f32, output_db: f32) {
+    let shared = &processor.shared;
+    shared
+        .input
+        .rms
+        .store(input_db.to_bits(), Ordering::Relaxed);
+    shared
+        .output
+        .rms
+        .store(output_db.to_bits(), Ordering::Relaxed);
 }
 
 /// Healthy callbacks and writes at `now`, then one watchdog pass.
@@ -1703,7 +1713,7 @@ fn a_silent_output_under_a_live_microphone_restarts_the_streams_after_the_grace_
     assert!(processor.is_recovery_requested());
     assert_eq!(
         processor.get_last_restart_reason().as_deref(),
-        Some(SILENT_REASON)
+        Some(SILENT_OUTPUT_REASON)
     );
     // A pending request is not asked for again.
     assert!(!beat_and_check(
@@ -1719,66 +1729,41 @@ fn a_silent_output_under_a_live_microphone_restarts_the_streams_after_the_grace_
     assert_eq!(processor.get_stream_restart_count(), 1);
     assert_eq!(
         processor.get_last_restart_reason().as_deref(),
-        Some(SILENT_REASON)
+        Some(SILENT_OUTPUT_REASON)
     );
 }
 
 #[test]
-fn a_silence_that_is_broken_starts_the_clock_again() {
-    let (processor, mut supervisor) = silent_output_rig();
-    let from = at(10);
-    assert_eq!(
-        first_request(&processor, &mut supervisor, from, 1_000),
-        None
-    );
-    processor
-        .shared
-        .output
-        .rms
-        .store((-60.0_f32).to_bits(), Ordering::Relaxed);
-    assert!(!beat_and_check(
-        &processor,
-        &mut supervisor,
-        from + 1_250_000
-    ));
-    processor
-        .shared
-        .output
-        .rms
-        .store((-120.0_f32).to_bits(), Ordering::Relaxed);
-    assert_eq!(
-        first_request(&processor, &mut supervisor, from + 1_500_000, 5_000),
-        Some(from + 1_500_000 + SILENT_OUTPUT_MS * 1_000)
-    );
+fn only_digital_silence_counts_as_a_silent_output() {
+    // The decayed meter of a loop writing zeros reaches and passes the floor;
+    // a suppressor's gated noise (-93 and -109 dB were measured) never does.
+    for (output_db, fires) in [
+        (-120.0, true),
+        (-150.0, true),
+        (-400.0, true),
+        (-119.5, false),
+        (-109.0, false),
+        (-93.6, false),
+        (-85.0, false),
+        (-60.0, false),
+    ] {
+        let (processor, mut supervisor) = silent_output_rig();
+        set_levels(&processor, -20.0, output_db);
+        let requested = first_request(&processor, &mut supervisor, at(10), 10_000);
+        assert_eq!(requested.is_some(), fires, "output {output_db} dB");
+    }
 }
 
 #[test]
 fn nothing_that_explains_the_silence_counts_as_a_silent_output() {
     type Setup = fn(&AudioProcessor);
-    let cases: [(&str, Setup); 6] = [
-        ("output muted", |p| p.set_output_mute(true)),
+    let cases: [(&str, Setup); 4] = [
         ("recovery suppressed", |p| p.set_recovery_suppressed(true)),
         ("recording", |p| {
             p.shared.recording.active.store(true, Ordering::Release)
         }),
-        ("microphone quiet", |p| {
-            p.shared
-                .input
-                .rms
-                .store((-40.0_f32).to_bits(), Ordering::Relaxed)
-        }),
-        ("microphone at the limit", |p| {
-            p.shared
-                .input
-                .rms
-                .store((-35.0_f32).to_bits(), Ordering::Relaxed)
-        }),
-        ("output at the limit", |p| {
-            p.shared
-                .output
-                .rms
-                .store((-85.0_f32).to_bits(), Ordering::Relaxed)
-        }),
+        ("microphone quiet", |p| set_levels(p, -40.0, -120.0)),
+        ("microphone at the limit", |p| set_levels(p, -35.0, -120.0)),
     ];
     for (name, setup) in cases {
         let (processor, mut supervisor) = silent_output_rig();
@@ -1794,29 +1779,157 @@ fn nothing_that_explains_the_silence_counts_as_a_silent_output() {
     assert!(first_request(&processor, &mut supervisor, at(10), 10_000).is_some());
 }
 
-#[cfg(feature = "vad")]
 #[test]
-fn only_a_closed_vad_only_gate_explains_a_silent_output() {
-    for (mode, score, explained) in [
-        (GateMode::VadOnly, 0.05, true),
-        (GateMode::VadOnly, 0.12, false),
-        (GateMode::VadAssisted, 0.05, false),
-        (GateMode::ThresholdOnly, 0.05, false),
+fn a_silence_that_is_broken_starts_the_clock_again() {
+    let (processor, mut supervisor) = silent_output_rig();
+    let from = at(10);
+    assert_eq!(
+        first_request(&processor, &mut supervisor, from, 1_000),
+        None
+    );
+    set_levels(&processor, -20.0, -60.0);
+    assert!(!beat_and_check(
+        &processor,
+        &mut supervisor,
+        from + 1_250_000
+    ));
+    set_levels(&processor, -20.0, -120.0);
+    assert_eq!(
+        first_request(&processor, &mut supervisor, from + 1_500_000, 5_000),
+        Some(from + 1_500_000 + SILENT_OUTPUT_MS * 1_000)
+    );
+}
+
+/// The output meter is an IIR: after loud audio, zeros take about two seconds
+/// to bring it to the silent level, and it stays there.
+#[test]
+fn a_loop_that_writes_zeros_brings_the_output_meter_to_the_silent_level() {
+    let (processor, _) = silent_output_rig();
+    let coeff = smoothing_coeff_for_time_constant(48_000.0, 100.0);
+    let mut meter = MeterState::default();
+    meter.rms_acc = 1.0e-3; // -30 dB
+    let zeros = [0.0_f32; 480];
+    let mut silent_after = None;
+    for block in 0..3_000 {
+        let rms_db = update_meter_block_stats(&zeros, &mut meter, coeff).rms_db;
+        set_levels(&processor, -20.0, rms_db);
+        match (output_silent_under_signal(&processor.shared), silent_after) {
+            (true, None) => silent_after = Some(block),
+            (false, Some(first)) => panic!("silent at block {first}, not at {block}: {rms_db}"),
+            _ => {}
+        }
+    }
+    // 10 ms blocks.
+    let blocks = silent_after.expect("the meter never reached the silent level");
+    assert!((150..300).contains(&blocks), "{blocks}");
+}
+
+/// A restart that ends the silence ends the request, even one raised before a
+/// dialog paused recovery and serviced after it closed.
+#[test]
+fn a_silent_output_request_is_withdrawn_once_the_output_is_back() {
+    for (name, suppress, backoff) in [
+        ("serviced at once", false, false),
+        ("waiting out the back-off", false, true),
+        ("kept through a dialog", true, false),
     ] {
         let (processor, mut supervisor) = silent_output_rig();
-        let gate = &processor.shared.gate;
-        gate.rt_control
-            .gate_mode
-            .store(mode as u8, Ordering::Relaxed);
-        gate.fused_score
-            .store(f32::to_bits(score), Ordering::Relaxed);
-        let requested = first_request(&processor, &mut supervisor, at(10), 10_000);
-        assert_eq!(requested.is_none(), explained, "{mode:?} {score}");
+        let requested = first_request(&processor, &mut supervisor, at(10), 10_000).unwrap();
+        let stream = &processor.shared.stream;
+        if backoff {
+            stream.restart_backoff_index.store(3, Ordering::Release);
+            stream
+                .last_restart_attempt_us
+                .store(requested, Ordering::Release);
+        }
+        if suppress {
+            processor.set_recovery_suppressed(true);
+        }
+        set_levels(&processor, -20.0, -30.0);
+        let started = AtomicBool::new(false);
+        let reopen = |_: &AudioProcessor, _: &mut Streams| {
+            started.store(true, Ordering::SeqCst);
+            Ok("started".to_string())
+        };
+
+        let at_service = requested + 2_000_000;
+        if suppress {
+            // Paused: the request waits, whatever the output does.
+            assert_eq!(processor.service_recovery_at(at_service, reopen), None);
+            assert!(processor.is_recovery_requested(), "{name}");
+            processor.set_recovery_suppressed(false);
+        }
+        assert_eq!(processor.service_recovery_at(at_service, reopen), None);
+        assert!(!started.load(Ordering::SeqCst), "{name}");
+        assert!(!processor.is_recovery_requested(), "{name}");
+        assert!(!processor.is_recovering(), "{name}");
+        assert_eq!(processor.get_stream_restart_count(), 0, "{name}");
+        assert!(!stream.recovery_state.lock().unwrap().reason_pending);
+
+        // The supervisor judges again afterwards.
+        set_levels(&processor, -20.0, -120.0);
+        assert!(
+            first_request(&processor, &mut supervisor, requested + 5_000_000, 10_000).is_some(),
+            "{name}"
+        );
     }
 }
 
-/// The streams of a silence that stays keep delivering, so only the level
-/// keeps the back-off from resetting every 10 s.
+#[test]
+fn a_silent_output_request_that_still_holds_restarts_the_streams() {
+    let (processor, mut supervisor) = silent_output_rig();
+    let requested = first_request(&processor, &mut supervisor, at(10), 10_000).unwrap();
+    processor.set_recovery_suppressed(true);
+    assert_eq!(processor.service_recovery_at(requested, streams_open), None);
+    processor.set_recovery_suppressed(false);
+    assert_eq!(
+        processor.service_recovery_at(requested + 1_000_000, streams_open),
+        Some(true)
+    );
+}
+
+#[test]
+fn another_cause_or_a_stopped_stream_keeps_a_silent_output_request() {
+    type Setup = fn(&AudioProcessor);
+    let cases: [(&str, Setup); 4] = [
+        ("a stall asked as well", |p| {
+            request_stall_restart(
+                &p.shared.stream.recovery_state,
+                &p.shared.stream.restart_requested,
+                "input_cb_age_ms=9000".to_string(),
+            )
+        }),
+        ("a stream error", |p| {
+            store_rt_error(
+                p.shared.dsp.rt_error_code.as_ref(),
+                RtErrorCode::InputStreamError,
+            )
+        }),
+        ("a resampler failure", |p| {
+            p.shared
+                .output
+                .resampler_error_count
+                .store(1, Ordering::Relaxed)
+        }),
+        ("a failed restart being retried", |p| {
+            p.shared.stream.running.store(false, Ordering::Release)
+        }),
+    ];
+    for (name, setup) in cases {
+        let (processor, mut supervisor) = silent_output_rig();
+        let requested = first_request(&processor, &mut supervisor, at(10), 10_000).unwrap();
+        setup(&processor);
+        set_levels(&processor, -20.0, -30.0);
+        assert_eq!(
+            processor.service_recovery_at(requested + 1_000_000, streams_open),
+            Some(true),
+            "{name}"
+        );
+    }
+}
+
+/// The streams of a silence that stays keep delivering, so only what the
+/// supervisor saw keeps the back-off from resetting every 10 s.
 #[test]
 fn a_silence_that_a_restart_does_not_cure_backs_off_to_the_cap() {
     let (processor, mut supervisor) = silent_output_rig();
@@ -1852,17 +1965,18 @@ fn a_silence_that_a_restart_does_not_cure_backs_off_to_the_cap() {
     assert!(restarts[last] - restarts[last - 1] >= 30_000_000);
 
     // Once the output carries signal again, delivering streams reset the back-off.
+    set_levels(&processor, -20.0, -30.0);
     processor
         .shared
         .stream
         .restart_requested
         .store(false, Ordering::Release);
-    processor
+    let seen = processor
         .shared
-        .output
-        .rms
-        .store((-30.0_f32).to_bits(), Ordering::Relaxed);
-    let healthy = restarts[last] + 11_000_000;
+        .stream
+        .silent_output_seen_us
+        .load(Ordering::Relaxed);
+    let healthy = restarts[last].max(seen) + 11_000_000;
     beat_and_check(&processor, &mut supervisor, healthy);
     assert_eq!(processor.service_recovery_at(healthy, streams_open), None);
     assert_eq!(
@@ -1873,6 +1987,36 @@ fn a_silence_that_a_restart_does_not_cure_backs_off_to_the_cap() {
             .load(Ordering::Acquire),
         0
     );
+}
+
+/// The silence goes on under the speech pauses, so a pause (the microphone
+/// below the signal level) is no evidence that the restart cured it.
+#[test]
+fn a_pause_in_speech_does_not_reset_the_backoff() {
+    let (processor, mut supervisor) = silent_output_rig();
+    let stream = &processor.shared.stream;
+    stream.last_start_time_us.store(at(10), Ordering::Release);
+    stream
+        .last_restart_attempt_us
+        .store(at(10), Ordering::Release);
+    stream.restart_backoff_index.store(2, Ordering::Release);
+    let backoff = || stream.restart_backoff_index.load(Ordering::Acquire);
+
+    // Speech over the grace time: the silence is seen until at(16).
+    assert_eq!(
+        first_request(&processor, &mut supervisor, at(15), 1_000),
+        None
+    );
+    // Then a pause. Ten seconds after the restart, one poll sees no silence.
+    set_levels(&processor, -60.0, -120.0);
+    beat_and_check(&processor, &mut supervisor, at(21));
+    assert_eq!(processor.service_recovery_at(at(21), streams_open), None);
+    assert_eq!(backoff(), 2);
+
+    // Ten seconds after the last sighting, the pause has lasted long enough.
+    beat_and_check(&processor, &mut supervisor, at(26));
+    assert_eq!(processor.service_recovery_at(at(26), streams_open), None);
+    assert_eq!(backoff(), 0);
 }
 
 #[test]

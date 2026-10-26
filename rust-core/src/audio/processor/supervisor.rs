@@ -3,8 +3,6 @@ use super::lifecycle::Streams;
 use super::shared::Shared;
 use super::AudioProcessor;
 use crate::audio::clock::now_micros;
-#[cfg(feature = "vad")]
-use crate::dsp::vad::GateMode;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -16,13 +14,16 @@ pub(super) const STARTUP_GRACE_MS: u64 = 5000;
 pub(super) const CONSECUTIVE_STALL_CHECKS: u32 = 3;
 /// The microphone has signal above this input level.
 const SIGNAL_INPUT_DB: f32 = -35.0;
-/// The output is silent below this level.
-const SILENT_OUTPUT_DB: f32 = -85.0;
+/// What the meters read for digital silence (`update_meter_block_stats`). A loop
+/// that writes zeros lets the output meter decay through and past it.
+const METER_FLOOR_DB: f32 = -120.0;
+/// The output is digitally silent at or below this level. The gate attenuates
+/// by 36 dB at most and a suppressor's gated noise stays far above it.
+const SILENT_OUTPUT_DB: f32 = METER_FLOOR_DB + 0.01;
 /// How long the output must stay silent under a live microphone to count as a stall.
 pub(super) const SILENT_OUTPUT_MS: u64 = 1500;
-/// A VAD-only gate with a fused score below this is closed on purpose.
-#[cfg(feature = "vad")]
-const GATE_CLOSED_SCORE: f32 = 0.12;
+/// The restart reason of that stall; recovery tells its request apart by it.
+pub(super) const SILENT_OUTPUT_REASON: &str = "output went silent while the microphone had signal";
 
 /// Ask for a restart because the streams stalled or went silent. The cause is
 /// recorded as the pending reason first, so an error code left over from
@@ -40,27 +41,12 @@ pub(super) fn request_stall_restart(
     restart_requested.store(true, Ordering::Release);
 }
 
-/// A VAD-only gate that scores the voice low has closed on purpose.
-#[cfg(feature = "vad")]
-fn gate_expected_closed(shared: &Shared) -> bool {
-    shared.gate.rt_control.gate_mode.load(Ordering::Relaxed) == GateMode::VadOnly as u8
-        && f32::from_bits(shared.gate.fused_score.load(Ordering::Relaxed)) < GATE_CLOSED_SCORE
-}
-
-#[cfg(not(feature = "vad"))]
-fn gate_expected_closed(_: &Shared) -> bool {
-    false
-}
-
-/// Whether the output is silent although the microphone has signal and nothing
-/// explains it: not an output mute, not a VAD-only gate that is closed. Raw
-/// monitor and bypass send the input on, so they never look silent here.
+/// Whether the loop writes digital silence although the microphone has signal.
+/// The meters read before the output callback applies the mute, so a mute never
+/// looks silent here, and raw monitor and bypass send the input on.
 pub(super) fn output_silent_under_signal(shared: &Shared) -> bool {
     let level = |bits: &AtomicU32| f32::from_bits(bits.load(Ordering::Relaxed));
-    level(&shared.input.rms) > SIGNAL_INPUT_DB
-        && level(&shared.output.rms) < SILENT_OUTPUT_DB
-        && !shared.output.muted.load(Ordering::Acquire)
-        && !gate_expected_closed(shared)
+    level(&shared.input.rms) > SIGNAL_INPUT_DB && level(&shared.output.rms) <= SILENT_OUTPUT_DB
 }
 
 /// Watchdog over the streams: asks for a restart once a callback or the output
@@ -165,6 +151,7 @@ impl Supervisor {
             self.silent_since_us = None;
             return false;
         }
+        stream.silent_output_seen_us.store(now, Ordering::Relaxed);
         let silent_since = *self.silent_since_us.get_or_insert(now);
         if now.saturating_sub(silent_since) < SILENT_OUTPUT_MS * 1000 {
             return false;
@@ -172,7 +159,7 @@ impl Supervisor {
         request_stall_restart(
             &stream.recovery_state,
             &stream.restart_requested,
-            "output went silent while the microphone had signal".to_string(),
+            SILENT_OUTPUT_REASON.to_string(),
         );
         self.silent_since_us = None;
         true

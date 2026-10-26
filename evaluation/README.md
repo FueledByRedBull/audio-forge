@@ -497,8 +497,12 @@ and the Retired evaluators table names the release whose source still has each
 tool. Two evaluators, `evaluate_deesser_corpus.py` and
 `evaluate_resampler_quality.py`, require `--output`: pass a path that is not a
 tracked report and add new measurements beside it.
-`evaluate_deesser_corpus.py` still regenerates the shipped de-esser
-coefficients. The older
+`evaluate_deesser_corpus.py` fits the de-esser coefficients. Its clip stage
+trains on the out-of-fold frame scores that it is also thresholded and reported on.
+The shipped coefficients (`deesser_fusion.py`, `deesser-corpus-v1-report.json`) were
+fitted on in-sample frame scores, and the frame stage no longer reproduces them on
+this tree either, so a run gives different values. Shipping them is a tuning change.
+The older
 `compressor-control-report.json`, `compressor-search-report.json`, and
 `rnnoise-backend-comparison.json` predate complete source provenance; they
 support their decisions but don't reproduce the current checkout. The
@@ -512,6 +516,35 @@ the voice-preservation report); for those three reports that identity is
 stated here, not verifiable from the reports. The de-esser corpus report
 scores the setup-time detector, not the audio change, and no tracked
 evaluator compares a same-input limiter render across builds.
+
+## Decision block
+
+A new report carries `"decision": {"outcome", "reason", "decided", "by"}`.
+
+- `outcome` is `adopt` when the change the report evaluated is in the product,
+  `retain` when the incumbent stays and the change is not in, and `measured` when
+  the report holds measurements and no decision.
+- `reason` is one sentence.
+- `decided` is the ISO date of the decision, and `by` is who made it. Both are
+  null for `measured`.
+
+`python/tools/bench_report.py` writes the block as `measured`; `--decision
+adopt|retain --reason "..." --by NAME` records the maintainer's call.
+`check_evaluation_hygiene.py` rejects a malformed block.
+
+The reports released before the block state their decision in eight ways: a token
+in `decision` with the reason in `summary` or `reason`; a sentence in `decision`; an
+object with a `reason`; an object of tokens, one per area; an object of
+measurements; top-level booleans only (`retained`, `passed`, `all_gates_passed`); a
+top-level `status`; separate `attenuation_decision` and `post_filter_decision`
+objects. Some state none. `read_decision` in `python/tools/evaluation_decision.py`
+gives every one of them the same four keys, but an older report fills only some.
+It takes the outcome from a table, because `retained` and `retain` name the
+candidate in some reports and the incumbent in others. `reason` is null when the
+report holds no text for it, `decided` is null when it has no timestamp (otherwise
+it is the day the report was generated), and `by` is always null, since they do not
+record who decided. A test fails for a report that has neither the block nor a
+table entry. Released reports are not edited.
 
 ## Interpretation
 

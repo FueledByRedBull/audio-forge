@@ -452,6 +452,40 @@ def test_joint_tuning_refreshes_probabilities_for_incumbent_pre_gain(monkeypatch
         assert result["gate_settings"] == incumbent_gate
 
 
+def test_joint_tuning_reuses_detector_posteriors_for_another_vad_threshold(monkeypatch):
+    def analyze(*_args, **_kwargs):
+        raise AssertionError("the posteriors do not depend on the threshold")
+
+    def simulate(audio, _probabilities, _before_gate, _strength, settings):
+        output = np.asarray(audio, dtype=np.float32)
+        return {
+            "output_audio": output,
+            "dry_audio": output,
+            "suppressor_latency_samples": 480,
+            "runtime_ms": 0.0,
+            "auto_makeup_activity": _activity_tape(audio, settings),
+        }
+
+    monkeypatch.setattr(joint_tuning, "analyze_offline_vad", analyze)
+    monkeypatch.setattr(joint_tuning, "_load_native_simulator", lambda: simulate)
+    monkeypatch.setattr(joint_tuning, "simulate_candidate_chain", _downstream_metrics)
+    args = _tuning_args()
+    incumbent_gate = {**args[3], "vad_threshold": args[3]["vad_threshold"] + 0.1}
+
+    result = joint_tuning.tune_gate_suppression_dynamics(
+        *args,
+        vad_probabilities=np.ones(100, dtype=np.float32),
+        noise_vad_probabilities=np.zeros(100, dtype=np.float32),
+        incumbent_settings={
+            "gate": incumbent_gate,
+            "suppressor": {"enabled": True, "strength": 1.0, "model": "rnnoise"},
+        },
+    )
+
+    assert result["candidate_count"] > 1
+    assert not result["failure_reasons"]
+
+
 @pytest.mark.parametrize("speech_neural_vad,noise_neural_vad", [
     (True, True), (False, False), (True, False), (False, True),
 ])
@@ -669,7 +703,7 @@ def test_training_noise_floor_does_not_use_heldout_noise(monkeypatch):
                 "suppressor": {"enabled": True, "strength": 1.0, "model": "rnnoise"},
             },
         )
-        return list(observed_thresholds)
+        return sorted(observed_thresholds)  # candidates run on several threads, in no fixed order
 
     thresholds_a = run(noise_a)
     thresholds_b = run(noise_b)

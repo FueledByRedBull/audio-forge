@@ -1,6 +1,7 @@
 """Shared pytest fixtures for Python UI tests."""
 
 import faulthandler
+import gc
 import os
 import sys
 
@@ -168,9 +169,40 @@ def close_windows_without_the_quit_question(monkeypatch):
     monkeypatch.setattr("mic_eq.ui.main_window.MainWindow._quit_choice", lambda _self: "quit")
 
 
+@pytest.fixture(autouse=True, scope="module")
+def collect_the_last_module_garbage():
+    """Free what the last module left in reference cycles here, on the main thread.
+
+    The native audio processor is unsendable: dropped on any other thread, it is reported
+    as an unraisable exception. Cycles are freed by whichever thread allocates enough to
+    start a collection, and the analysis tests start threads that do.
+    """
+    gc.collect()
+
+
+_window_garbage = False
+
+
 @pytest.fixture(autouse=True)
 def dispose_test_windows(monkeypatch):
     """Destroy each test's Qt parents through the event loop before Python GC."""
+    global _window_garbage
+    if _window_garbage:
+        # A main window made by the last test is Python garbage by now, in a reference
+        # cycle, and the native audio processor in it can only be dropped on this thread.
+        # Collect it before this test starts threads whose allocations would run the collection.
+        _window_garbage = False
+        gc.collect()
+    from mic_eq.ui.main_window import MainWindow
+
+    window_init = MainWindow.__init__
+
+    def note_the_window(self, *args, **kwargs):
+        global _window_garbage
+        _window_garbage = True
+        window_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(MainWindow, "__init__", note_the_window)
     app = QApplication.instance()
     existing = set(app.topLevelWidgets()) if isinstance(app, QApplication) else set()
     yield
@@ -181,3 +213,8 @@ def dispose_test_windows(monkeypatch):
     for widget in created:
         widget.deleteLater()
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    if _window_garbage:
+        # Qt lets go of the window's Python callbacks one event round later. A window held by
+        # a fixture is freed only once the fixtures are gone, by the collection above next time.
+        app.processEvents()
+        gc.collect()

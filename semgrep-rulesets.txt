@@ -1,9 +1,19 @@
-# Registry rules used by the AudioForge security scan. Registry packs cannot
-# be pinned by version, so they follow the registry. Only registry names or
-# paths to rule files work here: semgrep loads no rules from a GitHub
-# repository URL and reports no error.
+# Rules used by the AudioForge security scan. Registry packs cannot be pinned
+# by version, so they follow the registry. Only registry names, paths to rule
+# files, or the `git` lines below work here: semgrep loads no rules from a
+# GitHub repository URL and reports no error.
 p/security-audit
 p/secrets
 p/python
 p/rust
 p/github-actions
+
+# Third-party collections. run_semgrep.py clones each one at the pinned commit
+# into build/semgrep-rules and loads the listed rule directories or files,
+# which are the languages this repository contains (Python, Rust, YAML, plain
+# text); add a directory when a new language arrives. Move a pin only after
+# reading the rule changes between the two commits.
+# git <repository URL> <full commit> <rule directory or file>...
+git https://github.com/trailofbits/semgrep-rules 31390b3a99c04c81522d1b37c8d1900aa2dd4094 python rs yaml generic
+git https://github.com/elttam/semgrep-rules 244268562cc92d33f54b8a60a187df5520f91b26 rules/yaml rules-audit/python
+git https://github.com/apiiro/malicious-code-ruleset a21246b666f34db899f0e33add7237ed70fab790 dynamic_execution/python dynamic_execution/rust obfuscation/python obfuscation/rust obfuscation/generic_hide_remotely.yml obfuscation/generic_obfuscation_operators.yml obfuscation/generic_obfuscation_stringified_binaries.yml generic_one_liners.yml

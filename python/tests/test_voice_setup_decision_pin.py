@@ -8,7 +8,8 @@ stored to 6 significant digits and match within 1e-4 of their size, so another C
 booleans, reasons and counts match exactly.
 
 The Silero cases need the model (``VAD_MODEL_PATH`` or ``models/silero_vad.onnx``) and skip without it or with
-another model; the energy case runs wherever the native extension does.
+another model. The energy case runs wherever the native extension does, with nothing a Silero lookup can find:
+Voice Setup told that VAD is unavailable still has Auto-EQ run the model whenever it is there.
 
 Regenerate only with ``AUDIOFORGE_UPDATE_GOLDEN=1 python -m pytest python/tests/test_voice_setup_decision_pin.py``,
 in a pull request meant to change what Voice Setup decides, and say why.
@@ -28,6 +29,7 @@ import pytest
 
 import bench_metrics as bm
 from mic_eq import CORE_AVAILABLE
+from mic_eq.analysis import compressor_calibration, joint_tuning
 from mic_eq.analysis.voice_setup import analyze_voice_setup
 from mic_eq.config import EQSettings, Preset
 from test_bench_metrics import built_mix
@@ -116,14 +118,27 @@ def _silero_model() -> Path | None:
     return model if model.is_file() else None
 
 
+def _without_silero(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Leave no model for the native lookup: not by VAD_MODEL_PATH, ./models, ../models or LOCALAPPDATA."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    monkeypatch.chdir(run_dir)
+    monkeypatch.delenv("VAD_MODEL_PATH", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+
+
 @pytest.mark.parametrize(("name", "mix_id", "vad"), CASES, ids=[case[0] for case in CASES])
-def test_the_analysis_decides_what_it_decided_before(monkeypatch, name, mix_id, vad):
+def test_the_analysis_decides_what_it_decided_before(monkeypatch, tmp_path, name, mix_id, vad):
     model = _silero_model()
     if vad:
         if model is None:
             pytest.skip("Silero model not provisioned (set VAD_MODEL_PATH or place models/silero_vad.onnx)")
+        if not UPDATE and _read()["model_sha256"] != bm.file_sha256(model):
+            pytest.skip("the provisioned Silero model is not the one the stored values were made with")
         monkeypatch.setenv("VAD_MODEL_PATH", str(model))
         assert bm.silero_available()
+    else:
+        _without_silero(monkeypatch, tmp_path)
     actual = _analysis(mix_id, vad)
     if UPDATE:
         stored = _read() if PIN_PATH.is_file() else {"model_sha256": None, "cases": {}}
@@ -133,9 +148,15 @@ def test_the_analysis_decides_what_it_decided_before(monkeypatch, name, mix_id, 
         stored["cases"] = dict(sorted(stored["cases"].items()))
         _write(stored)
         pytest.skip(f"regenerated {name} in {PIN_PATH.name}")
-    stored = _read()
-    if vad and model is not None and stored["model_sha256"] != bm.file_sha256(model):
-        pytest.skip("the provisioned Silero model is not the one the stored values were made with")
-    differences = _differences(stored["cases"][name], actual)
+    differences = _differences(_read()["cases"][name], actual)
     assert not differences, "\n".join(differences[:12])
 
+
+def test_one_worker_decides_what_the_default_workers_decide(monkeypatch, tmp_path):
+    """The stored energy case was made by the serial analysis; the worker count may not change it."""
+    monkeypatch.setattr(joint_tuning, "ANALYSIS_WORKERS", 1)
+    monkeypatch.setattr(compressor_calibration, "ANALYSIS_WORKERS", 1)
+    _without_silero(monkeypatch, tmp_path)
+
+    differences = _differences(_read()["cases"]["fan_t01_energy"], _analysis("fan-t01", False))
+    assert not differences, "\n".join(differences[:12])

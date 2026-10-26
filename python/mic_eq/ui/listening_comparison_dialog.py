@@ -54,7 +54,7 @@ from .capture_session import (
     start_selected_route,
     sync_owner_processing_controls,
 )
-from .components import live_output_muted_notice
+from .components import live_output_muted_notice, session_is_ending
 from .layout_constants import (
     MARGIN_PANEL,
     SPACING_NORMAL,
@@ -381,7 +381,6 @@ class ListeningComparisonDialog(QDialog):
         )
         self.scope_label.setWordWrap(True)
         self.scope_label.setStyleSheet(DESCRIPTION_LABEL_STYLE)
-        self.scope_label.setAccessibleName("Listening comparison scope")
         layout.addWidget(self.scope_label)
 
         self.scope_warning = QLabel(
@@ -389,7 +388,6 @@ class ListeningComparisonDialog(QDialog):
         )
         self.scope_warning.setWordWrap(True)
         self.scope_warning.setStyleSheet(status_chip_style("info"))
-        self.scope_warning.setAccessibleName("Listening comparison limitations")
         layout.addWidget(self.scope_warning)
 
         playback_group = QGroupBox("Playback")
@@ -422,7 +420,6 @@ class ListeningComparisonDialog(QDialog):
         self.level_match_checkbox = QCheckBox(
             "Match speech level (actual level difference remains visible)"
         )
-        self.level_match_checkbox.setAccessibleName("Match speech level")
         self.level_match_checkbox.setToolTip(
             "Apply a bounded preview-only gain so level does not dominate the comparison."
         )
@@ -432,7 +429,6 @@ class ListeningComparisonDialog(QDialog):
 
         self.progress_label = QLabel("Preparing comparison...")
         self.progress_label.setStyleSheet(SUBDUED_TEXT_STYLE)
-        self.progress_label.setAccessibleName("Listening comparison progress")
         layout.addWidget(self.progress_label)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -454,7 +450,6 @@ class ListeningComparisonDialog(QDialog):
             detail = QLabel("Waiting for render...")
             detail.setWordWrap(True)
             detail.setStyleSheet(SUBDUED_TEXT_STYLE)
-            detail.setAccessibleName(f"{label} listening comparison details")
             self._play_buttons[key] = button
             self._clip_labels[key] = detail
             row = QHBoxLayout()
@@ -465,7 +460,6 @@ class ListeningComparisonDialog(QDialog):
 
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
-        self.status_label.setAccessibleName("Listening comparison status")
         layout.addWidget(self.status_label)
         layout.addWidget(live_output_muted_notice())
 
@@ -851,6 +845,11 @@ class ListeningComparisonDialog(QDialog):
         QDialog.done(self, int(QDialog.DialogCode.Accepted if self._close_result else QDialog.DialogCode.Rejected))
 
     def closeEvent(self, event) -> None:
+        if session_is_ending():
+            # A veto here would stop Windows from signing out: stop playback and the render, close.
+            self._wait_for_worker()
+            event.accept()
+            return
         self._request_close(False)
         event.ignore()
 

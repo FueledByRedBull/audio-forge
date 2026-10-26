@@ -25,7 +25,7 @@ from PySide6.QtCore import (
     Slot,
 )
 from PySide6.QtGui import QPainter, QPen
-from PySide6.QtQml import qmlRegisterType
+from PySide6.QtQml import qmlRegisterType, qmlRegisterUncreatableType
 from PySide6.QtQuick import QQuickPaintedItem, QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 
@@ -182,7 +182,14 @@ class QuickBridge(QObject):
 
         def action(name: str):
             spec = ACTION_SPECS[name]
-            return ActionControl(getattr(w, name + "_action"), self, name=spec.name, locked_tip=spec.locked_tip)
+            command = getattr(w, name + "_action")
+            if spec.shortcut:
+                # No menu holds this action; the window owns its shortcut.
+                command.setShortcut(spec.shortcut)
+                # Holding the keys must not flap a live mute, as the global hotkey does not.
+                command.setAutoRepeat(False)
+                w.addAction(command)
+            return ActionControl(command, self, name=spec.name, locked_tip=spec.locked_tip)
 
         def menu(target, label: str):
             # QMenu/QAction are the shared native command owners.
@@ -457,6 +464,7 @@ def install_quick_shell(window) -> None:
     qmlRegisterType(EQGraphItem, "AudioForge", 1, 0, "EQGraphItem")  # type: ignore[call-overload]
     qmlRegisterType(QuickMeterItem, "AudioForge", 1, 0, "QuickMeterItem")  # type: ignore[call-overload]
     qmlRegisterType(LevelTrace, "AudioForge", 1, 0, "LevelTrace")  # type: ignore[call-overload]
+    qmlRegisterUncreatableType(QuickBridge, "AudioForge", 1, 0, "QuickBridge", "The window creates it")  # type: ignore[call-overload]
     try:
         bridge = QuickBridge(window)
     except Exception as error:
@@ -466,7 +474,7 @@ def install_quick_shell(window) -> None:
     view = QQuickWidget(window)
     view.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
     view.setClearColor(qcolor(PALETTE.app_surface))
-    view.rootContext().setContextProperty("ui", bridge)
+    view.setInitialProperties({"ui": bridge})
     view.setSource(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
     if view.status() != QQuickWidget.Status.Ready:
         reason = "; ".join(error.toString() for error in view.errors()) or "no details were reported"

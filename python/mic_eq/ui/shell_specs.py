@@ -46,6 +46,7 @@ class _ActionSpec(NamedTuple):
     enabled: bool = True
     checkable: bool = False
     locked_tip: str = ""  # shown instead of ``tip`` while the action is disabled
+    shortcut: str = ""  # a window shortcut the Quick view owns; the menu bar holds the others
 
 
 # Keyed by the name the window's shell_texts exposes each text under.
@@ -192,9 +193,10 @@ ACTION_SPECS = {
     ),
     "user_mute_checkbox": _ActionSpec(
         "Mute",
-        "Keep transmission muted until you turn this off. "
+        "Keep transmission muted until you turn this off (Ctrl+M). "
         "Calibration and stream recovery use a separate temporary mute.",
         "Mute output",
         checkable=True,
+        shortcut="Ctrl+M",
     ),
 }

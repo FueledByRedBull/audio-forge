@@ -250,12 +250,8 @@ class FirstRunSetupDialog(QDialog):
         route_output_widget.setFixedWidth(60)
         self.route_input_health_label = QLabel("Input: --")
         self.route_output_health_label = QLabel("Output: --")
-        for label, name in (
-            (self.route_input_health_label, "Live microphone health"),
-            (self.route_output_health_label, "Live destination health"),
-        ):
+        for label in (self.route_input_health_label, self.route_output_health_label):
             label.setWordWrap(True)
-            label.setAccessibleName(name)
         feedback_layout.addWidget(route_input_widget, 0, 0, Qt.AlignmentFlag.AlignHCenter)
         feedback_layout.addWidget(route_output_widget, 0, 1, Qt.AlignmentFlag.AlignHCenter)
         feedback_layout.addWidget(self.route_input_health_label, 1, 0)
@@ -347,15 +343,10 @@ class FirstRunSetupDialog(QDialog):
                 (self.progress, "Setup progress", None),
                 (route_input_widget, "Live microphone level", None),
                 (route_output_widget, "Live destination level", None),
-                (self.route_input_health_label, "Live microphone health", None),
-                (self.route_output_health_label, "Live destination health", None),
                 (self.mute_checkbox, "Mute output during setup", None),
                 (self.input_device_selector, "Setup microphone", None),
                 (self.output_device_selector, "Setup destination", None),
-                (self.back_button, "Previous setup step", None),
-                (self.skip_button, "Skip current setup step", None),
                 (self.pause_button, "Pause setup", None),
-                (self.action_button, "Run current setup step", None),
                 (
                     self.advanced_latency_button,
                     "Open advanced latency calibration",
@@ -578,14 +569,14 @@ class FirstRunSetupDialog(QDialog):
             if not self._selected_devices_ready():
                 self._set_status(
                     "Both a microphone and a destination must be available and selected.",
-                    "error",
+                    "bad",
                 )
                 return
             if not self._apply_selected_devices():
                 self._set_status(
                     "Those devices are no longer available. Return to the main window, "
                     "refresh the device list, and try again.",
-                    "error",
+                    "bad",
                 )
                 return
             self._complete_step("Microphone and destination selected.")
@@ -594,7 +585,7 @@ class FirstRunSetupDialog(QDialog):
             if not self._selected_devices_ready():
                 self._route_check_phase = "speech"
                 self._set_status(
-                    "The selected route is unavailable. Return to step 1.", "error"
+                    "The selected route is unavailable. Return to step 1.", "bad"
                 )
                 return
             if getattr(self.owner, "user_muted", False):
@@ -614,7 +605,7 @@ class FirstRunSetupDialog(QDialog):
                 )
                 if not healthy:
                     self._route_check_phase = "speech"
-                    self._set_status(reason, "error")
+                    self._set_status(reason, "bad")
                     self.action_button.setText("Check levels")
                     return
                 self._complete_step("You confirmed the destination signal.")
@@ -667,13 +658,13 @@ class FirstRunSetupDialog(QDialog):
             self._set_status(
                 f"{reason} Check your destination app, then confirm that it receives "
                 "your microphone signal.",
-                "success",
+                "ok",
             )
             self.action_button.setText("Confirm signal")
         else:
             self._route_check_phase = "speech"
             self.action_button.setText("Check levels")
-            self._set_status(reason, "error")
+            self._set_status(reason, "bad")
 
     def _run_latency_calibration(self) -> None:
         self._set_route_feedback_active(False)
@@ -702,7 +693,7 @@ class FirstRunSetupDialog(QDialog):
 
     def _complete_step(self, message: str) -> None:
         self.config.first_run_setup_steps[self.current_step] = "completed"
-        self._set_status(message, "success")
+        self._set_status(message, "ok")
         self._advance_or_finish()
 
     def _skip_step(self) -> None:

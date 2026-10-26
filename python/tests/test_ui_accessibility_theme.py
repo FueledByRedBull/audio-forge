@@ -11,8 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QEvent, QRect
-from PySide6.QtGui import QPalette
+from PySide6.QtCore import QEvent, QRect, QSize
+from PySide6.QtGui import QColor, QIcon, QPalette, QPixmap
 from PySide6.QtWidgets import QScrollArea, QWidget
 
 from mic_eq.config import AppConfig
@@ -30,6 +30,7 @@ from mic_eq.ui.level_meter import SCALE_TEXT_GAP, _scale_mark_geometry
 from mic_eq.ui.shell_specs import TEXT_SPECS
 from mic_eq.ui import theme
 from mic_eq.ui.theme import (
+    CONTROL_BOUNDARY_PAIRS,
     PALETTE,
     TEXT_CONTRAST_PAIRS,
     SemanticPalette,
@@ -38,6 +39,8 @@ from mic_eq.ui.theme import (
     build_palette,
     contrast_ratio,
     contrast_theme_changed,
+    control_boundary_pairs,
+    muted_icon,
     prefers_reduced_motion,
     qcolor,
     windows_contrast_colors,
@@ -83,6 +86,38 @@ def test_all_semantic_text_pairs_meet_wcag_aa_contrast() -> None:
     }
     assert measured
     assert min(measured.values()) >= 4.5, measured
+
+
+def test_control_edges_switch_tracks_and_slider_tracks_meet_three_to_one() -> None:
+    measured = {name: contrast_ratio(fg, bg) for name, fg, bg in CONTROL_BOUNDARY_PAIRS}
+    assert measured and min(measured.values()) >= 3.0, measured
+    # The edge also stands out from a field while it is hovered, and the knob from its off track.
+    assert contrast_ratio(PALETTE.control_edge, PALETTE.control_hover) >= 3.0
+    assert contrast_ratio(PALETTE.text_primary, PALETTE.control_edge) >= 3.0
+    # The widgets' stylesheet draws its edges and slider grooves from the same token.
+    sheet = application_stylesheet()
+    assert f"border: 1px solid {PALETTE.control_edge}" in sheet
+    assert f"background-color: {PALETTE.control_edge}" in sheet
+
+
+def test_control_boundaries_keep_three_to_one_under_a_contrast_theme() -> None:
+    pairs = control_boundary_pairs(build_palette(SYSTEM_COLORS))
+    assert min(contrast_ratio(fg, bg) for _name, fg, bg in pairs) >= 3.0
+
+
+def test_the_muted_tray_icon_crosses_out_a_corner_and_keeps_the_rest(qapp) -> None:
+    base = QPixmap(32, 32)
+    base.fill(QColor(PALETTE.card_surface))
+    icon = QIcon(base)
+    muted = muted_icon(icon)
+    assert muted.availableSizes() == icon.availableSizes()
+    before = icon.pixmap(QSize(32, 32)).toImage()
+    after = muted.pixmap(QSize(32, 32)).toImage()
+    assert after.pixelColor(2, 2) == before.pixelColor(2, 2)
+    # The badge is not colour alone: a light slash crosses its fill.
+    assert after.pixelColor(22, 28).name() == PALETTE.action_destructive
+    assert after.pixelColor(22, 22).red() > 200
+    assert muted_icon(QIcon()).isNull()
 
 
 def test_application_palette_uses_the_same_semantic_surface() -> None:

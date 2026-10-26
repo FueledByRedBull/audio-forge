@@ -29,7 +29,7 @@ from ..analysis.latency_calibration import (
 )
 from ..analysis.signal_processing import resample_poly
 from .accessibility import set_accessible_group
-from .components import Card, form_layout
+from .components import Card, form_layout, session_is_ending
 from .level_meter import LevelMeter, MeterWidget
 from .capture_session import (
     CaptureSession,
@@ -281,7 +281,6 @@ class LatencyCalibrationDialog(QDialog):
         layout.addWidget(self.progress)
 
         self.status_label = QLabel("Ready")
-        self.status_label.setAccessibleName("Latency calibration status")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
@@ -317,7 +316,6 @@ class LatencyCalibrationDialog(QDialog):
 
         set_accessible_group(
             (
-                (self.run_button, "Run latency calibration", None),
                 (self.accept_button, "Accept latency calibration", None),
                 (self.reset_button, "Reset latency calibration", None),
                 (self.close_button, "Close latency calibration", None),
@@ -725,6 +723,12 @@ class LatencyCalibrationDialog(QDialog):
         self._finish_close()
 
     def closeEvent(self, event):
+        if session_is_ending():
+            # A veto here would stop Windows from signing out: stop the work, join its thread, close.
+            self._wait_for_worker()
+            self._finish_close()
+            event.accept()
+            return
         self._request_close(False)
         event.ignore()
 

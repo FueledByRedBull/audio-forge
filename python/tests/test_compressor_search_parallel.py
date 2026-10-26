@@ -6,6 +6,7 @@ import pytest
 
 from mic_eq.analysis import compressor_calibration, voice_setup
 from mic_eq.analysis.cancellation import AnalysisCancelled
+from mic_eq.analysis.parallel import ANALYSIS_WORKERS
 from mic_eq.config import Preset
 
 
@@ -133,4 +134,4 @@ def test_compressor_search_cancels_between_small_batches():
     completed = []
     with pytest.raises(AnalysisCancelled):
         _run(lambda text, value: completed.append(value), lambda: bool(completed))
-    assert 1 <= len(completed) <= 4
+    assert 1 <= len(completed) <= ANALYSIS_WORKERS

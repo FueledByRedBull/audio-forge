@@ -976,10 +976,11 @@ def analyze_voice_setup(
             raise ValueError("raw and filtered setup captures must have matching lengths")
         if raw_noise_arr.size == 0 or raw_speech_arr.size == 0:
             raise ValueError("raw setup captures are empty")
-        if raw_capture_is_clipped(raw_noise_arr, sample_rate) or raw_capture_is_clipped(
-            raw_speech_arr, sample_rate
-        ):
-            raise ValueError("raw setup captures are non-finite or clipped")
+    if any(
+        raw is not None and raw_capture_is_clipped(raw, sample_rate)
+        for raw in (raw_noise_arr, raw_speech_arr)
+    ):
+        raise ValueError("raw setup captures are non-finite or clipped")
 
     if noise_arr.size < int(sample_rate * NOISE_MIN_DURATION_S):
         raise ValueError("Room-noise capture was too short for setup.")
@@ -1094,7 +1095,8 @@ def analyze_voice_setup(
     joint_noise_vad_probabilities = noise_vad_probabilities
     joint_vad_backend = vad_analysis_backend
     joint_noise_vad_backend = noise_vad_backend
-    if vad_available:
+    # The posteriors depend on the pre-gain alone, so at unity gain they are the ones above.
+    if vad_available and float(gate_settings["vad_pre_gain"]) != 1.0:
         joint_vad_probabilities, joint_vad_backend = analyze_offline_vad(
             speech_arr,
             sample_rate,

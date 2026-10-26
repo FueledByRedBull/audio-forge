@@ -69,6 +69,47 @@ def test_offline_vad_applies_live_pre_gain_before_inference(monkeypatch):
     assert backend == "silero"
 
 
+def test_offline_vad_posteriors_do_not_depend_on_the_threshold():
+    audio = _make_voice(48_000, seconds=3.0)
+    low, backend = vad_analysis.analyze_offline_vad(audio, 48_000, threshold=0.2)
+    if backend != "silero":
+        pytest.skip("Silero model not provisioned (set VAD_MODEL_PATH)")
+    high, _ = vad_analysis.analyze_offline_vad(audio, 48_000, threshold=0.8)
+
+    assert low is not None and high is not None
+    np.testing.assert_array_equal(low, high)
+
+
+@pytest.mark.parametrize(("level", "analyses"), [(2.0, 2), (0.05, 4)], ids=["unity-gain", "gained"])
+def test_the_setup_analysis_measures_a_capture_again_only_for_another_vad_gain(monkeypatch, level, analyses):
+    class Stop(Exception):
+        pass
+
+    gains: list[float] = []
+    given: dict[str, Any] = {}
+
+    def fake_offline_vad(audio, _sample_rate, *, threshold=0.48, pre_gain=1.0):
+        del threshold
+        gains.append(pre_gain)
+        return np.full(max(1, np.asarray(audio).size // 512), 0.8, dtype=np.float32), "silero"
+
+    def stop_at_tuning(*_args, **kwargs):
+        given.update(kwargs)
+        raise Stop
+
+    monkeypatch.setattr(voice_setup_module, "analyze_offline_vad", fake_offline_vad)
+    monkeypatch.setattr(voice_setup_module, "tune_gate_suppression_dynamics", stop_at_tuning)
+    with pytest.raises(Stop):
+        analyze_voice_setup(
+            _make_noise(48_000), _make_voice(48_000, seconds=_FULL_ANALYSIS_VOICE_SECONDS, level=level),
+            48_000, "broadcast", vad_available=True,
+        )
+
+    assert len(gains) == analyses
+    assert (gains[-1] != 1.0) == (analyses == 4)
+    assert given["vad_probabilities"] is not None and given["noise_vad_probabilities"] is not None
+
+
 def test_causal_vad_mapping_keeps_exact_44k1_window_timing():
     sample_rate = 44_100
     frame_ends = np.arange(1, 2_001, dtype=np.int64) * 441

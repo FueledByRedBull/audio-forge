@@ -9,6 +9,8 @@ compression after selecting the input stages, then validates the full chain.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
+import threading
 import time
 from typing import Any
 
@@ -16,6 +18,7 @@ import numpy as np
 
 from .auto_eq import simulate_candidate_chain
 from .cancellation import AnalysisCancelled, check_analysis_cancelled
+from .parallel import ANALYSIS_WORKERS
 from .signal_processing import resample_poly
 from .vad import (
     VAD_SPEECH_EVIDENCE_THRESHOLD,
@@ -267,6 +270,18 @@ def _run_gate_suppressor(
         tuple(row) for row in activity_array.tolist()
     ]
     return normalized
+
+
+class _Render:
+    """A full-wet render that every candidate with the same simulator input shares.
+
+    Candidates evaluated together ask for it at once; the first renders it and the
+    rest wait on the lock. A failed render is left empty, so the next one retries.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.result: dict[str, Any] | None = None
 
 
 def _array_identity(values: np.ndarray) -> tuple[int, int, tuple[int, ...]]:
@@ -710,11 +725,12 @@ def tune_gate_suppression_dynamics(
         0.0,
         1.0,
     )
+    # The posteriors depend on the pre-gain alone; the threshold never reaches them.
     detector_probability_cache: dict[
-        tuple[float, float],
+        float,
         tuple[np.ndarray, np.ndarray, bool, bool] | None,
     ] = {
-        (base_detector_gain, base_detector_threshold): (
+        base_detector_gain: (
             speech_probabilities,
             noise_probabilities,
             vad_probabilities is not None,
@@ -735,9 +751,8 @@ def tune_gate_suppression_dynamics(
             0.0,
             1.0,
         )
-        cache_key = (detector_gain, detector_threshold)
-        if cache_key in detector_probability_cache:
-            return detector_probability_cache[cache_key]
+        if detector_gain in detector_probability_cache:
+            return detector_probability_cache[detector_gain]
         if vad_probabilities is None:
             return (
                 speech_probabilities,
@@ -780,7 +795,7 @@ def tune_gate_suppression_dynamics(
                 True,
                 True,
             )
-        detector_probability_cache[cache_key] = cached
+        detector_probability_cache[detector_gain] = cached
         return cached
 
     base_release = float(base_gate.get("release_ms", 120.0))
@@ -811,8 +826,15 @@ def tune_gate_suppression_dynamics(
             )
             progress_callback(detail, progress)
 
-    render_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+    # The native renders report wall time, which runs longer the more of them share the
+    # processors. The feasibility gate asks whether a model keeps up with real time, so each
+    # model's cost is taken from its first candidate, evaluated alone, and every other
+    # candidate of the model, and its held-out check, carries that figure.
+    probe_runtime_factors: dict[str, float] = {}
+    render_cache: dict[tuple[Any, ...], _Render] = {}
     joined_capture_cache: dict[tuple[Any, ...], tuple[np.ndarray, np.ndarray, int]] = {}
+    # Candidates are evaluated on several threads; the caches are shared between them.
+    cache_lock = threading.Lock()
 
     def run_cached_suppressor(
         audio: np.ndarray,
@@ -838,18 +860,20 @@ def tune_gate_suppression_dynamics(
             str(candidate_model),
             _settings_identity(render_settings),
         )
-        if cache_key not in render_cache:
-            full_wet = _run_gate_suppressor(
-                simulator,
-                audio,
-                probabilities,
-                render_settings,
-                suppressor_strength=1.0,
-                noise_model=candidate_model,
-                return_dry_audio=True,
-            )
-            render_cache[cache_key] = full_wet
-        return _mix_cached_suppressor_render(render_cache[cache_key], candidate_strength)
+        with cache_lock:
+            render = render_cache.setdefault(cache_key, _Render())
+        with render.lock:
+            if render.result is None:
+                render.result = _run_gate_suppressor(
+                    simulator,
+                    audio,
+                    probabilities,
+                    render_settings,
+                    suppressor_strength=1.0,
+                    noise_model=candidate_model,
+                    return_dry_audio=True,
+                )
+        return _mix_cached_suppressor_render(render.result, candidate_strength)
 
     def evaluate(
         candidate_model: str,
@@ -866,7 +890,13 @@ def tune_gate_suppression_dynamics(
         evaluation_speech_vad_available: bool,
         evaluation_speech_evidence_probabilities: np.ndarray,
         render_namespace: str,
-    ) -> dict[str, Any] | None:
+        model_runtime_factor: float | None = None,
+    ) -> dict[str, Any] | str:
+        """Return the evaluated candidate, or why it could not be evaluated.
+
+        ``model_runtime_factor`` is the model's measured cost (see ``probe_runtime_factors``);
+        without one, the candidate's own timings are its cost.
+        """
         check_analysis_cancelled(cancel_check)
         candidate_strength = _clamp(float(requested_strength), 0.0, 1.0)
         candidate_gate, simulator_gate = _candidate_settings(
@@ -896,12 +926,13 @@ def tune_gate_suppression_dynamics(
                 _array_identity(evaluation_speech_probabilities),
                 _array_identity(evaluation_noise_probabilities),
             )
-            if joined_key not in joined_capture_cache:
-                joined_capture_cache[joined_key] = _join_captures(
-                    evaluation_speech, evaluation_noise,
-                    evaluation_speech_probabilities, evaluation_noise_probabilities,
-                )
-            joined_audio, joined_probabilities, noise_start = joined_capture_cache[joined_key]
+            with cache_lock:
+                if joined_key not in joined_capture_cache:
+                    joined_capture_cache[joined_key] = _join_captures(
+                        evaluation_speech, evaluation_noise,
+                        evaluation_speech_probabilities, evaluation_noise_probabilities,
+                    )
+                joined_audio, joined_probabilities, noise_start = joined_capture_cache[joined_key]
             rendered = run_cached_suppressor(
                 joined_audio,
                 joined_probabilities,
@@ -974,6 +1005,16 @@ def tune_gate_suppression_dynamics(
                 if np.any(active_slice)
                 else 1.0
             )
+            measured_runtime_factor = (
+                _metric_float(rendered, "runtime_ms", 0.0)
+                + _metric_float(speech_downstream, "candidate_runtime_ms", 0.0)
+                + _metric_float(noise_downstream, "candidate_runtime_ms", 0.0)
+            ) / max(
+                1.0,
+                1000.0
+                * (evaluation_noise.size + evaluation_speech.size)
+                / _SIMULATION_RATE,
+            )
             metrics = {
                 "speech_retained_ratio": _retained_ratio(
                     speech_out_rms, speech_in_rms, active
@@ -1020,15 +1061,9 @@ def tune_gate_suppression_dynamics(
                     bool(speech_downstream.get("non_finite_output", True))
                 ),
                 "runtime_factor": (
-                    _metric_float(rendered, "runtime_ms", 0.0)
-                    + _metric_float(speech_downstream, "candidate_runtime_ms", 0.0)
-                    + _metric_float(noise_downstream, "candidate_runtime_ms", 0.0)
-                )
-                / max(
-                    1.0,
-                    1000.0
-                    * (evaluation_noise.size + evaluation_speech.size)
-                    / _SIMULATION_RATE,
+                    measured_runtime_factor
+                    if model_runtime_factor is None
+                    else model_runtime_factor
                 ),
                 "suppressor_latency_samples": float(speech_latency_samples),
                 "suppressor_latency_ms": suppressor_latency_ms,
@@ -1049,10 +1084,15 @@ def tune_gate_suppression_dynamics(
         except AnalysisCancelled:
             raise
         except Exception as exc:
-            reason = f"{type(exc).__name__}: {exc}"
-            failure_reasons.append(f"{candidate_model} unavailable: {reason}")
-            model_failure_reasons.setdefault(candidate_model, []).append(reason)
+            return f"{type(exc).__name__}: {exc}"
+
+    def settled(model: str, outcome: dict[str, Any] | str) -> dict[str, Any] | None:
+        """Pass an evaluated candidate through; note why a failed one failed, in the order asked."""
+        if isinstance(outcome, str):
+            failure_reasons.append(f"{model} unavailable: {outcome}")
+            model_failure_reasons.setdefault(model, []).append(outcome)
             return None
+        return outcome
 
     # Split at complete 10 ms frames; only the first half selects parameters.
     if min(noise_split, speech_split) < _FRAME_SAMPLES:
@@ -1140,70 +1180,80 @@ def tune_gate_suppression_dynamics(
             )
 
         evaluated_for_model: list[dict[str, Any]] = []
-        for (
-            candidate_base,
-            requested_strength,
-            _delta,
-            threshold_delta,
-            release_delta,
-            candidate_is_incumbent,
-        ) in candidate_specs:
-            candidate_gate, _simulator_gate = _candidate_settings(
-                candidate_base,
-                noise_floor_db=measured_noise_floor,
-                strength=requested_strength,
-                threshold_delta_db=threshold_delta,
-                release_delta_ms=release_delta,
-            )
-            detector_evidence = detector_probabilities(candidate_gate)
-            if detector_evidence is None:
-                detector_gain = float(candidate_gate.get("vad_pre_gain", 1.0))
-                reason = (
-                    f"VAD evidence unavailable for detector pre-gain "
-                    f"{detector_gain:g}"
+        with ThreadPoolExecutor(max_workers=ANALYSIS_WORKERS) as pool:
+
+            def start(
+                spec: tuple[Mapping[str, Any], float, float, float, float, bool],
+            ) -> Future[dict[str, Any] | str] | str:
+                """Queue one candidate, or say why its detector evidence is missing."""
+                (
+                    candidate_base,
+                    requested_strength,
+                    _delta,
+                    threshold_delta,
+                    release_delta,
+                    candidate_is_incumbent,
+                ) = spec
+                candidate_gate, _simulator_gate = _candidate_settings(
+                    candidate_base,
+                    noise_floor_db=measured_noise_floor,
+                    strength=requested_strength,
+                    threshold_delta_db=threshold_delta,
+                    release_delta_ms=release_delta,
                 )
-                failure_reasons.append(f"{candidate_model} unavailable: {reason}")
-                model_failure_reasons.setdefault(candidate_model, []).append(reason)
+                detector_evidence = detector_probabilities(candidate_gate)
+                if detector_evidence is None:
+                    detector_gain = float(candidate_gate.get("vad_pre_gain", 1.0))
+                    return (
+                        f"VAD evidence unavailable for detector pre-gain "
+                        f"{detector_gain:g}"
+                    )
+                (
+                    candidate_speech_probabilities,
+                    candidate_noise_probabilities,
+                    candidate_speech_vad_available,
+                    candidate_noise_vad_available,
+                ) = detector_evidence
+                return pool.submit(
+                    evaluate,
+                    candidate_model,
+                    candidate_base,
+                    requested_strength,
+                    threshold_delta,
+                    release_delta,
+                    candidate_is_incumbent,
+                    simulation_noise[:noise_split],
+                    simulation_speech[:speech_split],
+                    candidate_noise_probabilities[: noise_split // _FRAME_SAMPLES],
+                    candidate_speech_probabilities[: speech_split // _FRAME_SAMPLES],
+                    candidate_noise_vad_available,
+                    candidate_speech_vad_available,
+                    speech_evidence_probabilities[: speech_split // _FRAME_SAMPLES],
+                    "training",
+                    probe_runtime_factors.get(candidate_model),
+                )
+
+            def record(queued: Future[dict[str, Any] | str] | str) -> None:
+                """Take in one candidate's outcome; callers go in candidate order."""
+                outcome = queued.result() if isinstance(queued, Future) else queued
+                candidate = settled(candidate_model, outcome)
                 report_search_progress(
                     f"Searching suppression candidates ({progress_attempts + 1} checked)..."
                 )
-                if not evaluated_for_model:
-                    break
-                continue
-            (
-                candidate_speech_probabilities,
-                candidate_noise_probabilities,
-                candidate_speech_vad_available,
-                candidate_noise_vad_available,
-            ) = detector_evidence
-            candidate = evaluate(
-                candidate_model,
-                candidate_base,
-                requested_strength,
-                threshold_delta,
-                release_delta,
-                candidate_is_incumbent,
-                simulation_noise[:noise_split],
-                simulation_speech[:speech_split],
-                candidate_noise_probabilities[: noise_split // _FRAME_SAMPLES],
-                candidate_speech_probabilities[: speech_split // _FRAME_SAMPLES],
-                candidate_noise_vad_available,
-                candidate_speech_vad_available,
-                speech_evidence_probabilities[: speech_split // _FRAME_SAMPLES],
-                "training",
-            )
-            report_search_progress(
-                f"Searching suppression candidates ({progress_attempts + 1} checked)..."
-            )
-            if candidate is None:
-                # A model's first attempt is its backend availability probe.
-                # Do not spend the remaining bounded budget repeating a known
-                # unavailable backend; retain the reason in model_evaluations.
-                if not evaluated_for_model:
-                    break
-                continue
-            candidates.append(candidate)
-            evaluated_for_model.append(candidate)
+                if candidate is not None:
+                    candidates.append(candidate)
+                    evaluated_for_model.append(candidate)
+
+            # A model's first attempt is its backend availability probe.
+            # Do not spend the remaining bounded budget repeating a known
+            # unavailable backend; retain the reason in model_evaluations.
+            record(start(candidate_specs[0]))
+            if evaluated_for_model:
+                probe_runtime_factors[candidate_model] = evaluated_for_model[0]["metrics"][
+                    "runtime_factor"
+                ]
+                for queued in [start(spec) for spec in candidate_specs[1:]]:
+                    record(queued)
         model_evaluations.append(
             _model_evaluation(
                 candidate_model,
@@ -1290,44 +1340,53 @@ def tune_gate_suppression_dynamics(
                 incumbent_speech_vad_available,
                 incumbent_noise_vad_available,
             ) = incumbent_detector_evidence
-            holdout = evaluate(
-                selected["model"],
-                selected["gate"],
-                selected["suppressor_strength"],
-                0.0,
-                0.0,
-                False,
-                simulation_noise[noise_split:],
-                simulation_speech[speech_split:],
-                selected_noise_probabilities[noise_split // _FRAME_SAMPLES :],
-                selected_speech_probabilities[speech_split // _FRAME_SAMPLES :],
-                selected_noise_vad_available,
-                selected_speech_vad_available,
-                speech_evidence_probabilities[speech_split // _FRAME_SAMPLES :],
-                "holdout",
-            )
-            report_search_progress(
-                f"Checking suppression holdout ({progress_attempts + 1} checked)..."
-            )
-            holdout_incumbent = evaluate(
-                incumbent_model,
-                incumbent_gate,
-                incumbent_strength,
-                0.0,
-                0.0,
-                True,
-                simulation_noise[noise_split:],
-                simulation_speech[speech_split:],
-                incumbent_noise_probabilities[noise_split // _FRAME_SAMPLES :],
-                incumbent_speech_probabilities[speech_split // _FRAME_SAMPLES :],
-                incumbent_noise_vad_available,
-                incumbent_speech_vad_available,
-                speech_evidence_probabilities[speech_split // _FRAME_SAMPLES :],
-                "holdout",
-            )
-            report_search_progress(
-                f"Checking suppression holdout ({progress_attempts + 1} checked)..."
-            )
+            with ThreadPoolExecutor(max_workers=min(2, ANALYSIS_WORKERS)) as pool:
+                queued_holdout = pool.submit(
+                    evaluate,
+                    selected["model"],
+                    selected["gate"],
+                    selected["suppressor_strength"],
+                    0.0,
+                    0.0,
+                    False,
+                    simulation_noise[noise_split:],
+                    simulation_speech[speech_split:],
+                    selected_noise_probabilities[noise_split // _FRAME_SAMPLES :],
+                    selected_speech_probabilities[speech_split // _FRAME_SAMPLES :],
+                    selected_noise_vad_available,
+                    selected_speech_vad_available,
+                    speech_evidence_probabilities[speech_split // _FRAME_SAMPLES :],
+                    "holdout",
+                    probe_runtime_factors[selected["model"]],
+                )
+                queued_holdout_incumbent = pool.submit(
+                    evaluate,
+                    incumbent_model,
+                    incumbent_gate,
+                    incumbent_strength,
+                    0.0,
+                    0.0,
+                    True,
+                    simulation_noise[noise_split:],
+                    simulation_speech[speech_split:],
+                    incumbent_noise_probabilities[noise_split // _FRAME_SAMPLES :],
+                    incumbent_speech_probabilities[speech_split // _FRAME_SAMPLES :],
+                    incumbent_noise_vad_available,
+                    incumbent_speech_vad_available,
+                    speech_evidence_probabilities[speech_split // _FRAME_SAMPLES :],
+                    "holdout",
+                    probe_runtime_factors[incumbent_model],
+                )
+                holdout = settled(selected["model"], queued_holdout.result())
+                report_search_progress(
+                    f"Checking suppression holdout ({progress_attempts + 1} checked)..."
+                )
+                holdout_incumbent = settled(
+                    incumbent_model, queued_holdout_incumbent.result()
+                )
+                report_search_progress(
+                    f"Checking suppression holdout ({progress_attempts + 1} checked)..."
+                )
             if holdout is not None and holdout_incumbent is not None:
                 holdout["gates"] = _gates(holdout["metrics"], holdout_incumbent["metrics"])
                 holdout["passes"] = bool(all(holdout["gates"].values()))

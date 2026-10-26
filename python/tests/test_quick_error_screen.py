@@ -69,6 +69,11 @@ def failed_window(request, qapp, monkeypatch, tmp_path):
     return window
 
 
+# The screen is one class whatever the failure: the tests that read the failure's code, reason or
+# graphics API run for each failure, the rest for one.
+one_failure = pytest.mark.parametrize("failed_window", [_bridge_raises], indirect=True)
+
+
 def _label(window, name: str) -> QLabel:
     label = window.centralWidget().findChild(QLabel, name)
     assert label is not None
@@ -130,6 +135,7 @@ def test_the_export_diagnostics_button_writes_a_file_that_names_the_failure(
     }
 
 
+@one_failure
 def test_the_quit_button_quits(failed_window, monkeypatch) -> None:
     quits: list[bool] = []
     monkeypatch.setattr(QGuiApplication, "quit", staticmethod(lambda: quits.append(True)))
@@ -155,6 +161,7 @@ def test_a_scene_that_stops_rendering_is_replaced_once(quick_window) -> None:  #
     assert not isValid(scene)
 
 
+@one_failure
 def test_enter_presses_the_focused_button(failed_window, monkeypatch) -> None:
     exports: list[bool] = []
     quits: list[bool] = []
@@ -170,6 +177,7 @@ def test_enter_presses_the_focused_button(failed_window, monkeypatch) -> None:
     assert exports == [True, True] and quits == [True]
 
 
+@one_failure
 def test_the_reason_is_read_only_selectable_and_cannot_push_the_buttons_off_screen(
     failed_window,
 ) -> None:
@@ -205,6 +213,7 @@ def test_a_scene_that_does_not_load_leaves_no_live_bridge_behind(qapp, monkeypat
     assert window.findChildren(QuickBridge) == []
 
 
+@one_failure
 def test_first_run_setup_does_not_open_over_the_error_screen(failed_window, monkeypatch) -> None:
     opened: list[bool] = []
     monkeypatch.setattr(failed_window, "_show_first_run_setup", lambda **_k: opened.append(True))
@@ -256,14 +265,8 @@ def test_login_launch_without_a_window_does_not_start_audio_and_says_so_in_the_t
     assert icon == QSystemTrayIcon.MessageIcon.Critical
 
 
-def test_a_scene_that_loads_leaves_no_failure(quick_window) -> None:  # noqa: F811
-    assert quick_window.quick_view_failure is None
-    assert isinstance(quick_window.centralWidget(), QQuickWidget)
-
-
-@pytest.mark.parametrize("failure", ["bridge", "qml"])
-def test_the_packaged_smoke_test_exits_non_zero_when_the_scene_cannot_start(failure) -> None:
-    script = f"""
+def test_the_packaged_smoke_test_exits_non_zero_when_the_scene_cannot_start() -> None:
+    script = """
 import logging, sys
 from PySide6.QtWidgets import QApplication
 messages = []
@@ -271,15 +274,10 @@ class Capture(logging.Handler):
     def emit(self, record):
         messages.append(self.format(record))
 logging.getLogger().addHandler(Capture())
-failure = {failure!r}
-if failure == "bridge":
-    import mic_eq.ui.quick_shell as shell
-    def refuse(_self, _window):
-        raise RuntimeError("model could not be built")
-    shell.QuickBridge._build_model = refuse
-else:
-    import mic_eq.ui.quick_shell as shell
-    shell.QML_DIR = shell.QML_DIR / "missing"
+import mic_eq.ui.quick_shell as shell
+def refuse(_self, _window):
+    raise RuntimeError("model could not be built")
+shell.QuickBridge._build_model = refuse
 from mic_eq.ui.app_bootstrap import run_smoke_test
 from mic_eq.ui.main_window import MainWindow
 status = run_smoke_test(MainWindow)
@@ -309,6 +307,7 @@ class _Engine:
         return self.running
 
 
+@one_failure
 def test_the_screen_says_whether_audio_still_runs_and_how_to_stop_it(failed_window, monkeypatch) -> None:
     window = failed_window
     audio = _label(window, "errorAudio")

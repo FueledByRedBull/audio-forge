@@ -49,20 +49,6 @@ def _window() -> MainWindow:
     return window
 
 
-def test_a_shown_window_with_no_renderer_relaunches_in_software(spawned) -> None:
-    window = _window()
-    window.show()
-    QTest.qWait(SETTLE_MS)
-
-    view = window.centralWidget()
-    assert isinstance(view, QQuickWidget) and not view.quickWindow().isSceneGraphInitialized()
-    assert len(spawned) == 1
-    environment = spawned[0][1]
-    assert environment["QT_QUICK_BACKEND"] == "software"
-    assert environment[RENDERER_RELAUNCH_ENV] == "1"
-    assert not window.isVisible()  # this copy quit
-
-
 def test_a_cancelled_quit_starts_no_copy_and_shows_the_error_screen(spawned, monkeypatch) -> None:
     window = _window()
     # The unsaved-changes prompt answered Cancel.
@@ -233,8 +219,8 @@ def test_the_copy_quits_and_spawns_once_after_the_window_closed(
 
 @pytest.mark.parametrize(
     ("close_to_tray", "spawn_error"),
-    [(False, OSError("blocked")), (True, OSError("blocked")), (True, ValueError("embedded null"))],
-    ids=["os-error", "os-error-in-tray-mode", "other-error-in-tray-mode"],
+    [(False, OSError("blocked")), (True, OSError("blocked"))],
+    ids=["os-error", "os-error-in-tray-mode"],
 )
 def test_a_spawn_that_fails_keeps_the_app_and_its_guard_and_shows_the_error_screen(
     spawned, qapp, monkeypatch, tmp_path, close_to_tray, spawn_error

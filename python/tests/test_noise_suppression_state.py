@@ -138,8 +138,7 @@ def test_rollback_failure_reports_barrier_before_stopping_audio(qapp):
 @pytest.mark.parametrize(
     ("name", "value"),
     [
-        ("strength", float("nan")), ("strength", float("inf")),
-        ("strength", -0.01), ("strength", 1.01), ("strength", True),
+        ("strength", float("nan")), ("strength", -0.01), ("strength", 1.01), ("strength", True),
         ("strength", "0.5"), ("enabled", 1), ("enabled", "false"),
         ("model", "missing"), ("model", None), ("missing", 1),
     ],

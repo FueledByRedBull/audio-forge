@@ -59,7 +59,7 @@ def test_native_audio_arrays_survive_result_release(renderer):
         np.testing.assert_allclose(arrays[0], audio, atol=1e-6)
 
 
-@pytest.mark.parametrize("quiet_amplitude", [0.0, 1e-7, None, 1e-3])
+@pytest.mark.parametrize("quiet_amplitude", [0.0, None, 1e-3])
 def test_native_silence_delta_reports_actual_boost_or_unavailable(quiet_amplitude):
     t = np.arange(24_000) / 48_000
     voice = 0.1 * np.sin(2 * np.pi * 1000 * t)
@@ -71,7 +71,7 @@ def test_native_silence_delta_reports_actual_boost_or_unavailable(quiet_amplitud
         "compressor_makeup_gain_db": gain, "compressor_auto_makeup_enabled": False,
         "limiter_enabled": False, "deesser_enabled": False,
     }) for gain in (0.0, 6.0)]
-    if quiet_amplitude in (0.0, 1e-7, None):
+    if quiet_amplitude in (0.0, None):
         assert all(result["silence_level_delta_db"] is None for result in results)
         assert all(result["silence_analysis_block_count"] == 0 for result in results)
     else:

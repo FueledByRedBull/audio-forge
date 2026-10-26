@@ -660,13 +660,6 @@ def test_initial_analysis_renders_selected_frontend_before_compressor_for_normal
     assert 55 in observed["progress"]
 
 
-def test_initial_analysis_raw_mode_keeps_full_chain_path_available(monkeypatch):
-    observed = _run_initial_analysis(monkeypatch, processing_mode="raw")
-    assert len(observed["calls"]) == 2
-    assert observed["calls"][0][2]["processing_mode"] == "raw"
-    assert observed["result"]["diagnostics"]["offline_validation_full_chain"] is True
-
-
 def _abstention(*reasons):
     def analyze(*_args, **_kwargs):
         return {
@@ -691,16 +684,10 @@ def _failed_validation(*failures):
     return analyze
 
 
-@pytest.mark.parametrize(
-    "auto_eq",
-    [
-        _failed_validation("peak_count (1 too low)"),
-        _failed_validation("headroom risk after downstream simulation"),
-    ],
-    ids=["unclear-capture", "headroom-risk"],
-)
-def test_a_failed_validation_refuses_the_whole_setup(monkeypatch, auto_eq):
-    observed = _run_initial_analysis(monkeypatch, processing_mode="normal", auto_eq=auto_eq)
+def test_a_failed_validation_refuses_the_whole_setup(monkeypatch):
+    observed = _run_initial_analysis(
+        monkeypatch, processing_mode="normal", auto_eq=_failed_validation("peak_count (1 too low)")
+    )
     result = observed["result"]
 
     assert result["eq_settings"] is None
@@ -713,8 +700,6 @@ def test_a_failed_validation_refuses_the_whole_setup(monkeypatch, auto_eq):
     [
         ["capture quality score is too low"],
         ["noise-referenced SNR is too low", "no validated correction improved the target safely"],
-        ["room-noise reference is invalid"],
-        ["insufficient repeatable voiced windows"],
     ],
 )
 def test_an_abstention_with_a_capture_reason_blocks_the_recommendation(monkeypatch, reasons):

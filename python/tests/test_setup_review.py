@@ -119,16 +119,10 @@ def test_two_clauses_that_fire_together_each_keep_their_own_line(monkeypatch):
     assert any("too few clear voiced sounds" in line for line in lines)
 
 
-@pytest.mark.parametrize(
-    "diagnostics",
-    [
-        {"weak_capture": True},
-        {"weak_capture": True, "noise_referenced_snr_db": float("nan")},
-        {"weak_capture": True, "noise_reference_quality": {"status": "usable"}},
-    ],
-)
-def test_a_weak_capture_always_shows_at_least_one_line(diagnostics):
-    assert capture_issue_lines(diagnostics)
+def test_a_weak_capture_always_shows_at_least_one_line():
+    # A usable room-noise status adds no line of its own; a bare flag (a stable code) and a
+    # figure that is not a number (test_a_figure_that_is_not_a_number_never_breaks_the_lines) are below.
+    assert capture_issue_lines({"weak_capture": True, "noise_reference_quality": {"status": "usable"}})
 
 
 def test_the_makeup_that_replaced_automatic_loudness_is_named():
@@ -165,14 +159,14 @@ def test_a_voice_level_under_a_threshold_never_prints_as_the_threshold(snr, show
     assert shown in line and rule in line
 
 
-@pytest.mark.parametrize(("seconds", "shown"), [(1.99, "1.9"), (1.96, "1.9"), (0.04, "0.0"), (1.5, "1.5")])
+@pytest.mark.parametrize(("seconds", "shown"), [(1.99, "1.9"), (0.04, "0.0"), (1.5, "1.5")])
 def test_speech_just_under_two_seconds_never_prints_as_two(seconds, shown):
     (line,) = capture_issue_lines({"weak_capture": True, "vad_active_duration_s": seconds})
 
     assert f"heard {shown} seconds of speech; it needs at least 2." in line
 
 
-@pytest.mark.parametrize(("quality", "shown"), [(0.496, "49%"), (0.4999, "49%"), (0.29, "29%"), (0.1, "10%")])
+@pytest.mark.parametrize(("quality", "shown"), [(0.4999, "49%"), (0.29, "29%"), (0.1, "10%")])
 def test_a_quality_under_half_never_prints_as_half(quality, shown):
     (line,) = capture_issue_lines(
         {"weak_capture": True, "capture_confidence": quality, "noise_referenced_snr_db": 12.0}

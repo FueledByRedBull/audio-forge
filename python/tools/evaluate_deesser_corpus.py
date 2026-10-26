@@ -340,29 +340,11 @@ def train_and_evaluate() -> dict[str, Any]:
         frame_labels,
         regularization=2.0,
     )
-    final_frame_probabilities = _sigmoid(
-        frame_intercept + frame_features @ frame_coefficients
-    )
-    final_clip_features: list[list[float]] = []
-    for clip in clips:
-        start = int(clip["row_start"])
-        stop = start + int(clip["row_count"])
-        probabilities = final_frame_probabilities[start:stop]
-        raw_features = frame_features[start:stop]
-        top_count = max(1, int(np.ceil(probabilities.size * 0.10)))
-        final_clip_features.append(
-            [
-                float(np.percentile(probabilities, 90.0)),
-                float(np.mean(np.partition(probabilities, -top_count)[-top_count:])),
-                float(np.mean(probabilities)),
-                float(clip["temporal_score"]),
-                float(np.percentile(raw_features[:, 0], 90.0)),
-                float(np.percentile(raw_features[:, 2], 90.0)),
-            ]
-        )
-    final_clip_features_array = np.asarray(final_clip_features, dtype=float)
+    # The shipped clip stage reads the out-of-fold frame scores it was thresholded and is reported
+    # on. Scores from the frame model fitted on every frame would be in-sample for these same
+    # clips, and the shipped model only ever scores clips it was not fitted on.
     clip_intercept, clip_coefficients = _fit_logistic(
-        final_clip_features_array,
+        clip_features_oof_array,
         clip_labels_array,
         regularization=0.4,
     )

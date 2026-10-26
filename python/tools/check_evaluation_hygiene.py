@@ -11,6 +11,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, NoReturn
 
+from evaluation_decision import block_errors
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EVALUATION_ROOT = REPO_ROOT / "evaluation"
@@ -437,6 +439,9 @@ def validate_report(path: Path, *, unverified: list[str] | None = None) -> list[
     )
     schema_version, schema_errors = _validated_schema_version(path, report)
     errors.extend(schema_errors)
+    decision = report.get("decision")
+    if isinstance(decision, dict) and "outcome" in decision:
+        errors.extend(f"{path}: {error}" for error in block_errors(decision))
 
     for location, value in _walk_strings(report):
         if LOCAL_PATH.search(value):

@@ -187,3 +187,48 @@ def test_out_of_fold_split_holds_out_whole_clips_and_balances_labels(monkeypatch
         ]
         assert sum(clip["row_count"] for clip in held_clips) == len(rows)
         assert sorted(int(clip["label"]) for clip in held_clips) == [0, 1, 1]
+
+
+def test_the_shipped_clip_stage_trains_on_the_out_of_fold_scores_it_is_thresholded_on(monkeypatch):
+    clips = []
+    next_row = 0
+    for index in range(18):
+        row_count = 2 + index % 3
+        clips.append(
+            {
+                "name": f"clip-{index}",
+                "label": int(index % 3 != 0),
+                "condition": "generated",
+                "temporal_score": 0.1 * (index % 4),
+                "row_start": next_row,
+                "row_count": row_count,
+            }
+        )
+        next_row += row_count
+    rng = np.random.default_rng(3)
+    features = rng.random((next_row, 3))
+    labels = (rng.random(next_row) < 0.3).astype(int)
+    monkeypatch.setattr(
+        evaluate_deesser_corpus, "_extract_corpus", lambda: (features, labels, clips)
+    )
+    monkeypatch.setattr(
+        evaluate_deesser_corpus, "_low_false_activation_threshold", lambda *_a, **_k: 0.5
+    )
+    fits: list[tuple[float, np.ndarray]] = []
+
+    def record_fit(train_features, train_labels, *, regularization, **kwargs):
+        fits.append((regularization, np.array(train_features)))
+        # A frame model that depends on the rows it was fitted on, so its scores differ
+        # between a fold's model and the model fitted on every row.
+        if regularization == 2.0:
+            return 0.0, np.asarray(train_features).mean(axis=0)
+        return 0.0, np.zeros(np.asarray(train_features).shape[1])
+
+    monkeypatch.setattr(evaluate_deesser_corpus, "_fit_logistic", record_fit)
+
+    evaluate_deesser_corpus.train_and_evaluate()
+
+    # Six folds, then the clip stage on every clip's out-of-fold scores.
+    *fold_fits, shipped_fit = [rows for regularization, rows in fits if regularization == 0.4]
+    assert len(fold_fits) == 6
+    assert {tuple(row) for row in shipped_fit} == {tuple(row) for rows in fold_fits for row in rows}

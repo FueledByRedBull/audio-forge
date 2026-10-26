@@ -22,6 +22,9 @@ deep-pause and tail level are read against the input. Each is defined as at v1.1
     python python/tools/bench_report.py --output bench.md --json-output bench.json
     python python/tools/bench_report.py --output after.md --json-output after.json --compare bench.json
 
+The numbers carry the common decision block of evaluation/README.md. It reads `measured` until the maintainer decides:
+`--decision adopt|retain --reason "..." --by NAME` records it.
+
 Silero is used when `VAD_MODEL_PATH` or `models/silero_vad.onnx` is available; without it the VAD is
 reported as unavailable and the gate and Voice Setup run on their energy path. DeepFilter is not
 needed; RNNoise is the suppressor. The full set takes about ten minutes. The Voice Setup tuner reads
@@ -37,12 +40,14 @@ import platform
 import subprocess
 import sys
 import time
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 import bench_metrics as bm
+from evaluation_decision import decision_block
 
 SCHEMA_VERSION = 1
 # (key, heading, decimals)
@@ -191,6 +196,7 @@ def markdown(result: dict[str, Any]) -> str:
         f"`{build['git_revision'] or 'not clean'}`, manifest `{build['manifest_sha256'][:16]}`.",
         f"- VAD: {'Silero' if build['vad'] == 'silero' else 'unavailable (energy path)'}.",
         f"- Suppressor: {_suppressors(mixes)}. AUDIOFORGE_ENABLE_DEEPFILTER: {build.get('deepfilter_enabled') or 'unset'}.",
+        f"- Decision: {result['decision']['outcome']}; {result['decision']['reason']}",
         f"- Run time: {result['run_seconds']:.0f} s wall, {sum(e['factory']['cpu_s'] for e in mixes.values()):.1f} s "
         f"CPU in the factory renders.",
         "",
@@ -264,7 +270,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json-output", type=Path, help="write the numbers and the build identity here; each "
                         "finished mix is also appended to <file>.partial.jsonl until the run ends")
     parser.add_argument("--compare", type=Path, help="an earlier report's JSON; print after-minus-before deltas")
+    parser.add_argument("--decision", choices=("adopt", "retain"), help="record the maintainer's decision on these numbers")
+    parser.add_argument("--reason", help="why, in a sentence (required with --decision)")
+    parser.add_argument("--by", help="who decided (required with --decision)")
     args = parser.parse_args(argv)
+    if (args.reason or args.by) and not args.decision:
+        parser.error("--reason and --by go with --decision")
+    try:  # fail before the run, not after ten minutes
+        decision = (decision_block(args.decision, args.reason, date.today().isoformat(), args.by) if args.decision else
+                    decision_block("measured", "The numbers are information; the maintainer decides."))
+    except ValueError as error:
+        parser.error(str(error))
     earlier = None
     if args.compare:  # fail before the run, not after ten minutes
         try:
@@ -284,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     started = time.perf_counter()
     partial = args.json_output.with_name(args.json_output.name + ".partial.jsonl") if args.json_output else None
     mixes = run(bench, mix_ids, vad, with_voice_setup=not args.skip_voice_setup, partial=partial)
-    result = {"schema_version": SCHEMA_VERSION, "build": build_identity(args.bench_dir, vad),
+    result = {"schema_version": SCHEMA_VERSION, "decision": decision, "build": build_identity(args.bench_dir, vad),
               "run_seconds": time.perf_counter() - started, "mixes": mixes}
     text = markdown(result)
     if earlier:

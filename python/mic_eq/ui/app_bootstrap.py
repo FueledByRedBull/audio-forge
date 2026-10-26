@@ -22,6 +22,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
 from .. import configure_deepfilter_runtime_paths
 from ..app_logging import configure_app_logging, get_log_file
+from ..config_parts import shared
 from .desktop_integration import SingleInstanceCoordinator, activate_window
 from .login_startup import LOGIN_STARTUP_ARGUMENT
 from .theme import apply_application_theme
@@ -349,13 +350,15 @@ def _crash_diagnostics() -> Iterator[Callable[[], None]]:
 
     # A sibling file: a second handle on app.log would block its rotation on Windows.
     crash_file = None
-    try:
-        crash_file = open(
-            configure_app_logging().with_name("crash.log"), "a", encoding="utf-8"
-        )
-        faulthandler.enable(crash_file)
-    except OSError:
-        pass
+    log_file = configure_app_logging()
+    # Logging has run the pending config migration or left it pending. An open file inside the
+    # config folder would make the migration's directory swap fail, so crash.log waits for it.
+    if not shared.migration_pending():
+        try:
+            crash_file = open(log_file.with_name("crash.log"), "a", encoding="utf-8")
+            faulthandler.enable(crash_file)
+        except OSError:
+            pass
 
     sys.excepthook = log_uncaught
     threading.excepthook = log_thread_uncaught

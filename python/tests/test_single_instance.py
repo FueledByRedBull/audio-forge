@@ -243,6 +243,8 @@ def test_login_lifecycle_keeps_hidden_session_alive_and_releases_lock_on_quit(
             self._confirm_discard_changes = lambda: True
             self._quit_choice = lambda: "quit"
             self._hide_to_tray = lambda: MainWindow._hide_to_tray(cast(MainWindow, self))
+            self._shutdown = lambda: MainWindow._shutdown(cast(MainWindow, self))
+            self._engine = SimpleNamespace(wait=lambda _timeout: True)
             self._unregister_mute_hotkey = lambda: None
             self._save_ui_state = lambda: True
             self.processor = SimpleNamespace(is_running=lambda: False)

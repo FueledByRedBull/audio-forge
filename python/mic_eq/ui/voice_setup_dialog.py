@@ -1810,11 +1810,17 @@ class VoiceSetupDialog(QDialog):
         joint = diagnostics.get("joint_tuning")
         if isinstance(joint, Mapping):
             found = plain_reasons(joint.get("reasons", []))
-            outcome = found[0] if found else (
-                "New noise suppression and gate settings passed the checks."
-                if joint.get("apply_recommended")
-                else "Your current noise suppression and gate settings are kept."
-            )
+            if found:
+                outcome = found[0]
+            elif joint.get("withheld_for") == "questionable_noise_reference":
+                outcome = (
+                    "Noise suppression and the gate were not tuned because the room-noise "
+                    "recording was not steady. Your current settings are kept."
+                )
+            elif joint.get("apply_recommended"):
+                outcome = "New noise suppression and gate settings passed the checks."
+            else:
+                outcome = "Your current noise suppression and gate settings are kept."
             self.overall_label.setText(self.overall_label.text() + f"\n{outcome}")
             details.extend(found[1:])
             self.overall_label.setToolTip(" ".join(details))

@@ -49,7 +49,7 @@ def short_bench(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_report_runs_end_to_end_and_compares_with_an_earlier_run(short_bench: Path, tmp_path: Path, capsys):
     report, numbers = tmp_path / "bench.md", tmp_path / "bench.json"
     assert bench_report.main(["--bench-dir", str(short_bench), "--mixes", "fan-short", "--output", str(report),
-                              "--json-output", str(numbers)]) == 0
+                              "--json-output", str(numbers), "--deesser-on"]) == 0
     assert not numbers.with_name("bench.json.partial.jsonl").exists()  # a finished run leaves no partial file
     result = json.loads(numbers.read_text(encoding="utf-8"))
     entry = result["mixes"]["fan-short"]
@@ -66,6 +66,13 @@ def test_report_runs_end_to_end_and_compares_with_an_earlier_run(short_bench: Pa
     assert all(v in bm.VETOES for v in voice["vetoes"])
     text = report.read_text(encoding="utf-8")
     assert "## Factory chain" in text and "## Voice Setup with Auto-EQ" in text and "fan-short" in text
+    # The de-esser arm, the clauses against the current settings and the compressor step on its own.
+    assert entry["deesser_on"]["finite"] and entry["factory"]["fair"]["finite"]
+    assert "## Factory chain with the de-esser on" in text and "## Voice Setup against the current settings" in text
+    assert "## Compressor step on its own" in text
+    assert voice["noise_reference"]["status"] in {"usable", "questionable", "invalid"} and voice["tuner"]
+    assert set(voice["compressor_step"]) == {"step", "off", "squash"}
+    assert {"proposal", "final"} == set(voice["fair"])
     assert "VAD: unavailable" in text and "- Decision: measured;" in text
     # The suppressor each path used, and whether DeepFilter was enabled, are in the report and the numbers.
     assert factory["suppressor"]["model"] == "rnnoise" and voice["suppressor"]["model"] in {"rnnoise", "deepfilter-ll", "deepfilter"}
@@ -83,6 +90,7 @@ def test_report_runs_end_to_end_and_compares_with_an_earlier_run(short_bench: Pa
     assert "# Bench comparison (after minus before)" in printed
     assert "| fan-short | +0.000 |" in printed
     assert "Voice Setup" not in printed.split("# Bench comparison")[1]
+    assert "de-esser on" not in printed  # the arm is on request only
 
 
 def test_a_decision_given_on_the_command_line_is_recorded_with_its_date(short_bench: Path, tmp_path: Path):
@@ -128,15 +136,15 @@ def test_a_bad_compare_file_stops_the_run_before_any_mix_is_rendered(short_bench
 
 
 def test_a_crash_keeps_the_mixes_that_finished(short_bench: Path, tmp_path: Path, monkeypatch):
-    measure, calls = bm.measure_settings, []
+    make_context, calls = bm.make_context, []
 
-    def crash_on_the_second_mix(*args, **kwargs):
+    def crash_on_the_second_mix(mix):
         calls.append(1)
         if len(calls) == 2:
             raise RuntimeError("simulated crash")
-        return measure(*args, **kwargs)
+        return make_context(mix)
 
-    monkeypatch.setattr(bm, "measure_settings", crash_on_the_second_mix)
+    monkeypatch.setattr(bm, "make_context", crash_on_the_second_mix)
     numbers = tmp_path / "bench.json"
     with pytest.raises(RuntimeError, match="simulated crash"):
         bench_report.main(["--bench-dir", str(short_bench), "--skip-voice-setup", "--json-output", str(numbers)])
@@ -159,3 +167,20 @@ def test_git_revision_ignores_untracked_files_but_not_edits(tmp_path: Path):
     assert bench_report.git_revision(tmp_path) == git("rev-parse", "HEAD")
     (tmp_path / "tracked.txt").write_text("b", encoding="utf-8")
     assert bench_report.git_revision(tmp_path) is None
+
+
+def test_the_snr_sweep_adds_each_distractor_at_the_given_levels_and_nothing_else():
+    bench = bm.load_bench()
+    swept = bench_report.with_snr_sweep(bench, [14.0, 6.5])
+    added = sorted(set(swept.manifest["mixes"]) - set(bench.manifest["mixes"]))
+
+    assert added == ["babble-t08@14", "babble-t08@6.5", "music-t03@14", "music-t03@6.5", "tv-t06@14", "tv-t06@6.5"]
+    recipe, original = swept.manifest["mixes"]["tv-t06@14"], bench.manifest["mixes"]["tv-t06"]
+    assert {**recipe, "noise": {**recipe["noise"], "snr_db": original["noise"]["snr_db"]}} == original
+    assert recipe["noise"]["snr_db"] == 14.0
+    assert bench.manifest["mixes"]["tv-t06"]["noise"]["snr_db"] == 10.0  # the committed set is not touched
+    # The same voice and noise at another level: the capture is quieter by the difference.
+    loud, quiet = bm.build_mix(swept, "tv-t06"), bm.build_mix(swept, "tv-t06@14")
+    assert np.array_equal(loud["clean"], quiet["clean"])
+    ratio = np.std(loud["noise_capture"]) / np.std(quiet["noise_capture"])
+    assert 20 * np.log10(ratio) == pytest.approx(4.0, abs=0.01)

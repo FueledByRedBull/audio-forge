@@ -158,8 +158,115 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ inputs.candidate_run_id }}
 
+      # The five release files are located, staged and hashed here, before the
+      # MSI or the executable of the candidate runs; publish-release re-checks the
+      # staged copies against the recorded hashes.
+      - name: Locate the candidate files
+        id: files
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          $archiveName = "AudioForge-$($env:RELEASE_TAG)-win64-ultra.7z"
+          $installerName = "AudioForge-$($env:RELEASE_TAG)-win64.msi"
+          $sourceName = "AudioForge-$($env:RELEASE_TAG)-source.7z"
+          foreach ($entry in @(
+            @("archive", $archiveName),
+            @("checksum", "$archiveName.sha256"),
+            @("manifest", "$archiveName.manifest.json"),
+            @("metadata", "$archiveName.metadata.json"),
+            @("source_archive", $sourceName),
+            @("source_checksum", "$sourceName.sha256"),
+            @("source_metadata", "$sourceName.metadata.json"),
+            @("installer", $installerName),
+            @("installer_checksum", "$installerName.sha256"),
+            @("installer_manifest", "$installerName.manifest.json"),
+            @("installer_metadata", "$installerName.metadata.json"),
+            @("native_attestation", "AudioForge-$($env:RELEASE_TAG)-deepfilter.provenance.json")
+          )) {
+            $file = @(Get-ChildItem -LiteralPath candidate -Filter $entry[1] -File)
+            if ($file.Count -ne 1) {
+              throw "Candidate artifact must contain exactly one $($entry[1])."
+            }
+            "$($entry[0])=$($file[0].FullName)" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Stage the release assets
+        id: stage
+        env:
+          EXPECTED_SHA256: ${{ inputs.expected_archive_sha256 }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          ARCHIVE: ${{ steps.files.outputs.archive }}
+          CHECKSUM: ${{ steps.files.outputs.checksum }}
+          MANIFEST: ${{ steps.files.outputs.manifest }}
+          METADATA: ${{ steps.files.outputs.metadata }}
+          INSTALLER: ${{ steps.files.outputs.installer }}
+          INSTALLER_CHECKSUM: ${{ steps.files.outputs.installer_checksum }}
+          INSTALLER_MANIFEST: ${{ steps.files.outputs.installer_manifest }}
+          INSTALLER_METADATA: ${{ steps.files.outputs.installer_metadata }}
+          SOURCE_ARCHIVE: ${{ steps.files.outputs.source_archive }}
+          SOURCE_CHECKSUM: ${{ steps.files.outputs.source_checksum }}
+          SOURCE_METADATA: ${{ steps.files.outputs.source_metadata }}
+          NATIVE_ATTESTATION: ${{ steps.files.outputs.native_attestation }}
+        run: |
+          if ($env:EXPECTED_SHA256 -notmatch '^[0-9a-fA-F]{64}$') {
+            throw "expected_archive_sha256 must contain exactly 64 hexadecimal characters."
+          }
+          if ((Get-FileHash -LiteralPath $env:ARCHIVE -Algorithm SHA256).Hash.ToLowerInvariant() -ne ($env:EXPECTED_SHA256).ToLowerInvariant()) {
+            throw "The portable archive is not the one approved by expected_archive_sha256."
+          }
+          $publicVersion = (python python/tools/release_version.py pep440 $env:RELEASE_TAG).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($publicVersion)) {
+            throw "Unable to resolve the public release version for notes."
+          }
+          $evidenceDir = Join-Path $env:RUNNER_TEMP ("audioforge-release-evidence-" + [guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
+          if (-not (Test-Path -LiteralPath "validation/release-qualification.json" -PathType Leaf)) {
+            throw "Automated qualification evidence is missing."
+          }
+          Copy-Item -LiteralPath "validation/release-qualification.json" -Destination $evidenceDir
+          foreach ($sidecar in @(
+            $env:CHECKSUM, $env:MANIFEST, $env:METADATA,
+            $env:INSTALLER_CHECKSUM, $env:INSTALLER_MANIFEST, $env:INSTALLER_METADATA,
+            $env:SOURCE_CHECKSUM, $env:SOURCE_METADATA, $env:NATIVE_ATTESTATION
+          )) {
+            Copy-Item -LiteralPath $sidecar -Destination $evidenceDir -ErrorAction Stop
+          }
+          $stageDir = "verified-release"
+          New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
+          $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe"
+          if (-not (Test-Path -LiteralPath $sevenZip)) { $sevenZip = "7z.exe" }
+          $evidenceArchive = Join-Path $stageDir "AudioForge-$($env:RELEASE_TAG)-evidence.7z"
+          & $sevenZip a -t7z -mx=9 -mtc=off -mta=off -mtm=off $evidenceArchive (Join-Path $evidenceDir "*")
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release evidence archive failed with exit code $LASTEXITCODE."
+          }
+          $staged = @($env:ARCHIVE, $env:INSTALLER, $env:SOURCE_ARCHIVE) | ForEach-Object {
+            Copy-Item -LiteralPath $_ -Destination $stageDir -PassThru -ErrorAction Stop
+          }
+          $assetPaths = @($staged.FullName) + @($evidenceArchive)
+          $checksumsFile = Join-Path $stageDir "AudioForge-$($env:RELEASE_TAG)-SHA256SUMS.txt"
+          $assetPaths | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $([IO.Path]::GetFileName($_))"
+          } | Set-Content -LiteralPath $checksumsFile -Encoding ascii
+          $hashes = [ordered]@{}
+          foreach ($file in Get-ChildItem -LiteralPath $stageDir -File) {
+            $hashes[$file.Name] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
+          "public_version=$publicVersion" >> $env:GITHUB_OUTPUT
+          "asset_hashes=$($hashes | ConvertTo-Json -Compress)" >> $env:GITHUB_OUTPUT
+
+      # Retention outlasts an environment approval that waits for days; once it
+      # expires the publish job fails and the candidate is promoted again.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: audioforge-verified-release-${{ inputs.release_tag }}
+          path: verified-release
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Verify exact candidate and automated qualification binding
-        id: candidate
         env:
           EXPECTED_SHA256: ${{ inputs.expected_archive_sha256 }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -167,6 +274,18 @@ jobs:
           CANDIDATE_RUN_ATTEMPT: ${{ steps.origins.outputs.candidate_run_attempt }}
           TAG_COMMIT: ${{ steps.origins.outputs.tag_commit }}
           EXPECTED_PRERELEASE: ${{ steps.origins.outputs.prerelease }}
+          ARCHIVE: ${{ steps.files.outputs.archive }}
+          CHECKSUM: ${{ steps.files.outputs.checksum }}
+          MANIFEST: ${{ steps.files.outputs.manifest }}
+          METADATA: ${{ steps.files.outputs.metadata }}
+          INSTALLER: ${{ steps.files.outputs.installer }}
+          INSTALLER_CHECKSUM: ${{ steps.files.outputs.installer_checksum }}
+          INSTALLER_MANIFEST: ${{ steps.files.outputs.installer_manifest }}
+          INSTALLER_METADATA: ${{ steps.files.outputs.installer_metadata }}
+          SOURCE_ARCHIVE: ${{ steps.files.outputs.source_archive }}
+          SOURCE_CHECKSUM: ${{ steps.files.outputs.source_checksum }}
+          SOURCE_METADATA: ${{ steps.files.outputs.source_metadata }}
+          NATIVE_ATTESTATION: ${{ steps.files.outputs.native_attestation }}
         run: |
           $canonicalTag = (python python/tools/release_version.py tag $env:RELEASE_TAG).Trim()
           if ($LASTEXITCODE -ne 0 -or $canonicalTag -ne $env:RELEASE_TAG) {
@@ -175,34 +294,18 @@ jobs:
           if ($env:EXPECTED_SHA256 -notmatch '^[0-9a-fA-F]{64}$') {
             throw "expected_archive_sha256 must contain exactly 64 hexadecimal characters."
           }
-          $archive = Get-ChildItem -LiteralPath candidate -Filter "*-win64-ultra.7z" -File
-          $checksum = Get-ChildItem -LiteralPath candidate -Filter "*-win64-ultra.7z.sha256" -File
-          $manifest = Get-ChildItem -LiteralPath candidate -Filter "*-win64-ultra.7z.manifest.json" -File
-          $metadata = Get-ChildItem -LiteralPath candidate -Filter "*-win64-ultra.7z.metadata.json" -File
-          $sourceArchive = Get-ChildItem -LiteralPath candidate -Filter "*-source.7z" -File
-          $sourceChecksum = Get-ChildItem -LiteralPath candidate -Filter "*-source.7z.sha256" -File
-          $sourceMetadata = Get-ChildItem -LiteralPath candidate -Filter "*-source.7z.metadata.json" -File
-          $installer = Get-ChildItem -LiteralPath candidate -Filter "*.msi" -File
-          $installerChecksum = Get-ChildItem -LiteralPath candidate -Filter "*.msi.sha256" -File
-          $installerManifest = Get-ChildItem -LiteralPath candidate -Filter "*.msi.manifest.json" -File
-          $installerMetadata = Get-ChildItem -LiteralPath candidate -Filter "*.msi.metadata.json" -File
-          $nativeAttestation = Get-ChildItem -LiteralPath candidate -Filter "*-deepfilter.provenance.json" -File
-          if (
-            @($archive).Count -ne 1 -or
-            @($checksum).Count -ne 1 -or
-            @($manifest).Count -ne 1 -or
-            @($metadata).Count -ne 1 -or
-            @($sourceArchive).Count -ne 1 -or
-            @($sourceChecksum).Count -ne 1 -or
-            @($sourceMetadata).Count -ne 1 -or
-            @($installer).Count -ne 1 -or
-            @($installerChecksum).Count -ne 1 -or
-            @($installerManifest).Count -ne 1 -or
-            @($installerMetadata).Count -ne 1 -or
-            @($nativeAttestation).Count -ne 1
-          ) {
-            throw "Candidate artifact must contain exactly one portable archive, source archive, MSI, DeepFilter attestation, and each provenance sidecar."
-          }
+          $archive = Get-Item -LiteralPath $env:ARCHIVE
+          $checksum = Get-Item -LiteralPath $env:CHECKSUM
+          $manifest = Get-Item -LiteralPath $env:MANIFEST
+          $metadata = Get-Item -LiteralPath $env:METADATA
+          $sourceArchive = Get-Item -LiteralPath $env:SOURCE_ARCHIVE
+          $sourceChecksum = Get-Item -LiteralPath $env:SOURCE_CHECKSUM
+          $sourceMetadata = Get-Item -LiteralPath $env:SOURCE_METADATA
+          $installer = Get-Item -LiteralPath $env:INSTALLER
+          $installerChecksum = Get-Item -LiteralPath $env:INSTALLER_CHECKSUM
+          $installerManifest = Get-Item -LiteralPath $env:INSTALLER_MANIFEST
+          $installerMetadata = Get-Item -LiteralPath $env:INSTALLER_METADATA
+          $nativeAttestation = Get-Item -LiteralPath $env:NATIVE_ATTESTATION
 
           $extract = Join-Path $env:RUNNER_TEMP "audioforge-promoted-candidate"
           New-Item -ItemType Directory -Force -Path $extract | Out-Null
@@ -296,89 +399,6 @@ jobs:
             throw "Promotion refused: exact candidate EXE smoke test failed with code $($process.ExitCode)."
           }
 
-          "archive=$($archive.FullName)" >> $env:GITHUB_OUTPUT
-          "checksum=$($checksum.FullName)" >> $env:GITHUB_OUTPUT
-          "manifest=$($manifest.FullName)" >> $env:GITHUB_OUTPUT
-          "metadata=$($metadata.FullName)" >> $env:GITHUB_OUTPUT
-          "installer=$($installer.FullName)" >> $env:GITHUB_OUTPUT
-          "installer_checksum=$($installerChecksum.FullName)" >> $env:GITHUB_OUTPUT
-          "installer_manifest=$($installerManifest.FullName)" >> $env:GITHUB_OUTPUT
-          "installer_metadata=$($installerMetadata.FullName)" >> $env:GITHUB_OUTPUT
-          "source_archive=$($sourceArchive.FullName)" >> $env:GITHUB_OUTPUT
-          "source_checksum=$($sourceChecksum.FullName)" >> $env:GITHUB_OUTPUT
-          "source_metadata=$($sourceMetadata.FullName)" >> $env:GITHUB_OUTPUT
-          "native_attestation=$($nativeAttestation.FullName)" >> $env:GITHUB_OUTPUT
-
-      # Everything that goes to the GitHub Release is staged here, after every
-      # check, with its SHA-256 recorded as a job output for publish-release.
-      - name: Stage the verified release assets
-        id: stage
-        env:
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          ARCHIVE: ${{ steps.candidate.outputs.archive }}
-          CHECKSUM: ${{ steps.candidate.outputs.checksum }}
-          MANIFEST: ${{ steps.candidate.outputs.manifest }}
-          METADATA: ${{ steps.candidate.outputs.metadata }}
-          INSTALLER: ${{ steps.candidate.outputs.installer }}
-          INSTALLER_CHECKSUM: ${{ steps.candidate.outputs.installer_checksum }}
-          INSTALLER_MANIFEST: ${{ steps.candidate.outputs.installer_manifest }}
-          INSTALLER_METADATA: ${{ steps.candidate.outputs.installer_metadata }}
-          SOURCE_ARCHIVE: ${{ steps.candidate.outputs.source_archive }}
-          SOURCE_CHECKSUM: ${{ steps.candidate.outputs.source_checksum }}
-          SOURCE_METADATA: ${{ steps.candidate.outputs.source_metadata }}
-          NATIVE_ATTESTATION: ${{ steps.candidate.outputs.native_attestation }}
-        run: |
-          $version = $env:RELEASE_TAG.TrimStart("v")
-          $publicVersion = (python python/tools/release_version.py pep440 $env:RELEASE_TAG).Trim()
-          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($publicVersion)) {
-            throw "Unable to resolve the public release version for notes."
-          }
-          $evidenceDir = Join-Path $env:RUNNER_TEMP ("audioforge-release-evidence-" + [guid]::NewGuid().ToString("N"))
-          New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
-          if (-not (Test-Path -LiteralPath "validation/release-qualification.json" -PathType Leaf)) {
-            throw "Automated qualification evidence is missing."
-          }
-          Copy-Item -LiteralPath "validation/release-qualification.json" -Destination $evidenceDir
-          foreach ($sidecar in @(
-            $env:CHECKSUM, $env:MANIFEST, $env:METADATA,
-            $env:INSTALLER_CHECKSUM, $env:INSTALLER_MANIFEST, $env:INSTALLER_METADATA,
-            $env:SOURCE_CHECKSUM, $env:SOURCE_METADATA, $env:NATIVE_ATTESTATION
-          )) {
-            Copy-Item -LiteralPath $sidecar -Destination $evidenceDir -ErrorAction Stop
-          }
-          $stageDir = "verified-release"
-          New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
-          $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe"
-          if (-not (Test-Path -LiteralPath $sevenZip)) { $sevenZip = "7z.exe" }
-          $evidenceArchive = Join-Path $stageDir "AudioForge-v$version-evidence.7z"
-          & $sevenZip a -t7z -mx=9 -mtc=off -mta=off -mtm=off $evidenceArchive (Join-Path $evidenceDir "*")
-          if ($LASTEXITCODE -ne 0) {
-            throw "Release evidence archive failed with exit code $LASTEXITCODE."
-          }
-          $staged = @($env:ARCHIVE, $env:INSTALLER, $env:SOURCE_ARCHIVE) | ForEach-Object {
-            Copy-Item -LiteralPath $_ -Destination $stageDir -PassThru -ErrorAction Stop
-          }
-          $assetPaths = @($staged.FullName) + @($evidenceArchive)
-          $checksumsFile = Join-Path $stageDir "AudioForge-v$version-SHA256SUMS.txt"
-          $assetPaths | ForEach-Object {
-            $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$hash  $([IO.Path]::GetFileName($_))"
-          } | Set-Content -LiteralPath $checksumsFile -Encoding ascii
-          $hashes = [ordered]@{}
-          foreach ($file in Get-ChildItem -LiteralPath $stageDir -File) {
-            $hashes[$file.Name] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          }
-          "public_version=$publicVersion" >> $env:GITHUB_OUTPUT
-          "asset_hashes=$($hashes | ConvertTo-Json -Compress)" >> $env:GITHUB_OUTPUT
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: audioforge-verified-release-${{ inputs.release_tag }}
-          path: verified-release
-          compression-level: 0
-          if-no-files-found: error
-          retention-days: 3
-
   # The only job that can write. The environment is a second lock beside the
   # dispatch check: repository settings limit it to master. It never runs the
   # candidate's code, so a flaw in the candidate cannot reach the write token.
@@ -424,18 +444,26 @@ jobs:
         id: verified
         env:
           EXPECTED_SHA256: ${{ inputs.expected_archive_sha256 }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
           ASSET_HASHES: ${{ needs.verify-candidate.outputs.asset_hashes }}
         run: |
           if ($env:EXPECTED_SHA256 -notmatch '^[0-9a-fA-F]{64}$') {
             throw "expected_archive_sha256 must contain exactly 64 hexadecimal characters."
           }
+          $tag = $env:RELEASE_TAG
+          $expectedNames = [ordered]@{
+            archive = "AudioForge-$tag-win64-ultra.7z"
+            installer = "AudioForge-$tag-win64.msi"
+            source_archive = "AudioForge-$tag-source.7z"
+            evidence_archive = "AudioForge-$tag-evidence.7z"
+            checksums = "AudioForge-$tag-SHA256SUMS.txt"
+          }
           $recorded = $env:ASSET_HASHES | ConvertFrom-Json
           $files = @(Get-ChildItem -LiteralPath verified-release -File)
-          $differences = @(
-            Compare-Object -ReferenceObject @($recorded.PSObject.Properties.Name) -DifferenceObject @($files.Name) -CaseSensitive
-          )
-          if ($files.Count -eq 0 -or $differences.Count -gt 0) {
-            throw "The verified release artifact does not hold exactly the files the verification job staged."
+          foreach ($actual in @(@($recorded.PSObject.Properties.Name), @($files.Name))) {
+            if (@(Compare-Object -ReferenceObject @($expectedNames.Values) -DifferenceObject $actual -CaseSensitive).Count -gt 0) {
+              throw "The verified release artifact does not hold exactly the five release files of $tag."
+            }
           }
           $hashes = @{}
           foreach ($file in $files) {
@@ -445,24 +473,15 @@ jobs:
             }
           }
           $assets = [ordered]@{}
-          foreach ($kind in @(
-            @("archive", "*-win64-ultra.7z"), @("installer", "*-win64.msi"),
-            @("source_archive", "*-source.7z"), @("evidence_archive", "*-evidence.7z"),
-            @("checksums", "*-SHA256SUMS.txt")
-          )) {
-            $pattern = $kind[1]
-            $match = @($files | Where-Object Name -clike $pattern)
-            if ($match.Count -ne 1) {
-              throw "The verified release artifact must hold exactly one $pattern file."
-            }
-            $assets[$kind[0]] = $match[0]
+          foreach ($kind in $expectedNames.Keys) {
+            $assets[$kind] = $files | Where-Object { $_.Name -ceq $expectedNames[$kind] }
           }
-          if ($hashes[$assets.archive.Name] -ne ($env:EXPECTED_SHA256).ToLowerInvariant()) {
+          if ($hashes[$expectedNames.archive] -ne ($env:EXPECTED_SHA256).ToLowerInvariant()) {
             throw "The portable archive is not the one approved by expected_archive_sha256."
           }
           $listed = @(Get-Content -LiteralPath $assets.checksums.FullName)
           $wanted = @("archive", "installer", "source_archive", "evidence_archive") | ForEach-Object {
-            "$($hashes[$assets[$_].Name])  $($assets[$_].Name)"
+            "$($hashes[$expectedNames[$_]])  $($expectedNames[$_])"
           }
           if (@(Compare-Object -ReferenceObject $wanted -DifferenceObject $listed -CaseSensitive).Count -gt 0) {
             throw "SHA256SUMS does not list the verified assets."

@@ -234,6 +234,7 @@ def _recheck(tmp_path: Path, digests: dict[str, str], approved: str) -> subproce
         env={
             **os.environ,
             "EXPECTED_SHA256": approved,
+            "RELEASE_TAG": "v1.19.0",
             "ASSET_HASHES": json.dumps(digests),
             "GITHUB_OUTPUT": str(tmp_path / "github-output"),
         },
@@ -282,6 +283,15 @@ def test_publish_recheck_refuses_files_that_changed_between_jobs(
     assert expected_error in result.stdout + result.stderr
 
 
+def test_publish_recheck_refuses_files_named_for_another_release(tmp_path: Path) -> None:
+    digests, files = _verified_release(tmp_path, tag="v1.18.2")
+
+    result = _recheck(tmp_path, digests, digests[files["archive"].name])
+
+    assert result.returncode != 0
+    assert "five release files of v1.19.0" in result.stdout + result.stderr
+
+
 def test_publish_recheck_refuses_an_archive_other_than_the_approved_one(tmp_path: Path) -> None:
     digests, _files = _verified_release(tmp_path)
 
@@ -312,3 +322,159 @@ def test_publish_recheck_refuses_a_checksum_list_that_disagrees(tmp_path: Path) 
 
     assert result.returncode != 0
     assert "SHA256SUMS does not list the verified assets" in result.stdout + result.stderr
+
+
+TAG = "v1.19.0"
+SEVEN_ZIP = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "7-Zip" / "7z.exe"
+
+
+def _run_step(job_id: str, step_name: str, cwd: Path, env: dict[str, str], prelude: str = ""):
+    """Run one step of verify-candidate in pwsh the way the runner would."""
+    job = _job("release-promote.yml", job_id)
+    shell = _shell_for(job)
+    step = next(s for s in job["steps"] if s.get("name") == step_name)
+    (cwd / "runner-temp").mkdir(exist_ok=True)
+    return subprocess.run(
+        [shell, "-NoProfile", "-NonInteractive", "-Command",
+         "$ErrorActionPreference = 'Stop'\n" + prelude + step["run"]],
+        cwd=cwd,
+        env={
+            **os.environ,
+            **env,
+            "GITHUB_OUTPUT": str(cwd / "github-output"),
+            "RUNNER_TEMP": str(cwd / "runner-temp"),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+
+def _outputs(cwd: Path) -> dict[str, str]:
+    return dict(
+        line.split("=", 1)
+        for line in (cwd / "github-output").read_text(encoding="utf-8").splitlines()
+    )
+
+
+def _candidate_artifact(cwd: Path) -> tuple[Path, dict[str, str]]:
+    candidate = cwd / "candidate"
+    candidate.mkdir()
+    archive = f"AudioForge-{TAG}-win64-ultra.7z"
+    installer = f"AudioForge-{TAG}-win64.msi"
+    source = f"AudioForge-{TAG}-source.7z"
+    names = [
+        archive, f"{archive}.sha256", f"{archive}.manifest.json", f"{archive}.metadata.json",
+        source, f"{source}.sha256", f"{source}.metadata.json",
+        installer, f"{installer}.sha256", f"{installer}.manifest.json", f"{installer}.metadata.json",
+        f"AudioForge-{TAG}-deepfilter.provenance.json",
+    ]
+    for name in names:
+        (candidate / name).write_bytes(f"bytes of {name}".encode())
+    (cwd / "validation").mkdir()
+    (cwd / "validation" / "release-qualification.json").write_text("{}", encoding="utf-8")
+    return candidate, {"archive": archive, "installer": installer, "source": source}
+
+
+def test_the_candidate_files_are_found_by_their_exact_names(tmp_path: Path) -> None:
+    _candidate_artifact(tmp_path)
+    stray = tmp_path / "candidate" / "AudioForge-v1.18.2-win64-ultra.7z"
+    stray.write_bytes(b"another release")
+
+    result = _run_step("verify-candidate", "Locate the candidate files", tmp_path, {"RELEASE_TAG": TAG})
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    outputs = _outputs(tmp_path)
+    assert len(outputs) == 12
+    assert Path(outputs["archive"]).name == f"AudioForge-{TAG}-win64-ultra.7z"
+    assert all(Path(path).parent == tmp_path / "candidate" for path in outputs.values())
+
+
+@pytest.mark.parametrize(
+    "missing", ["-win64-ultra.7z", "-win64-ultra.7z.metadata.json", "-source.7z.sha256", "-win64.msi", "-deepfilter.provenance.json"]
+)
+def test_a_candidate_without_one_of_its_files_is_refused(tmp_path: Path, missing: str) -> None:
+    candidate, _names = _candidate_artifact(tmp_path)
+    next(candidate.glob(f"*{missing}")).unlink()
+
+    result = _run_step("verify-candidate", "Locate the candidate files", tmp_path, {"RELEASE_TAG": TAG})
+
+    assert result.returncode != 0
+    assert "must contain exactly one" in result.stdout + result.stderr
+
+
+def _stage(tmp_path: Path, approved: str | None = None) -> subprocess.CompletedProcess:
+    candidate, names = _candidate_artifact(tmp_path)
+    located = _run_step("verify-candidate", "Locate the candidate files", tmp_path, {"RELEASE_TAG": TAG})
+    assert located.returncode == 0, located.stdout + located.stderr
+    outputs = _outputs(tmp_path)
+    (tmp_path / "github-output").unlink()
+    archive_hash = hashlib.sha256((candidate / names["archive"]).read_bytes()).hexdigest()
+    fake_python = """
+function python {
+  param([Parameter(ValueFromRemainingArguments=$true)][string[]]$CommandArgs)
+  $global:LASTEXITCODE = 0
+  '1.19.0'
+}
+"""
+    return _run_step(
+        "verify-candidate",
+        "Stage the release assets",
+        tmp_path,
+        {
+            "RELEASE_TAG": TAG,
+            "EXPECTED_SHA256": approved or archive_hash,
+            **{key.upper(): value for key, value in outputs.items()},
+        },
+        fake_python,
+    )
+
+
+@pytest.mark.skipif(not SEVEN_ZIP.is_file(), reason="7-Zip is required to build the evidence archive")
+def test_staged_assets_are_the_exact_five_files_and_pass_the_publish_recheck(tmp_path: Path) -> None:
+    staged = _stage(tmp_path)
+
+    assert staged.returncode == 0, staged.stdout + staged.stderr
+    outputs = _outputs(tmp_path)
+    recorded = json.loads(outputs["asset_hashes"])
+    assert sorted(recorded) == sorted([
+        f"AudioForge-{TAG}-win64-ultra.7z",
+        f"AudioForge-{TAG}-win64.msi",
+        f"AudioForge-{TAG}-source.7z",
+        f"AudioForge-{TAG}-evidence.7z",
+        f"AudioForge-{TAG}-SHA256SUMS.txt",
+    ])
+    assert outputs["public_version"] == "1.19.0"
+    for name, digest in recorded.items():
+        assert hashlib.sha256((tmp_path / "verified-release" / name).read_bytes()).hexdigest() == digest
+
+    # The publish job accepts exactly what the verification job staged.
+    rechecked = subprocess.run(
+        [
+            _shell_for(_job("release-promote.yml", "publish-release")), "-NoProfile", "-NonInteractive", "-Command",
+            "$ErrorActionPreference = 'Stop'\n"
+            + next(
+                s for s in _job("release-promote.yml", "publish-release")["steps"]
+                if s.get("name") == "Re-check the verified assets"
+            )["run"],
+        ],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "EXPECTED_SHA256": recorded[f"AudioForge-{TAG}-win64-ultra.7z"],
+            "RELEASE_TAG": TAG,
+            "ASSET_HASHES": outputs["asset_hashes"],
+            "GITHUB_OUTPUT": str(tmp_path / "recheck-output"),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert rechecked.returncode == 0, rechecked.stdout + rechecked.stderr
+
+
+@pytest.mark.skipif(not SEVEN_ZIP.is_file(), reason="7-Zip is required to build the evidence archive")
+def test_nothing_is_staged_for_an_archive_other_than_the_approved_one(tmp_path: Path) -> None:
+    staged = _stage(tmp_path, approved="f" * 64)
+
+    assert staged.returncode != 0
+    assert "approved by expected_archive_sha256" in staged.stdout + staged.stderr
+    assert not (tmp_path / "verified-release").exists()

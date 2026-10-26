@@ -46,6 +46,7 @@ jobs:
           ref: ${{ inputs.release_tag || github.sha }}
           fetch-depth: 0
           filter: blob:none
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -184,6 +185,7 @@ jobs:
           ref: ${{ inputs.release_tag || github.sha }}
           fetch-depth: 0
           filter: blob:none
+          persist-credentials: false
 
       - name: Bind source revision to checked-out release ref
         run: |
@@ -631,6 +633,7 @@ jobs:
           ref: ${{ needs.package-windows.outputs.source_revision }}
           fetch-depth: 0
           filter: blob:none
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -693,6 +696,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.package-windows.outputs.source_revision }}
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -713,7 +717,8 @@ jobs:
         with:
           toolchain: 1.94.0
 
-      # Test binaries are not shipped, so this cache may share ci.yml's key.
+      # Test binaries are not shipped, so this cache is safe to restore. Its key
+      # is not ci.yml's rust-tests key, which also covers the DeepFilter lock.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -768,6 +773,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.package-windows.outputs.source_revision }}
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -777,7 +783,8 @@ jobs:
         with:
           toolchain: 1.94.0
 
-      # Test binaries are not shipped, so this cache may share ci.yml's key.
+      # Test binaries are not shipped, so this cache uses the same key as
+      # ci.yml's rust-stress job; keep the two keys equal.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -817,6 +824,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.package-windows.outputs.source_revision }}
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:

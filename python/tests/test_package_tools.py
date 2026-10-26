@@ -2876,6 +2876,9 @@ GATE_STEPS = [
     ("release-promote.yml", "verify-candidate", "release_provenance.py verify"),
     ("release-promote.yml", "verify-candidate", "package_smoke.py --dist"),
     ("release-promote.yml", "verify-candidate", "-evidence.7z"),
+    ("release-promote.yml", "verify-candidate", "Get-ChildItem -LiteralPath candidate"),
+    ("release-promote.yml", "verify-candidate", "msi_smoke.py"),
+    ("release-promote.yml", "verify-candidate", "actions/upload-artifact@"),
     ("release-promote.yml", "publish-release", "ASSET_HASHES:"),
     ("release-promote.yml", "publish-release", "gh release upload"),
     ("release-hardware-qualify.yml", "qualify-hardware", "release_provenance.py verify"),
@@ -3146,7 +3149,7 @@ def test_only_the_publish_job_of_promotion_can_write():
                 "cargo test --locked -p mic_eq_core -- --skip "
                 "seeded_control_and_dsp_loops_remain_finite_under_contention --exact --nocapture",
             ),
-            "missing required DeepFilter gate '(skipped|skipping)'",
+            "Select-String",
         ),
     ],
 )
@@ -3205,7 +3208,7 @@ def test_ci_rust_tests_scan_for_the_skip_lines_the_tests_print():
                 "cargo test --locked -p mic_eq_core -- --skip "
                 "seeded_control_and_dsp_loops_remain_finite_under_contention --exact --nocapture",
             ),
-            "missing required DeepFilter gate '(skipped|skipping)'",
+            "Select-String",
         ),
         (
             lambda jobs: _step_named(jobs["rust-tests"], "Rust tests").update({"if": False}),
@@ -3389,7 +3392,7 @@ def test_semgrep_collection_checkout_pins_the_requested_commit(tmp_path):
 
     def run_git(*args, cwd=source):
         return subprocess.run(
-            [git, "-c", "user.name=t", "-c", "user.email=t@example.test", *args],
+            [git, "-c", "core.longpaths=true", "-c", "user.name=t", "-c", "user.email=t@example.test", *args],
             cwd=cwd, check=True, capture_output=True, text=True,
         ).stdout.strip()
 
@@ -3435,3 +3438,253 @@ def test_semgrep_run_fails_before_scanning_when_a_collection_cannot_be_fetched(
 
     assert run_semgrep.main() == 2
     assert "git fetch failed" in capsys.readouterr().err
+
+
+def _load_workflow(name):
+    return check_workflows.yaml.safe_load(
+        (check_workflows.WORKFLOW_DIR / name).read_text(encoding="utf-8")
+    )
+
+
+@pytest.mark.parametrize("workflow", sorted(check_workflows.DISPATCH_WORKFLOWS))
+@pytest.mark.parametrize(
+    "triggers",
+    [
+        {"workflow_dispatch": None, "workflow_call": None},
+        {"workflow_dispatch": None, "push": {"branches": ["master"]}},
+        {"workflow_dispatch": None, "schedule": [{"cron": "0 3 * * *"}]},
+        {"workflow_dispatch": None, "pull_request": None},
+        {"workflow_call": None},
+        ["workflow_dispatch", "release"],
+        "push",
+    ],
+)
+def test_dispatch_workflows_accept_no_trigger_but_workflow_dispatch(workflow, triggers):
+    document = _load_workflow(workflow)
+    errors: list[str] = []
+    check_workflows._check_triggers_and_expressions(workflow, document, errors)
+    assert errors == []
+
+    key = next(key for key in document if key in ("on", True))
+    document[key] = triggers
+    check_workflows._check_triggers_and_expressions(workflow, document, errors)
+
+    assert any("only workflow_dispatch may trigger this workflow" in error for error in errors)
+
+
+def test_other_workflows_may_keep_their_own_triggers():
+    document = _load_workflow("ci.yml")
+    errors: list[str] = []
+    check_workflows._check_triggers_and_expressions("ci.yml", document, errors)
+    assert errors == []
+
+
+@pytest.mark.parametrize("workflow", sorted(path.name for path in check_workflows.WORKFLOW_DIR.glob("*.yml")))
+def test_no_checkout_keeps_its_token(workflow):
+    document = _load_workflow(workflow)
+    checkouts = [
+        step
+        for job in document["jobs"].values()
+        for step in job["steps"]
+        if str(step.get("uses", "")).startswith("actions/checkout@")
+    ]
+    assert checkouts
+    assert all(step["with"]["persist-credentials"] is False for step in checkouts)
+
+    for broken in ({}, {"persist-credentials": True}, {"persist-credentials": "false"}):
+        checkouts[0]["with"] = dict(broken)
+        errors: list[str] = []
+        check_workflows._check_checkout_credentials(workflow, document, errors)
+        assert len(errors) == 1 and "persist-credentials: false" in errors[0]
+
+
+@pytest.mark.parametrize(
+    ("workflow", "job"),
+    [
+        ("release-promote.yml", "publish-release"),
+        ("release-hardware-qualify.yml", "qualify-hardware"),
+        ("release-hardware-matrix.yml", "assemble"),
+    ],
+)
+def test_the_privileged_job_of_each_dispatch_workflow_is_bound_to_the_release_environment(
+    workflow, job
+):
+    assert _load_workflow(workflow)["jobs"][job]["environment"] == "release"
+    assert f"{job} must use environment: release" in _gate_errors(
+        workflow, lambda jobs: jobs[job].pop("environment")
+    )
+    assert f"{job} must use environment: release" in _gate_errors(
+        workflow, lambda jobs: jobs[job].update(environment="staging")
+    )
+
+
+def test_the_read_only_verification_job_declares_no_environment():
+    errors = _gate_errors(
+        "release-promote.yml",
+        lambda jobs: jobs["verify-candidate"].update(environment="release"),
+    )
+    assert "verify-candidate must not use environment: release" in errors
+
+
+def test_promotion_stages_and_uploads_the_release_files_before_the_candidate_runs():
+    steps = _load_workflow("release-promote.yml")["jobs"]["verify-candidate"]["steps"]
+    names = [step.get("name", step.get("uses", "")) for step in steps]
+    stage = names.index("Stage the release assets")
+    upload = next(i for i, step in enumerate(steps) if str(step.get("uses", "")).startswith("actions/upload-artifact@"))
+    verify = names.index("Verify exact candidate and automated qualification binding")
+    assert stage < upload < verify
+    assert steps[upload]["with"]["retention-days"] == 7
+    for step in steps[:upload]:
+        run = str(step.get("run", ""))
+        assert not any(marker in run for marker in check_workflows.PROMOTE_CANDIDATE_RUNNERS)
+    assert "msi_smoke.py" in steps[verify]["run"] and "--smoke-test" in steps[verify]["run"]
+
+
+@pytest.mark.parametrize(
+    "candidate_code",
+    [
+        "python python/tools/msi_smoke.py --msi x --install-uninstall",
+        'Start-Process -FilePath "$extract\\AudioForge.exe"',
+        "python python/tools/package_smoke.py --dist x",
+    ],
+)
+def test_candidate_code_before_the_release_files_are_staged_fails_the_check(candidate_code):
+    def early(jobs):
+        jobs["verify-candidate"]["steps"].insert(5, {"run": candidate_code})
+
+    assert "runs candidate code before the release files are staged" in _gate_errors(
+        "release-promote.yml", early
+    )
+
+
+def test_staging_that_moves_behind_the_candidate_step_fails_the_check():
+    def late(jobs):
+        steps = jobs["verify-candidate"]["steps"]
+        stage = next(step for step in steps if step.get("name") == "Stage the release assets")
+        steps.remove(stage)
+        steps.append(stage)
+
+    assert "must run after the gate before it" in _gate_errors("release-promote.yml", late)
+
+
+@pytest.mark.parametrize("workflow", ["ci.yml", "release-package.yml"])
+@pytest.mark.parametrize(
+    ("edit", "expected"),
+    [
+        (lambda run: run.replace("{ throw \"Rust tests skipped", "{ Write-Host \"Rust tests skipped"), "skipped"),
+        (lambda run: run.replace("{ throw \"Rust tests failed", "{ Write-Host \"Rust tests failed"), "LASTEXITCODE"),
+        (lambda run: run.replace("$skipped = ", "$notices = "), "skipped"),
+        (lambda run: run.replace("Select-String", "Get-Content"), "Select-String"),
+    ],
+)
+def test_the_rust_skip_scan_must_fail_the_step(workflow, edit, expected):
+    def mutate(jobs):
+        step = _step_named(jobs["rust-tests"], "Rust tests")
+        edited = edit(step["run"])
+        assert edited != step["run"]
+        step["run"] = edited
+
+    errors = _ci_errors(mutate) if workflow == "ci.yml" else _release_job_errors(mutate)
+
+    assert "missing required DeepFilter gate" in errors and expected in errors
+
+
+def test_package_check_watches_every_input_of_the_bundle_build():
+    workflow = _package_check()
+    paths = workflow.get("on", workflow.get(True))["pull_request"]["paths"]
+    for packaged in (
+        "rust-toolchain.toml",
+        ".cargo/**",
+        "AudioForge.ico",
+        "LICENSE",
+        "AudioForge.spec",
+        "pyinstaller-hooks/**",
+        "installer/**",
+        "licenses/**",
+    ):
+        assert packaged in paths
+
+
+def _source_repository(tmp_path):
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git is required")
+    source = tmp_path / "source"
+    source.mkdir()
+
+    def run_git(*args, cwd=source):
+        result = subprocess.run(
+            [git, "-c", "core.longpaths=true", "-c", "user.name=t", "-c", "user.email=t@example.test", *args],
+            cwd=cwd, check=False, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    run_git("init", "--quiet")
+    run_git("config", "uploadpack.allowAnySHA1InWant", "true")
+    (source / "rule.yml").write_text("pinned\n", encoding="utf-8")
+    run_git("add", ".")
+    run_git("commit", "--quiet", "-m", "pinned")
+    return source, run_git("rev-parse", "HEAD"), run_git
+
+
+def test_semgrep_collection_checkout_discards_edited_and_added_files(tmp_path):
+    source, commit, run_git = _source_repository(tmp_path)
+    checkout = tmp_path / "build" / "semgrep-rules" / "acme-rules"
+    run_semgrep._checkout_rules(source.as_uri(), commit, checkout)
+
+    (checkout / "rule.yml").write_text("edited\n", encoding="utf-8")
+    (checkout / "extra.yml").write_text("rules: []\n", encoding="utf-8")
+    (checkout / "nested").mkdir()
+    (checkout / "nested" / "more.yml").write_text("rules: []\n", encoding="utf-8")
+    # No network is needed for a checkout that is already at the pinned commit.
+    run_semgrep._checkout_rules("https://invalid.invalid/none.git", commit, checkout)
+
+    assert (checkout / "rule.yml").read_text(encoding="utf-8") == "pinned\n"
+    assert not (checkout / "extra.yml").exists() and not (checkout / "nested").exists()
+    assert run_git("status", "--porcelain", "--ignored", cwd=checkout) == ""
+
+
+def test_semgrep_collection_checkout_needs_git(tmp_path, monkeypatch):
+    def no_git(*args, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(run_semgrep.subprocess, "run", no_git)
+
+    with pytest.raises(RuntimeError, match="git is required"):
+        run_semgrep._checkout_rules("https://github.com/acme/rules", "a" * 40, tmp_path / "checkout")
+
+
+def test_semgrep_collection_git_commands_time_out(tmp_path, monkeypatch):
+    timeouts = []
+
+    def hang(command, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(run_semgrep.subprocess, "run", hang)
+
+    with pytest.raises(RuntimeError, match="took over"):
+        run_semgrep._checkout_rules("https://github.com/acme/rules", "a" * 40, tmp_path / "checkout")
+    assert timeouts == [run_semgrep.GIT_TIMEOUT_SECONDS]
+
+
+def test_semgrep_run_exits_with_2_and_names_the_problem_when_git_is_missing(
+    tmp_path, monkeypatch, capsys
+):
+    rulesets = tmp_path / "semgrep-rulesets.txt"
+    rulesets.write_text(
+        f"git https://github.com/acme/rules {'a' * 40} python\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(run_semgrep, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(run_semgrep, "RULESET_FILE", rulesets)
+    monkeypatch.setattr(run_semgrep, "RULES_DIR", tmp_path / "build" / "semgrep-rules")
+    monkeypatch.setattr(sys, "argv", ["run_semgrep.py", "--sarif", str(tmp_path / "out.sarif")])
+
+    def no_git(*args, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(run_semgrep.subprocess, "run", no_git)
+
+    assert run_semgrep.main() == 2
+    assert "git is required" in capsys.readouterr().err

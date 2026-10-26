@@ -133,11 +133,11 @@ PROMOTE_JOB_PERMISSIONS = {
     "publish-release": {"contents": "write"},
 }
 PROMOTE_PUBLISH_JOB = "publish-release"
-# Candidate code is the executable, the MSI and the pinned pip packages; none of
-# these may appear in the publishing job.
-PROMOTE_PUBLISH_FORBIDDEN = (
-    "Start-Process", "msiexec", "msi_smoke.py", "package_smoke.py", "-m pip", "pip install",
-)
+# Candidate code is the executable, the MSI and the pinned pip packages. None of
+# it may appear in the publishing job, and the verifying job runs the executable
+# and the MSI only after the release files are staged and uploaded.
+PROMOTE_CANDIDATE_RUNNERS = ("Start-Process", "msiexec", "msi_smoke.py", "package_smoke.py")
+PROMOTE_PUBLISH_FORBIDDEN = (*PROMOTE_CANDIDATE_RUNNERS, "-m pip", "pip install")
 PROMOTE_PUBLISH_ONLY_COMMANDS = tuple(
     f"gh release {verb}" for verb in ("create", "upload", "edit", "delete")
 )
@@ -149,6 +149,14 @@ DISPATCH_WORKFLOWS = (
     "release-hardware-matrix.yml",
 )
 HARDWARE_RUNNER = ["self-hosted", "windows", "x64", "audioforge-hardware"]
+# The jobs that declare `environment: release`. Repository settings limit that
+# environment to master, which binds a branch copy of the workflow only while
+# the copy keeps the line; no other job may use it.
+RELEASE_ENVIRONMENT_JOBS = {
+    "release-promote.yml": frozenset({PROMOTE_PUBLISH_JOB}),
+    "release-hardware-qualify.yml": frozenset({"qualify-hardware"}),
+    "release-hardware-matrix.yml": frozenset({"assemble"}),
+}
 DISPATCH_AUTHORIZATION = (
     "GH_TOKEN: ${{ github.token }}",
     "DISPATCHER: ${{ github.triggering_actor }}",
@@ -200,23 +208,29 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                     "name: audioforge-release-validation-${{ inputs.release_tag }}",
                     "run-id: ${{ inputs.candidate_run_id }}",
                 ),
-                (
-                    *PROVENANCE_GATES,
-                    "--report validation/release-qualification.json",
-                    "source_distribution.py verify",
-                    "--require-receipt",
-                    "package_smoke.py --dist",
-                    "--smoke-test",
-                ),
+                # The five release files are staged, hashed and uploaded before the
+                # step that runs the candidate's MSI and executable.
+                ("Get-ChildItem -LiteralPath candidate", "-deepfilter.provenance.json"),
                 (
                     "-evidence.7z",
                     "validation/release-qualification.json",
                     "SHA256SUMS",
+                    "EXPECTED_SHA256: ${{ inputs.expected_archive_sha256 }}",
                     "asset_hashes=",
                 ),
                 (
                     "actions/upload-artifact@",
                     "name: audioforge-verified-release-${{ inputs.release_tag }}",
+                    "retention-days: 7",
+                ),
+                (
+                    *PROVENANCE_GATES,
+                    "--report validation/release-qualification.json",
+                    "source_distribution.py verify",
+                    "--require-receipt",
+                    "msi_smoke.py",
+                    "package_smoke.py --dist",
+                    "--smoke-test",
                 ),
             ),
             PROMOTE_PUBLISH_JOB: (
@@ -232,6 +246,9 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                 (
                     "ASSET_HASHES: ${{ needs.verify-candidate.outputs.asset_hashes }}",
                     "EXPECTED_SHA256: ${{ inputs.expected_archive_sha256 }}",
+                    "RELEASE_TAG: ${{ inputs.release_tag }}",
+                    'archive = "AudioForge-$tag-win64-ultra.7z"',
+                    'checksums = "AudioForge-$tag-SHA256SUMS.txt"',
                     "Get-FileHash",
                 ),
                 (
@@ -323,8 +340,10 @@ RUST_SKIP_SCAN_STEP = (
     "cargo test --locked -p mic_eq_core",
     "AUDIOFORGE_ENABLE_DEEPFILTER: 1",
     "--nocapture",
-    "(skipped|skipping)",
-    "throw",
+    # The step must fail: a non-zero test exit and any skip notice both throw.
+    r"re:^\s*if \(\$LASTEXITCODE -ne 0\) \{ throw ",
+    r"re:^\s*\$skipped = .*Select-String .*-Pattern '\\b\(skipped\|skipping\)\\b'",
+    r"re:^\s*if \(\$skipped\.Count -gt 0\) \{ throw ",
 )
 # ci.yml's rust-tests also builds df.dll from the pinned source; the release
 # workflow's test jobs run on the runtime files its package job built.
@@ -545,6 +564,7 @@ def _check_required_gates(
         _check_step_sequences(name, label, document, sequence, errors)
         if name in DISPATCH_WORKFLOWS:
             _check_dispatch_authorization(name, document, errors)
+            _check_release_environment(name, document, errors)
         if name == "release-promote.yml":
             _check_promotion_jobs(name, document, errors)
             upload_lines = (
@@ -649,9 +669,15 @@ def _step_text(step: dict[str, Any]) -> str:
 
 
 def _step_has(step: dict[str, Any], needle: str) -> bool:
-    """Whether an active step carries `needle`: "!x" means "x" is absent, "a@" an action."""
+    """Whether an active step carries `needle`.
+
+    "!x" means "x" is absent, "a@" an action, "re:x" a regular expression that
+    matches one run line, and anything else a substring.
+    """
     if needle.startswith("!"):
         return not _step_has(step, needle[1:])
+    if needle.startswith("re:"):
+        return any(re.search(needle[3:], line) for line in _step_lines(step))
     if needle.endswith("@"):
         return str(step.get("uses", "")).startswith(needle)
     if any(marker in needle for marker in RUN_REQUIRED_MARKERS):
@@ -728,17 +754,23 @@ def _check_dispatch_authorization(
             )
 
 
+def _check_release_environment(name: str, document: dict[str, Any], errors: list[str]) -> None:
+    jobs = _mapping(document.get("jobs"), f"{name}: jobs", errors)
+    for job_id, job in jobs.items():
+        bound = job_id in RELEASE_ENVIRONMENT_JOBS[name]
+        if (job.get("environment") if isinstance(job, dict) else None) != ("release" if bound else None):
+            errors.append(
+                f"{name}: {job_id} must {'use' if bound else 'not use'} environment: release"
+            )
+
+
 def _check_promotion_jobs(name: str, document: dict[str, Any], errors: list[str]) -> None:
-    """Only the publishing job writes, waits for the release environment and gh release."""
+    """Only the publishing job writes or runs gh release, and it never runs the candidate."""
     jobs = _mapping(document.get("jobs"), f"{name}: jobs", errors)
     for job_id, job in jobs.items():
         if not isinstance(job, dict):
             continue
         publishes = job_id == PROMOTE_PUBLISH_JOB
-        if job.get("environment") != ("release" if publishes else None):
-            errors.append(
-                f"{name}: {job_id} must {'use' if publishes else 'not use'} environment: release"
-            )
         lines = _active_run_lines({"jobs": {job_id: job}})
         if publishes:
             needs = job.get("needs")
@@ -759,6 +791,25 @@ def _check_promotion_jobs(name: str, document: dict[str, Any], errors: list[str]
             for command in PROMOTE_PUBLISH_ONLY_COMMANDS
             if _active_run_has_marker(lines, command)
         )
+        steps = _active_steps({"jobs": {job_id: job}})
+        staged = next(
+            (
+                index
+                for index, step in enumerate(steps)
+                if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+            ),
+            len(steps),
+        )
+        early = [
+            marker
+            for marker in PROMOTE_CANDIDATE_RUNNERS
+            if any(marker in line for step in steps[:staged] for line in _step_lines(step))
+        ]
+        if early:
+            errors.append(
+                f"{name}: {job_id} runs candidate code before the release files are "
+                f"staged and uploaded ({early})"
+            )
 
 
 def _check_package_check_publishes_nothing(
@@ -829,6 +880,10 @@ def _check_triggers_and_expressions(
             errors.append(f"{name}: trigger {trigger} is not allowed")
     jobs = document.get("jobs")
     job_list = [job for job in jobs.values() if isinstance(job, dict)] if isinstance(jobs, dict) else []
+    if name in DISPATCH_WORKFLOWS and names != ["workflow_dispatch"]:
+        errors.append(
+            f"{name}: only workflow_dispatch may trigger this workflow, found {names}"
+        )
     if names != ["workflow_dispatch"] and any(
         "self-hosted" in str(job.get("runs-on")) for job in job_list
     ):
@@ -841,6 +896,21 @@ def _check_triggers_and_expressions(
                         f"{name}: run text must not interpolate {expression.strip()!r}; "
                         "pass it through env"
                     )
+
+
+def _check_checkout_credentials(
+    name: str, document: dict[str, Any], errors: list[str]
+) -> None:
+    """Every job installs packages or runs repository code, so no checkout keeps its token."""
+    jobs = document.get("jobs")
+    for job_id, job in jobs.items() if isinstance(jobs, dict) else ():
+        for step in (job.get("steps") if isinstance(job, dict) else None) or []:
+            if (
+                isinstance(step, dict)
+                and str(step.get("uses", "")).startswith("actions/checkout@")
+                and (step.get("with") or {}).get("persist-credentials") is not False
+            ):
+                errors.append(f"{name}: {job_id}: actions/checkout must set persist-credentials: false")
 
 
 def _check_tag_checkouts(
@@ -1257,6 +1327,7 @@ def check_workflows() -> list[str]:
             _check_rustsec_ignores(path.name, document, reviewed, errors)
         _check_triggers_and_expressions(path.name, document, errors)
         _check_tag_checkouts(path.name, document, errors)
+        _check_checkout_credentials(path.name, document, errors)
         _check_python_runtime(path.name, source, errors)
 
         action_refs = ACTION_REF.findall(source)

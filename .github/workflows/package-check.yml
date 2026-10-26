@@ -10,6 +10,8 @@ on:
   pull_request:
     paths:
       - AudioForge.spec
+      - AudioForge.ico
+      - LICENSE
       - build_exe.ps1
       - build_msi.ps1
       - build_deepfilter.ps1
@@ -19,6 +21,8 @@ on:
       - requirements/**
       - Cargo.toml
       - Cargo.lock
+      - rust-toolchain.toml
+      - .cargo/**
       - rust-core/**
       - build-support/**
       - installer/**

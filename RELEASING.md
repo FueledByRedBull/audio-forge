@@ -59,8 +59,8 @@ archive, and one `SHA256SUMS.txt`.
    final binary, and name untested configurations in the release notes.
    The runner is a personal machine that executes repository code: register it
    only while a run is needed, and only for this repository. Like promotion,
-   both hardware workflows refuse to run unless dispatched from `master` by
-   a user with the admin or maintain role.
+   both hardware workflows are limited to `master` and to admin or maintain
+   users, as described under step 6.
 6. **Promote.** Run `Promote release candidate` with `release_tag`,
    `candidate_run_id`, and `expected_archive_sha256`. It downloads the same
    candidate bytes, verifies sidecars, evidence, and corresponding source
@@ -70,22 +70,39 @@ archive, and one `SHA256SUMS.txt`.
    SHA-256 digests in preflight, and the final check downloads and hashes
    every published file.
 
-   Promotion has two jobs. `verify-candidate` runs the candidate (the
-   executable, the MSI and the pinned pip packages) with a read-only token and
-   no credentials in its checkout, then stages the five files with their
-   SHA-256 as an artifact. Only `publish-release` can write; it runs none of the
-   candidate's code, re-hashes the staged files against the recorded digests and
-   `expected_archive_sha256`, and publishes.
+   Promotion has two jobs. `verify-candidate` installs the pinned pip packages
+   and runs the candidate (the MSI and the executable) with a read-only token
+   and no credentials in its checkout. Before it runs the MSI or the
+   executable it locates the five release files, stages them, records their
+   SHA-256 and uploads the staged copies as an artifact. Only `publish-release`
+   can write; it runs none of the candidate's code, re-hashes the staged files
+   against the recorded digests and `expected_archive_sha256`, and publishes.
+   The artifact is kept seven days so an environment approval can wait; after
+   that the publish job fails and the candidate is promoted again.
 
-   Dispatch rules: the first step of every job in `Promote release candidate`
-   and in both hardware workflows fails unless the run is on
-   `refs/heads/master` and `github.triggering_actor` has the admin or maintain
-   role (`GET /repos/{repo}/collaborators/{user}/permission`). `publish-release`
-   also declares `environment: release`. Create that environment in the
-   repository settings (Settings, Environments) and limit its deployment
-   branches to `master` before the first promotion; GitHub creates a missing
-   environment without any protection rules. Add required reviewers there if a
-   second approval is wanted.
+   What restricts who can dispatch these workflows, and where:
+
+   - **In the workflow files, a guard against mistakes.** The first step of
+     every job in `Promote release candidate` and in both hardware workflows
+     fails unless the run is on `refs/heads/master` and
+     `github.triggering_actor` has the admin or maintain role
+     (`GET /repos/{repo}/collaborators/{user}/permission`). The three accept
+     only `workflow_dispatch`; `check_workflows.py` rejects any other trigger.
+     A copy of a file on another branch can delete this step, so it does not
+     bind that copy.
+   - **In repository settings, which binds a branch copy.** `publish-release`,
+     `qualify-hardware` and `assemble` declare `environment: release`, and
+     that environment limits deployment branches to `master`, so GitHub
+     refuses to start those jobs from any other ref even when the copy dropped
+     the first step. A copy that also drops the `environment:` line is bound
+     by neither; only the rules on who can push branches limit that.
+     `verify-candidate` declares no environment because its token is
+     read-only. If the environment is ever deleted, GitHub recreates it
+     without branch rules on the next run, so recreate it with the master-only
+     policy (Settings, Environments) before dispatching. Add required
+     reviewers there if a second approval is wanted.
+   - **In the token scope.** Only `publish-release` has `contents: write`;
+     every other job in these workflows is read-only.
 
 GitHub release immutability is enabled: publication locks the assets and tag
 and creates GitHub's

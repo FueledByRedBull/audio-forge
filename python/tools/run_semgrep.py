@@ -17,20 +17,26 @@ RULESET_FILE = REPO_ROOT / "semgrep-rulesets.txt"
 # Third-party collections are cloned here at their pinned commit; the directory
 # is fixed so rule ids, and the nosemgrep comments that name them, are stable.
 RULES_DIR = REPO_ROOT / "build" / "semgrep-rules"
+GIT_TIMEOUT_SECONDS = 300
 COLLECTION_LINE = re.compile(
     r"git (https://github\.com/([\w.-]+)/([\w.-]+)) ([0-9a-f]{40})((?: [\w.-][\w./-]*)+)"
 )
 
 
 def _checkout_rules(url: str, commit: str, checkout: Path) -> None:
-    """Make `checkout` hold `url` at exactly `commit`; semgrep cannot load a URL."""
+    """Make `checkout` hold `url` at exactly `commit`, unmodified; semgrep cannot load a URL."""
 
     def git(*args: str, check: bool = True) -> str:
         # core.longpaths: some collections carry paths beyond the Windows limit.
-        result = subprocess.run(
-            ["git", "-c", "core.longpaths=true", "-C", str(checkout), *args],
-            capture_output=True, text=True, check=False,
-        )
+        try:
+            result = subprocess.run(
+                ["git", "-c", "core.longpaths=true", "-C", str(checkout), *args],
+                capture_output=True, text=True, check=False, timeout=GIT_TIMEOUT_SECONDS,
+            )
+        except FileNotFoundError:
+            raise RuntimeError("git is required to fetch the pinned Semgrep rule collections") from None
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"git {args[0]} for {url} took over {GIT_TIMEOUT_SECONDS} s") from None
         if check and result.returncode != 0:
             raise RuntimeError(f"git {args[0]} failed for {url}: {result.stderr.strip()[:300]}")
         return result.stdout.strip()
@@ -40,7 +46,12 @@ def _checkout_rules(url: str, commit: str, checkout: Path) -> None:
         git("init", "--quiet")
     if git("rev-parse", "--verify", "--quiet", "HEAD", check=False) != commit:
         git("fetch", "--quiet", "--depth=1", url, commit)
-        git("checkout", "--quiet", "--detach", "FETCH_HEAD")
+        git("checkout", "--quiet", "--force", "--detach", "FETCH_HEAD")
+    # The right commit is not enough: an edited, added or ignored rule file is
+    # loaded all the same, so any difference from the commit is discarded.
+    if git("status", "--porcelain", "--untracked-files=all", "--ignored"):
+        git("reset", "--quiet", "--hard", "HEAD")
+        git("clean", "--quiet", "-ffdx")
 
 
 def _rulesets() -> list[str]:

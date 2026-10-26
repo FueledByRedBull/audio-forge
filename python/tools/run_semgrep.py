@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -13,14 +14,66 @@ from pathlib import Path, PureWindowsPath
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RULESET_FILE = REPO_ROOT / "semgrep-rulesets.txt"
+# Third-party collections are cloned here at their pinned commit; the directory
+# is fixed so rule ids, and the nosemgrep comments that name them, are stable.
+RULES_DIR = REPO_ROOT / "build" / "semgrep-rules"
+GIT_TIMEOUT_SECONDS = 300
+COLLECTION_LINE = re.compile(
+    r"git (https://github\.com/([\w.-]+)/([\w.-]+)) ([0-9a-f]{40})((?: [\w.-][\w./-]*)+)"
+)
+
+
+def _checkout_rules(url: str, commit: str, checkout: Path) -> None:
+    """Make `checkout` hold `url` at exactly `commit`, unmodified; semgrep cannot load a URL."""
+
+    def git(*args: str, check: bool = True) -> str:
+        # core.longpaths: some collections carry paths beyond the Windows limit.
+        try:
+            result = subprocess.run(
+                ["git", "-c", "core.longpaths=true", "-C", str(checkout), *args],
+                capture_output=True, text=True, check=False, timeout=GIT_TIMEOUT_SECONDS,
+            )
+        except FileNotFoundError:
+            raise RuntimeError("git is required to fetch the pinned Semgrep rule collections") from None
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"git {args[0]} for {url} took over {GIT_TIMEOUT_SECONDS} s") from None
+        if check and result.returncode != 0:
+            raise RuntimeError(f"git {args[0]} failed for {url}: {result.stderr.strip()[:300]}")
+        return result.stdout.strip()
+
+    checkout.mkdir(parents=True, exist_ok=True)
+    if not (checkout / ".git").is_dir():
+        git("init", "--quiet")
+    if git("rev-parse", "--verify", "--quiet", "HEAD", check=False) != commit:
+        git("fetch", "--quiet", "--depth=1", url, commit)
+        git("checkout", "--quiet", "--force", "--detach", "FETCH_HEAD")
+    # The right commit is not enough: an edited, added or ignored rule file is
+    # loaded all the same, so any difference from the commit is discarded.
+    if git("status", "--porcelain", "--untracked-files=all", "--ignored"):
+        git("reset", "--quiet", "--hard", "HEAD")
+        git("clean", "--quiet", "-ffdx")
 
 
 def _rulesets() -> list[str]:
-    return [
-        line
-        for raw_line in RULESET_FILE.read_text(encoding="utf-8").splitlines()
-        if (line := raw_line.strip()) and not line.startswith("#")
-    ]
+    configs: list[str] = []
+    for raw_line in RULESET_FILE.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if not line.startswith("git "):
+            configs.append(line)
+            continue
+        match = COLLECTION_LINE.fullmatch(line)
+        if match is None or any(".." in part.split("/") for part in match[5].split()):
+            raise RuntimeError(f"Unusable semgrep collection line: {line}")
+        url, owner, repo, commit, directories = match.groups()
+        checkout = RULES_DIR / f"{owner}-{repo}"
+        _checkout_rules(url, commit, checkout)
+        configs.extend(
+            (checkout / directory).relative_to(REPO_ROOT).as_posix()
+            for directory in directories.split()
+        )
+    return configs
 
 
 def _suppressed_in_source(result: dict[str, object]) -> bool:
@@ -133,7 +186,11 @@ def main() -> int:
     if scan_output.is_file():
         scan_output.unlink()
 
-    command = _scan_command(scan_output)
+    try:
+        command = _scan_command(scan_output)
+    except RuntimeError as error:
+        print(error, file=sys.stderr)
+        return 2
 
     child_env = os.environ.copy()
     child_env.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1")

@@ -1446,24 +1446,75 @@ mod tests {
         );
         assert!(rx.try_pop().is_some());
 
-        // The fault returns: the request waits out the interval, and the
-        // streams are left alone meanwhile.
-        fault(&processor);
+        // The fault returns: requests inside the interval are skipped and the
+        // streams are left alone; the DSP thread asks again while it lasts.
         for second in [1, 5, 9] {
+            fault(&processor);
             assert_eq!(
                 processor.service_recovery_at(at(second), streams_open),
                 None
             );
-            assert!(processor.restart_requested.load(Ordering::Acquire));
+            assert!(
+                !processor.restart_requested.load(Ordering::Acquire),
+                "a skipped request must not hold the supervisor back"
+            );
             assert!(rx.try_pop().is_none());
+            assert_eq!(
+                processor.get_rt_error_code(),
+                RtErrorCode::SuppressorNonFinite as u32,
+                "the fault stays visible"
+            );
         }
         assert_eq!(processor.get_stream_restart_count(), 0);
+        fault(&processor);
         assert_eq!(
             processor.service_recovery_at(at(10), streams_open),
             Some(true)
         );
         assert!(rx.try_pop().is_some());
         assert!(!processor.restart_requested.load(Ordering::Acquire));
+    }
+
+    /// A stall inside the rebuild interval still restarts the streams: the
+    /// supervisor keeps watching while a rebuild is being held back.
+    #[test]
+    fn a_stall_during_the_rebuild_interval_restarts_the_streams() {
+        let mut processor = AudioProcessor::new();
+        let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
+        let (tx, mut rx) = queue.split();
+        *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
+        let fault = |processor: &AudioProcessor| {
+            store_rt_error(
+                processor.rt_error_code.as_ref(),
+                RtErrorCode::SuppressorBackendFailed,
+            );
+            processor.restart_requested.store(true, Ordering::Release);
+        };
+        fault(&processor);
+        assert_eq!(
+            processor.service_recovery_at(at(0), streams_open),
+            Some(true)
+        );
+        assert!(rx.try_pop().is_some());
+
+        fault(&processor);
+        assert_eq!(processor.service_recovery_at(at(2), streams_open), None);
+        // The supervisor only checks for a stall while no restart is pending.
+        assert!(!processor.restart_requested.load(Ordering::Acquire));
+        request_stall_restart(
+            &processor.recovery_state,
+            &processor.restart_requested,
+            "input_cb_age_ms=9000, output_cb_age_ms=9000, output_write_age_ms=9000".to_string(),
+        );
+        assert_eq!(
+            processor.service_recovery_at(at(3), streams_open),
+            Some(true)
+        );
+        assert_eq!(processor.get_stream_restart_count(), 1);
+        assert!(
+            rx.try_pop().is_none(),
+            "the stall is not answered with a rebuild"
+        );
     }
 
     #[test]
@@ -5167,33 +5218,78 @@ mod tests {
         assert!(region.contains("RtErrorCode::FixedBufferOverflow"));
     }
 
-    /// A suppressor that was disabled, or bypassed, for longer than the
-    /// starvation limit has produced no output for that long, so the clock must
-    /// restart whenever it is not being fed: with blocks smaller than one
-    /// suppressor frame the first block after re-enabling yields no output yet.
     #[test]
-    fn suppressor_starvation_clock_restarts_whenever_the_suppressor_is_not_fed() {
-        let source = include_str!("dsp_loop.rs");
-        let refresh = "last_suppressor_output = Instant::now();";
-        for (label, start, end) in [
-            (
-                "path change",
-                "if processing_path != previous_processing_path {",
-                "previous_processing_path = processing_path;",
-            ),
-            (
-                "suppressor disabled",
-                "// Suppressor disabled: clear buffer counter",
-                "// Suppressor disabled: apply remaining stages directly",
-            ),
-        ] {
-            assert!(
-                source_between(source, start, end).contains(refresh),
-                "{label} must restart the suppressor starvation clock"
-            );
+    fn suppressor_starvation_is_only_timed_while_the_suppressor_is_fed() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        // A block every 5 ms (a 240-frame period) with no output: starved once
+        // the limit has passed, not before.
+        let mut watch = SuppressorStarvation::new(at(0));
+        for ms in (5..=400).step_by(5) {
+            watch.fed(at(ms));
+            assert!(!watch.starved(at(ms)), "{ms} ms");
         }
-        let check = source_between(source, "} else if accepted > 0", "store_rt_error(");
-        assert!(check.contains("last_suppressor_output.elapsed()"));
+        watch.fed(at(405));
+        assert!(watch.starved(at(405)));
+
+        // Output ends the run.
+        watch.restart(at(410));
+        watch.fed(at(415));
+        assert!(!watch.starved(at(415)));
+
+        // The input goes quiet for up to 2.5 s (or the suppressor is disabled
+        // or bypassed), then resumes in blocks smaller than one frame. The
+        // first block gives no output yet, which is not starvation.
+        for quiet_ms in [150, 400, 1_000, 2_500] {
+            let mut watch = SuppressorStarvation::new(at(0));
+            watch.fed(at(5));
+            watch.restart(at(10)); // last output
+            let resumed = 10 + quiet_ms;
+            watch.fed(at(resumed));
+            assert!(!watch.starved(at(resumed)), "quiet for {quiet_ms} ms");
+            // ...but a suppressor that stays silent while fed still is.
+            for ms in (resumed + 5..=resumed + 400).step_by(5) {
+                watch.fed(at(ms));
+            }
+            assert!(!watch.starved(at(resumed + 400)));
+            watch.fed(at(resumed + 405));
+            assert!(watch.starved(at(resumed + 405)), "quiet for {quiet_ms} ms");
+        }
+    }
+
+    /// The decision above only helps if the loop feeds the clock where the
+    /// suppressor is fed and restarts it where output arrives or the stream
+    /// is reset.
+    #[test]
+    fn suppressor_starvation_clock_is_wired_to_the_feed_and_the_output() {
+        let source = include_str!("dsp_loop.rs");
+        let enabled_branch = source_between(
+            source,
+            "// Always feed suppressor first so frame accumulation is correct.",
+            "// Record DSP processing time",
+        );
+        let feed = enabled_branch.find("suppressor_starvation.fed(").unwrap();
+        let process = enabled_branch
+            .find("suppressor_rt.process_frames()")
+            .unwrap();
+        let output = enabled_branch.find("if available > 0 {").unwrap();
+        let check = enabled_branch
+            .find("suppressor_starvation.starved(")
+            .unwrap();
+        assert!(feed < process && process < output && output < check);
+        let output_arm = source_between(
+            enabled_branch,
+            "if available > 0 {",
+            "} else if accepted > 0",
+        );
+        assert!(output_arm.contains("suppressor_starvation.restart("));
+        let reset = source_between(
+            source,
+            "macro_rules! reset_input_continuity",
+            "let mut consecutive_idle_wakeups",
+        );
+        assert!(reset.contains("suppressor_starvation.restart("));
+        assert!(!source.contains("last_suppressor_output"));
     }
 
     #[test]

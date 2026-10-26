@@ -353,9 +353,62 @@ pub(crate) mod rt_scan {
         code
     }
 
-    /// Name and body (`{ .. }`) of every function in `code` that has one.
-    fn functions(code: &str) -> Vec<(&str, &str)> {
+    /// The type an `impl` header is for: `<T> Trait for Foo<T> where ..` is
+    /// `Foo`.
+    fn impl_type(header: &str) -> &str {
+        let header = header.split(" where ").next().unwrap_or(header).trim();
+        let mut ty = header.rsplit(" for ").next().unwrap_or(header).trim();
+        if ty.starts_with('<') {
+            // Skip the generic parameters; the `>` of `->` does not close them.
+            let mut depth = 0_usize;
+            let mut previous = ' ';
+            for (index, c) in ty.char_indices() {
+                match c {
+                    '<' => depth += 1,
+                    '>' if previous != '-' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            ty = ty[index + 1..].trim();
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                previous = c;
+            }
+        }
+        ty.split(|c: char| c == '<' || c.is_whitespace())
+            .next()
+            .unwrap_or(ty)
+    }
+
+    /// Byte range of the body and the type of every `impl` block in `code`.
+    fn impl_blocks(code: &str) -> Vec<(usize, usize, &str)> {
         let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        let mut found = Vec::new();
+        for (at, _) in code.match_indices("impl") {
+            let before = code[..at].trim_end();
+            let before = before.strip_suffix("unsafe").unwrap_or(before).trim_end();
+            let starts_item = before.is_empty() || before.ends_with(['}', ';', '{', ']']);
+            let after = &code[at + "impl".len()..];
+            if !starts_item || after.starts_with(is_word) {
+                continue;
+            }
+            let Some(open) = after.find('{') else {
+                continue;
+            };
+            let open = at + "impl".len() + open;
+            let header = &code[at + "impl".len()..open];
+            found.push((open, matching_brace(code, open), impl_type(header)));
+        }
+        found
+    }
+
+    /// Qualified name (`Type::name` inside an `impl`) and body (`{ .. }`) of
+    /// every function in `code` that has one.
+    fn functions(code: &str) -> Vec<(String, &str)> {
+        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        let impls = impl_blocks(code);
         let mut found = Vec::new();
         for (at, _) in code.match_indices("fn ") {
             if code[..at].chars().next_back().is_some_and(is_word) {
@@ -372,7 +425,16 @@ pub(crate) mod rt_scan {
                     b')' | b']' => depth -= 1,
                     b'{' if depth == 0 => {
                         let close = matching_brace(code, offset);
-                        found.push((&code[name_start..name_end], &code[offset..=close]));
+                        let name = &code[name_start..name_end];
+                        let owner = impls
+                            .iter()
+                            .filter(|(open, close, _)| (*open..=*close).contains(&at))
+                            .max_by_key(|(open, ..)| *open);
+                        let qualified = match owner {
+                            Some((.., ty)) => format!("{ty}::{name}"),
+                            None => name.to_string(),
+                        };
+                        found.push((qualified, &code[offset..=close]));
                         break;
                     }
                     b';' if depth == 0 => break,
@@ -384,9 +446,10 @@ pub(crate) mod rt_scan {
     }
 
     /// Check every function body of `source` outside `#[cfg(test)]` items.
-    /// `non_rt` lists the functions that never run on a callback or in the DSP
-    /// loop (setup, parameter validation, offline analysis), each with the
-    /// reason; an entry that no longer needs to be listed fails too.
+    /// `non_rt` lists the functions (`Type::name`, or `name` outside an `impl`)
+    /// that never run on a callback or in the DSP loop (setup, parameter
+    /// validation, offline analysis), each with the reason; an entry that no
+    /// longer needs to be listed fails too.
     pub(crate) fn assert_functions_rt_clean(file: &str, source: &str, non_rt: &[(&str, &str)]) {
         let code = without_test_items(code_only(source));
         let bodies = functions(&code);
@@ -396,16 +459,21 @@ pub(crate) mod rt_scan {
             bodies.len()
         );
         let mut needed = vec![false; non_rt.len()];
-        for (name, body) in bodies {
+        let mut offenders = Vec::new();
+        for (name, body) in &bodies {
             let Some(pattern) = FORBIDDEN.iter().find(|pattern| body.contains(**pattern)) else {
                 continue;
             };
-            let entry = non_rt.iter().position(|(listed, _)| *listed == name);
-            let entry = entry.unwrap_or_else(|| {
-                panic!("{file}: fn {name} contains forbidden RT pattern {pattern}; remove it, or list the function as non-RT with a reason")
-            });
-            needed[entry] = true;
+            match non_rt.iter().position(|(listed, _)| listed == name) {
+                Some(entry) => needed[entry] = true,
+                None => offenders.push(format!("{name} ({pattern})")),
+            }
         }
+        assert!(
+            offenders.is_empty(),
+            "{file}: forbidden RT patterns in {}; remove them, or list the function as non-RT with a reason",
+            offenders.join(", ")
+        );
         for ((name, reason), needed) in non_rt.iter().zip(needed) {
             assert!(!reason.is_empty(), "{file}: {name} needs a reason");
             assert!(needed, "{file}: {name} no longer needs its non-RT entry");
@@ -472,24 +540,42 @@ pub(crate) mod rt_scan {
         fn third() {}
         #[cfg(test)]
         mod tests { fn fixture() { let _ = vec![1]; } }
+        struct First;
+        struct Second<T>(T);
+        impl First { fn new() -> Vec<f32> { Vec::new() } }
+        impl<T: Fn(f32) -> f32> Clone for Second<T> where T: Copy { fn clone(&self) -> Self { loop {} } }
     "#;
 
     #[test]
     fn the_function_scan_ignores_comments_strings_and_test_items() {
-        assert_functions_rt_clean("sample", SCANNED, &[]);
+        assert_functions_rt_clean("sample", SCANNED, &[("First::new", SETUP)]);
     }
 
     #[test]
-    #[should_panic(expected = "fn offender contains forbidden RT pattern .to_vec(")]
+    #[should_panic(expected = "offender (.to_vec()")]
     fn the_function_scan_flags_an_allocating_function() {
         let source = format!("{SCANNED} fn offender(x: &[f32]) -> usize {{ x.to_vec().len() }}");
-        assert_functions_rt_clean("sample", &source, &[]);
+        assert_functions_rt_clean("sample", &source, &[("First::new", SETUP)]);
     }
 
     #[test]
     #[should_panic(expected = "offender no longer needs its non-RT entry")]
     fn the_function_scan_rejects_a_stale_non_rt_entry() {
-        assert_functions_rt_clean("sample", SCANNED, &[("offender", SETUP)]);
+        assert_functions_rt_clean(
+            "sample",
+            SCANNED,
+            &[("First::new", SETUP), ("offender", SETUP)],
+        );
+    }
+
+    /// A same-named function of another type is not covered by an entry for
+    /// the first one.
+    #[test]
+    #[should_panic(expected = "Second::new (Vec::)")]
+    fn the_function_scan_matches_the_owning_type_not_just_the_name() {
+        let source =
+            format!("{SCANNED} impl<T> Second<T> {{ fn new() -> Vec<f32> {{ Vec::new() }} }}");
+        assert_functions_rt_clean("sample", &source, &[("First::new", SETUP)]);
     }
 
     /// Setup, validation and offline code in the scanned sources, by function
@@ -514,13 +600,13 @@ pub(crate) mod rt_scan {
                 "dsp/eq.rs",
                 include_str!("dsp/eq.rs"),
                 &[
-                    ("validate", VALIDATION),
+                    ("EqBandConfig::validate", VALIDATION),
                     ("eq_max_frequency_hz", VALIDATION),
                     ("validate_eq_frequency_hz", VALIDATION),
                     ("validate_eq_gain_db", VALIDATION),
                     ("validate_eq_q", VALIDATION),
                     ("validate_eq_slope", VALIDATION),
-                    ("magnitude_response_db", OFFLINE),
+                    ("ParametricEQ::magnitude_response_db", OFFLINE),
                 ][..],
             ),
             ("dsp/gate.rs", include_str!("dsp/gate.rs"), &[][..]),
@@ -530,7 +616,7 @@ pub(crate) mod rt_scan {
                 include_str!("dsp/deepfilter_ffi.rs"),
                 &[
                     (
-                        "try_new",
+                        "DeepFilterRuntimeConfig::try_new",
                         "runtime config validation; builds its error text on rejection",
                     ),
                     ("app_owned_paths", SETUP),
@@ -538,23 +624,23 @@ pub(crate) mod rt_scan {
                     ("configure_app_owned_paths", SETUP),
                     ("configured_app_owned_paths", SETUP),
                     ("find_model_path", SETUP),
-                    ("trusted_library_candidates", SETUP),
-                    ("load_symbols_from_path", SETUP),
-                    ("try_load", SETUP),
-                    ("new", SETUP),
-                    ("open", SETUP),
-                    ("new_with_config", SETUP),
-                    ("from_library", SETUP),
-                    ("default", SETUP),
+                    ("DeepFilterLib::trusted_library_candidates", SETUP),
+                    ("DeepFilterLib::load_symbols_from_path", SETUP),
+                    ("DeepFilterLib::try_load", SETUP),
+                    ("DeepFilterFFI::new", SETUP),
+                    ("DeepFilterFFI::open", SETUP),
+                    ("DeepFilterProcessor::new_with_config", SETUP),
+                    ("DeepFilterProcessor::from_library", SETUP),
+                    ("DeepFilterProcessor::default", SETUP),
                 ][..],
             ),
             (
                 "dsp/limiter.rs",
                 include_str!("dsp/limiter.rs"),
                 &[
-                    ("new_with_lookahead_ms", SETUP),
+                    ("Limiter::new_with_lookahead_ms", SETUP),
                     (
-                        "set_lookahead_ms",
+                        "Limiter::set_lookahead_ms",
                         "resizes the delay line and is documented as not realtime-safe; only the Python setup calls it",
                     ),
                 ][..],
@@ -562,7 +648,10 @@ pub(crate) mod rt_scan {
             (
                 "dsp/loudness.rs",
                 include_str!("dsp/loudness.rs"),
-                &[("new", SETUP), ("integrated_loudness_lufs", OFFLINE)][..],
+                &[
+                    ("LoudnessMeter::new", SETUP),
+                    ("integrated_loudness_lufs", OFFLINE),
+                ][..],
             ),
             (
                 "dsp/noise_suppressor.rs",
@@ -575,7 +664,7 @@ pub(crate) mod rt_scan {
             (
                 "dsp/rnnoise.rs",
                 include_str!("dsp/rnnoise.rs"),
-                &[("default", SETUP)][..],
+                &[("RNNoiseProcessor::default", SETUP)][..],
             ),
             (
                 "dsp/true_peak.rs",
@@ -583,16 +672,32 @@ pub(crate) mod rt_scan {
                 &[("generate_fir", SETUP)][..],
             ),
             ("dsp/util.rs", include_str!("dsp/util.rs"), &[][..]),
-            ("audio/rt.rs", include_str!("audio/rt.rs"), &[("new", SETUP)][..]),
+            (
+                "audio/rt.rs",
+                include_str!("audio/rt.rs"),
+                &[
+                    ("FixedAudioBuffer::new", SETUP),
+                    ("FixedAudioRing::new", SETUP),
+                ][..],
+            ),
             (
                 "audio/buffer.rs",
                 include_str!("audio/buffer.rs"),
-                &[("split", SETUP)][..],
+                &[("AudioRingBuffer::split", SETUP)][..],
             ),
             (
                 "audio/processor/output_writer.rs",
                 include_str!("audio/processor/output_writer.rs"),
                 &[][..],
+            ),
+            (
+                "audio/processor/resampling.rs",
+                include_str!("audio/processor/resampling.rs"),
+                &[
+                    ("build_sinc_resampler_with_quality", SETUP),
+                    ("product_resampler_configuration", SETUP),
+                    ("simulate_product_resampler", OFFLINE),
+                ][..],
             ),
             (
                 "audio/processor/routing.rs",

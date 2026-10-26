@@ -78,6 +78,9 @@
     "path": "build-support/deepfilter/Cargo.lock",
     "sha256": "35591D5E442D11E1208ADD6960EF7C5190454E3632FCDE10D8A1D1B78136224F",
     "manifest_sha256": "F756DED61C98DC8B66A46F48569210070B9F983EF68A62A2D6B368EC1F2BC5C3",
+    "superseded_manifest_sha256": [
+      "A4FF7A3E754FD0029F1E7E515D50EB23B0630F1A305B368EDA91AA7F4B0291AF"
+    ],
     "package_count": 227,
     "security_pins": {
       "bytes": "1.12.1",

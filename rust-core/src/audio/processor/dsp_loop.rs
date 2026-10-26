@@ -159,6 +159,50 @@ fn contain_non_finite(buffer: &mut [f32]) -> bool {
     found
 }
 
+/// Notices a suppressor that is fed but produces nothing.
+///
+/// The clock only runs while samples are being fed: after a pause in the feed
+/// (the input went quiet, or the suppressor was disabled or bypassed) it starts
+/// over, because a suppressor that was not fed has nothing to produce yet and
+/// blocks smaller than one frame show no output for a few passes.
+struct SuppressorStarvation {
+    since: Instant,
+    last_fed: Instant,
+}
+
+impl SuppressorStarvation {
+    /// Fed this long without output counts as starved.
+    const LIMIT: Duration = Duration::from_millis(400);
+    /// A longer pause between two feeds ends the run being timed. The input
+    /// delivers a block every few milliseconds while it works.
+    const FEED_GAP: Duration = Duration::from_millis(100);
+
+    fn new(now: Instant) -> Self {
+        Self {
+            since: now,
+            last_fed: now,
+        }
+    }
+
+    /// Output arrived, or the stream was reset.
+    fn restart(&mut self, now: Instant) {
+        self.since = now;
+        self.last_fed = now;
+    }
+
+    /// The suppressor was handed samples.
+    fn fed(&mut self, now: Instant) {
+        if now.duration_since(self.last_fed) > Self::FEED_GAP {
+            self.since = now;
+        }
+        self.last_fed = now;
+    }
+
+    fn starved(&self, now: Instant) -> bool {
+        now.duration_since(self.since) > Self::LIMIT
+    }
+}
+
 /// Advance an exponential moving average by the wall time since its last update.
 fn advance_time_ema(state: &mut f32, sample: f32, elapsed_ms: f32, time_constant_ms: f32) {
     let alpha = 1.0 - (-elapsed_ms / time_constant_ms).exp();
@@ -1178,12 +1222,9 @@ impl AudioProcessor {
             // Latency tracking
             let mut last_latency_update = Instant::now();
             let latency_update_interval = std::time::Duration::from_millis(100); // Update every 100ms
-            const SUPPRESSOR_STARVATION_MS: u64 = 400;
             const NON_FINITE_REBUILD_THRESHOLD: u32 = 3;
             const NON_FINITE_REBUILD_WINDOW_MS: u64 = 2000;
-            // Starvation is measured from the last suppressor output or from the
-            // last time the suppressor was not being fed (disabled, Bypass, Raw).
-            let mut last_suppressor_output = Instant::now();
+            let mut suppressor_starvation = SuppressorStarvation::new(Instant::now());
             let mut non_finite_window_started_at: Option<Instant> = None;
             let mut non_finite_window_count: u32 = 0;
             #[cfg(feature = "vad")]
@@ -1618,7 +1659,7 @@ impl AudioProcessor {
                     );
                     gate_gain_meter.store(0.0_f32.to_bits(), Ordering::Relaxed);
                     gate_auto_relax_active.store(false, Ordering::Relaxed);
-                    last_suppressor_output = Instant::now();
+                    suppressor_starvation.restart(Instant::now());
                     #[cfg(feature = "vad")]
                     {
                         vad_source_discontinuity.fetch_add(1, Ordering::Release);
@@ -1984,7 +2025,6 @@ impl AudioProcessor {
                                 deesser_rt.reset();
                                 limiter_rt.reset();
                                 suppressor_rt.soft_reset();
-                                last_suppressor_output = Instant::now();
                                 if processing_path == ProcessingPath::Full
                                     && suppressor_enabled.load(Ordering::Acquire)
                                 {
@@ -2349,6 +2389,7 @@ impl AudioProcessor {
                                             reset_input_continuity!();
                                             continue;
                                         }
+                                        suppressor_starvation.fed(Instant::now());
                                         suppressor_rt.process_frames();
                                         suppressor_successful_inference_frames.store(
                                             suppressor_rt.successful_inference_frames(),
@@ -2377,7 +2418,7 @@ impl AudioProcessor {
 
                                         let available = suppressor_rt.available_samples();
                                         if available > 0 {
-                                            last_suppressor_output = Instant::now();
+                                            suppressor_starvation.restart(Instant::now());
                                             rnnoise_output.clear();
                                             let count = available.min(rnnoise_output.capacity());
                                             let _ = rnnoise_output.set_len_zeroed(count);
@@ -2443,8 +2484,7 @@ impl AudioProcessor {
                                             write_output(output_slice, false);
                                         } else if accepted > 0
                                             && !recording_active_thread.load(Ordering::Relaxed)
-                                            && last_suppressor_output.elapsed().as_millis() as u64
-                                                > SUPPRESSOR_STARVATION_MS
+                                            && suppressor_starvation.starved(Instant::now())
                                         {
                                             store_rt_error(
                                                 rt_error_code.as_ref(),
@@ -2452,7 +2492,7 @@ impl AudioProcessor {
                                             );
                                             restart_requested_for_dsp
                                                 .store(true, Ordering::Release);
-                                            last_suppressor_output = Instant::now();
+                                            suppressor_starvation.restart(Instant::now());
                                         }
 
                                         // Record DSP processing time
@@ -2465,7 +2505,6 @@ impl AudioProcessor {
                                     }
                                 } else {
                                     // Suppressor disabled: clear buffer counter
-                                    last_suppressor_output = Instant::now();
                                     suppressor_buffer_len.store(0, Ordering::Relaxed);
                                     suppressor_latency_samples.store(0, Ordering::Relaxed);
                                     suppressor_successful_inference_frames

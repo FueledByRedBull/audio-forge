@@ -362,7 +362,17 @@ if (Test-Path -LiteralPath $workspace) {
 }
 
 Assert-WorkspaceSourceTree $gitPath $sourceCache $commit $workspace
-Assert-FileHash (Join-Path $workspace "Cargo.toml") $manifestSha "Workspace DeepFilter build manifest"
+# The workspace manifest is a copy of the tracked, verified one. A workspace made by
+# an earlier recipe holds a manifest the recipe has since replaced; refresh it from
+# the tracked file. Any other manifest is not a copy of this recipe's.
+$workspaceManifest = Join-Path $workspace "Cargo.toml"
+$olderManifests = @($provenance.lock.superseded_manifest_sha256 | ForEach-Object { ([string]$_).ToUpperInvariant() })
+if ((Get-Sha256 $workspaceManifest) -in $olderManifests) {
+    Copy-Item -LiteralPath $trackedManifest -Destination $workspaceManifest -Force
+}
+if ((Get-Sha256 $workspaceManifest) -ne $manifestSha.ToUpperInvariant()) {
+    throw "The build manifest in $workspace matches no known version of this recipe. Delete that folder and run again; it is recreated from the source cache."
+}
 Assert-FileHash (Join-Path $workspace "Cargo.lock") ([string]$provenance.lock.sha256) "Tracked DeepFilter lockfile"
 Assert-FileHash (Join-Path $workspace "models\DeepFilterNet3_onnx.tar.gz") ([string]$provenance.models.'models/DeepFilterNet3_onnx.tar.gz'.sha256) "Standard model archive"
 Assert-FileHash (Join-Path $workspace "models\DeepFilterNet3_ll_onnx.tar.gz") ([string]$provenance.models.'models/DeepFilterNet3_ll_onnx.tar.gz'.sha256) "Low-latency model archive"

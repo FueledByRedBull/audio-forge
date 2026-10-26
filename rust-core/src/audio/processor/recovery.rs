@@ -19,7 +19,7 @@ const HEALTHY_STREAM_MS: u64 = 10_000;
 /// A callback older than this no longer shows a running stream (the
 /// supervisor's stall limit).
 const FRESH_CALLBACK_MS: u64 = 2_500;
-/// A suppressor rebuild that follows another one sooner than this waits.
+/// A suppressor rebuild that follows another one sooner than this is skipped.
 const SUPPRESSOR_REBUILD_MIN_INTERVAL_MS: u64 = 10_000;
 
 impl AudioProcessor {
@@ -98,12 +98,15 @@ impl AudioProcessor {
             RtErrorCode::SuppressorBackendFailed | RtErrorCode::SuppressorNonFinite
         ) && !reason_pending
             && !output_resampler_failed;
-        // A suppressor that keeps failing is rebuilt at most once per interval;
-        // the request stays pending until then.
+        // A suppressor that keeps failing is rebuilt at most once per interval.
+        // The request is dropped rather than held: the DSP thread asks again
+        // while the fault lasts, and a pending request would keep the supervisor
+        // from noticing a stalled stream, which must still restart it.
         if suppressor_fault
             && last_rebuild_us > 0
             && now.saturating_sub(last_rebuild_us) < SUPPRESSOR_REBUILD_MIN_INTERVAL_MS * 1000
         {
+            self.restart_requested.store(false, Ordering::Release);
             return None;
         }
         if suppressor_fault && self.rebuild_noise_suppressor() {

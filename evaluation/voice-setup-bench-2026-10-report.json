@@ -1,0 +1,645 @@
+{
+ "schema_version": 1,
+ "title": "Voice Setup on the fixed bench set: the questionable room-noise reference, the compressor clauses, the de-esser confidence terms",
+ "decision": {
+  "outcome": "measured",
+  "reason": "The numbers are information; the maintainer decides.",
+  "decided": null,
+  "by": null
+ },
+ "builds": {
+  "before": {
+   "native_module": "mic_eq_core.cp313-win_amd64.pyd",
+   "native_module_sha256": "4a60c2707caacd152badf27cb19ac2a593d8801f821cd24aa41c79a3409e77d0",
+   "git_revision": null,
+   "manifest_sha256": "e15402a336c53ba9ac7325b6a8b6903e463274ab834bfcca4953a1153b58f3eb",
+   "vad": "silero",
+   "deepfilter_enabled": null,
+   "python": "3.13.15",
+   "numpy": "2.5.1",
+   "scipy": "1.18.0"
+  },
+  "after": {
+   "native_module": "mic_eq_core.cp313-win_amd64.pyd",
+   "native_module_sha256": "4a60c2707caacd152badf27cb19ac2a593d8801f821cd24aa41c79a3409e77d0",
+   "git_revision": null,
+   "manifest_sha256": "e15402a336c53ba9ac7325b6a8b6903e463274ab834bfcca4953a1153b58f3eb",
+   "vad": "silero",
+   "deepfilter_enabled": null,
+   "python": "3.13.15",
+   "numpy": "2.5.1",
+   "scipy": "1.18.0"
+  },
+  "deesser_both": {
+   "native_module": "mic_eq_core.cp313-win_amd64.pyd",
+   "native_module_sha256": "648976a1c38b2310ca2b6d2056981980f6d2a40f8e67555657a2e87d4c1881cc",
+   "git_revision": null,
+   "manifest_sha256": "e15402a336c53ba9ac7325b6a8b6903e463274ab834bfcca4953a1153b58f3eb",
+   "vad": "silero",
+   "deepfilter_enabled": null,
+   "python": "3.13.15",
+   "numpy": "2.5.1",
+   "scipy": "1.18.0"
+  },
+  "deesser_floor": {
+   "native_module": "mic_eq_core.cp313-win_amd64.pyd",
+   "native_module_sha256": "b542adde84fe6bae210e99f115bc8f10b6d083c568d2ee3174279c3324d74ec3",
+   "git_revision": null,
+   "manifest_sha256": "e15402a336c53ba9ac7325b6a8b6903e463274ab834bfcca4953a1153b58f3eb",
+   "vad": "silero",
+   "deepfilter_enabled": null,
+   "python": "3.13.15",
+   "numpy": "2.5.1",
+   "scipy": "1.18.0"
+  },
+  "deesser_weights": {
+   "native_module": "mic_eq_core.cp313-win_amd64.pyd",
+   "native_module_sha256": "aef20ad0a85834aba6c725fb55840d77ec6d74867dc84613bd8aee3f2212f768",
+   "git_revision": null,
+   "manifest_sha256": "e15402a336c53ba9ac7325b6a8b6903e463274ab834bfcca4953a1153b58f3eb",
+   "vad": "silero",
+   "deepfilter_enabled": null,
+   "python": "3.13.15",
+   "numpy": "2.5.1",
+   "scipy": "1.18.0"
+  }
+ },
+ "bench": {
+  "mixes": 28,
+  "sweep_mixes": 12
+ },
+ "noise_reference": {
+  "groups": {
+   "usable": {
+    "fixed": {
+     "mixes": 11,
+     "before": {
+      "applied": 9,
+      "refused:B1": 1,
+      "refused:B2": 1
+     },
+     "after": {
+      "applied": 9,
+      "refused:B1": 1,
+      "refused:B2": 1
+     },
+     "retakes_usable": null,
+     "applied_fail_plain": 9,
+     "applied_fail_aware": 4,
+     "applied": 9
+    },
+    "sweep": {
+     "mixes": 4,
+     "before": {
+      "applied": 1,
+      "refused:B2": 3
+     },
+     "after": {
+      "applied": 1,
+      "refused:B2": 3
+     },
+     "retakes_usable": null,
+     "applied_fail_plain": 1,
+     "applied_fail_aware": 0,
+     "applied": 1
+    }
+   },
+   "questionable": {
+    "fixed": {
+     "mixes": 2,
+     "before": {
+      "refused:B2": 2
+     },
+     "after": {
+      "applied": 1,
+      "refused:B2": 1
+     },
+     "retakes_usable": "2 of 6",
+     "applied_fail_plain": 0,
+     "applied_fail_aware": 0,
+     "applied": 1
+    },
+    "sweep": {
+     "mixes": 4,
+     "before": {
+      "refused:B2": 4
+     },
+     "after": {
+      "applied": 3,
+      "refused:B2": 1
+     },
+     "retakes_usable": "0 of 12",
+     "applied_fail_plain": 3,
+     "applied_fail_aware": 0,
+     "applied": 3
+    }
+   },
+   "invalid": {
+    "fixed": {
+     "mixes": 2,
+     "before": {
+      "refused:B1": 1,
+      "refused:B2": 1
+     },
+     "after": {
+      "refused:B1": 1,
+      "refused:B2": 1
+     },
+     "retakes_usable": "0 of 6",
+     "applied_fail_plain": 0,
+     "applied_fail_aware": 0,
+     "applied": 0
+    },
+    "sweep": {
+     "mixes": 4,
+     "before": {
+      "refused:B2": 4
+     },
+     "after": {
+      "refused:B2": 4
+     },
+     "retakes_usable": "0 of 12",
+     "applied_fail_plain": 0,
+     "applied_fail_aware": 0,
+     "applied": 0
+    }
+   },
+   "none": {
+    "fixed": {
+     "mixes": 1,
+     "before": {
+      "refused:capture": 1
+     },
+     "after": {
+      "refused:capture": 1
+     },
+     "retakes_usable": null,
+     "applied_fail_plain": 0,
+     "applied_fail_aware": 0,
+     "applied": 0
+    },
+    "sweep": {
+     "mixes": 0,
+     "before": {},
+     "after": {},
+     "retakes_usable": null,
+     "applied_fail_plain": 0,
+     "applied_fail_aware": 0,
+     "applied": 0
+    }
+   }
+  },
+  "changed": [
+   {
+    "mix": "cafe-t02",
+    "reference": "questionable",
+    "before": "refused B2",
+    "after": "applied",
+    "tuner": "withheld",
+    "fails_plain": [],
+    "fails_aware": [],
+    "reads": {
+     "estoi": 0.9629,
+     "si_sdr": 10.2751,
+     "tone_error_db": 1.4936,
+     "onset_db": -5.5715
+    }
+   },
+   {
+    "mix": "tv-t06@14",
+    "reference": "questionable",
+    "before": "refused B2",
+    "after": "applied",
+    "tuner": "withheld",
+    "fails_plain": [
+     "onset_db"
+    ],
+    "fails_aware": [],
+    "reads": {
+     "estoi": 0.928,
+     "si_sdr": 8.5476,
+     "tone_error_db": 1.2888,
+     "onset_db": 5.17
+    }
+   },
+   {
+    "mix": "tv-t06@18",
+    "reference": "questionable",
+    "before": "refused B2",
+    "after": "applied",
+    "tuner": "withheld",
+    "fails_plain": [
+     "onset_db"
+    ],
+    "fails_aware": [],
+    "reads": {
+     "estoi": 0.9517,
+     "si_sdr": 9.9599,
+     "tone_error_db": 1.2253,
+     "onset_db": -8.2746
+    }
+   },
+   {
+    "mix": "tv-t06@22",
+    "reference": "questionable",
+    "before": "refused B2",
+    "after": "applied",
+    "tuner": "withheld",
+    "fails_plain": [
+     "onset_db"
+    ],
+    "fails_aware": [],
+    "reads": {
+     "estoi": 0.9662,
+     "si_sdr": 10.7072,
+     "tone_error_db": 1.161,
+     "onset_db": -14.397
+    }
+   }
+  ]
+ },
+ "compressor": {
+  "mixes": 27,
+  "step": {
+   "plain": {
+    "mixes_failing": 18,
+    "by_clause": {
+     "deep_pause_db": 5,
+     "estoi": 8,
+     "onset_db": 17,
+     "tail_db": 10
+    }
+   },
+   "aware": {
+    "mixes_failing": 3,
+    "by_clause": {
+     "deep_pause_db": 1,
+     "estoi": 1,
+     "sibilant_loss_db": 2,
+     "tail_db": 1
+    }
+   }
+  },
+  "off": {
+   "plain": {
+    "mixes_failing": 24,
+    "by_clause": {
+     "onset_db": 24
+    }
+   },
+   "aware": {
+    "mixes_failing": 0,
+    "by_clause": {}
+   }
+  },
+  "squash": {
+   "plain": {
+    "mixes_failing": 27,
+    "by_clause": {
+     "deep_pause_db": 27,
+     "estoi": 26,
+     "sibilant_loss_db": 6,
+     "tail_db": 27
+    }
+   },
+   "aware": {
+    "mixes_failing": 27,
+    "by_clause": {
+     "deep_pause_db": 18,
+     "estoi": 27,
+     "onset_db": 14,
+     "tail_db": 21,
+     "tone_error_db": 9
+    }
+   }
+  },
+  "whole_setups": {
+   "setups": 27,
+   "failing_plain": 17,
+   "failing_aware": 5
+  }
+ },
+ "deesser": {
+  "both": {
+   "mixes": 16,
+   "arms": {
+    "deesser_on": {
+     "estoi": {
+      "mixes": 16,
+      "mean": 0.0,
+      "max_abs": 0.0001,
+      "beyond_margin": 0,
+      "identical": 3
+     },
+     "si_sdr": {
+      "mixes": 16,
+      "mean": -0.0,
+      "max_abs": 0.0022,
+      "beyond_margin": 0,
+      "identical": 3
+     },
+     "tone_error_db": {
+      "mixes": 16,
+      "mean": -0.0,
+      "max_abs": 0.0022,
+      "beyond_margin": 0,
+      "identical": 3
+     },
+     "sibilant_loss_db": {
+      "mixes": 16,
+      "mean": 0.0045,
+      "max_abs": 0.0319,
+      "beyond_margin": 0,
+      "identical": 3
+     },
+     "deep_pause_db": {
+      "mixes": 16,
+      "mean": -0.0002,
+      "max_abs": 0.0018,
+      "beyond_margin": 0,
+      "identical": 3
+     },
+     "tail_db": {
+      "mixes": 16,
+      "mean": -0.0007,
+      "max_abs": 0.0061,
+      "beyond_margin": 0,
+      "identical": 3
+     },
+     "onset_db": {
+      "mixes": 16,
+      "mean": -0.0005,
+      "max_abs": 0.0056,
+      "beyond_margin": 0,
+      "identical": 3
+     },
+     "pause_db": {
+      "mixes": 16,
+      "mean": -0.001,
+      "max_abs": 0.007,
+      "beyond_margin": 0,
+      "identical": 3
+     }
+    },
+    "proposal": {
+     "estoi": {
+      "mixes": 15,
+      "mean": -0.0,
+      "max_abs": 0.0,
+      "beyond_margin": 0,
+      "identical": 13
+     },
+     "si_sdr": {
+      "mixes": 15,
+      "mean": -0.0,
+      "max_abs": 0.0002,
+      "beyond_margin": 0,
+      "identical": 13
+     },
+     "tone_error_db": {
+      "mixes": 15,
+      "mean": -0.0,
+      "max_abs": 0.0003,
+      "beyond_margin": 0,
+      "identical": 13
+     },
+     "sibilant_loss_db": {
+      "mixes": 15,
+      "mean": 0.0007,
+      "max_abs": 0.0057,
+      "beyond_margin": 0,
+      "identical": 13
+     },
+     "deep_pause_db": {
+      "mixes": 15,
+      "mean": -0.0,
+      "max_abs": 0.0001,
+      "beyond_margin": 0,
+      "identical": 13
+     },
+     "tail_db": {
+      "mixes": 15,
+      "mean": -0.0003,
+      "max_abs": 0.0033,
+      "beyond_margin": 0,
+      "identical": 13
+     },
+     "onset_db": {
+      "mixes": 15,
+      "mean": -0.0,
+      "max_abs": 0.0,
+      "beyond_margin": 0,
+      "identical": 13
+     },
+     "pause_db": {
+      "mixes": 15,
+      "mean": -0.0002,
+      "max_abs": 0.003,
+      "beyond_margin": 0,
+      "identical": 13
+     }
+    },
+    "final": {
+     "estoi": {
+      "mixes": 10,
+      "mean": -0.0,
+      "max_abs": 0.0,
+      "beyond_margin": 0,
+      "identical": 8
+     },
+     "si_sdr": {
+      "mixes": 10,
+      "mean": -0.0,
+      "max_abs": 0.0002,
+      "beyond_margin": 0,
+      "identical": 8
+     },
+     "tone_error_db": {
+      "mixes": 10,
+      "mean": -0.0001,
+      "max_abs": 0.0003,
+      "beyond_margin": 0,
+      "identical": 8
+     },
+     "sibilant_loss_db": {
+      "mixes": 10,
+      "mean": 0.001,
+      "max_abs": 0.0057,
+      "beyond_margin": 0,
+      "identical": 8
+     },
+     "deep_pause_db": {
+      "mixes": 10,
+      "mean": -0.0,
+      "max_abs": 0.0001,
+      "beyond_margin": 0,
+      "identical": 8
+     },
+     "tail_db": {
+      "mixes": 10,
+      "mean": -0.0004,
+      "max_abs": 0.0033,
+      "beyond_margin": 0,
+      "identical": 8
+     },
+     "onset_db": {
+      "mixes": 10,
+      "mean": -0.0,
+      "max_abs": 0.0,
+      "beyond_margin": 0,
+      "identical": 8
+     },
+     "pause_db": {
+      "mixes": 10,
+      "mean": -0.0003,
+      "max_abs": 0.003,
+      "beyond_margin": 0,
+      "identical": 8
+     }
+    }
+   },
+   "readings_beyond_margin": 0,
+   "outcome_or_step_changes": [],
+   "measurable_change": false
+  },
+  "floor": {
+   "mixes": 16,
+   "arms": {
+    "deesser_on": {
+     "estoi": {
+      "mixes": 16,
+      "mean": -0.0,
+      "max_abs": 0.0,
+      "beyond_margin": 0,
+      "identical": 4
+     },
+     "si_sdr": {
+      "mixes": 16,
+      "mean": -0.0,
+      "max_abs": 0.0003,
+      "beyond_margin": 0,
+      "identical": 4
+     },
+     "tone_error_db": {
+      "mixes": 16,
+      "mean": 0.0,
+      "max_abs": 0.0002,
+      "beyond_margin": 0,
+      "identical": 5
+     },
+     "sibilant_loss_db": {
+      "mixes": 16,
+      "mean": -0.0003,
+      "max_abs": 0.0019,
+      "beyond_margin": 0,
+      "identical": 4
+     },
+     "deep_pause_db": {
+      "mixes": 16,
+      "mean": -0.0,
+      "max_abs": 0.0001,
+      "beyond_margin": 0,
+      "identical": 4
+     },
+     "tail_db": {
+      "mixes": 16,
+      "mean": -0.0,
+      "max_abs": 0.0001,
+      "beyond_margin": 0,
+      "identical": 4
+     },
+     "onset_db": {
+      "mixes": 16,
+      "mean": -0.0,
+      "max_abs": 0.0007,
+      "beyond_margin": 0,
+      "identical": 6
+     },
+     "pause_db": {
+      "mixes": 16,
+      "mean": -0.0,
+      "max_abs": 0.0001,
+      "beyond_margin": 0,
+      "identical": 4
+     }
+    }
+   },
+   "readings_beyond_margin": 0,
+   "outcome_or_step_changes": [],
+   "measurable_change": false
+  },
+  "weights": {
+   "mixes": 16,
+   "arms": {
+    "deesser_on": {
+     "estoi": {
+      "mixes": 16,
+      "mean": 0.0,
+      "max_abs": 0.0001,
+      "beyond_margin": 0,
+      "identical": 3
+     },
+     "si_sdr": {
+      "mixes": 16,
+      "mean": -0.0,
+      "max_abs": 0.002,
+      "beyond_margin": 0,
+      "identical": 3
+     },
+     "tone_error_db": {
+      "mixes": 16,
+      "mean": -0.0001,
+      "max_abs": 0.0022,
+      "beyond_margin": 0,
+      "identical": 3
+     },
+     "sibilant_loss_db": {
+      "mixes": 16,
+      "mean": 0.0048,
+      "max_abs": 0.0319,
+      "beyond_margin": 0,
+      "identical": 3
+     },
+     "deep_pause_db": {
+      "mixes": 16,
+      "mean": -0.0002,
+      "max_abs": 0.0017,
+      "beyond_margin": 0,
+      "identical": 3
+     },
+     "tail_db": {
+      "mixes": 16,
+      "mean": -0.0007,
+      "max_abs": 0.006,
+      "beyond_margin": 0,
+      "identical": 3
+     },
+     "onset_db": {
+      "mixes": 16,
+      "mean": -0.0004,
+      "max_abs": 0.0051,
+      "beyond_margin": 0,
+      "identical": 5
+     },
+     "pause_db": {
+      "mixes": 16,
+      "mean": -0.0009,
+      "max_abs": 0.007,
+      "beyond_margin": 0,
+      "identical": 3
+     }
+    }
+   },
+   "readings_beyond_margin": 0,
+   "outcome_or_step_changes": [],
+   "measurable_change": false
+  }
+ },
+ "limitations": [
+  "Fixed public bench set: two speakers, synthetic and public-recording noise, one realization per mix. Nothing is held out, and the set can be overfitted; the numbers say what changed on it, not what a stranger's microphone does.",
+  "The distractors (TV, music, babble) are synthetic or built from the same two speakers. The sweep varies only their SNR; it is not a cohort.",
+  "The current settings are always the factory Preset(). A retake is a stretch of the same noise that played during the take, so it measures a continuous distractor, not a passing one.",
+  "The clauses are those of the retired refusal study; the compression-aware reading is new and is checked here only against its own controls (no compressor, a squashing compressor), not against listening.",
+  "The Voice Setup tuner reads wall-clock time, so a run on a loaded machine can differ in its choices."
+ ]
+}

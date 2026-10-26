@@ -98,6 +98,26 @@ def test_joint_unavailable_keeps_incumbent_and_cancellation_propagates(monkeypat
         joint_tuning.tune_gate_suppression_dynamics(*args, **kwargs, cancel_check=lambda: True)
 
 
+def test_a_withheld_search_does_not_run_and_leaves_the_incumbent_in_place(monkeypatch):
+    monkeypatch.setattr(joint_tuning, "_load_native_simulator", lambda: pytest.fail("the search ran"))
+    result = joint_tuning.tune_gate_suppression_dynamics(
+        *_tuning_args(), withheld_for="questionable_noise_reference"
+    )
+
+    assert result == {
+        "status": "withheld",
+        "decision": "retain_incumbent",
+        "apply_recommended": False,
+        "withheld_for": "questionable_noise_reference",
+        "reasons": [],
+    }
+    with pytest.raises(AnalysisCancelled):  # a cancelled analysis still stops, and a bad rate is still refused
+        joint_tuning.tune_gate_suppression_dynamics(*_tuning_args(), withheld_for="x", cancel_check=lambda: True)
+    noise, speech, _rate, *rest = _tuning_args()
+    with pytest.raises(ValueError, match="sample rate"):
+        joint_tuning.tune_gate_suppression_dynamics(noise, speech, 1, *rest, withheld_for="x")
+
+
 @pytest.mark.parametrize("with_neural_vad", [True, False])
 def test_joint_selection_evaluates_each_model_and_selects_lower_noise_model(
     monkeypatch, with_neural_vad,

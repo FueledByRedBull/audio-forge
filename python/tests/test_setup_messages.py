@@ -277,10 +277,12 @@ def test_the_verification_summary_reports_the_tone_error_before_and_after():
         {"vad_active_duration_s": 1.2},
         {"capture_confidence": 0.3},
         {"uncertainty_reasons": ["too few voiced frames for a stable spectrum"]},
-        {"noise_reference_quality": {"status": "questionable", "reasons": ["room-noise capture is not stationary"]}},
+        {"noise_reference_quality": {"status": "invalid", "reasons": ["room-noise capture is not stationary"]}},
+        {"noise_reference_quality": {"status": "questionable", "reasons": ["room-noise capture is silent"]}},
         {},
     ],
-    ids=["snr-under-6", "snr-under-8", "speech-under-2s", "capture-quality", "single-spectrum", "room-noise", "unnamed"],
+    ids=["snr-under-6", "snr-under-8", "speech-under-2s", "capture-quality", "single-spectrum", "room-noise",
+         "questionable-room-noise", "unnamed"],
 )
 def test_the_weak_capture_lines_say_the_settings_are_suggestions_only(found):
     from mic_eq.ui.setup_messages import capture_issue_lines
@@ -289,3 +291,16 @@ def test_the_weak_capture_lines_say_the_settings_are_suggestions_only(found):
 
     assert lines
     assert all("suggestions only" in line for line in lines)
+
+
+def test_a_questionable_room_noise_line_says_what_was_kept_not_suggestions_only():
+    from mic_eq.ui.setup_messages import capture_issue_codes, capture_issue_lines
+
+    diagnostics = {"noise_reference_quality": {"status": "questionable", "reasons": ["room-noise capture is not stationary"]}}
+    (line,) = capture_issue_lines(diagnostics, {"makeup_gain_db": 2.0})
+
+    assert capture_issue_codes(diagnostics) == ["noise_reference_not_usable"]
+    assert "noise suppression and gate were left as they are" in line
+    assert "automatic loudness was not switched on (makeup is fixed at 2.0 dB)." in line
+    assert "suggestions only" not in line
+    assert line.endswith("Record the room noise again without talking.")

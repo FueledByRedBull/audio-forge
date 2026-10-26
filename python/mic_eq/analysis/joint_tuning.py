@@ -554,18 +554,29 @@ def tune_gate_suppression_dynamics(
     cancel_check: Callable[[], bool] | None = None,
     max_suppressor_latency_ms: float = _DEFAULT_MAX_SUPPRESSOR_LATENCY_MS,
     progress_callback: Callable[[str, int], None] | None = None,
+    withheld_for: str | None = None,
 ) -> dict[str, Any]:
     """Select a gate/suppressor candidate with compression left for calibration.
 
     The search is deliberately small and deterministic. It never returns a
     candidate for application unless every predefined gate passes; this keeps
     weak captures and unavailable native assets on the incumbent settings.
+    ``withheld_for`` names why the search is not run at all: the incumbent
+    stays, and the answer carries that cause instead of a sentence to explain.
     """
     started = time.perf_counter()
     check_analysis_cancelled(cancel_check)
     if isinstance(sample_rate, bool) or not isinstance(sample_rate, int) or not 8000 <= sample_rate <= 192000:
         raise ValueError("Unsupported capture sample rate")
     latency_limit_ms = _validate_latency_limit(max_suppressor_latency_ms)
+    if withheld_for is not None:
+        return {
+            "status": "withheld",
+            "decision": "retain_incumbent",
+            "apply_recommended": False,
+            "withheld_for": str(withheld_for),
+            "reasons": [],
+        }
     base_gate = dict(gate_settings)
     strength = _clamp(float(suppressor_strength), 0.0, 1.0)
     incumbent_payload = dict(incumbent_settings or {})

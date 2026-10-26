@@ -688,16 +688,18 @@ def _analyze_clean_capture(
     monkeypatch.setattr(
         voice_setup_module, "analyze_auto_eq", lambda *_args, **_kwargs: (dict(eq_settings), {})
     )
-    monkeypatch.setattr(
-        voice_setup_module,
-        "tune_gate_suppression_dynamics",
-        lambda *args, **_kwargs: {
+    def tuner(*args, withheld_for=None, **_kwargs):
+        if withheld_for is not None:  # the real search returns at once, with the incumbent staying
+            return {"status": "withheld", "decision": "retain_incumbent", "apply_recommended": False,
+                    "withheld_for": withheld_for, "reasons": []}
+        return {
             "status": "accepted",
             "apply_recommended": True,
             "gate_settings": dict(args[3]),
             "suppressor_settings": {"enabled": True, "strength": 0.75, "model": "rnnoise"},
-        },
-    )
+        }
+
+    monkeypatch.setattr(voice_setup_module, "tune_gate_suppression_dynamics", tuner)
     monkeypatch.setattr(voice_setup_module, "_calibrate_compressor_threshold", calibration)
     monkeypatch.setattr(voice_setup_module, "simulate_candidate_chain", simulation)
     for name, change in ([] if alter is None else [alter] if isinstance(alter, tuple) else alter):
@@ -741,13 +743,6 @@ def test_a_reliable_capture_gets_automatic_makeup_and_can_be_applied(monkeypatch
         (
             "analyze_noise_reference",
             lambda reference: replace(
-                reference, status="questionable", reasons=["room noise drifts"]
-            ),
-            "room noise drifts",
-        ),
-        (
-            "analyze_noise_reference",
-            lambda reference: replace(
                 reference, status="invalid", reasons=["room noise is clipped"]
             ),
             "room noise is clipped",
@@ -763,7 +758,7 @@ def test_a_reliable_capture_gets_automatic_makeup_and_can_be_applied(monkeypatch
             "too little VAD-active speech",
         ),
     ],
-    ids=["questionable-noise", "invalid-noise", "single-spectrum", "short-speech"],
+    ids=["invalid-noise", "single-spectrum", "short-speech"],
 )
 def test_a_vetoed_capture_is_weak_and_names_its_real_reason(
     monkeypatch, analysis_input, veto, reason
@@ -885,21 +880,26 @@ def _short_of_headroom_unless_users(compressor):
 
 
 _LOW_SNR = ("analyze_voice_spectrum", lambda spectrum: replace(spectrum, snr_db=4.0))
+_SHORT_SPEECH = ("_vad_masked_speech_features", lambda f: {**f, "active_duration_s": 1.5})
+_QUESTIONABLE_ROOM = (
+    "analyze_noise_reference",
+    lambda r: replace(r, status="questionable", reasons=["room noise drifts"]),
+)
 
 
 # A weak capture that is more than a faint voice leaves the setup nothing to stand on.
 _NOT_JUST_FAINT = {
-    "short-speech": {"alter": ("_vad_masked_speech_features", lambda f: {**f, "active_duration_s": 1.5})},
+    "short-speech": {"alter": _SHORT_SPEECH},
     "single-spectrum": {
         "alter": ("analyze_voice_spectrum", lambda s: replace(s, used_single_spectrum_fallback=True))
     },
-    "room-noise-questionable": {
+    "invalid-room-noise": {
         "alter": (
             "analyze_noise_reference",
-            lambda r: replace(r, status="questionable", reasons=["room noise drifts"]),
+            lambda r: replace(r, status="invalid", reasons=["room noise is clipped"]),
         )
     },
-    "silent-room": {"noise": _SILENT_ROOM},
+    "faint-and-questionable-room": {"alter": [_LOW_SNR, _QUESTIONABLE_ROOM]},
     "faint-and-silent-room": {"alter": _LOW_SNR, "noise": _SILENT_ROOM},
 }
 
@@ -941,8 +941,8 @@ _WITH_USERS = {"compressor": _USERS_COMPRESSOR}
 
 _INCUMBENT_COMPRESSOR_CASES = {
     "headroom-only": {"headroom_at": _short_of_headroom_unless_users},
-    "weak-capture": {"noise": _SILENT_ROOM},
-    "weak-and-headroom": {"noise": _SILENT_ROOM, "headroom_at": _short_of_headroom_unless_users},
+    "weak-capture": {"alter": _SHORT_SPEECH},
+    "weak-and-headroom": {"alter": _SHORT_SPEECH, "headroom_at": _short_of_headroom_unless_users},
     "clean": {},
 }
 
@@ -963,7 +963,7 @@ def test_the_two_refusals_read_as_they_always_did(monkeypatch):
     headroom = _analyze_clean_capture(
         monkeypatch, headroom_at=_short_of_headroom_unless_users, incumbent_settings=_WITH_USERS
     )["diagnostics"]
-    weak = _analyze_clean_capture(monkeypatch, noise=_SILENT_ROOM, incumbent_settings=_WITH_USERS)["diagnostics"]
+    weak = _analyze_clean_capture(monkeypatch, _SHORT_SPEECH, incumbent_settings=_WITH_USERS)["diagnostics"]
 
     assert headroom["offline_validation_passed"] is False
     assert "final full-chain headroom validation did not pass" in headroom["uncertainty_reasons"]
@@ -1160,17 +1160,136 @@ def test_the_released_headroom_rule_holds_where_the_limiter_allowance_does_not_a
     ) == 1
 
 
-def test_a_digitally_silent_room_reference_is_weak_but_the_analysis_completes(monkeypatch):
+# A silent room recording and a voice take with no quiet frames: nothing measures the noise.
+_SILENT_AND_NO_PAUSES = (
+    "analyze_noise_reference",
+    lambda r: replace(
+        r,
+        in_capture_spectrum_db=None,
+        conservative_spectrum_db=r.explicit_spectrum_db,
+        conservative_noise_rms_db=-120.0,
+    ),
+)
+
+
+def test_a_silent_room_reference_without_an_in_capture_noise_estimate_is_weak(monkeypatch):
     from mic_eq.analysis.noise_reference import SILENT_REFERENCE_REASON
 
-    result = _analyze_clean_capture(monkeypatch, noise=np.zeros(96_000, dtype=np.float32))
+    result = _analyze_clean_capture(monkeypatch, _SILENT_AND_NO_PAUSES, noise=np.zeros(96_000, dtype=np.float32))
     diagnostics = result["diagnostics"]
 
+    # The ratio reads against -120 dB, so it looks excellent and says nothing.
+    assert diagnostics["noise_referenced_snr_db"] > 20.0
     assert diagnostics["weak_capture"] is True
     assert diagnostics["apply_recommended"] is False
     assert result["compressor_settings"]["auto_makeup_enabled"] is False
     assert SILENT_REFERENCE_REASON in diagnostics["uncertainty_reasons"]
     assert diagnostics["noise_reference_quality"]["status"] == "questionable"
+    assert diagnostics["joint_tuning"]["status"] == "withheld"
+
+
+@pytest.mark.parametrize("status", ["unavailable", "", "unknown"])
+def test_a_room_noise_status_that_is_neither_usable_nor_questionable_is_weak(monkeypatch, status):
+    diagnostics = _analyze_clean_capture(
+        monkeypatch, ("analyze_noise_reference", lambda r: replace(r, status=status))
+    )["diagnostics"]
+
+    assert diagnostics["weak_capture"] is True
+    assert diagnostics["apply_recommended"] is False
+
+
+def test_a_withheld_search_without_a_current_gate_keeps_the_factory_gate(monkeypatch):
+    from mic_eq.config import GateSettings
+
+    result = _analyze_clean_capture(monkeypatch, _QUESTIONABLE_ROOM)
+
+    assert result["diagnostics"]["joint_tuning"]["status"] == "withheld"
+    assert result["gate_settings"] == asdict(GateSettings())
+
+
+@pytest.mark.parametrize(("alter", "tuned"), [(_QUESTIONABLE_ROOM, False), (None, True)], ids=["withheld", "usable"])
+def test_only_a_search_that_runs_reports_its_progress_step(monkeypatch, alter, tuned):
+    steps: list[str] = []
+    _analyze_clean_capture(monkeypatch, alter, progress_callback=lambda text, _pct: steps.append(text))
+    assert ("Tuning noise suppression and gate..." in steps) is tuned
+
+
+def test_a_digitally_silent_room_reference_does_not_block_the_setup(monkeypatch):
+    from mic_eq.analysis.noise_reference import SILENT_REFERENCE_REASON
+
+    result = _analyze_clean_capture(monkeypatch, noise=np.zeros(96_000, dtype=np.float32))
+    diagnostics = result["diagnostics"]
+
+    assert diagnostics["weak_capture"] is False
+    assert diagnostics["apply_recommended"] is True
+    assert result["compressor_settings"]["auto_makeup_enabled"] is False
+    assert SILENT_REFERENCE_REASON in diagnostics["uncertainty_reasons"]
+    assert diagnostics["noise_reference_quality"]["status"] == "questionable"
+    assert diagnostics["joint_tuning"]["status"] == "withheld"
+
+
+_USERS_GATE_AND_SUPPRESSOR = {
+    "gate": {**asdict(Preset().gate), "threshold_db": -37.0},
+    "rnnoise": {"enabled": True, "strength": 0.4, "model": "rnnoise"},
+}
+
+
+def test_a_questionable_room_noise_reference_withholds_only_the_gate_and_the_suppressor(monkeypatch):
+    result = _analyze_clean_capture(monkeypatch, _QUESTIONABLE_ROOM, incumbent_settings=_USERS_GATE_AND_SUPPRESSOR)
+    diagnostics = result["diagnostics"]
+
+    assert diagnostics["noise_reference_quality"]["status"] == "questionable"
+    # The steps tuned on the recording keep what the person has, and say why.
+    assert diagnostics["joint_tuning"]["status"] == "withheld"
+    assert diagnostics["joint_tuning"]["withheld_for"] == "questionable_noise_reference"
+    assert result["gate_settings"] == _USERS_GATE_AND_SUPPRESSOR["gate"]
+    assert result["suppressor_settings"] == _USERS_GATE_AND_SUPPRESSOR["rnnoise"]
+    # Every other step is judged as for a usable recording, so a clean voice is still recommended...
+    assert diagnostics["weak_capture"] is False
+    assert diagnostics["apply_recommended"] is True
+    # ...but automatic loudness still needs a usable recording, and the person is still told what was found.
+    assert result["compressor_settings"]["auto_makeup_enabled"] is False
+    assert "room noise drifts" in diagnostics["uncertainty_reasons"]
+
+
+def test_a_usable_room_noise_reference_recommends_its_own_gate_without_a_current_one(monkeypatch):
+    from mic_eq.config import GateSettings
+
+    assert _analyze_clean_capture(monkeypatch)["gate_settings"] != asdict(GateSettings())
+
+
+def test_a_usable_room_noise_reference_still_gets_its_search(monkeypatch):
+    result = _analyze_clean_capture(monkeypatch, incumbent_settings=_USERS_GATE_AND_SUPPRESSOR)
+
+    assert result["diagnostics"]["joint_tuning"]["status"] == "accepted"
+    assert result["suppressor_settings"]["strength"] == 0.75
+
+
+@pytest.mark.parametrize(
+    "alter",
+    [
+        [_QUESTIONABLE_ROOM, _LOW_SNR],
+        [_QUESTIONABLE_ROOM, _SHORT_SPEECH],
+        [_QUESTIONABLE_ROOM, ("analyze_voice_spectrum", lambda s: replace(s, residual_confidence=0.0))],
+        ("analyze_noise_reference", lambda r: replace(r, status="invalid", reasons=["room noise is clipped"])),
+    ],
+    ids=["weak-snr", "short-speech", "low-quality", "invalid-reference"],
+)
+def test_a_questionable_reference_with_another_weakness_or_an_invalid_one_is_still_weak(monkeypatch, alter):
+    diagnostics = _analyze_clean_capture(monkeypatch, alter)["diagnostics"]
+
+    assert diagnostics["weak_capture"] is True
+    assert diagnostics["apply_recommended"] is False
+
+
+def test_a_questionable_reference_does_not_loosen_the_final_check(monkeypatch):
+    result = _analyze_clean_capture(monkeypatch, _QUESTIONABLE_ROOM, headroom_at=lambda _compressor: -4.0)
+    diagnostics = result["diagnostics"]
+
+    assert diagnostics["weak_capture"] is False
+    assert diagnostics["offline_headroom_safe"] is False
+    assert diagnostics["apply_recommended"] is False
+    assert any("too little headroom" in reason for reason in diagnostics["uncertainty_reasons"])
 
 
 def test_production_compressor_search_keeps_nonthreshold_controls(monkeypatch):

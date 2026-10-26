@@ -231,11 +231,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "CPU ONNX Runtime hydration failed with exit code $LASTEXITCODE." }
       - name: Rust format
         run: cargo fmt --check
-      # cargo fmt does not follow include!, so it skips the processor sources and
-      # the two included test files.
+      # cargo fmt does not follow include!, so it skips the two included test files.
       - name: Rust format (include!d files)
         run: |
-          $files = Get-ChildItem rust-core/src/audio/processor/*.rs, rust-core/src/dsp/vad/tests.rs, rust-core/src/dsp/deepfilter_ffi/tests.rs | ForEach-Object FullName
+          $files = Get-ChildItem rust-core/src/dsp/vad/tests.rs, rust-core/src/dsp/deepfilter_ffi/tests.rs | ForEach-Object FullName
           rustfmt --edition 2021 --check @files
           if ($LASTEXITCODE -ne 0) { throw "rustfmt check of the include!d files failed with exit code $LASTEXITCODE." }
       - name: Cache pinned cargo-audit and advisory database

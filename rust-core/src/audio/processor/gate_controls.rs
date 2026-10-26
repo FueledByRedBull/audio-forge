@@ -1,3 +1,17 @@
+use super::control::{AtomicGateControlState, GateControlState};
+use super::{
+    AudioProcessor, GATE_ATTACK_MAX_MS, GATE_ATTACK_MIN_MS, GATE_RELEASE_MAX_MS,
+    GATE_RELEASE_MIN_MS, GATE_THRESHOLD_MAX_DB, GATE_THRESHOLD_MIN_DB,
+};
+#[cfg(feature = "vad")]
+use super::{
+    GATE_MARGIN_MAX_DB, GATE_MARGIN_MIN_DB, VAD_HOLD_MAX_MS, VAD_HOLD_MIN_MS, VAD_PRE_GAIN_MAX,
+    VAD_PRE_GAIN_MIN, VAD_THRESHOLD_MAX, VAD_THRESHOLD_MIN,
+};
+use std::sync::atomic::Ordering;
+#[cfg(not(windows))]
+use thread_priority::{set_current_thread_priority, ThreadPriority};
+
 impl AudioProcessor {
     // === Noise Gate Controls ===
 
@@ -8,21 +22,21 @@ impl AudioProcessor {
         else {
             return;
         };
-        if let Ok(mut control) = self.gate_control.lock() {
+        if let Ok(mut control) = self.shared.gate.control.lock() {
             control.threshold_db = threshold_db;
         }
-        self.gate_rt_control.set_threshold_db(threshold_db);
-        self.gate_dirty.store(true, Ordering::Release);
+        self.shared.gate.rt_control.set_threshold_db(threshold_db);
+        self.shared.gate.dirty.store(true, Ordering::Release);
     }
 
     /// Number of rapid gate open/close chatter events since processing start.
     pub fn get_gate_chatter_event_count(&self) -> u64 {
-        self.gate_chatter_event_count.load(Ordering::Relaxed)
+        self.shared.gate.chatter_event_count.load(Ordering::Relaxed)
     }
 
     /// Whether VAD chatter mitigation is temporarily relaxing the gate.
     pub fn is_gate_auto_relax_active(&self) -> bool {
-        self.gate_auto_relax_active.load(Ordering::Relaxed)
+        self.shared.gate.auto_relax_active.load(Ordering::Relaxed)
     }
 
     // === VAD Gate Controls (VAD feature only) ===
@@ -30,19 +44,19 @@ impl AudioProcessor {
     #[cfg(feature = "vad")]
     /// Get VAD speech probability (0.0-1.0)
     pub fn get_vad_probability(&self) -> f32 {
-        f32::from_bits(self.vad_meter_probability.load(Ordering::Relaxed))
+        f32::from_bits(self.shared.vad.meter_probability.load(Ordering::Relaxed))
     }
 
     #[cfg(feature = "vad")]
     /// Get fused gate open score (0.0-1.0)
     pub fn get_gate_fused_score(&self) -> f32 {
-        f32::from_bits(self.gate_fused_score.load(Ordering::Relaxed))
+        f32::from_bits(self.shared.gate.fused_score.load(Ordering::Relaxed))
     }
 
     #[cfg(feature = "vad")]
     /// Check whether VAD backend is available (model/runtime loaded)
     pub fn is_vad_available(&self) -> bool {
-        self.vad_available.load(Ordering::Relaxed)
+        self.shared.vad.available.load(Ordering::Relaxed)
     }
 
     #[cfg(feature = "vad")]
@@ -53,11 +67,11 @@ impl AudioProcessor {
         else {
             return;
         };
-        if let Ok(mut control) = self.gate_control.lock() {
+        if let Ok(mut control) = self.shared.gate.control.lock() {
             control.vad_threshold = threshold;
         }
-        self.gate_rt_control.set_vad_threshold(threshold);
-        self.gate_dirty.store(true, Ordering::Release);
+        self.shared.gate.rt_control.set_vad_threshold(threshold);
+        self.shared.gate.dirty.store(true, Ordering::Release);
     }
 
     #[cfg(feature = "vad")]
@@ -67,11 +81,11 @@ impl AudioProcessor {
         else {
             return;
         };
-        if let Ok(mut control) = self.gate_control.lock() {
+        if let Ok(mut control) = self.shared.gate.control.lock() {
             control.hold_ms = hold_ms;
         }
-        self.gate_rt_control.set_hold_ms(hold_ms);
-        self.gate_dirty.store(true, Ordering::Release);
+        self.shared.gate.rt_control.set_hold_ms(hold_ms);
+        self.shared.gate.dirty.store(true, Ordering::Release);
     }
 
     #[cfg(feature = "vad")]
@@ -83,17 +97,19 @@ impl AudioProcessor {
         else {
             return;
         };
-        if let Ok(mut control) = self.gate_control.lock() {
+        if let Ok(mut control) = self.shared.gate.control.lock() {
             control.pre_gain = gain;
         }
-        self.gate_rt_control.set_pre_gain(gain);
-        self.gate_dirty.store(true, Ordering::Release);
+        self.shared.gate.rt_control.set_pre_gain(gain);
+        self.shared.gate.dirty.store(true, Ordering::Release);
     }
 
     #[cfg(feature = "vad")]
     /// Get current VAD pre-gain
     pub fn vad_pre_gain(&self) -> f32 {
-        self.gate_control
+        self.shared
+            .gate
+            .control
             .lock()
             .map(|control| control.pre_gain)
             .unwrap_or(1.0)
@@ -102,23 +118,25 @@ impl AudioProcessor {
     #[cfg(feature = "vad")]
     /// Enable/disable auto-threshold mode (automatically adjusts gate threshold based on noise floor)
     pub fn set_auto_threshold(&self, enabled: bool) {
-        if let Ok(mut control) = self.gate_control.lock() {
+        if let Ok(mut control) = self.shared.gate.control.lock() {
             control.auto_threshold = enabled;
         }
-        self.gate_rt_control.set_auto_threshold(enabled);
-        self.gate_dirty.store(true, Ordering::Release);
+        self.shared.gate.rt_control.set_auto_threshold(enabled);
+        self.shared.gate.dirty.store(true, Ordering::Release);
     }
 
     #[cfg(feature = "vad")]
     /// Get current noise floor estimate (in dB)
     pub fn get_noise_floor(&self) -> f32 {
-        f32::from_bits(self.gate_noise_floor_db.load(Ordering::Relaxed))
+        f32::from_bits(self.shared.gate.noise_floor_db.load(Ordering::Relaxed))
     }
 
     #[cfg(feature = "vad")]
     /// Check if auto-threshold is enabled
     pub fn auto_threshold_enabled(&self) -> bool {
-        self.gate_control
+        self.shared
+            .gate
+            .control
             .lock()
             .map(|control| control.auto_threshold)
             .unwrap_or(false)
@@ -169,9 +187,11 @@ impl AudioProcessor {
     ///
     /// Each value is clamped like its single setter and a non-finite value
     /// keeps the current one.
-    fn apply_gate_settings(&self, requested: &GateControlState) {
+    pub(super) fn apply_gate_settings(&self, requested: &GateControlState) {
         let mut state = self
-            .gate_control
+            .shared
+            .gate
+            .control
             .lock()
             .map(|control| control.clone())
             .unwrap_or_else(|_| GateControlState::new());
@@ -224,11 +244,14 @@ impl AudioProcessor {
             );
         }
 
-        self.gate_enabled.store(state.enabled, Ordering::Release);
-        self.gate_rt_control.publish(&state);
-        if let Ok(mut control) = self.gate_control.lock() {
+        self.shared
+            .gate
+            .enabled
+            .store(state.enabled, Ordering::Release);
+        self.shared.gate.rt_control.publish(&state);
+        if let Ok(mut control) = self.shared.gate.control.lock() {
             *control = state;
         }
-        self.gate_dirty.store(true, Ordering::Release);
+        self.shared.gate.dirty.store(true, Ordering::Release);
     }
 }

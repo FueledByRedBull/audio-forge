@@ -1,3 +1,11 @@
+use super::lifecycle::Streams;
+use super::AudioProcessor;
+use crate::audio::clock::now_micros;
+use crate::audio::rt::RtErrorCode;
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(not(windows))]
+use thread_priority::{set_current_thread_priority, ThreadPriority};
+
 /// The restart cause an audio callback left only as an error code or counter.
 /// Resampler failures always request a restart; a stream error does only when
 /// the device is gone, so it is checked last.
@@ -12,7 +20,7 @@ fn restart_cause(rt_error: RtErrorCode, output_resampler_failed: bool) -> Option
 
 /// Wait before the next restart attempt, by the number of attempts since the
 /// streams last ran healthily. The last entry is the cap.
-const RESTART_BACKOFF_MS: [u64; 6] = [0, 2_000, 5_000, 10_000, 20_000, 30_000];
+pub(super) const RESTART_BACKOFF_MS: [u64; 6] = [0, 2_000, 5_000, 10_000, 20_000, 30_000];
 /// Input and output must still be delivering this long after a restart before
 /// it counts as recovered and the back-off starts over.
 const HEALTHY_STREAM_MS: u64 = 10_000;
@@ -29,15 +37,18 @@ impl AudioProcessor {
     /// - None: no recovery attempt was made
     /// - Some(true): recovery succeeded
     /// - Some(false): recovery attempt failed
-    pub fn service_recovery(&mut self) -> Option<bool> {
-        self.service_recovery_at(now_micros(), |processor| {
-            let input_name = processor.input_device_name.clone();
-            let output_name = processor.output_device_name.clone();
-            let input_name_ordinal = processor.input_device_name_ordinal;
-            let output_name_ordinal = processor.output_device_name_ordinal;
-            let input_endpoint_id = processor.input_device_endpoint_id.clone();
-            let output_endpoint_id = processor.output_device_endpoint_id.clone();
-            processor.start_with_device_ordinals_and_ids(
+    pub fn service_recovery(&self) -> Option<bool> {
+        self.service_recovery_at(now_micros(), |processor, streams| {
+            let devices = processor.lock_devices();
+            let input_name = devices.input_name.clone();
+            let output_name = devices.output_name.clone();
+            let input_name_ordinal = devices.input_name_ordinal;
+            let output_name_ordinal = devices.output_name_ordinal;
+            let input_endpoint_id = devices.input_endpoint_id.clone();
+            let output_endpoint_id = devices.output_endpoint_id.clone();
+            drop(devices);
+            processor.start_locked(
+                streams,
                 input_name.as_deref(),
                 input_name_ordinal,
                 input_endpoint_id.as_deref(),
@@ -52,17 +63,24 @@ impl AudioProcessor {
     /// keep delivering: a device that opens but stays silent must keep growing
     /// the back-off, which the start result alone cannot show.
     fn reset_backoff_after_healthy_streams(&self, now: u64) {
-        let attempt = self.last_restart_attempt_us.load(Ordering::Acquire);
+        let attempt = self
+            .shared
+            .stream
+            .last_restart_attempt_us
+            .load(Ordering::Acquire);
         let delivering = |last_us: &AtomicU64| {
             let last_us = last_us.load(Ordering::Relaxed);
             last_us > attempt && now.saturating_sub(last_us) < FRESH_CALLBACK_MS * 1000
         };
         if attempt > 0
             && now.saturating_sub(attempt) >= HEALTHY_STREAM_MS * 1000
-            && delivering(&self.last_input_callback_time_us)
-            && delivering(&self.last_output_write_time)
+            && delivering(&self.shared.input.callback_time_us)
+            && delivering(&self.shared.output.last_write_time_us)
         {
-            self.restart_backoff_index.store(0, Ordering::Release);
+            self.shared
+                .stream
+                .restart_backoff_index
+                .store(0, Ordering::Release);
         }
     }
 
@@ -72,10 +90,15 @@ impl AudioProcessor {
     /// error stores its own code first, a stall marks its reason pending first,
     /// an output-resampler failure counts first. That request is put back, so
     /// it is never lost to this one.
-    fn finish_suppressor_request(&self, handled: RtErrorCode, clear_code: bool) {
-        self.restart_requested.store(false, Ordering::Release);
+    pub(super) fn finish_suppressor_request(&self, handled: RtErrorCode, clear_code: bool) {
+        self.shared
+            .stream
+            .restart_requested
+            .store(false, Ordering::Release);
         let code_unchanged = if clear_code {
-            self.rt_error_code
+            self.shared
+                .dsp
+                .rt_error_code
                 .compare_exchange(
                     handled as u32,
                     RtErrorCode::None as u32,
@@ -84,39 +107,62 @@ impl AudioProcessor {
                 )
                 .is_ok()
         } else {
-            self.rt_error_code.load(Ordering::Acquire) == handled as u32
+            self.shared.dsp.rt_error_code.load(Ordering::Acquire) == handled as u32
         };
         let other_reason = self
+            .shared
+            .stream
             .recovery_state
             .lock()
             .map(|state| state.reason_pending)
             .unwrap_or(false)
-            || self.output_resampler_error_count.load(Ordering::Relaxed) > 0;
+            || self
+                .shared
+                .output
+                .resampler_error_count
+                .load(Ordering::Relaxed)
+                > 0;
         if !code_unchanged || other_reason {
-            self.restart_requested.store(true, Ordering::Release);
+            self.shared
+                .stream
+                .restart_requested
+                .store(true, Ordering::Release);
         }
     }
 
     /// `service_recovery` at a given time, with the stream start supplied by
     /// the caller so tests need neither a clock nor an audio device.
-    fn service_recovery_at(
-        &mut self,
+    pub(super) fn service_recovery_at(
+        &self,
         now: u64,
-        start: impl FnOnce(&mut Self) -> Result<String, String>,
+        start: impl FnOnce(&Self, &mut Streams) -> Result<String, String>,
     ) -> Option<bool> {
-        if self.recovery_suppressed.load(Ordering::Acquire) {
+        let stop_epoch = self.shared.stream.stop_epoch.load(Ordering::Acquire);
+        if self
+            .shared
+            .stream
+            .recovery_suppressed
+            .load(Ordering::Acquire)
+        {
             return None;
         }
 
         self.reset_backoff_after_healthy_streams(now);
 
-        if !self.restart_requested.load(Ordering::Acquire) {
+        if !self.shared.stream.restart_requested.load(Ordering::Acquire) {
             return None;
         }
 
-        let rt_error = RtErrorCode::from_u32(self.rt_error_code.load(Ordering::Acquire));
-        let output_resampler_failed = self.output_resampler_error_count.load(Ordering::Relaxed) > 0;
+        let rt_error = RtErrorCode::from_u32(self.shared.dsp.rt_error_code.load(Ordering::Acquire));
+        let output_resampler_failed = self
+            .shared
+            .output
+            .resampler_error_count
+            .load(Ordering::Relaxed)
+            > 0;
         let (reason_pending, last_rebuild_us) = self
+            .shared
+            .stream
             .recovery_state
             .lock()
             .map(|state| (state.reason_pending, state.last_suppressor_rebuild_us))
@@ -142,7 +188,7 @@ impl AudioProcessor {
         }
         if suppressor_fault && self.rebuild_noise_suppressor() {
             self.finish_suppressor_request(rt_error, true);
-            if let Ok(mut state) = self.recovery_state.lock() {
+            if let Ok(mut state) = self.shared.stream.recovery_state.lock() {
                 state.last_error = None;
                 if !state.reason_pending {
                     state.last_reason =
@@ -156,7 +202,7 @@ impl AudioProcessor {
         // Stream errors and resampler failures request a restart from the audio
         // callbacks, which cannot record why; name the cause here unless a panic
         // or stall already recorded its own reason for this request.
-        if let Ok(mut state) = self.recovery_state.lock() {
+        if let Ok(mut state) = self.shared.stream.recovery_state.lock() {
             if !state.reason_pending {
                 if let Some(cause) = restart_cause(rt_error, output_resampler_failed) {
                     state.last_reason = Some(cause.to_string());
@@ -165,32 +211,64 @@ impl AudioProcessor {
             }
         }
 
-        let last_attempt = self.last_restart_attempt_us.load(Ordering::Acquire);
-        let backoff_idx = self.restart_backoff_index.load(Ordering::Acquire) as usize;
+        let last_attempt = self
+            .shared
+            .stream
+            .last_restart_attempt_us
+            .load(Ordering::Acquire);
+        let backoff_idx = self
+            .shared
+            .stream
+            .restart_backoff_index
+            .load(Ordering::Acquire) as usize;
         let backoff_ms = RESTART_BACKOFF_MS[backoff_idx.min(RESTART_BACKOFF_MS.len() - 1)];
 
         if last_attempt > 0 && now.saturating_sub(last_attempt) < backoff_ms * 1000 {
             return None;
         }
 
-        self.restart_requested.store(false, Ordering::Release);
-        if let Ok(mut state) = self.recovery_state.lock() {
+        self.shared.stream.recovering.store(true, Ordering::Release);
+        // One lock hold for the stop and the start, so no other caller can start or
+        // stop in between.
+        let mut streams = self.lock_streams();
+        // A stop or a suppression that came first while this waited for the lock
+        // stands: the restart would reopen devices the caller just let go.
+        if self.shared.stream.stop_epoch.load(Ordering::Acquire) != stop_epoch
+            || self
+                .shared
+                .stream
+                .recovery_suppressed
+                .load(Ordering::Acquire)
+        {
+            self.shared
+                .stream
+                .recovering
+                .store(false, Ordering::Release);
+            return None;
+        }
+        self.shared
+            .stream
+            .restart_requested
+            .store(false, Ordering::Release);
+        if let Ok(mut state) = self.shared.stream.recovery_state.lock() {
             state.reason_pending = false;
         }
-        self.recovering.store(true, Ordering::Release);
-        self.last_restart_attempt_us.store(now, Ordering::Release);
+        self.shared
+            .stream
+            .last_restart_attempt_us
+            .store(now, Ordering::Release);
+        self.stop_locked(&mut streams);
 
-        self.stop();
-
-        let (success, last_error) = match start(self) {
+        let (success, last_error) = match start(self, &mut streams) {
             Ok(_) => (true, None),
             Err(err) => (
                 false,
                 Some(format!("Restart failed for selected devices: {err}")),
             ),
         };
+        drop(streams);
 
-        if let Ok(mut state) = self.recovery_state.lock() {
+        if let Ok(mut state) = self.shared.stream.recovery_state.lock() {
             if success {
                 state.last_error = None;
                 state.restart_count = state.restart_count.saturating_add(1);
@@ -203,29 +281,39 @@ impl AudioProcessor {
 
         // Every attempt grows the back-off; only healthy streams reset it.
         let next = (backoff_idx + 1).min(RESTART_BACKOFF_MS.len() - 1);
-        self.restart_backoff_index
+        self.shared
+            .stream
+            .restart_backoff_index
             .store(next as u32, Ordering::Release);
         if !success {
-            self.restart_requested.store(true, Ordering::Release);
+            self.shared
+                .stream
+                .restart_requested
+                .store(true, Ordering::Release);
         }
 
-        self.recovering.store(false, Ordering::Release);
+        self.shared
+            .stream
+            .recovering
+            .store(false, Ordering::Release);
         Some(success)
     }
 
     /// Whether a restart has been requested by the supervisor.
     pub fn is_recovery_requested(&self) -> bool {
-        self.restart_requested.load(Ordering::Acquire)
+        self.shared.stream.restart_requested.load(Ordering::Acquire)
     }
 
     /// Whether a recovery attempt is in progress.
     pub fn is_recovering(&self) -> bool {
-        self.recovering.load(Ordering::Acquire)
+        self.shared.stream.recovering.load(Ordering::Acquire)
     }
 
     /// Number of successful stream restarts.
     pub fn get_stream_restart_count(&self) -> u64 {
-        self.recovery_state
+        self.shared
+            .stream
+            .recovery_state
             .lock()
             .map(|s| s.restart_count)
             .unwrap_or(0)
@@ -233,7 +321,9 @@ impl AudioProcessor {
 
     /// Last recovery error string, if any.
     pub fn get_last_stream_error(&self) -> Option<String> {
-        self.recovery_state
+        self.shared
+            .stream
+            .recovery_state
             .lock()
             .ok()
             .and_then(|s| s.last_error.clone())
@@ -241,7 +331,9 @@ impl AudioProcessor {
 
     /// Last recovery trigger reason string, if any.
     pub fn get_last_restart_reason(&self) -> Option<String> {
-        self.recovery_state
+        self.shared
+            .stream
+            .recovery_state
             .lock()
             .ok()
             .and_then(|s| s.last_reason.clone())

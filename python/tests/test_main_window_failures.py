@@ -59,6 +59,7 @@ def test_a_recovery_service_that_fails_every_tick_is_logged_once_per_streak(
     isolated_main_window, caplog
 ):
     window: Any = isolated_main_window
+    window._engine.threaded = False  # the poll runs and fails on this thread
     window.processor = _BrokenProcessor(window.processor, "service_recovery")
     caplog.set_level(logging.INFO)
 

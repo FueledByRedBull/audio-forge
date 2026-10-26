@@ -686,6 +686,24 @@ pub(crate) mod rt_scan {
                 &[("AudioRingBuffer::split", SETUP)][..],
             ),
             (
+                "audio/processor/dsp_loop.rs",
+                include_str!("audio/processor/dsp_loop.rs"),
+                &[
+                    (
+                        "DspLoop::new",
+                        "runs once on the DSP thread before it reports ready, so before the streams start",
+                    ),
+                    (
+                        "ensure_resampler_scratch_capacity",
+                        "start-up validation on the control thread; builds its error text on rejection",
+                    ),
+                    (
+                        "record_dsp_thread_panic",
+                        "runs once, after the loop has unwound, to record why it died",
+                    ),
+                ][..],
+            ),
+            (
                 "audio/processor/output_writer.rs",
                 include_str!("audio/processor/output_writer.rs"),
                 &[][..],

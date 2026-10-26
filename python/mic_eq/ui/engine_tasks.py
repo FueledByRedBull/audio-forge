@@ -7,10 +7,10 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QThreadPool, Signal, Slot
 
-# Off until the native AudioProcessor can be called from a thread other than the one that made it:
-# it is `unsendable` in rust-core (python_api.rs), so a worker's call would panic. Even then the
-# window only stays alive if start, stop, service_recovery and the device listings release the GIL.
-OFFLOAD_ENGINE_CALLS = False
+# The native AudioProcessor can be called from any thread (a frozen pyclass in rust-core,
+# python_api.rs), and start, stop, service_recovery and the device listings release the GIL, so the
+# window stays alive while they run. Getters and setters never wait for a start in progress.
+OFFLOAD_ENGINE_CALLS = True
 
 
 def attempt(call: Callable[[], Any]) -> Any:

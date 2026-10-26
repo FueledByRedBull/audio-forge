@@ -1,7 +1,22 @@
+use super::diagnostics::StreamRecoveryState;
+use super::lifecycle::Streams;
+use super::shared::Shared;
+use super::AudioProcessor;
+use crate::audio::clock::now_micros;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+pub(super) const CHECK_INTERVAL_MS: u64 = 250;
+pub(super) const CALLBACK_STALL_MS: u64 = 2500;
+const WRITE_STALL_MS: u64 = 3000;
+pub(super) const STARTUP_GRACE_MS: u64 = 5000;
+pub(super) const CONSECUTIVE_STALL_CHECKS: u32 = 3;
+
 /// Ask for a restart because the callbacks stalled. The stall is recorded as
 /// the pending reason first, so an error code left over from earlier (a
 /// suppressor fault, say) cannot send the request into a suppressor rebuild.
-fn request_stall_restart(
+pub(super) fn request_stall_restart(
     recovery_state: &Mutex<StreamRecoveryState>,
     restart_requested: &AtomicBool,
     reason: String,
@@ -13,98 +28,111 @@ fn request_stall_restart(
     restart_requested.store(true, Ordering::Release);
 }
 
+/// Watchdog over the stream heartbeats: asks for a restart once a callback or
+/// the output writer has been silent for `CONSECUTIVE_STALL_CHECKS` checks.
+pub(super) struct Supervisor {
+    shared: Arc<Shared>,
+    consecutive_stalls: u32,
+}
+
+impl Supervisor {
+    pub(super) fn new(shared: Arc<Shared>) -> Self {
+        Self {
+            shared,
+            consecutive_stalls: 0,
+        }
+    }
+
+    /// Check every `CHECK_INTERVAL_MS` until `supervisor_running` is cleared.
+    fn run(mut self) {
+        while self
+            .shared
+            .stream
+            .supervisor_running
+            .load(Ordering::Acquire)
+        {
+            std::thread::sleep(Duration::from_millis(CHECK_INTERVAL_MS));
+            self.check(now_micros());
+        }
+    }
+
+    /// One watchdog pass at `now` (`now_micros` time). Returns whether it
+    /// requested a restart.
+    pub(super) fn check(&mut self, now: u64) -> bool {
+        let stream = &self.shared.stream;
+        if !stream.running.load(Ordering::Acquire) {
+            return false;
+        }
+
+        if stream.recovering.load(Ordering::Acquire)
+            || stream.restart_requested.load(Ordering::Acquire)
+        {
+            self.consecutive_stalls = 0;
+            return false;
+        }
+
+        if stream.recovery_suppressed.load(Ordering::Acquire)
+            || self.shared.recording.active.load(Ordering::Acquire)
+        {
+            self.consecutive_stalls = 0;
+            return false;
+        }
+
+        let last_start = stream.last_start_time_us.load(Ordering::Relaxed);
+        if last_start > 0 && now.saturating_sub(last_start) < STARTUP_GRACE_MS * 1000 {
+            self.consecutive_stalls = 0;
+            return false;
+        }
+
+        let age_ms = |last: u64| {
+            if last > 0 {
+                now.saturating_sub(last) / 1000
+            } else {
+                u64::MAX
+            }
+        };
+        let input_age_ms = age_ms(self.shared.input.callback_time_us.load(Ordering::Relaxed));
+        let output_age_ms = age_ms(self.shared.output.callback_time_us.load(Ordering::Relaxed));
+        let write_age_ms = age_ms(
+            self.shared
+                .output
+                .last_write_time_us
+                .load(Ordering::Relaxed),
+        );
+
+        if input_age_ms > CALLBACK_STALL_MS
+            || output_age_ms > CALLBACK_STALL_MS
+            || write_age_ms > WRITE_STALL_MS
+        {
+            self.consecutive_stalls = self.consecutive_stalls.saturating_add(1);
+            if self.consecutive_stalls < CONSECUTIVE_STALL_CHECKS {
+                return false;
+            }
+            let reason = format!(
+                "input_cb_age_ms={}, output_cb_age_ms={}, output_write_age_ms={}",
+                input_age_ms, output_age_ms, write_age_ms
+            );
+            request_stall_restart(&stream.recovery_state, &stream.restart_requested, reason);
+            self.consecutive_stalls = 0;
+            return true;
+        }
+        self.consecutive_stalls = 0;
+        false
+    }
+}
+
 impl AudioProcessor {
-    fn ensure_supervisor(&mut self) {
-        if self.supervisor_thread.is_some() {
+    pub(super) fn ensure_supervisor(&self, streams: &mut Streams) {
+        if streams.supervisor_thread.is_some() {
             return;
         }
 
-        self.supervisor_running.store(true, Ordering::Release);
+        self.shared
+            .stream
+            .supervisor_running
+            .store(true, Ordering::Release);
 
-        let running = Arc::clone(&self.running);
-        let supervisor_running = Arc::clone(&self.supervisor_running);
-        let restart_requested = Arc::clone(&self.restart_requested);
-        let recovering = Arc::clone(&self.recovering);
-        let last_input_callback_time_us = Arc::clone(&self.last_input_callback_time_us);
-        let last_output_callback_time_us = Arc::clone(&self.last_output_callback_time_us);
-        let last_output_write_time = Arc::clone(&self.last_output_write_time);
-        let last_start_time_us = Arc::clone(&self.last_start_time_us);
-        let recovery_state = Arc::clone(&self.recovery_state);
-        let recording_active = Arc::clone(&self.recording_active);
-        let recovery_suppressed = Arc::clone(&self.recovery_suppressed);
-
-        self.supervisor_thread = Some(std::thread::spawn(move || {
-            const CHECK_INTERVAL_MS: u64 = 250;
-            const CALLBACK_STALL_MS: u64 = 2500;
-            const WRITE_STALL_MS: u64 = 3000;
-            const STARTUP_GRACE_MS: u64 = 5000;
-            const CONSECUTIVE_STALL_CHECKS: u32 = 3;
-            let mut consecutive_stalls = 0u32;
-
-            while supervisor_running.load(Ordering::Acquire) {
-                std::thread::sleep(std::time::Duration::from_millis(CHECK_INTERVAL_MS));
-
-                if !running.load(Ordering::Acquire) {
-                    continue;
-                }
-
-                if recovering.load(Ordering::Acquire) || restart_requested.load(Ordering::Acquire) {
-                    consecutive_stalls = 0;
-                    continue;
-                }
-
-                if recovery_suppressed.load(Ordering::Acquire)
-                    || recording_active.load(Ordering::Acquire)
-                {
-                    consecutive_stalls = 0;
-                    continue;
-                }
-
-                let now = now_micros();
-                let last_start = last_start_time_us.load(Ordering::Relaxed);
-                if last_start > 0 && now.saturating_sub(last_start) < STARTUP_GRACE_MS * 1000 {
-                    consecutive_stalls = 0;
-                    continue;
-                }
-
-                let last_in = last_input_callback_time_us.load(Ordering::Relaxed);
-                let last_out = last_output_callback_time_us.load(Ordering::Relaxed);
-                let last_write = last_output_write_time.load(Ordering::Relaxed);
-
-                let input_age_ms = if last_in > 0 {
-                    now.saturating_sub(last_in) / 1000
-                } else {
-                    u64::MAX
-                };
-                let output_age_ms = if last_out > 0 {
-                    now.saturating_sub(last_out) / 1000
-                } else {
-                    u64::MAX
-                };
-                let write_age_ms = if last_write > 0 {
-                    now.saturating_sub(last_write) / 1000
-                } else {
-                    u64::MAX
-                };
-
-                if input_age_ms > CALLBACK_STALL_MS
-                    || output_age_ms > CALLBACK_STALL_MS
-                    || write_age_ms > WRITE_STALL_MS
-                {
-                    consecutive_stalls = consecutive_stalls.saturating_add(1);
-                    if consecutive_stalls < CONSECUTIVE_STALL_CHECKS {
-                        continue;
-                    }
-                    let reason = format!(
-                        "input_cb_age_ms={}, output_cb_age_ms={}, output_write_age_ms={}",
-                        input_age_ms, output_age_ms, write_age_ms
-                    );
-                    request_stall_restart(&recovery_state, &restart_requested, reason);
-                    consecutive_stalls = 0;
-                } else {
-                    consecutive_stalls = 0;
-                }
-            }
-        }));
+        let supervisor = Supervisor::new(Arc::clone(&self.shared));
+        streams.supervisor_thread = Some(std::thread::spawn(move || supervisor.run()));
     }
 }

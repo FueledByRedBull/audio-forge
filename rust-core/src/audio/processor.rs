@@ -4,49 +4,37 @@
 //! compressor -> sample/true-peak limiting -> output.
 //!
 //! Adapted from Spectral Workbench for AudioForge.
+//!
+//! Layout: `shared` holds every cross-thread value (`Arc<Shared>`, grouped by
+//! stage); `lifecycle` starts and stops the streams and the DSP thread under the
+//! `streams` lock; `dsp_loop` is the realtime loop (`DspLoop`, built on the DSP
+//! thread from a `DspLoopSetup` the starting thread assembles); `control`,
+//! `*_controls` and `routing` publish parameter changes to it through seqlock
+//! snapshots and dirty flags;
+//! `supervisor` and `recovery` restart after a stall or device change; the rest
+//! are workers, diagnostics and the Python API (`python_api`).
 
 #![allow(clippy::useless_conversion)] // PyO3 proc-macro wrappers trigger false positives.
 
-use pyo3::prelude::*;
-use ringbuf::traits::{Consumer, Observer, Producer};
-use rubato::{
-    calculate_cutoff, Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType,
-    WindowFunction,
-};
-use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
-
-use std::sync::atomic::AtomicU8;
-
-use super::buffer::{AudioProducer, AudioRingBuffer};
-use super::clock::now_micros;
-use super::input::{AudioInput, InputChannelMode, InputStreamOptions, TARGET_SAMPLE_RATE};
-use super::output::{AudioOutput, OutputProbeControl, OutputUnderruns};
-use super::rt::{store_rt_error, FixedAudioBuffer, RtCommandQueue, RtErrorCode};
-#[cfg(windows)]
-use super::scheduling::ProAudioThread;
-use crate::dsp::biquad::{Biquad, BiquadType};
-use crate::dsp::eq::{
-    validate_eq_frequency_hz, validate_eq_gain_db, validate_eq_q, EqBandConfig, EqFilterType,
-    NUM_BANDS,
-};
-use crate::dsp::noise_suppressor::{
-    new_controlled_noise_suppression_engine as new_noise_suppression_engine,
-    ControlledNoiseSuppressionEngine as NoiseSuppressionEngine, GateControl, NoiseModel,
-};
+use crate::audio::input::TARGET_SAMPLE_RATE;
+use crate::dsp::eq::{EqBandConfig, NUM_BANDS};
 use crate::dsp::rnnoise::RNNOISE_FRAME_SIZE;
-use crate::dsp::{
-    AutoMakeupActivityInput, Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ,
-    TruePeakDetector, TruePeakLimiter, TruePeakLimiterBlockStats,
-};
+use lifecycle::{ActiveDevices, Streams};
+use shared::Shared;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 
-#[cfg(feature = "vad")]
-use crate::dsp::vad::{GateMode, SileroVAD, VadAutoGate};
+#[cfg(all(debug_assertions, not(windows)))]
+macro_rules! processor_debug_log {
+    ($($arg:tt)*) => {
+        eprintln!($($arg)*);
+    };
+}
+
+#[cfg(all(not(debug_assertions), not(windows)))]
+macro_rules! processor_debug_log {
+    ($($arg:tt)*) => {};
+}
 
 const RT_INPUT_CHUNK_CAPACITY: usize = 8192;
 const RT_PROCESS_BUFFER_CAPACITY: usize = 8192;
@@ -143,387 +131,73 @@ const LIMITER_CEILING_MAX_DB: f64 = 0.0;
 const LIMITER_RELEASE_MIN_MS: f64 = 10.0;
 const LIMITER_RELEASE_MAX_MS: f64 = 500.0;
 
-#[cfg(all(debug_assertions, not(windows)))]
-macro_rules! processor_debug_log {
-    ($($arg:tt)*) => {
-        eprintln!($($arg)*);
-    };
-}
+mod block_processor;
+mod control;
+mod diagnostics;
+mod dsp_loop;
+mod dynamics_controls;
+mod eq_controls;
+mod gate_controls;
+mod lifecycle;
+#[cfg(test)]
+mod loop_tests;
+mod noise_controls;
+mod output_writer;
+mod python_api;
+mod raw_recording;
+mod recovery;
+mod resampling;
+mod routing;
+#[cfg(test)]
+mod rt_audit_tests;
+mod runtime_metrics;
+mod shared;
+mod status;
+mod stress_harness;
+mod supervisor;
+#[cfg(test)]
+mod tests;
+mod vad_worker;
 
-#[cfg(all(not(debug_assertions), not(windows)))]
-macro_rules! processor_debug_log {
-    ($($arg:tt)*) => {};
-}
+pub use block_processor::{OfflineDspBlockProcessor, OfflineDspBlockStats};
+#[cfg(feature = "vad")]
+pub use python_api::{analyze_vad_probabilities, simulate_gate_suppressor_order, PyGateMode};
+pub use python_api::{
+    input_prefilter_response_db, simulate_auto_eq_chain, simulate_auto_makeup_control,
+    PyAudioProcessor,
+};
+pub use resampling::{
+    product_resampler_configuration, simulate_product_resampler, simulate_product_resampler_py,
+};
+pub use routing::InputCleanupMode;
+pub use stress_harness::{run_seeded_control_dsp_stress, ControlDspStressReport};
 
-include!("processor/control.rs");
-include!("processor/block_processor.rs");
-include!("processor/output_writer.rs");
-
-/// Main audio processor combining all DSP stages
+/// Main audio processor combining all DSP stages.
+///
+/// Every method takes `&self`, so the processor can be shared between threads: a
+/// worker may start, stop or recover the streams while the GUI thread reads
+/// meters and diagnostics. Those reads only touch `shared` and `devices`, never
+/// the `streams` lock a start holds.
 pub struct AudioProcessor {
-    gate_enabled: Arc<AtomicBool>,
-    gate_control: Arc<Mutex<GateControlState>>,
-    gate_rt_control: Arc<AtomicGateControlState>,
-    gate_dirty: Arc<AtomicBool>,
-
-    suppressor_enabled: Arc<AtomicBool>,
-    suppressor_control: Arc<Mutex<SuppressorControlState>>,
-    suppressor_rt_control: Arc<AtomicSuppressorControlState>,
-    suppressor_dirty: Arc<AtomicBool>,
-    suppressor_reset_requested: Arc<AtomicBool>,
-    pending_suppressor_tx: Arc<Mutex<Option<ringbuf::HeapProd<NoiseSuppressionEngine>>>>,
-    retired_suppressor_rx: Arc<Mutex<Option<ringbuf::HeapCons<NoiseSuppressionEngine>>>>,
-    suppressor_strength: Arc<AtomicU32>, // f32 bits stored as u32
-    current_model: Arc<AtomicU8>,        // NoiseModel as u8
-
-    /// Independent measured microphone correction and user tone EQ stages.
-    correction_eq: Arc<Mutex<ParametricEQ>>,
-    eq: Arc<Mutex<ParametricEQ>>,
-    eq_enabled: Arc<AtomicBool>,
-    eq_control: Arc<EqControlState>,
-    eq_dirty: Arc<AtomicBool>,
-
-    /// Compressor
-    compressor: Arc<Mutex<Compressor>>,
-    compressor_enabled: Arc<AtomicBool>,
-    compressor_control: Arc<Mutex<CompressorControlState>>,
-    compressor_rt_control: Arc<AtomicCompressorControlState>,
-    compressor_dirty: Arc<AtomicBool>,
-
-    /// De-esser
-    deesser: Arc<Mutex<DeEsser>>,
-    deesser_control: Arc<Mutex<DeesserControlState>>,
-    deesser_rt_control: Arc<AtomicDeesserControlState>,
-    deesser_dirty: Arc<AtomicBool>,
-
-    /// Hard limiter (brick-wall ceiling)
-    limiter: Arc<Mutex<Limiter>>,
-    limiter_enabled: Arc<AtomicBool>,
-    limiter_control: Arc<Mutex<LimiterControlState>>,
-    limiter_rt_control: Arc<AtomicLimiterControlState>,
-    limiter_dirty: Arc<AtomicBool>,
-
-    /// Audio input stream
-    audio_input: Option<AudioInput>,
-
-    /// Audio output stream
-    audio_output: Option<AudioOutput>,
-
-    /// Processing thread handle
-    process_thread: Option<std::thread::JoinHandle<()>>,
-
-    /// Supervisor thread for callback-based recovery detection.
-    supervisor_thread: Option<std::thread::JoinHandle<()>>,
-    supervisor_running: Arc<AtomicBool>,
-    restart_requested: Arc<AtomicBool>,
-    recovering: Arc<AtomicBool>,
-    restart_backoff_index: Arc<AtomicU32>,
-    last_restart_attempt_us: Arc<AtomicU64>,
-    last_start_time_us: Arc<AtomicU64>,
-    recovery_state: Arc<Mutex<StreamRecoveryState>>,
-
-    /// Running flag
-    running: Arc<AtomicBool>,
-
-    /// Master bypass flag
-    bypass: Arc<AtomicBool>,
-    /// True raw monitor path: bypasses pre-filter/DSP and uses minimal output write path.
-    raw_monitor_enabled: Arc<AtomicBool>,
-    /// Input channel mixdown mode consumed by the CPAL input callback.
-    input_channel_mode: Arc<AtomicU8>,
-    /// Optional adaptive cleanup mode that owns the input high-pass topology.
-    input_cleanup_mode: Arc<AtomicU8>,
+    /// State shared with the DSP thread, the supervisor and the VAD worker.
+    shared: Arc<Shared>,
 
     /// Sample rate
     sample_rate: u32,
-    /// Actual active output device sample rate
-    output_sample_rate: Arc<AtomicU32>,
-    /// Negotiated fixed input callback buffer size, or zero for driver default.
-    input_fixed_buffer_frames: Arc<AtomicU32>,
-    /// Negotiated fixed output callback buffer size, or zero for driver default.
-    output_fixed_buffer_frames: Arc<AtomicU32>,
-    /// Latest stereo input correlation reported by the input callback.
-    input_stereo_correlation: Arc<AtomicU32>,
-    /// Number of stereo input blocks with strong negative correlation.
-    input_phase_warning_count: Arc<AtomicU64>,
-    /// Last phase-safe mono rescue strategy selected by the input callback.
-    input_phase_rescue_strategy: Arc<AtomicU8>,
-    /// Last estimated stereo channel delay in samples for phase-safe mono.
-    input_phase_estimated_delay_samples: Arc<AtomicU32>,
-    /// Whether the last phase-safe mono rescue flipped polarity.
-    input_phase_polarity_flipped: Arc<AtomicBool>,
-    /// Whether adaptive input cleanup is currently suppressing line hum.
-    input_cleanup_hum_detected: Arc<AtomicBool>,
-    /// Whether adaptive input cleanup is currently reacting to rumble/plosive energy.
-    input_cleanup_rumble_detected: Arc<AtomicBool>,
-    /// Selected effective input cleanup high-pass cutoff in Hz.
-    input_cleanup_high_pass_hz: Arc<AtomicU32>,
 
-    /// Input device name
-    input_device_name: Option<String>,
+    /// Stream and worker-thread handles. The one lock serializes start, stop and
+    /// recovery.
+    streams: Mutex<Streams>,
 
-    /// Zero-based occurrence of the selected input friendly name.
-    input_device_name_ordinal: u32,
-
-    /// Stable platform endpoint ID for the selected input, when available.
-    input_device_endpoint_id: Option<String>,
-
-    /// Output device name
-    output_device_name: Option<String>,
-
-    /// Zero-based occurrence of the selected output friendly name.
-    output_device_name_ordinal: u32,
-
-    /// Stable platform endpoint ID for the selected output, when available.
-    output_device_endpoint_id: Option<String>,
-
-    // === Level Metering (lock-free atomics) ===
-    // Stored as f32 bits via to_bits()/from_bits()
-    /// Input peak level at processor tap (pre-filtered in normal mode, raw in raw-monitor mode)
-    input_peak: Arc<AtomicU32>,
-    /// Input RMS level
-    input_rms: Arc<AtomicU32>,
-    /// Input crest factor in dB (decaying sample peak over RMS, same 100 ms window).
-    input_crest_factor_db: Arc<AtomicU32>,
-    /// Output peak level (after all processing)
-    output_peak: Arc<AtomicU32>,
-    /// Output RMS level
-    output_rms: Arc<AtomicU32>,
-    /// Output crest factor in dB (decaying sample peak over RMS, same 100 ms window).
-    output_crest_factor_db: Arc<AtomicU32>,
-    /// Output short-term loudness estimate in LUFS-like dB.
-    output_short_term_lufs: Arc<AtomicU32>,
-    /// Compressor gain reduction in dB
-    compressor_gain_reduction: Arc<AtomicU32>,
-    /// De-esser gain reduction in dB
-    deesser_gain_reduction: Arc<AtomicU32>,
-    /// De-esser detector confidence (0.0-1.0)
-    deesser_detector_confidence: Arc<AtomicU32>,
-    /// Last known gate gain (0.0-1.0) for metering.
-    gate_gain_meter: Arc<AtomicU32>,
-    /// Latest raw VAD speech probability (0.0-1.0), written only by the worker.
-    #[cfg_attr(not(feature = "vad"), allow(dead_code))]
-    vad_raw_probability: Arc<AtomicU32>,
-    /// Smoothed VAD speech probability (0.0-1.0) for metering.
-    #[cfg_attr(not(feature = "vad"), allow(dead_code))]
-    vad_meter_probability: Arc<AtomicU32>,
-    /// Latest gate noise-floor estimate in dB.
-    #[cfg_attr(not(feature = "vad"), allow(dead_code))]
-    gate_noise_floor_db: Arc<AtomicU32>,
-    /// Latest fused gate open score (0.0-1.0) for diagnostics.
-    #[cfg_attr(not(feature = "vad"), allow(dead_code))]
-    gate_fused_score: Arc<AtomicU32>,
-    /// Whether VAD-mode chatter mitigation is temporarily relaxing the gate.
-    gate_auto_relax_active: Arc<AtomicBool>,
-    /// Lifetime count of detected rapid gate open/close chatter.
-    gate_chatter_event_count: Arc<AtomicU64>,
-    /// Whether the current VAD backend is loaded, written only by the worker.
-    #[cfg_attr(not(feature = "vad"), allow(dead_code))]
-    vad_backend_available: Arc<AtomicBool>,
-    /// Whether a fresh VAD result is available to the realtime gate.
-    #[cfg_attr(not(feature = "vad"), allow(dead_code))]
-    vad_available: Arc<AtomicBool>,
-    #[cfg(feature = "vad")]
-    /// Non-realtime VAD worker thread handle.
-    vad_worker_thread: Option<std::thread::JoinHandle<()>>,
-    #[cfg(feature = "vad")]
-    /// Non-realtime VAD worker running flag.
-    vad_worker_running: Arc<AtomicBool>,
-    #[cfg(feature = "vad")]
-    /// Last successful non-realtime VAD inference timestamp.
-    vad_last_update_us: Arc<AtomicU64>,
-    #[cfg(feature = "vad")]
-    /// Input-rate source position covered by the last successful VAD result.
-    /// This lets the DSP thread measure audio age independently of worker
-    /// scheduling and publication time.
-    vad_source_sample_end: Arc<AtomicU64>,
-    #[cfg(feature = "vad")]
-    /// Incremented when the bounded VAD queue drops a block. The stateful
-    /// model must restart at the next contiguous source sample.
-    vad_source_discontinuity: Arc<AtomicU64>,
-    #[cfg(feature = "vad")]
-    /// Seqlock for the worker-owned VAD result fields.
-    vad_result_sequence: Arc<AtomicU64>,
-    #[cfg(feature = "vad")]
-    /// Source discontinuity generation bound to the published result.
-    vad_result_generation: Arc<AtomicU64>,
-    #[cfg(feature = "vad")]
-    /// Last reason the VAD worker could not provide results.
-    vad_worker_error: Arc<Mutex<Option<String>>>,
-
-    /// Compressor current release time in milliseconds (for metering)
-    compressor_current_release_ms: Arc<AtomicU64>,
-    /// Compressor current measured loudness in LUFS (f64 bits).
-    compressor_current_lufs: Arc<AtomicU64>,
-    /// `Compressor::auto_makeup_error_code` of the live compressor (0 healthy).
-    compressor_auto_makeup_error: Arc<AtomicU8>,
-    /// Compressor current applied makeup gain in dB (f64 bits).
-    compressor_current_makeup_gain: Arc<AtomicU64>,
-
-    /// Processing latency in microseconds (measured from input to output)
-    latency_us: Arc<AtomicU64>,
-    /// User-configured compensation added to reported latency (microseconds).
-    latency_compensation_us: Arc<AtomicU64>,
-
-    // === DSP Performance Metrics (lock-free atomics) ===
-    /// DSP processing time in microseconds (for last processed chunk)
-    dsp_time_us: Arc<AtomicU64>,
-    /// Input ring buffer fill level (samples)
-    input_buffer_len: Arc<AtomicU32>,
-    /// Output ring buffer fill level (samples)
-    output_buffer_len: Arc<AtomicU32>,
-    /// Noise suppressor internal buffer fill level (samples)
-    suppressor_buffer_len: Arc<AtomicU32>,
-    /// Suppressor latency + pending samples mirrored from the processing thread.
-    suppressor_latency_samples: Arc<AtomicU32>,
-    /// Successful external suppressor inference frames mirrored from the processing thread.
-    suppressor_successful_inference_frames: Arc<AtomicU64>,
-    /// Last successful output write time (for detecting stalled processing)
-    last_output_write_time: Arc<AtomicU64>,
-    /// Last input callback heartbeat timestamp (unix micros)
-    last_input_callback_time_us: Arc<AtomicU64>,
-    /// Last output callback heartbeat timestamp (unix micros)
-    last_output_callback_time_us: Arc<AtomicU64>,
-    /// Consecutive output callback underrun count
-    output_underrun_streak: Arc<AtomicU32>,
-    /// Total output callback underruns since start
-    output_underrun_total: Arc<AtomicU64>,
-    /// Output callbacks that ran dry before the stream was primed
-    output_priming_underrun_total: Arc<AtomicU64>,
-    /// Output callback has fully served a request after real audio was queued
-    output_primed: Arc<AtomicBool>,
-    /// Callback time the current start's priming bound runs from (0 until first underrun after real audio)
-    output_priming_started_at_us: Arc<AtomicU64>,
-    /// Samples dropped by DSP-side jitter buffer control
-    jitter_dropped_samples: Arc<AtomicU64>,
-    /// Number of normal DSP-side drift-retime length adjustments.
-    output_retime_adjustment_count: Arc<AtomicU64>,
-    /// Number of true DSP-side output recovery events.
-    output_recovery_event_count: Arc<AtomicU64>,
-    /// Samples discarded because the output ring buffer could not accept the full write.
-    output_short_write_dropped_samples: Arc<AtomicU64>,
-    /// Number of times the DSP loop entered its idle sleep path.
-    dsp_idle_wakeup_count: Arc<AtomicU64>,
-    /// Last idle sleep duration selected by the DSP loop.
-    dsp_idle_sleep_us: Arc<AtomicU64>,
-
-    /// Smoothed DSP processing time in microseconds (EMA per processed block, nominal 200ms time constant)
-    dsp_time_smoothed_us: Arc<AtomicU64>,
-    /// Smoothed input buffer fill level (EMA over measured wall time, 200ms time constant)
-    smoothed_input_buffer_len: Arc<AtomicU32>,
-    /// Smoothed suppressor buffer fill level (EMA per processed block, nominal 200ms time constant)
-    smoothed_buffer_len: Arc<AtomicU32>,
-
-    /// Dropped samples counter from input ring buffer
-    input_dropped: Arc<AtomicU64>,
-    /// Counter value at the last user reset. The DSP loop detects capture
-    /// gaps from `input_dropped` itself, so a reset must not rewind it.
-    input_dropped_baseline: AtomicU64,
-    /// Number of proactive input backlog recoveries.
-    input_backlog_recovery_count: Arc<AtomicU64>,
-    /// Samples proactively dropped from the input backlog.
-    input_backlog_dropped_samples: Arc<AtomicU64>,
-
-    /// Control-snapshot reads in the real-time loop that stayed unstable and were re-armed.
-    lock_contention_count: Arc<AtomicU64>,
-    /// Number of times suppressor output contained non-finite samples.
-    suppressor_non_finite_count: Arc<AtomicU64>,
-    /// Number of blocks where the downstream chain (de-esser, EQ, compressor,
-    /// limiter) produced non-finite samples; the stages were reset each time.
-    downstream_non_finite_count: Arc<AtomicU64>,
-    /// Output resampler failures; each drops a chunk and requests a restart.
-    output_resampler_error_count: Arc<AtomicU64>,
-    /// True when the DSP thread could not register for MMCSS Pro Audio
-    /// scheduling and runs at normal priority.
-    dsp_scheduling_degraded: Arc<AtomicBool>,
-    /// Number of clipped input samples before safety clamp.
-    clip_event_count: Arc<AtomicU64>,
-    /// Peak pre-clamp level in dBFS.
-    clip_peak_db: Arc<AtomicU32>,
-    /// Largest absolute input sample since `take_input_peak_since_read`
-    /// (f32 bits, linear; measured on the mono engine-rate signal before the
-    /// pre-filter, in every processing path).
-    input_peak_hold: Arc<AtomicU32>,
-    /// Input samples at or above `FULL_SCALE_LINEAR`, cumulative since start.
-    input_full_scale_count: Arc<AtomicU64>,
-    /// Largest absolute sample of the meter's OUT tap (before the final
-    /// true-peak limiter and clamp) since the last take (f32 bits, linear).
-    output_pre_limiter_peak_hold: Arc<AtomicU32>,
-    /// Largest absolute sample written to the output queue, after the final
-    /// limiter, clamp and fade, since the last take (f32 bits, linear).
-    output_final_peak_hold: Arc<AtomicU32>,
-    /// Queued output samples at or above `FULL_SCALE_LINEAR`, cumulative since start.
-    output_full_scale_count: Arc<AtomicU64>,
-    /// Number of final output samples clamped by output protection.
-    output_clip_event_count: Arc<AtomicU64>,
-    /// Peak final pre-clamp output level in dBFS.
-    output_clip_peak_db: Arc<AtomicU32>,
-    /// Number of output blocks with estimated true peak above the active ceiling.
-    output_true_peak_event_count: Arc<AtomicU64>,
-    /// Peak estimated true-peak level in dBFS.
-    output_true_peak_db: Arc<AtomicU32>,
-    /// Peak estimated true-peak level before final true-peak limiting in dBFS.
-    output_true_peak_input_db: Arc<AtomicU32>,
-    /// Current final true-peak limiter gain reduction in dB.
-    output_true_peak_gain_reduction_db: Arc<AtomicU32>,
-    /// Output true-peak headroom relative to the active ceiling in dB.
-    output_true_peak_headroom_db: Arc<AtomicU32>,
-    /// Current normal limiter gain reduction in dB.
-    limiter_gain_reduction_db: Arc<AtomicU32>,
-    /// Peak normal limiter gain reduction since the last DSP block in dB.
-    limiter_peak_gain_reduction_db: Arc<AtomicU32>,
-    /// Decaying recent normal limiter gain-reduction peak in dB.
-    limiter_gain_reduction_history_db: Arc<AtomicU32>,
-    /// Decaying recent final true-peak limiter gain-reduction peak in dB.
-    output_true_peak_gain_reduction_history_db: Arc<AtomicU32>,
-    /// Whether input resampling is active.
-    input_resampler_active: Arc<AtomicBool>,
-    /// Whether output resampling is active.
-    output_resampler_active: Arc<AtomicBool>,
-    /// Whether the current noise backend is operational.
-    noise_backend_available: Arc<AtomicBool>,
-    /// Whether the backend has entered a failed state.
-    noise_backend_failed: Arc<AtomicBool>,
-    /// Last backend error string.
-    noise_backend_error: Arc<Mutex<Option<String>>>,
-    /// Last RT-safe error code published by callbacks or the DSP loop.
-    rt_error_code: Arc<AtomicU32>,
-    /// Input callback stream error count.
-    input_callback_error_count: Arc<AtomicU64>,
-    /// Output callback stream error count.
-    output_callback_error_count: Arc<AtomicU64>,
-    /// Fixed-buffer overflow count in AudioForge RT regions.
-    rt_buffer_overflow_count: Arc<AtomicU64>,
-
-    // === RAW AUDIO RECORDING (for calibration) ===
-    /// Raw audio recording consumer (for calibration - captures audio AFTER pre-filter, BEFORE gate)
-    raw_recording_consumer: Arc<Mutex<Option<super::buffer::AudioConsumer>>>,
-    /// Current recording position (samples recorded so far)
-    raw_recording_pos: Arc<AtomicUsize>,
-    /// Target recording length (total samples to record)
-    raw_recording_target: Arc<AtomicUsize>,
-    /// Current recording level in dB for UI/self-test metering.
-    recording_level_db: Arc<AtomicU32>,
-    /// Manual output mute flag (independent of recording).
-    output_muted: Arc<AtomicBool>,
-    /// Flag indicating recording is active (used to mute output to prevent user from hearing themselves)
-    recording_active: Arc<AtomicBool>,
-    /// Whether the raw recording tap should run before adaptive input cleanup.
-    /// The default calibration tap remains after the fixed pre-filter.
-    raw_recording_before_cleanup: Arc<AtomicBool>,
-    /// Producer for calibration probes rendered by the selected CPAL output stream.
-    output_probe_producer: Arc<Mutex<Option<AudioProducer>>>,
-    /// Whether the selected output callback should render the queued calibration probe.
-    output_probe_active: Arc<AtomicBool>,
-    /// Whether the last queued output probe has been fully rendered.
-    output_probe_complete: Arc<AtomicBool>,
-    /// Requests that the output callback discard any remaining queued probe.
-    output_probe_cancel_requested: Arc<AtomicBool>,
-    /// Temporarily disables watchdog-driven recovery during intrusive UI workflows.
-    recovery_suppressed: Arc<AtomicBool>,
-    /// Non-finite values the clamping live setters ignored.
-    rejected_control_value_count: AtomicU64,
+    /// Devices the streams are bound to. Held only for short reads and writes.
+    devices: Mutex<ActiveDevices>,
 }
+
+// The Python class is `frozen` and called from worker threads.
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<AudioProcessor>();
+};
 
 impl AudioProcessor {
     fn validate_eq_band_index(&self, band: usize) -> Result<(), String> {
@@ -541,228 +215,15 @@ impl AudioProcessor {
     /// Create a new audio processor
     pub fn new() -> Self {
         let sample_rate = TARGET_SAMPLE_RATE;
-        let suppressor_control_state = SuppressorControlState::new();
-        let compressor_control_state = CompressorControlState::new();
-
-        // Create strength Arc BEFORE noise suppressor (share reference)
-        let suppressor_strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
 
         Self {
-            gate_enabled: Arc::new(AtomicBool::new(true)),
-            gate_control: Arc::new(Mutex::new(GateControlState::new())),
-            gate_rt_control: Arc::new(AtomicGateControlState::new()),
-            gate_dirty: Arc::new(AtomicBool::new(false)),
-            suppressor_enabled: Arc::new(AtomicBool::new(true)),
-            suppressor_control: Arc::new(Mutex::new(suppressor_control_state)),
-            suppressor_rt_control: Arc::new(AtomicSuppressorControlState::new()),
-            suppressor_dirty: Arc::new(AtomicBool::new(false)),
-            suppressor_reset_requested: Arc::new(AtomicBool::new(false)),
-            pending_suppressor_tx: Arc::new(Mutex::new(None)),
-            retired_suppressor_rx: Arc::new(Mutex::new(None)),
-            suppressor_strength, // Store Arc for PyO3 bindings
-            current_model: Arc::new(AtomicU8::new(NoiseModel::RNNoise as u8)),
-            correction_eq: Arc::new(Mutex::new(ParametricEQ::new(sample_rate as f64))),
-            eq: Arc::new(Mutex::new(ParametricEQ::new(sample_rate as f64))),
-            eq_enabled: Arc::new(AtomicBool::new(true)),
-            eq_control: Arc::new(EqControlState::new()),
-            eq_dirty: Arc::new(AtomicBool::new(false)),
-            compressor: {
-                let mut compressor = Compressor::default_voice(sample_rate as f64);
-                apply_compressor_control(&mut compressor, &compressor_control_state);
-                Arc::new(Mutex::new(compressor))
-            },
-            compressor_enabled: Arc::new(AtomicBool::new(true)),
-            compressor_control: Arc::new(Mutex::new(compressor_control_state)),
-            compressor_rt_control: Arc::new(AtomicCompressorControlState::new()),
-            compressor_dirty: Arc::new(AtomicBool::new(false)),
-            deesser: Arc::new(Mutex::new(DeEsser::new(sample_rate as f64))),
-            deesser_control: Arc::new(Mutex::new(DeesserControlState::new())),
-            deesser_rt_control: Arc::new(AtomicDeesserControlState::new()),
-            deesser_dirty: Arc::new(AtomicBool::new(false)),
-            limiter: Arc::new(Mutex::new(Limiter::new(
-                CAREFUL_OUTPUT_CEILING_DB,
-                50.0,
-                sample_rate as f64,
-            ))),
-            limiter_enabled: Arc::new(AtomicBool::new(true)),
-            limiter_control: Arc::new(Mutex::new(LimiterControlState::new())),
-            limiter_rt_control: Arc::new(AtomicLimiterControlState::new()),
-            limiter_dirty: Arc::new(AtomicBool::new(false)),
-            audio_input: None,
-            audio_output: None,
-            process_thread: None,
-            supervisor_thread: None,
-            supervisor_running: Arc::new(AtomicBool::new(false)),
-            restart_requested: Arc::new(AtomicBool::new(false)),
-            recovering: Arc::new(AtomicBool::new(false)),
-            restart_backoff_index: Arc::new(AtomicU32::new(0)),
-            last_restart_attempt_us: Arc::new(AtomicU64::new(0)),
-            last_start_time_us: Arc::new(AtomicU64::new(0)),
-            recovery_state: Arc::new(Mutex::new(StreamRecoveryState::default())),
-            running: Arc::new(AtomicBool::new(false)),
-            bypass: Arc::new(AtomicBool::new(false)),
-            raw_monitor_enabled: Arc::new(AtomicBool::new(false)),
-            input_channel_mode: Arc::new(AtomicU8::new(InputChannelMode::PhaseSafeMono as u8)),
-            input_cleanup_mode: Arc::new(AtomicU8::new(InputCleanupMode::Off as u8)),
+            shared: Arc::new(Shared::new(sample_rate)),
             sample_rate,
-            output_sample_rate: Arc::new(AtomicU32::new(sample_rate)),
-            input_fixed_buffer_frames: Arc::new(AtomicU32::new(0)),
-            output_fixed_buffer_frames: Arc::new(AtomicU32::new(0)),
-            input_stereo_correlation: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
-            input_phase_warning_count: Arc::new(AtomicU64::new(0)),
-            input_phase_rescue_strategy: Arc::new(AtomicU8::new(0)),
-            input_phase_estimated_delay_samples: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
-            input_phase_polarity_flipped: Arc::new(AtomicBool::new(false)),
-            input_cleanup_hum_detected: Arc::new(AtomicBool::new(false)),
-            input_cleanup_rumble_detected: Arc::new(AtomicBool::new(false)),
-            input_cleanup_high_pass_hz: Arc::new(AtomicU32::new(
-                (INPUT_PREFILTER_HZ as f32).to_bits(),
-            )),
-            input_device_name: None,
-            input_device_name_ordinal: 0,
-            input_device_endpoint_id: None,
-            output_device_name: None,
-            output_device_name_ordinal: 0,
-            output_device_endpoint_id: None,
-            // Initialize metering atomics with -infinity (no signal)
-            input_peak: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
-            input_rms: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
-            input_crest_factor_db: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
-            output_peak: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
-            output_rms: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
-            output_crest_factor_db: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
-            output_short_term_lufs: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
-            compressor_gain_reduction: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
-            deesser_gain_reduction: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
-            deesser_detector_confidence: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
-            gate_gain_meter: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
-            vad_raw_probability: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
-            vad_meter_probability: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
-            gate_noise_floor_db: Arc::new(AtomicU32::new((-60.0_f32).to_bits())),
-            gate_fused_score: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
-            gate_auto_relax_active: Arc::new(AtomicBool::new(false)),
-            gate_chatter_event_count: Arc::new(AtomicU64::new(0)),
-            vad_backend_available: Arc::new(AtomicBool::new(false)),
-            vad_available: Arc::new(AtomicBool::new(false)),
-            #[cfg(feature = "vad")]
-            vad_worker_thread: None,
-            #[cfg(feature = "vad")]
-            vad_worker_running: Arc::new(AtomicBool::new(false)),
-            #[cfg(feature = "vad")]
-            vad_last_update_us: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "vad")]
-            vad_source_sample_end: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "vad")]
-            vad_source_discontinuity: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "vad")]
-            vad_result_sequence: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "vad")]
-            vad_result_generation: Arc::new(AtomicU64::new(0)),
-            #[cfg(feature = "vad")]
-            vad_worker_error: Arc::new(Mutex::new(None)),
-            compressor_current_release_ms: Arc::new(AtomicU64::new(
-                COMPRESSOR_DEFAULT_RELEASE_TENTH_MS,
-            )),
-            compressor_current_lufs: Arc::new(AtomicU64::new((-100.0_f64).to_bits())),
-            compressor_auto_makeup_error: Arc::new(AtomicU8::new(0)),
-            compressor_current_makeup_gain: Arc::new(AtomicU64::new(0.0_f64.to_bits())),
-            latency_us: Arc::new(AtomicU64::new(0)),
-            latency_compensation_us: Arc::new(AtomicU64::new(0)),
-            // Initialize DSP performance metrics
-            dsp_time_us: Arc::new(AtomicU64::new(0)),
-            input_buffer_len: Arc::new(AtomicU32::new(0)),
-            smoothed_input_buffer_len: Arc::new(AtomicU32::new(0)),
-            output_buffer_len: Arc::new(AtomicU32::new(0)),
-            suppressor_buffer_len: Arc::new(AtomicU32::new(0)),
-            suppressor_latency_samples: Arc::new(AtomicU32::new(0)),
-            suppressor_successful_inference_frames: Arc::new(AtomicU64::new(0)),
-            last_output_write_time: Arc::new(AtomicU64::new(0)),
-            last_input_callback_time_us: Arc::new(AtomicU64::new(0)),
-            last_output_callback_time_us: Arc::new(AtomicU64::new(0)),
-            output_underrun_streak: Arc::new(AtomicU32::new(0)),
-            output_underrun_total: Arc::new(AtomicU64::new(0)),
-            output_priming_underrun_total: Arc::new(AtomicU64::new(0)),
-            output_primed: Arc::new(AtomicBool::new(false)),
-            output_priming_started_at_us: Arc::new(AtomicU64::new(0)),
-            jitter_dropped_samples: Arc::new(AtomicU64::new(0)),
-            output_retime_adjustment_count: Arc::new(AtomicU64::new(0)),
-            output_recovery_event_count: Arc::new(AtomicU64::new(0)),
-            output_short_write_dropped_samples: Arc::new(AtomicU64::new(0)),
-            dsp_idle_wakeup_count: Arc::new(AtomicU64::new(0)),
-            dsp_idle_sleep_us: Arc::new(AtomicU64::new(PROCESS_IDLE_SLEEP_US)),
-            dsp_time_smoothed_us: Arc::new(AtomicU64::new(0)),
-            smoothed_buffer_len: Arc::new(AtomicU32::new(0)),
-
-            // Initialize dropped samples counter
-            input_dropped: Arc::new(AtomicU64::new(0)),
-            input_dropped_baseline: AtomicU64::new(0),
-            input_backlog_recovery_count: Arc::new(AtomicU64::new(0)),
-            input_backlog_dropped_samples: Arc::new(AtomicU64::new(0)),
-
-            // Initialize lock contention counter
-            lock_contention_count: Arc::new(AtomicU64::new(0)),
-            suppressor_non_finite_count: Arc::new(AtomicU64::new(0)),
-            downstream_non_finite_count: Arc::new(AtomicU64::new(0)),
-            output_resampler_error_count: Arc::new(AtomicU64::new(0)),
-            dsp_scheduling_degraded: Arc::new(AtomicBool::new(false)),
-            clip_event_count: Arc::new(AtomicU64::new(0)),
-            clip_peak_db: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
-            input_peak_hold: Arc::new(AtomicU32::new(0)),
-            input_full_scale_count: Arc::new(AtomicU64::new(0)),
-            output_pre_limiter_peak_hold: Arc::new(AtomicU32::new(0)),
-            output_final_peak_hold: Arc::new(AtomicU32::new(0)),
-            output_full_scale_count: Arc::new(AtomicU64::new(0)),
-            output_clip_event_count: Arc::new(AtomicU64::new(0)),
-            output_clip_peak_db: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
-            output_true_peak_event_count: Arc::new(AtomicU64::new(0)),
-            output_true_peak_db: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
-            output_true_peak_input_db: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
-            output_true_peak_gain_reduction_db: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
-            output_true_peak_headroom_db: Arc::new(AtomicU32::new(120.0_f32.to_bits())),
-            limiter_gain_reduction_db: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
-            limiter_peak_gain_reduction_db: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
-            limiter_gain_reduction_history_db: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
-            output_true_peak_gain_reduction_history_db: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
-            input_resampler_active: Arc::new(AtomicBool::new(false)),
-            output_resampler_active: Arc::new(AtomicBool::new(false)),
-            noise_backend_available: Arc::new(AtomicBool::new(true)),
-            noise_backend_failed: Arc::new(AtomicBool::new(false)),
-            noise_backend_error: Arc::new(Mutex::new(None)),
-            rt_error_code: Arc::new(AtomicU32::new(RtErrorCode::None as u32)),
-            input_callback_error_count: Arc::new(AtomicU64::new(0)),
-            output_callback_error_count: Arc::new(AtomicU64::new(0)),
-            rt_buffer_overflow_count: Arc::new(AtomicU64::new(0)),
-
-            // Initialize raw recording buffer
-            raw_recording_consumer: Arc::new(Mutex::new(None)),
-            raw_recording_pos: Arc::new(AtomicUsize::new(0)),
-            raw_recording_target: Arc::new(AtomicUsize::new(0)),
-            recording_level_db: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
-            output_muted: Arc::new(AtomicBool::new(false)),
-            recording_active: Arc::new(AtomicBool::new(false)),
-            raw_recording_before_cleanup: Arc::new(AtomicBool::new(false)),
-            output_probe_producer: Arc::new(Mutex::new(None)),
-            output_probe_active: Arc::new(AtomicBool::new(false)),
-            output_probe_complete: Arc::new(AtomicBool::new(true)),
-            output_probe_cancel_requested: Arc::new(AtomicBool::new(false)),
-            recovery_suppressed: Arc::new(AtomicBool::new(false)),
-            rejected_control_value_count: AtomicU64::new(0),
+            streams: Mutex::new(Streams::default()),
+            devices: Mutex::new(ActiveDevices::default()),
         }
     }
 }
-
-include!("processor/dsp_loop.rs");
-include!("processor/status.rs");
-include!("processor/gate_controls.rs");
-include!("processor/noise_controls.rs");
-include!("processor/eq_controls.rs");
-include!("processor/dynamics_controls.rs");
-include!("processor/runtime_metrics.rs");
-include!("processor/supervisor.rs");
-include!("processor/vad_worker.rs");
-include!("processor/recovery.rs");
-include!("processor/stress_harness.rs");
-include!("processor/raw_recording.rs");
 
 impl Default for AudioProcessor {
     fn default() -> Self {
@@ -773,14 +234,18 @@ impl Default for AudioProcessor {
 impl Drop for AudioProcessor {
     fn drop(&mut self) {
         self.stop();
-        self.supervisor_running.store(false, Ordering::Release);
-        if let Some(handle) = self.supervisor_thread.take() {
+        self.shared
+            .stream
+            .supervisor_running
+            .store(false, Ordering::Release);
+        let supervisor = self
+            .streams
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .supervisor_thread
+            .take();
+        if let Some(handle) = supervisor {
             let _ = handle.join();
         }
     }
 }
-
-include!("processor/tests.rs");
-
-// === Python Bindings ===
-include!("processor/python_api.rs");

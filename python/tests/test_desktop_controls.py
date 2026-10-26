@@ -196,7 +196,7 @@ def test_failed_model_switch_retains_previous_model_and_strength(qapp, monkeypat
         MainWindow._on_model_changed(owner, 2)
         assert state.get_settings()["model"] == "deepfilter-ll"
         assert state.get_settings()["strength"] == 0.123456789
-        assert state.latency_text == "Latency: ~20ms (DeepFilterNet LL)"
+        assert state.latency_text == "Latency: ~15ms (DeepFilterNet LL)"
         assert [call.args[0] for call in processor.set_noise_model.call_args_list] == [
             "deepfilter", "deepfilter-ll",
         ]

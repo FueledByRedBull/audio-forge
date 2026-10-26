@@ -17,6 +17,7 @@ use crate::dsp::eq::{EqBandConfig, EqFilterType, NUM_BANDS};
 use crate::dsp::noise_suppressor::{
     ControlledNoiseSuppressor, GateControl, NoiseModel, NoiseSuppressor,
 };
+use ringbuf::traits::{Consumer, Producer};
 use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
@@ -632,6 +633,124 @@ fn getters_do_not_wait_for_a_start_in_progress() {
     });
 }
 
+/// An engine that does nothing but note that it was retired.
+struct RetireProbe {
+    model: NoiseModel,
+    retired: Arc<std::sync::atomic::AtomicBool>,
+    enabled: bool,
+}
+
+impl RetireProbe {
+    fn boxed(model: NoiseModel, retired: &Arc<std::sync::atomic::AtomicBool>) -> Box<Self> {
+        Box::new(Self {
+            model,
+            retired: Arc::clone(retired),
+            enabled: true,
+        })
+    }
+}
+
+impl NoiseSuppressor for RetireProbe {
+    fn push_samples(&mut self, samples: &[f32]) -> usize {
+        samples.len()
+    }
+    fn process_frames(&mut self) {}
+    fn available_samples(&self) -> usize {
+        0
+    }
+    fn pop_samples_into(&mut self, _buffer: &mut [f32]) -> usize {
+        0
+    }
+    fn set_strength(&self, _value: f32) {}
+    fn get_strength(&self) -> f32 {
+        1.0
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    fn soft_reset(&mut self) {}
+    fn pending_input(&self) -> usize {
+        0
+    }
+    fn model_type(&self) -> NoiseModel {
+        self.model
+    }
+    fn latency_samples(&self) -> usize {
+        480
+    }
+    fn backend_available(&self) -> bool {
+        true
+    }
+    fn backend_error(&self) -> Option<&str> {
+        None
+    }
+    fn backend_failed(&self) -> bool {
+        false
+    }
+    fn retire(&mut self) {
+        self.retired.store(true, Ordering::SeqCst);
+    }
+}
+
+impl ControlledNoiseSuppressor for RetireProbe {
+    fn push_controlled_samples(&mut self, samples: &[f32], _controls: &[GateControl]) -> usize {
+        samples.len()
+    }
+}
+
+/// Queue `engine` for the loop the way `set_noise_model` does.
+fn queue_engine(
+    processor: &AudioProcessor,
+    engine: crate::dsp::noise_suppressor::ControlledNoiseSuppressionEngine,
+) {
+    let mut queue = processor.shared.suppressor.pending_tx.lock().unwrap();
+    assert!(queue.as_mut().unwrap().try_push(engine).is_ok());
+    processor
+        .shared
+        .suppressor
+        .dirty
+        .store(true, Ordering::Release);
+}
+
+#[test]
+fn an_engine_swapped_out_of_the_loop_is_retired_there_and_then() {
+    use std::sync::atomic::AtomicBool;
+
+    let processor = AudioProcessor::new();
+    let old_retired = Arc::new(AtomicBool::new(false));
+    let new_retired = Arc::new(AtomicBool::new(false));
+    let mut offline = OfflineLoop::new(
+        &processor,
+        OfflineLoopConfig {
+            suppressor: Some(RetireProbe::boxed(NoiseModel::RNNoise, &old_retired)),
+            ..OfflineLoopConfig::default()
+        },
+    );
+    queue_engine(
+        &processor,
+        RetireProbe::boxed(NoiseModel::RNNoise, &new_retired),
+    );
+    offline.run_until_idle();
+
+    // The loop only hands the old engine to the queue the control thread drains
+    // later; it must have told it to end its background work by then.
+    assert!(old_retired.load(Ordering::SeqCst));
+    assert!(!new_retired.load(Ordering::SeqCst));
+    assert!(processor
+        .shared
+        .suppressor
+        .retired_rx
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .try_pop()
+        .is_some());
+}
+
 /// The production loop with DeepFilterNet inference at a worker thread, on the
 /// stand-in library of `dsp::deepfilter_ffi::fake`.
 #[cfg(feature = "deepfilter")]
@@ -639,17 +758,23 @@ mod worker_engine {
     use super::*;
     use crate::dsp::deepfilter_ffi::fake::{worker_engine, Fake};
     use crate::dsp::deepfilter_ffi::DeepFilterModel;
+    use crate::dsp::deepfilter_ffi::TEST_WORKER_TRANSIT_SAMPLES as WORKER_TRANSIT_SAMPLES;
+    use std::cell::{Cell, RefCell};
+    use std::sync::atomic::AtomicBool;
     use std::time::Instant;
 
-    fn loop_with_worker(fake: &Arc<Fake>) -> (AudioProcessor, OfflineLoop) {
-        let processor = AudioProcessor::new();
-        let model = NoiseModel::DeepFilterNetLL;
+    fn select_model(processor: &AudioProcessor, model: NoiseModel) {
         processor.shared.suppressor.rt_control.set_model(model);
         processor
             .shared
             .suppressor
             .current_model
             .store(model as u8, Ordering::Release);
+    }
+
+    fn loop_with_worker(fake: &Arc<Fake>) -> (AudioProcessor, OfflineLoop) {
+        let processor = AudioProcessor::new();
+        select_model(&processor, NoiseModel::DeepFilterNetLL);
         let engine = worker_engine(fake, DeepFilterModel::LowLatency, 1.0);
         let offline = OfflineLoop::new(
             &processor,
@@ -669,12 +794,18 @@ mod worker_engine {
         frames_offered: usize,
     ) -> Vec<f32> {
         let out = feed(offline, tone, 1, BLOCK);
+        wait_for("the worker to take a frame", || {
+            fake.started.load(Ordering::Acquire) as usize >= frames_offered
+        });
+        out
+    }
+
+    fn wait_for(what: &str, mut condition: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(10);
-        while (fake.started.load(Ordering::Acquire) as usize) < frames_offered {
-            assert!(Instant::now() < deadline, "the worker took no frame");
+        while !condition() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
             std::thread::sleep(Duration::from_millis(1));
         }
-        out
     }
 
     #[test]
@@ -705,14 +836,35 @@ mod worker_engine {
                 .load(Ordering::Relaxed)
                 >= 55
         );
-        // The model's frame plus the frames waiting at the worker: bounded by
-        // its queue, and never below what the model itself delays.
+        // The model's frame, nothing waiting for the next one (the blocks are
+        // whole frames) and the worker's transit: the same at every moment.
         let latency = processor
             .shared
             .suppressor
             .latency_samples
             .load(Ordering::Relaxed) as usize;
-        assert!((BLOCK..=BLOCK * 10).contains(&latency), "{latency}");
+        assert_eq!(latency, BLOCK + WORKER_TRANSIT_SAMPLES);
+    }
+
+    #[test]
+    fn a_finished_frame_is_emitted_on_an_idle_pass_without_the_next_block() {
+        let fake = Fake::new();
+        let (_processor, mut offline) = loop_with_worker(&fake);
+        let mut tone = Tone::new(440.0, 0.2);
+        let primed = duration_samples(48_000, OUTPUT_PRIME_MS);
+        let mut total = feed(&mut offline, &mut tone, 1, BLOCK).len();
+
+        // No more input: only the idle passes can bring the frame out.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while total < primed + BLOCK - 8 {
+            assert!(
+                Instant::now() < deadline,
+                "only {total} samples came out ({primed} of them priming)"
+            );
+            offline.run_until_idle();
+            total += offline.drain_output().len();
+            std::thread::sleep(Duration::from_micros(200));
+        }
     }
 
     #[test]
@@ -748,17 +900,22 @@ mod worker_engine {
         let (processor, mut offline) = loop_with_worker(&fake);
         let mut tone = Tone::new(440.0, 0.2);
         let mut out = Vec::new();
-        // Fewer frames than the stall needs, however long they took.
-        for _ in 0..9 {
+        // Each look at the silent worker counts for 50 ms at most, so three
+        // blocks cannot make the 300 ms, however long they took.
+        for _ in 0..3 {
             out.extend(feed(&mut offline, &mut tone, 1, BLOCK));
         }
         assert!(!processor.noise_backend_failed());
-        std::thread::sleep(Duration::from_millis(150));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !processor.noise_backend_failed() {
+            assert!(Instant::now() < deadline, "the stall was never declared");
+            out.extend(feed(&mut offline, &mut tone, 1, BLOCK));
+            std::thread::sleep(Duration::from_millis(10));
+        }
         for _ in 0..8 {
             out.extend(feed(&mut offline, &mut tone, 1, BLOCK));
         }
 
-        assert!(processor.noise_backend_failed());
         assert_eq!(
             processor.get_rt_error_code(),
             RtErrorCode::SuppressorBackendFailed as u32
@@ -768,23 +925,25 @@ mod worker_engine {
             rms_db(&out[out.len() - 4_800..]) > -30.0,
             "the dry audio is gone"
         );
-        // 17 blocks are less than the 400 ms the starvation check allows, and
-        // the dry audio resets it anyway.
+        // The dry audio resets the starvation count, and the stall is declared
+        // within 40 blocks anyway.
         assert!(!processor.is_recovery_requested());
         fake.hold.store(false, Ordering::Release);
+        wait_for("the declared-failed worker to end", || {
+            fake.freed.load(Ordering::Acquire)
+        });
     }
 
     #[test]
-    fn a_burst_longer_than_the_workers_queue_costs_latency_not_suppression() {
+    fn a_period_of_8192_samples_costs_latency_not_suppression() {
         let fake = Fake::new();
         let (processor, mut offline) = loop_with_worker(&fake);
         let mut tone = Tone::new(440.0, 0.2);
         for block in 1..=20 {
             feed_block(&mut offline, &mut tone, &fake, block);
         }
-        // What the loop reads after it was held up: more frames than the
-        // worker's queue holds, at once.
-        let mut out = feed(&mut offline, &mut tone, 1, 9 * BLOCK);
+        // The longest period the opt-in fixed buffer allows, as one block.
+        let mut out = feed(&mut offline, &mut tone, 1, 8192);
         for _ in 0..30 {
             out.extend(feed(&mut offline, &mut tone, 1, BLOCK));
             std::thread::sleep(Duration::from_millis(2));
@@ -806,20 +965,26 @@ mod worker_engine {
         fake.hold.store(true, Ordering::Release);
         let (processor, mut offline) = loop_with_worker(&fake);
         let mut tone = Tone::new(440.0, 0.2);
-        // 16 frames fit the suppressor's input queue; the worker is stuck on the
-        // first. A block read after the stall time no longer fits.
+        // 24 of the 26 frames the suppressor input queue holds, and the worker is stuck
+        // on the first. The blocks that follow overflow the queue and reset it
+        // again and again; the worker's silence is counted through the resets.
         feed(&mut offline, &mut tone, 1, 16 * BLOCK);
+        feed(&mut offline, &mut tone, 1, 8 * BLOCK);
         assert!(!processor.noise_backend_failed());
-        std::thread::sleep(Duration::from_millis(150));
-        feed(&mut offline, &mut tone, 1, 4 * BLOCK);
-        assert_eq!(processor.get_rt_buffer_overflow_count(), 1);
-
-        // The overflow reset the queue, not the verdict.
         let mut out = Vec::new();
+        for _ in 0..30 {
+            if processor.noise_backend_failed() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(60));
+            out.extend(feed(&mut offline, &mut tone, 1, BLOCK));
+        }
+        assert!(processor.get_rt_buffer_overflow_count() >= 1);
+        assert!(processor.noise_backend_failed());
+
         for _ in 0..6 {
             out.extend(feed(&mut offline, &mut tone, 1, BLOCK));
         }
-        assert!(processor.noise_backend_failed());
         assert!(out.iter().all(|s| s.is_finite()));
         assert!(
             rms_db(&out[out.len() - 2_400..]) > -30.0,
@@ -849,13 +1014,100 @@ mod worker_engine {
         assert!(!fake.freed.load(Ordering::Acquire));
 
         fake.hold.store(false, Ordering::Release);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !fake.freed.load(Ordering::Acquire) {
-            assert!(
-                Instant::now() < deadline,
-                "the library state was never freed"
-            );
-            std::thread::sleep(Duration::from_millis(1));
+        wait_for("the library state to be freed", || {
+            fake.freed.load(Ordering::Acquire)
+        });
+    }
+
+    #[test]
+    fn an_engine_the_loop_declines_is_retired_too() {
+        let processor = AudioProcessor::new();
+        let declined = Arc::new(AtomicBool::new(false));
+        let mut offline = OfflineLoop::new(&processor, OfflineLoopConfig::default());
+        // The selected model is RNNoise; this one is not it.
+        queue_engine(
+            &processor,
+            RetireProbe::boxed(NoiseModel::DeepFilterNet, &declined),
+        );
+        offline.run_until_idle();
+        assert!(declined.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn repeated_starts_stops_and_model_switches_leave_no_worker_running() {
+        let mut fakes: Vec<Arc<Fake>> = Vec::new();
+        let mut tone = Tone::new(440.0, 0.2);
+        for _ in 0..6 {
+            let first = Fake::new();
+            fakes.push(Arc::clone(&first));
+            let (processor, mut offline) = loop_with_worker(&first);
+            feed_block(&mut offline, &mut tone, &first, 1);
+
+            for model in [DeepFilterModel::Standard, DeepFilterModel::LowLatency] {
+                let engine_model = match model {
+                    DeepFilterModel::Standard => NoiseModel::DeepFilterNet,
+                    DeepFilterModel::LowLatency => NoiseModel::DeepFilterNetLL,
+                };
+                let next = Fake::new();
+                fakes.push(Arc::clone(&next));
+                select_model(&processor, engine_model);
+                queue_engine(&processor, worker_engine(&next, model, 1.0));
+                assert!(feed(&mut offline, &mut tone, 2, BLOCK)
+                    .iter()
+                    .all(|s| s.is_finite()));
+            }
+            // The swapped-out engines still wait, undropped, in the queue the
+            // control thread drains: their workers must be gone already.
+            for old in &fakes[fakes.len() - 3..fakes.len() - 1] {
+                wait_for("a swapped-out worker to end", || {
+                    old.freed.load(Ordering::Acquire)
+                });
+            }
+            drop(offline);
+            drop(processor);
         }
+        for fake in &fakes {
+            wait_for("a worker to end", || fake.freed.load(Ordering::Acquire));
+        }
+    }
+
+    #[test]
+    fn a_model_selected_while_the_stream_starts_reaches_the_loop() {
+        // `start` does not wait for `set_noise_model` (the window calls it on
+        // its own thread), and loading a model takes a few hundred
+        // milliseconds. The stream begins on the model it finds, so a selection
+        // made for a stopped processor must be redone for the running one.
+        let processor = AudioProcessor::new();
+        let started: RefCell<Option<OfflineLoop>> = RefCell::new(None);
+        let builds = Cell::new(0);
+        let selected = processor.select_noise_model(NoiseModel::DeepFilterNetLL, |_, _| {
+            builds.set(builds.get() + 1);
+            let engine = worker_engine(&Fake::new(), DeepFilterModel::LowLatency, 1.0);
+            if started.borrow().is_none() {
+                *started.borrow_mut() =
+                    Some(OfflineLoop::new(&processor, OfflineLoopConfig::default()));
+            }
+            engine
+        });
+
+        assert!(selected);
+        assert_eq!(
+            builds.get(),
+            2,
+            "once for the stopped state, once for the loop"
+        );
+        let mut offline = started.into_inner().unwrap();
+        offline.run_until_idle();
+        assert!(!processor.shared.suppressor.dirty.load(Ordering::Acquire));
+        assert!(processor
+            .shared
+            .suppressor
+            .retired_rx
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .try_pop()
+            .is_some());
     }
 }

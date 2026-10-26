@@ -35,9 +35,9 @@ class NoiseSuppressionState(QObject):
     @property
     def latency_text(self) -> str:
         if self._settings["model"] == "deepfilter":
-            return "Latency: ~40ms (DeepFilterNet)"
+            return "Latency: ~35ms (DeepFilterNet)"
         if self._settings["model"] == "deepfilter-ll":
-            return "Latency: ~20ms (DeepFilterNet LL)"
+            return "Latency: ~15ms (DeepFilterNet LL)"
         return "Latency: ~10ms (RNNoise)"
 
     def _validated(self, settings: dict) -> dict:

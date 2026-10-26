@@ -39,6 +39,21 @@ _RECOVERY_DIAGNOSTICS = frozenset(
     {"output_recovery_count", "output_recovery_event_count", "stream_restart_count"}
 )
 
+# DeepFilterNet inference runs at a worker thread, and the latency the engine
+# publishes adds a fixed share for the time a frame spends there. This is
+# WORKER_TRANSIT_SAMPLES in rust-core/src/dsp/deepfilter_ffi/worker.rs; a test
+# compares the two.
+DEEPFILTER_WORKER_TRANSIT_SAMPLES = 240
+
+# What each suppressor publishes as `suppressor_latency_samples` when no input is
+# waiting for a frame: the model's latency, plus the worker's share for
+# DeepFilterNet. RNNoise runs inline.
+SUPPRESSOR_PUBLISHED_LATENCY_SAMPLES = {
+    "rnnoise": 480,
+    "deepfilter-ll": 480 + DEEPFILTER_WORKER_TRANSIT_SAMPLES,
+    "deepfilter": 1_440 + DEEPFILTER_WORKER_TRANSIT_SAMPLES,
+}
+
 
 def _critical_diagnostic_failures(
     diagnostics: dict,
@@ -108,7 +123,8 @@ def _selected_noise_model_failures(
         failures.append(f"noise_model={diagnostics.get('noise_model')!r}")
     if expected_model == "deepfilter":
         if not _suppressor_latency_is_valid(
-            diagnostics.get("suppressor_latency_samples"), 1_440
+            diagnostics.get("suppressor_latency_samples"),
+            SUPPRESSOR_PUBLISHED_LATENCY_SAMPLES["deepfilter"],
         ):
             failures.append(
                 "suppressor_latency_samples="
@@ -131,7 +147,7 @@ def _selected_noise_model_failures(
 
 
 def _suppressor_latency_is_valid(value: object, base_samples: int) -> bool:
-    """Allow the bounded input-frame remainder added to model latency."""
+    """Allow the bounded input-frame remainder added to the published base latency."""
     return (
         isinstance(value, (int, float))
         and not isinstance(value, bool)

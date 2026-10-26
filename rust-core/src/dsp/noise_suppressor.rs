@@ -219,6 +219,21 @@ pub trait NoiseSuppressor: Send {
     /// some later time and on another thread. Ask any background work to end
     /// now; it must not block or allocate, as the DSP thread calls it.
     fn retire(&mut self) {}
+
+    /// The latency the loop publishes for this engine: the model's, plus what
+    /// the engine holds back. An engine that works at a thread of its own does
+    /// not count a frame there while it is being processed, but a fixed share
+    /// for it, so the figure does not move with the moment it is read.
+    fn reported_latency_samples(&self) -> usize {
+        self.latency_samples() + self.pending_input()
+    }
+
+    /// Whether `process_frames` has something to do without new input: frames
+    /// at a worker whose results are to be collected, or waiting to be handed
+    /// over. The loop then calls it on its idle passes too.
+    fn has_pending_work(&self) -> bool {
+        false
+    }
 }
 
 /// Runtime-selected noise suppressor. The box is created off the RT path and

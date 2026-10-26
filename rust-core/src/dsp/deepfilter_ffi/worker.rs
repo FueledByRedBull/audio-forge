@@ -15,18 +15,31 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Frames the worker may owe the loop at once (10 ms each), so the most latency
-/// a slow worker can add. A longer block of input waits in the processor's
-/// input queue and is offered as results come back.
-pub(super) const WORKER_QUEUE_FRAMES: usize = 8;
+/// Frames the worker may owe the loop at once (10 ms each): enough for one pass
+/// to offer the longest device period the opt-in fixed buffer allows (8192
+/// samples, 17 frames and a part that the remainder of the pass before completes
+/// to 18). It is also the most latency a slow worker can add. Frames beyond it
+/// wait in the processor's input queue.
+pub(super) const WORKER_QUEUE_FRAMES: usize = 8192_usize.div_ceil(DEEPFILTER_FRAME_SIZE);
 const QUEUE_SAMPLES: usize = WORKER_QUEUE_FRAMES * DEEPFILTER_FRAME_SIZE;
-/// The worker is stalled once it has owed a result for `WORKER_STALL_TIME`
-/// while this many frames (100 ms of audio) wait behind it. Counting the audio
-/// as well as the time keeps a pause of the loop, with no audio arriving, from
-/// looking like a stall. The waiting frames are held by the processor's input
-/// queue, which holds 18, so the count must stay well below that.
-const WORKER_STALL_FRAMES: usize = 10;
-const WORKER_STALL_TIME: Duration = Duration::from_millis(100);
+/// What the published suppressor latency adds for the time a frame spends at the
+/// worker (5 ms): the worker's poll, the model, and the loop's next look on an
+/// idle pass. Measured with the real library, input paced in real time, blocks
+/// of 128, 256 and 480 samples: from the frame being offered to its output being
+/// emitted, DeepFilterNet LL took 4.1 ms on average (95th percentile 4.8, worst
+/// 6.2) and the standard model 2.6 ms (4.2, 4.8), whatever the block size. The
+/// tools that check the published figure (`health_check.py`,
+/// `evaluate_hardware_validation.py`) mirror this value, and a test compares them.
+pub(crate) const WORKER_TRANSIT_SAMPLES: usize = 240;
+/// The worker is stalled once it has owed a result for this long without
+/// sending one, as the loop saw it. The loop's backlog recovery keeps 100 ms
+/// of input, so a freeze of that length must never look like a stall.
+const WORKER_STALL_TIME: Duration = Duration::from_millis(300);
+/// What one look at the worker can add to that silence. A pause of the whole
+/// process (the machine freezing, a suspend) stops the worker as well as the
+/// loop, and it is no evidence against the worker: it counts for no more than
+/// this.
+const WORKER_STALL_STEP: Duration = Duration::from_millis(50);
 /// How often an idle worker looks for a frame.
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 
@@ -124,8 +137,10 @@ pub(super) struct WorkerLink {
     /// Results the worker still owes for frames a reset dropped. They come
     /// first, and are discarded.
     stale: usize,
-    /// Since when the worker has owed a result without sending one.
-    silent_since: Option<Instant>,
+    /// How long the worker has owed a result without sending one, as seen in
+    /// the loop's looks, and when it last looked.
+    silent_for: Duration,
+    last_look: Option<Instant>,
 }
 
 impl WorkerLink {
@@ -134,7 +149,8 @@ impl WorkerLink {
             worker,
             offered: 0,
             stale: 0,
-            silent_since: None,
+            silent_for: Duration::ZERO,
+            last_look: None,
         }
     }
 
@@ -145,12 +161,28 @@ impl WorkerLink {
 
     /// A result came back.
     fn heard_from_worker(&mut self) {
-        self.silent_since = (self.owed() > 0).then(Instant::now);
+        self.silent_for = Duration::ZERO;
+        self.last_look = None;
+    }
+
+    /// Add the time since the last look to the worker's silence, if it owes a
+    /// result and none is waiting to be collected.
+    fn look_at_silence(&mut self) {
+        if self.owed() == 0 || self.worker.has_result() {
+            self.heard_from_worker();
+            return;
+        }
+        let now = Instant::now();
+        if let Some(last) = self.last_look {
+            self.silent_for += now.saturating_duration_since(last).min(WORKER_STALL_STEP);
+        }
+        self.last_look = Some(now);
     }
 
     /// The frames offered so far no longer matter (the queue was cleared, or
     /// the stage was switched off): their results are discarded on arrival.
-    /// The worker's silence goes on, so a reset does not hide a stall.
+    /// The worker's silence goes on, so a reset (an input overflow resets the
+    /// queue) does not hide a stall.
     pub(super) fn abandon(&mut self) {
         self.stale += self.offered;
         self.offered = 0;
@@ -181,23 +213,18 @@ impl WorkerLink {
     }
 
     /// Why no more results will come, if that is known: the worker stopped, or
-    /// it has owed a result for `WORKER_STALL_TIME` with `WORKER_STALL_FRAMES`
-    /// waiting behind it (`waiting_frames`). Call before `take_head`: the
+    /// it has been silent for `WORKER_STALL_TIME`. Call before `take_head`: the
     /// worker stores its failure after its last result.
     pub(super) fn failure(
         &mut self,
         scratch: &mut [f32; DEEPFILTER_FRAME_SIZE],
-        waiting_frames: usize,
     ) -> Option<DeepFilterProcessError> {
         self.reap(scratch);
-        self.worker.failure().or_else(|| {
-            let silent_for_long = self
-                .silent_since
-                .is_some_and(|since| since.elapsed() >= WORKER_STALL_TIME);
-            // Results waiting to be collected show a worker that is answering.
-            (silent_for_long && waiting_frames >= WORKER_STALL_FRAMES && !self.worker.has_result())
-                .then_some(DeepFilterProcessError::WorkerStalled)
-        })
+        if let Some(error) = self.worker.failure() {
+            return Some(error);
+        }
+        self.look_at_silence();
+        (self.silent_for >= WORKER_STALL_TIME).then_some(DeepFilterProcessError::WorkerStalled)
     }
 
     /// Take the result of the oldest offered frame into `wet`. False while it
@@ -222,7 +249,6 @@ impl WorkerLink {
             return false;
         }
         self.offered += 1;
-        self.silent_since.get_or_insert_with(Instant::now);
         true
     }
 

@@ -45,15 +45,17 @@
 //! Offline callers get an inline processor: `process_frames` returns with every
 //! complete frame answered. The live DSP loop gets one built with
 //! `with_worker`, which moves the library to a worker thread (`worker`): the
-//! loop then only offers frames, collects finished ones and counts. A frame's
-//! result is normally collected on the next call, about one block later than
-//! inline. The worker owes at most `WORKER_QUEUE_FRAMES` results (80 ms); a
-//! longer block waits in `input_buffer` and is offered as results come back,
-//! so a burst costs latency, not suppression. The frames stay in
-//! `input_buffer` until their result is in, so `pending_input` and the
-//! published latency include the time spent there. A worker that stops,
-//! panics, stalls or returns a bad frame leaves dry passthrough with the
-//! reason in `backend_error`.
+//! loop then only offers frames, collects finished ones and counts. The loop
+//! calls `process_frames` on its idle passes too (`has_pending_work`), so a
+//! frame comes out a few milliseconds after it was offered, not with the next
+//! block. The worker owes at most `WORKER_QUEUE_FRAMES` results (a whole
+//! 8192-sample period); more waits in `input_buffer` and is offered as results
+//! come back, so a burst costs latency, not suppression. The frames stay in
+//! `input_buffer` until their result is in, so `pending_input` counts them, but
+//! the published latency (`reported_latency_samples`) counts the time at the
+//! worker as a fixed `WORKER_TRANSIT_SAMPLES`. A worker that stops, panics,
+//! stalls or returns a bad frame leaves dry passthrough with the reason in
+//! `backend_error`, and is let go.
 
 #[cfg(test)]
 pub(crate) mod fake;
@@ -75,11 +77,16 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 use std::vec::Vec;
-use worker::{InferenceWorker, WorkerLink};
+#[cfg(test)]
+pub(crate) use worker::WORKER_TRANSIT_SAMPLES as TEST_WORKER_TRANSIT_SAMPLES;
+use worker::{InferenceWorker, WorkerLink, WORKER_TRANSIT_SAMPLES};
 
 /// DeepFilterNet frame size (same as RNNoise: 10ms at 48kHz)
 pub const DEEPFILTER_FRAME_SIZE: usize = 480;
-const DEEPFILTER_BUFFER_CAPACITY: usize = 8192 + DEEPFILTER_FRAME_SIZE;
+/// What the input queue holds: the loop's backlog window (250 ms, read in at
+/// most two passes of 8192 samples) and one frame. A frame stays queued while it
+/// is at the worker, so a backlog read in two passes must find room for both.
+const DEEPFILTER_BUFFER_CAPACITY: usize = 12_000 + DEEPFILTER_FRAME_SIZE;
 const DEEPFILTER_MAX_LATENCY_SAMPLES: usize = DEEPFILTER_FRAME_SIZE * 3;
 const _: () = assert!(DEEPFILTER_MAX_LATENCY_SAMPLES <= GATE_COMPENSATION_MAX_DELAY);
 pub const DEFAULT_DEEPFILTER_ATTENUATION_LIMIT_DB: f32 = 30.0;
@@ -1114,10 +1121,9 @@ impl DeepFilterProcessor {
 
     /// Why the worker will answer no more, if that is known now.
     fn worker_failure(&mut self) -> Option<DeepFilterProcessError> {
-        let waiting_frames = self.input_buffer.len() / DEEPFILTER_FRAME_SIZE;
         self.link
             .as_mut()
-            .and_then(|link| link.failure(&mut self.output_frame, waiting_frames))
+            .and_then(|link| link.failure(&mut self.output_frame))
     }
 
     /// Hand complete frames not yet offered to the worker, as many as it will
@@ -1146,10 +1152,14 @@ impl DeepFilterProcessor {
         }
     }
 
+    /// The worker will answer no more: pass the audio through dry from here
+    /// on, and let the worker go (a stalled one would otherwise keep its
+    /// thread and the library state until the engine is dropped).
     fn fail_worker(&mut self, error: DeepFilterProcessError) {
         self.mark_backend_failed_rt(error);
         if let Some(link) = self.link.as_mut() {
             link.abandon();
+            link.stop();
         }
     }
 
@@ -1313,6 +1323,29 @@ impl NoiseSuppressor for DeepFilterProcessor {
         if let Some(link) = self.link.as_ref() {
             link.stop();
         }
+    }
+
+    fn reported_latency_samples(&self) -> usize {
+        match self.link.as_ref() {
+            // Frames at the worker are not counted one by one: they are back
+            // within `WORKER_TRANSIT_SAMPLES`, the same at every moment.
+            Some(link) if self.enabled && !self.backend_failed => {
+                let unoffered = self
+                    .input_buffer
+                    .len()
+                    .saturating_sub(link.offered() * DEEPFILTER_FRAME_SIZE);
+                self.latency_samples() + unoffered + WORKER_TRANSIT_SAMPLES
+            }
+            _ => self.latency_samples() + self.pending_input(),
+        }
+    }
+
+    fn has_pending_work(&self) -> bool {
+        self.link.as_ref().is_some_and(|link| {
+            self.enabled
+                && !self.backend_failed
+                && (link.offered() > 0 || self.input_buffer.len() >= DEEPFILTER_FRAME_SIZE)
+        })
     }
 }
 

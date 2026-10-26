@@ -5,7 +5,7 @@
 //! delay is kept), and 0 for the frame a reset leaves invalid.
 
 use super::fake::{inline_processor, worker_processor, Fake};
-use super::worker::{TestFault, WORKER_QUEUE_FRAMES};
+use super::worker::{TestFault, WORKER_QUEUE_FRAMES, WORKER_TRANSIT_SAMPLES};
 use super::*;
 use std::time::{Duration, Instant};
 
@@ -248,7 +248,7 @@ fn a_worker_that_dies_or_panics_falls_back_to_dry_passthrough_and_says_why() {
 }
 
 #[test]
-fn a_worker_that_stops_answering_is_declared_stalled_and_never_blocks_the_caller() {
+fn a_worker_that_stops_answering_is_declared_stalled_and_let_go() {
     let fake = Fake::new();
     fake.hold.store(true, Ordering::Release);
     let mut processor = worker_processor(&fake, LL, 1.0);
@@ -260,6 +260,7 @@ fn a_worker_that_stops_answering_is_declared_stalled_and_never_blocks_the_caller
         begun.elapsed() < Duration::from_secs(2),
         "the calls waited for the stalled worker"
     );
+    // Polled like the loop's idle passes do; the verdict takes 300 ms.
     let output = collect_frames(&mut processor, 14);
 
     assert!(processor.backend_failed() && !processor.is_ffi_available());
@@ -274,33 +275,72 @@ fn a_worker_that_stops_answering_is_declared_stalled_and_never_blocks_the_caller
         assert_frame(&output, n, level(n - 1));
     }
     assert_eq!(processor.pending_input(), 0);
+
+    // The engine is still alive, but its worker was told to end: once the frame
+    // it is stuck in returns, it frees the library state by itself.
+    assert!(!fake.freed.load(Ordering::Acquire));
     fake.hold.store(false, Ordering::Release);
+    wait_until("the declared-failed worker to end", || {
+        fake.freed.load(Ordering::Acquire)
+    });
 }
 
 #[test]
-fn a_worker_that_falls_behind_makes_the_frames_wait_and_loses_none() {
+fn a_healthy_worker_frozen_with_the_loop_is_not_called_stalled() {
+    // A capture gap leaves the loop 100 ms of backlog (10 frames), and a
+    // machine-wide freeze stops the worker along with the loop. Neither says
+    // anything against the worker, however long the freeze.
     let fake = Fake::new();
     fake.hold.store(true, Ordering::Release);
     let mut processor = worker_processor(&fake, LL, 1.0);
-    let frames = WORKER_QUEUE_FRAMES + 1;
+    for n in 0..10 {
+        assert_eq!(processor.push_samples(&[level(n); FRAME]), FRAME);
+    }
+    processor.process_frames();
+    wait_until("the worker to take a frame", || started(&fake) == 1);
+    // One look at the silent worker before the freeze, so that the look after it
+    // has a time to add.
+    processor.process_frames();
+    processor.process_frames();
+
+    std::thread::sleep(Duration::from_millis(500));
+    fake.hold.store(false, Ordering::Release);
+    let output = collect_frames(&mut processor, 10);
+
+    assert!(!processor.backend_failed() && processor.backend_error().is_none());
+    for n in 0..10 {
+        assert_frame(&output, n, level(n) * 0.5);
+    }
+}
+
+#[test]
+fn a_worker_slowed_by_a_stale_backlog_makes_the_frames_wait_and_loses_none() {
+    // A reset leaves the results of three frames owed. They are discarded when
+    // they arrive, and until then they take three of the worker's slots.
+    let fake = Fake::new();
+    fake.hold.store(true, Ordering::Release);
+    let mut processor = worker_processor(&fake, LL, 1.0);
+    for n in 0..3 {
+        push_level(&mut processor, n);
+    }
+    processor.soft_reset();
+    let frames = WORKER_QUEUE_FRAMES;
     for n in 0..frames {
         push_level(&mut processor, n);
     }
-    // The frames wait where they are, so the time they spend at the worker is
-    // part of the pending input (and of the published latency); the worker owes
-    // its maximum and the last frame waits for a slot.
-    assert_eq!(processor.pending_input(), frames * FRAME);
-    assert_eq!(processor.latency_samples(), 480);
-    assert_eq!(processor.available_samples(), 0);
+    // The last three frames wait for a slot; all of them are still pending, so
+    // the time they spend waiting is in the published latency.
     assert_eq!(link(&processor).owed_results(), WORKER_QUEUE_FRAMES);
-    assert!(!processor.backend_failed() && processor.backend_error().is_none());
-    assert!(processor.is_ffi_available());
+    assert_eq!(processor.pending_input(), frames * FRAME);
+    assert_eq!(processor.available_samples(), 0);
+    assert!(!processor.backend_failed() && processor.is_ffi_available());
 
     fake.hold.store(false, Ordering::Release);
     let output = collect_frames(&mut processor, frames);
 
-    // Every frame is processed, including the one that had to wait.
-    for n in 0..frames {
+    // The first frame after a reset is the model's invalid overlap.
+    assert_frame(&output, 0, 0.0);
+    for n in 1..frames {
         assert_frame(&output, n, level(n) * 0.5);
     }
     assert!(!processor.backend_failed());
@@ -309,20 +349,16 @@ fn a_worker_that_falls_behind_makes_the_frames_wait_and_loses_none() {
 }
 
 #[test]
-fn a_block_longer_than_the_workers_queue_waits_instead_of_going_dry() {
-    // What the loop reads after a delay: one frame more than the queue holds.
-    // (With ten or more frames waiting, a worker starved for 100 ms on an
-    // overloaded machine would count as stalled.)
-    let frames = WORKER_QUEUE_FRAMES + 1;
-    let input: Vec<f32> = (0..FRAME * frames + 40)
-        .map(|i| (i as f32 * 0.037).sin() * 0.3)
-        .collect();
+fn a_whole_device_period_is_offered_in_one_pass() {
+    // The largest period the opt-in fixed buffer allows: 8192 samples.
+    let input: Vec<f32> = (0..8192).map(|i| (i as f32 * 0.037).sin() * 0.3).collect();
     let controls: Vec<GateControl> = (0..input.len())
         .map(|i| GateControl {
             gain: 0.02 + 0.98 * (0.5 + 0.5 * (i as f32 * 0.0013).sin()),
             open: (i / 600) % 3 != 0,
         })
         .collect();
+    let frames = input.len() / FRAME;
     let (inline_fake, worker_fake) = (Fake::new(), Fake::new());
     let mut inline = inline_processor(&inline_fake, LL, 0.4);
     let mut worker = worker_processor(&worker_fake, LL, 0.4);
@@ -333,11 +369,12 @@ fn a_block_longer_than_the_workers_queue_waits_instead_of_going_dry() {
         input.len()
     );
     worker.process_frames();
-    assert_eq!(link(&worker).owed_results(), WORKER_QUEUE_FRAMES);
+    // Every complete frame went to the worker in this one call.
+    assert_eq!(link(&worker).owed_results(), frames);
     assert_eq!(worker.pending_input(), input.len());
     let actual = collect_frames(&mut worker, frames);
 
-    // The same audio, only later: nothing went through dry.
+    // The same audio, only later.
     assert_same_bits(&actual, &expected);
     assert_eq!(worker.successful_inference_frames(), frames as u64);
     assert!(!worker.backend_failed() && worker.backend_error().is_none());
@@ -346,19 +383,26 @@ fn a_block_longer_than_the_workers_queue_waits_instead_of_going_dry() {
 
 #[test]
 fn a_dead_worker_is_found_when_the_input_queue_overflows() {
-    // The loop answers an overflow by resetting the queue, which would restart
-    // the worker's silence clock; large blocks reach the overflow before they
-    // reach another `process_frames`, so the push itself has to notice.
+    // The loop answers an overflow by resetting the queue, and large blocks
+    // reach the overflow before they reach another `process_frames`, so the push
+    // itself has to notice. Every look at the silent worker counts for 50 ms at
+    // most, however long ago the last one was; the sleeps are longer than that,
+    // so five looks make 250 ms and the push, the sixth, makes the 300.
     let fake = Fake::new();
     fake.hold.store(true, Ordering::Release);
     let mut processor = worker_processor(&fake, LL, 1.0);
-    for n in 0..16 {
+    // 24 of the 26 frames the queue holds, then a block that does not fit.
+    for n in 0..24 {
         assert_eq!(processor.push_samples(&[level(n); FRAME]), FRAME);
     }
     processor.process_frames();
-    assert!(!processor.backend_failed());
-    std::thread::sleep(Duration::from_millis(150));
+    for _ in 0..6 {
+        std::thread::sleep(Duration::from_millis(60));
+        processor.process_frames();
+    }
+    assert!(!processor.backend_failed(), "250 ms are not 300");
 
+    std::thread::sleep(Duration::from_millis(60));
     let accepted = processor.push_samples(&[0.1; 4 * FRAME]);
     assert!(accepted < 4 * FRAME, "the queue was meant to overflow");
     assert!(processor.backend_failed());
@@ -367,11 +411,84 @@ fn a_dead_worker_is_found_when_the_input_queue_overflows() {
         Some("DeepFilterNet worker stopped answering")
     );
 
+    // The caller's reset does not take the verdict back.
     processor.soft_reset();
     assert!(processor.backend_failed());
     push_level(&mut processor, 0);
     assert_eq!(collect_frames(&mut processor, 1).len(), FRAME);
     fake.hold.store(false, Ordering::Release);
+}
+
+#[test]
+fn the_published_latency_is_the_models_plus_what_waits_for_a_frame_plus_the_transit() {
+    // The formula the loop publishes, and the window the release health check
+    // and the hardware validation accept for it: a bounded remainder on top of
+    // the model and the worker's transit.
+    for model in [LL, DeepFilterModel::Standard] {
+        let fake = Fake::new();
+        fake.hold.store(true, Ordering::Release);
+        let mut worker = worker_processor(&fake, model, 1.0);
+        let mut inline = inline_processor(&Fake::new(), model, 1.0);
+        let base = model.latency_samples();
+        for remainder in [0_usize, 1, 100, 479] {
+            // A whole frame in flight at the worker does not move the figure.
+            for frames in [0_usize, 1] {
+                worker.soft_reset();
+                inline.soft_reset();
+                let samples = vec![0.1; frames * FRAME + remainder];
+                worker.push_samples(&samples);
+                worker.process_frames();
+                inline.push_samples(&samples);
+                inline.process_frames();
+                let published = worker.reported_latency_samples();
+                assert_eq!(published, base + remainder + WORKER_TRANSIT_SAMPLES);
+                assert!(
+                    (base + WORKER_TRANSIT_SAMPLES..base + WORKER_TRANSIT_SAMPLES + FRAME)
+                        .contains(&published)
+                );
+                // Inline there is no transit and the frame is already answered.
+                assert_eq!(inline.reported_latency_samples(), base + remainder);
+                assert_eq!(worker.pending_input(), frames * FRAME + remainder);
+            }
+        }
+        // Without a worker to wait for, the figure is the model's again.
+        worker.soft_reset();
+        worker.push_samples(&[0.1; 100]);
+        worker.set_enabled(false);
+        assert_eq!(worker.reported_latency_samples(), FRAME + 100);
+        worker.set_enabled(true);
+        fake.hold.store(false, Ordering::Release);
+        link(&worker).worker().inject_fault(TestFault::Exit);
+        wait_until("the worker to stop", || {
+            link(&worker).worker().failure().is_some()
+        });
+        worker.process_frames();
+        assert!(worker.backend_failed());
+        assert_eq!(worker.reported_latency_samples(), base + 100);
+    }
+}
+
+#[test]
+fn the_loop_collects_on_idle_passes_only_while_the_worker_has_something_for_it() {
+    let fake = Fake::new();
+    fake.hold.store(true, Ordering::Release);
+    let mut processor = worker_processor(&fake, LL, 1.0);
+    assert!(!processor.has_pending_work());
+    processor.push_samples(&[0.1; 100]);
+    processor.process_frames();
+    assert!(
+        !processor.has_pending_work(),
+        "a partial frame waits for input"
+    );
+    push_level(&mut processor, 0);
+    assert!(processor.has_pending_work(), "a frame is at the worker");
+    fake.hold.store(false, Ordering::Release);
+    collect_frames(&mut processor, 1);
+    wait_until("the answer to be taken", || {
+        processor.process_frames();
+        !processor.has_pending_work()
+    });
+    assert!(!inline_processor(&Fake::new(), LL, 1.0).has_pending_work());
 }
 
 /// Three frames are at the worker (it holds the first) when `interrupt` runs;

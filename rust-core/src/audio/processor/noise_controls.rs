@@ -6,7 +6,8 @@ use super::{AudioProcessor, RNNOISE_STRENGTH_MAX, RNNOISE_STRENGTH_MIN};
 // no worker thread for that.
 use crate::dsp::noise_suppressor::{
     new_controlled_noise_suppression_engine as new_noise_suppression_engine,
-    new_realtime_noise_suppression_engine, NoiseModel,
+    new_realtime_noise_suppression_engine,
+    ControlledNoiseSuppressionEngine as NoiseSuppressionEngine, NoiseModel,
 };
 use ringbuf::traits::Producer;
 use std::sync::atomic::Ordering;
@@ -80,15 +81,31 @@ impl AudioProcessor {
             }
         }
 
-        // Create new suppressor engine with current strength. A stopped
-        // processor keeps none, so it gets no worker thread.
-        let strength = Arc::clone(&self.shared.suppressor.strength);
+        self.select_noise_model(model, self.engine_builder())
+    }
+
+    /// Builds the engines of this processor: `build(model, true)` for the live
+    /// loop (inference at a worker), `build(model, false)` for one that only
+    /// shows whether the backend loads, which a stopped processor needs and
+    /// must not give a worker thread.
+    fn engine_builder(&self) -> impl Fn(NoiseModel, bool) -> NoiseSuppressionEngine + '_ {
+        move |model, realtime| {
+            let strength = Arc::clone(&self.shared.suppressor.strength);
+            if realtime {
+                new_realtime_noise_suppression_engine(model, strength)
+            } else {
+                new_noise_suppression_engine(model, strength)
+            }
+        }
+    }
+
+    pub(super) fn select_noise_model(
+        &self,
+        model: NoiseModel,
+        build: impl Fn(NoiseModel, bool) -> NoiseSuppressionEngine,
+    ) -> bool {
         let running = self.shared.stream.running.load(Ordering::Acquire);
-        let new_engine = if running {
-            new_realtime_noise_suppression_engine(model, strength)
-        } else {
-            new_noise_suppression_engine(model, strength)
-        };
+        let new_engine = build(model, running);
         let backend_diagnostics = noise_backend_diagnostics(&new_engine);
 
         if model != NoiseModel::RNNoise && !backend_diagnostics.available {
@@ -146,16 +163,24 @@ impl AudioProcessor {
             .reset_requested
             .store(true, Ordering::Release);
         self.shared.suppressor.dirty.store(true, Ordering::Release);
+        // The stream can have started while the engine loaded (a model load
+        // takes a few hundred milliseconds) or while the selection was being
+        // recorded. It began on the model it found then, and only a queued
+        // engine moves it to this one. `start` does not wait for this call.
+        if !running && self.shared.stream.running.load(Ordering::Acquire) {
+            return self.rebuild_with(build);
+        }
         true
     }
 
     pub(super) fn rebuild_noise_suppressor(&self) -> bool {
+        self.rebuild_with(self.engine_builder())
+    }
+
+    fn rebuild_with(&self, build: impl Fn(NoiseModel, bool) -> NoiseSuppressionEngine) -> bool {
         self.drain_retired_suppressors();
         let model = self.get_noise_model();
-        let engine = new_realtime_noise_suppression_engine(
-            model,
-            Arc::clone(&self.shared.suppressor.strength),
-        );
+        let engine = build(model, true);
         let diagnostics = noise_backend_diagnostics(&engine);
         if model != NoiseModel::RNNoise && !diagnostics.available {
             store_backend_diagnostics(

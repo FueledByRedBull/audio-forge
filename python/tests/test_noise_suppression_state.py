@@ -157,8 +157,8 @@ def test_invalid_settings_never_write_or_change_state(qapp, name, value):
 
 @pytest.mark.parametrize(
     ("model", "label"),
-    [("deepfilter", "Latency: ~40ms (DeepFilterNet)"),
-     ("deepfilter-ll", "Latency: ~20ms (DeepFilterNet LL)"),
+    [("deepfilter", "Latency: ~35ms (DeepFilterNet)"),
+     ("deepfilter-ll", "Latency: ~15ms (DeepFilterNet LL)"),
      ("rnnoise", "Latency: ~10ms (RNNoise)")],
 )
 def test_model_selection_updates_latency_without_touching_other_controls(qapp, model, label):

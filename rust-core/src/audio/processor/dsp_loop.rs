@@ -629,7 +629,7 @@ impl DspLoop {
             && shared.suppressor.enabled.load(Ordering::Acquire)
         {
             shared.suppressor.latency_samples.store(
-                suppressor_engine.latency_samples() as u32,
+                suppressor_engine.reported_latency_samples() as u32,
                 Ordering::Relaxed,
             );
         }
@@ -832,6 +832,9 @@ impl DspLoop {
         }
         let n_raw = input_read.samples;
         if n_raw == 0 {
+            if suppressor_in_use {
+                self.pipeline.harvest_suppressor_output(shared);
+            }
             return self.pacing.idle(shared);
         }
 
@@ -1554,121 +1557,7 @@ impl Pipeline {
                 return false;
             }
             self.suppressor.starvation.fed(accepted);
-            self.suppressor.engine.process_frames();
-            shared.suppressor.successful_inference_frames.store(
-                self.suppressor.engine.successful_inference_frames(),
-                Ordering::Relaxed,
-            );
-            update_backend_status_rt(
-                &shared.suppressor.backend_available,
-                &shared.suppressor.backend_failed,
-                shared.dsp.rt_error_code.as_ref(),
-                &self.suppressor.engine,
-            );
-
-            // Track suppressor internal buffer fill level after processing.
-            let suppressor_buffered =
-                self.suppressor.engine.pending_input() + self.suppressor.engine.available_samples();
-            let suppressor_latency =
-                self.suppressor.engine.latency_samples() + self.suppressor.engine.pending_input();
-            let raw_buffer = suppressor_buffered as u32;
-            let prev_smoothed = shared
-                .suppressor
-                .smoothed_buffer_len
-                .load(Ordering::Relaxed);
-            let smoothed = smooth_buffer(self.metric_alpha, raw_buffer, prev_smoothed);
-            shared
-                .suppressor
-                .buffer_len
-                .store(raw_buffer, Ordering::Relaxed);
-            shared
-                .suppressor
-                .latency_samples
-                .store(suppressor_latency as u32, Ordering::Relaxed);
-            shared
-                .suppressor
-                .smoothed_buffer_len
-                .store(smoothed, Ordering::Relaxed);
-
-            let available = self.suppressor.engine.available_samples();
-            if available > 0 {
-                self.suppressor.starvation.restart();
-                self.suppressor.output.clear();
-                let count = available.min(self.suppressor.output.capacity());
-                let _ = self.suppressor.output.set_len_zeroed(count);
-                let processed = self
-                    .suppressor
-                    .engine
-                    .pop_samples_into(self.suppressor.output.as_mut_slice());
-                let _ = self.suppressor.output.set_len_zeroed(processed);
-                let output_slice = self.suppressor.output.as_mut_slice();
-
-                if contain_non_finite(output_slice) {
-                    shared
-                        .suppressor
-                        .non_finite_count
-                        .fetch_add(1, Ordering::Relaxed);
-                    store_rt_error(
-                        shared.dsp.rt_error_code.as_ref(),
-                        RtErrorCode::SuppressorNonFinite,
-                    );
-                    let now = Instant::now();
-                    match self.suppressor.non_finite_window_started_at {
-                        Some(start)
-                            if now.duration_since(start).as_millis() as u64
-                                <= NON_FINITE_REBUILD_WINDOW_MS => {}
-                        _ => {
-                            self.suppressor.non_finite_window_started_at = Some(now);
-                            self.suppressor.non_finite_window_count = 0;
-                        }
-                    }
-                    self.suppressor.non_finite_window_count =
-                        self.suppressor.non_finite_window_count.saturating_add(1);
-                    if self.suppressor.non_finite_window_count >= NON_FINITE_REBUILD_THRESHOLD {
-                        shared
-                            .stream
-                            .restart_requested
-                            .store(true, Ordering::Release);
-                        self.suppressor.non_finite_window_started_at = None;
-                        self.suppressor.non_finite_window_count = 0;
-                    }
-                    update_backend_status_rt(
-                        &shared.suppressor.backend_available,
-                        &shared.suppressor.backend_failed,
-                        shared.dsp.rt_error_code.as_ref(),
-                        &self.suppressor.engine,
-                    );
-                }
-
-                self.suppressor.recovery_fade.apply(output_slice);
-                self.chain.process(
-                    shared,
-                    output_slice,
-                    #[cfg(feature = "vad")]
-                    &self.gate,
-                    #[cfg(feature = "vad")]
-                    self.vad_source_sample_clock,
-                );
-
-                // Measure OUTPUT levels
-                self.meters.measure_output(shared, output_slice);
-
-                // Send processed samples to output
-                self.output.write(shared, output_slice, false);
-            } else if accepted > 0
-                && !shared.recording.active.load(Ordering::Relaxed)
-                && self.suppressor.starvation.starved()
-            {
-                store_rt_error(
-                    shared.dsp.rt_error_code.as_ref(),
-                    RtErrorCode::SuppressorBackendFailed,
-                );
-                shared
-                    .stream
-                    .restart_requested
-                    .store(true, Ordering::Release);
-                self.suppressor.starvation.restart();
-            }
+            self.drain_suppressor(shared, accepted);
 
             // Record DSP processing time
             self.record_dsp_time(shared, dsp_start);
@@ -1726,6 +1615,134 @@ impl Pipeline {
         true
     }
 
+    /// Let the suppressor engine finish what it can, publish its state and send
+    /// the output it has down the chain. `accepted` is what this call fed it;
+    /// an idle pass, which feeds nothing, passes 0.
+    fn drain_suppressor(&mut self, shared: &Shared, accepted: usize) {
+        self.suppressor.engine.process_frames();
+        shared.suppressor.successful_inference_frames.store(
+            self.suppressor.engine.successful_inference_frames(),
+            Ordering::Relaxed,
+        );
+        update_backend_status_rt(
+            &shared.suppressor.backend_available,
+            &shared.suppressor.backend_failed,
+            shared.dsp.rt_error_code.as_ref(),
+            &self.suppressor.engine,
+        );
+
+        // Track suppressor internal buffer fill level after processing.
+        let suppressor_buffered =
+            self.suppressor.engine.pending_input() + self.suppressor.engine.available_samples();
+        let suppressor_latency = self.suppressor.engine.reported_latency_samples();
+        let raw_buffer = suppressor_buffered as u32;
+        let prev_smoothed = shared
+            .suppressor
+            .smoothed_buffer_len
+            .load(Ordering::Relaxed);
+        let smoothed = smooth_buffer(self.metric_alpha, raw_buffer, prev_smoothed);
+        shared
+            .suppressor
+            .buffer_len
+            .store(raw_buffer, Ordering::Relaxed);
+        shared
+            .suppressor
+            .latency_samples
+            .store(suppressor_latency as u32, Ordering::Relaxed);
+        shared
+            .suppressor
+            .smoothed_buffer_len
+            .store(smoothed, Ordering::Relaxed);
+
+        let available = self.suppressor.engine.available_samples();
+        if available > 0 {
+            self.suppressor.starvation.restart();
+            self.suppressor.output.clear();
+            let count = available.min(self.suppressor.output.capacity());
+            let _ = self.suppressor.output.set_len_zeroed(count);
+            let processed = self
+                .suppressor
+                .engine
+                .pop_samples_into(self.suppressor.output.as_mut_slice());
+            let _ = self.suppressor.output.set_len_zeroed(processed);
+            let output_slice = self.suppressor.output.as_mut_slice();
+
+            if contain_non_finite(output_slice) {
+                shared
+                    .suppressor
+                    .non_finite_count
+                    .fetch_add(1, Ordering::Relaxed);
+                store_rt_error(
+                    shared.dsp.rt_error_code.as_ref(),
+                    RtErrorCode::SuppressorNonFinite,
+                );
+                let now = Instant::now();
+                match self.suppressor.non_finite_window_started_at {
+                    Some(start)
+                        if now.duration_since(start).as_millis() as u64
+                            <= NON_FINITE_REBUILD_WINDOW_MS => {}
+                    _ => {
+                        self.suppressor.non_finite_window_started_at = Some(now);
+                        self.suppressor.non_finite_window_count = 0;
+                    }
+                }
+                self.suppressor.non_finite_window_count =
+                    self.suppressor.non_finite_window_count.saturating_add(1);
+                if self.suppressor.non_finite_window_count >= NON_FINITE_REBUILD_THRESHOLD {
+                    shared
+                        .stream
+                        .restart_requested
+                        .store(true, Ordering::Release);
+                    self.suppressor.non_finite_window_started_at = None;
+                    self.suppressor.non_finite_window_count = 0;
+                }
+                update_backend_status_rt(
+                    &shared.suppressor.backend_available,
+                    &shared.suppressor.backend_failed,
+                    shared.dsp.rt_error_code.as_ref(),
+                    &self.suppressor.engine,
+                );
+            }
+
+            self.suppressor.recovery_fade.apply(output_slice);
+            self.chain.process(
+                shared,
+                output_slice,
+                #[cfg(feature = "vad")]
+                &self.gate,
+                #[cfg(feature = "vad")]
+                self.vad_source_sample_clock,
+            );
+
+            // Measure OUTPUT levels
+            self.meters.measure_output(shared, output_slice);
+
+            // Send processed samples to output
+            self.output.write(shared, output_slice, false);
+        } else if accepted > 0
+            && !shared.recording.active.load(Ordering::Relaxed)
+            && self.suppressor.starvation.starved()
+        {
+            store_rt_error(
+                shared.dsp.rt_error_code.as_ref(),
+                RtErrorCode::SuppressorBackendFailed,
+            );
+            shared
+                .stream
+                .restart_requested
+                .store(true, Ordering::Release);
+            self.suppressor.starvation.restart();
+        }
+    }
+
+    /// An idle pass: collect what a suppressor worker has finished since the
+    /// last block, so its frames do not wait for the next one.
+    fn harvest_suppressor_output(&mut self, shared: &Shared) {
+        if self.suppressor.engine.has_pending_work() {
+            self.drain_suppressor(shared, 0);
+        }
+    }
+
     /// Restart everything that depends on contiguous input after a gap.
     fn reset_after_input_gap(&mut self, shared: &Shared) {
         self.gate.reset();
@@ -1738,7 +1755,7 @@ impl Pipeline {
             .store(0, Ordering::Relaxed);
         shared.suppressor.latency_samples.store(
             if shared.suppressor.enabled.load(Ordering::Acquire) {
-                self.suppressor.engine.latency_samples() as u32
+                self.suppressor.engine.reported_latency_samples() as u32
             } else {
                 0
             },

@@ -1809,8 +1809,14 @@ def test_voice_rollback_uses_shared_transaction_and_keeps_failed_snapshot(
         dialog.reject()
 
 
+# Two unknown contexts compare equal, so only the explicit "unknown" clause drops the reliability there.
+@pytest.mark.parametrize(
+    ("snapshot_context", "owner_context", "reliability"),
+    [("route-a", "route-b", 0.0), (None, None, 0.0), ("route-a", "route-a", 0.8)],
+    ids=["stale", "unknown", "same-context"],
+)
 def test_rollback_drops_stale_noise_reliability_but_restores_numeric_settings(
-    qapp, monkeypatch
+    qapp, monkeypatch, snapshot_context, owner_context, reliability
 ) -> None:
     owner = _ContextRestoreOwner()
     dialog = VoiceSetupDialog()
@@ -1821,15 +1827,16 @@ def test_rollback_drops_stale_noise_reliability_but_restores_numeric_settings(
             "dynamics_customized": False,
         },
         "noise_reference_reliability": 0.8,
-        "calibration_context_key": "route-a",
+        "calibration_context_key": snapshot_context,
     }
     dialog._pre_setup_snapshot = snapshot
-    owner.context_key = "route-b"
+    owner.context_key = owner_context
     monkeypatch.setattr(
         "mic_eq.ui.voice_setup_dialog._find_eq_state_owner", lambda _widget: owner
     )
     try:
         assert dialog._restore_pre_setup_snapshot() is True
+        assert owner.apply_calls[0][1] == reliability
         assert owner.compressor_state.last_settings == {
             "dynamics_profile": "balanced",
             "dynamics_customized": False,

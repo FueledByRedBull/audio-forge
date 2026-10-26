@@ -607,6 +607,16 @@ ACTIVATION_KEYS = [
 
 
 @pytest.mark.parametrize("key", ACTIVATION_KEYS)
+def test_the_keyboard_activates_a_toggle(quick_window, qapp, key) -> None:
+    window = quick_window
+    _show(window, qapp)
+    band = window.quick_bridge.model["eq"]["bands"][0]["enabled"]
+    before = window.eq_state.get_band(0).enabled
+    _activate(window, _with_proxy(window, "Toggle", band), key, qapp)
+    assert window.eq_state.get_band(0).enabled is not before
+
+
+@pytest.mark.parametrize("key", ACTIVATION_KEYS)
 def test_the_keyboard_activates_a_button(quick_window, qapp, monkeypatch, key) -> None:
     window = quick_window
     exported: list[bool] = []

@@ -447,23 +447,98 @@ def test_redirect_handler_rejects_untrusted_intermediate_hop():
             "https://evil.example/source.tar.gz",
         )
 
-def _answer_cargo_metadata_for(monkeypatch, manifest: dict[str, Any]) -> None:
-    """Answer `cargo metadata` with the manifest's own crates, so no Rust toolchain installs.
 
-    The sources still come from Cargo.lock, so a crate the lock dropped or re-versioned fails the
-    checksum match; a crate the lock added is left to the release job, which runs real cargo.
+# Crates Cargo.lock lists that `cargo metadata --filter-platform x86_64-pc-windows-msvc --features
+# extension-module` leaves out: other operating systems, wasm, and features the extension does not
+# turn on. Cargo.lock cannot say which those are, so a crate the lock gains that Windows does not
+# build is listed here once; a crate Windows does build must appear in the source manifest instead.
+NOT_BUILT_FOR_WINDOWS = {line.strip() for line in """
+    alsa 0.11.0
+    alsa-sys 0.4.0
+    bitflags 2.11.0
+    block2 0.6.2
+    bumpalo 3.20.2
+    bytes 1.11.1
+    cesu8 1.1.0
+    combine 4.6.7
+    coreaudio-rs 0.14.2
+    dispatch2 0.3.0
+    equivalent 1.0.2
+    futures-core 0.3.32
+    futures-task 0.3.32
+    futures-util 0.3.32
+    hashbrown 0.16.1
+    indexmap 2.13.0
+    jni 0.21.1
+    jni-sys 0.3.0
+    js-sys 0.3.90
+    log 0.4.29
+    mach2 0.5.0
+    memchr 2.8.0
+    ndk 0.9.0
+    ndk-context 0.1.1
+    ndk-sys 0.6.0+11769913
+    num-derive 0.4.2
+    num_enum 0.7.5
+    num_enum_derive 0.7.5
+    objc2 0.6.3
+    objc2-audio-toolbox 0.3.2
+    objc2-avf-audio 0.3.2
+    objc2-core-audio 0.3.2
+    objc2-core-audio-types 0.3.2
+    objc2-core-foundation 0.3.2
+    objc2-encode 4.1.0
+    objc2-foundation 0.3.2
+    pkg-config 0.3.32
+    proc-macro-crate 3.4.0
+    redox_syscall 0.5.18
+    rustversion 1.0.22
+    same-file 1.0.6
+    serde_derive 1.0.228
+    slab 0.4.12
+    thread-priority 1.2.0
+    toml_datetime 0.7.5+spec-1.1.0
+    toml_edit 0.23.10+spec-1.0.0
+    toml_parser 1.0.9+spec-1.1.0
+    walkdir 2.5.0
+    wasm-bindgen 0.2.113
+    wasm-bindgen-futures 0.4.63
+    wasm-bindgen-macro 0.2.113
+    wasm-bindgen-macro-support 0.2.113
+    wasm-bindgen-shared 0.2.113
+    web-sys 0.3.90
+    winapi 0.3.9
+    winapi-i686-pc-windows-gnu 0.4.0
+    winapi-util 0.1.11
+    winapi-x86_64-pc-windows-gnu 0.4.0
+    windows-sys 0.45.0
+    windows-sys 0.61.2
+    windows-targets 0.42.2
+    windows_aarch64_gnullvm 0.42.2
+    windows_aarch64_msvc 0.42.2
+    windows_i686_gnu 0.42.2
+    windows_i686_msvc 0.42.2
+    windows_x86_64_gnu 0.42.2
+    windows_x86_64_gnullvm 0.42.2
+    windows_x86_64_msvc 0.42.2
+    winnow 0.7.14
+""".strip().splitlines()}
+
+
+def _answer_cargo_metadata_from_the_lock(monkeypatch) -> None:
+    """Answer `cargo metadata` from Cargo.lock minus NOT_BUILT_FOR_WINDOWS, so no Rust toolchain installs.
+
+    A crate added to the lock, dropped from it, re-versioned or given another checksum then fails
+    the manifest check as it would with the real resolution.
     """
-    sources = {
-        (package["name"], package["version"]): package.get("source")
-        for package in tomllib.loads((source_tool.ROOT / "Cargo.lock").read_text(encoding="utf-8"))["package"]
-    }
+    lock = tomllib.loads((source_tool.ROOT / "Cargo.lock").read_text(encoding="utf-8"))["package"]
     packages = [
         {
-            "id": entry["id"], "name": entry["name"], "version": entry["version"],
-            "source": sources.get((entry["name"], entry["version"])), "license": entry.get("license"),
+            "id": f"{package['name']} {package['version']}", "name": package["name"],
+            "version": package["version"], "source": package.get("source"), "license": None,
         }
-        for entry in manifest["entries"]
-        if entry["kind"] == "cargo-crate" and entry["lock_file"] == "Cargo.lock"
+        for package in lock
+        if f"{package['name']} {package['version']}" not in NOT_BUILT_FOR_WINDOWS
     ]
     metadata = json.dumps({"packages": packages, "resolve": {"nodes": [{"id": package["id"]} for package in packages]}})
     real_run = subprocess.run
@@ -479,8 +554,14 @@ def _answer_cargo_metadata_for(monkeypatch, manifest: dict[str, Any]) -> None:
 def test_manifest_records_current_incomplete_status(monkeypatch):
     manifest_path = Path(__file__).resolve().parents[2] / "licenses" / "source-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    _answer_cargo_metadata_for(monkeypatch, manifest)
-    loaded = source_tool.load_manifest(manifest_path)
+    _answer_cargo_metadata_from_the_lock(monkeypatch)
+    try:
+        loaded = source_tool.load_manifest(manifest_path)
+    except SourceDistributionError as error:
+        pytest.fail(
+            f"{error}. If Cargo.lock gained or re-versioned a crate that Windows does not build, list it in "
+            "NOT_BUILT_FOR_WINDOWS; otherwise regenerate licenses/source-manifest.json."
+        )
 
     assert manifest["status"] in {"complete", "incomplete"}
     assert bool(manifest["blockers"]) is (manifest["status"] == "incomplete")

@@ -30,7 +30,7 @@ your audio never leaves your PC.
 | Sound consistent | A compressor with speech-aware automatic makeup gain, plus peak protection that stops clipping. |
 | Shape your voice | A ten-band EQ you can drag or type into, Auto-EQ, and guided Auto Voice Setup. |
 | Tame harshness | A de-esser for sharp "s" and "sh" sounds and persistent harshness. |
-| Stay in control | Presets, undo and redo, a global mute shortcut, level meters that flag clipping, and health advice that says what to change. |
+| Stay in control | Presets, undo and redo, a mute shortcut, level meters that flag clipping, and health advice that says what to change. |
 
 <details>
 <summary>More screenshots: processing cards and Auto Voice Setup</summary>
@@ -148,8 +148,10 @@ location. See the
   Double-click a band handle, or press **Delete** on the selected band, to reset
   that band as one undo step. In Bypass and Raw the graph says "EQ not running".
 - **Shortcuts:** **Ctrl+S** saves your preset, **Ctrl+Shift+S** saves a copy,
-  and **Ctrl+Z** / **Ctrl+Shift+Z** undo and redo. **Ctrl+Alt+M** mutes from
-  anywhere once you enable it under **Settings > Tray and background**.
+  and **Ctrl+Z** / **Ctrl+Shift+Z** undo and redo. **Ctrl+Return** starts and
+  **Ctrl+.** stops processing. **Ctrl+M** mutes while the window has focus;
+  **Ctrl+Alt+M** mutes from anywhere once you enable it under **Settings >
+  Tray and background**.
 - **Unsaved changes:** quitting or switching presets offers Save, Discard, or
   Cancel.
 
@@ -186,6 +188,11 @@ location. See the
   that is no worse than your current EQ, or says by about how much to lower the
   microphone level. When the correction's own boost is most of the excess, that
   amount counts only your recording's part, and the advice says so.
+  A questionable room-noise recording no longer refuses the whole setup: the
+  gate and noise suppression keep your current settings and the rest is judged
+  as usual. An invalid recording, a weak voice-to-noise ratio, a low capture
+  score, the headroom check, or a silent recording with no pauses to measure
+  the room from still refuse.
 - **Suggestions have to earn a change.** Auto Voice Setup tries gate and noise
   suppression options before calibrating compression. It tests speech followed
   by noise without resetting the processing, so pause noise is checked too.
@@ -247,7 +254,15 @@ Reliability and diagnostics:
 - Health indicators that give the number and the action, for example how many
   decibels to lower the microphone level, plus technical counters behind
   **Details**.
-- Automatic stream restart after device errors.
+- Automatic recovery. Only the audio engine watches the streams and restarts
+  them: after a device error, a stalled callback, or about 1.5 seconds of exact
+  digital silence at the output while the input is above -35 dB. Restarts wait
+  0, 2, 5, 10, 20, then 30 seconds, and the wait resets after 10 seconds of
+  healthy streams. Recovery pauses while the latency, Auto-EQ or Voice Setup
+  dialog is open.
+- DeepFilterNet runs on its own thread. If its model or inference fails, audio
+  passes through unsuppressed and the reason appears in diagnostics instead of
+  closing the app.
 - Device refresh keeps your selection when the device is still available.
   Streams prefer 48 kHz when the device supports it.
 - **Settings > Help > Export Diagnostics** writes a size-limited support file. It
@@ -286,8 +301,9 @@ Audio passes through these stages in order:
 The noise gate runs before suppression: with the default threshold gate,
 moving it after suppression clipped the starts of phrases in testing. See
 **Processing mode** above for Bypass and Raw. The latency shown in the app
-includes engine and noise-suppression delay, plus your measured route when
-you calibrate it. End-to-end latency still depends on your devices, driver,
+includes engine and noise-suppression delay (about 15 ms for DeepFilterNet LL
+and 35 ms for standard DeepFilterNet), plus your measured route when you
+calibrate it. End-to-end latency still depends on your devices, driver,
 buffer sizes, and routing.
 
 ## Help and Contributing

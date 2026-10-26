@@ -36,6 +36,9 @@ Per-case detail stays out of Git (`--details-output` under ignored
 | Voice Setup refusals | Measured; no veto changed. | [Study](#refusals); `voice-setup-refusals-2026-10-report.json`; per-user rows in `models/evaluation-details/voice-setup-refusals-2026-10/` |
 | Voice Setup refusals, three changes | Measured on held-out DAPS recordings: partial results, the by-band tonal check and RNNoise 0.7 each failed a predefined gate, so nothing changes and the current build stays. | [Study](#refusals-three-changes); `voice-setup-arms-2026-10-report.json` (the tool writes it with 2-space indentation; stored with 1-space indentation to fit the size limit, same content); rows, rule and development material in ignored `models/evaluation-details/voice-setup-arms-2026-10/` |
 | Voice Setup capture clip rule | Keep the rule that refuses a take for a flat top of 6 samples (125 microseconds at 48 kHz) or more than 20 separate runs at or above 0.999. | [Study](#capture-clip-rule); Ignored `models/evaluation-details/capture-clip-rule-2026-10/` (`README.md`, `run.py`, `results.json`). |
+| Voice Setup, questionable room-noise recording | Measured on the bench set, not decided. Built: a questionable recording withholds only the gate and the suppressor (the steps tuned on it) and the rest is judged as for a usable recording; an invalid recording still refuses. 4 of the 6 questionable mixes are applied instead of refused, none fails a compression-aware clause, and with the sound still playing a retake was usable for 2 of the 18 questionable recordings' retakes and 0 of the 18 invalid ones'. | [Study](#questionable-room-noise-recording); `voice-setup-bench-2026-10-report.json`, written by `bench_study.py` |
+| Voice Setup, compressor clauses | Measured on the bench set, not decided. The onset and tail clauses of the refusal study read intended compression as harm (the compressor step fails 18 of 27 mixes, no compressor fails 24); read against the compression itself they fail 3 and 0, and a squashing compressor still fails all 27. The bench report prints both readings. | [Study](#compressor-clauses); `voice-setup-bench-2026-10-report.json` |
+| De-esser detector confidence terms | Measured on a scratch build, not in this tree. Removing the voice-support floor and the fixed weights moves no bench reading by more than 0.032 dB (0.1 dB margin) or 0.0001 ESTOI (0.002), and no Voice Setup outcome. The full-chain golden test's fixed synthetic input does move: peak de-esser reduction drops by 0.77 dB, so the change is not applied. | [Study](#de-esser-confidence-terms); `voice-setup-bench-2026-10-report.json` |
 | De-esser detector | Historical transient setup detector: all 96 generated corpus clips classified correctly, with no false positives. This scores detection, not the audio change or the new persistent-shape model. | `deesser-corpus-v1-report.json` (coefficient fit); `deesser-corpus-v1-2026-09-report.json` (re-run); current [audio follow-up](audio-followups-2026-10-report.json) |
 | De-esser on real speech | Add persistent notch-complement power concentration with a shared spectral-background reference, plus a signed-curvature setup model. The earlier study's no-change decision remains historical: its setup model enabled 65% of harsh, 62% of bright and 42% of ordinary simulated voices, while Auto reduced the sibilance band by only ~0.3–0.7 dB. The current change has separate benefit and preservation evidence, and is adopted under the same owner timing exception as the gate compensation above (its mandatory timing gate failed). | Current [audio follow-up](audio-followups-2026-10-report.json); historical `deesser-real-speech-2026-10-report.json` |
 | Resampling | 128-tap Blackman product resampler. The October 2026 re-run on the current source passes all 11 checks and reproduces every quality figure of the historical report to the last digit; only the timings differ. The rejected 128-tap Blackman-Harris-squared window still fails the same four (10.3 dB passband error at 44.1 to 48 kHz), and a Rust test fails if the product window reverts to it. | `resampler-quality-report.json` (historical); `resampler-quality-2026-10-report.json` (current source, from [`evaluate_resampler_quality.py`](../python/tools/evaluate_resampler_quality.py); `--output` is required) |
@@ -395,6 +398,70 @@ because a run rule cannot tell them from the peak of a normalised take.
 
 Digital hard clipping only; no room, noise or microphone captures of real
 clicks.
+
+## Voice Setup on the bench set (October 2026)
+
+Three questions on the fixed bench set (16 mixes of two speakers; nothing is held out and the set can be overfitted),
+run with `python/tools/bench_report.py` and summarised by `python/tools/bench_study.py` into
+`voice-setup-bench-2026-10-report.json`, which reads `measured`: the maintainer decides. For the first question the TV,
+music and babble mixes were also built at 6, 14, 18 and 22 dB (12 more mixes from the same recipes and seeds, not
+committed), because at their own SNR each also has a weak speech-to-noise ratio, which hides what the noise recording
+does. Per-mix rows, the five full runs and the de-esser patch are in ignored
+`models/evaluation-details/voice-setup-bench-2026-10/`.
+
+### Questionable room-noise recording
+
+Voice Setup refused the whole setup when the 2 s room-noise recording was questionable (unsteady, partly matching
+the voice, or with speech in it). The change withholds only what is tuned on that recording: the gate and the noise
+suppressor keep the person's current settings, and Auto-EQ, the de-esser and the compressor are judged as for a usable
+recording. Automatic loudness stays off. An invalid recording, a weak speech-to-noise ratio, a low overall score and the
+final headroom check refuse as before, and so does a silent recording when the voice take has no quiet frames to measure
+the noise from (the ratio would read against -120 dB). Without a current gate the factory gate stands; nothing is
+recommended from the recording.
+
+Of the 6 mixes with a questionable recording (cafe; TV at 6, 10, 14, 18 and 22 dB), 4 are now applied (cafe and TV at
+14, 18 and 22 dB) and all 6 were refused before. TV at 6 and 10 dB stay refused for their speech-to-noise ratio. The 6
+mixes with an invalid recording (keyboard; babble at 6 to 22 dB) stay refused, and the 15 with a usable recording keep
+their outcomes (10 applied). The clipped take is refused before its room noise is judged and has no status. The tuner had kept the current gate and suppressor on all 27 mixes it ran on (the 28th, the clipped take, is
+refused before), so withholding them cost nothing here; for a person whose tuner would have changed them it does.
+
+Against the current settings the 4 setups applied now fail no clause read against their own compression (see the next
+section); read plain, 3 fail the onset clause. The 10 applied setups with a usable recording fail 10 plain and 4 compression-aware. Asking
+for a retake does not help while the sound goes on: with the same sound playing, 2 of the 18 retakes of a questionable
+recording were usable (cafe 2 of 3, TV 0 of 15) and 0 of the 18 of an invalid one (babble 0 of 15, keyboard 0 of 3). Music at 6 to 18 dB is refused for a weak speech-to-noise ratio
+with a usable recording, which this change leaves alone.
+
+### Compressor clauses
+
+The refusal study's clauses (ESTOI, tone error, sibilant loss, deep pause, tail, onset and overload) read a setup
+against the clean take and the unprocessed input. A compressor lowers the loud parts of the voice on purpose, so against
+those it narrows the onset and lifts the pauses and the tail. On 27 mixes the compressor step on its own, changed alone
+against the factory chain, fails a clause in 18 (onset 17, tail 10, ESTOI 8, deep pause 5), and taking the compressor
+away fails the onset clause in 24: the clauses follow how much the compressor compresses, not whether it harms.
+
+`compression_aware` in `bench_metrics.py` reads each setup against the clean take and the input as its own compressor
+alone leaves them. Read that way the step fails 3 mixes (sibilant loss in two, ESTOI with deep pause and tail in the
+quietest take), no compressor fails none, and a 20:1 compressor from -60 dB with a 0.5 ms attack still fails all 27. The
+whole setups fail a clause in 17 of 27 plain and 5 aware. The bench report prints both readings. Nothing in the product
+judges a compressor with these clauses (its own check is the 95th-percentile gain-reduction target), so no product
+behaviour changes.
+
+### De-esser confidence terms
+
+In `detector_confidence_target` (`rust-core/src/dsp/deesser.rs`), remove the voice-support floor (a blend of the ratio
+confidence toward 0.65 times the voice-support term) and the fixed weights (0.62 ratio, 0.18 level, 0.20 voice
+support): the confidence becomes the ratio confidence times the same broadband and narrowness gains. The earlier
+ablation (ignored `models/evaluation-details/deesser-confidence-ablation-2026-10/`) found no measurable effect for
+either on 40 simulated users.
+
+Measured on a scratch build of the change, with the factory chain's de-esser switched on (the factory de-esser is off,
+so the plain factory arm never exercises it) and with Voice Setup, on 16 mixes: no reading moves by more than 0.032 dB
+(sibilant loss; the other dB readings by 0.007 dB or less) or by 0.0001 ESTOI, against margins of 0.1 dB and 0.002
+borrowed from the ablation, and no Voice Setup outcome or step changes. Dropping the floor alone moves nothing by
+more than 0.002 dB; the weights account for the rest. Only 3 of 16 mixes render identically. On the fixed synthetic
+input of the full-chain golden test (`test_full_downstream_chain_matches_golden_tolerance`), though, the peak de-esser
+reduction drops from 9.93 to 9.16 dB and the RMS, compressor and limiter readings move with it, so the change is not
+applied. The patch is kept with the per-mix rows.
 
 ## Auto-EQ solvers without SciPy (October 2026)
 

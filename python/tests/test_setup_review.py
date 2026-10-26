@@ -50,8 +50,8 @@ def test_a_reliable_capture_has_nothing_to_report(monkeypatch):
             "analyze_noise_reference",
             lambda reference: replace(
                 reference,
-                status="questionable",
-                reasons=["room-noise capture is not stationary"],
+                status="invalid",
+                reasons=["room-noise capture is dominated by changing events"],
             ),
             "noise_reference_not_usable",
             None,

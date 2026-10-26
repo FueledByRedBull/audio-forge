@@ -9,6 +9,7 @@ before the UI offers to apply them.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import asdict
 from typing import Any, NamedTuple
 
 import numpy as np
@@ -41,6 +42,7 @@ from .deesser_fusion import (
 from .signal_processing import resample_poly
 from .noise_reference import (
     MIN_NOISE_DURATION_S,
+    SILENT_REFERENCE_REASON,
     CaptureMetadata,
     analyze_noise_reference,
 )
@@ -56,7 +58,7 @@ from .vad import (
     analyze_offline_vad,
     map_causal_vad_probabilities,
 )
-from ..config import DeEsserSettings, EQ_FREQUENCIES, EQSettings, build_eq_candidate_settings
+from ..config import DeEsserSettings, EQ_FREQUENCIES, EQSettings, GateSettings, build_eq_candidate_settings
 
 NOISE_MIN_DURATION_S = MIN_NOISE_DURATION_S
 SPEECH_MIN_DURATION_S = 3.0
@@ -1072,13 +1074,23 @@ def analyze_voice_setup(
             (loudness_confidence, 0.08),
         ]
     )
-    # Automatic makeup rides the measured loudness, so it is offered only
-    # for a capture that can be relied on, whatever its score.
-    capture_reliable = bool(
+    voice_reliable = bool(
         noise_referenced_snr_db >= 6.0
         and float(features["active_duration_s"]) >= 2.0
         and not spectrum_result.used_single_spectrum_fallback
-        and noise_reference.status == "usable"
+    )
+    # Automatic makeup rides the measured loudness, so it is offered only
+    # for a capture that can be relied on, whatever its score.
+    capture_reliable = bool(voice_reliable and noise_reference.status == "usable")
+    # A questionable recording withholds only the gate and suppressor tuned on it.
+    joint_withheld_for = (
+        "questionable_noise_reference" if noise_reference.status == "questionable" else None
+    )
+    # A silent recording with no quiet frames in the voice take leaves no noise estimate,
+    # so the speech-to-noise ratio reads against -120 dB and means nothing.
+    noise_floor_unknown = bool(
+        SILENT_REFERENCE_REASON in noise_reference.reasons
+        and noise_reference.in_capture_spectrum_db is None
     )
 
     gate_settings = _recommend_gate_settings(
@@ -1096,7 +1108,7 @@ def analyze_voice_setup(
     joint_vad_backend = vad_analysis_backend
     joint_noise_vad_backend = noise_vad_backend
     # The posteriors depend on the pre-gain alone, so at unity gain they are the ones above.
-    if vad_available and float(gate_settings["vad_pre_gain"]) != 1.0:
+    if joint_withheld_for is None and vad_available and float(gate_settings["vad_pre_gain"]) != 1.0:
         joint_vad_probabilities, joint_vad_backend = analyze_offline_vad(
             speech_arr,
             sample_rate,
@@ -1194,7 +1206,7 @@ def analyze_voice_setup(
     incumbent_suppressor = incumbent_payload.get("suppressor") or incumbent_payload.get(
         "rnnoise"
     )
-    if progress_callback is not None:
+    if progress_callback is not None and joint_withheld_for is None:
         progress_callback("Tuning noise suppression and gate...", 25)
     joint_tuning = tune_gate_suppression_dynamics(
         noise_arr,
@@ -1219,6 +1231,7 @@ def analyze_voice_setup(
                 "model": noise_model,
             },
         },
+        withheld_for=joint_withheld_for,
         cancel_check=cancel_check,
         progress_callback=progress_callback,
     )
@@ -1235,7 +1248,10 @@ def analyze_voice_setup(
     else:
         # Inconclusive or unavailable evidence preserves the caller's exact
         # controls. Other setup stages may still be independently reviewed.
-        gate_settings = dict(incumbent_gate or gate_settings)
+        # A withheld search recommends nothing from the recording: without the
+        # caller's gate, the factory one stands.
+        fallback_gate = asdict(GateSettings()) if joint_withheld_for else gate_settings
+        gate_settings = dict(incumbent_gate or fallback_gate)
         suppressor_settings = dict(
             incumbent_suppressor
             or {
@@ -1422,7 +1438,9 @@ def analyze_voice_setup(
         offline_validation = {"error": str(exc), "simulation_backend": "unavailable"}
 
     weak_capture = bool(
-        not capture_reliable
+        not voice_reliable
+        or noise_reference.status not in ("usable", "questionable")
+        or noise_floor_unknown
         or noise_referenced_snr_db < 8.0
         or capture_confidence < 0.50
     )

@@ -1464,7 +1464,7 @@ def test_the_preset_menu_button_name_contains_its_visible_label(quick_window, qa
         assert button.property("text") in scene.name(button)
 
 
-def test_a_read_only_value_box_is_no_tab_stop_copies_and_shows_no_edit_border(
+def test_a_read_only_value_box_is_no_tab_stop_copies_and_shows_no_edit_ring(
     quick_window, wide_page, qapp
 ) -> None:
     window, page = quick_window, wide_page
@@ -1486,18 +1486,22 @@ def test_a_read_only_value_box_is_no_tab_stop_copies_and_shows_no_edit_border(
     def border_colour(box):
         return QQmlProperty.read(box, "border.color").name()
 
-    accent = window.quick_bridge.model["theme"]["accent"].lower()
+    def rings(box):
+        return [c for c in box.childItems() if c.metaObject().className().startswith("FocusRing") and c.isVisible()]
+
+    edge = window.quick_bridge.model["theme"]["control_edge"].lower()
     QGuiApplication.clipboard().clear()
     QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=_reveal(page, readout))
     QTest.keyClick(view, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
     QTest.keyClick(view, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
     assert QGuiApplication.clipboard().text() == field.property("text") != ""
-    assert border_colour(readout).lower() != accent
+    assert rings(readout) == []
 
-    # An editable box still shows it has focus.
+    # An editable box still shows it has focus, with the ring every control wears.
     _frequency, editable = _band_box(window, "frequency")
     QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=_reveal(page, editable))
-    assert border_colour(editable).lower() == accent
+    assert len(rings(editable)) == 1
+    assert border_colour(editable).lower() == border_colour(readout).lower() == edge
 
 
 def test_the_drops_tooltip_does_not_promise_a_right_click_quick_lacks(quick_window) -> None:
@@ -1620,13 +1624,13 @@ def test_the_status_dot_shows_sound_running_and_heard(engine_window, qapp) -> No
     def palette(name: str) -> str:
         return QColor(getattr(PALETTE, name)).name()
 
-    assert colour() == palette("border_strong")
+    assert colour() == palette("control_edge")
     # Stop is offered while a login start waits for its devices, but nothing is running.
     window._login_startup_deadline = time.monotonic() + 60
     window._sync_processing_controls()
     assert window.stop_btn_action.isEnabled()
     assert window.shell_texts["transmission_status_label"].text.startswith("Transmission: Stopped")
-    assert colour() == palette("border_strong")
+    assert colour() == palette("control_edge")
     window._login_startup_deadline = None
     window._sync_processing_controls()
 
@@ -1642,7 +1646,7 @@ def test_the_status_dot_shows_sound_running_and_heard(engine_window, qapp) -> No
     assert colour() == palette("status_warn_text")
 
     window.stop_btn_action.trigger()
-    assert colour() == palette("border_strong")
+    assert colour() == palette("control_edge")
 
 
 def test_the_device_grace_starts_over_after_stop_and_start(engine_window, monkeypatch) -> None:

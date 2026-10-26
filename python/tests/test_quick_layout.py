@@ -261,3 +261,36 @@ def test_the_status_message_keeps_a_quarter_of_the_strip_at_the_worst_combinatio
         caption = status_caption(window, text)
         assert caption.property("truncated") is True
         assert caption_tip(caption) == text
+
+
+@pytest.mark.parametrize("point_size", [9, 11, 13, 14])
+@pytest.mark.parametrize("width", [1200, 1230, 1260, 1300])
+@pytest.mark.parametrize("state", ["unmuted", "muted-bypass"])
+def test_the_top_bar_fits_its_card_at_every_font_size_and_wide_width(
+    qapp, monkeypatch, segoe_font, point_size, width, state
+) -> None:
+    qapp.setFont(QFont(qapp.font().family(), point_size))
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Ready", width=width)
+    try:
+        if state == "muted-bypass":
+            window.user_mute_checkbox_action.setChecked(True)
+            window.processing_mode_choice.setIndex(1)
+        for _ in range(3):
+            qapp.processEvents()
+            QTest.qWait(30)
+        bar = named(window, "topBar")
+        inner = scene_rect(bar.parentItem()).right()
+        meters_left = scene_rect(named(window, "meterPanel")).left()
+        assert inner <= meters_left
+        assert scene_rect(bar).right() <= inner + 0.5, f"the bar ends at {scene_rect(bar).right():.1f}, card at {inner:.1f}"
+        beyond = [
+            f"{item.metaObject().className()} {item.objectName()!r} right={scene_rect(item).right():.1f}"
+            for item in shown_items(bar)
+            if scene_rect(item).right() > inner + 0.5
+        ]
+        assert not beyond, f"the card's inner edge is {inner:.1f}: {beyond}"
+        assert named(window, "mutedBadge").isVisible() is (state == "muted-bypass")
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()

@@ -118,7 +118,10 @@ needs `python/tools/package_smoke.py --source-only` and
 building. That script never launches the app, so after a local bundle build also
 run `dist\AudioForge\AudioForge.exe --smoke-test` hidden, with a 60 second
 limit, and require exit code 0. Without that run, a startup failure shows only
-as a hidden dialog and a process that never exits.
+as a hidden dialog and a process that never exits. CI runs the same build and
+smoke steps (`package-check.yml`) on pushes to `master` and on pull requests that
+touch packaging inputs. Its Rust job builds `df.dll` from the pinned source and
+fails when a DeepFilter or Silero test reports that it skipped itself.
 
 After a release is published, download the assets, recompute their SHA-256, and
 reconcile the README and notes in a later commit. Never move a tag.

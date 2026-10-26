@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, Slot
 
 from .gate_state import GateState
 from .level_meter import ConfidenceMeter, GainReductionMeter
@@ -50,6 +50,7 @@ class ProcessingMeters(QObject):
             gate_state.telemetryChanged.connect(self._render_gate)
             self._render_gate()
 
+    @Slot()
     def _render_gate(self) -> None:
         gate_state = self.gate_state
         assert gate_state is not None  # Only connected when there is a gate state.

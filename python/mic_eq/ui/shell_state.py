@@ -63,6 +63,7 @@ class StatusState(TextState):
         if timeout > 0:
             self._expiry.start(timeout)
 
+    @Slot()
     def clearMessage(self) -> None:
         self._expiry.stop()
         self.update(text="")

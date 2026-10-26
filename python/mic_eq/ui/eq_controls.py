@@ -113,6 +113,7 @@ class EQControl(QObject):
             )
         return view
 
+    @Slot()
     def _refresh(self, *, force: bool = False) -> None:
         view = self._read()
         if force or view != self._view:

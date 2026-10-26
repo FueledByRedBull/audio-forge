@@ -13,7 +13,7 @@ from collections import deque
 from collections.abc import Callable
 
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Property, QObject, Qt, QTimer, QRectF, Signal
+from PySide6.QtCore import Property, QObject, Qt, QTimer, QRectF, Signal, Slot
 from PySide6.QtGui import QPainter, QLinearGradient, QPen, QFont
 
 from ..analysis.voice_setup import CLIP_FLAT_TOP_S
@@ -71,6 +71,7 @@ class MeterModel(QObject):
         self._announced_text: str | None = None
         self.changed.connect(self._sync_value_text)
 
+    @Slot()  # a plain bound method would give each meter a metaobject of its own
     def _sync_value_text(self) -> None:
         value = self._read_value()
         if value != self._announced_value:
@@ -314,6 +315,7 @@ class LevelMeter(MeterModel):
         if changed:
             self.changed.emit()
 
+    @Slot()
     def _decay_peak_hold(self):
         """Decay measured peak hold; stop repainting once it reaches the floor."""
         previous = (self.peak_hold_db, self.is_clipping, self.clip_marker)

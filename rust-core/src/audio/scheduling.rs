@@ -10,14 +10,14 @@ unsafe extern "system" {
 
 const PRO_AUDIO_TASK: [u16; 10] = [80, 114, 111, 32, 65, 117, 100, 105, 111, 0];
 
-pub(super) struct ProAudioThread {
+pub(crate) struct ProAudioThread {
     handle: Option<NonNull<c_void>>,
     // MMCSS must be reverted by the registering thread, including during unwind.
     _same_thread: PhantomData<Rc<()>>,
 }
 
 impl ProAudioThread {
-    pub(super) fn enter() -> io::Result<Self> {
+    pub(crate) fn enter() -> io::Result<Self> {
         Self::enter_task(&PRO_AUDIO_TASK)
     }
 
@@ -39,7 +39,7 @@ impl ProAudioThread {
         })
     }
 
-    pub(super) fn finish(mut self) -> io::Result<()> {
+    pub(crate) fn finish(mut self) -> io::Result<()> {
         self.revert()
     }
 

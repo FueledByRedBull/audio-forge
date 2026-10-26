@@ -226,6 +226,16 @@ impl<T: Copy + Default, const N: usize> FixedAudioRing<T, N> {
         }
         count
     }
+
+    /// Copy up to `output.len()` values that start `skip` values behind the
+    /// front, leaving them queued.
+    pub fn peek_into(&self, skip: usize, output: &mut [T]) -> usize {
+        let count = output.len().min(self.len.saturating_sub(skip));
+        for (offset, sample) in output.iter_mut().take(count).enumerate() {
+            *sample = self.data[(self.head + skip + offset) % N];
+        }
+        count
+    }
 }
 
 impl<T: Copy + Default, const N: usize> Default for FixedAudioRing<T, N> {
@@ -271,6 +281,23 @@ mod tests {
             RtErrorCode::InputResamplerFailed.as_str(),
             "input resampler failed"
         );
+    }
+
+    #[test]
+    fn ring_peek_reads_ahead_without_consuming() {
+        let mut ring = FixedAudioRing::<u32, 4>::new();
+        ring.push_slice(&[1, 2, 3]);
+        let mut out = [0; 2];
+        assert_eq!(ring.peek_into(1, &mut out), 2);
+        assert_eq!(out, [2, 3]);
+        assert_eq!(ring.peek_into(2, &mut out), 1);
+        assert_eq!(ring.peek_into(3, &mut out), 0);
+        // Across the wrap of the ring.
+        assert_eq!(ring.pop_into(&mut [0; 1]), 1);
+        ring.push_slice(&[4, 5]);
+        assert_eq!(ring.peek_into(2, &mut out), 2);
+        assert_eq!(out, [4, 5]);
+        assert_eq!(ring.len(), 4);
     }
 
     #[test]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 import logging
 import math
@@ -308,6 +310,20 @@ def set_temporary_mute(owner: Any, reason: str, enabled: bool) -> None:
     setter = getattr(processor, "set_output_mute", None)
     if callable(setter):
         setter(bool(enabled or getattr(owner, "user_muted", False)))
+
+
+@contextmanager
+def recovery_paused(processor: Any) -> Iterator[None]:
+    """Keep the engine's stall recovery off while a dialog is open, then put back what was set.
+
+    A capture inside the dialog saves and restores its own value the same way, so the two nest.
+    """
+    previous = bool(processor.is_recovery_suppressed())
+    processor.set_recovery_suppressed(True)
+    try:
+        yield
+    finally:
+        processor.set_recovery_suppressed(previous)
 
 
 def owner_calibration_context_key(owner: Any) -> str | None:

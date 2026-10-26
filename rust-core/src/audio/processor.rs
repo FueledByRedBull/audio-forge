@@ -41,6 +41,14 @@ const RT_PROCESS_BUFFER_CAPACITY: usize = 8192;
 const RT_RESAMPLE_QUEUE_CAPACITY: usize = 65_536;
 const RT_SUPPRESSOR_OUTPUT_CAPACITY: usize = RT_PROCESS_BUFFER_CAPACITY + RNNOISE_FRAME_SIZE;
 const RT_OUTPUT_SCRATCH_CAPACITY: usize = RT_SUPPRESSOR_OUTPUT_CAPACITY;
+// One drain of the suppressor engine moves everything its worker can hand back
+// in a pass into the scratch buffer above, so a pass's results go down the
+// chain in one call; a larger worker queue needs a larger scratch.
+#[cfg(feature = "deepfilter")]
+const _: () = assert!(
+    crate::dsp::deepfilter_ffi::WORKER_OWED_SAMPLES <= RT_SUPPRESSOR_OUTPUT_CAPACITY,
+    "the worker may owe more than the suppressor output scratch holds"
+);
 const RT_SUPPRESSOR_COMMAND_CAPACITY: usize = 2;
 const RT_SUPPRESSOR_RETIRE_CAPACITY: usize = 8;
 const RESAMPLER_CHUNK_SIZE: usize = 1024;

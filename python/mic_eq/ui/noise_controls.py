@@ -31,7 +31,7 @@ class NoiseControl(QObject):
                 "Choose the suppression backend.\n"
                 "RNNoise: low latency baseline.\n"
                 "DeepFilterNet LL: low latency with stronger cleanup.\n"
-                "DeepFilterNet: stronger cleanup at about 30 ms.",
+                "DeepFilterNet: stronger cleanup at about 35 ms.",
             ),
             "strength": (
                 "Noise suppression strength",

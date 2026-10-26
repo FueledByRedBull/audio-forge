@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 from health_check import (
     _ZERO_REQUIRED_DIAGNOSTICS,
+    SUPPRESSOR_PUBLISHED_LATENCY_SAMPLES,
     _critical_diagnostic_failures,
     _suppressor_latency_is_valid,
 )
@@ -641,11 +642,7 @@ def _model_diagnostics_healthy(
         or bool(diagnostics.get("noise_backend_failed", False))
     ):
         return False
-    expected_latency = {
-        "rnnoise": 480,
-        "deepfilter-ll": 480,
-        "deepfilter": 1_440,
-    }.get(model)
+    expected_latency = SUPPRESSOR_PUBLISHED_LATENCY_SAMPLES.get(model)
     if expected_latency is not None and not _suppressor_latency_is_valid(
         diagnostics.get("suppressor_latency_samples"), expected_latency
     ):

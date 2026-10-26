@@ -1636,6 +1636,468 @@ fn the_restart_backoff_resets_only_after_both_streams_keep_delivering() {
     );
 }
 
+/// A running processor on a fake clock under a microphone that has signal. Its
+/// callbacks and writer beat at every watchdog pass; the writer queues only
+/// exact zeros unless `signal` is set.
+struct SilentOutputRig {
+    processor: AudioProcessor,
+    supervisor: Supervisor,
+    signal: bool,
+}
+
+impl SilentOutputRig {
+    fn new() -> Self {
+        let processor = AudioProcessor::new();
+        let shared = &processor.shared;
+        shared.stream.running.store(true, Ordering::Release);
+        shared
+            .stream
+            .last_start_time_us
+            .store(at(0), Ordering::Release);
+        let supervisor = Supervisor::new(Arc::clone(&processor.shared));
+        let rig = Self {
+            processor,
+            supervisor,
+            signal: false,
+        };
+        rig.set_input_db(-20.0);
+        rig
+    }
+
+    fn set_input_db(&self, db: f32) {
+        self.processor
+            .shared
+            .input
+            .rms
+            .store(db.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Healthy callbacks and one written block at `now`.
+    fn beat(&self, now: u64) {
+        let shared = &self.processor.shared;
+        shared.input.callback_time_us.store(now, Ordering::Relaxed);
+        shared.output.callback_time_us.store(now, Ordering::Relaxed);
+        shared
+            .output
+            .last_write_time_us
+            .store(now, Ordering::Relaxed);
+        if self.signal {
+            shared
+                .output
+                .last_signal_write_time_us
+                .store(now, Ordering::Relaxed);
+        }
+    }
+
+    fn beat_and_check(&mut self, now: u64) -> bool {
+        self.beat(now);
+        self.supervisor.check(now)
+    }
+
+    /// The first watchdog pass within `span_ms` of `from` that asks for a restart.
+    fn first_request(&mut self, from: u64, span_ms: u64) -> Option<u64> {
+        let tick = CHECK_INTERVAL_MS * 1_000;
+        (0..=span_ms * 1_000 / tick)
+            .map(|step| from + step * tick)
+            .find(|&now| self.beat_and_check(now))
+    }
+
+    /// `service_recovery_at` with a start that only records that it ran.
+    fn service(&self, now: u64, started: &AtomicBool) -> Option<bool> {
+        self.beat(now);
+        self.processor.service_recovery_at(now, |_, _| {
+            started.store(true, Ordering::SeqCst);
+            Ok("started".to_string())
+        })
+    }
+}
+
+#[test]
+fn a_loop_that_writes_exact_zeros_under_a_live_microphone_restarts_the_streams() {
+    let mut rig = SilentOutputRig::new();
+    // Nothing is judged during the start-up grace period.
+    assert_eq!(rig.first_request(at(0), STARTUP_GRACE_MS - 1), None);
+    // The silence is timed from the first pass that sees it.
+    let seen = at(0) + STARTUP_GRACE_MS * 1_000;
+    let requested = seen + SILENT_OUTPUT_MS * 1_000;
+    assert_eq!(rig.first_request(seen, 10_000), Some(requested));
+    let processor = &rig.processor;
+    assert!(processor.is_recovery_requested());
+    assert_eq!(
+        processor.get_last_restart_reason().as_deref(),
+        Some(SILENT_OUTPUT_REASON)
+    );
+    // A pending request is not asked for again.
+    assert!(!rig.beat_and_check(requested + 250_000));
+
+    assert_eq!(
+        rig.processor.service_recovery_at(requested, streams_open),
+        Some(true)
+    );
+    assert_eq!(rig.processor.get_stream_restart_count(), 1);
+    assert_eq!(
+        rig.processor.get_last_restart_reason().as_deref(),
+        Some(SILENT_OUTPUT_REASON)
+    );
+}
+
+#[test]
+fn nothing_that_explains_the_zeros_counts_as_a_silent_output() {
+    type Setup = fn(&mut SilentOutputRig);
+    let cases: [(&str, Setup); 5] = [
+        ("recovery suppressed", |rig| {
+            rig.processor.set_recovery_suppressed(true)
+        }),
+        ("recording", |rig| {
+            rig.processor
+                .shared
+                .recording
+                .active
+                .store(true, Ordering::Release)
+        }),
+        ("microphone quiet", |rig| rig.set_input_db(-40.0)),
+        ("microphone at the limit", |rig| rig.set_input_db(-35.0)),
+        ("signal being written", |rig| rig.signal = true),
+    ];
+    for (name, setup) in cases {
+        let mut rig = SilentOutputRig::new();
+        setup(&mut rig);
+        assert_eq!(rig.first_request(at(10), 10_000), None, "{name}");
+    }
+    // The same rig does fire once nothing explains it.
+    let mut rig = SilentOutputRig::new();
+    assert!(rig.first_request(at(10), 10_000).is_some());
+}
+
+#[test]
+fn a_block_of_signal_starts_the_clock_again() {
+    let mut rig = SilentOutputRig::new();
+    let from = at(10);
+    assert_eq!(rig.first_request(from, 1_000), None);
+    rig.signal = true;
+    assert!(!rig.beat_and_check(from + 1_250_000));
+    rig.signal = false;
+    // Zeros count from half a second after the block, then for the full time.
+    let zeros_from = from + 1_250_000 + ZERO_OUTPUT_MS * 1_000;
+    assert_eq!(
+        rig.first_request(from + 1_500_000, 10_000),
+        Some(zeros_from + SILENT_OUTPUT_MS * 1_000)
+    );
+}
+
+/// Pushes blocks through the production output writer and returns the writer's
+/// last write time and last signal time.
+fn write_blocks(shared: &Shared, blocks: &[Vec<f32>]) -> (u64, u64) {
+    let rb = AudioRingBuffer::new(8192);
+    let (mut producer, mut consumer) = rb.split();
+    let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
+    let mut true_peak_detector = TruePeakDetector::new();
+    let mut true_peak_limiter = TruePeakLimiter::default();
+    let mut drift_error_ema = 0.0_f32;
+    let mut drift_retimer = DriftRetimer::default();
+    let fade_remaining = Cell::new(0usize);
+    let limiter_enabled = AtomicBool::new(true);
+    let output_ceiling_linear = Cell::new(0.9);
+    let mut writer = OutputWriteContext {
+        output_producer: &mut producer,
+        output_queue_control_scratch: &mut control_scratch,
+        discontinuity_fade_scratch: &mut fade_scratch,
+        output_safety_scratch: &mut safety_scratch,
+        true_peak_detector: &mut true_peak_detector,
+        true_peak_limiter: &mut true_peak_limiter,
+        drift_error_ema: &mut drift_error_ema,
+        drift_retimer: &mut drift_retimer,
+        discontinuity_fade_remaining: &fade_remaining,
+        output_fade_remaining: 0,
+        limiter_enabled: &limiter_enabled,
+        output_ceiling_linear: &output_ceiling_linear,
+        counters: OutputWriteCounters::new(shared),
+        limits: test_output_writer_limits(4, 8, 4),
+    };
+    let mut drained = [0.0_f32; 1024];
+    for block in blocks {
+        assert!(writer.write_chunk(block, true));
+        while consumer.read(&mut drained) > 0 {}
+    }
+    (
+        shared.output.last_write_time_us.load(Ordering::Relaxed),
+        shared
+            .output
+            .last_signal_write_time_us
+            .load(Ordering::Relaxed),
+    )
+}
+
+/// What the writer stamps decides whether the supervisor sees silence: a meter
+/// level cannot, since the suppressor and a closed gate take steady noise
+/// 60 and 36 dB down and the meter then reads below its floor.
+#[test]
+fn only_exact_zeros_written_look_like_silence_to_the_supervisor() {
+    let constant = |level_db: f32| vec![10.0_f32.powf(level_db / 20.0); 480];
+    let noise = |level_db: f32| {
+        let amplitude = 10.0_f32.powf(level_db / 20.0);
+        (0..480)
+            .map(|i| {
+                if (i * 7 + i / 3) % 2 == 0 {
+                    amplitude
+                } else {
+                    -amplitude
+                }
+            })
+            .collect::<Vec<f32>>()
+    };
+    let mut one_sample = vec![0.0_f32; 480];
+    one_sample[300] = 1.0e-12;
+    for (name, block, silent) in [
+        ("exact zeros", vec![0.0_f32; 480], true),
+        ("negative zeros", vec![-0.0_f32; 480], true),
+        ("-130 dB constant", constant(-130.0), false),
+        ("-150 dB constant", constant(-150.0), false),
+        ("-150 dB noise", noise(-150.0), false),
+        ("one tiny sample", one_sample, false),
+    ] {
+        let processor = AudioProcessor::new();
+        let shared = &processor.shared;
+        shared
+            .input
+            .rms
+            .store((-20.0_f32).to_bits(), Ordering::Relaxed);
+        let (last_write, last_signal) = write_blocks(shared, &vec![block; 4]);
+        assert_ne!(last_write, 0, "{name}");
+        assert_eq!(last_signal == 0, silent, "{name}");
+        // Just inside the window after the last write, the zeros have not
+        // lasted long enough, but the zeros of an earlier signal-free run have.
+        let judged_at = last_write + ZERO_OUTPUT_MS * 1_000 - 1_000;
+        assert_eq!(
+            output_silent_under_signal(shared, judged_at),
+            silent,
+            "{name}"
+        );
+    }
+}
+
+/// A restart that ends the silence ends the request, even one raised before a
+/// dialog paused recovery and serviced after it closed, and it leaves the last
+/// recovery as it was.
+#[test]
+fn a_silent_output_request_is_withdrawn_once_the_output_is_back() {
+    for (name, suppress, backoff, earlier) in [
+        ("serviced at once", false, false, None),
+        ("waiting out the back-off", false, true, None),
+        ("kept through a dialog", true, false, None),
+        (
+            "after an earlier restart",
+            false,
+            false,
+            Some("input_cb_age_ms=9000"),
+        ),
+    ] {
+        let mut rig = SilentOutputRig::new();
+        if let Some(reason) = earlier {
+            let stream = &rig.processor.shared.stream;
+            request_stall_restart(
+                &stream.recovery_state,
+                &stream.restart_requested,
+                reason.to_string(),
+            );
+            let reopen = |p: &AudioProcessor, _: &mut Streams| {
+                p.shared.stream.running.store(true, Ordering::Release);
+                Ok("started".to_string())
+            };
+            assert_eq!(rig.processor.service_recovery_at(at(1), reopen), Some(true));
+        }
+        let requested = rig.first_request(at(10), 10_000).unwrap();
+        let stream = &rig.processor.shared.stream;
+        if backoff {
+            stream.restart_backoff_index.store(3, Ordering::Release);
+            stream
+                .last_restart_attempt_us
+                .store(requested, Ordering::Release);
+        }
+        if suppress {
+            rig.processor.set_recovery_suppressed(true);
+        }
+        rig.signal = true; // the output is back
+        let started = AtomicBool::new(false);
+
+        let at_service = requested + 2_000_000;
+        if suppress {
+            // Paused: the request waits, whatever the output does.
+            assert_eq!(rig.service(at_service, &started), None);
+            assert!(rig.processor.is_recovery_requested(), "{name}");
+            rig.processor.set_recovery_suppressed(false);
+        }
+        assert_eq!(rig.service(at_service, &started), None);
+        let processor = &rig.processor;
+        assert!(!started.load(Ordering::SeqCst), "{name}");
+        assert!(!processor.is_recovery_requested(), "{name}");
+        assert!(!processor.is_recovering(), "{name}");
+        assert_eq!(
+            processor.get_stream_restart_count(),
+            u64::from(earlier.is_some()),
+            "{name}"
+        );
+        assert!(!stream.recovery_state.lock().unwrap().reason_pending);
+        // Nothing restarted for it, so it is no recovery trigger.
+        assert_eq!(
+            processor.get_last_restart_reason().as_deref(),
+            earlier,
+            "{name}"
+        );
+
+        // The supervisor judges again afterwards.
+        rig.signal = false;
+        assert!(
+            rig.first_request(requested + 5_000_000, 10_000).is_some(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_silent_output_request_that_still_holds_restarts_the_streams() {
+    let mut rig = SilentOutputRig::new();
+    let requested = rig.first_request(at(10), 10_000).unwrap();
+    let started = AtomicBool::new(false);
+    rig.processor.set_recovery_suppressed(true);
+    assert_eq!(rig.service(requested, &started), None);
+    rig.processor.set_recovery_suppressed(false);
+    assert_eq!(rig.service(requested + 1_000_000, &started), Some(true));
+    assert!(started.load(Ordering::SeqCst));
+}
+
+#[test]
+fn another_cause_or_a_stopped_stream_keeps_a_silent_output_request() {
+    type Setup = fn(&AudioProcessor);
+    let cases: [(&str, Setup); 4] = [
+        ("a stall asked as well", |p| {
+            request_stall_restart(
+                &p.shared.stream.recovery_state,
+                &p.shared.stream.restart_requested,
+                "input_cb_age_ms=9000".to_string(),
+            )
+        }),
+        ("a stream error", |p| {
+            store_rt_error(
+                p.shared.dsp.rt_error_code.as_ref(),
+                RtErrorCode::InputStreamError,
+            )
+        }),
+        ("a resampler failure", |p| {
+            p.shared
+                .output
+                .resampler_error_count
+                .store(1, Ordering::Relaxed)
+        }),
+        ("a failed restart being retried", |p| {
+            p.shared.stream.running.store(false, Ordering::Release)
+        }),
+    ];
+    for (name, setup) in cases {
+        let mut rig = SilentOutputRig::new();
+        let requested = rig.first_request(at(10), 10_000).unwrap();
+        setup(&rig.processor);
+        rig.signal = true; // the output is back
+        let started = AtomicBool::new(false);
+        assert_eq!(
+            rig.service(requested + 1_000_000, &started),
+            Some(true),
+            "{name}"
+        );
+    }
+}
+
+/// The streams of a silence that stays keep delivering, so only what the
+/// supervisor saw keeps the back-off from resetting every 10 s.
+#[test]
+fn a_silence_that_a_restart_does_not_cure_backs_off_to_the_cap() {
+    let mut rig = SilentOutputRig::new();
+    let tick = CHECK_INTERVAL_MS * 1_000;
+    let mut restarts = Vec::new();
+    for step in 0..=800 {
+        let now = at(0) + step * tick;
+        rig.beat_and_check(now);
+        let reopen = |processor: &AudioProcessor, _: &mut Streams| {
+            processor
+                .shared
+                .stream
+                .running
+                .store(true, Ordering::Release);
+            processor
+                .shared
+                .stream
+                .last_start_time_us
+                .store(now, Ordering::Release);
+            Ok("started".to_string())
+        };
+        if rig.processor.service_recovery_at(now, reopen) == Some(true) {
+            restarts.push(now);
+        }
+    }
+    let processor = &rig.processor;
+    assert_eq!(processor.get_stream_restart_count(), restarts.len() as u64);
+    assert!(restarts.len() >= 7, "{restarts:?}");
+    for (attempt, pair) in restarts.windows(2).enumerate() {
+        let wait_ms = RESTART_BACKOFF_MS[(attempt + 1).min(RESTART_BACKOFF_MS.len() - 1)];
+        assert!(pair[1] - pair[0] >= wait_ms * 1_000, "{restarts:?}");
+    }
+    let last = restarts.len() - 1;
+    assert!(restarts[last] - restarts[last - 1] >= 30_000_000);
+
+    // Once the output carries signal again, delivering streams reset the back-off.
+    rig.signal = true;
+    let stream = &processor.shared.stream;
+    stream.restart_requested.store(false, Ordering::Release);
+    let seen = stream.silent_output_seen_us.load(Ordering::Relaxed);
+    let healthy = restarts[last].max(seen) + 11_000_000;
+    rig.beat(healthy);
+    assert_eq!(processor.service_recovery_at(healthy, streams_open), None);
+    assert_eq!(stream.restart_backoff_index.load(Ordering::Acquire), 0);
+}
+
+/// The silence goes on under the speech pauses, so a pause (the microphone
+/// below the signal level) is no evidence that the restart cured it.
+#[test]
+fn a_pause_in_speech_does_not_reset_the_backoff() {
+    let mut rig = SilentOutputRig::new();
+    {
+        let stream = &rig.processor.shared.stream;
+        stream.last_start_time_us.store(at(10), Ordering::Release);
+        stream
+            .last_restart_attempt_us
+            .store(at(10), Ordering::Release);
+        stream.restart_backoff_index.store(2, Ordering::Release);
+    }
+    let backoff = |rig: &SilentOutputRig| {
+        rig.processor
+            .shared
+            .stream
+            .restart_backoff_index
+            .load(Ordering::Acquire)
+    };
+
+    // Speech over the grace time: the silence is seen until at(16).
+    assert_eq!(rig.first_request(at(15), 1_000), None);
+    // Then a pause. Ten seconds after the restart, one poll sees no silence.
+    rig.set_input_db(-60.0);
+    rig.beat_and_check(at(21));
+    assert_eq!(
+        rig.processor.service_recovery_at(at(21), streams_open),
+        None
+    );
+    assert_eq!(backoff(&rig), 2);
+
+    // Ten seconds after the last sighting, the pause has lasted long enough.
+    rig.beat_and_check(at(26));
+    assert_eq!(
+        rig.processor.service_recovery_at(at(26), streams_open),
+        None
+    );
+    assert_eq!(backoff(&rig), 0);
+}
+
 #[test]
 fn suppressor_rebuilds_are_rate_limited() {
     let processor = AudioProcessor::new();
@@ -3659,6 +4121,7 @@ fn output_writer_counters<'a>(
     output_buffer_len: &'a AtomicU32,
     last_output_write_time: &'a AtomicU64,
 ) -> OutputWriteCounters<'a> {
+    static LAST_SIGNAL_WRITE_TIME: AtomicU64 = AtomicU64::new(0);
     static OUTPUT_CLIP_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
     static OUTPUT_CLIP_PEAK_DB: AtomicU32 = AtomicU32::new((-120.0_f32).to_bits());
     static OUTPUT_FINAL_PEAK_HOLD: AtomicU32 = AtomicU32::new(0);
@@ -3681,6 +4144,7 @@ fn output_writer_counters<'a>(
         rt_error_code,
         output_buffer_len,
         last_output_write_time,
+        last_signal_write_time: &LAST_SIGNAL_WRITE_TIME,
         output_clip_event_count: &OUTPUT_CLIP_EVENT_COUNT,
         output_clip_peak_db: &OUTPUT_CLIP_PEAK_DB,
         output_final_peak_hold: &OUTPUT_FINAL_PEAK_HOLD,
@@ -4263,6 +4727,7 @@ fn test_output_writer_limits_true_peak_without_sample_clip() {
             rt_error_code: &rt_error_code,
             output_buffer_len: &output_buffer_len,
             last_output_write_time: &last_output_write_time,
+            last_signal_write_time: &AtomicU64::new(0),
             output_clip_event_count: &output_clip_event_count,
             output_clip_peak_db: &output_clip_peak_db,
             output_final_peak_hold: &output_final_peak_hold,
@@ -5629,17 +6094,35 @@ fn suppressor_starvation_count_is_wired_to_the_feed_and_every_reset() {
         "// Always feed suppressor first so frame accumulation is correct.",
         "// Record DSP processing time",
     );
+    // The processing, the output and the check live in `drain_suppressor`,
+    // which the idle passes call too (with nothing fed).
     let feed = enabled_branch.find("starvation.fed(accepted)").unwrap();
-    let process = enabled_branch.find("engine.process_frames()").unwrap();
-    let output = enabled_branch.find("if available > 0 {").unwrap();
-    let check = enabled_branch.find("starvation.starved()").unwrap();
-    assert!(feed < process && process < output && output < check);
-    let output_arm = source_between(
-        enabled_branch,
-        "if available > 0 {",
-        "} else if accepted > 0",
-    );
+    let drain = enabled_branch
+        .find("self.drain_suppressor(shared, accepted)")
+        .unwrap();
+    assert!(feed < drain);
+    let drain_fn = source_between(source, "fn drain_suppressor(", "/// An idle pass:");
+    let process = drain_fn.find("engine.process_frames()").unwrap();
+    let output = drain_fn.find("if available > 0 {").unwrap();
+    let check = drain_fn.find("starvation.starved()").unwrap();
+    assert!(process < output && output < check);
+    let output_arm = source_between(drain_fn, "if available > 0 {", "} else {");
     assert!(output_arm.contains("starvation.restart()"));
+    // An idle pass feeds nothing, so it can never raise the starvation alarm.
+    let idle_pass = source_between(
+        source,
+        "fn harvest_suppressor_output(",
+        "/// Restart everything that depends on contiguous input",
+    );
+    assert!(idle_pass.contains("self.drain_suppressor(shared, 0)"));
+    let pass = source_between(
+        source,
+        "pub(super) fn pass(&mut self)",
+        "fn reset_input_continuity(",
+    );
+    let no_input = source_between(pass, "if n_raw == 0 {", "if self.input.stage_block");
+    assert!(no_input.contains("if suppressor_in_use {"));
+    assert!(no_input.contains("self.pipeline.harvest_suppressor_output(shared)"));
     let reset = source_between(
         source,
         "fn reset_after_input_gap(",

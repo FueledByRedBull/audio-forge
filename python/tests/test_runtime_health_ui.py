@@ -14,7 +14,6 @@ from mic_eq.ui.health import RecentStreamHealth, advice_for
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.shell_specs import TEXT_SPECS
 from mic_eq.ui.shell_state import TextState
-from mic_eq.ui.stream_recovery import StreamRecoveryManager
 from mic_eq.ui.theme import PALETTE
 
 
@@ -132,7 +131,7 @@ def _diagnostic_window(diagnostics: dict[str, Any]):
     state_owner = QObject()
     window: Any = SimpleNamespace(
         _stream_health=RecentStreamHealth(),
-        _stream_recovery=StreamRecoveryManager(),
+        _processing=False,
         _last_backend_warning=None,
         processor=processor,
         _update_session_summary=Mock(),
@@ -202,6 +201,16 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
     diagnostics["input_callback_error_count"] += 1
     MainWindow._update_diagnostic_labels(window, **args)
     assert texts["health_summary_label"].state == "warn"
+
+
+def test_recovery_chip_says_the_restarts_are_paused_during_setup(qapp):
+    window, _processor, args = _diagnostic_window({"recovery_suppressed": True})
+
+    MainWindow._update_diagnostic_labels(window, **args)
+
+    chip = window.shell_texts["recovery_diag_label"]
+    assert chip.text == "Recovery: 0 restarts, 0 output recoveries, paused during setup"
+    assert chip.state == "info"
 
 
 def test_output_drift_retiming_is_not_an_engine_fault(qapp, monkeypatch):

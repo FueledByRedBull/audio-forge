@@ -105,6 +105,11 @@ impl OfflineLoop {
         self.input.write(samples)
     }
 
+    #[cfg(all(test, feature = "deepfilter"))]
+    pub(super) fn drift_error_ema(&self) -> f32 {
+        self.dsp.drift_error_ema()
+    }
+
     pub(super) fn pass(&mut self) -> Pass {
         let pass = self.dsp.pass();
         #[cfg(feature = "vad")]

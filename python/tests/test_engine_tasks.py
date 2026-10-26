@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from PySide6.QtCore import QTimer
@@ -275,10 +276,7 @@ def test_the_engine_recovery_runs_on_the_worker_one_call_at_a_time(engine_window
     engine.release.clear()
     engine.entered.clear()
 
-    def tick() -> None:
-        window._service_stream_recovery(
-            diagnostics={}, input_rms=-60.0, output_rms=-60.0, output_buf=0
-        )
+    tick = window._service_stream_recovery
 
     began = time.monotonic()
     tick()
@@ -295,41 +293,118 @@ def test_the_engine_recovery_runs_on_the_worker_one_call_at_a_time(engine_window
     wait_until(qapp, lambda: engine.calls == ["service_recovery"] * 2)
 
 
-def test_an_output_stall_is_recovered_with_the_mute_set_between_stop_and_start(
-    engine_window, qapp
+def test_a_stall_is_left_to_the_engines_own_recovery(engine_window, monkeypatch):
+    """The supervisor in the engine is the only stall detector: a tick polls and restarts nothing."""
+    window, engine = engine_window
+    window._engine.threaded = False  # the fake engine answers at once
+    clock = [1000.0]
+    monkeypatch.setattr("mic_eq.ui.main_window.time.monotonic", lambda: clock[0])
+    window._start_processing()
+    # The stalls the window used to judge for itself, long past any warm-up or grace time:
+    # output callbacks gone while the input lives, and a loud input with a silent output.
+    engine.get_input_callback_age_ms = lambda: 10
+    engine.get_output_callback_age_ms = lambda: 9_000
+    engine.get_input_rms_db = lambda: -20.0
+    engine.get_output_rms_db = lambda: -120.0
+    engine.calls.clear()
+
+    for _ in range(60):
+        clock[0] += 1.0
+        window._update_diagnostics()
+
+    assert engine.calls == ["service_recovery"] * 60
+    assert engine.running
+
+
+def test_the_poll_shows_the_engines_back_off_and_adds_none_of_its_own(engine_window):
+    window, engine = engine_window
+    window._engine.threaded = False
+    window._start_processing()
+    engine.calls.clear()
+    stall = "input_cb_age_ms=3100, output_cb_age_ms=12, output_write_age_ms=3200"
+    engine.get_last_restart_reason = lambda: stall
+    engine.get_last_stream_error = lambda: "Restart failed for selected devices: gone"
+    retrying = (
+        "The selected devices are not available, so AudioForge keeps retrying: "
+        "Restart failed for selected devices: gone"
+    )
+
+    # What the engine answers after a stall: waiting out its back-off, a restart whose devices are
+    # gone, the back-off again, then a restart that works. Every tick asks; none restarts itself.
+    for answer, shown in (
+        (None, "Processing: started"),
+        (False, retrying),
+        (None, retrying),
+        (True, "Audio restarted automatically after: audio stalled; you may have heard a short gap"),
+    ):
+        engine.recovery_result = answer
+        window._update_diagnostics()
+        assert window.status_message.text == shown
+
+    assert engine.calls == ["service_recovery"] * 4
+
+
+def test_a_restart_names_its_cause_unless_it_was_a_stall(engine_window):
+    window, engine = engine_window
+    window._engine.threaded = False
+    engine.recovery_result = True
+    engine.get_last_restart_reason = lambda: "DSP thread panicked: boom"
+
+    window._service_stream_recovery()
+
+    assert window.status_message.text == (
+        "Audio restarted automatically after: DSP thread panicked: boom; you may have heard a short gap"
+    )
+
+
+@pytest.mark.parametrize("before", [False, True])
+@pytest.mark.parametrize(
+    "open_dialog",
+    ["_on_latency_calibration_clicked", "_on_auto_eq_clicked", "_on_auto_voice_setup_clicked"],
+)
+def test_a_calibration_dialog_pauses_the_engines_recovery_while_it_is_open(
+    engine_window, monkeypatch, open_dialog, before
 ):
+    window, engine = engine_window
+    monkeypatch.setattr(window, "_latency_profile_key", lambda: "route")
+    monkeypatch.setattr(window, "_current_latency_profile", lambda: None)
+    for name in ("LatencyCalibrationDialog", "CalibrationDialog", "VoiceSetupDialog"):
+        monkeypatch.setattr(main_window, name, lambda *_args, **_kwargs: Mock())
+    during: list[bool] = []
+
+    def exec_dialog(_dialog) -> int:
+        during.append(engine.is_recovery_suppressed())
+        return 0
+
+    monkeypatch.setattr(main_window, "_exec_and_release", exec_dialog)
+    engine.set_recovery_suppressed(before)
+
+    getattr(window, open_dialog)()
+
+    assert during == [True]
+    assert engine.is_recovery_suppressed() is before
+
+
+def test_a_stop_during_a_recovery_poll_stays_stopped(engine_window, qapp):
     window, engine = engine_window
     window._start_processing()
     engine.calls.clear()
     engine.release.clear()
     engine.entered.clear()
-
-    window._recover_output_path()
+    engine.recovery_result = True
+    window._service_stream_recovery()
     assert engine.entered.wait(2.0)
-    assert not window.stop_btn_action.isEnabled() and not window.start_btn_action.isEnabled()
+
+    window.stop_btn_action.trigger()  # queued behind the poll on the one worker
     engine.release.set()
-    wait_until(qapp, lambda: "restarted it" in window.status_message.text)
-    wait_until(qapp, lambda: window.stop_btn_action.isEnabled())
-
-    # The mute lands before the engine starts, or the first buffer would be heard.
-    assert engine.calls == ["stop", "mute", "start", "mute"]
-    assert engine.running
-    assert window.status_message.text == (
-        "The output stopped responding, so AudioForge restarted it (started)"
-    )
-
-
-def test_an_output_recovery_that_fails_says_so_and_unlocks_the_controls(engine_window, qapp):
-    window, engine = engine_window
-    window._start_processing()
-    engine.start_error = RuntimeError("device vanished")
-
-    window._recover_output_path()
-    wait_until(qapp, lambda: "could not restart the output" in window.status_message.text)
     wait_until(qapp, lambda: window.start_btn_action.isEnabled())
+    engine.recovery_result = None  # the stop took the pending request with it
+    window._update_diagnostics()
+    window._engine.wait()
+    run_loop_for(qapp, 0.1)
 
-    assert "device vanished" in window.status_message.text
-    assert not engine.running and not window.stop_btn_action.isEnabled()
+    assert engine.calls == ["service_recovery", "stop", "service_recovery"]
+    assert not engine.running
 
 
 def test_the_timers_leave_the_engine_alone_while_a_call_is_out(engine_window, qapp):
@@ -411,10 +486,7 @@ def test_a_panic_in_the_recovery_poll_lets_the_next_tick_ask_again(engine_window
     window._start_processing()
     engine.recovery_error = _Panic("unsendable")
 
-    def tick() -> None:
-        window._service_stream_recovery(
-            diagnostics={}, input_rms=-60.0, output_rms=-60.0, output_buf=0
-        )
+    tick = window._service_stream_recovery
 
     tick()
     wait_until(qapp, lambda: not window._recovery_polling)
@@ -461,28 +533,12 @@ def test_the_late_answer_of_a_start_after_shutdown_is_dropped(engine_window, qap
     assert engine.lifecycle() == ["start"]
 
 
-def test_a_recovery_restart_does_not_start_audio_again_after_shutdown(engine_window, qapp):
-    window, engine = engine_window
-    window._start_processing()
-    engine.calls.clear()
-    engine.release.clear()
-    engine.entered.clear()
-    window._recover_output_path()
-    assert engine.entered.wait(2.0)
-
-    threading.Timer(0.2, engine.release.set).start()
-    window._shutdown()  # waits for the stop that is out, then stops what runs
-    run_loop_for(qapp, 0.2)
-
-    assert engine.lifecycle() == ["stop"] and not engine.running
-
-
 def test_a_recovery_poll_holds_the_getters_off_the_engine_while_it_is_out(engine_window, qapp):
     window, engine = engine_window
     window._start_processing()
     engine.release.clear()
     engine.entered.clear()
-    window._service_stream_recovery(diagnostics={}, input_rms=-60.0, output_rms=-60.0, output_buf=0)
+    window._service_stream_recovery()
     assert engine.entered.wait(2.0)
 
     engine.status_reads = 0
@@ -504,7 +560,7 @@ def test_a_start_click_during_a_recovery_poll_waits_for_its_answer(
     shown: list[str] = []
     monkeypatch.setattr(QMessageBox, "critical", lambda _parent, _title, text: shown.append(text))
     engine.release.clear()
-    window._service_stream_recovery(diagnostics={}, input_rms=-60.0, output_rms=-60.0, output_buf=0)
+    window._service_stream_recovery()
     assert engine.entered.wait(2.0)
 
     window.start_btn_action.trigger()

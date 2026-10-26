@@ -1298,6 +1298,278 @@ mod tests {
         );
     }
 
+    /// Seconds on the fake clock `service_recovery_at` runs on.
+    fn at(seconds: u64) -> u64 {
+        100_000_000 + seconds * 1_000_000
+    }
+
+    fn streams_open(_: &mut AudioProcessor) -> Result<String, String> {
+        Ok("Started".to_string())
+    }
+
+    /// An error code left set by an earlier suppressor fault must not turn a
+    /// later callback stall into a suppressor rebuild: that would clear the
+    /// request and leave the stalled streams as they are.
+    #[test]
+    fn a_stall_restart_is_not_mistaken_for_a_stale_suppressor_fault() {
+        let mut processor = AudioProcessor::new();
+        let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
+        let (tx, mut rx) = queue.split();
+        *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
+
+        for (round, stale) in [
+            RtErrorCode::SuppressorBackendFailed,
+            RtErrorCode::SuppressorNonFinite,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let reason = "input_cb_age_ms=9000, output_cb_age_ms=9000, output_write_age_ms=9000";
+            store_rt_error(processor.rt_error_code.as_ref(), stale);
+            request_stall_restart(
+                &processor.recovery_state,
+                &processor.restart_requested,
+                reason.to_string(),
+            );
+            let first = at(round as u64 * 100);
+            // Inside the back-off the request waits; it is not rebuilt away.
+            processor.restart_backoff_index.store(1, Ordering::Release);
+            processor
+                .last_restart_attempt_us
+                .store(first, Ordering::Release);
+            assert_eq!(
+                processor.service_recovery_at(first + 1_000_000, streams_open),
+                None
+            );
+            assert!(processor.restart_requested.load(Ordering::Acquire));
+            // Once it is due the streams restart.
+            assert_eq!(
+                processor.service_recovery_at(first + 2_000_000, streams_open),
+                Some(true)
+            );
+            assert_eq!(processor.get_stream_restart_count(), round as u64 + 1);
+            assert!(rx.try_pop().is_none(), "no engine for a stalled stream");
+            assert_eq!(processor.get_last_restart_reason().as_deref(), Some(reason));
+        }
+    }
+
+    /// A restart whose streams open but never deliver must not reset the
+    /// back-off: the stall watchdog would restart them every ~6 s forever.
+    #[test]
+    fn restarts_of_streams_that_open_but_stay_silent_back_off_to_the_cap() {
+        let mut processor = AudioProcessor::new();
+        let mut restarted = Vec::new();
+        // The supervisor flags a stall about 6 s after each restart.
+        for second in 0..=140 {
+            let due = restarted.last().is_none_or(|last| second >= last + 6);
+            if due && !processor.restart_requested.load(Ordering::Acquire) {
+                request_stall_restart(
+                    &processor.recovery_state,
+                    &processor.restart_requested,
+                    "stalled".to_string(),
+                );
+            }
+            if processor.service_recovery_at(at(second), streams_open) == Some(true) {
+                restarted.push(second);
+            }
+        }
+        assert_eq!(restarted, [0, 6, 12, 22, 42, 72, 102, 132]);
+        assert_eq!(
+            processor.restart_backoff_index.load(Ordering::Acquire) as usize,
+            RESTART_BACKOFF_MS.len() - 1
+        );
+        assert_eq!(*RESTART_BACKOFF_MS.last().unwrap(), 30_000);
+    }
+
+    #[test]
+    fn the_restart_backoff_resets_only_after_both_streams_keep_delivering() {
+        let mut processor = AudioProcessor::new();
+        processor.restart_backoff_index.store(5, Ordering::Release);
+        processor
+            .last_restart_attempt_us
+            .store(at(0), Ordering::Release);
+        let set = |processor: &AudioProcessor, input: u64, output: u64| {
+            processor
+                .last_input_callback_time_us
+                .store(input, Ordering::Relaxed);
+            processor
+                .last_output_write_time
+                .store(output, Ordering::Relaxed);
+        };
+        let backoff =
+            |processor: &AudioProcessor| processor.restart_backoff_index.load(Ordering::Acquire);
+        // (input callback, output write, now): none of these is a recovery.
+        for (input, output, now) in [
+            (at(5), at(5), at(9)),       // delivering, but for under 10 s
+            (at(0) - 1, at(11), at(11)), // input callback from before the restart
+            (at(11), 0, at(11)),         // nothing written to the output yet
+            (at(8), at(11), at(11)),     // input callbacks stopped 3 s ago
+        ] {
+            set(&processor, input, output);
+            assert_eq!(processor.service_recovery_at(now, streams_open), None);
+            assert_eq!(backoff(&processor), 5, "{input} {output} {now}");
+        }
+        set(&processor, at(11), at(11));
+        assert_eq!(processor.service_recovery_at(at(12), streams_open), None);
+        assert_eq!(backoff(&processor), 0);
+
+        // After that, the next stall restarts at once.
+        request_stall_restart(
+            &processor.recovery_state,
+            &processor.restart_requested,
+            "stalled".to_string(),
+        );
+        assert_eq!(
+            processor.service_recovery_at(at(13), streams_open),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn suppressor_rebuilds_are_rate_limited() {
+        let mut processor = AudioProcessor::new();
+        let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
+        let (tx, mut rx) = queue.split();
+        *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
+        let fault = |processor: &AudioProcessor| {
+            store_rt_error(
+                processor.rt_error_code.as_ref(),
+                RtErrorCode::SuppressorNonFinite,
+            );
+            processor.restart_requested.store(true, Ordering::Release);
+        };
+
+        fault(&processor);
+        assert_eq!(
+            processor.service_recovery_at(at(0), streams_open),
+            Some(true)
+        );
+        assert!(rx.try_pop().is_some());
+
+        // The fault returns: requests inside the interval are skipped and the
+        // streams are left alone; the DSP thread asks again while it lasts.
+        for second in [1, 5, 9] {
+            fault(&processor);
+            assert_eq!(
+                processor.service_recovery_at(at(second), streams_open),
+                None
+            );
+            assert!(
+                !processor.restart_requested.load(Ordering::Acquire),
+                "a skipped request must not hold the supervisor back"
+            );
+            assert!(rx.try_pop().is_none());
+            assert_eq!(
+                processor.get_rt_error_code(),
+                RtErrorCode::SuppressorNonFinite as u32,
+                "the fault stays visible"
+            );
+        }
+        assert_eq!(processor.get_stream_restart_count(), 0);
+        fault(&processor);
+        assert_eq!(
+            processor.service_recovery_at(at(10), streams_open),
+            Some(true)
+        );
+        assert!(rx.try_pop().is_some());
+        assert!(!processor.restart_requested.load(Ordering::Acquire));
+    }
+
+    /// Between reading a suppressor request and clearing it, a stream error,
+    /// a stall or an output-resampler failure may ask for a restart of its
+    /// own. Clearing the flag must not erase that request.
+    #[test]
+    fn clearing_a_suppressor_request_keeps_one_that_arrived_meanwhile() {
+        let fault = RtErrorCode::SuppressorNonFinite;
+        for (clear_code, interleaved) in [
+            (false, "none"),
+            (true, "none"),
+            (false, "device lost"),
+            (true, "device lost"),
+            (false, "stall"),
+            (true, "stall"),
+            (false, "output resampler"),
+            (true, "output resampler"),
+        ] {
+            let processor = AudioProcessor::new();
+            // The request as service_recovery read it.
+            store_rt_error(processor.rt_error_code.as_ref(), fault);
+            processor.restart_requested.store(true, Ordering::Release);
+            // What the other thread did before the request is cleared.
+            match interleaved {
+                "device lost" => store_rt_error(
+                    processor.rt_error_code.as_ref(),
+                    RtErrorCode::InputStreamError,
+                ),
+                "stall" => request_stall_restart(
+                    &processor.recovery_state,
+                    &processor.restart_requested,
+                    "stalled".to_string(),
+                ),
+                "output resampler" => {
+                    processor
+                        .output_resampler_error_count
+                        .store(1, Ordering::Relaxed);
+                }
+                _ => {}
+            }
+            processor.finish_suppressor_request(fault, clear_code);
+            assert_eq!(
+                processor.restart_requested.load(Ordering::Acquire),
+                interleaved != "none",
+                "{interleaved}, clear_code {clear_code}"
+            );
+            let code = processor.get_rt_error_code();
+            match (interleaved, clear_code) {
+                ("device lost", _) => assert_eq!(code, RtErrorCode::InputStreamError as u32),
+                (_, true) => assert_eq!(code, RtErrorCode::None as u32),
+                (_, false) => assert_eq!(code, fault as u32),
+            }
+        }
+    }
+
+    /// A stall inside the rebuild interval still restarts the streams: the
+    /// supervisor keeps watching while a rebuild is being held back.
+    #[test]
+    fn a_stall_during_the_rebuild_interval_restarts_the_streams() {
+        let mut processor = AudioProcessor::new();
+        let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
+        let (tx, mut rx) = queue.split();
+        *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
+        let fault = |processor: &AudioProcessor| {
+            store_rt_error(
+                processor.rt_error_code.as_ref(),
+                RtErrorCode::SuppressorBackendFailed,
+            );
+            processor.restart_requested.store(true, Ordering::Release);
+        };
+        fault(&processor);
+        assert_eq!(
+            processor.service_recovery_at(at(0), streams_open),
+            Some(true)
+        );
+        assert!(rx.try_pop().is_some());
+
+        fault(&processor);
+        assert_eq!(processor.service_recovery_at(at(2), streams_open), None);
+        // The supervisor only checks for a stall while no restart is pending.
+        assert!(!processor.restart_requested.load(Ordering::Acquire));
+        request_stall_restart(
+            &processor.recovery_state,
+            &processor.restart_requested,
+            "input_cb_age_ms=9000, output_cb_age_ms=9000, output_write_age_ms=9000".to_string(),
+        );
+        assert_eq!(
+            processor.service_recovery_at(at(3), streams_open),
+            Some(true)
+        );
+        assert_eq!(processor.get_stream_restart_count(), 1);
+        assert!(
+            rx.try_pop().is_none(),
+            "the stall is not answered with a rebuild"
+        );
+    }
+
     #[test]
     fn test_start_publishes_processing_thread_before_starting_streams() {
         let source = include_str!("dsp_loop.rs");
@@ -3896,6 +4168,61 @@ mod tests {
         }
     }
 
+    /// Bypass and Raw monitor toggles reset every stage on the DSP thread.
+    #[test]
+    fn a_processing_path_change_resets_every_stage_without_allocating() {
+        let mut block = [0.0_f32; 512];
+        fill_probe_block(&mut block);
+        let rate = TARGET_SAMPLE_RATE as f64;
+        let mut gate = NoiseGate::new(-45.0, 5.0, 80.0, rate);
+        let mut eq = ParametricEQ::new(rate);
+        eq.set_band_gain(4, 3.0);
+        let mut compressor = Compressor::default_voice(rate);
+        compressor.set_auto_makeup_enabled(true);
+        let mut deesser = DeEsser::new(rate);
+        deesser.set_enabled(true);
+        let mut limiter = Limiter::default_settings(rate);
+        let mut suppressor =
+            new_noise_suppression_engine(NoiseModel::RNNoise, Arc::new(AtomicU32::new(0)));
+        let mut cleanup = AdaptiveInputCleanupState::new(TARGET_SAMPLE_RATE as f32);
+        // Leave state behind in every stage, including the loudness meter.
+        for _ in 0..8 {
+            gate.process_block_inplace(&mut block);
+            eq.process_block_inplace(&mut block);
+            compressor.process_block_inplace(&mut block);
+            deesser.process_block_inplace(&mut block);
+            limiter.process_block_inplace(&mut block);
+            suppressor.push_samples(&block);
+            suppressor.process_frames();
+            cleanup.analyze_input(&block);
+        }
+
+        crate::test_alloc::assert_no_allocations("processing path change resets", || {
+            gate.reset();
+            eq.reset();
+            compressor.reset();
+            deesser.reset();
+            limiter.reset();
+            suppressor.soft_reset();
+            cleanup.reset_dynamic_state();
+        });
+
+        // The scan below keeps this list equal to the production reset block.
+        let source = include_str!("dsp_loop.rs");
+        let path_change = source_between(
+            source,
+            "if processing_path != previous_processing_path {",
+            "previous_processing_path = processing_path;",
+        );
+        assert_eq!(
+            path_change.matches(".reset()").count(),
+            6,
+            "a stage reset was added to or removed from the path change: update this test"
+        );
+        assert_eq!(path_change.matches(".soft_reset()").count(), 1);
+        assert_eq!(path_change.matches("reset_dynamic_state()").count(), 1);
+    }
+
     #[test]
     fn test_offline_block_processor_processes_without_live_stream_state() {
         let mut processor = OfflineDspBlockProcessor::new(TARGET_SAMPLE_RATE as f64);
@@ -4942,6 +5269,127 @@ mod tests {
         assert!(compact.contains("suppressor_rt.push_controlled_samples(buffer,gate_controls)"));
         assert!(region.contains("if accepted < buffer.len()"));
         assert!(region.contains("RtErrorCode::FixedBufferOverflow"));
+    }
+
+    #[test]
+    fn suppressor_starvation_counts_audio_fed_without_output() {
+        let rate = TARGET_SAMPLE_RATE;
+        let limit = rate as usize * 4 / 10;
+        // Whatever the block cadence (a 5 ms period, a 100 ms resampler chunk,
+        // an 8 kHz input's 128 ms, an 8192-frame buffer's 171 ms), the
+        // suppressor counts as starved once 0.4 s of audio went in without
+        // output, and not before.
+        for block_ms in [5_usize, 100, 128, 171] {
+            let block = rate as usize * block_ms / 1000;
+            let mut watch = SuppressorStarvation::new(rate);
+            let mut fed = 0;
+            while fed + block < limit {
+                watch.fed(block);
+                fed += block;
+                assert!(!watch.starved(), "{block_ms} ms blocks, {fed} samples");
+            }
+            watch.fed(block);
+            assert!(watch.starved(), "{block_ms} ms blocks");
+        }
+
+        // Output ends the run, however long the suppressor had been fed.
+        let mut watch = SuppressorStarvation::new(rate);
+        watch.fed(limit - 1);
+        assert!(!watch.starved());
+        watch.restart();
+        watch.fed(limit - 1);
+        assert!(!watch.starved());
+        watch.fed(1);
+        assert!(watch.starved());
+
+        // Nothing is counted while nothing is fed: a quiet input, however
+        // long, leaves the count alone, so the first block after it (too
+        // small to give output yet) is not starvation.
+        let mut watch = SuppressorStarvation::new(rate);
+        watch.fed(480);
+        watch.restart(); // the last output
+        assert!(!watch.starved());
+        watch.fed(128);
+        assert!(!watch.starved());
+    }
+
+    /// An engine that gives a frame of output for every 480 samples it has
+    /// received is never starved, whatever the block size.
+    #[test]
+    fn a_healthy_suppressor_is_never_starved() {
+        let rate = TARGET_SAMPLE_RATE;
+        for block in [1_usize, 37, 128, 240, 480, 1024, 4096, 8192] {
+            let mut watch = SuppressorStarvation::new(rate);
+            let mut pending = 0;
+            for _ in 0..(10 * rate as usize / block).max(1) {
+                watch.fed(block);
+                pending += block;
+                if pending >= 480 {
+                    pending %= 480;
+                    watch.restart();
+                } else {
+                    assert!(!watch.starved(), "{block}-sample blocks");
+                }
+            }
+        }
+    }
+
+    /// The count only helps if the loop feeds it where the suppressor is fed
+    /// and starts it over where output arrives or the suppressor is reset,
+    /// switched off or swapped.
+    #[test]
+    fn suppressor_starvation_count_is_wired_to_the_feed_and_every_reset() {
+        let source = include_str!("dsp_loop.rs");
+        let enabled_branch = source_between(
+            source,
+            "// Always feed suppressor first so frame accumulation is correct.",
+            "// Record DSP processing time",
+        );
+        let feed = enabled_branch
+            .find("suppressor_starvation.fed(accepted)")
+            .unwrap();
+        let process = enabled_branch
+            .find("suppressor_rt.process_frames()")
+            .unwrap();
+        let output = enabled_branch.find("if available > 0 {").unwrap();
+        let check = enabled_branch
+            .find("suppressor_starvation.starved()")
+            .unwrap();
+        assert!(feed < process && process < output && output < check);
+        let output_arm = source_between(
+            enabled_branch,
+            "if available > 0 {",
+            "} else if accepted > 0",
+        );
+        assert!(output_arm.contains("suppressor_starvation.restart()"));
+        let reset = source_between(
+            source,
+            "macro_rules! reset_input_continuity",
+            "let mut consecutive_idle_wakeups",
+        );
+        assert!(reset.contains("suppressor_starvation.restart()"));
+        // The engine swap, the path change and the reset request of an enabled
+        // suppressor each start the count over right after the reset; the
+        // disabled branch does it on every pass, checked below.
+        let region = marked_region(source, "dsp_processing_loop");
+        assert_eq!(region.matches("suppressor_rt.soft_reset()").count(), 4);
+        let restarted_after_reset = region
+            .match_indices("suppressor_rt.soft_reset()")
+            .filter(|(at, _)| {
+                region[*at..]
+                    .lines()
+                    .take(3)
+                    .any(|line| line.contains("suppressor_starvation.restart()"))
+            })
+            .count();
+        assert_eq!(restarted_after_reset, 3);
+        let disabled = source_between(
+            source,
+            "// Suppressor disabled: clear buffer counter",
+            "// Suppressor disabled: apply remaining stages directly",
+        );
+        assert!(disabled.contains("suppressor_starvation.restart()"));
+        assert!(!source.contains("last_suppressor_output"));
     }
 
     #[test]

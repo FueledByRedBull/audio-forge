@@ -11,7 +11,8 @@
         "patched_sha256": "DCDED623C019216BE3729B6314279A4F91E1E747D6F4129DF0CDEC8B0894BB9E"
       },
       "libDF/src/capi.rs": {
-        "sha256": "6ADB1B6158EAD9505E3CCDB5A8F06A52FF361E1E49D1A28EDC76AC05BC2756AF"
+        "sha256": "6ADB1B6158EAD9505E3CCDB5A8F06A52FF361E1E49D1A28EDC76AC05BC2756AF",
+        "patched_sha256": "0DD5E27CCD0AF28EE719EBE84674FB2A9E145CA58394CA0261705DD14A0F4602"
       },
       "libDF/src/lib.rs": {
         "sha256": "716B6274C60344B25B7824A55D06D0FAC0E58603FAEDBB86B3F3BD1EA6A256D3",
@@ -42,6 +43,11 @@
         "path": "libDF/src/lib.rs",
         "operation": "Floor both unit normalization state updates at f32::MIN_POSITIVE so FTZ/DAZ cannot turn sustained digital silence into 0 / sqrt(0) nonfinite features.",
         "occurrences": 2
+      },
+      {
+        "path": "libDF/src/capi.rs",
+        "operation": "Replace the file with build-support/deepfilter/capi.rs, which runs df_create, df_get_frame_length, df_set_atten_lim, df_set_post_filter_beta, df_process_frame and df_free under catch_unwind. A model that cannot be loaded or a frame that cannot be processed answers NULL, 0 or a NaN SNR instead of ending the host process. The build profile unwinds (panic = \"unwind\") so the panic can be caught; the other exports are unchanged.",
+        "occurrences": 6
       }
     ]
   },
@@ -71,7 +77,10 @@
   "lock": {
     "path": "build-support/deepfilter/Cargo.lock",
     "sha256": "35591D5E442D11E1208ADD6960EF7C5190454E3632FCDE10D8A1D1B78136224F",
-    "manifest_sha256": "A4FF7A3E754FD0029F1E7E515D50EB23B0630F1A305B368EDA91AA7F4B0291AF",
+    "manifest_sha256": "F756DED61C98DC8B66A46F48569210070B9F983EF68A62A2D6B368EC1F2BC5C3",
+    "superseded_manifest_sha256": [
+      "A4FF7A3E754FD0029F1E7E515D50EB23B0630F1A305B368EDA91AA7F4B0291AF"
+    ],
     "package_count": 227,
     "security_pins": {
       "bytes": "1.12.1",

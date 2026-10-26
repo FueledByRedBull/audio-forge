@@ -3,8 +3,8 @@
   "assets": [
     {
       "path": "df.dll",
-      "size": 13766656,
-      "sha256": "38605121768ed5c29fe933adf4edac2e2f4bbc98e53ead6838919cc7fd4ab027",
+      "size": 18409984,
+      "sha256": "849310c4176a3726b6fac9bcb39018e9523711953cd0bdd16000d6116195ab93",
       "source": "https://github.com/Rikorose/DeepFilterNet/tree/d375b2d8309e0935d165700c91da9de862a99c31",
       "origin": {
         "status": "verified-source-build",

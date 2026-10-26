@@ -86,6 +86,16 @@ function Ensure-VerifiedArchive(
     Assert-FileHash $ArchivePath $ExpectedSha "Cached $ArchiveName source archive"
 }
 
+function Assert-FileHashIn([string]$Path, [string[]]$Expected, [string]$Label) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Label is missing: $Path"
+    }
+    $actual = Get-Sha256 $Path
+    if ($actual -notin @($Expected | ForEach-Object { $_.ToUpperInvariant() })) {
+        throw "$Label SHA-256 matches neither the pinned nor the patched source: $actual ($Path)"
+    }
+}
+
 function Invoke-Checked([string]$FilePath, [string[]]$Arguments) {
     & $FilePath @Arguments
     if ($LASTEXITCODE -ne 0) {
@@ -181,7 +191,7 @@ function Assert-WorkspaceSourceTree([string]$GitPath, [string]$SourceCache, [str
         if (-not (Test-Path -LiteralPath $workspacePath -PathType Leaf)) {
             throw "DeepFilter workspace is missing upstream source file: $relative"
         }
-        if ($relative -notin @("libDF\Cargo.toml", "libDF\src\lib.rs", "libDF\src\tract.rs")) {
+        if ($relative -notin @("libDF\Cargo.toml", "libDF\src\capi.rs", "libDF\src\lib.rs", "libDF\src\tract.rs")) {
             $expectedHash = Invoke-Captured $GitPath @("-C", $SourceCache, "rev-parse", "$Commit`:$($relative.Replace('\', '/'))")
             $actualHash = Invoke-Captured $GitPath @("-C", $Workspace, "hash-object", "--no-filters", "--", "libDF\$relativeWithinLib")
             if ($actualHash.Trim() -ne $expectedHash.Trim()) {
@@ -327,7 +337,7 @@ if (Test-Path -LiteralPath $workspace) {
             # The previous run may have stopped while writing its marker.
             # Validate its copied inputs before resuming setup.
             Assert-FileHash (Join-Path $workspace "Cargo.lock") ([string]$provenance.lock.sha256) "Existing DeepFilter lockfile"
-            Assert-FileHash (Join-Path $workspace "libDF\src\capi.rs") ([string]$provenance.upstream.files.'libDF/src/capi.rs'.sha256) "Existing C API source"
+            Assert-FileHashIn (Join-Path $workspace "libDF\src\capi.rs") @([string]$provenance.upstream.files.'libDF/src/capi.rs'.sha256, [string]$provenance.upstream.files.'libDF/src/capi.rs'.patched_sha256) "Existing C API source"
             Assert-FileHash (Join-Path $workspace "models\DeepFilterNet3_onnx.tar.gz") ([string]$provenance.models.'models/DeepFilterNet3_onnx.tar.gz'.sha256) "Existing standard model archive"
             Assert-FileHash (Join-Path $workspace "models\DeepFilterNet3_ll_onnx.tar.gz") ([string]$provenance.models.'models/DeepFilterNet3_ll_onnx.tar.gz'.sha256) "Existing low-latency model archive"
         }
@@ -336,7 +346,7 @@ if (Test-Path -LiteralPath $workspace) {
         # written its marker. Accept it only when its copied inputs are exact;
         # never overwrite an unverified existing directory.
         Assert-FileHash (Join-Path $workspace "Cargo.lock") ([string]$provenance.lock.sha256) "Existing DeepFilter lockfile"
-        Assert-FileHash (Join-Path $workspace "libDF\src\capi.rs") ([string]$provenance.upstream.files.'libDF/src/capi.rs'.sha256) "Existing C API source"
+        Assert-FileHashIn (Join-Path $workspace "libDF\src\capi.rs") @([string]$provenance.upstream.files.'libDF/src/capi.rs'.sha256, [string]$provenance.upstream.files.'libDF/src/capi.rs'.patched_sha256) "Existing C API source"
         Assert-FileHash (Join-Path $workspace "models\DeepFilterNet3_onnx.tar.gz") ([string]$provenance.models.'models/DeepFilterNet3_onnx.tar.gz'.sha256) "Existing standard model archive"
         Assert-FileHash (Join-Path $workspace "models\DeepFilterNet3_ll_onnx.tar.gz") ([string]$provenance.models.'models/DeepFilterNet3_ll_onnx.tar.gz'.sha256) "Existing low-latency model archive"
     }
@@ -352,9 +362,18 @@ if (Test-Path -LiteralPath $workspace) {
 }
 
 Assert-WorkspaceSourceTree $gitPath $sourceCache $commit $workspace
-Assert-FileHash (Join-Path $workspace "Cargo.toml") $manifestSha "Workspace DeepFilter build manifest"
+# The workspace manifest is a copy of the tracked, verified one. A workspace made by
+# an earlier recipe holds a manifest the recipe has since replaced; refresh it from
+# the tracked file. Any other manifest is not a copy of this recipe's.
+$workspaceManifest = Join-Path $workspace "Cargo.toml"
+$olderManifests = @($provenance.lock.superseded_manifest_sha256 | ForEach-Object { ([string]$_).ToUpperInvariant() })
+if ((Get-Sha256 $workspaceManifest) -in $olderManifests) {
+    Copy-Item -LiteralPath $trackedManifest -Destination $workspaceManifest -Force
+}
+if ((Get-Sha256 $workspaceManifest) -ne $manifestSha.ToUpperInvariant()) {
+    throw "The build manifest in $workspace matches no known version of this recipe. Delete that folder and run again; it is recreated from the source cache."
+}
 Assert-FileHash (Join-Path $workspace "Cargo.lock") ([string]$provenance.lock.sha256) "Tracked DeepFilter lockfile"
-Assert-FileHash (Join-Path $workspace "libDF\src\capi.rs") ([string]$provenance.upstream.files.'libDF/src/capi.rs'.sha256) "C API source"
 Assert-FileHash (Join-Path $workspace "models\DeepFilterNet3_onnx.tar.gz") ([string]$provenance.models.'models/DeepFilterNet3_onnx.tar.gz'.sha256) "Standard model archive"
 Assert-FileHash (Join-Path $workspace "models\DeepFilterNet3_ll_onnx.tar.gz") ([string]$provenance.models.'models/DeepFilterNet3_ll_onnx.tar.gz'.sha256) "Low-latency model archive"
 
@@ -432,6 +451,14 @@ if ((Get-Sha256 $tractSource) -eq ([string]$provenance.upstream.files.'libDF/src
     Set-Utf8NoBom $tractSource $tractSourceText
 }
 Assert-FileHash $tractSource ([string]$provenance.upstream.files.'libDF/src/tract.rs'.patched_sha256) "Patched libDF tract source"
+$capiSource = Join-Path $workspace "libDF\src\capi.rs"
+$capiPatch = Join-Path $supportRoot "capi.rs"
+$capiPatchedSha = [string]$provenance.upstream.files.'libDF/src/capi.rs'.patched_sha256
+Assert-FileHash $capiPatch $capiPatchedSha "Tracked abort-free C API source"
+if ((Get-Sha256 $capiSource) -eq ([string]$provenance.upstream.files.'libDF/src/capi.rs'.sha256).ToUpperInvariant()) {
+    Copy-Item -LiteralPath $capiPatch -Destination $capiSource -Force
+}
+Assert-FileHash $capiSource $capiPatchedSha "Patched libDF C API source"
 Assert-WorkspaceSourceTree $gitPath $sourceCache $commit $workspace
 
 if (-not $workspaceHasMarker) {
@@ -442,6 +469,7 @@ if (-not $workspaceHasMarker) {
         lock_sha256 = Get-Sha256 (Join-Path $workspace "Cargo.lock")
         lib_manifest_sha256 = Get-Sha256 $libManifest
         lib_source_sha256 = Get-Sha256 $libSource
+        capi_source_sha256 = Get-Sha256 $capiSource
         tract_source_sha256 = Get-Sha256 $tractSource
         tract_manifest_sha256 = Get-Sha256 (Join-Path $tractPatch "Cargo.toml")
         rustflags = @(
@@ -500,6 +528,7 @@ try {
         "build_deepfilter.ps1" = Get-CanonicalTextSha256 (Join-Path $projectRoot "build_deepfilter.ps1")
         "build-support/deepfilter/Cargo.toml" = Get-CanonicalTextSha256 $trackedManifest
         "build-support/deepfilter/Cargo.lock" = Get-CanonicalTextSha256 $trackedLock
+        "build-support/deepfilter/capi.rs" = Get-Sha256 $capiPatch
         "build-support/deepfilter/provenance.json" = Get-CanonicalTextSha256 $provenancePath
         "models/DeepFilterNet3_onnx.tar.gz" = Get-Sha256 (Join-Path $projectRoot "models\DeepFilterNet3_onnx.tar.gz")
         "models/DeepFilterNet3_ll_onnx.tar.gz" = Get-Sha256 (Join-Path $projectRoot "models\DeepFilterNet3_ll_onnx.tar.gz")
@@ -515,7 +544,7 @@ try {
         source = [ordered]@{
             repository = $repository
             commit = $commit
-            workspace_validation = "Every file under libDF was matched to the pinned git blob; only the three recorded source patches were accepted."
+            workspace_validation = "Every file under libDF was matched to the pinned git blob; only the recorded source patches were accepted."
         }
         recipe = [ordered]@{
             files = $recipeFiles

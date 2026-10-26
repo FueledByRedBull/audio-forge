@@ -9,6 +9,8 @@ pub mod limiter;
 pub mod loudness;
 pub mod noise_suppressor;
 pub mod rnnoise;
+#[cfg(any(feature = "vad", feature = "deepfilter"))]
+pub(crate) mod sha256;
 pub mod true_peak;
 pub mod util;
 

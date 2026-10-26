@@ -8,7 +8,8 @@ A new report carries ``"decision": {"outcome", "reason", "decided", "by"}``:
 * ``decided``: the ISO date of the decision, or null for ``measured``;
 * ``by``: who made the decision, or null for ``measured``.
 
-``read_decision`` gives the same four fields for any tracked report, whichever way it states its decision.
+``read_decision`` gives the same four fields for any tracked report, whichever way it states its decision. For
+a report released before the block, ``reason`` and ``decided`` are null where it records none, and ``by`` is null.
 """
 
 from __future__ import annotations
@@ -35,7 +36,8 @@ LEGACY_OUTCOMES = {
     "auto-makeup-real-speech-2026-09-report.json": "adopt",
     "compressor-control-report.json": "adopt",
     "compressor-expanded-search-2026-09-report.json": "retain",
-    "compressor-search-report.json": "adopt",
+    # The first run of the expanded search; the 2026-09 run failed and the product searches threshold only.
+    "compressor-search-report.json": "retain",
     "correction-tone-product-report.json": "adopt",
     "cross-take-auto-eq-report.json": "retain",
     "deepfilter-fullband-report.json": "retain",

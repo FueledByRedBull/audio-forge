@@ -538,11 +538,13 @@ object with a `reason`; an object of tokens, one per area; an object of
 measurements; top-level booleans only (`retained`, `passed`, `all_gates_passed`); a
 top-level `status`; separate `attenuation_decision` and `post_filter_decision`
 objects. Some state none. `read_decision` in `python/tools/evaluation_decision.py`
-gives every one of them the same four fields. It takes the outcome from a table,
-because `retained` and `retain` name the candidate in some reports and the
-incumbent in others. Their `by` is null, since they do not record who decided, and
-their `decided` is the day the report was generated. A test fails for a report that
-has neither the block nor a table entry. Released reports are not edited.
+gives every one of them the same four keys, but an older report fills only some.
+It takes the outcome from a table, because `retained` and `retain` name the
+candidate in some reports and the incumbent in others. `reason` is null when the
+report holds no text for it, `decided` is null when it has no timestamp (otherwise
+it is the day the report was generated), and `by` is always null, since they do not
+record who decided. A test fails for a report that has neither the block nor a
+table entry. Released reports are not edited.
 
 ## Interpretation
 

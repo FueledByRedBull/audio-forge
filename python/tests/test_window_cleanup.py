@@ -10,12 +10,20 @@ import gc
 import sys
 import threading
 
+import pytest
+
+window_left_behind = False
+
 
 def test_a_test_leaves_a_main_window_behind(isolated_main_window):
+    global window_left_behind
     assert isolated_main_window.processor is not None
+    window_left_behind = True
 
 
 def test_the_next_test_finds_no_processor_left_for_a_worker_thread(qapp):
+    if not window_left_behind:
+        pytest.skip("needs the window the test before it leaves; run the whole file")
     dropped: list[str] = []
     previous = sys.unraisablehook
     sys.unraisablehook = lambda unraisable: dropped.append(str(unraisable.exc_value))

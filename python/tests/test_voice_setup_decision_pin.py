@@ -43,11 +43,14 @@ PIN_PATH = Path(__file__).resolve().parent / "fixtures" / "golden" / "voice_setu
 UPDATE = os.environ.get("AUDIOFORGE_UPDATE_GOLDEN") == "1"
 RELATIVE_TOLERANCE = 1e-4
 ABSOLUTE_TOLERANCE = 1e-6
-# (case name, bench mix, Silero VAD). The energy case runs without a model.
+# (case name, bench mix, Silero VAD, strength of the user's noise suppression). The energy cases run without a
+# model. A nearly-off suppressor is the incumbent a candidate beats, so that case reaches the held-out check
+# and applies; the others keep the factory settings, which the search leaves alone.
 CASES = (
-    ("fan_t01_silero", "fan-t01", True),
-    ("cafe_t02_silero", "cafe-t02", True),
-    ("fan_t01_energy", "fan-t01", False),
+    ("fan_t01_silero", "fan-t01", True, None),
+    ("cafe_t02_silero", "cafe-t02", True, None),
+    ("fan_t01_energy", "fan-t01", False, None),
+    ("fan_t01_energy_weak_incumbent", "fan-t01", False, 0.05),
 )
 
 
@@ -66,17 +69,19 @@ def _normalized(value: Any) -> Any:
     return value
 
 
-def _analysis(mix_id: str, vad: bool) -> dict[str, Any]:
+def _analysis(mix_id: str, vad: bool, suppressor_strength: float | None = None) -> dict[str, Any]:
     mix = built_mix(mix_id)
     size = int(CROP_SECONDS * SR)
     mix = {**mix, "raw": mix["raw"][:size], "clean": mix["clean"][:size], "labels": mix["labels"][:size],
            "noise_capture": mix["noise_capture"][: int(NOISE_SECONDS * SR)]}
     ctx = bm.make_context(mix)
     preset = Preset()
+    suppressor = asdict(preset.rnnoise)
+    if suppressor_strength is not None:
+        suppressor["strength"] = suppressor_strength
     result = analyze_voice_setup(
         ctx["noise"].astype(np.float32), ctx["noisy"].astype(np.float32), SR, "broadcast", vad_available=vad,
-        incumbent_settings={"gate": asdict(preset.gate), "rnnoise": asdict(preset.rnnoise),
-                            "eq": EQSettings().to_dict()},
+        incumbent_settings={"gate": asdict(preset.gate), "rnnoise": suppressor, "eq": EQSettings().to_dict()},
         raw_noise_audio=ctx["raw_noise"], raw_speech_audio=ctx["raw"])
     return _normalized(result)
 
@@ -127,8 +132,8 @@ def _without_silero(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
 
 
-@pytest.mark.parametrize(("name", "mix_id", "vad"), CASES, ids=[case[0] for case in CASES])
-def test_the_analysis_decides_what_it_decided_before(monkeypatch, tmp_path, name, mix_id, vad):
+@pytest.mark.parametrize(("name", "mix_id", "vad", "strength"), CASES, ids=[case[0] for case in CASES])
+def test_the_analysis_decides_what_it_decided_before(monkeypatch, tmp_path, name, mix_id, vad, strength):
     model = _silero_model()
     if vad:
         if model is None:
@@ -139,7 +144,7 @@ def test_the_analysis_decides_what_it_decided_before(monkeypatch, tmp_path, name
         assert bm.silero_available()
     else:
         _without_silero(monkeypatch, tmp_path)
-    actual = _analysis(mix_id, vad)
+    actual = _analysis(mix_id, vad, strength)
     if UPDATE:
         stored = _read() if PIN_PATH.is_file() else {"model_sha256": None, "cases": {}}
         if vad and model is not None:
@@ -152,11 +157,22 @@ def test_the_analysis_decides_what_it_decided_before(monkeypatch, tmp_path, name
     assert not differences, "\n".join(differences[:12])
 
 
-def test_one_worker_decides_what_the_default_workers_decide(monkeypatch, tmp_path):
-    """The stored energy case was made by the serial analysis; the worker count may not change it."""
+@pytest.mark.parametrize(("name", "mix_id", "vad", "strength"), [case for case in CASES if not case[2]],
+                         ids=[case[0] for case in CASES if not case[2]])
+def test_one_worker_decides_what_the_default_workers_decide(monkeypatch, tmp_path, name, mix_id, vad, strength):
+    """The stored energy cases were made by the serial analysis; the worker count may not change them."""
     monkeypatch.setattr(joint_tuning, "ANALYSIS_WORKERS", 1)
     monkeypatch.setattr(compressor_calibration, "ANALYSIS_WORKERS", 1)
     _without_silero(monkeypatch, tmp_path)
 
-    differences = _differences(_read()["cases"]["fan_t01_energy"], _analysis("fan-t01", False))
+    differences = _differences(_read()["cases"][name], _analysis(mix_id, vad, strength))
     assert not differences, "\n".join(differences[:12])
+
+
+def test_the_pinned_weak_incumbent_reaches_the_apply_and_held_out_branch():
+    """Without this the pin could go on passing with the whole candidate search retaining the incumbent."""
+    tuning = _read()["cases"]["fan_t01_energy_weak_incumbent"]["diagnostics"]["joint_tuning"]
+
+    assert tuning["decision"] == "apply_candidate" and tuning["apply_recommended"]
+    assert tuning["holdout_evaluated"] and tuning["holdout_passed"]
+    assert tuning["suppressor_settings"]["strength"] != 0.05

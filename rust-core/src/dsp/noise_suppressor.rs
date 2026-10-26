@@ -214,6 +214,11 @@ pub trait NoiseSuppressor: Send {
     fn successful_inference_frames(&self) -> u64 {
         0
     }
+
+    /// The engine has been taken out of service and will only be dropped, at
+    /// some later time and on another thread. Ask any background work to end
+    /// now; it must not block or allocate, as the DSP thread calls it.
+    fn retire(&mut self) {}
 }
 
 /// Runtime-selected noise suppressor. The box is created off the RT path and
@@ -235,27 +240,48 @@ pub fn new_noise_suppression_engine(
     new_controlled_noise_suppression_engine(model, strength)
 }
 
+/// An engine that answers inline: after `process_frames` every complete frame
+/// is out. Offline callers rely on that.
 pub(crate) fn new_controlled_noise_suppression_engine(
     model: NoiseModel,
     strength: Arc<AtomicU32>,
 ) -> ControlledNoiseSuppressionEngine {
+    new_engine(model, strength, false)
+}
+
+/// An engine for the live DSP loop. DeepFilterNet inference runs on a worker
+/// thread so the loop never runs the model; RNNoise is cheap and stays inline.
+pub(crate) fn new_realtime_noise_suppression_engine(
+    model: NoiseModel,
+    strength: Arc<AtomicU32>,
+) -> ControlledNoiseSuppressionEngine {
+    new_engine(model, strength, true)
+}
+
+#[cfg_attr(not(feature = "deepfilter"), allow(unused_variables))]
+fn new_engine(
+    model: NoiseModel,
+    strength: Arc<AtomicU32>,
+    realtime: bool,
+) -> ControlledNoiseSuppressionEngine {
+    #[cfg(feature = "deepfilter")]
+    let deepfilter = |model| {
+        let processor = super::DeepFilterProcessor::new(strength.clone(), model);
+        if realtime {
+            processor.with_worker()
+        } else {
+            processor
+        }
+    };
     match model {
         NoiseModel::RNNoise => Box::new(super::RNNoiseProcessor::new(strength)),
         #[cfg(feature = "deepfilter")]
-        NoiseModel::DeepFilterNetLL => {
-            use super::deepfilter_ffi::DeepFilterModel;
-            Box::new(super::DeepFilterProcessor::new(
-                strength,
-                DeepFilterModel::LowLatency,
-            ))
-        }
+        NoiseModel::DeepFilterNetLL => Box::new(deepfilter(
+            super::deepfilter_ffi::DeepFilterModel::LowLatency,
+        )),
         #[cfg(feature = "deepfilter")]
         NoiseModel::DeepFilterNet => {
-            use super::deepfilter_ffi::DeepFilterModel;
-            Box::new(super::DeepFilterProcessor::new(
-                strength,
-                DeepFilterModel::Standard,
-            ))
+            Box::new(deepfilter(super::deepfilter_ffi::DeepFilterModel::Standard))
         }
     }
 }

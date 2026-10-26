@@ -40,8 +40,27 @@
 //! If the library or model is not found, the processor uses passthrough mode.
 //!
 //! Expected latency: ~10ms with LL variant (no lookahead)
+//!
+//! WHERE INFERENCE RUNS:
+//! Offline callers get an inline processor: `process_frames` returns with every
+//! complete frame answered. The live DSP loop gets one built with
+//! `with_worker`, which moves the library to a worker thread (`worker`): the
+//! loop then only offers frames, collects finished ones and counts. A frame's
+//! result is normally collected on the next call, about one block later than
+//! inline. The worker owes at most `WORKER_QUEUE_FRAMES` results (80 ms); a
+//! longer block waits in `input_buffer` and is offered as results come back,
+//! so a burst costs latency, not suppression. The frames stay in
+//! `input_buffer` until their result is in, so `pending_input` and the
+//! published latency include the time spent there. A worker that stops,
+//! panics, stalls or returns a bad frame leaves dry passthrough with the
+//! reason in `backend_error`.
 
+#[cfg(test)]
+pub(crate) mod fake;
 mod identity;
+mod worker;
+#[cfg(test)]
+mod worker_tests;
 
 use crate::audio::rt::FixedAudioRing;
 use crate::dsp::noise_suppressor::{
@@ -56,6 +75,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 use std::vec::Vec;
+use worker::{InferenceWorker, WorkerLink};
 
 /// DeepFilterNet frame size (same as RNNoise: 10ms at 48kHz)
 pub const DEEPFILTER_FRAME_SIZE: usize = 480;
@@ -204,11 +224,15 @@ type DfSetAttenLimFn = unsafe extern "C" fn(*mut DFState, f32);
 type DfSetPostFilterBetaFn = unsafe extern "C" fn(*mut DFState, f32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 enum DeepFilterProcessError {
-    InputSizeMismatch,
+    InputSizeMismatch = 1,
     OutputSizeMismatch,
     NonFiniteSnr,
     NonFiniteOutput,
+    WorkerPanicked,
+    WorkerStopped,
+    WorkerStalled,
 }
 
 impl DeepFilterProcessError {
@@ -218,7 +242,29 @@ impl DeepFilterProcessError {
             Self::OutputSizeMismatch => "DeepFilterNet output buffer size mismatch",
             Self::NonFiniteSnr => "DeepFilterNet processing failed with non-finite SNR",
             Self::NonFiniteOutput => "DeepFilterNet processing produced non-finite output",
+            Self::WorkerPanicked => "DeepFilterNet worker panicked",
+            Self::WorkerStopped => "DeepFilterNet worker stopped unexpectedly",
+            Self::WorkerStalled => "DeepFilterNet worker stopped answering",
         }
+    }
+
+    /// The value the worker publishes in an atomic; 0 is no error.
+    fn code(self) -> u8 {
+        self as u8
+    }
+
+    fn from_code(code: u8) -> Option<Self> {
+        [
+            Self::InputSizeMismatch,
+            Self::OutputSizeMismatch,
+            Self::NonFiniteSnr,
+            Self::NonFiniteOutput,
+            Self::WorkerPanicked,
+            Self::WorkerStopped,
+            Self::WorkerStalled,
+        ]
+        .into_iter()
+        .find(|error| error.code() == code)
     }
 }
 
@@ -735,6 +781,8 @@ fn mix_wet_with_aligned_dry(
 
 pub struct DeepFilterProcessor {
     df: Option<DeepFilterFFI>, // Option for graceful fallback if FFI fails
+    /// Set instead of `df` once the library has moved to a worker thread.
+    link: Option<WorkerLink>,
     input_buffer: FixedAudioRing<ControlledSample, DEEPFILTER_BUFFER_CAPACITY>,
     output_buffer: FixedAudioRing<f32, DEEPFILTER_BUFFER_CAPACITY>,
     input_frame: [ControlledSample; DEEPFILTER_FRAME_SIZE],
@@ -837,6 +885,7 @@ impl DeepFilterProcessor {
         };
         Self {
             df,
+            link: None,
             input_buffer: FixedAudioRing::new(),
             output_buffer: FixedAudioRing::new(),
             input_frame: [ControlledSample::default(); DEEPFILTER_FRAME_SIZE],
@@ -877,6 +926,14 @@ impl DeepFilterProcessor {
             let gate = controls.map_or(GateControl::BYPASS, |controls| controls[index]);
             self.input_buffer.push(ControlledSample { sample, gate });
         }
+        if accepted < samples.len() && !self.backend_failed {
+            // The caller answers an overflow by resetting this queue, which
+            // restarts the worker's silence clock: a worker that is not
+            // answering must be found out before that.
+            if let Some(error) = self.worker_failure() {
+                self.fail_worker(error);
+            }
+        }
         accepted
     }
 
@@ -913,6 +970,10 @@ impl DeepFilterProcessor {
         self.dry_delay_index = 0;
         self.invalid_wet_samples = self.model.latency_samples();
         self.gate_compensation.reset();
+        // Frames offered to the worker belong to the timeline just discarded.
+        if let Some(link) = self.link.as_mut() {
+            link.abandon();
+        }
     }
 
     /// Process frames through FFI or fallback
@@ -929,20 +990,18 @@ impl DeepFilterProcessor {
         let alpha =
             1.0 - (-1.0 / (TAU_MS / 1000.0 * SAMPLE_RATE / DEEPFILTER_FRAME_SIZE as f32)).exp();
 
+        if self.link.is_some() {
+            self.process_frames_with_worker(alpha, target_strength);
+            return;
+        }
+
         // Process complete frames (480 samples each)
         while self.input_buffer.len() >= DEEPFILTER_FRAME_SIZE
             && self.output_buffer.remaining() >= DEEPFILTER_FRAME_SIZE
         {
-            self.smoothed_strength += alpha * (target_strength - self.smoothed_strength);
-            let read = self.read_input_frame();
-            if read != DEEPFILTER_FRAME_SIZE {
+            let Some(use_aligned_dry) = self.begin_frame(alpha, target_strength) else {
                 break;
-            }
-            self.frame_scratch.copy_from_slice(&self.dry_frame);
-            let use_aligned_dry = self.enabled && self.df.is_some();
-            if use_aligned_dry {
-                self.delay_dry_frame();
-            }
+            };
 
             // Process through FFI if available
             if self.enabled && !self.backend_failed {
@@ -951,24 +1010,7 @@ impl DeepFilterProcessor {
                         Ok(_lsnr) => {
                             self.successful_inference_frames =
                                 self.successful_inference_frames.saturating_add(1);
-                            // Preserved model overlap predates a soft reset. Only
-                            // the wet prefix is invalid; aligned dry stays intact.
-                            let invalid = self.invalid_wet_samples.min(DEEPFILTER_FRAME_SIZE);
-                            self.output_frame[..invalid].fill(0.0);
-                            self.invalid_wet_samples -= invalid;
-                            for (wet, input) in self.output_frame.iter_mut().zip(&self.input_frame)
-                            {
-                                let ratio = self.gate_compensation.next_ratio(input.gate);
-                                if ratio != 1.0 {
-                                    *wet *= ratio;
-                                }
-                            }
-                            mix_wet_with_aligned_dry(
-                                &mut self.output_frame,
-                                &self.aligned_dry_frame,
-                                self.smoothed_strength,
-                            );
-                            self.output_buffer.push_slice(&self.output_frame);
+                            self.finish_wet_frame();
                             continue;
                         }
                         Err(error) => {
@@ -978,20 +1020,164 @@ impl DeepFilterProcessor {
                 }
             }
 
-            // Passthrough. Preserve the selected backend's fixed latency after
-            // a runtime failure, but do not delay an unavailable backend.
-            if use_aligned_dry {
-                self.output_frame.copy_from_slice(&self.aligned_dry_frame);
-            } else {
-                self.output_frame.copy_from_slice(&self.dry_frame);
-            }
-            self.output_buffer.push_slice(&self.output_frame);
+            self.finish_dry_frame(use_aligned_dry);
         }
+    }
+
+    /// Take the next input frame and advance what every frame advances: the
+    /// strength smoother and the dry delay. Returns whether the dry copy is
+    /// aligned with the model's output (`None`: the queue held no full frame).
+    fn begin_frame(&mut self, alpha: f32, target_strength: f32) -> Option<bool> {
+        self.smoothed_strength += alpha * (target_strength - self.smoothed_strength);
+        if self.read_input_frame() != DEEPFILTER_FRAME_SIZE {
+            return None;
+        }
+        self.frame_scratch.copy_from_slice(&self.dry_frame);
+        let use_aligned_dry = self.enabled && self.has_backend();
+        if use_aligned_dry {
+            self.delay_dry_frame();
+        }
+        Some(use_aligned_dry)
+    }
+
+    /// Queue a frame the model processed (`output_frame`) mixed with its
+    /// aligned dry copy.
+    fn finish_wet_frame(&mut self) {
+        // Preserved model overlap predates a soft reset. Only the wet prefix
+        // is invalid; aligned dry stays intact.
+        let invalid = self.invalid_wet_samples.min(DEEPFILTER_FRAME_SIZE);
+        self.output_frame[..invalid].fill(0.0);
+        self.invalid_wet_samples -= invalid;
+        for (wet, input) in self.output_frame.iter_mut().zip(&self.input_frame) {
+            let ratio = self.gate_compensation.next_ratio(input.gate);
+            if ratio != 1.0 {
+                *wet *= ratio;
+            }
+        }
+        mix_wet_with_aligned_dry(
+            &mut self.output_frame,
+            &self.aligned_dry_frame,
+            self.smoothed_strength,
+        );
+        self.output_buffer.push_slice(&self.output_frame);
+    }
+
+    /// Queue a frame the model did not process. Passthrough preserves the
+    /// selected backend's fixed latency after a runtime failure, but does not
+    /// delay an unavailable backend.
+    fn finish_dry_frame(&mut self, use_aligned_dry: bool) {
+        if use_aligned_dry {
+            self.output_frame.copy_from_slice(&self.aligned_dry_frame);
+        } else {
+            self.output_frame.copy_from_slice(&self.dry_frame);
+        }
+        self.output_buffer.push_slice(&self.output_frame);
+    }
+
+    /// Worker mode of `process_frames_internal`: queue the frames whose result
+    /// is back, then hand the newly complete frames to the worker. A worker
+    /// that has stopped or stalled turns the rest into dry passthrough.
+    fn process_frames_with_worker(&mut self, alpha: f32, target_strength: f32) {
+        let failure = self.worker_failure();
+        while self.input_buffer.len() >= DEEPFILTER_FRAME_SIZE
+            && self.output_buffer.remaining() >= DEEPFILTER_FRAME_SIZE
+        {
+            let mut wet = false;
+            if self.enabled && !self.backend_failed {
+                wet = self
+                    .link
+                    .as_mut()
+                    .is_some_and(|link| link.take_head(&mut self.output_frame));
+                if !wet {
+                    let Some(error) = failure else {
+                        break;
+                    };
+                    self.fail_worker(error);
+                }
+            }
+            let Some(use_aligned_dry) = self.begin_frame(alpha, target_strength) else {
+                break;
+            };
+            if wet {
+                self.finish_wet_frame();
+            } else {
+                self.finish_dry_frame(use_aligned_dry);
+            }
+        }
+        if let Some(error) = failure {
+            if !self.backend_failed {
+                self.fail_worker(error);
+            }
+        }
+        self.offer_frames();
+    }
+
+    /// Why the worker will answer no more, if that is known now.
+    fn worker_failure(&mut self) -> Option<DeepFilterProcessError> {
+        let waiting_frames = self.input_buffer.len() / DEEPFILTER_FRAME_SIZE;
+        self.link
+            .as_mut()
+            .and_then(|link| link.failure(&mut self.output_frame, waiting_frames))
+    }
+
+    /// Hand complete frames not yet offered to the worker, as many as it will
+    /// take; the rest wait in `input_buffer` for the next call. Only their
+    /// samples are copied.
+    fn offer_frames(&mut self) {
+        if !self.enabled || self.backend_failed {
+            return;
+        }
+        let Some(link) = self.link.as_mut() else {
+            return;
+        };
+        while link.has_room()
+            && (link.offered() + 1) * DEEPFILTER_FRAME_SIZE <= self.input_buffer.len()
+        {
+            self.input_buffer.peek_into(
+                link.offered() * DEEPFILTER_FRAME_SIZE,
+                &mut self.input_frame,
+            );
+            for (scratch, input) in self.frame_scratch.iter_mut().zip(&self.input_frame) {
+                *scratch = input.sample;
+            }
+            if !link.offer(&self.frame_scratch) {
+                break;
+            }
+        }
+    }
+
+    fn fail_worker(&mut self, error: DeepFilterProcessError) {
+        self.mark_backend_failed_rt(error);
+        if let Some(link) = self.link.as_mut() {
+            link.abandon();
+        }
+    }
+
+    /// Whether a library is behind this processor: inline or at the worker.
+    fn has_backend(&self) -> bool {
+        self.df.is_some() || self.link.is_some()
+    }
+
+    /// Move the library to a worker thread, for the live DSP loop. Without
+    /// this the processor answers inline, as offline callers need. A worker
+    /// that cannot start leaves the unavailable-backend passthrough.
+    pub(crate) fn with_worker(mut self) -> Self {
+        if let Some(df) = self.df.take() {
+            match InferenceWorker::spawn(df) {
+                Ok(worker) => self.link = Some(WorkerLink::new(worker)),
+                Err(error) => {
+                    self.load_error = Some(format!(
+                        "DeepFilterNet init failed: worker thread did not start: {error}"
+                    ));
+                }
+            }
+        }
+        self
     }
 
     /// Check if FFI is available (not in passthrough fallback mode)
     pub fn is_ffi_available(&self) -> bool {
-        self.df.is_some() && !self.backend_failed
+        self.has_backend() && !self.backend_failed
     }
 
     /// Get load/runtime error if the backend is unavailable.
@@ -1006,7 +1192,7 @@ impl DeepFilterProcessor {
     }
 
     fn effective_latency_samples(&self) -> usize {
-        if self.enabled && self.df.is_some() {
+        if self.enabled && self.has_backend() {
             self.model.latency_samples()
         } else {
             // Disabled/unavailable passthrough still waits for one common
@@ -1117,7 +1303,16 @@ impl NoiseSuppressor for DeepFilterProcessor {
     }
 
     fn successful_inference_frames(&self) -> u64 {
-        self.successful_inference_frames
+        self.link.as_ref().map_or(
+            self.successful_inference_frames,
+            WorkerLink::inferred_frames,
+        )
+    }
+
+    fn retire(&mut self) {
+        if let Some(link) = self.link.as_ref() {
+            link.stop();
+        }
     }
 }
 

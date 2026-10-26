@@ -631,3 +631,231 @@ fn getters_do_not_wait_for_a_start_in_progress() {
         done_tx.send(()).unwrap();
     });
 }
+
+/// The production loop with DeepFilterNet inference at a worker thread, on the
+/// stand-in library of `dsp::deepfilter_ffi::fake`.
+#[cfg(feature = "deepfilter")]
+mod worker_engine {
+    use super::*;
+    use crate::dsp::deepfilter_ffi::fake::{worker_engine, Fake};
+    use crate::dsp::deepfilter_ffi::DeepFilterModel;
+    use std::time::Instant;
+
+    fn loop_with_worker(fake: &Arc<Fake>) -> (AudioProcessor, OfflineLoop) {
+        let processor = AudioProcessor::new();
+        let model = NoiseModel::DeepFilterNetLL;
+        processor.shared.suppressor.rt_control.set_model(model);
+        processor
+            .shared
+            .suppressor
+            .current_model
+            .store(model as u8, Ordering::Release);
+        let engine = worker_engine(fake, DeepFilterModel::LowLatency, 1.0);
+        let offline = OfflineLoop::new(
+            &processor,
+            OfflineLoopConfig {
+                suppressor: Some(engine),
+                ..OfflineLoopConfig::default()
+            },
+        );
+        (processor, offline)
+    }
+
+    /// Feed one block and let the worker take every frame it was offered.
+    fn feed_block(
+        offline: &mut OfflineLoop,
+        tone: &mut Tone,
+        fake: &Fake,
+        frames_offered: usize,
+    ) -> Vec<f32> {
+        let out = feed(offline, tone, 1, BLOCK);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while (fake.started.load(Ordering::Acquire) as usize) < frames_offered {
+            assert!(Instant::now() < deadline, "the worker took no frame");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        out
+    }
+
+    #[test]
+    fn the_loop_runs_with_inference_at_a_worker_and_publishes_its_latency() {
+        let fake = Fake::new();
+        let (processor, mut offline) = loop_with_worker(&fake);
+        let mut tone = Tone::new(440.0, 0.2);
+        let mut out = Vec::new();
+        for block in 1..=60 {
+            out.extend(feed_block(&mut offline, &mut tone, &fake, block));
+        }
+        out.extend(feed(&mut offline, &mut tone, 2, BLOCK));
+
+        assert!(out.iter().all(|s| s.is_finite()));
+        assert!(peak(&out) <= 1.0);
+        assert!(
+            rms_db(&out[out.len() - 4_800..]) > -60.0,
+            "the output is silent"
+        );
+        assert!(!processor.noise_backend_failed());
+        assert_eq!(processor.get_rt_error_code(), RtErrorCode::None as u32);
+        assert_eq!(processor.get_rt_buffer_overflow_count(), 0);
+        assert!(
+            processor
+                .shared
+                .suppressor
+                .successful_inference_frames
+                .load(Ordering::Relaxed)
+                >= 55
+        );
+        // The model's frame plus the frames waiting at the worker: bounded by
+        // its queue, and never below what the model itself delays.
+        let latency = processor
+            .shared
+            .suppressor
+            .latency_samples
+            .load(Ordering::Relaxed) as usize;
+        assert!((BLOCK..=BLOCK * 10).contains(&latency), "{latency}");
+    }
+
+    #[test]
+    fn a_failing_worker_leaves_dry_passthrough_and_the_loop_reports_it() {
+        let fake = Fake::new();
+        fake.fail_from.store(5, Ordering::Release);
+        let (processor, mut offline) = loop_with_worker(&fake);
+        let mut tone = Tone::new(440.0, 0.2);
+        let mut out = Vec::new();
+        for block in 1..=40 {
+            out.extend(feed_block(&mut offline, &mut tone, &fake, block.min(6)));
+        }
+        out.extend(feed(&mut offline, &mut tone, 2, BLOCK));
+
+        assert!(processor.noise_backend_failed());
+        assert_eq!(
+            processor.get_rt_error_code(),
+            RtErrorCode::SuppressorBackendFailed as u32
+        );
+        assert!(out.iter().all(|s| s.is_finite()));
+        assert!(peak(&out) <= 1.0);
+        assert!(
+            rms_db(&out[out.len() - 4_800..]) > -30.0,
+            "the dry audio is gone"
+        );
+        assert!(!processor.is_recovery_requested());
+    }
+
+    #[test]
+    fn a_stalled_worker_is_declared_failed_before_the_starvation_restart() {
+        let fake = Fake::new();
+        fake.hold.store(true, Ordering::Release);
+        let (processor, mut offline) = loop_with_worker(&fake);
+        let mut tone = Tone::new(440.0, 0.2);
+        let mut out = Vec::new();
+        // Fewer frames than the stall needs, however long they took.
+        for _ in 0..9 {
+            out.extend(feed(&mut offline, &mut tone, 1, BLOCK));
+        }
+        assert!(!processor.noise_backend_failed());
+        std::thread::sleep(Duration::from_millis(150));
+        for _ in 0..8 {
+            out.extend(feed(&mut offline, &mut tone, 1, BLOCK));
+        }
+
+        assert!(processor.noise_backend_failed());
+        assert_eq!(
+            processor.get_rt_error_code(),
+            RtErrorCode::SuppressorBackendFailed as u32
+        );
+        assert!(out.iter().all(|s| s.is_finite()));
+        assert!(
+            rms_db(&out[out.len() - 4_800..]) > -30.0,
+            "the dry audio is gone"
+        );
+        // 17 blocks are less than the 400 ms the starvation check allows, and
+        // the dry audio resets it anyway.
+        assert!(!processor.is_recovery_requested());
+        fake.hold.store(false, Ordering::Release);
+    }
+
+    #[test]
+    fn a_burst_longer_than_the_workers_queue_costs_latency_not_suppression() {
+        let fake = Fake::new();
+        let (processor, mut offline) = loop_with_worker(&fake);
+        let mut tone = Tone::new(440.0, 0.2);
+        for block in 1..=20 {
+            feed_block(&mut offline, &mut tone, &fake, block);
+        }
+        // What the loop reads after it was held up: more frames than the
+        // worker's queue holds, at once.
+        let mut out = feed(&mut offline, &mut tone, 1, 9 * BLOCK);
+        for _ in 0..30 {
+            out.extend(feed(&mut offline, &mut tone, 1, BLOCK));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        assert!(out.iter().all(|s| s.is_finite()));
+        assert!(
+            rms_db(&out[out.len() - 4_800..]) > -60.0,
+            "the output is silent"
+        );
+        assert!(!processor.noise_backend_failed());
+        assert_eq!(processor.get_rt_buffer_overflow_count(), 0);
+        assert_eq!(processor.get_rt_error_code(), RtErrorCode::None as u32);
+    }
+
+    #[test]
+    fn an_input_overflow_does_not_hide_a_dead_worker() {
+        let fake = Fake::new();
+        fake.hold.store(true, Ordering::Release);
+        let (processor, mut offline) = loop_with_worker(&fake);
+        let mut tone = Tone::new(440.0, 0.2);
+        // 16 frames fit the suppressor's input queue; the worker is stuck on the
+        // first. A block read after the stall time no longer fits.
+        feed(&mut offline, &mut tone, 1, 16 * BLOCK);
+        assert!(!processor.noise_backend_failed());
+        std::thread::sleep(Duration::from_millis(150));
+        feed(&mut offline, &mut tone, 1, 4 * BLOCK);
+        assert_eq!(processor.get_rt_buffer_overflow_count(), 1);
+
+        // The overflow reset the queue, not the verdict.
+        let mut out = Vec::new();
+        for _ in 0..6 {
+            out.extend(feed(&mut offline, &mut tone, 1, BLOCK));
+        }
+        assert!(processor.noise_backend_failed());
+        assert!(out.iter().all(|s| s.is_finite()));
+        assert!(
+            rms_db(&out[out.len() - 2_400..]) > -30.0,
+            "the dry audio is gone"
+        );
+        fake.hold.store(false, Ordering::Release);
+    }
+
+    #[test]
+    fn stopping_the_loop_does_not_wait_for_a_worker_inside_a_slow_frame() {
+        let fake = Fake::new();
+        fake.hold.store(true, Ordering::Release);
+        let (_processor, mut offline) = loop_with_worker(&fake);
+        let mut tone = Tone::new(440.0, 0.2);
+        feed_block(&mut offline, &mut tone, &fake, 1);
+
+        // On another thread, so that a drop that waits fails the test instead
+        // of hanging it.
+        let (dropped, wait_for_drop) = mpsc::channel();
+        std::thread::spawn(move || {
+            drop(offline);
+            let _ = dropped.send(());
+        });
+        wait_for_drop
+            .recv_timeout(Duration::from_secs(2))
+            .expect("stopping the loop waited for the worker's slow frame");
+        assert!(!fake.freed.load(Ordering::Acquire));
+
+        fake.hold.store(false, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !fake.freed.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "the library state was never freed"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}

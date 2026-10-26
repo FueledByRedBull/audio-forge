@@ -1811,12 +1811,18 @@ impl SuppressorStage {
                     Some(candidate) => candidate.model_type() == control.model,
                     None => break,
                 };
-                let Some(candidate) = self.commands.try_pop() else {
+                let Some(mut candidate) = self.commands.try_pop() else {
                     break;
                 };
+                // A retired engine is dropped later, on the control thread:
+                // its background work ends now rather than then.
+                if !candidate_matches {
+                    candidate.retire();
+                }
 
                 if candidate_matches {
-                    let retired = std::mem::replace(&mut self.engine, candidate);
+                    let mut retired = std::mem::replace(&mut self.engine, candidate);
+                    retired.retire();
                     self.engine.soft_reset();
                     self.starvation.restart();
                     if in_use {

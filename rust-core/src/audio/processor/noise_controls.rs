@@ -2,8 +2,11 @@ use super::diagnostics::{
     noise_backend_diagnostics, store_backend_diagnostics, update_backend_diagnostics,
 };
 use super::{AudioProcessor, RNNOISE_STRENGTH_MAX, RNNOISE_STRENGTH_MIN};
+// Engines built only to ask whether a backend loads answer inline: they need
+// no worker thread for that.
 use crate::dsp::noise_suppressor::{
-    new_controlled_noise_suppression_engine as new_noise_suppression_engine, NoiseModel,
+    new_controlled_noise_suppression_engine as new_noise_suppression_engine,
+    new_realtime_noise_suppression_engine, NoiseModel,
 };
 use ringbuf::traits::Producer;
 use std::sync::atomic::Ordering;
@@ -77,9 +80,15 @@ impl AudioProcessor {
             }
         }
 
-        // Create new suppressor engine with current strength
+        // Create new suppressor engine with current strength. A stopped
+        // processor keeps none, so it gets no worker thread.
         let strength = Arc::clone(&self.shared.suppressor.strength);
-        let new_engine = new_noise_suppression_engine(model, strength);
+        let running = self.shared.stream.running.load(Ordering::Acquire);
+        let new_engine = if running {
+            new_realtime_noise_suppression_engine(model, strength)
+        } else {
+            new_noise_suppression_engine(model, strength)
+        };
         let backend_diagnostics = noise_backend_diagnostics(&new_engine);
 
         if model != NoiseModel::RNNoise && !backend_diagnostics.available {
@@ -95,7 +104,6 @@ impl AudioProcessor {
             return false;
         }
 
-        let running = self.shared.stream.running.load(Ordering::Acquire);
         if running {
             let queued = if let Ok(mut tx_guard) = self.shared.suppressor.pending_tx.lock() {
                 if let Some(tx) = tx_guard.as_mut() {
@@ -144,8 +152,10 @@ impl AudioProcessor {
     pub(super) fn rebuild_noise_suppressor(&self) -> bool {
         self.drain_retired_suppressors();
         let model = self.get_noise_model();
-        let engine =
-            new_noise_suppression_engine(model, Arc::clone(&self.shared.suppressor.strength));
+        let engine = new_realtime_noise_suppression_engine(
+            model,
+            Arc::clone(&self.shared.suppressor.strength),
+        );
         let diagnostics = noise_backend_diagnostics(&engine);
         if model != NoiseModel::RNNoise && !diagnostics.available {
             store_backend_diagnostics(

@@ -21,7 +21,7 @@ use crate::audio::output::{AudioOutput, OutputProbeControl, OutputUnderruns};
 #[cfg(windows)]
 use crate::audio::scheduling::ProAudioThread;
 use crate::dsp::noise_suppressor::{
-    new_controlled_noise_suppression_engine as new_noise_suppression_engine,
+    new_realtime_noise_suppression_engine as new_noise_suppression_engine,
     ControlledNoiseSuppressionEngine as NoiseSuppressionEngine,
 };
 use ringbuf::traits::Consumer;

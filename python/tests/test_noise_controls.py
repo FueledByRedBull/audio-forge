@@ -63,7 +63,7 @@ def test_controls_preserve_metadata_precision_and_immediate_edits(qapp):
     assert state.get_settings()["strength"] == 0.123456789
     model.setIndex(1)
     assert model.index == 1 and model.text == "DeepFilterNet LL"
-    assert latency.text == "Latency: ~10ms (DeepFilterNet LL)"
+    assert latency.text == "Latency: ~20ms (DeepFilterNet LL)"
     assert state.get_settings()["strength"] == 0.123456789
     strength.setValue(66.5)
     assert state.get_settings()["strength"] == 0.66

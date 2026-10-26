@@ -224,7 +224,7 @@ pub(crate) mod test_signal {
 pub(crate) mod rt_scan {
     /// Blocking, allocating, freeing, formatting and logging APIs the RT path
     /// must not reach.
-    const FORBIDDEN: [&str; 41] = [
+    const FORBIDDEN: [&str; 42] = [
         ".lock()",
         "try_lock",
         "Mutex",
@@ -234,6 +234,7 @@ pub(crate) mod rt_scan {
         ".recv(",
         ".send(",
         ".join(",
+        ".unpark(",
         "thread::spawn",
         "std::fs",
         ".reserve(",
@@ -631,7 +632,16 @@ pub(crate) mod rt_scan {
                     ("DeepFilterFFI::open", SETUP),
                     ("DeepFilterProcessor::new_with_config", SETUP),
                     ("DeepFilterProcessor::from_library", SETUP),
+                    ("DeepFilterProcessor::with_worker", SETUP),
                     ("DeepFilterProcessor::default", SETUP),
+                ][..],
+            ),
+            #[cfg(feature = "deepfilter")]
+            (
+                "dsp/deepfilter_ffi/worker.rs",
+                include_str!("dsp/deepfilter_ffi/worker.rs"),
+                &[
+                    ("InferenceWorker::spawn", SETUP),
                 ][..],
             ),
             (
@@ -657,7 +667,7 @@ pub(crate) mod rt_scan {
                 "dsp/noise_suppressor.rs",
                 include_str!("dsp/noise_suppressor.rs"),
                 &[(
-                    "new_controlled_noise_suppression_engine",
+                    "new_engine",
                     "engine factory; engines are built on the control thread and queued to the loop",
                 )][..],
             ),

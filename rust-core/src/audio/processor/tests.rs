@@ -6094,17 +6094,35 @@ fn suppressor_starvation_count_is_wired_to_the_feed_and_every_reset() {
         "// Always feed suppressor first so frame accumulation is correct.",
         "// Record DSP processing time",
     );
+    // The processing, the output and the check live in `drain_suppressor`,
+    // which the idle passes call too (with nothing fed).
     let feed = enabled_branch.find("starvation.fed(accepted)").unwrap();
-    let process = enabled_branch.find("engine.process_frames()").unwrap();
-    let output = enabled_branch.find("if available > 0 {").unwrap();
-    let check = enabled_branch.find("starvation.starved()").unwrap();
-    assert!(feed < process && process < output && output < check);
-    let output_arm = source_between(
-        enabled_branch,
-        "if available > 0 {",
-        "} else if accepted > 0",
-    );
+    let drain = enabled_branch
+        .find("self.drain_suppressor(shared, accepted)")
+        .unwrap();
+    assert!(feed < drain);
+    let drain_fn = source_between(source, "fn drain_suppressor(", "/// An idle pass:");
+    let process = drain_fn.find("engine.process_frames()").unwrap();
+    let output = drain_fn.find("if available > 0 {").unwrap();
+    let check = drain_fn.find("starvation.starved()").unwrap();
+    assert!(process < output && output < check);
+    let output_arm = source_between(drain_fn, "if available > 0 {", "} else {");
     assert!(output_arm.contains("starvation.restart()"));
+    // An idle pass feeds nothing, so it can never raise the starvation alarm.
+    let idle_pass = source_between(
+        source,
+        "fn harvest_suppressor_output(",
+        "/// Restart everything that depends on contiguous input",
+    );
+    assert!(idle_pass.contains("self.drain_suppressor(shared, 0)"));
+    let pass = source_between(
+        source,
+        "pub(super) fn pass(&mut self)",
+        "fn reset_input_continuity(",
+    );
+    let no_input = source_between(pass, "if n_raw == 0 {", "if self.input.stage_block");
+    assert!(no_input.contains("if suppressor_in_use {"));
+    assert!(no_input.contains("self.pipeline.harvest_suppressor_output(shared)"));
     let reset = source_between(
         source,
         "fn reset_after_input_gap(",

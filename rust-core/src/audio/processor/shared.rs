@@ -64,6 +64,9 @@ pub(super) struct SuppressorShared {
     /// Wet/dry strength shared with every engine.
     pub(super) strength: Arc<AtomicU32>,
     pub(super) current_model: AtomicU8,
+    /// The model of the engine a started loop runs: published by `start` before
+    /// the stream is marked running, and by the loop when it swaps engines.
+    pub(super) engine_model: AtomicU8,
     /// Noise suppressor internal buffer fill level (samples)
     pub(super) buffer_len: AtomicU32,
     /// Suppressor latency + pending samples mirrored from the processing thread.
@@ -494,6 +497,7 @@ impl Shared {
                 retired_rx: Mutex::new(None),
                 strength: suppressor_strength,
                 current_model: AtomicU8::new(NoiseModel::RNNoise as u8),
+                engine_model: AtomicU8::new(NoiseModel::RNNoise as u8),
                 buffer_len: AtomicU32::new(0),
                 latency_samples: AtomicU32::new(0),
                 successful_inference_frames: AtomicU64::new(0),

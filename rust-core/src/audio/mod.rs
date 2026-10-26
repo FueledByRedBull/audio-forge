@@ -150,7 +150,7 @@ pub mod output;
 pub mod processor;
 pub mod rt;
 #[cfg(windows)]
-mod scheduling;
+pub(crate) mod scheduling;
 
 pub use buffer::{AudioConsumer, AudioProducer, AudioRingBuffer};
 pub use device::{

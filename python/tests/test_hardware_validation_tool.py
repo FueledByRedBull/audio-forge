@@ -5,6 +5,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -28,6 +29,12 @@ TOOL = _load_tool("evaluate_hardware_validation")
 HEALTH_TOOL = _load_tool("health_check")
 MATRIX_TOOL = _load_tool("evaluate_hardware_matrix")
 BUNDLE_RUNTIME = _load_tool("bundle_runtime")
+
+# What the engines publish with no input waiting for a frame, as the tools expect it.
+PUBLISHED = HEALTH_TOOL.SUPPRESSOR_PUBLISHED_LATENCY_SAMPLES
+RUST_DEEPFILTER = (
+    Path(__file__).resolve().parents[2] / "rust-core" / "src" / "dsp" / "deepfilter_ffi"
+)
 
 
 def test_hardware_result_parsers_require_success_and_evidence() -> None:
@@ -470,10 +477,44 @@ def test_health_gate_rejects_missing_or_nonzero_critical_diagnostics() -> None:
     assert "output_underrun_total=4 (baseline 3)" in failures
 
 
+def _rust_number(path: Path, pattern: str) -> int:
+    match = re.search(pattern, path.read_text(encoding="utf-8"), re.MULTILINE)
+    assert match is not None, pattern
+    return int(match.group(1).replace("_", ""))
+
+
+def test_the_tools_expect_the_latency_the_engine_publishes() -> None:
+    """The window is the engine's formula: the model's latency, the worker's share
+    for DeepFilterNet, and a remainder shorter than the frame that is waiting."""
+    frame = _rust_number(
+        RUST_DEEPFILTER.parent / "deepfilter_ffi.rs",
+        r"^pub const DEEPFILTER_FRAME_SIZE: usize = (\d+);",
+    )
+    transit = _rust_number(
+        RUST_DEEPFILTER / "worker.rs",
+        r"^pub\(crate\) const WORKER_TRANSIT_SAMPLES: usize = ([\d_]+);",
+    )
+    source = (RUST_DEEPFILTER.parent / "deepfilter_ffi.rs").read_text(encoding="utf-8")
+    assert "DeepFilterModel::LowLatency => DEEPFILTER_FRAME_SIZE," in source
+    assert "DeepFilterModel::Standard => DEEPFILTER_FRAME_SIZE * 3," in source
+
+    assert HEALTH_TOOL.DEEPFILTER_WORKER_TRANSIT_SAMPLES == transit
+    assert PUBLISHED == {
+        "rnnoise": frame,
+        "deepfilter-ll": frame + transit,
+        "deepfilter": 3 * frame + transit,
+    }
+    for model, base in PUBLISHED.items():
+        for remainder in (0, 1, frame // 2, frame - 1):
+            assert HEALTH_TOOL._suppressor_latency_is_valid(base + remainder, base), model
+        assert not HEALTH_TOOL._suppressor_latency_is_valid(base - 1, base)
+        assert not HEALTH_TOOL._suppressor_latency_is_valid(base + frame, base)
+
+
 def test_health_gate_requires_standard_deepfilter_inference_and_output() -> None:
     clean = {
         "noise_model": "deepfilter",
-        "suppressor_latency_samples": 1_440,
+        "suppressor_latency_samples": PUBLISHED["deepfilter"],
         "suppressor_successful_inference_frames": 12,
         "output_true_peak_db": -18.0,
     }
@@ -491,16 +532,17 @@ def test_health_gate_requires_standard_deepfilter_inference_and_output() -> None
         )
         == []
     )
-    clean["suppressor_latency_samples"] = 1_919
+    clean["suppressor_latency_samples"] = PUBLISHED["deepfilter"] + 479
     assert (
         HEALTH_TOOL._selected_noise_model_failures(
             clean, expected_model="deepfilter"
         )
         == []
     )
-    clean["suppressor_latency_samples"] = 1_920
-    assert "suppressor_latency_samples=1920" in HEALTH_TOOL._selected_noise_model_failures(
-        clean, expected_model="deepfilter"
+    clean["suppressor_latency_samples"] = PUBLISHED["deepfilter"] + 480
+    assert (
+        f"suppressor_latency_samples={PUBLISHED['deepfilter'] + 480}"
+        in HEALTH_TOOL._selected_noise_model_failures(clean, expected_model="deepfilter")
     )
 
     broken = dict(clean)
@@ -522,7 +564,7 @@ def test_health_gate_requires_standard_deepfilter_inference_and_output() -> None
 def test_lifecycle_model_probe_requires_new_inference_frames() -> None:
     diagnostics = {
         "noise_model": "deepfilter",
-        "suppressor_latency_samples": 1_440,
+        "suppressor_latency_samples": PUBLISHED["deepfilter"],
         "noise_backend_available": True,
         "noise_backend_failed": False,
         "suppressor_successful_inference_frames": 12,
@@ -610,9 +652,7 @@ def test_lifecycle_model_probe_uses_bundled_deepfilter_and_restores_cleanly(
                 "noise_backend_failed": False,
                 "last_stream_error": None,
                 "noise_model": model,
-                "suppressor_latency_samples": (
-                    1_440 if model == "deepfilter" else 480
-                ),
+                "suppressor_latency_samples": PUBLISHED[model],
                 "suppressor_successful_inference_frames": frames,
                 "output_true_peak_db": -200.0,
             }
@@ -712,9 +752,9 @@ def test_lifecycle_model_probe_uses_bundled_deepfilter_and_restores_cleanly(
     if startup_underruns:
         assert result["diagnostics"]["before"]["output_underrun_total"] == 3
     assert result["event"]["alternate_inference_frames"] == 1
-    assert result["event"]["latency_samples_before"] == 480
-    assert result["event"]["latency_samples_alternate"] == 1_440
-    assert result["event"]["latency_samples_restored"] == 480
+    assert result["event"]["latency_samples_before"] == PUBLISHED["rnnoise"]
+    assert result["event"]["latency_samples_alternate"] == PUBLISHED["deepfilter"]
+    assert result["event"]["latency_samples_restored"] == PUBLISHED["rnnoise"]
     assert environment_seen == ["1"]
     assert "AUDIOFORGE_ENABLE_DEEPFILTER" not in os.environ
 

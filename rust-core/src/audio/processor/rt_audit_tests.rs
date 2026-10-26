@@ -485,6 +485,38 @@ fn initial_suppressor_engine_is_built_before_the_dsp_thread_exists() {
     assert!(!start[spawn..].contains("new_noise_suppression_engine("));
 }
 
+#[test]
+fn live_suppressor_engines_come_from_the_factory_that_puts_inference_at_a_worker() {
+    // The offline simulators need engines that answer inline; every engine the
+    // live loop installs (first, selected or rebuilt) must not.
+    let lifecycle = include_str!("lifecycle.rs");
+    assert!(
+        lifecycle.contains("new_realtime_noise_suppression_engine as new_noise_suppression_engine")
+    );
+    let controls = include_str!("noise_controls.rs");
+    // The one place that picks between the two factories, and who asks for which.
+    let builder = between(controls, "fn engine_builder(", "fn select_noise_model(");
+    assert!(builder.contains("if realtime {"));
+    assert!(builder.contains("new_realtime_noise_suppression_engine("));
+    assert!(builder.contains("new_noise_suppression_engine("));
+    let select = between(
+        controls,
+        "fn select_noise_model(",
+        "pub(super) fn rebuild_noise_suppressor(",
+    );
+    // A stopped processor builds its engine only to ask whether it loads.
+    assert!(select.contains("build(model, running)"));
+    let rebuild = between(
+        controls,
+        "pub(super) fn rebuild_noise_suppressor(",
+        "/// Get current noise suppression model",
+    );
+    assert!(rebuild.contains("self.rebuild_with(self.engine_builder())"));
+    assert!(rebuild.contains("build(model, true)"));
+    assert!(!controls[controls.find("fn list_noise_models").unwrap()..]
+        .contains("new_realtime_noise_suppression_engine("));
+}
+
 // --- RT-004: suppressor command queue ----------------------------------------
 
 #[test]

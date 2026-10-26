@@ -4302,7 +4302,7 @@ class MainWindow(QMainWindow):
             "<li>Band-limited true-peak output protection</li>"
             "<li>Runtime health, recovery, and calibration diagnostics</li>"
             "</ul>"
-            "<p><b>Target neural-suppression latency:</b> up to about 30ms</p>",
+            "<p><b>Target neural-suppression latency:</b> up to about 35ms</p>",
         )
 
     def _reset_dropped_samples(self):

@@ -5,8 +5,20 @@
 //! - Provides a stable ABI through C interface
 //! - Uses runtime dynamic loading (no compile-time library dependency)
 //! - Falls back to passthrough, with the reason in `backend_error`, when the
-//!   library or model is unavailable or `df_create` returns null. A panic inside
-//!   the library cannot unwind across the C ABI.
+//!   library or model is unavailable, the model is not the pinned one,
+//!   `df_create` returns null or a frame fails.
+//!
+//! WHAT THE HOST CAN AND CANNOT CATCH:
+//! A panic inside the library cannot unwind across the C ABI, so no
+//! `catch_unwind` on this side can see it: it ends the process. The upstream
+//! C API panics (`expect`/`unwrap`) when a model cannot be loaded or a frame
+//! cannot be processed. The host therefore keeps such input from reaching it:
+//! the model file must be the pinned one (`identity`), and the audio handed to
+//! `df_process_frame` is finite. The library built from this repository
+//! (`build-support/deepfilter/capi.rs`) catches its own panics and answers a
+//! null state (`df_create`), a zero frame length or a NaN SNR
+//! (`df_process_frame`) instead; each falls back to passthrough with the
+//! reason in `backend_error`.
 //!
 //! C API FUNCTIONS (from libDF/src/capi.rs):
 //! - df_create(path, atten_lim, log_level) -> *mut DFState
@@ -28,6 +40,8 @@
 //! If the library or model is not found, the processor uses passthrough mode.
 //!
 //! Expected latency: ~10ms with LL variant (no lookahead)
+
+mod identity;
 
 use crate::audio::rt::FixedAudioRing;
 use crate::dsp::noise_suppressor::{
@@ -210,7 +224,8 @@ impl DeepFilterProcessError {
 
 /// Dynamically loaded DeepFilterNet library symbols
 struct DeepFilterLib {
-    _library: libloading::Library,
+    /// `None` only for the stand-in libraries the tests build.
+    _library: Option<libloading::Library>,
     df_create: DfCreateFn,
     df_free: DfFreeFn,
     df_get_frame_length: DfGetFrameLengthFn,
@@ -234,6 +249,20 @@ impl DeepFilterModel {
         match self {
             DeepFilterModel::LowLatency => "DeepFilterNet3_ll_onnx.tar.gz",
             DeepFilterModel::Standard => "DeepFilterNet3_onnx.tar.gz",
+        }
+    }
+
+    /// Size and SHA-256 of the pinned model file (release-assets.json).
+    fn identity(self) -> identity::ModelIdentity {
+        match self {
+            DeepFilterModel::LowLatency => identity::ModelIdentity {
+                size: 36_359_660,
+                sha256: "5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a",
+            },
+            DeepFilterModel::Standard => identity::ModelIdentity {
+                size: 7_983_136,
+                sha256: "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616",
+            },
         }
     }
 
@@ -409,7 +438,7 @@ impl DeepFilterLib {
         let df_set_post_filter_beta = *df_set_post_filter_beta.into_raw();
 
         Ok(DeepFilterLib {
-            _library: library,
+            _library: Some(library),
             df_create,
             df_free,
             df_get_frame_length,
@@ -500,24 +529,46 @@ impl DeepFilterFFI {
         self.state.as_ptr()
     }
 
-    /// Create a new DeepFilterNet instance using model from file system
+    /// Find the model file and create a DeepFilterNet instance from it.
     ///
-    /// # Safety
-    /// This function calls unsafe FFI functions to create the DeepFilterNet instance.
-    /// It validates the returned pointer and returns an error if creation failed.
+    /// A model chosen through the external override is the user's own
+    /// responsibility; every other model must be the pinned one.
     fn new(
         lib: Arc<DeepFilterLib>,
         model: DeepFilterModel,
         config: DeepFilterRuntimeConfig,
         app_paths: &AppOwnedDeepFilterPaths,
         allow_external: bool,
+        external_model: Option<&Path>,
     ) -> Result<Self, String> {
-        // Find model path
-        let external_model = env::var_os("DEEPFILTER_MODEL_PATH").map(PathBuf::from);
-        let model_path = find_model_path(model, app_paths, allow_external, external_model.as_deref())
+        let model_path = find_model_path(model, app_paths, allow_external, external_model)
             .ok_or_else(|| {
                 format!("DeepFilterNet model file not found. Bundle {} with the app, or opt in to an external DEEPFILTER_MODEL_PATH", model.filename())
             })?;
+        let chosen_externally = allow_external
+            && external_model.is_some_and(|external| {
+                model_path == external || model_path == external.join(model.filename())
+            });
+        let identity = (!chosen_externally).then(|| model.identity());
+        Self::open(lib, config, &model_path, identity)
+    }
+
+    /// Create a new DeepFilterNet instance from the model at `model_path`,
+    /// which must match `identity` when one is given.
+    ///
+    /// # Safety
+    /// This function calls unsafe FFI functions to create the DeepFilterNet instance.
+    /// It validates the returned pointer and returns an error if creation failed.
+    fn open(
+        lib: Arc<DeepFilterLib>,
+        config: DeepFilterRuntimeConfig,
+        model_path: &Path,
+        identity: Option<identity::ModelIdentity>,
+    ) -> Result<Self, String> {
+        // The library aborts the process on a model it cannot load.
+        if let Some(identity) = identity {
+            identity::verify(model_path, &identity)?;
+        }
 
         // Convert path to C string
         let model_path_cstr = std::ffi::CString::new(
@@ -590,6 +641,11 @@ impl DeepFilterFFI {
         }
         if output.len() != self.frame_size {
             return Err(DeepFilterProcessError::OutputSizeMismatch);
+        }
+
+        // The library aborts the process on a frame it cannot process.
+        for sample in input.iter_mut().filter(|sample| !sample.is_finite()) {
+            *sample = 0.0;
         }
 
         // SAFETY: Buffer sizes match the backend frame size, the state is valid
@@ -679,7 +735,6 @@ fn mix_wet_with_aligned_dry(
 
 pub struct DeepFilterProcessor {
     df: Option<DeepFilterFFI>, // Option for graceful fallback if FFI fails
-    _lib: Option<Arc<DeepFilterLib>>, // Keep library loaded
     input_buffer: FixedAudioRing<ControlledSample, DEEPFILTER_BUFFER_CAPACITY>,
     output_buffer: FixedAudioRing<f32, DEEPFILTER_BUFFER_CAPACITY>,
     input_frame: [ControlledSample; DEEPFILTER_FRAME_SIZE],
@@ -711,74 +766,77 @@ impl DeepFilterProcessor {
         model: DeepFilterModel,
         runtime_config: DeepFilterRuntimeConfig,
     ) -> Self {
-        let initial_strength = unit_or(f32::from_bits(strength.load(Ordering::Relaxed)), 1.0);
-        let compensation_delay = match model {
-            DeepFilterModel::LowLatency => DEEPFILTER_FRAME_SIZE,
-            DeepFilterModel::Standard => 0,
-        };
         if !crate::dsp::noise_suppressor::deepfilter_experimental_enabled() {
-            return Self {
-                df: None,
-                _lib: None,
-                input_buffer: FixedAudioRing::new(),
-                output_buffer: FixedAudioRing::new(),
-                input_frame: [ControlledSample::default(); DEEPFILTER_FRAME_SIZE],
-                gate_compensation: GateCompensation::new(compensation_delay),
-                enabled: true,
+            return Self::with_backend(
                 strength,
-                smoothed_strength: initial_strength,
-                dry_frame: [0.0; DEEPFILTER_FRAME_SIZE],
-                frame_scratch: [0.0; DEEPFILTER_FRAME_SIZE],
-                output_frame: [0.0; DEEPFILTER_FRAME_SIZE],
-                aligned_dry_frame: [0.0; DEEPFILTER_FRAME_SIZE],
-                dry_delay: [0.0; DEEPFILTER_MAX_LATENCY_SAMPLES],
-                dry_delay_index: 0,
-                invalid_wet_samples: 0,
-                load_error: Some(
+                model,
+                None,
+                Some(
                     "DeepFilterNet disabled; set AUDIOFORGE_ENABLE_DEEPFILTER=1 to enable"
                         .to_string(),
                 ),
-                model,
-                backend_failed: false,
-                runtime_error: None,
-                successful_inference_frames: 0,
-            };
+            );
         }
 
         // Snapshot bootstrap-owned paths before initialization. This happens
         // outside the realtime processing loop.
         let app_paths = configured_app_owned_paths();
         let allow_external = external_deepfilter_paths_allowed();
+        let external_model = env::var_os("DEEPFILTER_MODEL_PATH").map(PathBuf::from);
+        Self::from_library(
+            strength,
+            model,
+            runtime_config,
+            DeepFilterLib::try_load(&app_paths, allow_external),
+            &app_paths,
+            allow_external,
+            external_model.as_deref(),
+        )
+    }
 
-        // Try to load library and initialize FFI
-        let (df, lib, load_error) = match DeepFilterLib::try_load(&app_paths, allow_external) {
-            Ok(lib) => {
-                let lib_arc = Arc::new(lib);
-                match DeepFilterFFI::new(
-                    lib_arc.clone(),
-                    model,
-                    runtime_config,
-                    &app_paths,
-                    allow_external,
-                ) {
-                    Ok(df) => (Some(df), Some(lib_arc), None),
-                    Err(e) => (
-                        None,
-                        Some(lib_arc),
-                        Some(format!("DeepFilterNet init failed: {}", e)),
-                    ),
-                }
-            }
-            Err(e) => (
-                None,
-                None,
-                Some(format!("DeepFilterNet C library unavailable: {}", e)),
-            ),
+    /// Build the processor around the result of loading the library. Whatever
+    /// goes wrong while the model is loaded leaves a passthrough processor
+    /// whose `backend_error` says why.
+    fn from_library(
+        strength: Arc<AtomicU32>,
+        model: DeepFilterModel,
+        runtime_config: DeepFilterRuntimeConfig,
+        library: Result<DeepFilterLib, String>,
+        app_paths: &AppOwnedDeepFilterPaths,
+        allow_external: bool,
+        external_model: Option<&Path>,
+    ) -> Self {
+        let backend = match library {
+            Ok(library) => DeepFilterFFI::new(
+                Arc::new(library),
+                model,
+                runtime_config,
+                app_paths,
+                allow_external,
+                external_model,
+            )
+            .map_err(|e| format!("DeepFilterNet init failed: {}", e)),
+            Err(e) => Err(format!("DeepFilterNet C library unavailable: {}", e)),
         };
+        match backend {
+            Ok(df) => Self::with_backend(strength, model, Some(df), None),
+            Err(load_error) => Self::with_backend(strength, model, None, Some(load_error)),
+        }
+    }
 
+    fn with_backend(
+        strength: Arc<AtomicU32>,
+        model: DeepFilterModel,
+        df: Option<DeepFilterFFI>,
+        load_error: Option<String>,
+    ) -> Self {
+        let initial_strength = unit_or(f32::from_bits(strength.load(Ordering::Relaxed)), 1.0);
+        let compensation_delay = match model {
+            DeepFilterModel::LowLatency => DEEPFILTER_FRAME_SIZE,
+            DeepFilterModel::Standard => 0,
+        };
         Self {
             df,
-            _lib: lib,
             input_buffer: FixedAudioRing::new(),
             output_buffer: FixedAudioRing::new(),
             input_frame: [ControlledSample::default(); DEEPFILTER_FRAME_SIZE],

@@ -178,15 +178,11 @@ impl LoudnessMeter {
         self.sample_rate
     }
 
-    /// Reset loudness meter state
-    pub fn reset(&mut self) -> Result<(), LoudnessError> {
-        // Recreates the meter, which allocates. `EbuR128::reset` (ebur128 0.1.10)
-        // would clear the same state in place.
-        let meter = EbuR128::new(1, self.sample_rate, Mode::M | Mode::HISTOGRAM)
-            .map_err(|e| LoudnessError::InitError(e.to_string()))?;
-        self.meter = meter;
+    /// Reset loudness meter state in place; the DSP loop calls this on a
+    /// processing-path change, so it must not allocate.
+    pub fn reset(&mut self) {
+        self.meter.reset();
         self.current_lufs = -100.0;
-        Ok(())
     }
 }
 
@@ -246,9 +242,27 @@ mod tests {
         let tone = vec![0.1_f32; 48_000];
         meter.process(&tone);
 
-        meter.reset().unwrap();
+        meter.reset();
 
         assert_eq!(meter.loudness_momentary(), -100.0);
+    }
+
+    #[test]
+    fn reset_clears_the_measurement_state_like_a_new_meter() {
+        let loud = vec![0.5_f32; 48_000];
+        let tone: Vec<f32> = (0..9_600)
+            .map(|i| 0.1 * (2.0 * std::f32::consts::PI * 1_000.0 * i as f32 / 48_000.0).sin())
+            .collect();
+        let mut reused = LoudnessMeter::new(48_000).unwrap();
+        reused.process(&loud);
+        reused.reset();
+        let mut fresh = LoudnessMeter::new(48_000).unwrap();
+        for block in tone.chunks(480) {
+            reused.process(block);
+            fresh.process(block);
+            assert_eq!(reused.loudness_momentary(), fresh.loudness_momentary());
+        }
+        assert!(fresh.loudness_momentary() > -30.0);
     }
 
     #[test]

@@ -487,6 +487,7 @@ DEEPFILTER_RECIPE_FILES = (
     "build_deepfilter.ps1",
     "build-support/deepfilter/Cargo.toml",
     "build-support/deepfilter/Cargo.lock",
+    "build-support/deepfilter/capi.rs",
     "build-support/deepfilter/provenance.json",
 )
 

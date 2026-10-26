@@ -1,3 +1,18 @@
+/// Ask for a restart because the callbacks stalled. The stall is recorded as
+/// the pending reason first, so an error code left over from earlier (a
+/// suppressor fault, say) cannot send the request into a suppressor rebuild.
+fn request_stall_restart(
+    recovery_state: &Mutex<StreamRecoveryState>,
+    restart_requested: &AtomicBool,
+    reason: String,
+) {
+    if let Ok(mut state) = recovery_state.lock() {
+        state.last_reason = Some(reason);
+        state.reason_pending = true;
+    }
+    restart_requested.store(true, Ordering::Release);
+}
+
 impl AudioProcessor {
     fn ensure_supervisor(&mut self) {
         if self.supervisor_thread.is_some() {
@@ -84,11 +99,7 @@ impl AudioProcessor {
                         "input_cb_age_ms={}, output_cb_age_ms={}, output_write_age_ms={}",
                         input_age_ms, output_age_ms, write_age_ms
                     );
-                    if let Ok(mut state) = recovery_state.lock() {
-                        state.last_reason = Some(reason);
-                        state.reason_pending = true;
-                    }
-                    restart_requested.store(true, Ordering::Release);
+                    request_stall_restart(&recovery_state, &restart_requested, reason);
                     consecutive_stalls = 0;
                 } else {
                     consecutive_stalls = 0;

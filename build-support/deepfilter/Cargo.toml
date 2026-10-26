@@ -12,6 +12,7 @@ inherits = "release"
 debug = false
 lto = "fat"
 strip = true
-panic = "abort"
+# The patched C API catches its own panics, which needs unwinding.
+panic = "unwind"
 [patch.crates-io]
 tract-linalg = { path = 'patches/tract-linalg' }

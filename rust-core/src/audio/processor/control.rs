@@ -1,10 +1,20 @@
-include!("routing.rs");
-include!("resampling.rs");
-include!("diagnostics.rs");
+use crate::dsp::eq::{EqBandConfig, EqFilterType, NUM_BANDS};
+use crate::dsp::noise_suppressor::{
+    ControlledNoiseSuppressionEngine as NoiseSuppressionEngine, NoiseModel,
+};
+#[cfg(feature = "vad")]
+use crate::dsp::vad::GateMode;
+use crate::dsp::{Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ, TruePeakLimiter};
+#[cfg(feature = "vad")]
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::Mutex;
+#[cfg(not(windows))]
+use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 const CONTROL_SNAPSHOT_MAX_RETRIES: usize = 32;
 
-fn locked_control_update<F>(writer: &Mutex<()>, seq: &AtomicU64, apply: F)
+pub(super) fn locked_control_update<F>(writer: &Mutex<()>, seq: &AtomicU64, apply: F)
 where
     F: FnOnce(),
 {
@@ -18,7 +28,7 @@ where
     seq.fetch_add(1, Ordering::Release);
 }
 
-fn stable_control_snapshot<T, F>(seq: &AtomicU64, mut read: F) -> Option<T>
+pub(super) fn stable_control_snapshot<T, F>(seq: &AtomicU64, mut read: F) -> Option<T>
 where
     F: FnMut() -> T,
 {
@@ -43,7 +53,7 @@ where
 }
 
 #[inline]
-fn release_ms_to_tenth_ms(release_ms: f64) -> u64 {
+pub(super) fn release_ms_to_tenth_ms(release_ms: f64) -> u64 {
     if !release_ms.is_finite() {
         return 0;
     }
@@ -51,37 +61,37 @@ fn release_ms_to_tenth_ms(release_ms: f64) -> u64 {
 }
 
 #[inline]
-fn clamp_control_value(value: f64, min_value: f64, max_value: f64) -> Option<f64> {
+pub(super) fn clamp_control_value(value: f64, min_value: f64, max_value: f64) -> Option<f64> {
     value.is_finite().then(|| value.clamp(min_value, max_value))
 }
 
 #[inline]
-fn clamp_control_value_f32(value: f32, min_value: f32, max_value: f32) -> Option<f32> {
+pub(super) fn clamp_control_value_f32(value: f32, min_value: f32, max_value: f32) -> Option<f32> {
     value.is_finite().then(|| value.clamp(min_value, max_value))
 }
 
 #[derive(Clone)]
-struct GateControlState {
-    enabled: bool,
-    threshold_db: f64,
-    attack_ms: f64,
-    release_ms: f64,
+pub(super) struct GateControlState {
+    pub(super) enabled: bool,
+    pub(super) threshold_db: f64,
+    pub(super) attack_ms: f64,
+    pub(super) release_ms: f64,
     #[cfg(feature = "vad")]
-    gate_mode: GateMode,
+    pub(super) gate_mode: GateMode,
     #[cfg(feature = "vad")]
-    vad_threshold: f32,
+    pub(super) vad_threshold: f32,
     #[cfg(feature = "vad")]
-    hold_ms: f32,
+    pub(super) hold_ms: f32,
     #[cfg(feature = "vad")]
-    pre_gain: f32,
+    pub(super) pre_gain: f32,
     #[cfg(feature = "vad")]
-    auto_threshold: bool,
+    pub(super) auto_threshold: bool,
     #[cfg(feature = "vad")]
-    margin_db: f32,
+    pub(super) margin_db: f32,
 }
 
 impl GateControlState {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             enabled: true,
             threshold_db: -40.0,
@@ -103,29 +113,29 @@ impl GateControlState {
     }
 }
 
-struct AtomicGateControlState {
+pub(super) struct AtomicGateControlState {
     writer: Mutex<()>,
     seq: AtomicU64,
-    enabled: AtomicBool,
-    threshold_db_bits: AtomicU64,
-    attack_ms_bits: AtomicU64,
-    release_ms_bits: AtomicU64,
+    pub(super) enabled: AtomicBool,
+    pub(super) threshold_db_bits: AtomicU64,
+    pub(super) attack_ms_bits: AtomicU64,
+    pub(super) release_ms_bits: AtomicU64,
     #[cfg(feature = "vad")]
-    gate_mode: AtomicU8,
+    pub(super) gate_mode: AtomicU8,
     #[cfg(feature = "vad")]
-    vad_threshold_bits: AtomicU32,
+    pub(super) vad_threshold_bits: AtomicU32,
     #[cfg(feature = "vad")]
-    hold_ms_bits: AtomicU32,
+    pub(super) hold_ms_bits: AtomicU32,
     #[cfg(feature = "vad")]
-    pre_gain_bits: AtomicU32,
+    pub(super) pre_gain_bits: AtomicU32,
     #[cfg(feature = "vad")]
-    auto_threshold: AtomicBool,
+    pub(super) auto_threshold: AtomicBool,
     #[cfg(feature = "vad")]
-    margin_db_bits: AtomicU32,
+    pub(super) margin_db_bits: AtomicU32,
 }
 
 impl AtomicGateControlState {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let state = GateControlState::new();
         Self {
             writer: Mutex::new(()),
@@ -149,14 +159,14 @@ impl AtomicGateControlState {
         }
     }
 
-    fn update<F>(&self, apply: F)
+    pub(super) fn update<F>(&self, apply: F)
     where
         F: FnOnce(&Self),
     {
         locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
-    fn snapshot(&self) -> Option<GateControlState> {
+    pub(super) fn snapshot(&self) -> Option<GateControlState> {
         stable_control_snapshot(&self.seq, || GateControlState {
             enabled: self.enabled.load(Ordering::Relaxed),
             threshold_db: f64::from_bits(self.threshold_db_bits.load(Ordering::Relaxed)),
@@ -178,7 +188,7 @@ impl AtomicGateControlState {
         })
     }
 
-    fn set_threshold_db(&self, threshold_db: f64) {
+    pub(super) fn set_threshold_db(&self, threshold_db: f64) {
         self.update(|state| {
             state
                 .threshold_db_bits
@@ -187,7 +197,7 @@ impl AtomicGateControlState {
     }
 
     #[cfg(feature = "vad")]
-    fn set_vad_threshold(&self, threshold: f32) {
+    pub(super) fn set_vad_threshold(&self, threshold: f32) {
         self.update(|state| {
             state
                 .vad_threshold_bits
@@ -196,7 +206,7 @@ impl AtomicGateControlState {
     }
 
     #[cfg(feature = "vad")]
-    fn set_hold_ms(&self, hold_ms: f32) {
+    pub(super) fn set_hold_ms(&self, hold_ms: f32) {
         self.update(|state| {
             state
                 .hold_ms_bits
@@ -205,7 +215,7 @@ impl AtomicGateControlState {
     }
 
     #[cfg(feature = "vad")]
-    fn set_pre_gain(&self, pre_gain: f32) {
+    pub(super) fn set_pre_gain(&self, pre_gain: f32) {
         self.update(|state| {
             state
                 .pre_gain_bits
@@ -214,19 +224,19 @@ impl AtomicGateControlState {
     }
 
     #[cfg(feature = "vad")]
-    fn set_auto_threshold(&self, enabled: bool) {
+    pub(super) fn set_auto_threshold(&self, enabled: bool) {
         self.update(|state| state.auto_threshold.store(enabled, Ordering::Relaxed));
     }
 }
 
 #[derive(Clone)]
-struct SuppressorControlState {
-    enabled: bool,
-    model: NoiseModel,
+pub(super) struct SuppressorControlState {
+    pub(super) enabled: bool,
+    pub(super) model: NoiseModel,
 }
 
 impl SuppressorControlState {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             enabled: true,
             model: NoiseModel::RNNoise,
@@ -244,15 +254,15 @@ fn noise_model_from_u8(value: u8) -> NoiseModel {
     }
 }
 
-struct AtomicSuppressorControlState {
+pub(super) struct AtomicSuppressorControlState {
     writer: Mutex<()>,
-    seq: AtomicU64,
+    pub(super) seq: AtomicU64,
     enabled: AtomicBool,
     model: AtomicU8,
 }
 
 impl AtomicSuppressorControlState {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let state = SuppressorControlState::new();
         Self {
             writer: Mutex::new(()),
@@ -269,31 +279,31 @@ impl AtomicSuppressorControlState {
         locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
-    fn snapshot(&self) -> Option<SuppressorControlState> {
+    pub(super) fn snapshot(&self) -> Option<SuppressorControlState> {
         stable_control_snapshot(&self.seq, || SuppressorControlState {
             enabled: self.enabled.load(Ordering::Relaxed),
             model: noise_model_from_u8(self.model.load(Ordering::Relaxed)),
         })
     }
 
-    fn set_enabled(&self, enabled: bool) {
+    pub(super) fn set_enabled(&self, enabled: bool) {
         self.update(|state| state.enabled.store(enabled, Ordering::Relaxed));
     }
 
-    fn set_model(&self, model: NoiseModel) {
+    pub(super) fn set_model(&self, model: NoiseModel) {
         self.update(|state| state.model.store(model as u8, Ordering::Relaxed));
     }
 }
 
 #[derive(Clone, Copy)]
-struct EqControlSnapshot {
+pub(super) struct EqControlSnapshot {
     enabled: bool,
-    correction_bands: [EqBandConfig; NUM_BANDS],
-    tone_bands: [EqBandConfig; NUM_BANDS],
+    pub(super) correction_bands: [EqBandConfig; NUM_BANDS],
+    pub(super) tone_bands: [EqBandConfig; NUM_BANDS],
 }
 
 impl EqControlSnapshot {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             enabled: true,
             correction_bands: std::array::from_fn(EqBandConfig::default_for_index),
@@ -302,9 +312,9 @@ impl EqControlSnapshot {
     }
 }
 
-struct EqControlState {
+pub(super) struct EqControlState {
     writer: Mutex<()>,
-    seq: AtomicU64,
+    pub(super) seq: AtomicU64,
     enabled: AtomicBool,
     correction_frequency_bits: [AtomicU64; NUM_BANDS],
     correction_gain_bits: [AtomicU64; NUM_BANDS],
@@ -321,7 +331,7 @@ struct EqControlState {
 }
 
 impl EqControlState {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let snapshot = EqControlSnapshot::new();
         Self {
             writer: Mutex::new(()),
@@ -373,7 +383,7 @@ impl EqControlState {
         locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
-    fn snapshot(&self) -> Option<EqControlSnapshot> {
+    pub(super) fn snapshot(&self) -> Option<EqControlSnapshot> {
         stable_control_snapshot(&self.seq, || {
             let enabled = self.enabled.load(Ordering::Relaxed);
             let read_bands = |frequency_bits: &[AtomicU64; NUM_BANDS],
@@ -422,13 +432,13 @@ impl EqControlState {
         })
     }
 
-    fn set_enabled(&self, enabled: bool) {
+    pub(super) fn set_enabled(&self, enabled: bool) {
         self.update(|state| {
             state.enabled.store(enabled, Ordering::Relaxed);
         });
     }
 
-    fn set_layers(
+    pub(super) fn set_layers(
         &self,
         correction_bands: &[EqBandConfig; NUM_BANDS],
         tone_bands: &[EqBandConfig; NUM_BANDS],
@@ -460,21 +470,21 @@ impl EqControlState {
 }
 
 #[derive(Clone)]
-struct DeesserControlState {
-    enabled: bool,
-    auto_enabled: bool,
-    auto_amount: f64,
-    low_cut_hz: f64,
-    high_cut_hz: f64,
-    threshold_db: f64,
-    ratio: f64,
-    attack_ms: f64,
-    release_ms: f64,
-    max_reduction_db: f64,
+pub(super) struct DeesserControlState {
+    pub(super) enabled: bool,
+    pub(super) auto_enabled: bool,
+    pub(super) auto_amount: f64,
+    pub(super) low_cut_hz: f64,
+    pub(super) high_cut_hz: f64,
+    pub(super) threshold_db: f64,
+    pub(super) ratio: f64,
+    pub(super) attack_ms: f64,
+    pub(super) release_ms: f64,
+    pub(super) max_reduction_db: f64,
 }
 
 impl DeesserControlState {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             enabled: false,
             auto_enabled: true,
@@ -490,23 +500,23 @@ impl DeesserControlState {
     }
 }
 
-struct AtomicDeesserControlState {
+pub(super) struct AtomicDeesserControlState {
     writer: Mutex<()>,
     seq: AtomicU64,
-    enabled: AtomicBool,
-    auto_enabled: AtomicBool,
-    auto_amount_bits: AtomicU64,
-    low_cut_hz_bits: AtomicU64,
-    high_cut_hz_bits: AtomicU64,
-    threshold_db_bits: AtomicU64,
-    ratio_bits: AtomicU64,
-    attack_ms_bits: AtomicU64,
-    release_ms_bits: AtomicU64,
-    max_reduction_db_bits: AtomicU64,
+    pub(super) enabled: AtomicBool,
+    pub(super) auto_enabled: AtomicBool,
+    pub(super) auto_amount_bits: AtomicU64,
+    pub(super) low_cut_hz_bits: AtomicU64,
+    pub(super) high_cut_hz_bits: AtomicU64,
+    pub(super) threshold_db_bits: AtomicU64,
+    pub(super) ratio_bits: AtomicU64,
+    pub(super) attack_ms_bits: AtomicU64,
+    pub(super) release_ms_bits: AtomicU64,
+    pub(super) max_reduction_db_bits: AtomicU64,
 }
 
 impl AtomicDeesserControlState {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let state = DeesserControlState::new();
         Self {
             writer: Mutex::new(()),
@@ -524,14 +534,14 @@ impl AtomicDeesserControlState {
         }
     }
 
-    fn update<F>(&self, apply: F)
+    pub(super) fn update<F>(&self, apply: F)
     where
         F: FnOnce(&Self),
     {
         locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
-    fn snapshot(&self) -> Option<DeesserControlState> {
+    pub(super) fn snapshot(&self) -> Option<DeesserControlState> {
         stable_control_snapshot(&self.seq, || DeesserControlState {
             enabled: self.enabled.load(Ordering::Relaxed),
             auto_enabled: self.auto_enabled.load(Ordering::Relaxed),
@@ -548,22 +558,22 @@ impl AtomicDeesserControlState {
 }
 
 #[derive(Clone)]
-struct CompressorControlState {
-    enabled: bool,
-    threshold_db: f64,
-    ratio: f64,
-    attack_ms: f64,
-    base_release_ms: f64,
-    makeup_gain_db: f64,
-    adaptive_release: bool,
-    auto_makeup_enabled: bool,
-    target_lufs: f64,
-    noise_reference_reliability: f64,
-    sidechain_highpass_enabled: bool,
+pub(super) struct CompressorControlState {
+    pub(super) enabled: bool,
+    pub(super) threshold_db: f64,
+    pub(super) ratio: f64,
+    pub(super) attack_ms: f64,
+    pub(super) base_release_ms: f64,
+    pub(super) makeup_gain_db: f64,
+    pub(super) adaptive_release: bool,
+    pub(super) auto_makeup_enabled: bool,
+    pub(super) target_lufs: f64,
+    pub(super) noise_reference_reliability: f64,
+    pub(super) sidechain_highpass_enabled: bool,
 }
 
 impl CompressorControlState {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             enabled: true,
             threshold_db: -20.0,
@@ -580,24 +590,24 @@ impl CompressorControlState {
     }
 }
 
-struct AtomicCompressorControlState {
+pub(super) struct AtomicCompressorControlState {
     writer: Mutex<()>,
     seq: AtomicU64,
-    enabled: AtomicBool,
-    threshold_db_bits: AtomicU64,
-    ratio_bits: AtomicU64,
-    attack_ms_bits: AtomicU64,
-    base_release_ms_bits: AtomicU64,
-    makeup_gain_db_bits: AtomicU64,
-    adaptive_release: AtomicBool,
-    auto_makeup_enabled: AtomicBool,
-    target_lufs_bits: AtomicU64,
-    noise_reference_reliability_bits: AtomicU64,
-    sidechain_highpass_enabled: AtomicBool,
+    pub(super) enabled: AtomicBool,
+    pub(super) threshold_db_bits: AtomicU64,
+    pub(super) ratio_bits: AtomicU64,
+    pub(super) attack_ms_bits: AtomicU64,
+    pub(super) base_release_ms_bits: AtomicU64,
+    pub(super) makeup_gain_db_bits: AtomicU64,
+    pub(super) adaptive_release: AtomicBool,
+    pub(super) auto_makeup_enabled: AtomicBool,
+    pub(super) target_lufs_bits: AtomicU64,
+    pub(super) noise_reference_reliability_bits: AtomicU64,
+    pub(super) sidechain_highpass_enabled: AtomicBool,
 }
 
 impl AtomicCompressorControlState {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let state = CompressorControlState::new();
         Self {
             writer: Mutex::new(()),
@@ -618,14 +628,14 @@ impl AtomicCompressorControlState {
         }
     }
 
-    fn update<F>(&self, apply: F)
+    pub(super) fn update<F>(&self, apply: F)
     where
         F: FnOnce(&Self),
     {
         locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
-    fn snapshot(&self) -> Option<CompressorControlState> {
+    pub(super) fn snapshot(&self) -> Option<CompressorControlState> {
         stable_control_snapshot(&self.seq, || CompressorControlState {
             enabled: self.enabled.load(Ordering::Relaxed),
             threshold_db: f64::from_bits(self.threshold_db_bits.load(Ordering::Relaxed)),
@@ -644,7 +654,7 @@ impl AtomicCompressorControlState {
         })
     }
 
-    fn set_threshold_db(&self, value: f64) {
+    pub(super) fn set_threshold_db(&self, value: f64) {
         self.update(|state| {
             state
                 .threshold_db_bits
@@ -654,17 +664,17 @@ impl AtomicCompressorControlState {
 }
 
 #[derive(Clone)]
-struct LimiterControlState {
-    enabled: bool,
-    ceiling_db: f64,
-    release_ms: f64,
-    careful_output_enabled: bool,
+pub(super) struct LimiterControlState {
+    pub(super) enabled: bool,
+    pub(super) ceiling_db: f64,
+    pub(super) release_ms: f64,
+    pub(super) careful_output_enabled: bool,
 }
 
-const CAREFUL_OUTPUT_CEILING_DB: f64 = -1.5;
+pub(super) const CAREFUL_OUTPUT_CEILING_DB: f64 = -1.5;
 
 impl LimiterControlState {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             enabled: true,
             ceiling_db: -0.5,
@@ -674,17 +684,17 @@ impl LimiterControlState {
     }
 }
 
-struct AtomicLimiterControlState {
+pub(super) struct AtomicLimiterControlState {
     writer: Mutex<()>,
-    seq: AtomicU64,
+    pub(super) seq: AtomicU64,
     enabled: AtomicBool,
     ceiling_db_bits: AtomicU64,
     release_ms_bits: AtomicU64,
-    careful_output_enabled: AtomicBool,
+    pub(super) careful_output_enabled: AtomicBool,
 }
 
 impl AtomicLimiterControlState {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let state = LimiterControlState::new();
         Self {
             writer: Mutex::new(()),
@@ -703,7 +713,7 @@ impl AtomicLimiterControlState {
         locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
-    fn snapshot(&self) -> Option<LimiterControlState> {
+    pub(super) fn snapshot(&self) -> Option<LimiterControlState> {
         stable_control_snapshot(&self.seq, || LimiterControlState {
             enabled: self.enabled.load(Ordering::Relaxed),
             ceiling_db: f64::from_bits(self.ceiling_db_bits.load(Ordering::Relaxed)),
@@ -712,11 +722,11 @@ impl AtomicLimiterControlState {
         })
     }
 
-    fn set_enabled(&self, enabled: bool) {
+    pub(super) fn set_enabled(&self, enabled: bool) {
         self.update(|state| state.enabled.store(enabled, Ordering::Relaxed));
     }
 
-    fn set_ceiling_db(&self, value: f64) {
+    pub(super) fn set_ceiling_db(&self, value: f64) {
         self.update(|state| {
             state
                 .ceiling_db_bits
@@ -724,7 +734,7 @@ impl AtomicLimiterControlState {
         });
     }
 
-    fn set_release_ms(&self, value: f64) {
+    pub(super) fn set_release_ms(&self, value: f64) {
         self.update(|state| {
             state
                 .release_ms_bits
@@ -732,7 +742,7 @@ impl AtomicLimiterControlState {
         });
     }
 
-    fn set_careful_output_enabled(&self, enabled: bool) {
+    pub(super) fn set_careful_output_enabled(&self, enabled: bool) {
         self.update(|state| {
             state
                 .careful_output_enabled
@@ -741,7 +751,7 @@ impl AtomicLimiterControlState {
     }
 }
 
-fn apply_eq_control(
+pub(super) fn apply_eq_control(
     correction_eq: &mut ParametricEQ,
     tone_eq: &mut ParametricEQ,
     control: &EqControlSnapshot,
@@ -754,7 +764,7 @@ fn apply_eq_control(
     }
 }
 
-fn apply_gate_control(gate: &mut NoiseGate, control: &GateControlState) {
+pub(super) fn apply_gate_control(gate: &mut NoiseGate, control: &GateControlState) {
     gate.set_enabled(control.enabled);
     gate.set_threshold(control.threshold_db);
     gate.set_attack_time(control.attack_ms);
@@ -769,14 +779,14 @@ fn apply_gate_control(gate: &mut NoiseGate, control: &GateControlState) {
     }
 }
 
-fn apply_suppressor_control(
+pub(super) fn apply_suppressor_control(
     suppressor: &mut NoiseSuppressionEngine,
     control: &SuppressorControlState,
 ) {
     suppressor.set_enabled(control.enabled);
 }
 
-fn apply_deesser_control(deesser: &mut DeEsser, control: &DeesserControlState) {
+pub(super) fn apply_deesser_control(deesser: &mut DeEsser, control: &DeesserControlState) {
     deesser.set_enabled(control.enabled);
     deesser.set_auto_enabled(control.auto_enabled);
     deesser.set_auto_amount(control.auto_amount);
@@ -789,7 +799,10 @@ fn apply_deesser_control(deesser: &mut DeEsser, control: &DeesserControlState) {
     deesser.set_max_reduction_db(control.max_reduction_db);
 }
 
-fn apply_compressor_control(compressor: &mut Compressor, control: &CompressorControlState) {
+pub(super) fn apply_compressor_control(
+    compressor: &mut Compressor,
+    control: &CompressorControlState,
+) {
     compressor.set_enabled(control.enabled);
     if compressor.threshold_db() != control.threshold_db {
         compressor.set_threshold(control.threshold_db);
@@ -818,7 +831,7 @@ fn apply_compressor_control(compressor: &mut Compressor, control: &CompressorCon
     compressor.set_sidechain_highpass_enabled(control.sidechain_highpass_enabled);
 }
 
-fn effective_limiter_ceiling_db(ceiling_db: f64, careful_output_enabled: bool) -> f64 {
+pub(super) fn effective_limiter_ceiling_db(ceiling_db: f64, careful_output_enabled: bool) -> f64 {
     if careful_output_enabled {
         ceiling_db.min(CAREFUL_OUTPUT_CEILING_DB)
     } else {
@@ -826,7 +839,7 @@ fn effective_limiter_ceiling_db(ceiling_db: f64, careful_output_enabled: bool) -
     }
 }
 
-fn apply_limiter_control(limiter: &mut Limiter, control: &LimiterControlState) {
+pub(super) fn apply_limiter_control(limiter: &mut Limiter, control: &LimiterControlState) {
     limiter.set_ceiling(effective_limiter_ceiling_db(
         control.ceiling_db,
         control.careful_output_enabled,
@@ -835,7 +848,10 @@ fn apply_limiter_control(limiter: &mut Limiter, control: &LimiterControlState) {
     limiter.set_enabled(control.enabled);
 }
 
-fn apply_true_peak_limiter_control(limiter: &mut TruePeakLimiter, control: &LimiterControlState) {
+pub(super) fn apply_true_peak_limiter_control(
+    limiter: &mut TruePeakLimiter,
+    control: &LimiterControlState,
+) {
     limiter.set_release_ms(control.release_ms as f32);
 }
 

@@ -274,14 +274,15 @@ pub fn list_input_device_formats() -> PyResult<Vec<InputFormats>> {
 
 /// List all available input (microphone) devices.
 #[pyfunction]
-pub fn list_input_devices() -> PyResult<Vec<DeviceInfo>> {
-    crate::catch_panic(|| collect_devices(true))
+pub fn list_input_devices(py: Python<'_>) -> PyResult<Vec<DeviceInfo>> {
+    // Enumerating endpoints can block on the audio service; keep the GIL free.
+    py.detach(|| crate::catch_panic(|| collect_devices(true)))
 }
 
 /// List all available output devices.
 #[pyfunction]
-pub fn list_output_devices() -> PyResult<Vec<DeviceInfo>> {
-    crate::catch_panic(|| collect_devices(false))
+pub fn list_output_devices(py: Python<'_>) -> PyResult<Vec<DeviceInfo>> {
+    py.detach(|| crate::catch_panic(|| collect_devices(false)))
 }
 
 #[cfg(test)]

@@ -1,55 +1,104 @@
-struct OutputWriteCounters<'a> {
-    jitter_dropped_samples: &'a AtomicU64,
-    output_retime_adjustment_count: &'a AtomicU64,
-    output_recovery_event_count: &'a AtomicU64,
-    output_short_write_dropped_samples: &'a AtomicU64,
-    rt_buffer_overflow_count: &'a AtomicU64,
-    rt_error_code: &'a AtomicU32,
-    output_buffer_len: &'a AtomicU32,
-    last_output_write_time: &'a AtomicU64,
-    output_clip_event_count: &'a AtomicU64,
-    output_clip_peak_db: &'a AtomicU32,
-    output_final_peak_hold: &'a AtomicU32,
-    output_full_scale_count: &'a AtomicU64,
-    output_true_peak_event_count: &'a AtomicU64,
-    output_true_peak_db: &'a AtomicU32,
-    output_true_peak_input_db: &'a AtomicU32,
-    output_true_peak_gain_reduction_db: &'a AtomicU32,
-    output_true_peak_gain_reduction_history_db: &'a AtomicU32,
-    output_true_peak_headroom_db: &'a AtomicU32,
+use super::shared::Shared;
+use super::{
+    resampling::{retime_audio_block, DriftRetimer},
+    routing::{
+        record_level_extremes, sanitize_and_clamp_output_inplace_with_metrics,
+        sanitize_non_finite_inplace, update_decaying_peak_db,
+    },
+};
+use super::{OUTPUT_DRIFT_MAX_EXPANSION_RATIO, OUTPUT_DRIFT_MAX_RATIO_ADJUST};
+use crate::audio::buffer::AudioProducer;
+use crate::audio::clock::now_micros;
+use crate::audio::rt::{store_rt_error, FixedAudioBuffer, RtErrorCode};
+use crate::dsp::noise_suppressor::ControlledNoiseSuppressionEngine as NoiseSuppressionEngine;
+use crate::dsp::{TruePeakDetector, TruePeakLimiter, TruePeakLimiterBlockStats};
+use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+#[cfg(not(windows))]
+use thread_priority::{set_current_thread_priority, ThreadPriority};
+
+pub(super) struct OutputWriteCounters<'a> {
+    pub(super) jitter_dropped_samples: &'a AtomicU64,
+    pub(super) output_retime_adjustment_count: &'a AtomicU64,
+    pub(super) output_recovery_event_count: &'a AtomicU64,
+    pub(super) output_short_write_dropped_samples: &'a AtomicU64,
+    pub(super) rt_buffer_overflow_count: &'a AtomicU64,
+    pub(super) rt_error_code: &'a AtomicU32,
+    pub(super) output_buffer_len: &'a AtomicU32,
+    pub(super) last_output_write_time: &'a AtomicU64,
+    pub(super) output_clip_event_count: &'a AtomicU64,
+    pub(super) output_clip_peak_db: &'a AtomicU32,
+    pub(super) output_final_peak_hold: &'a AtomicU32,
+    pub(super) output_full_scale_count: &'a AtomicU64,
+    pub(super) output_true_peak_event_count: &'a AtomicU64,
+    pub(super) output_true_peak_db: &'a AtomicU32,
+    pub(super) output_true_peak_input_db: &'a AtomicU32,
+    pub(super) output_true_peak_gain_reduction_db: &'a AtomicU32,
+    pub(super) output_true_peak_gain_reduction_history_db: &'a AtomicU32,
+    pub(super) output_true_peak_headroom_db: &'a AtomicU32,
+}
+
+impl<'a> OutputWriteCounters<'a> {
+    /// The counters the live output stage publishes through.
+    pub(super) fn new(shared: &'a Shared) -> Self {
+        Self {
+            jitter_dropped_samples: &shared.output.jitter_dropped_samples,
+            output_retime_adjustment_count: &shared.output.retime_adjustment_count,
+            output_recovery_event_count: &shared.output.recovery_event_count,
+            output_short_write_dropped_samples: &shared.output.short_write_dropped_samples,
+            rt_buffer_overflow_count: &shared.dsp.rt_buffer_overflow_count,
+            rt_error_code: &shared.dsp.rt_error_code,
+            output_buffer_len: &shared.output.buffer_len,
+            last_output_write_time: &shared.output.last_write_time_us,
+            output_clip_event_count: &shared.output.clip_event_count,
+            output_clip_peak_db: &shared.output.clip_peak_db,
+            output_final_peak_hold: &shared.output.final_peak_hold,
+            output_full_scale_count: &shared.output.full_scale_count,
+            output_true_peak_event_count: &shared.output.true_peak_event_count,
+            output_true_peak_db: &shared.output.true_peak_db,
+            output_true_peak_input_db: &shared.output.true_peak_input_db,
+            output_true_peak_gain_reduction_db: &shared.output.true_peak_gain_reduction_db,
+            output_true_peak_gain_reduction_history_db: &shared
+                .output
+                .true_peak_gain_reduction_history_db,
+            output_true_peak_headroom_db: &shared.output.true_peak_headroom_db,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
-struct OutputWriteLimits {
-    output_target_center_samples: usize,
-    output_hard_backlog_samples: usize,
-    discontinuity_fade_samples: usize,
-    max_catchup_ratio: f32,
-    max_emergency_catchup_ratio: f32,
+pub(super) struct OutputWriteLimits {
+    pub(super) output_target_center_samples: usize,
+    pub(super) output_hard_backlog_samples: usize,
+    pub(super) discontinuity_fade_samples: usize,
+    pub(super) max_catchup_ratio: f32,
+    pub(super) max_emergency_catchup_ratio: f32,
 }
 
-struct OutputWriteContext<
+pub(super) struct OutputWriteContext<
     'a,
     const OUTPUT_QUEUE_CONTROL_CAPACITY: usize,
     const DISCONTINUITY_FADE_CAPACITY: usize,
     const OUTPUT_SAFETY_CAPACITY: usize,
 > {
-    output_producer: &'a mut AudioProducer,
-    output_queue_control_scratch: &'a mut FixedAudioBuffer<f32, OUTPUT_QUEUE_CONTROL_CAPACITY>,
-    discontinuity_fade_scratch: &'a mut FixedAudioBuffer<f32, DISCONTINUITY_FADE_CAPACITY>,
-    output_safety_scratch: &'a mut FixedAudioBuffer<f32, OUTPUT_SAFETY_CAPACITY>,
-    true_peak_detector: &'a mut TruePeakDetector,
-    true_peak_limiter: &'a mut TruePeakLimiter,
-    drift_error_ema: &'a mut f32,
-    drift_retimer: &'a mut DriftRetimer,
-    discontinuity_fade_remaining: &'a Cell<usize>,
+    pub(super) output_producer: &'a mut AudioProducer,
+    pub(super) output_queue_control_scratch:
+        &'a mut FixedAudioBuffer<f32, OUTPUT_QUEUE_CONTROL_CAPACITY>,
+    pub(super) discontinuity_fade_scratch:
+        &'a mut FixedAudioBuffer<f32, DISCONTINUITY_FADE_CAPACITY>,
+    pub(super) output_safety_scratch: &'a mut FixedAudioBuffer<f32, OUTPUT_SAFETY_CAPACITY>,
+    pub(super) true_peak_detector: &'a mut TruePeakDetector,
+    pub(super) true_peak_limiter: &'a mut TruePeakLimiter,
+    pub(super) drift_error_ema: &'a mut f32,
+    pub(super) drift_retimer: &'a mut DriftRetimer,
+    pub(super) discontinuity_fade_remaining: &'a Cell<usize>,
     /// Fade-in owed to the output stream after a short write dropped samples.
     /// It applies after the true-peak delay, where the dropout happened.
-    output_fade_remaining: usize,
-    limiter_enabled: &'a AtomicBool,
-    output_ceiling_linear: &'a Cell<f32>,
-    counters: OutputWriteCounters<'a>,
-    limits: OutputWriteLimits,
+    pub(super) output_fade_remaining: usize,
+    pub(super) limiter_enabled: &'a AtomicBool,
+    pub(super) output_ceiling_linear: &'a Cell<f32>,
+    pub(super) counters: OutputWriteCounters<'a>,
+    pub(super) limits: OutputWriteLimits,
 }
 
 impl<
@@ -65,7 +114,7 @@ impl<
         OUTPUT_SAFETY_CAPACITY,
     >
 {
-    fn write_chunk(&mut self, write_source: &[f32], clean_path: bool) -> bool {
+    pub(super) fn write_chunk(&mut self, write_source: &[f32], clean_path: bool) -> bool {
         if write_source.is_empty() {
             return false;
         }
@@ -200,7 +249,7 @@ impl<
         discontinuity_fade_scratch.as_slice()
     }
 
-    fn sanitize_and_limit<'b>(
+    pub(super) fn sanitize_and_limit<'b>(
         write_slice: &[f32],
         output_safety_scratch: &'b mut FixedAudioBuffer<f32, OUTPUT_SAFETY_CAPACITY>,
         true_peak_detector: &mut TruePeakDetector,
@@ -365,14 +414,14 @@ impl<
 
 /// Recovery is tied to aligned model output, before downstream delay/resampling.
 /// Counting the already-invalid prefix does not hold or buffer any audio.
-struct SuppressorRecoveryFade {
-    invalid_samples: usize,
-    remaining: usize,
+pub(super) struct SuppressorRecoveryFade {
+    pub(super) invalid_samples: usize,
+    pub(super) remaining: usize,
     total: usize,
 }
 
 impl SuppressorRecoveryFade {
-    fn new(total: usize) -> Self {
+    pub(super) fn new(total: usize) -> Self {
         Self {
             invalid_samples: 0,
             remaining: 0,
@@ -380,13 +429,13 @@ impl SuppressorRecoveryFade {
         }
     }
 
-    fn restart(&mut self, latency: usize) {
+    pub(super) fn restart(&mut self, latency: usize) {
         self.invalid_samples = latency;
         // Direct/unavailable backends retain the output writer's existing fade.
         self.remaining = if latency > 0 { self.total } else { 0 };
     }
 
-    fn restart_for_suppressor(
+    pub(super) fn restart_for_suppressor(
         &mut self,
         suppressor: &NoiseSuppressionEngine,
         writer_remaining: &Cell<usize>,
@@ -405,7 +454,7 @@ impl SuppressorRecoveryFade {
         writer_remaining.set(if model_delay > 0 { 0 } else { writer_total });
     }
 
-    fn apply(&mut self, samples: &mut [f32]) {
+    pub(super) fn apply(&mut self, samples: &mut [f32]) {
         let skip = self.invalid_samples.min(samples.len());
         self.invalid_samples -= skip;
         fade_in(&mut samples[skip..], &mut self.remaining, self.total);
@@ -413,7 +462,7 @@ impl SuppressorRecoveryFade {
 }
 
 /// Multiply the start of `samples` by the remaining part of a linear fade-in.
-fn fade_in(samples: &mut [f32], remaining: &mut usize, total: usize) {
+pub(super) fn fade_in(samples: &mut [f32], remaining: &mut usize, total: usize) {
     let count = (*remaining).min(samples.len());
     let elapsed = total.saturating_sub(*remaining);
     for (i, sample) in samples.iter_mut().take(count).enumerate() {

@@ -63,6 +63,7 @@ def startup_window(qapp, monkeypatch):
     monkeypatch.setattr(main_window, "list_input_devices", lambda: devices["input"])
     monkeypatch.setattr(main_window, "list_output_devices", list_outputs)
     window = MainWindow(login_startup=True)
+    window._engine.threaded = False  # the fake engine answers at once
     window.processor = _engine()
     window._tray_icon = QSystemTrayIcon(window)
     window._tray_icon.show()

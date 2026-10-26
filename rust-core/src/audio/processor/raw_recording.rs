@@ -1,8 +1,14 @@
+use super::{AudioProcessor, MAX_OUTPUT_PROBE_SECONDS, MAX_RECORDING_SECONDS};
+use crate::audio::buffer::AudioProducer;
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+#[cfg(not(windows))]
+use thread_priority::{set_current_thread_priority, ThreadPriority};
+
 impl AudioProcessor {
     /// Start recording raw audio for calibration
     /// Taps audio after the fixed pre-filter while preserving the historical
     /// calibration behavior (adaptive cleanup is paused during capture).
-    pub fn start_raw_recording(&mut self, duration_secs: f64) -> Result<(), String> {
+    pub fn start_raw_recording(&self, duration_secs: f64) -> Result<(), String> {
         self.start_raw_recording_with_tap(duration_secs, false)
     }
 
@@ -11,7 +17,7 @@ impl AudioProcessor {
     /// pre-filter and pauses adaptive cleanup; setting `before_cleanup` keeps
     /// cleanup running while capturing the original input for an audition.
     pub fn start_raw_recording_with_tap(
-        &mut self,
+        &self,
         duration_secs: f64,
         before_cleanup: bool,
     ) -> Result<(), String> {
@@ -34,7 +40,7 @@ impl AudioProcessor {
         }
 
         let mut drained = vec![0.0f32; 4096];
-        if let Ok(mut consumer_guard) = self.raw_recording_consumer.lock() {
+        if let Ok(mut consumer_guard) = self.shared.recording.consumer.lock() {
             let Some(ref mut consumer) = *consumer_guard else {
                 return Err("Recording buffer unavailable. Start the processor first.".to_string());
             };
@@ -44,14 +50,20 @@ impl AudioProcessor {
                     break;
                 }
             }
-            self.raw_recording_pos.store(0, Ordering::Release);
-            self.raw_recording_target
+            self.shared.recording.pos.store(0, Ordering::Release);
+            self.shared
+                .recording
+                .target
                 .store(num_samples, Ordering::Release);
-            self.recording_level_db
+            self.shared
+                .recording
+                .level_db
                 .store((-120.0_f32).to_bits(), Ordering::Relaxed);
-            self.raw_recording_before_cleanup
+            self.shared
+                .recording
+                .before_cleanup
                 .store(before_cleanup, Ordering::Release);
-            self.recording_active.store(true, Ordering::Release);
+            self.shared.recording.active.store(true, Ordering::Release);
             Ok(())
         } else {
             Err("Failed to access recording buffer".to_string())
@@ -59,15 +71,19 @@ impl AudioProcessor {
     }
 
     /// Stop recording and return captured audio (truncated to actual length)
-    pub fn stop_raw_recording(&mut self) -> Option<Vec<f32>> {
-        self.recording_active.store(false, Ordering::Release);
-        self.raw_recording_before_cleanup
+    pub fn stop_raw_recording(&self) -> Option<Vec<f32>> {
+        self.shared.recording.active.store(false, Ordering::Release);
+        self.shared
+            .recording
+            .before_cleanup
             .store(false, Ordering::Release);
-        self.recording_level_db
+        self.shared
+            .recording
+            .level_db
             .store((-120.0_f32).to_bits(), Ordering::Relaxed);
-        if let Ok(mut consumer_guard) = self.raw_recording_consumer.lock() {
+        if let Ok(mut consumer_guard) = self.shared.recording.consumer.lock() {
             if let Some(ref mut consumer) = *consumer_guard {
-                let pos = self.raw_recording_pos.load(Ordering::Acquire);
+                let pos = self.shared.recording.pos.load(Ordering::Acquire);
                 let mut buffer = vec![0.0f32; pos];
                 let mut read_total = 0usize;
                 while read_total < pos {
@@ -78,7 +94,7 @@ impl AudioProcessor {
                     read_total += read;
                 }
                 buffer.truncate(read_total);
-                self.raw_recording_target.store(0, Ordering::Release);
+                self.shared.recording.target.store(0, Ordering::Release);
                 return Some(buffer);
             }
         }
@@ -87,30 +103,30 @@ impl AudioProcessor {
 
     /// Check if recording is complete
     pub fn is_recording_complete(&self) -> bool {
-        let target = self.raw_recording_target.load(Ordering::Acquire);
-        let pos = self.raw_recording_pos.load(Ordering::Acquire);
+        let target = self.shared.recording.target.load(Ordering::Acquire);
+        let pos = self.shared.recording.pos.load(Ordering::Acquire);
         target > 0 && pos >= target
     }
 
     /// Get recording progress (0.0 to 1.0)
     pub fn recording_progress(&self) -> f32 {
-        let target = self.raw_recording_target.load(Ordering::Acquire);
+        let target = self.shared.recording.target.load(Ordering::Acquire);
         if target == 0 {
             return 0.0;
         }
-        let pos = self.raw_recording_pos.load(Ordering::Acquire);
+        let pos = self.shared.recording.pos.load(Ordering::Acquire);
         (pos as f32 / target as f32).min(1.0)
     }
 
     /// Get current recording level as RMS in dB (for level meter visualization)
     /// Returns -inf dB if no recording is active
     pub fn recording_level_db(&self) -> f32 {
-        f32::from_bits(self.recording_level_db.load(Ordering::Relaxed))
+        f32::from_bits(self.shared.recording.level_db.load(Ordering::Relaxed))
     }
 
     /// Manually set output mute state (useful for calibration workflow)
     pub fn set_output_mute(&self, muted: bool) {
-        self.output_muted.store(muted, Ordering::Release);
+        self.shared.output.muted.store(muted, Ordering::Release);
     }
 
     /// Queue a mono calibration probe for the selected output stream.
@@ -121,7 +137,7 @@ impl AudioProcessor {
         if !self.is_running() {
             return Err("Audio processor must be running before queuing a probe".to_string());
         }
-        if self.output_muted.load(Ordering::Acquire) {
+        if self.shared.output.muted.load(Ordering::Acquire) {
             return Err("Unmute output before playing a calibration probe".to_string());
         }
         if samples.is_empty() {
@@ -130,8 +146,12 @@ impl AudioProcessor {
         if samples.iter().any(|sample| !sample.is_finite()) {
             return Err("Output probe contains non-finite samples".to_string());
         }
-        if self.output_probe_active.load(Ordering::Acquire)
-            || self.output_probe_cancel_requested.load(Ordering::Acquire)
+        if self.shared.output.probe_active.load(Ordering::Acquire)
+            || self
+                .shared
+                .output
+                .probe_cancel_requested
+                .load(Ordering::Acquire)
         {
             return Err("An output probe is already active".to_string());
         }
@@ -153,7 +173,9 @@ impl AudioProcessor {
         let scaled: Vec<f32> = samples.iter().map(|sample| sample * gain).collect();
 
         let mut producer_guard = self
-            .output_probe_producer
+            .shared
+            .output
+            .probe_producer
             .lock()
             .map_err(|_| "Failed to access output probe buffer".to_string())?;
         let producer = producer_guard
@@ -170,29 +192,39 @@ impl AudioProcessor {
             ));
         }
 
-        self.output_probe_complete.store(false, Ordering::Release);
-        self.output_probe_cancel_requested
+        self.shared
+            .output
+            .probe_complete
             .store(false, Ordering::Release);
-        self.output_probe_active.store(true, Ordering::Release);
+        self.shared
+            .output
+            .probe_cancel_requested
+            .store(false, Ordering::Release);
+        self.shared
+            .output
+            .probe_active
+            .store(true, Ordering::Release);
         Ok(())
     }
 
     /// Whether the last queued selected-route probe has finished rendering.
     pub fn is_output_probe_complete(&self) -> bool {
-        self.output_probe_complete.load(Ordering::Acquire)
+        self.shared.output.probe_complete.load(Ordering::Acquire)
     }
 
     /// Cancel the selected-route probe and ask the output callback to drain it.
     pub fn cancel_output_probe(&self) {
-        if self.output_probe_active.load(Ordering::Acquire) {
-            self.output_probe_cancel_requested
+        if self.shared.output.probe_active.load(Ordering::Acquire) {
+            self.shared
+                .output
+                .probe_cancel_requested
                 .store(true, Ordering::Release);
         }
     }
 }
 
 #[inline]
-fn record_raw_recording_block(
+pub(super) fn record_raw_recording_block(
     samples: &[f32],
     sample_rate: u32,
     producer: &mut AudioProducer,

@@ -1,8 +1,23 @@
-fn duration_samples(sample_rate: u32, duration_ms: u32) -> usize {
+use super::{
+    PROCESS_IDLE_MAX_SLEEP_US, PROCESS_IDLE_RECENT_INPUT_WINDOW_US, PROCESS_IDLE_SLEEP_US,
+    PRODUCT_RESAMPLER_SINC_LEN, PRODUCT_RESAMPLER_WINDOW_NAME, RESAMPLER_CHUNK_SIZE,
+};
+use crate::audio::rt::{store_rt_error, FixedAudioBuffer, RtErrorCode};
+use pyo3::prelude::*;
+use rubato::{
+    calculate_cutoff, Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType,
+    WindowFunction,
+};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::time::Instant;
+#[cfg(not(windows))]
+use thread_priority::{set_current_thread_priority, ThreadPriority};
+
+pub(super) fn duration_samples(sample_rate: u32, duration_ms: u32) -> usize {
     (((sample_rate as u64) * duration_ms as u64 + 500) / 1000).max(1) as usize
 }
 
-fn samples_to_micros(samples: u64, sample_rate: u32) -> u64 {
+pub(super) fn samples_to_micros(samples: u64, sample_rate: u32) -> u64 {
     if sample_rate == 0 {
         0
     } else {
@@ -10,7 +25,7 @@ fn samples_to_micros(samples: u64, sample_rate: u32) -> u64 {
     }
 }
 
-fn smoothing_coeff_for_time_constant(sample_rate_hz: f32, time_constant_ms: f32) -> f32 {
+pub(super) fn smoothing_coeff_for_time_constant(sample_rate_hz: f32, time_constant_ms: f32) -> f32 {
     if !sample_rate_hz.is_finite()
         || sample_rate_hz <= 0.0
         || !time_constant_ms.is_finite()
@@ -22,7 +37,7 @@ fn smoothing_coeff_for_time_constant(sample_rate_hz: f32, time_constant_ms: f32)
     }
 }
 
-fn smoothing_coeff_for_block(
+pub(super) fn smoothing_coeff_for_block(
     sample_rate_hz: f32,
     time_constant_ms: f32,
     block_samples: usize,
@@ -41,18 +56,24 @@ fn smoothing_coeff_for_block(
     (-(block_samples as f32) / (sample_rate_hz * (time_constant_ms / 1000.0))).exp()
 }
 
-fn clear_resampler_output_samples(output: &mut [Vec<f64>]) {
+pub(super) fn clear_resampler_output_samples(output: &mut [Vec<f64>]) {
     for channel in output {
         channel.fill(0.0);
     }
 }
 
-fn signal_input_resampler_failure(rt_error_code: &AtomicU32, restart_requested: &AtomicBool) {
+pub(super) fn signal_input_resampler_failure(
+    rt_error_code: &AtomicU32,
+    restart_requested: &AtomicBool,
+) {
     store_rt_error(rt_error_code, RtErrorCode::InputResamplerFailed);
     restart_requested.store(true, Ordering::Release);
 }
 
-fn next_process_idle_sleep_us(consecutive_idle_wakeups: u32, input_callback_age_us: u64) -> u64 {
+pub(super) fn next_process_idle_sleep_us(
+    consecutive_idle_wakeups: u32,
+    input_callback_age_us: u64,
+) -> u64 {
     if input_callback_age_us <= PROCESS_IDLE_RECENT_INPUT_WINDOW_US {
         return PROCESS_IDLE_SLEEP_US;
     }
@@ -64,18 +85,21 @@ fn next_process_idle_sleep_us(consecutive_idle_wakeups: u32, input_callback_age_
 }
 
 #[derive(Clone, Copy)]
-struct LatencyComponents {
-    input_resampler_delay_samples: u64,
-    output_buffer_samples: u64,
-    output_sample_rate: u32,
-    output_resampler_delay_samples: u64,
-    suppressor_latency_samples: u64,
-    limiter_lookahead_samples: u64,
-    true_peak_lookahead_samples: u64,
-    processing_sample_rate: u32,
+pub(super) struct LatencyComponents {
+    pub(super) input_resampler_delay_samples: u64,
+    pub(super) output_buffer_samples: u64,
+    pub(super) output_sample_rate: u32,
+    pub(super) output_resampler_delay_samples: u64,
+    pub(super) suppressor_latency_samples: u64,
+    pub(super) limiter_lookahead_samples: u64,
+    pub(super) true_peak_lookahead_samples: u64,
+    pub(super) processing_sample_rate: u32,
 }
 
-fn total_reported_latency_us(components: LatencyComponents, compensation_us: u64) -> u64 {
+pub(super) fn total_reported_latency_us(
+    components: LatencyComponents,
+    compensation_us: u64,
+) -> u64 {
     let input_resampler_latency_us = samples_to_micros(
         components.input_resampler_delay_samples,
         components.processing_sample_rate,
@@ -111,18 +135,18 @@ fn total_reported_latency_us(components: LatencyComponents, compensation_us: u64
 }
 
 #[derive(Default)]
-struct DriftRetimer {
+pub(super) struct DriftRetimer {
     next_source_position: f64,
     previous_sample: Option<f32>,
 }
 
 impl DriftRetimer {
-    fn reset(&mut self) {
+    pub(super) fn reset(&mut self) {
         *self = Self::default();
     }
 }
 
-fn retime_audio_block<'a, const N: usize>(
+pub(super) fn retime_audio_block<'a, const N: usize>(
     input: &[f32],
     speed_ratio: f32,
     max_output_len: usize,
@@ -170,7 +194,7 @@ fn retime_audio_block<'a, const N: usize>(
     output.as_slice()
 }
 
-fn build_sinc_resampler(
+pub(super) fn build_sinc_resampler(
     input_rate: u32,
     output_rate: u32,
     chunk_size: usize,
@@ -347,7 +371,7 @@ pub fn product_resampler_configuration() -> PyResult<(usize, String, String, usi
 }
 
 #[inline]
-fn has_resampler_output_capacity<const N: usize>(
+pub(super) fn has_resampler_output_capacity<const N: usize>(
     scratch: &FixedAudioBuffer<f32, N>,
     outbuf: &[Vec<f64>],
 ) -> bool {

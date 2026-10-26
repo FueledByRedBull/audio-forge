@@ -1,16 +1,46 @@
+#[cfg(feature = "vad")]
+use super::control::GateControlState;
+#[cfg(feature = "vad")]
+use super::lifecycle::Streams;
+#[cfg(feature = "vad")]
+use super::shared::VadShared;
+use super::AudioProcessor;
+#[cfg(feature = "vad")]
+use super::{VAD_PROBABILITY_STALE_US, VAD_WORKER_MAX_BUFFER_SAMPLES};
+#[cfg(feature = "vad")]
+use crate::audio::buffer::AudioConsumer;
+#[cfg(feature = "vad")]
+use crate::audio::clock::now_micros;
+#[cfg(feature = "vad")]
+use crate::dsp::vad::SileroVAD;
+#[cfg(feature = "vad")]
+use std::sync::atomic::AtomicBool;
+#[cfg(feature = "vad")]
+use std::sync::atomic::AtomicU32;
+#[cfg(feature = "vad")]
+use std::sync::atomic::AtomicU64;
+#[cfg(feature = "vad")]
+use std::sync::atomic::Ordering;
+#[cfg(feature = "vad")]
+use std::sync::Arc;
+#[cfg(feature = "vad")]
+use std::sync::Mutex;
+#[cfg(not(windows))]
+use thread_priority::{set_current_thread_priority, ThreadPriority};
+
 #[cfg(all(test, feature = "vad"))]
-static VAD_WORKER_FORCE_INFERENCE_ERROR: AtomicBool = AtomicBool::new(false);
+pub(super) static VAD_WORKER_FORCE_INFERENCE_ERROR: AtomicBool = AtomicBool::new(false);
 #[cfg(all(test, feature = "vad"))]
-static VAD_WORKER_LAST_PRE_GAIN_BITS: AtomicU32 = AtomicU32::new(1.0_f32.to_bits());
+pub(super) static VAD_WORKER_LAST_PRE_GAIN_BITS: AtomicU32 = AtomicU32::new(1.0_f32.to_bits());
 #[cfg(all(test, feature = "vad"))]
-static VAD_WORKER_DISCONTINUITY_RESETS: AtomicU64 = AtomicU64::new(0);
+pub(super) static VAD_WORKER_DISCONTINUITY_RESETS: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(test, feature = "vad"))]
-static VAD_WORKER_DISCONTINUITY_FLUSHED_SAMPLES: AtomicU64 = AtomicU64::new(0);
+pub(super) static VAD_WORKER_DISCONTINUITY_FLUSHED_SAMPLES: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(test, feature = "vad"))]
-static VAD_WORKER_MODEL_INITS: AtomicU64 = AtomicU64::new(0);
+pub(super) static VAD_WORKER_MODEL_INITS: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(test, feature = "vad"))]
 thread_local! {
-    static VAD_WORKER_FORCE_DISCONTINUITY_AFTER_FINAL_CHECK: Cell<bool> = const { Cell::new(false) };
+    pub(super) static VAD_WORKER_FORCE_DISCONTINUITY_AFTER_FINAL_CHECK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(feature = "vad")]
@@ -18,18 +48,18 @@ const VAD_RESULT_SNAPSHOT_MAX_RETRIES: usize = 8;
 
 #[cfg(feature = "vad")]
 #[derive(Clone, Copy, Debug)]
-struct VadResultSnapshot {
-    probability: f32,
-    backend_available: bool,
-    last_update_us: u64,
-    source_sample_end: u64,
+pub(super) struct VadResultSnapshot {
+    pub(super) probability: f32,
+    pub(super) backend_available: bool,
+    pub(super) last_update_us: u64,
+    pub(super) source_sample_end: u64,
     generation: u64,
 }
 
 #[cfg(feature = "vad")]
 impl VadResultSnapshot {
     #[inline]
-    fn is_fresh(&self, source_sample_clock: u64, now_us: u64, sample_rate: u32) -> bool {
+    pub(super) fn is_fresh(&self, source_sample_clock: u64, now_us: u64, sample_rate: u32) -> bool {
         if self.last_update_us == 0 {
             return false;
         }
@@ -43,14 +73,14 @@ impl VadResultSnapshot {
 }
 
 #[cfg(feature = "vad")]
-struct VadResultAtomics<'a> {
-    sequence: &'a AtomicU64,
-    result_generation: &'a AtomicU64,
-    probability: &'a AtomicU32,
-    backend_available: &'a AtomicBool,
-    last_update_us: &'a AtomicU64,
-    source_sample_end: &'a AtomicU64,
-    source_discontinuity: &'a AtomicU64,
+pub(super) struct VadResultAtomics<'a> {
+    pub(super) sequence: &'a AtomicU64,
+    pub(super) result_generation: &'a AtomicU64,
+    pub(super) probability: &'a AtomicU32,
+    pub(super) backend_available: &'a AtomicBool,
+    pub(super) last_update_us: &'a AtomicU64,
+    pub(super) source_sample_end: &'a AtomicU64,
+    pub(super) source_discontinuity: &'a AtomicU64,
 }
 
 #[cfg(feature = "vad")]
@@ -63,7 +93,7 @@ impl VadResultAtomics<'_> {
     }
 
     #[inline]
-    fn invalidate(&self, backend_available: bool) {
+    pub(super) fn invalidate(&self, backend_available: bool) {
         let generation = self.source_discontinuity.load(Ordering::Acquire);
         self.begin_write();
         self.probability.store(0.0_f32.to_bits(), Ordering::Relaxed);
@@ -76,7 +106,7 @@ impl VadResultAtomics<'_> {
     }
 
     #[inline]
-    fn publish_vad_inference_result(
+    pub(super) fn publish_vad_inference_result(
         &self,
         expected_generation: u64,
         probability: f32,
@@ -115,7 +145,7 @@ impl VadResultAtomics<'_> {
     }
 
     #[inline]
-    fn snapshot(&self) -> Option<VadResultSnapshot> {
+    pub(super) fn snapshot(&self) -> Option<VadResultSnapshot> {
         for _ in 0..VAD_RESULT_SNAPSHOT_MAX_RETRIES {
             let sequence_before = self.sequence.load(Ordering::Acquire);
             if (sequence_before & 1) != 0 {
@@ -154,7 +184,7 @@ impl VadResultAtomics<'_> {
 /// session 20 times a second only burns CPU next to the realtime loop.
 #[cfg(feature = "vad")]
 #[derive(Default)]
-struct VadRetryBackoff {
+pub(super) struct VadRetryBackoff {
     failures: u32,
 }
 
@@ -163,7 +193,7 @@ impl VadRetryBackoff {
     const FIRST_DELAY_MS: u64 = 50;
     const MAX_DELAY_MS: u64 = 5_000;
 
-    fn next_delay(&mut self) -> std::time::Duration {
+    pub(super) fn next_delay(&mut self) -> std::time::Duration {
         let delay_ms = Self::FIRST_DELAY_MS
             .saturating_mul(1_u64 << self.failures.min(10))
             .min(Self::MAX_DELAY_MS);
@@ -171,7 +201,7 @@ impl VadRetryBackoff {
         std::time::Duration::from_millis(delay_ms)
     }
 
-    fn reset(&mut self) {
+    pub(super) fn reset(&mut self) {
         self.failures = 0;
     }
 }
@@ -179,7 +209,7 @@ impl VadRetryBackoff {
 /// Sleep for up to `delay`, returning as soon as `running` is cleared, so
 /// `stop_vad_worker`'s join never waits out a retry back-off.
 #[cfg(feature = "vad")]
-fn sleep_while_running(running: &AtomicBool, delay: std::time::Duration) {
+pub(super) fn sleep_while_running(running: &AtomicBool, delay: std::time::Duration) {
     const SLICE: std::time::Duration = std::time::Duration::from_millis(20);
     let deadline = std::time::Instant::now() + delay;
     while running.load(Ordering::Acquire) {
@@ -193,61 +223,66 @@ fn sleep_while_running(running: &AtomicBool, delay: std::time::Duration) {
 
 /// Publish the last VAD worker failure for diagnostics (`None` clears it).
 #[cfg(feature = "vad")]
-fn publish_vad_worker_error(slot: &Mutex<Option<String>>, error: Option<String>) {
+pub(super) fn publish_vad_worker_error(slot: &Mutex<Option<String>>, error: Option<String>) {
     if let Ok(mut slot) = slot.lock() {
         *slot = error;
     }
 }
 
+#[cfg(feature = "vad")]
+impl VadShared {
+    /// Borrowed view of the fields the VAD worker publishes its results through.
+    pub(super) fn result(&self) -> VadResultAtomics<'_> {
+        VadResultAtomics {
+            sequence: &self.result_sequence,
+            result_generation: &self.result_generation,
+            probability: &self.raw_probability,
+            backend_available: &self.backend_available,
+            last_update_us: &self.last_update_us,
+            source_sample_end: &self.source_sample_end,
+            source_discontinuity: &self.source_discontinuity,
+        }
+    }
+}
+
 impl AudioProcessor {
     #[cfg(feature = "vad")]
-    fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
-        if let Some(handle) = self.vad_worker_thread.take() {
+    pub(super) fn ensure_vad_worker(&self, streams: &mut Streams, vad_consumer: AudioConsumer) {
+        if let Some(handle) = streams.vad_worker_thread.take() {
             if !handle.is_finished() {
-                self.vad_worker_thread = Some(handle);
+                streams.vad_worker_thread = Some(handle);
                 return;
             }
             let _ = handle.join();
         }
 
-        self.vad_worker_running.store(true, Ordering::Release);
-        let running = Arc::clone(&self.vad_worker_running);
-        let probability = Arc::clone(&self.vad_raw_probability);
-        let available = Arc::clone(&self.vad_backend_available);
-        let last_update_us = Arc::clone(&self.vad_last_update_us);
-        let source_sample_end = Arc::clone(&self.vad_source_sample_end);
-        let source_discontinuity = Arc::clone(&self.vad_source_discontinuity);
-        let result_sequence = Arc::clone(&self.vad_result_sequence);
-        let result_generation = Arc::clone(&self.vad_result_generation);
-        let gate_rt_control = Arc::clone(&self.gate_rt_control);
-        let worker_error = Arc::clone(&self.vad_worker_error);
-        publish_vad_worker_error(&worker_error, None);
+        self.shared
+            .vad
+            .worker_running
+            .store(true, Ordering::Release);
+        let shared = Arc::clone(&self.shared);
+        publish_vad_worker_error(&shared.vad.worker_error, None);
         let sample_rate = self.sample_rate;
         let threshold = self
-            .gate_rt_control
+            .shared
+            .gate
+            .rt_control
             .snapshot()
             .unwrap_or_else(GateControlState::new)
             .vad_threshold;
 
-        self.vad_worker_thread = Some(std::thread::spawn(move || {
-            let result = VadResultAtomics {
-                sequence: result_sequence.as_ref(),
-                result_generation: result_generation.as_ref(),
-                probability: probability.as_ref(),
-                backend_available: available.as_ref(),
-                last_update_us: last_update_us.as_ref(),
-                source_sample_end: source_sample_end.as_ref(),
-                source_discontinuity: source_discontinuity.as_ref(),
-            };
+        streams.vad_worker_thread = Some(std::thread::spawn(move || {
+            let result = shared.vad.result();
             let mut worker_consumer = vad_consumer;
             let mut vad: Option<SileroVAD> = None;
             let mut source_samples_read = 0_u64;
             let mut vad_source_base = 0_u64;
-            let mut observed_discontinuity = source_discontinuity.load(Ordering::Acquire);
+            let mut observed_discontinuity =
+                shared.vad.source_discontinuity.load(Ordering::Acquire);
             let mut retry = VadRetryBackoff::default();
             let mut local = Vec::with_capacity(VAD_WORKER_MAX_BUFFER_SAMPLES);
-            while running.load(Ordering::Acquire) {
-                let current_discontinuity = source_discontinuity.load(Ordering::Acquire);
+            while shared.vad.worker_running.load(Ordering::Acquire) {
+                let current_discontinuity = shared.vad.source_discontinuity.load(Ordering::Acquire);
                 if current_discontinuity != observed_discontinuity {
                     observed_discontinuity = current_discontinuity;
                     // A dropped ring block means the next samples are not
@@ -292,13 +327,16 @@ impl AudioProcessor {
                             VAD_WORKER_MODEL_INITS.fetch_add(1, Ordering::Release);
                             vad_source_base = source_samples_read;
                             vad = Some(candidate);
-                            publish_vad_worker_error(&worker_error, None);
+                            publish_vad_worker_error(&shared.vad.worker_error, None);
                             result.invalidate(true);
                         }
                         Err(error) => {
-                            publish_vad_worker_error(&worker_error, Some(error.to_string()));
+                            publish_vad_worker_error(
+                                &shared.vad.worker_error,
+                                Some(error.to_string()),
+                            );
                             result.invalidate(false);
-                            sleep_while_running(&running, retry.next_delay());
+                            sleep_while_running(&shared.vad.worker_running, retry.next_delay());
                             continue;
                         }
                     }
@@ -317,7 +355,8 @@ impl AudioProcessor {
                 // A marker may have been published while the consumer read the
                 // queue. Do not run inference on that read; the next iteration
                 // drains the queue and resets the model before accepting data.
-                if source_discontinuity.load(Ordering::Acquire) != observed_discontinuity {
+                if shared.vad.source_discontinuity.load(Ordering::Acquire) != observed_discontinuity
+                {
                     local.clear();
                     continue;
                 }
@@ -325,7 +364,7 @@ impl AudioProcessor {
                 if !local.is_empty() {
                     // Keep the model's input gain in sync with the lock-free gate
                     // controls. This runs on the worker, away from the RT path.
-                    if let Some(control) = gate_rt_control.snapshot() {
+                    if let Some(control) = shared.gate.rt_control.snapshot() {
                         if control.pre_gain.is_finite() {
                             let worker_vad = vad.as_mut().expect("VAD backend initialized");
                             worker_vad.set_pre_gain(control.pre_gain);
@@ -337,12 +376,12 @@ impl AudioProcessor {
                     #[cfg(test)]
                     if VAD_WORKER_FORCE_INFERENCE_ERROR.swap(false, Ordering::AcqRel) {
                         publish_vad_worker_error(
-                            &worker_error,
+                            &shared.vad.worker_error,
                             Some("forced test failure".to_string()),
                         );
                         result.invalidate(false);
                         vad = None;
-                        sleep_while_running(&running, retry.next_delay());
+                        sleep_while_running(&shared.vad.worker_running, retry.next_delay());
                         continue;
                     }
                     let inference = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -375,10 +414,10 @@ impl AudioProcessor {
                                 Ok(Err(error)) => error.to_string(),
                                 _ => "VAD inference panicked".to_string(),
                             };
-                            publish_vad_worker_error(&worker_error, Some(reason));
+                            publish_vad_worker_error(&shared.vad.worker_error, Some(reason));
                             result.invalidate(false);
                             vad = None;
-                            sleep_while_running(&running, retry.next_delay());
+                            sleep_while_running(&shared.vad.worker_running, retry.next_delay());
                         }
                     }
                     local.clear();
@@ -393,28 +432,25 @@ impl AudioProcessor {
     /// rate, failed inference), or `None` while it loads and runs.
     #[cfg(feature = "vad")]
     pub fn get_vad_worker_error(&self) -> Option<String> {
-        self.vad_worker_error
+        self.shared
+            .vad
+            .worker_error
             .lock()
             .ok()
             .and_then(|error| error.clone())
     }
 
     #[cfg(feature = "vad")]
-    fn stop_vad_worker(&mut self) {
-        self.vad_worker_running.store(false, Ordering::Release);
-        if let Some(handle) = self.vad_worker_thread.take() {
+    pub(super) fn stop_vad_worker(&self, streams: &mut Streams) {
+        self.shared
+            .vad
+            .worker_running
+            .store(false, Ordering::Release);
+        if let Some(handle) = streams.vad_worker_thread.take() {
             let _ = handle.join();
         }
-        self.vad_available.store(false, Ordering::Release);
-        let result = VadResultAtomics {
-            sequence: self.vad_result_sequence.as_ref(),
-            result_generation: self.vad_result_generation.as_ref(),
-            probability: self.vad_raw_probability.as_ref(),
-            backend_available: self.vad_backend_available.as_ref(),
-            last_update_us: self.vad_last_update_us.as_ref(),
-            source_sample_end: self.vad_source_sample_end.as_ref(),
-            source_discontinuity: self.vad_source_discontinuity.as_ref(),
-        };
+        self.shared.vad.available.store(false, Ordering::Release);
+        let result = self.shared.vad.result();
         result.invalidate(false);
     }
 }

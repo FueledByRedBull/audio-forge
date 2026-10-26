@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 import pytest
+from shiboken6 import getCppPointer
 from PySide6.QtCore import (
     QCoreApplication,
     QEvent,
@@ -22,7 +23,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QKeyEvent, QMouseEvent, QPainter
 from PySide6.QtTest import QSignalSpy, QTest
-from PySide6.QtQml import QQmlProperty
+from PySide6.QtQml import QQmlProperty, qmlTypeId
 from PySide6.QtQuick import QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QMessageBox
@@ -1729,3 +1730,53 @@ def test_a_muted_output_says_its_levels_are_from_before_the_mute(engine_window, 
         assert "mute" not in description()
     finally:
         QAccessible.setActive(was_active)
+
+
+def _qobjects_in(value, found: list | None = None) -> list:
+    found = [] if found is None else found
+    if isinstance(value, QObject):
+        found.append(value)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _qobjects_in(item, found)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _qobjects_in(item, found)
+    return found
+
+
+def test_objects_the_scene_reads_keep_the_metaobject_of_their_class(quick_window) -> None:
+    """A plain bound method connected to a signal gives its object a metaobject of its own.
+
+    That metaobject is freed with the object, but QML keeps the property layout it built from it, keyed
+    by address, for the life of the process. A later object whose metaobject lands on that address is read
+    with the wrong layout: a bool written into a string (an access violation) or a wrong value.
+    Connect a @Slot, or a lambda, instead.
+    """
+    bridge = quick_window.quick_bridge
+    scene = quick_window.centralWidget().rootObject()
+    own = sorted({
+        type(item).__name__
+        for item in _qobjects_in([bridge, bridge.model, scene.findChildren(QObject)])
+        if type(item).__module__.startswith("mic_eq")
+        and getCppPointer(item.metaObject())[0] != getCppPointer(type(item).staticMetaObject)[0]
+    })
+    assert own == []
+
+
+def test_a_second_window_registers_no_further_qml_types(quick_window) -> None:
+    """Qt keeps every registration for the life of the process; each window used to add four."""
+
+    def registered() -> list[int]:
+        return [
+            qmlTypeId("AudioForge", 1, 0, name)  # type: ignore[arg-type]  # the stub says bytes; str works
+            for name in ("EQGraphItem", "QuickMeterItem", "LevelTrace", "QuickBridge")
+        ]
+
+    first = registered()
+    assert all(type_id >= 0 for type_id in first)
+
+    view = MainWindow().centralWidget()
+
+    assert isinstance(view, QQuickWidget) and view.status() == QQuickWidget.Status.Ready
+    assert registered() == first

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from bisect import bisect_left
 
-from PySide6.QtCore import Property, QLineF, QObject, QPointF, QRect, QRectF, Qt, Signal
+from PySide6.QtCore import Property, QLineF, QObject, QPointF, QRect, QRectF, Qt, Signal, Slot
 from PySide6.QtGui import QFont, QFontMetricsF, QGuiApplication, QPainter, QPen, QPolygonF
 
 from mic_eq import eq_magnitude_response_v2, input_prefilter_response_db
@@ -328,6 +328,8 @@ class EQGraphModel(QObject):
             part for part in (GRAPH_HELP, not_running, self._selection_summary()) if part
         )
 
+    @Slot()
+    @Slot(int, float, float)
     def _refresh_description(self, *_drag_end) -> None:
         description = self.accessible_description()
         if self.dragging_band_index is None and description != self._description:

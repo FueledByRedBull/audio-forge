@@ -10,6 +10,7 @@ import logging
 import os
 from collections import deque
 from dataclasses import asdict
+from functools import cache
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -142,6 +143,7 @@ class QuickBridge(QObject):
             self._sync_trace_timer()
         return False
 
+    @Slot()
     def _sample_levels(self) -> None:
         """Record input and output level from what the meters already show."""
 
@@ -458,13 +460,20 @@ def graphics_api(window) -> str:
     return "software_after_failure" if api == "software" and os.environ.get(RENDERER_RELAUNCH_ENV) else api
 
 
-def install_quick_shell(window) -> None:
-    """Make the QML scene the window's content, or the error screen if it cannot start."""
+@cache
+def _register_qml_types() -> None:
+    """Register the scene's Python types with QML; Qt keeps every registration for the process."""
 
     qmlRegisterType(EQGraphItem, "AudioForge", 1, 0, "EQGraphItem")  # type: ignore[call-overload]
     qmlRegisterType(QuickMeterItem, "AudioForge", 1, 0, "QuickMeterItem")  # type: ignore[call-overload]
     qmlRegisterType(LevelTrace, "AudioForge", 1, 0, "LevelTrace")  # type: ignore[call-overload]
     qmlRegisterUncreatableType(QuickBridge, "AudioForge", 1, 0, "QuickBridge", "The window creates it")  # type: ignore[call-overload]
+
+
+def install_quick_shell(window) -> None:
+    """Make the QML scene the window's content, or the error screen if it cannot start."""
+
+    _register_qml_types()
     try:
         bridge = QuickBridge(window)
     except Exception as error:

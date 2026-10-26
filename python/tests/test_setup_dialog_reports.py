@@ -314,6 +314,29 @@ def test_the_review_calls_the_score_a_capture_quality_never_confidence(real_main
         dialog.deleteLater()
 
 
+def test_the_review_says_why_noise_suppression_and_the_gate_were_not_tuned(real_main_window) -> None:
+    dialog, _speech = _review_dialog(real_main_window)
+    result = _voice_setup_result(real_main_window, dialog)
+    try:
+        result["diagnostics"].update(apply_recommended=True, weak_capture=False)
+        result["diagnostics"]["joint_tuning"] = {
+            "status": "withheld", "withheld_for": "questionable_noise_reference", "reasons": [],
+        }
+        dialog._show_summary(result)
+        assert dialog.overall_label.text().endswith(
+            "\nNoise suppression and the gate were not tuned because the room-noise "
+            "recording was not steady. Your current settings are kept."
+        )
+        result["diagnostics"]["joint_tuning"] = {"apply_recommended": True, "reasons": []}
+        dialog._show_summary(result)
+        assert dialog.overall_label.text().endswith(
+            "\nNew noise suppression and gate settings passed the checks."
+        )
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
 def test_a_suggestions_only_result_makes_apply_the_secondary_action(real_main_window) -> None:
     from mic_eq.ui.theme import PRIMARY_ACTION_BUTTON_STYLE
 

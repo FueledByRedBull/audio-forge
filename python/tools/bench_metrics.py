@@ -50,6 +50,15 @@ VETO_NAMES = {
 CAPTURE_REFUSALS = ("raw setup captures are non-finite or clipped", "Room-noise capture was too short for setup.",
                     "Voice capture was too short for setup.")
 ACTIVE_BAND_DB = 0.25  # the Auto-EQ stage's own threshold for a band that corrects anything
+# The clauses of "no worse than the current settings" as the retired refusal study read them
+# (``evaluate_voice_setup_refusals.RULES`` at v1.18.0): measure -> (direction in which larger is better, tolerance).
+CLAUSES = {"estoi": (1.0, 0.01), "tone_error_db": (-1.0, 1.0), "sibilant_loss_db": (-1.0, 3.0),
+           "deep_pause_db": (-1.0, 1.0), "tail_db": (-1.0, 1.0), "onset_db": (1.0, 1.0)}
+SLACK = 1e-9
+RETAKE_STARTS_S = (3.0, 5.0, 7.0)  # where, in the noise of the take, the room-noise retakes begin
+# A compressor that squashes the voice: the known-bad probe of the retired refusal study (20:1 from -60 dB, 0.5 ms).
+SQUASH = {"enabled": True, "threshold_db": -60.0, "ratio": 20.0, "attack_ms": 0.5, "release_ms": 200.0,
+          "makeup_gain_db": 0.0, "adaptive_release": False, "auto_makeup_enabled": False}
 RETRY_COSTS = {"verification_delivery_mismatch": "D1", "verification_capture_too_short": "D2",
                "verification_capture_invalid": "D2"}
 TONE_FRAME, TONE_HOP, MIN_TONE_FRAMES = 4096, 2048, 8
@@ -308,6 +317,34 @@ def measure(rendered: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def clause_results(candidate: dict[str, Any], current: dict[str, Any]) -> dict[str, str]:
+    """``pass``, ``fail`` or ``unmeasurable`` for each clause of a setup against the current settings.
+
+    The overload clause fails when the candidate clips, or reaches a limiter overload, where the current settings do
+    not. A render that failed has no readings, so none of its clauses can be read.
+    """
+    results = {}
+    for name, (direction, tolerance) in CLAUSES.items():
+        value, baseline = candidate.get(name, math.nan), current.get(name, math.nan)
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in (value, baseline)):
+            results[name] = "unmeasurable"
+        else:
+            results[name] = "fail" if direction * (value - baseline) < -tolerance - SLACK else "pass"
+    if any("error" in reading for reading in (candidate, current)):
+        results["overload"] = "unmeasurable"
+    else:
+        worse = any(candidate[key] and not current[key] for key in ("clipped", "limiter_overload"))
+        results["overload"] = "fail" if worse else "pass"
+    return results
+
+
+def failed_clauses(candidate: dict[str, Any] | None, current: dict[str, Any]) -> list[str]:
+    """The clauses a setup fails against the current settings; none for a setup that was not rendered."""
+    if candidate is None:
+        return []
+    return [name for name, result in clause_results(candidate, current).items() if result == "fail"]
+
+
 # ----------------------------------------------------------------------------------------------
 # Settings and chain
 
@@ -385,6 +422,48 @@ def measure_settings(settings: dict[str, Any], ctx: dict[str, Any]) -> dict[str,
     except (RuntimeError, ValueError) as error:
         return {"error": f"{type(error).__name__}: {error}"}
     return measure(rendered, ctx)
+
+
+def compressor_only(settings: dict[str, Any], compressor: dict[str, Any]) -> dict[str, Any]:
+    """The chain with nothing on but ``compressor``: what that compression alone does to a signal."""
+    off = {"enabled": False}
+    return {**settings, "eq_settings": {**settings["eq_settings"], **off}, "gate_settings": {**settings["gate_settings"], **off},
+            "suppressor_settings": {**settings["suppressor_settings"], **off},
+            "deesser_settings": {**settings["deesser_settings"], **off}, "limiter_settings": {**settings["limiter_settings"], **off},
+            "compressor_settings": compressor}
+
+
+def compression_aware(ctx: dict[str, Any], compressor: dict[str, Any], vad_available: bool) -> dict[str, Any]:
+    """``ctx`` with the clean take and the input as ``compressor`` alone leaves them.
+
+    A compressor lowers the loud parts of the voice on purpose, so against the unprocessed take it narrows the
+    onset-to-body difference and lifts the pauses and tails that follow speech, and the clause readings take that for
+    harm. Read against this context, a render is judged for what it does beyond the compression it was asked for.
+    """
+    only = compressor_only(current_settings(vad_available), compressor)
+    clean, noisy = (np.asarray(render(only, audio)["output_audio"], np.float64) for audio in (ctx["raw_clean"], ctx["raw"]))
+    aware = {**ctx, "clean": clean[: ctx["clean"].size], "noisy": noisy[: ctx["noisy"].size]}
+    aware["noisy_db"], aware["clean_db"] = frame_rms_db(aware["noisy"]), frame_rms_db(aware["clean"])
+    aware["estoi_reference"] = estoi_reference(aware["clean"], SAMPLE_RATE)
+    return aware
+
+
+def fair_settings_readings(settings: dict[str, Any], ctx: dict[str, Any], vad_available: bool) -> dict[str, Any]:
+    """The readings of ``settings`` against its own compressor's compression of the clean take and the input."""
+    return measure_settings(settings, compression_aware(ctx, settings["compressor_settings"], vad_available))
+
+
+def compressor_arms(current: dict[str, Any], proposed_compressor: dict[str, Any], ctx: dict[str, Any],
+                    vad_available: bool) -> dict[str, dict[str, Any]]:
+    """The compressor step on its own against the current settings: the proposed compressor, no compressor, and a
+    squashing one as the known-bad control, each read plain and against its own compression (see ``compression_aware``)."""
+    arms = {"step": proposed_compressor, "off": {**current["compressor_settings"], "enabled": False},
+            "squash": {**current["compressor_settings"], **SQUASH}}
+    out = {}
+    for name, compressor in arms.items():
+        settings = {**current, "compressor_settings": compressor}
+        out[name] = {"plain": measure_settings(settings, ctx), "fair": fair_settings_readings(settings, ctx, vad_available)}
+    return out
 
 
 def is_vacuous(withheld: dict[str, Any], current: dict[str, Any], sections: tuple[str, ...]) -> bool:
@@ -523,17 +602,39 @@ def silero_available() -> bool:
 
 def make_context(mix: dict[str, Any]) -> dict[str, Any]:
     """The raw mix, the pre-filtered noisy input, clean reference and noise capture the measures read, and what
-    every render of the mix shares: the frame levels of the input and the clean take, and ESTOI's reference side."""
+    every render of the mix shares: the frame levels of the input and the clean take, and ESTOI's reference side.
+
+    ``retakes`` are 2 s stretches of the noise that played during the take, as the room-noise recording would be if
+    the person were asked to record it again with the same sound still playing (fewer for a short take).
+    """
     from mic_eq.ui.calibration_support import filtered_capture_for_analysis
 
     def filtered(audio: np.ndarray) -> np.ndarray:
         return filtered_capture_for_analysis(audio, SAMPLE_RATE).astype(np.float64)
 
-    ctx = {"raw": mix["raw"], "labels": mix["labels"], "raw_noise": mix["noise_capture"],
-           "noise": filtered(mix["noise_capture"]), "clean": filtered(mix["clean"]), "noisy": filtered(mix["raw"])}
+    during_take = mix["raw"].astype(np.float64) - mix["clean"]
+    retakes = [during_take[int(s * SAMPLE_RATE) : int((s + NOISE_S) * SAMPLE_RATE)].astype(np.float32)
+               for s in RETAKE_STARTS_S if int((s + NOISE_S) * SAMPLE_RATE) <= during_take.size]
+    ctx = {"raw": mix["raw"], "labels": mix["labels"], "raw_noise": mix["noise_capture"], "raw_clean": mix["clean"],
+           "noise": filtered(mix["noise_capture"]), "clean": filtered(mix["clean"]), "noisy": filtered(mix["raw"]),
+           "retakes": [filtered(take).astype(np.float32) for take in retakes]}
     ctx["noisy_db"], ctx["clean_db"] = frame_rms_db(ctx["noisy"]), frame_rms_db(ctx["clean"])
     ctx["estoi_reference"] = estoi_reference(ctx["clean"], SAMPLE_RATE)
     return ctx
+
+
+def retake_statuses(ctx: dict[str, Any], vad_available: bool) -> list[str]:
+    """The room-noise status of each retake of the mix, judged against its voice capture as the analysis does."""
+    from mic_eq.analysis.noise_reference import analyze_noise_reference
+    from mic_eq.analysis.vad import analyze_offline_vad
+
+    def vad(audio: np.ndarray) -> np.ndarray | None:
+        return analyze_offline_vad(audio, SAMPLE_RATE)[0] if vad_available else None
+
+    setup = ctx["noisy"].astype(np.float32)
+    speech_vad = vad(setup)
+    return [analyze_noise_reference(take, setup, SAMPLE_RATE, noise_vad_probabilities=vad(take),
+                                    speech_vad_probabilities=speech_vad).status for take in ctx["retakes"]]
 
 
 def voice_setup(ctx: dict[str, Any], vad_available: bool) -> dict[str, Any]:
@@ -584,9 +685,18 @@ def voice_setup(ctx: dict[str, Any], vad_available: bool) -> dict[str, Any]:
     if flow is not None and outcome == "applied":
         final = {name: flow["state"][name] for name in SECTIONS} | {"diagnostics": {"vad_available": vad}}
     cpu = time.process_time() - started
+    reference = {k: diagnostics["noise_reference_quality"][k] for k in ("status", "reasons")}
+    if reference["status"] != "usable":
+        reference["retakes"] = retake_statuses(ctx, vad)
+    ends = final or proposal
     return {
         "outcome": outcome, "veto": veto, "vetoes": fired, "reason": "; ".join(diagnostics["uncertainty_reasons"]),
-        "steps": changed_steps(final or proposal, current), "cpu_s": cpu,
+        "steps": changed_steps(ends, current), "cpu_s": cpu, "noise_reference": reference,
+        "tuner": tuning.get("status"),
+        "settings": {"proposal": proposal, "final": final},
+        "fair": {"proposal": fair_settings_readings(proposal, ctx, vad),
+                 "final": None if final is None else fair_settings_readings(final, ctx, vad)},
+        "compressor_step": compressor_arms(current, proposal["compressor_settings"], ctx, vad),
         "proposal": measure_settings(proposal, ctx),
         "suppressor": {k: proposal["suppressor_settings"].get(k) for k in ("enabled", "model", "strength")},
         "final": None if final is None else measure_settings(final, ctx),

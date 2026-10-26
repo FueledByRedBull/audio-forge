@@ -294,13 +294,16 @@ def _capture_issues(
 
     ``capture_reliable`` has four clauses in the analysis (voice against the room noise
     under 6 dB, under 2 s of speech, a single-spectrum fallback, a room-noise recording
-    that is not "usable"). Any one of them withholds automatic loudness and makes the
-    capture weak, which turns the recommendation into suggestions only. A weak capture
-    can also come from a voice under 8 dB over the room or a low overall score. Each line
-    says what was found, what was held back, and what to do.
+    that is not "usable"). Any one of them withholds automatic loudness. All but a
+    questionable room-noise recording also make the capture weak, which turns the
+    recommendation into suggestions only; a questionable one keeps the current noise
+    suppression and gate instead. A weak capture can also come from a voice under 8 dB
+    over the room or a low overall score. Each line says what was found, what was held
+    back, and what to do.
     """
     makeup = _number((compressor or {}).get("makeup_gain_db"))
-    withheld = _WITHHELD.format(makeup=f" (makeup is fixed at {makeup:.1f} dB)" if makeup is not None else "")
+    fixed = f" (makeup is fixed at {makeup:.1f} dB)" if makeup is not None else ""
+    withheld = _WITHHELD.format(makeup=fixed)
     suggestions = "The settings are suggestions only."
     lines: list[tuple[str, str]] = []
     snr = _number(diagnostics.get("noise_referenced_snr_db"))
@@ -341,7 +344,11 @@ def _capture_issues(
             if SILENT_REFERENCE_REASON in (quality.get("reasons") or ())
             else "Record the room noise again without talking."
         )
-        lines.append(("noise_reference_not_usable", f"{found[0]} {withheld} {again}"))
+        held = withheld if quality.get("status") != "questionable" else (
+            "Your noise suppression and gate were left as they are, and automatic loudness was not "
+            f"switched on{fixed}." + (f" {suggestions}" if diagnostics.get("weak_capture") else "")
+        )
+        lines.append(("noise_reference_not_usable", f"{found[0]} {held} {again}"))
     capture = _number(diagnostics.get("capture_confidence"))
     if capture is not None and capture < 0.50 and not fallback:
         lines.append((

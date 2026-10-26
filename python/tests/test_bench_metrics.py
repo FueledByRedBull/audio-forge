@@ -11,6 +11,8 @@ import pytest
 from scipy.signal import fftconvolve
 
 import bench_metrics as bm
+from mic_eq import CORE_AVAILABLE
+from mic_eq.ui.calibration_support import filtered_capture_for_analysis
 
 SR = bm.SAMPLE_RATE
 
@@ -244,3 +246,76 @@ def test_the_bench_stops_where_the_dialog_stops(monkeypatch):
 
     _scripted_verification(monkeypatch, [{"decision": "reduce", "reduction_targets": []}])
     assert bm.verify_flow(_proposal(), _captures())["ended"] == "no_target"
+
+
+def _reading(**changes):
+    return {"estoi": 0.95, "tone_error_db": 1.0, "sibilant_loss_db": 2.0, "deep_pause_db": -20.0, "tail_db": -15.0,
+            "onset_db": -5.0, "clipped": False, "limiter_overload": False, **changes}
+
+
+@pytest.mark.parametrize(
+    ("changes", "clause", "result"),
+    [
+        ({"estoi": 0.9399}, "estoi", "fail"), ({"estoi": 0.9401}, "estoi", "pass"),
+        ({"tone_error_db": 2.01}, "tone_error_db", "fail"), ({"tone_error_db": 1.99}, "tone_error_db", "pass"),
+        ({"sibilant_loss_db": 5.01}, "sibilant_loss_db", "fail"), ({"sibilant_loss_db": 4.99}, "sibilant_loss_db", "pass"),
+        ({"deep_pause_db": -18.99}, "deep_pause_db", "fail"), ({"deep_pause_db": -19.01}, "deep_pause_db", "pass"),
+        ({"tail_db": -13.99}, "tail_db", "fail"), ({"tail_db": -14.01}, "tail_db", "pass"),
+        # Onset is the one measure where larger is better.
+        ({"onset_db": -6.01}, "onset_db", "fail"), ({"onset_db": -5.99}, "onset_db", "pass"), ({"onset_db": 9.0}, "onset_db", "pass"),
+        ({"onset_db": float("nan")}, "onset_db", "unmeasurable"), ({"tail_db": None}, "tail_db", "unmeasurable"),
+        ({"clipped": True}, "overload", "fail"), ({"limiter_overload": True}, "overload", "fail"),
+    ],
+)
+def test_a_clause_fails_beyond_its_tolerance_and_in_its_own_direction(changes, clause, result):
+    assert bm.clause_results(_reading(**changes), _reading())[clause] == result
+
+
+def test_an_overload_the_current_settings_already_have_does_not_count_against_a_setup():
+    both = _reading(clipped=True, limiter_overload=True)
+    assert bm.clause_results(both, both)["overload"] == "pass"
+    assert bm.failed_clauses(both, _reading()) == ["overload"]
+    assert bm.failed_clauses(None, _reading()) == []  # a setup that was not rendered fails nothing
+    assert set(bm.clause_results({"error": "RuntimeError: x"}, _reading()).values()) == {"unmeasurable"}
+
+
+# A compressor a little deeper than the factory one (-20 dB, 4:1): ordinary compression of a voice.
+GOOD_COMPRESSOR = {"enabled": True, "threshold_db": -23.0, "ratio": 4.0, "attack_ms": 8.0, "release_ms": 200.0,
+                   "makeup_gain_db": 0.0, "adaptive_release": False, "auto_makeup_enabled": False,
+                   "sidechain_highpass_enabled": True}
+
+
+@pytest.mark.skipif(not CORE_AVAILABLE, reason="native extension is not built")
+def test_the_compression_aware_reading_judges_compression_for_what_it_does_beyond_the_asked_for_gain_reduction():
+    ctx = bm.make_context(built_mix("room-t02"))
+    current = bm.current_settings(False)
+    arms = bm.compressor_arms(current, GOOD_COMPRESSOR, ctx, False)
+    plain, aware = bm.measure_settings(current, ctx), bm.fair_settings_readings(current, ctx, False)
+
+    # Read plain, a good compressor lifts the pauses and the tail, and taking the compressor away fails the onset
+    # clause: the clauses track how much the compressor compresses, not whether it harms.
+    assert {"deep_pause_db", "tail_db"} <= set(bm.failed_clauses(arms["step"]["plain"], plain))
+    assert "onset_db" in bm.failed_clauses(arms["off"]["plain"], plain)
+    # Read against each setup's own compression, both pass...
+    assert bm.failed_clauses(arms["step"]["fair"], aware) == []
+    assert bm.failed_clauses(arms["off"]["fair"], aware) == []
+    # ...and a compressor that squashes the voice still fails.
+    assert "estoi" in bm.failed_clauses(arms["squash"]["fair"], aware)
+    # With no compressor there is nothing to take out of the reading.
+    assert arms["off"]["fair"] == arms["off"]["plain"]
+
+
+def test_a_retake_is_two_seconds_of_the_noise_that_played_during_the_take():
+    mix = built_mix("tv-t06")
+    ctx = bm.make_context(mix)
+    noise = mix["raw"].astype(np.float64) - mix["clean"]
+
+    assert len(ctx["retakes"]) == len(bm.RETAKE_STARTS_S) == 3
+    assert all(take.shape == (int(bm.NOISE_S * SR),) and take.dtype == np.float32 for take in ctx["retakes"])
+    # The voice is taken out of the take exactly, so a retake holds the distractor alone, filtered as the captures are.
+    first = noise[int(3.0 * SR) : int(5.0 * SR)]
+    assert np.allclose(ctx["retakes"][0], filtered_capture_for_analysis(first.astype(np.float32), SR), atol=1e-5)
+    assert np.std(ctx["retakes"][0]) > 0.0
+    short = bm.make_context({**mix, "raw": mix["raw"][: 6 * SR], "clean": mix["clean"][: 6 * SR],
+                             "labels": mix["labels"][: 6 * SR]})
+    assert len(short["retakes"]) == 1  # only the stretch that fits

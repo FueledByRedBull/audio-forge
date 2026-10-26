@@ -7,9 +7,10 @@ tuning change is expected to be run against it as often as needed. The numbers i
 decision and are not a gate. Tuning against the set can overfit it; that is accepted, and the report
 says what it covers, not what a stranger's microphone would do.
 
-Each mix goes through two paths:
+Each mix goes through these paths:
 
-* the factory chain, rendered offline with the factory `Preset()`;
+* the factory chain, rendered offline with the factory `Preset()`, and with `--deesser-on` the same chain
+  with the de-esser switched on (the factory de-esser is off, so the first path never exercises it);
 * Voice Setup with Auto-EQ as the app's offline flow runs it (analysis, then the dialog's verification
   with its automatic reductions), read on the proposal and, when the setup is applied, on the settings
   the user ends with. The mix is both the speech recording and the verification take, and its own
@@ -19,8 +20,18 @@ Measures against the clean take are ESTOI, SI-SDR, tone error, and onset level. 
 deep-pause and tail level are read against the input. Each is defined as at v1.18.0; see
 `bench_metrics.py`. CPU time is the process CPU time of the render, or of the analysis and verification.
 
+A setup is also judged against the current (factory) settings by the clauses of the retired refusal study
+(`bench_metrics.CLAUSES`). A compressor lowers the loud parts of the voice on purpose, which the unprocessed take
+and input read as a narrowed onset and a lifted tail, so every clause is read twice: plain, and against the
+clean take and the input as each setup's own compressor alone leaves them (`compression_aware`). The
+compressor step is also judged on its own, with no compressor and a squashing one as controls.
+
     python python/tools/bench_report.py --output bench.md --json-output bench.json
     python python/tools/bench_report.py --output after.md --json-output after.json --compare bench.json
+
+`--sweep-snr 6,14,18,22` also builds each TV, music and babble mix at those SNRs (named `<mix>@<snr>`): at their own
+SNR each also has a weak speech-to-noise ratio, which hides what the room-noise recording does.
+The extra mixes are not part of the committed set. `bench_study.py` summarises several runs into one report.
 
 The numbers carry the common decision block of evaluation/README.md. It reads `measured` until the maintainer decides:
 `--decision adopt|retain --reason "..." --by NAME` records it.
@@ -40,6 +51,7 @@ import platform
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -96,8 +108,22 @@ def check_files(bench: bm.Bench) -> None:
         raise SystemExit(f"bench files differ from the manifest: {', '.join(differ)}")
 
 
+def with_snr_sweep(bench: bm.Bench, snrs: list[float]) -> bm.Bench:
+    """The bench with each TV, music and babble mix also built at ``snrs`` (as ``<mix>@<snr>``), same take and seed.
+
+    At the manifest's own SNR each distractor also has a weak speech-to-noise ratio, which refuses it whatever its
+    room-noise recording is; the sweep separates the two. These mixes are not part of the committed set.
+    """
+    mixes = dict(bench.manifest["mixes"])
+    for mix_id, recipe in bench.manifest["mixes"].items():
+        if recipe["noise"]["kind"] in ("tv", "music", "babble"):
+            for snr in snrs:
+                mixes[f"{mix_id}@{snr:g}"] = {**recipe, "noise": {**recipe["noise"], "snr_db": float(snr)}}
+    return replace(bench, manifest={**bench.manifest, "mixes": mixes})
+
+
 def run(bench: bm.Bench, mix_ids: list[str], vad: bool, *, with_voice_setup: bool = True,
-        partial: Path | None = None) -> dict[str, Any]:
+        with_deesser_on: bool = False, partial: Path | None = None) -> dict[str, Any]:
     """Render each mix; ``partial`` gets one JSON line per finished mix, so a crash keeps the earlier ones."""
     mixes: dict[str, Any] = {}
     if partial:
@@ -108,11 +134,15 @@ def run(bench: bm.Bench, mix_ids: list[str], vad: bool, *, with_voice_setup: boo
         settings = bm.current_settings(vad)
         started = time.process_time()
         factory = bm.measure_settings(settings, ctx)
+        cpu_s = time.process_time() - started
         entry: dict[str, Any] = {
             "condition": bench.manifest["mixes"][mix_id]["condition"], "take": bench.manifest["mixes"][mix_id]["take"],
-            "factory": {**factory, "cpu_s": time.process_time() - started,
+            "factory": {**factory, "cpu_s": cpu_s, "fair": bm.fair_settings_readings(settings, ctx, vad),
                         "suppressor": {k: settings["suppressor_settings"].get(k) for k in ("enabled", "model", "strength")}},
         }
+        if with_deesser_on:
+            deesser = {**settings, "deesser_settings": {**settings["deesser_settings"], "enabled": True}}
+            entry["deesser_on"] = bm.measure_settings(deesser, ctx)
         if with_voice_setup:
             entry["voice_setup"] = bm.voice_setup(ctx, vad)
         mixes[mix_id] = entry
@@ -185,6 +215,51 @@ def _suppressors(mixes: dict[str, Any]) -> str:
     return f"factory chain {count(factory)}; Voice Setup chose {count(chosen)}"
 
 
+def _fails(candidate: dict[str, Any] | None, current: dict[str, Any] | None) -> str:
+    if candidate is None or current is None:
+        return "-"
+    return ",".join(bm.failed_clauses(candidate, current)) or "none"
+
+
+def _reference(vs: dict[str, Any]) -> str:
+    reference = vs.get("noise_reference") or {}
+    retakes = reference.get("retakes")
+    return str(reference.get("status", "-")) + (f" (retakes: {', '.join(retakes)})" if retakes else "")
+
+
+def _clause_sections(voiced: dict[str, Any]) -> list[str]:
+    """Voice Setup and its compressor step against the current settings, read plain and compression-aware."""
+    setup_rows, step_rows = [], []
+    for mix_id, entry in voiced.items():
+        vs = entry["voice_setup"]
+        if not vs.get("proposal"):
+            continue
+        which = "final" if vs.get("final") else "proposal"
+        current, aware = entry["factory"], entry["factory"].get("fair")
+        setup_rows.append([mix_id, vs["outcome"], _reference(vs), str(vs.get("tuner") or "-"), ",".join(vs["steps"]) or "-",
+                           _fails(vs[which], current), _fails((vs.get("fair") or {}).get(which), aware)])
+        arms = vs.get("compressor_step") or {}
+        step_rows.append([mix_id, *(_fails(arms.get(arm, {}).get(kind), current if kind == "plain" else aware)
+                                    for arm in ("step", "off", "squash") for kind in ("plain", "fair"))])
+
+    def total(rows: list[list[str]], column: int) -> str:
+        return f"{sum(row[column] not in ('none', '-') for row in rows)} of {len(rows)}"
+
+    return ["", "## Voice Setup against the current settings", "",
+            "The setup the user ends with (the proposal when it was refused) against the factory chain: the clauses it "
+            "fails (`none` passes them all), read plain and against each setup's own compressor alone. "
+            f"Setups failing a clause: plain {total(setup_rows, 5)}, compression-aware {total(setup_rows, 6)}.", "",
+            _table(["mix", "outcome", "noise reference", "gate and suppressor", "steps", "fails (plain)",
+                    "fails (compression-aware)"], setup_rows),
+            "", "## Compressor step on its own", "",
+            "The factory chain with only the compressor changed, against the factory chain, with the clauses it fails. "
+            "`step` is Voice Setup's compressor, `off` has no compressor, `squash` is a 20:1 compressor from -60 dB with a "
+            "0.5 ms attack, which must fail. Mixes failing: "
+            + "; ".join(f"{name} plain {total(step_rows, 1 + 2 * i)}, compression-aware {total(step_rows, 2 + 2 * i)}"
+                        for i, name in enumerate(("step", "off", "squash"))) + ".", "",
+            _table(["mix", "step plain", "step aware", "off plain", "off aware", "squash plain", "squash aware"], step_rows)]
+
+
 def markdown(result: dict[str, Any]) -> str:
     build, mixes = result["build"], result["mixes"]
     head = [h for _, h, _ in MEASURES]
@@ -204,6 +279,9 @@ def markdown(result: dict[str, Any]) -> str:
         _table(["mix", *head, "overload", "CPU s"],
                _rows(mixes, lambda e: e["factory"], lambda e: [], lambda e: [number(e["factory"]["cpu_s"], 1)])),
     ]
+    if any("deesser_on" in e for e in mixes.values()):
+        out += ["", "## Factory chain with the de-esser on", "",
+                _table(["mix", *head, "overload"], _rows(mixes, lambda e: e["deesser_on"], lambda e: [], lambda e: []))]
     if any("voice_setup" in e for e in mixes.values()):
         voiced = {k: e for k, e in mixes.items() if "voice_setup" in e}
         out += ["", "## Voice Setup with Auto-EQ", "",
@@ -213,6 +291,7 @@ def markdown(result: dict[str, Any]) -> str:
                              lambda e: [_outcome(e["voice_setup"]), ",".join(e["voice_setup"]["vetoes"]) or "-",
                                         ",".join(e["voice_setup"]["steps"]) or "-"],
                              lambda e: [number(e["voice_setup"]["cpu_s"], 1)]))]
+        out += _clause_sections(voiced)
     return "\n".join(out) + "\n"
 
 
@@ -256,6 +335,8 @@ def compare_markdown(result: dict[str, Any], earlier: dict[str, Any]) -> str:
                 changes.append(f"- {mix_id}: {_outcome(b)} [{','.join(b['steps'])}] -> {_outcome(a)} [{','.join(a['steps'])}]")
         out += ["## Voice Setup with Auto-EQ", "", *(changes or ["Outcomes and steps are unchanged."]), "",
                 _table(["mix", *head], deltas(_voice_measures))]
+    if shared and all("deesser_on" in result["mixes"][k] and "deesser_on" in earlier["mixes"][k] for k in shared):
+        out += ["", "## Factory chain with the de-esser on", "", _table(["mix", *head], deltas(lambda e: e["deesser_on"]))]
     cpu = [(k, result["mixes"][k]["factory"]["cpu_s"] - earlier["mixes"][k]["factory"]["cpu_s"]) for k in shared]
     out += ["", f"Factory render CPU: {signed(sum(v for _, v in cpu), 1)} s in total over the shared mixes."]
     return "\n".join(out) + "\n"
@@ -266,6 +347,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bench-dir", type=Path, default=bm.BENCH_DIR)
     parser.add_argument("--mixes", help="comma-separated mix ids (default: all)")
     parser.add_argument("--skip-voice-setup", action="store_true", help="factory chain only")
+    parser.add_argument("--deesser-on", action="store_true",
+                        help="also render the factory chain with the de-esser switched on")
+    parser.add_argument("--sweep-snr", type=lambda text: [float(v) for v in text.split(",")],
+                        help="comma-separated SNRs in dB: also build each TV, music and babble mix at these "
+                        "(named <mix>@<snr>); with --mixes, name the ones to run")
     parser.add_argument("--output", type=Path, help="write the Markdown report here (default: stdout)")
     parser.add_argument("--json-output", type=Path, help="write the numbers and the build identity here; each "
                         "finished mix is also appended to <file>.partial.jsonl until the run ends")
@@ -292,6 +378,8 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"{args.compare} is not a schema {SCHEMA_VERSION} bench report")
     bench = bm.load_bench(args.bench_dir)
     check_files(bench)
+    if args.sweep_snr:
+        bench = with_snr_sweep(bench, args.sweep_snr)
     mix_ids = args.mixes.split(",") if args.mixes else list(bench.manifest["mixes"])
     unknown = [m for m in mix_ids if m not in bench.manifest["mixes"]]
     if unknown:
@@ -299,7 +387,8 @@ def main(argv: list[str] | None = None) -> int:
     vad = bm.silero_available()
     started = time.perf_counter()
     partial = args.json_output.with_name(args.json_output.name + ".partial.jsonl") if args.json_output else None
-    mixes = run(bench, mix_ids, vad, with_voice_setup=not args.skip_voice_setup, partial=partial)
+    mixes = run(bench, mix_ids, vad, with_voice_setup=not args.skip_voice_setup, with_deesser_on=args.deesser_on,
+                partial=partial)
     result = {"schema_version": SCHEMA_VERSION, "decision": decision, "build": build_identity(args.bench_dir, vad),
               "run_seconds": time.perf_counter() - started, "mixes": mixes}
     text = markdown(result)

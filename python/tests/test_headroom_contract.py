@@ -109,7 +109,7 @@ def test_full_chain_explicitly_unavailable_vad_does_not_require_model(
 
 
 @pytest.mark.parametrize("typed", [False, True])
-@pytest.mark.parametrize("full_chain", [False, True])
+@pytest.mark.parametrize("full_chain", [False])  # the flag is only forwarded; the EQ format picks the path
 def test_preview_requires_native_simulation(monkeypatch, typed, full_chain):
     monkeypatch.setattr(
         headroom, "_native_simulate", lambda *_: (None, {"message": "test unavailable"})

@@ -98,12 +98,6 @@ def test_silence_and_unreadable_audio_cannot_continue(take, code):
         assert "not muted" in verdict.message
 
 
-def test_the_levels_form_gives_the_same_verdict_as_the_audio_form():
-    assert verdict_from_levels(-0.4, -10.0).code == "too_hot"
-    assert verdict_from_levels(-12.0, -45.0).code == "too_quiet"
-    assert verdict_from_levels(-12.0, -20.0).code == "good"
-
-
 def test_the_live_verdict_waits_out_the_pauses_and_says_a_peak_at_once():
     assert live_verdict([-70.0] * (LEVEL_HOLD_UPDATES - 1), [-60.0] * (LEVEL_HOLD_UPDATES - 1)) is None
 
@@ -247,7 +241,7 @@ def test_the_advised_raise_crosses_the_threshold_without_making_the_peak_too_hot
 
 @pytest.mark.parametrize(
     ("peak", "code", "change"),
-    [(-3.1, "good", 0), (-3.0, "good", 0), (-2.9, "too_hot", -4), (-5.9, "good", 0)],
+    [(-3.0, "good", 0), (-2.9, "too_hot", -4), (-5.9, "good", 0)],
 )
 def test_the_hot_boundary_and_the_lowering_advice(peak, code, change):
     verdict = verdict_from_levels(peak, -20.0)

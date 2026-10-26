@@ -1,6 +1,6 @@
 """Unavailable meter state and bounded painting work."""
 
-from PySide6.QtCore import QDeadlineTimer, QEventLoop, QTimer
+from PySide6.QtCore import QEventLoop, QTimer
 
 from mic_eq.ui.level_meter import ConfidenceMeter, GainReductionMeter, LevelMeter
 
@@ -12,22 +12,27 @@ def _wait(milliseconds: int) -> None:
 
 
 def test_level_meter_decays_without_any_widget_and_stops_by_itself(qapp):
-    meter = LevelMeter()
-    meter.PEAK_DECAY_RATE = 200.0  # Fall 10 dB per tick so the full decay takes about a second.
+    now = [100.0]  # the test's clock, in seconds
+    meter = LevelMeter(clock=lambda: now[0])
+    meter.PEAK_DECAY_RATE = 200.0  # Fall 10 dB per 50 ms tick.
     ticks = []
     meter.decay_timer.timeout.connect(lambda: ticks.append(1))
     assert not meter.decay_timer.isActive()
     meter.set_levels(-20.0, 0.0)
     assert meter.decay_timer.isActive()
     assert meter.is_clipping
+    # One real timer firing shows the timeout drives the decay; the clock moves only when told to.
+    now[0] += 0.05
     _wait(125)
     assert len(ticks) >= 1
     assert meter.peak_hold_db < meter.DB_MAX
 
     # The clip flash clears and the hold reaches the floor without any view.
-    deadline = QDeadlineTimer(3000)
-    while meter.decay_timer.isActive() and not deadline.hasExpired():
-        _wait(50)
+    for _ in range(100):
+        if not meter.decay_timer.isActive():
+            break
+        now[0] += 0.05
+        meter._decay_peak_hold()
     assert not meter.decay_timer.isActive()
     assert meter.peak_hold_db == meter.DB_MIN
     assert not meter.is_clipping

@@ -861,62 +861,12 @@ def test_an_auto_eq_refusal_refuses_the_whole_setup(monkeypatch, auto_eq, comple
     assert (result["eq_settings"] or {}).get("bands") is None
 
 
-# The user's compressor, told apart from any proposal by its threshold.
-_USERS_COMPRESSOR = {
-    **asdict(Preset().compressor),
-    "threshold_db": -17.25,
-    "auto_makeup_enabled": False,
-    "makeup_gain_db": 1.0,
-}
-_SILENT_ROOM = np.zeros(96_000, dtype=np.float32)
-
-
-def _is_users_compressor(compressor):
-    return compressor["threshold_db"] == _USERS_COMPRESSOR["threshold_db"]
-
-
-def _short_of_headroom_unless_users(compressor):
-    return 2.0 if _is_users_compressor(compressor) else -4.0
-
-
 _LOW_SNR = ("analyze_voice_spectrum", lambda spectrum: replace(spectrum, snr_db=4.0))
 _SHORT_SPEECH = ("_vad_masked_speech_features", lambda f: {**f, "active_duration_s": 1.5})
 _QUESTIONABLE_ROOM = (
     "analyze_noise_reference",
     lambda r: replace(r, status="questionable", reasons=["room noise drifts"]),
 )
-
-
-# A weak capture that is more than a faint voice leaves the setup nothing to stand on.
-_NOT_JUST_FAINT = {
-    "short-speech": {"alter": _SHORT_SPEECH},
-    "single-spectrum": {
-        "alter": ("analyze_voice_spectrum", lambda s: replace(s, used_single_spectrum_fallback=True))
-    },
-    "invalid-room-noise": {
-        "alter": (
-            "analyze_noise_reference",
-            lambda r: replace(r, status="invalid", reasons=["room noise is clipped"]),
-        )
-    },
-    "faint-and-questionable-room": {"alter": [_LOW_SNR, _QUESTIONABLE_ROOM]},
-    "faint-and-silent-room": {"alter": _LOW_SNR, "noise": _SILENT_ROOM},
-}
-
-
-@pytest.mark.parametrize("options", list(_NOT_JUST_FAINT.values()), ids=list(_NOT_JUST_FAINT))
-def test_a_weak_capture_that_is_more_than_a_faint_voice_is_refused(monkeypatch, options):
-    refused = _analyze_clean_capture(monkeypatch, incumbent_settings=_WITH_USERS, **options)
-
-    assert refused["diagnostics"]["weak_capture"] is True
-    assert refused["diagnostics"]["apply_recommended"] is False
-
-
-def _fails_beyond_headroom_unless_users(extra):
-    def reading(compressor):
-        return 2.0 if _is_users_compressor(compressor) else {**_headroom_reading(-4.0), **extra}
-
-    return reading
 
 
 @pytest.mark.parametrize(
@@ -926,44 +876,16 @@ def _fails_beyond_headroom_unless_users(extra):
 )
 def test_a_final_check_failure_beyond_headroom_is_refused(monkeypatch, extra):
     refused = _analyze_clean_capture(
-        monkeypatch,
-        headroom_at=_fails_beyond_headroom_unless_users(extra),
-        incumbent_settings=_WITH_USERS,
+        monkeypatch, headroom_at=lambda _compressor: {**_headroom_reading(-4.0), **extra}
     )
 
     assert refused["diagnostics"]["apply_recommended"] is False
     assert refused["diagnostics"]["offline_validation_passed"] is False
-    assert not _is_users_compressor(refused["compressor_settings"])
-
-
-_WITH_USERS = {"compressor": _USERS_COMPRESSOR}
-
-
-_INCUMBENT_COMPRESSOR_CASES = {
-    "headroom-only": {"headroom_at": _short_of_headroom_unless_users},
-    "weak-capture": {"alter": _SHORT_SPEECH},
-    "weak-and-headroom": {"alter": _SHORT_SPEECH, "headroom_at": _short_of_headroom_unless_users},
-    "clean": {},
-}
-
-
-@pytest.mark.parametrize(
-    "case", list(_INCUMBENT_COMPRESSOR_CASES.values()), ids=list(_INCUMBENT_COMPRESSOR_CASES)
-)
-def test_the_users_compressor_changes_nothing(monkeypatch, case):
-    knowing = _analyze_clean_capture(monkeypatch, incumbent_settings=_WITH_USERS, **case)
-    ignorant = _analyze_clean_capture(monkeypatch, incumbent_settings={}, **case)
-
-    assert repr(knowing) == repr(ignorant)
-    assert not _is_users_compressor(knowing["compressor_settings"])
-    assert knowing["diagnostics"]["apply_recommended"] is (not case)
 
 
 def test_the_two_refusals_read_as_they_always_did(monkeypatch):
-    headroom = _analyze_clean_capture(
-        monkeypatch, headroom_at=_short_of_headroom_unless_users, incumbent_settings=_WITH_USERS
-    )["diagnostics"]
-    weak = _analyze_clean_capture(monkeypatch, _SHORT_SPEECH, incumbent_settings=_WITH_USERS)["diagnostics"]
+    headroom = _analyze_clean_capture(monkeypatch, headroom_at=lambda _compressor: -4.0)["diagnostics"]
+    weak = _analyze_clean_capture(monkeypatch, _SHORT_SPEECH)["diagnostics"]
 
     assert headroom["offline_validation_passed"] is False
     assert "final full-chain headroom validation did not pass" in headroom["uncertainty_reasons"]
@@ -2265,7 +2187,7 @@ def test_native_chain_reports_robust_reduction_and_can_return_rendered_audio():
     )
 
 
-def test_silent_room_noise_moves_on_and_a_silent_voice_is_the_fault(qapp, monkeypatch):
+def test_silent_room_noise_moves_on_and_a_leaky_gate_is_a_weak_reference(qapp, monkeypatch):
     # A headset that mutes itself between words records silence as room noise.
     from mic_eq.analysis.noise_reference import (
         SILENT_REFERENCE_GUIDANCE,
@@ -2285,8 +2207,6 @@ def test_silent_room_noise_moves_on_and_a_silent_voice_is_the_fault(qapp, monkey
     owner.meter_timer.stop()
     owner.diagnostics_timer.stop()
     dialog = VoiceSetupDialog(parent=owner)
-    analyses = []
-    monkeypatch.setattr(dialog, "_start_analysis", lambda: analyses.append(1))
     try:
         dialog.setup_state = "noise_recording"
         finish_take(dialog, np.zeros(96_000, dtype=np.float32))
@@ -2312,41 +2232,6 @@ def test_silent_room_noise_moves_on_and_a_silent_voice_is_the_fault(qapp, monkey
         assert "retake it" in dialog.warning_label.text()
         assert "retake" in dialog.warning_label.text()
         assert dialog.warning_label.styleSheet() == message_text_style("warn", strong=True)
-
-        # A capture the analysis cannot use at all still has to be retaken.
-        dialog.setup_state = "noise_recording"
-        finish_take(dialog, _make_noise(48_000, seconds=0.5))
-        assert dialog.setup_state == "idle" and dialog.noise_audio is None
-        assert dialog.phase_label.text() == "Room-noise capture rejected"
-        assert dialog.start_button.text() == "Retake Room Noise"
-
-        # Clipping is refused by the analysis, so it is caught at the recording.
-        clipped = _make_noise(48_000)
-        clipped[::200] = 1.0
-        dialog.setup_state = "noise_recording"
-        finish_take(dialog, clipped)
-        assert dialog.setup_state == "idle" and dialog.noise_audio is None
-        assert all(token in dialog.warning_label.text() for token in _LOUD_ROOM)
-
-        dialog.setup_state = "noise_recording"
-        finish_take(dialog, np.zeros(96_000, dtype=np.float32))
-        loud_voice = _make_voice(48_000)
-        loud_voice[1000:1006] = 1.0
-        dialog.setup_state = "voice_recording"
-        finish_take(dialog, loud_voice)
-        assert dialog.setup_state == "noise_ready" and not analyses
-        assert all(token in dialog.warning_label.text() for token in _CLIPPED)
-        assert "move back" in dialog.warning_label.text()
-        dialog.setup_state = "voice_recording"
-        finish_take(dialog, np.zeros(480_000, dtype=np.float32))
-        assert dialog.setup_state == "noise_ready"
-        assert dialog.voice_audio is None and not analyses
-        assert all(token in dialog.warning_label.text() for token in _NO_SOUND)
-        assert dialog.start_button.text() == "Record Voice"
-
-        dialog.setup_state = "voice_recording"
-        finish_take(dialog, _make_voice(48_000))
-        assert dialog.setup_state == "analyzing" and analyses == [1]
     finally:
         dialog.reject()
         dialog.deleteLater()

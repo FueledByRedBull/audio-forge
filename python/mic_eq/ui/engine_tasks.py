@@ -14,11 +14,21 @@ OFFLOAD_ENGINE_CALLS = False
 
 
 def attempt(call: Callable[[], Any]) -> Any:
-    """The call's result, or the exception it raised."""
+    """The call's result, or the error it raised.
+
+    A native panic (pyo3_runtime.PanicException) is no Exception; it comes back as a RuntimeError,
+    or the worker would die with the answer unsent and the window locked. Interrupts pass through.
+    """
     try:
         return call()
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        raise
     except Exception as error:
         return error
+    except BaseException as panic:
+        failure = RuntimeError(f"{type(panic).__name__}: {panic}")
+        failure.__cause__ = panic
+        return failure
 
 
 class EngineTasks(QObject):

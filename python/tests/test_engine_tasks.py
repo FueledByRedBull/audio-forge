@@ -14,6 +14,11 @@ from PySide6.QtWidgets import QMessageBox
 
 from mic_eq.config import DeviceIdentity
 from mic_eq.ui import main_window
+from mic_eq.ui.engine_tasks import attempt
+
+
+class _Panic(BaseException):
+    """What a native panic looks like to Python: pyo3_runtime.PanicException is no Exception."""
 
 
 class _SlowEngine:
@@ -27,8 +32,9 @@ class _SlowEngine:
         self.entered = threading.Event()
         self.release = threading.Event()
         self.release.set()  # a test that wants a call to hang clears this
-        self.start_error: Exception | None = None
+        self.start_error: BaseException | None = None
         self.recovery_result: bool | None = None
+        self.recovery_error: BaseException | None = None
 
     def __getattr__(self, name: str):
         return getattr(self.native, name)
@@ -56,6 +62,8 @@ class _SlowEngine:
     def service_recovery(self):
         self.calls.append("service_recovery")
         self._hang()
+        if self.recovery_error is not None:
+            raise self.recovery_error
         return self.recovery_result
 
     def is_running(self) -> bool:
@@ -367,3 +375,121 @@ def test_a_click_that_runs_at_once_does_not_flicker_the_controls(isolated_main_w
 
     # A button that is disabled and enabled again has lost the keyboard focus on the way.
     assert changes == []
+
+
+def test_a_native_panic_is_an_error_but_an_interrupt_still_interrupts():
+    def panic():
+        raise _Panic("PyAudioProcessor is unsendable, but sent to another thread")
+
+    failure = attempt(panic)
+    assert isinstance(failure, RuntimeError) and "unsendable" in str(failure)
+    assert isinstance(failure.__cause__, _Panic)
+
+    def interrupt():
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        attempt(interrupt)
+
+
+def test_a_panic_in_a_start_unlocks_the_controls_and_is_reported(engine_window, qapp, monkeypatch):
+    window, engine = engine_window
+    engine.start_error = _Panic("PyAudioProcessor is unsendable, but sent to another thread")
+    shown: list[str] = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda _parent, title, text: shown.append(text))
+
+    window.start_btn_action.trigger()
+    wait_until(qapp, lambda: bool(shown))
+
+    assert "unsendable" in shown[0]
+    assert window.start_btn_action.isEnabled() and window._engine_busy is None
+
+
+def test_a_panic_in_the_recovery_poll_lets_the_next_tick_ask_again(engine_window, qapp):
+    window, engine = engine_window
+    window._start_processing()
+    engine.recovery_error = _Panic("unsendable")
+
+    def tick() -> None:
+        window._service_stream_recovery(
+            diagnostics={}, input_rms=-60.0, output_rms=-60.0, output_buf=0
+        )
+
+    tick()
+    wait_until(qapp, lambda: not window._recovery_polling)
+    tick()
+    wait_until(qapp, lambda: engine.calls.count("service_recovery") == 2)
+
+
+def test_shutdown_does_not_stop_the_engine_beside_a_call_that_is_still_out(
+    engine_window, qapp, monkeypatch
+):
+    window, engine = engine_window
+    monkeypatch.setattr(main_window, "ENGINE_CALL_WAIT_MS", 100)
+    window._start_processing()
+    engine.calls.clear()
+    engine.release.clear()
+    engine.entered.clear()
+    window.stop_btn_action.trigger()
+    assert engine.entered.wait(2.0)
+
+    began = time.monotonic()
+    window._shutdown()
+    assert time.monotonic() - began < 2.0
+
+    assert engine.lifecycle() == ["stop"]  # not a second stop on this thread beside the first
+    engine.release.set()
+    window._engine.wait()
+    run_loop_for(qapp, 0.1)
+    assert window.status_message.text != "Processing stopped"  # the late answer is dropped
+
+
+def test_the_late_answer_of_a_start_after_shutdown_is_dropped(engine_window, qapp, monkeypatch):
+    window, engine = engine_window
+    monkeypatch.setattr(main_window, "ENGINE_CALL_WAIT_MS", 100)
+    engine.release.clear()
+    window.start_btn_action.trigger()
+    assert engine.entered.wait(2.0)
+
+    window._shutdown()
+    engine.release.set()
+    window._engine.wait()
+    run_loop_for(qapp, 0.1)
+
+    assert window.status_message.text != "Processing: started"
+    assert engine.lifecycle() == ["start"]
+
+
+def test_a_recovery_restart_does_not_start_audio_again_after_shutdown(engine_window, qapp):
+    window, engine = engine_window
+    window._start_processing()
+    engine.calls.clear()
+    engine.release.clear()
+    engine.entered.clear()
+    window._recover_output_path()
+    assert engine.entered.wait(2.0)
+
+    threading.Timer(0.2, engine.release.set).start()
+    window._shutdown()  # waits for the stop that is out, then stops what runs
+    run_loop_for(qapp, 0.2)
+
+    assert engine.lifecycle() == ["stop"] and not engine.running
+
+
+def test_a_recovery_poll_holds_the_getters_off_the_engine_while_it_is_out(engine_window, qapp):
+    window, engine = engine_window
+    window._start_processing()
+    engine.release.clear()
+    engine.entered.clear()
+    window._service_stream_recovery(diagnostics={}, input_rms=-60.0, output_rms=-60.0, output_buf=0)
+    assert engine.entered.wait(2.0)
+
+    engine.status_reads = 0
+    window._update_meters()
+    window._update_diagnostics()
+    window._sync_meter_timer()
+    reads = engine.status_reads
+    engine.release.set()
+    wait_until(qapp, lambda: not window._recovery_polling)
+
+    assert reads == 0

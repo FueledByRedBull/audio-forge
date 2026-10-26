@@ -34,11 +34,12 @@ class _LiveProcessor:
 
 
 @pytest.fixture
-def live_window(isolated_main_window, monkeypatch):
+def live_window(isolated_main_window, monkeypatch, qapp):
     monkeypatch.setattr(MainWindow, "_quit_choice", _QUIT_CHOICE)
     window: Any = isolated_main_window
     window.processor = _LiveProcessor(window.processor)
-    return window
+    yield window
+    qapp.processEvents()  # ends a sign-out query a test left open
 
 
 @pytest.fixture
@@ -260,6 +261,7 @@ def test_a_sign_out_whose_save_fails_stops_audio_without_a_dialog(
 
     assert _close(live_window)
     assert not live_window.processor.running
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)  # the fixture closes again
 
 
 def test_a_sign_out_while_hidden_in_the_tray_saves_and_stops_audio(
@@ -284,3 +286,30 @@ def test_a_sign_out_while_hidden_in_the_tray_saves_and_stops_audio(
     assert not live_window.processor.running and saved and saved[-1]["width"] > 0
     tray.hide.assert_called()
     assert answers.asked == []
+
+
+def test_a_sign_out_query_tells_the_dialogs_through_an_app_property(live_window, qapp):
+    assert not qapp.property("audioforge_session_ending")
+
+    qapp.commitDataRequest.emit(None)
+    assert qapp.property("audioforge_session_ending") is True
+
+    qapp.processEvents()  # the query is over; Qt says nothing when another program refuses it
+    assert not qapp.property("audioforge_session_ending")
+
+
+@pytest.mark.parametrize("close_to_tray", [True, False])
+def test_a_sign_out_that_did_not_happen_leaves_closing_as_it_was(
+    live_window, answers, qapp, close_to_tray
+):
+    _tray(live_window, close_to_tray=close_to_tray)
+    _unsaved_change(live_window)
+    qapp.commitDataRequest.emit(None)
+    qapp.processEvents()
+
+    assert not _close(live_window)
+
+    # Hidden to the tray, or asked about the live audio; never quit with the edit lost.
+    assert live_window.processor.running and not live_window._quitting
+    assert answers.asked == ([] if close_to_tray else [["Quit", "Keep Running in Tray", "Cancel"]])
+    assert live_window.preset_modified

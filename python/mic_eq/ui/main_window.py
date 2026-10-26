@@ -202,7 +202,10 @@ MINIMUM_WINDOW_HEIGHT = 640
 # The pages in navigation order; the shared page state and the page stack follow it.
 PAGE_NAMES = ("Mic", "Health", "Settings")
 NO_DESTINATION_WARNING = "Warning: No output device is selected. Choose one in the Output list, then press Start."
-ENGINE_CALL_WAIT_MS = 10_000
+# Windows allows a program a few seconds to end a session, and the save comes after this wait.
+ENGINE_CALL_WAIT_MS = 3_000
+# Set on the app while Qt asks to commit data for a sign-out or shutdown; the dialogs read it too.
+SESSION_ENDING_PROPERTY = "audioforge_session_ending"
 SAVE_PROBLEM = "Settings could not be saved, so recent changes may be lost when AudioForge closes."
 
 
@@ -228,6 +231,22 @@ def _ago_text(age_ms: int | None, *, output: bool = False) -> str:
     if age_ms == NO_CALLBACK_YET:
         return "has not started playing sound yet" if output else "has not started sending sound yet"
     return f"{age_ms} ms ago"
+
+
+def _engine_in_use(window) -> bool:
+    """Whether a call is out on the engine worker; the meters and Health wait for it."""
+    return bool(window.__dict__.get("_engine_busy") or window.__dict__.get("_recovery_polling"))
+
+
+def _session_is_ending() -> bool:
+    app = QGuiApplication.instance()
+    return app is not None and bool(app.property(SESSION_ENDING_PROPERTY))
+
+
+def _end_session_query() -> None:
+    app = QGuiApplication.instance()
+    if app is not None:
+        app.setProperty(SESSION_ENDING_PROPERTY, False)
 
 
 def _device_label(identity: DeviceIdentity, devices: list) -> str:
@@ -410,7 +429,6 @@ class MainWindow(QMainWindow):
         self.single_instance = None  # set by the app bootstrap; the relaunch releases it
         self._problems: dict[str, str] = {}  # on the warning banner until resolved
         self._quitting = False
-        self._session_ending = False
         self._shut_down = False
         self._quit_dont_ask = False
         self._tray_icon: QSystemTrayIcon | None = None
@@ -1011,6 +1029,13 @@ class MainWindow(QMainWindow):
     def _report_problem(self, key: str, message: str, timeout: int = 0) -> None:
         self.status_message.showMessage(message, timeout)
         self._set_problem(key, message)
+
+    def _report_preset_problem(
+        self, key: str, preset_id: str, message: str, timeout: int = 0
+    ) -> None:
+        """A problem that ends when preset ``preset_id`` loads, not when any preset does."""
+        self.__dict__.setdefault("_failed_presets", {})[key] = preset_id
+        self._report_problem(key, message, timeout)
 
     def _show_config_banner(self) -> None:
         text = "\n".join(filter(None, (self.config.load_warning, *self._problems.values())))
@@ -1656,8 +1681,12 @@ class MainWindow(QMainWindow):
         self._update_session_summary()
 
     def _on_commit_data(self) -> None:
-        self._quitting = True
-        self._session_ending = True
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.setProperty(SESSION_ENDING_PROPERTY, True)
+        # Qt does not say when another program refuses the sign-out; the query is over when this
+        # call returns to the event loop, and a closeEvent in it has run by then.
+        QTimer.singleShot(0, _end_session_query)
 
     def _on_about_to_quit(self) -> None:
         """Shut down a window Qt never closed: hidden in the tray, or the app quit without it."""
@@ -2631,8 +2660,11 @@ class MainWindow(QMainWindow):
                     "Startup preset %r not found; falling back to last used",
                     preset_name,
                 )
-                self._report_problem(
-                    "startup_preset", f"Startup preset '{preset_name}' could not be loaded", 5000
+                self._report_preset_problem(
+                    "startup_preset",
+                    self.config.startup_preset,
+                    f"Startup preset '{preset_name}' could not be loaded",
+                    5000,
                 )
 
         startup_preset_failed = bool(self.config.startup_preset) and not preset_loaded
@@ -2650,8 +2682,9 @@ class MainWindow(QMainWindow):
                             config_dirty = True
                         restored_count += int(preset_loaded)
                     else:
-                        self._report_problem(
+                        self._report_preset_problem(
                             "last_preset",
+                            self.config.last_preset,
                             f"Previous preset '{preset_key}' not found, starting with defaults",
                         )
                         self.config.last_preset = ""
@@ -2667,8 +2700,10 @@ class MainWindow(QMainWindow):
                             config_dirty = True
                         restored_count += int(preset_loaded)
                     else:
-                        self._report_problem(
-                            "last_preset", "Previous preset file not found, starting with defaults"
+                        self._report_preset_problem(
+                            "last_preset",
+                            self.config.last_preset,
+                            "Previous preset file not found, starting with defaults",
                         )
                         self.config.last_preset = ""
                         config_dirty = True
@@ -2804,12 +2839,16 @@ class MainWindow(QMainWindow):
         self, name: str, call: Callable[[], Any], done: Callable[[Any], object]
     ) -> None:
         """Run a blocking engine call on the worker, with the engine controls locked until ``done`` ran."""
+        if self._shut_down:
+            return
         if self._engine.threaded:  # a call that returns at once would only cost the focus of a button
             self._engine_busy = name
             self._sync_processing_controls()
 
         def finish(outcome: Any) -> None:
             self._engine_busy = None
+            if self._shut_down:
+                return
             try:
                 done(outcome)
             finally:
@@ -3377,6 +3416,7 @@ class MainWindow(QMainWindow):
                 self.config.last_preset = previous_last_preset
                 self._last_preset_identity_persisted = False
             self._set_preset_identity(preset, path=filepath, persist_last_used=persisted)
+            self._set_problem("last_preset", None)
             message = f"Preset saved: {filepath.name}"
             if self._processing_mode() == "raw":
                 message += "; Raw Monitor is session-only and was not stored in the preset"
@@ -3478,7 +3518,7 @@ class MainWindow(QMainWindow):
 
     def _sync_meter_timer(self) -> None:
         timer = self.__dict__.get("meter_timer")
-        if timer is None or self.__dict__.get("_engine_busy"):
+        if timer is None or _engine_in_use(self):
             return
         try:
             running = self.processor.is_running()
@@ -3509,7 +3549,7 @@ class MainWindow(QMainWindow):
 
     def _update_meters(self):
         """Refresh available live measurements; keep recovery on its own timer."""
-        if self.__dict__.get("_engine_busy"):
+        if _engine_in_use(self):
             return
         try:
             running = self.processor.is_running()
@@ -3572,7 +3612,7 @@ class MainWindow(QMainWindow):
 
     def _update_diagnostics(self):
         """Update slower diagnostics and service recovery."""
-        if self.__dict__.get("_engine_busy"):
+        if _engine_in_use(self):
             return
         if self.__dict__.get("_login_startup_deadline") is not None:
             try:
@@ -4111,7 +4151,7 @@ class MainWindow(QMainWindow):
         output_buf: int,
     ) -> None:
         """Service UI-side and Rust-side stream recovery; the restarts run on the worker."""
-        if self._engine_busy or self._recovery_polling:
+        if self._engine_busy or self._recovery_polling or self._shut_down:
             return
         gate_state = getattr(self, "gate_state", None)
         gate_mode = int(gate_state.get_settings()["gate_mode"]) if gate_state is not None else 0
@@ -4156,6 +4196,8 @@ class MainWindow(QMainWindow):
     def _recovery_serviced(self, outcome: Any) -> None:
         """Show what the engine's own recovery did: ``outcome`` is its answer or the exception raised."""
         self._recovery_polling = False
+        if self._shut_down:
+            return
         try:
             if isinstance(outcome, Exception):
                 raise outcome
@@ -4560,8 +4602,16 @@ class MainWindow(QMainWindow):
                 persist_last_used=persist_last_used,
             )
         if history_ready and not history_replaying:
-            for key in ("startup_preset", "last_preset"):
-                self._set_problem(key, None)
+            loaded = {preset_id} if preset_id is not None else set()
+            if preset_path is not None:
+                loaded |= {
+                    str(preset_path),
+                    _startup_custom_file_id(preset_path.name),
+                    f"{STARTUP_CUSTOM_PREFIX}{preset.name}",
+                }
+            for key, failed_id in self.__dict__.get("_failed_presets", {}).items():
+                if failed_id in loaded:
+                    self._set_problem(key, None)
             self._commit_pending_configuration_snapshot(
                 label=f"Loaded preset ({preset.name})",
                 source="preset",
@@ -4698,7 +4748,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close."""
-        if not self._quitting:
+        # A Windows sign-out or shutdown waits on this close, so it never asks or refuses.
+        session_ending = _session_is_ending()
+        if not self._quitting and not session_ending:
             if (
                 self._tray_icon is not None
                 and self._tray_icon.isVisible()
@@ -4714,15 +4766,14 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
 
-        # A Windows sign-out or shutdown waits on this close, so it never asks or refuses.
-        if not self._session_ending and not self._confirm_discard_changes():
+        if not session_ending and not self._confirm_discard_changes():
             self._quitting = False
             self._quit_dont_ask = False
             event.ignore()
             return
         self._quitting = True
         saved = self._shutdown()
-        if not saved and not self._session_ending:
+        if not saved and not session_ending:
             QMessageBox.warning(
                 self,
                 "Settings Not Saved",
@@ -4734,7 +4785,10 @@ class MainWindow(QMainWindow):
         """Save the settings and stop audio; closeEvent and an app quit without a close share this."""
         if self._quit_dont_ask:
             self.config.confirm_quit_when_live = False
-        self._engine.wait(ENGINE_CALL_WAIT_MS)  # a call in flight owns the engine; the stop below follows it
+        self._shut_down = True  # from here the answers of engine calls still out are dropped
+        engine_idle = self._engine.wait(ENGINE_CALL_WAIT_MS)
+        if not engine_idle:
+            logger.warning("An engine call is still out at shutdown; the exit ends the audio")
         self._unregister_mute_hotkey()
         if self._tray_icon is not None:
             self._tray_icon.hide()
@@ -4752,9 +4806,9 @@ class MainWindow(QMainWindow):
         try:
             saved = self._save_ui_state()
         finally:
-            if self.processor.is_running():
+            # Not beside a call that is still out: the engine is not safe to enter twice.
+            if engine_idle and self.processor.is_running():
                 self.processor.stop()
-        self._shut_down = True
         return saved
 
 

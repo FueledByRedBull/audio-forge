@@ -93,7 +93,7 @@ def test_a_save_problem_is_added_to_the_load_warning_and_leaves_it_when_resolved
     assert _banner(window).text == "AudioForge found an invalid config.json." and _banner(window).shown
 
 
-def test_a_missing_last_preset_stays_on_the_banner_until_a_preset_loads(start_window, qapp):
+def test_a_missing_last_preset_stays_on_the_banner_until_a_preset_is_saved(start_window, qapp):
     window = start_window(AppConfig(last_preset="builtin:no_such_preset"))
     qapp.processEvents()
     window.status_message.showMessage("Ready")  # the strip has moved on
@@ -101,7 +101,43 @@ def test_a_missing_last_preset_stays_on_the_banner_until_a_preset_loads(start_wi
     assert _banner(window).shown and "no_such_preset" in _banner(window).text
 
     key = next(iter(BUILTIN_PRESETS))
+    assert window._apply_preset(BUILTIN_PRESETS[key], preset_key=key)  # another preset is no fix
+    assert _banner(window).shown and "no_such_preset" in _banner(window).text
+
+    assert window._save_preset_file(window._get_current_preset()) is not None
+    assert not _banner(window).shown
+
+
+def test_a_missing_last_preset_is_resolved_when_that_preset_loads(start_window, monkeypatch):
+    window = start_window(AppConfig(last_preset="builtin:ghost"))
+    assert _banner(window).shown
+
+    monkeypatch.setitem(BUILTIN_PRESETS, "ghost", next(iter(BUILTIN_PRESETS.values())))
+    assert window._apply_preset(BUILTIN_PRESETS["ghost"], preset_key="ghost")
+
+    assert not _banner(window).shown
+
+
+def test_the_startup_preset_problem_outlasts_other_and_automatic_loads(start_window, monkeypatch):
+    window = start_window(AppConfig(startup_preset="builtin:ghost"))
+    assert _banner(window).shown and "ghost" in _banner(window).text
+    key = next(iter(BUILTIN_PRESETS))
+
     assert window._apply_preset(BUILTIN_PRESETS[key], preset_key=key)
+    assert window._load_device_preset_id(f"builtin:{key}")  # a route-bound preset, loaded by itself
+    assert _banner(window).shown and "ghost" in _banner(window).text
+
+    monkeypatch.setitem(BUILTIN_PRESETS, "ghost", BUILTIN_PRESETS[key])
+    assert window._apply_preset(BUILTIN_PRESETS["ghost"], preset_key="ghost")
+    assert not _banner(window).shown
+
+
+def test_choosing_another_startup_preset_resolves_its_problem(start_window):
+    window = start_window(AppConfig(startup_preset="builtin:ghost"))
+    assert _banner(window).shown
+
+    window._set_startup_preset("")
+
     assert not _banner(window).shown
 
 

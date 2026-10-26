@@ -67,13 +67,61 @@ def _migration_marker(base_dir: Path) -> Path:
     return base_dir / _MIGRATION_MARKER_NAME
 
 
+def _marker_state(marker: Path) -> str:
+    """Return "" with no marker, "staged" for a published copy, else "pending".
+
+    Empty, unreadable or unrecognised content (a crash mid-write, another build)
+    counts as pending so it is retried rather than left to block saves.
+    """
+    try:
+        text = marker.read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        return ""
+    except (OSError, UnicodeError):
+        return "pending"
+    return "staged" if text == "staged" else "pending"
+
+
 def migration_pending() -> bool:
     """Return whether a legacy config migration needs a safe retry."""
-    return _migration_marker(_config_base_dir()).exists()
+    base_dir = _config_base_dir()
+    state = _marker_state(_migration_marker(base_dir))
+    # A staged marker beside a published destination is complete even if it
+    # could not be deleted.
+    return bool(state) and not (
+        state == "staged" and (base_dir / APPDATA_DIR_NAME).exists()
+    )
 
 
 def _write_migration_marker(marker: Path, state: str) -> None:
     marker.write_text(state, encoding="ascii")
+
+
+def _clear_migration_marker(marker: Path) -> None:
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("Could not clear config migration marker", exc_info=True)
+
+
+def _restore_stranded_config(base_dir: Path, config_dir: Path) -> None:
+    """Put back a destination a failed migration moved aside, if nothing replaced it."""
+    kept = sorted(
+        base_dir.glob(f".{APPDATA_DIR_NAME}.partial-*"),
+        key=lambda path: path.stat().st_mtime,
+    )
+    if config_dir.exists() or not kept:
+        return
+    try:
+        kept[-1].replace(config_dir)
+    except OSError:
+        logger.warning("Could not restore config folder %s", kept[-1], exc_info=True)
+        return
+    logger.warning("Restored the AudioForge config folder from %s", kept[-1])
+    if len(kept) > 1:
+        logger.warning("Older config folders were left in place: %s", ", ".join(map(str, kept[:-1])))
 
 
 def _config_dir() -> Path:
@@ -82,20 +130,20 @@ def _config_dir() -> Path:
     legacy_dir = base_dir / LEGACY_APPDATA_DIR_NAME
     marker = _migration_marker(base_dir)
     migration_failed = False
-    marker_state = ""
-    if marker.exists():
-        try:
-            marker_state = marker.read_text(encoding="ascii").strip()
-        except (OSError, UnicodeError):
-            marker_state = "pending"
+    marker_state = _marker_state(marker)
 
     if marker_state == "staged" and config_dir.exists():
         # A process may have been interrupted after the atomic directory swap
         # and before removing the marker. The destination is complete.
+        _clear_migration_marker(marker)
+        marker_state = ""
+    elif marker_state and not legacy_dir.exists():
+        # Nothing is left to migrate from, so the marker can only block saves.
         try:
-            marker.unlink()
+            _restore_stranded_config(base_dir, config_dir)
         except OSError:
-            logger.warning("Could not clear completed config migration marker", exc_info=True)
+            logger.warning("Could not look for a stranded config folder", exc_info=True)
+        _clear_migration_marker(marker)
         marker_state = ""
 
     needs_migration = legacy_dir.exists() and (
@@ -130,13 +178,11 @@ def _config_dir() -> Path:
             # Mark the directory as staged only after the atomic publication.
             # A crash before this write leaves the pending marker, so the next
             # process retries instead of accepting a partial destination.
-            _write_migration_marker(marker, "staged")
             try:
-                marker.unlink()
-            except FileNotFoundError:
-                pass
+                _write_migration_marker(marker, "staged")
             except OSError:
-                logger.warning("Could not clear config migration marker", exc_info=True)
+                logger.warning("Could not mark config migration as staged", exc_info=True)
+            _clear_migration_marker(marker)
         except OSError:
             migration_failed = True
             logger.warning("Legacy AudioForge config migration failed", exc_info=True)

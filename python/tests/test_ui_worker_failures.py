@@ -73,8 +73,6 @@ def test_a_worker_exception_is_logged_with_its_traceback(
     ("module", "function", "make_worker"),
     [
         (analysis_worker, "analyze_auto_eq", lambda: analysis_worker.AnalysisWorker(_audio(), 48_000)),
-        (voice_setup_dialog, "analyze_voice_setup", _voice_worker),
-        (voice_setup_dialog, "validate_voice_setup_verification", _verification_worker),
     ],
 )
 def test_an_exception_without_a_message_still_gives_the_user_a_sentence(

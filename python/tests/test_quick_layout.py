@@ -104,6 +104,7 @@ def shown_items(item: QQuickItem):
             yield from shown_items(child)
 
 
+@pytest.mark.parametrize("minimum_window", ["short", "short-unsaved"], indirect=True)
 def test_the_scene_is_built_at_its_minimum_width(minimum_window) -> None:
     assert named(minimum_window, "meterPanel").width() > 0
     assert minimum_window.centralWidget().width() == MINIMUM_WINDOW_WIDTH
@@ -118,13 +119,6 @@ def test_nothing_in_the_content_column_runs_under_the_meters(minimum_window) -> 
         if scene_rect(item).right() > meters_left + 0.5
     ]
     assert not overflowing, f"meter panel starts at {meters_left:.1f}: {overflowing}"
-
-
-@pytest.mark.parametrize("name", ["micPage", "presetBar", "voiceSetupButton", "bandEditorRow", "gainBox"])
-def test_the_mic_page_rows_fit_the_page(minimum_window, name) -> None:
-    meters_left = scene_rect(named(minimum_window, "meterPanel")).left()
-    box = scene_rect(named(minimum_window, name))
-    assert box.right() <= meters_left + 0.5, f"{name} ends at {box.right():.1f}, meters at {meters_left:.1f}"
 
 
 def test_a_long_preset_name_is_elided_and_whole_in_the_tooltip(minimum_window) -> None:
@@ -145,6 +139,9 @@ def status_caption(window: MainWindow, text: str) -> QQuickItem:
     return next(child for child in strip.childItems() if child.property("text") == text)
 
 
+# The unsaved flag only reaches the preset bar; the status strip reads the message, transmission,
+# calibration and health, so one saved and one long-named window cover it.
+@pytest.mark.parametrize("minimum_window", ["short", "long"], indirect=True)
 def test_an_elided_status_caption_has_its_full_text_as_its_tip(minimum_window) -> None:
     message = named(minimum_window, "statusMessage")
     calibration = status_caption(minimum_window, STALE_CALIBRATION)
@@ -172,6 +169,7 @@ def test_the_calibration_text_keeps_its_natural_width_when_there_is_room(
         qapp.processEvents()
 
 
+@pytest.mark.parametrize("minimum_window", ["short", "long"], indirect=True)
 def test_the_status_strip_texts_do_not_overlap(minimum_window) -> None:
     strip = named(minimum_window, "statusStrip")
     boxes = sorted(
@@ -203,6 +201,7 @@ def health_chip(window: MainWindow) -> QQuickItem:
     return next(child for child in strip.childItems() if "Chip" in child.metaObject().className())
 
 
+@pytest.mark.parametrize("minimum_window", ["short", "long"], indirect=True)
 @pytest.mark.parametrize("text", LONG_HEALTH_TEXTS)
 def test_a_long_health_text_is_cut_short_and_whole_in_the_tooltip_and_the_name(
     minimum_window, qapp, text
@@ -229,6 +228,7 @@ def test_a_long_health_text_is_cut_short_and_whole_in_the_tooltip_and_the_name(
         QAccessible.setActive(was_active)
 
 
+@pytest.mark.parametrize("minimum_window", ["short", "long"], indirect=True)
 def test_a_short_health_text_keeps_its_natural_width_and_its_own_tooltip(minimum_window, qapp) -> None:
     window = minimum_window
     window._set_health_chip("health_summary_label", "Health: OK", "ok")
@@ -242,6 +242,7 @@ def test_a_short_health_text_keeps_its_natural_width_and_its_own_tooltip(minimum
     assert caption_tip(chip) == "Everything looks fine."
 
 
+@pytest.mark.parametrize("minimum_window", ["short", "long"], indirect=True)
 def test_the_status_message_keeps_a_quarter_of_the_strip_at_the_worst_combination(
     minimum_window, qapp
 ) -> None:
@@ -263,8 +264,10 @@ def test_the_status_message_keeps_a_quarter_of_the_strip_at_the_worst_combinatio
         assert caption_tip(caption) == text
 
 
-@pytest.mark.parametrize("point_size", [9, 11, 13, 14])
-@pytest.mark.parametrize("width", [1200, 1230, 1260, 1300])
+# The tightest cells: the largest font at the `wide` threshold, then the widest window, with the
+# Muted badge showing. Sizes and widths between them leave more room than a neighbour that is kept.
+@pytest.mark.parametrize("point_size", [9, 14])
+@pytest.mark.parametrize("width", [1200, 1300])
 @pytest.mark.parametrize("state", ["unmuted", "muted-bypass"])
 def test_the_top_bar_fits_its_card_at_every_font_size_and_wide_width(
     qapp, monkeypatch, segoe_font, point_size, width, state

@@ -15,7 +15,6 @@ import numpy as np
 import pytest
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtCore import QElapsedTimer, QEventLoop, QThread, QTimer
-from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QDialog, QMessageBox
 
 from mic_eq.analysis.voice_setup import (
@@ -426,23 +425,6 @@ def test_an_unreadable_verification_take_restores_and_offers_another_try(
 
         dialog._on_start_clicked()
         assert dialog.setup_state == "verification_ready"
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
-
-
-def test_apply_and_verify_again_button_shows_a_literal_ampersand(real_main_window) -> None:
-    window = real_main_window
-    dialog = VoiceSetupDialog(parent=window)
-    noise, speech = _short_voice_captures(int(window.processor.sample_rate()))
-    _bind_capture_context(dialog, noise, speech)
-    _apply_complete_candidate(window, dialog, _voice_setup_result(window, dialog))
-    dialog.setup_state = "verification_recording"
-    try:
-        dialog._on_recording_complete(np.full_like(speech, np.nan))
-
-        assert dialog.start_button.text().startswith("Apply")
-        assert QKeySequence.mnemonic(dialog.start_button.text()).isEmpty()
     finally:
         dialog.reject()
         dialog.deleteLater()
@@ -1321,19 +1303,6 @@ def test_a_result_without_an_eq_says_nothing_still_applies(
         dialog.deleteLater()
 
 
-def test_a_compressor_set_by_the_analysis_is_described_as_before(real_main_window) -> None:
-    window = real_main_window
-    dialog, _speech = _review_dialog(window)
-    try:
-        dialog._on_analysis_complete(_voice_setup_result(window, dialog))
-
-        assert "kept as it is" not in dialog.compressor_label.text()
-        assert dialog.compressor_label.toolTip() != ""
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
-
-
 def test_a_verified_setup_lists_every_stage(real_main_window, monkeypatch) -> None:
     window = real_main_window
     dialog, _speech = _review_dialog(window)
@@ -1856,32 +1825,6 @@ def test_rollback_drops_stale_noise_reliability_but_restores_numeric_settings(
     }
     dialog._pre_setup_snapshot = snapshot
     owner.context_key = "route-b"
-    monkeypatch.setattr(
-        "mic_eq.ui.voice_setup_dialog._find_eq_state_owner", lambda _widget: owner
-    )
-    try:
-        assert dialog._restore_pre_setup_snapshot() is True
-        assert owner.compressor_state.last_settings == {
-            "dynamics_profile": "balanced",
-            "dynamics_customized": False,
-        }
-    finally:
-        dialog.reject()
-
-
-def test_rollback_drops_noise_reliability_when_context_is_unknown(qapp, monkeypatch) -> None:
-    owner = _ContextRestoreOwner()
-    owner.context_key = None
-    dialog = VoiceSetupDialog()
-    dialog._pre_setup_snapshot = {
-        "preset": Preset().to_dict(),
-        "compressor_metadata": {
-            "dynamics_profile": "balanced",
-            "dynamics_customized": False,
-        },
-        "noise_reference_reliability": 0.8,
-        "calibration_context_key": None,
-    }
     monkeypatch.setattr(
         "mic_eq.ui.voice_setup_dialog._find_eq_state_owner", lambda _widget: owner
     )

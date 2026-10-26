@@ -36,8 +36,11 @@ def _render(audio: np.ndarray, *, enabled: bool, strength: float,
     )
 
 
-@pytest.mark.parametrize("mode", [0, 1, 2])
-@pytest.mark.parametrize("available", [False, True])
+# Threshold-only mode (0) never reads the VAD availability flag, so `True` repeats `False` there.
+AVAILABLE_AND_MODE = [(False, 0), (False, 1), (False, 2), (True, 1), (True, 2)]
+
+
+@pytest.mark.parametrize(("available", "mode"), AVAILABLE_AND_MODE)
 @pytest.mark.parametrize("strength", [0.0, 0.37, 1.0])
 @pytest.mark.parametrize("model", MODELS)
 def test_gated_neural_input_preserves_incumbent_order(mode, available, strength, model):
@@ -69,9 +72,10 @@ def test_gated_neural_input_preserves_incumbent_order(mode, available, strength,
         assert np.all(actual <= high + tolerance)
 
 
-@pytest.mark.parametrize("mode", [0, 1, 2])
-@pytest.mark.parametrize("available", [False, True])
-@pytest.mark.parametrize("model", MODELS)
+# Plain deepfilter only: for the other models the incumbent-order test makes the same
+# dry-audio equality check at strengths 0.37 and 1.0.
+@pytest.mark.parametrize(("available", "mode"), AVAILABLE_AND_MODE)
+@pytest.mark.parametrize("model", MODELS[-1:])
 def test_strength_zero_retains_exact_original_gate_output(mode, available, model):
     result = _render(_capture(), enabled=True, strength=0.0, mode=mode, available=available, model=model)
     np.testing.assert_array_equal(result["output_audio"], result["dry_audio"])

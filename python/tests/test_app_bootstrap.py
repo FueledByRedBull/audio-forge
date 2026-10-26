@@ -134,54 +134,6 @@ def test_deepfilter_bootstrap_registers_bundled_assets_without_trusting_external
     ]
 
 
-def test_deepfilter_bootstrap_allows_explicit_external_override(tmp_path, monkeypatch):
-    trusted = tmp_path / "trusted"
-    external = tmp_path / "external" / _deepfilter_lib_name()
-    external_model = tmp_path / "external" / "DeepFilterNet3_ll_onnx.tar.gz"
-    trusted.mkdir()
-    external.parent.mkdir()
-    external.write_bytes(b"x")
-    external_model.write_bytes(b"x")
-    _write_deepfilter_assets(trusted)
-    monkeypatch.setenv("AUDIOFORGE_ENABLE_DEEPFILTER", "1")
-    monkeypatch.setenv("AUDIOFORGE_ALLOW_EXTERNAL_DF", "1")
-    monkeypatch.setenv("DEEPFILTER_LIB_PATH", str(external))
-    monkeypatch.setenv("DEEPFILTER_MODEL_PATH", str(external_model))
-    monkeypatch.setattr(app_bootstrap, "_trusted_runtime_roots", lambda: [trusted])
-    registrations = _capture_deepfilter_registration(monkeypatch)
-
-    app_bootstrap.configure_deepfilter_env()
-
-    assert app_bootstrap.os.environ["DEEPFILTER_LIB_PATH"] == str(external)
-    assert app_bootstrap.os.environ["DEEPFILTER_MODEL_PATH"] == str(external_model)
-    assert registrations == [
-        (str(trusted / _deepfilter_lib_name()), str(trusted / "models"))
-    ]
-
-
-def test_deepfilter_bootstrap_external_override_gets_missing_bundled_defaults(
-    tmp_path, monkeypatch, restore_deepfilter_enable
-):
-    trusted = tmp_path / "trusted"
-    trusted.mkdir()
-    _write_deepfilter_assets(trusted)
-    monkeypatch.setenv("AUDIOFORGE_ALLOW_EXTERNAL_DF", "1")
-    monkeypatch.delenv("AUDIOFORGE_ENABLE_DEEPFILTER", raising=False)
-    monkeypatch.delenv("DEEPFILTER_LIB_PATH", raising=False)
-    monkeypatch.delenv("DEEPFILTER_MODEL_PATH", raising=False)
-    monkeypatch.setattr(app_bootstrap, "_trusted_runtime_roots", lambda: [trusted])
-    registrations = _capture_deepfilter_registration(monkeypatch)
-
-    app_bootstrap.configure_deepfilter_env()
-
-    assert app_bootstrap.os.environ["AUDIOFORGE_ENABLE_DEEPFILTER"] == "1"
-    assert "DEEPFILTER_LIB_PATH" not in app_bootstrap.os.environ
-    assert "DEEPFILTER_MODEL_PATH" not in app_bootstrap.os.environ
-    assert registrations == [
-        (str(trusted / _deepfilter_lib_name()), str(trusted / "models"))
-    ]
-
-
 def test_deepfilter_bootstrap_uses_standard_model_when_ll_absent(tmp_path, monkeypatch, restore_deepfilter_enable):
     trusted = tmp_path / "trusted"
     trusted.mkdir()

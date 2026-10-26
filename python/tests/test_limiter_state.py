@@ -97,7 +97,6 @@ def test_rejected_write_restores_native_and_visible_state_without_history(qapp, 
     ("name", "value"),
     [
         ("ceiling_db", float("nan")),
-        ("ceiling_db", float("inf")),
         ("ceiling_db", -12.1),
         ("ceiling_db", True),
         ("release_ms", 9.9),

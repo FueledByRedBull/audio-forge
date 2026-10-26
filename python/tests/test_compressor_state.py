@@ -163,8 +163,9 @@ def test_compressor_rollback_failure_signals_barrier_before_stopping(qapp):
     observed = []
     state.recoveryFailed.connect(lambda _message: observed.append(processor.stopped))
     processor.failures_left = 2
-    with pytest.raises(RuntimeError, match="previous settings also failed"):
+    with pytest.raises(RuntimeError, match="previous settings also failed") as raised:
         state.set_settings({"adaptive_release": True})
+    assert "compressor write rejected" in str(raised.value)  # the native error reaches the caller
     assert observed == [False]
     assert processor.stopped
 

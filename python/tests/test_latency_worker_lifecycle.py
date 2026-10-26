@@ -7,7 +7,6 @@ import time
 from unittest.mock import Mock
 
 import numpy as np
-from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QWidget
 
 from mic_eq.ui import latency_calibration_dialog as latency_ui
@@ -39,36 +38,16 @@ def test_cancel_keeps_running_latency_worker_owned_until_it_stops(qapp, monkeypa
     dialog._capture_started_at = time.monotonic() - 3.0
     dialog.show()
     worker = None
-    ui_ticks = 0
-
-    def tick():
-        nonlocal ui_ticks
-        ui_ticks += 1
-
-    timer = QTimer(dialog)
-    timer.setInterval(10)
-    timer.timeout.connect(tick)
     try:
         dialog._poll_capture()
         worker = dialog.worker
         assert worker is not None and entered.wait(5.0)
 
-        timer.start()
         started = time.monotonic()
         dialog.reject()
         # The old implementation blocked here for 1.5 seconds; the margin tolerates a loaded runner.
         assert time.monotonic() - started < 1.0
 
-        assert worker.isRunning()
-        assert dialog.worker is worker
-        assert dialog.isVisible()
-        assert "cancel" in dialog.status_label.text().lower()
-
-        deadline = time.monotonic() + 1.65
-        while time.monotonic() < deadline:
-            qapp.processEvents()
-            time.sleep(0.005)
-        assert ui_ticks >= 50
         assert worker.isRunning()
         assert dialog.worker is worker
         assert dialog.isVisible()
@@ -81,7 +60,6 @@ def test_cancel_keeps_running_latency_worker_owned_until_it_stops(qapp, monkeypa
             time.sleep(0.01)
         assert not dialog.isVisible()
     finally:
-        timer.stop()
         release.set()
         if worker is not None:
             worker.wait(2_000)

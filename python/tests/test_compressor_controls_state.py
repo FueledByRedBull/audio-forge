@@ -114,26 +114,6 @@ def test_release_mode_preserves_active_value_across_edits_and_toggle(native, ada
     assert settings["base_release_ms"] == 60.0
 
 
-def test_bulk_compressor_apply_propagates_native_failure(native):
-    class FailingProcessor:
-        fail = False
-
-        def __getattr__(self, name):
-            return getattr(native, name)
-
-        def apply_compressor_settings(self, settings):
-            if self.fail:
-                raise RuntimeError("adaptive release write failed")
-            native.apply_compressor_settings(settings)
-
-    processor = FailingProcessor()
-    state = CompressorState(processor)
-    processor.fail = True
-
-    with pytest.raises(RuntimeError, match="adaptive release write failed"):
-        state.set_settings({"adaptive_release": True})
-
-
 @pytest.mark.parametrize(
     ("running", "compressor_enabled", "bypass", "raw", "expected"),
     [

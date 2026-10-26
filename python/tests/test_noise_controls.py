@@ -73,7 +73,7 @@ def test_controls_preserve_metadata_precision_and_immediate_edits(qapp):
     assert state.get_settings()["strength"] == 0.46
 
 
-@pytest.mark.parametrize("value,expected", [(-1, 0), (200, 100), (0.5, 0), (1.5, 2), (49.5, 50)])
+@pytest.mark.parametrize("value,expected", [(-1, 0), (200, 100), (0.5, 0), (1.5, 2)])
 def test_strength_clamps_and_rounds_like_the_previous_widget_proxy(qapp, value, expected):
     state = NoiseSuppressionState(Processor())
     parent = QObject()

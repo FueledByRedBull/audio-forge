@@ -4535,8 +4535,6 @@ class MainWindow(QMainWindow):
         preset: Preset,
         preset_key: str | None = None,
         *,
-        require_exact: bool = False,
-        scope: str = "complete",
         preset_path: Path | None = None,
         persist_last_used: bool = True,
     ) -> bool:
@@ -4545,25 +4543,7 @@ class MainWindow(QMainWindow):
         Args:
             preset: Preset object to apply
             preset_key: Optional key for built-in presets (e.g., "voice", "bass_cut")
-            scope: "complete" replaces the processing chain; "eq" replaces EQ only.
         """
-        if scope not in {"complete", "eq"}:
-            raise ValueError(f"Unknown preset scope: {scope}")
-        if scope == "eq":
-            self.eq_state.set_enabled(preset.eq.enabled)
-            self.eq_state.apply_typed_bands(preset.eq.bands, layer="tone")
-            self.status_message.showMessage(f"Applied EQ-only template: {preset.name}")
-            if self.__dict__.get("_history_ready", False) and not self.__dict__.get(
-                "_history_replaying", False
-            ):
-                self._commit_pending_configuration_snapshot(
-                    label=f"EQ-only template ({preset.name})",
-                    source="preset",
-                )
-            else:
-                self._set_preset_modified(True)
-            return True
-
         if (
             self.__dict__.get("_history_ready", False)
             and not self.__dict__.get("_history_replaying", False)
@@ -4573,8 +4553,6 @@ class MainWindow(QMainWindow):
         try:
             self.apply_processing_configuration(preset)
         except Exception as error:
-            if require_exact:
-                raise
             if self.__dict__.get("_history_ready", False) and self.__dict__.get("_login_startup_deadline") is None:
                 QMessageBox.critical(self, "Preset Not Applied", str(error))
             else:

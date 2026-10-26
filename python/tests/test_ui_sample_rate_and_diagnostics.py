@@ -23,10 +23,10 @@ from mic_eq.ui.analysis_worker import AnalysisWorker
 from mic_eq.ui.latency_calibration_dialog import (
     LatencyCalibrationDialog,
     _capture_sample_rate,
-    _device_name as latency_device_name,
     _output_sample_rate,
     _resample_probe,
 )
+from mic_eq.ui.capture_session import device_name
 from mic_eq.ui.device_selection import (
     default_device_index,
     find_identity_index,
@@ -1674,12 +1674,10 @@ def test_latency_profile_key_uses_structured_device_identity(window):
     assert key != legacy_latency_profile_key("Mic A", "Out B")
 
 
-def test_latency_dialog_device_name_coerces_identity_to_name():
-    assert (
-        latency_device_name(DeviceIdentity(name="Mic A", is_default=False)) == "Mic A"
-    )
-    assert latency_device_name("Out B") == "Out B"
-    assert latency_device_name(None) is None
+def test_device_name_coerces_identity_to_name():
+    assert device_name(DeviceIdentity(name="Mic A", is_default=False)) == "Mic A"
+    assert device_name("Out B") == "Out B"
+    assert device_name(None) is None
 
 
 def test_update_diagnostics_surfaces_output_recovery_and_reuses_diagnostics(window):

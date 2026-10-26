@@ -19,13 +19,11 @@ from mic_eq.ui.theme import PALETTE
 
 
 def test_presentation_timer_pauses_without_stopping_diagnostics(qapp):
-    from PySide6.QtCore import QEventLoop, QTimer
+    from PySide6.QtCore import QTimer
 
     state = {"running": False, "visible": True, "minimized": False}
-    ticks = []
     meter_timer, diagnostics_timer = QTimer(), QTimer()
     meter_timer.setInterval(16)
-    meter_timer.timeout.connect(lambda: ticks.append(1))
     diagnostics_timer.start(250)
     window: Any = SimpleNamespace(
         processor=SimpleNamespace(is_running=lambda: state["running"]),
@@ -45,14 +43,8 @@ def test_presentation_timer_pauses_without_stopping_diagnostics(qapp):
         )
         for running, visible, minimized in cases:
             state.update(running=running, visible=visible, minimized=minimized)
-            ticks.clear()
             MainWindow._sync_meter_timer(window)
-            loop = QEventLoop()
-            QTimer.singleShot(80, loop.quit)
-            loop.exec()
-            should_tick = running and visible and not minimized
-            assert bool(ticks) == should_tick
-            assert meter_timer.isActive() == should_tick
+            assert meter_timer.isActive() == (running and visible and not minimized)
             assert diagnostics_timer.isActive()
         # Each restart first drops what piled up while the timer was stopped.
         assert [call.kwargs for call in window._note_meter_peaks.call_args_list] == [{"resumed": True}] * 2

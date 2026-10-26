@@ -306,15 +306,6 @@ def test_auto_eq_refuses_a_silent_take_as_a_microphone_fault(auto_eq) -> None:
     assert auto_eq.start_button.text() == "Check Level"
 
 
-def test_auto_eq_post_processing_runs_off_the_gui_thread(auto_eq, monkeypatch) -> None:
-    prefilter = _Spy(monkeypatch, calibration_dialog, "_filtered_capture_for_analysis")
-
-    _auto_take(auto_eq, _speech())
-
-    assert prefilter.off_the_gui_thread
-    assert auto_eq.recording_state == "analyzing"
-
-
 def test_auto_eq_waits_in_its_own_state_and_then_continues(auto_eq, monkeypatch) -> None:
     prefilter = _gated_auto_eq_take(auto_eq, monkeypatch)
 

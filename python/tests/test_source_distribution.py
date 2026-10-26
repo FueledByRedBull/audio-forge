@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import subprocess
 import tarfile
 import tomllib
 from typing import Any, cast
@@ -446,9 +447,39 @@ def test_redirect_handler_rejects_untrusted_intermediate_hop():
             "https://evil.example/source.tar.gz",
         )
 
-def test_manifest_records_current_incomplete_status():
+def _answer_cargo_metadata_for(monkeypatch, manifest: dict[str, Any]) -> None:
+    """Answer `cargo metadata` with the manifest's own crates, so no Rust toolchain installs.
+
+    The sources still come from Cargo.lock, so a crate the lock dropped or re-versioned fails the
+    checksum match; a crate the lock added is left to the release job, which runs real cargo.
+    """
+    sources = {
+        (package["name"], package["version"]): package.get("source")
+        for package in tomllib.loads((source_tool.ROOT / "Cargo.lock").read_text(encoding="utf-8"))["package"]
+    }
+    packages = [
+        {
+            "id": entry["id"], "name": entry["name"], "version": entry["version"],
+            "source": sources.get((entry["name"], entry["version"])), "license": entry.get("license"),
+        }
+        for entry in manifest["entries"]
+        if entry["kind"] == "cargo-crate" and entry["lock_file"] == "Cargo.lock"
+    ]
+    metadata = json.dumps({"packages": packages, "resolve": {"nodes": [{"id": package["id"]} for package in packages]}})
+    real_run = subprocess.run
+
+    def run(command, *args, **kwargs):
+        if list(command[:2]) != ["cargo", "metadata"]:
+            return real_run(command, *args, **kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout=metadata)
+
+    monkeypatch.setattr(source_tool.subprocess, "run", run)
+
+
+def test_manifest_records_current_incomplete_status(monkeypatch):
     manifest_path = Path(__file__).resolve().parents[2] / "licenses" / "source-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    _answer_cargo_metadata_for(monkeypatch, manifest)
     loaded = source_tool.load_manifest(manifest_path)
 
     assert manifest["status"] in {"complete", "incomplete"}

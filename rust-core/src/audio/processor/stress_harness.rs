@@ -12,7 +12,9 @@ use crate::audio::buffer::AudioRingBuffer;
 use crate::audio::buffer::{AudioConsumer, AudioProducer};
 use crate::audio::input::TARGET_SAMPLE_RATE;
 use crate::dsp::eq::{EqBandConfig, NUM_BANDS};
-use crate::dsp::noise_suppressor::ControlledNoiseSuppressionEngine as NoiseSuppressionEngine;
+use crate::dsp::noise_suppressor::{
+    ControlledNoiseSuppressionEngine as NoiseSuppressionEngine, NoiseModel,
+};
 use crate::dsp::rnnoise::RNNOISE_FRAME_SIZE;
 use ringbuf::traits::Observer;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -52,6 +54,18 @@ pub(super) struct OfflineLoop {
 
 impl OfflineLoop {
     pub(super) fn new(processor: &AudioProcessor, config: OfflineLoopConfig) -> Self {
+        Self::new_with_start_window(processor, config, processor.engine_builder(), || {})
+    }
+
+    /// `new`, running `window` where `start` still has its stream unmarked (the
+    /// first engine is built and its model published, `running` is not set yet),
+    /// and settling a selection that arrived by then with engines from `build`.
+    pub(super) fn new_with_start_window(
+        processor: &AudioProcessor,
+        config: OfflineLoopConfig,
+        build: impl Fn(NoiseModel, bool) -> NoiseSuppressionEngine,
+        window: impl FnOnce(),
+    ) -> Self {
         // The same steps, in the same order, as `start_streams_unguarded`.
         let shared: &Arc<Shared> = &processor.shared;
         let engine_rate = processor.sample_rate;
@@ -71,6 +85,7 @@ impl OfflineLoop {
         let (suppressor_control, initial_engine) = processor.initial_suppressor();
         let suppressor = config.suppressor.unwrap_or(initial_engine);
 
+        window();
         processor.mark_running();
         let dsp = DspLoop::new(DspLoopSetup {
             shared: Arc::clone(shared),
@@ -90,6 +105,7 @@ impl OfflineLoop {
             suppressor_commands,
             suppressor_retire,
         });
+        processor.settle_selection_with_started_stream(processor.get_noise_model(), build);
         Self {
             dsp,
             input: input_producer,

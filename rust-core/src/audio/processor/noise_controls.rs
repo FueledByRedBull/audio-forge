@@ -88,7 +88,9 @@ impl AudioProcessor {
     /// loop (inference at a worker), `build(model, false)` for one that only
     /// shows whether the backend loads, which a stopped processor needs and
     /// must not give a worker thread.
-    fn engine_builder(&self) -> impl Fn(NoiseModel, bool) -> NoiseSuppressionEngine + '_ {
+    pub(super) fn engine_builder(
+        &self,
+    ) -> impl Fn(NoiseModel, bool) -> NoiseSuppressionEngine + '_ {
         move |model, realtime| {
             let strength = Arc::clone(&self.shared.suppressor.strength);
             if realtime {

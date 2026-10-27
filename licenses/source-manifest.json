@@ -927,22 +927,22 @@
     },
     {
       "build_role": "locked interpreter used by the release workflow",
-      "filename": "Python-3.13.15.tar.xz",
-      "id": "cpython-3.13.15",
+      "filename": "Python-3.13.17.tar.xz",
+      "id": "cpython-3.13.17",
       "kind": "cpython-source",
       "license": "PSF-2.0; Microsoft Distributable Code terms for Windows runtime",
       "license_paths": [
-        "Python-3.13.15/LICENSE",
-        "Python-3.13.15/PC/crtlicense.txt"
+        "Python-3.13.17/LICENSE",
+        "Python-3.13.17/PC/crtlicense.txt"
       ],
       "name": "CPython",
-      "sha256": "1e66a7945a48390ee4c2a4268a0e4185884059a13c4aab6d148aa208deea4a76",
-      "source_of_truth": "https://www.python.org/downloads/release/python-31315/",
-      "url": "https://www.python.org/ftp/python/3.13.15/Python-3.13.15.tar.xz",
-      "version": "3.13.15"
+      "sha256": "6020bd10aff3bf4821be16f088ebb1591beb7b811dcd8fab1da8f7c22a7b27e7",
+      "source_of_truth": "https://www.python.org/downloads/release/python-31317/",
+      "url": "https://www.python.org/ftp/python/3.13.17/Python-3.13.17.tar.xz",
+      "version": "3.13.17"
     },
     {
-      "build_role": "source dependency used by CPython 3.13.15 Windows build",
+      "build_role": "source dependency used by CPython 3.13.17 Windows build",
       "filename": "cpython-source-deps-bzip2-1.0.8.tar.gz",
       "id": "cpython-external-bzip2-1.0.8",
       "kind": "cpython-build-source",
@@ -957,7 +957,7 @@
       "version": "1.0.8"
     },
     {
-      "build_role": "source dependency used by CPython 3.13.15 Windows build",
+      "build_role": "source dependency used by CPython 3.13.17 Windows build",
       "filename": "cpython-source-deps-libffi-3.4.4.tar.gz",
       "id": "cpython-external-libffi-3.4.4",
       "kind": "cpython-build-source",
@@ -973,7 +973,7 @@
       "version": "3.4.4"
     },
     {
-      "build_role": "source dependency used by CPython 3.13.15 Windows build",
+      "build_role": "source dependency used by CPython 3.13.17 Windows build",
       "filename": "cpython-source-deps-mpdecimal-4.0.0.tar.gz",
       "id": "cpython-external-mpdecimal-4.0.0",
       "kind": "cpython-build-source",
@@ -988,22 +988,22 @@
       "version": "4.0.0"
     },
     {
-      "build_role": "source dependency used by CPython 3.13.15 Windows build",
-      "filename": "cpython-source-deps-openssl-3.0.21.tar.gz",
-      "id": "cpython-external-openssl-3.0.21",
+      "build_role": "source dependency used by CPython 3.13.17 Windows build",
+      "filename": "cpython-source-deps-openssl-3.5.9.tar.gz",
+      "id": "cpython-external-openssl-3.5.9",
       "kind": "cpython-build-source",
       "license": "Apache-2.0",
       "license_paths": [
-        "cpython-source-deps-openssl-3.0.21/LICENSE.txt"
+        "cpython-source-deps-openssl-3.5.9/LICENSE.txt"
       ],
       "name": "CPython external dependency: openssl",
-      "sha256": "0349aef1ff9ded3eb23be12c2586e026be5cec3fd40df859e388671d7844fced",
-      "source_of_truth": "https://github.com/python/cpython-source-deps/tree/openssl-3.0.21",
-      "url": "https://github.com/python/cpython-source-deps/archive/refs/tags/openssl-3.0.21.tar.gz",
-      "version": "3.0.21"
+      "sha256": "d6cf0d9a651f25fe506f6b3dc133a80b9b79a0bc565f570dcf8fdbd597551485",
+      "source_of_truth": "https://github.com/python/cpython-source-deps/tree/openssl-3.5.9",
+      "url": "https://github.com/python/cpython-source-deps/archive/refs/tags/openssl-3.5.9.tar.gz",
+      "version": "3.5.9"
     },
     {
-      "build_role": "source dependency used by CPython 3.13.15 Windows build",
+      "build_role": "source dependency used by CPython 3.13.17 Windows build",
       "filename": "cpython-source-deps-sqlite-3.50.4.0.tar.gz",
       "id": "cpython-external-sqlite-3.50.4.0",
       "kind": "cpython-build-source",
@@ -1015,7 +1015,7 @@
       "version": "3.50.4.0"
     },
     {
-      "build_role": "source dependency used by CPython 3.13.15 Windows build",
+      "build_role": "source dependency used by CPython 3.13.17 Windows build",
       "filename": "cpython-source-deps-xz-5.2.5.tar.gz",
       "id": "cpython-external-xz-5.2.5",
       "kind": "cpython-build-source",
@@ -1033,7 +1033,7 @@
       "version": "5.2.5"
     },
     {
-      "build_role": "source dependency used by CPython 3.13.15 Windows build",
+      "build_role": "source dependency used by CPython 3.13.17 Windows build",
       "filename": "cpython-source-deps-zlib-1.3.1.tar.gz",
       "id": "cpython-external-zlib-1.3.1",
       "kind": "cpython-build-source",

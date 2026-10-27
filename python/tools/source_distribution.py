@@ -51,7 +51,7 @@ TRUSTED_SOURCE_HOSTS = frozenset(
         "pypi.org",
     }
 )
-EXPECTED_CPYTHON_VERSION = "3.13.15"
+EXPECTED_CPYTHON_VERSION = "3.13.17"
 # The largest pinned source archive is the ONNX Runtime tarball at about 283 MB.
 DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024
 PYPI_SDIST_PACKAGES = (
@@ -84,7 +84,7 @@ PYTHON_SOURCE = {
     "filename_template": "Python-{version}.tar.xz",
     "url_template": "https://www.python.org/ftp/python/{version}/Python-{version}.tar.xz",
     "sha256_by_version": {
-        "3.13.15": "1e66a7945a48390ee4c2a4268a0e4185884059a13c4aab6d148aa208deea4a76",
+        "3.13.17": "6020bd10aff3bf4821be16f088ebb1591beb7b811dcd8fab1da8f7c22a7b27e7",
     },
 }
 
@@ -159,10 +159,10 @@ CPYTHON_EXTERNAL_SOURCES = (
     },
     {
         "name": "openssl",
-        "version": "3.0.21",
-        "sha256": "0349aef1ff9ded3eb23be12c2586e026be5cec3fd40df859e388671d7844fced",
+        "version": "3.5.9",
+        "sha256": "d6cf0d9a651f25fe506f6b3dc133a80b9b79a0bc565f570dcf8fdbd597551485",
         "license": "Apache-2.0",
-        "license_paths": ["cpython-source-deps-openssl-3.0.21/LICENSE.txt"],
+        "license_paths": ["cpython-source-deps-openssl-3.5.9/LICENSE.txt"],
     },
     {
         "name": "mpdecimal",
@@ -198,7 +198,7 @@ CPYTHON_EXTERNAL_SOURCES = (
     },
 )
 
-# The official CPython 3.13.15 Windows build resolves these exact source-deps
+# The official CPython 3.13.17 Windows build resolves these exact source-deps
 # tags from PCbuild/get_externals.bat.  OpenSSL belongs to that graph; a
 # separate older OpenSSL archive would falsely describe the shipped runtime.
 

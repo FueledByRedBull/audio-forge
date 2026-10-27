@@ -77,7 +77,7 @@ those files.
 
 The manifest currently covers:
 
-* CPython 3.13.15 and the exact Windows source-deps selected by
+* CPython 3.13.17 and the exact Windows source-deps selected by
   `PCbuild/get_externals.bat`, plus Python package sources for NumPy 2.5.1,
   PySide6-Essentials, PySide6-Addons and shiboken6 6.11.1, PyInstaller 6.21.0,
   and pywin32 311.
@@ -94,8 +94,8 @@ The manifest currently covers:
   CPU FetchContent sources from `cmake/deps.txt` and
   `onnxruntime_external_deps.cmake`. GPU, WebGPU, training, and benchmark-only
   inputs are excluded because this release enables only the CPU provider.
-* The CPython external dependency archives retained by the official 3.13.15
-  source graph, including the OpenSSL 3.0.21 source input, the pinned
+* The CPython external dependency archives retained by the official 3.13.17
+  source graph, including the OpenSSL 3.5.9 source input, the pinned
   NumPy OpenBLAS recipe and upstream source, and Mesa 11.2.2 for Qt's
   `opengl32sw.dll`. The portable package may exclude unused `libcrypto` and
   `libssl` payloads when the packaging rules prove they are not loaded.
@@ -107,7 +107,7 @@ The manifest currently covers:
 * Every registry crate resolved by `cargo metadata --locked` for the Windows
   `extension-module` build, with checksums taken from `Cargo.lock`.
 
-Use CPython 3.13.15 x64, Rust 1.94.0, the archive digests in the manifest,
+Use CPython 3.13.17 x64, Rust 1.94.0, the archive digests in the manifest,
 and the locked requirements. Build the native extension with:
 
 ```powershell

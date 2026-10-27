@@ -1057,7 +1057,7 @@ def test_workflow_checker_rejects_legacy_python_pin():
         errors,
     )
 
-    assert any("must pin CPython 3.13.15" in error for error in errors)
+    assert any("must pin CPython 3.13.17" in error for error in errors)
 
 
 def test_dependabot_checker_rejects_routine_version_updates(monkeypatch, tmp_path):

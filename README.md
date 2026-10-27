@@ -320,7 +320,7 @@ buffer sizes, and routing.
 
 These steps are for building AudioForge, not for running the download. The
 engine is written in Rust and the interface in PySide6. You need Windows 10
-(1809+) or 11 x64, PowerShell 7+, Git, CPython 3.13.15 x64, uv, rustup with the
+(1809+) or 11 x64, PowerShell 7+, Git, CPython 3.13.17 x64, uv, rustup with the
 toolchain selected by `rust-toolchain.toml`, MSVC C++ Build Tools, GitHub CLI
 (`gh`), and 7-Zip. Install these prerequisites separately; `dev.ps1` does not
 install system tools or download Python.

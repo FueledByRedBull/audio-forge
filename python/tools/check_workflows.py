@@ -101,7 +101,7 @@ ACTION_REF = re.compile(
     r"^\s*(?:-\s*)?uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE
 )
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
-PYTHON_VERSION = "3.13.15"
+PYTHON_VERSION = "3.13.17"
 RUN_REQUIRED_MARKERS = frozenset(
     {
         "pip_audit --require-hashes",

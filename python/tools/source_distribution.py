@@ -52,8 +52,8 @@ TRUSTED_SOURCE_HOSTS = frozenset(
     }
 )
 EXPECTED_CPYTHON_VERSION = "3.13.15"
-# The largest pinned source archive is qtbase at about 51 MB.
-DOWNLOAD_MAX_BYTES = 256 * 1024 * 1024
+# The largest pinned source archive is the ONNX Runtime tarball at about 283 MB.
+DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024
 PYPI_SDIST_PACKAGES = (
     ("numpy", "NumPy"),
     ("pyinstaller", "PyInstaller"),

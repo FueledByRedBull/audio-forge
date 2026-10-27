@@ -35,9 +35,9 @@ archive, and one `SHA256SUMS.txt`.
 
    Every job must pass: promotion refuses a run that is not successful. Fix
    failures on the branch without tagging or changing the version, and
-   dispatch again. A new dispatch cancels a candidate still running on the same
-   branch (`cancel-in-progress: true`), so let a run you want to keep finish
-   first. Promotion also binds the run attempt, so re-running only failed jobs
+   dispatch again. A new dispatch for the same `release_tag`, or for the same
+   commit when it is blank, cancels a candidate still running
+   (`cancel-in-progress: true`), so let a run you want to keep finish first. Promotion also binds the run attempt, so re-running only failed jobs
    doesn't produce a promotable candidate. Set `asset_source_tag`
    only to override where model assets come from (see
    [Runtime assets](#runtime-assets)). Supply an existing tag in

@@ -194,6 +194,7 @@ _RUNTIME_NUMBERS = frozenset(
         "limiter_peak_gain_reduction_db",
         "noise_attenuation_limit_db",
         "noise_post_filter_beta",
+        "noise_selection_dropped_count",
     }
 )
 _RUNTIME_BOOLS = frozenset(

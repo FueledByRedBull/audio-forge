@@ -6790,6 +6790,37 @@ fn test_live_setters_count_rejected_non_finite_values() {
 }
 
 #[test]
+fn test_runtime_diagnostics_report_dropped_noise_selections() {
+    let wrapper = PyAudioProcessor {
+        processor: AudioProcessor::new(),
+    };
+    let dropped = |wrapper: &PyAudioProcessor| {
+        Python::attach(|py| {
+            let diagnostics = wrapper.get_runtime_diagnostics(py).unwrap();
+            diagnostics
+                .bind(py)
+                .cast::<pyo3::types::PyDict>()
+                .unwrap()
+                .get_item("noise_selection_dropped_count")
+                .unwrap()
+                .unwrap()
+                .extract::<u64>()
+                .unwrap()
+        })
+    };
+    Python::initialize();
+    assert_eq!(dropped(&wrapper), 0);
+    wrapper
+        .processor
+        .shared
+        .suppressor
+        .dropped_selection_count
+        .fetch_add(3, Ordering::Relaxed);
+    assert_eq!(wrapper.processor.get_noise_selection_dropped_count(), 3);
+    assert_eq!(dropped(&wrapper), 3);
+}
+
+#[test]
 fn test_runtime_diagnostics_report_rt_failure_counters() {
     let wrapper = PyAudioProcessor {
         processor: AudioProcessor::new(),

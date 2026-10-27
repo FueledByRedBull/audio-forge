@@ -500,7 +500,7 @@ fn live_suppressor_engines_come_from_the_factory_that_puts_inference_at_a_worker
         "pub(super) fn rebuild_noise_suppressor(",
         "/// Get current noise suppression model",
     );
-    assert!(rebuild.contains("self.rebuild_with(self.engine_builder())"));
+    assert!(rebuild.contains("self.rebuild_with(self.get_noise_model(), self.engine_builder())"));
     assert!(rebuild.contains("build(model, true)"));
     assert!(!controls[controls.find("fn list_noise_models").unwrap()..]
         .contains("new_realtime_noise_suppression_engine("));

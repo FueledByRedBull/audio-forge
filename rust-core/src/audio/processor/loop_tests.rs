@@ -719,6 +719,7 @@ mod worker_engine {
     use crate::dsp::deepfilter_ffi::fake::{worker_engine, Fake};
     use crate::dsp::deepfilter_ffi::DeepFilterModel;
     use crate::dsp::deepfilter_ffi::TEST_WORKER_TRANSIT_SAMPLES as WORKER_TRANSIT_SAMPLES;
+    use ringbuf::traits::Observer;
     use std::cell::{Cell, RefCell};
     use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::time::Instant;
@@ -1256,13 +1257,14 @@ mod worker_engine {
     }
 
     /// With the start and the selection both done and the loop idle, the loop
-    /// has to run the selected model, the control has to agree, nothing may be
-    /// left pending, and no more than `max_queued` engines were built and
-    /// swapped in, each replacing (and retiring) the engine that ran before it.
+    /// has to run `target`, the control has to agree, nothing may be left
+    /// pending, and no more than `max_queued` engines were built and swapped
+    /// in, each replacing (and retiring) the engine that ran before it.
     fn assert_loop_runs_selection(
         processor: &AudioProcessor,
         live_builds: &AtomicUsize,
         first_model: NoiseModel,
+        target: NoiseModel,
         max_queued: usize,
     ) {
         let suppressor = &processor.shared.suppressor;
@@ -1272,10 +1274,10 @@ mod worker_engine {
         while let Some(engine) = queue.as_mut().unwrap().try_pop() {
             retired.push(engine.model_type());
         }
-        assert_eq!(processor.get_noise_model(), SELECTED, "the selection");
+        assert_eq!(processor.get_noise_model(), target, "the selection");
         assert_eq!(
             suppressor.engine_model.load(Ordering::Acquire),
-            SELECTED as u8,
+            target as u8,
             "the model of the engine the loop runs"
         );
         assert!(
@@ -1310,7 +1312,7 @@ mod worker_engine {
             "self.initial_suppressor()",
             "self.mark_running()",
             "self.check_dsp_startup(",
-            "self.settle_selection_with_started_stream(",
+            "self.settle_selection_with_started_stream(self.get_noise_model(), self.engine_builder());",
             "output.start()",
         ];
         let at = |text: &str, needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle}"));
@@ -1340,7 +1342,7 @@ mod worker_engine {
         let mut offline = OfflineLoop::new(&processor, start_config(SELECTED));
 
         offline.run_until_idle();
-        assert_loop_runs_selection(&processor, &live_builds, SELECTED, 0);
+        assert_loop_runs_selection(&processor, &live_builds, SELECTED, SELECTED, 0);
     }
 
     #[test]
@@ -1371,7 +1373,7 @@ mod worker_engine {
         });
 
         assert!(selected);
-        assert_loop_runs_selection(&processor, &live_builds, NoiseModel::RNNoise, 1);
+        assert_loop_runs_selection(&processor, &live_builds, NoiseModel::RNNoise, SELECTED, 1);
     }
 
     #[test]
@@ -1379,7 +1381,9 @@ mod worker_engine {
         // The model loaded when it was checked for the stopped processor and
         // does not load for the loop. The start has no caller to tell, so it
         // must still finish, the selection must go back to what the loop runs,
-        // and the failed load must show in the backend diagnostics.
+        // and the drop must show: in the backend status at once, and in the
+        // count for good, because the loop's next pass resets the status to
+        // that of the engine it runs.
         let processor = AudioProcessor::new();
         let live_builds = AtomicUsize::new(0);
         let (window, window_holder) = hold();
@@ -1420,6 +1424,58 @@ mod worker_engine {
             .unwrap()
             .try_pop()
             .is_none());
+        assert!(suppressor
+            .pending_tx
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .is_empty());
+        assert_eq!(processor.get_noise_selection_dropped_count(), 1);
+        assert!(processor.is_noise_backend_available());
+    }
+
+    #[test]
+    fn a_newer_selection_made_while_a_failing_engine_loads_is_kept() {
+        // The start settles the window's selection (DeepFilterNetLL) with an
+        // engine that does not load. While it loads, a newer selection is made
+        // and queued. The failure drops the first selection only: undoing it to
+        // the model the loop runs would also undo the newer one, and the loop
+        // would decline the newer engine.
+        let newer = NoiseModel::DeepFilterNet;
+        let processor = AudioProcessor::new();
+        let live_builds = AtomicUsize::new(0);
+        let (window, window_holder) = hold();
+        let (loading, loading_holder) = hold();
+        let starting_processor = &processor;
+
+        let (selected, newer_selected) = std::thread::scope(|scope| {
+            let starting = scope.spawn(move || {
+                let mut offline = OfflineLoop::new_with_start_window(
+                    starting_processor,
+                    start_config(NoiseModel::RNNoise),
+                    |model, _| {
+                        loading.wait();
+                        StubSuppressor::unavailable(model)
+                    },
+                    || window.wait(),
+                );
+                offline.run_until_idle();
+            });
+            window_holder.wait_until_reached();
+            let selected = select(&processor, &live_builds, NO_HOLD);
+            window_holder.release();
+            loading_holder.wait_until_reached();
+            let newer_selected =
+                processor.select_noise_model(newer, stub_builder(&live_builds, NO_HOLD));
+            loading_holder.release();
+            starting.join().unwrap();
+            (selected, newer_selected)
+        });
+
+        assert!(selected && newer_selected);
+        assert_loop_runs_selection(&processor, &live_builds, NoiseModel::RNNoise, newer, 1);
+        assert_eq!(processor.get_noise_selection_dropped_count(), 1);
     }
 
     #[test]
@@ -1442,7 +1498,7 @@ mod worker_engine {
 
         assert!(selected);
         offline.run_until_idle();
-        assert_loop_runs_selection(&processor, &live_builds, NoiseModel::RNNoise, 1);
+        assert_loop_runs_selection(&processor, &live_builds, NoiseModel::RNNoise, SELECTED, 1);
     }
 
     #[test]
@@ -1454,7 +1510,7 @@ mod worker_engine {
         assert!(select(&processor, &live_builds, &|| {}));
 
         offline.run_until_idle();
-        assert_loop_runs_selection(&processor, &live_builds, NoiseModel::RNNoise, 1);
+        assert_loop_runs_selection(&processor, &live_builds, NoiseModel::RNNoise, SELECTED, 1);
     }
 
     #[test]

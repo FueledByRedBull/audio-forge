@@ -68,6 +68,7 @@ def _runtime() -> dict[str, object]:
         "downstream_non_finite_count": 4,
         "output_resampler_error_count": 2,
         "rejected_control_value_count": 7,
+        "noise_selection_dropped_count": 1,
         "dsp_scheduling_degraded": True,
         "vad_worker_error": "C:\\Users\\private\\silero.onnx missing",
         "auto_makeup_error": "meter rejected audio",
@@ -165,6 +166,7 @@ def test_snapshot_is_deterministic_finite_bounded_and_private() -> None:
     assert first["runtime"]["downstream_non_finite_count"] == 4
     assert first["runtime"]["output_resampler_error_count"] == 2
     assert first["runtime"]["rejected_control_value_count"] == 7
+    assert first["runtime"]["noise_selection_dropped_count"] == 1
     assert first["runtime"]["dsp_scheduling_degraded"] is True
     assert first["runtime"]["vad_worker_error_present"] is True
     assert first["runtime"]["auto_makeup_error_present"] is True

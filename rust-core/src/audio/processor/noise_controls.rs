@@ -168,41 +168,61 @@ impl AudioProcessor {
     }
 
     pub(super) fn record_selected_model(&self, model: NoiseModel) {
-        if let Ok(mut control) = self.shared.suppressor.control.lock() {
+        self.replace_selection(None, model);
+    }
+
+    /// Record `model` as the selection; with `only_over`, only while that is
+    /// still the selection. The control lock is held through all three writes,
+    /// so a conditional replace never sees half of another recording.
+    fn replace_selection(&self, only_over: Option<NoiseModel>, model: NoiseModel) {
+        let suppressor = &self.shared.suppressor;
+        let mut control = suppressor.control.lock();
+        let current = suppressor.current_model.load(Ordering::Acquire);
+        if only_over.is_some_and(|over| over as u8 != current) {
+            return;
+        }
+        if let Ok(control) = control.as_mut() {
             control.model = model;
         }
-        self.shared.suppressor.rt_control.set_model(model);
-        self.shared
-            .suppressor
+        suppressor.rt_control.set_model(model);
+        suppressor
             .current_model
             .store(model as u8, Ordering::Release);
     }
 
     /// The stream began on the model it found then, and only a queued engine
     /// moves it to another. When it found `model` already, nothing is needed.
-    /// When the engine cannot be built the selection is undone, to the model the
-    /// loop runs, so the control and the loop agree and nothing waits for an
-    /// engine that will not come.
+    /// When the engine cannot be built the selection is counted as dropped and
+    /// undone, to the model the loop runs, so the control and the loop agree and
+    /// nothing waits for an engine that will not come. A newer selection made
+    /// while the engine was loading stays.
     pub(super) fn settle_selection_with_started_stream(
         &self,
         model: NoiseModel,
         build: impl Fn(NoiseModel, bool) -> NoiseSuppressionEngine,
     ) -> bool {
         let live = self.shared.suppressor.engine_model.load(Ordering::Acquire);
-        if live == model as u8 || self.rebuild_with(build) {
+        if live == model as u8 || self.rebuild_with(model, build) {
             return true;
         }
-        self.record_selected_model(model_from_code(live));
+        self.shared
+            .suppressor
+            .dropped_selection_count
+            .fetch_add(1, Ordering::Relaxed);
+        self.replace_selection(Some(model), model_from_code(live));
         false
     }
 
     pub(super) fn rebuild_noise_suppressor(&self) -> bool {
-        self.rebuild_with(self.engine_builder())
+        self.rebuild_with(self.get_noise_model(), self.engine_builder())
     }
 
-    fn rebuild_with(&self, build: impl Fn(NoiseModel, bool) -> NoiseSuppressionEngine) -> bool {
+    fn rebuild_with(
+        &self,
+        model: NoiseModel,
+        build: impl Fn(NoiseModel, bool) -> NoiseSuppressionEngine,
+    ) -> bool {
         self.drain_retired_suppressors();
-        let model = self.get_noise_model();
         let engine = build(model, true);
         let diagnostics = noise_backend_diagnostics(&engine);
         if model != NoiseModel::RNNoise && !diagnostics.available {

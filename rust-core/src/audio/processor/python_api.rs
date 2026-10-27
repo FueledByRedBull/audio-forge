@@ -2691,6 +2691,10 @@ impl PyAudioProcessor {
             )?;
             diagnostics.set_item("noise_backend_error", self.processor.noise_backend_error())?;
             diagnostics.set_item(
+                "noise_selection_dropped_count",
+                self.processor.get_noise_selection_dropped_count(),
+            )?;
+            diagnostics.set_item(
                 "suppressor_latency_samples",
                 self.processor
                     .shared

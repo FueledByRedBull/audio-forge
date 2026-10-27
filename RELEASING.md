@@ -248,9 +248,10 @@ cargo audit
 - **Workflow lint:** the `static` job of `ci.yml` runs `zizmor` over
   `.github/workflows`. Its version is locked in `requirements/dev.txt`. Fix a
   finding, or suppress it in the workflow with `# zizmor: ignore[<rule>]` and
-  the reason on the same line. The `template-injection` suppressions in
-  `release-package.yml` cover step and job outputs only; `check_workflows.py`
-  rejects any other expression in run text.
+  the reason on the same line. Run text interpolates no expressions:
+  `release-package.yml` hands step and job outputs to its scripts as `AF_*`
+  variables, and `check_workflows.py` requires each one to be exactly one such
+  output.
 - **Weekly checks:** `weekly-checks.yml` runs on Mondays from `master` and on
   demand. It downloads every pinned source archive again with no Actions cache,
   rebuilds the runtime assets from their pinned sources, and runs the Python and

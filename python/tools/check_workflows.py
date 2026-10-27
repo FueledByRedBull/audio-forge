@@ -78,6 +78,9 @@ FORBIDDEN_TRIGGERS = frozenset({"pull_request_target", "workflow_run", "issue_co
 # (inputs, event fields, even through env) reaches a script as $env:NAME instead.
 RUN_EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
 SAFE_RUN_EXPRESSION = re.compile(r"(?:steps|needs)\.[\w-]+\.outputs\.[\w-]+")
+# release-package.yml hands step and job outputs to its scripts as AF_* variables
+# (read as $env:AF_NAME); each such variable must be exactly one of those outputs.
+RELEASE_OUTPUT_ENV_PREFIX = "AF_"
 # A checkout of a tag input names refs/tags/ (a bare name can resolve to a
 # branch of that name) and the job then asserts HEAD is the tag's commit.
 TAG_INPUT = re.compile(r"inputs\.\w*tag\b")
@@ -726,6 +729,12 @@ def _check_required_gates(
         _check_pytest_shards(document, errors)
 
 
+def _is_output_expression(value: Any) -> bool:
+    """Whether `value` is exactly one step or job output expression."""
+    match = RUN_EXPRESSION.fullmatch(str(value).strip())
+    return match is not None and SAFE_RUN_EXPRESSION.fullmatch(match.group(1).strip()) is not None
+
+
 def _step_text(step: dict[str, Any]) -> str:
     entries = [
         f"{key}: {str(value).lower() if isinstance(value, bool) else value}"
@@ -1260,6 +1269,13 @@ def _check_release_jobs(document: dict[str, Any], errors: list[str]) -> None:
         for path in RELEASE_RUNTIME_FILES:
             if path not in listed:
                 fail(f"the {RELEASE_RUNTIME_ARTIFACT} artifact must contain {path}")
+
+    for job_name in jobs:
+        for step in job_steps(job_name):
+            env = step.get("env")
+            for key, value in (env.items() if isinstance(env, dict) else ()):
+                if str(key).startswith(RELEASE_OUTPUT_ENV_PREFIX) and not _is_output_expression(value):
+                    fail(f"{job_name}: {key} must be exactly one step or job output")
 
     for job_name, job in jobs.items():
         for step in job.get("steps", []) if isinstance(job, dict) else []:

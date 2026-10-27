@@ -544,10 +544,7 @@ def test_release_metadata_checks_each_native_version_command_immediately():
         "if ($LASTEXITCODE -ne 0 -or $sourceRevision -notmatch"
         in workflow
     )
-    assert (
-        'if ($LASTEXITCODE -ne 0 -or $tagCommit -ne "${{ needs.package-windows.outputs.source_revision }}")'
-        in workflow
-    )
+    assert "if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $env:AF_SOURCE_REVISION)" in workflow
 
 
 def test_ci_workflow_hydrates_cpu_ort_in_every_native_job():
@@ -3756,3 +3753,24 @@ def test_the_cached_deepfilter_runtime_is_keyed_on_the_recipe():
         restore["with"]["key"] = restore["with"]["key"].replace("'build_deepfilter.ps1', ", "")
 
     assert "missing required DeepFilter gate" in _ci_errors(narrow)
+
+
+@pytest.mark.parametrize(
+    ("value", "accepted"),
+    [
+        ("${{ steps.meta.outputs.release_tag }}", True),
+        ("${{ needs.package-windows.outputs.source_revision }}", True),
+        ("${{ inputs.release_tag }}", False),
+        ("${{ steps.meta.outputs.release_tag || inputs.release_tag }}", False),
+        ("${{ steps.a.outputs.b }}${{ steps.c.outputs.d }}", False),
+        ("v1.0.0", False),
+    ],
+)
+def test_release_af_variables_must_be_exactly_one_step_or_job_output(value, accepted):
+    def mutate(jobs):
+        step = _step_named(jobs["package-windows"], "Create release archive")
+        step["env"]["AF_ARCHIVE"] = value
+
+    errors = _release_job_errors(mutate)
+
+    assert ("AF_ARCHIVE must be exactly one step or job output" not in errors) is accepted

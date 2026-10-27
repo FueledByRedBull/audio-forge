@@ -157,6 +157,13 @@ RELEASE_ENVIRONMENT_JOBS = {
     "release-hardware-qualify.yml": frozenset({"qualify-hardware"}),
     "release-hardware-matrix.yml": frozenset({"assemble"}),
 }
+# cache-cleanup.yml deletes a closed pull request's Actions caches. Its one job is
+# the only one that may hold actions: write, and it runs no actions or checkout.
+CACHE_CLEANUP_WORKFLOW = "cache-cleanup.yml"
+CACHE_CLEANUP_JOB = "cleanup"
+# weekly-checks.yml re-runs the checks that read the outside world, with nothing
+# cached, and publishes nothing.
+WEEKLY_WORKFLOW = "weekly-checks.yml"
 DISPATCH_AUTHORIZATION = (
     "GH_TOKEN: ${{ github.token }}",
     "DISPATCHER: ${{ github.triggering_actor }}",
@@ -311,6 +318,54 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
             ),
         },
     ),
+    # Deletes the caches of a closed pull request with the gh CLI alone.
+    CACHE_CLEANUP_WORKFLOW: (
+        "cache cleanup",
+        {
+            CACHE_CLEANUP_JOB: (
+                (
+                    "gh cache list",
+                    "PULL_REF: refs/pull/${{ github.event.pull_request.number }}/merge",
+                    "gh cache delete",
+                ),
+            ),
+        },
+    ),
+    # Re-reads sources, assets and advisories with nothing cached; it publishes nothing.
+    WEEKLY_WORKFLOW: (
+        "weekly",
+        {
+            "source": (
+                (
+                    "source_distribution.py bundle",
+                    "source_distribution.py verify",
+                    "--include-runtime-assets",
+                    "--require-receipt",
+                    "--revision",
+                ),
+            ),
+            "assets": (
+                (
+                    "python/tools/fetch_release_assets.py",
+                    "!--only-cpu-runtime",
+                    "python/tools/verify_release_assets.py",
+                    "GH_TOKEN: ${{ github.token }}",
+                ),
+            ),
+            "audit": (
+                ("pip install --require-hashes -r requirements/dev.txt",),
+                (
+                    "pip_audit --require-hashes -r requirements/runtime.txt",
+                    "pip_audit --require-hashes -r requirements/dev.txt",
+                ),
+                ("cargo install cargo-audit --version 0.22.2 --locked --force",),
+                (
+                    "cargo audit --deny warnings",
+                    "--file build-support/deepfilter/Cargo.lock",
+                ),
+            ),
+        },
+    ),
     # Builds and tests the bundle and the MSI of the pushed source; it publishes nothing.
     "package-check.yml": (
         "package check",
@@ -348,6 +403,14 @@ RUST_SKIP_SCAN_STEP = (
 # ci.yml's rust-tests also builds df.dll from the pinned source; the release
 # workflow's test jobs run on the runtime files its package job built.
 CI_RUST_DEEPFILTER_STEPS = (
+    # df.dll and its attestation may be restored here (never in the release
+    # workflow); the step after it still checks both against the recipe.
+    (
+        "actions/cache/restore@",
+        "target/deepfilter/df.dll.provenance.json",
+        "hashFiles('build_deepfilter.ps1', 'build-support/deepfilter/**', "
+        "'release-assets.json', 'rust-toolchain.toml')",
+    ),
     (
         "python/tools/fetch_release_assets.py",
         "!--only-cpu-runtime",
@@ -356,6 +419,8 @@ CI_RUST_DEEPFILTER_STEPS = (
     ),
     RUST_SKIP_SCAN_STEP,
 )
+# ci.yml's static job lints the workflow definitions with the locked zizmor.
+CI_STATIC_STEPS = (("zizmor --no-progress .github/workflows", "GH_TOKEN: ${{ github.token }}"),)
 
 
 def _mapping(value: Any, context: str, errors: list[str]) -> dict[str, Any]:
@@ -387,6 +452,10 @@ def _check_permissions(
                     "ci.yml: static must have only contents: read and "
                     "security-events: write"
                 )
+            continue
+        if name == CACHE_CLEANUP_WORKFLOW and job_name == CACHE_CLEANUP_JOB:
+            if permissions != {"actions": "write"}:
+                errors.append(f"{name}: {job_name} must have only actions: write")
             continue
         if name == "release-promote.yml" and job_name in PROMOTE_JOB_PERMISSIONS:
             if permissions != PROMOTE_JOB_PERMISSIONS[job_name]:
@@ -580,6 +649,10 @@ def _check_required_gates(
                 )
         if name == "package-check.yml":
             _check_package_check_publishes_nothing(name, document, errors)
+        if name == CACHE_CLEANUP_WORKFLOW:
+            _check_cache_cleanup(name, source, document, errors)
+        if name == WEEKLY_WORKFLOW:
+            _check_weekly_checks(name, document, errors)
         return
 
     shared = (
@@ -818,6 +891,34 @@ def _check_package_check_publishes_nothing(
         errors.append(f"{name}: must not publish or upload anything ({forbidden})")
 
 
+def _check_cache_cleanup(
+    name: str, source: str, document: dict[str, Any], errors: list[str]
+) -> None:
+    """The cleanup job holds actions: write, so it stays a bare gh script."""
+    triggers = next((value for key, value in document.items() if key in ("on", True)), None)
+    if triggers != {"pull_request": {"types": ["closed"]}}:
+        errors.append(f"{name}: must trigger only on pull_request closed")
+    jobs = _mapping(document.get("jobs"), f"{name}: jobs", errors)
+    if list(jobs) != [CACHE_CLEANUP_JOB]:
+        errors.append(f"{name}: must define only the {CACHE_CLEANUP_JOB} job")
+    if ACTION_REF.search(source):
+        errors.append(f"{name}: must not use actions or check out code")
+
+
+def _check_weekly_checks(name: str, document: dict[str, Any], errors: list[str]) -> None:
+    """The weekly run is scheduled, publishes nothing and hydrates source uncached."""
+    triggers = next((value for key, value in document.items() if key in ("on", True)), None)
+    if not isinstance(triggers, dict) or sorted(triggers) != ["schedule", "workflow_dispatch"]:
+        errors.append(f"{name}: must trigger only on schedule and workflow_dispatch")
+    _check_package_check_publishes_nothing(name, document, errors)
+    jobs = _mapping(document.get("jobs"), f"{name}: jobs", errors)
+    source = jobs.get("source")
+    if isinstance(source, dict) and any(
+        use.startswith("actions/cache") for use in _active_uses({"jobs": {"source": source}})
+    ):
+        errors.append(f"{name}: source must hydrate without the Actions cache")
+
+
 def _check_cargo_locked(
     name: str, document: dict[str, Any], errors: list[str]
 ) -> None:
@@ -859,7 +960,7 @@ def _check_rustsec_ignores(
             errors.append(
                 f"{name}: cargo audit ignores {sorted(ignored)}, expected {sorted(expected)}"
             )
-    if name in ("ci.yml", "release-package.yml") and not audits_deepfilter:
+    if name in ("ci.yml", "release-package.yml", WEEKLY_WORKFLOW) and not audits_deepfilter:
         errors.append(f"{name}: missing a cargo audit of {DEEPFILTER_LOCK}")
 
 
@@ -1004,6 +1105,9 @@ def _check_ci_jobs(document: dict[str, Any], errors: list[str]) -> None:
                 errors.append(f"ci.yml: {gate} does not check the result of {part}")
     _check_step_sequences(
         "ci.yml", "DeepFilter", document, {"rust-tests": CI_RUST_DEEPFILTER_STEPS}, errors
+    )
+    _check_step_sequences(
+        "ci.yml", "workflow lint", document, {"static": CI_STATIC_STEPS}, errors
     )
     for job_name in CI_CPU_RUNTIME_JOBS:
         job = jobs.get(job_name)
@@ -1326,7 +1430,7 @@ def check_workflows() -> list[str]:
         _check_python_runtime(path.name, source, errors)
 
         action_refs = ACTION_REF.findall(source)
-        if not action_refs:
+        if not action_refs and path.name != CACHE_CLEANUP_WORKFLOW:
             errors.append(f"{path.name}: no GitHub Action references found")
         for action, ref in action_refs:
             if COMMIT_SHA.fullmatch(ref) is None:

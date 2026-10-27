@@ -125,6 +125,16 @@ smoke steps (`package-check.yml`) on pushes to `master` and on pull requests tha
 touch packaging inputs. Its Rust job builds `df.dll` from the pinned source and
 fails when a DeepFilter or Silero test reports that it skipped itself.
 
+`ci.yml` restores `df.dll` and its attestation from the Actions cache, keyed on
+`build_deepfilter.ps1`, `build-support/deepfilter/`, `release-assets.json` and
+`rust-toolchain.toml`, so a change to any of them rebuilds the DLL. The step after
+the restore still runs `verify_release_assets.py` on the files. Package check and
+the release workflow always build it. Closing a pull request runs
+`cache-cleanup.yml`, which deletes the caches that pull request created, and
+`weekly-checks.yml` re-runs the source, asset and advisory checks with nothing
+cached. After you edit a workflow, run `zizmor .github/workflows` as well as
+`check_workflows.py`; CI runs both.
+
 After a release is published, download the assets, recompute their SHA-256, and
 reconcile the README and notes in a later commit. Never move a tag.
 

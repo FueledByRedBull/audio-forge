@@ -152,10 +152,12 @@ jobs:
           } | ConvertTo-Json | Set-Content -LiteralPath $baselineBuildInfo -Encoding utf8
           Set-Content -LiteralPath (Join-Path $upgradeBaselinePayload "_internal\msi-upgrade-baseline-only.marker") -Value "baseline" -Encoding utf8
           $upgradeBaseline = Join-Path $env:RUNNER_TEMP "AudioForge-upgrade-baseline.msi"
+          # Only the upgrade test installs the baseline, so it is not compressed.
           powershell -ExecutionPolicy Bypass -File .\build_msi.ps1 `
             -Payload $upgradeBaselinePayload `
             -Version 0.0.0 `
             -Output $upgradeBaseline `
+            -CompressionLevel none `
             -AcceptWixEula
           if ($LASTEXITCODE -ne 0) {
             throw "MSI upgrade-baseline build failed with exit code $LASTEXITCODE."

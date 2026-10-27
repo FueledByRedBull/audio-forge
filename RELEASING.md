@@ -22,8 +22,9 @@ archive, and one `SHA256SUMS.txt`.
    - `static` (version and evaluation hygiene checks, Ruff, Pyright, workflow
      check, source smoke, Semgrep, dependency and RustSec audits,
      `cargo fmt`) needs no built file and runs beside the packaging job.
-   - `package-windows` builds DeepFilter from the pinned source in every run,
-     builds the app, and uploads the candidate.
+   - `package-windows` hydrates and verifies the corresponding source first, so a
+     source failure stops the run early, then builds DeepFilter from the pinned
+     source in every run, builds the app, and uploads the candidate.
    - When it finishes, the pytest shards (`.github/pytest-shards.json`),
      the Rust tests with Clippy, and the release-mode stress test run on the
      files it produced: the packaged native module, `df.dll`, the models, and
@@ -132,8 +133,10 @@ their paths, sizes, hashes, origins, and licenses, and
   (`build-support/deepfilter/`, `build_deepfilter.ps1`). The recipe is not an
   attestation; keep the per-build `target/deepfilter/df.dll.provenance.json`
   with its DLL. Matching source and settings don't promise byte-identical
-  output across machines. The release workflow builds it in every run; no
-  cache supplies the DLL or its attestation.
+  output across machines. The release workflow and Package check build it in
+  every run; no cache supplies the DLL or its attestation. Only the Rust job of
+  `ci.yml` restores them, keyed on the recipe files, and still runs
+  `verify_release_assets.py` on what it restored.
 - CPU-only ONNX Runtime and Silero v6.2.1 come from their recorded upstream
   identities.
 - Both DeepFilter model archives come from the standing asset-source release:
@@ -181,6 +184,10 @@ powershell -ExecutionPolicy Bypass -File .\build_msi.ps1 -AcceptWixEula
 `-AcceptWixEula`; without it the script stops before building. Review the
 EULA before passing the switch. The release workflow passes it.
 
+The MSI keeps the compression set in `installer/AudioForge.wxs`. The throwaway
+`0.0.0` baseline that the upgrade test installs is built with
+`-CompressionLevel none`, since nobody ships or downloads it.
+
 `build_exe.ps1` verifies runtime assets, rebuilds the native extension with
 locked Cargo resolution, collects dependency notices, and reuses PyInstaller's
 analysis cache (`-Clean` forces a cold PyInstaller build). It fails before
@@ -189,7 +196,9 @@ Builds without models aren't a supported edition. The MSI payload must match
 the portable tree; `python/tools/msi_smoke.py` checks extraction and per-user
 install and uninstall. Archive creation and provenance commands belong to the
 workflow; its solid LZMA2 settings come from
-`evaluation/archive-format-benchmark.json`.
+`evaluation/archive-format-benchmark.json`. The corresponding-source archive
+holds upstream archives that are already compressed, so it uses a lighter level
+(`-mx=5`).
 
 ## Release checks
 
@@ -236,6 +245,18 @@ cargo audit
   push to `master` and on pull requests that touch packaging inputs. It
   publishes nothing and is not a required check, because a path-filtered
   workflow does not report on other pull requests.
+- **Workflow lint:** the `static` job of `ci.yml` runs `zizmor` over
+  `.github/workflows`. Its version is locked in `requirements/dev.txt`. Fix a
+  finding, or suppress it in the workflow with `# zizmor: ignore[<rule>]` and
+  the reason on the same line. The `template-injection` suppressions in
+  `release-package.yml` cover step and job outputs only; `check_workflows.py`
+  rejects any other expression in run text.
+- **Weekly checks:** `weekly-checks.yml` runs on Mondays from `master` and on
+  demand. It downloads every pinned source archive again with no Actions cache,
+  rebuilds the runtime assets from their pinned sources, and runs the Python and
+  RustSec audits. It holds a read-only token and publishes nothing. A failure
+  means an upstream file or advisory changed since the last run; look at it
+  before the next release.
 - **Dependabot:** GitHub Actions version updates stay on, weekly and grouped
   into one pull request, to keep the pinned actions current. Python and Cargo
   version updates are off (`open-pull-requests-limit: 0`); security updates stay

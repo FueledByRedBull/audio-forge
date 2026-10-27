@@ -117,31 +117,25 @@ function Get-FileVersion([string]$Path) {
 }
 
 function Find-Dumpbin {
-    $candidates = [System.Collections.Generic.List[string]]::new()
     $command = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
     if ($command) {
-        $candidates.Add($command.Source)
+        return $command.Source
     }
 
-    $roots = @()
-    if ($env:ProgramFiles) { $roots += (Join-Path $env:ProgramFiles "Microsoft Visual Studio") }
+    # vswhere ships with Visual Studio and the Build Tools; walking the whole
+    # install tree for dumpbin.exe is slow on a hosted runner.
     $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
-    if ($programFilesX86) { $roots += (Join-Path $programFilesX86 "Microsoft Visual Studio") }
-    foreach ($root in $roots) {
-        if (Test-Path -LiteralPath $root -PathType Container) {
-            $candidate = Get-ChildItem -LiteralPath $root -Recurse -Filter dumpbin.exe -File -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -match "\\VC\\Tools\\MSVC\\" } |
-                Sort-Object FullName
-            foreach ($item in $candidate) {
-                $candidates.Add($item.FullName)
+    if ($programFilesX86) {
+        $vswhere = Join-Path $programFilesX86 "Microsoft Visual Studio\Installer\vswhere.exe"
+        if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
+            $found = @(& $vswhere -latest -products "*" -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe" | Sort-Object)
+            if ($LASTEXITCODE -eq 0 -and $found.Count -gt 0) {
+                return $found[0]
             }
         }
     }
 
-    if ($candidates.Count -eq 0) {
-        throw "dumpbin.exe was not found. Install the MSVC build tools or put dumpbin.exe on PATH."
-    }
-    return $candidates[0]
+    throw "dumpbin.exe was not found. Install the MSVC build tools or put dumpbin.exe on PATH."
 }
 
 function Invoke-Captured([string]$FilePath, [string[]]$Arguments) {

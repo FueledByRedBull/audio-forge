@@ -3479,7 +3479,15 @@ def test_other_workflows_may_keep_their_own_triggers():
     assert errors == []
 
 
-@pytest.mark.parametrize("workflow", sorted(path.name for path in check_workflows.WORKFLOW_DIR.glob("*.yml")))
+# The cache cleanup uses no actions at all; _check_cache_cleanup enforces that.
+@pytest.mark.parametrize(
+    "workflow",
+    sorted(
+        path.name
+        for path in check_workflows.WORKFLOW_DIR.glob("*.yml")
+        if path.name != check_workflows.CACHE_CLEANUP_WORKFLOW
+    ),
+)
 def test_no_checkout_keeps_its_token(workflow):
     document = _load_workflow(workflow)
     checkouts = [
@@ -3688,3 +3696,63 @@ def test_semgrep_run_exits_with_2_and_names_the_problem_when_git_is_missing(
 
     assert run_semgrep.main() == 2
     assert "git is required" in capsys.readouterr().err
+
+
+def test_cache_cleanup_stays_a_bare_gh_script():
+    def add_checkout(jobs):
+        jobs["cleanup"]["steps"].insert(0, {"uses": "actions/checkout@" + "a" * 40})
+
+    assert "must not use actions or check out code" in _gate_errors(
+        "cache-cleanup.yml", add_checkout
+    )
+
+
+def test_actions_write_belongs_to_the_cache_cleanup_job_alone():
+    cleanup = _load_workflow("cache-cleanup.yml")
+    errors: list[str] = []
+    check_workflows._check_permissions("cache-cleanup.yml", cleanup, errors)
+    assert errors == []
+
+    cleanup["jobs"]["cleanup"]["permissions"]["contents"] = "write"
+    check_workflows._check_permissions("cache-cleanup.yml", cleanup, errors)
+    assert errors == ["cache-cleanup.yml: cleanup must have only actions: write"]
+
+    weekly = _load_workflow("weekly-checks.yml")
+    weekly["jobs"]["audit"]["permissions"] = {"actions": "write"}
+    errors = []
+    check_workflows._check_permissions("weekly-checks.yml", weekly, errors)
+    assert errors == ["weekly-checks.yml: job audit must not request write permission"]
+
+
+def test_weekly_checks_publish_nothing_and_hydrate_source_uncached():
+    def cache_source(jobs):
+        jobs["source"]["steps"].insert(
+            0, {"uses": "actions/cache@" + "a" * 40, "with": {"path": "x", "key": "y"}}
+        )
+
+    def upload(jobs):
+        jobs["audit"]["steps"].append({"uses": "actions/upload-artifact@" + "a" * 40})
+
+    assert "source must hydrate without the Actions cache" in _gate_errors(
+        "weekly-checks.yml", cache_source
+    )
+    assert "must not publish or upload anything" in _gate_errors("weekly-checks.yml", upload)
+
+
+@pytest.mark.parametrize(
+    ("job", "step", "expected"),
+    [
+        ("rust-tests", "Restore DeepFilter runtime", "missing required DeepFilter gate"),
+        ("static", "Workflow security lint", "missing required workflow lint gate"),
+    ],
+)
+def test_ci_keeps_the_deepfilter_restore_and_the_workflow_lint(job, step, expected):
+    assert expected in _ci_errors(lambda jobs: _drop_step(jobs[job], step))
+
+
+def test_the_cached_deepfilter_runtime_is_keyed_on_the_recipe():
+    def narrow(jobs):
+        restore = _step_named(jobs["rust-tests"], "Restore DeepFilter runtime")
+        restore["with"]["key"] = restore["with"]["key"].replace("'build_deepfilter.ps1', ", "")
+
+    assert "missing required DeepFilter gate" in _ci_errors(narrow)

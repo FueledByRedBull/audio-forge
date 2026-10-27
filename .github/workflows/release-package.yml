@@ -306,27 +306,9 @@ jobs:
             throw "Existing release tag '$env:RELEASE_TAG' must resolve to the checked-out commit $currentCommit, but resolves to $tagCommit."
           }
 
-      - name: Download and verify pinned release runtime assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ASSET_SOURCE_TAG: ${{ steps.meta.outputs.asset_source_tag }}
-        run: |
-          .\.venv\Scripts\python.exe python/tools/fetch_release_assets.py `
-            --release-tag $env:ASSET_SOURCE_TAG `
-            --force
-
-      - name: Configure pinned CPU ONNX Runtime
-        run: |
-          $ortLib = (Resolve-Path "target\onnxruntime-cpu\lib").Path
-          "ORT_LIB_LOCATION=$ortLib" >> $env:GITHUB_ENV
-          "ORT_PREFER_DYNAMIC_LINK=1" >> $env:GITHUB_ENV
-
-      - name: Build Rust extension
-        run: .\.venv\Scripts\python.exe -m maturin develop --release --locked
-
-      - name: Verify release assets
-        run: .\.venv\Scripts\python.exe python/tools/verify_release_assets.py
-
+      # Source hydration reads only committed files and the network, so it runs
+      # before the build and a source failure shows in minutes. The cache holds
+      # downloaded archives, never anything built here.
       # The archives depend only on the manifest entries; the manifest file also
       # carries project_version, which changes every release. source_distribution.py
       # re-hashes each restored archive against the manifest and rejects extras.
@@ -347,7 +329,7 @@ jobs:
 
       - name: Hydrate and verify corresponding source
         id: source
-        run: |
+        run: | # zizmor: ignore[template-injection] step and job outputs only, derived from the validated release tag
           $sourceDir = $env:AUDIOFORGE_SOURCE_DIR
           .\.venv\Scripts\python.exe python/tools/source_distribution.py bundle `
             --manifest licenses/source-manifest.json `
@@ -378,7 +360,7 @@ jobs:
           if (Test-Path -LiteralPath $sourceArchive) {
             Remove-Item -LiteralPath $sourceArchive -Force
           }
-          & $sevenZip a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on $sourceArchive (Join-Path (Resolve-Path $sourceDir).Path "*")
+          & $sevenZip a -t7z -mx=5 -m0=lzma2 -mmt=on -ms=on $sourceArchive (Join-Path (Resolve-Path $sourceDir).Path "*")
           if ($LASTEXITCODE -ne 0) {
             throw "7-Zip source archive failed with exit code $LASTEXITCODE."
           }
@@ -413,6 +395,27 @@ jobs:
           "checksum=$sourceChecksum" >> $env:GITHUB_OUTPUT
           "metadata=$sourceMetadata" >> $env:GITHUB_OUTPUT
 
+      - name: Download and verify pinned release runtime assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_SOURCE_TAG: ${{ steps.meta.outputs.asset_source_tag }}
+        run: |
+          .\.venv\Scripts\python.exe python/tools/fetch_release_assets.py `
+            --release-tag $env:ASSET_SOURCE_TAG `
+            --force
+
+      - name: Configure pinned CPU ONNX Runtime
+        run: |
+          $ortLib = (Resolve-Path "target\onnxruntime-cpu\lib").Path
+          "ORT_LIB_LOCATION=$ortLib" >> $env:GITHUB_ENV
+          "ORT_PREFER_DYNAMIC_LINK=1" >> $env:GITHUB_ENV
+
+      - name: Build Rust extension
+        run: .\.venv\Scripts\python.exe -m maturin develop --release --locked
+
+      - name: Verify release assets
+        run: .\.venv\Scripts\python.exe python/tools/verify_release_assets.py
+
       - name: Build executable
         run: powershell -ExecutionPolicy Bypass -File .\build_exe.ps1 -PythonPath .\.venv\Scripts\python.exe
 
@@ -421,7 +424,7 @@ jobs:
 
       - name: Bind DeepFilter build attestation to the packaged DLL
         id: native
-        run: |
+        run: | # zizmor: ignore[template-injection] step and job outputs only, derived from the validated release tag
           $attestationSource = Resolve-Path "target/deepfilter/df.dll.provenance.json"
           $attestation = "AudioForge-${{ steps.meta.outputs.release_tag }}-deepfilter.provenance.json"
           Copy-Item -LiteralPath $attestationSource -Destination $attestation -Force
@@ -441,7 +444,7 @@ jobs:
 
       - name: Build per-user MSI from exact portable tree
         id: installer
-        run: |
+        run: | # zizmor: ignore[template-injection] step and job outputs only, derived from the validated release tag
           $installer = "AudioForge-${{ steps.meta.outputs.release_tag }}-win64.msi"
           $upgradeBaselineRoot = Join-Path $env:RUNNER_TEMP ("AudioForge-msi-upgrade-baseline-" + [guid]::NewGuid().ToString("N"))
           New-Item -ItemType Directory -Force -Path $upgradeBaselineRoot | Out-Null
@@ -454,10 +457,12 @@ jobs:
           } | ConvertTo-Json | Set-Content -LiteralPath $baselineBuildInfo -Encoding utf8
           Set-Content -LiteralPath (Join-Path $upgradeBaselinePayload "_internal\msi-upgrade-baseline-only.marker") -Value "baseline" -Encoding utf8
           $upgradeBaseline = Join-Path $env:RUNNER_TEMP "AudioForge-upgrade-baseline.msi"
+          # Only the upgrade test installs the baseline, so it is not compressed.
           powershell -ExecutionPolicy Bypass -File .\build_msi.ps1 `
             -Payload $upgradeBaselinePayload `
             -Version 0.0.0 `
             -Output $upgradeBaseline `
+            -CompressionLevel none `
             -AcceptWixEula
           if ($LASTEXITCODE -ne 0) {
             throw "MSI upgrade-baseline build failed with exit code $LASTEXITCODE."
@@ -482,7 +487,7 @@ jobs:
 
       - name: Create release archive
         id: package
-        run: |
+        run: | # zizmor: ignore[template-injection] step and job outputs only, derived from the validated release tag
           $archive = "${{ steps.meta.outputs.archive }}"
           $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe"
           if (-not (Test-Path -LiteralPath $sevenZip)) {
@@ -501,7 +506,7 @@ jobs:
 
       - name: Generate exact-artifact provenance
         id: provenance
-        run: |
+        run: | # zizmor: ignore[template-injection] step and job outputs only, derived from the validated release tag
           $archive = "${{ steps.package.outputs.archive }}"
           .\.venv\Scripts\python.exe python/tools/release_provenance.py create `
             --bundle dist/AudioForge `
@@ -842,7 +847,7 @@ jobs:
       - name: Verify, extract, and smoke-test exact candidate
         env:
           EXPECTED_NATIVE_SHA256: ${{ needs.package-windows.outputs.native_sha256 }}
-        run: |
+        run: | # zizmor: ignore[template-injection] step and job outputs only, derived from the validated release tag
           $archive = Resolve-Path "candidate/${{ needs.package-windows.outputs.archive }}"
           $checksum = Resolve-Path "candidate/${{ needs.package-windows.outputs.checksum }}"
           $manifest = Resolve-Path "candidate/${{ needs.package-windows.outputs.manifest }}"

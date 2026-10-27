@@ -27,7 +27,7 @@ use crate::dsp::{
     AutoMakeupActivityInput, Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ,
     TruePeakDetector, TruePeakLimiter,
 };
-use crate::rt_scan::{assert_marked_regions_clean, assert_rt_clean, marked_region};
+use crate::rt_scan::{assert_marked_regions_clean, assert_rt_clean, marked_region, source_between};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use pyo3::Python;
@@ -1481,6 +1481,26 @@ fn a_stop_or_suppression_that_wins_the_lock_cancels_a_waiting_recovery() {
             suppress
         );
     }
+}
+
+/// A restart that panics must not leave the processor marked as recovering:
+/// `start_locked` would skip its back-off reset from then on. The stop that
+/// opens every restart clears the flag, so the start never runs with it raised.
+#[test]
+fn a_panicking_restart_does_not_leave_the_processor_recovering() {
+    let processor = AudioProcessor::new();
+    processor
+        .shared
+        .stream
+        .restart_requested
+        .store(true, Ordering::Release);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        processor.service_recovery_at(at(10), |_: &AudioProcessor, _: &mut Streams| {
+            panic!("start exploded")
+        })
+    }));
+    assert!(outcome.is_err());
+    assert!(!processor.is_recovering());
 }
 
 /// An error code left set by an earlier suppressor fault must not turn a
@@ -5926,17 +5946,6 @@ fn native_audit_31_dsp_loop_has_no_inert_heartbeat_timer() {
     assert!(!source.contains("HEARTBEAT_INTERVAL"));
 }
 
-fn source_between<'a>(source: &'a str, start_marker: &str, end_marker: &str) -> &'a str {
-    let start = source
-        .find(start_marker)
-        .unwrap_or_else(|| panic!("missing {start_marker}"));
-    let end = source[start..]
-        .find(end_marker)
-        .map(|offset| start + offset)
-        .unwrap_or_else(|| panic!("missing {end_marker}"));
-    &source[start..end]
-}
-
 #[test]
 fn test_marked_rt_regions_reject_blocking_or_allocating_apis() {
     for (file, source, expected) in [
@@ -6397,16 +6406,16 @@ fn test_runtime_diagnostics_split_retime_adjustments_from_recovery_events() {
         let diagnostics = wrapper.get_runtime_diagnostics(py).unwrap();
         let diagnostics = diagnostics.bind(py);
         let diagnostics = diagnostics.cast::<PyDict>().unwrap();
-        assert!(diagnostics
-            .get_item("noise_attenuation_limit_db")
-            .unwrap()
-            .unwrap()
-            .is_none());
-        assert!(diagnostics
-            .get_item("noise_post_filter_beta")
-            .unwrap()
-            .unwrap()
-            .is_none());
+        // The DeepFilter keys exist only in a DeepFilter build, and are None
+        // while another model runs.
+        for key in ["noise_attenuation_limit_db", "noise_post_filter_beta"] {
+            let value = diagnostics.get_item(key).unwrap();
+            if cfg!(feature = "deepfilter") {
+                assert!(value.unwrap().is_none(), "{key}");
+            } else {
+                assert!(value.is_none(), "{key}");
+            }
+        }
         assert_eq!(
             diagnostics
                 .get_item("output_retime_adjustment_count")

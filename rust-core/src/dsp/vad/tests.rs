@@ -968,6 +968,41 @@ mod tests {
     }
 
     #[test]
+    fn test_a_model_replaced_at_the_same_path_is_verified_again() {
+        let model = Path::new("../models/silero_vad.onnx");
+        if !model.exists() {
+            eprintln!("Skipping model-optional pinned Silero cache coverage");
+            return;
+        }
+        // Test fixture only; the process id keeps parallel runs apart.
+        // nosemgrep: rust.lang.security.temp-dir.temp-dir
+        let path = std::env::temp_dir().join(format!(
+            "audioforge-vad-replaced-{}.onnx",
+            std::process::id()
+        ));
+        std::fs::copy(model, &path).unwrap();
+        let first = cached_pinned_silero_model(&path);
+
+        // Same size, other bytes, later modification time.
+        let size = std::fs::metadata(&path).unwrap().len() as usize;
+        std::fs::write(&path, vec![0_u8; size]).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+            .unwrap();
+        let second = cached_pinned_silero_model(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(first.is_ok());
+        assert!(matches!(
+            second,
+            Err(VadError::ModelLoadError(message)) if message.contains("SHA-256")
+        ));
+    }
+
+    #[test]
     fn test_missing_explicit_model_path_does_not_fall_back_to_cwd_models() {
         let result = SileroVAD::find_model_path(Some("missing-dir/silero_vad.onnx".to_string()));
         assert!(matches!(

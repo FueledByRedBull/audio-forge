@@ -17,7 +17,7 @@ use crate::dsp::noise_suppressor::{
     ControlledNoiseSuppressionEngine as NoiseSuppressionEngine, NoiseModel,
 };
 use crate::dsp::{Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ};
-use crate::rt_scan::{assert_rt_clean, marked_region};
+use crate::rt_scan::{assert_rt_clean, marked_region, source_between};
 use pyo3::prelude::*;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -25,17 +25,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 #[cfg(not(windows))]
 use thread_priority::{set_current_thread_priority, ThreadPriority};
-
-fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
-    let from = source
-        .find(start)
-        .unwrap_or_else(|| panic!("missing {start}"));
-    let to = source[from..]
-        .find(end)
-        .map(|offset| from + offset)
-        .unwrap_or_else(|| panic!("missing {end}"));
-    &source[from..to]
-}
 
 /// The production code that sets up and runs the DSP thread: dsp_loop.rs and
 /// lifecycle.rs without their inline test modules.
@@ -143,7 +132,7 @@ fn limiter_consume_counts_an_unstable_snapshot_as_contention() {
 #[test]
 fn control_seqlock_orders_its_relaxed_data_with_fences() {
     let source = include_str!("control.rs");
-    let writer = between(
+    let writer = source_between(
         source,
         "fn locked_control_update",
         "fn stable_control_snapshot",
@@ -152,7 +141,7 @@ fn control_seqlock_orders_its_relaxed_data_with_fences() {
     let fence = writer.find("fence(Ordering::Release)").unwrap();
     let apply = writer.find("apply();").unwrap();
     assert!(first < fence && fence < apply);
-    let reader = between(
+    let reader = source_between(
         source,
         "fn stable_control_snapshot",
         "fn release_ms_to_tenth_ms",
@@ -163,7 +152,7 @@ fn control_seqlock_orders_its_relaxed_data_with_fences() {
     assert!(read < fence && fence < second);
 
     let vad = include_str!("vad_worker.rs");
-    let begin = between(vad, "fn begin_write", "fn invalidate");
+    let begin = source_between(vad, "fn begin_write", "fn invalidate");
     assert!(begin.contains("fence(Ordering::Release)"));
     assert_eq!(vad.matches("self.begin_write()").count(), 2);
     assert!(!vad.contains("sequence.fetch_add(1, Ordering::AcqRel)"));
@@ -344,14 +333,14 @@ fn successful_start_attempt_is_not_cleaned_up() {
 #[test]
 fn dsp_thread_spawn_failure_is_an_error_not_a_panic() {
     let production = dsp_loop_production();
-    let start = between(
+    let start = source_between(
         &production,
         "fn start_streams_unguarded(",
         "/// Stop audio processing",
     );
     assert!(!start.contains("std::thread::spawn("));
     assert!(start.contains("std::thread::Builder::new().spawn("));
-    let public = between(
+    let public = source_between(
         &production,
         "pub fn start_with_device_ordinals_and_ids(",
         "fn start_with_cleanup(",
@@ -471,7 +460,7 @@ fn missing_pro_audio_registration_degrades_instead_of_failing_start() {
 #[test]
 fn initial_suppressor_engine_is_built_before_the_dsp_thread_exists() {
     let production = dsp_loop_production();
-    let start = between(
+    let start = source_between(
         &production,
         "fn start_streams_unguarded(",
         "/// Stop audio processing",
@@ -495,18 +484,18 @@ fn live_suppressor_engines_come_from_the_factory_that_puts_inference_at_a_worker
     );
     let controls = include_str!("noise_controls.rs");
     // The one place that picks between the two factories, and who asks for which.
-    let builder = between(controls, "fn engine_builder(", "fn select_noise_model(");
+    let builder = source_between(controls, "fn engine_builder(", "fn select_noise_model(");
     assert!(builder.contains("if realtime {"));
     assert!(builder.contains("new_realtime_noise_suppression_engine("));
     assert!(builder.contains("new_noise_suppression_engine("));
-    let select = between(
+    let select = source_between(
         controls,
         "fn select_noise_model(",
         "pub(super) fn rebuild_noise_suppressor(",
     );
     // A stopped processor builds its engine only to ask whether it loads.
     assert!(select.contains("build(model, running)"));
-    let rebuild = between(
+    let rebuild = source_between(
         controls,
         "pub(super) fn rebuild_noise_suppressor(",
         "/// Get current noise suppression model",
@@ -523,14 +512,14 @@ fn live_suppressor_engines_come_from_the_factory_that_puts_inference_at_a_worker
 fn suppressor_queue_is_drained_at_the_top_of_every_pass() {
     let source = include_str!("dsp_loop.rs");
     let rt = marked_region(source, "dsp_processing_loop");
-    let pass = between(rt, "fn pass(&mut self)", "fn reset_input_continuity(");
+    let pass = source_between(rt, "fn pass(&mut self)", "fn reset_input_continuity(");
     let call = pass.find("let suppressor_in_use =").unwrap();
     let install = pass.find(".install_pending(").unwrap();
     let input_read = pass.find("self.input.read_block()").unwrap();
     let first_branch = pass.find("if n_raw == 0").unwrap();
     assert!(call < install && install < input_read && input_read < first_branch);
     // The old drain lived inside `if use_suppressor`, in the Full path only.
-    let full_path = between(
+    let full_path = source_between(
         rt,
         "// Stage 2: Noise Suppression",
         "// Suppressor disabled: clear buffer counter",
@@ -795,20 +784,20 @@ fn a_nan_latches_the_stages_and_meters_unless_contained_and_cleared() {
 #[test]
 fn input_ring_is_sized_from_the_device_rate_after_the_device_is_selected() {
     let production = dsp_loop_production();
-    let start = between(
+    let start = source_between(
         &production,
         "fn start_streams_unguarded(",
         "/// Stop audio processing",
     );
     assert!(!start.contains("AudioRingBuffer::new(self.sample_rate as usize * 2)"));
-    let open_input = between(start, "fn open_input(", "fn open_output(");
+    let open_input = source_between(start, "fn open_input(", "fn open_output(");
     let select = open_input
         .find("from_named_device_identity_setup(")
         .unwrap();
     let ring = open_input.find("self.input_ring(sample_rate)").unwrap();
     let open = open_input.find("AudioInput::from_setup(").unwrap();
     assert!(select < ring && ring < open);
-    let input_ring = between(start, "fn input_ring(", "fn output_ring(");
+    let input_ring = source_between(start, "fn input_ring(", "fn output_ring(");
     assert!(input_ring.contains("AudioRingBuffer::new(sample_rate as usize * 2)"));
 }
 
@@ -817,7 +806,7 @@ fn input_ring_is_sized_from_the_device_rate_after_the_device_is_selected() {
 #[test]
 fn no_denormals_safety_comment_states_the_documented_caveat() {
     let source = include_str!("dsp_loop.rs");
-    let comment = between(
+    let comment = source_between(
         source,
         "// SAFETY: `no_denormals`",
         "let dsp_loop = || unsafe",
@@ -1001,12 +990,12 @@ fn dsp_loop_meters_cleanup_and_sanitizers_do_not_allocate() {
             "/// Consume a pending limiter",
         ),
     ] {
-        assert_rt_clean(label, between(source, start, end));
+        assert_rt_clean(label, source_between(source, start, end));
     }
     let routing = include_str!("routing.rs");
     assert_rt_clean(
         "routing.rs meters",
-        between(
+        source_between(
             routing,
             "fn update_meter_block_stats(",
             "fn record_level_extremes(",
@@ -1014,7 +1003,7 @@ fn dsp_loop_meters_cleanup_and_sanitizers_do_not_allocate() {
     );
     assert_rt_clean(
         "routing.rs sanitizers",
-        between(
+        source_between(
             routing,
             "fn sanitize_and_clamp_output_inplace(",
             "fn new_input_pre_filter(",
@@ -1022,12 +1011,12 @@ fn dsp_loop_meters_cleanup_and_sanitizers_do_not_allocate() {
     );
     assert_rt_clean(
         "routing.rs adaptive cleanup",
-        between(routing, "fn analyze_input(", "fn wrap_phase("),
+        source_between(routing, "fn analyze_input(", "fn wrap_phase("),
     );
     let control = include_str!("control.rs");
     assert_rt_clean(
         "control.rs apply_*_control",
-        between(
+        source_between(
             control,
             "fn apply_eq_control(",
             "#[cfg(test)]\nmod compressor_control_tests",
@@ -1096,13 +1085,13 @@ fn a_stopped_vad_worker_does_not_wait_out_its_maximum_back_off() {
 #[test]
 fn processor_keeps_no_write_only_gate_shadow() {
     let source = include_str!("../processor.rs");
-    let fields = between(
+    let fields = source_between(
         source,
         "pub struct AudioProcessor {",
         "impl AudioProcessor {",
     );
     assert!(!fields.contains("gate: Arc<Mutex<NoiseGate>>"));
     assert!(!include_str!("shared.rs").contains("Mutex<NoiseGate>"));
-    let stop = between(include_str!("lifecycle.rs"), "pub fn stop(", "\n    }\n}\n");
+    let stop = source_between(include_str!("lifecycle.rs"), "pub fn stop(", "\n    }\n}\n");
     assert!(!stop.contains("self.gate.lock()"));
 }

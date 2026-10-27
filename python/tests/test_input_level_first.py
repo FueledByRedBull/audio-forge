@@ -102,7 +102,6 @@ class _OldEngine(_Engine):
 @pytest.fixture
 def running_window(isolated_main_window):
     window = isolated_main_window
-    window._engine.threaded = False  # the fake engine answers at once
     engine = _Engine(window.processor)
     window.processor = engine
     clock = _Clock()

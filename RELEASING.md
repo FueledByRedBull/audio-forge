@@ -347,7 +347,8 @@ every part of its criterion holds; record "not run" for any skipped.
 4. **Mute.** While running, turn the top-bar **Mute** toggle on, then off. Pass:
    the OUT meter reads MUTE, the Output row says muted, the status dot shows
    muted, and the tray tooltip says "Running / Muted"; unmuting returns all
-   three. The tray's **Mute Output** item follows the same state.
+   three. The tray's **Mute Output** item follows the same state. Repeat with
+   **Ctrl+M** in the window: the top bar shows a **Muted** pill while muted.
 5. **Edit, Undo and Redo.** Drag one EQ band, then change the gate threshold.
    Press **Undo** twice and **Redo** twice, then repeat with **Ctrl+Z** and
    **Ctrl+Shift+Z**. Pass: each press moves exactly one edit and both values
@@ -403,6 +404,17 @@ every part of its criterion holds; record "not run" for any skipped.
       exits with no dialog.
     - An ordinary uninstall removes the shortcut; an upgrade doesn't. A shortcut
       reassigned to a portable copy survives uninstalling the MSI.
+14. **Bypass and Raw look.** Switch the processing mode to **Bypass**, then
+    **Raw Monitor**, then back to **Normal**. Pass: Bypass and Raw Monitor show
+    the alert look, Normal returns to the ordinary look, and audio keeps
+    flowing through all three.
+15. **DeepFilterNet latency labels.** While running with audio flowing, select
+    **DeepFilterNet LL**, then **DeepFilterNet**. Pass: the latency label reads
+    about 15 ms, then about 35 ms, audio keeps flowing, and Health shows no
+    DeepFilter error.
+16. **Recovery during setup.** Open **Auto Voice Setup** (or latency
+    calibration) while running. Pass: Health shows automatic recovery as paused
+    while the dialog is open and normal again after it closes.
 
 The checklist can fail: item 3's Drops criterion fails 1.16.0, which counted
 three or four dropouts on every Start, and item 5's last sentence fails a

@@ -8,8 +8,9 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
-from PySide6.QtCore import QRect
-from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import QRect, QSize, QUrl
+from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPixmap
+from PySide6.QtWidgets import QMessageBox, QSystemTrayIcon, QWidget
 
 from mic_eq.ui.desktop_integration import (
     MOD_ALT,
@@ -20,6 +21,7 @@ from mic_eq.ui.desktop_integration import (
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.noise_suppression_state import NoiseSuppressionState
 from mic_eq.ui import desktop_integration
+from mic_eq.ui.theme import PALETTE, muted_icon
 
 
 class _ModeCombo:
@@ -204,3 +206,54 @@ def test_failed_model_switch_retains_previous_model_and_strength(qapp, monkeypat
     finally:
         host.deleteLater()
         qapp.processEvents()
+
+
+def test_the_tray_icon_carries_the_muted_badge_only_while_output_is_muted(
+    isolated_main_window, monkeypatch
+):
+    window: Any = isolated_main_window
+    base = QPixmap(32, 32)
+    base.fill(QColor(PALETTE.card_surface))
+    window.setWindowIcon(QIcon(base))
+    monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", lambda: True)
+    window._setup_desktop_integration(tray_only=True)
+    tray = window._tray_icon
+
+    def shown():
+        return tray.icon().pixmap(QSize(32, 32)).toImage()
+
+    heard = shown()
+    badged = muted_icon(QIcon(base)).pixmap(QSize(32, 32)).toImage()
+    assert badged != heard
+
+    window.user_mute_checkbox_action.setChecked(True)
+    assert shown() == badged
+    window.user_mute_checkbox_action.setChecked(False)
+    assert shown() == heard
+    window.set_temporary_output_mute(True, "configuration")  # any mute owner counts
+    assert shown() == badged
+    window.set_temporary_output_mute(False, "configuration")
+    assert shown() == heard
+    tray.hide()
+
+
+@pytest.mark.parametrize("folder_exists", [True, False])
+def test_the_presets_folder_opens_through_the_desktop_services_or_says_it_cannot(
+    isolated_main_window, monkeypatch, tmp_path, folder_exists
+):
+    window: Any = isolated_main_window
+    folder = tmp_path / "presets"
+    if folder_exists:
+        folder.mkdir()
+    monkeypatch.setattr("mic_eq.ui.main_window.get_presets_dir", lambda: folder)
+    opened: list[QUrl] = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url) or True)
+    shown: list[str] = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda _parent, _title, text: shown.append(text))
+
+    window._open_presets_folder()
+
+    if folder_exists:
+        assert opened == [QUrl.fromLocalFile(str(folder))] and not shown
+    else:
+        assert not opened and str(folder) in shown[0]

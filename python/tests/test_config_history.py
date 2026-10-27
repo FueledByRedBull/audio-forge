@@ -594,10 +594,10 @@ def test_configuration_rollback_stop_failure_keeps_mute_and_reports_stop_failure
             raise RuntimeError("configuration write unavailable")
 
         monkeypatch.setattr(window, "_write_processing_configuration", fail_configuration_write)
-        with pytest.raises(RuntimeError, match="processor stop failed"):
+        with pytest.raises(RuntimeError, match="restoration failed"):
             window.apply_processing_configuration(window._get_current_preset())
         assert "configuration" in window._temporary_mute_reasons
-        assert "processor stop both failed" in str(window.status_message.text)
+        assert "Stopping audio failed: stop unavailable" in str(window.status_message.text)
     finally:
         window.processor = original_processor
         window.meter_timer.stop()

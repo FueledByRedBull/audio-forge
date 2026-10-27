@@ -103,24 +103,10 @@ fn hash_file(path: &Path) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dsp::deepfilter_ffi::fake::scratch_file;
     use crate::dsp::deepfilter_ffi::DeepFilterModel;
     use crate::dsp::sha256::sha256_hex;
     use std::time::Duration;
-
-    fn model_file(name: &str, contents: &[u8]) -> PathBuf {
-        let suffix = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        // Test fixtures contain no privileged or secret data; uniqueness only
-        // prevents parallel test collisions and is not a security boundary.
-        // nosemgrep: rust.lang.security.temp-dir.temp-dir
-        let dir = std::env::temp_dir().join(format!("audioforge-identity-{name}-{suffix}"));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("model.tar.gz");
-        fs::write(&path, contents).unwrap();
-        path
-    }
 
     fn identity_of(contents: &[u8]) -> ModelIdentity {
         ModelIdentity {
@@ -132,7 +118,7 @@ mod tests {
     #[test]
     fn verify_accepts_only_the_pinned_size_and_digest() {
         let contents = b"pinned model stand-in";
-        let path = model_file("verify", contents);
+        let path = scratch_file("identity-verify", contents);
         let expected = identity_of(contents);
         assert_eq!(verify(&path, &expected), Ok(()));
 
@@ -155,7 +141,7 @@ mod tests {
 
     #[test]
     fn a_replaced_file_is_hashed_again() {
-        let path = model_file("replaced", b"first contents");
+        let path = scratch_file("identity-replaced", b"first contents");
         let expected = identity_of(b"first contents");
         assert_eq!(verify(&path, &expected), Ok(()));
 

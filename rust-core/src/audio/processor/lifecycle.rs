@@ -356,17 +356,7 @@ impl AudioProcessor {
     /// give the raw recording tap a fresh ring. Its capacity is fixed so the DSP
     /// thread can write without locking during steady-state capture.
     pub(super) fn reset_recording_tap(&self) -> AudioProducer {
-        self.shared.recording.active.store(false, Ordering::Release);
-        self.shared
-            .recording
-            .before_cleanup
-            .store(false, Ordering::Release);
-        self.shared.recording.pos.store(0, Ordering::Release);
-        self.shared.recording.target.store(0, Ordering::Release);
-        self.shared
-            .recording
-            .level_db
-            .store((-120.0_f32).to_bits(), Ordering::Relaxed);
+        self.shared.recording.clear_capture();
         if let Ok(mut consumer_guard) = self.shared.recording.consumer.lock() {
             *consumer_guard = None;
         }
@@ -460,18 +450,7 @@ impl AudioProcessor {
                 .map_err(|_| "Failed to initialize output probe buffer".to_string())?;
             *producer = Some(output_probe_producer);
         }
-        self.shared
-            .output
-            .probe_active
-            .store(false, Ordering::Release);
-        self.shared
-            .output
-            .probe_complete
-            .store(true, Ordering::Release);
-        self.shared
-            .output
-            .probe_cancel_requested
-            .store(false, Ordering::Release);
+        self.shared.output.reset_probe();
         let output_probe = OutputProbeControl {
             consumer: output_probe_consumer,
             active: Arc::clone(&self.shared.output.probe_active),
@@ -539,16 +518,14 @@ impl AudioProcessor {
             .sample_rate
             .store(sample_rate, Ordering::Relaxed);
         let output_rb = AudioRingBuffer::new(sample_rate as usize * 2);
-        let (output_producer, output_consumer) = output_rb.split();
+        let (mut output_producer, output_consumer) = output_rb.split();
         let output_prime_samples = duration_samples(sample_rate, OUTPUT_PRIME_MS);
-        let mut prod = output_producer;
         let silence = vec![0.0f32; output_prime_samples];
-        prod.write(&silence);
+        output_producer.write(&silence);
         self.shared
             .output
             .buffer_len
             .store(output_prime_samples as u32, Ordering::Relaxed);
-        let output_producer = prod;
         (output_producer, output_consumer)
     }
 
@@ -592,32 +569,18 @@ impl AudioProcessor {
         input_sample_rate: u32,
         output_sample_rate: u32,
     ) -> Result<(DeviceResampler, DeviceResampler), String> {
-        let input_resampler = if input_sample_rate != self.sample_rate {
-            Some(
-                build_sinc_resampler(input_sample_rate, self.sample_rate, RESAMPLER_CHUNK_SIZE)
-                    .map_err(|e| {
-                        format!(
-                            "Failed to initialize input resampler ({} Hz -> {} Hz): {}",
-                            input_sample_rate, self.sample_rate, e
-                        )
-                    })?,
-            )
-        } else {
-            None
+        let build = |side: &str, from: u32, to: u32| -> Result<DeviceResampler, String> {
+            if from == to {
+                return Ok(None);
+            }
+            build_sinc_resampler(from, to, RESAMPLER_CHUNK_SIZE)
+                .map(Some)
+                .map_err(|e| {
+                    format!("Failed to initialize {side} resampler ({from} Hz -> {to} Hz): {e}")
+                })
         };
-        let output_resampler = if output_sample_rate != self.sample_rate {
-            Some(
-                build_sinc_resampler(self.sample_rate, output_sample_rate, RESAMPLER_CHUNK_SIZE)
-                    .map_err(|e| {
-                        format!(
-                            "Failed to initialize output resampler ({} Hz -> {} Hz): {}",
-                            self.sample_rate, output_sample_rate, e
-                        )
-                    })?,
-            )
-        } else {
-            None
-        };
+        let input_resampler = build("input", input_sample_rate, self.sample_rate)?;
+        let output_resampler = build("output", self.sample_rate, output_sample_rate)?;
         if let Some(resampler) = input_resampler.as_ref() {
             ensure_resampler_scratch_capacity(resampler, RT_PROCESS_BUFFER_CAPACITY, "input")?;
         }
@@ -672,18 +635,7 @@ impl AudioProcessor {
     pub(super) fn stop_locked(&self, streams: &mut Streams) {
         self.shared.stream.stop_epoch.fetch_add(1, Ordering::AcqRel);
         self.shared.stream.running.store(false, Ordering::SeqCst);
-        self.shared
-            .output
-            .probe_active
-            .store(false, Ordering::Release);
-        self.shared
-            .output
-            .probe_complete
-            .store(true, Ordering::Release);
-        self.shared
-            .output
-            .probe_cancel_requested
-            .store(false, Ordering::Release);
+        self.shared.output.reset_probe();
         self.shared
             .input
             .fixed_buffer_frames
@@ -744,17 +696,7 @@ impl AudioProcessor {
             .store(false, Ordering::Release);
 
         // Clear capture state without changing the caller's output mute.
-        self.shared.recording.active.store(false, Ordering::Release);
-        self.shared
-            .recording
-            .before_cleanup
-            .store(false, Ordering::Release);
-        self.shared.recording.pos.store(0, Ordering::Release);
-        self.shared.recording.target.store(0, Ordering::Release);
-        self.shared
-            .recording
-            .level_db
-            .store((-120.0_f32).to_bits(), Ordering::Relaxed);
+        self.shared.recording.clear_capture();
         self.shared
             .suppressor
             .latency_samples
@@ -908,9 +850,9 @@ mod startup_tests",
         assert!(reset < build);
         // The silent prime goes straight to the producer: it must neither mark
         // real audio as queued nor prime the stream.
-        let prime = &start[start.find("let output_prime_samples").unwrap()
-            ..start.find("let output_producer = prod;").unwrap()];
-        assert!(prime.contains("prod.write(&silence)"));
+        let prime = &start[start.find("let output_prime_samples").unwrap()..];
+        let prime = &prime[..prime.find("\n    }\n").unwrap()];
+        assert!(prime.contains("output_producer.write(&silence)"));
         assert!(!prime.contains("last_write_time_us") && !prime.contains(".primed"));
         // Recovery and a normal start run the same function.
         let recovery = include_str!("recovery.rs");

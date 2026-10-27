@@ -193,85 +193,6 @@ fn collect_devices(input: bool) -> PyResult<Vec<DeviceInfo>> {
     Ok(result)
 }
 
-/// What one input device offers, for the format probe.
-#[derive(Clone, Debug)]
-#[pyclass(skip_from_py_object)]
-pub struct InputFormats {
-    #[pyo3(get)]
-    pub name: String,
-    #[pyo3(get)]
-    pub endpoint_id: Option<String>,
-    #[pyo3(get)]
-    pub is_default: bool,
-    /// `(sample format, channels, sample rate)` of the default input config.
-    #[pyo3(get)]
-    pub default_config: Option<(String, u16, u32)>,
-    /// `(sample format, channels, lowest rate, highest rate)` of every
-    /// supported input config range.
-    #[pyo3(get)]
-    pub supported: Vec<(String, u16, u32, u32)>,
-    /// Why the device could not be inspected.
-    #[pyo3(get)]
-    pub error: Option<String>,
-}
-
-fn describe_default_config(config: &cpal::SupportedStreamConfig) -> (String, u16, u32) {
-    (
-        config.sample_format().to_string(),
-        config.channels(),
-        config.sample_rate(),
-    )
-}
-
-fn describe_config_ranges(
-    ranges: impl Iterator<Item = cpal::SupportedStreamConfigRange>,
-) -> Vec<(String, u16, u32, u32)> {
-    ranges
-        .map(|range| {
-            (
-                range.sample_format().to_string(),
-                range.channels(),
-                range.min_sample_rate(),
-                range.max_sample_rate(),
-            )
-        })
-        .collect()
-}
-
-fn collect_input_formats() -> PyResult<Vec<InputFormats>> {
-    let host = cpal::default_host();
-    let default_id = host
-        .default_input_device()
-        .and_then(|device| device.id().ok());
-    let devices = host
-        .input_devices()
-        .map_err(|error| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string()))?;
-    Ok(devices
-        .map(|device| {
-            let device_id = device.id().ok();
-            let supported = device.supported_input_configs();
-            InputFormats {
-                name: device_name(&device).unwrap_or_else(|error| format!("<unnamed: {error}>")),
-                endpoint_id: device_id.as_ref().map(persisted_endpoint_id),
-                is_default: device_id.is_some() && device_id == default_id,
-                default_config: device
-                    .default_input_config()
-                    .ok()
-                    .map(|config| describe_default_config(&config)),
-                error: supported.as_ref().err().map(ToString::to_string),
-                supported: supported.map(describe_config_ranges).unwrap_or_default(),
-            }
-        })
-        .collect())
-}
-
-/// List the sample formats and channel counts every input device offers.
-/// Read-only: it asks the host what each device supports and opens no stream.
-#[pyfunction]
-pub fn list_input_device_formats() -> PyResult<Vec<InputFormats>> {
-    crate::catch_panic(collect_input_formats)
-}
-
 /// List all available input (microphone) devices.
 #[pyfunction]
 pub fn list_input_devices(py: Python<'_>) -> PyResult<Vec<DeviceInfo>> {
@@ -287,35 +208,8 @@ pub fn list_output_devices(py: Python<'_>) -> PyResult<Vec<DeviceInfo>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{describe_config_ranges, describe_default_config, display_name, parse_endpoint_id};
-    use cpal::{
-        DeviceDescriptionBuilder, SampleFormat, SupportedBufferSize, SupportedStreamConfig,
-        SupportedStreamConfigRange,
-    };
-
-    #[test]
-    fn input_formats_report_every_range_with_its_sample_format() {
-        let unknown = SupportedBufferSize::Unknown;
-        let ranges = [
-            SupportedStreamConfigRange::new(2, 48_000, 48_000, unknown, SampleFormat::F32),
-            SupportedStreamConfigRange::new(1, 44_100, 96_000, unknown, SampleFormat::I24),
-            SupportedStreamConfigRange::new(2, 48_000, 48_000, unknown, SampleFormat::U24),
-        ];
-        assert_eq!(
-            describe_config_ranges(ranges.into_iter()),
-            [
-                ("f32".to_string(), 2, 48_000, 48_000),
-                ("i24".to_string(), 1, 44_100, 96_000),
-                ("u24".to_string(), 2, 48_000, 48_000),
-            ]
-        );
-        assert!(describe_config_ranges(std::iter::empty()).is_empty());
-        let default = SupportedStreamConfig::new(2, 48_000, unknown, SampleFormat::I16);
-        assert_eq!(
-            describe_default_config(&default),
-            ("i16".to_string(), 2, 48_000)
-        );
-    }
+    use super::{display_name, parse_endpoint_id};
+    use cpal::DeviceDescriptionBuilder;
 
     #[test]
     fn endpoint_id_rejects_empty_values() {

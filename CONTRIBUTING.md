@@ -93,7 +93,9 @@ Preserve strict realtime constraints in CPAL callbacks and the DSP loop after
 startup: no allocation, vector growth or Vec-returning suppressor helpers,
 formatting/logging, I/O, blocking locks, or `try_lock`. Keep parameter updates in
 atomic snapshots or bounded queues, and model loading and suppressor construction
-outside those regions. Changes within `RT_REGION_*` markers must pass the RT
+outside those regions. Live DeepFilter inference runs on a worker the DSP loop
+never waits on; the loop only polls it, and the RT scan forbids `.unpark(`.
+Changes within `RT_REGION_*` markers must pass the RT
 source-scan tests. Do not enable `extension-module` in Rust test builds.
 
 A preset schema change needs a migration and round-trip tests. Migrate a stored

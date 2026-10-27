@@ -343,21 +343,25 @@ def test_configuring_logging_first_still_migrates_the_legacy_settings(
     assert not shared_module.migration_pending()
 
 
-def test_logging_stays_off_while_a_failed_migration_is_pending(
+def test_a_failed_migration_logs_to_the_temp_folder_and_leaves_the_config_folder_alone(
     tmp_path, monkeypatch, clean_root_handlers
 ):
     monkeypatch.setenv("APPDATA", str(tmp_path))
+    temp = tmp_path / "temp"
+    monkeypatch.setattr(app_logging.tempfile, "gettempdir", lambda: str(temp))
     legacy = tmp_path / LEGACY
     legacy.mkdir()
     (legacy / "config.json").write_text("{}", encoding="utf-8")
-    handlers_before = list(logging.getLogger().handlers)
     monkeypatch.setattr(
         shared_module.shutil, "copytree", lambda *a, **k: (_ for _ in ()).throw(OSError("busy"))
     )
 
-    app_logging.configure_app_logging()
+    log_file = app_logging.configure_app_logging()
+    logging.getLogger("probe").warning("after the failure")
 
-    assert logging.getLogger().handlers == handlers_before
+    assert log_file == temp / CURRENT / "logs" / "app.log"
+    text = log_file.read_text(encoding="utf-8")
+    assert "busy" in text and "after the failure" in text
     assert not (tmp_path / CURRENT).exists()
     assert shared_module.migration_pending()
 

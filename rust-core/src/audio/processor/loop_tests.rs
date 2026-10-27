@@ -216,65 +216,11 @@ fn bypass_and_raw_monitor_skip_the_chain_and_switch_back() {
     assert_eq!(processor.get_rt_error_code(), RtErrorCode::None as u32);
 }
 
-/// A suppressor that takes every sample and never produces any.
-#[derive(Default)]
-struct SilentSuppressor {
-    enabled: bool,
-}
-
-impl NoiseSuppressor for SilentSuppressor {
-    fn push_samples(&mut self, samples: &[f32]) -> usize {
-        samples.len()
-    }
-    fn process_frames(&mut self) {}
-    fn available_samples(&self) -> usize {
-        0
-    }
-    fn pop_samples_into(&mut self, _buffer: &mut [f32]) -> usize {
-        0
-    }
-    fn set_strength(&self, _value: f32) {}
-    fn get_strength(&self) -> f32 {
-        1.0
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
-    }
-    fn is_enabled(&self) -> bool {
-        self.enabled
-    }
-    fn soft_reset(&mut self) {}
-    fn pending_input(&self) -> usize {
-        0
-    }
-    fn model_type(&self) -> NoiseModel {
-        NoiseModel::RNNoise
-    }
-    fn latency_samples(&self) -> usize {
-        480
-    }
-    fn backend_available(&self) -> bool {
-        true
-    }
-    fn backend_error(&self) -> Option<&str> {
-        None
-    }
-    fn backend_failed(&self) -> bool {
-        false
-    }
-}
-
-impl ControlledNoiseSuppressor for SilentSuppressor {
-    fn push_controlled_samples(&mut self, samples: &[f32], _controls: &[GateControl]) -> usize {
-        samples.len()
-    }
-}
-
 fn offline_with_silent_suppressor(processor: &AudioProcessor) -> OfflineLoop {
     OfflineLoop::new(
         processor,
         OfflineLoopConfig {
-            suppressor: Some(Box::new(SilentSuppressor::default())),
+            suppressor: Some(StubSuppressor::boxed(NoiseModel::RNNoise, &Arc::default())),
             ..OfflineLoopConfig::default()
         },
     )
@@ -633,15 +579,16 @@ fn getters_do_not_wait_for_a_start_in_progress() {
     });
 }
 
-/// An engine that does nothing but note that it was retired.
-struct RetireProbe {
+/// An engine that takes every sample, never produces any and notes when it
+/// was retired.
+struct StubSuppressor {
     model: NoiseModel,
     retired: Arc<std::sync::atomic::AtomicBool>,
     enabled: bool,
     available: bool,
 }
 
-impl RetireProbe {
+impl StubSuppressor {
     fn boxed(model: NoiseModel, retired: &Arc<std::sync::atomic::AtomicBool>) -> Box<Self> {
         Box::new(Self {
             model,
@@ -663,7 +610,7 @@ impl RetireProbe {
     }
 }
 
-impl NoiseSuppressor for RetireProbe {
+impl NoiseSuppressor for StubSuppressor {
     fn push_samples(&mut self, samples: &[f32]) -> usize {
         samples.len()
     }
@@ -708,7 +655,7 @@ impl NoiseSuppressor for RetireProbe {
     }
 }
 
-impl ControlledNoiseSuppressor for RetireProbe {
+impl ControlledNoiseSuppressor for StubSuppressor {
     fn push_controlled_samples(&mut self, samples: &[f32], _controls: &[GateControl]) -> usize {
         samples.len()
     }
@@ -738,13 +685,13 @@ fn an_engine_swapped_out_of_the_loop_is_retired_there_and_then() {
     let mut offline = OfflineLoop::new(
         &processor,
         OfflineLoopConfig {
-            suppressor: Some(RetireProbe::boxed(NoiseModel::RNNoise, &old_retired)),
+            suppressor: Some(StubSuppressor::boxed(NoiseModel::RNNoise, &old_retired)),
             ..OfflineLoopConfig::default()
         },
     );
     queue_engine(
         &processor,
-        RetireProbe::boxed(NoiseModel::RNNoise, &new_retired),
+        StubSuppressor::boxed(NoiseModel::RNNoise, &new_retired),
     );
     offline.run_until_idle();
 
@@ -1040,7 +987,7 @@ mod worker_engine {
         // The selected model is RNNoise; this one is not it.
         queue_engine(
             &processor,
-            RetireProbe::boxed(NoiseModel::DeepFilterNet, &declined),
+            StubSuppressor::boxed(NoiseModel::DeepFilterNet, &declined),
         );
         offline.run_until_idle();
         assert!(declined.load(Ordering::SeqCst));
@@ -1135,7 +1082,7 @@ mod worker_engine {
         let mut offline = OfflineLoop::new(
             &processor,
             OfflineLoopConfig {
-                suppressor: Some(RetireProbe::boxed(NoiseModel::DeepFilterNetLL, &first)),
+                suppressor: Some(StubSuppressor::boxed(NoiseModel::DeepFilterNetLL, &first)),
                 ..OfflineLoopConfig::default()
             },
         );
@@ -1143,7 +1090,7 @@ mod worker_engine {
         let settled =
             processor.settle_selection_with_started_stream(NoiseModel::DeepFilterNetLL, |_, _| {
                 builds.set(builds.get() + 1);
-                RetireProbe::boxed(NoiseModel::DeepFilterNetLL, &first)
+                StubSuppressor::boxed(NoiseModel::DeepFilterNetLL, &first)
             });
 
         assert!(settled);
@@ -1176,7 +1123,7 @@ mod worker_engine {
         let mut offline = OfflineLoop::new(
             &processor,
             OfflineLoopConfig {
-                suppressor: Some(RetireProbe::boxed(NoiseModel::RNNoise, &first)),
+                suppressor: Some(StubSuppressor::boxed(NoiseModel::RNNoise, &first)),
                 ..OfflineLoopConfig::default()
             },
         );
@@ -1189,7 +1136,7 @@ mod worker_engine {
 
         let settled = processor
             .settle_selection_with_started_stream(NoiseModel::DeepFilterNetLL, |model, _| {
-                RetireProbe::unavailable(model)
+                StubSuppressor::unavailable(model)
             });
 
         assert!(!settled);

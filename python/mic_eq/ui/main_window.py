@@ -424,8 +424,8 @@ class MainWindow(QMainWindow):
         self._device_wait_since: float | None = None
         self._stream_health = RecentStreamHealth()
         self._last_backend_warning = None
-        # The engine and its dropped-selection count when last read; a new engine counts from zero.
-        self._noise_drops_seen: tuple[Any, int] = (self.processor, 0)
+        # The engine's dropped-selection count when last read; a new engine counts from zero.
+        self._noise_drops_seen = 0
         # The latest Voice Setup or Auto-EQ outcome, kept for the diagnostics export.
         self.last_setup_result: dict | None = None
         self._last_output_underrun_total = 0
@@ -4068,13 +4068,12 @@ class MainWindow(QMainWindow):
             f"{DROPPED_DIAGNOSTICS_TOOLTIP}\n\nTechnical counters (for support reports):\n{dropped_detail}"
         )
 
-        # The engine drops a selection it cannot load, and a start has no caller to tell. Warn
-        # once per new drop, before the backend warning so that one stays on the line.
+        # A start that cannot load a model chosen while it ran has no caller to tell. Warn once
+        # per new drop, before the backend warning so that one stays on the line.
         noise_drops = int(diagnostics.get("noise_selection_dropped_count", 0) or 0)
-        drops_seen = getattr(self, "_noise_drops_seen", None)
-        if drops_seen and drops_seen[0] is self.processor and noise_drops > drops_seen[1]:
+        if noise_drops > self._noise_drops_seen:
             self.status_message.showMessage(NOISE_SELECTION_DROPPED_WARNING, 8000)
-        self._noise_drops_seen = (self.processor, noise_drops)
+        self._noise_drops_seen = noise_drops
 
         backend_available = diagnostics.get("noise_backend_available", True)
         backend_failed = diagnostics.get("noise_backend_failed", False)

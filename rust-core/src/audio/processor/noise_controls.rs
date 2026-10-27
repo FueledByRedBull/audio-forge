@@ -15,6 +15,18 @@ use std::sync::Arc;
 #[cfg(not(windows))]
 use thread_priority::{set_current_thread_priority, ThreadPriority};
 
+/// What became of a selection settled against a started stream.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Settled {
+    /// The loop runs the model, or an engine for it is queued.
+    Applied,
+    /// The engine did not load, and the selection went back to the model the
+    /// loop runs.
+    Dropped,
+    /// The engine did not load, but a newer selection stands and was left alone.
+    Superseded,
+}
+
 impl AudioProcessor {
     // === Noise Suppression Controls ===
 
@@ -162,7 +174,8 @@ impl AudioProcessor {
         // takes a few hundred milliseconds) or while the selection was being
         // recorded. `start` does not wait for this call.
         if !running && self.shared.stream.running.load(Ordering::Acquire) {
-            return self.settle_selection_with_started_stream(model, build);
+            // The caller hears the answer, so nothing is counted here.
+            return self.settle_selection_with_started_stream(model, build) == Settled::Applied;
         }
         true
     }
@@ -173,13 +186,14 @@ impl AudioProcessor {
 
     /// Record `model` as the selection; with `only_over`, only while that is
     /// still the selection. The control lock is held through all three writes,
-    /// so a conditional replace never sees half of another recording.
-    fn replace_selection(&self, only_over: Option<NoiseModel>, model: NoiseModel) {
+    /// so a conditional replace never sees half of another recording. Returns
+    /// whether it recorded.
+    fn replace_selection(&self, only_over: Option<NoiseModel>, model: NoiseModel) -> bool {
         let suppressor = &self.shared.suppressor;
         let mut control = suppressor.control.lock();
         let current = suppressor.current_model.load(Ordering::Acquire);
         if only_over.is_some_and(|over| over as u8 != current) {
-            return;
+            return false;
         }
         if let Ok(control) = control.as_mut() {
             control.model = model;
@@ -188,29 +202,45 @@ impl AudioProcessor {
         suppressor
             .current_model
             .store(model as u8, Ordering::Release);
+        true
     }
 
     /// The stream began on the model it found then, and only a queued engine
     /// moves it to another. When it found `model` already, nothing is needed.
-    /// When the engine cannot be built the selection is counted as dropped and
-    /// undone, to the model the loop runs, so the control and the loop agree and
-    /// nothing waits for an engine that will not come. A newer selection made
-    /// while the engine was loading stays.
+    /// When the engine cannot be built the selection is undone, to the model the
+    /// loop runs, so the control and the loop agree and nothing waits for an
+    /// engine that will not come. A newer selection made while the engine was
+    /// loading stays.
     pub(super) fn settle_selection_with_started_stream(
         &self,
         model: NoiseModel,
         build: impl Fn(NoiseModel, bool) -> NoiseSuppressionEngine,
-    ) -> bool {
+    ) -> Settled {
         let live = self.shared.suppressor.engine_model.load(Ordering::Acquire);
         if live == model as u8 || self.rebuild_with(model, build) {
-            return true;
+            Settled::Applied
+        } else if self.replace_selection(Some(model), model_from_code(live)) {
+            Settled::Dropped
+        } else {
+            Settled::Superseded
         }
-        self.shared
-            .suppressor
-            .dropped_selection_count
-            .fetch_add(1, Ordering::Relaxed);
-        self.replace_selection(Some(model), model_from_code(live));
-        false
+    }
+
+    /// `start`'s settle of a selection made while it was opening the stream.
+    /// That selection's caller has long been told it worked, so a drop is
+    /// counted for the diagnostics, where the window finds it.
+    pub(super) fn settle_selection_after_start(
+        &self,
+        build: impl Fn(NoiseModel, bool) -> NoiseSuppressionEngine,
+    ) {
+        if self.settle_selection_with_started_stream(self.get_noise_model(), build)
+            == Settled::Dropped
+        {
+            self.shared
+                .suppressor
+                .dropped_selection_count
+                .fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub(super) fn rebuild_noise_suppressor(&self) -> bool {
@@ -226,12 +256,16 @@ impl AudioProcessor {
         let engine = build(model, true);
         let diagnostics = noise_backend_diagnostics(&engine);
         if model != NoiseModel::RNNoise && !diagnostics.available {
-            store_backend_diagnostics(
-                &self.shared.suppressor.backend_available,
-                &self.shared.suppressor.backend_failed,
-                &self.shared.suppressor.backend_error,
-                diagnostics,
-            );
+            // A newer selection has its own status; a stale failure must not
+            // overwrite it.
+            if self.get_noise_model() == model {
+                store_backend_diagnostics(
+                    &self.shared.suppressor.backend_available,
+                    &self.shared.suppressor.backend_failed,
+                    &self.shared.suppressor.backend_error,
+                    diagnostics,
+                );
+            }
             return false;
         }
 

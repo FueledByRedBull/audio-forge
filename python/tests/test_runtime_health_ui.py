@@ -133,6 +133,7 @@ def _diagnostic_window(diagnostics: dict[str, Any]):
         _stream_health=RecentStreamHealth(),
         _processing=False,
         _last_backend_warning=None,
+        _noise_drops_seen=0,
         processor=processor,
         _update_session_summary=Mock(),
         _shell_state_owner=state_owner,

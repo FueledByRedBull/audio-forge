@@ -77,8 +77,8 @@ pub(super) struct SuppressorShared {
     pub(super) smoothed_buffer_len: AtomicU32,
     /// Number of times suppressor output contained non-finite samples.
     pub(super) non_finite_count: AtomicU64,
-    /// Selections dropped after the stream started because the engine for the
-    /// model did not build or could not be queued.
+    /// Selections `start` dropped because the engine for the model did not
+    /// build or could not be queued; no caller was left to be told.
     pub(super) dropped_selection_count: AtomicU64,
     /// Whether the current noise backend is operational.
     pub(super) backend_available: AtomicBool,

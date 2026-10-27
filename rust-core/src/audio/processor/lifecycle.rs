@@ -334,11 +334,10 @@ impl AudioProcessor {
 
         // A model selected after the first engine was built found the stream
         // stopped and queued nothing; the stream is marked running now, so
-        // settle it here. A failure undoes the selection and shows in the
-        // backend diagnostics; it does not fail the start. If the selection
-        // also saw the running stream, both queue an engine and the loop swaps
-        // both in.
-        self.settle_selection_with_started_stream(self.get_noise_model(), self.engine_builder());
+        // settle it here. A failure undoes the selection and is counted in the
+        // diagnostics; it does not fail the start. If the selection also saw the
+        // running stream, both queue an engine and the loop swaps both in.
+        self.settle_selection_after_start(self.engine_builder());
 
         if let Some(output) = streams.output.as_ref() {
             if let Err(e) = output.start() {

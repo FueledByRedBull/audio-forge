@@ -105,7 +105,7 @@ impl OfflineLoop {
             suppressor_commands,
             suppressor_retire,
         });
-        processor.settle_selection_with_started_stream(processor.get_noise_model(), build);
+        processor.settle_selection_after_start(build);
         Self {
             dsp,
             input: input_producer,

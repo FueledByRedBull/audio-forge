@@ -715,6 +715,7 @@ fn an_engine_swapped_out_of_the_loop_is_retired_there_and_then() {
 /// stand-in library of `dsp::deepfilter_ffi::fake`.
 #[cfg(feature = "deepfilter")]
 mod worker_engine {
+    use super::super::noise_controls::Settled;
     use super::*;
     use crate::dsp::deepfilter_ffi::fake::{worker_engine, Fake};
     use crate::dsp::deepfilter_ffi::DeepFilterModel;
@@ -1094,7 +1095,7 @@ mod worker_engine {
                 StubSuppressor::boxed(NoiseModel::DeepFilterNetLL, &first)
             });
 
-        assert!(settled);
+        assert_eq!(settled, Settled::Applied);
         assert_eq!(builds.get(), 0);
         offline.run_until_idle();
         assert!(
@@ -1140,7 +1141,12 @@ mod worker_engine {
                 StubSuppressor::unavailable(model)
             });
 
-        assert!(!settled);
+        assert_eq!(settled, Settled::Dropped);
+        assert_eq!(
+            processor.get_noise_selection_dropped_count(),
+            0,
+            "the caller hears it"
+        );
         assert_eq!(processor.get_noise_model(), NoiseModel::RNNoise);
         assert_eq!(
             processor
@@ -1312,7 +1318,7 @@ mod worker_engine {
             "self.initial_suppressor()",
             "self.mark_running()",
             "self.check_dsp_startup(",
-            "self.settle_selection_with_started_stream(self.get_noise_model(), self.engine_builder());",
+            "self.settle_selection_after_start(self.engine_builder());",
             "output.start()",
         ];
         let at = |text: &str, needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle}"));
@@ -1326,7 +1332,7 @@ mod worker_engine {
             "window();",
             "processor.mark_running()",
             "DspLoop::new(",
-            "processor.settle_selection_with_started_stream(",
+            "processor.settle_selection_after_start(",
         ];
         assert!(order
             .windows(2)
@@ -1439,9 +1445,11 @@ mod worker_engine {
     fn a_newer_selection_made_while_a_failing_engine_loads_is_kept() {
         // The start settles the window's selection (DeepFilterNetLL) with an
         // engine that does not load. While it loads, a newer selection is made
-        // and queued. The failure drops the first selection only: undoing it to
+        // and queued. The failure leaves the newer selection alone: undoing it to
         // the model the loop runs would also undo the newer one, and the loop
-        // would decline the newer engine.
+        // would decline the newer engine. The first selection was superseded,
+        // not dropped, so it is not counted, and its failed load does not take
+        // the backend status the newer one set.
         let newer = NoiseModel::DeepFilterNet;
         let processor = AudioProcessor::new();
         let live_builds = AtomicUsize::new(0);
@@ -1449,7 +1457,7 @@ mod worker_engine {
         let (loading, loading_holder) = hold();
         let starting_processor = &processor;
 
-        let (selected, newer_selected) = std::thread::scope(|scope| {
+        let (selected, newer_selected, available_after_start) = std::thread::scope(|scope| {
             let starting = scope.spawn(move || {
                 let mut offline = OfflineLoop::new_with_start_window(
                     starting_processor,
@@ -1460,7 +1468,9 @@ mod worker_engine {
                     },
                     || window.wait(),
                 );
+                let available = starting_processor.is_noise_backend_available();
                 offline.run_until_idle();
+                available
             });
             window_holder.wait_until_reached();
             let selected = select(&processor, &live_builds, NO_HOLD);
@@ -1469,13 +1479,50 @@ mod worker_engine {
             let newer_selected =
                 processor.select_noise_model(newer, stub_builder(&live_builds, NO_HOLD));
             loading_holder.release();
-            starting.join().unwrap();
-            (selected, newer_selected)
+            (selected, newer_selected, starting.join().unwrap())
         });
 
         assert!(selected && newer_selected);
+        assert!(
+            available_after_start,
+            "a stale failure took the newer selection's backend status"
+        );
         assert_loop_runs_selection(&processor, &live_builds, NoiseModel::RNNoise, newer, 1);
-        assert_eq!(processor.get_noise_selection_dropped_count(), 1);
+        assert_eq!(processor.get_noise_selection_dropped_count(), 0);
+    }
+
+    #[test]
+    fn a_selection_that_fails_after_the_stream_started_tells_its_caller_and_is_not_counted() {
+        // A selection that finds the stream running by the time its engine has
+        // loaded returns the failure to its caller, who reports the specific
+        // error. Counting it too would put a second, vaguer warning on top.
+        let processor = AudioProcessor::new();
+        let started: RefCell<Option<OfflineLoop>> = RefCell::new(None);
+        let selected = processor.select_noise_model(SELECTED, |model, realtime| {
+            if realtime {
+                return StubSuppressor::unavailable(model);
+            }
+            if started.borrow().is_none() {
+                *started.borrow_mut() =
+                    Some(OfflineLoop::new(&processor, OfflineLoopConfig::default()));
+            }
+            StubSuppressor::boxed(model, &Arc::default())
+        });
+
+        assert!(!selected, "the caller was not told");
+        assert_eq!(processor.get_noise_selection_dropped_count(), 0);
+        assert_eq!(processor.get_noise_model(), NoiseModel::RNNoise);
+        let mut offline = started.into_inner().unwrap();
+        offline.run_until_idle();
+        assert!(!processor.shared.suppressor.dirty.load(Ordering::Acquire));
+        assert_eq!(
+            processor
+                .shared
+                .suppressor
+                .engine_model
+                .load(Ordering::Acquire),
+            NoiseModel::RNNoise as u8
+        );
     }
 
     #[test]

@@ -1743,32 +1743,46 @@ def test_a_dropped_noise_selection_warns_once_and_says_what_to_do(window):
     assert _poll_dropped_selections(window, processor, 2) == NOISE_SELECTION_DROPPED_WARNING
 
 
-def test_a_count_that_is_already_nonzero_does_not_warn_at_the_first_poll(window):
-    processor = _MeterProcessor()
-    processor._diagnostics["noise_selection_dropped_count"] = 3
-    _recovery_setup(window, processor)
-    window.status_message.clearMessage()
-
-    assert window.status_message.text == ""
-    assert _poll_dropped_selections(window, processor, 3) == ""
-    assert _poll_dropped_selections(window, processor, 3) == ""
-    assert _poll_dropped_selections(window, processor, 4) == NOISE_SELECTION_DROPPED_WARNING
-
-
 def test_a_counter_that_starts_over_does_not_warn_until_it_grows_again(window):
     processor = _MeterProcessor()
     _recovery_setup(window, processor)
-    _poll_dropped_selections(window, processor, 5)
+    assert _poll_dropped_selections(window, processor, 5) == NOISE_SELECTION_DROPPED_WARNING
     window.status_message.clearMessage()
 
     assert _poll_dropped_selections(window, processor, 0) == ""
     assert _poll_dropped_selections(window, processor, 1) == NOISE_SELECTION_DROPPED_WARNING
 
 
-def test_the_window_watches_the_count_the_engine_exports(window):
-    # A fresh engine counts from zero, and the window starts from that.
+def test_the_window_starts_from_the_zero_the_engine_exports(window):
+    # A fresh engine counts from zero, and the window has seen nothing yet.
     assert window.processor.get_runtime_diagnostics()["noise_selection_dropped_count"] == 0
-    assert window._noise_drops_seen == (window.processor, 0)
+    assert window._noise_drops_seen == 0
+
+
+class _RefusingProcessor(_MeterProcessor):
+    """An engine that cannot load DeepFilterNet and says so to the caller."""
+
+    def list_noise_models(self):
+        return [("rnnoise", "RNNoise"), ("deepfilter", "DeepFilterNet")]
+
+    def set_noise_model(self, model: str) -> bool:
+        return model == "rnnoise"
+
+
+def test_a_selection_refused_to_its_caller_keeps_its_own_message(window, monkeypatch):
+    # The caller is told why, and the engine does not count what it already
+    # reported, so the next poll leaves that message on the line.
+    monkeypatch.setattr(QMessageBox, "warning", Mock())
+    processor = _RefusingProcessor()
+    _recovery_setup(window, processor)
+    window.noise_suppression_state.models = tuple(processor.list_noise_models())
+
+    window._on_model_changed(1)
+
+    specific = window.status_message.text
+    assert "unavailable; previous model retained" in specific
+    assert _poll_dropped_selections(window, processor, 0) == specific
+    assert specific != NOISE_SELECTION_DROPPED_WARNING
 
 
 def test_the_dropped_selection_warning_is_announced_to_assistive_technology(window, monkeypatch):

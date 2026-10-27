@@ -353,10 +353,10 @@ impl AudioProcessor {
             .load(Ordering::Relaxed)
     }
 
-    /// Noise model selections dropped after the stream started, because the
-    /// engine for the model did not build or could not be queued. Unlike the
-    /// backend status, which the loop overwrites with the live engine's, this
-    /// only grows.
+    /// Noise model selections `start` dropped, because the engine for the model
+    /// did not build or could not be queued once the stream was open. A selection
+    /// whose caller hears the failure is not counted. Unlike the backend status,
+    /// which the loop overwrites with the live engine's, this only grows.
     pub fn get_noise_selection_dropped_count(&self) -> u64 {
         self.shared
             .suppressor

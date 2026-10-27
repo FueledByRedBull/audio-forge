@@ -1,4 +1,8 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!-- build_msi.ps1 -CompressionLevel overrides this for a throwaway test MSI. -->
+  <?ifndef CompressionLevel?>
+  <?define CompressionLevel="high"?>
+  <?endif?>
   <Package
     Id="FueledByRedBull.AudioForge"
     Name="AudioForge"
@@ -19,7 +23,7 @@
     <Launch
       Condition="Installed OR (VersionNT64 AND WINDOWSBUILDNUMBER &gt;= 17763)"
       Message="AudioForge requires 64-bit Windows 10 version 1809 (build 17763) or newer." />
-    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="$(var.CompressionLevel)" />
 
     <!-- The app checks target, arguments and marker before removing its link.
          Never remove a portable copy's registration or rewrite one on upgrade. -->

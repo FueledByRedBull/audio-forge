@@ -4,6 +4,10 @@ param(
     [string]$WixPath,
     [string]$Version,
     [string]$PythonPath = "",
+    # Unset keeps the compression authored in installer/AudioForge.wxs. Only a
+    # throwaway MSI that is installed in a test and never shipped sets it.
+    [ValidateSet("none", "low", "medium", "high", "mszip")]
+    [string]$CompressionLevel,
     [switch]$AcceptWixEula
 )
 
@@ -138,10 +142,15 @@ try {
         throw "WiX OSMF EULA acceptance failed."
     }
 
+    $compressionDefine = @()
+    if ($CompressionLevel) {
+        $compressionDefine = @("-d", "CompressionLevel=$CompressionLevel")
+    }
     & $WixPath build `
         -arch x64 `
         -b "PayloadDir=$payloadPath" `
         -d "Version=$version" `
+        @compressionDefine `
         -pdbtype none `
         -o $outputPath `
         (Join-Path $PSScriptRoot "installer\AudioForge.wxs")

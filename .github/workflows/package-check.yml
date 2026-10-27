@@ -65,7 +65,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements/dev.txt
 
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # pinned 1.94.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
         with:
           toolchain: 1.94.0
 
@@ -152,10 +152,12 @@ jobs:
           } | ConvertTo-Json | Set-Content -LiteralPath $baselineBuildInfo -Encoding utf8
           Set-Content -LiteralPath (Join-Path $upgradeBaselinePayload "_internal\msi-upgrade-baseline-only.marker") -Value "baseline" -Encoding utf8
           $upgradeBaseline = Join-Path $env:RUNNER_TEMP "AudioForge-upgrade-baseline.msi"
+          # Only the upgrade test installs the baseline, so it is not compressed.
           powershell -ExecutionPolicy Bypass -File .\build_msi.ps1 `
             -Payload $upgradeBaselinePayload `
             -Version 0.0.0 `
             -Output $upgradeBaseline `
+            -CompressionLevel none `
             -AcceptWixEula
           if ($LASTEXITCODE -ne 0) {
             throw "MSI upgrade-baseline build failed with exit code $LASTEXITCODE."

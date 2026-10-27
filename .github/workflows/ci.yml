@@ -95,6 +95,14 @@ jobs:
         run: python -m pyright
       - name: Workflow definition check
         run: python python/tools/check_workflows.py
+      # GH_TOKEN lets zizmor run the audits that query GitHub, such as the
+      # impostor-commit and known-vulnerable-action checks.
+      - name: Workflow security lint
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          zizmor --no-progress .github/workflows
+          if ($LASTEXITCODE -ne 0) { throw "zizmor failed with exit code $LASTEXITCODE." }
       - name: Package source smoke
         run: python python/tools/package_smoke.py --source-only
       - name: Semgrep
@@ -153,7 +161,7 @@ jobs:
           path: python/mic_eq/mic_eq_core*.pyd
           key: ${{ runner.os }}-${{ runner.arch }}-native-v1-py${{ steps.python.outputs.python-version }}-${{ hashFiles('rust-core/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'pyproject.toml', 'release-assets.json', '.github/workflows/ci.yml') }}
       - if: steps.native.outputs.cache-hit != 'true'
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # pinned 1.94.0
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
         with:
           toolchain: 1.94.0
       - if: steps.native.outputs.cache-hit != 'true'
@@ -215,7 +223,7 @@ jobs:
         run: |
           python -m pip install --require-hashes -r requirements/runtime.txt --no-compile
           if ($LASTEXITCODE -ne 0) { throw "Runtime dependency install failed with exit code $LASTEXITCODE." }
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # pinned 1.94.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
         with:
           toolchain: 1.94.0
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -282,9 +290,24 @@ jobs:
           if ($actualHash -ne $asset.sha256) {
             throw "Silero model hash mismatch: $actualHash"
           }
-      # df.dll is built from the pinned DeepFilter source and the models come
-      # from the pinned release (the ONNX Runtime and Silero files above are
-      # kept). Without them the DeepFilter tests print "skipping" and pass.
+      # Only this job restores df.dll and its build attestation; Package check and
+      # Release package build the DLL from source on every run. The key covers
+      # every input of the recipe, with no restore-keys fallback. On a hit the
+      # next step still runs: fetch_release_assets.py skips the build because
+      # df.dll is present, and verify_release_assets.py checks the DLL against
+      # its attestation and the attestation against the recipe files.
+      - name: Restore DeepFilter runtime
+        id: deepfilter
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            df.dll
+            target/deepfilter/df.dll.provenance.json
+          key: ${{ runner.os }}-${{ runner.arch }}-deepfilter-dll-v1-${{ hashFiles('build_deepfilter.ps1', 'build-support/deepfilter/**', 'release-assets.json', 'rust-toolchain.toml') }}
+      # df.dll is built from the pinned DeepFilter source (unless restored above)
+      # and the models come from the pinned release (the ONNX Runtime and Silero
+      # files above are kept). Without them the DeepFilter tests print
+      # "skipping" and pass.
       - name: Build and verify the pinned DeepFilter runtime
         env:
           GH_TOKEN: ${{ github.token }}
@@ -293,6 +316,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "DeepFilter runtime hydration failed with exit code $LASTEXITCODE." }
           python python/tools/verify_release_assets.py
           if ($LASTEXITCODE -ne 0) { throw "Runtime asset verification failed with exit code $LASTEXITCODE." }
+      # Saved once the DLL has passed verification, so a failing test run later in
+      # the job does not cost the next run another build.
+      - name: Save DeepFilter runtime
+        if: steps.deepfilter.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            df.dll
+            target/deepfilter/df.dll.provenance.json
+          key: ${{ steps.deepfilter.outputs.cache-primary-key }}
       # The seeded contention stress test runs in the rust-stress job, in
       # release mode; this debug run skips only that one test. --nocapture shows
       # the "skipping" lines, and any of them fails the step.
@@ -326,7 +359,7 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13.15"
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # pinned 1.94.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
         with:
           toolchain: 1.94.0
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

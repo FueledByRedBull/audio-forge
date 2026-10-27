@@ -5,7 +5,8 @@
     "python/tests/test_headroom_contract.py"
   ],
   "voice-capture": [
-    "python/tests/test_voice_setup_capture_analysis.py"
+    "python/tests/test_voice_setup_capture_analysis.py",
+    "python/tests/test_bench_invariants.py"
   ],
   "voice-flow": [
     "python/tests/test_voice_setup_integration.py",
@@ -22,7 +23,8 @@
   ],
   "refusals": [
     "python/tests/test_setup_dialog_reports.py",
-    "python/tests/test_ui_sample_rate_and_diagnostics.py"
+    "python/tests/test_ui_sample_rate_and_diagnostics.py",
+    "python/tests/test_voice_setup_decision_pin.py"
   ],
   "quick-ui": [
     "python/tests/test_quick_shell.py",
@@ -39,7 +41,6 @@
     "python/tests/test_quick_undo.py",
     "python/tests/test_bench_metrics.py",
     "python/tests/test_bench_report.py",
-    "python/tests/test_bench_invariants.py",
     "python/tests/test_golden_chain.py"
   ],
   "tooling": [

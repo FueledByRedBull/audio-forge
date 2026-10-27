@@ -104,7 +104,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # pinned 1.94.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
         with:
           toolchain: 1.94.0
 
@@ -200,7 +200,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements/dev.txt
 
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # pinned 1.94.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
         with:
           toolchain: 1.94.0
 
@@ -306,27 +306,9 @@ jobs:
             throw "Existing release tag '$env:RELEASE_TAG' must resolve to the checked-out commit $currentCommit, but resolves to $tagCommit."
           }
 
-      - name: Download and verify pinned release runtime assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ASSET_SOURCE_TAG: ${{ steps.meta.outputs.asset_source_tag }}
-        run: |
-          .\.venv\Scripts\python.exe python/tools/fetch_release_assets.py `
-            --release-tag $env:ASSET_SOURCE_TAG `
-            --force
-
-      - name: Configure pinned CPU ONNX Runtime
-        run: |
-          $ortLib = (Resolve-Path "target\onnxruntime-cpu\lib").Path
-          "ORT_LIB_LOCATION=$ortLib" >> $env:GITHUB_ENV
-          "ORT_PREFER_DYNAMIC_LINK=1" >> $env:GITHUB_ENV
-
-      - name: Build Rust extension
-        run: .\.venv\Scripts\python.exe -m maturin develop --release --locked
-
-      - name: Verify release assets
-        run: .\.venv\Scripts\python.exe python/tools/verify_release_assets.py
-
+      # Source hydration reads only committed files and the network, so it runs
+      # before the build and a source failure shows in minutes. The cache holds
+      # downloaded archives, never anything built here.
       # The archives depend only on the manifest entries; the manifest file also
       # carries project_version, which changes every release. source_distribution.py
       # re-hashes each restored archive against the manifest and rejects extras.
@@ -347,6 +329,9 @@ jobs:
 
       - name: Hydrate and verify corresponding source
         id: source
+        env:
+          AF_RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+          AF_VERSION: ${{ steps.meta.outputs.version }}
         run: |
           $sourceDir = $env:AUDIOFORGE_SOURCE_DIR
           .\.venv\Scripts\python.exe python/tools/source_distribution.py bundle `
@@ -374,11 +359,11 @@ jobs:
           }
           $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe"
           if (-not (Test-Path -LiteralPath $sevenZip)) { $sevenZip = "7z.exe" }
-          $sourceArchive = "AudioForge-${{ steps.meta.outputs.release_tag }}-source.7z"
+          $sourceArchive = "AudioForge-$($env:AF_RELEASE_TAG)-source.7z"
           if (Test-Path -LiteralPath $sourceArchive) {
             Remove-Item -LiteralPath $sourceArchive -Force
           }
-          & $sevenZip a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on $sourceArchive (Join-Path (Resolve-Path $sourceDir).Path "*")
+          & $sevenZip a -t7z -mx=5 -m0=lzma2 -mmt=on -ms=on $sourceArchive (Join-Path (Resolve-Path $sourceDir).Path "*")
           if ($LASTEXITCODE -ne 0) {
             throw "7-Zip source archive failed with exit code $LASTEXITCODE."
           }
@@ -396,7 +381,7 @@ jobs:
           @{
             schema_version = 1
             project = "AudioForge"
-            version = "${{ steps.meta.outputs.version }}"
+            version = $env:AF_VERSION
             commit = $env:AUDIOFORGE_SOURCE_REVISION
             archive = @{
               name = $sourceArchive
@@ -413,6 +398,27 @@ jobs:
           "checksum=$sourceChecksum" >> $env:GITHUB_OUTPUT
           "metadata=$sourceMetadata" >> $env:GITHUB_OUTPUT
 
+      - name: Download and verify pinned release runtime assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_SOURCE_TAG: ${{ steps.meta.outputs.asset_source_tag }}
+        run: |
+          .\.venv\Scripts\python.exe python/tools/fetch_release_assets.py `
+            --release-tag $env:ASSET_SOURCE_TAG `
+            --force
+
+      - name: Configure pinned CPU ONNX Runtime
+        run: |
+          $ortLib = (Resolve-Path "target\onnxruntime-cpu\lib").Path
+          "ORT_LIB_LOCATION=$ortLib" >> $env:GITHUB_ENV
+          "ORT_PREFER_DYNAMIC_LINK=1" >> $env:GITHUB_ENV
+
+      - name: Build Rust extension
+        run: .\.venv\Scripts\python.exe -m maturin develop --release --locked
+
+      - name: Verify release assets
+        run: .\.venv\Scripts\python.exe python/tools/verify_release_assets.py
+
       - name: Build executable
         run: powershell -ExecutionPolicy Bypass -File .\build_exe.ps1 -PythonPath .\.venv\Scripts\python.exe
 
@@ -421,9 +427,11 @@ jobs:
 
       - name: Bind DeepFilter build attestation to the packaged DLL
         id: native
+        env:
+          AF_RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
         run: |
           $attestationSource = Resolve-Path "target/deepfilter/df.dll.provenance.json"
-          $attestation = "AudioForge-${{ steps.meta.outputs.release_tag }}-deepfilter.provenance.json"
+          $attestation = "AudioForge-$($env:AF_RELEASE_TAG)-deepfilter.provenance.json"
           Copy-Item -LiteralPath $attestationSource -Destination $attestation -Force
           $attestationObject = Get-Content -LiteralPath $attestation -Raw | ConvertFrom-Json
           $dll = Resolve-Path "df.dll"
@@ -441,8 +449,11 @@ jobs:
 
       - name: Build per-user MSI from exact portable tree
         id: installer
+        env:
+          AF_RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+          AF_MSI_VERSION: ${{ steps.meta.outputs.msi_version }}
         run: |
-          $installer = "AudioForge-${{ steps.meta.outputs.release_tag }}-win64.msi"
+          $installer = "AudioForge-$($env:AF_RELEASE_TAG)-win64.msi"
           $upgradeBaselineRoot = Join-Path $env:RUNNER_TEMP ("AudioForge-msi-upgrade-baseline-" + [guid]::NewGuid().ToString("N"))
           New-Item -ItemType Directory -Force -Path $upgradeBaselineRoot | Out-Null
           Copy-Item -LiteralPath ".\dist\AudioForge" -Destination $upgradeBaselineRoot -Recurse
@@ -454,17 +465,19 @@ jobs:
           } | ConvertTo-Json | Set-Content -LiteralPath $baselineBuildInfo -Encoding utf8
           Set-Content -LiteralPath (Join-Path $upgradeBaselinePayload "_internal\msi-upgrade-baseline-only.marker") -Value "baseline" -Encoding utf8
           $upgradeBaseline = Join-Path $env:RUNNER_TEMP "AudioForge-upgrade-baseline.msi"
+          # Only the upgrade test installs the baseline, so it is not compressed.
           powershell -ExecutionPolicy Bypass -File .\build_msi.ps1 `
             -Payload $upgradeBaselinePayload `
             -Version 0.0.0 `
             -Output $upgradeBaseline `
+            -CompressionLevel none `
             -AcceptWixEula
           if ($LASTEXITCODE -ne 0) {
             throw "MSI upgrade-baseline build failed with exit code $LASTEXITCODE."
           }
           powershell -ExecutionPolicy Bypass -File .\build_msi.ps1 `
             -Payload .\dist\AudioForge `
-            -Version "${{ steps.meta.outputs.msi_version }}" `
+            -Version "$env:AF_MSI_VERSION" `
             -Output $installer `
             -AcceptWixEula
           if ($LASTEXITCODE -ne 0) {
@@ -482,8 +495,11 @@ jobs:
 
       - name: Create release archive
         id: package
+        env:
+          AF_ARCHIVE: ${{ steps.meta.outputs.archive }}
+          AF_INSTALLER: ${{ steps.installer.outputs.installer }}
         run: |
-          $archive = "${{ steps.meta.outputs.archive }}"
+          $archive = $env:AF_ARCHIVE
           $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe"
           if (-not (Test-Path -LiteralPath $sevenZip)) {
             $sevenZip = "7z.exe"
@@ -497,27 +513,31 @@ jobs:
           }
 
           "archive=$archive" >> $env:GITHUB_OUTPUT
-          "installer=${{ steps.installer.outputs.installer }}" >> $env:GITHUB_OUTPUT
+          "installer=$env:AF_INSTALLER" >> $env:GITHUB_OUTPUT
 
       - name: Generate exact-artifact provenance
         id: provenance
+        env:
+          AF_ARCHIVE: ${{ steps.package.outputs.archive }}
+          AF_INSTALLER: ${{ steps.installer.outputs.installer }}
+          AF_NATIVE_ATTESTATION: ${{ steps.native.outputs.attestation }}
         run: |
-          $archive = "${{ steps.package.outputs.archive }}"
+          $archive = $env:AF_ARCHIVE
           .\.venv\Scripts\python.exe python/tools/release_provenance.py create `
             --bundle dist/AudioForge `
             --archive $archive `
             --baseline evaluation/release-bundle-path-baseline.json `
-            --native-attestation ${{ steps.native.outputs.attestation }} `
+            --native-attestation $env:AF_NATIVE_ATTESTATION `
             --output-dir .
           if ($LASTEXITCODE -ne 0) {
             throw "Release provenance generation failed."
           }
-          $installer = "${{ steps.installer.outputs.installer }}"
+          $installer = $env:AF_INSTALLER
           .\.venv\Scripts\python.exe python/tools/release_provenance.py create `
             --bundle dist/AudioForge `
             --archive $installer `
             --baseline evaluation/release-bundle-path-baseline.json `
-            --native-attestation ${{ steps.native.outputs.attestation }} `
+            --native-attestation $env:AF_NATIVE_ATTESTATION `
             --output-dir .
           if ($LASTEXITCODE -ne 0) {
             throw "Installer provenance generation failed."
@@ -712,7 +732,7 @@ jobs:
           .\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements/runtime.txt --no-compile
           if ($LASTEXITCODE -ne 0) { throw "Runtime dependency install failed with exit code $LASTEXITCODE." }
 
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # pinned 1.94.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
         with:
           toolchain: 1.94.0
 
@@ -778,7 +798,7 @@ jobs:
         with:
           python-version: "3.13.15"
 
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # pinned 1.94.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
         with:
           toolchain: 1.94.0
 
@@ -842,19 +862,33 @@ jobs:
       - name: Verify, extract, and smoke-test exact candidate
         env:
           EXPECTED_NATIVE_SHA256: ${{ needs.package-windows.outputs.native_sha256 }}
+          AF_ARCHIVE: ${{ needs.package-windows.outputs.archive }}
+          AF_CHECKSUM: ${{ needs.package-windows.outputs.checksum }}
+          AF_MANIFEST: ${{ needs.package-windows.outputs.manifest }}
+          AF_METADATA: ${{ needs.package-windows.outputs.metadata }}
+          AF_INSTALLER: ${{ needs.package-windows.outputs.installer }}
+          AF_INSTALLER_CHECKSUM: ${{ needs.package-windows.outputs.installer_checksum }}
+          AF_INSTALLER_MANIFEST: ${{ needs.package-windows.outputs.installer_manifest }}
+          AF_INSTALLER_METADATA: ${{ needs.package-windows.outputs.installer_metadata }}
+          AF_SOURCE_ARCHIVE: ${{ needs.package-windows.outputs.source_archive }}
+          AF_SOURCE_CHECKSUM: ${{ needs.package-windows.outputs.source_checksum }}
+          AF_SOURCE_METADATA: ${{ needs.package-windows.outputs.source_metadata }}
+          AF_NATIVE_ATTESTATION: ${{ needs.package-windows.outputs.native_attestation }}
+          AF_SOURCE_REVISION: ${{ needs.package-windows.outputs.source_revision }}
+          AF_VERSION: ${{ needs.package-windows.outputs.version }}
         run: |
-          $archive = Resolve-Path "candidate/${{ needs.package-windows.outputs.archive }}"
-          $checksum = Resolve-Path "candidate/${{ needs.package-windows.outputs.checksum }}"
-          $manifest = Resolve-Path "candidate/${{ needs.package-windows.outputs.manifest }}"
-          $metadata = Resolve-Path "candidate/${{ needs.package-windows.outputs.metadata }}"
-          $installer = Resolve-Path "candidate/${{ needs.package-windows.outputs.installer }}"
-          $installerChecksum = Resolve-Path "candidate/${{ needs.package-windows.outputs.installer_checksum }}"
-          $installerManifest = Resolve-Path "candidate/${{ needs.package-windows.outputs.installer_manifest }}"
-          $installerMetadata = Resolve-Path "candidate/${{ needs.package-windows.outputs.installer_metadata }}"
-          $sourceArchive = Resolve-Path "candidate/${{ needs.package-windows.outputs.source_archive }}"
-          $sourceChecksum = Resolve-Path "candidate/${{ needs.package-windows.outputs.source_checksum }}"
-          $sourceMetadata = Resolve-Path "candidate/${{ needs.package-windows.outputs.source_metadata }}"
-          $nativeAttestation = Resolve-Path "candidate/${{ needs.package-windows.outputs.native_attestation }}"
+          $archive = Resolve-Path "candidate/$env:AF_ARCHIVE"
+          $checksum = Resolve-Path "candidate/$env:AF_CHECKSUM"
+          $manifest = Resolve-Path "candidate/$env:AF_MANIFEST"
+          $metadata = Resolve-Path "candidate/$env:AF_METADATA"
+          $installer = Resolve-Path "candidate/$env:AF_INSTALLER"
+          $installerChecksum = Resolve-Path "candidate/$env:AF_INSTALLER_CHECKSUM"
+          $installerManifest = Resolve-Path "candidate/$env:AF_INSTALLER_MANIFEST"
+          $installerMetadata = Resolve-Path "candidate/$env:AF_INSTALLER_METADATA"
+          $sourceArchive = Resolve-Path "candidate/$env:AF_SOURCE_ARCHIVE"
+          $sourceChecksum = Resolve-Path "candidate/$env:AF_SOURCE_CHECKSUM"
+          $sourceMetadata = Resolve-Path "candidate/$env:AF_SOURCE_METADATA"
+          $nativeAttestation = Resolve-Path "candidate/$env:AF_NATIVE_ATTESTATION"
           $extract = Join-Path $env:RUNNER_TEMP "audioforge-candidate"
           New-Item -ItemType Directory -Force -Path $extract | Out-Null
           $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe"
@@ -875,7 +909,7 @@ jobs:
             throw "Corresponding-source extraction failed with exit code $LASTEXITCODE."
           }
           $tagCommit = (git rev-parse HEAD).Trim()
-          if ($LASTEXITCODE -ne 0 -or $tagCommit -ne "${{ needs.package-windows.outputs.source_revision }}") {
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $env:AF_SOURCE_REVISION) {
             throw "Candidate validation checkout does not match its source revision."
           }
           if ($tagCommit -notmatch '^[0-9a-f]{40}$') {
@@ -885,7 +919,7 @@ jobs:
             --archive $sourceArchive `
             --checksum $sourceChecksum `
             --metadata $sourceMetadata `
-            --expected-version "${{ needs.package-windows.outputs.version }}" `
+            --expected-version $env:AF_VERSION `
             --manifest licenses/source-manifest.json `
             --source-dir $sourceExtract `
             --include-runtime-assets `

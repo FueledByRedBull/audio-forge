@@ -1,0 +1,140 @@
+name: Weekly checks
+
+# Re-runs, with no source or asset cache, the checks that read the outside world: the
+# pinned corresponding-source archives, the runtime asset hydration and the
+# vulnerability databases. It holds a read-only token and publishes or uploads
+# nothing; a failure here means an upstream source moved, not that master broke.
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  RUSTFLAGS: -C debuginfo=0
+
+jobs:
+  # Downloads every pinned source archive again and verifies it against the
+  # manifest. There is deliberately no actions/cache here: a cached archive
+  # would hide an upstream file that changed or disappeared.
+  source:
+    name: Corresponding source
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13.15"
+      - name: Hydrate and verify corresponding source
+        run: |
+          $sourceDir = Join-Path $env:RUNNER_TEMP "source-distribution"
+          python python/tools/source_distribution.py bundle `
+            --manifest licenses/source-manifest.json `
+            --output $sourceDir `
+            --revision $env:GITHUB_SHA `
+            --include-runtime-assets
+          if ($LASTEXITCODE -ne 0) { throw "Corresponding-source hydration failed with exit code $LASTEXITCODE." }
+          python python/tools/source_distribution.py verify `
+            --manifest licenses/source-manifest.json `
+            --source-dir $sourceDir `
+            --include-runtime-assets `
+            --require-receipt `
+            --revision $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw "Corresponding-source verification failed with exit code $LASTEXITCODE." }
+
+  # Fetches the pinned runtime files and builds df.dll from its pinned source,
+  # as a fresh checkout would.
+  assets:
+    name: Runtime assets
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13.15"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
+        with:
+          toolchain: 1.94.0
+      - name: Fetch and verify the pinned runtime assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python python/tools/fetch_release_assets.py --force
+          if ($LASTEXITCODE -ne 0) { throw "Runtime asset hydration failed with exit code $LASTEXITCODE." }
+          python python/tools/verify_release_assets.py
+          if ($LASTEXITCODE -ne 0) { throw "Runtime asset verification failed with exit code $LASTEXITCODE." }
+
+  audit:
+    name: Dependency audits
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13.15"
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements/dev.txt --no-compile
+          if ($LASTEXITCODE -ne 0) { throw "Dependency install failed with exit code $LASTEXITCODE." }
+      - name: Audit locked Python dependencies
+        run: |
+          python -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
+          if ($LASTEXITCODE -ne 0) { throw "Runtime dependency audit failed with exit code $LASTEXITCODE." }
+          # semgrep pins mcp==1.29.0 exactly, so the dev lock cannot move off
+          # CVE-2026-59951. Only semgrep's MCP server uses mcp and nothing here
+          # runs it. Remove the ignore when semgrep allows mcp>=1.30.0.
+          # semgrep also pins opentelemetry-api~=1.37.0, so the lock cannot move
+          # off CVE-2026-114603, a ReDoS in TraceState.from_header for inbound
+          # tracestate headers. semgrep only exports telemetry. Remove the ignore
+          # when semgrep allows opentelemetry-api>=1.45.1.
+          python -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951 --ignore-vuln CVE-2026-114603
+          if ($LASTEXITCODE -ne 0) { throw "Development dependency audit failed with exit code $LASTEXITCODE." }
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
+        with:
+          toolchain: 1.94.0
+      - name: Cache pinned cargo-audit and advisory database
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/cargo-audit.exe
+            ~/.cargo/advisory-db
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-audit-0.22.2
+      - name: Install pinned cargo-audit
+        run: |
+          $audit = Join-Path $env:USERPROFILE ".cargo/bin/cargo-audit.exe"
+          $version = ""
+          if (Test-Path -LiteralPath $audit) { $version = & $audit --version | Out-String }
+          if ($version -notmatch "0\.22\.2") {
+            cargo install cargo-audit --version 0.22.2 --locked --force
+            if ($LASTEXITCODE -ne 0) { throw "cargo-audit installation failed with exit code $LASTEXITCODE." }
+          }
+          $version = & $audit --version | Out-String
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch "0\.22\.2") { throw "cargo-audit 0.22.2 is not available." }
+      - name: RustSec audit
+        run: |
+          cargo audit --deny warnings
+          if ($LASTEXITCODE -ne 0) { throw "RustSec audit failed with exit code $LASTEXITCODE." }
+          # DeepFilter is an independent locked Cargo graph shipped as df.dll.
+          # These are the three reviewed unmaintained-crate notices in that graph;
+          # vulnerability findings remain fatal.
+          cargo audit `
+            --file build-support/deepfilter/Cargo.lock `
+            --deny warnings `
+            --ignore RUSTSEC-2024-0436 `
+            --ignore RUSTSEC-2024-0370 `
+            --ignore RUSTSEC-2026-0319
+          if ($LASTEXITCODE -ne 0) { throw "DeepFilter RustSec audit failed with exit code $LASTEXITCODE." }

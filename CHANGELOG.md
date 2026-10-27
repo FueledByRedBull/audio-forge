@@ -1,5 +1,87 @@
 # Changelog
 
+## v1.19.0
+
+### Noise suppression and recovery
+
+- DeepFilterNet and DeepFilterNet LL stay available (RNNoise remains the default model) and now run their inference on a worker thread of their own, so a slow frame no longer stalls the audio path. RNNoise is unchanged.
+- If the DeepFilterNet worker returns a bad frame, panics, exits or stops answering, audio passes through unsuppressed and the reason shows in diagnostics.
+- A corrupt DeepFilterNet model or a failing frame no longer ends the app: the bundled `df.dll` is rebuilt with panic unwinding and its exports return an error instead of aborting.
+- Each DeepFilterNet model is checked against its pinned size and SHA-256 before it loads, and non-finite input is zeroed.
+- DeepFilterNet latency now includes the worker's hand-off time: the labels read about 15 ms for DeepFilterNet LL and about 35 ms for DeepFilterNet, up from 10 and 30.
+- A noise model chosen while the stream is starting now reaches the running engine.
+- The suppressor's starvation clock restarts when suppression is re-enabled or the processing path changes, so the first small block after a pause no longer raises a false backend failure.
+- The audio engine is now the only stall detector and restarter; the separate Python stall check and restart path are gone.
+- Restart waits grow with each attempt (0, 2, 5, 10, 20, then 30 s at most) and reset only after both streams have delivered for 10 s. A device that opens but stays silent is no longer restarted every 6 s, and suppressor rebuilds are at least 10 s apart.
+- A silent output restarts the engine when it holds exact digital zeros for 1.5 s while the input is above -35 dB. It no longer reads a level, so loud steady noise and quiet speech are left alone.
+- A stall restart now reads "Audio restarted automatically after: audio stalled; you may have heard a short gap".
+- Recovery pauses while the latency, Auto-EQ and Voice Setup dialogs are open, and a restart that comes due waits until they close.
+- Start, Stop, device listing and recovery run on a worker thread, so the window stays responsive and the engine controls lock until the call finishes.
+- A Start click during a recovery poll waits for it, and a Stop that wins the race cancels a pending recovery instead of reopening the devices.
+- The loudness meter resets in place when the processing path changes, so nothing is allocated on the audio thread.
+
+### Voice Setup
+
+- A questionable room-noise recording (unsteady, partly matching the voice, or with speech in it) no longer refuses the whole setup. The gate and noise suppressor keep your current settings, Auto-EQ, the de-esser and the compressor are judged as for a usable recording, and automatic loudness stays off.
+- With no current gate, the factory gate stands instead of one tuned on a questionable recording.
+- The review says why: "Noise suppression and the gate were not tuned because the room-noise recording was not steady. Your current settings are kept."
+- An invalid recording, a weak voice-to-noise ratio, a low capture score, the final headroom check, and a silent recording with no pauses to measure the room from still refuse.
+- Noise-suppression and compression candidates are analysed on a worker pool and share renders, so Auto Voice Setup finishes sooner with the same decisions.
+- The dialog shows "Analysis in progress" instead of "Complete!" while it analyses.
+
+### Window and interface
+
+- A Muted pill sits in the top bar, and the tray icon shows a muted variant while audio is muted.
+- **Ctrl+M** mutes inside the window and does not auto-repeat; **Ctrl+Alt+M** stays the global shortcut.
+- The mode picker takes an alert look in Bypass and Raw, and keeps a visible cue under Windows contrast themes.
+- Stop stays available while a stream restart is pending.
+- A Windows sign-out or shutdown never waits on the unsaved-changes question or a failed save, and Voice Setup, Auto-EQ, latency calibration and the listening comparison close without asking. A cancelled sign-out leaves closing as it was.
+- Quitting from the hidden tray state runs the same shutdown as closing the window: window geometry and settings are saved and audio stops.
+- Changing one device picker saves only that picker, so the other picker's temporary fallback no longer overwrites the device the app said it would wait for.
+- Device labels put the `[#n]` marker (shown only when devices share a name) and `(Default)` before the name, as in `[#2] (Default) Name`, so identical devices stay apart when a picker cuts off the end. Saved device keys are unchanged.
+- A failed save, a missing or broken startup preset and an unplugged saved device stay in the warning banner until resolved, instead of flashing in the status line.
+- Undo and redo of a preset load restore that preset's name, file and saved state along with its settings.
+- After a failed configuration the engine stops on the engine worker, not the window thread; if that stop fails, the status bar says so until something replaces it.
+- Open Presets Folder warns when the folder is missing.
+- The startup-failure dialog shows the log file in use, and the renderer failure screen says whether audio is still running and how to stop it.
+- Every control's hint also opens on keyboard focus, and every control exposes its tooltip as its accessible description.
+- The recovery chip reads "paused during setup" while a setup dialog is open.
+- Control edges and switch and slider tracks keep at least 3.35:1 contrast against their surfaces.
+- One focus ring marks every focusable control and the rail, and a focused rail button no longer looks hovered.
+- Stage cards follow signal order for Tab and screen readers in every layout, and dialog buttons follow their visual order.
+- Preset names, device names and status text show as plain text and are never parsed as markup.
+- Dialog labels that change text no longer carry fixed accessible names, several buttons take their accessible names from their visible text, and Guided Setup shows errors and successes in the right colours.
+- A slider value set through an accessibility tool now commits; a drag still commits once.
+- The device pickers give up width before the Muted pill pushes Stop out of the top bar.
+
+### Settings and presets
+
+- A leftover migration marker no longer blocks saves on every launch. An unrecognised marker, a missing legacy folder, a failed "staged" write and a marker that cannot be deleted each finish, retry or clear it. No user files are deleted, and a config folder stranded as a partial copy is moved back first.
+- Logging resolves the config folder before it creates `logs`, so it can no longer make a pending migration look finished. While a migration is pending the log goes to `%TEMP%\AudioForge\logs`, its first line gives the reason, and `crash.log` is not opened.
+- The migration warning names the reason a migration failed, and also shows when the settings file exists but the migration is still pending.
+- The config schema stays 2 and the preset format is unchanged; presets saved by 1.19.0 are stamped 1.19.0, so 1.18.2 and older refuse them as newer.
+
+### Internal
+
+- Promote and both hardware workflows fail unless they were started from `master` by someone with the admin or maintain role.
+- Promote runs as two jobs. `verify-candidate` has a read-only token, no persisted credentials and runs everything that executes candidate code; `publish-release` alone can write, sits behind the `release` environment and re-hashes the staged files before publishing.
+- CI and Release package build `df.dll`, fetch the models and run the Rust tests with DeepFilter enabled; a skip line fails the job.
+- `package-check.yml` builds the bundle and MSI on pushes to master and on pull requests that touch packaging paths, then runs the package smoke checks. It publishes nothing.
+- Release packaging runs are grouped by release tag, or by commit when no tag is given, so runs for different tags no longer cancel each other.
+- `check_workflows.py` parses the workflows and checks that each gate exists, is unconditional, sits in the right job and runs in order.
+- Semgrep runs the Trail of Bits, elttam and Apiiro rule sets from clones at pinned commits.
+- The dev lock moves certifi, filelock and setuptools past their advisories, and `github/codeql-action/upload-sarif` moves to 4.39.0.
+- CVE-2026-114603, a ReDoS in the `opentelemetry-api` ~=1.37.0 pin that Semgrep imposes, is added to the pip-audit ignore table beside the `mcp` entry, and Dependabot ignores `opentelemetry-api`.
+- The Rust audio processor is split into ordinary modules instead of one file stitched together with `include!`.
+- The realtime source scan lives in `rt_scan.rs`, flags more blocking and allocating calls, ignores comments and strings, and checks every non-test function in the DSP sources against a reasoned allowlist.
+- The verified VAD model cache is keyed by path, size and modification time, so a model replaced at the same path is checked again.
+- Objects the QML scene reads keep their class's metaobject and the QML types are registered once per process. This fixes an intermittent access violation when one process builds many windows.
+- New evaluation reports carry a common `decision` block, and `check_evaluation_hygiene.py` rejects a malformed one.
+- Bench tools share their helpers, build info records HEAD and a `git_dirty` flag, and reports are written with two-space JSON.
+- `evaluate_deesser_corpus.py` fits the clip stage on the out-of-fold frame scores it is thresholded and reported on; the shipped coefficients are unchanged.
+- `analyze_voice_setup` checks every raw capture it is given for clipping, not only when both captures are passed.
+- Duplicate tests and unused Python code are removed, and Pyright resolves sibling imports in `python/tests`.
+
 ## v1.18.2
 
 ### Window and interface

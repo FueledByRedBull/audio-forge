@@ -201,6 +201,8 @@ def dispose_test_windows(monkeypatch):
         global _window_garbage
         _window_garbage = True
         window_init(self, *args, **kwargs)
+        # The fake engines answer at once; test_engine_tasks turns the worker back on.
+        self._engine.threaded = False
 
     monkeypatch.setattr(MainWindow, "__init__", note_the_window)
     app = QApplication.instance()

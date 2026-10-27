@@ -317,6 +317,15 @@ pub(super) struct OutputShared {
     pub(super) probe_cancel_requested: Arc<AtomicBool>,
 }
 
+impl OutputShared {
+    /// Nothing queued or rendering, and the last probe counts as complete.
+    pub(super) fn reset_probe(&self) {
+        self.probe_active.store(false, Ordering::Release);
+        self.probe_complete.store(true, Ordering::Release);
+        self.probe_cancel_requested.store(false, Ordering::Release);
+    }
+}
+
 /// Raw recording tap used for calibration.
 pub(super) struct RecordingShared {
     /// Raw audio recording consumer (for calibration - captures audio AFTER pre-filter, BEFORE gate)
@@ -332,6 +341,19 @@ pub(super) struct RecordingShared {
     /// Whether the raw recording tap should run before adaptive input cleanup.
     /// The default calibration tap remains after the fixed pre-filter.
     pub(super) before_cleanup: AtomicBool,
+}
+
+impl RecordingShared {
+    /// Stale capture state cleared: no recording, nothing recorded, level at
+    /// the floor. The consumer ring and the caller's output mute are left alone.
+    pub(super) fn clear_capture(&self) {
+        self.active.store(false, Ordering::Release);
+        self.before_cleanup.store(false, Ordering::Release);
+        self.pos.store(0, Ordering::Release);
+        self.target.store(0, Ordering::Release);
+        self.level_db
+            .store((-120.0_f32).to_bits(), Ordering::Relaxed);
+    }
 }
 
 /// Voice-activity worker results and health.

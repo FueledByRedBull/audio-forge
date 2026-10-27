@@ -123,9 +123,17 @@ def test_the_report_carries_the_decision_block_passes_the_hygiene_check_and_stay
     assert written["decision"] == {"outcome": "measured", "reason": "The numbers are information; the maintainer decides.",
                                    "decided": None, "by": None}
     assert "_rows" not in written and set(written["deesser"]) == {"both"} and written["limitations"]
+    assert output.read_text(encoding="utf-8").startswith('{\n  "schema_version": 1,')  # two-space indent
     assert hygiene.validate_report(output) == [] and output.stat().st_size < hygiene.MAX_TRACKED_REPORT_BYTES
     assert {p.name for p in details.iterdir()} == {"rows.json", "before.json", "after.json", "both.json"}
     assert len(json.loads((details / "rows.json").read_text(encoding="utf-8"))) == 4
+
+
+def test_the_report_comes_back_apart_from_the_rows_that_stay_out_of_it():
+    report, rows = study.build_report(BEFORE, AFTER, {})
+
+    assert "_rows" not in report and "rows" not in report["noise_reference"]
+    assert [row["mix"] for row in rows] == list(BEFORE["mixes"])
 
 
 def test_the_tool_refuses_a_file_that_is_not_a_bench_report_and_a_bad_variant_name(tmp_path: Path):

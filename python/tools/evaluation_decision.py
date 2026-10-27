@@ -114,6 +114,11 @@ def decision_block(outcome: str, reason: str, decided: str | None = None, by: st
     return block
 
 
+def measured_decision() -> dict[str, Any]:
+    """The block of a report that records numbers and leaves the decision to the maintainer."""
+    return decision_block("measured", "The numbers are information; the maintainer decides.")
+
+
 def _legacy_reason(report: dict[str, Any]) -> str | None:
     decision = report.get("decision")
     if isinstance(decision, dict):

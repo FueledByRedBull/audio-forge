@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict
 
 from PySide6.QtCore import QObject, Signal
@@ -22,9 +23,17 @@ class NoiseSuppressionState(QObject):
     writeFailed = Signal(str)
     recoveryFailed = Signal(str)
 
-    def __init__(self, processor, parent: QObject | None = None):
+    def __init__(
+        self,
+        processor,
+        parent: QObject | None = None,
+        *,
+        stop_audio: Callable[[], object] | None = None,
+    ):
         super().__init__(parent)
         self.processor = processor
+        # Where the app routes a failure stop off the GUI thread; alone, the processor is stopped here.
+        self._stop_audio = stop_audio
         self._settings = asdict(RNNoiseSettings())
         self.models = tuple(processor.list_noise_models())
 
@@ -99,7 +108,7 @@ class NoiseSuppressionState(QObject):
                 )
                 self.recoveryFailed.emit(message)
                 try:
-                    self.processor.stop()
+                    (self._stop_audio or self.processor.stop)()
                 except Exception as stop_error:
                     message += f"; stopping audio also failed: {stop_error}"
                 self.writeFailed.emit(message)

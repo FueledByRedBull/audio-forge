@@ -13,6 +13,10 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
+    ignore:
+      # semgrep pins opentelemetry-api ~=1.37.0, so a bump breaks every Python job.
+      # Drop this with the CVE-2026-114603 pip-audit exception.
+      - dependency-name: opentelemetry-api
 
   - package-ecosystem: cargo
     directory: /

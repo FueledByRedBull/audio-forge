@@ -59,7 +59,7 @@ from typing import Any
 import numpy as np
 
 import bench_metrics as bm
-from evaluation_decision import decision_block
+from evaluation_decision import decision_block, measured_decision
 
 SCHEMA_VERSION = 1
 # (key, heading, decimals)
@@ -70,28 +70,30 @@ MEASURES = (
 )
 
 
-def git_revision(root: Path = bm.REPO_ROOT) -> str | None:
-    """HEAD when no tracked file is modified, otherwise None (a report of unsaved code names no commit).
+def git_state(root: Path = bm.REPO_ROOT) -> tuple[str | None, bool]:
+    """HEAD, and whether a tracked file differs from it (a report of unsaved code names a commit it does not match).
 
-    Untracked files do not count: the run's own ``.partial.jsonl`` is one.
+    Untracked files do not count: the run's own ``.partial.jsonl`` is one. Without git, ``(None, False)``.
     """
     def run(*args: str) -> str:
         return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
 
     try:
-        return run("rev-parse", "HEAD") if not run("status", "--porcelain", "--untracked-files=no") else None
+        return run("rev-parse", "HEAD"), bool(run("status", "--porcelain", "--untracked-files=no"))
     except (OSError, subprocess.CalledProcessError):
-        return None
+        return None, False
 
 
 def build_identity(root: Path, vad: bool) -> dict[str, Any]:
     import scipy
     from mic_eq import mic_eq_core
 
+    revision, dirty = git_state()
     return {
         "native_module": Path(mic_eq_core.__file__).name,
         "native_module_sha256": bm.file_sha256(Path(mic_eq_core.__file__)),
-        "git_revision": git_revision(),
+        "git_revision": revision,
+        "git_dirty": dirty,
         "manifest_sha256": bm.file_sha256(root / "manifest.json"),
         "vad": "silero" if vad else "unavailable",
         # The tuner tries DeepFilter models only when this is set, so reports from different setups differ visibly.
@@ -234,13 +236,13 @@ def _clause_sections(voiced: dict[str, Any]) -> list[str]:
         vs = entry["voice_setup"]
         if not vs.get("proposal"):
             continue
-        which = "final" if vs.get("final") else "proposal"
+        which = bm.ended_with(vs)
         current, aware = entry["factory"], entry["factory"].get("fair")
         setup_rows.append([mix_id, vs["outcome"], _reference(vs), str(vs.get("tuner") or "-"), ",".join(vs["steps"]) or "-",
                            _fails(vs[which], current), _fails((vs.get("fair") or {}).get(which), aware)])
         arms = vs.get("compressor_step") or {}
         step_rows.append([mix_id, *(_fails(arms.get(arm, {}).get(kind), current if kind == "plain" else aware)
-                                    for arm in ("step", "off", "squash") for kind in ("plain", "fair"))])
+                                    for arm in bm.COMPRESSOR_ARMS for kind in ("plain", "fair"))])
 
     def total(rows: list[list[str]], column: int) -> str:
         return f"{sum(row[column] not in ('none', '-') for row in rows)} of {len(rows)}"
@@ -256,8 +258,13 @@ def _clause_sections(voiced: dict[str, Any]) -> list[str]:
             "`step` is Voice Setup's compressor, `off` has no compressor, `squash` is a 20:1 compressor from -60 dB with a "
             "0.5 ms attack, which must fail. Mixes failing: "
             + "; ".join(f"{name} plain {total(step_rows, 1 + 2 * i)}, compression-aware {total(step_rows, 2 + 2 * i)}"
-                        for i, name in enumerate(("step", "off", "squash"))) + ".", "",
+                        for i, name in enumerate(bm.COMPRESSOR_ARMS)) + ".", "",
             _table(["mix", "step plain", "step aware", "off plain", "off aware", "squash plain", "squash aware"], step_rows)]
+
+
+def _git_text(build: dict[str, Any]) -> str:
+    revision = build["git_revision"]
+    return f"`{revision}`{' plus uncommitted changes' if build['git_dirty'] else ''}" if revision else "not recorded"
 
 
 def markdown(result: dict[str, Any]) -> str:
@@ -268,7 +275,7 @@ def markdown(result: dict[str, Any]) -> str:
         f"{len(mixes)} mixes of the fixed bench set. The numbers are information for the maintainer, not a gate.",
         "",
         f"- Build: native module `{build['native_module_sha256'][:16]}`, git revision "
-        f"`{build['git_revision'] or 'not clean'}`, manifest `{build['manifest_sha256'][:16]}`.",
+        f"{_git_text(build)}, manifest `{build['manifest_sha256'][:16]}`.",
         f"- VAD: {'Silero' if build['vad'] == 'silero' else 'unavailable (energy path)'}.",
         f"- Suppressor: {_suppressors(mixes)}. AUDIOFORGE_ENABLE_DEEPFILTER: {build.get('deepfilter_enabled') or 'unset'}.",
         f"- Decision: {result['decision']['outcome']}; {result['decision']['reason']}",
@@ -364,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--reason and --by go with --decision")
     try:  # fail before the run, not after ten minutes
         decision = (decision_block(args.decision, args.reason, date.today().isoformat(), args.by) if args.decision else
-                    decision_block("measured", "The numbers are information; the maintainer decides."))
+                    measured_decision())
     except ValueError as error:
         parser.error(str(error))
     earlier = None
@@ -395,7 +402,7 @@ def main(argv: list[str] | None = None) -> int:
     if earlier:
         text += "\n" + compare_markdown(result, earlier)
     if args.json_output:
-        args.json_output.write_text(json.dumps(result, indent=1, default=float) + "\n", encoding="utf-8", newline="\n")
+        args.json_output.write_text(json.dumps(result, indent=2, default=float) + "\n", encoding="utf-8", newline="\n")
         if partial:
             partial.unlink(missing_ok=True)
     if args.output:

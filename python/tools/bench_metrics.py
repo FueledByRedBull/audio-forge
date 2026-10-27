@@ -59,6 +59,7 @@ RETAKE_STARTS_S = (3.0, 5.0, 7.0)  # where, in the noise of the take, the room-n
 # A compressor that squashes the voice: the known-bad probe of the retired refusal study (20:1 from -60 dB, 0.5 ms).
 SQUASH = {"enabled": True, "threshold_db": -60.0, "ratio": 20.0, "attack_ms": 0.5, "release_ms": 200.0,
           "makeup_gain_db": 0.0, "adaptive_release": False, "auto_makeup_enabled": False}
+COMPRESSOR_ARMS = ("step", "off", "squash")  # the compressor step on its own: Voice Setup's, none, the known-bad control
 RETRY_COSTS = {"verification_delivery_mismatch": "D1", "verification_capture_too_short": "D2",
                "verification_capture_invalid": "D2"}
 TONE_FRAME, TONE_HOP, MIN_TONE_FRAMES = 4096, 2048, 8
@@ -460,8 +461,8 @@ def compressor_arms(current: dict[str, Any], proposed_compressor: dict[str, Any]
     arms = {"step": proposed_compressor, "off": {**current["compressor_settings"], "enabled": False},
             "squash": {**current["compressor_settings"], **SQUASH}}
     out = {}
-    for name, compressor in arms.items():
-        settings = {**current, "compressor_settings": compressor}
+    for name in COMPRESSOR_ARMS:
+        settings = {**current, "compressor_settings": arms[name]}
         out[name] = {"plain": measure_settings(settings, ctx), "fair": fair_settings_readings(settings, ctx, vad_available)}
     return out
 
@@ -476,6 +477,11 @@ def is_vacuous(withheld: dict[str, Any], current: dict[str, Any], sections: tupl
         elif digest(withheld[name]) != digest(current[name]):
             return False
     return True
+
+
+def ended_with(voice_setup_entry: dict[str, Any]) -> str | None:
+    """Which readings are the setup the user ends with: ``final`` once applied, else the ``proposal``; None if none."""
+    return "final" if voice_setup_entry.get("final") else "proposal" if voice_setup_entry.get("proposal") else None
 
 
 def changed_steps(proposal: dict[str, Any], current: dict[str, Any]) -> list[str]:

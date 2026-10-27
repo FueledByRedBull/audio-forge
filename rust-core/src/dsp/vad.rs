@@ -1282,23 +1282,28 @@ fn read_pinned_silero_model(path: &Path) -> Result<Vec<u8>, VadError> {
 
 /// `read_pinned_silero_model`, remembering the last verified file so later VAD
 /// instances (worker restarts, offline analyses) skip re-reading and re-hashing
-/// its 2.3 MB. Never called on the realtime path.
-/// shortcut: a file replaced at the same path keeps the verified copy until
-/// the process restarts; key by modification time if that ever matters.
+/// its 2.3 MB for as long as its size and modification time stay the same.
+/// Never called on the realtime path.
 fn cached_pinned_silero_model(path: &Path) -> Result<Arc<[u8]>, VadError> {
-    type VerifiedModel = (PathBuf, Arc<[u8]>);
+    type VerifiedModel = (PathBuf, (u64, std::time::SystemTime), Arc<[u8]>);
     static VERIFIED: OnceLock<Mutex<Option<VerifiedModel>>> = OnceLock::new();
     let verified = VERIFIED.get_or_init(|| Mutex::new(None));
-    if let Ok(cached) = verified.lock() {
-        if let Some((cached_path, bytes)) = cached.as_ref() {
-            if cached_path == path {
+    // Read before the file, so a replacement in between is checked next time.
+    // A file that cannot be stamped is read every time; an unreadable one fails
+    // in `read_pinned_silero_model` with its own message.
+    let stamp = std::fs::metadata(path)
+        .and_then(|metadata| Ok((metadata.len(), metadata.modified()?)))
+        .ok();
+    if let (Some(stamp), Ok(cached)) = (stamp, verified.lock()) {
+        if let Some((cached_path, cached_stamp, bytes)) = cached.as_ref() {
+            if cached_path == path && *cached_stamp == stamp {
                 return Ok(Arc::clone(bytes));
             }
         }
     }
     let bytes: Arc<[u8]> = read_pinned_silero_model(path)?.into();
-    if let Ok(mut cached) = verified.lock() {
-        *cached = Some((path.to_path_buf(), Arc::clone(&bytes)));
+    if let (Some(stamp), Ok(mut cached)) = (stamp, verified.lock()) {
+        *cached = Some((path.to_path_buf(), stamp, Arc::clone(&bytes)));
     }
     Ok(bytes)
 }

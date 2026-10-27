@@ -75,7 +75,7 @@ from .device_selection import (
 )
 from .capture_session import recovery_paused
 from .engine_tasks import EngineTasks, attempt
-from .theme import contrast_theme_changed
+from .theme import contrast_theme_changed, muted_icon
 from .config_history import (
     BoundedConfigurationHistory,
     ConfigurationSnapshot,
@@ -368,12 +368,13 @@ class MainWindow(QMainWindow):
 
         # Create audio processor
         self.processor = AudioProcessor()
-        self.limiter_state = LimiterState(self.processor, self)
-        self.deesser_state = DeEsserState(self.processor, self)
-        self.compressor_state = CompressorState(self.processor, self)
-        self.gate_state = GateState(self.processor, self)
-        self.eq_state = EQState(self.processor, self)
-        self.noise_suppression_state = NoiseSuppressionState(self.processor, self)
+        stop_audio = self._stop_audio_on_worker
+        self.limiter_state = LimiterState(self.processor, self, stop_audio=stop_audio)
+        self.deesser_state = DeEsserState(self.processor, self, stop_audio=stop_audio)
+        self.compressor_state = CompressorState(self.processor, self, stop_audio=stop_audio)
+        self.gate_state = GateState(self.processor, self, stop_audio=stop_audio)
+        self.eq_state = EQState(self.processor, self, stop_audio=stop_audio)
+        self.noise_suppression_state = NoiseSuppressionState(self.processor, self, stop_audio=stop_audio)
         self.processing_meters = ProcessingMeters(self.processor, self.gate_state, self)
         self.input_meter = LevelMeter("IN", show_scale=True, name="Input level meter", parent=self)
         self.output_meter = LevelMeter("OUT", show_scale=True, name="Output level meter", parent=self)
@@ -434,6 +435,7 @@ class MainWindow(QMainWindow):
         self._shut_down = False
         self._quit_dont_ask = False
         self._tray_icon: QSystemTrayIcon | None = None
+        self._tray_icons: tuple[QIcon, QIcon] = (QIcon(), QIcon())  # heard, muted
         self._tray_menu: QMenu | None = None
         self._tray_mute_action: QAction | None = None
         self._mute_hotkey: GlobalMuteHotkey | None = None
@@ -877,9 +879,10 @@ class MainWindow(QMainWindow):
         self.output_meter.set_muted(muted)
         tray = self.__dict__.get("_tray_icon")
         if tray is not None:
+            tray_muted = bool(self.user_muted or self._temporary_mute_reasons)
             tooltip = build_tray_tooltip(
                 processing=running,
-                muted=bool(self.user_muted or self._temporary_mute_reasons),
+                muted=tray_muted,
                 health=self.shell_texts["health_summary_label"].text.removeprefix("Health: "),
                 route=(input_name, output_name),
             )
@@ -887,6 +890,9 @@ class MainWindow(QMainWindow):
             if tooltip != self.__dict__.get("_tray_tooltip"):
                 self._tray_tooltip = tooltip
                 tray.setToolTip(tooltip)
+            if tray_muted != self.__dict__.get("_tray_icon_muted", False):
+                self._tray_icon_muted = tray_muted
+                tray.setIcon(self._tray_icons[tray_muted])
         if self.__dict__.get("_history_ready") and not self.__dict__.get("_calibration_dialog_open"):
             self._refresh_calibration_status()
 
@@ -1656,6 +1662,7 @@ class MainWindow(QMainWindow):
             icon = app.windowIcon()
         if icon.isNull():
             icon = QIcon.fromTheme("audio-card")
+        self._tray_icons = (icon, muted_icon(icon))
         self._tray_icon = QSystemTrayIcon(icon, self)
         self._tray_icon.setToolTip("AudioForge microphone processor")
         self._tray_menu = QMenu(self)
@@ -3000,7 +3007,8 @@ class MainWindow(QMainWindow):
         idle = not (busy or running)
         self.start_btn_action.setEnabled(idle)
         self.stop_btn_action.setEnabled(
-            not busy and (running or self.__dict__.get("_login_startup_deadline") is not None)
+            not busy
+            and (running or self._restart_pending() or self.__dict__.get("_login_startup_deadline") is not None)
         )
         self.input_choice.setEnabled(idle)
         self.output_choice.setEnabled(idle)
@@ -3014,6 +3022,11 @@ class MainWindow(QMainWindow):
         if callable(sync_meters):
             sync_meters()
 
+    def _restart_pending(self) -> bool:
+        """Whether the engine, streams stopped, is waiting to retry a failed restart; Stop cancels it."""
+        getter = getattr(self.processor, "is_recovery_requested", None)
+        return callable(getter) and bool(getter())
+
     def _stop_processing(self):
         """Stop audio processing and wait for the engine."""
         if self._prepare_stop():
@@ -3025,10 +3038,10 @@ class MainWindow(QMainWindow):
             self._run_engine("stop", self.processor.stop, self._finish_stop)
 
     def _prepare_stop(self) -> bool:
-        """Whether there is a running engine to stop."""
+        """Whether there is a running engine, or a restart retry, to stop."""
         if self.__dict__.get("_login_startup_deadline") is not None:
             self._cancel_login_startup()
-        if not self.processor.is_running():
+        if not (self.processor.is_running() or self._restart_pending()):
             self._sync_processing_controls()
             if DEBUG:
                 logger.debug("Stop processing clicked, but processor is not running")
@@ -3055,9 +3068,18 @@ class MainWindow(QMainWindow):
             self._update_session_summary()
             if DEBUG:
                 logger.debug("Processing stopped")
-        except RuntimeError as e:
+        except Exception as e:
             logger.exception("Stop processing failed")
             QMessageBox.critical(self, "Error", f"Failed to stop processing:\n{e}")
+
+    def _stop_audio_on_worker(self) -> None:
+        """Stop the engine after a failed configuration; a start or recovery on the worker may hold the lock."""
+        self._engine.submit(self.processor.stop, self._audio_stop_failed)
+
+    def _audio_stop_failed(self, outcome: Any) -> None:
+        if isinstance(outcome, Exception) and not self._shut_down:
+            logger.error("Stopping audio after a failed configuration failed", exc_info=outcome)
+            self.status_message.showMessage(f"Stopping audio failed: {outcome}; restart AudioForge")
 
     def _on_auto_eq_clicked(self):
         """Open Auto-EQ calibration dialog."""
@@ -4141,7 +4163,7 @@ class MainWindow(QMainWindow):
 
     def _service_stream_recovery(self) -> None:
         """Poll the engine's own stream recovery; it detects stalls, backs off and restarts."""
-        if self._engine_busy or self._recovery_polling or self._shut_down:
+        if _engine_in_use(self) or self._shut_down:
             return
         # Not locked like a click: it asks the engine every tick and mostly has nothing to do.
         self._recovery_polling = True
@@ -4178,16 +4200,8 @@ class MainWindow(QMainWindow):
                         err_msg = self.processor.get_last_stream_error() or ""
                     except Exception:
                         err_msg = ""
-                    if err_msg:
-                        self.status_message.showMessage(
-                            f"The selected devices are not available, so AudioForge keeps retrying: {err_msg}",
-                            6000,
-                        )
-                    else:
-                        self.status_message.showMessage(
-                            "The selected devices are not available, so AudioForge keeps retrying",
-                            6000,
-                        )
+                    message = "The selected devices are not available, so AudioForge keeps retrying"
+                    self.status_message.showMessage(f"{message}: {err_msg}" if err_msg else message, 6000)
                 self._sync_processing_controls()
             self._recovery_service_failing = False
         except Exception:
@@ -4393,8 +4407,8 @@ class MainWindow(QMainWindow):
         try:
             self.set_temporary_output_mute(True, "configuration")
             if self.__dict__.get("_output_mute_error") and self.processor.is_running():
-                self.processor.stop()
-                raise RuntimeError("Audio stopped because configuration mute failed")
+                self._stop_audio_on_worker()
+                raise RuntimeError("Audio is muted and stopping because configuration mute failed")
             try:
                 self._write_processing_configuration(candidate)
                 if processing_mode is not None:
@@ -4420,25 +4434,15 @@ class MainWindow(QMainWindow):
                     self._flush_processing_configuration_writes()
                 except Exception as restore_error:
                     release_mute = False
-                    try:
-                        self.processor.stop()
-                    except Exception as stop_error:
-                        self.status_message.showMessage(
-                            "Audio remains muted, but configuration restoration and "
-                            "processor stop both failed; restart AudioForge",
-                            7000,
-                        )
-                        raise RuntimeError(
-                            f"Configuration failed ({error}); restoration failed ({restore_error}); "
-                            f"processor stop failed ({stop_error}). Audio remains muted."
-                        ) from stop_error
+                    # Before the stop is asked for: its failure message must be the one left showing.
                     self.status_message.showMessage(
-                        "Audio stopped and muted: configuration restoration failed",
+                        "Audio muted and stopping: configuration restoration failed",
                         7000,
                     )
+                    self._stop_audio_on_worker()
                     raise RuntimeError(
                         f"Configuration failed ({error}); restoration failed ({restore_error}). "
-                        "Audio is stopped and muted."
+                        "Audio is muted and stopping."
                     ) from restore_error
                 raise RuntimeError(f"Configuration was not applied; previous sound restored: {error}") from error
         finally:
@@ -4631,14 +4635,13 @@ class MainWindow(QMainWindow):
 
     def _open_presets_folder(self):
         """Open the presets folder in the file explorer."""
-        import subprocess
-
         presets_dir = get_presets_dir()
-
-        if os.name == "nt":  # Windows
-            subprocess.run(["explorer", str(presets_dir)])
-        elif os.name == "posix":  # Linux/Mac
-            subprocess.run(["xdg-open", str(presets_dir)])
+        if not presets_dir.is_dir() or not QDesktopServices.openUrl(QUrl.fromLocalFile(str(presets_dir))):
+            QMessageBox.warning(
+                self,
+                "Presets Folder",
+                f"Unable to open the presets folder. Check: {presets_dir}",
+            )
 
     def closeEvent(self, event):
         """Handle window close."""

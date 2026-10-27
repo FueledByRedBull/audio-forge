@@ -100,8 +100,10 @@ The manifest currently covers:
   `opengl32sw.dll`. The portable package may exclude unused `libcrypto` and
   `libssl` payloads when the packaging rules prove they are not loaded.
 * The pinned DeepFilterNet source, its resolved Cargo graph, the recorded
-  `tract-linalg` patch, and the locked Windows C API build recipe under
-  `build-support/deepfilter/` and `build_deepfilter.ps1`.
+  `tract-linalg` patch, the replacement C API source `capi.rs` (it keeps a
+  model or inference failure from ending the process), and the locked
+  Windows C API build recipe under `build-support/deepfilter/` and
+  `build_deepfilter.ps1`.
 * Every registry crate resolved by `cargo metadata --locked` for the Windows
   `extension-module` build, with checksums taken from `Cargo.lock`.
 
@@ -151,7 +153,7 @@ separate copy so an installer repair does not overwrite your changes.
 ## DeepFilter build provenance
 
 `build_deepfilter.ps1` verifies the pinned upstream commit, model archives,
-Cargo lock, local `tract-linalg` patch, compiler target, required exports, and
+Cargo lock, local `tract-linalg` patch and `capi.rs` source, compiler target, required exports, and
 the output digest before the DLL is copied into a release build. The provenance
 record also carries the deterministic parity and latency results used to accept
 the replacement. Regenerate the manifest after changing this recipe and run

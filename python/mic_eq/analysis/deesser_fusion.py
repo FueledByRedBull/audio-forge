@@ -5,7 +5,6 @@ from __future__ import annotations
 import numpy as np
 
 MODEL_VERSION = "deesser-soft-fusion-v1"
-CORPUS_VERSION = "audioforge-generated-deesser-corpus-v1"
 
 # A ridge fit on VoiceBank development speakers, never EARS. This signed score
 # distinguishes local resonance from broad tilt; it is not a probability.
@@ -170,7 +169,6 @@ __all__ = [
     "CLIP_COEFFICIENTS",
     "CLIP_FEATURE_NAMES",
     "CLIP_INTERCEPT",
-    "CORPUS_VERSION",
     "ENABLE_PROBABILITY_THRESHOLD",
     "FRAME_COEFFICIENTS",
     "FRAME_FEATURE_NAMES",

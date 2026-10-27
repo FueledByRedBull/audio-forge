@@ -148,6 +148,8 @@ pub(super) struct WorkerLink {
     /// When each owed result was asked for, oldest first from `owed_head`.
     owed_since: [Instant; WORKER_QUEUE_FRAMES],
     owed_head: usize,
+    /// `WORKER_LATE_AFTER` unless a test sets its own. Unconditional: a
+    /// `#[cfg(test)]` field would blank this impl out of the RT source scan.
     late_after: Duration,
 }
 
@@ -172,21 +174,26 @@ impl WorkerLink {
 
     /// A result came back.
     fn heard_from_worker(&mut self) {
-        self.silent_for = Duration::ZERO;
-        self.last_look = None;
+        self.forget_silence();
         self.owed_head = (self.owed_head + 1) % WORKER_QUEUE_FRAMES;
     }
 
+    fn forget_silence(&mut self) {
+        self.silent_for = Duration::ZERO;
+        self.last_look = None;
+    }
+
     /// How many of the results the worker owes were asked for longer ago than
-    /// `late_after`: the frames it is behind with, which the published latency
-    /// counts one by one. Frames offered together in one pass are not late
-    /// while the worker is working through them.
+    /// `WORKER_LATE_AFTER`: the frames it is behind with, which the published
+    /// latency counts one by one. Frames offered together in one pass are not
+    /// late while the worker is working through them.
     pub(super) fn late_frames(&self) -> usize {
+        let late_after = self.late_after;
         let now = Instant::now();
         (0..self.owed())
             .take_while(|index| {
                 let since = self.owed_since[(self.owed_head + index) % WORKER_QUEUE_FRAMES];
-                now.saturating_duration_since(since) > self.late_after
+                now.saturating_duration_since(since) > late_after
             })
             .count()
     }
@@ -195,8 +202,7 @@ impl WorkerLink {
     /// result and none is waiting to be collected.
     fn look_at_silence(&mut self) {
         if self.owed() == 0 || self.worker.has_result() {
-            self.silent_for = Duration::ZERO;
-            self.last_look = None;
+            self.forget_silence();
             return;
         }
         let now = Instant::now();

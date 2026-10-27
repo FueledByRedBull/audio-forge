@@ -255,7 +255,8 @@ cargo audit
 - **Weekly checks:** `weekly-checks.yml` runs on Mondays from `master` and on
   demand. It downloads every pinned source archive again with no Actions cache,
   rebuilds the runtime assets from their pinned sources, and runs the Python and
-  RustSec audits. It holds a read-only token and publishes nothing. A failure
+  RustSec audits (only the pinned `cargo-audit` binary comes from a cache; the
+  advisory database is fetched fresh). It holds a read-only token and publishes nothing. A failure
   means an upstream file or advisory changed since the last run; look at it
   before the next release.
 - **Dependabot:** GitHub Actions version updates stay on, weekly and grouped

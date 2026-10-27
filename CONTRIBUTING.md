@@ -131,8 +131,8 @@ fails when a DeepFilter or Silero test reports that it skipped itself.
 the restore still runs `verify_release_assets.py` on the files. Package check and
 the release workflow always build it. Closing a pull request runs
 `cache-cleanup.yml`, which deletes the caches that pull request created, and
-`weekly-checks.yml` re-runs the source, asset and advisory checks with nothing
-cached. After you edit a workflow, run `zizmor .github/workflows` as well as
+`weekly-checks.yml` re-runs the source, asset and advisory checks with the
+source archives and runtime assets downloaded fresh. After you edit a workflow, run `zizmor .github/workflows` as well as
 `check_workflows.py`; CI runs both.
 
 After a release is published, download the assets, recompute their SHA-256, and

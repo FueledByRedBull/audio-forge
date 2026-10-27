@@ -1,6 +1,6 @@
 name: Weekly checks
 
-# Re-runs, with nothing cached, the checks that read the outside world: the
+# Re-runs, with no source or asset cache, the checks that read the outside world: the
 # pinned corresponding-source archives, the runtime asset hydration and the
 # vulnerability databases. It holds a read-only token and publishes or uploads
 # nothing; a failure here means an upstream source moved, not that master broke.

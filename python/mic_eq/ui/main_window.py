@@ -207,6 +207,10 @@ ENGINE_CALL_WAIT_MS = 3_000
 # Set on the app while Qt asks to commit data for a sign-out or shutdown; the dialogs read it too.
 SESSION_ENDING_PROPERTY = "audioforge_session_ending"
 SAVE_PROBLEM = "Settings could not be saved, so recent changes may be lost when AudioForge closes."
+NOISE_SELECTION_DROPPED_WARNING = (
+    "The noise suppression model you chose could not be applied, and the previous one is still "
+    "running. Choose it again. If it keeps failing, check the model files or use Help > Export Diagnostics."
+)
 
 
 # The engine reports this age until a device has made its first callback.
@@ -420,6 +424,8 @@ class MainWindow(QMainWindow):
         self._device_wait_since: float | None = None
         self._stream_health = RecentStreamHealth()
         self._last_backend_warning = None
+        # The engine and its dropped-selection count when last read; a new engine counts from zero.
+        self._noise_drops_seen: tuple[Any, int] = (self.processor, 0)
         # The latest Voice Setup or Auto-EQ outcome, kept for the diagnostics export.
         self.last_setup_result: dict | None = None
         self._last_output_underrun_total = 0
@@ -4017,6 +4023,7 @@ class MainWindow(QMainWindow):
                 ("gate_chatter_event_count", "GCH"),
                 ("gate_auto_relax_active", "GAR"),
                 ("deesser_detector_confidence", "DSC"),
+                ("noise_selection_dropped_count", "NSD"),
             ],
         )
         if rt_error_active:
@@ -4060,6 +4067,14 @@ class MainWindow(QMainWindow):
         self.shell_texts["dropped_label"].update(tip=
             f"{DROPPED_DIAGNOSTICS_TOOLTIP}\n\nTechnical counters (for support reports):\n{dropped_detail}"
         )
+
+        # The engine drops a selection it cannot load, and a start has no caller to tell. Warn
+        # once per new drop, before the backend warning so that one stays on the line.
+        noise_drops = int(diagnostics.get("noise_selection_dropped_count", 0) or 0)
+        drops_seen = getattr(self, "_noise_drops_seen", None)
+        if drops_seen and drops_seen[0] is self.processor and noise_drops > drops_seen[1]:
+            self.status_message.showMessage(NOISE_SELECTION_DROPPED_WARNING, 8000)
+        self._noise_drops_seen = (self.processor, noise_drops)
 
         backend_available = diagnostics.get("noise_backend_available", True)
         backend_failed = diagnostics.get("noise_backend_failed", False)

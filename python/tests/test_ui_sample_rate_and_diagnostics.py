@@ -15,6 +15,7 @@ from unittest.mock import Mock, call
 import numpy as np
 import pytest
 from PySide6.QtCore import QEventLoop, QThread, QTimer, Signal
+from PySide6.QtGui import QAccessible
 from PySide6.QtWidgets import QMessageBox
 
 from mic_eq.analysis.cancellation import AnalysisCancelled
@@ -36,6 +37,7 @@ from mic_eq.ui.device_selection import (
 )
 from mic_eq.ui import main_window, rate_limiter
 from mic_eq.ui.main_window import (
+    NOISE_SELECTION_DROPPED_WARNING,
     MainWindow,
     _normalize_startup_preset_id,
     _startup_builtin_id,
@@ -1713,6 +1715,77 @@ def test_stopped_diagnostics_continue_native_recovery_and_reconcile_controls(win
     assert processor.is_running() is True
     assert not window.start_btn_action.isEnabled()
     assert window.stop_btn_action.isEnabled()
+
+
+def _poll_dropped_selections(window, processor, count) -> str:
+    """One diagnostics tick with the engine reporting ``count`` dropped selections."""
+    processor._diagnostics["noise_selection_dropped_count"] = count
+    window._update_diagnostics()
+    return window.status_message.text
+
+
+def test_a_dropped_noise_selection_warns_once_and_says_what_to_do(window):
+    processor = _MeterProcessor()
+    _recovery_setup(window, processor)
+    window.status_message.clearMessage()
+
+    assert _poll_dropped_selections(window, processor, 0) == ""
+    assert _poll_dropped_selections(window, processor, 1) == NOISE_SELECTION_DROPPED_WARNING
+    for expected in ("could not be applied", "previous one is still running",
+                     "Choose it again", "Help > Export Diagnostics"):
+        assert expected in NOISE_SELECTION_DROPPED_WARNING
+
+    # The same count is not a new drop: nothing comes back once the message has gone.
+    window.status_message.clearMessage()
+    assert _poll_dropped_selections(window, processor, 1) == ""
+
+    # The next drop warns again.
+    assert _poll_dropped_selections(window, processor, 2) == NOISE_SELECTION_DROPPED_WARNING
+
+
+def test_a_count_that_is_already_nonzero_does_not_warn_at_the_first_poll(window):
+    processor = _MeterProcessor()
+    processor._diagnostics["noise_selection_dropped_count"] = 3
+    _recovery_setup(window, processor)
+    window.status_message.clearMessage()
+
+    assert window.status_message.text == ""
+    assert _poll_dropped_selections(window, processor, 3) == ""
+    assert _poll_dropped_selections(window, processor, 3) == ""
+    assert _poll_dropped_selections(window, processor, 4) == NOISE_SELECTION_DROPPED_WARNING
+
+
+def test_a_counter_that_starts_over_does_not_warn_until_it_grows_again(window):
+    processor = _MeterProcessor()
+    _recovery_setup(window, processor)
+    _poll_dropped_selections(window, processor, 5)
+    window.status_message.clearMessage()
+
+    assert _poll_dropped_selections(window, processor, 0) == ""
+    assert _poll_dropped_selections(window, processor, 1) == NOISE_SELECTION_DROPPED_WARNING
+
+
+def test_the_window_watches_the_count_the_engine_exports(window):
+    # A fresh engine counts from zero, and the window starts from that.
+    assert window.processor.get_runtime_diagnostics()["noise_selection_dropped_count"] == 0
+    assert window._noise_drops_seen == (window.processor, 0)
+
+
+def test_the_dropped_selection_warning_is_announced_to_assistive_technology(window, monkeypatch):
+    announced: list[str] = []
+    monkeypatch.setattr(QAccessible, "isActive", staticmethod(lambda: True))
+    monkeypatch.setattr(
+        QAccessible, "updateAccessibility",
+        staticmethod(lambda event: announced.append(event.message())),
+    )
+    processor = _MeterProcessor()
+    _recovery_setup(window, processor)
+    window.status_message.clearMessage()
+
+    _poll_dropped_selections(window, processor, 0)
+    assert NOISE_SELECTION_DROPPED_WARNING not in announced
+    _poll_dropped_selections(window, processor, 1)
+    assert announced.count(NOISE_SELECTION_DROPPED_WARNING) == 1
 
 
 def test_stale_output_underrun_and_recovery_totals_do_not_warn(window, monkeypatch):

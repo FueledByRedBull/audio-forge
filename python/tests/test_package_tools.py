@@ -554,7 +554,9 @@ def test_ci_workflow_hydrates_cpu_ort_in_every_native_job():
     check_workflows._check_required_gates("ci.yml", source, errors)
 
     assert errors == []
-    assert source.count("fetch_release_assets.py --only-cpu-runtime --force") == 3
+    assert source.count("fetch_release_assets.py --only-cpu-runtime --force") == len(
+        check_workflows.CI_CPU_RUNTIME_JOBS
+    )
 
 
 def _ci_errors(mutate):

@@ -19,8 +19,9 @@ PYTEST_SHARDS_PATH = REPO_ROOT / ".github" / "pytest-shards.json"
 CI_GATES = {
     "python": ("static", "pytest"),
     "rust": ("rust-tests", "rust-stress"),
+    "linux": ("linux-tests",),
 }
-CI_CPU_RUNTIME_JOBS = ("pytest", "rust-tests", "rust-stress")
+CI_CPU_RUNTIME_JOBS = ("pytest", "rust-tests", "rust-stress", "linux-tests")
 CI_CPU_RUNTIME_HYDRATION = "fetch_release_assets.py --only-cpu-runtime --force"
 # The debug-mode Rust run skips only this test; rust-stress runs it in release.
 CI_DEBUG_SKIPPED_TEST = "seeded_control_and_dsp_loops_remain_finite_under_contention"

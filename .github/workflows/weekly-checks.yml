@@ -94,14 +94,15 @@ jobs:
         run: |
           python -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
           if ($LASTEXITCODE -ne 0) { throw "Runtime dependency audit failed with exit code $LASTEXITCODE." }
-          # semgrep pins mcp==1.29.0 exactly, so the dev lock cannot move off
-          # CVE-2026-59951. Only semgrep's MCP server uses mcp and nothing here
-          # runs it. Remove the ignore when semgrep allows mcp>=1.30.0.
+          # semgrep pins mcp==1.29.0 exactly (through 1.182.1), so the dev lock
+          # cannot move off CVE-2026-59951, CVE-2026-116684, CVE-2026-116685 and
+          # CVE-2026-116686. Only semgrep's MCP server uses mcp and nothing here
+          # runs it. Remove the ignores when semgrep allows mcp>=1.30.0.
           # semgrep also pins opentelemetry-api~=1.37.0, so the lock cannot move
           # off CVE-2026-114603, a ReDoS in TraceState.from_header for inbound
           # tracestate headers. semgrep only exports telemetry. Remove the ignore
           # when semgrep allows opentelemetry-api>=1.45.1.
-          python -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951 --ignore-vuln CVE-2026-114603
+          python -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951 --ignore-vuln CVE-2026-114603 --ignore-vuln CVE-2026-116684 --ignore-vuln CVE-2026-116685 --ignore-vuln CVE-2026-116686
           if ($LASTEXITCODE -ne 0) { throw "Development dependency audit failed with exit code $LASTEXITCODE." }
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
         with:

@@ -88,12 +88,16 @@ TAG_CHECKOUT_REF = re.compile(r"refs/tags/\$\{\{\s*inputs\.\w+\s*\}\}")
 HEAD_IS_TAG_COMMIT = re.compile(r"git rev-parse HEAD\)\.Trim\(\)\s+-ne\b")
 # Allowed pip_audit --ignore-vuln ids, each with the dev-lock pin that causes it.
 # The ignore stops being allowed once the lock moves off that pin.
-# CVE-2026-59951: semgrep pins mcp==1.29.0; only its MCP server uses mcp.
+# CVE-2026-59951, CVE-2026-116684, CVE-2026-116685, CVE-2026-116686: semgrep
+# pins mcp==1.29.0 (through 1.182.1); only its MCP server uses mcp.
 # CVE-2026-114603: semgrep pins opentelemetry-api~=1.37.0 (through 1.182.1); the
 # ReDoS is in TraceState.from_header for inbound tracestate headers, and semgrep
 # only exports telemetry.
 AUDIT_IGNORES = {
     "CVE-2026-59951": ("mcp", "1.29.0"),
+    "CVE-2026-116684": ("mcp", "1.29.0"),
+    "CVE-2026-116685": ("mcp", "1.29.0"),
+    "CVE-2026-116686": ("mcp", "1.29.0"),
     "CVE-2026-114603": ("opentelemetry-api", "1.37.0"),
 }
 CARGO_LOCKED_COMMANDS = ("build", "test", "clippy", "run")

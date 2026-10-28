@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from quick_child import run_checks
+from test_quick_layout import SEGOE_UI
 
 CHECKS = Path(__file__).with_name("quick_high_dpi_checks.py")
 # One window of each kind and the two painted items that scale (the EQ graph, a meter) keep
@@ -20,6 +21,8 @@ CHECKS = Path(__file__).with_name("quick_high_dpi_checks.py")
 SELECTION = "not unsaved and not output and not compressor and not deesser"
 
 
+# The child's layout checks measure text in the Windows UI font and skip without it.
+@pytest.mark.skipif(not SEGOE_UI.is_file(), reason="The Windows UI font is not installed")
 @pytest.mark.parametrize("scale", ["1.5", "2"])
 def test_the_scene_loads_without_warnings_and_nothing_overflows_at_scale(scale) -> None:
     run_checks(

@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QMessageBox,
 )
-from PySide6.QtCore import QCoreApplication, QEvent
+from PySide6.QtCore import QCoreApplication, QEvent, QLocale
 
 from mic_eq.ui.theme import apply_application_theme
 
@@ -30,6 +30,9 @@ def qapp():
     app = QApplication.instance()
     if app is None:
         app = QApplication([])
+    # Expected text uses the en-US formats Windows CI runs with; a developer's
+    # system locale (a decimal comma, say) must not change it.
+    QLocale.setDefault(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
     apply_application_theme(app)
     yield app
     app.processEvents()

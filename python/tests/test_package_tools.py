@@ -1816,6 +1816,7 @@ def test_package_smoke_requires_windows_audio_backend(tmp_path):
     assert any("windowsmediaplugin.dll" in error for error in errors)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows bundle layout (.pyd)")
 def test_package_smoke_rejects_duplicate_native_extension(tmp_path):
     bundle = tmp_path / "AudioForge"
     (bundle / "AudioForge.exe").parent.mkdir(parents=True)

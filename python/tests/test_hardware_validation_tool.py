@@ -371,6 +371,7 @@ def test_hardware_subprocess_uses_source_python_path(monkeypatch) -> None:
     assert result["return_code"] == 0
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows bundle runtime (DLL directory)")
 def test_bundle_runtime_pins_the_bundled_vad_model(tmp_path, monkeypatch) -> None:
     internal = tmp_path / "_internal"
     model_root = internal / "models"

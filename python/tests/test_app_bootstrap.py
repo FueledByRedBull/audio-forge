@@ -271,6 +271,7 @@ def test_launcher_leaves_model_discovery_to_app_bootstrap(tmp_path, monkeypatch)
     assert "VAD_MODEL_PATH" not in app_bootstrap.os.environ
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows taskbar properties")
 def test_windows_taskbar_relaunch_command_quotes_executable_path(qapp, monkeypatch):
     class Store:
         def __init__(self):

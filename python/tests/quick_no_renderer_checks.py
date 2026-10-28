@@ -11,6 +11,8 @@ The process spawn is recorded, not made.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 from PySide6.QtCore import QTimer
 from PySide6.QtTest import QTest
@@ -91,7 +93,9 @@ def test_a_copy_that_was_already_relaunched_shows_the_error_screen(spawned, monk
 
     assert spawned == []
     assert window._interface_snapshot() == {
-        "view": "error", "classic_reason": "no_renderer", "graphics_api": "direct3d11",
+        "view": "error", "classic_reason": "no_renderer",
+        # Qt Quick's default scene graph backend on each platform.
+        "graphics_api": "direct3d11" if sys.platform == "win32" else "opengl",
     }
     assert window.isVisible()
 

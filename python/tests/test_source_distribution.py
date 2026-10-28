@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 import tomllib
 from typing import Any, cast
@@ -235,6 +236,14 @@ def test_release_manifest_cannot_claim_complete_with_blocked_entry():
         )
 
 
+# Verifying the Windows release sources needs the release interpreter itself.
+_RELEASE_INTERPRETER = pytest.mark.skipif(
+    ".".join(map(str, sys.version_info[:3])) != source_tool.EXPECTED_CPYTHON_VERSION,
+    reason=f"needs the release interpreter, CPython {source_tool.EXPECTED_CPYTHON_VERSION}",
+)
+
+
+@_RELEASE_INTERPRETER
 def test_release_manifest_rejects_stale_qt_source_identity():
     manifest_path = Path(__file__).resolve().parents[2] / "licenses" / "source-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -271,6 +280,7 @@ def test_pyside_mapping_rejects_missing_or_different_wheel_versions(name):
             source_tool._pyside_source_entries(changed)
 
 
+@_RELEASE_INTERPRETER
 @pytest.mark.parametrize("field", ["sha256", "url", "source_of_truth"])
 def test_release_manifest_rejects_changed_pyside_archive_identity(field):
     manifest = json.loads(source_tool.DEFAULT_MANIFEST.read_text(encoding="utf-8"))
@@ -596,6 +606,7 @@ def _answer_cargo_metadata_from_the_lock(monkeypatch) -> None:
     monkeypatch.setattr(source_tool.subprocess, "run", run)
 
 
+@_RELEASE_INTERPRETER
 def test_manifest_records_current_incomplete_status(monkeypatch):
     manifest_path = Path(__file__).resolve().parents[2] / "licenses" / "source-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

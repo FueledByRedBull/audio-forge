@@ -15,6 +15,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from ctypes import wintypes
 from pathlib import Path
@@ -399,10 +400,12 @@ class SingleInstanceCoordinator:
             return False
         payload = command.encode("ascii") + b"\n"
         written = socket.write(payload)
-        # The caller exits next, so wait until nothing is left to write. A Windows
-        # pipe can finish the write inside write(), leaving nothing to wait for.
-        while socket.bytesToWrite() > 0 and socket.waitForBytesWritten(500):
-            pass
+        # The caller exits next, so wait until nothing is left to write. On Windows
+        # waitForBytesWritten can return before the pipe write is done, so only the
+        # remaining byte count decides.
+        deadline = time.monotonic() + 2.0
+        while socket.bytesToWrite() > 0 and time.monotonic() < deadline:
+            socket.waitForBytesWritten(50)
         delivered = written == len(payload) and socket.bytesToWrite() == 0
         socket.disconnectFromServer()
         if not delivered:

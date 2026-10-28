@@ -105,11 +105,13 @@ def _blocking_findings(sarif_path: Path) -> list[str]:
 
 
 def _semgrep_executable() -> str:
-    scripts_dir = Path(sys.executable).resolve().parent
-    for name in ("semgrep.exe", "semgrep"):
-        candidate = scripts_dir / name
-        if candidate.is_file():
-            return str(candidate)
+    # A POSIX venv's python is a symlink out of the venv; its scripts sit beside the link.
+    interpreter = Path(sys.executable)
+    for scripts_dir in dict.fromkeys((interpreter.parent, interpreter.resolve().parent)):
+        for name in ("semgrep.exe", "semgrep"):
+            candidate = scripts_dir / name
+            if candidate.is_file():
+                return str(candidate)
     executable = shutil.which("semgrep")
     if executable is None:
         raise RuntimeError("Semgrep executable is not installed")

@@ -86,6 +86,7 @@ def test_validate_msi_accepts_distinct_upgrade_payload_and_checks_current_tree(
     appdata = tmp_path / "appdata"
     monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
     monkeypatch.setenv("APPDATA", str(appdata))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(appdata))
     monkeypatch.setattr(msi_smoke, "_msiexec", lambda: "fake-msiexec")
     comparisons: list[tuple[Path, Path, bytes]] = []
     original_compare = msi_smoke._compare_payload

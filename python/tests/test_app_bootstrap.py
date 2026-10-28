@@ -189,6 +189,7 @@ def test_vad_bootstrap_preserves_explicit_override(tmp_path, monkeypatch):
 
 def test_app_logging_uses_audioforge_rotating_log(tmp_path, monkeypatch):
     monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     log_file = get_log_file()
 
     configured = configure_app_logging()
@@ -217,6 +218,7 @@ def test_app_logging_survives_an_unusable_profile_folder(tmp_path, monkeypatch):
     profile = tmp_path / "profile"
     profile.write_text("a file where the profile folder should be")
     monkeypatch.setenv("APPDATA", str(profile))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(profile))
     handlers_before = list(logging.getLogger().handlers)
 
     assert configure_app_logging() == get_log_file()
@@ -226,6 +228,7 @@ def test_app_logging_survives_an_unusable_profile_folder(tmp_path, monkeypatch):
 
 def test_app_logging_does_not_open_the_log_file_until_something_is_logged(tmp_path, monkeypatch):
     monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     log_file = configure_app_logging()
     try:
         assert not log_file.exists()
@@ -703,6 +706,7 @@ def test_startup_reaches_the_window_when_the_log_folder_cannot_be_created(
     profile = tmp_path / "profile"
     profile.write_text("a file where the profile folder should be")
     monkeypatch.setenv("APPDATA", str(profile))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(profile))
     reached = []
 
     def window():

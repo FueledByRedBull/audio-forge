@@ -91,6 +91,10 @@ def test_save_config_retries_a_transient_permission_error(tmp_path, monkeypatch)
     assert list(tmp_path.glob("*.tmp")) == []
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="POSIX rename replaces a read-only file; only the folder's permissions apply",
+)
 def test_replace_file_does_not_wait_on_a_read_only_target(tmp_path, monkeypatch):
     destination = tmp_path / "config.json"
     destination.write_text("existing", encoding="utf-8")

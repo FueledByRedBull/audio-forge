@@ -144,6 +144,7 @@ def test_preset_migration_does_not_mutate_caller_payload():
 
 def test_newly_saved_preset_records_explicit_value_provenance(tmp_path, monkeypatch):
     monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     preset = Preset(name="Provenance", gate=GateSettings(vad_threshold=0.41))
     path = save_preset(preset)
 
@@ -161,6 +162,8 @@ def test_audioforge_appdata_migrates_legacy_miceq_dir(tmp_path, monkeypatch):
     (legacy_dir / "config.json").write_text('{"version":"1.8.2"}', encoding="utf-8")
 
     monkeypatch.setenv("APPDATA", str(appdata_dir))
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(appdata_dir))
 
     config_file = config.get_config_file()
 

@@ -153,6 +153,7 @@ def test_exclusive_preset_creation_wins_against_a_competing_writer(
         raise FileExistsError("destination appeared during publication")
 
     monkeypatch.setattr(presets_module.os, "rename", competing_writer)
+    monkeypatch.setattr(presets_module.os, "link", competing_writer)
 
     with pytest.raises(FileExistsError):
         config.save_preset(Preset(name="Race"), destination)
@@ -952,6 +953,7 @@ def test_load_preset_allows_imports_root():
 
 def test_load_preset_rejects_oversized_file_before_json_parse(tmp_path, monkeypatch):
     monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     preset_path = config.get_presets_dir() / "oversized.json"
     preset_path.write_bytes(b"{" + b" " * MAX_PRESET_FILE_BYTES)
 

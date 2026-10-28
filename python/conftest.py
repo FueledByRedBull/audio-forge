@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 from PySide6.QtCore import QCoreApplication, QEvent, QLocale
+from PySide6.QtGui import QFont
 
 from mic_eq.ui.theme import apply_application_theme
 
@@ -34,6 +35,11 @@ def qapp():
     # system locale (a decimal comma, say) must not change it.
     QLocale.setDefault(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
     apply_application_theme(app)
+    # Subpixel text antialiasing (fontconfig rgba, the Ubuntu default) renders
+    # differently in a widget and in a QImage; the pixel comparisons need grayscale.
+    font = app.font()
+    font.setStyleStrategy(QFont.StyleStrategy.NoSubpixelAntialias)
+    app.setFont(font)
     yield app
     app.processEvents()
 

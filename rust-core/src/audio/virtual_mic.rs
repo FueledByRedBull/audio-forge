@@ -56,7 +56,9 @@ static VIRTUAL_MIC: Mutex<Option<VirtualMic>> = Mutex::new(None);
 /// Create the virtual microphone unless it already exists, and wait until
 /// PipeWire announces its source node.
 pub fn create() -> Result<(), String> {
-    let mut slot = VIRTUAL_MIC.lock().unwrap_or_else(|error| error.into_inner());
+    let mut slot = VIRTUAL_MIC
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     if slot.as_ref().is_some_and(|mic| !mic.thread.is_finished()) {
         return Ok(());
     }
@@ -171,9 +173,7 @@ fn serve(
 #[pyfunction]
 pub fn create_virtual_microphone(py: Python<'_>) -> PyResult<()> {
     // Waits on the PipeWire daemon; keep the GIL free.
-    py.detach(|| {
-        crate::catch_panic(|| create().map_err(pyo3::exceptions::PyRuntimeError::new_err))
-    })
+    py.detach(|| crate::catch_panic(|| create().map_err(pyo3::exceptions::PyRuntimeError::new_err)))
 }
 
 /// Remove the virtual microphone created by `create_virtual_microphone`.

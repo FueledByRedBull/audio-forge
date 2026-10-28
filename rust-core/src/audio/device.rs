@@ -167,13 +167,12 @@ fn collect_devices(input: bool) -> PyResult<Vec<DeviceInfo>> {
             continue;
         };
         #[cfg(target_os = "linux")]
-        let name = match (host.id() == cpal::HostId::PipeWire)
-            .then(|| pipewire_listing(&device, input))
-        {
-            Some(PipeWireListing::Hide) => continue,
-            Some(PipeWireListing::Rename(label)) => label.to_string(),
-            _ => name,
-        };
+        let name =
+            match (host.id() == cpal::HostId::PipeWire).then(|| pipewire_listing(&device, input)) {
+                Some(PipeWireListing::Hide) => continue,
+                Some(PipeWireListing::Rename(label)) => label.to_string(),
+                _ => name,
+            };
         let ordinal = ordinals.entry(name.clone()).or_default();
         let name_ordinal = *ordinal;
         *ordinal = ordinal.saturating_add(1);

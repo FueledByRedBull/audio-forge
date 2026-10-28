@@ -635,6 +635,155 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  # The Linux tarball and AppImage, built on the oldest supported release from
+  # the same commit. Like package-windows it builds every shipped binary here,
+  # libdf.so included, and restores nothing compiled from a cache.
+  package-linux:
+    name: Build Linux release package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      APPIMAGETOOL_URL: https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+      APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+      APPIMAGE_RUNTIME_URL: https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+      APPIMAGE_RUNTIME_SHA256: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_tag || github.sha }}
+          persist-credentials: false
+
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            appstream desktop-file-utils libasound2-dev libclang-dev libdbus-1-dev \
+            libegl1 libpipewire-0.3-dev libpulse-dev libxkbcommon0 pkg-config
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13.17"
+          cache: pip
+          cache-dependency-path: requirements/dev.txt
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
+        with:
+          toolchain: 1.94.0
+
+      # Downloaded crate sources only, as in package-windows.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-registry-v1-${{ hashFiles('Cargo.lock', 'build-support/deepfilter/Cargo.lock') }}
+
+      - name: Create Python 3.13 virtual environment
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --require-hashes -r requirements/dev.txt --no-compile
+
+      - name: Resolve release metadata
+        id: meta
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          INPUT_ASSET_SOURCE_TAG: ${{ inputs.asset_source_tag }}
+          CONFIGURED_ASSET_SOURCE_TAG: ${{ vars.AUDIOFORGE_ASSET_SOURCE_TAG }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version=$(.venv/bin/python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          expected_tag=$(.venv/bin/python python/tools/release_version.py tag "$version")
+          release_tag=$INPUT_RELEASE_TAG
+          if [[ -z $release_tag ]]; then
+            if [[ $REF_TYPE == tag ]]; then release_tag=$REF_NAME; else release_tag=$expected_tag; fi
+          fi
+          if [[ $release_tag != "$expected_tag" ]]; then
+            echo "Release tag '$release_tag' does not match pyproject version '$version' ($expected_tag)." >&2
+            exit 1
+          fi
+          asset_source_tag=${INPUT_ASSET_SOURCE_TAG:-$CONFIGURED_ASSET_SOURCE_TAG}
+          if [[ -z $asset_source_tag ]]; then
+            asset_source_tag=$(.venv/bin/python -c "import json; print(json.load(open('release-assets.json'))['fallback_release_tag'])")
+          fi
+          {
+            echo "release_tag=$release_tag"
+            echo "asset_source_tag=$asset_source_tag"
+            echo "tarball=dist/AudioForge-$release_tag-linux-x86_64.tar.gz"
+            echo "appimage=dist/AudioForge-$release_tag-x86_64.AppImage"
+          } >> "$GITHUB_OUTPUT"
+
+      # Builds libdf.so from the pinned DeepFilter source and verifies the rest.
+      - name: Download and verify pinned release runtime assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_SOURCE_TAG: ${{ steps.meta.outputs.asset_source_tag }}
+        run: .venv/bin/python python/tools/fetch_release_assets.py --release-tag "$ASSET_SOURCE_TAG" --force
+
+      - name: Build the Linux bundle
+        env:
+          AUDIOFORGE_PYTHON: .venv/bin/python
+        run: ./build_linux.sh
+
+      - name: Validate desktop entry and AppStream metadata
+        run: |
+          desktop-file-validate installer/linux/io.github.FueledByRedBull.AudioForge.desktop
+          appstreamcli validate --no-net installer/linux/io.github.FueledByRedBull.AudioForge.metainfo.xml
+
+      - name: Download pinned AppImage tools
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/appimagetool" "$APPIMAGETOOL_URL"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/runtime-x86_64" "$APPIMAGE_RUNTIME_URL"
+          sha256sum -c - <<< "$APPIMAGETOOL_SHA256  $RUNNER_TEMP/appimagetool
+          $APPIMAGE_RUNTIME_SHA256  $RUNNER_TEMP/runtime-x86_64"
+          chmod +x "$RUNNER_TEMP/appimagetool"
+
+      # Runners have no FUSE, so appimagetool and the AppImage extract themselves.
+      - name: Package the tarball and AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          .venv/bin/python python/tools/linux_package.py \
+            --appimagetool "$RUNNER_TEMP/appimagetool" \
+            --appimage-runtime "$RUNNER_TEMP/runtime-x86_64"
+
+      - name: Smoke-test the packaged app
+        env:
+          QT_QPA_PLATFORM: offscreen
+          TARBALL: ${{ steps.meta.outputs.tarball }}
+          APPIMAGE: ${{ steps.meta.outputs.appimage }}
+        run: |
+          extracted="$RUNNER_TEMP/tarball"
+          mkdir -p "$extracted"
+          tar xzf "$TARBALL" -C "$extracted"
+          "$extracted"/AudioForge-*/AudioForge/AudioForge --smoke-test
+          "$APPIMAGE" --appimage-extract-and-run --smoke-test
+
+      - name: Write checksums
+        env:
+          TARBALL: ${{ steps.meta.outputs.tarball }}
+          APPIMAGE: ${{ steps.meta.outputs.appimage }}
+        run: |
+          for file in "$TARBALL" "$APPIMAGE"; do
+            (cd "$(dirname "$file")" && sha256sum "$(basename "$file")" > "$(basename "$file").sha256")
+          done
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: audioforge-release-linux-${{ steps.meta.outputs.release_tag }}
+          compression-level: 0
+          path: |
+            ${{ steps.meta.outputs.tarball }}
+            ${{ steps.meta.outputs.tarball }}.sha256
+            ${{ steps.meta.outputs.appimage }}
+            ${{ steps.meta.outputs.appimage }}.sha256
+            target/deepfilter/libdf.so.provenance.json
+          if-no-files-found: error
+          retention-days: 3
+
   # Every test file runs exactly once: the shards in .github/pytest-shards.json
   # run their listed files and the last shard runs all other files.
   pytest:

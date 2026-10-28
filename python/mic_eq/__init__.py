@@ -11,8 +11,14 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _ORT_DLL_DIRECTORY_HANDLES: list[object] = []
 
 
-def _ort_dll_root() -> Path | None:
-    """Return the one trusted directory that may contain the CPU ORT DLLs."""
+# The one shared object the pinned Linux ONNX Runtime archive ships (see
+# release-assets.json); ``ort`` loads it by absolute path from ORT_DYLIB_PATH.
+_LINUX_ORT_LIBRARY = "libonnxruntime.so.1.23.2"
+_WINDOWS_ORT_FILES = ("onnxruntime.dll", "onnxruntime_providers_shared.dll")
+
+
+def _ort_dll_root(required: tuple[str, ...] = _WINDOWS_ORT_FILES) -> Path | None:
+    """Return the one trusted directory that may contain the CPU ORT runtime."""
     package_root = Path(__file__).resolve().parent
     if getattr(sys, "frozen", False):
         # PyInstaller places this package and the spec's ``.`` binaries under
@@ -25,9 +31,7 @@ def _ort_dll_root() -> Path | None:
     resolved = root.resolve()
     if not resolved.is_dir():
         return None
-    if not (resolved / "onnxruntime.dll").is_file() or not (
-        resolved / "onnxruntime_providers_shared.dll"
-    ).is_file():
+    if not all((resolved / name).is_file() for name in required):
         return None
     return resolved
 
@@ -36,6 +40,8 @@ def _configure_ort_dll_directory() -> None:
     """Register the packaged CPU ORT directory before loading the Rust extension."""
     add_dll_directory = getattr(os, "add_dll_directory", None)
     if add_dll_directory is None:
+        if sys.platform.startswith("linux"):
+            _configure_linux_ort_library()
         return
     root = _ort_dll_root()
     if root is None:
@@ -47,6 +53,17 @@ def _configure_ort_dll_directory() -> None:
     except OSError as error:
         raise ImportError(f"cannot register CPU ORT DLL directory: {root}") from error
     _ORT_DLL_DIRECTORY_HANDLES.append(handle)
+
+
+def _configure_linux_ort_library() -> None:
+    """Point ``ort``'s runtime loader at the trusted CPU ORT shared object."""
+    root = _ort_dll_root((_LINUX_ORT_LIBRARY,))
+    if root is None:
+        raise ImportError(
+            "CPU ONNX Runtime library is missing from the trusted project/bundle directory"
+        )
+    # Overwrite any inherited value so only the app-owned library can load.
+    os.environ["ORT_DYLIB_PATH"] = str(root / _LINUX_ORT_LIBRARY)
 
 
 __version__ = "1.19.0"

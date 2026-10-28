@@ -2588,6 +2588,93 @@ def test_fetch_pinned_archive_rejects_unsafe_or_symlink_members(tmp_path):
         )
 
 
+def _tar_with(archive, members):
+    import tarfile
+
+    with tarfile.open(archive, "w:gz") as output:
+        for info, payload in members:
+            output.addfile(info, io.BytesIO(payload) if payload is not None else None)
+
+
+def test_fetch_pinned_tgz_extracts_only_the_named_regular_file(tmp_path):
+    import tarfile
+
+    payload = b"\x7fELF runtime"
+    regular = tarfile.TarInfo("package/lib/libruntime.so.1.2.3")
+    regular.size = len(payload)
+    link = tarfile.TarInfo("package/lib/libruntime.so")
+    link.type = tarfile.SYMTYPE
+    link.linkname = "libruntime.so.1.2.3"
+    archive = tmp_path / "runtime.tgz"
+    _tar_with(archive, [(regular, payload), (link, None)])
+
+    extracted = fetch_release_assets._extract_pinned_tar_member(
+        archive, tmp_path / "extract", "package/lib/libruntime.so.1.2.3"
+    )
+    assert extracted.read_bytes() == payload
+
+    with pytest.raises(RuntimeError, match="exactly one regular file"):
+        fetch_release_assets._extract_pinned_tar_member(
+            archive, tmp_path / "extract-link", "package/lib/libruntime.so"
+        )
+
+    escape = tarfile.TarInfo("../escape.so")
+    escape.size = 1
+    escaping = tmp_path / "escape.tgz"
+    _tar_with(escaping, [(escape, b"x")])
+    with pytest.raises(RuntimeError, match="unsafe member path"):
+        fetch_release_assets._extract_pinned_tar_member(
+            escaping, tmp_path / "extract-escape", "package/lib/libruntime.so.1.2.3"
+        )
+
+
+def test_asset_manifest_keeps_only_the_requested_platform_and_shared_entries(tmp_path):
+    def entry(path, platform=None):
+        value = {"path": path, "sha256": "a" * 64}
+        if platform:
+            value["platform"] = platform
+        return value
+
+    manifest = tmp_path / "release-assets.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "assets": [
+                    entry("runtime.dll", "windows"),
+                    entry("libruntime.so", "linux"),
+                    entry("models/model.onnx"),
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    for platform, native in (("windows", "runtime.dll"), ("linux", "libruntime.so")):
+        loaded = verify_release_assets.load_asset_manifest(manifest, platform=platform)
+        assert sorted(loaded.entries) == sorted([native, "models/model.onnx"])
+
+    invalid = json.loads(manifest.read_text(encoding="utf-8"))
+    invalid["assets"].append(entry("runtime.dylib", "macos"))
+    invalid["assets"].append(entry("runtime.dll", "linux"))
+    manifest.write_text(json.dumps(invalid), encoding="utf-8")
+    with pytest.raises(ValueError) as raised:
+        verify_release_assets.load_asset_manifest(manifest, platform="linux")
+    assert "platform must be one of" in str(raised.value)
+    assert "repeats asset path runtime.dll" in str(raised.value)
+
+
+def test_repository_manifest_pins_a_linux_cpu_ort_archive():
+    linux = verify_release_assets.load_asset_manifest(platform="linux")
+    windows = verify_release_assets.load_asset_manifest(platform="windows")
+
+    linux_runtime = [path for path in linux.entries if path.startswith("target/onnxruntime-cpu/")]
+    assert linux_runtime == ["target/onnxruntime-cpu/lib/libonnxruntime.so.1.23.2"]
+    assert not any(path.endswith(".so.1.23.2") for path in windows.entries)
+    assert "df.dll" in windows.entries and "df.dll" not in linux.entries
+    origin = linux.entries[linux_runtime[0]]["origin"]
+    assert origin["archive_member"] == "onnxruntime-linux-x64-1.23.2/lib/libonnxruntime.so.1.23.2"
+
+
 def test_verify_release_assets_validates_pinned_archive_contract(tmp_path, monkeypatch):
     runtime = tmp_path / "runtime.dll"
     runtime.write_bytes(b"runtime")

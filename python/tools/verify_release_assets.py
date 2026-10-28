@@ -43,6 +43,16 @@ BLOCKED_ORIGIN_STATUSES = frozenset(
     }
 )
 KNOWN_ORIGIN_STATUSES |= BLOCKED_ORIGIN_STATUSES
+# Entries without a platform ship everywhere (models); native libraries name one.
+ASSET_PLATFORMS = frozenset({"windows", "linux"})
+
+
+def current_asset_platform() -> str:
+    if sys.platform == "win32":
+        return "windows"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    raise RuntimeError(f"unsupported release asset platform: {sys.platform}")
 
 
 def _sha256(path: Path) -> str:
@@ -64,8 +74,15 @@ def load_asset_manifest(
     *,
     require_assets: bool = True,
     require_metadata: bool = False,
+    platform: str | None = None,
 ) -> AssetManifest:
-    """Load and validate the live release asset manifest once."""
+    """Load and validate the live release asset manifest once.
+
+    Every entry is validated, but ``assets`` and ``entries`` hold only the
+    entries for ``platform`` (default: the running platform) plus the
+    platform-neutral ones.
+    """
+    platform = platform or current_asset_platform()
 
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -89,6 +106,7 @@ def load_asset_manifest(
         errors.append("manifest must contain a non-empty assets list")
 
     entries: dict[str, dict[str, Any]] = {}
+    seen_paths: set[str] = set()
     bundle_paths: dict[str, str] = {}
     validated_assets: list[dict[str, Any]] = []
     for index, asset in enumerate(raw_assets):
@@ -102,8 +120,13 @@ def load_asset_manifest(
         normalized_path = raw_path.replace("\\", "/")
         if path_error := _validate_manifest_path(raw_path, "asset path"):
             errors.append(path_error)
-        if normalized_path in entries:
+        if normalized_path in seen_paths:
             errors.append(f"manifest repeats asset path {raw_path}")
+        asset_platform = asset.get("platform")
+        if asset_platform is not None and asset_platform not in ASSET_PLATFORMS:
+            errors.append(
+                f"{raw_path}: platform must be one of {sorted(ASSET_PLATFORMS)}"
+            )
 
         raw_bundle_path = asset.get("bundle_path")
         normalized_bundle_path: str | None = None
@@ -168,6 +191,9 @@ def load_asset_manifest(
                         ):
                             errors.append(path_error)
 
+        seen_paths.add(normalized_path)
+        if asset_platform is not None and asset_platform != platform:
+            continue
         if normalized_path not in entries:
             entries[normalized_path] = asset
         if normalized_bundle_path is not None and normalized_bundle_path not in bundle_paths:

@@ -3,6 +3,7 @@
   "assets": [
     {
       "path": "df.dll",
+      "platform": "windows",
       "size": 18409984,
       "sha256": "849310c4176a3726b6fac9bcb39018e9523711953cd0bdd16000d6116195ab93",
       "source": "https://github.com/Rikorose/DeepFilterNet/tree/d375b2d8309e0935d165700c91da9de862a99c31",
@@ -20,6 +21,7 @@
     },
     {
       "path": "target/onnxruntime-cpu/lib/onnxruntime.dll",
+      "platform": "windows",
       "size": 14186016,
       "sha256": "dec964ab1ee36cc9b0ae247d13b376627992fc57dec0454354017ab8fd84f1ea",
       "source": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-1.23.2.zip",
@@ -38,6 +40,7 @@
     },
     {
       "path": "target/onnxruntime-cpu/lib/onnxruntime.lib",
+      "platform": "windows",
       "size": 2124,
       "sha256": "977263ca76e6a9d0f230a198d3b05b2a2bddfed66bc5c4d4fd25293b03cc78b5",
       "source": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-1.23.2.zip",
@@ -56,6 +59,7 @@
     },
     {
       "path": "target/onnxruntime-cpu/lib/onnxruntime_providers_shared.dll",
+      "platform": "windows",
       "size": 22088,
       "sha256": "a2b3a50956aa75a9879c8472bc7df4f7a8072bcd2db19a1b7d988e7688f293ef",
       "source": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-1.23.2.zip",
@@ -69,6 +73,25 @@
         "archive_member": "onnxruntime-win-x64-1.23.2/lib/onnxruntime_providers_shared.dll",
         "runtime": "CPU-only Windows x64; shared execution-provider loader",
         "rebuild": "Hydrate the pinned official archive, verify its archive SHA-256, and extract only the validated member. ORT_LIB_LOCATION points to target/onnxruntime-cpu/lib during the Rust build."
+      },
+      "license": "MIT; bundled notices: licenses/ONNXRuntime-LICENSE.txt and licenses/ONNXRuntime-ThirdPartyNotices.txt"
+    },
+    {
+      "path": "target/onnxruntime-cpu/lib/libonnxruntime.so.1.23.2",
+      "platform": "linux",
+      "size": 22326072,
+      "sha256": "13ab8084954fa4a47c777880180b90810d6020f021441395712b48a75b74c68b",
+      "source": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz",
+      "origin": {
+        "status": "verified-upstream-archive",
+        "package": "onnxruntime-linux-x64",
+        "version": "1.23.2",
+        "commit": "a83fc4d58cb48eb68890dd689f94f28288cf2278",
+        "archive_sha256": "1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b",
+        "archive_size": 8309231,
+        "archive_member": "onnxruntime-linux-x64-1.23.2/lib/libonnxruntime.so.1.23.2",
+        "runtime": "CPU-only Linux x86_64 (glibc 2.27+); ONNX Runtime C API loaded at runtime through ort load-dynamic",
+        "rebuild": "Hydrate the pinned official archive, verify its archive SHA-256, and extract only the validated member. The Python package exports its absolute path as ORT_DYLIB_PATH before loading the extension."
       },
       "license": "MIT; bundled notices: licenses/ONNXRuntime-LICENSE.txt and licenses/ONNXRuntime-ThirdPartyNotices.txt"
     },

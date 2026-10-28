@@ -60,6 +60,31 @@ def test_frozen_runtime_ignores_source_tree_decoy(tmp_path, monkeypatch):
     assert registered == [str(bundle_root.resolve())]
 
 
+def test_linux_exports_only_the_trusted_ort_library_path(tmp_path, monkeypatch):
+    ort_root = tmp_path / "target" / "onnxruntime-cpu" / "lib"
+    ort_root.mkdir(parents=True)
+    (ort_root / mic_eq._LINUX_ORT_LIBRARY).write_bytes(b"ort")
+    monkeypatch.setattr(mic_eq, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.delattr(mic_eq.os, "add_dll_directory", raising=False)
+    monkeypatch.setattr(mic_eq.sys, "platform", "linux")
+    monkeypatch.setenv("ORT_DYLIB_PATH", "/tmp/untrusted/libonnxruntime.so")
+
+    mic_eq._configure_ort_dll_directory()
+
+    assert mic_eq.os.environ["ORT_DYLIB_PATH"] == str(
+        ort_root.resolve() / mic_eq._LINUX_ORT_LIBRARY
+    )
+
+
+def test_linux_missing_ort_library_fails_before_native_import(tmp_path, monkeypatch):
+    monkeypatch.setattr(mic_eq, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.delattr(mic_eq.os, "add_dll_directory", raising=False)
+    monkeypatch.setattr(mic_eq.sys, "platform", "linux")
+
+    with pytest.raises(ImportError, match="CPU ONNX Runtime library is missing"):
+        mic_eq._configure_ort_dll_directory()
+
+
 def test_missing_ort_directory_fails_before_native_import(tmp_path, monkeypatch):
     registered: list[str] = []
     monkeypatch.setattr(mic_eq, "_PROJECT_ROOT", tmp_path)

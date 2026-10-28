@@ -166,6 +166,14 @@ fn collect_devices(input: bool) -> PyResult<Vec<DeviceInfo>> {
         let Ok(name) = device_name(&device) else {
             continue;
         };
+        #[cfg(target_os = "linux")]
+        let name = match (host.id() == cpal::HostId::PipeWire)
+            .then(|| pipewire_listing(&device, input))
+        {
+            Some(PipeWireListing::Hide) => continue,
+            Some(PipeWireListing::Rename(label)) => label.to_string(),
+            _ => name,
+        };
         let ordinal = ordinals.entry(name.clone()).or_default();
         let name_ordinal = *ordinal;
         *ordinal = ordinal.saturating_add(1);
@@ -191,6 +199,31 @@ fn collect_devices(input: bool) -> PyResult<Vec<DeviceInfo>> {
         });
     }
     Ok(result)
+}
+
+#[cfg(target_os = "linux")]
+enum PipeWireListing {
+    Keep,
+    Hide,
+    Rename(&'static str),
+}
+
+/// What the pickers show for one PipeWire node, matching what WASAPI lists:
+/// inputs are capture devices, not the monitors of every sink, and never
+/// AudioForge's own virtual microphone (that would feed the output back in).
+#[cfg(target_os = "linux")]
+fn pipewire_listing(device: &Device, input: bool) -> PipeWireListing {
+    let Ok(id) = device.id() else {
+        return PipeWireListing::Keep;
+    };
+    match id.id() {
+        // cpal's alias for capturing the default sink's monitor.
+        "sink_default" => PipeWireListing::Hide,
+        "input_default" | "output_default" => PipeWireListing::Rename("Follow system default"),
+        name if input && name == super::virtual_mic::SOURCE_NODE_NAME => PipeWireListing::Hide,
+        _ if input && device.supports_output() => PipeWireListing::Hide,
+        _ => PipeWireListing::Keep,
+    }
 }
 
 /// List all available input (microphone) devices.

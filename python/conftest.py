@@ -109,6 +109,9 @@ def refuse_real_user_state(monkeypatch, guard_violations):
     # Elsewhere the autostart entry lives under the isolated XDG_CONFIG_HOME above.
     if sys.platform == "win32":
         monkeypatch.setattr(login_startup, "startup_shortcut_path", startup_folder)
+    else:
+        # A real "AudioForge Mic" would appear on the developer's PipeWire graph.
+        monkeypatch.setattr("mic_eq.mic_eq_core.create_virtual_microphone", lambda: None, raising=False)
     monkeypatch.setattr(desktop_integration.SingleInstanceCoordinator, "__init__", coordinator_init)
 
 

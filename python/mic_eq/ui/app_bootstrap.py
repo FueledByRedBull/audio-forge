@@ -107,6 +107,24 @@ def configure_vad_env() -> None:
             return
 
 
+def configure_virtual_microphone() -> None:
+    """Create the PipeWire "AudioForge Mic" on Linux; it lasts until AudioForge exits.
+
+    Without PipeWire the app still runs: routing then needs a device of the
+    user's own, as on Windows.
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        from .. import mic_eq_core
+
+        mic_eq_core.create_virtual_microphone()
+    except (ImportError, RuntimeError):
+        logging.getLogger(__name__).warning(
+            "Could not create the AudioForge Mic virtual microphone", exc_info=True
+        )
+
+
 def configure_windows_app_id() -> None:
     """Give Windows a stable taskbar identity for the app."""
     if os.name != "nt":
@@ -497,6 +515,8 @@ def _run_qt_app(
     try:
         configure_deepfilter_env()
         configure_vad_env()
+        if not smoke_test:
+            configure_virtual_microphone()
         window = (
             cast(Callable[..., QMainWindow], window_cls)(login_startup=True)
             if login_startup else window_cls()

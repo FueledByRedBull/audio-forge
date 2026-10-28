@@ -645,6 +645,7 @@ dependencies = [
  "no_denormals",
  "numpy",
  "ort",
+ "pipewire",
  "pyo3",
  "ringbuf",
  "rubato",

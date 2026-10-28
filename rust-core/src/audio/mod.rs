@@ -151,6 +151,8 @@ pub mod processor;
 pub mod rt;
 #[cfg(windows)]
 pub(crate) mod scheduling;
+#[cfg(target_os = "linux")]
+pub mod virtual_mic;
 
 pub use buffer::{AudioConsumer, AudioProducer, AudioRingBuffer};
 pub use device::{list_input_devices, list_output_devices, DeviceInfo};

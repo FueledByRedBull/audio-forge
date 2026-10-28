@@ -47,7 +47,14 @@ DEEPFILTER_RECIPE_FILES = (
     "models/DeepFilterNet3_onnx.tar.gz",
     "models/DeepFilterNet3_ll_onnx.tar.gz",
 )
-DEEPFILTER_TEXT_RECIPE_SUFFIXES = frozenset({".json", ".lock", ".ps1", ".toml"})
+# build_deepfilter.py builds libdf.so from the same provenance for this target.
+DEEPFILTER_LINUX_LIBRARY = "libdf.so"
+DEEPFILTER_LINUX_TARGET = "x86_64-unknown-linux-gnu"
+DEEPFILTER_LINUX_RECIPE_FILES = tuple(
+    "python/tools/build_deepfilter.py" if name == "build_deepfilter.ps1" else name
+    for name in DEEPFILTER_RECIPE_FILES
+)
+DEEPFILTER_TEXT_RECIPE_SUFFIXES = frozenset({".json", ".lock", ".ps1", ".py", ".toml"})
 BUNDLED_RELEASE_ASSETS = {
     "target/onnxruntime-cpu/lib/onnxruntime.dll": "_internal/onnxruntime.dll",
     "target/onnxruntime-cpu/lib/onnxruntime_providers_shared.dll": (
@@ -339,8 +346,12 @@ def _deepfilter_attestation_contract_errors(
     provenance: dict[str, Any],
     *,
     label: str = "DeepFilter attestation",
+    target: str | None = None,
 ) -> list[str]:
-    """Validate the shared DeepFilter attestation schema and build contract."""
+    """Validate the shared DeepFilter attestation schema and build contract.
+
+    ``target`` replaces the provenance target for a library built for another platform.
+    """
     errors: list[str] = []
     if attestation.get("schema_version") != 1:
         errors.append(f"{label} schema_version must be 1")
@@ -362,8 +373,9 @@ def _deepfilter_attestation_contract_errors(
         errors.append(f"{label} build identity is incomplete")
         return errors
 
+    expected_fields = {**expected_build, "target": target or expected_build.get("target")}
     for field in ("target", "profile", "features", "default_features"):
-        if recipe.get(field) != expected_build.get(field):
+        if recipe.get(field) != expected_fields.get(field):
             errors.append(f"{label} {field} does not match provenance")
     abi = attestation.get("abi")
     expected_exports = expected_build.get("required_exports")

@@ -277,12 +277,16 @@ def _verify_source_build_attestation(
     staged_paths: Mapping[str, Path] | None = None,
 ) -> list[str]:
     from release_provenance import (
+        DEEPFILTER_LINUX_LIBRARY,
+        DEEPFILTER_LINUX_RECIPE_FILES,
+        DEEPFILTER_LINUX_TARGET,
         DEEPFILTER_RECIPE_FILES,
         _deepfilter_attestation_contract_errors,
         _deepfilter_recipe_sha256,
     )
 
     errors: list[str] = []
+    linux_library = Path(raw_path).name == DEEPFILTER_LINUX_LIBRARY
     origin = asset.get("origin")
     if not isinstance(origin, dict):
         return [f"{raw_path}: source-built asset must contain an origin object"]
@@ -347,6 +351,7 @@ def _verify_source_build_attestation(
             attestation,
             provenance,
             label=f"{raw_path}: attestation",
+            target=DEEPFILTER_LINUX_TARGET if linux_library else None,
         )
     )
 
@@ -355,7 +360,8 @@ def _verify_source_build_attestation(
     if not isinstance(recipe_files, dict):
         errors.append(f"{raw_path}: attestation recipe.files must be an object")
     else:
-        missing = [name for name in DEEPFILTER_RECIPE_FILES if name not in recipe_files]
+        required = DEEPFILTER_LINUX_RECIPE_FILES if linux_library else DEEPFILTER_RECIPE_FILES
+        missing = [name for name in required if name not in recipe_files]
         if missing:
             errors.append(f"{raw_path}: attestation is missing recipe hashes: {', '.join(missing)}")
         for name, expected_hash in recipe_files.items():

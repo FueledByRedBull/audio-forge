@@ -352,6 +352,20 @@ def test_deepfilter_attestation_requires_required_exports():
     assert any("ABI exports" in error for error in errors)
 
 
+def test_the_linux_library_is_held_to_its_own_target():
+    provenance = {"build": {"target": "x86_64-pc-windows-msvc"}}
+    linux = {"recipe": {"target": release_provenance.DEEPFILTER_LINUX_TARGET}, "abi": {}}
+
+    def target_errors(**kwargs):
+        errors = release_provenance._deepfilter_attestation_contract_errors(linux, provenance, **kwargs)
+        return [error for error in errors if "target" in error]
+
+    assert target_errors()
+    assert target_errors(target=release_provenance.DEEPFILTER_LINUX_TARGET) == []
+    assert "python/tools/build_deepfilter.py" in release_provenance.DEEPFILTER_LINUX_RECIPE_FILES
+    assert "build_deepfilter.ps1" not in release_provenance.DEEPFILTER_LINUX_RECIPE_FILES
+
+
 def test_source_distribution_completion_is_only_required_for_publication(
     tmp_path, monkeypatch
 ):

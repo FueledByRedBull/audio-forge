@@ -96,6 +96,24 @@
       "license": "MIT; bundled notices: licenses/ONNXRuntime-LICENSE.txt and licenses/ONNXRuntime-ThirdPartyNotices.txt"
     },
     {
+      "path": "libdf.so",
+      "platform": "linux",
+      "size": 18834808,
+      "sha256": "43bffb4c6c8eab7a2c6187e5a1375735d31a2544c32175a56414437c47032b0c",
+      "source": "https://github.com/Rikorose/DeepFilterNet/tree/d375b2d8309e0935d165700c91da9de862a99c31",
+      "origin": {
+        "status": "verified-source-build",
+        "attestation_path": "target/deepfilter/libdf.so.provenance.json",
+        "provenance": "build-support/deepfilter/provenance.json",
+        "repository": "https://github.com/Rikorose/DeepFilterNet.git",
+        "commit": "d375b2d8309e0935d165700c91da9de862a99c31",
+        "build_recipe": "python/tools/build_deepfilter.py",
+        "abi": "Linux x86_64 DeepFilter C API; runtime export validation in deepfilter_ffi.rs",
+        "rebuild": "Run python/tools/build_deepfilter.py. It applies the same recipe as build_deepfilter.ps1 for x86_64-unknown-linux-gnu and writes a per-build output attestation. Native linker metadata may vary between approved toolchains, so the manifest sha256 is a reference build digest rather than a clean-build gate."
+      },
+      "license": "MIT option; bundled notice: licenses/DeepFilterNet-LICENSE.txt"
+    },
+    {
       "path": "models/DeepFilterNet3_ll_onnx.tar.gz",
       "size": 36359660,
       "sha256": "5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a",

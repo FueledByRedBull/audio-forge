@@ -11,10 +11,13 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import sysconfig
 import tarfile
 import tomllib
 from typing import Any
 import zipfile
+
+from packaging.markers import Marker
 
 from source_distribution import (
     PYSIDE_SOURCE,
@@ -29,6 +32,8 @@ from verify_release_assets import load_asset_manifest
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE_DIR_ENV = "AUDIOFORGE_SOURCE_DIR"
 SOURCE_REVISION_ENV = "AUDIOFORGE_SOURCE_REVISION"
+# The Cargo target each release platform builds, for resolving its dependency graph.
+CARGO_TARGETS = {"windows": "x86_64-pc-windows-msvc", "linux": "x86_64-unknown-linux-gnu"}
 
 
 def _native_source_components(manifest: dict[str, Any]) -> list[dict[str, Any]]:
@@ -181,8 +186,9 @@ def _source_archive_notices(
 def _deepfilter_rust_components(
     output: Path,
     existing: set[tuple[str, str]],
+    cargo_target: str = CARGO_TARGETS["windows"],
 ) -> list[dict[str, Any]]:
-    """Collect notices from the exact C API workspace used for df.dll."""
+    """Collect notices from the exact C API workspace used for the DeepFilter library."""
     provenance_path = ROOT / "build-support" / "deepfilter" / "provenance.json"
     try:
         provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
@@ -205,7 +211,7 @@ def _deepfilter_rust_components(
                     "--format-version",
                     "1",
                     "--filter-platform",
-                    "x86_64-pc-windows-msvc",
+                    cargo_target,
                     "--manifest-path",
                     str(manifest_path),
                     "--no-default-features",
@@ -373,15 +379,23 @@ def _notice_name(path: Path) -> bool:
     return path.name.lower().startswith(("license", "copying", "copyright", "notice"))
 
 
-def build_inventory(output: Path) -> dict[str, Any]:
+def build_inventory(output: Path, platform: str = "windows") -> dict[str, Any]:
     output.mkdir(parents=True, exist_ok=True)
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    locked = dict(re.findall(r"^([A-Za-z0-9_.-]+)==([^\s;\\]+)",
-                            (ROOT / "requirements/runtime.txt").read_text(encoding="utf-8"),
-                            re.MULTILINE))
+    # Keep only the pins whose environment marker holds on the target platform.
+    target = {"sys_platform": "win32" if platform == "windows" else platform}
+    locked = {
+        name: version
+        for name, version, marker in re.findall(
+            r"^([A-Za-z0-9_.-]+)==([^\s;\\]+)(?:\s*;\s*([^\\\n]*?))?\s*\\?$",
+            (ROOT / "requirements/runtime.txt").read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        if not marker or Marker(marker).evaluate(target)
+    }
     names = set(locked)
     # These supply the frozen bootloader and Windows taskbar extension payloads.
-    names.update(("pyinstaller", "pywin32"))
+    names.update(("pyinstaller", "pywin32") if platform == "windows" else ("pyinstaller",))
     python_components = []
     for name in sorted(names, key=str.casefold):
         dist = metadata.distribution(name)
@@ -409,7 +423,7 @@ def build_inventory(output: Path) -> dict[str, Any]:
 
     cargo = json.loads(subprocess.run(
         ["cargo", "metadata", "--locked", "--format-version", "1",
-         "--filter-platform", "x86_64-pc-windows-msvc", "--features", "extension-module"],
+         "--filter-platform", CARGO_TARGETS[platform], "--features", "extension-module"],
         cwd=ROOT, check=True, capture_output=True, text=True, encoding="utf-8",
     ).stdout)
     resolved = {node["id"] for node in cargo["resolve"]["nodes"]}
@@ -429,8 +443,16 @@ def build_inventory(output: Path) -> dict[str, Any]:
         (str(component["name"]).casefold(), str(component["version"]))
         for component in rust_components
     }
-    rust_components.extend(_deepfilter_rust_components(output, existing_rust))
-    runtime = load_asset_manifest(ROOT / "release-assets.json", platform="windows")
+    rust_components.extend(
+        _deepfilter_rust_components(output, existing_rust, CARGO_TARGETS[platform])
+    )
+    runtime = load_asset_manifest(ROOT / "release-assets.json", platform=platform)
+    # Windows CPython keeps its license at the prefix root, POSIX builds beside the stdlib.
+    python_license = (
+        Path(sys.base_prefix) / "LICENSE.txt"
+        if platform == "windows"
+        else Path(sysconfig.get_paths()["stdlib"]) / "LICENSE.txt"
+    )
     source_status = source_distribution_status(output)
     for component in source_status.get("native_components", []):
         if str(component["id"]).startswith(("qt-", "python-pyside6-", "python-shiboken6-")):
@@ -438,9 +460,13 @@ def build_inventory(output: Path) -> dict[str, Any]:
     inventory = {
         "schema_version": 1, "version": project["project"]["version"],
         "distribution_license": "MIT; bundled components retain their individual licenses", "original_source_license": "MIT",
-        "scope": "Locked Python runtime, frozen bootloader, Windows extension, and resolved Windows Rust build graph; Rust entries can include build-only dependencies.",
+        "scope": (
+            "Locked Python runtime, frozen bootloader, Windows extension, and resolved Windows Rust build graph; Rust entries can include build-only dependencies."
+            if platform == "windows"
+            else "Locked Python runtime, frozen bootloader, Linux extension, and resolved Linux Rust build graph; Rust entries can include build-only dependencies."
+        ),
         "python": {"version": sys.version.split()[0], "source": f"https://www.python.org/downloads/release/python-{sys.version_info.major}{sys.version_info.minor}{sys.version_info.micro}/",
-                   "notices": copy_notices([Path(sys.base_prefix) / "LICENSE.txt"], output / "cpython")},
+                   "notices": copy_notices([python_license], output / "cpython")},
         "python_components": python_components, "rust_components": rust_components,
         "native_assets": list(runtime.assets),
         "source_distribution": source_status,
@@ -453,12 +479,13 @@ def build_inventory(output: Path) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "build" / "dependency-licenses")
+    parser.add_argument("--platform", choices=sorted(CARGO_TARGETS), default="windows")
     args = parser.parse_args()
     output = args.output.resolve()
     # Generated notices are build inputs; refuse to overwrite a source directory.
     if not output.is_relative_to(ROOT / "build") or output == ROOT / "build":
         parser.error("--output must be a subdirectory of the repository build directory")
-    inventory = build_inventory(output)
+    inventory = build_inventory(output, args.platform)
     print(f"Collected {len(inventory['python_components'])} Python and "
           f"{len(inventory['rust_components'])} Rust dependency records")
     return 0

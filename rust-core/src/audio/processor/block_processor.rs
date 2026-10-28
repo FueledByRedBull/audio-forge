@@ -5,8 +5,6 @@ use crate::dsp::{
     AutoMakeupActivityInput, Compressor, DeEsser, Limiter, ParametricEQ, TruePeakDetector,
     TruePeakLimiter,
 };
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 #[derive(Debug, Clone, Copy)]
 pub struct OfflineDspBlockStats {

@@ -23,8 +23,6 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 /// The production code that sets up and runs the DSP thread: dsp_loop.rs and
 /// lifecycle.rs without their inline test modules.

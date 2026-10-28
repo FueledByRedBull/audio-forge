@@ -3,8 +3,6 @@ use crate::audio::clock::now_micros;
 use crate::audio::rt::RtErrorCode;
 use crate::dsp::Compressor;
 use std::sync::atomic::Ordering;
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 impl AudioProcessor {
     // === Metering ===

@@ -2,8 +2,6 @@ use super::AudioProcessor;
 use crate::dsp::eq::{EqBandConfig, NUM_BANDS};
 use pyo3::prelude::*;
 use std::sync::atomic::Ordering;
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 impl AudioProcessor {
     // === EQ Controls ===

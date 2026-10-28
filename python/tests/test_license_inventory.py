@@ -52,7 +52,7 @@ def test_qt_notices_cover_normalized_wheel_distribution_names(tmp_path, monkeypa
         stdout=json.dumps({"resolve": {"nodes": []}, "packages": []}),
     ))
     monkeypatch.setattr(license_inventory, "_deepfilter_rust_components", lambda *args: [])
-    monkeypatch.setattr(license_inventory, "load_asset_manifest", lambda *args: SimpleNamespace(assets=[]))
+    monkeypatch.setattr(license_inventory, "load_asset_manifest", lambda *args, **kwargs: SimpleNamespace(assets=[]))
     monkeypatch.setattr(license_inventory, "source_distribution_status", lambda *args: {})
     output = tmp_path / "build/dependency-licenses"
     inventory = license_inventory.build_inventory(output)

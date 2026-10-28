@@ -399,7 +399,7 @@ def _bundled_asset_errors(bundle: Path) -> list[str]:
     """Bind the bundled CPU ORT DLLs and Silero model to the checked-in asset manifest."""
     manifest_path = REPO_ROOT / "release-assets.json"
     try:
-        entries = load_asset_manifest(manifest_path).entries
+        entries = load_asset_manifest(manifest_path, platform="windows").entries
     except (OSError, ValueError) as exc:
         return [f"release asset manifest could not be loaded: {exc}"]
     errors: list[str] = []
@@ -470,7 +470,7 @@ def _deepfilter_attestation_errors(
     manifest_path = REPO_ROOT / "release-assets.json"
     provenance_path = REPO_ROOT / "build-support" / "deepfilter" / "provenance.json"
     try:
-        entries = load_asset_manifest(manifest_path).entries
+        entries = load_asset_manifest(manifest_path, platform="windows").entries
         provenance = _load_json(provenance_path)
     except (OSError, ValueError) as exc:
         errors.append(f"DeepFilter source identity could not be loaded: {exc}")

@@ -430,7 +430,7 @@ def build_inventory(output: Path) -> dict[str, Any]:
         for component in rust_components
     }
     rust_components.extend(_deepfilter_rust_components(output, existing_rust))
-    runtime = load_asset_manifest(ROOT / "release-assets.json")
+    runtime = load_asset_manifest(ROOT / "release-assets.json", platform="windows")
     source_status = source_distribution_status(output)
     for component in source_status.get("native_components", []):
         if str(component["id"]).startswith(("qt-", "python-pyside6-", "python-shiboken6-")):

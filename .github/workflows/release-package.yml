@@ -762,25 +762,26 @@ jobs:
           "$extracted"/AudioForge-*/AudioForge/AudioForge --smoke-test
           "$APPIMAGE" --appimage-extract-and-run --smoke-test
 
-      - name: Write checksums
+      # One flat directory, as release-promote.yml locates the files by name.
+      - name: Stage the Linux release files
         env:
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
           TARBALL: ${{ steps.meta.outputs.tarball }}
           APPIMAGE: ${{ steps.meta.outputs.appimage }}
         run: |
-          for file in "$TARBALL" "$APPIMAGE"; do
-            (cd "$(dirname "$file")" && sha256sum "$(basename "$file")" > "$(basename "$file").sha256")
+          mkdir linux-release
+          cp "$TARBALL" "$APPIMAGE" linux-release/
+          cp target/deepfilter/libdf.so.provenance.json "linux-release/AudioForge-$RELEASE_TAG-libdf.provenance.json"
+          cd linux-release
+          for file in "$(basename "$TARBALL")" "$(basename "$APPIMAGE")"; do
+            sha256sum "$file" > "$file.sha256"
           done
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: audioforge-release-linux-${{ steps.meta.outputs.release_tag }}
           compression-level: 0
-          path: |
-            ${{ steps.meta.outputs.tarball }}
-            ${{ steps.meta.outputs.tarball }}.sha256
-            ${{ steps.meta.outputs.appimage }}
-            ${{ steps.meta.outputs.appimage }}.sha256
-            target/deepfilter/libdf.so.provenance.json
+          path: linux-release
           if-no-files-found: error
           retention-days: 3
 

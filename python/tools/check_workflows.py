@@ -219,11 +219,27 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                     "name: audioforge-release-validation-${{ inputs.release_tag }}",
                     "run-id: ${{ inputs.candidate_run_id }}",
                 ),
-                # The five release files are staged, hashed and uploaded before the
+                (
+                    "actions/download-artifact@",
+                    "name: audioforge-release-linux-${{ inputs.release_tag }}",
+                    "run-id: ${{ inputs.candidate_run_id }}",
+                ),
+                # The seven release files are staged, hashed and uploaded before the
                 # step that runs the candidate's MSI and executable.
-                ("Get-ChildItem -LiteralPath candidate", "-deepfilter.provenance.json"),
+                (
+                    "Get-ChildItem -LiteralPath candidate",
+                    "-deepfilter.provenance.json",
+                    "Get-ChildItem -LiteralPath linux-candidate",
+                    "-libdf.provenance.json",
+                ),
+                # The Linux files come from the same run; their libdf.so is the attested one.
+                (
+                    "tar -xzf $env:LINUX_TARBALL",
+                    "LINUX_NATIVE_ATTESTATION: ${{ steps.files.outputs.linux_native_attestation }}",
+                ),
                 (
                     "-evidence.7z",
+                    "$env:LINUX_TARBALL, $env:LINUX_APPIMAGE",
                     "validation/release-qualification.json",
                     "SHA256SUMS",
                     "EXPECTED_SHA256: ${{ inputs.expected_archive_sha256 }}",

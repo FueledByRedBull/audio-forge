@@ -406,23 +406,35 @@ def _build_source_asset(
     attestation = temporary / attestation_relative
     output = temporary / str(asset["name"])
     output.parent.mkdir(parents=True, exist_ok=True)
-    powershell = shutil.which("pwsh") or shutil.which("powershell")
-    if not powershell:
-        raise RuntimeError("PowerShell is required to build the pinned DeepFilter source asset.")
-    _run(
-        [
-            powershell,
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(REPO_ROOT / "build_deepfilter.ps1"),
-            "-OutputPath",
-            str(output),
-            "-AttestationPath",
-            str(attestation),
-        ]
-    )
+    if asset["name"] == "libdf.so":
+        _run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "python" / "tools" / "build_deepfilter.py"),
+                "--output",
+                str(output),
+                "--attestation",
+                str(attestation),
+            ]
+        )
+    else:
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        if not powershell:
+            raise RuntimeError("PowerShell is required to build the pinned DeepFilter source asset.")
+        _run(
+            [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(REPO_ROOT / "build_deepfilter.ps1"),
+                "-OutputPath",
+                str(output),
+                "-AttestationPath",
+                str(attestation),
+            ]
+        )
     if not output.is_file():
         raise RuntimeError(f"Source build completed without producing {output}")
     if not attestation.is_file():

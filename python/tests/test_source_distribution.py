@@ -468,6 +468,7 @@ NOT_BUILT_FOR_WINDOWS = {line.strip() for line in """
     alsa-sys 0.4.0
     annotate-snippets 0.11.5
     anstyle 1.0.14
+    audio_thread_priority 0.38.0
     bindgen 0.72.1
     bitflags 2.11.0
     block2 0.6.2
@@ -481,6 +482,7 @@ NOT_BUILT_FOR_WINDOWS = {line.strip() for line in """
     combine 4.6.7
     cookie-factory 0.3.3
     coreaudio-rs 0.14.2
+    dbus 0.9.12
     dispatch2 0.3.0
     either 1.19.0
     enum-primitive-derive 0.3.0
@@ -506,10 +508,12 @@ NOT_BUILT_FOR_WINDOWS = {line.strip() for line in """
     jni-sys 0.4.1
     jni-sys-macros 0.4.1
     js-sys 0.3.90
+    libdbus-sys 0.2.7
     libspa 0.10.1
     libspa-sys 0.10.1
     linux-raw-sys 0.12.1
     log 0.4.29
+    mach2 0.4.3
     mach2 0.6.0
     memchr 2.8.0
     minimal-lexical 0.2.1

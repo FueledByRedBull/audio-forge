@@ -518,6 +518,10 @@ fn dsp_block_sources_hold_no_blocking_or_allocating_apis() {
                     "runs once on the DSP thread before it reports ready, so before the streams start",
                 ),
                 (
+                    "promote_to_realtime",
+                    "runs once on the DSP thread before its first pass; asks RTKit over D-Bus",
+                ),
+                (
                     "ensure_resampler_scratch_capacity",
                     "start-up validation on the control thread; builds its error text on rejection",
                 ),

@@ -56,7 +56,7 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 #[cfg(feature = "vad")]
@@ -370,6 +370,9 @@ pub(super) struct DspLoop {
 /// Time constant of the block-rate and fill-level metrics.
 const TAU_MS: f32 = 200.0;
 const LATENCY_UPDATE_INTERVAL: Duration = Duration::from_millis(100);
+/// Longest stretch without blocking: half of RTKit's default 200 ms budget.
+#[cfg(target_os = "linux")]
+const REALTIME_BUSY_LIMIT: Duration = Duration::from_millis(100);
 const NON_FINITE_REBUILD_THRESHOLD: u32 = 3;
 const NON_FINITE_REBUILD_WINDOW_MS: u64 = 2000;
 const OUTPUT_MAX_CATCHUP_RATIO: f32 = 1.03;
@@ -600,8 +603,8 @@ impl DspLoop {
         apply_limiter_control(&mut limiter, &limiter_snapshot);
         output_ceiling_linear.set(10.0_f32.powf(limiter.ceiling_db() as f32 / 20.0));
 
-        // Keep the existing priority policy outside Windows.
-        #[cfg(not(windows))]
+        // Keep the existing priority policy outside Windows and Linux (see run()).
+        #[cfg(not(any(windows, target_os = "linux")))]
         if let Err(_e) = set_current_thread_priority(ThreadPriority::Max) {
             processor_debug_log!("Warning: Could not set audio thread priority: {:?}", _e);
         }
@@ -763,6 +766,10 @@ impl DspLoop {
     /// thread behind a running processor.
     pub(super) fn run(mut self) {
         let shared = Arc::clone(&self.shared);
+        // Only the live DSP thread is promoted; offline loops built by new() stay
+        // ordinary threads.
+        #[cfg(target_os = "linux")]
+        let _realtime = promote_to_realtime(self.pacing.sample_rate);
         // Run the whole loop with denormals flushed to zero so tiny values
         // cannot stall the CPU.
         // SAFETY: `no_denormals` sets the FTZ/DAZ bits of this thread's FP
@@ -781,12 +788,46 @@ impl DspLoop {
     }
 }
 
+/// Ask RTKit to make the calling thread realtime; None when it refuses.
+///
+/// RTKit grants realtime within RLIMIT_RTTIME, a process-wide budget. Ask for a
+/// second (RTKit caps it at its maximum, the budget PipeWire's own threads here
+/// already have) rather than one block, which would cut the budget for those
+/// threads too.
+#[cfg(target_os = "linux")]
+fn promote_to_realtime(sample_rate: u32) -> Option<audio_thread_priority::RtPriorityHandle> {
+    match audio_thread_priority::promote_current_thread_to_real_time(sample_rate, sample_rate) {
+        Ok(handle) => Some(handle),
+        Err(_e) => {
+            processor_debug_log!("Warning: RTKit refused realtime priority: {:?}", _e);
+            None
+        }
+    }
+}
+
 // RT_REGION_START: dsp_processing_loop
 impl DspLoop {
     fn run_passes(&mut self) {
+        // A realtime thread that runs RLIMIT_RTTIME without blocking is killed
+        // with SIGXCPU. An overloaded loop finds input on every pass and never
+        // idles, so it still sleeps briefly well inside RTKit's budget.
+        #[cfg(target_os = "linux")]
+        let mut busy_since = Instant::now();
         while self.shared.stream.running.load(Ordering::SeqCst) {
-            if let Pass::Idle { sleep_us } = self.pass() {
-                std::thread::sleep(Duration::from_micros(sleep_us));
+            match self.pass() {
+                Pass::Idle { sleep_us } => {
+                    std::thread::sleep(Duration::from_micros(sleep_us));
+                    #[cfg(target_os = "linux")]
+                    {
+                        busy_since = Instant::now();
+                    }
+                }
+                #[cfg(target_os = "linux")]
+                _ if busy_since.elapsed() >= REALTIME_BUSY_LIMIT => {
+                    std::thread::sleep(Duration::from_millis(1));
+                    busy_since = Instant::now();
+                }
+                _ => {}
             }
         }
     }

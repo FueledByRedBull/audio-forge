@@ -29,7 +29,7 @@ from .desktop_integration import (
     SingleInstanceCoordinator,
     activate_window,
 )
-from .login_startup import LOGIN_STARTUP_ARGUMENT
+from .login_startup import APP_ID, LOGIN_STARTUP_ARGUMENT
 from .theme import apply_application_theme
 
 
@@ -478,6 +478,8 @@ def _run_qt_app(
 
     login_startup = not smoke_test and LOGIN_STARTUP_ARGUMENT in sys.argv
     app = QApplication([arg for arg in sys.argv if arg != LOGIN_STARTUP_ARGUMENT])
+    # Wayland matches windows to the installed .desktop file by this id.
+    app.setDesktopFileName(APP_ID)
     apply_application_theme(app)
 
     app_icon = _application_icon()

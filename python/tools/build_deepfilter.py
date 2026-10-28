@@ -163,8 +163,9 @@ def ensure_tract_archive(archive: Path, cargo_home: Path, name: str, expected_sh
         if cached is not None:
             shutil.copyfile(cached, staged)
         else:
+            # The URL is pinned in provenance.json and the archive hash is checked below.
             request = urllib.request.Request(url, headers={"User-Agent": "AudioForge-deepfilter-build"})
-            with urllib.request.urlopen(request, timeout=120) as response, staged.open("wb") as output:
+            with urllib.request.urlopen(request, timeout=120) as response, staged.open("wb") as output:  # nosemgrep: dynamic-urllib-use-detected
                 shutil.copyfileobj(response, output)
         assert_hash(staged, expected_sha, f"Downloaded {name} source archive")
         staged.replace(archive)
@@ -174,7 +175,7 @@ def ensure_tract_archive(archive: Path, cargo_home: Path, name: str, expected_sh
 
 def extract_archive(archive: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(archive, "r:gz") as source:
+    with tarfile.open(archive, "r:gz") as source:  # nosemgrep: tarfile-extractall-traversal
         # The data filter refuses links outside the tree, absolute paths and device files.
         source.extractall(destination, filter="data")
 

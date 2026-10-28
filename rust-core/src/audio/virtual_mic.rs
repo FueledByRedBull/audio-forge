@@ -121,7 +121,7 @@ fn serve(
     let registry = core.get_registry_rc().map_err(pipewire_error)?;
 
     let module_name = c"libpipewire-module-loopback";
-    let args = CString::new(LOOPBACK_ARGS).expect("loopback arguments contain no NUL");
+    let args = CString::new(LOOPBACK_ARGS).map_err(|error| error.to_string())?;
     // SAFETY: the context pointer is valid while `context` lives, both strings
     // are NUL-terminated and outlive the call, and null properties are allowed.
     // The context owns the module and destroys it when it is dropped below.

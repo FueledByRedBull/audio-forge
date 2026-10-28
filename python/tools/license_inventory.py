@@ -387,7 +387,8 @@ def build_inventory(output: Path, platform: str = "windows") -> dict[str, Any]:
     locked = {
         name: version
         for name, version, marker in re.findall(
-            r"^([A-Za-z0-9_.-]+)==([^\s;\\]+)(?:\s*;\s*([^\\\n]*?))?\s*\\?$",
+            # A regular expression: its operator runs are not obfuscated code.
+            r"^([A-Za-z0-9_.-]+)==([^\s;\\]+)(?:\s*;\s*([^\\\n]*?))?\s*\\?$",  # nosemgrep: generic-obfuscation-operators
             (ROOT / "requirements/runtime.txt").read_text(encoding="utf-8"),
             re.MULTILINE,
         )

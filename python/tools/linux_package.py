@@ -67,7 +67,7 @@ fi
 
 # The Exec line quotes the path; the Desktop Entry spec reserves these characters there.
 case $here in
-    *'"'* | *'`'* | *'$'* | *'\\'* | *'%'*)
+    *'"'* | *'`'* | *'$'* | *'\\'* | *'%'*) # nosemgrep: generic-obfuscation-operators
         echo "Move AudioForge to a folder whose path has no \\" \\` \\$ \\\\ or % characters." >&2
         exit 1
         ;;

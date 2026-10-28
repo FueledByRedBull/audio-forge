@@ -1,9 +1,14 @@
 # Releasing AudioForge
 
 A release is built once by the `Release package` workflow, then promoted
-without rebuilding. The public release has exactly five files: the portable
-archive, the per-user MSI, the corresponding-source archive, an evidence
-archive, and one `SHA256SUMS.txt`.
+without rebuilding. The public release has exactly seven files: the portable
+Windows archive, the per-user MSI, the corresponding-source archive, the Linux
+tarball and AppImage, an evidence archive, and one `SHA256SUMS.txt`.
+
+`package-linux` builds the Linux files on Ubuntu 24.04, the oldest supported
+Linux release, from the same commit. Promotion takes them from the same
+candidate run as the approved Windows archive. It checks their sidecars, and it
+checks the `libdf.so` inside the tarball against its build attestation.
 
 ## Automated workflow
 
@@ -65,7 +70,7 @@ archive, and one `SHA256SUMS.txt`.
 6. **Promote.** Run `Promote release candidate` with `release_tag`,
    `candidate_run_id`, and `expected_archive_sha256`. It downloads the same
    candidate bytes, verifies sidecars, evidence, and corresponding source
-   against that digest, assembles a draft, and publishes only when all five
+   against that digest, assembles a draft, and publishes only when all seven
    files are present and verified. Release notes come from the workflow
    revision; the binary stays bound to the tag. Reruns compare GitHub's
    SHA-256 digests in preflight, and the final check downloads and hashes
@@ -74,7 +79,7 @@ archive, and one `SHA256SUMS.txt`.
    Promotion has two jobs. `verify-candidate` installs the pinned pip packages
    and runs the candidate (the MSI and the executable) with a read-only token
    and no credentials in its checkout. Before it runs the MSI or the
-   executable it locates the five release files, stages them, records their
+   executable it locates the seven release files, stages them, records their
    SHA-256 and uploads the staged copies as an artifact. Only `publish-release`
    can write; it runs none of the candidate's code, re-hashes the staged files
    against the recorded digests and `expected_archive_sha256`, and publishes.

@@ -1,10 +1,11 @@
 # AudioForge
 
 **Remove background noise and polish your voice for calls, streams, and
-recordings. Everything is processed on your Windows PC.**
+recordings. Everything is processed on your own Windows or Linux PC.**
 
 [![Download the latest release](https://img.shields.io/github/v/release/FueledByRedBull/audio-forge?label=download&color=287dba)](https://github.com/FueledByRedBull/audio-forge/releases/latest)
 [![Windows 10 and 11, 64-bit](https://img.shields.io/badge/Windows_10%20%7C%2011-x64-287dba)](#compatibility)
+[![Linux x86_64 with PipeWire](https://img.shields.io/badge/Linux-x86__64-287dba)](#linux)
 
 AudioForge sits between your microphone and the apps you talk in. It cuts
 background noise, evens out your level, tames harsh "s" sounds and sudden
@@ -12,15 +13,16 @@ peaks, and lets you shape your tone. A guided setup tests its suggestions on
 your own recording before you apply them. No account and no cloud service:
 your audio never leaves your PC.
 
-**[Download for Windows](https://github.com/FueledByRedBull/audio-forge/releases/latest)** · [Set up in five steps](#set-up) · [What it does](#what-it-does) · [No sound?](#no-sound)
+**[Download for Windows](https://github.com/FueledByRedBull/audio-forge/releases/latest)** · [Linux](#linux) · [Set up in five steps](#set-up) · [What it does](#what-it-does) · [No sound?](#no-sound)
 
 ![AudioForge Mic page routing a studio microphone to the CABLE Input virtual cable, with the equalizer card drawing each band's curve, the Auto-EQ correction, the input filter and their total, the editor for the selected band, and level meters.](docs/images/audioforge-routing-eq.png)
 
 > [!IMPORTANT]
-> **To use AudioForge in Discord, OBS, Zoom, or Teams, you also need a virtual
-> audio cable.** AudioForge doesn't install one. It is tested with the free
+> **On Windows, using AudioForge in Discord, OBS, Zoom, or Teams also needs a
+> virtual audio cable.** AudioForge doesn't install one. It is tested with the free
 > [VB-CABLE](https://vb-audio.com/Cable/); other virtual cables should work but
 > haven't been tested. You don't need a cable to monitor yourself on headphones.
+> On Linux, AudioForge creates its own microphone instead; see [Linux](#linux).
 
 ## What It Does
 
@@ -134,6 +136,51 @@ location. See the
 - Still stuck? [Open an issue](https://github.com/FueledByRedBull/audio-forge/issues/new/choose)
   and attach the file from **Settings > Help > Export Diagnostics**. The export
   excludes audio and real device names; check it before you share it.
+
+## Linux
+
+AudioForge runs natively on 64-bit Linux desktops that use PipeWire: Ubuntu 24.04
+or later, Fedora 40 or later, Debian 13, Arch, and distributions based on them.
+It is developed on Arch Linux with the COSMIC desktop, which is the only setup
+tested by hand so far; the Ubuntu 24.04 build runs the automated tests.
+
+**Download** one of these from the
+[latest release](https://github.com/FueledByRedBull/audio-forge/releases/latest):
+
+- **AppImage:** `AudioForge-v<version>-x86_64.AppImage`. Make it executable
+  (`chmod +x`) and run it.
+- **Tarball:** `AudioForge-v<version>-linux-x86_64.tar.gz`. Extract it anywhere
+  and run `AudioForge/AudioForge`. Run `./install.sh` in the extracted folder to
+  add AudioForge to your application menu, and `./install.sh --uninstall` to
+  take it off again before you move or delete the folder.
+
+Check a download with `sha256sum <file>` against
+`AudioForge-v<version>-SHA256SUMS.txt`, or with `gh release verify-asset` as
+described under [Download](#download).
+
+**No virtual cable.** While AudioForge runs, it adds a microphone called
+**AudioForge Mic** to PipeWire. AudioForge's **Output** is **AudioForge Mic
+Input**, which setup picks for you. In Discord, OBS, your browser, or any other
+app, choose **AudioForge Mic** as the microphone. The device goes away when
+AudioForge quits, even after a crash, and it never becomes your default
+microphone.
+
+**Global mute.** Linux desktops don't let an app take over a key for itself.
+Bind a shortcut in your desktop's keyboard settings to the command
+`audioforge --toggle-mute` instead. It mutes or unmutes the running AudioForge
+and never starts a second copy. Turning the global shortcut on under
+**Settings > Tray and background** shows the exact command for your copy in the
+status bar.
+
+**Login startup** writes an XDG autostart entry,
+`~/.config/autostart/io.github.FueledByRedBull.AudioForge.desktop`, under the
+same rules as the Windows shortcut: it's off until you turn it on, and an entry
+another copy wrote is left alone. The AppImage registers the image file itself,
+so move the AppImage first and turn the option on afterwards.
+
+**Realtime audio.** The processing thread asks RTKit for realtime priority, the
+way PipeWire's own threads get it. If RTKit isn't running or says no, AudioForge
+keeps working at normal priority.
 
 ## Everyday Controls
 
@@ -275,7 +322,8 @@ Reliability and diagnostics:
 ## Compatibility
 
 AudioForge is built for Windows 10 (version 1809 or later) and Windows 11,
-64-bit. Linux and macOS aren't supported.
+64-bit, and for 64-bit Linux with PipeWire (see [Linux](#linux)). macOS isn't
+supported.
 
 Hardware testing so far covers Windows 11 at 48 kHz with USB microphones and
 VB-CABLE, including 30-minute runs and model switching, on earlier release
@@ -355,6 +403,35 @@ covers development checks and runtime configuration,
 [RELEASING.md](RELEASING.md) covers packaging and publication, and
 [evaluation/README.md](evaluation/README.md) records the measured DSP
 decisions.
+
+### On Linux
+
+You need Python 3.13 or 3.14, Git, rustup (it picks the toolchain in
+`rust-toolchain.toml`), the GitHub CLI (`gh`), and the development files for
+PipeWire, D-Bus, ALSA, PulseAudio and libclang. On Ubuntu 24.04:
+
+```sh
+sudo apt install libasound2-dev libclang-dev libdbus-1-dev libpipewire-0.3-dev libpulse-dev pkg-config
+```
+
+On Arch: `sudo pacman -S --needed alsa-lib clang dbus libpipewire libpulse pkgconf`.
+Then:
+
+```sh
+git clone https://github.com/FueledByRedBull/audio-forge.git
+cd audio-forge
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --require-hashes -r requirements/dev.txt
+python python/tools/fetch_release_assets.py
+maturin develop --release
+AUDIOFORGE_ENABLE_DEEPFILTER=1 python -m mic_eq
+```
+
+`fetch_release_assets.py` downloads the pinned ONNX Runtime and models and
+builds `libdf.so` from the pinned DeepFilterNet source. `./build_linux.sh` builds
+the bundle in `dist/AudioForge`, and `python python/tools/linux_package.py`
+turns it into the tarball (add `--appimagetool` for the AppImage).
 
 ## Roadmap
 

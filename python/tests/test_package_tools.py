@@ -425,14 +425,14 @@ def test_ci_uploads_semgrep_results_with_scoped_code_scanning_permission():
     assert triggers["push"] == {
         "branches": ["master"],
     }
-    static_job = workflow["jobs"]["static"]
-    assert static_job["permissions"] == {
+    semgrep_job = workflow["jobs"]["semgrep"]
+    assert semgrep_job["permissions"] == {
         "contents": "read",
         "security-events": "write",
     }
     upload = next(
         step
-        for step in static_job["steps"]
+        for step in semgrep_job["steps"]
         if step.get("name") == "Upload Semgrep results to GitHub Code Scanning"
     )
     assert upload["uses"].startswith("github/codeql-action/upload-sarif@")
@@ -446,7 +446,7 @@ def test_ci_uploads_semgrep_results_with_scoped_code_scanning_permission():
     )
     artifact = next(
         step
-        for step in static_job["steps"]
+        for step in semgrep_job["steps"]
         if step.get("name") == "Upload Semgrep SARIF"
     )
     assert artifact["uses"].startswith("actions/upload-artifact@")
@@ -464,8 +464,9 @@ def test_ci_uploads_semgrep_results_with_scoped_code_scanning_permission():
     [
         ("top", {"contents": "write"}),
         ("top", "write-all"),
-        ("static", {"contents": "read", "security-events": "write", "actions": "write"}),
-        ("static", "write-all"),
+        ("semgrep", {"contents": "read", "security-events": "write", "actions": "write"}),
+        ("semgrep", "write-all"),
+        ("static", {"security-events": "write"}),
         ("pytest", {"security-events": "write"}),
         ("python", {"contents": "write"}),
         ("rust-stress", "write-all"),
@@ -635,6 +636,9 @@ def test_ci_pytest_shard_lists_reject_renamed_duplicate_and_unmatched_files(
     assert "does not exist" in errors_for(renamed)
     assert "listed more than once" in errors_for({**real, first: [*real[first], last_listed]})
     assert "matrix shard must be" in errors_for({**real, "extra": ["python/tests/test_spectrum.py"]})
+    workflow["jobs"]["linux-pytest"]["strategy"]["matrix"]["shard"].pop(0)
+    assert "linux-pytest matrix shard must be" in errors_for(real)
+    assert "ci.yml: pytest matrix" not in errors_for(real)
     assert "other than 'rest'" in errors_for({**real, "rest": ["python/tests/test_spectrum.py"]})
 
 
@@ -1630,6 +1634,7 @@ def test_semgrep_publishes_windows_file_uris_without_changing_findings(
                 {"location": {"uri": "file:///D:/already%20encoded.py"}},
                 {"location": {"uri": "https://example.com/source.py"}},
                 {"location": {"uri": "python/relative.py"}},
+                {"location": {"uri": "/home/runner/work/source file.py"}},
             ],
         }],
     }
@@ -1654,6 +1659,9 @@ def test_semgrep_publishes_windows_file_uris_without_changing_findings(
     )
     payload["runs"][0]["artifacts"][0]["location"]["uri"] = (
         "file://server/share/source%20file.py"
+    )
+    payload["runs"][0]["artifacts"][4]["location"]["uri"] = (
+        "file:///home/runner/work/source%20file.py"
     )
     assert json.loads(output.read_text(encoding="utf-8")) == payload
     assert not (tmp_path / ".semgrep-results.sarif").exists()

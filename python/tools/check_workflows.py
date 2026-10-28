@@ -17,11 +17,11 @@ DEPENDABOT_PATH = REPO_ROOT / ".github" / "dependabot.yml"
 PYTEST_SHARDS_PATH = REPO_ROOT / ".github" / "pytest-shards.json"
 # Required status checks are the gate jobs; each must wait for all of its parts.
 CI_GATES = {
-    "python": ("static", "pytest"),
+    "python": ("static", "semgrep", "pytest"),
     "rust": ("rust-tests", "rust-stress"),
-    "linux": ("linux-tests",),
+    "linux": ("linux-tests", "linux-pytest"),
 }
-CI_CPU_RUNTIME_JOBS = ("pytest", "rust-tests", "rust-stress", "linux-tests")
+CI_CPU_RUNTIME_JOBS = ("pytest", "rust-tests", "rust-stress", "linux-tests", "linux-pytest")
 CI_CPU_RUNTIME_HYDRATION = "fetch_release_assets.py --only-cpu-runtime --force"
 # The debug-mode Rust run skips only this test; rust-stress runs it in release.
 CI_DEBUG_SKIPPED_TEST = "seeded_control_and_dsp_loops_remain_finite_under_contention"
@@ -463,13 +463,13 @@ def _check_permissions(
     for job_name, raw_job in jobs.items():
         job = _mapping(raw_job, f"{name}: job {job_name}", errors)
         permissions = job.get("permissions")
-        if name == "ci.yml" and job_name == "static":
+        if name == "ci.yml" and job_name == "semgrep":
             if permissions != {
                 "contents": "read",
                 "security-events": "write",
             }:
                 errors.append(
-                    "ci.yml: static must have only contents: read and "
+                    "ci.yml: semgrep must have only contents: read and "
                     "security-events: write"
                 )
             continue
@@ -1342,24 +1342,30 @@ def _check_pytest_shards(document: dict[str, Any], errors: list[str]) -> None:
 def _check_pytest_job(
     document: dict[str, Any], shards: dict[str, Any], name: str, errors: list[str]
 ) -> None:
-    """Require the pytest matrix of `name` to run the shards of pytest-shards.json."""
-    label = PYTEST_SHARDS_PATH.name
+    """Require the pytest matrices of `name` to run the shards of pytest-shards.json."""
     jobs = _mapping(document.get("jobs"), f"{name}: jobs", errors)
-    job = jobs.get("pytest")
-    if not isinstance(job, dict):
-        return
+    for job_name in ("pytest", "linux-pytest"):
+        job = jobs.get(job_name)
+        if isinstance(job, dict):
+            _check_pytest_matrix(job, job_name, shards, name, errors)
+
+
+def _check_pytest_matrix(
+    job: dict[str, Any], job_name: str, shards: dict[str, Any], name: str, errors: list[str]
+) -> None:
+    label = PYTEST_SHARDS_PATH.name
     strategy = job.get("strategy")
     matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
     expected = [*shards, CI_LAST_PYTEST_SHARD]
     if not isinstance(matrix, dict) or matrix.get("shard") != expected:
-        errors.append(f"{name}: pytest matrix shard must be {expected}, as listed in {label}")
+        errors.append(f"{name}: {job_name} matrix shard must be {expected}, as listed in {label}")
     steps = job.get("steps")
     run = "\n".join(
         str(step.get("run", "")) for step in steps if isinstance(step, dict)
     ) if isinstance(steps, list) else ""
     if label not in run or "--ignore" not in run:
         errors.append(
-            f"{name}: pytest must run the files in {label} and ignore them in the last shard"
+            f"{name}: {job_name} must run the files in {label} and ignore them in the last shard"
         )
 
 

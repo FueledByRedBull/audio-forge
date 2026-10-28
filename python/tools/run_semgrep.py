@@ -9,7 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -172,10 +172,11 @@ def _scan_command(scan_output: Path) -> list[str]:
 def _sarif_file_uris(value: dict[str, object]) -> dict[str, object]:
     uri = value.get("uri")
     if isinstance(uri, str):
-        path = PureWindowsPath(uri)
-        if path.is_absolute():
-            # Semgrep emits native Windows paths; SARIF requires URI syntax.
-            value["uri"] = path.as_uri()
+        # Semgrep emits native paths; SARIF requires URI syntax.
+        for path in (PureWindowsPath(uri), PurePosixPath(uri)):
+            if path.is_absolute():
+                value["uri"] = path.as_uri()
+                break
     return value
 
 

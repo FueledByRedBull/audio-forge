@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 from typing import cast
@@ -92,8 +94,21 @@ def test_a_sent_command_runs_its_callback_without_activating_the_window(qapp, tm
     )
     try:
         assert primary.acquire() == primary.ACQUIRED
-        assert sender.send_command(desktop_integration.TOGGLE_MUTE_COMMAND)
-        assert sender.send_command("unknown-command")
+        # A Windows pipe write completes only once the server reads it, so the
+        # sender runs on its own thread, as a second launch would in its own process.
+        sent: list[bool] = []
+        thread = threading.Thread(
+            target=lambda: sent.extend(
+                sender.send_command(command)
+                for command in (desktop_integration.TOGGLE_MUTE_COMMAND, "unknown-command")
+            )
+        )
+        thread.start()
+        deadline = time.monotonic() + 10
+        while thread.is_alive() and time.monotonic() < deadline:
+            qapp.processEvents()
+            thread.join(0.01)
+        assert sent == [True, True], sender.last_error
         for _ in range(50):
             qapp.processEvents()
             if mutes:

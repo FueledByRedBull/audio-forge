@@ -399,10 +399,11 @@ class SingleInstanceCoordinator:
             return False
         payload = command.encode("ascii") + b"\n"
         written = socket.write(payload)
-        # A Windows pipe can finish the write inside write(), leaving nothing to wait for.
-        delivered = written == len(payload) and (
-            socket.bytesToWrite() == 0 or socket.waitForBytesWritten(500)
-        )
+        # The caller exits next, so wait until nothing is left to write. A Windows
+        # pipe can finish the write inside write(), leaving nothing to wait for.
+        while socket.bytesToWrite() > 0 and socket.waitForBytesWritten(500):
+            pass
+        delivered = written == len(payload) and socket.bytesToWrite() == 0
         socket.disconnectFromServer()
         if not delivered:
             self.last_error = "the running AudioForge did not accept the command"

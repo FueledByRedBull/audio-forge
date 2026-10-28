@@ -260,6 +260,7 @@ def test_deeply_nested_route_keys_are_skipped_not_fatal():
 # PC-011
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows bundle runtime (DLL directory)")
 def test_frozen_launcher_registers_only_the_bundle_content_directory(tmp_path, monkeypatch):
     exe_dir = tmp_path / "AudioForge"
     meipass = exe_dir / "_internal"

@@ -76,6 +76,59 @@ def test_second_instance_forwards_activation_without_removing_primary_server(
         primary.close()
 
 
+def test_a_sent_command_runs_its_callback_without_activating_the_window(qapp, tmp_path):
+    server_name = _server_name()
+    primary = desktop_integration.SingleInstanceCoordinator(
+        server_name=server_name, lock_path=tmp_path / "audioforge.lock"
+    )
+    sender = desktop_integration.SingleInstanceCoordinator(
+        server_name=server_name, lock_path=tmp_path / "audioforge.lock"
+    )
+    activations: list[bool] = []
+    mutes: list[bool] = []
+    primary.set_activation_callback(lambda: activations.append(True))
+    primary.set_command_callback(
+        desktop_integration.TOGGLE_MUTE_COMMAND, lambda: mutes.append(True)
+    )
+    try:
+        assert primary.acquire() == primary.ACQUIRED
+        assert sender.send_command(desktop_integration.TOGGLE_MUTE_COMMAND)
+        assert sender.send_command("unknown-command")
+        for _ in range(50):
+            qapp.processEvents()
+            if mutes:
+                break
+        for _ in range(10):
+            qapp.processEvents()
+        assert mutes == [True]
+        assert activations == []
+    finally:
+        sender.close()
+        primary.close()
+
+
+def test_sending_a_command_without_a_running_instance_fails(tmp_path):
+    sender = desktop_integration.SingleInstanceCoordinator(
+        server_name=_server_name(), lock_path=tmp_path / "audioforge.lock"
+    )
+    try:
+        assert not sender.send_command(desktop_integration.TOGGLE_MUTE_COMMAND)
+        assert sender.last_error == "AudioForge is not running"
+    finally:
+        sender.close()
+
+
+def test_the_toggle_mute_command_line_names_this_copy(monkeypatch, tmp_path):
+    image = tmp_path / "Audio Forge.AppImage"
+    monkeypatch.setattr(desktop_integration.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(desktop_integration.sys, "platform", "linux")
+    monkeypatch.setenv("APPIMAGE", str(image))
+    assert desktop_integration.toggle_mute_command() == f"'{image}' --toggle-mute"
+
+    monkeypatch.setattr(desktop_integration.sys, "frozen", False)
+    assert desktop_integration.toggle_mute_command().endswith("-m mic_eq --toggle-mute")
+
+
 def test_second_instance_fails_closed_when_owner_has_no_activation_endpoint(
     tmp_path,
 ):
@@ -174,7 +227,7 @@ def test_login_bootstrap_never_shows_window_or_modal_and_uses_quiet_lock(qapp, m
 
     instance = SimpleNamespace(
         acquire=Mock(return_value="acquired"), close=Mock(),
-        set_activation_callback=Mock(), last_error=None,
+        set_activation_callback=Mock(), set_command_callback=Mock(), last_error=None,
     )
     factory = Mock(
         return_value=instance, ACQUIRED="acquired", FORWARDED="forwarded",
@@ -186,6 +239,9 @@ def test_login_bootstrap_never_shows_window_or_modal_and_uses_quiet_lock(qapp, m
         def __init__(self, *, login_startup=False):
             super().__init__()
             seen.append(login_startup)
+
+        def _toggle_mute_from_hotkey(self):
+            pass
 
         def begin_login_startup(self):
             seen.append(self.isVisible())
@@ -246,6 +302,7 @@ def test_login_lifecycle_keeps_hidden_session_alive_and_releases_lock_on_quit(
             self._shutdown = lambda: MainWindow._shutdown(cast(MainWindow, self))
             self._engine = SimpleNamespace(wait=lambda _timeout: True)
             self._unregister_mute_hotkey = lambda: None
+            self._toggle_mute_from_hotkey = lambda: None
             self._save_ui_state = lambda: True
             self.processor = SimpleNamespace(is_running=lambda: False)
             self.config = SimpleNamespace(window_geometry={})

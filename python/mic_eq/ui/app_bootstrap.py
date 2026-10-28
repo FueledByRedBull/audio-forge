@@ -23,7 +23,12 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 from .. import configure_deepfilter_runtime_paths
 from ..app_logging import configure_app_logging, get_log_file
 from ..config_parts import shared
-from .desktop_integration import SingleInstanceCoordinator, activate_window
+from .desktop_integration import (
+    TOGGLE_MUTE_ARGUMENT,
+    TOGGLE_MUTE_COMMAND,
+    SingleInstanceCoordinator,
+    activate_window,
+)
 from .login_startup import LOGIN_STARTUP_ARGUMENT
 from .theme import apply_application_theme
 
@@ -390,8 +395,21 @@ def _crash_diagnostics() -> Iterator[Callable[[], None]]:
                     Path(crash_file.name).unlink(missing_ok=True)
 
 
+def send_toggle_mute() -> int:
+    """Mute or unmute the running AudioForge; a key binding runs this, so it never opens a window."""
+    if QCoreApplication.instance() is None:
+        _app = QCoreApplication([])  # local sockets need a Qt application object
+    instance = SingleInstanceCoordinator()
+    if not instance.send_command(TOGGLE_MUTE_COMMAND):
+        print(f"AudioForge: {instance.last_error}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool = False) -> int:
     """Run the Qt application for the provided main window class."""
+    if not smoke_test and TOGGLE_MUTE_ARGUMENT in sys.argv:
+        return send_toggle_mute()
     isolated_config = tempfile.TemporaryDirectory(prefix="audioforge-smoke-") if smoke_test else None
     previous_config_env = {
         name: os.environ.get(name)
@@ -494,6 +512,9 @@ def _run_qt_app(
             window.show()
         if instance is not None:
             instance.set_activation_callback(lambda: activate_window(window))
+            instance.set_command_callback(
+                TOGGLE_MUTE_COMMAND, getattr(window, "_toggle_mute_from_hotkey")
+            )
     except Exception:
         if instance is not None:
             instance.close()

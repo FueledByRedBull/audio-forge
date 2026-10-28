@@ -453,31 +453,62 @@ def test_redirect_handler_rejects_untrusted_intermediate_hop():
 # turn on. Cargo.lock cannot say which those are, so a crate the lock gains that Windows does not
 # build is listed here once; a crate Windows does build must appear in the source manifest instead.
 NOT_BUILT_FOR_WINDOWS = {line.strip() for line in """
+    aho-corasick 1.1.5
     alsa 0.11.0
     alsa-sys 0.4.0
+    annotate-snippets 0.11.5
+    anstyle 1.0.14
+    bindgen 0.72.1
     bitflags 2.11.0
     block2 0.6.2
     bumpalo 3.20.2
+    byteorder 1.5.0
     bytes 1.11.1
-    cesu8 1.1.0
+    cc 1.10.0
+    cexpr 0.6.0
+    cfg-expr 0.20.10
+    clang-sys 1.9.1
     combine 4.6.7
+    cookie-factory 0.3.3
     coreaudio-rs 0.14.2
     dispatch2 0.3.0
+    either 1.19.0
+    enum-primitive-derive 0.3.0
     equivalent 1.0.2
-    futures-core 0.3.32
-    futures-task 0.3.32
-    futures-util 0.3.32
+    errno 0.3.14
+    find-msvc-tools 0.1.15
+    futures 0.3.34
+    futures-channel 0.3.34
+    futures-core 0.3.34
+    futures-executor 0.3.34
+    futures-io 0.3.34
+    futures-macro 0.3.34
+    futures-sink 0.3.34
+    futures-task 0.3.34
+    futures-util 0.3.34
+    glob 0.3.4
     hashbrown 0.16.1
     indexmap 2.13.0
-    jni 0.21.1
+    itertools 0.13.0
+    jni 0.22.4
+    jni-macros 0.22.4
     jni-sys 0.3.0
+    jni-sys 0.4.1
+    jni-sys-macros 0.4.1
     js-sys 0.3.90
+    libspa 0.10.1
+    libspa-sys 0.10.1
+    linux-raw-sys 0.12.1
     log 0.4.29
-    mach2 0.5.0
+    mach2 0.6.0
     memchr 2.8.0
+    minimal-lexical 0.2.1
+    mio 1.1.1
     ndk 0.9.0
     ndk-context 0.1.1
     ndk-sys 0.6.0+11769913
+    nom 7.1.3
+    nom 8.0.0
     num-derive 0.4.2
     num_enum 0.7.5
     num_enum_derive 0.7.5
@@ -489,20 +520,43 @@ NOT_BUILT_FOR_WINDOWS = {line.strip() for line in """
     objc2-core-foundation 0.3.2
     objc2-encode 4.1.0
     objc2-foundation 0.3.2
+    pipewire 0.10.1
+    pipewire-sys 0.10.1
     pkg-config 0.3.32
     proc-macro-crate 3.4.0
+    pulseaudio 0.3.2
     redox_syscall 0.5.18
+    regex 1.13.1
+    regex-automata 0.4.18
+    regex-syntax 0.8.11
+    rustc_version 0.4.1
+    rustix 1.1.6
     rustversion 1.0.22
     same-file 1.0.6
+    semver 1.0.28
     serde_derive 1.0.228
+    serde_spanned 1.1.2
+    shlex 1.3.0
+    shlex 2.0.1
+    simd_cesu8 1.2.0
+    simdutf8 0.1.5
     slab 0.4.12
+    syn 3.0.9
+    system-deps 7.0.8
+    thiserror 2.0.21
+    thiserror-impl 2.0.21
     thread-priority 1.2.0
+    toml 1.0.6+spec-1.1.0
     toml_datetime 0.7.5+spec-1.1.0
+    toml_datetime 1.1.2+spec-1.1.0
     toml_edit 0.23.10+spec-1.0.0
     toml_parser 1.0.9+spec-1.1.0
+    toml_writer 1.1.3+spec-1.1.0
+    unicode-width 0.2.3
+    version-compare 0.2.1
     walkdir 2.5.0
+    wasi 0.11.1+wasi-snapshot-preview1
     wasm-bindgen 0.2.113
-    wasm-bindgen-futures 0.4.63
     wasm-bindgen-macro 0.2.113
     wasm-bindgen-macro-support 0.2.113
     wasm-bindgen-shared 0.2.113
@@ -511,16 +565,7 @@ NOT_BUILT_FOR_WINDOWS = {line.strip() for line in """
     winapi-i686-pc-windows-gnu 0.4.0
     winapi-util 0.1.11
     winapi-x86_64-pc-windows-gnu 0.4.0
-    windows-sys 0.45.0
     windows-sys 0.61.2
-    windows-targets 0.42.2
-    windows_aarch64_gnullvm 0.42.2
-    windows_aarch64_msvc 0.42.2
-    windows_i686_gnu 0.42.2
-    windows_i686_msvc 0.42.2
-    windows_x86_64_gnu 0.42.2
-    windows_x86_64_gnullvm 0.42.2
-    windows_x86_64_msvc 0.42.2
     winnow 0.7.14
 """.strip().splitlines()}
 

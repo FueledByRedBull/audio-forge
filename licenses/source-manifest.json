@@ -69,16 +69,16 @@
     },
     {
       "build_role": "resolved Rust dependency",
-      "filename": "cpal-0.17.3.crate",
-      "id": "cargo-cpal-0.17.3",
+      "filename": "cpal-0.18.2.crate",
+      "id": "cargo-cpal-0.18.2",
       "kind": "cargo-crate",
       "license": "Apache-2.0",
       "lock_file": "Cargo.lock",
       "name": "cpal",
-      "sha256": "d8942da362c0f0d895d7cac616263f2f9424edc5687364dfd1d25ef7eba506d7",
-      "source_of_truth": "https://crates.io/crates/cpal/0.17.3",
-      "url": "https://crates.io/api/v1/crates/cpal/0.17.3/download",
-      "version": "0.17.3"
+      "sha256": "6f02e8d0327b42d3e2e4ab2119af397344eb9fc54a34bf0ddeaa1277af8681f1",
+      "source_of_truth": "https://crates.io/crates/cpal/0.18.2",
+      "url": "https://crates.io/api/v1/crates/cpal/0.18.2/download",
+      "version": "0.18.2"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -209,6 +209,19 @@
       "source_of_truth": "https://crates.io/crates/libloading/0.8.9",
       "url": "https://crates.io/api/v1/crates/libloading/0.8.9/download",
       "version": "0.8.9"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "libloading-0.9.0.crate",
+      "id": "cargo-libloading-0.9.0",
+      "kind": "cargo-crate",
+      "license": "ISC",
+      "lock_file": "Cargo.lock",
+      "name": "libloading",
+      "sha256": "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60",
+      "source_of_truth": "https://crates.io/crates/libloading/0.9.0",
+      "url": "https://crates.io/api/v1/crates/libloading/0.9.0/download",
+      "version": "0.9.0"
     },
     {
       "build_role": "resolved Rust dependency",

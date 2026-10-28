@@ -567,7 +567,7 @@ impl AudioOutput {
         let mut fixed_buffer_frames = None;
         if let Some(frames) = Self::requested_fixed_buffer_frames() {
             if supported_fixed_buffer_frames(frames, setup.supported_config.buffer_size()) {
-                let mut candidate = stream_config.clone();
+                let mut candidate = stream_config;
                 candidate.buffer_size = BufferSize::Fixed(frames);
                 if Self::preflight_sample_format(&setup.device, sample_format, &candidate) {
                     stream_config = candidate;

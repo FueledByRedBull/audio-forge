@@ -397,8 +397,12 @@ class SingleInstanceCoordinator:
             socket.abort()
             self.last_error = "AudioForge is not running"
             return False
-        socket.write(command.encode("ascii") + b"\n")
-        delivered = socket.waitForBytesWritten(500)
+        payload = command.encode("ascii") + b"\n"
+        written = socket.write(payload)
+        # A Windows pipe can finish the write inside write(), leaving nothing to wait for.
+        delivered = written == len(payload) and (
+            socket.bytesToWrite() == 0 or socket.waitForBytesWritten(500)
+        )
         socket.disconnectFromServer()
         if not delivered:
             self.last_error = "the running AudioForge did not accept the command"

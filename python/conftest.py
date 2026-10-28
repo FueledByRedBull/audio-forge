@@ -106,7 +106,9 @@ def refuse_real_user_state(monkeypatch, guard_violations):
             _refuse(guard_violations, "test used the app's real single-instance lock or server name; pass both")
         original_init(self, server_name=server_name, lock_path=lock_path)
 
-    monkeypatch.setattr(login_startup, "startup_shortcut_path", startup_folder)
+    # Elsewhere the autostart entry lives under the isolated XDG_CONFIG_HOME above.
+    if sys.platform == "win32":
+        monkeypatch.setattr(login_startup, "startup_shortcut_path", startup_folder)
     monkeypatch.setattr(desktop_integration.SingleInstanceCoordinator, "__init__", coordinator_init)
 
 

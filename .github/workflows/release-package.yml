@@ -107,6 +107,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
         with:
           toolchain: 1.94.0
+          components: rustfmt, clippy
 
       - name: Rust format
         run: cargo fmt --check
@@ -203,6 +204,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
         with:
           toolchain: 1.94.0
+          components: rustfmt, clippy
 
       # Downloaded crate sources only: cargo checks them against the lockfiles.
       # Nothing that is compiled here (target/, df.dll) is restored from a cache,
@@ -672,6 +674,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
         with:
           toolchain: 1.94.0
+          components: rustfmt, clippy
 
       # Downloaded crate sources only, as in package-windows.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -885,6 +888,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
         with:
           toolchain: 1.94.0
+          components: rustfmt, clippy
 
       # Test binaries are not shipped, so this cache is safe to restore. Its key
       # is not ci.yml's rust-tests key, which also covers the DeepFilter lock.
@@ -951,6 +955,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
         with:
           toolchain: 1.94.0
+          components: rustfmt, clippy
 
       # Test binaries are not shipped, so this cache uses the same key as
       # ci.yml's rust-stress job; keep the two keys equal.

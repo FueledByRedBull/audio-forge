@@ -1,0 +1,231 @@
+"""Package the Linux bundle from build_linux.sh as a tarball and an AppImage.
+
+dist/AudioForge becomes:
+  dist/AudioForge-<version>-linux-x86_64.tar.gz   extract anywhere; install.sh adds it to the menu
+  dist/AudioForge-<version>-x86_64.AppImage        when --appimagetool is given
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tomllib
+
+ROOT = Path(__file__).resolve().parents[2]
+APP_ID = "io.github.FueledByRedBull.AudioForge"
+DESKTOP_DIR = ROOT / "installer" / "linux"
+ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
+ORT_LIBRARY = "libonnxruntime.so.1.23.2"
+MODELS = ("DeepFilterNet3_ll_onnx.tar.gz", "DeepFilterNet3_onnx.tar.gz", "silero_vad.onnx")
+
+# AudioForge.spec leaves these out of the bundle. Every supported desktop has
+# them, and they must match it: the audio, D-Bus, graphics, display and font
+# stacks, glib, and the C++ runtime. Releases are built on the oldest supported
+# distribution, so the system copy is never older than the one the build linked.
+SYSTEM_LIBRARIES = (
+    "libpipewire-0.3.so", "libasound.so", "libpulse", "libdbus-1.so", "libsystemd.so",
+    "libstdc++.so", "libgcc_s.so",
+    "libGL", "libEGL.so", "libOpenGL.so", "libdrm.so", "libgbm.so", "libwayland-",
+    "libX11.so", "libX11-xcb.so", "libxcb.so", "libxkbcommon",
+    "libfontconfig.so", "libfreetype.so",
+    "libglib-2.0.so", "libgobject-2.0.so", "libgio-2.0.so", "libgmodule-2.0.so",
+    "libgthread-2.0.so",
+)
+# Qt plugins the app never loads; the GTK theme alone drags in GTK's stack.
+UNUSED_QT_PLUGINS = (
+    "platformthemes/libqgtk3.so",
+    "platforminputcontexts/libqtvirtualkeyboardplugin.so",
+    "egldeviceintegrations/", "generic/", "networkinformation/", "qmltooling/", "tls/",
+    *(f"imageformats/libq{name}.so" for name in ("gif", "icns", "jpeg", "pdf", "tga", "tiff", "wbmp", "webp")),
+)
+
+INSTALL_SH = """#!/bin/sh
+# Add this copy of AudioForge to your application menu; --uninstall removes it.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+app_id=@APP_ID@
+data=${XDG_DATA_HOME:-}
+case $data in /*) ;; *) data=$HOME/.local/share ;; esac
+
+if [ "${1:-}" = "--uninstall" ]; then
+    rm -f "$data/applications/$app_id.desktop" "$data/metainfo/$app_id.metainfo.xml"
+    for icon in "$data"/icons/hicolor/*/apps/"$app_id".png; do
+        rm -f "$icon"
+    done
+    echo "AudioForge was removed from the application menu. Delete this folder to remove the app."
+    exit 0
+fi
+
+# The Exec line quotes the path; the Desktop Entry spec reserves these characters there.
+case $here in
+    *'"'* | *'`'* | *'$'* | *'\\'* | *'%'*)
+        echo "Move AudioForge to a folder whose path has no \\" \\` \\$ \\\\ or % characters." >&2
+        exit 1
+        ;;
+esac
+mkdir -p "$data/applications" "$data/metainfo"
+entry=$data/applications/$app_id.desktop
+grep -v '^Exec=' "$here/share/applications/$app_id.desktop" > "$entry"
+printf 'Exec="%s/AudioForge/AudioForge"\\n' "$here" >> "$entry"
+cp "$here/share/metainfo/$app_id.metainfo.xml" "$data/metainfo/"
+for icon in "$here"/share/icons/hicolor/*/apps/"$app_id".png; do
+    size=$(basename "$(dirname "$(dirname "$icon")")")
+    mkdir -p "$data/icons/hicolor/$size/apps"
+    cp "$icon" "$data/icons/hicolor/$size/apps/"
+done
+command -v update-desktop-database >/dev/null && update-desktop-database -q "$data/applications" || true
+echo "AudioForge is in your application menu. Run ./install.sh --uninstall before moving this folder."
+""".replace("@APP_ID@", APP_ID)
+
+APPRUN = """#!/bin/sh
+here=$(dirname "$(readlink -f "$0")")
+exec "$here/usr/lib/audioforge/AudioForge" "$@"
+"""
+
+
+def project_version() -> str:
+    with (ROOT / "pyproject.toml").open("rb") as handle:
+        return tomllib.load(handle)["project"]["version"]
+
+
+def check_bundle(bundle: Path, version: str) -> list[str]:
+    """Problems that make ``bundle`` unfit to ship; empty when it is ready."""
+    internal = bundle / "_internal"
+    errors = [
+        f"missing {relative}"
+        for relative in (
+            "AudioForge",
+            f"_internal/{ORT_LIBRARY}",
+            "_internal/libdf.so",
+            "_internal/AudioForge.ico",
+            *(f"_internal/models/{model}" for model in MODELS),
+        )
+        if not (bundle / relative).is_file()
+    ]
+    if not list((internal / "mic_eq").glob("mic_eq_core.cpython-*-linux-gnu.so")):
+        errors.append("missing the mic_eq_core extension")
+    try:
+        built = json.loads((internal / "audioforge-build.json").read_text(encoding="utf-8"))["version"]
+    except (OSError, KeyError, ValueError):
+        built = None
+    if built != version:
+        errors.append(f"audioforge-build.json names version {built!r}, not {version}")
+    for path in sorted(internal.rglob("*.so*")):
+        relative = path.relative_to(bundle).as_posix()
+        if path.name.startswith(SYSTEM_LIBRARIES):
+            errors.append(f"bundles a library that must come from the system: {relative}")
+        if any(f"PySide6/Qt/plugins/{plugin}" in relative for plugin in UNUSED_QT_PLUGINS):
+            errors.append(f"bundles an unused Qt plugin: {relative}")
+    return errors
+
+
+def export_icons(share: Path) -> None:
+    """Write the hicolor PNGs from AudioForge.ico, which holds every size we install."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtGui import QGuiApplication, QImageReader
+
+    _app = QGuiApplication.instance() or QGuiApplication([])
+    reader = QImageReader(str(ROOT / "AudioForge.ico"))
+    images = {}
+    for index in range(reader.imageCount()):
+        reader.jumpToImage(index)
+        image = reader.read()
+        images[image.width()] = image
+    missing = [size for size in ICON_SIZES if size not in images]
+    if missing:
+        raise SystemExit(f"AudioForge.ico has no {missing} px images")
+    for size in ICON_SIZES:
+        target = share / "icons" / "hicolor" / f"{size}x{size}" / "apps" / f"{APP_ID}.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not images[size].save(str(target), "PNG"):
+            raise SystemExit(f"could not write {target}")
+
+
+def share_tree(share: Path) -> None:
+    (share / "applications").mkdir(parents=True)
+    (share / "metainfo").mkdir(parents=True)
+    shutil.copy2(DESKTOP_DIR / f"{APP_ID}.desktop", share / "applications")
+    shutil.copy2(DESKTOP_DIR / f"{APP_ID}.metainfo.xml", share / "metainfo")
+    export_icons(share)
+
+
+def write_executable(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _normalized(info: tarfile.TarInfo) -> tarfile.TarInfo:
+    info.uid = info.gid = 0
+    info.uname = info.gname = ""
+    return info
+
+
+def build_tarball(bundle: Path, work: Path, output: Path, version: str) -> Path:
+    name = f"AudioForge-{version}-linux-x86_64"
+    staging = work / name
+    shutil.copytree(bundle, staging / "AudioForge", symlinks=True)
+    share_tree(staging / "share")
+    write_executable(staging / "install.sh", INSTALL_SH)
+    archive = output / f"{name}.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(staging, arcname=name, filter=_normalized)
+    return archive
+
+
+def build_appimage(bundle: Path, work: Path, output: Path, version: str, appimagetool: Path) -> Path:
+    appdir = work / "AudioForge.AppDir"
+    usr = appdir / "usr"
+    shutil.copytree(bundle, usr / "lib" / "audioforge", symlinks=True)
+    (usr / "bin").mkdir(parents=True)
+    (usr / "bin" / "audioforge").symlink_to("../lib/audioforge/AudioForge")
+    share_tree(usr / "share")
+    shutil.copy2(usr / "share" / "applications" / f"{APP_ID}.desktop", appdir)
+    shutil.copy2(usr / "share" / "icons" / "hicolor" / "256x256" / "apps" / f"{APP_ID}.png", appdir)
+    (appdir / ".DirIcon").symlink_to(f"{APP_ID}.png")
+    write_executable(appdir / "AppRun", APPRUN)
+    image = output / f"AudioForge-{version}-x86_64.AppImage"
+    subprocess.run(
+        [str(appimagetool), "--no-appstream", str(appdir), str(image)],
+        check=True,
+        env={**os.environ, "ARCH": "x86_64"},
+    )
+    return image
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--bundle", type=Path, default=ROOT / "dist" / "AudioForge")
+    parser.add_argument("--output", type=Path, default=ROOT / "dist")
+    parser.add_argument("--appimagetool", type=Path, help="appimagetool executable; omit to skip the AppImage")
+    parser.add_argument("--check-only", action="store_true", help="check the bundle without packaging it")
+    args = parser.parse_args()
+    bundle = args.bundle.resolve()
+    if sys.platform != "linux":
+        parser.error("Linux packages are built on Linux")
+    version = project_version()
+    errors = check_bundle(bundle, version)
+    if errors:
+        print(f"{bundle} is not ready to ship:", *errors, sep="\n  ", file=sys.stderr)
+        return 1
+    if args.check_only:
+        print(f"{bundle} is ready to ship")
+        return 0
+    work = args.output / "linux-package"
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True)
+    print(build_tarball(bundle, work, args.output, version))
+    if args.appimagetool:
+        print(build_appimage(bundle, work, args.output, version, args.appimagetool))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

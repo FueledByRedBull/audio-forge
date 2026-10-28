@@ -96,7 +96,7 @@ fn validate_stream_format(channels: u16, sample_rate: u32) -> Result<(), input::
 /// the stream can no longer deliver audio, ask the supervisor for a restart
 /// instead of waiting for the callback-stall watchdog.
 fn handle_stream_error(
-    error: &cpal::StreamError,
+    error: &cpal::Error,
     code: RtErrorCode,
     error_count: &AtomicU64,
     rt_error_code: &AtomicU32,
@@ -105,8 +105,8 @@ fn handle_stream_error(
     error_count.fetch_add(1, Ordering::Relaxed);
     store_rt_error(rt_error_code, code);
     if matches!(
-        error,
-        cpal::StreamError::DeviceNotAvailable | cpal::StreamError::StreamInvalidated
+        error.kind(),
+        cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::StreamInvalidated
     ) {
         restart_requested.store(true, Ordering::Release);
     }
@@ -206,9 +206,11 @@ mod tests {
     #[test]
     fn stream_errors_request_a_restart_only_when_the_stream_is_gone() {
         for (error, restarts) in [
-            (cpal::StreamError::DeviceNotAvailable, true),
-            (cpal::StreamError::StreamInvalidated, true),
-            (cpal::StreamError::BufferUnderrun, false),
+            (cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable), true),
+            (cpal::Error::new(cpal::ErrorKind::StreamInvalidated), true),
+            (cpal::Error::new(cpal::ErrorKind::Xrun), false),
+            // The backend already rerouted the stream; it keeps delivering audio.
+            (cpal::Error::new(cpal::ErrorKind::DeviceChanged), false),
         ] {
             let count = AtomicU64::new(0);
             let code = AtomicU32::new(RtErrorCode::None as u32);

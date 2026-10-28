@@ -376,7 +376,7 @@ impl AudioInput {
     {
         device
             .build_input_stream(
-                config,
+                *config,
                 |_data: &[T], _: &cpal::InputCallbackInfo| {},
                 |_error| {},
                 None,
@@ -990,7 +990,7 @@ impl AudioInput {
 
         let stream = device
             .build_input_stream(
-                &stream_config,
+                stream_config,
                 move |data: &[T], _: &cpal::InputCallbackInfo| {
                     // RT_REGION_START: cpal_input_callback
                     last_callback_time_us.store(now_micros(), Ordering::Relaxed);

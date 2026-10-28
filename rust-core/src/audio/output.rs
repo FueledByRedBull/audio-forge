@@ -83,7 +83,7 @@ impl AudioOutput {
     {
         device
             .build_output_stream(
-                config,
+                *config,
                 |data: &mut [T], _: &cpal::OutputCallbackInfo| {
                     let silence = T::from_sample(0.0_f32);
                     for sample in data {
@@ -478,7 +478,7 @@ impl AudioOutput {
 
         let stream = device
             .build_output_stream(
-                &stream_config,
+                stream_config,
                 move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
                     // RT_REGION_START: cpal_output_callback
                     let now_us = now_micros();

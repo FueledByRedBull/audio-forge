@@ -131,10 +131,10 @@ fn display_name(description: &cpal::DeviceDescription) -> String {
     #[cfg(target_os = "windows")]
     if let Some(name) = description
         .extended()
-        .first()
+        .next()
         .filter(|name| !name.trim().is_empty())
     {
-        return name.clone();
+        return name.to_string();
     }
 
     description.name().to_string()
@@ -182,7 +182,7 @@ fn collect_devices(input: bool) -> PyResult<Vec<DeviceInfo>> {
             host_api: if cfg!(target_os = "windows") {
                 "WASAPI".to_string()
             } else {
-                "default".to_string()
+                host.id().name().to_string()
             },
             direction: if input { "input" } else { "output" }.to_string(),
             sample_rate: config.as_ref().map(|value| value.sample_rate()),
@@ -217,20 +217,26 @@ mod tests {
         assert!(parse_endpoint_id("   ").is_err());
     }
 
+    // CPAL only parses IDs of hosts compiled for the current platform.
+    #[cfg(target_os = "windows")]
+    const NATIVE_ID: &str = "wasapi:stable-device";
+    #[cfg(not(target_os = "windows"))]
+    const NATIVE_ID: &str = "alsa:stable-device";
+
     #[test]
     fn endpoint_id_accepts_serialized_cpal_ids() {
-        let id = parse_endpoint_id("wasapi:stable-device").expect("valid CPAL ID");
-        assert_eq!(id.to_string(), "wasapi:stable-device");
+        let id = parse_endpoint_id(NATIVE_ID).expect("valid CPAL ID");
+        assert_eq!(id.to_string(), NATIVE_ID);
     }
 
     #[test]
     fn endpoint_id_persistence_keeps_the_existing_windows_shape() {
-        let id = parse_endpoint_id("wasapi:stable-device").expect("valid CPAL ID");
+        let id = parse_endpoint_id(NATIVE_ID).expect("valid CPAL ID");
         let persisted = super::persisted_endpoint_id(&id);
         if cfg!(target_os = "windows") {
             assert_eq!(persisted, "stable-device");
         } else {
-            assert_eq!(persisted, "wasapi:stable-device");
+            assert_eq!(persisted, NATIVE_ID);
         }
     }
 

@@ -20,6 +20,7 @@ import sys
 import tarfile
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 SUPPORT = ROOT / "build-support" / "deepfilter"
@@ -180,7 +181,7 @@ def extract_archive(archive: Path, destination: Path) -> None:
         source.extractall(destination, filter="data")
 
 
-def build(output: Path, attestation_path: Path, *, allow_untested_rust: bool) -> dict[str, object]:
+def build(output: Path, attestation_path: Path, *, allow_untested_rust: bool) -> dict[str, Any]:
     provenance = json.loads(PROVENANCE.read_text(encoding="utf-8"))
     upstream = provenance["upstream"]
     upstream_files = upstream["files"]

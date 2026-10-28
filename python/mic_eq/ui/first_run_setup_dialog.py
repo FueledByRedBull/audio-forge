@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from typing import Any
 
 from PySide6.QtCore import Qt, QTimer
@@ -46,7 +47,12 @@ STEP_CONTENT = {
     "devices": (
         "1. Choose devices",
         "Select the microphone and destination for your calls, games, or recording. "
-        "Choose a virtual cable when another app should receive AudioForge output.",
+        + (
+            "Choose a virtual cable when another app should receive AudioForge output."
+            if sys.platform == "win32"
+            else "Choose AudioForge Mic Input when another app should receive AudioForge "
+            "output; that app then records from AudioForge Mic."
+        ),
         "Use this route",
     ),
     "route": (

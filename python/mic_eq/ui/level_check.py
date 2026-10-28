@@ -17,6 +17,7 @@ import numpy as np
 from ..analysis.noise_reference import capture_is_silent
 from ..analysis.voice_setup import CLIP_LEVEL, raw_capture_is_clipped
 from .calibration_support import TOO_LOUD_DB, TOO_QUIET_DB
+from .platform_text import SOUND_SETTINGS
 
 LEVEL_CHECK_SECONDS = 3.0
 # A quiet verdict needs this many 100 ms level updates (1.5 s) without any block above
@@ -88,7 +89,7 @@ def verdict_from_levels(
         return LevelVerdict(
             "too_hot",
             f"{what}: lower the microphone level by about {lower} dB "
-            f"(in Windows or on the microphone), then {again}.",
+            f"(in {SOUND_SETTINGS} or on the microphone), then {again}.",
             "bad",
             peak_db,
             speech_db,
@@ -124,10 +125,10 @@ def verdict_from_levels(
         needed = max(least, math.floor(min(TARGET_SPEECH_DB - speech_db, TARGET_PEAK_DB - peak_db)))
         raise_by = min(needed, _MAX_RAISE_DB)
         fix = (
-            f"Raise the microphone level by about {raise_by} dB (in Windows or on the "
+            f"Raise the microphone level by about {raise_by} dB (in {SOUND_SETTINGS} or on the "
             "microphone) or move closer"
             if needed <= _MAX_RAISE_DB
-            else "Raise the microphone level as far as it goes (in Windows or on the "
+            else f"Raise the microphone level as far as it goes (in {SOUND_SETTINGS} or on the "
             "microphone) and move closer"
         )
         return LevelVerdict(
@@ -224,7 +225,7 @@ def clipped_message(audio: np.ndarray, sample_rate: int) -> str:
     lower = -change if change < 0 else round(-TARGET_PEAK_DB)
     return (
         "The recording clipped: its peaks were held at full scale. Lower the microphone "
-        f"level by about {lower} dB (in Windows or on the microphone) or move back a "
+        f"level by about {lower} dB (in {SOUND_SETTINGS} or on the microphone) or move back a "
         "little, then record again."
     )
 

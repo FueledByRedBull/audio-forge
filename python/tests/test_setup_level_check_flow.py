@@ -9,6 +9,7 @@ import pytest
 
 from mic_eq.ui import calibration_dialog
 from mic_eq.ui.calibration_dialog import CalibrationDialog
+from mic_eq.ui.platform_text import SOUND_SETTINGS
 from mic_eq.ui.theme import message_text_style
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from capture_helpers import finish_take
@@ -31,7 +32,7 @@ UNREADABLE = np.full(1000, np.nan, dtype=np.float32)
 
 HOT_MESSAGE = (
     "Your voice peaks at -0.4 dB, close to the limit: lower the microphone level "
-    "by about 6 dB (in Windows or on the microphone), then check again."
+    f"by about 6 dB (in {SOUND_SETTINGS} or on the microphone), then check again."
 )
 
 

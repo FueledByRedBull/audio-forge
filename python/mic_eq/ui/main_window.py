@@ -1577,7 +1577,8 @@ class MainWindow(QMainWindow):
             self._setup_desktop_integration(tray_only=True)
         if self._tray_icon is None or not self._tray_icon.isVisible():
             if now >= deadline:
-                self._cancel_login_startup("Login stopped: Windows tray unavailable; exiting")
+                tray = "Windows tray" if sys.platform == "win32" else "System tray"
+                self._cancel_login_startup(f"Login stopped: {tray} unavailable; exiting")
                 app = QGuiApplication.instance()
                 if app is not None:
                     app.exit(1)
@@ -2997,7 +2998,9 @@ class MainWindow(QMainWindow):
                     "Try these steps:\n"
                     "1. Press the refresh button (the circular arrow) next to the Output list\n"
                     "2. Ensure your microphone is connected\n"
-                    "3. Check Windows audio settings\n"
+                    "3. Check "
+                    + ("Windows audio settings" if sys.platform == "win32" else "your sound settings")
+                    + "\n"
                     "4. Try selecting a different device"
                 )
             else:

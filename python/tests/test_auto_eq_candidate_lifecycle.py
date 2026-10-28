@@ -23,6 +23,7 @@ from mic_eq.config import (
 from capture_helpers import finish_take
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.calibration_support import AutoEqCandidate, chain_settings
+from mic_eq.ui.platform_text import SOUND_SETTINGS
 from mic_eq.ui.theme import message_text_style, status_chip_style
 
 
@@ -532,7 +533,7 @@ def _advice(text: str) -> tuple[str | None, int | None, str | None]:
     lever = re.search(r"Lower the (compressor's target loudness|microphone gain)", text)
     figure = re.search(r"by about (\d+) dB", text)
     purpose = next((purpose for purpose in _PURPOSES if purpose in text), None)
-    if lever and lever[1] == "microphone gain" and "(in Windows or on the microphone)" not in text:
+    if lever and lever[1] == "microphone gain" and f"(in {SOUND_SETTINGS} or on the microphone)" not in text:
         return ("microphone gain, without where", None, purpose)
     return (lever[1] if lever else None, int(figure[1]) if figure else None, purpose)
 
@@ -1005,7 +1006,7 @@ def test_the_level_verdict_waits_for_a_full_window_but_loudness_does_not(qapp):
         dialog._on_level_update(-20.0, -1.0)  # too loud is said at once
         assert dialog.warning_label.text().startswith(
             "Your voice peaks at -1.0 dB, close to the limit: lower the microphone level by about 5 dB "
-            "(in Windows or on the microphone)"
+            f"(in {SOUND_SETTINGS} or on the microphone)"
         )
     finally:
         dialog.reject()

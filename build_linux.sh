@@ -22,6 +22,9 @@ fail() {
 "$python" -c 'import sys; sys.exit(sys.prefix == sys.base_prefix)' \
     || fail "build Python must be inside a virtual environment: $python"
 echo "Using build Python: $python"
+# maturin develop installs into the environment VIRTUAL_ENV names.
+VIRTUAL_ENV=$("$python" -c 'import sys; print(sys.prefix)')
+export VIRTUAL_ENV
 
 ort=target/onnxruntime-cpu/lib/libonnxruntime.so.1.23.2
 [[ -f $ort ]] || fail "$ort is missing; run python/tools/fetch_release_assets.py"

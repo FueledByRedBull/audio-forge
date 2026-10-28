@@ -1,8 +1,8 @@
 """Package the Linux bundle from build_linux.sh as a tarball and an AppImage.
 
-dist/AudioForge becomes:
-  dist/AudioForge-<version>-linux-x86_64.tar.gz   extract anywhere; install.sh adds it to the menu
-  dist/AudioForge-<version>-x86_64.AppImage        when --appimagetool is given
+dist/AudioForge becomes, named after the release tag like the Windows files:
+  dist/AudioForge-<tag>-linux-x86_64.tar.gz   extract anywhere; install.sh adds it to the menu
+  dist/AudioForge-<tag>-x86_64.AppImage        when --appimagetool is given
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ import subprocess
 import sys
 import tarfile
 import tomllib
+
+from release_version import parse_version
 
 ROOT = Path(__file__).resolve().parents[2]
 APP_ID = "io.github.FueledByRedBull.AudioForge"
@@ -168,7 +170,7 @@ def _normalized(info: tarfile.TarInfo) -> tarfile.TarInfo:
 
 
 def build_tarball(bundle: Path, work: Path, output: Path, version: str) -> Path:
-    name = f"AudioForge-{version}-linux-x86_64"
+    name = f"AudioForge-{parse_version(version).tag}-linux-x86_64"
     staging = work / name
     shutil.copytree(bundle, staging / "AudioForge", symlinks=True)
     share_tree(staging / "share")
@@ -179,7 +181,9 @@ def build_tarball(bundle: Path, work: Path, output: Path, version: str) -> Path:
     return archive
 
 
-def build_appimage(bundle: Path, work: Path, output: Path, version: str, appimagetool: Path) -> Path:
+def build_appimage(
+    bundle: Path, work: Path, output: Path, version: str, appimagetool: Path, runtime: Path | None
+) -> Path:
     appdir = work / "AudioForge.AppDir"
     usr = appdir / "usr"
     shutil.copytree(bundle, usr / "lib" / "audioforge", symlinks=True)
@@ -190,9 +194,11 @@ def build_appimage(bundle: Path, work: Path, output: Path, version: str, appimag
     shutil.copy2(usr / "share" / "icons" / "hicolor" / "256x256" / "apps" / f"{APP_ID}.png", appdir)
     (appdir / ".DirIcon").symlink_to(f"{APP_ID}.png")
     write_executable(appdir / "AppRun", APPRUN)
-    image = output / f"AudioForge-{version}-x86_64.AppImage"
+    image = output / f"AudioForge-{parse_version(version).tag}-x86_64.AppImage"
+    # Without --runtime-file, appimagetool downloads whatever runtime is newest.
+    runtime_args = ["--runtime-file", str(runtime)] if runtime else []
     subprocess.run(
-        [str(appimagetool), "--no-appstream", str(appdir), str(image)],
+        [str(appimagetool), "--no-appstream", *runtime_args, str(appdir), str(image)],
         check=True,
         env={**os.environ, "ARCH": "x86_64"},
     )
@@ -204,6 +210,7 @@ def main() -> int:
     parser.add_argument("--bundle", type=Path, default=ROOT / "dist" / "AudioForge")
     parser.add_argument("--output", type=Path, default=ROOT / "dist")
     parser.add_argument("--appimagetool", type=Path, help="appimagetool executable; omit to skip the AppImage")
+    parser.add_argument("--appimage-runtime", type=Path, help="pinned AppImage runtime for appimagetool to embed")
     parser.add_argument("--check-only", action="store_true", help="check the bundle without packaging it")
     args = parser.parse_args()
     bundle = args.bundle.resolve()
@@ -223,7 +230,7 @@ def main() -> int:
     work.mkdir(parents=True)
     print(build_tarball(bundle, work, args.output, version))
     if args.appimagetool:
-        print(build_appimage(bundle, work, args.output, version, args.appimagetool))
+        print(build_appimage(bundle, work, args.output, version, args.appimagetool, args.appimage_runtime))
     return 0
 
 

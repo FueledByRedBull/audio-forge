@@ -426,8 +426,8 @@ CI_RUST_DEEPFILTER_STEPS = (
     # df.dll and its attestation may be restored here (never in the release
     # workflow); the step after it still checks both against the recipe.
     (
-        "actions/cache/restore@",
         "target/deepfilter/df.dll.provenance.json",
+        "actions/cache/restore@",
         "hashFiles('build_deepfilter.ps1', 'build-support/deepfilter/**', "
         "'release-assets.json', 'rust-toolchain.toml')",
     ),

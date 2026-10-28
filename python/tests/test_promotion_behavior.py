@@ -413,7 +413,7 @@ def test_the_candidate_files_are_found_by_their_exact_names(tmp_path: Path) -> N
 )
 def test_a_candidate_without_one_of_its_files_is_refused(tmp_path: Path, missing: str) -> None:
     candidate, _names = _candidate_artifact(tmp_path)
-    next((*candidate.glob(f"*{missing}"), *(tmp_path / "linux-candidate").glob(f"*{missing}"))).unlink()
+    [*candidate.glob(f"*{missing}"), *(tmp_path / "linux-candidate").glob(f"*{missing}")][0].unlink()
 
     result = _run_step("verify-candidate", "Locate the candidate files", tmp_path, {"RELEASE_TAG": TAG})
 

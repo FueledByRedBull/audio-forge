@@ -370,28 +370,31 @@ def test_audit_ignore_is_rejected_once_the_dev_lock_moves_past_its_package(
 
 
 OTEL_IGNORE = "--ignore-vuln CVE-2026-114603"
+MCP_SDK_IGNORES = " --ignore-vuln CVE-2026-116684 --ignore-vuln CVE-2026-116685 --ignore-vuln CVE-2026-116686"
 
 
 @pytest.mark.parametrize("workflow", ["ci.yml", "release-package.yml"])
-def test_dev_audit_ignores_exactly_the_two_semgrep_pinned_advisories(workflow):
+def test_dev_audit_ignores_exactly_the_semgrep_pinned_advisories(workflow):
     workflow_file = check_workflows.WORKFLOW_DIR / workflow
     source = workflow_file.read_text(encoding="utf-8")
-    assert f"{DEV_AUDIT} {MCP_IGNORE} {OTEL_IGNORE}" in source
-    assert set(check_workflows.AUDIT_IGNORES) == {"CVE-2026-59951", "CVE-2026-114603"}
+    assert f"{DEV_AUDIT} {MCP_IGNORE} {OTEL_IGNORE}{MCP_SDK_IGNORES}" in source
+    assert set(check_workflows.AUDIT_IGNORES) == {
+        "CVE-2026-59951", "CVE-2026-114603", "CVE-2026-116684", "CVE-2026-116685", "CVE-2026-116686",
+    }
     dev_lock = check_workflows.DEV_LOCK_PATH.read_text(encoding="utf-8")
     for package, version in check_workflows.AUDIT_IGNORES.values():
         assert f"\n{package}=={version} " in dev_lock
 
 
 @pytest.mark.parametrize(
-    ("lock", "stale"),
+    ("lock", "stale", "count"),
     [
-        ("mcp==1.29.0\nopentelemetry-api==1.45.1\n", "CVE-2026-114603"),
-        ("mcp==1.30.0\nopentelemetry-api==1.37.0\n", "CVE-2026-59951"),
+        ("mcp==1.29.0\nopentelemetry-api==1.45.1\n", "CVE-2026-114603", 1),
+        ("mcp==1.30.0\nopentelemetry-api==1.37.0\n", "CVE-2026-59951", 4),
     ],
 )
 def test_each_audit_ignore_is_rejected_once_its_own_package_moves(
-    tmp_path, monkeypatch, lock, stale
+    tmp_path, monkeypatch, lock, stale, count
 ):
     errors = _audit_ignore_errors(
         tmp_path,
@@ -401,7 +404,7 @@ def test_each_audit_ignore_is_rejected_once_its_own_package_moves(
         dev_lock=lock,
     )
 
-    assert errors.count("needs dev.txt to pin") == 1
+    assert errors.count("needs dev.txt to pin") == count
     assert stale in errors and "remove the ignore" in errors
 
 

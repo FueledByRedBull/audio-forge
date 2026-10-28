@@ -212,7 +212,7 @@ stress test, then:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
-.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951 --ignore-vuln CVE-2026-114603
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951 --ignore-vuln CVE-2026-114603 --ignore-vuln CVE-2026-116684 --ignore-vuln CVE-2026-116685 --ignore-vuln CVE-2026-116686
 .\.venv\Scripts\python.exe python\tools\run_semgrep.py --sarif semgrep-results.sarif
 .\.venv\Scripts\python.exe python\tools\check_versions.py
 .\.venv\Scripts\python.exe python\tools\check_workflows.py
@@ -239,8 +239,9 @@ cargo audit
 - **Python:** install `requirements/dev.txt` with `--require-hashes`; never
   release from an environment resolved from open `pyproject.toml` ranges.
   The runtime audit has no ignores. The development audit ignores only
-  two ids, each caused by a Semgrep pin. CVE-2026-59951: Semgrep pins
-  `mcp==1.29.0` and only its MCP server uses it. CVE-2026-114603: Semgrep pins
+  ids caused by a Semgrep pin. CVE-2026-59951, CVE-2026-116684,
+  CVE-2026-116685 and CVE-2026-116686: Semgrep pins `mcp==1.29.0` and only
+  its MCP server uses it. CVE-2026-114603: Semgrep pins
   `opentelemetry-api~=1.37.0`; the ReDoS is in parsing inbound `tracestate`
   headers, and Semgrep only exports telemetry. Remove each ignore when Semgrep
   allows `mcp>=1.30.0` or `opentelemetry-api>=1.45.1`; `check_workflows.py`

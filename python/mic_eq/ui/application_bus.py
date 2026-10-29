@@ -138,32 +138,33 @@ class ApplicationBusService:
             header = message.header
             if header.message_type != MessageType.method_call:
                 continue
-            reply = self._answer(message)
+            reply, action = self._answer(message)
             if not header.flags & MessageFlag.no_reply_expected:
                 try:
                     connection.send(reply)
                 except (OSError, ConnectionError):
                     return
+            # Only after the reply: the callback may quit the app and close the bus.
+            if action is not None:
+                self._bridge.called.emit(action)
 
     def _answer(self, message):
         fields = message.header.fields
         interface = fields.get(HeaderFields.interface)
         member = fields.get(HeaderFields.member)
         if fields.get(HeaderFields.path) != self.path:
-            return new_error(message, "org.freedesktop.DBus.Error.UnknownObject")
+            return new_error(message, "org.freedesktop.DBus.Error.UnknownObject"), None
         if member == "Introspect" and interface in (None, "org.freedesktop.DBus.Introspectable"):
-            return new_method_return(message, "s", (INTROSPECTION,))
+            return new_method_return(message, "s", (INTROSPECTION,)), None
         if member == "Ping" and interface in (None, "org.freedesktop.DBus.Peer"):
-            return new_method_return(message)
+            return new_method_return(message), None
         if interface not in (None, INTERFACE):
-            return new_error(message, "org.freedesktop.DBus.Error.UnknownInterface")
+            return new_error(message, "org.freedesktop.DBus.Error.UnknownInterface"), None
         if member in ("Activate", "Open"):
-            self._bridge.called.emit("")
-            return new_method_return(message)
+            return new_method_return(message), ""
         if member == "ActivateAction":
             action = message.body[0]
             if action not in self.actions:
-                return new_error(message, "org.freedesktop.DBus.Error.InvalidArgs", "s", (f"no action {action!r}",))
-            self._bridge.called.emit(action)
-            return new_method_return(message)
-        return new_error(message, "org.freedesktop.DBus.Error.UnknownMethod")
+                return new_error(message, "org.freedesktop.DBus.Error.InvalidArgs", "s", (f"no action {action!r}",)), None
+            return new_method_return(message), action
+        return new_error(message, "org.freedesktop.DBus.Error.UnknownMethod"), None

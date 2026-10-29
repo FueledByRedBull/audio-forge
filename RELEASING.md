@@ -110,6 +110,19 @@ checks the `libdf.so` inside the tarball against its build attestation.
    - **In the token scope.** Only `publish-release` has `contents: write`;
      every other job in these workflows is read-only.
 
+7. **Update the AUR package.** For a final release, download the published
+   `AudioForge-v<version>-SHA256SUMS.txt`, then write the new `PKGBUILD` and
+   `.SRCINFO` into a checkout of the `audioforge-bin` AUR repository, commit
+   and push:
+
+   ```sh
+   python python/tools/aur_package.py --tag v<version> \
+     --checksums AudioForge-v<version>-SHA256SUMS.txt --output ~/aur/audioforge-bin
+   ```
+
+   Pass `--pkgrel 2` (and so on) to republish the same version with packaging
+   fixes. Release candidates are not published to the AUR.
+
 GitHub release immutability is enabled: publication locks the assets and tag
 and creates GitHub's
 [release attestation](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/verify-release-integrity).

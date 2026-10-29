@@ -649,6 +649,7 @@ jobs:
       run:
         shell: bash
     env:
+      AUDIOFORGE_SOURCE_DIR: build/source-distribution
       APPIMAGETOOL_URL: https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
       APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
       APPIMAGE_RUNTIME_URL: https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
@@ -690,6 +691,9 @@ jobs:
           python -m venv .venv
           .venv/bin/python -m pip install --require-hashes -r requirements/dev.txt --no-compile
 
+      - name: Bind source revision to checked-out release ref
+        run: echo "AUDIOFORGE_SOURCE_REVISION=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
       - name: Resolve release metadata
         id: meta
         env:
@@ -719,6 +723,35 @@ jobs:
             echo "tarball=dist/AudioForge-$release_tag-linux-x86_64.tar.gz"
             echo "appimage=dist/AudioForge-$release_tag-x86_64.AppImage"
           } >> "$GITHUB_OUTPUT"
+
+      # The same manifest covers both builds; hydrating it here lets the Linux
+      # license inventory report the corresponding source as complete.
+      - name: Digest the pinned dependency source entries
+        id: source_entries
+        run: |
+          digest=$(.venv/bin/python -c "import hashlib, json; m = json.load(open('licenses/source-manifest.json', encoding='utf-8')); print(hashlib.sha256(json.dumps(m['entries'], sort_keys=True, separators=(',', ':')).encode()).hexdigest())")
+          [[ $digest =~ ^[0-9a-f]{64}$ ]] || { echo "Unable to digest the source manifest entries." >&2; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pinned dependency source archives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/source-distribution/archives
+          key: corresponding-source-content-v2-${{ steps.source_entries.outputs.digest }}
+
+      - name: Hydrate and verify corresponding source
+        run: |
+          .venv/bin/python python/tools/source_distribution.py bundle \
+            --manifest licenses/source-manifest.json \
+            --output "$AUDIOFORGE_SOURCE_DIR" \
+            --revision "$AUDIOFORGE_SOURCE_REVISION" \
+            --include-runtime-assets
+          .venv/bin/python python/tools/source_distribution.py verify \
+            --manifest licenses/source-manifest.json \
+            --source-dir "$AUDIOFORGE_SOURCE_DIR" \
+            --include-runtime-assets \
+            --require-receipt \
+            --revision "$AUDIOFORGE_SOURCE_REVISION"
 
       # Builds libdf.so from the pinned DeepFilter source and verifies the rest.
       - name: Download and verify pinned release runtime assets
@@ -767,6 +800,8 @@ jobs:
           "$APPIMAGE" --appimage-extract-and-run --smoke-test
 
       # One flat directory, as release-promote.yml locates the files by name.
+      # The tarball's manifest and metadata bind it to this run and commit, as
+      # the Windows archive's do, for promotion and hardware qualification.
       - name: Stage the Linux release files
         env:
           RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
@@ -775,11 +810,15 @@ jobs:
         run: |
           mkdir linux-release
           cp "$TARBALL" "$APPIMAGE" linux-release/
-          cp target/deepfilter/libdf.so.provenance.json "linux-release/AudioForge-$RELEASE_TAG-libdf.provenance.json"
+          attestation="linux-release/AudioForge-$RELEASE_TAG-libdf.provenance.json"
+          cp target/deepfilter/libdf.so.provenance.json "$attestation"
+          .venv/bin/python python/tools/release_provenance.py create \
+            --bundle dist/AudioForge \
+            --archive "linux-release/$(basename "$TARBALL")" \
+            --native-attestation "$attestation" \
+            --output-dir linux-release
           cd linux-release
-          for file in "$(basename "$TARBALL")" "$(basename "$APPIMAGE")"; do
-            sha256sum "$file" > "$file.sha256"
-          done
+          sha256sum "$(basename "$APPIMAGE")" > "$(basename "$APPIMAGE").sha256"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

@@ -87,6 +87,11 @@ jobs:
           if ((git rev-parse HEAD).Trim() -ne $tagCommit) {
             throw "The checkout is not the release tag commit."
           }
+          # One matrix covers one artifact: the Windows archive or the Linux tarball.
+          $qualificationWorkflows = @(
+            "Qualify release candidate on hardware",
+            "Qualify Linux release candidate on hardware"
+          )
           function Assert-HardwareRun {
             param([string]$RunId)
             $json = gh run view $RunId `
@@ -99,7 +104,7 @@ jobs:
             if ([string]$run.databaseId -ne $RunId) {
               throw "GitHub Actions run identity mismatch for $RunId."
             }
-            if ($run.workflowName -ne "Qualify release candidate on hardware") {
+            if ($run.workflowName -notin $qualificationWorkflows) {
               throw "Run $RunId was not produced by the hardware qualification workflow."
             }
             if ($run.event -ne "workflow_dispatch" -or
@@ -129,7 +134,7 @@ jobs:
                 [string]$producer.run_attempt -ne $RunAttempt) {
               throw "Hardware source report does not bind to run $RunId attempt $RunAttempt."
             }
-            if ([string]$producer.workflow -ne "Qualify release candidate on hardware") {
+            if ([string]$producer.workflow -notin $qualificationWorkflows) {
               throw "Hardware source report from run $RunId has an unexpected producer workflow."
             }
             if ([string]$producer.event -ne "workflow_dispatch" -or

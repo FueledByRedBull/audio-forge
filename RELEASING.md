@@ -60,12 +60,19 @@ checks the `libdf.so` inside the tarball against its build attestation.
    [manual release checks](#manual-release-checks). `self_test.py` and `health_check.py` are the hardware checks
    that `release-hardware-qualify.yml` runs through
    `evaluate_hardware_validation.py`. They need a real audio route, so no
-   hosted job can run them. Keep each measurement bound to its candidate
+   hosted job can run them. `release-hardware-qualify-linux.yml` qualifies the
+   Linux tarball the same way on a self-hosted Ubuntu 24.04 runner labelled
+   `[self-hosted, linux, x64, audioforge-hardware]`, in a logged-in PipeWire
+   session. Its `sleep_resume` case reads systemd-sleep's journal entries, so
+   the runner's user must be able to read the system journal (on Ubuntu, the
+   `systemd-journal` group). Pass the tarball's SHA-256 as
+   `expected_archive_sha256`. A matrix covers one artifact, so assemble the
+   Windows and Linux cases in separate `release-hardware-matrix.yml` runs. Keep each measurement bound to its candidate
    revision and digest, never attribute an earlier candidate's results to the
    final binary, and name untested configurations in the release notes.
    The runner is a personal machine that executes repository code: register it
    only while a run is needed, and only for this repository. Like promotion,
-   both hardware workflows are limited to `master` and to admin or maintain
+   the hardware workflows are limited to `master` and to admin or maintain
    users, as described under step 6.
 6. **Promote.** Run `Promote release candidate` with `release_tag`,
    `candidate_run_id`, and `expected_archive_sha256`. It downloads the same
@@ -76,7 +83,12 @@ checks the `libdf.so` inside the tarball against its build attestation.
    SHA-256 digests in preflight, and the final check downloads and hashes
    every published file.
 
-   Promotion has two jobs. `verify-candidate` installs the pinned pip packages
+   `verify-linux-candidate` checks the Linux tarball on Linux: it extracts
+   it and verifies it against its manifest and metadata sidecars, its
+   `libdf.so` attestation, the tag commit and the candidate run, and its
+   bundled source status. `publish-release` waits for it too.
+
+   Promotion's other two jobs share the work. `verify-candidate` installs the pinned pip packages
    and runs the candidate (the MSI and the executable) with a read-only token
    and no credentials in its checkout. Before it runs the MSI or the
    executable it locates the seven release files, stages them, records their
@@ -89,10 +101,10 @@ checks the `libdf.so` inside the tarball against its build attestation.
    What restricts who can dispatch these workflows, and where:
 
    - **In the workflow files, a guard against mistakes.** The first step of
-     every job in `Promote release candidate` and in both hardware workflows
+     every job in `Promote release candidate` and in the hardware workflows
      fails unless the run is on `refs/heads/master` and
      `github.triggering_actor` has the admin or maintain role
-     (`GET /repos/{repo}/collaborators/{user}/permission`). The three accept
+     (`GET /repos/{repo}/collaborators/{user}/permission`). They accept
      only `workflow_dispatch`; `check_workflows.py` rejects any other trigger.
      A copy of a file on another branch can delete this step, so it does not
      bind that copy.

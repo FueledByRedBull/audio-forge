@@ -20,7 +20,6 @@ from verify_release_assets import load_asset_manifest
 
 from hardware_qualification import (
     REQUIRED_DEVICE_CLASSES,
-    REQUIRED_OS_RELEASES,
     REQUIRED_SAMPLE_RATES,
     REQUIRED_SCENARIOS,
     SUPPORTED_DEVICE_CLASSES,
@@ -28,6 +27,8 @@ from hardware_qualification import (
     SUPPORTED_SAMPLE_RATES,
     SUPPORTED_SCENARIOS,
     coverage_missing,
+    os_release,
+    required_os_releases,
     validate_case,
 )
 
@@ -62,6 +63,10 @@ BUNDLED_RELEASE_ASSETS = {
     ),
     "models/silero_vad.onnx": "_internal/models/silero_vad.onnx",
 }
+BUNDLED_LINUX_RELEASE_ASSETS = {
+    "target/onnxruntime-cpu/lib/libonnxruntime.so.1.23.2": "_internal/libonnxruntime.so.1.23.2",
+    "models/silero_vad.onnx": "_internal/models/silero_vad.onnx",
+}
 QUALIFICATION_KINDS = frozenset(
     {
         "exact-artifact-package",
@@ -69,6 +74,13 @@ QUALIFICATION_KINDS = frozenset(
         "exact-artifact-hardware-matrix",
     }
 )
+
+
+def bundle_platform(bundle: Path) -> str:
+    """``linux`` for the Linux onedir bundle, else ``windows``."""
+    if not (bundle / "AudioForge.exe").is_file() and (bundle / "AudioForge").is_file():
+        return "linux"
+    return "windows"
 
 
 def sha256_file(path: Path) -> str:
@@ -138,11 +150,13 @@ def _bundle_component(path: str) -> str:
         return "DeepFilter Standard model"
     if relative == "models/silero_vad.onnx":
         return "Silero model"
-    if relative == "df.dll":
+    if relative in ("df.dll", "libdf.so"):
         return "DeepFilter runtime"
-    if relative.startswith("onnxruntime") and relative.endswith(".dll"):
+    if (relative.startswith("onnxruntime") and relative.endswith(".dll")) or relative.startswith(
+        "libonnxruntime.so"
+    ):
         return "ONNX Runtime"
-    if relative == "audioforge.exe" or relative.startswith("mic_eq/mic_eq_core"):
+    if relative in ("audioforge.exe", "audioforge") or relative.startswith("mic_eq/mic_eq_core"):
         return "Application executable and native core"
     return "Python and other runtime files"
 
@@ -408,14 +422,16 @@ def _deepfilter_attestation_contract_errors(
 
 
 def _bundled_asset_errors(bundle: Path) -> list[str]:
-    """Bind the bundled CPU ORT DLLs and Silero model to the checked-in asset manifest."""
+    """Bind the bundled CPU ORT libraries and Silero model to the checked-in asset manifest."""
     manifest_path = REPO_ROOT / "release-assets.json"
+    target = bundle_platform(bundle)
     try:
-        entries = load_asset_manifest(manifest_path, platform="windows").entries
+        entries = load_asset_manifest(manifest_path, platform=target).entries
     except (OSError, ValueError) as exc:
         return [f"release asset manifest could not be loaded: {exc}"]
     errors: list[str] = []
-    for manifest_path_name, bundle_path_name in BUNDLED_RELEASE_ASSETS.items():
+    assets = BUNDLED_LINUX_RELEASE_ASSETS if target == "linux" else BUNDLED_RELEASE_ASSETS
+    for manifest_path_name, bundle_path_name in assets.items():
         asset_path = bundle / bundle_path_name
         if not asset_path.is_file():
             errors.append(f"candidate bundle is missing release asset: {bundle_path_name}")
@@ -436,6 +452,8 @@ def _deepfilter_attestation_errors(
 ) -> list[str]:
     """Verify the generated DeepFilter attestation against a candidate bundle."""
     errors: list[str] = []
+    linux = bundle_platform(bundle) == "linux"
+    library_name = DEEPFILTER_LINUX_LIBRARY if linux else "df.dll"
     if not attestation_path.is_file():
         return [f"DeepFilter attestation is missing: {attestation_path}"]
     try:
@@ -463,11 +481,11 @@ def _deepfilter_attestation_errors(
         if (
             not isinstance(output_name, str)
             or Path(output_name).name != output_name
-            or Path(output_name).suffix.casefold() != ".dll"
+            or Path(output_name).suffix.casefold() != Path(library_name).suffix
         ):
-            errors.append("DeepFilter attestation output.name must be a safe DLL filename")
+            errors.append(f"DeepFilter attestation output.name must be a safe {library_name} filename")
 
-    bundled_dll = bundle / "_internal" / "df.dll"
+    bundled_dll = bundle / "_internal" / library_name
     if not bundled_dll.is_file():
         errors.append(f"candidate bundle is missing its DeepFilter DLL: {bundled_dll}")
     elif output_sha is not None:
@@ -482,13 +500,15 @@ def _deepfilter_attestation_errors(
     manifest_path = REPO_ROOT / "release-assets.json"
     provenance_path = REPO_ROOT / "build-support" / "deepfilter" / "provenance.json"
     try:
-        entries = load_asset_manifest(manifest_path, platform="windows").entries
+        entries = load_asset_manifest(manifest_path, platform="linux" if linux else "windows").entries
         provenance = _load_json(provenance_path)
     except (OSError, ValueError) as exc:
         errors.append(f"DeepFilter source identity could not be loaded: {exc}")
         return errors
-    errors.extend(_deepfilter_attestation_contract_errors(attestation, provenance))
-    manifest_asset = entries.get("df.dll")
+    errors.extend(_deepfilter_attestation_contract_errors(
+        attestation, provenance, target=DEEPFILTER_LINUX_TARGET if linux else None
+    ))
+    manifest_asset = entries.get(library_name)
     origin = manifest_asset.get("origin") if isinstance(manifest_asset, dict) else None
     expected_upstream = provenance.get("upstream")
     if not isinstance(origin, dict) or not isinstance(expected_upstream, dict):
@@ -504,7 +524,7 @@ def _deepfilter_attestation_errors(
     if not isinstance(recipe_files, dict):
         errors.append("DeepFilter attestation recipe.files is missing")
     else:
-        for required in DEEPFILTER_RECIPE_FILES:
+        for required in DEEPFILTER_LINUX_RECIPE_FILES if linux else DEEPFILTER_RECIPE_FILES:
             raw_digest = recipe_files.get(required)
             is_model = required.startswith("models/")
             recipe_file = (
@@ -655,7 +675,7 @@ def _qualification_errors(
                 not isinstance(case.get("os_release"), str)
                 or case.get("os_release") not in SUPPORTED_OS_RELEASES
             ):
-                errors.append(f"{report_path} hardware matrix case Windows release is unsupported")
+                errors.append(f"{report_path} hardware matrix case OS release is unsupported")
             if (
                 not isinstance(case.get("device_class"), str)
                 or case.get("device_class") not in SUPPORTED_DEVICE_CLASSES
@@ -710,7 +730,11 @@ def _qualification_errors(
             errors.append(f"{report_path} hardware matrix required coverage is missing")
         else:
             expected_required = {
-                "required_os_releases": sorted(REQUIRED_OS_RELEASES),
+                "required_os_releases": sorted(required_os_releases(
+                    case["os_release"]
+                    for case in (cases if isinstance(cases, list) else [])
+                    if isinstance(case, dict) and isinstance(case.get("os_release"), str)
+                )),
                 "required_device_classes": sorted(REQUIRED_DEVICE_CLASSES),
                 "required_nominal_sample_rates_hz": sorted(REQUIRED_SAMPLE_RATES),
                 "required_scenarios": sorted(REQUIRED_SCENARIOS),
@@ -805,11 +829,7 @@ def _matrix_source_report_errors(
                 errors.append(f"{matrix_path} matrix case does not match its source report")
             else:
                 summary = {
-                    "os_release": (
-                        source_machine.get("release")
-                        if isinstance(source_machine, dict)
-                        else None
-                    ),
+                    "os_release": os_release(source_machine),
                     "device_class": source_case.get("device_class"),
                     "nominal_sample_rate_hz": source_case.get("nominal_sample_rate_hz"),
                     "scenario": source_case.get("scenario"),

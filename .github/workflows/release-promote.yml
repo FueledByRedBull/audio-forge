@@ -37,6 +37,8 @@ jobs:
       contents: read
     outputs:
       prerelease: ${{ steps.origins.outputs.prerelease }}
+      tag_commit: ${{ steps.origins.outputs.tag_commit }}
+      candidate_run_attempt: ${{ steps.origins.outputs.candidate_run_attempt }}
       public_version: ${{ steps.stage.outputs.public_version }}
       asset_hashes: ${{ steps.stage.outputs.asset_hashes }}
     defaults:
@@ -202,6 +204,8 @@ jobs:
           foreach ($entry in @(
             @("linux_tarball", $tarballName),
             @("linux_tarball_checksum", "$tarballName.sha256"),
+            @("linux_tarball_manifest", "$tarballName.manifest.json"),
+            @("linux_tarball_metadata", "$tarballName.metadata.json"),
             @("linux_appimage", $appImageName),
             @("linux_appimage_checksum", "$appImageName.sha256"),
             @("linux_native_attestation", "AudioForge-$($env:RELEASE_TAG)-libdf.provenance.json")
@@ -269,6 +273,8 @@ jobs:
           NATIVE_ATTESTATION: ${{ steps.files.outputs.native_attestation }}
           LINUX_TARBALL: ${{ steps.files.outputs.linux_tarball }}
           LINUX_TARBALL_CHECKSUM: ${{ steps.files.outputs.linux_tarball_checksum }}
+          LINUX_TARBALL_MANIFEST: ${{ steps.files.outputs.linux_tarball_manifest }}
+          LINUX_TARBALL_METADATA: ${{ steps.files.outputs.linux_tarball_metadata }}
           LINUX_APPIMAGE: ${{ steps.files.outputs.linux_appimage }}
           LINUX_APPIMAGE_CHECKSUM: ${{ steps.files.outputs.linux_appimage_checksum }}
           LINUX_NATIVE_ATTESTATION: ${{ steps.files.outputs.linux_native_attestation }}
@@ -293,7 +299,8 @@ jobs:
             $env:CHECKSUM, $env:MANIFEST, $env:METADATA,
             $env:INSTALLER_CHECKSUM, $env:INSTALLER_MANIFEST, $env:INSTALLER_METADATA,
             $env:SOURCE_CHECKSUM, $env:SOURCE_METADATA, $env:NATIVE_ATTESTATION,
-            $env:LINUX_TARBALL_CHECKSUM, $env:LINUX_APPIMAGE_CHECKSUM, $env:LINUX_NATIVE_ATTESTATION
+            $env:LINUX_TARBALL_CHECKSUM, $env:LINUX_TARBALL_MANIFEST, $env:LINUX_TARBALL_METADATA,
+            $env:LINUX_APPIMAGE_CHECKSUM, $env:LINUX_NATIVE_ATTESTATION
           )) {
             Copy-Item -LiteralPath $sidecar -Destination $evidenceDir -ErrorAction Stop
           }
@@ -468,9 +475,87 @@ jobs:
   # The only job that can write. The environment is a second lock beside the
   # dispatch check: repository settings limit it to master. It never runs the
   # candidate's code, so a flaw in the candidate cannot reach the write token.
+  # The Linux tarball is checked against its manifest on Linux, where its
+  # symlinks extract as they were built; it runs none of the candidate.
+  verify-linux-candidate:
+    name: Verify the Linux candidate without publishing
+    needs: verify-candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Authorize the dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCHER: ${{ github.triggering_actor }}
+        run: |
+          if ($env:GITHUB_REF -ne "refs/heads/master") {
+            throw "This workflow runs only from refs/heads/master, not $env:GITHUB_REF."
+          }
+          $permission = Invoke-RestMethod `
+            -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" } `
+            -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/collaborators/$([uri]::EscapeDataString($env:DISPATCHER))/permission"
+          if ($permission.role_name -notin @("admin", "maintain")) {
+            throw "$env:DISPATCHER needs the admin or maintain role to run this workflow, but has '$($permission.role_name)'."
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.release_tag }}
+          persist-credentials: false
+
+      - name: Confirm the checkout is the release tag commit
+        env:
+          TAG_COMMIT: ${{ needs.verify-candidate.outputs.tag_commit }}
+        run: |
+          if ($env:TAG_COMMIT -notmatch '^[0-9a-fA-F]{40}$' -or (git rev-parse HEAD).Trim() -ne $env:TAG_COMMIT) {
+            throw "The checkout is not the release tag commit."
+          }
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13.17"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: audioforge-release-linux-${{ inputs.release_tag }}
+          path: linux-candidate
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_run_id }}
+
+      - name: Verify the Linux tarball's provenance
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          CANDIDATE_RUN_ATTEMPT: ${{ needs.verify-candidate.outputs.candidate_run_attempt }}
+          TAG_COMMIT: ${{ needs.verify-candidate.outputs.tag_commit }}
+        run: |
+          set -euo pipefail
+          tarball="linux-candidate/AudioForge-$RELEASE_TAG-linux-x86_64.tar.gz"
+          extract="$RUNNER_TEMP/audioforge-linux-candidate"
+          mkdir -p "$extract"
+          tar -xzf "$tarball" -C "$extract"
+          python python/tools/release_provenance.py verify \
+            --bundle "$extract/AudioForge-$RELEASE_TAG-linux-x86_64/AudioForge" \
+            --archive "$tarball" \
+            --checksum "$tarball.sha256" \
+            --manifest "$tarball.manifest.json" \
+            --metadata "$tarball.metadata.json" \
+            --expected-commit "$TAG_COMMIT" \
+            --expected-producer "Release package" "$CANDIDATE_RUN_ID" "$CANDIDATE_RUN_ATTEMPT" \
+            --require-source-distribution \
+            --native-attestation "linux-candidate/AudioForge-$RELEASE_TAG-libdf.provenance.json"
+
   publish-release:
     name: Publish the verified release
-    needs: verify-candidate
+    needs: [verify-candidate, verify-linux-candidate]
     runs-on: windows-latest
     timeout-minutes: 30
     environment: release

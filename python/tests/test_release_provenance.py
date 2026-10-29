@@ -176,6 +176,29 @@ def test_bundled_assets_match_release_manifest(tmp_path, monkeypatch):
     )
 
 
+def test_a_linux_bundle_binds_its_own_onnx_runtime_and_model(tmp_path, monkeypatch):
+    bundle = tmp_path / "AudioForge"
+    (bundle / "_internal").mkdir(parents=True)
+    (bundle / "AudioForge").write_bytes(b"elf")
+    assert release_provenance.bundle_platform(bundle) == "linux"
+    manifest_assets = []
+    for manifest_path, bundle_path in release_provenance.BUNDLED_LINUX_RELEASE_ASSETS.items():
+        target = bundle / bundle_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(manifest_path.encode("ascii"))
+        platform = None if manifest_path.startswith("models/") else "linux"
+        manifest_assets.append({
+            "path": manifest_path, "sha256": release_provenance.sha256_file(target),
+            **({"platform": platform} if platform else {}),
+        })
+    (tmp_path / "release-assets.json").write_text(json.dumps({"assets": manifest_assets}), encoding="utf-8")
+    monkeypatch.setattr(release_provenance, "REPO_ROOT", tmp_path)
+
+    assert _bundled_asset_errors(bundle) == []
+    (bundle / "_internal" / "libonnxruntime.so.1.23.2").write_bytes(b"tampered")
+    assert any("does not match release-assets.json" in error for error in _bundled_asset_errors(bundle))
+
+
 def test_create_and_verify_sidecars_bind_exact_archive_and_bundle(
     tmp_path, monkeypatch
 ):
@@ -902,3 +925,18 @@ def test_verifier_requires_both_pass_status_and_boolean(tmp_path, monkeypatch):
         reports=[report],
     )
     assert any("not a passing qualification report" in error for error in errors)
+
+
+def test_a_linux_bundle_binds_its_attestation_to_libdf_so(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    (bundle / "_internal").mkdir(parents=True)
+    (bundle / "AudioForge").write_bytes(b"elf")
+    (bundle / "_internal" / "libdf.so").write_bytes(b"library")
+    attestation = tmp_path / "libdf.so.provenance.json"
+    for name, digest, expected in (
+        ("df.dll", release_provenance.sha256_file(bundle / "_internal" / "libdf.so"), "safe libdf.so filename"),
+        ("libdf.so", "0" * 64, "does not match the candidate"),
+    ):
+        attestation.write_text(json.dumps({"output": {"name": name, "sha256": digest, "bytes": 7}}))
+        errors = release_provenance._deepfilter_attestation_errors(attestation, bundle)
+        assert any(expected in error for error in errors), errors

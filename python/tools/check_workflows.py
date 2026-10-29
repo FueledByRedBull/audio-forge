@@ -86,7 +86,9 @@ RELEASE_OUTPUT_ENV_PREFIX = "AF_"
 # branch of that name) and the job then asserts HEAD is the tag's commit.
 TAG_INPUT = re.compile(r"inputs\.\w*tag\b")
 TAG_CHECKOUT_REF = re.compile(r"refs/tags/\$\{\{\s*inputs\.\w+\s*\}\}")
-HEAD_IS_TAG_COMMIT = re.compile(r"git rev-parse HEAD\)\.Trim\(\)\s+-ne\b")
+HEAD_IS_TAG_COMMIT = re.compile(
+    r"git rev-parse HEAD\)\.Trim\(\)\s+-ne\b|\[\[ \$\(git rev-parse HEAD\) != "
+)
 # Allowed pip_audit --ignore-vuln ids, each with the dev-lock pin that causes it.
 # The ignore stops being allowed once the lock moves off that pin.
 # CVE-2026-59951, CVE-2026-116684, CVE-2026-116685, CVE-2026-116686: semgrep
@@ -138,8 +140,11 @@ RUN_REQUIRED_MARKERS = frozenset(
 # publishes from a second job that never runs it; only the second can write.
 PROMOTE_JOB_PERMISSIONS = {
     "verify-candidate": {"actions": "read", "contents": "read"},
+    "verify-linux-candidate": {"actions": "read", "contents": "read"},
     "publish-release": {"contents": "write"},
 }
+# Both verifying jobs pass before anything is published.
+PROMOTE_PUBLISH_NEEDS = ["verify-candidate", "verify-linux-candidate"]
 PROMOTE_PUBLISH_JOB = "publish-release"
 # Candidate code is the executable, the MSI and the pinned pip packages. None of
 # it may appear in the publishing job, and the verifying job runs the executable
@@ -154,15 +159,20 @@ PROMOTE_PUBLISH_ONLY_COMMANDS = tuple(
 DISPATCH_WORKFLOWS = (
     "release-promote.yml",
     "release-hardware-qualify.yml",
+    "release-hardware-qualify-linux.yml",
     "release-hardware-matrix.yml",
 )
-HARDWARE_RUNNER = ["self-hosted", "windows", "x64", "audioforge-hardware"]
+HARDWARE_RUNNERS = {
+    "release-hardware-qualify.yml": ["self-hosted", "windows", "x64", "audioforge-hardware"],
+    "release-hardware-qualify-linux.yml": ["self-hosted", "linux", "x64", "audioforge-hardware"],
+}
 # The jobs that declare `environment: release`. Repository settings limit that
 # environment to master, which binds a branch copy of the workflow only while
 # the copy keeps the line; no other job may use it.
 RELEASE_ENVIRONMENT_JOBS = {
     "release-promote.yml": frozenset({PROMOTE_PUBLISH_JOB}),
     "release-hardware-qualify.yml": frozenset({"qualify-hardware"}),
+    "release-hardware-qualify-linux.yml": frozenset({"qualify-hardware"}),
     "release-hardware-matrix.yml": frozenset({"assemble"}),
 }
 # cache-cleanup.yml deletes a closed pull request's Actions caches. Its one job is
@@ -179,6 +189,15 @@ DISPATCH_AUTHORIZATION = (
     "/collaborators/",
     "/permission",
     '$permission.role_name -notin @("admin", "maintain")',
+)
+# The same refusal in bash, for a self-hosted Linux runner without PowerShell.
+DISPATCH_AUTHORIZATION_BASH = (
+    "GH_TOKEN: ${{ github.token }}",
+    "DISPATCHER: ${{ github.triggering_actor }}",
+    "if [[ $GITHUB_REF != refs/heads/master ]]",
+    "/collaborators/",
+    "/permission",
+    "admin|maintain) ;;",
 )
 CANONICAL_TAG = (
     "release_tag must be the canonical vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N tag"
@@ -243,6 +262,7 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                 ),
                 (
                     "-evidence.7z",
+                    "$env:LINUX_TARBALL_MANIFEST, $env:LINUX_TARBALL_METADATA",
                     "$env:LINUX_TARBALL, $env:LINUX_APPIMAGE",
                     "validation/release-qualification.json",
                     "SHA256SUMS",
@@ -262,6 +282,27 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                     "msi_smoke.py",
                     "package_smoke.py --dist",
                     "--smoke-test",
+                ),
+            ),
+            # The Linux tarball's sidecars bind it to the candidate run and tag commit.
+            "verify-linux-candidate": (
+                (
+                    "actions/checkout@",
+                    "ref: refs/tags/${{ inputs.release_tag }}",
+                    "persist-credentials: false",
+                ),
+                (
+                    "actions/download-artifact@",
+                    "name: audioforge-release-linux-${{ inputs.release_tag }}",
+                    "run-id: ${{ inputs.candidate_run_id }}",
+                ),
+                (
+                    "release_provenance.py verify",
+                    "--expected-commit",
+                    "--expected-producer",
+                    "--require-source-distribution",
+                    "--native-attestation",
+                    "TAG_COMMIT: ${{ needs.verify-candidate.outputs.tag_commit }}",
                 ),
             ),
             PROMOTE_PUBLISH_JOB: (
@@ -330,6 +371,35 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                     "explicit operator attestation",
                     "--health-duration",
                     "$duration -lt 1800",
+                    "PYTHONPATH: ${{ github.workspace }}/python",
+                    "VAD_MODEL_PATH: ${{ steps.candidate.outputs.vad_model }}",
+                ),
+                (
+                    "actions/upload-artifact@",
+                    "name: audioforge-release-hardware-validation-"
+                    "${{ inputs.release_tag }}-${{ inputs.case_id }}",
+                    "path: ${{ runner.temp }}/release-hardware-qualification.json",
+                ),
+            ),
+        },
+    ),
+    "release-hardware-qualify-linux.yml": (
+        "hardware",
+        {
+            "qualify-hardware": (
+                ("actions/checkout@", "ref: refs/tags/${{ inputs.release_tag }}"),
+                (
+                    "actions/download-artifact@",
+                    "name: audioforge-release-linux-${{ inputs.release_tag }}",
+                    "path: ${{ runner.temp }}/audioforge-release-candidate",
+                ),
+                (CANONICAL_TAG, 'git rev-list -n 1 "$RELEASE_TAG" --', *PROVENANCE_GATES),
+                (
+                    "evaluate_hardware_validation.py",
+                    "--confirm-scenario-observed",
+                    "explicit operator attestation",
+                    "--health-duration",
+                    "d >= 1800",
                     "PYTHONPATH: ${{ github.workspace }}/python",
                     "VAD_MODEL_PATH: ${{ steps.candidate.outputs.vad_model }}",
                 ),
@@ -492,7 +562,7 @@ def _check_permissions(
                 )
             continue
         if (
-            name == "release-hardware-qualify.yml"
+            name in HARDWARE_RUNNERS
             and job_name == "qualify-hardware"
         ):
             if permissions != {"actions": "read", "contents": "read"}:
@@ -664,12 +734,12 @@ def _check_required_gates(
                 errors.append(
                     f"{name}: promotion must not overwrite published release assets"
                 )
-        if name == "release-hardware-qualify.yml":
+        if name in HARDWARE_RUNNERS:
             job = _mapping(document.get("jobs"), f"{name}: jobs", errors).get("qualify-hardware")
-            if not isinstance(job, dict) or job.get("runs-on") != HARDWARE_RUNNER:
+            if not isinstance(job, dict) or job.get("runs-on") != HARDWARE_RUNNERS[name]:
                 errors.append(
                     f"{name}: missing required hardware gate "
-                    f"'runs-on: [{', '.join(HARDWARE_RUNNER)}]'"
+                    f"'runs-on: [{', '.join(HARDWARE_RUNNERS[name])}]'"
                 )
         if name == "package-check.yml":
             _check_package_check_publishes_nothing(name, document, errors)
@@ -841,7 +911,11 @@ def _check_dispatch_authorization(
         job = job if isinstance(job, dict) else {}
         steps = job.get("steps")
         first = steps[0] if isinstance(steps, list) and steps and isinstance(steps[0], dict) else {}
-        missing = [needle for needle in DISPATCH_AUTHORIZATION if not _step_has(first, needle)]
+        missing = min(
+            ([needle for needle in form if not _step_has(first, needle)]
+             for form in (DISPATCH_AUTHORIZATION, DISPATCH_AUTHORIZATION_BASH)),
+            key=len,
+        )
         if missing:
             errors.append(
                 f"{name}: {job_id}: the first step must authorize the dispatch; missing {missing}"
@@ -872,8 +946,8 @@ def _check_promotion_jobs(name: str, document: dict[str, Any], errors: list[str]
         lines = _active_run_lines({"jobs": {job_id: job}})
         if publishes:
             needs = job.get("needs")
-            if (needs if isinstance(needs, list) else [needs]) != ["verify-candidate"]:
-                errors.append(f"{name}: {job_id} must need exactly verify-candidate")
+            if (needs if isinstance(needs, list) else [needs]) != PROMOTE_PUBLISH_NEEDS:
+                errors.append(f"{name}: {job_id} must need exactly {', '.join(PROMOTE_PUBLISH_NEEDS)}")
             runs_candidate = [
                 marker for marker in PROMOTE_PUBLISH_FORBIDDEN
                 if any(marker in line for line in lines)

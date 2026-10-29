@@ -8,7 +8,9 @@ from collections.abc import Iterable
 from typing import Any
 
 
-SUPPORTED_OS_RELEASES = frozenset({"10", "11"})
+# Windows reports name their release; every Linux machine counts as "linux".
+LINUX_OS_RELEASE = "linux"
+SUPPORTED_OS_RELEASES = frozenset({"10", "11", LINUX_OS_RELEASE})
 SUPPORTED_DEVICE_CLASSES = frozenset({"built_in", "usb", "virtual", "other"})
 SUPPORTED_SAMPLE_RATES = frozenset({44_100, 48_000})
 SUPPORTED_SCENARIOS = frozenset(
@@ -23,6 +25,8 @@ SUPPORTED_SCENARIOS = frozenset(
 # v1.12 release-qualified scope; broader accepted report dimensions above are
 # compatibility targets, not claims of completed hardware qualification.
 REQUIRED_OS_RELEASES = frozenset({"11"})
+# The Linux tarball is its own artifact, so its matrix needs a Linux case instead.
+REQUIRED_LINUX_OS_RELEASES = frozenset({LINUX_OS_RELEASE})
 REQUIRED_DEVICE_CLASSES = frozenset({"usb", "virtual"})
 REQUIRED_SAMPLE_RATES = frozenset({48_000})
 REQUIRED_SCENARIOS = frozenset({"baseline", "model_configuration_change"})
@@ -33,6 +37,24 @@ MINIMUM_AUTOMATED_BASELINE_CASES = 1
 PSEUDONYM = re.compile(r"^device-[0-9a-f]{16}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
+
+
+def os_release(machine: Any) -> str | None:
+    """The OS release a report's machine qualifies."""
+    if not isinstance(machine, dict):
+        return None
+    if machine.get("system") == "Linux":
+        return LINUX_OS_RELEASE
+    release = machine.get("release")
+    return release if isinstance(release, str) else None
+
+
+def required_os_releases(observed: Iterable[str]) -> frozenset[str]:
+    """A matrix of Linux reports needs a Linux case; any other needs the Windows release."""
+    observed = set(observed)
+    if observed and observed <= {LINUX_OS_RELEASE}:
+        return REQUIRED_LINUX_OS_RELEASES
+    return REQUIRED_OS_RELEASES
 
 
 def _lifecycle_evidence_errors(
@@ -173,13 +195,8 @@ def validate_case(
         if isinstance(scenario, str) and scenario != "baseline":
             errors.extend(_lifecycle_evidence_errors(scenario, report.get("lifecycle_evidence")))
 
-    machine = report.get("machine")
-    if (
-        not isinstance(machine, dict)
-        or not isinstance(machine.get("release"), str)
-        or machine.get("release") not in SUPPORTED_OS_RELEASES
-    ):
-        errors.append("unsupported or missing Windows release")
+    if os_release(report.get("machine")) not in SUPPORTED_OS_RELEASES:
+        errors.append("unsupported or missing OS release")
 
     duration = report.get("requested_health_duration_seconds")
     if (
@@ -230,11 +247,10 @@ def coverage_missing(
     baseline_count = 0
     for report in reports:
         case = report.get("case")
-        machine = report.get("machine")
         if not isinstance(case, dict):
             continue
-        release = machine.get("release") if isinstance(machine, dict) else None
-        if isinstance(release, str):
+        release = os_release(report.get("machine"))
+        if release is not None:
             os_releases.add(release)
         device_class = case.get("device_class")
         if isinstance(device_class, str):
@@ -251,7 +267,7 @@ def coverage_missing(
         "automated_baseline_cases": max(
             0, MINIMUM_AUTOMATED_BASELINE_CASES - baseline_count
         ),
-        "os_releases": sorted(REQUIRED_OS_RELEASES - os_releases),
+        "os_releases": sorted(required_os_releases(os_releases) - os_releases),
         "device_classes": sorted(REQUIRED_DEVICE_CLASSES - device_classes),
         "nominal_sample_rates_hz": sorted(REQUIRED_SAMPLE_RATES - sample_rates),
         "scenarios": sorted(REQUIRED_SCENARIOS - scenarios),

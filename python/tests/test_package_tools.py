@@ -965,6 +965,7 @@ def test_rustsec_ignore_is_rejected_on_the_application_lock(tmp_path, monkeypatc
         for name in (
             "release-promote.yml",
             "release-hardware-qualify.yml",
+            "release-hardware-qualify-linux.yml",
             "release-hardware-matrix.yml",
         )
     ]
@@ -979,6 +980,14 @@ def test_rustsec_ignore_is_rejected_on_the_application_lock(tmp_path, monkeypatc
             "release-promote.yml",
             "release-hardware-qualify.yml",
             "release-hardware-matrix.yml",
+        )
+    ]
+    + [
+        (
+            "release-hardware-qualify-linux.yml",
+            "[[ $(git rev-parse HEAD) != ",
+            "[[ $(git rev-parse HEAD) == ",
+            "HEAD is the tag commit",
         )
     ],
 )
@@ -997,7 +1006,8 @@ def test_tag_checkout_must_use_tag_ref_and_assert_head_is_the_tag_commit(
     check_workflows._check_tag_checkouts(
         workflow, check_workflows.yaml.safe_load(source.replace(old, new)), errors
     )
-    assert len(errors) == 1 and expected in errors[0]
+    # One error for each job that checks the tag out.
+    assert errors and all(expected in error for error in errors)
 
 
 def test_workflow_checker_rejects_privileged_triggers_and_run_interpolation():
@@ -1156,6 +1166,7 @@ def test_promotion_requires_dispatch_candidate_and_annotated_tag(needle):
 def test_promotion_binds_portable_and_msi_to_the_candidate_run():
     path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
     document = check_workflows.yaml.safe_load(path.read_text(encoding="utf-8"))
+    document = {"jobs": {"verify-candidate": document["jobs"]["verify-candidate"]}}
     prefix = "python python/tools/release_provenance.py verify"
     script = "\n".join(
         step["run"]
@@ -1177,6 +1188,19 @@ def test_promotion_binds_portable_and_msi_to_the_candidate_run():
     assert "--report validation/release-qualification.json" in commands[0]
     assert "--expected-archive-sha256" not in commands[1]
     assert "--report" not in commands[1]
+
+
+def test_promotion_binds_the_linux_tarball_to_the_candidate_run_and_tag():
+    path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
+    job = check_workflows.yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"]["verify-linux-candidate"]
+    script = "\n".join(step["run"] for step in job["steps"] if isinstance(step.get("run"), str))
+    command = script.split("python python/tools/release_provenance.py verify", 1)[1]
+
+    assert '--expected-producer "Release package" "$CANDIDATE_RUN_ID" "$CANDIDATE_RUN_ATTEMPT"' in command
+    assert '--expected-commit "$TAG_COMMIT"' in command
+    assert "--require-source-distribution" in command
+    assert "--native-attestation" in command
+    assert '--bundle "$extract/' in command
 
 
 @pytest.mark.parametrize(
@@ -2964,8 +2988,10 @@ def _step_with(jobs, job, needle):
 
 DISPATCH_JOBS = [
     ("release-promote.yml", "verify-candidate"),
+    ("release-promote.yml", "verify-linux-candidate"),
     ("release-promote.yml", "publish-release"),
     ("release-hardware-qualify.yml", "qualify-hardware"),
+    ("release-hardware-qualify-linux.yml", "qualify-hardware"),
     ("release-hardware-matrix.yml", "assemble"),
 ]
 # (workflow, job, a needle that identifies one of the job's gate steps)
@@ -2981,6 +3007,9 @@ GATE_STEPS = [
     ("release-promote.yml", "publish-release", "gh release upload"),
     ("release-hardware-qualify.yml", "qualify-hardware", "release_provenance.py verify"),
     ("release-hardware-qualify.yml", "qualify-hardware", "evaluate_hardware_validation.py"),
+    ("release-promote.yml", "verify-linux-candidate", "release_provenance.py verify"),
+    ("release-hardware-qualify-linux.yml", "qualify-hardware", "release_provenance.py verify"),
+    ("release-hardware-qualify-linux.yml", "qualify-hardware", "evaluate_hardware_validation.py"),
     ("release-hardware-matrix.yml", "assemble", "gh run download"),
     ("release-hardware-matrix.yml", "assemble", "evaluate_hardware_matrix.py"),
 ]
@@ -3005,7 +3034,9 @@ def test_dispatch_workflows_pass_the_gate_check_as_committed():
         (lambda steps: steps[0].update({"continue-on-error": True}), "unconditional and blocking"),
         (
             lambda steps: steps[0].update(
-                run=steps[0]["run"].replace('"admin", "maintain"', '"admin", "maintain", "write"')
+                run=steps[0]["run"]
+                .replace('"admin", "maintain"', '"admin", "maintain", "write"')
+                .replace("admin|maintain)", "admin|maintain|write)")
             ),
             "must authorize the dispatch",
         ),

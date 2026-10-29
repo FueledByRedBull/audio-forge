@@ -70,6 +70,11 @@ POWER_EVENT_QUERY = (
     "Provider[@Name='Microsoft-Windows-Kernel-Power'])]]"
 )
 MAX_POWER_EVENT_OUTPUT_CHARS = 16 * 1024 * 1024
+# systemd-sleep's journal entries; their SLEEP field names the operation.
+LINUX_SLEEP_MESSAGE_IDS = {
+    "6bbd95ee977941e497c48be27c254128": "sleep",
+    "8811e6df2a8e40f58a94cea26f8ebf14": "resume",
+}
 MAX_POWER_EVENT_FRAGMENT_CHARS = 1 * 1024 * 1024
 POWER_EVENT_DTD_MARKER = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
 
@@ -233,15 +238,14 @@ def _runtime_provenance(bundle_root: Path | None = None) -> dict[str, Any]:
             raise RuntimeError("mic_eq native extension is unavailable")
         native = _portable_runtime_file(Path(native_spec.origin))
     else:
-        candidates = list(
-            (bundle_root / "_internal" / "mic_eq").glob("mic_eq_core*.pyd")
-        )
-        if len(candidates) != 1:
-            raise RuntimeError("bundle must contain exactly one native extension")
+        try:
+            extension = _load_bundle_runtime_module().resolve_bundle_layout(bundle_root)["native_extension"]
+        except FileNotFoundError as error:
+            raise RuntimeError(str(error)) from error
         native = {
-            "path": "_internal/mic_eq/" + candidates[0].name,
-            "bytes": candidates[0].stat().st_size,
-            "sha256": _sha256(candidates[0]),
+            "path": "_internal/mic_eq/" + extension.name,
+            "bytes": extension.stat().st_size,
+            "sha256": _sha256(extension),
         }
     return {
         "native_extension": native,
@@ -313,7 +317,8 @@ def _replace_private_strings(value: Any, mapping: dict[str, str]) -> Any:
                 result,
                 flags=re.IGNORECASE,
             )
-        return _WINDOWS_ENDPOINT_ID.sub("endpoint-redacted", result)
+        result = _WINDOWS_ENDPOINT_ID.sub("endpoint-redacted", result)
+        return _LINUX_ENDPOINT_ID.sub("endpoint-redacted", result)
     if isinstance(value, dict):
         return {
             key: _replace_private_strings(child, mapping)
@@ -338,6 +343,15 @@ def _privacy_filter_runs(
 
 
 def _package_smoke(bundle_root: Path, bundle_version: str) -> dict[str, Any]:
+    if _load_bundle_runtime_module().is_linux_bundle(bundle_root):
+        result = _run([
+            str(Path(sys.executable).resolve()),
+            "python/tools/linux_package.py",
+            "--check-only",
+            "--bundle",
+            str(bundle_root),
+        ])
+        return {**result, "passed": int(result["return_code"]) == 0, "historical_ucrt_exception": None}
     command = [
         str(Path(sys.executable).resolve()),
         "python/tools/package_smoke.py",
@@ -359,7 +373,7 @@ def _package_smoke(bundle_root: Path, bundle_version: str) -> dict[str, Any]:
 
 
 def _hidden_executable_startup(bundle_root: Path, duration_seconds: float = 12.0) -> dict[str, Any]:
-    executable = bundle_root / "AudioForge.exe"
+    executable = _load_bundle_runtime_module().resolve_bundle_layout(bundle_root)["executable"]
     environment = os.environ.copy()
     environment["QT_QPA_PLATFORM"] = "offscreen"
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -560,6 +574,10 @@ _WINDOWS_ENDPOINT_ID = re.compile(
     r"(?i)(?<![a-z0-9])(?:\{\d+(?:\.\d+){3}\}\.\{[0-9a-f-]{36}\}|"
     r"\\\\\?\\(?:SWD|MMDEVAPI|HDAUDIO|USB)#[^\s\"']+)"
 )
+# PipeWire node names, which can carry a device's serial number, and cpal's IDs for them.
+_LINUX_ENDPOINT_ID = re.compile(
+    r"(?<![A-Za-z0-9])(?:pipewire:[^\s\"']+|(?:alsa|bluez)_(?:input|output|card)\.[^\s\"']+)"
+)
 
 
 def _diagnostic_failures(
@@ -664,7 +682,51 @@ def _model_diagnostics_healthy(
     return True
 
 
+def _read_linux_power_events(since: datetime) -> list[dict[str, Any]]:
+    try:
+        result = subprocess.run(
+            [
+                "journalctl",
+                "--output=json",
+                "--no-pager",
+                f"--since=@{int(since.timestamp())}",
+                *(f"MESSAGE_ID={message_id}" for message_id in LINUX_SLEEP_MESSAGE_IDS),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0 or len(result.stdout) > MAX_POWER_EVENT_OUTPUT_CHARS:
+        return []
+    events: list[dict[str, Any]] = []
+    for line in result.stdout.splitlines():
+        try:
+            entry = json.loads(line)
+            message_id = entry["MESSAGE_ID"]
+            kind = LINUX_SLEEP_MESSAGE_IDS[message_id]
+            timestamp = datetime.fromtimestamp(int(entry["__REALTIME_TIMESTAMP"]) / 1e6, timezone.utc)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if timestamp <= since:
+            continue
+        events.append(
+            {
+                "event_id": message_id,
+                "kind": kind,
+                "family": str(entry.get("SLEEP", "suspend")),
+                "provider": "systemd-sleep",
+                "timestamp": timestamp.isoformat(),
+            }
+        )
+    return sorted(events, key=lambda event: str(event["timestamp"]))
+
+
 def _read_power_events(since: datetime) -> list[dict[str, Any]]:
+    if platform.system() == "Linux":
+        return _read_linux_power_events(since)
     if platform.system() != "Windows":
         return []
     try:
@@ -1146,8 +1208,12 @@ def _run_lifecycle_probe_impl(
                 evidence["event"]["reason"] = "default_endpoint_not_observed"
                 return evidence
             print(
-                "Change a Windows default input or output endpoint now; "
-                f"the qualification probe waits up to {timeout_seconds:.0f}s."
+                (
+                    "Change a Windows default input or output endpoint now; "
+                    if platform.system() == "Windows"
+                    else "Change the system's default input or output device now; "
+                )
+                + f"the qualification probe waits up to {timeout_seconds:.0f}s."
             )
             changed_direction: str | None = None
             while time.monotonic() < deadline:
@@ -1192,7 +1258,8 @@ def _run_lifecycle_probe_impl(
             }
         else:
             print(
-                "Put Windows to sleep and resume now; the qualification probe "
+                f"Put {'Windows' if platform.system() == 'Windows' else 'the computer'} "
+                "to sleep and resume now; the qualification probe "
                 f"waits up to {timeout_seconds:.0f}s."
             )
             sleep_event: dict[str, Any] | None = None

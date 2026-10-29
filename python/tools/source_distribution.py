@@ -45,6 +45,7 @@ TRUSTED_SOURCE_HOSTS = frozenset(
         "raw.githubusercontent.com",
         "static.crates.io",
         "qt.mirror.constant.com",
+        "repo.almalinux.org",
         "wiki.qt.io",
         "www.openssl.org",
         "www.python.org",
@@ -89,7 +90,7 @@ PYTHON_SOURCE = {
 }
 
 QT_MODULE_SOURCES = ({'module': 'qtbase',
-  'description': 'Qt base (Core, Gui, Network, Widgets, Windows platform plugin)',
+  'description': 'Qt base (Core, Gui, Network, Widgets, DBus, Windows and xcb platform plugins)',
   'sha256': 'd9594a31228aa23ad6b531719a29b45f0f3989fe6c136d45767ea179f233c1ac'},
  {'module': 'qtdeclarative',
   'description': 'Qt QML and Qt Quick (Controls, Layouts, Effects, Quick Widgets) used by the main window',
@@ -98,8 +99,14 @@ QT_MODULE_SOURCES = ({'module': 'qtbase',
   'description': 'Qt image format plugins shipped in the Windows bundle',
   'sha256': 'b2bf6c6845ac175ed7f819145483ba4676f617aaa6a5012c8efee63c8bbac413'},
  {'module': 'qtmultimedia',
-  'description': 'Qt Multimedia core and Windows audio backend used by QAudioSink',
-  'sha256': '390f8e52ddee3aca5c4de7eead900c84c4fa61ff6d1f0ebea9c7543365c09b0a'})
+  'description': 'Qt Multimedia core and the Windows and PulseAudio audio backends used by QAudioSink',
+  'sha256': '390f8e52ddee3aca5c4de7eead900c84c4fa61ff6d1f0ebea9c7543365c09b0a'},
+ {'module': 'qtsvg',
+  'description': 'Qt SVG and its icon engine and image plugins shipped in the Linux bundle',
+  'sha256': '7f3cf02f4824bf03c2c5859ea6db173bf1482a1daf24e6cdf7bc78cfa26a8a94'},
+ {'module': 'qtwayland',
+  'description': 'Qt Wayland client and platform plugins shipped in the Linux bundle',
+  'sha256': '95788aa502f75441d4edf65932b235f76523084e13dbbb7b9ee2d207b32bd9b3'})
 QT_SOURCE = {
     "filename_template": "{module}-everywhere-src-{version}.tar.xz",
     "url_template": (
@@ -215,7 +222,7 @@ ONNXRUNTIME_SOURCE = {
         "onnxruntime-a83fc4d58cb48eb68890dd689f94f28288cf2278/LICENSE",
         "onnxruntime-a83fc4d58cb48eb68890dd689f94f28288cf2278/ThirdPartyNotices.txt",
     ],
-    "build_role": "exact CPU ONNX Runtime source corresponding to the pinned Windows package",
+    "build_role": "exact CPU ONNX Runtime source corresponding to the pinned Windows and Linux packages",
 }
 
 ONNXRUNTIME_SUBMODULE_SOURCES = (
@@ -467,10 +474,26 @@ OPENBLAS_SOURCES = (
         "url": "https://github.com/MacPython/openblas-libs/archive/refs/tags/v0.3.33.112.0.tar.gz",
         "sha256": "557f08e84c0ea58c5020453c101ba5c8dea71ce923650a9d57d9c49e3d844e8c",
         "source_of_truth": "https://github.com/MacPython/openblas-libs/tree/v0.3.33.112.0",
-        "build_role": "exact NumPy 2.5.1 Windows OpenBLAS source and patch recipe",
+        "build_role": "exact NumPy 2.5.1 Windows and Linux OpenBLAS source and patch recipe",
         "license_paths": ["openblas-libs-0.3.33.112.0/LICENSE.txt"],
     },
 )
+
+# NumPy's Linux wheel ships the GCC 8.5.0 Fortran and quad-math runtimes of the
+# manylinux_2_28 (AlmaLinux 8) image that built scipy-openblas. Their machine
+# code matches every AlmaLinux 8.10 build of them; this is the build the
+# OpenBLAS objects name.
+GCC_RUNTIME_SOURCE = {
+    "id": "gcc-runtime-8.5.0-28.el8_10.alma.1",
+    "name": "GCC (libgfortran and libquadmath runtimes)",
+    "version": "8.5.0-28.el8_10.alma.1",
+    "filename": "gcc-8.5.0-28.el8_10.alma.1.src.rpm",
+    "url": "https://repo.almalinux.org/vault/8.10/BaseOS/Source/Packages/gcc-8.5.0-28.el8_10.alma.1.src.rpm",
+    "sha256": "c94dbbd2cd6d5d01a5a6822ea18f8ce34942c25a80e17b4682d547d5e652dbd0",
+    "source_of_truth": "https://repo.almalinux.org/vault/8.10/BaseOS/Source/Packages/",
+    "build_role": "source for the libgfortran and libquadmath copies in NumPy's Linux wheel",
+    "license": "GPL-3.0-or-later WITH GCC-exception-3.1; LGPL-2.1-or-later (libquadmath)",
+}
 
 MESA_SOURCE = {
     "name": "Mesa llvmpipe",
@@ -485,6 +508,7 @@ MESA_SOURCE = {
 
 DEEPFILTER_RECIPE_FILES = (
     "build_deepfilter.ps1",
+    "python/tools/build_deepfilter.py",
     "build-support/deepfilter/Cargo.toml",
     "build-support/deepfilter/Cargo.lock",
     "build-support/deepfilter/capi.rs",
@@ -608,7 +632,7 @@ def _pypi_sdist(package: str, version: str) -> dict[str, str]:
 
 
 def _crate_entries() -> list[dict[str, Any]]:
-    """Return exact registry source archives resolved for the Windows build."""
+    """Return exact registry source archives resolved for the Windows and Linux builds."""
     command = [
         "cargo",
         "metadata",
@@ -617,6 +641,8 @@ def _crate_entries() -> list[dict[str, Any]]:
         "1",
         "--filter-platform",
         "x86_64-pc-windows-msvc",
+        "--filter-platform",
+        "x86_64-unknown-linux-gnu",
         "--features",
         "extension-module",
     ]
@@ -743,13 +769,20 @@ def _source_entry(
     return entry
 
 
+def _runtime_assets(asset_file: Path) -> list[dict[str, Any]]:
+    """The Windows and Linux runtime assets, each platform-neutral one once."""
+    windows = load_asset_manifest(asset_file, platform="windows").assets
+    linux = load_asset_manifest(asset_file, platform="linux").assets
+    return [*windows, *(asset for asset in linux if asset.get("platform") == "linux")]
+
+
 def _native_asset_entries() -> tuple[list[dict[str, Any]], list[str]]:
     """Describe non-source runtime assets without overstating source coverage."""
     asset_file = ROOT / "release-assets.json"
     if not asset_file.exists():
         return [], ["release-assets.json is missing"]
     try:
-        assets = load_asset_manifest(asset_file, platform="windows").assets
+        assets = _runtime_assets(asset_file)
     except (OSError, KeyError, TypeError, ValueError) as exc:
         return [], [f"Could not read release-assets.json: {exc}"]
 
@@ -888,7 +921,7 @@ def build_manifest() -> dict[str, Any]:
                 version=qt_version,
                 source=source,
                 source_of_truth="https://download.qt.io/official_releases/qt/",
-                build_role="corresponding source for the Qt libraries and plugins used by the Windows bundle",
+                build_role="corresponding source for the Qt libraries and plugins used by the Windows and Linux bundles",
                 license="LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
             )
         )
@@ -934,6 +967,7 @@ def build_manifest() -> dict[str, Any]:
                 "license": "BSD-3-Clause",
             }
         )
+    entries.append({**GCC_RUNTIME_SOURCE, "kind": "native-build-source"})
     entries.append(
         {
             **MESA_SOURCE,
@@ -1014,13 +1048,14 @@ def build_manifest() -> dict[str, Any]:
         "blockers": sorted(set(blockers)),
         "scope": (
             "Exact sources for the release Python runtime, PySide/Qt binding stack, "
-            "PyInstaller bootloader, CPython, CPU ONNX Runtime graph, and resolved Windows Cargo graph. "
+            "PyInstaller bootloader, CPython, CPU ONNX Runtime graph, NumPy's Linux GCC runtimes, "
+            "and resolved Windows and Linux Cargo graphs. "
             "Runtime models and redistributable binaries are recorded separately."
         ),
         "recipes": [
             {
                 "id": "deepfilter-build",
-                "name": "DeepFilter C API Windows build recipe",
+                "name": "DeepFilter C API build recipes for Windows and Linux",
                 "files": recipe_files,
             }
         ],
@@ -1095,7 +1130,7 @@ def _expected_runtime_entries() -> dict[str, dict[str, Any]]:
     """Read the current runtime asset identities without resolving networks."""
     asset_file = ROOT / "release-assets.json"
     try:
-        assets = load_asset_manifest(asset_file, platform="windows").assets
+        assets = _runtime_assets(asset_file)
     except (OSError, KeyError, TypeError, ValueError) as exc:
         raise SourceDistributionError(f"Could not read release-assets.json: {exc}") from exc
     expected: dict[str, dict[str, Any]] = {}
@@ -1171,6 +1206,7 @@ def _expected_static_source_entries(runtime: dict[str, str]) -> dict[str, dict[s
 
     static_sources = [
         ("mesa-llvmpipe-11.2.2", MESA_SOURCE),
+        (str(GCC_RUNTIME_SOURCE["id"]), GCC_RUNTIME_SOURCE),
         (f"deepfilter-upstream-{DEEPFILTER_SOURCE['version'][:12]}", DEEPFILTER_SOURCE),
         ("deepfilter-tract-linalg-0.21.17", DEEPFILTER_TRACT_SOURCE),
         *[(str(source["id"]), source) for source in OPENBLAS_SOURCES],
@@ -1475,6 +1511,7 @@ def _validate_manifest(manifest: dict[str, Any], *, release: bool = False) -> No
             for source in CPYTHON_EXTERNAL_SOURCES
         ),
         "mesa-llvmpipe-11.2.2",
+        GCC_RUNTIME_SOURCE["id"],
         f"deepfilter-upstream-{DEEPFILTER_SOURCE['version'][:12]}",
         "deepfilter-tract-linalg-0.21.17",
         *(source["id"] for source in OPENBLAS_SOURCES),

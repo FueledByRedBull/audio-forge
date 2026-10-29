@@ -1,15 +1,16 @@
 # Corresponding source distribution
 
 `licenses/source-manifest.json` records the exact source archives and SHA-256
-digests needed to reconstruct the AudioForge Windows build. It is generated from the
-locked Python requirements, the resolved Windows Cargo graph, the Qt source
-corresponding to the bundled PySide6 Qt libraries, the CPython interpreter, and
-the pinned Windows-only source package.
+digests needed to reconstruct the AudioForge Windows and Linux builds. It is
+generated from the locked Python requirements, the resolved Windows and Linux
+Cargo graphs, the Qt source corresponding to the bundled PySide6 Qt libraries,
+the CPython interpreter, and the pinned platform-specific source packages. One
+corresponding-source archive covers both builds.
 
 The manifest status is authoritative: `complete` means every recorded source,
 recipe file, and hydratable runtime asset identity is present and verified;
 `incomplete` lists blockers and cannot pass release verification. A source-built
-runtime output such as `df.dll` is derived from the included source and recipe,
+runtime output such as `df.dll` or `libdf.so` is derived from the included source and recipe,
 so its candidate-specific binary is checked by its build attestation instead of
 being copied into the corresponding-source receipt. The release process must
 replace any inherited binary whose build identity cannot be reproduced before
@@ -86,10 +87,10 @@ The manifest currently covers:
 * Qt for Python's shared `pyside-setup-everywhere-src-6.11.1.tar.xz` source
   archive for all three binding packages; they publish wheels without PyPI
   source distributions.
-* Qt base 6.11.1, which supplies the Core, Gui, Network, Widgets, and Windows
-  platform plugin libraries present in the PySide6 runtime bundle, plus Qt's
-  declarative (QML and Qt Quick), image-format and multimedia module/plugin
-  sources.
+* Qt base 6.11.1, which supplies the Core, Gui, Network, Widgets, DBus, and
+  Windows and xcb platform plugin libraries present in the PySide6 runtime
+  bundles, plus Qt's declarative (QML and Qt Quick), image-format (Windows),
+  multimedia, SVG and Wayland (Linux) module/plugin sources.
 * CPU ONNX Runtime 1.23.2 source, its pinned repository submodules, and the
   CPU FetchContent sources from `cmake/deps.txt` and
   `onnxruntime_external_deps.cmake`. GPU, WebGPU, training, and benchmark-only
@@ -102,13 +103,23 @@ The manifest currently covers:
 * The pinned DeepFilterNet source, its resolved Cargo graph, the recorded
   `tract-linalg` patch, the replacement C API source `capi.rs` (it keeps a
   model or inference failure from ending the process), and the locked
-  Windows C API build recipe under `build-support/deepfilter/` and
-  `build_deepfilter.ps1`.
+  C API build recipes under `build-support/deepfilter/`:
+  `build_deepfilter.ps1` for Windows and `python/tools/build_deepfilter.py`
+  for Linux.
 * Every registry crate resolved by `cargo metadata --locked` for the Windows
-  `extension-module` build, with checksums taken from `Cargo.lock`.
+  and Linux `extension-module` builds, with checksums taken from `Cargo.lock`.
+* AlmaLinux 8's GCC 8.5.0 source package for the `libgfortran` and
+  `libquadmath` runtimes that NumPy's Linux wheel ships with OpenBLAS.
+
+The Linux bundle takes the audio, D-Bus, Kerberos, graphics, display and font
+libraries and the C++ runtime from the user's system. The few other libraries
+it copies from the Ubuntu 24.04 build host (compression libraries, libffi, and
+the XCB libraries of Qt's xcb plugin) are under permissive licenses; their
+copyright files are in `_internal/licenses/system/`.
 
 Use CPython 3.13.17 x64, Rust 1.94.0, the archive digests in the manifest,
-and the locked requirements. Build the native extension with:
+and the locked requirements. Build the native extension with (on Linux,
+`.venv/bin/python`):
 
 ```powershell
 .\.venv\Scripts\python.exe -m maturin develop --release --locked
@@ -150,11 +161,18 @@ license texts and component inventory remain under `_internal/licenses/`.
 An MSI installs the same portable layout; perform replacement testing in a
 separate copy so an installer repair does not overwrite your changes.
 
+On Linux, copy the extracted tarball's `AudioForge` directory, or extract the
+AppImage with `--appimage-extract` and use `squashfs-root/usr/lib/audioforge`.
+Replace the `libQt6*.so.6` files in `_internal/PySide6/Qt/lib/` and their
+plugins under `_internal/PySide6/Qt/plugins/` with a compatible x86_64 Qt build
+of the same version, then run `AudioForge --smoke-test` in that copy.
+
 ## DeepFilter build provenance
 
-`build_deepfilter.ps1` verifies the pinned upstream commit, model archives,
+`build_deepfilter.ps1` (and `python/tools/build_deepfilter.py` for `libdf.so`)
+verifies the pinned upstream commit, model archives,
 Cargo lock, local `tract-linalg` patch and `capi.rs` source, compiler target, required exports, and
-the output digest before the DLL is copied into a release build. The provenance
+the output digest before the library is copied into a release build. The provenance
 record also carries the deterministic parity and latency results used to accept
 the replacement. Regenerate the manifest after changing this recipe and run
 `verify` without `--allow-incomplete` before release promotion.

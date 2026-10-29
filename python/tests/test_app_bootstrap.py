@@ -881,3 +881,21 @@ def test_the_first_launch_logs_qt_messages_once_it_owns_the_instance(
         app_bootstrap.run_qt_app(window)  # type: ignore[arg-type]
 
     assert [r.getMessage() for r in caplog.records if r.name == "qt"] == ["default: window-time warning"]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the app's bus name is claimed on Linux")
+def test_the_app_claims_its_bus_name_before_building_the_window(startup_fakes, session_bus):
+    from jeepney.bus_messages import message_bus  # pyright: ignore[reportMissingImports]
+    from jeepney.io.blocking import open_dbus_connection  # pyright: ignore[reportMissingImports]
+
+    owned = []
+
+    def window():
+        with open_dbus_connection("SESSION") as client:
+            owned.append(client.send_and_get_reply(message_bus.NameHasOwner(app_bootstrap.APP_ID)).body[0])
+        raise RuntimeError("stop at the window")
+
+    with pytest.raises(RuntimeError, match="stop at the window"):
+        app_bootstrap._run_qt_app(window, smoke_test=False, enable_qt_log=lambda: None)  # type: ignore[arg-type]
+
+    assert owned == [True]

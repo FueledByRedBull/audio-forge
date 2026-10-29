@@ -173,7 +173,9 @@ change it later. Desktops without the service, COSMIC among them, don't let
 an app take over a key for itself: bind a shortcut in your desktop's keyboard
 settings to the command `audioforge --toggle-mute` instead. AudioForge shows
 the exact command for your copy in the status bar. The command mutes or
-unmutes the running AudioForge and never starts a second copy.
+unmutes the running AudioForge and never starts a second copy. The application
+menu entry has the same **Toggle Output Mute** action, and the running app
+answers `gapplication action io.github.FueledByRedBull.AudioForge toggle-mute`.
 
 **Login startup** writes an XDG autostart entry,
 `~/.config/autostart/io.github.FueledByRedBull.AudioForge.desktop`, under the

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -77,3 +80,26 @@ def test_a_host_library_without_one_owner_or_a_copyright_file_stops_the_build(mo
     monkeypatch.setattr(linux_package.Path, "is_file", lambda path: False)
     with pytest.raises(SystemExit, match="no copyright file"):
         linux_package.host_library_notices(["/usr/lib/x86_64-linux-gnu/libffi.so.8"])
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="install.sh runs on Linux")
+def test_install_sh_points_every_desktop_command_at_the_extracted_copy(tmp_path):
+    copy = tmp_path / "My & Copy|x"
+    shutil.copytree(
+        linux_package.DESKTOP_DIR, copy / "share" / "applications",
+        ignore=lambda _dir, names: [name for name in names if not name.endswith(".desktop")],
+    )
+    (copy / "share" / "metainfo").mkdir(parents=True)
+    (copy / "share" / "metainfo" / f"{linux_package.APP_ID}.metainfo.xml").write_text("")
+    icon = copy / "share" / "icons" / "hicolor" / "48x48" / "apps" / f"{linux_package.APP_ID}.png"
+    icon.parent.mkdir(parents=True)
+    icon.write_bytes(b"")
+    (copy / "install.sh").write_text(linux_package.INSTALL_SH)
+
+    subprocess.run(["sh", str(copy / "install.sh")], check=True, capture_output=True,
+                   env={**os.environ, "XDG_DATA_HOME": str(tmp_path / "data")})
+
+    entry = (tmp_path / "data" / "applications" / f"{linux_package.APP_ID}.desktop").read_text()
+    commands = [line for line in entry.splitlines() if line.startswith("Exec=")]
+    executable = f'"{copy}/AudioForge/AudioForge"'
+    assert commands == [f"Exec={executable}", f"Exec={executable} --toggle-mute"]

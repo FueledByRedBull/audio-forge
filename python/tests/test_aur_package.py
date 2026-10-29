@@ -18,6 +18,9 @@ def test_a_release_renders_matching_pkgbuild_and_srcinfo():
     assert "\tpkgver = 1.2.3\n" in srcinfo
     assert f"\tsource = {aur_package.REPOSITORY}/releases/download/v1.2.3/{TARBALL}\n" in srcinfo
     assert srcinfo.count("\tdepends = ") == len(aur_package.DEPENDS)
+    # The system install, unlike the tarball and AppImage, can be launched over D-Bus.
+    assert "DBusActivatable=true" in pkgbuild
+    assert '"$pkgdir/usr/share/dbus-1/services/$_app_id.service"' in pkgbuild
 
 
 def test_a_release_candidate_is_refused():

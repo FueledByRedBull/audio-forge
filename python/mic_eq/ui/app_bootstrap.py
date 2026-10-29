@@ -512,6 +512,19 @@ def _run_qt_app(
                 )
             return 1
         app.aboutToQuit.connect(instance.close)
+    # Claimed before the window is built, so a D-Bus launch finds the name
+    # quickly; its calls queue until the event loop runs, after the window exists.
+    windows: list[QMainWindow] = []
+    if instance is not None and sys.platform.startswith("linux"):
+        from .application_bus import ApplicationBusService
+
+        bus_service = ApplicationBusService(
+            APP_ID,
+            lambda: activate_window(windows[0]),
+            {TOGGLE_MUTE_COMMAND: lambda: getattr(windows[0], "_toggle_mute_from_hotkey")()},
+        )
+        if bus_service.start():
+            app.aboutToQuit.connect(bus_service.close)
 
     enable_qt_log()
     try:
@@ -524,6 +537,7 @@ def _run_qt_app(
             if login_startup else window_cls()
         )
         setattr(window, "single_instance", instance)
+        windows.append(window)
         if not app_icon.isNull():
             window.setWindowIcon(app_icon)
         apply_windows_window_icon(window)

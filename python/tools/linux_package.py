@@ -79,8 +79,13 @@ case $here in
 esac
 mkdir -p "$data/applications" "$data/metainfo"
 entry=$data/applications/$app_id.desktop
-grep -v '^Exec=' "$here/share/applications/$app_id.desktop" > "$entry"
-printf 'Exec="%s/AudioForge/AudioForge"\\n' "$here" >> "$entry"
+# Point the entry's commands, its actions' included, at this copy.
+while IFS= read -r line; do
+    case $line in
+        Exec=audioforge*) printf 'Exec="%s/AudioForge/AudioForge"%s\\n' "$here" "${line#Exec=audioforge}" ;;
+        *) printf '%s\\n' "$line" ;;
+    esac
+done < "$here/share/applications/$app_id.desktop" > "$entry"
 cp "$here/share/metainfo/$app_id.metainfo.xml" "$data/metainfo/"
 for icon in "$here"/share/icons/hicolor/*/apps/"$app_id".png; do
     size=$(basename "$(dirname "$(dirname "$icon")")")

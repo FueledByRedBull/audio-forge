@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
-import subprocess
 import sys
 import threading
 
@@ -33,37 +31,6 @@ def test_an_unsupported_shortcut_is_refused():
         portal.portal_trigger("M")
     with pytest.raises(ValueError):
         portal.portal_trigger("Ctrl+F25")
-
-
-# A private bus with no service directories, so nothing on the host gets activated on it.
-BUS_CONFIG = """<busconfig>
-  <type>session</type>
-  <listen>unix:dir={directory}</listen>
-  <auth>EXTERNAL</auth>
-  <policy context="default">
-    <allow send_destination="*" eavesdrop="true"/>
-    <allow eavesdrop="true"/>
-    <allow own="*"/>
-  </policy>
-</busconfig>
-"""
-
-
-@pytest.fixture
-def session_bus(monkeypatch, tmp_path):
-    if shutil.which("dbus-daemon") is None:
-        pytest.skip("needs dbus-daemon")
-    config = tmp_path / "bus.conf"
-    config.write_text(BUS_CONFIG.format(directory=tmp_path), encoding="utf-8")
-    daemon = subprocess.Popen(
-        ["dbus-daemon", f"--config-file={config}", "--nofork", "--print-address"],
-        stdout=subprocess.PIPE, text=True,
-    )
-    assert daemon.stdout is not None
-    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", daemon.stdout.readline().strip())
-    yield
-    daemon.terminate()
-    daemon.wait(timeout=5)
 
 
 class FakePortal:

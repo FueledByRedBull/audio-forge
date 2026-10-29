@@ -13,6 +13,7 @@ import re
 from release_version import parse_tag
 
 PKGNAME = "audioforge-bin"
+APP_ID = "io.github.FueledByRedBull.AudioForge"
 REPOSITORY = "https://github.com/FueledByRedBull/audio-forge"
 DESCRIPTION = "Remove background noise and polish your voice for calls, streams and recordings"
 LICENSES = ("MIT", "LGPL-3.0-only")
@@ -32,6 +33,12 @@ PACKAGE_FUNCTION = """package() {
     printf '#!/bin/sh\\nexec /opt/audioforge/AudioForge "$@"\\n' > "$pkgdir/usr/bin/audioforge"
     chmod 755 "$pkgdir/usr/bin/audioforge"
     ln -s /opt/audioforge/_internal/licenses "$pkgdir/usr/share/licenses/$pkgname"
+    # A system install can be launched over D-Bus; the release entry stays Exec-only
+    # because AppImage and tarball copies have no D-Bus service file.
+    sed -i 's/^StartupWMClass=.*/&\\nDBusActivatable=true/' "$pkgdir/usr/share/applications/$_app_id.desktop"
+    install -d "$pkgdir/usr/share/dbus-1/services"
+    printf '[D-BUS Service]\\nName=%s\\nExec=/usr/bin/audioforge\\n' "$_app_id" \\
+        > "$pkgdir/usr/share/dbus-1/services/$_app_id.service"
 }
 """
 
@@ -62,6 +69,7 @@ def render(tag: str, sha256: str, pkgrel: int = 1) -> tuple[str, str]:
     source = f"{REPOSITORY}/releases/download/v$pkgver/AudioForge-v$pkgver-linux-x86_64.tar.gz"
     pkgbuild = "\n".join((
         f"pkgname={PKGNAME}",
+        f"_app_id={APP_ID}",
         f"pkgver={version.base}",
         f"pkgrel={pkgrel}",
         f'pkgdesc="{DESCRIPTION}"',

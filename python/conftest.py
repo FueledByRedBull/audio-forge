@@ -118,7 +118,47 @@ def refuse_real_user_state(monkeypatch, guard_violations):
     else:
         # A real "AudioForge Mic" would appear on the developer's PipeWire graph.
         monkeypatch.setattr("mic_eq.mic_eq_core.create_virtual_microphone", lambda: None, raising=False)
+        # So would the app's bus name and portal sessions on the session bus; the
+        # session_bus fixture gives a test a private one.
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/audioforge-test-bus")
     monkeypatch.setattr(desktop_integration.SingleInstanceCoordinator, "__init__", coordinator_init)
+
+
+# A private bus that activates only the services a test puts in its own directory.
+_BUS_CONFIG = """<busconfig>
+  <type>session</type>
+  <listen>unix:dir={directory}</listen>
+  <auth>EXTERNAL</auth>
+  <servicedir>{directory}/services</servicedir>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+"""
+
+
+@pytest.fixture
+def session_bus(monkeypatch, tmp_path):
+    """Point the test at its own D-Bus session bus; yields its service file directory."""
+    import shutil
+    import subprocess
+
+    if shutil.which("dbus-daemon") is None:
+        pytest.skip("needs dbus-daemon")
+    (tmp_path / "services").mkdir()
+    config = tmp_path / "bus.conf"
+    config.write_text(_BUS_CONFIG.format(directory=tmp_path), encoding="utf-8")
+    daemon = subprocess.Popen(
+        ["dbus-daemon", f"--config-file={config}", "--nofork", "--print-address"],
+        stdout=subprocess.PIPE, text=True,
+    )
+    assert daemon.stdout is not None
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", daemon.stdout.readline().strip())
+    yield tmp_path / "services"
+    daemon.terminate()
+    daemon.wait(timeout=5)
 
 
 @pytest.fixture

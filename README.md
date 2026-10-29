@@ -187,6 +187,11 @@ so move the AppImage first and turn the option on afterwards.
 way PipeWire's own threads get it. If RTKit isn't running or says no, AudioForge
 keeps working at normal priority.
 
+**Tray.** The tray icon needs a panel that shows StatusNotifierItem icons. If
+the panel starts after AudioForge, for example at login, the icon shows up as
+soon as the panel is ready. Close-to-tray is only offered while the icon is
+there.
+
 ## Everyday Controls
 
 - **Processing mode:** **Normal** runs the full chain. **Bypass** skips voice
@@ -334,7 +339,9 @@ Hardware testing so far covers Windows 11 at 48 kHz with USB microphones and
 VB-CABLE, including 30-minute runs and model switching, on earlier release
 candidates. The final release binaries haven't repeated that full hardware
 run. Windows 10, analog inputs, 44.1 kHz, device unplug and replug, and sleep
-recovery aren't hardware-tested yet. Each release's evidence archive records
+recovery aren't hardware-tested yet. The Linux tarball gets the same kind of
+release hardware run on an Ubuntu 24.04 machine, but no release has had one
+yet. Each release's evidence archive records
 its automated validation; see the [release workflow](RELEASING.md#automated-workflow).
 Measured sound-processing decisions are indexed in
 [evaluation/README.md](evaluation/README.md).

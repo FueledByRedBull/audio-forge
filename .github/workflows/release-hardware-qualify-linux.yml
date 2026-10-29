@@ -112,10 +112,11 @@ jobs:
             exit 1
           fi
           [[ $DISPATCHER =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || { echo "Unexpected dispatcher name." >&2; exit 1; }
-          role=$(curl -fsSL \
+          permission="$RUNNER_TEMP/dispatcher-permission.json"
+          curl -fsSL -o "$permission" \
             -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/collaborators/$DISPATCHER/permission" |
-            python3 -c "import json, sys; print(json.load(sys.stdin)['role_name'])")
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/collaborators/$DISPATCHER/permission"
+          role=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1]))['role_name'])" "$permission")
           case $role in
             admin|maintain) ;;
             *) echo "$DISPATCHER needs the admin or maintain role to run this workflow, but has '$role'." >&2; exit 1 ;;

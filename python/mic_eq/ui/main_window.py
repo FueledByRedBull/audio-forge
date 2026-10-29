@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QSystemTrayIcon,
 )
-from PySide6.QtCore import QEvent, Qt, QTimer, QRect, QUrl
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QRect, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QIcon
 import os
 import sys
@@ -195,6 +195,9 @@ PHASE_FIX_LABELS = {
     "polarity_flip": "flipping one channel's polarity",
 }
 DEFAULT_MUTE_HOTKEY = "Ctrl+Alt+M"
+# The StatusNotifierItem tray host on Linux panels; Qt's tray icon needs one.
+TRAY_HOST_SERVICE = "org.kde.StatusNotifierWatcher"
+TRAY_HOST_RETRIES = 10
 DEFAULT_WINDOW_WIDTH = 1440
 DEFAULT_WINDOW_HEIGHT = 960
 MINIMUM_WINDOW_WIDTH = 900
@@ -441,6 +444,8 @@ class MainWindow(QMainWindow):
         self._shut_down = False
         self._quit_dont_ask = False
         self._tray_icon: QSystemTrayIcon | None = None
+        self._tray_host_watcher: QObject | None = None  # Linux: waits for a late panel
+        self._tray_host_retries = 0
         self._tray_icons: tuple[QIcon, QIcon] = (QIcon(), QIcon())  # heard, muted
         self._tray_menu: QMenu | None = None
         self._tray_mute_action: QAction | None = None
@@ -1665,6 +1670,7 @@ class MainWindow(QMainWindow):
                 self._close_to_tray_action.blockSignals(False)
                 # The Settings row follows changed(), which the block suppressed.
                 self._close_to_tray_action.changed.emit()
+            self._watch_for_tray_host()
             return
 
         if self._close_to_tray_action is not None:
@@ -1706,6 +1712,30 @@ class MainWindow(QMainWindow):
         self._tray_icon.activated.connect(self._on_tray_activated)
         self._tray_icon.show()
         self._update_session_summary()
+
+    def _watch_for_tray_host(self) -> None:
+        """Set the tray up once a panel that started after the app offers one."""
+        if sys.platform != "linux" or self._tray_host_watcher is not None:
+            return
+        from PySide6.QtDBus import QDBusConnection, QDBusServiceWatcher
+
+        watcher = QDBusServiceWatcher(
+            TRAY_HOST_SERVICE,
+            QDBusConnection.sessionBus(),
+            QDBusServiceWatcher.WatchModeFlag.WatchForRegistration,
+            self,
+        )
+        watcher.serviceRegistered.connect(self._on_tray_host_registered)
+        self._tray_host_watcher = watcher
+
+    def _on_tray_host_registered(self, _service: str = "") -> None:
+        if self._tray_icon is not None or self._shut_down:
+            return
+        self._setup_desktop_integration(tray_only=True)
+        # A panel registers the watcher before its own host, which Qt also waits for.
+        if self._tray_icon is None and self._tray_host_retries < TRAY_HOST_RETRIES:
+            self._tray_host_retries += 1
+            QTimer.singleShot(1000, self._on_tray_host_registered)
 
     def _on_commit_data(self) -> None:
         app = QGuiApplication.instance()

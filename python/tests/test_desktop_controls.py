@@ -265,3 +265,41 @@ def test_the_presets_folder_opens_through_the_desktop_services_or_says_it_cannot
         assert opened == [QUrl.fromLocalFile(str(folder))] and not shown
     else:
         assert not opened and str(folder) in shown[0]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux panels offer the tray over D-Bus")
+def test_a_panel_that_starts_after_the_app_still_gets_the_tray(
+    isolated_main_window, monkeypatch, session_bus, qapp
+):
+    import os
+    import time
+
+    from jeepney.bus_messages import message_bus  # pyright: ignore[reportMissingImports]
+    from jeepney.io.blocking import open_dbus_connection  # pyright: ignore[reportMissingImports]
+    from PySide6.QtDBus import QDBusConnection
+
+    from mic_eq.ui.main_window import TRAY_HOST_SERVICE
+
+    window: Any = isolated_main_window
+    # Qt keeps one session bus connection per process; hand the window the test's bus.
+    bus = QDBusConnection.connectToBus(os.environ["DBUS_SESSION_BUS_ADDRESS"], "audioforge-tray-test")
+    monkeypatch.setattr(QDBusConnection, "sessionBus", lambda: bus)
+    window._tray_host_watcher = None  # the window was built with no bus to watch
+    available = False
+    monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", lambda: available)
+    window._setup_desktop_integration(tray_only=True)
+    assert window._tray_icon is None
+
+    available = True
+    with open_dbus_connection("SESSION") as panel:
+        panel.send_and_get_reply(message_bus.RequestName(TRAY_HOST_SERVICE))
+        deadline = time.monotonic() + 5
+        while window._tray_icon is None and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+    try:
+        assert window._tray_icon is not None
+    finally:
+        if window._tray_icon is not None:
+            window._tray_icon.hide()
+        QDBusConnection.disconnectFromBus("audioforge-tray-test")

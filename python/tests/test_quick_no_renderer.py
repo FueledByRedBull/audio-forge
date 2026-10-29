@@ -154,12 +154,15 @@ def test_the_bootstrap_hands_the_window_the_instance_guard(qapp, monkeypatch) ->
 
     instance = SimpleNamespace(
         acquire=Mock(return_value="acquired"), close=Mock(),
-        set_activation_callback=Mock(), last_error=None,
+        set_activation_callback=Mock(), set_command_callback=Mock(), last_error=None,
     )
     factory = Mock(return_value=instance, ACQUIRED="acquired")
     windows: list[QMainWindow] = []
 
     class Window(QMainWindow):
+        def _toggle_mute_from_hotkey(self) -> None:
+            pass
+
         def show(self) -> None:
             windows.append(self)
             QTimer.singleShot(0, lambda: qapp.exit(0))

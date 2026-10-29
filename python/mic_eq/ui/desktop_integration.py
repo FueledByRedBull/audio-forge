@@ -11,9 +11,11 @@ import functools
 import getpass
 import logging
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from ctypes import wintypes
 from pathlib import Path
@@ -90,6 +92,9 @@ def _user_scope() -> str:
 
 _USER_SCOPE = _user_scope()
 SINGLE_INSTANCE_SERVER = f"AudioForge.SingleInstance.v1.{_USER_SCOPE}"
+# A launch with this argument mutes or unmutes the running instance and exits.
+TOGGLE_MUTE_ARGUMENT = "--toggle-mute"
+TOGGLE_MUTE_COMMAND = "toggle-mute"
 # Set in the environment of a copy started after the renderer failed.
 RENDERER_RELAUNCH_ENV = "AUDIOFORGE_RENDERER_RELAUNCH"
 MOD_ALT = 0x0001
@@ -161,6 +166,16 @@ def parse_global_hotkey(shortcut: str) -> tuple[int, int]:
     return modifiers, virtual_key
 
 
+def toggle_mute_command() -> str:
+    """The command line a desktop key binding runs to mute or unmute AudioForge."""
+
+    from .login_startup import launch_executable
+
+    if getattr(sys, "frozen", False):
+        return shlex.join([str(launch_executable()), TOGGLE_MUTE_ARGUMENT])
+    return shlex.join([sys.executable, "-m", "mic_eq", TOGGLE_MUTE_ARGUMENT])
+
+
 class _WindowsHotkeyFilter(QAbstractNativeEventFilter):
     """Forward WM_HOTKEY messages without adding a native message loop."""
 
@@ -203,7 +218,10 @@ class GlobalMuteHotkey:
         if self.registered:
             return True, None
         if os.name != "nt":
-            return False, "global mute shortcuts are supported on Windows only"
+            return False, (
+                "bind the command `" + toggle_mute_command()
+                + "` to a key in your desktop's keyboard settings"
+            )
         try:
             modifiers, virtual_key = parse_global_hotkey(self.shortcut)
         except ValueError as error:
@@ -326,6 +344,7 @@ class SingleInstanceCoordinator:
         self._server_owned = False
         self._lock_file: QLockFile | None = None
         self._activation_callback: Callable[[], None] | None = None
+        self._command_callbacks: dict[str, Callable[[], None]] = {}
         self._pending_activation = False
         self.last_error: str | None = None
         self._closed = False
@@ -360,6 +379,38 @@ class SingleInstanceCoordinator:
         if callback is not None and self._pending_activation:
             self._pending_activation = False
             QTimer.singleShot(0, callback)
+
+    def set_command_callback(self, command: str, callback: Callable[[], None]) -> None:
+        """Run ``callback`` when a later launch sends ``command`` (see ``send_command``)."""
+
+        self._command_callbacks[command] = callback
+
+    def send_command(self, command: str) -> bool:
+        """Hand ``command`` to the running instance; False if none answered.
+
+        Only the owner of the session runs it, so a command line such as
+        ``--toggle-mute`` never starts a second audio session.
+        """
+
+        socket = QLocalSocket()
+        socket.connectToServer(self.server_name)
+        if not socket.waitForConnected(500):
+            socket.abort()
+            self.last_error = "AudioForge is not running"
+            return False
+        payload = command.encode("ascii") + b"\n"
+        written = socket.write(payload)
+        # The caller exits next, so wait until nothing is left to write. On Windows
+        # waitForBytesWritten can return before the pipe write is done, so only the
+        # remaining byte count decides.
+        deadline = time.monotonic() + 2.0
+        while socket.bytesToWrite() > 0 and time.monotonic() < deadline:
+            socket.waitForBytesWritten(50)
+        delivered = written == len(payload) and socket.bytesToWrite() == 0
+        socket.disconnectFromServer()
+        if not delivered:
+            self.last_error = "the running AudioForge did not accept the command"
+        return delivered
 
     def close(self) -> None:
         """Release the activation channel and process lock exactly once."""
@@ -408,13 +459,42 @@ class SingleInstanceCoordinator:
             socket = self._server.nextPendingConnection()
             if socket is None:
                 return
-            callback = self._activation_callback
+            # A launch that sends nothing asks for activation; one that sends a
+            # line asks for that command. The client closes either way.
+            received = bytearray()
+            finished = [False]
+
+            def read(socket=socket, received=received) -> None:
+                received.extend(bytes(socket.readAll().data()))
+                del received[64:]
+
+            def finish(socket=socket, received=received, finished=finished) -> None:
+                if finished[0]:
+                    return
+                finished[0] = True
+                read(socket)
+                socket.deleteLater()
+                self._on_client_finished(bytes(received))
+
+            socket.readyRead.connect(read)
+            socket.disconnected.connect(finish)
+            if socket.state() != QLocalSocket.LocalSocketState.ConnectedState:
+                finish()
+
+    def _on_client_finished(self, received: bytes) -> None:
+        command = received.split(b"\n", 1)[0].decode("ascii", "replace").strip()
+        if command:
+            callback = self._command_callbacks.get(command)
             if callback is None:
-                self._pending_activation = True
+                logger.warning("Ignored unknown command from another launch: %r", command)
             else:
                 QTimer.singleShot(0, callback)
-            socket.disconnected.connect(socket.deleteLater)
-            socket.disconnectFromServer()
+            return
+        activation = self._activation_callback
+        if activation is None:
+            self._pending_activation = True
+        else:
+            QTimer.singleShot(0, activation)
 
 
 def relaunch_with_software_rendering(instance: SingleInstanceCoordinator | None) -> bool:

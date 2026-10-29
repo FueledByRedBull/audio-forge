@@ -10,8 +10,6 @@ use rubato::{
 };
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 pub(super) fn duration_samples(sample_rate: u32, duration_ms: u32) -> usize {
     (((sample_rate as u64) * duration_ms as u64 + 500) / 1000).max(1) as usize

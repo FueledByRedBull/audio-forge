@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Linux
+
+- AudioForge runs natively on 64-bit Linux with PipeWire (Ubuntu 24.04, Fedora 40, Debian 13 or later, and Arch), as an AppImage or as a tarball whose `install.sh` adds it to the application menu.
+- While AudioForge runs it adds an **AudioForge Mic** microphone that other apps record from, so Linux needs no virtual cable. **AudioForge Mic Input** is the preferred output, and the microphone never becomes the system default.
+- The device lists show PipeWire's device names, offer "Follow system default", and leave out sink monitors and AudioForge's own microphone.
+- `audioforge --toggle-mute` mutes or unmutes the running copy; bind it to a key in your desktop's keyboard settings.
+- Login startup writes an XDG autostart entry, under the same rules as the Windows shortcut.
+- The processing thread asks RTKit for realtime priority and falls back to normal priority without it.
+- Level advice names your sound settings instead of Windows.
+- Source builds accept Python 3.14 as well as 3.13.
+
+### Internal
+
+- cpal moves to 0.18 and uses its PipeWire host on Linux; ONNX Runtime loads at runtime there through `ORT_DYLIB_PATH`.
+- `python/tools/build_deepfilter.py` builds `libdf.so` from the same pinned recipe as `build_deepfilter.ps1`, and `release-assets.json` records it with its attestation.
+- `build_linux.sh` and `python/tools/linux_package.py` build, check and package the Linux bundle. The bundle leaves out the system's audio, D-Bus, graphics, font and C++ runtime libraries.
+- CI runs Clippy, the Rust tests and the full pytest suite on Ubuntu 24.04 in a `linux` job that isn't a required check yet.
+- Release package builds the Linux tarball and AppImage with pinned appimagetool and runtime; promotion verifies them and publishes all seven release files.
+- `license_inventory.py --platform linux` collects the Linux dependency notices.
+
 ## v1.19.0
 
 ### Noise suppression and recovery

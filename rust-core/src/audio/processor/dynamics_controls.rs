@@ -17,8 +17,6 @@ use super::{
     LIMITER_CEILING_MAX_DB, LIMITER_CEILING_MIN_DB, LIMITER_RELEASE_MAX_MS, LIMITER_RELEASE_MIN_MS,
 };
 use std::sync::atomic::Ordering;
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 impl AudioProcessor {
     /// `clamp_control_value` that counts the non-finite values it drops.

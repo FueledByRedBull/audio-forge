@@ -3,6 +3,7 @@
 from pathlib import Path
 import hashlib
 import json
+import sys
 import sysconfig
 
 
@@ -54,12 +55,19 @@ for component in components:
             raise ValueError(f"Dependency notice digest mismatch: {relative}")
         datas.append((str(path), (Path("licenses/dependencies") / relative.parent).as_posix()))
 
-df_dll = repo_root / "df.dll"
+windows = sys.platform == "win32"
+
+df_dll = repo_root / ("df.dll" if windows else "libdf.so")
 if df_dll.exists():
     binaries.append((str(df_dll), "."))
 
 ort_lib_dir = repo_root / "target" / "onnxruntime-cpu" / "lib"
-for ort_dll_name in ("onnxruntime.dll", "onnxruntime_providers_shared.dll"):
+ort_names = (
+    ("onnxruntime.dll", "onnxruntime_providers_shared.dll")
+    if windows
+    else ("libonnxruntime.so.1.23.2",)
+)
+for ort_dll_name in ort_names:
     ort_dll = ort_lib_dir / ort_dll_name
     if ort_dll.exists():
         binaries.append((str(ort_dll), "."))
@@ -74,6 +82,9 @@ for model_name in (
     if model_path.exists():
         datas.append((str(model_path), "models"))
 icon_file = repo_root / "AudioForge.ico"
+if not windows and icon_file.exists():
+    # Windows reads the icon from the executable; an ELF file has none.
+    datas.append((str(icon_file), "."))
 
 
 a = Analysis(
@@ -95,6 +106,7 @@ a = Analysis(
         "mic_eq.mic_eq_core",
         "mic_eq",
         "mic_eq.ui",
+        # Windows only; elsewhere PyInstaller notes them as not found and moves on.
         "pythoncom",
         "pywintypes",
         # ShellLink.GetPath creates timestamps through this dynamic import.
@@ -131,6 +143,57 @@ a = Analysis(
     optimize=0,
 )
 
+if not windows:
+    import os
+    import re
+    import subprocess
+
+    sys.path.insert(0, str(python_source / "tools"))
+    from linux_package import SYSTEM_LIBRARIES as system_libraries
+    from linux_package import UNUSED_QT_PLUGINS as unused_qt_plugins
+
+    host_library_dirs = ("/lib/", "/lib64/", "/usr/lib/", "/usr/lib64/")
+
+    def unused_plugin(entry):
+        dest = entry[0].replace("\\", "/")
+        return any(f"PySide6/Qt/plugins/{plugin}" in dest for plugin in unused_qt_plugins)
+
+    def from_host(entry):
+        return entry[1].startswith(host_library_dirs) and entry[2] != "EXTENSION"
+
+    a.binaries = [entry for entry in a.binaries if not unused_plugin(entry)]
+    a.datas = [entry for entry in a.datas if not unused_plugin(entry)]
+    def direct_needs(path):
+        # Direct DT_NEEDED entries only; ldd-style resolution would report the
+        # system libraries' own dependencies as if the app linked them.
+        dynamic = subprocess.run(
+            ["readelf", "-d", path], capture_output=True, text=True, check=True,
+            env={**os.environ, "LC_ALL": "C"},
+        ).stdout
+        return re.findall(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]", dynamic)
+
+    # Keep a build-host library only when something the app ships links it,
+    # without following links into the system libraries above: a stray copy
+    # would shadow the system's own through the bundle's library path.
+    collected = {Path(entry[0]).name: entry[1] for entry in a.binaries}
+    pending = [
+        entry[1] for entry in a.binaries
+        if not from_host(entry) or Path(entry[0]).name.startswith("libpython")
+    ]
+    needed = set()
+    while pending:
+        for name in direct_needs(pending.pop()):
+            if name in needed or name.startswith(system_libraries) or name not in collected:
+                continue
+            needed.add(name)
+            pending.append(collected[name])
+    a.binaries = [
+        entry for entry in a.binaries
+        if not Path(entry[0]).name.startswith(system_libraries)
+        and (not from_host(entry) or Path(entry[0]).name in needed
+             or Path(entry[0]).name.startswith("libpython"))
+    ]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -149,7 +212,8 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=[str(icon_file)] if icon_file.exists() else None,
+    # Linux takes the icon from the desktop entry, not the executable.
+    icon=[str(icon_file)] if windows and icon_file.exists() else None,
 )
 
 coll = COLLECT(

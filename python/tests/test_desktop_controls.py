@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import sys
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
@@ -22,6 +23,8 @@ from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.noise_suppression_state import NoiseSuppressionState
 from mic_eq.ui import desktop_integration
 from mic_eq.ui.theme import PALETTE, muted_icon
+
+_WIN32_HOTKEY = pytest.mark.skipif(sys.platform != "win32", reason="Win32 RegisterHotKey backend")
 
 
 class _ModeCombo:
@@ -124,6 +127,7 @@ def test_tray_close_keeps_audio_running_until_explicit_quit() -> None:
     event.accept.assert_called_once()
 
 
+@_WIN32_HOTKEY
 def test_hotkey_registration_is_idempotent_and_released(qapp, monkeypatch):
     register = Mock(return_value=True)
     unregister = Mock(return_value=True)
@@ -142,6 +146,7 @@ def test_hotkey_registration_is_idempotent_and_released(qapp, monkeypatch):
     assert not hotkey.registered
 
 
+@_WIN32_HOTKEY
 def test_failed_hotkey_registration_reports_the_error_of_the_failing_call(qapp, monkeypatch):
     def refuse(*_args):
         ctypes.set_last_error(1409)  # ERROR_HOTKEY_ALREADY_REGISTERED
@@ -155,6 +160,7 @@ def test_failed_hotkey_registration_reports_the_error_of_the_failing_call(qapp, 
     assert error is not None and "1409" in error
 
 
+@_WIN32_HOTKEY
 def test_user32_handle_keeps_the_error_code_of_a_failing_call():
     ctypes.set_last_error(0)
 

@@ -19,7 +19,8 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QMessageBox,
 )
-from PySide6.QtCore import QCoreApplication, QEvent
+from PySide6.QtCore import QCoreApplication, QEvent, QLocale
+from PySide6.QtGui import QFont
 
 from mic_eq.ui.theme import apply_application_theme
 
@@ -30,7 +31,15 @@ def qapp():
     app = QApplication.instance()
     if app is None:
         app = QApplication([])
+    # Expected text uses the en-US formats Windows CI runs with; a developer's
+    # system locale (a decimal comma, say) must not change it.
+    QLocale.setDefault(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
     apply_application_theme(app)
+    # Subpixel text antialiasing (fontconfig rgba, the Ubuntu default) renders
+    # differently in a widget and in a QImage; the pixel comparisons need grayscale.
+    font = app.font()
+    font.setStyleStrategy(QFont.StyleStrategy.NoSubpixelAntialias)
+    app.setFont(font)
     yield app
     app.processEvents()
 
@@ -103,7 +112,12 @@ def refuse_real_user_state(monkeypatch, guard_violations):
             _refuse(guard_violations, "test used the app's real single-instance lock or server name; pass both")
         original_init(self, server_name=server_name, lock_path=lock_path)
 
-    monkeypatch.setattr(login_startup, "startup_shortcut_path", startup_folder)
+    # Elsewhere the autostart entry lives under the isolated XDG_CONFIG_HOME above.
+    if sys.platform == "win32":
+        monkeypatch.setattr(login_startup, "startup_shortcut_path", startup_folder)
+    else:
+        # A real "AudioForge Mic" would appear on the developer's PipeWire graph.
+        monkeypatch.setattr("mic_eq.mic_eq_core.create_virtual_microphone", lambda: None, raising=False)
     monkeypatch.setattr(desktop_integration.SingleInstanceCoordinator, "__init__", coordinator_init)
 
 

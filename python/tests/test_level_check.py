@@ -17,6 +17,7 @@ from mic_eq.ui.level_check import (
     verdict_from_audio,
     verdict_from_levels,
 )
+from mic_eq.ui.platform_text import SOUND_SETTINGS
 
 RATE = 48_000
 
@@ -163,8 +164,8 @@ def test_the_advice_says_where_to_change_the_level():
     hot = verdict_from_levels(-0.4, -10.0)
     quiet = verdict_from_levels(-12.0, -45.0)
 
-    assert "(in Windows or on the microphone)" in hot.message
-    assert "(in Windows or on the microphone)" in quiet.message
+    assert f"(in {SOUND_SETTINGS} or on the microphone)" in hot.message
+    assert f"(in {SOUND_SETTINGS} or on the microphone)" in quiet.message
 
 
 def test_a_microphone_far_below_the_target_is_not_asked_for_an_impossible_gain():
@@ -192,7 +193,7 @@ def test_the_clipped_take_message_never_asks_for_a_zero_or_negative_amount(level
 
     found = re.search(r"by about (-?\d+) dB", message)
     assert found is not None and int(found.group(1)) > 0
-    assert "(in Windows or on the microphone)" in message
+    assert f"(in {SOUND_SETTINGS} or on the microphone)" in message
 
 
 def test_a_voice_just_under_the_threshold_is_printed_below_it():

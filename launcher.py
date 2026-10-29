@@ -10,7 +10,8 @@ from pathlib import Path
 
 def _configure_frozen_runtime():
     """Configure frozen-runtime paths and DLL search directories before imports."""
-    if not getattr(sys, "frozen", False):
+    # Linux opens its native libraries by absolute path; there is no DLL search path.
+    if not getattr(sys, "frozen", False) or sys.platform != "win32":
         return
 
     # The bundle's DLLs (df.dll, ORT, Qt) all live in the PyInstaller content

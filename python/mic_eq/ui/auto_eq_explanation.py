@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..analysis.auto_eq_parts.headroom import headroom_excess_split_db, headroom_shortfall_db
+from .platform_text import SOUND_SETTINGS
 
 
 _REMOVED_REASON = "headroom validation removed the usable correction"
@@ -294,7 +295,7 @@ def headroom_advice(
         f"Lower the compressor's target loudness{amount}{purpose}. "
         "Automatic makeup would undo a lower microphone gain."
         if makeup
-        else f"Lower the microphone gain{amount} (in Windows or on the microphone){purpose}."
+        else f"Lower the microphone gain{amount} (in {SOUND_SETTINGS} or on the microphone){purpose}."
     )
     if over_rule and ((chain or {}).get("limiter") or {}).get("enabled") is False:
         parts.append(

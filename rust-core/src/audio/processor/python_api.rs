@@ -57,8 +57,6 @@ use std::sync::atomic::Ordering;
 #[cfg(feature = "vad")]
 use std::sync::Arc;
 use std::time::Instant;
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 /// Gate operating modes
 #[cfg(feature = "vad")]

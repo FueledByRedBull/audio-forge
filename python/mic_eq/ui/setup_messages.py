@@ -19,6 +19,7 @@ from typing import Any
 from .auto_eq_explanation import reason_message as _auto_eq_reason_message
 from ..analysis.noise_reference import SILENT_REFERENCE_REASON
 from .calibration_support import diagnostic_state, format_percent
+from .platform_text import SOUND_SETTINGS
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,8 @@ _REASON_RULES: tuple[tuple[str, str], ...] = (
     (r"raw full-chain capture is unavailable for input validation",
      "The unprocessed recording was not available for the final safety check."),
     (r"the microphone level leaves too little headroom; lower the input gain by about (?P<db>[\d.]+) dB",
-     "Your microphone level is too high for safe loudness. Lower it by about {db} dB, in Windows or on the microphone, then record again."),
+     "Your microphone level is too high for safe loudness. Lower it by about {db} dB, in "
+     + SOUND_SETTINGS + " or on the microphone, then record again."),
     (r"final full-chain headroom validation did not pass",
      "At this microphone level loud peaks would overload the limiter. Lower the microphone level and record again."),
     (r"offline DSP validation did not pass",

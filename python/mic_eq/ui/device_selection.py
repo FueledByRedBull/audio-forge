@@ -6,6 +6,8 @@ from ..config import DeviceIdentity, coerce_device_identity
 
 
 VIRTUAL_OUTPUT_MARKERS = ("cable", "vb-audio", "virtual")
+# The sink of AudioForge's own PipeWire virtual microphone (audio/virtual_mic.rs).
+AUDIOFORGE_MIC_ENDPOINT = "pipewire:audioforge_mic_input"
 
 
 def find_identity_index(
@@ -123,7 +125,11 @@ def default_device_index(identities: list[DeviceIdentity | None]) -> int:
 
 
 def preferred_output_index(identities: list[DeviceIdentity | None]) -> int:
-    """Prefer Windows virtual routing outputs, then the default, then first item."""
+    """Prefer AudioForge's own virtual mic, then virtual routing outputs, then
+    the default, then the first item."""
+    for index, item in enumerate(identities):
+        if isinstance(item, DeviceIdentity) and item.endpoint_id == AUDIOFORGE_MIC_ENDPOINT:
+            return index
     for index, item in enumerate(identities):
         if not isinstance(item, DeviceIdentity):
             continue
@@ -134,6 +140,7 @@ def preferred_output_index(identities: list[DeviceIdentity | None]) -> int:
 
 
 __all__ = [
+    "AUDIOFORGE_MIC_ENDPOINT",
     "VIRTUAL_OUTPUT_MARKERS",
     "default_device_index",
     "device_name_ordinal",

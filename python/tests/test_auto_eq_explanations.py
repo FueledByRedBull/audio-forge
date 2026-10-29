@@ -16,6 +16,7 @@ from mic_eq.ui.auto_eq_explanation import (
     target_profile_text,
 )
 from mic_eq.ui.eq_state import _format_auto_eq_diagnostics
+from mic_eq.ui.platform_text import SOUND_SETTINGS
 
 
 @pytest.mark.parametrize(
@@ -165,7 +166,7 @@ def _advice_facts(text: str) -> dict[str, object]:
     split = re.search(r"\((\d+\.\d) of (\d+\.\d) dB\)", text)
     lever = re.search(r"Lower the (compressor's target loudness|microphone gain)", text)
     # The microphone lever must say where the level is turned down.
-    where = lever is None or lever[1] != "microphone gain" or "(in Windows or on the microphone)" in text
+    where = lever is None or lever[1] != "microphone gain" or f"(in {SOUND_SETTINGS} or on the microphone)" in text
     return {
         "figure_db": int(figure[1]) if figure else None,
         "lever": (lever[1] if where else "microphone gain, without where") if lever else None,

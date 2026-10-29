@@ -749,7 +749,7 @@ def _native_asset_entries() -> tuple[list[dict[str, Any]], list[str]]:
     if not asset_file.exists():
         return [], ["release-assets.json is missing"]
     try:
-        assets = load_asset_manifest(asset_file).assets
+        assets = load_asset_manifest(asset_file, platform="windows").assets
     except (OSError, KeyError, TypeError, ValueError) as exc:
         return [], [f"Could not read release-assets.json: {exc}"]
 
@@ -1095,7 +1095,7 @@ def _expected_runtime_entries() -> dict[str, dict[str, Any]]:
     """Read the current runtime asset identities without resolving networks."""
     asset_file = ROOT / "release-assets.json"
     try:
-        assets = load_asset_manifest(asset_file).assets
+        assets = load_asset_manifest(asset_file, platform="windows").assets
     except (OSError, KeyError, TypeError, ValueError) as exc:
         raise SourceDistributionError(f"Could not read release-assets.json: {exc}") from exc
     expected: dict[str, dict[str, Any]] = {}

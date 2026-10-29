@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QComboBox, QWidget
 
 from mic_eq.config_parts import app_config
 from mic_eq.ui import main_window
+from test_quick_layout import SEGOE_UI
 from tools.capture_repository_screenshots import (
     SANITIZED_INPUT_DEVICES,
     SANITIZED_OUTPUT_DEVICES,
@@ -54,6 +55,8 @@ def test_sanitized_capture_devices_are_explicit_and_non_local() -> None:
     assert any("Virtual Route" in name for name in names)
 
 
+# The capture tool renders in the Windows UI font so the README images stay stable.
+@pytest.mark.skipif(not SEGOE_UI.is_file(), reason="The Windows UI font is not installed")
 def test_capture_generates_nonempty_portable_pngs_and_report(
     tmp_path: Path,
 ) -> None:

@@ -544,6 +544,18 @@ fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "deepfilter")]
     m.add_function(wrap_pyfunction!(configure_deepfilter_runtime_paths, m)?)?;
 
+    #[cfg(target_os = "linux")]
+    {
+        m.add_function(wrap_pyfunction!(
+            audio::virtual_mic::create_virtual_microphone,
+            m
+        )?)?;
+        m.add_function(wrap_pyfunction!(
+            audio::virtual_mic::destroy_virtual_microphone,
+            m
+        )?)?;
+    }
+
     Ok(())
 }
 

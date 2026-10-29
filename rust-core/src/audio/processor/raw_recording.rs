@@ -1,8 +1,6 @@
 use super::{AudioProcessor, MAX_OUTPUT_PROBE_SECONDS, MAX_RECORDING_SECONDS};
 use crate::audio::buffer::AudioProducer;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 impl AudioProcessor {
     /// Start recording raw audio for calibration

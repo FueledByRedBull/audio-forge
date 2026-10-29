@@ -13,7 +13,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # Audio I/O
-cpal = "=0.17.3"
+cpal = "=0.18.2"
 rubato = "0.14"  # High-quality resampling
 
 # Noise suppression (RNNoise)
@@ -54,9 +54,20 @@ ort = {
     features = ["std", "ndarray", "tracing"],
 }
 
-# Windows uses MMCSS (audio/scheduling.rs); thread-priority covers other targets.
-[target.'cfg(not(windows))'.dependencies]
+# Windows uses MMCSS (audio/scheduling.rs) and Linux RTKit; thread-priority covers other targets.
+[target.'cfg(not(any(windows, target_os = "linux")))'.dependencies]
 thread-priority = "1.0"
+
+# Linux loads ONNX Runtime at runtime from the path the Python package exports in
+# ORT_DYLIB_PATH, so the extension carries no build-machine library path.
+[target.'cfg(target_os = "linux")'.dependencies]
+# Native PipeWire host (real node names, default-device following), PulseAudio as fallback.
+cpal = { version = "=0.18.2", features = ["pipewire", "pulseaudio"] }
+# The virtual microphone (audio/virtual_mic.rs); the same version cpal links.
+pipewire = "=0.10.1"
+# Realtime scheduling for the DSP thread through RTKit, as unprivileged desktop users get it.
+audio_thread_priority = { version = "=0.38.0", default-features = false, features = ["with_dbus"] }
+ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = ["load-dynamic"] }
 
 [features]
 default = ["vad", "deepfilter"]

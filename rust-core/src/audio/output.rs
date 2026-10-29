@@ -83,7 +83,7 @@ impl AudioOutput {
     {
         device
             .build_output_stream(
-                config,
+                *config,
                 |data: &mut [T], _: &cpal::OutputCallbackInfo| {
                     let silence = T::from_sample(0.0_f32);
                     for sample in data {
@@ -478,7 +478,7 @@ impl AudioOutput {
 
         let stream = device
             .build_output_stream(
-                &stream_config,
+                stream_config,
                 move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
                     // RT_REGION_START: cpal_output_callback
                     let now_us = now_micros();
@@ -567,7 +567,7 @@ impl AudioOutput {
         let mut fixed_buffer_frames = None;
         if let Some(frames) = Self::requested_fixed_buffer_frames() {
             if supported_fixed_buffer_frames(frames, setup.supported_config.buffer_size()) {
-                let mut candidate = stream_config.clone();
+                let mut candidate = stream_config;
                 candidate.buffer_size = BufferSize::Fixed(frames);
                 if Self::preflight_sample_format(&setup.device, sample_format, &candidate) {
                     stream_config = candidate;

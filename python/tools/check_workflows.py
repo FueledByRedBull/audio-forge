@@ -17,10 +17,11 @@ DEPENDABOT_PATH = REPO_ROOT / ".github" / "dependabot.yml"
 PYTEST_SHARDS_PATH = REPO_ROOT / ".github" / "pytest-shards.json"
 # Required status checks are the gate jobs; each must wait for all of its parts.
 CI_GATES = {
-    "python": ("static", "pytest"),
+    "python": ("static", "semgrep", "pytest"),
     "rust": ("rust-tests", "rust-stress"),
+    "linux": ("linux-tests", "linux-pytest"),
 }
-CI_CPU_RUNTIME_JOBS = ("pytest", "rust-tests", "rust-stress")
+CI_CPU_RUNTIME_JOBS = ("pytest", "rust-tests", "rust-stress", "linux-tests", "linux-pytest")
 CI_CPU_RUNTIME_HYDRATION = "fetch_release_assets.py --only-cpu-runtime --force"
 # The debug-mode Rust run skips only this test; rust-stress runs it in release.
 CI_DEBUG_SKIPPED_TEST = "seeded_control_and_dsp_loops_remain_finite_under_contention"
@@ -88,12 +89,16 @@ TAG_CHECKOUT_REF = re.compile(r"refs/tags/\$\{\{\s*inputs\.\w+\s*\}\}")
 HEAD_IS_TAG_COMMIT = re.compile(r"git rev-parse HEAD\)\.Trim\(\)\s+-ne\b")
 # Allowed pip_audit --ignore-vuln ids, each with the dev-lock pin that causes it.
 # The ignore stops being allowed once the lock moves off that pin.
-# CVE-2026-59951: semgrep pins mcp==1.29.0; only its MCP server uses mcp.
+# CVE-2026-59951, CVE-2026-116684, CVE-2026-116685, CVE-2026-116686: semgrep
+# pins mcp==1.29.0 (through 1.182.1); only its MCP server uses mcp.
 # CVE-2026-114603: semgrep pins opentelemetry-api~=1.37.0 (through 1.182.1); the
 # ReDoS is in TraceState.from_header for inbound tracestate headers, and semgrep
 # only exports telemetry.
 AUDIT_IGNORES = {
     "CVE-2026-59951": ("mcp", "1.29.0"),
+    "CVE-2026-116684": ("mcp", "1.29.0"),
+    "CVE-2026-116685": ("mcp", "1.29.0"),
+    "CVE-2026-116686": ("mcp", "1.29.0"),
     "CVE-2026-114603": ("opentelemetry-api", "1.37.0"),
 }
 CARGO_LOCKED_COMMANDS = ("build", "test", "clippy", "run")
@@ -218,11 +223,27 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                     "name: audioforge-release-validation-${{ inputs.release_tag }}",
                     "run-id: ${{ inputs.candidate_run_id }}",
                 ),
-                # The five release files are staged, hashed and uploaded before the
+                (
+                    "actions/download-artifact@",
+                    "name: audioforge-release-linux-${{ inputs.release_tag }}",
+                    "run-id: ${{ inputs.candidate_run_id }}",
+                ),
+                # The seven release files are staged, hashed and uploaded before the
                 # step that runs the candidate's MSI and executable.
-                ("Get-ChildItem -LiteralPath candidate", "-deepfilter.provenance.json"),
+                (
+                    "Get-ChildItem -LiteralPath candidate",
+                    "-deepfilter.provenance.json",
+                    "Get-ChildItem -LiteralPath linux-candidate",
+                    "-libdf.provenance.json",
+                ),
+                # The Linux files come from the same run; their libdf.so is the attested one.
+                (
+                    "tar -xzf $env:LINUX_TARBALL",
+                    "LINUX_NATIVE_ATTESTATION: ${{ steps.files.outputs.linux_native_attestation }}",
+                ),
                 (
                     "-evidence.7z",
+                    "$env:LINUX_TARBALL, $env:LINUX_APPIMAGE",
                     "validation/release-qualification.json",
                     "SHA256SUMS",
                     "EXPECTED_SHA256: ${{ inputs.expected_archive_sha256 }}",
@@ -409,8 +430,8 @@ CI_RUST_DEEPFILTER_STEPS = (
     # df.dll and its attestation may be restored here (never in the release
     # workflow); the step after it still checks both against the recipe.
     (
-        "actions/cache/restore@",
         "target/deepfilter/df.dll.provenance.json",
+        "actions/cache/restore@",
         "hashFiles('build_deepfilter.ps1', 'build-support/deepfilter/**', "
         "'release-assets.json', 'rust-toolchain.toml')",
     ),
@@ -446,13 +467,13 @@ def _check_permissions(
     for job_name, raw_job in jobs.items():
         job = _mapping(raw_job, f"{name}: job {job_name}", errors)
         permissions = job.get("permissions")
-        if name == "ci.yml" and job_name == "static":
+        if name == "ci.yml" and job_name == "semgrep":
             if permissions != {
                 "contents": "read",
                 "security-events": "write",
             }:
                 errors.append(
-                    "ci.yml: static must have only contents: read and "
+                    "ci.yml: semgrep must have only contents: read and "
                     "security-events: write"
                 )
             continue
@@ -1325,24 +1346,30 @@ def _check_pytest_shards(document: dict[str, Any], errors: list[str]) -> None:
 def _check_pytest_job(
     document: dict[str, Any], shards: dict[str, Any], name: str, errors: list[str]
 ) -> None:
-    """Require the pytest matrix of `name` to run the shards of pytest-shards.json."""
-    label = PYTEST_SHARDS_PATH.name
+    """Require the pytest matrices of `name` to run the shards of pytest-shards.json."""
     jobs = _mapping(document.get("jobs"), f"{name}: jobs", errors)
-    job = jobs.get("pytest")
-    if not isinstance(job, dict):
-        return
+    for job_name in ("pytest", "linux-pytest"):
+        job = jobs.get(job_name)
+        if isinstance(job, dict):
+            _check_pytest_matrix(job, job_name, shards, name, errors)
+
+
+def _check_pytest_matrix(
+    job: dict[str, Any], job_name: str, shards: dict[str, Any], name: str, errors: list[str]
+) -> None:
+    label = PYTEST_SHARDS_PATH.name
     strategy = job.get("strategy")
     matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
     expected = [*shards, CI_LAST_PYTEST_SHARD]
     if not isinstance(matrix, dict) or matrix.get("shard") != expected:
-        errors.append(f"{name}: pytest matrix shard must be {expected}, as listed in {label}")
+        errors.append(f"{name}: {job_name} matrix shard must be {expected}, as listed in {label}")
     steps = job.get("steps")
     run = "\n".join(
         str(step.get("run", "")) for step in steps if isinstance(step, dict)
     ) if isinstance(steps, list) else ""
     if label not in run or "--ignore" not in run:
         errors.append(
-            f"{name}: pytest must run the files in {label} and ignore them in the last shard"
+            f"{name}: {job_name} must run the files in {label} and ignore them in the last shard"
         )
 
 

@@ -7,13 +7,15 @@ name = "mic_eq"
 version = "1.19.0"
 description = "Low-latency microphone audio processor with noise suppression and equalization"
 license = "MIT"
-requires-python = ">=3.13,<3.14"
+requires-python = ">=3.13,<3.15"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
 ]
 dependencies = [
     "PySide6-Essentials==6.11.1",

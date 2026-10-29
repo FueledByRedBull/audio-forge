@@ -370,28 +370,31 @@ def test_audit_ignore_is_rejected_once_the_dev_lock_moves_past_its_package(
 
 
 OTEL_IGNORE = "--ignore-vuln CVE-2026-114603"
+MCP_SDK_IGNORES = " --ignore-vuln CVE-2026-116684 --ignore-vuln CVE-2026-116685 --ignore-vuln CVE-2026-116686"
 
 
 @pytest.mark.parametrize("workflow", ["ci.yml", "release-package.yml"])
-def test_dev_audit_ignores_exactly_the_two_semgrep_pinned_advisories(workflow):
+def test_dev_audit_ignores_exactly_the_semgrep_pinned_advisories(workflow):
     workflow_file = check_workflows.WORKFLOW_DIR / workflow
     source = workflow_file.read_text(encoding="utf-8")
-    assert f"{DEV_AUDIT} {MCP_IGNORE} {OTEL_IGNORE}" in source
-    assert set(check_workflows.AUDIT_IGNORES) == {"CVE-2026-59951", "CVE-2026-114603"}
+    assert f"{DEV_AUDIT} {MCP_IGNORE} {OTEL_IGNORE}{MCP_SDK_IGNORES}" in source
+    assert set(check_workflows.AUDIT_IGNORES) == {
+        "CVE-2026-59951", "CVE-2026-114603", "CVE-2026-116684", "CVE-2026-116685", "CVE-2026-116686",
+    }
     dev_lock = check_workflows.DEV_LOCK_PATH.read_text(encoding="utf-8")
     for package, version in check_workflows.AUDIT_IGNORES.values():
         assert f"\n{package}=={version} " in dev_lock
 
 
 @pytest.mark.parametrize(
-    ("lock", "stale"),
+    ("lock", "stale", "count"),
     [
-        ("mcp==1.29.0\nopentelemetry-api==1.45.1\n", "CVE-2026-114603"),
-        ("mcp==1.30.0\nopentelemetry-api==1.37.0\n", "CVE-2026-59951"),
+        ("mcp==1.29.0\nopentelemetry-api==1.45.1\n", "CVE-2026-114603", 1),
+        ("mcp==1.30.0\nopentelemetry-api==1.37.0\n", "CVE-2026-59951", 4),
     ],
 )
 def test_each_audit_ignore_is_rejected_once_its_own_package_moves(
-    tmp_path, monkeypatch, lock, stale
+    tmp_path, monkeypatch, lock, stale, count
 ):
     errors = _audit_ignore_errors(
         tmp_path,
@@ -401,7 +404,7 @@ def test_each_audit_ignore_is_rejected_once_its_own_package_moves(
         dev_lock=lock,
     )
 
-    assert errors.count("needs dev.txt to pin") == 1
+    assert errors.count("needs dev.txt to pin") == count
     assert stale in errors and "remove the ignore" in errors
 
 
@@ -425,14 +428,14 @@ def test_ci_uploads_semgrep_results_with_scoped_code_scanning_permission():
     assert triggers["push"] == {
         "branches": ["master"],
     }
-    static_job = workflow["jobs"]["static"]
-    assert static_job["permissions"] == {
+    semgrep_job = workflow["jobs"]["semgrep"]
+    assert semgrep_job["permissions"] == {
         "contents": "read",
         "security-events": "write",
     }
     upload = next(
         step
-        for step in static_job["steps"]
+        for step in semgrep_job["steps"]
         if step.get("name") == "Upload Semgrep results to GitHub Code Scanning"
     )
     assert upload["uses"].startswith("github/codeql-action/upload-sarif@")
@@ -446,7 +449,7 @@ def test_ci_uploads_semgrep_results_with_scoped_code_scanning_permission():
     )
     artifact = next(
         step
-        for step in static_job["steps"]
+        for step in semgrep_job["steps"]
         if step.get("name") == "Upload Semgrep SARIF"
     )
     assert artifact["uses"].startswith("actions/upload-artifact@")
@@ -464,8 +467,9 @@ def test_ci_uploads_semgrep_results_with_scoped_code_scanning_permission():
     [
         ("top", {"contents": "write"}),
         ("top", "write-all"),
-        ("static", {"contents": "read", "security-events": "write", "actions": "write"}),
-        ("static", "write-all"),
+        ("semgrep", {"contents": "read", "security-events": "write", "actions": "write"}),
+        ("semgrep", "write-all"),
+        ("static", {"security-events": "write"}),
         ("pytest", {"security-events": "write"}),
         ("python", {"contents": "write"}),
         ("rust-stress", "write-all"),
@@ -554,7 +558,9 @@ def test_ci_workflow_hydrates_cpu_ort_in_every_native_job():
     check_workflows._check_required_gates("ci.yml", source, errors)
 
     assert errors == []
-    assert source.count("fetch_release_assets.py --only-cpu-runtime --force") == 3
+    assert source.count("fetch_release_assets.py --only-cpu-runtime --force") == len(
+        check_workflows.CI_CPU_RUNTIME_JOBS
+    )
 
 
 def _ci_errors(mutate):
@@ -633,6 +639,9 @@ def test_ci_pytest_shard_lists_reject_renamed_duplicate_and_unmatched_files(
     assert "does not exist" in errors_for(renamed)
     assert "listed more than once" in errors_for({**real, first: [*real[first], last_listed]})
     assert "matrix shard must be" in errors_for({**real, "extra": ["python/tests/test_spectrum.py"]})
+    workflow["jobs"]["linux-pytest"]["strategy"]["matrix"]["shard"].pop(0)
+    assert "linux-pytest matrix shard must be" in errors_for(real)
+    assert "ci.yml: pytest matrix" not in errors_for(real)
     assert "other than 'rest'" in errors_for({**real, "rest": ["python/tests/test_spectrum.py"]})
 
 
@@ -1628,6 +1637,7 @@ def test_semgrep_publishes_windows_file_uris_without_changing_findings(
                 {"location": {"uri": "file:///D:/already%20encoded.py"}},
                 {"location": {"uri": "https://example.com/source.py"}},
                 {"location": {"uri": "python/relative.py"}},
+                {"location": {"uri": "/home/runner/work/source file.py"}},
             ],
         }],
     }
@@ -1652,6 +1662,9 @@ def test_semgrep_publishes_windows_file_uris_without_changing_findings(
     )
     payload["runs"][0]["artifacts"][0]["location"]["uri"] = (
         "file://server/share/source%20file.py"
+    )
+    payload["runs"][0]["artifacts"][4]["location"]["uri"] = (
+        "file:///home/runner/work/source%20file.py"
     )
     assert json.loads(output.read_text(encoding="utf-8")) == payload
     assert not (tmp_path / ".semgrep-results.sarif").exists()
@@ -1816,6 +1829,7 @@ def test_package_smoke_requires_windows_audio_backend(tmp_path):
     assert any("windowsmediaplugin.dll" in error for error in errors)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows bundle layout (.pyd)")
 def test_package_smoke_rejects_duplicate_native_extension(tmp_path):
     bundle = tmp_path / "AudioForge"
     (bundle / "AudioForge.exe").parent.mkdir(parents=True)
@@ -2586,6 +2600,93 @@ def test_fetch_pinned_archive_rejects_unsafe_or_symlink_members(tmp_path):
         fetch_release_assets._extract_pinned_zip_member(
             symlink_archive, tmp_path / "extract-symlink", "package/runtime.dll"
         )
+
+
+def _tar_with(archive, members):
+    import tarfile
+
+    with tarfile.open(archive, "w:gz") as output:
+        for info, payload in members:
+            output.addfile(info, io.BytesIO(payload) if payload is not None else None)
+
+
+def test_fetch_pinned_tgz_extracts_only_the_named_regular_file(tmp_path):
+    import tarfile
+
+    payload = b"\x7fELF runtime"
+    regular = tarfile.TarInfo("package/lib/libruntime.so.1.2.3")
+    regular.size = len(payload)
+    link = tarfile.TarInfo("package/lib/libruntime.so")
+    link.type = tarfile.SYMTYPE
+    link.linkname = "libruntime.so.1.2.3"
+    archive = tmp_path / "runtime.tgz"
+    _tar_with(archive, [(regular, payload), (link, None)])
+
+    extracted = fetch_release_assets._extract_pinned_tar_member(
+        archive, tmp_path / "extract", "package/lib/libruntime.so.1.2.3"
+    )
+    assert extracted.read_bytes() == payload
+
+    with pytest.raises(RuntimeError, match="exactly one regular file"):
+        fetch_release_assets._extract_pinned_tar_member(
+            archive, tmp_path / "extract-link", "package/lib/libruntime.so"
+        )
+
+    escape = tarfile.TarInfo("../escape.so")
+    escape.size = 1
+    escaping = tmp_path / "escape.tgz"
+    _tar_with(escaping, [(escape, b"x")])
+    with pytest.raises(RuntimeError, match="unsafe member path"):
+        fetch_release_assets._extract_pinned_tar_member(
+            escaping, tmp_path / "extract-escape", "package/lib/libruntime.so.1.2.3"
+        )
+
+
+def test_asset_manifest_keeps_only_the_requested_platform_and_shared_entries(tmp_path):
+    def entry(path, platform=None):
+        value = {"path": path, "sha256": "a" * 64}
+        if platform:
+            value["platform"] = platform
+        return value
+
+    manifest = tmp_path / "release-assets.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "assets": [
+                    entry("runtime.dll", "windows"),
+                    entry("libruntime.so", "linux"),
+                    entry("models/model.onnx"),
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    for platform, native in (("windows", "runtime.dll"), ("linux", "libruntime.so")):
+        loaded = verify_release_assets.load_asset_manifest(manifest, platform=platform)
+        assert sorted(loaded.entries) == sorted([native, "models/model.onnx"])
+
+    invalid = json.loads(manifest.read_text(encoding="utf-8"))
+    invalid["assets"].append(entry("runtime.dylib", "macos"))
+    invalid["assets"].append(entry("runtime.dll", "linux"))
+    manifest.write_text(json.dumps(invalid), encoding="utf-8")
+    with pytest.raises(ValueError) as raised:
+        verify_release_assets.load_asset_manifest(manifest, platform="linux")
+    assert "platform must be one of" in str(raised.value)
+    assert "repeats asset path runtime.dll" in str(raised.value)
+
+
+def test_repository_manifest_pins_a_linux_cpu_ort_archive():
+    linux = verify_release_assets.load_asset_manifest(platform="linux")
+    windows = verify_release_assets.load_asset_manifest(platform="windows")
+
+    linux_runtime = [path for path in linux.entries if path.startswith("target/onnxruntime-cpu/")]
+    assert linux_runtime == ["target/onnxruntime-cpu/lib/libonnxruntime.so.1.23.2"]
+    assert not any(path.endswith(".so.1.23.2") for path in windows.entries)
+    assert "df.dll" in windows.entries and "df.dll" not in linux.entries
+    origin = linux.entries[linux_runtime[0]]["origin"]
+    assert origin["archive_member"] == "onnxruntime-linux-x64-1.23.2/lib/libonnxruntime.so.1.23.2"
 
 
 def test_verify_release_assets_validates_pinned_archive_contract(tmp_path, monkeypatch):

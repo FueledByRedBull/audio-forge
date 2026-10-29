@@ -1504,8 +1504,12 @@ class MainWindow(QMainWindow):
         self._refresh_login_startup_action()
 
     def _refresh_login_startup_action(self) -> None:
-        packaged = sys.platform == "win32" and bool(getattr(sys, "frozen", False))
-        state = login_startup.registration_state(Path(sys.executable)) if packaged else "absent"
+        packaged = sys.platform in {"win32", "linux"} and bool(getattr(sys, "frozen", False))
+        state = (
+            login_startup.registration_state(login_startup.launch_executable())
+            if packaged
+            else "absent"
+        )
         self._login_startup_action.blockSignals(True)
         self._login_startup_action.setChecked(state == "configured")
         self._login_startup_action.setEnabled(packaged and state in {"absent", "configured"})
@@ -1514,7 +1518,11 @@ class MainWindow(QMainWindow):
         self._login_startup_action.changed.emit()
         messages = {
             "absent": "No login shortcut configured",
-            "configured": "Shortcut configured; Windows may disable it",
+            "configured": (
+                "Shortcut configured; Windows may disable it"
+                if sys.platform == "win32"
+                else "Autostart entry configured"
+            ),
             "other": "Login shortcut belongs to another copy or is unrecognized",
             "unreadable": "Login shortcut could not be read; left unchanged",
         }
@@ -1524,13 +1532,16 @@ class MainWindow(QMainWindow):
         self._login_startup_action.setToolTip(
             "Windows Settings > Apps > Startup controls whether this shortcut runs. "
             "Moving a portable copy requires removing its shortcut before moving it."
+            if sys.platform == "win32"
+            else "Your desktop's autostart settings control whether this entry runs. "
+            "Moving a portable copy requires removing its entry before moving it."
         )
 
     def _on_login_startup_toggled(self, checked: bool) -> None:
         if not checked:
             self._cancel_login_startup()
         try:
-            login_startup.set_login_startup(Path(sys.executable), checked)
+            login_startup.set_login_startup(login_startup.launch_executable(), checked)
         except Exception as error:
             logger.exception("Could not change the login shortcut")
             self.status_message.showMessage(str(error), 8000)
@@ -1566,7 +1577,8 @@ class MainWindow(QMainWindow):
             self._setup_desktop_integration(tray_only=True)
         if self._tray_icon is None or not self._tray_icon.isVisible():
             if now >= deadline:
-                self._cancel_login_startup("Login stopped: Windows tray unavailable; exiting")
+                tray = "Windows tray" if sys.platform == "win32" else "System tray"
+                self._cancel_login_startup(f"Login stopped: {tray} unavailable; exiting")
                 app = QGuiApplication.instance()
                 if app is not None:
                     app.exit(1)
@@ -1581,7 +1593,7 @@ class MainWindow(QMainWindow):
                 10000,
             )
             return
-        if login_startup.registration_state(Path(sys.executable)) != "configured":
+        if login_startup.registration_state(login_startup.launch_executable()) != "configured":
             self._cancel_login_startup("Login stopped: this copy's shortcut is no longer configured")
             return
         if (
@@ -2986,7 +2998,9 @@ class MainWindow(QMainWindow):
                     "Try these steps:\n"
                     "1. Press the refresh button (the circular arrow) next to the Output list\n"
                     "2. Ensure your microphone is connected\n"
-                    "3. Check Windows audio settings\n"
+                    "3. Check "
+                    + ("Windows audio settings" if sys.platform == "win32" else "your sound settings")
+                    + "\n"
                     "4. Try selecting a different device"
                 )
             else:

@@ -40,8 +40,6 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 #[test]
 fn test_duration_samples_for_44k1_output() {

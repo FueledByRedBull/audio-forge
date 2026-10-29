@@ -61,6 +61,10 @@ def replace_file(source: Path, destination: Path) -> None:
 def _config_base_dir() -> Path:
     if os.name == "nt":
         return Path(os.environ.get("APPDATA", Path.home()))
+    # The XDG Base Directory spec ignores a relative XDG_CONFIG_HOME.
+    xdg_config = os.environ.get("XDG_CONFIG_HOME", "")
+    if os.path.isabs(xdg_config):
+        return Path(xdg_config)
     return Path.home() / ".config"
 
 

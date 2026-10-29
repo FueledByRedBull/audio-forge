@@ -5,6 +5,7 @@ from __future__ import annotations
 import filecmp
 import json
 import os
+import sys
 import tempfile
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
@@ -733,10 +734,15 @@ def _holds_preset_named(filepath: Path, name: str) -> bool:
 def _publish_exclusive(temporary_path: Path, destination: Path) -> None:
     """Move temporary_path to destination, raising FileExistsError if it exists.
 
-    Windows-only app: os.rename refuses an existing destination there (unlike POSIX), is
-    atomic, and needs no hard-link support from the volume.
+    On Windows os.rename refuses an existing destination, is atomic, and needs no
+    hard-link support from the volume. POSIX rename silently replaces, so there a
+    hard link publishes atomically and refuses an existing name instead.
     """
-    os.rename(temporary_path, destination)
+    if sys.platform == "win32":
+        os.rename(temporary_path, destination)
+        return
+    os.link(temporary_path, destination)
+    temporary_path.unlink()
 
 
 def save_preset(

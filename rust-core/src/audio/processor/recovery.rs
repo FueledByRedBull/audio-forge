@@ -4,8 +4,6 @@ use super::AudioProcessor;
 use crate::audio::clock::now_micros;
 use crate::audio::rt::RtErrorCode;
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 /// The restart cause an audio callback left only as an error code or counter.
 /// Resampler failures always request a restart; a stream error does only when

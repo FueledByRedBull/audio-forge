@@ -10,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.parse
 import urllib.request
@@ -343,6 +344,33 @@ def _extract_pinned_zip_member(
     return target
 
 
+def _extract_pinned_tar_member(
+    archive_path: Path,
+    extracted_root: Path,
+    relative_member: str,
+) -> Path:
+    """Extract one regular file from a pinned .tgz; links and traversal are refused."""
+    expected_member = _normalise_zip_member(relative_member)
+    with tarfile.open(archive_path, "r:gz") as archive:
+        matches = [
+            info
+            for info in archive.getmembers()
+            if _normalise_zip_member(info.name) == expected_member
+        ]
+        if len(matches) != 1 or not matches[0].isfile():
+            raise RuntimeError(
+                f"Archive '{archive_path.name}' did not contain exactly one regular file "
+                f"'{expected_member}'."
+            )
+        target = extracted_root.joinpath(*expected_member.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = archive.extractfile(matches[0])
+        assert source is not None
+        with source, target.open("wb") as output:
+            shutil.copyfileobj(source, output)
+    return target
+
+
 def _extract_archive_asset(
     archive_path: Path,
     extracted_root: Path,
@@ -378,23 +406,35 @@ def _build_source_asset(
     attestation = temporary / attestation_relative
     output = temporary / str(asset["name"])
     output.parent.mkdir(parents=True, exist_ok=True)
-    powershell = shutil.which("pwsh") or shutil.which("powershell")
-    if not powershell:
-        raise RuntimeError("PowerShell is required to build the pinned DeepFilter source asset.")
-    _run(
-        [
-            powershell,
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(REPO_ROOT / "build_deepfilter.ps1"),
-            "-OutputPath",
-            str(output),
-            "-AttestationPath",
-            str(attestation),
-        ]
-    )
+    if asset["name"] == "libdf.so":
+        _run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "python" / "tools" / "build_deepfilter.py"),
+                "--output",
+                str(output),
+                "--attestation",
+                str(attestation),
+            ]
+        )
+    else:
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        if not powershell:
+            raise RuntimeError("PowerShell is required to build the pinned DeepFilter source asset.")
+        _run(
+            [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(REPO_ROOT / "build_deepfilter.ps1"),
+                "-OutputPath",
+                str(output),
+                "-AttestationPath",
+                str(attestation),
+            ]
+        )
     if not output.is_file():
         raise RuntimeError(f"Source build completed without producing {output}")
     if not attestation.is_file():
@@ -544,9 +584,12 @@ def main() -> int:
                 archive = _download_pinned_archive(
                     pinned_archive_entry, temp_dir, pinned_archive_paths
                 )
-                source = _extract_pinned_zip_member(
-                    archive, pinned_extracted_root, archive_member
+                extract = (
+                    _extract_pinned_tar_member
+                    if archive.name.endswith(".tgz")
+                    else _extract_pinned_zip_member
                 )
+                source = extract(archive, pinned_extracted_root, archive_member)
                 _install_verified_asset(source, destination)
                 print(
                     f"Installed {asset['name']} from pinned CPU ONNX Runtime archive -> "

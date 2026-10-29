@@ -329,6 +329,7 @@ def test_configuring_logging_first_still_migrates_the_legacy_settings(
     tmp_path, monkeypatch, clean_root_handlers
 ):
     monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     legacy = tmp_path / LEGACY
     legacy.mkdir()
     (legacy / "config.json").write_text(json.dumps({"last_preset": "Old"}), encoding="utf-8")
@@ -347,6 +348,7 @@ def test_a_failed_migration_logs_to_the_temp_folder_and_leaves_the_config_folder
     tmp_path, monkeypatch, clean_root_handlers
 ):
     monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     temp = tmp_path / "temp"
     monkeypatch.setattr(app_logging.tempfile, "gettempdir", lambda: str(temp))
     legacy = tmp_path / LEGACY

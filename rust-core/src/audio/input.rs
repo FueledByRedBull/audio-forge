@@ -376,7 +376,7 @@ impl AudioInput {
     {
         device
             .build_input_stream(
-                config,
+                *config,
                 |_data: &[T], _: &cpal::InputCallbackInfo| {},
                 |_error| {},
                 None,
@@ -990,7 +990,7 @@ impl AudioInput {
 
         let stream = device
             .build_input_stream(
-                &stream_config,
+                stream_config,
                 move |data: &[T], _: &cpal::InputCallbackInfo| {
                     // RT_REGION_START: cpal_input_callback
                     last_callback_time_us.store(now_micros(), Ordering::Relaxed);
@@ -1112,7 +1112,7 @@ impl AudioInput {
         let mut fixed_buffer_frames = None;
         if let Some(frames) = Self::requested_fixed_buffer_frames() {
             if supported_fixed_buffer_frames(frames, supported_config.buffer_size()) {
-                let mut candidate = stream_config.clone();
+                let mut candidate = stream_config;
                 candidate.buffer_size = BufferSize::Fixed(frames);
                 if Self::preflight_sample_format(&device, sample_format, &candidate) {
                     stream_config = candidate;

@@ -91,6 +91,10 @@ def test_save_config_retries_a_transient_permission_error(tmp_path, monkeypatch)
     assert list(tmp_path.glob("*.tmp")) == []
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="POSIX rename replaces a read-only file; only the folder's permissions apply",
+)
 def test_replace_file_does_not_wait_on_a_read_only_target(tmp_path, monkeypatch):
     destination = tmp_path / "config.json"
     destination.write_text("existing", encoding="utf-8")
@@ -256,6 +260,7 @@ def test_deeply_nested_route_keys_are_skipped_not_fatal():
 # PC-011
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows bundle runtime (DLL directory)")
 def test_frozen_launcher_registers_only_the_bundle_content_directory(tmp_path, monkeypatch):
     exe_dir = tmp_path / "AudioForge"
     meipass = exe_dir / "_internal"

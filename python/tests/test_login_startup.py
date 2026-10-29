@@ -5,10 +5,14 @@ from __future__ import annotations
 import json
 import importlib.util
 from pathlib import Path
+import sys
 
 import pytest
 
 from mic_eq.ui import login_startup
+
+# These drive the Windows shell-link backend; test_login_startup_linux.py covers XDG autostart.
+pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows shell-link backend")
 
 
 class _ShellLink:
@@ -120,7 +124,6 @@ def test_directory_at_shortcut_path_is_preserved(registration):
 
 def test_uninstall_launcher_calls_ownership_helper_before_any_qt_import(monkeypatch, registration):
     import builtins
-    import sys
 
     executable, path = registration
     login_startup.set_login_startup(executable, True)

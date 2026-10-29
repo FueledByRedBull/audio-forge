@@ -1,9 +1,14 @@
 # Releasing AudioForge
 
 A release is built once by the `Release package` workflow, then promoted
-without rebuilding. The public release has exactly five files: the portable
-archive, the per-user MSI, the corresponding-source archive, an evidence
-archive, and one `SHA256SUMS.txt`.
+without rebuilding. The public release has exactly seven files: the portable
+Windows archive, the per-user MSI, the corresponding-source archive, the Linux
+tarball and AppImage, an evidence archive, and one `SHA256SUMS.txt`.
+
+`package-linux` builds the Linux files on Ubuntu 24.04, the oldest supported
+Linux release, from the same commit. Promotion takes them from the same
+candidate run as the approved Windows archive. It checks their sidecars, and it
+checks the `libdf.so` inside the tarball against its build attestation.
 
 ## Automated workflow
 
@@ -65,7 +70,7 @@ archive, and one `SHA256SUMS.txt`.
 6. **Promote.** Run `Promote release candidate` with `release_tag`,
    `candidate_run_id`, and `expected_archive_sha256`. It downloads the same
    candidate bytes, verifies sidecars, evidence, and corresponding source
-   against that digest, assembles a draft, and publishes only when all five
+   against that digest, assembles a draft, and publishes only when all seven
    files are present and verified. Release notes come from the workflow
    revision; the binary stays bound to the tag. Reruns compare GitHub's
    SHA-256 digests in preflight, and the final check downloads and hashes
@@ -74,7 +79,7 @@ archive, and one `SHA256SUMS.txt`.
    Promotion has two jobs. `verify-candidate` installs the pinned pip packages
    and runs the candidate (the MSI and the executable) with a read-only token
    and no credentials in its checkout. Before it runs the MSI or the
-   executable it locates the five release files, stages them, records their
+   executable it locates the seven release files, stages them, records their
    SHA-256 and uploads the staged copies as an artifact. Only `publish-release`
    can write; it runs none of the candidate's code, re-hashes the staged files
    against the recorded digests and `expected_archive_sha256`, and publishes.
@@ -104,6 +109,19 @@ archive, and one `SHA256SUMS.txt`.
      reviewers there if a second approval is wanted.
    - **In the token scope.** Only `publish-release` has `contents: write`;
      every other job in these workflows is read-only.
+
+7. **Update the AUR package.** For a final release, download the published
+   `AudioForge-v<version>-SHA256SUMS.txt`, then write the new `PKGBUILD` and
+   `.SRCINFO` into a checkout of the `audioforge-bin` AUR repository, commit
+   and push:
+
+   ```sh
+   python python/tools/aur_package.py --tag v<version> \
+     --checksums AudioForge-v<version>-SHA256SUMS.txt --output ~/aur/audioforge-bin
+   ```
+
+   Pass `--pkgrel 2` (and so on) to republish the same version with packaging
+   fixes. Release candidates are not published to the AUR.
 
 GitHub release immutability is enabled: publication locks the assets and tag
 and creates GitHub's
@@ -207,7 +225,7 @@ stress test, then:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
-.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951 --ignore-vuln CVE-2026-114603
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951 --ignore-vuln CVE-2026-114603 --ignore-vuln CVE-2026-116684 --ignore-vuln CVE-2026-116685 --ignore-vuln CVE-2026-116686
 .\.venv\Scripts\python.exe python\tools\run_semgrep.py --sarif semgrep-results.sarif
 .\.venv\Scripts\python.exe python\tools\check_versions.py
 .\.venv\Scripts\python.exe python\tools\check_workflows.py
@@ -234,8 +252,9 @@ cargo audit
 - **Python:** install `requirements/dev.txt` with `--require-hashes`; never
   release from an environment resolved from open `pyproject.toml` ranges.
   The runtime audit has no ignores. The development audit ignores only
-  two ids, each caused by a Semgrep pin. CVE-2026-59951: Semgrep pins
-  `mcp==1.29.0` and only its MCP server uses it. CVE-2026-114603: Semgrep pins
+  ids caused by a Semgrep pin. CVE-2026-59951, CVE-2026-116684,
+  CVE-2026-116685 and CVE-2026-116686: Semgrep pins `mcp==1.29.0` and only
+  its MCP server uses it. CVE-2026-114603: Semgrep pins
   `opentelemetry-api~=1.37.0`; the ReDoS is in parsing inbound `tracestate`
   headers, and Semgrep only exports telemetry. Remove each ignore when Semgrep
   allows `mcp>=1.30.0` or `opentelemetry-api>=1.45.1`; `check_workflows.py`

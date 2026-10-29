@@ -28,11 +28,13 @@ ORT_LIBRARY = "libonnxruntime.so.1.23.2"
 MODELS = ("DeepFilterNet3_ll_onnx.tar.gz", "DeepFilterNet3_onnx.tar.gz", "silero_vad.onnx")
 
 # AudioForge.spec leaves these out of the bundle. Every supported desktop has
-# them, and they must match it: the audio, D-Bus, graphics, display and font
-# stacks, glib, and the C++ runtime. Releases are built on the oldest supported
+# them, and they must match it: the audio, D-Bus, Kerberos (Qt Network's
+# GSSAPI), graphics, display and font stacks, glib, and the C++ runtime. Releases are built on the oldest supported
 # distribution, so the system copy is never older than the one the build linked.
 SYSTEM_LIBRARIES = (
     "libpipewire-0.3.so", "libasound.so", "libpulse", "libdbus-1.so", "libsystemd.so",
+    "libgssapi_krb5.so", "libkrb5.so", "libk5crypto.so", "libkrb5support.so", "libcom_err.so",
+    "libkeyutils.so",
     "libstdc++.so", "libgcc_s.so",
     "libGL", "libEGL.so", "libOpenGL.so", "libdrm.so", "libgbm.so", "libwayland-",
     "libX11.so", "libX11-xcb.so", "libxcb.so", "libxkbcommon",
@@ -93,6 +95,33 @@ APPRUN = """#!/bin/sh
 here=$(dirname "$(readlink -f "$0")")
 exec "$here/usr/lib/audioforge/AudioForge" "$@"
 """
+
+
+def _owning_package(library: str) -> tuple[str, list[Path]]:
+    """The build host's package that installs ``library``, and its copyright files."""
+    if shutil.which("dpkg-query"):
+        listing = subprocess.run(
+            ["dpkg-query", "-S", f"*/{Path(library).name}"], capture_output=True, text=True, check=True
+        ).stdout
+        packages = {line.split(":", 1)[0] for line in listing.splitlines() if not line.startswith("diversion")}
+        if len(packages) != 1:
+            raise SystemExit(f"{library} belongs to {sorted(packages) or 'no package'}, not one package")
+        package = packages.pop()
+        return package, [Path("/usr/share/doc", package, "copyright")]
+    package = subprocess.run(["pacman", "-Qqo", library], capture_output=True, text=True, check=True).stdout.strip()
+    return package, sorted(path for path in Path("/usr/share/licenses", package).glob("*") if path.is_file())
+
+
+def host_library_notices(libraries: list[str]) -> list[tuple[str, str, str]]:
+    """PyInstaller DATA entries for the copyright files of the packages that own ``libraries``."""
+    entries = set()
+    for library in libraries:
+        package, notices = _owning_package(library)
+        notices = [notice for notice in notices if notice.is_file()]
+        if not notices:
+            raise SystemExit(f"{package}, which installs {library}, has no copyright file")
+        entries.update((f"licenses/system/{package}/{notice.name}", str(notice), "DATA") for notice in notices)
+    return sorted(entries)
 
 
 def project_version() -> str:

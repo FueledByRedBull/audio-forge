@@ -18,7 +18,7 @@ DESCRIPTION = "Remove background noise and polish your voice for calls, streams 
 LICENSES = ("MIT", "LGPL-3.0-only")
 # The libraries linux_package.SYSTEM_LIBRARIES leaves to the system, by Arch package.
 DEPENDS = (
-    "alsa-lib", "dbus", "fontconfig", "freetype2", "glib2", "glibc", "libdrm", "libglvnd",
+    "alsa-lib", "dbus", "fontconfig", "freetype2", "glib2", "glibc", "krb5", "libdrm", "libglvnd",
     "libpipewire", "libpulse", "libstdc++", "libx11", "libxcb", "libxkbcommon",
     "libxkbcommon-x11", "mesa", "pipewire", "systemd-libs", "wayland",
 )

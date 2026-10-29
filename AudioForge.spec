@@ -152,6 +152,7 @@ if not windows:
 
     sys.path.insert(0, str(python_source / "tools"))
     from linux_package import SYSTEM_LIBRARIES as system_libraries
+    from linux_package import host_library_notices
     from linux_package import UNUSED_QT_PLUGINS as unused_qt_plugins
 
     host_library_dirs = ("/lib/", "/lib64/", "/usr/lib/", "/usr/lib64/")
@@ -205,6 +206,11 @@ if not windows:
         if entry[2] != "SYMLINK"
         or os.path.normpath(os.path.join(os.path.dirname(entry[0]), entry[1])) in kept
     ]
+    # libpython's terms come with the CPython inventory.
+    a.datas += host_library_notices([
+        entry[1] for entry in a.binaries
+        if from_host(entry) and not Path(entry[0]).name.startswith("libpython")
+    ])
 
 pyz = PYZ(a.pure)
 

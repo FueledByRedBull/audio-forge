@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+
+import pytest
 
 import linux_package
 
@@ -46,3 +49,31 @@ def test_system_libraries_readline_unused_plugins_and_a_stale_version_are_refuse
     assert any(error.startswith("bundles GPL readline") for error in errors)
     assert any(error.startswith("bundles an unused Qt plugin") for error in errors)
     assert len(errors) == 5
+
+
+def _dpkg_host(monkeypatch, listing):
+    monkeypatch.setattr(linux_package.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        linux_package.subprocess, "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout=listing),
+    )
+
+
+def test_a_host_library_ships_with_its_debian_copyright_file(monkeypatch):
+    _dpkg_host(monkeypatch, "libffi8:amd64: /usr/lib/x86_64-linux-gnu/libffi.so.8\n")
+    monkeypatch.setattr(linux_package.Path, "is_file", lambda path: True)
+
+    assert linux_package.host_library_notices(["/lib/x86_64-linux-gnu/libffi.so.8"]) == [
+        ("licenses/system/libffi8/copyright", "/usr/share/doc/libffi8/copyright", "DATA")
+    ]
+
+
+def test_a_host_library_without_one_owner_or_a_copyright_file_stops_the_build(monkeypatch):
+    _dpkg_host(monkeypatch, "")
+    with pytest.raises(SystemExit, match="no package"):
+        linux_package.host_library_notices(["/usr/lib/libmystery.so.1"])
+
+    _dpkg_host(monkeypatch, "libffi8:amd64: /usr/lib/x86_64-linux-gnu/libffi.so.8\n")
+    monkeypatch.setattr(linux_package.Path, "is_file", lambda path: False)
+    with pytest.raises(SystemExit, match="no copyright file"):
+        linux_package.host_library_notices(["/usr/lib/x86_64-linux-gnu/libffi.so.8"])

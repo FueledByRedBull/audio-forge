@@ -377,7 +377,8 @@ def _candidate_artifact(cwd: Path) -> tuple[Path, dict[str, str]]:
     tarball = f"AudioForge-{TAG}-linux-x86_64.tar.gz"
     appimage = f"AudioForge-{TAG}-x86_64.AppImage"
     for name in (
-        tarball, f"{tarball}.sha256", appimage, f"{appimage}.sha256",
+        tarball, f"{tarball}.sha256", f"{tarball}.manifest.json", f"{tarball}.metadata.json",
+        appimage, f"{appimage}.sha256",
         f"AudioForge-{TAG}-libdf.provenance.json",
     ):
         (linux_candidate / name).write_bytes(f"bytes of {name}".encode())
@@ -395,7 +396,7 @@ def test_the_candidate_files_are_found_by_their_exact_names(tmp_path: Path) -> N
 
     assert result.returncode == 0, result.stdout + result.stderr
     outputs = _outputs(tmp_path)
-    assert len(outputs) == 17
+    assert len(outputs) == 19
     assert Path(outputs["archive"]).name == f"AudioForge-{TAG}-win64-ultra.7z"
     assert all(
         Path(path).parent == tmp_path / ("linux-candidate" if key.startswith("linux_") else "candidate")
@@ -407,7 +408,8 @@ def test_the_candidate_files_are_found_by_their_exact_names(tmp_path: Path) -> N
     "missing",
     [
         "-win64-ultra.7z", "-win64-ultra.7z.metadata.json", "-source.7z.sha256", "-win64.msi",
-        "-deepfilter.provenance.json", "-linux-x86_64.tar.gz", "-x86_64.AppImage.sha256",
+        "-deepfilter.provenance.json", "-linux-x86_64.tar.gz", "-linux-x86_64.tar.gz.manifest.json",
+        "-x86_64.AppImage.sha256",
         "-libdf.provenance.json",
     ],
 )

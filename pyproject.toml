@@ -23,6 +23,7 @@ dependencies = [
     "shiboken6==6.11.1",
     "numpy>=2.5,<3",
     "pywin32>=311; sys_platform == 'win32'",
+    "jeepney>=0.9; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]

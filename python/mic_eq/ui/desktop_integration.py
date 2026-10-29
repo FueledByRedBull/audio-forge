@@ -1,7 +1,8 @@
 """Small desktop integrations used by the main window.
 
 The audio engine stays independent of this module.  Native work is limited to
-the Windows global hotkey and the Qt single-instance activation channel.
+the global mute hotkey (Win32, or the GlobalShortcuts portal on Linux) and the
+Qt single-instance activation channel.
 """
 
 from __future__ import annotations
@@ -20,11 +21,11 @@ from collections.abc import Callable
 from ctypes import wintypes
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractNativeEventFilter, QCoreApplication, QLockFile, Qt, QTimer
+from PySide6.QtCore import QAbstractNativeEventFilter, QCoreApplication, QLockFile, QObject, Qt, QTimer, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QMainWindow
 
-from .login_startup import LOGIN_STARTUP_ARGUMENT
+from .login_startup import APP_ID, LOGIN_STARTUP_ARGUMENT
 
 
 logger = logging.getLogger(__name__)
@@ -197,20 +198,40 @@ class _WindowsHotkeyFilter(QAbstractNativeEventFilter):
         return False, 0
 
 
+class _PortalBridge(QObject):
+    """Carry the portal worker's callbacks to the Qt thread that created it."""
+
+    activated = Signal()
+    failed = Signal(str)
+
+
 class GlobalMuteHotkey:
-    """Register one process-owned global Windows hotkey."""
+    """Register one process-owned global hotkey.
+
+    On Linux the desktop's GlobalShortcuts portal owns the key and may ask the
+    user to confirm it, so a bind can still fail after ``register()``
+    succeeds; ``on_failure`` then receives the error on the Qt thread.
+    """
 
     _next_id = 0xAF01
 
-    def __init__(self, shortcut: str, callback: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        shortcut: str,
+        callback: Callable[[], None],
+        on_failure: Callable[[str], None] | None = None,
+    ) -> None:
         self.shortcut = str(shortcut)
         self.callback = callback
+        self.on_failure = on_failure
         self._hotkey_id: int | None = None
         self._event_filter: _WindowsHotkeyFilter | None = None
+        self._portal = None
+        self._bridge: _PortalBridge | None = None
 
     @property
     def registered(self) -> bool:
-        return self._hotkey_id is not None
+        return self._hotkey_id is not None or self._portal is not None
 
     def register(self) -> tuple[bool, str | None]:
         """Register the shortcut and return ``(success, error)``."""
@@ -218,10 +239,7 @@ class GlobalMuteHotkey:
         if self.registered:
             return True, None
         if os.name != "nt":
-            return False, (
-                "bind the command `" + toggle_mute_command()
-                + "` to a key in your desktop's keyboard settings"
-            )
+            return self._register_portal()
         try:
             modifiers, virtual_key = parse_global_hotkey(self.shortcut)
         except ValueError as error:
@@ -243,9 +261,47 @@ class GlobalMuteHotkey:
         self._event_filter = event_filter
         return True, None
 
+    def _register_portal(self) -> tuple[bool, str | None]:
+        unbound = (
+            "bind the command `" + toggle_mute_command()
+            + "` to a key in your desktop's keyboard settings"
+        )
+        if not sys.platform.startswith("linux"):
+            return False, unbound
+        from . import global_shortcuts_portal as portal
+
+        try:
+            trigger = portal.portal_trigger(self.shortcut)
+        except ValueError as error:
+            return False, str(error)
+        if not portal.portal_available():
+            return False, unbound
+        bridge = _PortalBridge()
+        bridge.activated.connect(self.callback)
+        bridge.failed.connect(self._portal_failed)
+        session = portal.GlobalShortcutsSession(
+            APP_ID, trigger, "Toggle Output Mute", bridge.activated.emit, bridge.failed.emit
+        )
+        try:
+            session.start()
+        except OSError as error:
+            return False, str(error)
+        self._portal = session
+        self._bridge = bridge
+        return True, None
+
+    def _portal_failed(self, error: str) -> None:
+        self.unregister()
+        if self.on_failure is not None:
+            self.on_failure(error)
+
     def unregister(self) -> None:
         """Release the native registration and Qt event filter."""
 
+        if self._portal is not None:
+            session, self._portal, self._bridge = self._portal, None, None
+            session.close()
+            return
         hotkey_id = self._hotkey_id
         if hotkey_id is None:
             return

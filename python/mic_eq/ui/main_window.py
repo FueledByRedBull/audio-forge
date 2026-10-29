@@ -1768,23 +1768,32 @@ class MainWindow(QMainWindow):
 
     def _register_mute_hotkey(self, shortcut: str) -> bool:
         self._unregister_mute_hotkey()
-        hotkey = GlobalMuteHotkey(shortcut, self._toggle_mute_from_hotkey)
+        hotkey = GlobalMuteHotkey(shortcut, self._toggle_mute_from_hotkey, self._mute_hotkey_lost)
         registered, error = hotkey.register()
         if not registered:
-            self.config.mute_hotkey = ""
-            if self._mute_hotkey_action is not None:
-                self._mute_hotkey_action.blockSignals(True)
-                self._mute_hotkey_action.setChecked(False)
-                self._mute_hotkey_action.blockSignals(False)
-                # The Settings row follows changed(), which the block suppressed.
-                self._mute_hotkey_action.changed.emit()
-            self.status_message.showMessage(
-                f"Global mute shortcut unavailable: {error}",
-                8000,
-            )
+            self._disable_mute_hotkey(error)
             return False
         self._mute_hotkey = hotkey
         return True
+
+    def _mute_hotkey_lost(self, error: str) -> None:
+        """The desktop refused or dropped a shortcut that registered."""
+        self._mute_hotkey = None
+        self._disable_mute_hotkey(error)
+        self._save_config_safely()
+
+    def _disable_mute_hotkey(self, error: str | None) -> None:
+        self.config.mute_hotkey = ""
+        if self._mute_hotkey_action is not None:
+            self._mute_hotkey_action.blockSignals(True)
+            self._mute_hotkey_action.setChecked(False)
+            self._mute_hotkey_action.blockSignals(False)
+            # The Settings row follows changed(), which the block suppressed.
+            self._mute_hotkey_action.changed.emit()
+        self.status_message.showMessage(
+            f"Global mute shortcut unavailable: {error}",
+            8000,
+        )
 
     def _unregister_mute_hotkey(self) -> None:
         if self._mute_hotkey is None:

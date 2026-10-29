@@ -29,6 +29,7 @@ the wheel `.dist-info` notices and this inventory when redistributing.
 | NumPy, including its BLAS/native payloads | Its complete retained wheel license collection |
 | Portions derived from SciPy | BSD-3-Clause; the notice is reproduced below and in `eq_fit.py` |
 | pywin32 | PSF license |
+| jeepney (Linux) | MIT license |
 | PyInstaller bootloader | GPLv2 with the upstream bootloader exception; retained upstream license |
 | Rust dependencies | Per-component Cargo license declarations and retained notice files |
 

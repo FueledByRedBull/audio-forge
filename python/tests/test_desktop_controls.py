@@ -177,8 +177,10 @@ def test_failed_hotkey_registration_is_not_shown_or_saved_as_enabled(monkeypatch
         config=SimpleNamespace(mute_hotkey="Ctrl+Alt+M"),
         _unregister_mute_hotkey=lambda: None,
         _toggle_mute_from_hotkey=lambda: None,
+        _mute_hotkey_lost=lambda _error: None,
         _mute_hotkey_action=Mock(), status_message=Mock(),
     )
+    owner._disable_mute_hotkey = lambda error: MainWindow._disable_mute_hotkey(owner, error)
     assert not MainWindow._register_mute_hotkey(owner, "Ctrl+Alt+M")
     assert owner.config.mute_hotkey == ""
     owner._mute_hotkey_action.setChecked.assert_called_once_with(False)

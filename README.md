@@ -165,12 +165,15 @@ app, choose **AudioForge Mic** as the microphone. The device goes away when
 AudioForge quits, even after a crash, and it never becomes your default
 microphone.
 
-**Global mute.** Linux desktops don't let an app take over a key for itself.
-Bind a shortcut in your desktop's keyboard settings to the command
-`audioforge --toggle-mute` instead. It mutes or unmutes the running AudioForge
-and never starts a second copy. Turning the global shortcut on under
-**Settings > Tray and background** shows the exact command for your copy in the
-status bar.
+**Global mute.** Turning the global shortcut on under **Settings > Tray and
+background** asks your desktop for Ctrl+Alt+M through its global shortcuts
+service. KDE Plasma, GNOME 48 and later, and Hyprland have one; the desktop
+may ask you to confirm the key or pick another, and its own settings can
+change it later. Desktops without the service, COSMIC among them, don't let
+an app take over a key for itself: bind a shortcut in your desktop's keyboard
+settings to the command `audioforge --toggle-mute` instead. AudioForge shows
+the exact command for your copy in the status bar. The command mutes or
+unmutes the running AudioForge and never starts a second copy.
 
 **Login startup** writes an XDG autostart entry,
 `~/.config/autostart/io.github.FueledByRedBull.AudioForge.desktop`, under the

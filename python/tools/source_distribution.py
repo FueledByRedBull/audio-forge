@@ -46,6 +46,7 @@ TRUSTED_SOURCE_HOSTS = frozenset(
         "static.crates.io",
         "qt.mirror.constant.com",
         "repo.almalinux.org",
+        "vault.almalinux.org",
         "wiki.qt.io",
         "www.openssl.org",
         "www.python.org",

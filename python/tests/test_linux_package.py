@@ -29,9 +29,10 @@ def test_a_complete_bundle_is_ready(tmp_path):
     assert linux_package.check_bundle(_bundle(tmp_path), "1.2.3") == []
 
 
-def test_system_libraries_unused_plugins_and_a_stale_version_are_refused(tmp_path):
+def test_system_libraries_readline_unused_plugins_and_a_stale_version_are_refused(tmp_path):
     bundle = _bundle(tmp_path, version="1.2.2")
     (bundle / "_internal/libpipewire-0.3.so.0").write_bytes(b"")
+    (bundle / "_internal/libreadline.so.8").write_bytes(b"")
     theme = bundle / "_internal/PySide6/Qt/plugins/platformthemes/libqgtk3.so"
     theme.parent.mkdir(parents=True)
     theme.write_bytes(b"")
@@ -42,5 +43,6 @@ def test_system_libraries_unused_plugins_and_a_stale_version_are_refused(tmp_pat
     assert "missing _internal/libdf.so" in errors
     assert any("version '1.2.2'" in error for error in errors)
     assert "bundles a library that must come from the system: _internal/libpipewire-0.3.so.0" in errors
+    assert any(error.startswith("bundles GPL readline") for error in errors)
     assert any(error.startswith("bundles an unused Qt plugin") for error in errors)
-    assert len(errors) == 4
+    assert len(errors) == 5

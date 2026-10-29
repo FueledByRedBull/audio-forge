@@ -41,7 +41,10 @@ SYSTEM_LIBRARIES = (
     "libgthread-2.0.so",
 )
 # Qt plugins the app never loads; the GTK theme alone drags in GTK's stack.
+# QAudioSink and QMediaDevices work without a multimedia backend, and the
+# FFmpeg one would ship FFmpeg's LGPL libraries for nothing.
 UNUSED_QT_PLUGINS = (
+    "multimedia/",
     "platformthemes/libqgtk3.so",
     "platforminputcontexts/libqtvirtualkeyboardplugin.so",
     "egldeviceintegrations/", "generic/", "networkinformation/", "qmltooling/", "tls/",
@@ -123,6 +126,8 @@ def check_bundle(bundle: Path, version: str) -> list[str]:
         relative = path.relative_to(bundle).as_posix()
         if path.name.startswith(SYSTEM_LIBRARIES):
             errors.append(f"bundles a library that must come from the system: {relative}")
+        if path.name.startswith("libreadline.so"):
+            errors.append(f"bundles GPL readline, which the app never uses: {relative}")
         if any(f"PySide6/Qt/plugins/{plugin}" in relative for plugin in UNUSED_QT_PLUGINS):
             errors.append(f"bundles an unused Qt plugin: {relative}")
     return errors

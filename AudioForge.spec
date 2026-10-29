@@ -125,6 +125,8 @@ a = Analysis(
         "PySide6.QtPdfWidgets",
         "PySide6.QtMultimediaWidgets",
         "PySide6.QtVirtualKeyboard",
+        # Linux builds would ship GPL libreadline for an interactive prompt the app never shows.
+        "readline",
         "ssl",
         "_ssl",
         "_hashlib",
@@ -172,13 +174,16 @@ if not windows:
         ).stdout
         return re.findall(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]", dynamic)
 
-    # Keep a build-host library only when something the app ships links it,
-    # without following links into the system libraries above: a stray copy
+    def qt_library(entry):
+        return "/PySide6/Qt/lib/" in entry[1]
+
+    # Keep a build-host or Qt library only when something the app ships links
+    # it, without following links into the system libraries above: a stray copy
     # would shadow the system's own through the bundle's library path.
     collected = {Path(entry[0]).name: entry[1] for entry in a.binaries}
     pending = [
         entry[1] for entry in a.binaries
-        if not from_host(entry) or Path(entry[0]).name.startswith("libpython")
+        if not (from_host(entry) or qt_library(entry)) or Path(entry[0]).name.startswith("libpython")
     ]
     needed = set()
     while pending:
@@ -190,8 +195,15 @@ if not windows:
     a.binaries = [
         entry for entry in a.binaries
         if not Path(entry[0]).name.startswith(system_libraries)
-        and (not from_host(entry) or Path(entry[0]).name in needed
+        and (not (from_host(entry) or qt_library(entry)) or Path(entry[0]).name in needed
              or Path(entry[0]).name.startswith("libpython"))
+    ]
+    # PyInstaller files the top-level links to Qt's libraries with the data.
+    kept = {entry[0] for entry in a.binaries}
+    a.datas = [
+        entry for entry in a.datas
+        if entry[2] != "SYMLINK"
+        or os.path.normpath(os.path.join(os.path.dirname(entry[0]), entry[1])) in kept
     ]
 
 pyz = PYZ(a.pure)

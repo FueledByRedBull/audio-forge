@@ -76,6 +76,9 @@ impl<'a> OutputWriteCounters<'a> {
 pub(super) struct OutputWriteLimits {
     pub(super) output_target_center_samples: usize,
     pub(super) output_hard_backlog_samples: usize,
+    /// Linux only: the hard backlog also leaves room above the target for one
+    /// whole output callback (a PipeWire cycle) plus this many samples.
+    pub(super) output_cycle_reserve_samples: Option<usize>,
     pub(super) discontinuity_fade_samples: usize,
     pub(super) max_catchup_ratio: f32,
     pub(super) max_emergency_catchup_ratio: f32,
@@ -135,7 +138,11 @@ pub(super) fn short_queue_for(
 
 /// The targets for the callbacks seen so far: the qualified ones until the
 /// callbacks are short, for good once they sustain a long request, and whenever
-/// the DSP thread's scheduling is degraded.
+/// the DSP thread's scheduling is degraded. With a cycle reserve the hard
+/// backlog never sits closer than one sustained callback above the target: a
+/// write can land before that cycle's read, so the fill it sees may hold a whole
+/// cycle more than the target, and the graph can lengthen the cycle while the
+/// stream runs.
 pub(super) fn active_queue_limits(
     qualified: OutputWriteLimits,
     short: Option<ShortCallbackQueue>,
@@ -147,13 +154,22 @@ pub(super) fn active_queue_limits(
     let tier = short
         .filter(|_| !scheduling_degraded)
         .and_then(|short| [short.low_period, short.standard].into_iter().find(fits));
-    match tier {
+    let limits = match tier {
         Some(tier) => OutputWriteLimits {
             output_target_center_samples: tier.target_center_samples,
             output_hard_backlog_samples: tier.hard_backlog_samples,
             ..qualified
         },
         None => qualified,
+    };
+    match limits.output_cycle_reserve_samples {
+        Some(reserve) => OutputWriteLimits {
+            output_hard_backlog_samples: limits
+                .output_hard_backlog_samples
+                .max(limits.output_target_center_samples + sustained_callback_frames + reserve),
+            ..limits
+        },
+        None => limits,
     }
 }
 

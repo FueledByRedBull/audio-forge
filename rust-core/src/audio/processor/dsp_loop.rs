@@ -18,7 +18,7 @@ use super::raw_recording::record_raw_recording_block;
 use super::resampling::{
     clear_resampler_output_samples, duration_samples, has_resampler_output_capacity,
     next_process_idle_sleep_us, signal_input_resampler_failure, smoothing_coeff_for_block,
-    smoothing_coeff_for_time_constant, DriftRetimer, LatencyComponents,
+    smoothing_coeff_for_time_constant, stream_delay_samples, DriftRetimer, LatencyComponents,
 };
 use super::routing::{
     apply_input_pre_filter, new_input_pre_filter, publish_input_cleanup_bypassed,
@@ -31,8 +31,8 @@ use super::shared::Shared;
 #[cfg(feature = "vad")]
 use super::VAD_PROBABILITY_STALE_US;
 use super::{
-    COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, OUTPUT_HARD_BACKLOG_MS, OUTPUT_PRIME_MS,
-    OUTPUT_TARGET_HIGH_MS, RESAMPLER_CHUNK_SIZE, RT_INPUT_CHUNK_CAPACITY,
+    COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, OUTPUT_HARD_BACKLOG_MS, OUTPUT_HARD_BACKLOG_RESERVE_MS,
+    OUTPUT_PRIME_MS, OUTPUT_TARGET_HIGH_MS, RESAMPLER_CHUNK_SIZE, RT_INPUT_CHUNK_CAPACITY,
     RT_OUTPUT_SCRATCH_CAPACITY, RT_PROCESS_BUFFER_CAPACITY, RT_RESAMPLE_QUEUE_CAPACITY,
     RT_SUPPRESSOR_OUTPUT_CAPACITY,
 };
@@ -715,6 +715,8 @@ impl DspLoop {
             limits: OutputWriteLimits {
                 output_target_center_samples,
                 output_hard_backlog_samples,
+                output_cycle_reserve_samples: cfg!(target_os = "linux")
+                    .then(|| duration_samples(output_sample_rate, OUTPUT_HARD_BACKLOG_RESERVE_MS)),
                 discontinuity_fade_samples,
                 max_catchup_ratio: OUTPUT_MAX_CATCHUP_RATIO,
                 max_emergency_catchup_ratio: OUTPUT_MAX_EMERGENCY_CATCHUP_RATIO,
@@ -1093,6 +1095,12 @@ impl Pacing {
             LatencyComponents {
                 input_resampler_delay_samples: self.input_resampler_delay_samples,
                 output_buffer_samples,
+                stream_delay_samples: stream_delay_samples(
+                    shared
+                        .output
+                        .sustained_callback_frames
+                        .load(Ordering::Relaxed),
+                ),
                 output_sample_rate: self.output_sample_rate,
                 output_resampler_delay_samples: self.output_resampler_delay_samples,
                 suppressor_latency_samples,

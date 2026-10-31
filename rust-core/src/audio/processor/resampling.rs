@@ -1,6 +1,7 @@
 use super::{
-    PROCESS_IDLE_MAX_SLEEP_US, PROCESS_IDLE_RECENT_INPUT_WINDOW_US, PROCESS_IDLE_SLEEP_US,
-    PRODUCT_RESAMPLER_SINC_LEN, PRODUCT_RESAMPLER_WINDOW_NAME, RESAMPLER_CHUNK_SIZE,
+    PIPEWIRE_STREAM_DELAY_CYCLES, PROCESS_IDLE_MAX_SLEEP_US, PROCESS_IDLE_RECENT_INPUT_WINDOW_US,
+    PROCESS_IDLE_SLEEP_US, PRODUCT_RESAMPLER_SINC_LEN, PRODUCT_RESAMPLER_WINDOW_NAME,
+    RESAMPLER_CHUNK_SIZE,
 };
 use crate::audio::rt::{store_rt_error, FixedAudioBuffer, RtErrorCode};
 use pyo3::prelude::*;
@@ -86,12 +87,22 @@ pub(super) fn next_process_idle_sleep_us(
 pub(super) struct LatencyComponents {
     pub(super) input_resampler_delay_samples: u64,
     pub(super) output_buffer_samples: u64,
+    pub(super) stream_delay_samples: u64,
     pub(super) output_sample_rate: u32,
     pub(super) output_resampler_delay_samples: u64,
     pub(super) suppressor_latency_samples: u64,
     pub(super) limiter_lookahead_samples: u64,
     pub(super) true_peak_lookahead_samples: u64,
     pub(super) processing_sample_rate: u32,
+}
+
+/// The delay of the audio streams themselves, for the output's callback size.
+pub(super) fn stream_delay_samples(callback_frames: u32) -> u64 {
+    if cfg!(target_os = "linux") {
+        PIPEWIRE_STREAM_DELAY_CYCLES * callback_frames as u64
+    } else {
+        0
+    }
 }
 
 pub(super) fn total_reported_latency_us(components: LatencyComponents) -> u64 {
@@ -101,6 +112,10 @@ pub(super) fn total_reported_latency_us(components: LatencyComponents) -> u64 {
     );
     let output_latency_us = samples_to_micros(
         components.output_buffer_samples,
+        components.output_sample_rate,
+    );
+    let stream_latency_us = samples_to_micros(
+        components.stream_delay_samples,
         components.output_sample_rate,
     );
     let output_resampler_latency_us = samples_to_micros(
@@ -122,6 +137,7 @@ pub(super) fn total_reported_latency_us(components: LatencyComponents) -> u64 {
     ));
 
     output_latency_us
+        .saturating_add(stream_latency_us)
         .saturating_add(input_resampler_latency_us)
         .saturating_add(output_resampler_latency_us)
         .saturating_add(suppressor_latency_us)

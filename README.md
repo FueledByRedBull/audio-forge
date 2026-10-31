@@ -194,9 +194,11 @@ same rules as the Windows shortcut: it's off until you turn it on, and an entry
 another copy wrote is left alone. The AppImage registers the image file itself,
 so move the AppImage first and turn the option on afterwards.
 
-**Realtime audio.** The processing thread asks RTKit for realtime priority, the
-way PipeWire's own threads get it. If RTKit isn't running or says no, AudioForge
-keeps working at normal priority.
+**Realtime audio.** The processing thread and the DeepFilterNet worker ask RTKit
+for realtime priority, the way PipeWire's own threads get it. If RTKit isn't
+running or says no, AudioForge keeps working at normal priority, and DeepFilterNet
+may then drop audio on a busy system.
+
 
 **Tray.** The tray icon needs a panel that shows StatusNotifierItem icons. If
 the panel starts after AudioForge, for example at login, the icon shows up as

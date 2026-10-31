@@ -212,6 +212,8 @@ before it has filled a second of audio stays on the standard path until the app
 restarts, unless the device was removed or the Windows audio service stopped
 (`AUDCLNT_E_SERVICE_NOT_RUNNING`). A stream that ran longer and then failed is tried
 again at the next start.
+On Linux they default to 512 frames, and an out-of-range value such as 0 keeps
+PipeWire's own quantum.
 
 ## Runtime checks and screenshots
 

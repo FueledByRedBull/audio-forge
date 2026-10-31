@@ -19,7 +19,7 @@ use super::clock::now_micros;
 use super::device::{device_for_endpoint_id, device_name, persisted_endpoint_id};
 use super::rt::RtErrorCode;
 use super::{
-    find_48khz_config, handle_stream_error, parse_fixed_buffer_frames, stream_config_arg,
+    find_48khz_config, handle_stream_error, requested_fixed_buffer_frames, stream_config_arg,
     supported_fixed_buffer_frames, validate_stream_format,
 };
 
@@ -347,7 +347,7 @@ pub struct AudioInput {
 impl AudioInput {
     fn requested_fixed_buffer_frames() -> Option<u32> {
         let value = std::env::var("AUDIOFORGE_FIXED_INPUT_BUFFER_FRAMES").ok();
-        parse_fixed_buffer_frames(value.as_deref())
+        requested_fixed_buffer_frames(value.as_deref())
     }
 
     fn named_input_device(
@@ -1250,12 +1250,21 @@ mod tests {
     }
 
     #[test]
-    fn test_fixed_buffer_request_parser_is_bounded_and_fail_closed() {
+    fn fixed_buffer_requests_use_the_variable_or_the_platform_default() {
+        use super::super::{parse_fixed_buffer_frames, DEFAULT_FIXED_BUFFER_FRAMES};
+
         assert_eq!(parse_fixed_buffer_frames(None), None);
         assert_eq!(parse_fixed_buffer_frames(Some("bad")), None);
         assert_eq!(parse_fixed_buffer_frames(Some("15")), None);
         assert_eq!(parse_fixed_buffer_frames(Some("128")), Some(128));
         assert_eq!(parse_fixed_buffer_frames(Some("9000")), None);
+
+        let expected = cfg!(target_os = "linux").then_some(512);
+        assert_eq!(DEFAULT_FIXED_BUFFER_FRAMES, expected);
+        assert_eq!(requested_fixed_buffer_frames(None), expected);
+        assert_eq!(requested_fixed_buffer_frames(Some("256")), Some(256));
+        // An invalid value is how to keep the driver's own size.
+        assert_eq!(requested_fixed_buffer_frames(Some("0")), None);
     }
 
     #[test]

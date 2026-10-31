@@ -25,7 +25,7 @@ use super::wasapi_render::{
     probe_standard_buffer, short_period_is_verified, LowPeriodStream, Opened,
 };
 use super::{
-    find_48khz_config, handle_stream_error, parse_fixed_buffer_frames, stream_config_arg,
+    find_48khz_config, handle_stream_error, requested_fixed_buffer_frames, stream_config_arg,
     supported_fixed_buffer_frames, validate_stream_format,
 };
 
@@ -259,7 +259,7 @@ pub(crate) struct OutputStreamSetup {
 impl AudioOutput {
     fn requested_fixed_buffer_frames() -> Option<u32> {
         let value = std::env::var("AUDIOFORGE_FIXED_OUTPUT_BUFFER_FRAMES").ok();
-        parse_fixed_buffer_frames(value.as_deref())
+        requested_fixed_buffer_frames(value.as_deref())
     }
 
     fn preflight_config<T>(device: &Device, config: &StreamConfig) -> bool

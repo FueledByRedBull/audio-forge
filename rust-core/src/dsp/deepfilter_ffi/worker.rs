@@ -21,6 +21,9 @@ use std::time::{Duration, Instant};
 /// to 18). It is also the most latency a slow worker can add. Frames beyond it
 /// wait in the processor's input queue.
 pub(super) const WORKER_QUEUE_FRAMES: usize = 8192_usize.div_ceil(DEEPFILTER_FRAME_SIZE);
+/// Longest stretch without blocking: half of RTKit's default 200 ms budget.
+#[cfg(target_os = "linux")]
+const REALTIME_BUSY_LIMIT: std::time::Duration = std::time::Duration::from_millis(100);
 const QUEUE_SAMPLES: usize = WORKER_QUEUE_FRAMES * DEEPFILTER_FRAME_SIZE;
 /// What the published suppressor latency adds for the time a frame spends at the
 /// worker (5 ms): the worker's poll, the model, and the loop's next look on an
@@ -360,6 +363,9 @@ fn run(df: DeepFilterFFI, shared: &WorkerShared, input: AudioConsumer, output: A
     // works.
     #[cfg(windows)]
     let scheduling = ProAudioThread::enter().ok();
+    // A second of budget, as for the DSP thread: RTKit caps it at its maximum.
+    #[cfg(target_os = "linux")]
+    let _realtime = audio_thread_priority::promote_current_thread_to_real_time(48_000, 48_000).ok();
     // The model ran under the DSP loop's floating-point mode and must keep
     // doing so: it is the mode the library's long-silence behaviour was
     // verified in.
@@ -387,6 +393,8 @@ fn serve(
     let mut frame = [0.0_f32; DEEPFILTER_FRAME_SIZE];
     let mut wet = [0.0_f32; DEEPFILTER_FRAME_SIZE];
     let mut last_frame = Instant::now();
+    #[cfg(target_os = "linux")]
+    let mut busy_since = Instant::now();
     while !shared.stop.load(Ordering::Acquire) {
         #[cfg(test)]
         if shared.fault.load(Ordering::Acquire) == TestFault::Exit as u8 {
@@ -399,9 +407,20 @@ fn serve(
                 shared.idle_polls.fetch_add(1, Ordering::Relaxed);
             }
             std::thread::sleep(interval);
+            #[cfg(target_os = "linux")]
+            {
+                busy_since = Instant::now();
+            }
             continue;
         }
         last_frame = Instant::now();
+        // RTKit kills a realtime thread that never blocks with SIGXCPU, and a
+        // model that cannot keep up always finds another frame waiting.
+        #[cfg(target_os = "linux")]
+        if busy_since.elapsed() >= REALTIME_BUSY_LIMIT {
+            std::thread::sleep(POLL_INTERVAL);
+            busy_since = Instant::now();
+        }
         input.read(&mut frame);
         let inference = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             #[cfg(test)]

@@ -8,9 +8,10 @@
 //! so the thread that owns them exits and `create` builds them again.
 #![allow(clippy::useless_conversion)] // PyO3 proc-macro wrappers trigger false positives.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::CString;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Mutex, TryLockError};
 use std::thread::JoinHandle;
@@ -19,6 +20,7 @@ use std::time::Duration;
 use pipewire as pw;
 use pw::context::ContextRc;
 use pw::main_loop::MainLoopRc;
+use pw::metadata::{Metadata, MetadataListener};
 use pw::types::ObjectType;
 use pyo3::prelude::*;
 
@@ -54,6 +56,12 @@ struct VirtualMic {
 }
 
 static VIRTUAL_MIC: Mutex<Option<VirtualMic>> = Mutex::new(None);
+
+/// Whether the session manager made AudioForge Mic the system default
+/// microphone, as PipeWire's `default` metadata last said. The thread that owns
+/// the microphone keeps it current and clears it when it ends, so a read never
+/// waits and is false while there is no microphone.
+static DEFAULT_SOURCE_IS_OWN: AtomicBool = AtomicBool::new(false);
 
 /// Whether the thread that owns the microphone's nodes is still alive.
 fn alive(slot: &Option<VirtualMic>) -> bool {
@@ -133,6 +141,7 @@ fn run(quit_rx: pw::channel::Receiver<()>, ready_tx: mpsc::Sender<Result<(), Str
     if let Err(error) = serve(quit_rx, &ready_tx) {
         let _ = ready_tx.send(Err(error));
     }
+    DEFAULT_SOURCE_IS_OWN.store(false, Ordering::Relaxed);
 }
 
 fn serve(
@@ -167,11 +176,38 @@ fn serve(
     }
 
     let ready = Rc::new(Cell::new(Some(ready_tx.clone())));
+    // The `default` metadata object, where the session manager records the
+    // default devices. Listener first: it must go before the proxy it listens to.
+    let default_metadata: RefCell<Option<(MetadataListener, Metadata)>> = RefCell::new(None);
     let _registry_listener = registry
         .add_listener_local()
         .global({
             let ready = ready.clone();
+            let registry = registry.clone();
             move |global| {
+                let is_default_metadata = global.type_ == ObjectType::Metadata
+                    && global
+                        .props
+                        .is_some_and(|props| props.get("metadata.name") == Some("default"));
+                if is_default_metadata {
+                    if let Ok(metadata) = registry.bind::<Metadata, _>(global) {
+                        let listener = metadata
+                            .add_listener_local()
+                            .property(|_subject, key, _type, value| {
+                                let own = super::default_source_is_node(
+                                    key,
+                                    value,
+                                    SOURCE_NODE_NAME,
+                                    DEFAULT_SOURCE_IS_OWN.load(Ordering::Relaxed),
+                                );
+                                DEFAULT_SOURCE_IS_OWN.store(own, Ordering::Relaxed);
+                                0
+                            })
+                            .register();
+                        *default_metadata.borrow_mut() = Some((listener, metadata));
+                    }
+                    return;
+                }
                 let is_source = global.type_ == ObjectType::Node
                     && global
                         .props
@@ -232,6 +268,19 @@ pub fn create_virtual_microphone(py: Python<'_>) -> PyResult<()> {
 #[pyfunction]
 pub fn virtual_microphone_running() -> bool {
     is_running()
+}
+
+/// Whether the system default microphone is AudioForge Mic, so that following
+/// the default would record AudioForge itself.
+///
+/// The session manager makes it the default when no other microphone exists.
+/// The answer is the last one PipeWire's `default` metadata gave to the thread
+/// that owns the microphone, a cached flag that never waits for PipeWire. It
+/// is false while the microphone does not exist, and for a moment after it is
+/// created, until the metadata has been read.
+#[pyfunction]
+pub fn default_source_is_virtual_microphone() -> bool {
+    DEFAULT_SOURCE_IS_OWN.load(Ordering::Relaxed)
 }
 
 /// Remove the virtual microphone created by `create_virtual_microphone`.

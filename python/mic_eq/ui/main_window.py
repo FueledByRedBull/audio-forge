@@ -67,10 +67,13 @@ from .voice_setup_dialog import VoiceSetupDialog
 from .first_run_setup_dialog import FirstRunSetupDialog
 from .app_bootstrap import run_qt_app
 from .device_selection import (
+    OWN_MICROPHONE_MESSAGE,
+    OwnMicrophoneError,
     default_device_index,
     find_identity_index,
     identity_is_persistable,
     preferred_output_index,
+    records_own_microphone,
     start_processor_for_route,
 )
 from .capture_session import recovery_paused
@@ -3031,6 +3034,8 @@ class MainWindow(QMainWindow):
                 self.processor.stop()
                 raise RuntimeError("Output mute state could not be restored")
             self.status_message.showMessage(f"Processing: {result}")
+            if "own_microphone" in self._problems:
+                self._set_problem("own_microphone", None)
             self.start_btn_action.setEnabled(False)
             self.stop_btn_action.setEnabled(True)
             self.input_choice.setEnabled(False)
@@ -3044,6 +3049,8 @@ class MainWindow(QMainWindow):
             return True
         except Exception as e:
             logger.exception("Start processing failed")
+            if isinstance(e, OwnMicrophoneError):
+                self._own_microphone_refusals += 1
             if not interactive and self.processor.is_running():
                 try:
                     self.processor.stop()
@@ -3719,6 +3726,29 @@ class MainWindow(QMainWindow):
             # limiter and the ceiling still apply there.
             self.output_meter.clear_clip_marker()
 
+    _own_microphone_refusals = 0
+
+    def _stop_for_own_microphone(self) -> bool:
+        """Linux: stop, once, when a Follow-system-default input would now record AudioForge Mic.
+
+        That happens when the last real microphone goes away: the session manager then makes
+        AudioForge Mic the default, and the input would follow it into a loop. The stop also
+        takes a pending restart with it, so the engine's own recovery cannot reopen the loop.
+        """
+        if not records_own_microphone(self._combo_device_identity(self.input_choice)):
+            return False
+        if not (self.processor.is_running() or self._restart_pending()):
+            return False
+        logger.warning("Stopping audio: %s", OWN_MICROPHONE_MESSAGE)
+        self._own_microphone_refusals += 1
+
+        def stopped(outcome: Any) -> None:
+            self._finish_stop(outcome)
+            self._report_problem("own_microphone", OWN_MICROPHONE_MESSAGE)
+
+        self._run_engine("stop", self.processor.stop, stopped)
+        return True
+
     def _update_diagnostics(self):
         """Update slower diagnostics and service recovery."""
         if _engine_in_use(self):
@@ -3726,6 +3756,9 @@ class MainWindow(QMainWindow):
         watch = self.__dict__.get("virtual_microphone_watch")
         if watch is not None:
             watch.poll()
+        # Before the recovery below, so no restart reopens the loop.
+        if self._stop_for_own_microphone():
+            return
         if self.__dict__.get("_login_startup_deadline") is not None:
             try:
                 self._service_login_startup()
@@ -4320,6 +4353,8 @@ class MainWindow(QMainWindow):
                     runtime[key] = float(getattr(self.processor, f"get_{key}")())
                 except (AttributeError, OSError, RuntimeError, TypeError, ValueError, OverflowError):
                     runtime[key] = None  # one failed read must not lose the report
+            if sys.platform.startswith("linux"):
+                runtime["own_microphone_refusal_count"] = self._own_microphone_refusals
             preset = self._get_current_preset().to_dict()
             snapshot = build_diagnostics_snapshot(
                 app_version=__version__,

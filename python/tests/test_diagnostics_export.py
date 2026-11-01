@@ -358,6 +358,8 @@ class _FakeStatusBar:
 
 
 class _FakeWindow:
+    _own_microphone_refusals = 0
+
     def __init__(self) -> None:
         self.processor = _FakeProcessor()
         self.last_setup_result: Any = None

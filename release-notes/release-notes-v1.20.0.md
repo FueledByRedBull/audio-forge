@@ -53,8 +53,14 @@ is in the [Linux section](https://github.com/FueledByRedBull/audio-forge#linux).
 - **AudioForge Mic.** While AudioForge runs it adds a mono, 48 kHz microphone
   that Discord, OBS, browsers and other apps record from. Setup picks
   **AudioForge Mic Input** as the output. The microphone exists only while
-  AudioForge runs, AudioForge does not make it the system default, and it is
-  built again if PipeWire restarts.
+  AudioForge runs and is built again if PipeWire restarts. AudioForge doesn't
+  make it the system default, but with no other microphone connected the
+  desktop may.
+- **No feedback loop.** While AudioForge Mic is the system default, Start
+  with **Follow system default** as the input says no microphone is available,
+  and a running session stops once instead of feeding its own output back in.
+  Press Start after connecting a microphone. Diagnostics export a count as
+  `own_microphone_refusal_count`.
 - **Devices.** The pickers show PipeWire's device names and offer "Follow system
   default". Sink monitors and AudioForge's own microphone are left out.
 - **Mute on Linux.** `audioforge --toggle-mute` (it also works on Windows, as

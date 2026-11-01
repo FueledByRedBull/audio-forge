@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 
 from ..config import DeviceIdentity, coerce_device_identity
 
@@ -38,6 +39,33 @@ def records_own_microphone(input_device: object) -> bool:
     from .. import mic_eq_core
 
     return bool(mic_eq_core.default_source_is_virtual_microphone())
+
+
+# Starts refused and running inputs stopped this session: a start can be refused on the
+# engine's worker thread while the window stops one, so the count is locked.
+_refusals_lock = threading.Lock()
+_refusals = 0
+
+
+def note_own_microphone_refusal() -> None:
+    global _refusals
+    with _refusals_lock:
+        _refusals += 1
+
+
+def own_microphone_diagnostics() -> dict[str, object]:
+    """Linux: what the support export says about the guard; nothing on other platforms."""
+    if not sys.platform.startswith("linux"):
+        return {}
+    from .. import mic_eq_core
+
+    with _refusals_lock:
+        refusals = _refusals
+    return {
+        "own_microphone_refusal_count": refusals,
+        # Without the metadata watch the guard sees no default microphone and stays off.
+        "default_source_watch_failed": bool(mic_eq_core.default_source_watch_failed()),
+    }
 
 
 def find_identity_index(
@@ -128,6 +156,7 @@ def start_processor_for_route(
     if output_identity is None:
         raise ValueError("Select a destination device before starting audio processing")
     if records_own_microphone(input_identity):
+        note_own_microphone_refusal()
         raise OwnMicrophoneError(OWN_MICROPHONE_MESSAGE)
     start = getattr(processor, "start")
     return start(
@@ -181,6 +210,8 @@ __all__ = [
     "device_name_ordinal",
     "find_identity_index",
     "identity_is_persistable",
+    "note_own_microphone_refusal",
+    "own_microphone_diagnostics",
     "preferred_output_index",
     "records_own_microphone",
     "start_processor_for_route",

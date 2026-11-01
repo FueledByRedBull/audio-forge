@@ -57,11 +57,20 @@ struct VirtualMic {
 
 static VIRTUAL_MIC: Mutex<Option<VirtualMic>> = Mutex::new(None);
 
+/// A bound metadata object: its registry ID, its listener and the proxy. The
+/// listener comes before the proxy so that it is dropped first.
+type BoundMetadata = (u32, MetadataListener, Metadata);
+
 /// Whether the session manager made AudioForge Mic the system default
 /// microphone, as PipeWire's `default` metadata last said. The thread that owns
 /// the microphone keeps it current and clears it when it ends, so a read never
 /// waits and is false while there is no microphone.
 static DEFAULT_SOURCE_IS_OWN: AtomicBool = AtomicBool::new(false);
+
+/// Whether PipeWire refused the binding of its `default` metadata object, so
+/// `DEFAULT_SOURCE_IS_OWN` cannot change and the guard against recording
+/// AudioForge's own microphone is off. Cleared by a binding that works.
+static DEFAULT_SOURCE_WATCH_FAILED: AtomicBool = AtomicBool::new(false);
 
 /// Whether the thread that owns the microphone's nodes is still alive.
 fn alive(slot: &Option<VirtualMic>) -> bool {
@@ -142,6 +151,7 @@ fn run(quit_rx: pw::channel::Receiver<()>, ready_tx: mpsc::Sender<Result<(), Str
         let _ = ready_tx.send(Err(error));
     }
     DEFAULT_SOURCE_IS_OWN.store(false, Ordering::Relaxed);
+    DEFAULT_SOURCE_WATCH_FAILED.store(false, Ordering::Relaxed);
 }
 
 fn serve(
@@ -177,20 +187,27 @@ fn serve(
 
     let ready = Rc::new(Cell::new(Some(ready_tx.clone())));
     // The `default` metadata object, where the session manager records the
-    // default devices. Listener first: it must go before the proxy it listens to.
-    let default_metadata: RefCell<Option<(MetadataListener, Metadata)>> = RefCell::new(None);
+    // default devices.
+    let default_metadata: Rc<RefCell<Option<BoundMetadata>>> = Rc::default();
     let _registry_listener = registry
         .add_listener_local()
         .global({
             let ready = ready.clone();
             let registry = registry.clone();
+            let default_metadata = default_metadata.clone();
             move |global| {
                 let is_default_metadata = global.type_ == ObjectType::Metadata
                     && global
                         .props
                         .is_some_and(|props| props.get("metadata.name") == Some("default"));
                 if is_default_metadata {
-                    if let Ok(metadata) = registry.bind::<Metadata, _>(global) {
+                    // A new `default` object means the session manager restarted: what
+                    // the old one said is gone with it, and so is the old watch.
+                    DEFAULT_SOURCE_IS_OWN.store(false, Ordering::Relaxed);
+                    *default_metadata.borrow_mut() = None;
+                    let bound = registry.bind::<Metadata, _>(global);
+                    DEFAULT_SOURCE_WATCH_FAILED.store(bound.is_err(), Ordering::Relaxed);
+                    if let Ok(metadata) = bound {
                         let listener = metadata
                             .add_listener_local()
                             .property(|_subject, key, _type, value| {
@@ -204,7 +221,7 @@ fn serve(
                                 0
                             })
                             .register();
-                        *default_metadata.borrow_mut() = Some((listener, metadata));
+                        *default_metadata.borrow_mut() = Some((global.id, listener, metadata));
                     }
                     return;
                 }
@@ -217,6 +234,15 @@ fn serve(
                         let _ = sender.send(Ok(()));
                     }
                 }
+            }
+        })
+        // The session manager went away and took the `default` object with it: its
+        // last answer no longer holds, and nothing will correct it.
+        .global_remove(move |id| {
+            let mut bound = default_metadata.borrow_mut();
+            if bound.as_ref().is_some_and(|(bound_id, ..)| *bound_id == id) {
+                DEFAULT_SOURCE_IS_OWN.store(false, Ordering::Relaxed);
+                *bound = None;
             }
         })
         .register();
@@ -281,6 +307,16 @@ pub fn virtual_microphone_running() -> bool {
 #[pyfunction]
 pub fn default_source_is_virtual_microphone() -> bool {
     DEFAULT_SOURCE_IS_OWN.load(Ordering::Relaxed)
+}
+
+/// Whether PipeWire refused the binding of its `default` metadata object.
+///
+/// Then `default_source_is_virtual_microphone` cannot change and stays false,
+/// so AudioForge would not notice that it follows its own microphone. Support
+/// reports carry this answer. A later `default` object that binds clears it.
+#[pyfunction]
+pub fn default_source_watch_failed() -> bool {
+    DEFAULT_SOURCE_WATCH_FAILED.load(Ordering::Relaxed)
 }
 
 /// Remove the virtual microphone created by `create_virtual_microphone`.

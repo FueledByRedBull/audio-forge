@@ -72,6 +72,8 @@ from .device_selection import (
     default_device_index,
     find_identity_index,
     identity_is_persistable,
+    note_own_microphone_refusal,
+    own_microphone_diagnostics,
     preferred_output_index,
     records_own_microphone,
     start_processor_for_route,
@@ -1611,7 +1613,12 @@ class MainWindow(QMainWindow):
             self._cancel_login_startup("Login stopped: select and save both exact audio endpoints")
             return
         if now >= deadline:
-            self._cancel_login_startup("Login stopped: saved endpoints did not become available")
+            reason = (
+                "no microphone is available"
+                if records_own_microphone(saved_input)
+                else "saved endpoints did not become available"
+            )
+            self._cancel_login_startup(f"Login stopped: {reason}")
             return
         self._refresh_devices()
         indices = (
@@ -1620,6 +1627,13 @@ class MainWindow(QMainWindow):
         )
         if min(indices) < 0:
             self._login_startup_message = "Login waiting for saved audio endpoints"
+            self.status_message.showMessage(self._login_startup_message)
+            self.stop_btn_action.setEnabled(True)
+            return
+        if records_own_microphone(saved_input):
+            # A saved Follow-system-default input has no microphone to follow yet; a USB or
+            # Bluetooth one may still come within the wait.
+            self._login_startup_message = "Login waiting for a microphone"
             self.status_message.showMessage(self._login_startup_message)
             self.stop_btn_action.setEnabled(True)
             return
@@ -3034,8 +3048,7 @@ class MainWindow(QMainWindow):
                 self.processor.stop()
                 raise RuntimeError("Output mute state could not be restored")
             self.status_message.showMessage(f"Processing: {result}")
-            if "own_microphone" in self._problems:
-                self._set_problem("own_microphone", None)
+            self._clear_own_microphone_problem()
             self.start_btn_action.setEnabled(False)
             self.stop_btn_action.setEnabled(True)
             self.input_choice.setEnabled(False)
@@ -3049,8 +3062,9 @@ class MainWindow(QMainWindow):
             return True
         except Exception as e:
             logger.exception("Start processing failed")
-            if isinstance(e, OwnMicrophoneError):
-                self._own_microphone_refusals += 1
+            own_microphone = isinstance(e, OwnMicrophoneError)
+            if own_microphone:
+                self._set_problem("own_microphone", OWN_MICROPHONE_MESSAGE)
             if not interactive and self.processor.is_running():
                 try:
                     self.processor.stop()
@@ -3078,7 +3092,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(
                     self,
                     "Error Starting Processing",
-                    f"Failed to start audio processing:\n\n{e}\n\n{guidance}",
+                    # Refreshing the lists cannot help; the message says what does.
+                    error_msg if own_microphone else f"Failed to start audio processing:\n\n{e}\n\n{guidance}",
                 )
             self.status_message.showMessage(f"Could not start processing: {e}")
             self._sync_processing_controls()
@@ -3726,7 +3741,10 @@ class MainWindow(QMainWindow):
             # limiter and the ceiling still apply there.
             self.output_meter.clear_clip_marker()
 
-    _own_microphone_refusals = 0
+    def _clear_own_microphone_problem(self) -> None:
+        """Called by every start that worked; also from the dialogs' ``start_selected_route``."""
+        if "own_microphone" in self._problems:
+            self._set_problem("own_microphone", None)
 
     def _stop_for_own_microphone(self) -> bool:
         """Linux: stop, once, when a Follow-system-default input would now record AudioForge Mic.
@@ -3740,7 +3758,7 @@ class MainWindow(QMainWindow):
         if not (self.processor.is_running() or self._restart_pending()):
             return False
         logger.warning("Stopping audio: %s", OWN_MICROPHONE_MESSAGE)
-        self._own_microphone_refusals += 1
+        note_own_microphone_refusal()
 
         def stopped(outcome: Any) -> None:
             self._finish_stop(outcome)
@@ -4353,8 +4371,7 @@ class MainWindow(QMainWindow):
                     runtime[key] = float(getattr(self.processor, f"get_{key}")())
                 except (AttributeError, OSError, RuntimeError, TypeError, ValueError, OverflowError):
                     runtime[key] = None  # one failed read must not lose the report
-            if sys.platform.startswith("linux"):
-                runtime["own_microphone_refusal_count"] = self._own_microphone_refusals
+            runtime.update(own_microphone_diagnostics())
             preset = self._get_current_preset().to_dict()
             snapshot = build_diagnostics_snapshot(
                 app_version=__version__,

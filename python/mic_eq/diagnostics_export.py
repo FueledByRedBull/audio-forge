@@ -200,6 +200,7 @@ _RUNTIME_NUMBERS = frozenset(
 )
 _RUNTIME_BOOLS = frozenset(
     {
+        "default_source_watch_failed",
         "dsp_scheduling_degraded",
         "gate_auto_relax_active",
         "input_cleanup_hum_detected",

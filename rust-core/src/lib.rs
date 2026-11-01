@@ -559,6 +559,10 @@ fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
             m
         )?)?;
         m.add_function(wrap_pyfunction!(
+            audio::virtual_mic::default_source_watch_failed,
+            m
+        )?)?;
+        m.add_function(wrap_pyfunction!(
             audio::virtual_mic::destroy_virtual_microphone,
             m
         )?)?;

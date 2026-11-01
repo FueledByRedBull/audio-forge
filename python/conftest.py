@@ -130,6 +130,7 @@ def refuse_real_user_state(monkeypatch, guard_violations):
         monkeypatch.setattr(
             "mic_eq.mic_eq_core.default_source_is_virtual_microphone", lambda: False, raising=False
         )
+        monkeypatch.setattr("mic_eq.mic_eq_core.default_source_watch_failed", lambda: False, raising=False)
         # So would the app's bus name and portal sessions on the session bus; the
         # session_bus fixture gives a test a private one.
         monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/audioforge-test-bus")

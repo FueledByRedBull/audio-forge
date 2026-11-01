@@ -269,7 +269,12 @@ def device_label(device: str | None, default_label: str) -> str:
 def start_selected_route(owner: Any) -> object:
     input_device = owner.input_choice.currentData() if hasattr(owner, "input_choice") else None
     output_device = owner.output_choice.currentData() if hasattr(owner, "output_choice") else None
-    return start_processor_for_route(owner.processor, input_device, output_device)
+    started = start_processor_for_route(owner.processor, input_device, output_device)
+    # A start the window did not make itself: its "no microphone" notice no longer holds.
+    clear = getattr(owner, "_clear_own_microphone_problem", None)
+    if callable(clear):
+        clear()
+    return started
 
 
 def restart_processor_for_route(

@@ -1486,14 +1486,10 @@ class MainWindow(QMainWindow):
         confirm_quit_action.toggled.connect(self._on_confirm_quit_toggled)
         desktop_menu.addAction(confirm_quit_action)
 
-        self._mute_hotkey_action = QAction(
-            f"Enable global mute shortcut ({DEFAULT_MUTE_HOTKEY})", self
-        )
+        self._mute_hotkey_action = QAction(self)
         self._mute_hotkey_action.setCheckable(True)
         self._mute_hotkey_action.setChecked(bool(getattr(self.config, "mute_hotkey", "")))
-        self._mute_hotkey_action.setToolTip(
-            "Toggle Output Mute from any application while AudioForge is running."
-        )
+        self._describe_mute_hotkey("")
         self._mute_hotkey_action.toggled.connect(self._on_mute_hotkey_toggled)
         desktop_menu.addAction(self._mute_hotkey_action)
 
@@ -1798,7 +1794,9 @@ class MainWindow(QMainWindow):
 
     def _register_mute_hotkey(self, shortcut: str) -> bool:
         self._unregister_mute_hotkey()
-        hotkey = GlobalMuteHotkey(shortcut, self._toggle_mute_from_hotkey, self._mute_hotkey_lost)
+        hotkey = GlobalMuteHotkey(
+            shortcut, self._toggle_mute_from_hotkey, self._mute_hotkey_lost, self._mute_hotkey_availability
+        )
         registered, error = hotkey.register()
         if not registered:
             self._disable_mute_hotkey(error)
@@ -1812,8 +1810,28 @@ class MainWindow(QMainWindow):
         self._disable_mute_hotkey(error)
         self._save_config_safely()
 
+    def _mute_hotkey_availability(self, reason: str) -> None:
+        """The desktop cannot hold the shortcut now, or can again; the saved setting stays."""
+        self._describe_mute_hotkey(reason)
+        if reason:
+            self.status_message.showMessage(f"Global mute shortcut unavailable: {reason}", 8000)
+
+    def _describe_mute_hotkey(self, unavailable: str) -> None:
+        action = self._mute_hotkey_action
+        if action is None:
+            return
+        action.setText(
+            f"Global mute shortcut ({DEFAULT_MUTE_HOTKEY}): unavailable"
+            if unavailable
+            else f"Enable global mute shortcut ({DEFAULT_MUTE_HOTKEY})"
+        )
+        action.setToolTip(
+            unavailable or "Toggle Output Mute from any application while AudioForge is running."
+        )
+
     def _disable_mute_hotkey(self, error: str | None) -> None:
         self.config.mute_hotkey = ""
+        self._describe_mute_hotkey("")
         if self._mute_hotkey_action is not None:
             self._mute_hotkey_action.blockSignals(True)
             self._mute_hotkey_action.setChecked(False)
@@ -1830,6 +1848,7 @@ class MainWindow(QMainWindow):
             return
         self._mute_hotkey.unregister()
         self._mute_hotkey = None
+        self._describe_mute_hotkey("")
 
     def _toggle_mute_from_hotkey(self) -> None:
         self.user_mute_checkbox_action.setChecked(not self.user_mute_checkbox_action.isChecked())
@@ -3704,6 +3723,9 @@ class MainWindow(QMainWindow):
         """Update slower diagnostics and service recovery."""
         if _engine_in_use(self):
             return
+        watch = self.__dict__.get("virtual_microphone_watch")
+        if watch is not None:
+            watch.poll()
         if self.__dict__.get("_login_startup_deadline") is not None:
             try:
                 self._service_login_startup()
@@ -4750,6 +4772,9 @@ class MainWindow(QMainWindow):
         if self._quit_dont_ask:
             self.config.confirm_quit_when_live = False
         self._shut_down = True  # from here the answers of engine calls still out are dropped
+        watch = self.__dict__.get("virtual_microphone_watch")
+        if watch is not None:
+            watch.stop()
         engine_idle = self._engine.wait(ENGINE_CALL_WAIT_MS)
         if not engine_idle:
             logger.warning("An engine call is still out at shutdown; the exit ends the audio")

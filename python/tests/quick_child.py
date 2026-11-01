@@ -14,6 +14,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+class BusName:
+    """A window's D-Bus name, held from start() until close(); each call is noted in ``events``."""
+
+    def __init__(self, events: list[str], *, free: bool = True) -> None:
+        self.events, self.free = events, free
+
+    def close(self) -> None:
+        self.events.append("name released")
+
+    def start(self) -> bool:
+        self.events.append("name taken back")
+        return self.free
+
+
 def run_checks(checks: Path, environment: dict[str, str], *pytest_args: str) -> str:
     """Run ``checks`` offscreen, fail with the child's output unless every check passed."""
 

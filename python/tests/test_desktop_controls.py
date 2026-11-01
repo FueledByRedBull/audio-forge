@@ -177,13 +177,75 @@ def test_failed_hotkey_registration_is_not_shown_or_saved_as_enabled(monkeypatch
         config=SimpleNamespace(mute_hotkey="Ctrl+Alt+M"),
         _unregister_mute_hotkey=lambda: None,
         _toggle_mute_from_hotkey=lambda: None,
-        _mute_hotkey_lost=lambda _error: None,
+        _mute_hotkey_lost=lambda _error: None, _mute_hotkey_availability=lambda _reason: None,
+        _describe_mute_hotkey=lambda _reason: None,
         _mute_hotkey_action=Mock(), status_message=Mock(),
     )
     owner._disable_mute_hotkey = lambda error: MainWindow._disable_mute_hotkey(owner, error)
     assert not MainWindow._register_mute_hotkey(owner, "Ctrl+Alt+M")
     assert owner.config.mute_hotkey == ""
     owner._mute_hotkey_action.setChecked.assert_called_once_with(False)
+
+
+class _DesktopHotkey:
+    """The desktop end of the shortcut; the window around it is real."""
+
+    made: list[_DesktopHotkey] = []
+
+    def __init__(self, shortcut, callback, on_failure, on_availability):
+        self.on_failure, self.on_availability = on_failure, on_availability
+        self.made.append(self)
+
+    def register(self):
+        return True, None
+
+    def unregister(self):
+        pass
+
+
+def test_a_desktop_that_cannot_hold_the_shortcut_keeps_the_saved_setting_and_says_so(
+    isolated_main_window, monkeypatch
+):
+    window: Any = isolated_main_window
+    _DesktopHotkey.made = []
+    monkeypatch.setattr("mic_eq.ui.main_window.GlobalMuteHotkey", _DesktopHotkey)
+    saved: list[str] = []
+    monkeypatch.setattr(
+        "mic_eq.ui.main_window.save_config", lambda config: saved.append(config.mute_hotkey) or True
+    )
+    action = window._mute_hotkey_action
+    label = action.text()
+
+    action.setChecked(True)
+    hotkey = _DesktopHotkey.made[-1]
+    assert saved == ["Ctrl+Alt+M"]
+
+    hotkey.on_availability("no GlobalShortcuts portal answered; bind the command `x --toggle-mute`")
+
+    assert window.config.mute_hotkey == "Ctrl+Alt+M" and saved == ["Ctrl+Alt+M"]
+    assert action.isChecked()
+    assert "unavailable" in action.text() and "no GlobalShortcuts portal" in action.toolTip()
+    assert "no GlobalShortcuts portal" in window.status_message.text
+
+    hotkey.on_availability("")  # the portal is back and holds the key
+    assert action.text() == label and window.config.mute_hotkey == "Ctrl+Alt+M"
+
+    hotkey.on_availability("the desktop portal went away")
+    action.setChecked(False)  # switching it off clears the setting and the warning
+    assert window.config.mute_hotkey == "" and action.text() == label
+
+
+def test_a_desktop_that_refuses_the_shortcut_still_clears_the_saved_setting(
+    isolated_main_window, monkeypatch
+):
+    window: Any = isolated_main_window
+    _DesktopHotkey.made = []
+    monkeypatch.setattr("mic_eq.ui.main_window.GlobalMuteHotkey", _DesktopHotkey)
+    window._mute_hotkey_action.setChecked(True)
+
+    _DesktopHotkey.made[-1].on_failure("BindShortcuts was refused by the desktop")
+
+    assert window.config.mute_hotkey == "" and not window._mute_hotkey_action.isChecked()
 
 
 def test_failed_model_switch_retains_previous_model_and_strength(qapp, monkeypatch):

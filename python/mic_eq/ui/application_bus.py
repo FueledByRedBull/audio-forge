@@ -19,8 +19,10 @@ from jeepney import (
     DBusErrorResponse, HeaderFields, MatchRule, MessageFlag, MessageType, new_error, new_method_return,
 )
 from jeepney.bus_messages import message_bus
-from jeepney.io.blocking import DBusConnection, open_dbus_connection
+from jeepney.io.blocking import DBusConnection
 from PySide6.QtCore import QObject, Signal
+
+from .session_bus import open_session_bus
 
 
 logger = logging.getLogger(__name__)
@@ -79,8 +81,10 @@ class ApplicationBusService:
     def start(self) -> bool:
         """Claim the bus name; False when the bus or the name is unavailable."""
 
+        self._closed.clear()  # a service closed for a relaunch can take its name back
+        self._early.clear()
         try:
-            connection = open_dbus_connection("SESSION")
+            connection = open_session_bus()
         except OSError as error:
             logger.info("No session bus for %s: %s", INTERFACE, error)
             return False
@@ -138,7 +142,11 @@ class ApplicationBusService:
             header = message.header
             if header.message_type != MessageType.method_call:
                 continue
-            reply, action = self._answer(message)
+            try:
+                reply, action = self._answer(message)
+            except Exception:  # a bad call must not end the service
+                logger.exception("%s call %r failed", INTERFACE, header.fields.get(HeaderFields.member))
+                reply, action = new_error(message, "org.freedesktop.DBus.Error.Failed"), None
             if not header.flags & MessageFlag.no_reply_expected:
                 try:
                     connection.send(reply)
@@ -163,8 +171,8 @@ class ApplicationBusService:
         if member in ("Activate", "Open"):
             return new_method_return(message), ""
         if member == "ActivateAction":
-            action = message.body[0]
-            if action not in self.actions:
+            action = message.body[0] if message.body else None
+            if not isinstance(action, str) or action not in self.actions:
                 return new_error(message, "org.freedesktop.DBus.Error.InvalidArgs", "s", (f"no action {action!r}",)), None
             return new_method_return(message), action
         return new_error(message, "org.freedesktop.DBus.Error.UnknownMethod"), None

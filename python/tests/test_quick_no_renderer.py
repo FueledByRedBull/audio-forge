@@ -22,7 +22,8 @@ from mic_eq.ui.desktop_integration import (
     relaunch_with_software_rendering,
 )
 from mic_eq.ui.quick_shell import graphics_api
-from quick_child import run_checks
+from mic_eq.ui.virtual_microphone import VirtualMicrophoneWatch
+from quick_child import BusName, run_checks
 from test_quick_shell import quick_window  # noqa: F401  (a fixture)
 
 CHECKS = Path(__file__).with_name("quick_no_renderer_checks.py")
@@ -130,6 +131,29 @@ def test_a_guard_that_cannot_be_taken_back_is_logged_with_its_status(qapp, monke
     rival.close()
 
 
+def test_the_relaunch_releases_the_bus_name_before_the_copy_starts(monkeypatch) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(desktop_integration.subprocess, "Popen", lambda command, env: events.append("copy started"))
+
+    assert relaunch_with_software_rendering(None, BusName(events))  # type: ignore[arg-type]
+
+    assert events == ["name released", "copy started"]
+
+
+def test_a_relaunch_that_cannot_start_takes_the_bus_name_back(monkeypatch, caplog) -> None:
+    def refuse(*_args, **_kwargs):
+        raise OSError("blocked")
+
+    monkeypatch.setattr(desktop_integration.subprocess, "Popen", refuse)
+    events: list[str] = []
+
+    assert not relaunch_with_software_rendering(None, BusName(events))  # type: ignore[arg-type]
+    assert events == ["name released", "name taken back"]
+
+    assert not relaunch_with_software_rendering(None, BusName(events, free=False))  # type: ignore[arg-type]
+    assert "Could not take the D-Bus name back" in caplog.text
+
+
 def test_a_working_renderer_is_left_alone(monkeypatch, quick_window) -> None:  # noqa: F811
     commands = _spawn_recorder(monkeypatch)
     QTest.qWait(300)
@@ -175,3 +199,6 @@ def test_the_bootstrap_hands_the_window_the_instance_guard(qapp, monkeypatch) ->
 
     assert app_bootstrap._run_qt_app(Window, smoke_test=False, enable_qt_log=lambda: None) == 0
     assert getattr(windows[0], "single_instance") is instance
+    # Only the Linux app owns a PipeWire microphone to keep.
+    watch = getattr(windows[0], "virtual_microphone_watch", None)
+    assert isinstance(watch, VirtualMicrophoneWatch) == sys.platform.startswith("linux")

@@ -1,9 +1,13 @@
+# jeepney is a Linux-only dependency; Windows type checks run without it.
+# pyright: reportMissingImports=false
 """The GlobalShortcuts portal client binds the mute shortcut and reports activations."""
 
 from __future__ import annotations
 
+import queue
 import sys
 import threading
+import time
 
 import pytest
 
@@ -36,9 +40,11 @@ def test_an_unsupported_shortcut_is_refused():
 class FakePortal:
     """Answers the GlobalShortcuts calls the way xdg-desktop-portal does."""
 
-    def __init__(self, *, bind_code=0, activations=1):
+    def __init__(self, *, bind_code=0, activations=1, silent=False):
         self.bind_code = bind_code
         self.activations = activations
+        self.silent = silent  # owns the name but answers nothing, like a portal still starting up
+        self.session_path = f"{portal.PORTAL_PATH}/session/client/1"
         self.bound = []
         self.session_closed = threading.Event()
         self.connection = open_dbus_connection("SESSION")
@@ -57,7 +63,7 @@ class FakePortal:
         return path
 
     def _serve(self):
-        session = f"{portal.PORTAL_PATH}/session/client/1"
+        session = self.session_path
         while True:
             try:
                 message = self.connection.receive()
@@ -69,7 +75,7 @@ class FakePortal:
                 if header.fields.get(HeaderFields.member) == "NameOwnerChanged" and message.body[2] == "":
                     self.session_closed.set()
                 continue
-            if header.message_type != MessageType.method_call:
+            if header.message_type != MessageType.method_call or self.silent:
                 continue
             member = header.fields[HeaderFields.member]
             sender = header.fields[HeaderFields.sender]
@@ -96,14 +102,27 @@ class FakePortal:
                 reply = new_error(message, "org.freedesktop.DBus.Error.UnknownMethod")
             self.connection.send(reply)
 
+    def close_session(self):
+        self.connection.send(new_signal(
+            DBusAddress(self.session_path, interface=portal.SESSION_INTERFACE), "Closed", "a{sv}", ({},)
+        ))
+
     def close(self):
         self.connection.close()
 
 
-def _session(on_activated, on_failed):
+def _session(on_activated, on_failed, on_availability=lambda _reason: None):
     return portal.GlobalShortcutsSession(
-        "io.github.FueledByRedBull.AudioForge", "CTRL+ALT+m", "Toggle Output Mute", on_activated, on_failed
+        "io.github.FueledByRedBull.AudioForge", "CTRL+ALT+m", "Toggle Output Mute",
+        on_activated, on_failed, on_availability,
     )
+
+
+@pytest.fixture
+def no_session_bus(monkeypatch, tmp_path):
+    """A login from a console, ssh or sudo: no bus address, and no bus socket at the runtime dir."""
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
 
 
 def test_a_bound_shortcut_reports_activations_until_the_session_closes(session_bus):
@@ -140,6 +159,66 @@ def test_a_cancelled_bind_is_reported_as_a_failure(session_bus):
 
 def test_a_desktop_without_the_portal_is_reported_as_unavailable(session_bus):
     assert not portal.portal_available()
+
+
+def test_a_session_without_a_bus_is_unavailable_not_failed(no_session_bus):
+    assert not portal.portal_available()
+    reasons = queue.Queue()
+    failures = []
+    session = _session(lambda: None, failures.append, reasons.put)
+    try:
+        session.start()
+        assert reasons.get(timeout=5)
+    finally:
+        session.close()
+    assert failures == []
+
+
+def test_a_session_the_desktop_closes_is_reported_as_unavailable(session_bus):
+    fake = FakePortal(activations=0)
+    states = queue.Queue()
+    session = _session(lambda: None, lambda error: None, states.put)
+    try:
+        session.start()
+        assert states.get(timeout=5) == ""
+        fake.close_session()
+        assert states.get(timeout=5) == "the desktop closed the shortcut session"
+    finally:
+        session.close()
+        fake.close()
+
+
+def test_a_portal_that_leaves_and_returns_gets_the_shortcut_bound_again(session_bus):
+    fake = FakePortal(activations=0)
+    states = queue.Queue()
+    activated = threading.Semaphore(0)
+    session = _session(activated.release, lambda error: None, states.put)
+    try:
+        session.start()
+        assert states.get(timeout=5) == ""
+        fake.close()
+        assert states.get(timeout=5) == "the desktop portal went away"
+        fake = FakePortal(activations=1)
+        assert states.get(timeout=10) == ""
+        assert activated.acquire(timeout=5)
+    finally:
+        session.close()
+        fake.close()
+
+
+def test_a_portal_that_starts_after_the_session_gets_the_shortcut_bound(session_bus):
+    states = queue.Queue()
+    session = _session(lambda: None, lambda error: None, states.put)
+    fake = None
+    try:
+        session.start()
+        assert states.get(timeout=5) == "no GlobalShortcuts portal answered"
+        fake = FakePortal(activations=0)
+        assert states.get(timeout=10) == ""
+    finally:
+        session.close()
+        if fake is not None:
+            fake.close()
 
 
 def _wait_for(qapp, condition, timeout=5.0):
@@ -187,6 +266,38 @@ def test_a_refused_portal_bind_disables_the_hotkey(qapp, session_bus):
 def test_without_the_portal_the_hotkey_asks_for_a_desktop_key_binding(qapp, session_bus):
     from mic_eq.ui.desktop_integration import GlobalMuteHotkey
 
-    registered, error = GlobalMuteHotkey("Ctrl+Alt+M", lambda: None).register()
-    assert not registered
-    assert error is not None and "--toggle-mute" in error
+    reasons, failures = [], []
+    hotkey = GlobalMuteHotkey("Ctrl+Alt+M", lambda: None, failures.append, reasons.append)
+    try:
+        assert hotkey.register() == (True, None)
+        assert _wait_for(qapp, lambda: reasons)
+    finally:
+        hotkey.unregister()
+    assert "--toggle-mute" in reasons[0] and failures == []
+
+
+def test_without_a_session_bus_the_hotkey_asks_for_a_desktop_key_binding(qapp, no_session_bus):
+    from mic_eq.ui.desktop_integration import GlobalMuteHotkey
+
+    reasons, failures = [], []
+    hotkey = GlobalMuteHotkey("Ctrl+Alt+M", lambda: None, failures.append, reasons.append)
+    try:
+        assert hotkey.register() == (True, None)
+        assert _wait_for(qapp, lambda: reasons)
+    finally:
+        hotkey.unregister()
+    assert "--toggle-mute" in reasons[0] and failures == []
+
+
+def test_registering_does_not_wait_for_a_portal_that_never_answers(qapp, session_bus):
+    from mic_eq.ui.desktop_integration import GlobalMuteHotkey
+
+    fake = FakePortal(silent=True)
+    hotkey = GlobalMuteHotkey("Ctrl+Alt+M", lambda: None)
+    started = time.monotonic()
+    try:
+        assert hotkey.register() == (True, None)
+        assert time.monotonic() - started < 1.0
+    finally:
+        hotkey.unregister()
+        fake.close()

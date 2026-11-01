@@ -72,10 +72,13 @@ def isolated_settings_directory(monkeypatch, tmp_path_factory):
     home = tmp_path_factory.mktemp("home")
     appdata = home / "appdata"
     appdata.mkdir()
+    (home / "run").mkdir(mode=0o700)
     for name, path in {
         "APPDATA": appdata,
         "LOCALAPPDATA": home / "local",
         "XDG_CONFIG_HOME": home / "config",
+        # The single-instance lock and activation socket live here on Linux.
+        "XDG_RUNTIME_DIR": home / "run",
         "HOME": home,
         "USERPROFILE": home,
         "QML_DISK_CACHE_PATH": home / "qmlcache",
@@ -98,7 +101,10 @@ def _refuse(violations: list[str], message: str):
 
 @pytest.fixture(autouse=True)
 def refuse_real_user_state(monkeypatch, guard_violations):
-    """Fail a test that reaches the real Startup folder or the app's single-instance names."""
+    """Fail a test that reaches the real Startup folder or the app's single-instance names.
+
+    On Windows those names are global; elsewhere they sit under the isolated XDG_RUNTIME_DIR.
+    """
     from mic_eq.ui import desktop_integration, login_startup
 
     def startup_folder():
@@ -108,7 +114,7 @@ def refuse_real_user_state(monkeypatch, guard_violations):
     default_server = desktop_integration.SINGLE_INSTANCE_SERVER
 
     def coordinator_init(self, *, server_name=default_server, lock_path=None):
-        if lock_path is None or server_name == default_server:
+        if sys.platform == "win32" and (lock_path is None or server_name == default_server):
             _refuse(guard_violations, "test used the app's real single-instance lock or server name; pass both")
         original_init(self, server_name=server_name, lock_path=lock_path)
 
@@ -118,6 +124,8 @@ def refuse_real_user_state(monkeypatch, guard_violations):
     else:
         # A real "AudioForge Mic" would appear on the developer's PipeWire graph.
         monkeypatch.setattr("mic_eq.mic_eq_core.create_virtual_microphone", lambda: None, raising=False)
+        # Which also leaves the microphone's watch nothing to rebuild.
+        monkeypatch.setattr("mic_eq.mic_eq_core.virtual_microphone_running", lambda: True, raising=False)
         # So would the app's bus name and portal sessions on the session bus; the
         # session_bus fixture gives a test a private one.
         monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/audioforge-test-bus")

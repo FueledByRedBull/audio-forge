@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import errno
+import os
 from pathlib import Path
 import sys
 
@@ -97,7 +99,58 @@ def test_directory_at_entry_path_is_preserved(registration):
 
 def test_appimage_registers_the_image_not_its_mount(monkeypatch, tmp_path):
     image = tmp_path / "AudioForge-x86_64.AppImage"
+    mount = tmp_path / "mount"
     monkeypatch.setenv("APPIMAGE", str(image))
+    monkeypatch.setenv("APPDIR", str(mount))
+    monkeypatch.setattr(sys, "executable", str(mount / "usr" / "lib" / "audioforge" / "AudioForge"))
     assert login_startup.launch_executable() == image
     monkeypatch.setenv("APPIMAGE", "relative.AppImage")
     assert login_startup.launch_executable() == Path(sys.executable)
+
+
+@pytest.mark.parametrize("appdir", [None, "relative/mount", "other"])
+def test_an_inherited_appimage_does_not_name_a_program_outside_its_mount(monkeypatch, tmp_path, appdir):
+    # A launcher that is itself an AppImage exports APPIMAGE and APPDIR to every child it starts.
+    monkeypatch.setenv("APPIMAGE", str(tmp_path / "Launcher.AppImage"))
+    if appdir == "other":
+        monkeypatch.setenv("APPDIR", str(tmp_path / "launcher-mount"))
+    elif appdir is None:
+        monkeypatch.delenv("APPDIR", raising=False)
+    else:
+        monkeypatch.setenv("APPDIR", appdir)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "mount" / "usr" / "lib" / "audioforge" / "AudioForge"))
+    assert login_startup.launch_executable() == Path(sys.executable)
+
+
+def test_the_autostart_entry_is_written_on_a_volume_without_hard_links(registration, monkeypatch):
+    executable, path = registration
+
+    def refuse(*_args):
+        raise OSError(errno.EPERM, os.strerror(errno.EPERM))
+
+    monkeypatch.setattr(os, "link", refuse)
+
+    assert login_startup.set_login_startup(executable, True)
+
+    assert login_startup.registration_state(executable) == "configured"
+    assert list(path.parent.iterdir()) == [path]
+
+
+def test_an_entry_another_process_wrote_first_is_not_replaced_without_hard_links(registration, monkeypatch):
+    executable, path = registration
+    path.parent.mkdir(parents=True)
+    entry = """[Desktop Entry]
+Exec=other
+"""
+    path.write_text(entry, encoding="utf-8")
+
+    def refuse(*_args):
+        raise OSError(errno.EPERM, os.strerror(errno.EPERM))
+
+    monkeypatch.setattr(os, "link", refuse)
+
+    with pytest.raises(FileExistsError):
+        login_startup._write_autostart_entry(executable)
+
+    assert path.read_text(encoding="utf-8") == entry
+    assert list(path.parent.iterdir()) == [path]

@@ -15,6 +15,8 @@ import sys
 import tempfile
 from typing import Any, Literal
 
+from ..config_parts.shared import publish_exclusive
+
 
 LOGIN_STARTUP_ARGUMENT = "--login-startup"
 _DESCRIPTION = "AudioForge login startup"
@@ -23,9 +25,19 @@ APP_ID = "io.github.FueledByRedBull.AudioForge"
 
 
 def launch_executable() -> Path:
-    """The file a login entry should start: the AppImage itself, not its mount."""
+    """The file a login entry should start: the AppImage itself, not its mount.
+
+    $APPIMAGE is inherited by every child, so it names this program only when this
+    interpreter runs from the mount ($APPDIR) of that image.
+    """
     appimage = os.environ.get("APPIMAGE", "")
-    if sys.platform != "win32" and os.path.isabs(appimage):
+    appdir = os.environ.get("APPDIR", "")
+    if (
+        sys.platform != "win32"
+        and os.path.isabs(appimage)
+        and os.path.isabs(appdir)
+        and Path(sys.executable).resolve().is_relative_to(Path(appdir).resolve())
+    ):
         return Path(appimage)
     return Path(sys.executable)
 
@@ -198,7 +210,7 @@ def _write_autostart_entry(executable: Path) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as output:
             output.write(_autostart_entry(executable))
-        # A hard link refuses a name another process created first; rename would replace it.
-        os.link(temporary, path)
+        # Refuses a name another process created first; a plain rename would replace it.
+        publish_exclusive(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)

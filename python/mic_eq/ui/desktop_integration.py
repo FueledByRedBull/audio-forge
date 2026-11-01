@@ -20,12 +20,16 @@ import time
 from collections.abc import Callable
 from ctypes import wintypes
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QAbstractNativeEventFilter, QCoreApplication, QLockFile, QObject, Qt, QTimer, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QMainWindow
 
 from .login_startup import APP_ID, LOGIN_STARTUP_ARGUMENT
+
+if TYPE_CHECKING:
+    from .application_bus import ApplicationBusService
 
 
 logger = logging.getLogger(__name__)
@@ -203,14 +207,25 @@ class _PortalBridge(QObject):
 
     activated = Signal()
     failed = Signal(str)
+    availability = Signal(str)
+
+
+def _manual_binding_hint() -> str:
+    return (
+        "bind the command `" + toggle_mute_command()
+        + "` to a key in your desktop's keyboard settings"
+    )
 
 
 class GlobalMuteHotkey:
     """Register one process-owned global hotkey.
 
     On Linux the desktop's GlobalShortcuts portal owns the key and may ask the
-    user to confirm it, so a bind can still fail after ``register()``
-    succeeds; ``on_failure`` then receives the error on the Qt thread.
+    user to confirm it. ``register()`` only starts a worker, so a bind can still
+    fail after it succeeds: ``on_failure`` then receives the error on the Qt
+    thread when the desktop refuses the key. When the portal is absent, slow or
+    gone, ``on_availability`` receives the reason (and how to bind the key by
+    hand), then "" once the key is bound; the worker waits for a portal that left.
     """
 
     _next_id = 0xAF01
@@ -220,10 +235,12 @@ class GlobalMuteHotkey:
         shortcut: str,
         callback: Callable[[], None],
         on_failure: Callable[[str], None] | None = None,
+        on_availability: Callable[[str], None] | None = None,
     ) -> None:
         self.shortcut = str(shortcut)
         self.callback = callback
         self.on_failure = on_failure
+        self.on_availability = on_availability
         self._hotkey_id: int | None = None
         self._event_filter: _WindowsHotkeyFilter | None = None
         self._portal = None
@@ -262,30 +279,24 @@ class GlobalMuteHotkey:
         return True, None
 
     def _register_portal(self) -> tuple[bool, str | None]:
-        unbound = (
-            "bind the command `" + toggle_mute_command()
-            + "` to a key in your desktop's keyboard settings"
-        )
         if not sys.platform.startswith("linux"):
-            return False, unbound
+            return False, _manual_binding_hint()
         from . import global_shortcuts_portal as portal
 
         try:
             trigger = portal.portal_trigger(self.shortcut)
         except ValueError as error:
             return False, str(error)
-        if not portal.portal_available():
-            return False, unbound
         bridge = _PortalBridge()
         bridge.activated.connect(self.callback)
         bridge.failed.connect(self._portal_failed)
+        bridge.availability.connect(self._portal_availability)
         session = portal.GlobalShortcutsSession(
-            APP_ID, trigger, "Toggle Output Mute", bridge.activated.emit, bridge.failed.emit
+            APP_ID, trigger, "Toggle Output Mute",
+            bridge.activated.emit, bridge.failed.emit, bridge.availability.emit,
         )
-        try:
-            session.start()
-        except OSError as error:
-            return False, str(error)
+        # The worker opens the bus and asks the portal, off this thread.
+        session.start()
         self._portal = session
         self._bridge = bridge
         return True, None
@@ -294,6 +305,10 @@ class GlobalMuteHotkey:
         self.unregister()
         if self.on_failure is not None:
             self.on_failure(error)
+
+    def _portal_availability(self, reason: str) -> None:
+        if self.on_availability is not None:
+            self.on_availability(f"{reason}; {_manual_binding_hint()}" if reason else "")
 
     def unregister(self) -> None:
         """Release the native registration and Qt event filter."""
@@ -371,12 +386,39 @@ def activate_window(window: QMainWindow) -> None:
     window.activateWindow()
 
 
+def _private_directory() -> Path | None:
+    """Where the lock and the activation socket live; None on Windows, which names its own.
+
+    A name in the shared temp directory can be taken by another user before this one
+    starts, and a different $TMPDIR splits one account's launches in two. The login
+    session makes $XDG_RUNTIME_DIR for this account alone; without it a directory
+    under the home directory stands in.
+    """
+
+    if sys.platform == "win32":
+        return None
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "")
+    return Path(runtime) if os.path.isabs(runtime) else Path.home() / ".cache" / "AudioForge"
+
+
+def _require_private(directory: Path) -> None:
+    """Create ``directory`` if missing; refuse one that another account owns or can write."""
+
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = directory.stat()
+    # The platform test is for the type checker on Windows, where no such directory is used.
+    if sys.platform != "win32" and (info.st_uid != os.getuid() or info.st_mode & 0o022):
+        raise PermissionError(f"{directory} is not private to this account")
+
+
 class SingleInstanceCoordinator:
     """Own one process lock and forward later launches to its Qt window.
 
     ``QLockFile`` supplies stale-lock handling across supported platforms.  The
     local server is only the activation channel; failure to contact an existing
-    owner fails closed instead of starting a second audio session.
+    owner fails closed instead of starting a second audio session. Off Windows both
+    live in a directory only this account can write (``_private_directory``), and
+    ``--toggle-mute`` reaches the same endpoint through the same constructor.
     """
 
     ACQUIRED = "acquired"
@@ -391,8 +433,13 @@ class SingleInstanceCoordinator:
         lock_path: Path | None = None,
     ) -> None:
         self.server_name = str(server_name)
+        self._directory = _private_directory()
+        if self._directory is not None:
+            # A name given as an absolute path stays where it is.
+            self.server_name = str(self._directory / self.server_name)
         self._lock_path = lock_path or (
-            Path(tempfile.gettempdir()) / f"AudioForge.SingleInstance.{_USER_SCOPE}.lock"
+            (self._directory or Path(tempfile.gettempdir()))
+            / f"AudioForge.SingleInstance.{_USER_SCOPE}.lock"
         )
         self._server = QLocalServer()
         self._server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
@@ -408,6 +455,12 @@ class SingleInstanceCoordinator:
     def acquire(self, *, activate_existing: bool = True) -> str:
         """Acquire this instance or forward activation to the current owner."""
 
+        if self._directory is not None:
+            try:
+                _require_private(self._directory)
+            except OSError as error:
+                self.last_error = f"could not use {self._directory}: {error}"
+                return self.FAILED
         lock_file = QLockFile(str(self._lock_path))
         lock_file.setStaleLockTime(0)
         if not lock_file.tryLock(0):
@@ -553,11 +606,14 @@ class SingleInstanceCoordinator:
             QTimer.singleShot(0, activation)
 
 
-def relaunch_with_software_rendering(instance: SingleInstanceCoordinator | None) -> bool:
+def relaunch_with_software_rendering(
+    instance: SingleInstanceCoordinator | None, bus: ApplicationBusService | None = None
+) -> bool:
     """Start this app again with software rendering; False if it could not be started.
 
-    The instance guard is released first, or the new copy would only activate this one;
-    if the copy cannot be started, the guard is taken back.
+    The instance guard and the D-Bus name are released first, or the new copy would only
+    activate this one or run without the name; if the copy cannot be started, both are
+    taken back.
     """
 
     # PyInstaller's argv already starts with the executable; a source run needs Python's own flags.
@@ -572,6 +628,8 @@ def relaunch_with_software_rendering(instance: SingleInstanceCoordinator | None)
     }
     if instance is not None:
         instance.close()
+    if bus is not None:
+        bus.close()
     try:
         subprocess.Popen(command, env=environment)
     except Exception:  # any failure must end on the error screen, not a silent exit
@@ -580,6 +638,8 @@ def relaunch_with_software_rendering(instance: SingleInstanceCoordinator | None)
             status = instance.acquire(activate_existing=False)
             if status != instance.ACQUIRED:
                 logger.error("Could not take the single-instance guard back: %s", status)
+        if bus is not None and not bus.start():
+            logger.error("Could not take the D-Bus name back")
         return False
     return True
 

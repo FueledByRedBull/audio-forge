@@ -22,6 +22,7 @@ from PySide6.QtQuickWidgets import QQuickWidget
 from mic_eq.ui import desktop_integration, quick_shell
 from mic_eq.ui.desktop_integration import RENDERER_RELAUNCH_ENV, SingleInstanceCoordinator
 from mic_eq.ui.main_window import MainWindow
+from quick_child import BusName
 from test_quick_shell import _load_config_without_devices
 
 SETTLE_MS = 500  # several checks at the interval below
@@ -211,11 +212,12 @@ def test_the_copy_quits_and_spawns_once_after_the_window_closed(
     events = _record_save_and_spawn(window, monkeypatch, spawn_error=None)
     _visible_tray(window, close_to_tray=close_to_tray)
     _, names = _guard(window, tmp_path)
+    setattr(window, "application_bus", BusName(events))
     window.show()
 
     code, _state = _run_until_settled(qapp, window)
 
-    assert code == 0 and events == ["closeEvent saved", "spawn"]
+    assert code == 0 and events == ["closeEvent saved", "name released", "spawn"]
     successor = SingleInstanceCoordinator(**names)
     assert successor.acquire() == SingleInstanceCoordinator.ACQUIRED  # the new copy can take the guard
     successor.close()
@@ -232,6 +234,7 @@ def test_a_spawn_that_fails_keeps_the_app_and_its_guard_and_shows_the_error_scre
     window = _window()
     events = _record_save_and_spawn(window, monkeypatch, spawn_error=spawn_error)
     guard, names = _guard(window, tmp_path)
+    setattr(window, "application_bus", BusName(events))
     _visible_tray(window, close_to_tray=close_to_tray)
     window.config.mute_hotkey = "Ctrl+Alt+M"
     registered: list[str] = []
@@ -243,7 +246,7 @@ def test_a_spawn_that_fails_keeps_the_app_and_its_guard_and_shows_the_error_scre
 
     assert code == SURVIVED  # nothing quit the app
     # The shown window is saved once more as the loop ends, which is what a real quit does.
-    assert events == ["closeEvent saved", "spawn", "closeEvent saved"]
+    assert events == ["closeEvent saved", "name released", "spawn", "name taken back", "closeEvent saved"]
     assert state["visible"] and not state["quitting"]
     assert state["snapshot"]["view"] == "error" and state["snapshot"]["classic_reason"] == "no_renderer"
     assert state["tray_visible"] and registered == ["Ctrl+Alt+M"]

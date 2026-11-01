@@ -31,6 +31,7 @@ from .desktop_integration import (
 )
 from .login_startup import APP_ID, LOGIN_STARTUP_ARGUMENT
 from .theme import apply_application_theme
+from .virtual_microphone import VirtualMicrophoneWatch
 
 
 WINDOWS_APP_USER_MODEL_ID = "FueledByRedBull.AudioForge"
@@ -515,16 +516,18 @@ def _run_qt_app(
     # Claimed before the window is built, so a D-Bus launch finds the name
     # quickly; its calls queue until the event loop runs, after the window exists.
     windows: list[QMainWindow] = []
+    bus_service = None
     if instance is not None and sys.platform.startswith("linux"):
         from .application_bus import ApplicationBusService
 
-        bus_service = ApplicationBusService(
+        service = ApplicationBusService(
             APP_ID,
             lambda: activate_window(windows[0]),
             {TOGGLE_MUTE_COMMAND: lambda: getattr(windows[0], "_toggle_mute_from_hotkey")()},
         )
-        if bus_service.start():
-            app.aboutToQuit.connect(bus_service.close)
+        if service.start():
+            bus_service = service
+            app.aboutToQuit.connect(service.close)
 
     enable_qt_log()
     try:
@@ -537,6 +540,9 @@ def _run_qt_app(
             if login_startup else window_cls()
         )
         setattr(window, "single_instance", instance)
+        setattr(window, "application_bus", bus_service)
+        if not smoke_test and sys.platform.startswith("linux"):
+            setattr(window, "virtual_microphone_watch", VirtualMicrophoneWatch())
         windows.append(window)
         if not app_icon.isNull():
             window.setWindowIcon(app_icon)

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
+import stat
+import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 from typing import cast
@@ -138,10 +142,99 @@ def test_the_toggle_mute_command_line_names_this_copy(monkeypatch, tmp_path):
     monkeypatch.setattr(desktop_integration.sys, "frozen", True, raising=False)
     monkeypatch.setattr(desktop_integration.sys, "platform", "linux")
     monkeypatch.setenv("APPIMAGE", str(image))
+    monkeypatch.setenv("APPDIR", str(Path(sys.executable).parent))  # the mount this copy runs from
     assert desktop_integration.toggle_mute_command() == f"'{image}' --toggle-mute"
 
     monkeypatch.setattr(desktop_integration.sys, "frozen", False)
     assert desktop_integration.toggle_mute_command().endswith("-m mic_eq --toggle-mute")
+
+
+def test_the_instance_directory_is_the_users_runtime_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr(desktop_integration.sys, "platform", "linux")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    assert desktop_integration._private_directory() == tmp_path
+
+    # The XDG spec ignores a relative path, and a login without one gets a private directory at home.
+    for unusable in ("run", None):
+        if unusable is None:
+            monkeypatch.delenv("XDG_RUNTIME_DIR")
+        else:
+            monkeypatch.setenv("XDG_RUNTIME_DIR", unusable)
+        assert desktop_integration._private_directory() == Path.home() / ".cache" / "AudioForge"
+
+
+def test_windows_keeps_naming_its_instance_endpoints_itself(monkeypatch, tmp_path):
+    monkeypatch.setattr(desktop_integration.sys, "platform", "win32")
+    assert desktop_integration._private_directory() is None
+    instance = desktop_integration.SingleInstanceCoordinator(
+        server_name="AudioForge.test.names", lock_path=tmp_path / "audioforge.lock"
+    )
+    assert instance.server_name == "AudioForge.test.names"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the runtime directory is a POSIX concept")
+class TestRuntimeDirectory:
+    @pytest.fixture(autouse=True)
+    def runtime(self, monkeypatch, tmp_path):
+        self.directory = tmp_path / "runtime"
+        self.directory.mkdir(mode=0o700)
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(self.directory))
+
+    def test_the_socket_and_the_lock_live_in_it_not_in_the_temp_directory(self, qapp):
+        name = _server_name()
+        instance = desktop_integration.SingleInstanceCoordinator(server_name=name)
+        try:
+            assert instance.server_name == str(self.directory / name)
+            assert instance.acquire() == instance.ACQUIRED
+            assert (self.directory / name).exists()
+            assert list(self.directory.glob("AudioForge.SingleInstance.*.lock"))
+        finally:
+            instance.close()
+
+    def test_toggle_mute_reaches_the_running_instance_whatever_the_temp_directory(
+        self, qapp, monkeypatch, tmp_path
+    ):
+        # The app's own names, as a key binding launches them, from a shell with another $TMPDIR.
+        primary = desktop_integration.SingleInstanceCoordinator()
+        muted: list[bool] = []
+        primary.set_command_callback(desktop_integration.TOGGLE_MUTE_COMMAND, lambda: muted.append(True))
+        try:
+            assert primary.acquire() == primary.ACQUIRED
+            monkeypatch.setenv("TMPDIR", str(tmp_path / "elsewhere"))
+            exits: list[int] = []
+            thread = threading.Thread(target=lambda: exits.append(app_bootstrap.send_toggle_mute()))
+            thread.start()
+            deadline = time.monotonic() + 10
+            while (thread.is_alive() or not muted) and time.monotonic() < deadline:
+                qapp.processEvents()
+                thread.join(0.01)
+            assert exits == [0] and muted == [True]
+        finally:
+            primary.close()
+
+    def test_a_directory_others_can_write_is_refused(self, qapp):
+        self.directory.chmod(0o777)
+        instance = desktop_integration.SingleInstanceCoordinator(server_name=_server_name())
+        assert instance.acquire() == instance.FAILED
+        assert "not private" in (instance.last_error or "")
+        assert not list(self.directory.iterdir())
+
+    def test_a_directory_another_account_owns_is_refused(self, qapp, monkeypatch):
+        account = os.getuid()  # pyright: ignore[reportAttributeAccessIssue]
+        monkeypatch.setattr(desktop_integration.os, "getuid", lambda: account + 1, raising=False)
+        instance = desktop_integration.SingleInstanceCoordinator(server_name=_server_name())
+        assert instance.acquire() == instance.FAILED
+        assert "not private" in (instance.last_error or "")
+
+    def test_without_a_runtime_directory_a_private_one_at_home_is_made(self, qapp, monkeypatch):
+        monkeypatch.delenv("XDG_RUNTIME_DIR")
+        instance = desktop_integration.SingleInstanceCoordinator(server_name=_server_name())
+        try:
+            assert instance.acquire() == instance.ACQUIRED
+            made = Path.home() / ".cache" / "AudioForge"
+            assert stat.S_IMODE(made.stat().st_mode) == 0o700
+        finally:
+            instance.close()
 
 
 def test_second_instance_fails_closed_when_owner_has_no_activation_endpoint(

@@ -148,10 +148,101 @@ def test_publishing_never_replaces_an_existing_file(tmp_path):
     staged.write_text("new", encoding="utf-8")
 
     with pytest.raises(FileExistsError):
-        presets_module._publish_exclusive(staged, destination)
+        presets_module.publish_exclusive(staged, destination)
 
     assert destination.read_text(encoding="utf-8") == "occupied"
     assert staged.read_text(encoding="utf-8") == "new"
+
+
+@pytest.fixture
+def no_hard_links(monkeypatch):
+    """A POSIX volume that refuses hard links: FAT, exFAT, some FUSE and network mounts."""
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    def refuse(*_args):
+        raise OSError(errno.EPERM, os.strerror(errno.EPERM))
+
+    monkeypatch.setattr(os, "link", refuse)
+
+
+def test_publishing_without_hard_links_moves_the_file_into_place(no_hard_links, tmp_path):
+    destination = tmp_path / "voice.json"
+    staged = tmp_path / "staged.tmp"
+    staged.write_text("new", encoding="utf-8")
+
+    shared_module.publish_exclusive(staged, destination)
+
+    assert destination.read_text(encoding="utf-8") == "new"
+    assert not staged.exists()
+
+
+def test_publishing_without_hard_links_still_never_replaces_an_existing_file(no_hard_links, tmp_path):
+    destination = tmp_path / "taken.json"
+    destination.write_text("occupied", encoding="utf-8")
+    staged = tmp_path / "staged.tmp"
+    staged.write_text("new", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        shared_module.publish_exclusive(staged, destination)
+
+    assert destination.read_text(encoding="utf-8") == "occupied"
+    assert staged.read_text(encoding="utf-8") == "new"
+
+
+def test_a_failed_move_gives_the_claimed_name_back(no_hard_links, tmp_path, monkeypatch):
+    destination = tmp_path / "voice.json"
+    staged = tmp_path / "staged.tmp"
+    staged.write_text("new", encoding="utf-8")
+
+    def fail(*_args):
+        raise OSError(errno.EIO, "disk error")
+
+    monkeypatch.setattr(os, "replace", fail)
+    with pytest.raises(OSError):
+        shared_module.publish_exclusive(staged, destination)
+
+    assert not destination.exists()
+    assert staged.read_text(encoding="utf-8") == "new"
+
+
+def test_an_error_other_than_missing_hard_links_is_not_worked_around(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    def deny(*_args):
+        raise PermissionError(errno.EACCES, "read-only directory")
+
+    monkeypatch.setattr(os, "link", deny)
+    staged = tmp_path / "staged.tmp"
+    staged.write_text("new", encoding="utf-8")
+
+    with pytest.raises(PermissionError):
+        shared_module.publish_exclusive(staged, tmp_path / "voice.json")
+
+    assert not (tmp_path / "voice.json").exists()
+
+
+def test_windows_publishes_by_rename_and_never_asks_for_a_hard_link(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    def forbid(*_args):
+        raise AssertionError("Windows publishes with a rename")
+
+    monkeypatch.setattr(os, "link", forbid)
+    staged = tmp_path / "staged.tmp"
+    staged.write_text("new", encoding="utf-8")
+
+    shared_module.publish_exclusive(staged, tmp_path / "voice.json")
+
+    assert (tmp_path / "voice.json").read_text(encoding="utf-8") == "new"
+
+
+def test_a_preset_saves_on_a_volume_without_hard_links(no_hard_links, presets_dirs):
+    presets_dir, _imports_dir = presets_dirs
+
+    saved = config.save_preset(Preset(name="Voice"))
+
+    assert saved.parent == presets_dir and config.load_preset(saved).name == "Voice"
+    assert [item.name for item in presets_dir.iterdir()] == [saved.name]
 
 
 # PC-007, TS-007

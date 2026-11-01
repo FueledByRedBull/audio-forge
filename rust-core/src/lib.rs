@@ -551,6 +551,10 @@ fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
             m
         )?)?;
         m.add_function(wrap_pyfunction!(
+            audio::virtual_mic::virtual_microphone_running,
+            m
+        )?)?;
+        m.add_function(wrap_pyfunction!(
             audio::virtual_mic::destroy_virtual_microphone,
             m
         )?)?;

@@ -212,7 +212,8 @@ impl AudioProcessor {
             .load(Ordering::Relaxed)
     }
 
-    /// Whether the DSP thread runs without MMCSS Pro Audio scheduling.
+    /// Whether the DSP thread runs without realtime scheduling (MMCSS Pro
+    /// Audio on Windows, RTKit on Linux).
     pub fn is_dsp_scheduling_degraded(&self) -> bool {
         self.shared.dsp.scheduling_degraded.load(Ordering::Relaxed)
     }

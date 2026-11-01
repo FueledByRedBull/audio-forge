@@ -12,8 +12,6 @@ name = "mic_eq_core"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# Audio I/O
-cpal = "=0.18.2"
 rubato = "0.14"  # High-quality resampling
 
 # Noise suppression (RNNoise)
@@ -54,19 +52,32 @@ ort = {
     features = ["std", "ndarray", "tracing"],
 }
 
+# Audio I/O. Windows stays on 0.17.3: 0.18 opens WASAPI capture without
+# AUTOCONVERTPCM (so no 48 kHz format on microphones that mix at another rate)
+# and only raises its WASAPI thread priority under the `realtime` feature.
+[target.'cfg(windows)'.dependencies]
+cpal = "=0.17.3"
+
 # Windows uses MMCSS (audio/scheduling.rs) and Linux RTKit; thread-priority covers other targets.
 [target.'cfg(not(any(windows, target_os = "linux")))'.dependencies]
+cpal = "=0.18.2"
 thread-priority = "1.0"
 
 # Linux loads ONNX Runtime at runtime from the path the Python package exports in
 # ORT_DYLIB_PATH, so the extension carries no build-machine library path.
 [target.'cfg(target_os = "linux")'.dependencies]
 # Native PipeWire host (real node names, default-device following), PulseAudio as fallback.
-cpal = { version = "=0.18.2", features = ["pipewire", "pulseaudio"] }
+# realtime-dbus promotes PipeWire's callback thread through RTKit.
+cpal = { version = "=0.18.2", features = ["pipewire", "pulseaudio", "realtime-dbus"] }
 # The virtual microphone (audio/virtual_mic.rs); the same version cpal links.
 pipewire = "=0.10.1"
 # Realtime scheduling for the DSP thread through RTKit, as unprivileged desktop users get it.
-audio_thread_priority = { version = "=0.38.0", default-features = false, features = ["with_dbus"] }
+# The version cpal's realtime-dbus feature links, so the graph holds one copy.
+audio_thread_priority = { version = "=0.35.1", default-features = false, features = ["with_dbus"] }
+# The RLIMIT_RTTIME the DSP thread's busy guard follows; pipewire already enables this feature.
+rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
+# Ignoring SIGXCPU before the first realtime promotion (audio/processor/dsp_loop.rs).
+libc = "0.2"
 ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = ["load-dynamic"] }
 
 [features]

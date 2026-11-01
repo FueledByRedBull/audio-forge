@@ -92,11 +92,47 @@ fn validate_stream_format(channels: u16, sample_rate: u32) -> Result<(), input::
     Ok(())
 }
 
+// Windows is pinned to cpal 0.17.3 and the other platforms use 0.18 (see
+// Cargo.toml); the few places the two APIs differ are the cfg pairs below.
+
+/// The error type of a stream's error callback.
+#[cfg(windows)]
+type StreamError = cpal::StreamError;
+#[cfg(not(windows))]
+type StreamError = cpal::Error;
+
+/// Whether the stream behind `error` can no longer deliver audio.
+#[cfg(windows)]
+fn stream_is_gone(error: &StreamError) -> bool {
+    matches!(
+        error,
+        cpal::StreamError::DeviceNotAvailable | cpal::StreamError::StreamInvalidated
+    )
+}
+#[cfg(not(windows))]
+fn stream_is_gone(error: &StreamError) -> bool {
+    matches!(
+        error.kind(),
+        cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::StreamInvalidated
+    )
+}
+
+/// The stream config argument of `build_input_stream` and `build_output_stream`:
+/// 0.17 borrows it, 0.18 takes it by value.
+#[cfg(windows)]
+fn stream_config_arg(config: &cpal::StreamConfig) -> &cpal::StreamConfig {
+    config
+}
+#[cfg(not(windows))]
+fn stream_config_arg(config: &cpal::StreamConfig) -> cpal::StreamConfig {
+    *config
+}
+
 /// Shared stream error callback: count the error, publish its code and, when
 /// the stream can no longer deliver audio, ask the supervisor for a restart
 /// instead of waiting for the callback-stall watchdog.
 fn handle_stream_error(
-    error: &cpal::Error,
+    error: &StreamError,
     code: RtErrorCode,
     error_count: &AtomicU64,
     rt_error_code: &AtomicU32,
@@ -104,10 +140,7 @@ fn handle_stream_error(
 ) {
     error_count.fetch_add(1, Ordering::Relaxed);
     store_rt_error(rt_error_code, code);
-    if matches!(
-        error.kind(),
-        cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::StreamInvalidated
-    ) {
+    if stream_is_gone(error) {
         restart_requested.store(true, Ordering::Release);
     }
 }
@@ -205,15 +238,29 @@ mod tests {
         assert!(validate_stream_format(2, 0).is_err());
     }
 
-    #[test]
-    fn stream_errors_request_a_restart_only_when_the_stream_is_gone() {
-        for (error, restarts) in [
+    #[cfg(windows)]
+    fn stream_error_cases() -> Vec<(StreamError, bool)> {
+        vec![
+            (cpal::StreamError::DeviceNotAvailable, true),
+            (cpal::StreamError::StreamInvalidated, true),
+            (cpal::StreamError::BufferUnderrun, false),
+        ]
+    }
+
+    #[cfg(not(windows))]
+    fn stream_error_cases() -> Vec<(StreamError, bool)> {
+        vec![
             (cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable), true),
             (cpal::Error::new(cpal::ErrorKind::StreamInvalidated), true),
             (cpal::Error::new(cpal::ErrorKind::Xrun), false),
             // The backend already rerouted the stream; it keeps delivering audio.
             (cpal::Error::new(cpal::ErrorKind::DeviceChanged), false),
-        ] {
+        ]
+    }
+
+    #[test]
+    fn stream_errors_request_a_restart_only_when_the_stream_is_gone() {
+        for (error, restarts) in stream_error_cases() {
             let count = AtomicU64::new(0);
             let code = AtomicU32::new(RtErrorCode::None as u32);
             let restart = AtomicBool::new(false);

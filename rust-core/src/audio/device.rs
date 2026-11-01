@@ -131,10 +131,10 @@ fn display_name(description: &cpal::DeviceDescription) -> String {
     #[cfg(target_os = "windows")]
     if let Some(name) = description
         .extended()
-        .next()
+        .first()
         .filter(|name| !name.trim().is_empty())
     {
-        return name.to_string();
+        return name.clone();
     }
 
     description.name().to_string()

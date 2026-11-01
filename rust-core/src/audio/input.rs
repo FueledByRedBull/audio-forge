@@ -19,7 +19,7 @@ use super::clock::now_micros;
 use super::device::{device_for_endpoint_id, device_name, persisted_endpoint_id};
 use super::rt::RtErrorCode;
 use super::{
-    find_48khz_config, handle_stream_error, parse_fixed_buffer_frames,
+    find_48khz_config, handle_stream_error, parse_fixed_buffer_frames, stream_config_arg,
     supported_fixed_buffer_frames, validate_stream_format,
 };
 
@@ -376,7 +376,7 @@ impl AudioInput {
     {
         device
             .build_input_stream(
-                *config,
+                stream_config_arg(config),
                 |_data: &[T], _: &cpal::InputCallbackInfo| {},
                 |_error| {},
                 None,
@@ -990,7 +990,7 @@ impl AudioInput {
 
         let stream = device
             .build_input_stream(
-                stream_config,
+                stream_config_arg(&stream_config),
                 move |data: &[T], _: &cpal::InputCallbackInfo| {
                     // RT_REGION_START: cpal_input_callback
                     last_callback_time_us.store(now_micros(), Ordering::Relaxed);
@@ -1112,8 +1112,10 @@ impl AudioInput {
         let mut fixed_buffer_frames = None;
         if let Some(frames) = Self::requested_fixed_buffer_frames() {
             if supported_fixed_buffer_frames(frames, supported_config.buffer_size()) {
-                let mut candidate = stream_config;
-                candidate.buffer_size = BufferSize::Fixed(frames);
+                let candidate = StreamConfig {
+                    buffer_size: BufferSize::Fixed(frames),
+                    ..stream_config
+                };
                 if Self::preflight_sample_format(&device, sample_format, &candidate) {
                     stream_config = candidate;
                     fixed_buffer_frames = Some(frames);

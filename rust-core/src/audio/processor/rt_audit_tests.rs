@@ -456,6 +456,23 @@ fn missing_pro_audio_registration_degrades_instead_of_failing_start() {
 }
 
 #[test]
+fn the_dsp_thread_asks_for_realtime_before_it_reports_ready() {
+    let lifecycle = include_str!("lifecycle.rs");
+    let spawn = source_between(
+        lifecycle,
+        "fn spawn_dsp_thread(",
+        "/// Stop audio processing",
+    );
+    let promote = spawn.find("dsp_loop.promote_to_realtime()").unwrap();
+    let ready = spawn.find("dsp_ready_tx.send(").unwrap();
+    let run = spawn.find("dsp_loop.run()").unwrap();
+    assert!(promote < ready && ready < run);
+    // RTKit's D-Bus calls block for seconds; the loop never makes them.
+    let rt = marked_region(include_str!("dsp_loop.rs"), "dsp_processing_loop");
+    assert!(!rt.contains("promote_to_realtime"));
+}
+
+#[test]
 fn initial_suppressor_engine_is_built_before_the_dsp_thread_exists() {
     let production = dsp_loop_production();
     let start = source_between(

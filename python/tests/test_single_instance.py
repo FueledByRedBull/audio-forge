@@ -184,6 +184,16 @@ class TestRuntimeDirectory:
             monkeypatch.setenv("XDG_RUNTIME_DIR", directory)
             yield
 
+    def test_a_long_user_name_keeps_the_socket_under_the_unix_limit(self, monkeypatch):
+        monkeypatch.delenv("XDG_RUNTIME_DIR")
+        monkeypatch.setenv("HOME", "/home/" + "u" * 32)
+        monkeypatch.setattr(desktop_integration, "_USER_SCOPE", "75" * 32)
+        monkeypatch.setattr(desktop_integration, "SINGLE_INSTANCE_SERVER", f"AudioForge.SingleInstance.v1.{'75' * 32}")
+        instance = desktop_integration.SingleInstanceCoordinator(
+            server_name=desktop_integration.SINGLE_INSTANCE_SERVER, lock_path=Path(self.directory) / "lock"
+        )
+        assert len(instance.server_name.encode()) < 107
+
     def test_the_socket_and_the_lock_live_in_it_not_in_the_temp_directory(self, qapp):
         name = _server_name()
         instance = desktop_integration.SingleInstanceCoordinator(server_name=name)

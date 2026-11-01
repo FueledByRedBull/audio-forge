@@ -518,16 +518,20 @@ def _run_qt_app(
     windows: list[QMainWindow] = []
     bus_service = None
     if instance is not None and sys.platform.startswith("linux"):
-        from .application_bus import ApplicationBusService
-
-        service = ApplicationBusService(
-            APP_ID,
-            lambda: activate_window(windows[0]),
-            {TOGGLE_MUTE_COMMAND: lambda: getattr(windows[0], "_toggle_mute_from_hotkey")()},
-        )
-        if service.start():
-            bus_service = service
-            app.aboutToQuit.connect(service.close)
+        try:
+            from .application_bus import ApplicationBusService
+        except ImportError:
+            # D-Bus activation is an extra; the app runs without it.
+            logging.getLogger(__name__).warning("D-Bus activation is unavailable", exc_info=True)
+        else:
+            service = ApplicationBusService(
+                APP_ID,
+                lambda: activate_window(windows[0]),
+                {TOGGLE_MUTE_COMMAND: lambda: getattr(windows[0], "_toggle_mute_from_hotkey")()},
+            )
+            if service.start():
+                bus_service = service
+                app.aboutToQuit.connect(service.close)
 
     enable_qt_log()
     try:

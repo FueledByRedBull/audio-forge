@@ -162,3 +162,18 @@ def test_the_diagnostics_timer_polls_the_watch(isolated_main_window) -> None:
     window._update_diagnostics()
 
     watch.poll.assert_called_once_with()
+
+
+def test_an_outage_is_reported_once_however_many_retries_it_takes(pipewire, caplog):
+    pipewire.running = False
+    pipewire.error = RuntimeError("no PipeWire")
+    clock = _Clock()
+    watch = VirtualMicrophoneWatch(clock=clock)
+    with caplog.at_level("WARNING"):
+        for attempt in range(3):
+            watch.poll()
+            assert pipewire.built.acquire(timeout=5)
+            pipewire.build_thread.join(timeout=5)
+            clock.now += RETRY_SECONDS + CHECK_SECONDS + 1
+    assert pipewire.builds == 3
+    assert sum("is gone" in record.message for record in caplog.records) == 1

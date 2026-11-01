@@ -23,6 +23,7 @@ class VirtualMicrophoneWatch:
         self._next_check = 0.0
         self._rebuilding = False
         self._stopped = False
+        self._reported_gone = False
 
     def stop(self) -> None:
         """End the watch (the app is quitting); a rebuild already out is left to finish."""
@@ -40,7 +41,10 @@ class VirtualMicrophoneWatch:
 
         if mic_eq_core.virtual_microphone_running():
             return
-        logger.warning("AudioForge Mic is gone (PipeWire restarted?); building it again")
+        # Once per outage: a machine without PipeWire would otherwise warn every retry.
+        if not self._reported_gone:
+            self._reported_gone = True
+            logger.warning("AudioForge Mic is gone (PipeWire restarted?); building it again")
         self._rebuilding = True
         threading.Thread(target=self._rebuild, name="virtual-microphone", daemon=True).start()
 
@@ -53,6 +57,7 @@ class VirtualMicrophoneWatch:
             logger.info("AudioForge Mic could not be built yet: %s", error)
             self._next_check = self._clock() + RETRY_SECONDS
         else:
+            self._reported_gone = False
             logger.info("AudioForge Mic is back")
         finally:
             self._rebuilding = False

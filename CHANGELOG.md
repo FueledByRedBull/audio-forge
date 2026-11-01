@@ -18,7 +18,7 @@
 - cpal moves to 0.18 and uses its PipeWire host on Linux; ONNX Runtime loads at runtime there through `ORT_DYLIB_PATH`.
 - `python/tools/build_deepfilter.py` builds `libdf.so` from the same pinned recipe as `build_deepfilter.ps1`, and `release-assets.json` records it with its attestation.
 - `build_linux.sh` and `python/tools/linux_package.py` build, check and package the Linux bundle. The bundle leaves out the system's audio, D-Bus, graphics, font and C++ runtime libraries.
-- CI runs Clippy, the Rust tests and the full pytest suite on Ubuntu 24.04 in a `linux` job that isn't a required check yet.
+- CI runs Clippy, the Rust tests and the pytest shards on Ubuntu 24.04 in a `linux` job that isn't a required check yet.
 - Release package builds the Linux tarball and AppImage with pinned appimagetool and runtime; promotion verifies them and publishes all seven release files.
 - `license_inventory.py --platform linux` collects the Linux dependency notices.
 

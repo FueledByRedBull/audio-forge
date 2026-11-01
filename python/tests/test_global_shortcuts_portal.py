@@ -40,10 +40,11 @@ def test_an_unsupported_shortcut_is_refused():
 class FakePortal:
     """Answers the GlobalShortcuts calls the way xdg-desktop-portal does."""
 
-    def __init__(self, *, bind_code=0, activations=1, silent=False):
+    def __init__(self, *, bind_code=0, activations=1, silent=False, ignoring=()):
         self.bind_code = bind_code
         self.activations = activations
         self.silent = silent  # owns the name but answers nothing, like a portal still starting up
+        self.ignoring = set(ignoring)  # method names it stalls on
         self.session_path = f"{portal.PORTAL_PATH}/session/client/1"
         self.bound = []
         self.session_closed = threading.Event()
@@ -81,6 +82,8 @@ class FakePortal:
                 continue
             member = header.fields[HeaderFields.member]
             sender = header.fields[HeaderFields.sender]
+            if member in self.ignoring:
+                continue
             if member == "Get":
                 reply = new_method_return(message, "v", (("u", 1),))
             elif member == "Register":
@@ -233,6 +236,21 @@ def test_a_portal_that_owns_its_name_but_answers_late_gets_the_shortcut_bound(se
         session.start()
         assert states.get(timeout=10) == "TimeoutError"
         fake.silent = False
+        assert _next_state_other_than("TimeoutError", states, timeout=15) == ""
+    finally:
+        session.close()
+        fake.close()
+
+
+def test_a_portal_that_stalls_after_registering_is_asked_again(session_bus, monkeypatch):
+    monkeypatch.setattr(portal, "PORTAL_RETRY_SECONDS", 0.1)
+    states = queue.Queue()
+    session = _session(lambda: None, lambda error: None, states.put)
+    fake = FakePortal(activations=0, ignoring={"Get"})
+    try:
+        session.start()
+        assert states.get(timeout=10) == "TimeoutError"
+        fake.ignoring.clear()
         assert _next_state_other_than("TimeoutError", states, timeout=15) == ""
     finally:
         session.close()

@@ -212,8 +212,11 @@ class GlobalShortcutsSession:
         """Bind the shortcut, then pass on its activations until the desktop drops the session."""
 
         self._register_app_id(connection)
-        if not portal_available(connection):
-            raise PortalUnavailable("no GlobalShortcuts portal answered")
+        # A timeout goes to _serve's retry: a stalled portal announces nothing when it recovers.
+        try:
+            _checked(connection.send_and_get_reply(Properties(GLOBAL_SHORTCUTS).get("version"), timeout=5))
+        except DBusErrorResponse as error:
+            raise PortalUnavailable("no GlobalShortcuts portal answered") from error
         session = self._create_session(connection)
         self._bind(connection, session)
         self._report(self.on_availability, "")

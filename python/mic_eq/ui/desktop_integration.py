@@ -435,8 +435,10 @@ class SingleInstanceCoordinator:
         self.server_name = str(server_name)
         self._directory = _private_directory()
         if self._directory is not None:
-            # A name given as an absolute path stays where it is.
-            self.server_name = str(self._directory / self.server_name)
+            # A name given as an absolute path stays where it is. The directory already
+            # belongs to this account, and a Unix socket path can't pass about 107 bytes,
+            # so a long user name must not count against it twice.
+            self.server_name = str(self._directory / self.server_name.replace(f".{_USER_SCOPE}", ""))
         self._lock_path = lock_path or (
             (self._directory or Path(tempfile.gettempdir()))
             / f"AudioForge.SingleInstance.{_USER_SCOPE}.lock"

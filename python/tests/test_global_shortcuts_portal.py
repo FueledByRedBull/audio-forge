@@ -48,10 +48,12 @@ class FakePortal:
         self.bound = []
         self.session_closed = threading.Event()
         self.connection = open_dbus_connection("SESSION")
-        self.connection.send_and_get_reply(message_bus.RequestName(portal.PORTAL_SERVICE))
+        # The name last: a client that sees it calls at once, and a call arriving during a
+        # blocking setup call here would be dropped.
         self.connection.send_and_get_reply(message_bus.AddMatch(
             "type='signal',sender='org.freedesktop.DBus',member='NameOwnerChanged'"
         ))
+        self.connection.send_and_get_reply(message_bus.RequestName(portal.PORTAL_SERVICE))
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
 
@@ -219,6 +221,32 @@ def test_a_portal_that_starts_after_the_session_gets_the_shortcut_bound(session_
         session.close()
         if fake is not None:
             fake.close()
+
+
+def test_a_portal_that_owns_its_name_but_answers_late_gets_the_shortcut_bound(session_bus, monkeypatch):
+    # Nothing announces when a portal still starting up begins to answer.
+    monkeypatch.setattr(portal, "PORTAL_RETRY_SECONDS", 0.1)
+    states = queue.Queue()
+    session = _session(lambda: None, lambda error: None, states.put)
+    fake = FakePortal(activations=0, silent=True)
+    try:
+        session.start()
+        assert states.get(timeout=10) == "TimeoutError"
+        fake.silent = False
+        assert _next_state_other_than("TimeoutError", states, timeout=15) == ""
+    finally:
+        session.close()
+        fake.close()
+
+
+def _next_state_other_than(ignored, states, timeout):
+    import time
+
+    deadline = time.monotonic() + timeout
+    while True:
+        state = states.get(timeout=max(0.0, deadline - time.monotonic()))
+        if state != ignored:
+            return state
 
 
 def _wait_for(qapp, condition, timeout=5.0):

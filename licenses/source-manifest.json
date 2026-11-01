@@ -56,8 +56,8 @@
       "license": "MIT",
       "name": "musl libc Alpine patch: CVE-2025-26519",
       "sha256": "ab382da2bb5e1cc32d8904be28fb13f8ad3ce813967bd4bf7f5b1c6baee33e17",
-      "source_of_truth": "https://gitlab.alpinelinux.org/alpine/aports/-/blob/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/APKBUILD",
-      "url": "https://gitlab.alpinelinux.org/alpine/aports/-/raw/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/CVE-2025-26519.patch",
+      "source_of_truth": "https://github.com/alpinelinux/aports/blob/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/APKBUILD",
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/CVE-2025-26519.patch",
       "version": "1.2.5-r9"
     },
     {
@@ -68,8 +68,8 @@
       "license": "MIT",
       "name": "musl libc Alpine patch: handle-aux-at_base",
       "sha256": "2a65e03b94217063d72fe998e5fb2e25cd01716078a3ba1b0ab574ab205111e6",
-      "source_of_truth": "https://gitlab.alpinelinux.org/alpine/aports/-/blob/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/APKBUILD",
-      "url": "https://gitlab.alpinelinux.org/alpine/aports/-/raw/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/handle-aux-at_base.patch",
+      "source_of_truth": "https://github.com/alpinelinux/aports/blob/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/APKBUILD",
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/handle-aux-at_base.patch",
       "version": "1.2.5-r9"
     },
     {
@@ -80,8 +80,8 @@
       "license": "MIT",
       "name": "musl libc Alpine patch: isatty-glibc-align",
       "sha256": "1321d542b40921a4c248bb2d15dbd03fcbbf008c8725eb2043d3cab62faeba48",
-      "source_of_truth": "https://gitlab.alpinelinux.org/alpine/aports/-/blob/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/APKBUILD",
-      "url": "https://gitlab.alpinelinux.org/alpine/aports/-/raw/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/isatty-glibc-align.patch",
+      "source_of_truth": "https://github.com/alpinelinux/aports/blob/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/APKBUILD",
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/isatty-glibc-align.patch",
       "version": "1.2.5-r9"
     },
     {
@@ -92,8 +92,8 @@
       "license": "MIT",
       "name": "musl libc Alpine patch: ldso-early-page-size",
       "sha256": "7f5806124d4a89536e53a07bfe95fcd0a8f1b7a27fc0dfc89c78c724dea1c924",
-      "source_of_truth": "https://gitlab.alpinelinux.org/alpine/aports/-/blob/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/APKBUILD",
-      "url": "https://gitlab.alpinelinux.org/alpine/aports/-/raw/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/ldso-fix-non-functional-fix-to-early-dynamic-PAGE_SI.patch",
+      "source_of_truth": "https://github.com/alpinelinux/aports/blob/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/APKBUILD",
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/ldso-fix-non-functional-fix-to-early-dynamic-PAGE_SI.patch",
       "version": "1.2.5-r9"
     },
     {

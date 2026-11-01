@@ -41,7 +41,6 @@ TRUSTED_SOURCE_HOSTS = frozenset(
         "download.qt.io",
         "files.pythonhosted.org",
         "github.com",
-        "gitlab.alpinelinux.org",
         "musl.libc.org",
         "release-assets.githubusercontent.com",
         "raw.githubusercontent.com",
@@ -524,7 +523,8 @@ APPIMAGE_RUNTIME_SOURCE = {
     "license": "MIT",
     "license_paths": ["type2-runtime-20251108/LICENSE"],
 }
-_ALPINE_MUSL = "https://gitlab.alpinelinux.org/alpine/aports/-/{kind}/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/"
+# GitHub's mirror of aports: Alpine's own GitLab answers CI runners with HTTP 418.
+_ALPINE_MUSL = "https://raw.githubusercontent.com/alpinelinux/aports/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/"
 APPIMAGE_RUNTIME_SOURCES = (
     APPIMAGE_RUNTIME_SOURCE,
     {
@@ -605,9 +605,9 @@ APPIMAGE_RUNTIME_SOURCES = (
             "name": f"musl libc Alpine patch: {short}",
             "version": "1.2.5-r9",
             "filename": filename,
-            "url": _ALPINE_MUSL.format(kind="raw") + filename,
+            "url": _ALPINE_MUSL + filename,
             "sha256": sha256,
-            "source_of_truth": _ALPINE_MUSL.format(kind="blob") + "APKBUILD",
+            "source_of_truth": "https://github.com/alpinelinux/aports/blob/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/APKBUILD",
             "build_role": "Alpine 3.21 patch applied to the musl libc linked into the AppImage runtime",
             "license": "MIT",
         }

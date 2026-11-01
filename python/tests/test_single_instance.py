@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import stat
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -175,10 +176,13 @@ def test_windows_keeps_naming_its_instance_endpoints_itself(monkeypatch, tmp_pat
 @pytest.mark.skipif(sys.platform == "win32", reason="the runtime directory is a POSIX concept")
 class TestRuntimeDirectory:
     @pytest.fixture(autouse=True)
-    def runtime(self, monkeypatch, tmp_path):
-        self.directory = tmp_path / "runtime"
-        self.directory.mkdir(mode=0o700)
-        monkeypatch.setenv("XDG_RUNTIME_DIR", str(self.directory))
+    def runtime(self, monkeypatch):
+        # Short, like /run/user/1000: a Unix socket path can't pass about 107 bytes, and pytest's tmp_path does.
+        with tempfile.TemporaryDirectory(prefix="af", dir="/tmp") as directory:
+            self.directory = Path(directory)
+            self.directory.chmod(0o700)
+            monkeypatch.setenv("XDG_RUNTIME_DIR", directory)
+            yield
 
     def test_the_socket_and_the_lock_live_in_it_not_in_the_temp_directory(self, qapp):
         name = _server_name()

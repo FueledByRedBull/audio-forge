@@ -17,6 +17,7 @@ import logging
 import secrets
 import socket
 import threading
+import time
 from typing import Any
 
 from jeepney import (
@@ -37,6 +38,7 @@ REGISTRY = DBusAddress(PORTAL_PATH, PORTAL_SERVICE, "org.freedesktop.host.portal
 SESSION_INTERFACE = "org.freedesktop.portal.Session"
 BUS_INTERFACE = "org.freedesktop.DBus"
 SHORTCUT_ID = "toggle-mute"
+PORTAL_RETRY_SECONDS = 30.0
 # The desktop may ask the user to confirm or pick the key before it answers.
 RESPONSE_TIMEOUT = 300.0
 
@@ -197,7 +199,12 @@ class GlobalShortcutsSession:
             while not self._closed.is_set():
                 try:
                     self._bind_and_listen(connection, events)
-                except (PortalUnavailable, DBusErrorResponse, TimeoutError) as error:
+                except TimeoutError as error:
+                    # The name has an owner that isn't answering yet, as at login: no
+                    # owner change will announce when it starts to, so ask again later.
+                    self._unavailable(error)
+                    self._wait_for_portal(connection, events, retry_after=PORTAL_RETRY_SECONDS)
+                except (PortalUnavailable, DBusErrorResponse) as error:
                     self._unavailable(error)
                     self._wait_for_portal(connection, events)
 
@@ -225,11 +232,16 @@ class GlobalShortcutsSession:
             elif signal.body[0] == PORTAL_SERVICE and not signal.body[2]:
                 raise PortalUnavailable("the desktop portal went away")
 
-    def _wait_for_portal(self, connection: DBusConnection, events: deque) -> None:
-        """Return once the portal's bus name has an owner again."""
+    def _wait_for_portal(self, connection: DBusConnection, events: deque, retry_after: float | None = None) -> None:
+        """Return once the portal's bus name has an owner again, or after ``retry_after`` seconds."""
 
+        deadline = None if retry_after is None else time.monotonic() + retry_after
         while not self._closed.is_set():
-            signal = connection.recv_until_filtered(events)
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            try:
+                signal = connection.recv_until_filtered(events, timeout=remaining)
+            except TimeoutError:
+                return
             if (
                 signal.header.fields.get(HeaderFields.member) == "NameOwnerChanged"
                 and signal.body[0] == PORTAL_SERVICE

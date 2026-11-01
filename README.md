@@ -51,7 +51,7 @@ Screenshots use example devices and settings.
 
 ## Download
 
-Current version: `v1.19.0` ([release notes](release-notes/release-notes-v1.19.0.md)).
+Current version: `v1.20.0` ([release notes](release-notes/release-notes-v1.20.0.md)).
 This is the source-checkout version; the latest published package may be older.
 Open the [latest release](https://github.com/FueledByRedBull/audio-forge/releases/latest)
 and download **one** of these files. **Not sure? Choose the installer.**
@@ -153,6 +153,13 @@ tested by hand so far; the Ubuntu 24.04 build runs the automated tests.
   and run `AudioForge/AudioForge`. Run `./install.sh` in the extracted folder to
   add AudioForge to your application menu, and `./install.sh --uninstall` to
   take it off again before you move or delete the folder.
+
+The AppImage is one file with nothing to unpack. Take the tarball if you want
+a plain folder or want `install.sh` to add the menu entry. On Arch, the
+`audioforge-bin` AUR package repackages the tarball: it installs AudioForge
+under `/opt/audioforge` with an `audioforge` command and a menu entry, so
+pacman manages it. It follows final releases and is not one of the release
+files.
 
 Check a download with `sha256sum <file>` against
 `AudioForge-v<version>-SHA256SUMS.txt`, or with `gh release verify-asset` as

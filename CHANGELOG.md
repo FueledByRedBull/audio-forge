@@ -1,26 +1,55 @@
 # Changelog
 
-## Unreleased
+## v1.20.0
 
 ### Linux
 
-- AudioForge runs natively on 64-bit Linux with PipeWire (Ubuntu 24.04, Fedora 40, Debian 13 or later, and Arch), as an AppImage or as a tarball whose `install.sh` adds it to the application menu.
-- While AudioForge runs it adds an **AudioForge Mic** microphone that other apps record from, so Linux needs no virtual cable. **AudioForge Mic Input** is the preferred output, and the microphone never becomes the system default.
+- AudioForge runs natively on 64-bit Linux with PipeWire: Ubuntu 24.04 or later, Fedora 40 or later, Debian 13, Arch, and distributions based on them. It ships as an AppImage and as a tarball whose `install.sh` adds it to the application menu. Arch users can instead install the `audioforge-bin` AUR package, which unpacks the tarball under `/opt/audioforge`.
+- While AudioForge runs it adds an **AudioForge Mic** microphone (mono, 48 kHz) that other apps record from, so Linux needs no virtual cable. Setup picks **AudioForge Mic Input** as the output. The microphone exists only while AudioForge runs, AudioForge does not make it the system default, and it is built again if PipeWire restarts.
 - The device lists show PipeWire's device names, offer "Follow system default", and leave out sink monitors and AudioForge's own microphone.
-- `audioforge --toggle-mute` mutes or unmutes the running copy; bind it to a key in your desktop's keyboard settings.
-- Login startup writes an XDG autostart entry, under the same rules as the Windows shortcut.
-- The processing thread asks RTKit for realtime priority and falls back to normal priority without it.
+- `audioforge --toggle-mute` mutes or unmutes the running copy and never starts a second one. The application menu entry has the same **Toggle Output Mute** action, and `gapplication action io.github.FueledByRedBull.AudioForge toggle-mute` reaches it too.
+- The global mute shortcut asks the desktop for its key through the XDG GlobalShortcuts portal, which KDE Plasma, GNOME 48 and later, and Hyprland provide. With no portal, or if the desktop refuses the key, the status line says so and names the `--toggle-mute` command to bind in your keyboard settings.
+- Login startup writes an XDG autostart entry, under the same rules as the Windows shortcut. In an AppImage the entry names the image file, not its mount.
+- The processing thread asks RTKit for realtime priority, and so does PipeWire's callback thread. If RTKit is missing or refuses, the processing thread keeps running at normal priority and diagnostics say so.
+- The tray icon needs a panel that shows StatusNotifierItem icons, and it appears when the panel starts after AudioForge, for example at login.
+- Settings and presets live in `~/.config/AudioForge`, or in `$XDG_CONFIG_HOME/AudioForge` when that is set to an absolute path.
 - Level advice names your sound settings instead of Windows.
 - Source builds accept Python 3.14 as well as 3.13.
 
+### Noise suppression
+
+- A noise model chosen while Start is still opening the stream now applies once the stream runs. This includes a change made by loading a preset, by undo or redo, or during an automatic restart.
+- If the engine for that model fails to load, the previous model keeps running and the status line says to choose the model again and to check the model files or use Help > Export Diagnostics. The warning shows once per dropped selection. Diagnostics count them as `noise_selection_dropped_count`, shown as NSD in the Drops tooltip.
+
+### Python
+
+- The build and the packaged app move from Python 3.13.15 to 3.13.17. The corresponding-source manifest's OpenSSL pin follows CPython's build files, from 3.0.21 to 3.5.9; neither bundle ships OpenSSL.
+
+### Settings and presets
+
+- The config schema stays 2 and the preset format is unchanged; presets saved by 1.20.0 are stamped 1.20.0, so 1.19.0 and older refuse them as newer.
+
 ### Internal
 
-- cpal moves to 0.18 and uses its PipeWire host on Linux; ONNX Runtime loads at runtime there through `ORT_DYLIB_PATH`.
-- `python/tools/build_deepfilter.py` builds `libdf.so` from the same pinned recipe as `build_deepfilter.ps1`, and `release-assets.json` records it with its attestation.
-- `build_linux.sh` and `python/tools/linux_package.py` build, check and package the Linux bundle. The bundle leaves out the system's audio, D-Bus, graphics, font and C++ runtime libraries.
-- CI runs Clippy, the Rust tests and the pytest shards on Ubuntu 24.04 in a `linux` job that isn't a required check yet.
-- Release package builds the Linux tarball and AppImage with pinned appimagetool and runtime; promotion verifies them and publishes all seven release files.
-- `license_inventory.py --platform linux` collects the Linux dependency notices.
+- Windows keeps cpal 0.17.3, and its Rust dependency tree is unchanged. Linux uses cpal 0.18.2 with its PipeWire host and RTKit support, and ONNX Runtime loads at run time there through `ORT_DYLIB_PATH`.
+- Presets and the autostart entry are published without replacing a file that appeared in the meantime. Where the filesystem refuses hard links, publishing falls back to an exclusive create.
+- `python/tools/build_deepfilter.py` builds `libdf.so` from the same pinned recipe as `build_deepfilter.ps1`, and `release-assets.json` records it with its attestation, beside the pinned Linux ONNX Runtime.
+- `build_linux.sh` and `python/tools/linux_package.py` build, check and package the Linux bundle. The bundle leaves out the system's audio, D-Bus, Kerberos, graphics, font, glib and C++ runtime libraries, refuses FFmpeg and host libraries outside a licence allowlist, and is gated by `evaluation/release-bundle-path-baseline-linux.json`.
+- `python/tools/aur_package.py` writes the `PKGBUILD` and `.SRCINFO` of `audioforge-bin` from a release's `SHA256SUMS.txt`.
+- CI gains a `linux` gate that runs Clippy, the Rust tests and the pytest shards on Ubuntu 24.04. It isn't a required check yet.
+- Release package builds the Linux tarball and AppImage with a pinned appimagetool and runtime. Each gets a manifest and a metadata sidecar, and promotion checks them against the candidate run, the tag commit and the `libdf.so` build record, then publishes seven release files instead of five.
+- `release-hardware-qualify-linux.yml` qualifies the tarball on a self-hosted Ubuntu 24.04 runner under the same master-only and role rules as the Windows hardware workflow.
+- `license_inventory.py --platform linux` collects the Linux dependency notices, and the source manifest covers the Linux build, including the AppImage runtime's static libraries.
+- The Windows bundle filters QtDBus after analysis, since only the Linux tray watcher imports it.
+- CI restores `df.dll` from the Actions cache, keyed on the recipe, `release-assets.json` and the toolchain pin, and verifies it after every restore. Package check and Release package still build it every time.
+- `build_deepfilter.ps1` finds `dumpbin` with `vswhere`.
+- Release package checks the corresponding source before it builds and compresses the source archive at `-mx=5`.
+- The throwaway upgrade-baseline MSI is built uncompressed through `build_msi.ps1 -CompressionLevel`; the shipped MSI is built as before.
+- Two slow test files move to lighter pytest shards.
+- `weekly-checks.yml` re-downloads every pinned source archive, rebuilds the runtime assets and runs the Python and RustSec audits each Monday. `cache-cleanup.yml` deletes a pull request's Actions caches when it closes.
+- `zizmor` runs over `.github/workflows` in CI, and Release package hands step outputs to its scripts as `AF_*` variables instead of writing them into run text.
+- The dev lock moves msgpack from 1.2.1 to 1.2.4 for CVE-2026-114613. It comes in through cachecontrol, and nothing in the app uses it.
+- CVE-2026-116684, CVE-2026-116685 and CVE-2026-116686, all in the `mcp` 1.29.0 that Semgrep pins exactly, join the dev-audit ignore table beside CVE-2026-59951, and Dependabot ignores `mcp`. `check_workflows.py` fails once the lock stops pinning 1.29.0.
 
 ## v1.19.0
 

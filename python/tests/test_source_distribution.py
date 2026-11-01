@@ -5,7 +5,9 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import re
 import subprocess
+import sys
 import tarfile
 import tomllib
 from typing import Any, cast
@@ -235,6 +237,14 @@ def test_release_manifest_cannot_claim_complete_with_blocked_entry():
         )
 
 
+# Verifying the Windows release sources needs the release interpreter itself.
+_RELEASE_INTERPRETER = pytest.mark.skipif(
+    ".".join(map(str, sys.version_info[:3])) != source_tool.EXPECTED_CPYTHON_VERSION,
+    reason=f"needs the release interpreter, CPython {source_tool.EXPECTED_CPYTHON_VERSION}",
+)
+
+
+@_RELEASE_INTERPRETER
 def test_release_manifest_rejects_stale_qt_source_identity():
     manifest_path = Path(__file__).resolve().parents[2] / "licenses" / "source-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -252,10 +262,41 @@ def test_qt_sources_use_fixed_trusted_mirror():
         entry for identifier, entry in entries.items()
         if identifier.startswith(("qt-", "python-pyside6-", "python-shiboken6-"))
     ]
-    assert len(qt_entries) == 7
+    assert len(qt_entries) == 9
     for entry in qt_entries:
         assert entry["url"].startswith("https://qt.mirror.constant.com/")
         assert entry["source_of_truth"].startswith("https://download.qt.io/")
+
+
+def test_appimage_runtime_sources_are_pinned_in_the_manifest():
+    manifest = json.loads(source_tool.DEFAULT_MANIFEST.read_text(encoding="utf-8"))
+    by_id = {entry["id"]: entry for entry in manifest["entries"]}
+    sources = source_tool.APPIMAGE_RUNTIME_SOURCES
+    assert len(sources) == len({source["id"] for source in sources}) == 11
+    for source in sources:
+        assert source["id"].startswith("appimage-runtime-")
+        assert re.fullmatch(r"[0-9a-f]{64}", source["sha256"])
+        source_tool._validate_source_url(source["url"])
+        source_tool._validate_source_url(source["source_of_truth"])
+        assert by_id[source["id"]] == {**source, "kind": "native-build-source"}
+    # The release workflow pins the runtime by this tag.
+    runtime = source_tool.APPIMAGE_RUNTIME_SOURCE
+    assert runtime["url"].endswith(f"/refs/tags/{runtime['version']}.tar.gz")
+
+
+@_RELEASE_INTERPRETER
+@pytest.mark.parametrize("damage", ["omitted", "sha256"])
+def test_release_manifest_rejects_missing_or_changed_appimage_runtime_source(damage):
+    manifest = json.loads(source_tool.DEFAULT_MANIFEST.read_text(encoding="utf-8"))
+    libfuse = next(entry for entry in manifest["entries"] if entry["id"] == "appimage-runtime-libfuse-3.15.0")
+    if damage == "omitted":
+        manifest["entries"].remove(libfuse)
+        message = "lacks current source identity for appimage-runtime-libfuse-3.15.0"
+    else:
+        libfuse["sha256"] = "0" * 64
+        message = r"stale: appimage-runtime-libfuse-3.15.0 \(sha256\)"
+    with pytest.raises(SourceDistributionError, match=message):
+        source_tool._validate_manifest(manifest, release=True)
 
 
 @pytest.mark.parametrize("name", source_tool.PYSIDE_PACKAGES)
@@ -271,6 +312,7 @@ def test_pyside_mapping_rejects_missing_or_different_wheel_versions(name):
             source_tool._pyside_source_entries(changed)
 
 
+@_RELEASE_INTERPRETER
 @pytest.mark.parametrize("field", ["sha256", "url", "source_of_truth"])
 def test_release_manifest_rejects_changed_pyside_archive_identity(field):
     manifest = json.loads(source_tool.DEFAULT_MANIFEST.read_text(encoding="utf-8"))
@@ -448,14 +490,12 @@ def test_redirect_handler_rejects_untrusted_intermediate_hop():
         )
 
 
-# Crates Cargo.lock lists that `cargo metadata --filter-platform x86_64-pc-windows-msvc --features
-# extension-module` leaves out: other operating systems, wasm, and features the extension does not
-# turn on. Cargo.lock cannot say which those are, so a crate the lock gains that Windows does not
-# build is listed here once; a crate Windows does build must appear in the source manifest instead.
-NOT_BUILT_FOR_WINDOWS = {line.strip() for line in """
-    alsa 0.11.0
-    alsa-sys 0.4.0
-    bitflags 2.11.0
+# Crates Cargo.lock lists that `cargo metadata --filter-platform x86_64-pc-windows-msvc --filter-platform
+# x86_64-unknown-linux-gnu --features extension-module` leaves out: other operating systems, wasm, and
+# features the extension does not turn on. Cargo.lock cannot say which those are, so a crate the lock
+# gains that neither release builds is listed here once; a crate either builds must appear in the
+# source manifest instead.
+NOT_BUILT_FOR_RELEASES = {line.strip() for line in """
     block2 0.6.2
     bumpalo 3.20.2
     bytes 1.11.1
@@ -463,18 +503,16 @@ NOT_BUILT_FOR_WINDOWS = {line.strip() for line in """
     combine 4.6.7
     coreaudio-rs 0.14.2
     dispatch2 0.3.0
-    equivalent 1.0.2
-    futures-core 0.3.32
-    futures-task 0.3.32
-    futures-util 0.3.32
-    hashbrown 0.16.1
-    indexmap 2.13.0
     jni 0.21.1
+    jni 0.22.4
+    jni-macros 0.22.4
     jni-sys 0.3.0
+    jni-sys 0.4.1
+    jni-sys-macros 0.4.1
     js-sys 0.3.90
-    log 0.4.29
+    mach2 0.4.3
     mach2 0.5.0
-    memchr 2.8.0
+    mach2 0.6.0
     ndk 0.9.0
     ndk-context 0.1.1
     ndk-sys 0.6.0+11769913
@@ -489,18 +527,22 @@ NOT_BUILT_FOR_WINDOWS = {line.strip() for line in """
     objc2-core-foundation 0.3.2
     objc2-encode 4.1.0
     objc2-foundation 0.3.2
-    pkg-config 0.3.32
     proc-macro-crate 3.4.0
     redox_syscall 0.5.18
+    rustc_version 0.4.1
     rustversion 1.0.22
     same-file 1.0.6
+    semver 1.0.28
     serde_derive 1.0.228
-    slab 0.4.12
+    simd_cesu8 1.2.0
+    simdutf8 0.1.5
+    thiserror 2.0.21
+    thiserror-impl 2.0.21
     thread-priority 1.2.0
     toml_datetime 0.7.5+spec-1.1.0
     toml_edit 0.23.10+spec-1.0.0
-    toml_parser 1.0.9+spec-1.1.0
     walkdir 2.5.0
+    wasi 0.11.1+wasi-snapshot-preview1
     wasm-bindgen 0.2.113
     wasm-bindgen-futures 0.4.63
     wasm-bindgen-macro 0.2.113
@@ -512,7 +554,6 @@ NOT_BUILT_FOR_WINDOWS = {line.strip() for line in """
     winapi-util 0.1.11
     winapi-x86_64-pc-windows-gnu 0.4.0
     windows-sys 0.45.0
-    windows-sys 0.61.2
     windows-targets 0.42.2
     windows_aarch64_gnullvm 0.42.2
     windows_aarch64_msvc 0.42.2
@@ -521,12 +562,11 @@ NOT_BUILT_FOR_WINDOWS = {line.strip() for line in """
     windows_x86_64_gnu 0.42.2
     windows_x86_64_gnullvm 0.42.2
     windows_x86_64_msvc 0.42.2
-    winnow 0.7.14
 """.strip().splitlines()}
 
 
 def _answer_cargo_metadata_from_the_lock(monkeypatch) -> None:
-    """Answer `cargo metadata` from Cargo.lock minus NOT_BUILT_FOR_WINDOWS, so no Rust toolchain installs.
+    """Answer `cargo metadata` from Cargo.lock minus NOT_BUILT_FOR_RELEASES, so no Rust toolchain installs.
 
     A crate added to the lock, dropped from it, re-versioned or given another checksum then fails
     the manifest check as it would with the real resolution.
@@ -538,7 +578,7 @@ def _answer_cargo_metadata_from_the_lock(monkeypatch) -> None:
             "version": package["version"], "source": package.get("source"), "license": None,
         }
         for package in lock
-        if f"{package['name']} {package['version']}" not in NOT_BUILT_FOR_WINDOWS
+        if f"{package['name']} {package['version']}" not in NOT_BUILT_FOR_RELEASES
     ]
     metadata = json.dumps({"packages": packages, "resolve": {"nodes": [{"id": package["id"]} for package in packages]}})
     real_run = subprocess.run
@@ -551,6 +591,7 @@ def _answer_cargo_metadata_from_the_lock(monkeypatch) -> None:
     monkeypatch.setattr(source_tool.subprocess, "run", run)
 
 
+@_RELEASE_INTERPRETER
 def test_manifest_records_current_incomplete_status(monkeypatch):
     manifest_path = Path(__file__).resolve().parents[2] / "licenses" / "source-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -559,8 +600,8 @@ def test_manifest_records_current_incomplete_status(monkeypatch):
         loaded = source_tool.load_manifest(manifest_path)
     except SourceDistributionError as error:
         pytest.fail(
-            f"{error}. If Cargo.lock gained or re-versioned a crate that Windows does not build, list it in "
-            "NOT_BUILT_FOR_WINDOWS; otherwise regenerate licenses/source-manifest.json."
+            f"{error}. If Cargo.lock gained or re-versioned a crate that neither release builds, list it in "
+            "NOT_BUILT_FOR_RELEASES; otherwise regenerate licenses/source-manifest.json."
         )
 
     assert manifest["status"] in {"complete", "incomplete"}

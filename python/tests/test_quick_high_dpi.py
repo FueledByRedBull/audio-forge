@@ -8,6 +8,7 @@ the checks in ``quick_high_dpi_checks.py`` in a child pytest started with it.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,9 @@ CHECKS = Path(__file__).with_name("quick_high_dpi_checks.py")
 SELECTION = "not unsaved and not output and not compressor and not deesser"
 
 
+# The child's layout checks measure text in the Windows UI font: skipped off Windows, where
+# a runner without the font must fail rather than skip.
+@pytest.mark.skipif(sys.platform != "win32", reason="Measured in the Windows UI font")
 @pytest.mark.parametrize("scale", ["1.5", "2"])
 def test_the_scene_loads_without_warnings_and_nothing_overflows_at_scale(scale) -> None:
     run_checks(

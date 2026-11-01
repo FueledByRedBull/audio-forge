@@ -23,9 +23,15 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 from .. import configure_deepfilter_runtime_paths
 from ..app_logging import configure_app_logging, get_log_file
 from ..config_parts import shared
-from .desktop_integration import SingleInstanceCoordinator, activate_window
-from .login_startup import LOGIN_STARTUP_ARGUMENT
+from .desktop_integration import (
+    TOGGLE_MUTE_ARGUMENT,
+    TOGGLE_MUTE_COMMAND,
+    SingleInstanceCoordinator,
+    activate_window,
+)
+from .login_startup import APP_ID, LOGIN_STARTUP_ARGUMENT
 from .theme import apply_application_theme
+from .virtual_microphone import VirtualMicrophoneWatch
 
 
 WINDOWS_APP_USER_MODEL_ID = "FueledByRedBull.AudioForge"
@@ -100,6 +106,24 @@ def configure_vad_env() -> None:
         if candidate.is_file():
             os.environ["VAD_MODEL_PATH"] = str(candidate)
             return
+
+
+def configure_virtual_microphone() -> None:
+    """Create the PipeWire "AudioForge Mic" on Linux; it lasts until AudioForge exits.
+
+    Without PipeWire the app still runs: routing then needs a device of the
+    user's own, as on Windows.
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        from .. import mic_eq_core
+
+        mic_eq_core.create_virtual_microphone()
+    except (ImportError, RuntimeError):
+        logging.getLogger(__name__).warning(
+            "Could not create the AudioForge Mic virtual microphone", exc_info=True
+        )
 
 
 def configure_windows_app_id() -> None:
@@ -390,8 +414,21 @@ def _crash_diagnostics() -> Iterator[Callable[[], None]]:
                     Path(crash_file.name).unlink(missing_ok=True)
 
 
+def send_toggle_mute() -> int:
+    """Mute or unmute the running AudioForge; a key binding runs this, so it never opens a window."""
+    if QCoreApplication.instance() is None:
+        _app = QCoreApplication([])  # local sockets need a Qt application object
+    instance = SingleInstanceCoordinator()
+    if not instance.send_command(TOGGLE_MUTE_COMMAND):
+        print(f"AudioForge: {instance.last_error}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool = False) -> int:
     """Run the Qt application for the provided main window class."""
+    if not smoke_test and TOGGLE_MUTE_ARGUMENT in sys.argv:
+        return send_toggle_mute()
     isolated_config = tempfile.TemporaryDirectory(prefix="audioforge-smoke-") if smoke_test else None
     previous_config_env = {
         name: os.environ.get(name)
@@ -442,6 +479,8 @@ def _run_qt_app(
 
     login_startup = not smoke_test and LOGIN_STARTUP_ARGUMENT in sys.argv
     app = QApplication([arg for arg in sys.argv if arg != LOGIN_STARTUP_ARGUMENT])
+    # Wayland matches windows to the installed .desktop file by this id.
+    app.setDesktopFileName(APP_ID)
     apply_application_theme(app)
 
     app_icon = _application_icon()
@@ -474,16 +513,41 @@ def _run_qt_app(
                 )
             return 1
         app.aboutToQuit.connect(instance.close)
+    # Claimed before the window is built, so a D-Bus launch finds the name
+    # quickly; its calls queue until the event loop runs, after the window exists.
+    windows: list[QMainWindow] = []
+    bus_service = None
+    if instance is not None and sys.platform.startswith("linux"):
+        try:
+            from .application_bus import ApplicationBusService
+        except ImportError:
+            # D-Bus activation is an extra; the app runs without it.
+            logging.getLogger(__name__).warning("D-Bus activation is unavailable", exc_info=True)
+        else:
+            service = ApplicationBusService(
+                APP_ID,
+                lambda: activate_window(windows[0]),
+                {TOGGLE_MUTE_COMMAND: lambda: getattr(windows[0], "_toggle_mute_from_hotkey")()},
+            )
+            if service.start():
+                bus_service = service
+                app.aboutToQuit.connect(service.close)
 
     enable_qt_log()
     try:
         configure_deepfilter_env()
         configure_vad_env()
+        if not smoke_test:
+            configure_virtual_microphone()
         window = (
             cast(Callable[..., QMainWindow], window_cls)(login_startup=True)
             if login_startup else window_cls()
         )
         setattr(window, "single_instance", instance)
+        setattr(window, "application_bus", bus_service)
+        if not smoke_test and sys.platform.startswith("linux"):
+            setattr(window, "virtual_microphone_watch", VirtualMicrophoneWatch())
+        windows.append(window)
         if not app_icon.isNull():
             window.setWindowIcon(app_icon)
         apply_windows_window_icon(window)
@@ -494,6 +558,9 @@ def _run_qt_app(
             window.show()
         if instance is not None:
             instance.set_activation_callback(lambda: activate_window(window))
+            instance.set_command_callback(
+                TOGGLE_MUTE_COMMAND, getattr(window, "_toggle_mute_from_hotkey")
+            )
     except Exception:
         if instance is not None:
             instance.close()

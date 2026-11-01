@@ -3,8 +3,6 @@ use crate::audio::clock::now_micros;
 use crate::audio::rt::RtErrorCode;
 use crate::dsp::Compressor;
 use std::sync::atomic::Ordering;
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 impl AudioProcessor {
     // === Metering ===
@@ -214,7 +212,8 @@ impl AudioProcessor {
             .load(Ordering::Relaxed)
     }
 
-    /// Whether the DSP thread runs without MMCSS Pro Audio scheduling.
+    /// Whether the DSP thread runs without realtime scheduling (MMCSS Pro
+    /// Audio on Windows, RTKit on Linux).
     pub fn is_dsp_scheduling_degraded(&self) -> bool {
         self.shared.dsp.scheduling_degraded.load(Ordering::Relaxed)
     }

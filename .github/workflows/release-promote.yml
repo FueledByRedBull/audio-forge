@@ -23,10 +23,11 @@ concurrency:
 permissions:
   contents: read
 
-# The job that runs the candidate (the executable, the MSI and the pinned pip
-# packages) holds a read-only token and keeps no credentials in its checkout.
-# Only publish-release can write, and it runs none of the candidate's code: it
-# receives the verified files as an artifact and re-checks their hashes.
+# The jobs that run the candidate (the executable, the MSI, the Linux builds and
+# the pinned pip packages) hold a read-only token and keep no credentials in
+# their checkouts. Only publish-release can write, and it runs none of the
+# candidate's code: it receives the verified files as an artifact and re-checks
+# their hashes.
 jobs:
   verify-candidate:
     name: Verify the candidate without publishing
@@ -37,6 +38,8 @@ jobs:
       contents: read
     outputs:
       prerelease: ${{ steps.origins.outputs.prerelease }}
+      tag_commit: ${{ steps.origins.outputs.tag_commit }}
+      candidate_run_attempt: ${{ steps.origins.outputs.candidate_run_attempt }}
       public_version: ${{ steps.stage.outputs.public_version }}
       asset_hashes: ${{ steps.stage.outputs.asset_hashes }}
     defaults:
@@ -105,7 +108,7 @@ jobs:
             )
             $json = gh run view $RunId `
               --repo $env:GITHUB_REPOSITORY `
-              --json databaseId,workflowName,event,status,conclusion,headSha,attempt
+              --json databaseId,workflowName,event,status,conclusion,headSha,attempt,jobs
             if ($LASTEXITCODE -ne 0) {
               throw "Unable to read GitHub Actions run $RunId."
             }
@@ -128,6 +131,16 @@ jobs:
             }
             if ([string]$run.attempt -notmatch '^\d+$' -or [int]$run.attempt -lt 1) {
               throw "Run $RunId has an invalid attempt number."
+            }
+            # The run succeeds only if its jobs do, but a run from a workflow that
+            # lacks the Linux tests would also succeed: each must be there.
+            $shards = @((Get-Content -Raw .github/pytest-shards.json | ConvertFrom-Json).PSObject.Properties.Name) + "rest"
+            $required = @("Build Linux release package", "Linux Rust tests and lint") + @($shards | ForEach-Object { "linux-pytest ($_)" })
+            foreach ($jobName in $required) {
+              $job = @($run.jobs | Where-Object { $_.name -ceq $jobName })
+              if ($job.Count -ne 1 -or $job[0].conclusion -ne "success") {
+                throw "Run $RunId has no successful '$jobName' job."
+              }
             }
             return $run
           }
@@ -158,7 +171,15 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ inputs.candidate_run_id }}
 
-      # The five release files are located, staged and hashed here, before the
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: audioforge-release-linux-${{ inputs.release_tag }}
+          path: linux-candidate
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_run_id }}
+
+      # The seven release files are located, staged and hashed here, before the
       # MSI or the executable of the candidate runs; publish-release re-checks the
       # staged copies against the recorded hashes.
       - name: Locate the candidate files
@@ -189,6 +210,62 @@ jobs:
             }
             "$($entry[0])=$($file[0].FullName)" >> $env:GITHUB_OUTPUT
           }
+          $tarballName = "AudioForge-$($env:RELEASE_TAG)-linux-x86_64.tar.gz"
+          $appImageName = "AudioForge-$($env:RELEASE_TAG)-x86_64.AppImage"
+          foreach ($entry in @(
+            @("linux_tarball", $tarballName),
+            @("linux_tarball_checksum", "$tarballName.sha256"),
+            @("linux_tarball_manifest", "$tarballName.manifest.json"),
+            @("linux_tarball_metadata", "$tarballName.metadata.json"),
+            @("linux_appimage", $appImageName),
+            @("linux_appimage_checksum", "$appImageName.sha256"),
+            @("linux_appimage_manifest", "$appImageName.manifest.json"),
+            @("linux_appimage_metadata", "$appImageName.metadata.json"),
+            @("linux_native_attestation", "AudioForge-$($env:RELEASE_TAG)-libdf.provenance.json")
+          )) {
+            $file = @(Get-ChildItem -LiteralPath linux-candidate -Filter $entry[1] -File)
+            if ($file.Count -ne 1) {
+              throw "Linux candidate artifact must contain exactly one $($entry[1])."
+            }
+            "$($entry[0])=$($file[0].FullName)" >> $env:GITHUB_OUTPUT
+          }
+
+      # The Linux packages come from the same candidate run as the approved
+      # archive. Their sidecars must match, and the libdf.so inside the tarball
+      # must be the library its build attestation describes.
+      - name: Verify the Linux candidate files
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          LINUX_TARBALL: ${{ steps.files.outputs.linux_tarball }}
+          LINUX_TARBALL_CHECKSUM: ${{ steps.files.outputs.linux_tarball_checksum }}
+          LINUX_APPIMAGE: ${{ steps.files.outputs.linux_appimage }}
+          LINUX_APPIMAGE_CHECKSUM: ${{ steps.files.outputs.linux_appimage_checksum }}
+          LINUX_NATIVE_ATTESTATION: ${{ steps.files.outputs.linux_native_attestation }}
+        run: |
+          foreach ($pair in @(
+            @($env:LINUX_TARBALL, $env:LINUX_TARBALL_CHECKSUM),
+            @($env:LINUX_APPIMAGE, $env:LINUX_APPIMAGE_CHECKSUM)
+          )) {
+            $hash = (Get-FileHash -LiteralPath $pair[0] -Algorithm SHA256).Hash.ToLowerInvariant()
+            $listed = (Get-Content -LiteralPath $pair[1] -Raw).Trim()
+            if ($listed -cne "$hash  $([IO.Path]::GetFileName($pair[0]))") {
+              throw "$([IO.Path]::GetFileName($pair[1])) does not match the file it describes."
+            }
+          }
+          $attestation = Get-Content -LiteralPath $env:LINUX_NATIVE_ATTESTATION -Raw | ConvertFrom-Json
+          $attested = [string]$attestation.output.sha256
+          if ($attestation.output.name -ne "libdf.so" -or $attested -notmatch '^[0-9a-fA-F]{64}$') {
+            throw "The libdf.so attestation does not name a library and its SHA-256."
+          }
+          $member = "AudioForge-$($env:RELEASE_TAG)-linux-x86_64/AudioForge/_internal/libdf.so"
+          $extractDir = Join-Path $env:RUNNER_TEMP ("audioforge-linux-libdf-" + [guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+          tar -xzf $env:LINUX_TARBALL -C $extractDir $member
+          if ($LASTEXITCODE -ne 0) { throw "The Linux tarball has no $member." }
+          $packaged = (Get-FileHash -LiteralPath (Join-Path $extractDir $member) -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($packaged -ne $attested.ToLowerInvariant()) {
+            throw "The Linux tarball's libdf.so is not the library its attestation describes."
+          }
 
       - name: Stage the release assets
         id: stage
@@ -207,6 +284,15 @@ jobs:
           SOURCE_CHECKSUM: ${{ steps.files.outputs.source_checksum }}
           SOURCE_METADATA: ${{ steps.files.outputs.source_metadata }}
           NATIVE_ATTESTATION: ${{ steps.files.outputs.native_attestation }}
+          LINUX_TARBALL: ${{ steps.files.outputs.linux_tarball }}
+          LINUX_TARBALL_CHECKSUM: ${{ steps.files.outputs.linux_tarball_checksum }}
+          LINUX_TARBALL_MANIFEST: ${{ steps.files.outputs.linux_tarball_manifest }}
+          LINUX_TARBALL_METADATA: ${{ steps.files.outputs.linux_tarball_metadata }}
+          LINUX_APPIMAGE: ${{ steps.files.outputs.linux_appimage }}
+          LINUX_APPIMAGE_CHECKSUM: ${{ steps.files.outputs.linux_appimage_checksum }}
+          LINUX_APPIMAGE_MANIFEST: ${{ steps.files.outputs.linux_appimage_manifest }}
+          LINUX_APPIMAGE_METADATA: ${{ steps.files.outputs.linux_appimage_metadata }}
+          LINUX_NATIVE_ATTESTATION: ${{ steps.files.outputs.linux_native_attestation }}
         run: |
           if ($env:EXPECTED_SHA256 -notmatch '^[0-9a-fA-F]{64}$') {
             throw "expected_archive_sha256 must contain exactly 64 hexadecimal characters."
@@ -227,7 +313,10 @@ jobs:
           foreach ($sidecar in @(
             $env:CHECKSUM, $env:MANIFEST, $env:METADATA,
             $env:INSTALLER_CHECKSUM, $env:INSTALLER_MANIFEST, $env:INSTALLER_METADATA,
-            $env:SOURCE_CHECKSUM, $env:SOURCE_METADATA, $env:NATIVE_ATTESTATION
+            $env:SOURCE_CHECKSUM, $env:SOURCE_METADATA, $env:NATIVE_ATTESTATION,
+            $env:LINUX_TARBALL_CHECKSUM, $env:LINUX_TARBALL_MANIFEST, $env:LINUX_TARBALL_METADATA,
+            $env:LINUX_APPIMAGE_CHECKSUM, $env:LINUX_APPIMAGE_MANIFEST, $env:LINUX_APPIMAGE_METADATA,
+            $env:LINUX_NATIVE_ATTESTATION
           )) {
             Copy-Item -LiteralPath $sidecar -Destination $evidenceDir -ErrorAction Stop
           }
@@ -240,7 +329,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Release evidence archive failed with exit code $LASTEXITCODE."
           }
-          $staged = @($env:ARCHIVE, $env:INSTALLER, $env:SOURCE_ARCHIVE) | ForEach-Object {
+          $staged = @($env:ARCHIVE, $env:INSTALLER, $env:SOURCE_ARCHIVE, $env:LINUX_TARBALL, $env:LINUX_APPIMAGE) | ForEach-Object {
             Copy-Item -LiteralPath $_ -Destination $stageDir -PassThru -ErrorAction Stop
           }
           $assetPaths = @($staged.FullName) + @($evidenceArchive)
@@ -399,12 +488,152 @@ jobs:
             throw "Promotion refused: exact candidate EXE smoke test failed with code $($process.ExitCode)."
           }
 
+  # Verifies the Linux files on Linux, where their symlinks extract as they were
+  # built, and runs the candidate's two Linux builds under a read-only token with
+  # no credentials in the checkout, as verify-candidate does for the Windows
+  # ones. Before it runs anything it re-hashes what it downloaded against the
+  # digests verify-candidate staged, and it checks that the AppImage holds the
+  # same bundle as the tarball.
+  verify-linux-candidate:
+    name: Verify the Linux candidate without publishing
+    needs: verify-candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Authorize the dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCHER: ${{ github.triggering_actor }}
+        run: |
+          if ($env:GITHUB_REF -ne "refs/heads/master") {
+            throw "This workflow runs only from refs/heads/master, not $env:GITHUB_REF."
+          }
+          $permission = Invoke-RestMethod `
+            -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" } `
+            -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/collaborators/$([uri]::EscapeDataString($env:DISPATCHER))/permission"
+          if ($permission.role_name -notin @("admin", "maintain")) {
+            throw "$env:DISPATCHER needs the admin or maintain role to run this workflow, but has '$($permission.role_name)'."
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.release_tag }}
+          persist-credentials: false
+
+      - name: Confirm the checkout is the release tag commit
+        env:
+          TAG_COMMIT: ${{ needs.verify-candidate.outputs.tag_commit }}
+        run: |
+          if ($env:TAG_COMMIT -notmatch '^[0-9a-fA-F]{40}$' -or (git rev-parse HEAD).Trim() -ne $env:TAG_COMMIT) {
+            throw "The checkout is not the release tag commit."
+          }
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13.17"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: audioforge-release-linux-${{ inputs.release_tag }}
+          path: linux-candidate
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_run_id }}
+
+      # The bytes verify-candidate staged and hashed are the ones that get
+      # published; these must be the same bytes before anything here runs them.
+      - name: Compare the downloaded files with the staged ones
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          ASSET_HASHES: ${{ needs.verify-candidate.outputs.asset_hashes }}
+        run: |
+          python - "$RELEASE_TAG" <<'EOF'
+          import hashlib, json, os, sys
+          tag = sys.argv[1]
+          staged = json.loads(os.environ["ASSET_HASHES"])
+          for name in (f"AudioForge-{tag}-linux-x86_64.tar.gz", f"AudioForge-{tag}-x86_64.AppImage"):
+              with open(os.path.join("linux-candidate", name), "rb") as handle:
+                  digest = hashlib.file_digest(handle, "sha256").hexdigest()
+              if staged.get(name) != digest:
+                  sys.exit(f"{name} differs from the copy verify-candidate staged and hashed.")
+          EOF
+
+      - name: Install the libraries the Linux app starts with
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2t64 libdbus-1-3 libegl1 libfontconfig1 libfreetype6 libgl1 \
+            libglib2.0-0t64 libgssapi-krb5-2 libpipewire-0.3-0t64 libpulse0 libxkbcommon0
+
+      - name: Verify the Linux tarball and AppImage
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          CANDIDATE_RUN_ATTEMPT: ${{ needs.verify-candidate.outputs.candidate_run_attempt }}
+          TAG_COMMIT: ${{ needs.verify-candidate.outputs.tag_commit }}
+        run: |
+          set -euo pipefail
+          candidate="$PWD/linux-candidate"
+          tarball="$candidate/AudioForge-$RELEASE_TAG-linux-x86_64.tar.gz"
+          appimage="$candidate/AudioForge-$RELEASE_TAG-x86_64.AppImage"
+          tarball_root="$RUNNER_TEMP/audioforge-linux-candidate"
+          appimage_root="$RUNNER_TEMP/audioforge-linux-appimage"
+          mkdir -p "$tarball_root" "$appimage_root"
+          tar -xzf "$tarball" -C "$tarball_root"
+          # The runtime extracts the image itself, so no FUSE is needed.
+          chmod +x "$appimage"
+          (cd "$appimage_root" && "$appimage" --appimage-extract > /dev/null)
+          verify() {
+            python python/tools/release_provenance.py verify \
+              --bundle "$1" \
+              --archive "$2" \
+              --checksum "$2.sha256" \
+              --manifest "$2.manifest.json" \
+              --metadata "$2.metadata.json" \
+              --baseline evaluation/release-bundle-path-baseline-linux.json \
+              --expected-commit "$TAG_COMMIT" \
+              --expected-producer "Release package" "$CANDIDATE_RUN_ID" "$CANDIDATE_RUN_ATTEMPT" \
+              --require-source-distribution \
+              --native-attestation "$candidate/AudioForge-$RELEASE_TAG-libdf.provenance.json"
+          }
+          verify "$tarball_root/AudioForge-$RELEASE_TAG-linux-x86_64/AudioForge" "$tarball"
+          verify "$appimage_root/squashfs-root/usr/lib/audioforge" "$appimage"
+          # Each manifest matches the bundle extracted from its own file, so equal
+          # file lists mean the AppImage holds the tarball's bundle.
+          python - "$tarball.manifest.json" "$appimage.manifest.json" <<'EOF'
+          import json, sys
+          tarball, appimage = (json.load(open(path, encoding="utf-8")) for path in sys.argv[1:])
+          if tarball["files"] != appimage["files"]:
+              sys.exit("The AppImage does not hold the same bundle as the tarball.")
+          EOF
+
+      # The candidate runs only now, after its bytes were matched to the staged
+      # ones and its sidecars verified.
+      - name: Smoke-test the Linux tarball and AppImage
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          timeout 90 "$RUNNER_TEMP/audioforge-linux-candidate/AudioForge-$RELEASE_TAG-linux-x86_64/AudioForge/AudioForge" --smoke-test
+          timeout 90 "$PWD/linux-candidate/AudioForge-$RELEASE_TAG-x86_64.AppImage" --appimage-extract-and-run --smoke-test
+
   # The only job that can write. The environment is a second lock beside the
   # dispatch check: repository settings limit it to master. It never runs the
   # candidate's code, so a flaw in the candidate cannot reach the write token.
   publish-release:
     name: Publish the verified release
-    needs: verify-candidate
+    needs: [verify-candidate, verify-linux-candidate]
     runs-on: windows-latest
     timeout-minutes: 30
     environment: release
@@ -455,6 +684,8 @@ jobs:
             archive = "AudioForge-$tag-win64-ultra.7z"
             installer = "AudioForge-$tag-win64.msi"
             source_archive = "AudioForge-$tag-source.7z"
+            linux_tarball = "AudioForge-$tag-linux-x86_64.tar.gz"
+            linux_appimage = "AudioForge-$tag-x86_64.AppImage"
             evidence_archive = "AudioForge-$tag-evidence.7z"
             checksums = "AudioForge-$tag-SHA256SUMS.txt"
           }
@@ -462,7 +693,7 @@ jobs:
           $files = @(Get-ChildItem -LiteralPath verified-release -File)
           foreach ($actual in @(@($recorded.PSObject.Properties.Name), @($files.Name))) {
             if (@(Compare-Object -ReferenceObject @($expectedNames.Values) -DifferenceObject $actual -CaseSensitive).Count -gt 0) {
-              throw "The verified release artifact does not hold exactly the five release files of $tag."
+              throw "The verified release artifact does not hold exactly the seven release files of $tag."
             }
           }
           $hashes = @{}
@@ -480,7 +711,7 @@ jobs:
             throw "The portable archive is not the one approved by expected_archive_sha256."
           }
           $listed = @(Get-Content -LiteralPath $assets.checksums.FullName)
-          $wanted = @("archive", "installer", "source_archive", "evidence_archive") | ForEach-Object {
+          $wanted = @("archive", "installer", "source_archive", "linux_tarball", "linux_appimage", "evidence_archive") | ForEach-Object {
             "$($hashes[$expectedNames[$_]])  $($expectedNames[$_])"
           }
           if (@(Compare-Object -ReferenceObject $wanted -DifferenceObject $listed -CaseSensitive).Count -gt 0) {
@@ -497,6 +728,8 @@ jobs:
           ARCHIVE: ${{ steps.verified.outputs.archive }}
           INSTALLER: ${{ steps.verified.outputs.installer }}
           SOURCE_ARCHIVE: ${{ steps.verified.outputs.source_archive }}
+          LINUX_TARBALL: ${{ steps.verified.outputs.linux_tarball }}
+          LINUX_APPIMAGE: ${{ steps.verified.outputs.linux_appimage }}
           EVIDENCE_ARCHIVE: ${{ steps.verified.outputs.evidence_archive }}
           CHECKSUMS: ${{ steps.verified.outputs.checksums }}
           PUBLIC_VERSION: ${{ needs.verify-candidate.outputs.public_version }}
@@ -526,7 +759,10 @@ jobs:
           $notesPath = Join-Path $env:RUNNER_TEMP (Split-Path -Leaf $notesFile)
           $notesContent | Set-Content -LiteralPath $notesPath -Encoding utf8
           $expectedPrerelease = $env:EXPECTED_PRERELEASE -eq "true"
-          $assetPaths = @($env:ARCHIVE, $env:INSTALLER, $env:SOURCE_ARCHIVE, $env:EVIDENCE_ARCHIVE, $env:CHECKSUMS)
+          $assetPaths = @(
+            $env:ARCHIVE, $env:INSTALLER, $env:SOURCE_ARCHIVE,
+            $env:LINUX_TARBALL, $env:LINUX_APPIMAGE, $env:EVIDENCE_ARCHIVE, $env:CHECKSUMS
+          )
           foreach ($assetPath in $assetPaths) {
             if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) {
               throw "Validated release asset is missing: $assetPath"

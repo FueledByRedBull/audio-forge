@@ -23,6 +23,7 @@ from mic_eq.analysis.cancellation import AnalysisCancelled
 from mic_eq.analysis.failure_detection import validate_analysis
 from mic_eq.analysis.spectrum import analyze_voice_spectrum, smooth_spectrum_perceptual
 from mic_eq.ui.auto_eq_explanation import headroom_advice
+from mic_eq.ui.platform_text import SOUND_SETTINGS
 
 calculate_eq_bands = auto_eq.calculate_eq_bands
 analyze_auto_eq = auto_eq.analyze_auto_eq
@@ -2199,7 +2200,7 @@ def test_real_render_the_stated_decibels_let_the_full_correction_through_with_th
     advice = headroom_advice(validation, chain, bool(result["apply_recommended"]))
 
     assert validation["gain_scale"] == 1.0 and not _excess(validation["after"]) <= 0
-    figure = re.search(r"Lower the microphone gain by about (\d+) dB \(in Windows or on the microphone\)", advice)
+    figure = re.search(rf"Lower the microphone gain by about (\d+) dB \(in {SOUND_SETTINGS} or on the microphone\)", advice)
     assert figure and figure[1] == "1" and "to leave enough room" in advice
     assert _excess(_native_render(_tones(0.0), result["validated_candidate_eq"], chain)) <= 0
 

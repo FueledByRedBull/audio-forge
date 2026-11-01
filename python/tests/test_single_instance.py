@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+import os
+import stat
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 from typing import cast
@@ -74,6 +81,174 @@ def test_second_instance_forwards_activation_without_removing_primary_server(
     finally:
         secondary.close()
         primary.close()
+
+
+def test_a_sent_command_runs_its_callback_without_activating_the_window(qapp, tmp_path):
+    server_name = _server_name()
+    primary = desktop_integration.SingleInstanceCoordinator(
+        server_name=server_name, lock_path=tmp_path / "audioforge.lock"
+    )
+    sender = desktop_integration.SingleInstanceCoordinator(
+        server_name=server_name, lock_path=tmp_path / "audioforge.lock"
+    )
+    activations: list[bool] = []
+    mutes: list[bool] = []
+    primary.set_activation_callback(lambda: activations.append(True))
+    primary.set_command_callback(
+        desktop_integration.TOGGLE_MUTE_COMMAND, lambda: mutes.append(True)
+    )
+    try:
+        assert primary.acquire() == primary.ACQUIRED
+        # A Windows pipe write completes only once the server reads it, so the
+        # sender runs on its own thread, as a second launch would in its own process.
+        sent: list[bool] = []
+        thread = threading.Thread(
+            target=lambda: sent.extend(
+                sender.send_command(command)
+                for command in (desktop_integration.TOGGLE_MUTE_COMMAND, "unknown-command")
+            )
+        )
+        thread.start()
+        deadline = time.monotonic() + 10
+        while thread.is_alive() and time.monotonic() < deadline:
+            qapp.processEvents()
+            thread.join(0.01)
+        assert sent == [True, True], sender.last_error
+        for _ in range(50):
+            qapp.processEvents()
+            if mutes:
+                break
+        for _ in range(10):
+            qapp.processEvents()
+        assert mutes == [True]
+        assert activations == []
+    finally:
+        sender.close()
+        primary.close()
+
+
+def test_sending_a_command_without_a_running_instance_fails(tmp_path):
+    sender = desktop_integration.SingleInstanceCoordinator(
+        server_name=_server_name(), lock_path=tmp_path / "audioforge.lock"
+    )
+    try:
+        assert not sender.send_command(desktop_integration.TOGGLE_MUTE_COMMAND)
+        assert sender.last_error == "AudioForge is not running"
+    finally:
+        sender.close()
+
+
+def test_the_toggle_mute_command_line_names_this_copy(monkeypatch, tmp_path):
+    image = tmp_path / "Audio Forge.AppImage"
+    monkeypatch.setattr(desktop_integration.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(desktop_integration.sys, "platform", "linux")
+    monkeypatch.setenv("APPIMAGE", str(image))
+    monkeypatch.setenv("APPDIR", str(Path(sys.executable).parent))  # the mount this copy runs from
+    assert desktop_integration.toggle_mute_command() == f"'{image}' --toggle-mute"
+
+    monkeypatch.setattr(desktop_integration.sys, "frozen", False)
+    assert desktop_integration.toggle_mute_command().endswith("-m mic_eq --toggle-mute")
+
+
+def test_the_instance_directory_is_the_users_runtime_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr(desktop_integration.sys, "platform", "linux")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    assert desktop_integration._private_directory() == tmp_path
+
+    # The XDG spec ignores a relative path, and a login without one gets a private directory at home.
+    for unusable in ("run", None):
+        if unusable is None:
+            monkeypatch.delenv("XDG_RUNTIME_DIR")
+        else:
+            monkeypatch.setenv("XDG_RUNTIME_DIR", unusable)
+        assert desktop_integration._private_directory() == Path.home() / ".cache" / "AudioForge"
+
+
+def test_windows_keeps_naming_its_instance_endpoints_itself(monkeypatch, tmp_path):
+    monkeypatch.setattr(desktop_integration.sys, "platform", "win32")
+    assert desktop_integration._private_directory() is None
+    instance = desktop_integration.SingleInstanceCoordinator(
+        server_name="AudioForge.test.names", lock_path=tmp_path / "audioforge.lock"
+    )
+    assert instance.server_name == "AudioForge.test.names"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the runtime directory is a POSIX concept")
+class TestRuntimeDirectory:
+    @pytest.fixture(autouse=True)
+    def runtime(self, monkeypatch):
+        # Short, like /run/user/1000: a Unix socket path can't pass about 107 bytes, and pytest's tmp_path does.
+        with tempfile.TemporaryDirectory(prefix="af", dir="/tmp") as directory:
+            self.directory = Path(directory)
+            self.directory.chmod(0o700)
+            monkeypatch.setenv("XDG_RUNTIME_DIR", directory)
+            yield
+
+    def test_a_long_user_name_keeps_the_socket_under_the_unix_limit(self, monkeypatch):
+        monkeypatch.delenv("XDG_RUNTIME_DIR")
+        monkeypatch.setenv("HOME", "/home/" + "u" * 32)
+        monkeypatch.setattr(desktop_integration, "_USER_SCOPE", "75" * 32)
+        monkeypatch.setattr(desktop_integration, "SINGLE_INSTANCE_SERVER", f"AudioForge.SingleInstance.v1.{'75' * 32}")
+        instance = desktop_integration.SingleInstanceCoordinator(
+            server_name=desktop_integration.SINGLE_INSTANCE_SERVER, lock_path=Path(self.directory) / "lock"
+        )
+        assert len(instance.server_name.encode()) < 107
+
+    def test_the_socket_and_the_lock_live_in_it_not_in_the_temp_directory(self, qapp):
+        name = _server_name()
+        instance = desktop_integration.SingleInstanceCoordinator(server_name=name)
+        try:
+            assert instance.server_name == str(self.directory / name)
+            assert instance.acquire() == instance.ACQUIRED
+            assert (self.directory / name).exists()
+            assert list(self.directory.glob("AudioForge.SingleInstance.*.lock"))
+        finally:
+            instance.close()
+
+    def test_toggle_mute_reaches_the_running_instance_whatever_the_temp_directory(
+        self, qapp, monkeypatch, tmp_path
+    ):
+        # The app's own names, as a key binding launches them, from a shell with another $TMPDIR.
+        primary = desktop_integration.SingleInstanceCoordinator()
+        muted: list[bool] = []
+        primary.set_command_callback(desktop_integration.TOGGLE_MUTE_COMMAND, lambda: muted.append(True))
+        try:
+            assert primary.acquire() == primary.ACQUIRED
+            monkeypatch.setenv("TMPDIR", str(tmp_path / "elsewhere"))
+            exits: list[int] = []
+            thread = threading.Thread(target=lambda: exits.append(app_bootstrap.send_toggle_mute()))
+            thread.start()
+            deadline = time.monotonic() + 10
+            while (thread.is_alive() or not muted) and time.monotonic() < deadline:
+                qapp.processEvents()
+                thread.join(0.01)
+            assert exits == [0] and muted == [True]
+        finally:
+            primary.close()
+
+    def test_a_directory_others_can_write_is_refused(self, qapp):
+        self.directory.chmod(0o777)
+        instance = desktop_integration.SingleInstanceCoordinator(server_name=_server_name())
+        assert instance.acquire() == instance.FAILED
+        assert "not private" in (instance.last_error or "")
+        assert not list(self.directory.iterdir())
+
+    def test_a_directory_another_account_owns_is_refused(self, qapp, monkeypatch):
+        account = os.getuid()  # pyright: ignore[reportAttributeAccessIssue]
+        monkeypatch.setattr(desktop_integration.os, "getuid", lambda: account + 1, raising=False)
+        instance = desktop_integration.SingleInstanceCoordinator(server_name=_server_name())
+        assert instance.acquire() == instance.FAILED
+        assert "not private" in (instance.last_error or "")
+
+    def test_without_a_runtime_directory_a_private_one_at_home_is_made(self, qapp, monkeypatch):
+        monkeypatch.delenv("XDG_RUNTIME_DIR")
+        instance = desktop_integration.SingleInstanceCoordinator(server_name=_server_name())
+        try:
+            assert instance.acquire() == instance.ACQUIRED
+            made = Path.home() / ".cache" / "AudioForge"
+            assert stat.S_IMODE(made.stat().st_mode) == 0o700
+        finally:
+            instance.close()
 
 
 def test_second_instance_fails_closed_when_owner_has_no_activation_endpoint(
@@ -174,7 +349,7 @@ def test_login_bootstrap_never_shows_window_or_modal_and_uses_quiet_lock(qapp, m
 
     instance = SimpleNamespace(
         acquire=Mock(return_value="acquired"), close=Mock(),
-        set_activation_callback=Mock(), last_error=None,
+        set_activation_callback=Mock(), set_command_callback=Mock(), last_error=None,
     )
     factory = Mock(
         return_value=instance, ACQUIRED="acquired", FORWARDED="forwarded",
@@ -186,6 +361,9 @@ def test_login_bootstrap_never_shows_window_or_modal_and_uses_quiet_lock(qapp, m
         def __init__(self, *, login_startup=False):
             super().__init__()
             seen.append(login_startup)
+
+        def _toggle_mute_from_hotkey(self):
+            pass
 
         def begin_login_startup(self):
             seen.append(self.isVisible())
@@ -246,6 +424,7 @@ def test_login_lifecycle_keeps_hidden_session_alive_and_releases_lock_on_quit(
             self._shutdown = lambda: MainWindow._shutdown(cast(MainWindow, self))
             self._engine = SimpleNamespace(wait=lambda _timeout: True)
             self._unregister_mute_hotkey = lambda: None
+            self._toggle_mute_from_hotkey = lambda: None
             self._save_ui_state = lambda: True
             self.processor = SimpleNamespace(is_running=lambda: False)
             self.config = SimpleNamespace(window_geometry={})

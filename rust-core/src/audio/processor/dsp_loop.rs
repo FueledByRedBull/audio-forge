@@ -54,9 +54,9 @@ use ringbuf::{HeapCons, HeapProd};
 use rubato::{Resampler, SincFixedIn};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 #[cfg(feature = "vad")]
@@ -295,7 +295,7 @@ pub(super) fn run_guarded_dsp_loop(
 
 /// Real-time scheduling is an optimisation: without it the DSP thread runs at
 /// normal priority, which still works. Report the fallback through diagnostics.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub(super) fn tolerate_scheduling_failure<G, E>(
     registration: Result<G, E>,
     degraded: &AtomicBool,
@@ -370,6 +370,21 @@ pub(super) struct DspLoop {
 /// Time constant of the block-rate and fill-level metrics.
 const TAU_MS: f32 = 200.0;
 const LATENCY_UPDATE_INTERVAL: Duration = Duration::from_millis(100);
+/// Longest stretch without blocking the loop ever allows itself: half of
+/// RTKit's default 200 ms RLIMIT_RTTIME budget.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const REALTIME_BUSY_LIMIT: Duration = Duration::from_millis(100);
+/// Shortest busy limit. cpal sets the soft limit to one stream quantum, which can
+/// be a millisecond; half of that would put the loop to sleep after nearly every
+/// pass, and a pass can take several milliseconds. The soft limit is only a
+/// hint (SIGXCPU is ignored), so this floor trades nothing for safety: it is far
+/// below the hard limit, which is RTKit's maximum, 200 ms by default.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const REALTIME_BUSY_FLOOR: Duration = Duration::from_millis(10);
+/// How long start-up waits for RTKit's answer before running at normal priority.
+/// The ready wait is 5 s, and RTKit's D-Bus calls can each block for 10 s.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const REALTIME_PROMOTION_TIMEOUT: Duration = Duration::from_secs(2);
 const NON_FINITE_REBUILD_THRESHOLD: u32 = 3;
 const NON_FINITE_REBUILD_WINDOW_MS: u64 = 2000;
 const OUTPUT_MAX_CATCHUP_RATIO: f32 = 1.03;
@@ -600,8 +615,8 @@ impl DspLoop {
         apply_limiter_control(&mut limiter, &limiter_snapshot);
         output_ceiling_linear.set(10.0_f32.powf(limiter.ceiling_db() as f32 / 20.0));
 
-        // Keep the existing priority policy outside Windows.
-        #[cfg(not(windows))]
+        // Keep the existing priority policy outside Windows and Linux (see run()).
+        #[cfg(not(any(windows, target_os = "linux")))]
         if let Err(_e) = set_current_thread_priority(ThreadPriority::Max) {
             processor_debug_log!("Warning: Could not set audio thread priority: {:?}", _e);
         }
@@ -781,12 +796,148 @@ impl DspLoop {
     }
 }
 
+/// Run `request` on a helper thread and wait at most `timeout` for its answer,
+/// so a call that blocks on another process cannot hold the caller up.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn run_bounded(
+    timeout: Duration,
+    request: impl FnOnce() -> Result<(), String> + Send + 'static,
+) -> Result<(), String> {
+    let (answer_tx, answer_rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("audioforge-rtkit".to_string())
+        .spawn(move || {
+            let _ = answer_tx.send(request());
+        })
+        .map_err(|error| format!("could not start the RTKit request thread: {error}"))?;
+    match answer_rx.recv_timeout(timeout) {
+        Ok(answer) => answer,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err("RTKit did not answer in time".to_string()),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err("the RTKit request ended without an answer".to_string())
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl DspLoop {
+    /// Ask RTKit to make the DSP thread realtime. It runs on the DSP thread
+    /// before the thread reports ready, so the D-Bus round trips finish before
+    /// the streams start (cpal's streams are built inactive, so its own
+    /// promotions come after this one), and `run_bounded` keeps a slow RTKit
+    /// from failing the start. SIGXCPU is ignored first. A refusal, an
+    /// unreachable RTKit, a timeout or a SIGXCPU that cannot be ignored leaves
+    /// the thread at normal priority and sets the scheduling-degraded
+    /// diagnostic, like a missing MMCSS task on Windows. Only the live DSP thread is promoted;
+    /// offline loops built by `new` stay ordinary threads.
+    ///
+    /// RTKit grants realtime within RLIMIT_RTTIME, a process-wide budget. Ask
+    /// for a second, which RTKit caps at its maximum (the budget PipeWire's own
+    /// threads here already have), rather than one block, which would cut the
+    /// budget for those threads too. audio_thread_priority lowers the limit
+    /// before it asks and cannot raise the hard limit again, so a refusal
+    /// leaves it lowered. That is harmless: the limit only applies to realtime
+    /// threads, and each later promotion in this process (cpal's included) sets
+    /// it again with the same RTKit maximum as the hard limit.
+    // shortcut: a grant that arrives after the timeout leaves the thread
+    // realtime while the diagnostic says degraded; upgrade if that is ever seen.
+    pub(super) fn promote_to_realtime(&self) {
+        let sample_rate = self.pacing.sample_rate;
+        let promotion = ignore_sigxcpu()
+            .map_err(|error| format!("could not ignore SIGXCPU: {error}"))
+            .and_then(|()| {
+                audio_thread_priority::get_current_thread_info().map_err(|error| error.to_string())
+            })
+            .and_then(|thread| {
+                run_bounded(REALTIME_PROMOTION_TIMEOUT, move || {
+                    audio_thread_priority::promote_thread_to_real_time(
+                        thread,
+                        sample_rate,
+                        sample_rate,
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+                })
+            })
+            .inspect_err(|_e| {
+                processor_debug_log!("Warning: RTKit realtime priority unavailable: {}", _e);
+            });
+        tolerate_scheduling_failure(promotion, &self.shared.dsp.scheduling_degraded);
+    }
+}
+
+/// Ignore SIGXCPU for the whole process. A realtime thread that uses up the
+/// soft RLIMIT_RTTIME without blocking is sent SIGXCPU, which ends the process
+/// by default, and cpal sets that soft limit to one stream quantum when it
+/// promotes its callback thread, a millisecond or so at a low quantum. Ignored,
+/// the kernel keeps re-sending it once a second and the hard limit (RTKit's
+/// maximum for every promotion) still ends a runaway thread with SIGKILL; the
+/// busy guard stays far below both. A handler someone else installed already
+/// makes the signal harmless, so it is put back.
+#[cfg(target_os = "linux")]
+fn ignore_sigxcpu() -> std::io::Result<()> {
+    // SAFETY: signal() with SIG_IGN installs no code; it only changes the
+    // process's disposition of one signal, from any thread.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let previous = unsafe { libc::signal(libc::SIGXCPU, libc::SIG_IGN) };
+    if previous == libc::SIG_ERR {
+        return Err(std::io::Error::last_os_error());
+    }
+    if previous != libc::SIG_DFL && previous != libc::SIG_IGN {
+        // SAFETY: `previous` is the handler signal() just returned for this signal.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        unsafe { libc::signal(libc::SIGXCPU, previous) };
+    }
+    Ok(())
+}
+
+/// Longest stretch the loop may run without blocking, for a process whose soft
+/// and hard RLIMIT_RTTIME are `soft_us` and `hard_us` (None: unlimited): half
+/// the soft limit, within `REALTIME_BUSY_FLOOR` and `REALTIME_BUSY_LIMIT`, and
+/// never more than half the hard limit, which ends the process.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn busy_limit_for(soft_us: Option<u64>, hard_us: Option<u64>) -> Duration {
+    let half = |limit_us: u64| Duration::from_micros(limit_us / 2);
+    let from_soft = soft_us.map_or(REALTIME_BUSY_LIMIT, |limit_us| {
+        half(limit_us)
+            .max(REALTIME_BUSY_FLOOR)
+            .min(REALTIME_BUSY_LIMIT)
+    });
+    hard_us.map_or(from_soft, |limit_us| from_soft.min(half(limit_us)))
+}
+
+/// `busy_limit_for` the limits the process has now. They are read for every
+/// decision: each thread that asks RTKit for realtime (cpal's PipeWire callback
+/// thread asks for one stream quantum) sets the soft limit again.
+#[cfg(target_os = "linux")]
+fn realtime_busy_limit() -> Duration {
+    let limit = rustix::process::getrlimit(rustix::process::Resource::Rttime);
+    busy_limit_for(limit.current, limit.maximum)
+}
+
 // RT_REGION_START: dsp_processing_loop
 impl DspLoop {
     fn run_passes(&mut self) {
+        // A realtime thread that runs the hard RLIMIT_RTTIME without blocking
+        // is killed. An overloaded loop finds input on every pass and never
+        // idles, so it still sleeps briefly well inside the limit.
+        #[cfg(target_os = "linux")]
+        let mut busy_since = Instant::now();
         while self.shared.stream.running.load(Ordering::SeqCst) {
-            if let Pass::Idle { sleep_us } = self.pass() {
-                std::thread::sleep(Duration::from_micros(sleep_us));
+            match self.pass() {
+                Pass::Idle { sleep_us } => {
+                    std::thread::sleep(Duration::from_micros(sleep_us));
+                    #[cfg(target_os = "linux")]
+                    {
+                        busy_since = Instant::now();
+                    }
+                }
+                #[cfg(target_os = "linux")]
+                _ if busy_since.elapsed() >= realtime_busy_limit() => {
+                    std::thread::sleep(Duration::from_millis(1));
+                    busy_since = Instant::now();
+                }
+                _ => {}
             }
         }
     }
@@ -2497,5 +2648,83 @@ mod input_continuity_tests {
             assert!(output[0][..written].iter().all(|sample| *sample == 0.0));
             assert!(audio.iter().all(|sample| *sample == 0.0));
         });
+    }
+}
+
+#[cfg(test)]
+mod realtime_tests {
+    use super::*;
+
+    #[test]
+    fn busy_limit_follows_the_soft_limit_within_its_floor_and_cap() {
+        let hard = Some(200_000);
+        for (soft_us, expected) in [
+            (None, REALTIME_BUSY_LIMIT),
+            (Some(1_000_000), REALTIME_BUSY_LIMIT),
+            (Some(200_000), REALTIME_BUSY_LIMIT),
+            (Some(100_000), Duration::from_millis(50)),
+            (Some(30_000), Duration::from_millis(15)),
+            // A low quantum cannot push the limit under the floor.
+            (
+                Some(21_333),
+                Duration::from_micros(10_666).max(REALTIME_BUSY_FLOOR),
+            ),
+            (Some(1_333), REALTIME_BUSY_FLOOR),
+            (Some(0), REALTIME_BUSY_FLOOR),
+        ] {
+            assert_eq!(busy_limit_for(soft_us, hard), expected, "{soft_us:?}");
+        }
+    }
+
+    #[test]
+    fn busy_limit_stays_under_half_the_hard_limit() {
+        // The hard limit ends the process, so it outranks the floor.
+        for (soft_us, hard_us, expected) in [
+            (None, Some(200_000), REALTIME_BUSY_LIMIT),
+            (Some(200_000), Some(100_000), Duration::from_millis(50)),
+            (Some(200_000), Some(8_000), Duration::from_millis(4)),
+            (None, Some(8_000), Duration::from_millis(4)),
+            (Some(1), Some(1), Duration::ZERO),
+            (Some(200_000), None, REALTIME_BUSY_LIMIT),
+        ] {
+            assert_eq!(
+                busy_limit_for(soft_us, hard_us),
+                expected,
+                "{soft_us:?} {hard_us:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_floor_is_well_inside_rtkits_default_hard_limit() {
+        assert!(REALTIME_BUSY_FLOOR * 10 <= Duration::from_millis(200));
+        assert!(REALTIME_BUSY_FLOOR <= REALTIME_BUSY_LIMIT);
+    }
+
+    #[test]
+    fn a_bounded_request_returns_its_answer() {
+        assert_eq!(run_bounded(Duration::from_secs(5), || Ok(())), Ok(()));
+        assert_eq!(
+            run_bounded(Duration::from_secs(5), || Err("refused".to_string())),
+            Err("refused".to_string())
+        );
+    }
+
+    #[test]
+    fn a_bounded_request_that_never_answers_times_out() {
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let error = run_bounded(Duration::from_millis(50), move || {
+            let _ = release_rx.recv();
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(error.contains("did not answer"), "{error}");
+        let _ = release_tx.send(());
+    }
+
+    #[test]
+    fn a_bounded_request_that_panics_reports_it() {
+        let error = run_bounded(Duration::from_secs(5), || panic!("RTKit exploded")).unwrap_err();
+        assert!(error.contains("without an answer"), "{error}");
     }
 }

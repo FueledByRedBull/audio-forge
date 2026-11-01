@@ -14,8 +14,6 @@ use crate::dsp::noise_suppressor::ControlledNoiseSuppressionEngine as NoiseSuppr
 use crate::dsp::{TruePeakDetector, TruePeakLimiter, TruePeakLimiterBlockStats};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 pub(super) struct OutputWriteCounters<'a> {
     pub(super) jitter_dropped_samples: &'a AtomicU64,

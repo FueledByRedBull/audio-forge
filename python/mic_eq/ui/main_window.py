@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QSystemTrayIcon,
 )
-from PySide6.QtCore import QEvent, Qt, QTimer, QRect, QUrl
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QRect, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QIcon
 import os
 import sys
@@ -195,6 +195,9 @@ PHASE_FIX_LABELS = {
     "polarity_flip": "flipping one channel's polarity",
 }
 DEFAULT_MUTE_HOTKEY = "Ctrl+Alt+M"
+# The StatusNotifierItem tray host on Linux panels; Qt's tray icon needs one.
+TRAY_HOST_SERVICE = "org.kde.StatusNotifierWatcher"
+TRAY_HOST_RETRIES = 10
 DEFAULT_WINDOW_WIDTH = 1440
 DEFAULT_WINDOW_HEIGHT = 960
 MINIMUM_WINDOW_WIDTH = 900
@@ -441,6 +444,8 @@ class MainWindow(QMainWindow):
         self._shut_down = False
         self._quit_dont_ask = False
         self._tray_icon: QSystemTrayIcon | None = None
+        self._tray_host_watcher: QObject | None = None  # Linux: waits for a late panel
+        self._tray_host_retries = 0
         self._tray_icons: tuple[QIcon, QIcon] = (QIcon(), QIcon())  # heard, muted
         self._tray_menu: QMenu | None = None
         self._tray_mute_action: QAction | None = None
@@ -1481,14 +1486,10 @@ class MainWindow(QMainWindow):
         confirm_quit_action.toggled.connect(self._on_confirm_quit_toggled)
         desktop_menu.addAction(confirm_quit_action)
 
-        self._mute_hotkey_action = QAction(
-            f"Enable global mute shortcut ({DEFAULT_MUTE_HOTKEY})", self
-        )
+        self._mute_hotkey_action = QAction(self)
         self._mute_hotkey_action.setCheckable(True)
         self._mute_hotkey_action.setChecked(bool(getattr(self.config, "mute_hotkey", "")))
-        self._mute_hotkey_action.setToolTip(
-            "Toggle Output Mute from any application while AudioForge is running."
-        )
+        self._describe_mute_hotkey("")
         self._mute_hotkey_action.toggled.connect(self._on_mute_hotkey_toggled)
         desktop_menu.addAction(self._mute_hotkey_action)
 
@@ -1504,8 +1505,12 @@ class MainWindow(QMainWindow):
         self._refresh_login_startup_action()
 
     def _refresh_login_startup_action(self) -> None:
-        packaged = sys.platform == "win32" and bool(getattr(sys, "frozen", False))
-        state = login_startup.registration_state(Path(sys.executable)) if packaged else "absent"
+        packaged = sys.platform in {"win32", "linux"} and bool(getattr(sys, "frozen", False))
+        state = (
+            login_startup.registration_state(login_startup.launch_executable())
+            if packaged
+            else "absent"
+        )
         self._login_startup_action.blockSignals(True)
         self._login_startup_action.setChecked(state == "configured")
         self._login_startup_action.setEnabled(packaged and state in {"absent", "configured"})
@@ -1514,7 +1519,11 @@ class MainWindow(QMainWindow):
         self._login_startup_action.changed.emit()
         messages = {
             "absent": "No login shortcut configured",
-            "configured": "Shortcut configured; Windows may disable it",
+            "configured": (
+                "Shortcut configured; Windows may disable it"
+                if sys.platform == "win32"
+                else "Autostart entry configured"
+            ),
             "other": "Login shortcut belongs to another copy or is unrecognized",
             "unreadable": "Login shortcut could not be read; left unchanged",
         }
@@ -1524,13 +1533,16 @@ class MainWindow(QMainWindow):
         self._login_startup_action.setToolTip(
             "Windows Settings > Apps > Startup controls whether this shortcut runs. "
             "Moving a portable copy requires removing its shortcut before moving it."
+            if sys.platform == "win32"
+            else "Your desktop's autostart settings control whether this entry runs. "
+            "Moving a portable copy requires removing its entry before moving it."
         )
 
     def _on_login_startup_toggled(self, checked: bool) -> None:
         if not checked:
             self._cancel_login_startup()
         try:
-            login_startup.set_login_startup(Path(sys.executable), checked)
+            login_startup.set_login_startup(login_startup.launch_executable(), checked)
         except Exception as error:
             logger.exception("Could not change the login shortcut")
             self.status_message.showMessage(str(error), 8000)
@@ -1566,7 +1578,8 @@ class MainWindow(QMainWindow):
             self._setup_desktop_integration(tray_only=True)
         if self._tray_icon is None or not self._tray_icon.isVisible():
             if now >= deadline:
-                self._cancel_login_startup("Login stopped: Windows tray unavailable; exiting")
+                tray = "Windows tray" if sys.platform == "win32" else "System tray"
+                self._cancel_login_startup(f"Login stopped: {tray} unavailable; exiting")
                 app = QGuiApplication.instance()
                 if app is not None:
                     app.exit(1)
@@ -1581,7 +1594,7 @@ class MainWindow(QMainWindow):
                 10000,
             )
             return
-        if login_startup.registration_state(Path(sys.executable)) != "configured":
+        if login_startup.registration_state(login_startup.launch_executable()) != "configured":
             self._cancel_login_startup("Login stopped: this copy's shortcut is no longer configured")
             return
         if (
@@ -1653,6 +1666,7 @@ class MainWindow(QMainWindow):
                 self._close_to_tray_action.blockSignals(False)
                 # The Settings row follows changed(), which the block suppressed.
                 self._close_to_tray_action.changed.emit()
+            self._watch_for_tray_host()
             return
 
         if self._close_to_tray_action is not None:
@@ -1694,6 +1708,30 @@ class MainWindow(QMainWindow):
         self._tray_icon.activated.connect(self._on_tray_activated)
         self._tray_icon.show()
         self._update_session_summary()
+
+    def _watch_for_tray_host(self) -> None:
+        """Set the tray up once a panel that started after the app offers one."""
+        if sys.platform != "linux" or self._tray_host_watcher is not None:
+            return
+        from PySide6.QtDBus import QDBusConnection, QDBusServiceWatcher
+
+        watcher = QDBusServiceWatcher(
+            TRAY_HOST_SERVICE,
+            QDBusConnection.sessionBus(),
+            QDBusServiceWatcher.WatchModeFlag.WatchForRegistration,
+            self,
+        )
+        watcher.serviceRegistered.connect(self._on_tray_host_registered)
+        self._tray_host_watcher = watcher
+
+    def _on_tray_host_registered(self, _service: str = "") -> None:
+        if self._tray_icon is not None or self._shut_down:
+            return
+        self._setup_desktop_integration(tray_only=True)
+        # A panel registers the watcher before its own host, which Qt also waits for.
+        if self._tray_icon is None and self._tray_host_retries < TRAY_HOST_RETRIES:
+            self._tray_host_retries += 1
+            QTimer.singleShot(1000, self._on_tray_host_registered)
 
     def _on_commit_data(self) -> None:
         app = QGuiApplication.instance()
@@ -1756,29 +1794,61 @@ class MainWindow(QMainWindow):
 
     def _register_mute_hotkey(self, shortcut: str) -> bool:
         self._unregister_mute_hotkey()
-        hotkey = GlobalMuteHotkey(shortcut, self._toggle_mute_from_hotkey)
+        hotkey = GlobalMuteHotkey(
+            shortcut, self._toggle_mute_from_hotkey, self._mute_hotkey_lost, self._mute_hotkey_availability
+        )
         registered, error = hotkey.register()
         if not registered:
-            self.config.mute_hotkey = ""
-            if self._mute_hotkey_action is not None:
-                self._mute_hotkey_action.blockSignals(True)
-                self._mute_hotkey_action.setChecked(False)
-                self._mute_hotkey_action.blockSignals(False)
-                # The Settings row follows changed(), which the block suppressed.
-                self._mute_hotkey_action.changed.emit()
-            self.status_message.showMessage(
-                f"Global mute shortcut unavailable: {error}",
-                8000,
-            )
+            self._disable_mute_hotkey(error)
             return False
         self._mute_hotkey = hotkey
         return True
+
+    def _mute_hotkey_lost(self, error: str) -> None:
+        """The desktop refused or dropped a shortcut that registered."""
+        self._mute_hotkey = None
+        self._disable_mute_hotkey(error)
+        self._save_config_safely()
+
+    def _mute_hotkey_availability(self, reason: str) -> None:
+        """The desktop cannot hold the shortcut now, or can again; the saved setting stays."""
+        self._describe_mute_hotkey(reason)
+        if reason:
+            self.status_message.showMessage(f"Global mute shortcut unavailable: {reason}", 8000)
+
+    def _describe_mute_hotkey(self, unavailable: str) -> None:
+        action = self._mute_hotkey_action
+        if action is None:
+            return
+        action.setText(
+            f"Global mute shortcut ({DEFAULT_MUTE_HOTKEY}): unavailable"
+            if unavailable
+            else f"Enable global mute shortcut ({DEFAULT_MUTE_HOTKEY})"
+        )
+        action.setToolTip(
+            unavailable or "Toggle Output Mute from any application while AudioForge is running."
+        )
+
+    def _disable_mute_hotkey(self, error: str | None) -> None:
+        self.config.mute_hotkey = ""
+        self._describe_mute_hotkey("")
+        if self._mute_hotkey_action is not None:
+            self._mute_hotkey_action.blockSignals(True)
+            self._mute_hotkey_action.setChecked(False)
+            self._mute_hotkey_action.blockSignals(False)
+            # The Settings row follows changed(), which the block suppressed.
+            self._mute_hotkey_action.changed.emit()
+        self.status_message.showMessage(
+            f"Global mute shortcut unavailable: {error}",
+            8000,
+        )
 
     def _unregister_mute_hotkey(self) -> None:
         if self._mute_hotkey is None:
             return
         self._mute_hotkey.unregister()
         self._mute_hotkey = None
+        self._describe_mute_hotkey("")
 
     def _toggle_mute_from_hotkey(self) -> None:
         self.user_mute_checkbox_action.setChecked(not self.user_mute_checkbox_action.isChecked())
@@ -2986,7 +3056,9 @@ class MainWindow(QMainWindow):
                     "Try these steps:\n"
                     "1. Press the refresh button (the circular arrow) next to the Output list\n"
                     "2. Ensure your microphone is connected\n"
-                    "3. Check Windows audio settings\n"
+                    "3. Check "
+                    + ("Windows audio settings" if sys.platform == "win32" else "your sound settings")
+                    + "\n"
                     "4. Try selecting a different device"
                 )
             else:
@@ -3651,6 +3723,9 @@ class MainWindow(QMainWindow):
         """Update slower diagnostics and service recovery."""
         if _engine_in_use(self):
             return
+        watch = self.__dict__.get("virtual_microphone_watch")
+        if watch is not None:
+            watch.poll()
         if self.__dict__.get("_login_startup_deadline") is not None:
             try:
                 self._service_login_startup()
@@ -4697,6 +4772,9 @@ class MainWindow(QMainWindow):
         if self._quit_dont_ask:
             self.config.confirm_quit_when_live = False
         self._shut_down = True  # from here the answers of engine calls still out are dropped
+        watch = self.__dict__.get("virtual_microphone_watch")
+        if watch is not None:
+            watch.stop()
         engine_idle = self._engine.wait(ENGINE_CALL_WAIT_MS)
         if not engine_idle:
             logger.warning("An engine call is still out at shutdown; the exit ends the audio")

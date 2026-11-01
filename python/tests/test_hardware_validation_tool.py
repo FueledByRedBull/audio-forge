@@ -220,6 +220,31 @@ def test_power_event_reader_rejects_unbounded_or_entity_xml(monkeypatch) -> None
     assert TOOL._read_power_events(since) == []
 
 
+def test_linux_power_events_come_from_the_systemd_sleep_journal_entries(monkeypatch) -> None:
+    since = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    later = int(datetime(2026, 1, 2, tzinfo=timezone.utc).timestamp() * 1e6)
+    entries = [
+        {"MESSAGE_ID": "6bbd95ee977941e497c48be27c254128", "__REALTIME_TIMESTAMP": str(later), "SLEEP": "suspend"},
+        {"MESSAGE_ID": "8811e6df2a8e40f58a94cea26f8ebf14", "__REALTIME_TIMESTAMP": str(later + 5), "SLEEP": "suspend"},
+        {"MESSAGE_ID": "6bbd95ee977941e497c48be27c254128", "__REALTIME_TIMESTAMP": "1"},  # before the probe
+        {"MESSAGE_ID": "0" * 32, "__REALTIME_TIMESTAMP": str(later)},
+    ]
+    commands = []
+
+    def journal(command, **_kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout="\n".join(json.dumps(entry) for entry in entries) + "\nnot json\n")
+
+    monkeypatch.setattr(TOOL.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(TOOL.subprocess, "run", journal)
+
+    events = TOOL._read_power_events(since)
+
+    assert [(event["kind"], event["family"]) for event in events] == [("sleep", "suspend"), ("resume", "suspend")]
+    assert commands[0][:3] == ["journalctl", "--output=json", "--no-pager"]
+    assert f"--since=@{int(since.timestamp())}" in commands[0]
+
+
 def test_hardware_report_provenance_uses_project_version_and_dirty_revision(
     monkeypatch,
 ) -> None:
@@ -371,6 +396,7 @@ def test_hardware_subprocess_uses_source_python_path(monkeypatch) -> None:
     assert result["return_code"] == 0
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows bundle runtime (DLL directory)")
 def test_bundle_runtime_pins_the_bundled_vad_model(tmp_path, monkeypatch) -> None:
     internal = tmp_path / "_internal"
     model_root = internal / "models"
@@ -418,6 +444,32 @@ def test_bundle_runtime_pins_the_bundled_vad_model(tmp_path, monkeypatch) -> Non
     assert loaded is module
     assert BUNDLE_RUNTIME.os.environ["VAD_MODEL_PATH"] == str(vad_model.resolve())
     assert configured == [(str((internal / "df.dll").resolve()), str(model_root.resolve()))]
+
+
+def test_bundle_runtime_loads_a_linux_bundle_with_its_own_onnx_runtime(tmp_path, monkeypatch) -> None:
+    internal = tmp_path / "_internal"
+    (internal / "models").mkdir(parents=True)
+    (internal / "mic_eq").mkdir()
+    (tmp_path / "AudioForge").write_bytes(b"elf")
+    (internal / "libdf.so").write_bytes(b"so")
+    (internal / BUNDLE_RUNTIME.LINUX_ORT_LIBRARY).write_bytes(b"ort")
+    (internal / "models" / "silero_vad.onnx").write_bytes(b"vad")
+    (internal / "mic_eq" / "mic_eq_core.cpython-313-x86_64-linux-gnu.so").write_bytes(b"native")
+    module = ModuleType("mic_eq_core")
+    configured: list[tuple[str, str]] = []
+    setattr(module, "configure_deepfilter_runtime_paths", lambda *paths: configured.append(paths))
+    spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda _module: None))
+    monkeypatch.setattr(BUNDLE_RUNTIME.importlib.util, "spec_from_file_location", lambda *_args: spec)
+    monkeypatch.setattr(BUNDLE_RUNTIME.importlib.util, "module_from_spec", lambda _spec: module)
+    for name in ("VAD_MODEL_PATH", "ORT_DYLIB_PATH"):
+        monkeypatch.setenv(name, "set so that monkeypatch restores it")
+
+    assert BUNDLE_RUNTIME.load_bundled_core(tmp_path) is module
+
+    assert BUNDLE_RUNTIME.os.environ["ORT_DYLIB_PATH"] == str((internal / BUNDLE_RUNTIME.LINUX_ORT_LIBRARY).resolve())
+    assert configured == [(str((internal / "libdf.so").resolve()), str((internal / "models").resolve()))]
+    layout = BUNDLE_RUNTIME.resolve_bundle_layout(tmp_path)
+    assert layout["executable"].name == "AudioForge"
 
 
 def test_hardware_runtime_provenance_is_portable_and_hashes_exact_binary() -> None:
@@ -810,6 +862,16 @@ def test_hardware_privacy_filter_redacts_windows_endpoint_ids() -> None:
     assert "endpoint-redacted" in runs[0]["stderr"][0]
 
 
+def test_hardware_privacy_filter_redacts_pipewire_node_names() -> None:
+    node = "alsa_input.usb-Focusrite_Scarlett_Solo_USB_Y7ABC123-00.analog-stereo"
+    runs, _pseudonyms = TOOL._privacy_filter_runs(
+        [{"stderr": [f"pipewire:{node} vanished", f"{node} reappeared"]}], []
+    )
+
+    assert "Y7ABC123" not in json.dumps(runs)
+    assert runs[0]["stderr"] == ["endpoint-redacted vanished", "endpoint-redacted reappeared"]
+
+
 def test_hardware_evaluation_rejects_empty_device_names_before_running(tmp_path) -> None:
     with pytest.raises(ValueError, match="health input"):
         TOOL.evaluate(
@@ -948,6 +1010,23 @@ def test_hardware_matrix_accepts_required_risk_based_coverage(tmp_path) -> None:
     assert result["passed"] is True
     assert result["coverage"]["missing"]["automated_baseline_cases"] == 0
     assert result["coverage"]["missing"]["scenarios"] == []
+
+
+def test_a_linux_matrix_needs_linux_cases_and_accepts_no_windows_requirement(tmp_path) -> None:
+    archive_hash = "b" * 64
+    paths = []
+    for index, case in enumerate(_complete_matrix_cases(archive_hash)):
+        case["machine"] = {"system": "Linux", "release": "6.8.0-45-generic"}
+        case["case"]["id"] = f"linux-{index}"
+        path = tmp_path / f"case-{index}.json"
+        path.write_text(json.dumps(case), encoding="utf-8")
+        paths.append(path)
+
+    result = MATRIX_TOOL.aggregate(paths, expected_archive_sha256=archive_hash, output=tmp_path / "matrix.json")
+
+    assert result["passed"] is True
+    assert result["coverage"]["required"]["required_os_releases"] == ["linux"]
+    assert [case["os_release"] for case in result["cases"]] == ["linux", "linux"]
 
 
 def test_hardware_matrix_fails_when_a_report_is_outside_the_report_root(

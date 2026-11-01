@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import math
 import os
 import shutil
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -58,9 +60,49 @@ def replace_file(source: Path, destination: Path) -> None:
             time.sleep(0.05 * attempt)
 
 
+# FAT, exFAT, and some FUSE and network mounts refuse hard links.
+_NO_HARD_LINKS = {errno.EPERM, errno.ENOSYS, errno.EOPNOTSUPP}
+
+
+def publish_exclusive(temporary_path: Path, destination: Path) -> None:
+    """Move temporary_path to destination, raising FileExistsError if it exists.
+
+    On Windows os.rename refuses an existing destination, is atomic, and needs no
+    hard-link support from the volume. POSIX rename silently replaces, so there a
+    hard link publishes atomically and refuses an existing name instead.
+    """
+    if sys.platform == "win32":
+        os.rename(temporary_path, destination)
+        return
+    try:
+        os.link(temporary_path, destination)
+    except OSError as error:
+        if error.errno not in _NO_HARD_LINKS:
+            raise
+        _publish_without_link(temporary_path, destination)
+        return
+    temporary_path.unlink()
+
+
+def _publish_without_link(temporary_path: Path, destination: Path) -> None:
+    # O_EXCL claims the name, so a competing writer gets FileExistsError as it would
+    # from a link; the rename then replaces only our own empty claim. Until it does, a
+    # reader sees an empty file.
+    os.close(os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    try:
+        os.replace(temporary_path, destination)
+    except BaseException:
+        Path(destination).unlink(missing_ok=True)
+        raise
+
+
 def _config_base_dir() -> Path:
     if os.name == "nt":
         return Path(os.environ.get("APPDATA", Path.home()))
+    # The XDG Base Directory spec ignores a relative XDG_CONFIG_HOME.
+    xdg_config = os.environ.get("XDG_CONFIG_HOME", "")
+    if os.path.isabs(xdg_config):
+        return Path(xdg_config)
     return Path.home() / ".config"
 
 
@@ -455,5 +497,6 @@ __all__ = [
     "parse_latency_profile_key",
     "migration_failure",
     "migration_pending",
+    "publish_exclusive",
     "replace_file",
 ]

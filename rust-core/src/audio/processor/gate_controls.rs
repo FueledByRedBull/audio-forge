@@ -9,8 +9,6 @@ use super::{
     VAD_PRE_GAIN_MIN, VAD_THRESHOLD_MAX, VAD_THRESHOLD_MIN,
 };
 use std::sync::atomic::Ordering;
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 impl AudioProcessor {
     // === Noise Gate Controls ===

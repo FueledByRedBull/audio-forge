@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from .platform_text import SOUND_SETTINGS
 
 # How far back the meter's peaks and clips count towards the Health lines.
 HEALTH_PEAK_WINDOW_SECONDS = 8.0
@@ -197,7 +198,7 @@ def _input_peak_advice(numbers: list[float], opening: str) -> str:
     drop = math.ceil(round(peak - INPUT_PEAK_TARGET_DB, 6))
     return (
         f"{opening.format(peak=f'{peak:.1f}')} so loud sounds can be cut off and sound "
-        f"distorted. Lower the microphone level by about {drop} dB in Windows or on the interface."
+        f"distorted. Lower the microphone level by about {drop} dB in {SOUND_SETTINGS} or on the interface."
     )
 
 
@@ -286,7 +287,7 @@ _ADVICE: tuple[tuple[str, Callable[[list[float]], str]], ...] = (
         "Move the microphone cable away from power cables, or keep input cleanup on.")),
     ("Input: LOW", lambda n: (
         f"The microphone is very quiet (about {n[0]:.0f} dB on average), so noise will be loud next to "
-        "your voice. Raise the microphone level in Windows or move closer.")),
+        f"your voice. Raise the microphone level in {SOUND_SETTINGS} or move closer.")),
     ("Input: ALREADY COMPRESSED", lambda n: (
         "The microphone signal is already heavily compressed (its loud and quiet parts differ by only "
         f"{n[0]:.1f} dB), so more compression adds distortion. Turn off processing in the microphone "

@@ -337,11 +337,18 @@ def packaged_registry(startup_window, monkeypatch):
         yield window, registry
 
 
+CONFIGURED_TEXT = (
+    "Shortcut configured; Windows may disable it"
+    if sys.platform == "win32"
+    else "Autostart entry configured"
+)
+
+
 @pytest.mark.parametrize(
     ("state", "checked", "enabled", "text"),
     [
         ("absent", False, True, "No login shortcut configured"),
-        ("configured", True, True, "Shortcut configured; Windows may disable it"),
+        ("configured", True, True, CONFIGURED_TEXT),
         ("other", False, False, "Login shortcut belongs to another copy or is unrecognized"),
         ("unreadable", False, False, "Login shortcut could not be read; left unchanged"),
     ],
@@ -371,7 +378,7 @@ def test_ticking_the_login_shortcut_registers_this_copy(packaged_registry):
     window._login_startup_action.trigger()
     assert registry["calls"] == [(Path(sys.executable), True)]
     assert window._login_startup_action.isChecked()
-    assert window._login_startup_status_action.text() == "Shortcut configured; Windows may disable it"
+    assert window._login_startup_status_action.text() == CONFIGURED_TEXT
 
 
 def test_failed_login_shortcut_change_is_reported_and_leaves_the_menu_unchanged(packaged_registry):

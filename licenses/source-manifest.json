@@ -3,6 +3,226 @@
   "distribution_license": "MIT; bundled components retain their individual licenses",
   "entries": [
     {
+      "build_role": "libfuse3 static library linked into the AppImage runtime, built with the type2-runtime mount.c patch",
+      "filename": "fuse-3.15.0.tar.xz",
+      "id": "appimage-runtime-libfuse-3.15.0",
+      "kind": "native-build-source",
+      "license": "LGPL-2.1-only (lib/ and include/)",
+      "license_paths": [
+        "fuse-3.15.0/LICENSE",
+        "fuse-3.15.0/LGPL2.txt"
+      ],
+      "name": "libfuse",
+      "sha256": "70589cfd5e1cff7ccd6ac91c86c01be340b227285c5e200baa284e401eea2ca0",
+      "source_of_truth": "https://github.com/libfuse/libfuse/releases/tag/fuse-3.15.0",
+      "url": "https://github.com/libfuse/libfuse/releases/download/fuse-3.15.0/fuse-3.15.0.tar.xz",
+      "version": "3.15.0"
+    },
+    {
+      "build_role": "mimalloc static library linked into the AppImage runtime (Alpine mimalloc2-dev 2.1.7-r0, secure build)",
+      "filename": "mimalloc-2.1.7.tar.gz",
+      "id": "appimage-runtime-mimalloc-2.1.7",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "license_paths": [
+        "mimalloc-2.1.7/LICENSE"
+      ],
+      "name": "mimalloc",
+      "sha256": "0eed39319f139afde8515010ff59baf24de9e47ea316a315398e8027d198202d",
+      "source_of_truth": "https://github.com/microsoft/mimalloc/releases/tag/v2.1.7",
+      "url": "https://github.com/microsoft/mimalloc/archive/refs/tags/v2.1.7.tar.gz",
+      "version": "2.1.7"
+    },
+    {
+      "build_role": "musl libc static library linked into the AppImage runtime (Alpine musl-dev 1.2.5-r9, with the patches below)",
+      "filename": "musl-1.2.5.tar.gz",
+      "id": "appimage-runtime-musl-1.2.5",
+      "kind": "native-build-source",
+      "license": "MIT; portions under other permissive licenses listed in COPYRIGHT",
+      "license_paths": [
+        "musl-1.2.5/COPYRIGHT"
+      ],
+      "name": "musl libc",
+      "sha256": "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4",
+      "source_of_truth": "https://musl.libc.org/releases/",
+      "url": "https://musl.libc.org/releases/musl-1.2.5.tar.gz",
+      "version": "1.2.5"
+    },
+    {
+      "build_role": "Alpine 3.21 patch applied to the musl libc linked into the AppImage runtime",
+      "filename": "CVE-2025-26519.patch",
+      "id": "appimage-runtime-musl-patch-CVE-2025-26519",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "name": "musl libc Alpine patch: CVE-2025-26519",
+      "sha256": "ab382da2bb5e1cc32d8904be28fb13f8ad3ce813967bd4bf7f5b1c6baee33e17",
+      "source_of_truth": "https://github.com/alpinelinux/aports/blob/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/APKBUILD",
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/CVE-2025-26519.patch",
+      "version": "1.2.5-r9"
+    },
+    {
+      "build_role": "Alpine 3.21 patch applied to the musl libc linked into the AppImage runtime",
+      "filename": "handle-aux-at_base.patch",
+      "id": "appimage-runtime-musl-patch-handle-aux-at_base",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "name": "musl libc Alpine patch: handle-aux-at_base",
+      "sha256": "2a65e03b94217063d72fe998e5fb2e25cd01716078a3ba1b0ab574ab205111e6",
+      "source_of_truth": "https://github.com/alpinelinux/aports/blob/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/APKBUILD",
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/handle-aux-at_base.patch",
+      "version": "1.2.5-r9"
+    },
+    {
+      "build_role": "Alpine 3.21 patch applied to the musl libc linked into the AppImage runtime",
+      "filename": "isatty-glibc-align.patch",
+      "id": "appimage-runtime-musl-patch-isatty-glibc-align",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "name": "musl libc Alpine patch: isatty-glibc-align",
+      "sha256": "1321d542b40921a4c248bb2d15dbd03fcbbf008c8725eb2043d3cab62faeba48",
+      "source_of_truth": "https://github.com/alpinelinux/aports/blob/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/APKBUILD",
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/isatty-glibc-align.patch",
+      "version": "1.2.5-r9"
+    },
+    {
+      "build_role": "Alpine 3.21 patch applied to the musl libc linked into the AppImage runtime",
+      "filename": "ldso-fix-non-functional-fix-to-early-dynamic-PAGE_SI.patch",
+      "id": "appimage-runtime-musl-patch-ldso-early-page-size",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "name": "musl libc Alpine patch: ldso-early-page-size",
+      "sha256": "7f5806124d4a89536e53a07bfe95fcd0a8f1b7a27fc0dfc89c78c724dea1c924",
+      "source_of_truth": "https://github.com/alpinelinux/aports/blob/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/APKBUILD",
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/ldso-fix-non-functional-fix-to-early-dynamic-PAGE_SI.patch",
+      "version": "1.2.5-r9"
+    },
+    {
+      "build_role": "squashfuse and squashfuse_ll static libraries linked into the AppImage runtime",
+      "filename": "squashfuse-0.5.2.tar.gz",
+      "id": "appimage-runtime-squashfuse-0.5.2",
+      "kind": "native-build-source",
+      "license": "BSD-2-Clause",
+      "license_paths": [
+        "squashfuse-0.5.2/LICENSE"
+      ],
+      "name": "squashfuse",
+      "sha256": "db0238c5981dabbd80ee09ae15387f390091668ca060a7bc38047912491443d3",
+      "source_of_truth": "https://github.com/vasi/squashfuse/tree/0.5.2",
+      "url": "https://github.com/vasi/squashfuse/archive/0.5.2.tar.gz",
+      "version": "0.5.2"
+    },
+    {
+      "build_role": "source and build recipe for the AppImage runtime the Linux AppImage embeds, including scripts/docker/Dockerfile and patches/libfuse/mount.c.diff",
+      "filename": "type2-runtime-20251108.tar.gz",
+      "id": "appimage-runtime-type2-runtime-20251108",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "license_paths": [
+        "type2-runtime-20251108/LICENSE"
+      ],
+      "name": "AppImage type2-runtime",
+      "sha256": "4c4f6df4647c9f01f871d7edd3716d8aeeffda9d22ffbebe3fccd95a6ab52c95",
+      "source_of_truth": "https://github.com/AppImage/type2-runtime/tree/20251108",
+      "url": "https://github.com/AppImage/type2-runtime/archive/refs/tags/20251108.tar.gz",
+      "version": "20251108"
+    },
+    {
+      "build_role": "zlib static library linked into the AppImage runtime (Alpine zlib-static 1.3.1-r2)",
+      "filename": "zlib-1.3.1.tar.gz",
+      "id": "appimage-runtime-zlib-1.3.1",
+      "kind": "native-build-source",
+      "license": "Zlib",
+      "license_paths": [
+        "zlib-1.3.1/LICENSE"
+      ],
+      "name": "zlib",
+      "sha256": "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23",
+      "source_of_truth": "https://github.com/madler/zlib/releases/tag/v1.3.1",
+      "url": "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz",
+      "version": "1.3.1"
+    },
+    {
+      "build_role": "libzstd static library linked into the AppImage runtime (Alpine zstd-static 1.5.6-r2)",
+      "filename": "zstd-1.5.6.tar.gz",
+      "id": "appimage-runtime-zstd-1.5.6",
+      "kind": "native-build-source",
+      "license": "BSD-3-Clause OR GPL-2.0-only",
+      "license_paths": [
+        "zstd-1.5.6/LICENSE",
+        "zstd-1.5.6/COPYING"
+      ],
+      "name": "zstd",
+      "sha256": "8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1",
+      "source_of_truth": "https://github.com/facebook/zstd/releases/tag/v1.5.6",
+      "url": "https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-1.5.6.tar.gz",
+      "version": "1.5.6"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "aho-corasick-1.1.5.crate",
+      "id": "cargo-aho-corasick-1.1.5",
+      "kind": "cargo-crate",
+      "license": "Unlicense OR MIT",
+      "lock_file": "Cargo.lock",
+      "name": "aho-corasick",
+      "sha256": "c982642fa9e8606056828ee9a8505737230110bb1099153c79efe865c59d12ba",
+      "source_of_truth": "https://crates.io/crates/aho-corasick/1.1.5",
+      "url": "https://crates.io/api/v1/crates/aho-corasick/1.1.5/download",
+      "version": "1.1.5"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "alsa-0.11.0.crate",
+      "id": "cargo-alsa-0.11.0",
+      "kind": "cargo-crate",
+      "license": "Apache-2.0/MIT",
+      "lock_file": "Cargo.lock",
+      "name": "alsa",
+      "sha256": "812947049edcd670a82cd5c73c3661d2e58468577ba8489de58e1a73c04cbd5d",
+      "source_of_truth": "https://crates.io/crates/alsa/0.11.0",
+      "url": "https://crates.io/api/v1/crates/alsa/0.11.0/download",
+      "version": "0.11.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "alsa-sys-0.4.0.crate",
+      "id": "cargo-alsa-sys-0.4.0",
+      "kind": "cargo-crate",
+      "license": "MIT",
+      "lock_file": "Cargo.lock",
+      "name": "alsa-sys",
+      "sha256": "ad7569085a265dd3f607ebecce7458eaab2132a84393534c95b18dcbc3f31e04",
+      "source_of_truth": "https://crates.io/crates/alsa-sys/0.4.0",
+      "url": "https://crates.io/api/v1/crates/alsa-sys/0.4.0/download",
+      "version": "0.4.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "annotate-snippets-0.11.5.crate",
+      "id": "cargo-annotate-snippets-0.11.5",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "annotate-snippets",
+      "sha256": "710e8eae58854cdc1790fcb56cca04d712a17be849eeb81da2a724bf4bae2bc4",
+      "source_of_truth": "https://crates.io/crates/annotate-snippets/0.11.5",
+      "url": "https://crates.io/api/v1/crates/annotate-snippets/0.11.5/download",
+      "version": "0.11.5"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "anstyle-1.0.14.crate",
+      "id": "cargo-anstyle-1.0.14",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "anstyle",
+      "sha256": "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000",
+      "source_of_truth": "https://crates.io/crates/anstyle/1.0.14",
+      "url": "https://crates.io/api/v1/crates/anstyle/1.0.14/download",
+      "version": "1.0.14"
+    },
+    {
       "build_role": "resolved Rust dependency",
       "filename": "anymap3-1.0.1.crate",
       "id": "cargo-anymap3-1.0.1",
@@ -30,6 +250,19 @@
     },
     {
       "build_role": "resolved Rust dependency",
+      "filename": "audio_thread_priority-0.35.1.crate",
+      "id": "cargo-audio_thread_priority-0.35.1",
+      "kind": "cargo-crate",
+      "license": "MPL-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "audio_thread_priority",
+      "sha256": "7b1b4a0adbf971420cca66a75361a1190f34a6762d66361e5cde03dda35d1ed3",
+      "source_of_truth": "https://crates.io/crates/audio_thread_priority/0.35.1",
+      "url": "https://crates.io/api/v1/crates/audio_thread_priority/0.35.1/download",
+      "version": "0.35.1"
+    },
+    {
+      "build_role": "resolved Rust dependency",
       "filename": "autocfg-1.5.0.crate",
       "id": "cargo-autocfg-1.5.0",
       "kind": "cargo-crate",
@@ -40,6 +273,19 @@
       "source_of_truth": "https://crates.io/crates/autocfg/1.5.0",
       "url": "https://crates.io/api/v1/crates/autocfg/1.5.0/download",
       "version": "1.5.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "bindgen-0.72.1.crate",
+      "id": "cargo-bindgen-0.72.1",
+      "kind": "cargo-crate",
+      "license": "BSD-3-Clause",
+      "lock_file": "Cargo.lock",
+      "name": "bindgen",
+      "sha256": "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895",
+      "source_of_truth": "https://crates.io/crates/bindgen/0.72.1",
+      "url": "https://crates.io/api/v1/crates/bindgen/0.72.1/download",
+      "version": "0.72.1"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -56,6 +302,71 @@
     },
     {
       "build_role": "resolved Rust dependency",
+      "filename": "bitflags-2.11.0.crate",
+      "id": "cargo-bitflags-2.11.0",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "bitflags",
+      "sha256": "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af",
+      "source_of_truth": "https://crates.io/crates/bitflags/2.11.0",
+      "url": "https://crates.io/api/v1/crates/bitflags/2.11.0/download",
+      "version": "2.11.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "byteorder-1.5.0.crate",
+      "id": "cargo-byteorder-1.5.0",
+      "kind": "cargo-crate",
+      "license": "Unlicense OR MIT",
+      "lock_file": "Cargo.lock",
+      "name": "byteorder",
+      "sha256": "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b",
+      "source_of_truth": "https://crates.io/crates/byteorder/1.5.0",
+      "url": "https://crates.io/api/v1/crates/byteorder/1.5.0/download",
+      "version": "1.5.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "cc-1.10.0.crate",
+      "id": "cargo-cc-1.10.0",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "cc",
+      "sha256": "86e055fa6e3e40ad6187ba25b6855eeb635d5271f8e0f0e1e9a5826b8d75bea0",
+      "source_of_truth": "https://crates.io/crates/cc/1.10.0",
+      "url": "https://crates.io/api/v1/crates/cc/1.10.0/download",
+      "version": "1.10.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "cexpr-0.6.0.crate",
+      "id": "cargo-cexpr-0.6.0",
+      "kind": "cargo-crate",
+      "license": "Apache-2.0/MIT",
+      "lock_file": "Cargo.lock",
+      "name": "cexpr",
+      "sha256": "6fac387a98bb7c37292057cffc56d62ecb629900026402633ae9160df93a8766",
+      "source_of_truth": "https://crates.io/crates/cexpr/0.6.0",
+      "url": "https://crates.io/api/v1/crates/cexpr/0.6.0/download",
+      "version": "0.6.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "cfg-expr-0.20.10.crate",
+      "id": "cargo-cfg-expr-0.20.10",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "cfg-expr",
+      "sha256": "9ba9e9ec16c447027685b1f897b720e18e9a8afd00bd7332c483537e38086c9f",
+      "source_of_truth": "https://crates.io/crates/cfg-expr/0.20.10",
+      "url": "https://crates.io/api/v1/crates/cfg-expr/0.20.10/download",
+      "version": "0.20.10"
+    },
+    {
+      "build_role": "resolved Rust dependency",
       "filename": "cfg-if-1.0.4.crate",
       "id": "cargo-cfg-if-1.0.4",
       "kind": "cargo-crate",
@@ -69,6 +380,32 @@
     },
     {
       "build_role": "resolved Rust dependency",
+      "filename": "clang-sys-1.9.1.crate",
+      "id": "cargo-clang-sys-1.9.1",
+      "kind": "cargo-crate",
+      "license": "Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "clang-sys",
+      "sha256": "157a8ba7b480713b56f4c09fd13fc3e0a22a5dfab8097ba61cbc5feef950788a",
+      "source_of_truth": "https://crates.io/crates/clang-sys/1.9.1",
+      "url": "https://crates.io/api/v1/crates/clang-sys/1.9.1/download",
+      "version": "1.9.1"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "cookie-factory-0.3.3.crate",
+      "id": "cargo-cookie-factory-0.3.3",
+      "kind": "cargo-crate",
+      "license": "MIT",
+      "lock_file": "Cargo.lock",
+      "name": "cookie-factory",
+      "sha256": "9885fa71e26b8ab7855e2ec7cae6e9b380edff76cd052e07c683a0319d51b3a2",
+      "source_of_truth": "https://crates.io/crates/cookie-factory/0.3.3",
+      "url": "https://crates.io/api/v1/crates/cookie-factory/0.3.3/download",
+      "version": "0.3.3"
+    },
+    {
+      "build_role": "resolved Rust dependency",
       "filename": "cpal-0.17.3.crate",
       "id": "cargo-cpal-0.17.3",
       "kind": "cargo-crate",
@@ -79,6 +416,19 @@
       "source_of_truth": "https://crates.io/crates/cpal/0.17.3",
       "url": "https://crates.io/api/v1/crates/cpal/0.17.3/download",
       "version": "0.17.3"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "cpal-0.18.2.crate",
+      "id": "cargo-cpal-0.18.2",
+      "kind": "cargo-crate",
+      "license": "Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "cpal",
+      "sha256": "6f02e8d0327b42d3e2e4ab2119af397344eb9fc54a34bf0ddeaa1277af8681f1",
+      "source_of_truth": "https://crates.io/crates/cpal/0.18.2",
+      "url": "https://crates.io/api/v1/crates/cpal/0.18.2/download",
+      "version": "0.18.2"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -121,6 +471,19 @@
     },
     {
       "build_role": "resolved Rust dependency",
+      "filename": "dbus-0.6.5.crate",
+      "id": "cargo-dbus-0.6.5",
+      "kind": "cargo-crate",
+      "license": "Apache-2.0/MIT",
+      "lock_file": "Cargo.lock",
+      "name": "dbus",
+      "sha256": "48b5f0f36f1eebe901b0e6bee369a77ed3396334bf3f09abd46454a576f71819",
+      "source_of_truth": "https://crates.io/crates/dbus/0.6.5",
+      "url": "https://crates.io/api/v1/crates/dbus/0.6.5/download",
+      "version": "0.6.5"
+    },
+    {
+      "build_role": "resolved Rust dependency",
       "filename": "easyfft-0.4.2.crate",
       "id": "cargo-easyfft-0.4.2",
       "kind": "cargo-crate",
@@ -147,6 +510,188 @@
     },
     {
       "build_role": "resolved Rust dependency",
+      "filename": "either-1.19.0.crate",
+      "id": "cargo-either-1.19.0",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "either",
+      "sha256": "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be",
+      "source_of_truth": "https://crates.io/crates/either/1.19.0",
+      "url": "https://crates.io/api/v1/crates/either/1.19.0/download",
+      "version": "1.19.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "enum-primitive-derive-0.3.0.crate",
+      "id": "cargo-enum-primitive-derive-0.3.0",
+      "kind": "cargo-crate",
+      "license": "MIT",
+      "lock_file": "Cargo.lock",
+      "name": "enum-primitive-derive",
+      "sha256": "ba7795da175654fe16979af73f81f26a8ea27638d8d9823d317016888a63dc4c",
+      "source_of_truth": "https://crates.io/crates/enum-primitive-derive/0.3.0",
+      "url": "https://crates.io/api/v1/crates/enum-primitive-derive/0.3.0/download",
+      "version": "0.3.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "equivalent-1.0.2.crate",
+      "id": "cargo-equivalent-1.0.2",
+      "kind": "cargo-crate",
+      "license": "Apache-2.0 OR MIT",
+      "lock_file": "Cargo.lock",
+      "name": "equivalent",
+      "sha256": "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f",
+      "source_of_truth": "https://crates.io/crates/equivalent/1.0.2",
+      "url": "https://crates.io/api/v1/crates/equivalent/1.0.2/download",
+      "version": "1.0.2"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "errno-0.3.14.crate",
+      "id": "cargo-errno-0.3.14",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "errno",
+      "sha256": "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb",
+      "source_of_truth": "https://crates.io/crates/errno/0.3.14",
+      "url": "https://crates.io/api/v1/crates/errno/0.3.14/download",
+      "version": "0.3.14"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "find-msvc-tools-0.1.15.crate",
+      "id": "cargo-find-msvc-tools-0.1.15",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "find-msvc-tools",
+      "sha256": "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48",
+      "source_of_truth": "https://crates.io/crates/find-msvc-tools/0.1.15",
+      "url": "https://crates.io/api/v1/crates/find-msvc-tools/0.1.15/download",
+      "version": "0.1.15"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "futures-0.3.34.crate",
+      "id": "cargo-futures-0.3.34",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "futures",
+      "sha256": "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3",
+      "source_of_truth": "https://crates.io/crates/futures/0.3.34",
+      "url": "https://crates.io/api/v1/crates/futures/0.3.34/download",
+      "version": "0.3.34"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "futures-channel-0.3.34.crate",
+      "id": "cargo-futures-channel-0.3.34",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "futures-channel",
+      "sha256": "b1f9e3d69d39e4862ffed03ed071a76f9a13ba1d9109d355b0f0aa6b15e393c4",
+      "source_of_truth": "https://crates.io/crates/futures-channel/0.3.34",
+      "url": "https://crates.io/api/v1/crates/futures-channel/0.3.34/download",
+      "version": "0.3.34"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "futures-core-0.3.34.crate",
+      "id": "cargo-futures-core-0.3.34",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "futures-core",
+      "sha256": "92d699e522242e69e3003b94ecc1f960f3a5e015aa7c5d7486e65ad01dd94f5e",
+      "source_of_truth": "https://crates.io/crates/futures-core/0.3.34",
+      "url": "https://crates.io/api/v1/crates/futures-core/0.3.34/download",
+      "version": "0.3.34"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "futures-executor-0.3.34.crate",
+      "id": "cargo-futures-executor-0.3.34",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "futures-executor",
+      "sha256": "031b47cf1a3c6cc8bc2fc76cd437f521619387907d469316e7c0bc278f1f5432",
+      "source_of_truth": "https://crates.io/crates/futures-executor/0.3.34",
+      "url": "https://crates.io/api/v1/crates/futures-executor/0.3.34/download",
+      "version": "0.3.34"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "futures-io-0.3.34.crate",
+      "id": "cargo-futures-io-0.3.34",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "futures-io",
+      "sha256": "53c0fa8157de1303bfffdaa1cc2a673bfffb60102f76b0ef4441659124373fed",
+      "source_of_truth": "https://crates.io/crates/futures-io/0.3.34",
+      "url": "https://crates.io/api/v1/crates/futures-io/0.3.34/download",
+      "version": "0.3.34"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "futures-macro-0.3.34.crate",
+      "id": "cargo-futures-macro-0.3.34",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "futures-macro",
+      "sha256": "9fb9654ba8355388abeb8dcb4fc62f511300867002afc858860463bdd9fe0c44",
+      "source_of_truth": "https://crates.io/crates/futures-macro/0.3.34",
+      "url": "https://crates.io/api/v1/crates/futures-macro/0.3.34/download",
+      "version": "0.3.34"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "futures-sink-0.3.34.crate",
+      "id": "cargo-futures-sink-0.3.34",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "futures-sink",
+      "sha256": "1944426bf7d03f1d14f708785e4b33efd750b36d48a157b836b3efc15ede8e1d",
+      "source_of_truth": "https://crates.io/crates/futures-sink/0.3.34",
+      "url": "https://crates.io/api/v1/crates/futures-sink/0.3.34/download",
+      "version": "0.3.34"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "futures-task-0.3.34.crate",
+      "id": "cargo-futures-task-0.3.34",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "futures-task",
+      "sha256": "cd417de3d1d015fc3bfd2b1ea46dfc7bab72ef86f1cc7cc9c78e728b34a6d1fd",
+      "source_of_truth": "https://crates.io/crates/futures-task/0.3.34",
+      "url": "https://crates.io/api/v1/crates/futures-task/0.3.34/download",
+      "version": "0.3.34"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "futures-util-0.3.34.crate",
+      "id": "cargo-futures-util-0.3.34",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "futures-util",
+      "sha256": "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc",
+      "source_of_truth": "https://crates.io/crates/futures-util/0.3.34",
+      "url": "https://crates.io/api/v1/crates/futures-util/0.3.34/download",
+      "version": "0.3.34"
+    },
+    {
+      "build_role": "resolved Rust dependency",
       "filename": "generic_singleton-0.5.1.crate",
       "id": "cargo-generic_singleton-0.5.1",
       "kind": "cargo-crate",
@@ -160,6 +705,32 @@
     },
     {
       "build_role": "resolved Rust dependency",
+      "filename": "glob-0.3.4.crate",
+      "id": "cargo-glob-0.3.4",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "glob",
+      "sha256": "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b",
+      "source_of_truth": "https://crates.io/crates/glob/0.3.4",
+      "url": "https://crates.io/api/v1/crates/glob/0.3.4/download",
+      "version": "0.3.4"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "hashbrown-0.16.1.crate",
+      "id": "cargo-hashbrown-0.16.1",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "hashbrown",
+      "sha256": "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100",
+      "source_of_truth": "https://crates.io/crates/hashbrown/0.16.1",
+      "url": "https://crates.io/api/v1/crates/hashbrown/0.16.1/download",
+      "version": "0.16.1"
+    },
+    {
+      "build_role": "resolved Rust dependency",
       "filename": "heck-0.5.0.crate",
       "id": "cargo-heck-0.5.0",
       "kind": "cargo-crate",
@@ -170,6 +741,32 @@
       "source_of_truth": "https://crates.io/crates/heck/0.5.0",
       "url": "https://crates.io/api/v1/crates/heck/0.5.0/download",
       "version": "0.5.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "indexmap-2.13.0.crate",
+      "id": "cargo-indexmap-2.13.0",
+      "kind": "cargo-crate",
+      "license": "Apache-2.0 OR MIT",
+      "lock_file": "Cargo.lock",
+      "name": "indexmap",
+      "sha256": "7714e70437a7dc3ac8eb7e6f8df75fd8eb422675fc7678aff7364301092b1017",
+      "source_of_truth": "https://crates.io/crates/indexmap/2.13.0",
+      "url": "https://crates.io/api/v1/crates/indexmap/2.13.0/download",
+      "version": "2.13.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "itertools-0.13.0.crate",
+      "id": "cargo-itertools-0.13.0",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "itertools",
+      "sha256": "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186",
+      "source_of_truth": "https://crates.io/crates/itertools/0.13.0",
+      "url": "https://crates.io/api/v1/crates/itertools/0.13.0/download",
+      "version": "0.13.0"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -199,6 +796,19 @@
     },
     {
       "build_role": "resolved Rust dependency",
+      "filename": "libdbus-sys-0.2.7.crate",
+      "id": "cargo-libdbus-sys-0.2.7",
+      "kind": "cargo-crate",
+      "license": "Apache-2.0/MIT",
+      "lock_file": "Cargo.lock",
+      "name": "libdbus-sys",
+      "sha256": "328c4789d42200f1eeec05bd86c9c13c7f091d2ba9a6ea35acdf51f31bc0f043",
+      "source_of_truth": "https://crates.io/crates/libdbus-sys/0.2.7",
+      "url": "https://crates.io/api/v1/crates/libdbus-sys/0.2.7/download",
+      "version": "0.2.7"
+    },
+    {
+      "build_role": "resolved Rust dependency",
       "filename": "libloading-0.8.9.crate",
       "id": "cargo-libloading-0.8.9",
       "kind": "cargo-crate",
@@ -209,6 +819,58 @@
       "source_of_truth": "https://crates.io/crates/libloading/0.8.9",
       "url": "https://crates.io/api/v1/crates/libloading/0.8.9/download",
       "version": "0.8.9"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "libloading-0.9.0.crate",
+      "id": "cargo-libloading-0.9.0",
+      "kind": "cargo-crate",
+      "license": "ISC",
+      "lock_file": "Cargo.lock",
+      "name": "libloading",
+      "sha256": "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60",
+      "source_of_truth": "https://crates.io/crates/libloading/0.9.0",
+      "url": "https://crates.io/api/v1/crates/libloading/0.9.0/download",
+      "version": "0.9.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "libspa-0.10.1.crate",
+      "id": "cargo-libspa-0.10.1",
+      "kind": "cargo-crate",
+      "license": "MIT",
+      "lock_file": "Cargo.lock",
+      "name": "libspa",
+      "sha256": "882f7427e7989dcc9d388b7f05c4630390a1d7696f9ffa469cd4a7a48f0b4c40",
+      "source_of_truth": "https://crates.io/crates/libspa/0.10.1",
+      "url": "https://crates.io/api/v1/crates/libspa/0.10.1/download",
+      "version": "0.10.1"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "libspa-sys-0.10.1.crate",
+      "id": "cargo-libspa-sys-0.10.1",
+      "kind": "cargo-crate",
+      "license": "MIT",
+      "lock_file": "Cargo.lock",
+      "name": "libspa-sys",
+      "sha256": "3b6e17bdaf63ed0d5e4144022624032b41fd9733112e8c74ac26fc9bf1291924",
+      "source_of_truth": "https://crates.io/crates/libspa-sys/0.10.1",
+      "url": "https://crates.io/api/v1/crates/libspa-sys/0.10.1/download",
+      "version": "0.10.1"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "linux-raw-sys-0.12.1.crate",
+      "id": "cargo-linux-raw-sys-0.12.1",
+      "kind": "cargo-crate",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "lock_file": "Cargo.lock",
+      "name": "linux-raw-sys",
+      "sha256": "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53",
+      "source_of_truth": "https://crates.io/crates/linux-raw-sys/0.12.1",
+      "url": "https://crates.io/api/v1/crates/linux-raw-sys/0.12.1/download",
+      "version": "0.12.1"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -225,6 +887,19 @@
     },
     {
       "build_role": "resolved Rust dependency",
+      "filename": "log-0.4.29.crate",
+      "id": "cargo-log-0.4.29",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "log",
+      "sha256": "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897",
+      "source_of_truth": "https://crates.io/crates/log/0.4.29",
+      "url": "https://crates.io/api/v1/crates/log/0.4.29/download",
+      "version": "0.4.29"
+    },
+    {
+      "build_role": "resolved Rust dependency",
       "filename": "matrixmultiply-0.3.10.crate",
       "id": "cargo-matrixmultiply-0.3.10",
       "kind": "cargo-crate",
@@ -235,6 +910,45 @@
       "source_of_truth": "https://crates.io/crates/matrixmultiply/0.3.10",
       "url": "https://crates.io/api/v1/crates/matrixmultiply/0.3.10/download",
       "version": "0.3.10"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "memchr-2.8.0.crate",
+      "id": "cargo-memchr-2.8.0",
+      "kind": "cargo-crate",
+      "license": "Unlicense OR MIT",
+      "lock_file": "Cargo.lock",
+      "name": "memchr",
+      "sha256": "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79",
+      "source_of_truth": "https://crates.io/crates/memchr/2.8.0",
+      "url": "https://crates.io/api/v1/crates/memchr/2.8.0/download",
+      "version": "2.8.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "minimal-lexical-0.2.1.crate",
+      "id": "cargo-minimal-lexical-0.2.1",
+      "kind": "cargo-crate",
+      "license": "MIT/Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "minimal-lexical",
+      "sha256": "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a",
+      "source_of_truth": "https://crates.io/crates/minimal-lexical/0.2.1",
+      "url": "https://crates.io/api/v1/crates/minimal-lexical/0.2.1/download",
+      "version": "0.2.1"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "mio-1.1.1.crate",
+      "id": "cargo-mio-1.1.1",
+      "kind": "cargo-crate",
+      "license": "MIT",
+      "lock_file": "Cargo.lock",
+      "name": "mio",
+      "sha256": "a69bcab0ad47271a0234d9422b131806bf3968021e5dc9328caf2d4cd58557fc",
+      "source_of_truth": "https://crates.io/crates/mio/1.1.1",
+      "url": "https://crates.io/api/v1/crates/mio/1.1.1/download",
+      "version": "1.1.1"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -274,6 +988,32 @@
       "source_of_truth": "https://crates.io/crates/no_denormals/0.3.0",
       "url": "https://crates.io/api/v1/crates/no_denormals/0.3.0/download",
       "version": "0.3.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "nom-7.1.3.crate",
+      "id": "cargo-nom-7.1.3",
+      "kind": "cargo-crate",
+      "license": "MIT",
+      "lock_file": "Cargo.lock",
+      "name": "nom",
+      "sha256": "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a",
+      "source_of_truth": "https://crates.io/crates/nom/7.1.3",
+      "url": "https://crates.io/api/v1/crates/nom/7.1.3/download",
+      "version": "7.1.3"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "nom-8.0.0.crate",
+      "id": "cargo-nom-8.0.0",
+      "kind": "cargo-crate",
+      "license": "MIT",
+      "lock_file": "Cargo.lock",
+      "name": "nom",
+      "sha256": "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405",
+      "source_of_truth": "https://crates.io/crates/nom/8.0.0",
+      "url": "https://crates.io/api/v1/crates/nom/8.0.0/download",
+      "version": "8.0.0"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -407,6 +1147,45 @@
     },
     {
       "build_role": "resolved Rust dependency",
+      "filename": "pipewire-0.10.1.crate",
+      "id": "cargo-pipewire-0.10.1",
+      "kind": "cargo-crate",
+      "license": "MIT",
+      "lock_file": "Cargo.lock",
+      "name": "pipewire",
+      "sha256": "bde71084c4e25959d68f1ea54daa75e5ecdb338e5caf0b5510143b79baa32d5c",
+      "source_of_truth": "https://crates.io/crates/pipewire/0.10.1",
+      "url": "https://crates.io/api/v1/crates/pipewire/0.10.1/download",
+      "version": "0.10.1"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "pipewire-sys-0.10.1.crate",
+      "id": "cargo-pipewire-sys-0.10.1",
+      "kind": "cargo-crate",
+      "license": "MIT",
+      "lock_file": "Cargo.lock",
+      "name": "pipewire-sys",
+      "sha256": "9ce653f53e63e5b93853218092ee9a8906a5d082c92f3f1db26316955dd63ce0",
+      "source_of_truth": "https://crates.io/crates/pipewire-sys/0.10.1",
+      "url": "https://crates.io/api/v1/crates/pipewire-sys/0.10.1/download",
+      "version": "0.10.1"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "pkg-config-0.3.32.crate",
+      "id": "cargo-pkg-config-0.3.32",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "pkg-config",
+      "sha256": "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c",
+      "source_of_truth": "https://crates.io/crates/pkg-config/0.3.32",
+      "url": "https://crates.io/api/v1/crates/pkg-config/0.3.32/download",
+      "version": "0.3.32"
+    },
+    {
+      "build_role": "resolved Rust dependency",
       "filename": "portable-atomic-1.13.1.crate",
       "id": "cargo-portable-atomic-1.13.1",
       "kind": "cargo-crate",
@@ -456,6 +1235,19 @@
       "source_of_truth": "https://crates.io/crates/proc-macro2/1.0.106",
       "url": "https://crates.io/api/v1/crates/proc-macro2/1.0.106/download",
       "version": "1.0.106"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "pulseaudio-0.3.2.crate",
+      "id": "cargo-pulseaudio-0.3.2",
+      "kind": "cargo-crate",
+      "license": "MIT",
+      "lock_file": "Cargo.lock",
+      "name": "pulseaudio",
+      "sha256": "9ba79a4c6904c987cc31fa50e9b750539404511c2dbd9ce95e5e58444177a21e",
+      "source_of_truth": "https://crates.io/crates/pulseaudio/0.3.2",
+      "url": "https://crates.io/api/v1/crates/pulseaudio/0.3.2/download",
+      "version": "0.3.2"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -563,6 +1355,45 @@
     },
     {
       "build_role": "resolved Rust dependency",
+      "filename": "regex-1.13.1.crate",
+      "id": "cargo-regex-1.13.1",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "regex",
+      "sha256": "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d",
+      "source_of_truth": "https://crates.io/crates/regex/1.13.1",
+      "url": "https://crates.io/api/v1/crates/regex/1.13.1/download",
+      "version": "1.13.1"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "regex-automata-0.4.18.crate",
+      "id": "cargo-regex-automata-0.4.18",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "regex-automata",
+      "sha256": "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2",
+      "source_of_truth": "https://crates.io/crates/regex-automata/0.4.18",
+      "url": "https://crates.io/api/v1/crates/regex-automata/0.4.18/download",
+      "version": "0.4.18"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "regex-syntax-0.8.11.crate",
+      "id": "cargo-regex-syntax-0.8.11",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "regex-syntax",
+      "sha256": "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4",
+      "source_of_truth": "https://crates.io/crates/regex-syntax/0.8.11",
+      "url": "https://crates.io/api/v1/crates/regex-syntax/0.8.11/download",
+      "version": "0.8.11"
+    },
+    {
+      "build_role": "resolved Rust dependency",
       "filename": "ringbuf-0.5.2.crate",
       "id": "cargo-ringbuf-0.5.2",
       "kind": "cargo-crate",
@@ -615,6 +1446,19 @@
     },
     {
       "build_role": "resolved Rust dependency",
+      "filename": "rustix-1.1.6.crate",
+      "id": "cargo-rustix-1.1.6",
+      "kind": "cargo-crate",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "lock_file": "Cargo.lock",
+      "name": "rustix",
+      "sha256": "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa",
+      "source_of_truth": "https://crates.io/crates/rustix/1.1.6",
+      "url": "https://crates.io/api/v1/crates/rustix/1.1.6/download",
+      "version": "1.1.6"
+    },
+    {
+      "build_role": "resolved Rust dependency",
       "filename": "scopeguard-1.2.0.crate",
       "id": "cargo-scopeguard-1.2.0",
       "kind": "cargo-crate",
@@ -651,6 +1495,58 @@
       "source_of_truth": "https://crates.io/crates/serde_core/1.0.228",
       "url": "https://crates.io/api/v1/crates/serde_core/1.0.228/download",
       "version": "1.0.228"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "serde_spanned-1.1.2.crate",
+      "id": "cargo-serde_spanned-1.1.2",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "serde_spanned",
+      "sha256": "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c",
+      "source_of_truth": "https://crates.io/crates/serde_spanned/1.1.2",
+      "url": "https://crates.io/api/v1/crates/serde_spanned/1.1.2/download",
+      "version": "1.1.2"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "shlex-1.3.0.crate",
+      "id": "cargo-shlex-1.3.0",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "shlex",
+      "sha256": "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64",
+      "source_of_truth": "https://crates.io/crates/shlex/1.3.0",
+      "url": "https://crates.io/api/v1/crates/shlex/1.3.0/download",
+      "version": "1.3.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "shlex-2.0.1.crate",
+      "id": "cargo-shlex-2.0.1",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "shlex",
+      "sha256": "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba",
+      "source_of_truth": "https://crates.io/crates/shlex/2.0.1",
+      "url": "https://crates.io/api/v1/crates/shlex/2.0.1/download",
+      "version": "2.0.1"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "slab-0.4.12.crate",
+      "id": "cargo-slab-0.4.12",
+      "kind": "cargo-crate",
+      "license": "MIT",
+      "lock_file": "Cargo.lock",
+      "name": "slab",
+      "sha256": "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5",
+      "source_of_truth": "https://crates.io/crates/slab/0.4.12",
+      "url": "https://crates.io/api/v1/crates/slab/0.4.12/download",
+      "version": "0.4.12"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -693,6 +1589,32 @@
     },
     {
       "build_role": "resolved Rust dependency",
+      "filename": "syn-3.0.9.crate",
+      "id": "cargo-syn-3.0.9",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "syn",
+      "sha256": "d78c8dee4c7bf0e14673097256fed6142ce9d3b85a408189d07482442145823b",
+      "source_of_truth": "https://crates.io/crates/syn/3.0.9",
+      "url": "https://crates.io/api/v1/crates/syn/3.0.9/download",
+      "version": "3.0.9"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "system-deps-7.0.8.crate",
+      "id": "cargo-system-deps-7.0.8",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "system-deps",
+      "sha256": "396a35feb67335377e0251fcbc1092fc85c484bd4e3a7a54319399da127796e7",
+      "source_of_truth": "https://crates.io/crates/system-deps/7.0.8",
+      "url": "https://crates.io/api/v1/crates/system-deps/7.0.8/download",
+      "version": "7.0.8"
+    },
+    {
+      "build_role": "resolved Rust dependency",
       "filename": "target-lexicon-0.13.5.crate",
       "id": "cargo-target-lexicon-0.13.5",
       "kind": "cargo-crate",
@@ -729,6 +1651,58 @@
       "source_of_truth": "https://crates.io/crates/thiserror-impl/1.0.69",
       "url": "https://crates.io/api/v1/crates/thiserror-impl/1.0.69/download",
       "version": "1.0.69"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "toml-1.0.6+spec-1.1.0.crate",
+      "id": "cargo-toml-1.0.6+spec-1.1.0",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "toml",
+      "sha256": "399b1124a3c9e16766831c6bba21e50192572cdd98706ea114f9502509686ffc",
+      "source_of_truth": "https://crates.io/crates/toml/1.0.6+spec-1.1.0",
+      "url": "https://crates.io/api/v1/crates/toml/1.0.6+spec-1.1.0/download",
+      "version": "1.0.6+spec-1.1.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "toml_datetime-1.1.2+spec-1.1.0.crate",
+      "id": "cargo-toml_datetime-1.1.2+spec-1.1.0",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "toml_datetime",
+      "sha256": "2b86d767906c6c42421dcba507eb9d203e779497710a47782a224bb871653053",
+      "source_of_truth": "https://crates.io/crates/toml_datetime/1.1.2+spec-1.1.0",
+      "url": "https://crates.io/api/v1/crates/toml_datetime/1.1.2+spec-1.1.0/download",
+      "version": "1.1.2+spec-1.1.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "toml_parser-1.0.9+spec-1.1.0.crate",
+      "id": "cargo-toml_parser-1.0.9+spec-1.1.0",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "toml_parser",
+      "sha256": "702d4415e08923e7e1ef96cd5727c0dfed80b4d2fa25db9647fe5eb6f7c5a4c4",
+      "source_of_truth": "https://crates.io/crates/toml_parser/1.0.9+spec-1.1.0",
+      "url": "https://crates.io/api/v1/crates/toml_parser/1.0.9+spec-1.1.0/download",
+      "version": "1.0.9+spec-1.1.0"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "toml_writer-1.1.3+spec-1.1.0.crate",
+      "id": "cargo-toml_writer-1.1.3+spec-1.1.0",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "toml_writer",
+      "sha256": "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770",
+      "source_of_truth": "https://crates.io/crates/toml_writer/1.1.3+spec-1.1.0",
+      "url": "https://crates.io/api/v1/crates/toml_writer/1.1.3+spec-1.1.0/download",
+      "version": "1.1.3+spec-1.1.0"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -781,6 +1755,32 @@
       "source_of_truth": "https://crates.io/crates/unicode-ident/1.0.24",
       "url": "https://crates.io/api/v1/crates/unicode-ident/1.0.24/download",
       "version": "1.0.24"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "unicode-width-0.2.3.crate",
+      "id": "cargo-unicode-width-0.2.3",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "unicode-width",
+      "sha256": "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557",
+      "source_of_truth": "https://crates.io/crates/unicode-width/0.2.3",
+      "url": "https://crates.io/api/v1/crates/unicode-width/0.2.3/download",
+      "version": "0.2.3"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "version-compare-0.2.1.crate",
+      "id": "cargo-version-compare-0.2.1",
+      "kind": "cargo-crate",
+      "license": "MIT",
+      "lock_file": "Cargo.lock",
+      "name": "version-compare",
+      "sha256": "03c2856837ef78f57382f06b2b8563a2f512f7185d732608fd9176cb3b8edf0e",
+      "source_of_truth": "https://crates.io/crates/version-compare/0.2.1",
+      "url": "https://crates.io/api/v1/crates/version-compare/0.2.1/download",
+      "version": "0.2.1"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -914,6 +1914,19 @@
     },
     {
       "build_role": "resolved Rust dependency",
+      "filename": "windows-sys-0.61.2.crate",
+      "id": "cargo-windows-sys-0.61.2",
+      "kind": "cargo-crate",
+      "license": "MIT OR Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "windows-sys",
+      "sha256": "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc",
+      "source_of_truth": "https://crates.io/crates/windows-sys/0.61.2",
+      "url": "https://crates.io/api/v1/crates/windows-sys/0.61.2/download",
+      "version": "0.61.2"
+    },
+    {
+      "build_role": "resolved Rust dependency",
       "filename": "windows-threading-0.2.1.crate",
       "id": "cargo-windows-threading-0.2.1",
       "kind": "cargo-crate",
@@ -924,6 +1937,19 @@
       "source_of_truth": "https://crates.io/crates/windows-threading/0.2.1",
       "url": "https://crates.io/api/v1/crates/windows-threading/0.2.1/download",
       "version": "0.2.1"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "winnow-0.7.14.crate",
+      "id": "cargo-winnow-0.7.14",
+      "kind": "cargo-crate",
+      "license": "MIT",
+      "lock_file": "Cargo.lock",
+      "name": "winnow",
+      "sha256": "5a5364e9d77fcdeeaa6062ced926ee3381faa2ee02d3eb83a5c27a8825540829",
+      "source_of_truth": "https://crates.io/crates/winnow/0.7.14",
+      "url": "https://crates.io/api/v1/crates/winnow/0.7.14/download",
+      "version": "0.7.14"
     },
     {
       "build_role": "locked interpreter used by the release workflow",
@@ -3722,6 +4748,18 @@
       "version": "d375b2d8309e0935d165700c91da9de862a99c31"
     },
     {
+      "build_role": "source for the libgfortran and libquadmath copies in NumPy's Linux wheel",
+      "filename": "gcc-8.5.0-28.el8_10.alma.1.src.rpm",
+      "id": "gcc-runtime-8.5.0-28.el8_10.alma.1",
+      "kind": "native-build-source",
+      "license": "GPL-3.0-or-later WITH GCC-exception-3.1; LGPL-2.1-or-later (libquadmath)",
+      "name": "GCC (libgfortran and libquadmath runtimes)",
+      "sha256": "c94dbbd2cd6d5d01a5a6822ea18f8ce34942c25a80e17b4682d547d5e652dbd0",
+      "source_of_truth": "https://repo.almalinux.org/vault/8.10/BaseOS/Source/Packages/",
+      "url": "https://repo.almalinux.org/vault/8.10/BaseOS/Source/Packages/gcc-8.5.0-28.el8_10.alma.1.src.rpm",
+      "version": "8.5.0-28.el8_10.alma.1"
+    },
+    {
       "build_role": "source for Qt's bundled opengl32sw.dll Mesa software rasterizer",
       "filename": "mesa-11.2.2.tar.xz",
       "id": "mesa-llvmpipe-11.2.2",
@@ -3950,7 +4988,7 @@
       "version": "1.0.230629.1"
     },
     {
-      "build_role": "exact CPU ONNX Runtime source corresponding to the pinned Windows package",
+      "build_role": "exact CPU ONNX Runtime source corresponding to the pinned Windows and Linux packages",
       "filename": "onnxruntime-a83fc4d58cb48eb68890dd689f94f28288cf2278.tar.gz",
       "id": "onnxruntime-source-a83fc4d58cb4",
       "kind": "native-build-source",
@@ -4011,7 +5049,7 @@
       "version": "e709452ef2bbc1d113faf678c24e6d3467696e83"
     },
     {
-      "build_role": "exact NumPy 2.5.1 Windows OpenBLAS source and patch recipe",
+      "build_role": "exact NumPy 2.5.1 Windows and Linux OpenBLAS source and patch recipe",
       "filename": "openblas-libs-0.3.33.112.0.tar.gz",
       "id": "openblas-recipe-numpy-0.3.33.112.0",
       "kind": "native-build-source",
@@ -4110,19 +5148,19 @@
       "version": "6.11.1"
     },
     {
-      "build_role": "corresponding source for the Qt libraries and plugins used by the Windows bundle",
+      "build_role": "corresponding source for the Qt libraries and plugins used by the Windows and Linux bundles",
       "filename": "qtbase-everywhere-src-6.11.1.tar.xz",
       "id": "qt-qtbase-6.11.1",
       "kind": "qt-source",
       "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
-      "name": "Qt base (Core, Gui, Network, Widgets, Windows platform plugin)",
+      "name": "Qt base (Core, Gui, Network, Widgets, DBus, Windows and xcb platform plugins)",
       "sha256": "d9594a31228aa23ad6b531719a29b45f0f3989fe6c136d45767ea179f233c1ac",
       "source_of_truth": "https://download.qt.io/official_releases/qt/",
       "url": "https://qt.mirror.constant.com/official_releases/qt/6.11/6.11.1/submodules/qtbase-everywhere-src-6.11.1.tar.xz",
       "version": "6.11.1"
     },
     {
-      "build_role": "corresponding source for the Qt libraries and plugins used by the Windows bundle",
+      "build_role": "corresponding source for the Qt libraries and plugins used by the Windows and Linux bundles",
       "filename": "qtdeclarative-everywhere-src-6.11.1.tar.xz",
       "id": "qt-qtdeclarative-6.11.1",
       "kind": "qt-source",
@@ -4134,7 +5172,7 @@
       "version": "6.11.1"
     },
     {
-      "build_role": "corresponding source for the Qt libraries and plugins used by the Windows bundle",
+      "build_role": "corresponding source for the Qt libraries and plugins used by the Windows and Linux bundles",
       "filename": "qtimageformats-everywhere-src-6.11.1.tar.xz",
       "id": "qt-qtimageformats-6.11.1",
       "kind": "qt-source",
@@ -4146,15 +5184,39 @@
       "version": "6.11.1"
     },
     {
-      "build_role": "corresponding source for the Qt libraries and plugins used by the Windows bundle",
+      "build_role": "corresponding source for the Qt libraries and plugins used by the Windows and Linux bundles",
       "filename": "qtmultimedia-everywhere-src-6.11.1.tar.xz",
       "id": "qt-qtmultimedia-6.11.1",
       "kind": "qt-source",
       "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
-      "name": "Qt Multimedia core and Windows audio backend used by QAudioSink",
+      "name": "Qt Multimedia core and the Windows and PulseAudio audio backends used by QAudioSink",
       "sha256": "390f8e52ddee3aca5c4de7eead900c84c4fa61ff6d1f0ebea9c7543365c09b0a",
       "source_of_truth": "https://download.qt.io/official_releases/qt/",
       "url": "https://qt.mirror.constant.com/official_releases/qt/6.11/6.11.1/submodules/qtmultimedia-everywhere-src-6.11.1.tar.xz",
+      "version": "6.11.1"
+    },
+    {
+      "build_role": "corresponding source for the Qt libraries and plugins used by the Windows and Linux bundles",
+      "filename": "qtsvg-everywhere-src-6.11.1.tar.xz",
+      "id": "qt-qtsvg-6.11.1",
+      "kind": "qt-source",
+      "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "name": "Qt SVG and its icon engine and image plugins shipped in the Linux bundle",
+      "sha256": "7f3cf02f4824bf03c2c5859ea6db173bf1482a1daf24e6cdf7bc78cfa26a8a94",
+      "source_of_truth": "https://download.qt.io/official_releases/qt/",
+      "url": "https://qt.mirror.constant.com/official_releases/qt/6.11/6.11.1/submodules/qtsvg-everywhere-src-6.11.1.tar.xz",
+      "version": "6.11.1"
+    },
+    {
+      "build_role": "corresponding source for the Qt libraries and plugins used by the Windows and Linux bundles",
+      "filename": "qtwayland-everywhere-src-6.11.1.tar.xz",
+      "id": "qt-qtwayland-6.11.1",
+      "kind": "qt-source",
+      "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "name": "Qt Wayland client and platform plugins shipped in the Linux bundle",
+      "sha256": "95788aa502f75441d4edf65932b235f76523084e13dbbb7b9ee2d207b32bd9b3",
+      "source_of_truth": "https://download.qt.io/official_releases/qt/",
+      "url": "https://qt.mirror.constant.com/official_releases/qt/6.11/6.11.1/submodules/qtwayland-everywhere-src-6.11.1.tar.xz",
       "version": "6.11.1"
     },
     {
@@ -4196,6 +5258,33 @@
       "status": "available",
       "url": "https://github.com/Rikorose/DeepFilterNet/tree/d375b2d8309e0935d165700c91da9de862a99c31",
       "version": "d375b2d8309e0935d165700c91da9de862a99c31"
+    },
+    {
+      "asset_sha256": "43bffb4c6c8eab7a2c6187e5a1375735d31a2544c32175a56414437c47032b0c",
+      "filename": "d375b2d8309e0935d165700c91da9de862a99c31",
+      "id": "runtime-libdf.so",
+      "kind": "runtime-asset",
+      "license": "MIT option; bundled notice: licenses/DeepFilterNet-LICENSE.txt",
+      "name": "libdf.so",
+      "sha256": "43bffb4c6c8eab7a2c6187e5a1375735d31a2544c32175a56414437c47032b0c",
+      "source_build": true,
+      "source_role": "runtime asset, not application source",
+      "status": "available",
+      "url": "https://github.com/Rikorose/DeepFilterNet/tree/d375b2d8309e0935d165700c91da9de862a99c31",
+      "version": "d375b2d8309e0935d165700c91da9de862a99c31"
+    },
+    {
+      "asset_sha256": "13ab8084954fa4a47c777880180b90810d6020f021441395712b48a75b74c68b",
+      "filename": "onnxruntime-linux-x64-1.23.2.tgz",
+      "id": "runtime-libonnxruntime.so.1.23.2",
+      "kind": "runtime-asset",
+      "license": "MIT; bundled notices: licenses/ONNXRuntime-LICENSE.txt and licenses/ONNXRuntime-ThirdPartyNotices.txt",
+      "name": "target/onnxruntime-cpu/lib/libonnxruntime.so.1.23.2",
+      "sha256": "1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b",
+      "source_role": "runtime asset, not application source",
+      "status": "available",
+      "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz",
+      "version": "1.23.2"
     },
     {
       "asset_sha256": "dec964ab1ee36cc9b0ae247d13b376627992fc57dec0454354017ab8fd84f1ea",
@@ -4261,6 +5350,10 @@
           "sha256": "466f923b9e1b266cbb674b8f6e775bcfc65875123504a393799c7a16e9666dad"
         },
         {
+          "path": "python/tools/build_deepfilter.py",
+          "sha256": "fb41854308766052839b1b8a6a3734a34f08f31c2cd38505f7cf3600779f3980"
+        },
+        {
           "path": "build-support/deepfilter/Cargo.toml",
           "sha256": "f756ded61c98dc8b66a46f48569210070b9f983ef68a62a2d6b368ec1f2bc5c3"
         },
@@ -4278,10 +5371,10 @@
         }
       ],
       "id": "deepfilter-build",
-      "name": "DeepFilter C API Windows build recipe"
+      "name": "DeepFilter C API build recipes for Windows and Linux"
     }
   ],
   "schema_version": 1,
-  "scope": "Exact sources for the release Python runtime, PySide/Qt binding stack, PyInstaller bootloader, CPython, CPU ONNX Runtime graph, and resolved Windows Cargo graph. Runtime models and redistributable binaries are recorded separately.",
+  "scope": "Exact sources for the release Python runtime, PySide/Qt binding stack, PyInstaller bootloader, CPython, CPU ONNX Runtime graph, NumPy's Linux GCC runtimes, the Linux AppImage runtime and its statically linked libraries, and resolved Windows and Linux Cargo graphs. Runtime models and redistributable binaries are recorded separately.",
   "status": "complete"
 }

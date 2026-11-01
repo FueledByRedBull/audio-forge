@@ -189,6 +189,7 @@ def test_vad_bootstrap_preserves_explicit_override(tmp_path, monkeypatch):
 
 def test_app_logging_uses_audioforge_rotating_log(tmp_path, monkeypatch):
     monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     log_file = get_log_file()
 
     configured = configure_app_logging()
@@ -217,6 +218,7 @@ def test_app_logging_survives_an_unusable_profile_folder(tmp_path, monkeypatch):
     profile = tmp_path / "profile"
     profile.write_text("a file where the profile folder should be")
     monkeypatch.setenv("APPDATA", str(profile))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(profile))
     handlers_before = list(logging.getLogger().handlers)
 
     assert configure_app_logging() == get_log_file()
@@ -226,6 +228,7 @@ def test_app_logging_survives_an_unusable_profile_folder(tmp_path, monkeypatch):
 
 def test_app_logging_does_not_open_the_log_file_until_something_is_logged(tmp_path, monkeypatch):
     monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     log_file = configure_app_logging()
     try:
         assert not log_file.exists()
@@ -268,6 +271,7 @@ def test_launcher_leaves_model_discovery_to_app_bootstrap(tmp_path, monkeypatch)
     assert "VAD_MODEL_PATH" not in app_bootstrap.os.environ
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows taskbar properties")
 def test_windows_taskbar_relaunch_command_quotes_executable_path(qapp, monkeypatch):
     class Store:
         def __init__(self):
@@ -703,6 +707,7 @@ def test_startup_reaches_the_window_when_the_log_folder_cannot_be_created(
     profile = tmp_path / "profile"
     profile.write_text("a file where the profile folder should be")
     monkeypatch.setenv("APPDATA", str(profile))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(profile))
     reached = []
 
     def window():
@@ -876,3 +881,21 @@ def test_the_first_launch_logs_qt_messages_once_it_owns_the_instance(
         app_bootstrap.run_qt_app(window)  # type: ignore[arg-type]
 
     assert [r.getMessage() for r in caplog.records if r.name == "qt"] == ["default: window-time warning"]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the app's bus name is claimed on Linux")
+def test_the_app_claims_its_bus_name_before_building_the_window(startup_fakes, session_bus):
+    from jeepney.bus_messages import message_bus  # pyright: ignore[reportMissingImports]
+    from jeepney.io.blocking import open_dbus_connection  # pyright: ignore[reportMissingImports]
+
+    owned = []
+
+    def window():
+        with open_dbus_connection("SESSION") as client:
+            owned.append(client.send_and_get_reply(message_bus.NameHasOwner(app_bootstrap.APP_ID)).body[0])
+        raise RuntimeError("stop at the window")
+
+    with pytest.raises(RuntimeError, match="stop at the window"):
+        app_bootstrap._run_qt_app(window, smoke_test=False, enable_qt_log=lambda: None)  # type: ignore[arg-type]
+
+    assert owned == [True]

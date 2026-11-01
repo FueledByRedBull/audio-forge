@@ -562,13 +562,16 @@ def _renderer_missing(window) -> None:
     spawn_failed = False
     if api != "software" and not relaunched and not window.processor.is_running():
         # Order: close first (closeEvent saves, unregisters the hotkey, stops audio, and can be
-        # cancelled), then spawn (it frees the single-instance guard so the child can take it,
-        # and re-takes it on failure), and quit only if the spawn worked. All of it runs in one
-        # event-loop turn, so a failed spawn can show the window again before Qt acts on the
-        # last window having closed; the app then stays up with the error screen.
+        # cancelled), then spawn (it frees the single-instance guard and the D-Bus name so the
+        # child can take them, and re-takes them on failure), and quit only if the spawn worked.
+        # All of it runs in one event-loop turn, so a failed spawn can show the window again
+        # before Qt acts on the last window having closed; the app then stays up with the error
+        # screen.
         window._quitting = True
         if window.close():
-            if relaunch_with_software_rendering(getattr(window, "single_instance", None)):
+            if relaunch_with_software_rendering(
+                getattr(window, "single_instance", None), getattr(window, "application_bus", None)
+            ):
                 QCoreApplication.quit()
                 bridge.release()
                 return

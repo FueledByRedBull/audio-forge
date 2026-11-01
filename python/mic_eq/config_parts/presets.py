@@ -27,6 +27,7 @@ from .shared import (
     get_preset_imports_dir,
     get_presets_dir,
     migration_pending,
+    publish_exclusive,
     replace_file,
 )
 from .validation import (
@@ -730,15 +731,6 @@ def _holds_preset_named(filepath: Path, name: str) -> bool:
         return False
 
 
-def _publish_exclusive(temporary_path: Path, destination: Path) -> None:
-    """Move temporary_path to destination, raising FileExistsError if it exists.
-
-    Windows-only app: os.rename refuses an existing destination there (unlike POSIX), is
-    atomic, and needs no hard-link support from the volume.
-    """
-    os.rename(temporary_path, destination)
-
-
 def save_preset(
     preset: Preset,
     filepath: Optional[Path] = None,
@@ -772,7 +764,7 @@ def save_preset(
         else:
             # Exclusive publication: a competing writer cannot appear between
             # an exists() check and a destructive replace.
-            _publish_exclusive(temporary_path, filepath)
+            publish_exclusive(temporary_path, filepath)
     except Exception:
         temporary_path.unlink(missing_ok=True)
         raise
@@ -898,7 +890,7 @@ def import_preset(filepath: Path) -> tuple[Preset, Path]:
                 temporary_path.unlink(missing_ok=True)
                 return preset, imported_path
             try:
-                _publish_exclusive(temporary_path, imported_path)
+                publish_exclusive(temporary_path, imported_path)
             except FileExistsError:
                 suffix_index += 1
                 imported_path = imports_dir / (

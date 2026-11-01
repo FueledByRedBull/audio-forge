@@ -75,7 +75,7 @@ def _load_asset_manifest() -> tuple[list[dict[str, object]], list[str]]:
     if not manifest_path.is_file():
         return [], ["release-assets.json is missing"]
     try:
-        manifest = load_asset_manifest(manifest_path, require_metadata=True)
+        manifest = load_asset_manifest(manifest_path, require_metadata=True, platform="windows")
     except ValueError as exc:
         return [], [f"release-assets.json is invalid: {exc}"]
 

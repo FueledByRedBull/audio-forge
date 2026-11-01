@@ -12,8 +12,6 @@ use crate::dsp::noise_suppressor::{
 use ringbuf::traits::Producer;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 /// What became of a selection settled against a started stream.
 #[derive(Debug, PartialEq, Eq)]

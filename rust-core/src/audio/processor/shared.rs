@@ -418,8 +418,8 @@ pub(super) struct DspShared {
     /// Number of blocks where the downstream chain (de-esser, EQ, compressor,
     /// limiter) produced non-finite samples; the stages were reset each time.
     pub(super) downstream_non_finite_count: AtomicU64,
-    /// True when the DSP thread could not register for MMCSS Pro Audio
-    /// scheduling and runs at normal priority.
+    /// True when the DSP thread could not get realtime scheduling (MMCSS Pro
+    /// Audio on Windows, RTKit on Linux) and runs at normal priority.
     pub(super) scheduling_degraded: AtomicBool,
     /// Last RT-safe error code published by callbacks or the DSP loop.
     pub(super) rt_error_code: Arc<AtomicU32>,

@@ -1,9 +1,16 @@
 # Releasing AudioForge
 
 A release is built once by the `Release package` workflow, then promoted
-without rebuilding. The public release has exactly five files: the portable
-archive, the per-user MSI, the corresponding-source archive, an evidence
-archive, and one `SHA256SUMS.txt`.
+without rebuilding. The public release has exactly seven files: the portable
+Windows archive, the per-user MSI, the corresponding-source archive, the Linux
+tarball and AppImage, an evidence archive, and one `SHA256SUMS.txt`.
+
+`package-linux` builds the Linux files on Ubuntu 24.04, the oldest supported
+Linux release, from the same commit. The tarball and the AppImage each get a
+checksum, a manifest and a metadata file that name this run and commit, and
+`libdf.so` gets its build attestation. Promotion takes all of them from the
+same candidate run as the approved Windows archive and checks them on Linux
+(step 6).
 
 ## Automated workflow
 
@@ -33,6 +40,26 @@ archive, and one `SHA256SUMS.txt`.
      module's SHA-256.
    - `validate-candidate` runs beside those jobs, extracts the archive, and
      checks that its native module has the same SHA-256 the tests ran on.
+   - `package-linux` runs beside `package-windows`. It binds an existing tag to
+     its checkout, hydrates the same corresponding source, builds `libdf.so`
+     and the bundle, packs the tarball and the AppImage, smoke-tests both, and
+     stages the release files outside the working tree (provenance refuses a
+     tree with untracked files). It then passes the packaged native module,
+     `libdf.so`, the models and the CPU ONNX Runtime to the Linux test jobs as
+     the `audioforge-release-linux-runtime` artifact.
+   - `linux-tests` and `linux-pytest` run on those files once `package-linux`
+     has finished. `linux-tests` runs Clippy and the Rust tests with `libdf.so`
+     and the models, and a skipped DeepFilter or Silero test fails it. It also
+     audits the runtime lock on Linux, because the Windows `static` job skips
+     the lock's Linux-only entries. `linux-pytest` runs the same shards as
+     `pytest`. Promotion refuses a candidate run in which `package-linux`, `linux-tests` or any
+     `linux-pytest` shard is missing or did not succeed.
+   - The Linux bundle's paths are gated by
+     `evaluation/release-bundle-path-baseline-linux.json`. Until that file
+     exists, `package-linux` uploads this build's list as the
+     `audioforge-linux-bundle-paths` artifact and stops before staging. Review
+     the list (no FFmpeg, no GPL libraries, only the host libraries named in
+     `linux_package.py`), commit it as that file, and dispatch again.
 
    Every job must pass: promotion refuses a run that is not successful. Fix
    failures on the branch without tagging or changing the version, and
@@ -55,26 +82,41 @@ archive, and one `SHA256SUMS.txt`.
    [manual release checks](#manual-release-checks). `self_test.py` and `health_check.py` are the hardware checks
    that `release-hardware-qualify.yml` runs through
    `evaluate_hardware_validation.py`. They need a real audio route, so no
-   hosted job can run them. Keep each measurement bound to its candidate
+   hosted job can run them. `release-hardware-qualify-linux.yml` qualifies the
+   Linux tarball the same way on a self-hosted Ubuntu 24.04 runner labelled
+   `[self-hosted, linux, x64, audioforge-hardware]`, in a logged-in PipeWire
+   session. Its `sleep_resume` case reads systemd-sleep's journal entries, so
+   the runner's user must be able to read the system journal (on Ubuntu, the
+   `systemd-journal` group). Pass the tarball's SHA-256 as
+   `expected_archive_sha256`. A matrix covers one artifact, so assemble the
+   Windows and Linux cases in separate `release-hardware-matrix.yml` runs. Keep each measurement bound to its candidate
    revision and digest, never attribute an earlier candidate's results to the
    final binary, and name untested configurations in the release notes.
    The runner is a personal machine that executes repository code: register it
    only while a run is needed, and only for this repository. Like promotion,
-   both hardware workflows are limited to `master` and to admin or maintain
+   the hardware workflows are limited to `master` and to admin or maintain
    users, as described under step 6.
 6. **Promote.** Run `Promote release candidate` with `release_tag`,
    `candidate_run_id`, and `expected_archive_sha256`. It downloads the same
    candidate bytes, verifies sidecars, evidence, and corresponding source
-   against that digest, assembles a draft, and publishes only when all five
+   against that digest, assembles a draft, and publishes only when all seven
    files are present and verified. Release notes come from the workflow
    revision; the binary stays bound to the tag. Reruns compare GitHub's
    SHA-256 digests in preflight, and the final check downloads and hashes
    every published file.
 
-   Promotion has two jobs. `verify-candidate` installs the pinned pip packages
+   `verify-linux-candidate` checks the Linux files on Linux. It re-hashes the
+   tarball and the AppImage against the digests `verify-candidate` staged, then
+   extracts both and verifies each against its manifest and metadata sidecars,
+   the reviewed Linux path baseline, its `libdf.so` attestation, the tag commit
+   and the candidate run, and its bundled source status. The two manifests must
+   list the same files, so the AppImage holds the tarball's bundle. Only then
+   does it smoke-test both. `publish-release` waits for it too.
+
+   Promotion's other two jobs share the work. `verify-candidate` installs the pinned pip packages
    and runs the candidate (the MSI and the executable) with a read-only token
    and no credentials in its checkout. Before it runs the MSI or the
-   executable it locates the five release files, stages them, records their
+   executable it locates the seven release files, stages them, records their
    SHA-256 and uploads the staged copies as an artifact. Only `publish-release`
    can write; it runs none of the candidate's code, re-hashes the staged files
    against the recorded digests and `expected_archive_sha256`, and publishes.
@@ -84,10 +126,10 @@ archive, and one `SHA256SUMS.txt`.
    What restricts who can dispatch these workflows, and where:
 
    - **In the workflow files, a guard against mistakes.** The first step of
-     every job in `Promote release candidate` and in both hardware workflows
+     every job in `Promote release candidate` and in the hardware workflows
      fails unless the run is on `refs/heads/master` and
      `github.triggering_actor` has the admin or maintain role
-     (`GET /repos/{repo}/collaborators/{user}/permission`). The three accept
+     (`GET /repos/{repo}/collaborators/{user}/permission`). They accept
      only `workflow_dispatch`; `check_workflows.py` rejects any other trigger.
      A copy of a file on another branch can delete this step, so it does not
      bind that copy.
@@ -104,6 +146,19 @@ archive, and one `SHA256SUMS.txt`.
      reviewers there if a second approval is wanted.
    - **In the token scope.** Only `publish-release` has `contents: write`;
      every other job in these workflows is read-only.
+
+7. **Update the AUR package.** For a final release, download the published
+   `AudioForge-v<version>-SHA256SUMS.txt`, then write the new `PKGBUILD` and
+   `.SRCINFO` into a checkout of the `audioforge-bin` AUR repository, commit
+   and push:
+
+   ```sh
+   python python/tools/aur_package.py --tag v<version> \
+     --checksums AudioForge-v<version>-SHA256SUMS.txt --output ~/aur/audioforge-bin
+   ```
+
+   Pass `--pkgrel 2` (and so on) to republish the same version with packaging
+   fixes. Release candidates are not published to the AUR.
 
 GitHub release immutability is enabled: publication locks the assets and tag
 and creates GitHub's
@@ -469,8 +524,17 @@ logic behind items 4-8, 11 and 13 (`test_quick_undo.py`, `test_quick_shell.py`,
   duplicate top-level native-extension payloads, and rejects a stale
   bundle-version manifest.
 - `evaluation/release-bundle-path-baseline.json` gates reviewed bundle path
-  additions and removals. Its binary hashes are provenance, not
+  additions and removals, and `evaluation/release-bundle-path-baseline-linux.json`
+  does the same for the Linux bundle. Its binary hashes are provenance, not
   reproducible-build expectations.
+- `linux_package.py` refuses a Linux bundle that carries FFmpeg libraries,
+  lacks the libxcb libraries Qt's xcb plugin needs, or copies a library from a
+  build-host package that is not in its permissive list.
+- The AppImage runtime pinned in `package-linux` (URL and SHA-256) must have
+  a matching `appimage-runtime-type2-runtime-<tag>` entry in
+  `licenses/source-manifest.json`; `check_workflows.py` fails when it does not.
+  Moving to another runtime release means pinning the sources of the new
+  runtime and its libraries first (see `licenses/SOURCE_DISTRIBUTION.md`).
 - `prune_bundle.py` keeps every dependency `.dist-info` directory, removes a
   duplicate native-extension payload only when the canonical
   `_internal/mic_eq/mic_eq_core*.pyd` exists, and removes app-local

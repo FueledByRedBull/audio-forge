@@ -2,8 +2,6 @@ use super::resampling::{total_reported_latency_us, LatencyComponents};
 use super::{INPUT_DC_BLOCK_COEFF, INPUT_PREFILTER_HZ, INPUT_PREFILTER_Q};
 use crate::dsp::biquad::{Biquad, BiquadType};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ProcessingPath {

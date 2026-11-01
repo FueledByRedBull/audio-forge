@@ -42,7 +42,8 @@ NOISE_SECONDS = 1.6
 PIN_PATH = Path(__file__).resolve().parent / "fixtures" / "golden" / "voice_setup_analysis.json"
 UPDATE = os.environ.get("AUDIOFORGE_UPDATE_GOLDEN") == "1"
 RELATIVE_TOLERANCE = 1e-4
-ABSOLUTE_TOLERANCE = 1e-6
+# Compiler and platform differences move a value near zero by about 1e-5 (dB, for the band gains).
+ABSOLUTE_TOLERANCE = 5e-5
 # (case name, bench mix, Silero VAD, strength of the user's noise suppression). The energy cases run without a
 # model. A nearly-off suppressor is the incumbent a candidate beats, so that case reaches the held-out check
 # and applies; the others keep the factory settings, which the search leaves alone.

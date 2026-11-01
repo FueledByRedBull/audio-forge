@@ -25,8 +25,6 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 #[cfg(feature = "vad")]
 use std::sync::Mutex;
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 #[cfg(all(test, feature = "vad"))]
 pub(super) static VAD_WORKER_FORCE_INFERENCE_ERROR: AtomicBool = AtomicBool::new(false);

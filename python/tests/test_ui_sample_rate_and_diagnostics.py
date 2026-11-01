@@ -1422,6 +1422,18 @@ def test_device_selection_policy_prefers_default_and_virtual_output():
     assert preferred_output_index(identities) == 1
 
 
+def test_device_selection_prefers_the_audioforge_mic_over_any_cable():
+    identities = [
+        DeviceIdentity(name="VB-Audio Cable"),
+        DeviceIdentity(name="Speakers", is_default=True),
+        DeviceIdentity(
+            name="AudioForge Mic Input", endpoint_id="pipewire:audioforge_mic_input"
+        ),
+    ]
+
+    assert preferred_output_index(identities) == 2
+
+
 def test_refresh_devices_preserves_existing_selection(window, monkeypatch):
     window.input_choice.addItem("Mic A", DeviceIdentity(name="Mic A", is_default=False))
     window.input_choice.addItem("Mic B", DeviceIdentity(name="Mic B", is_default=True))

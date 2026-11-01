@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import re
 import sys
@@ -12,6 +13,7 @@ from release_version import ReleaseVersion, parse_tag, parse_version
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_PYTHON_MINOR = (3, 13)
+METAINFO = "installer/linux/io.github.FueledByRedBull.AudioForge.metainfo.xml"
 
 
 def _read(path: str) -> str:
@@ -138,6 +140,26 @@ def _check_changelog_entry(version: ReleaseVersion) -> None:
         raise ValueError(f"CHANGELOG.md has no '## {heading}' entry")
 
 
+def _check_metainfo_release(version: ReleaseVersion) -> None:
+    """The newest <release> of the AppStream metainfo is this version, with a real date.
+
+    A release candidate is described by its final version, as in the changelog.
+    """
+    match = re.search(r"<release\b([^>]*)>", _read(METAINFO))
+    attributes = dict(re.findall(r'([\w-]+)="([^"]*)"', match.group(1))) if match else {}
+    if attributes.get("version") != version.base:
+        raise ValueError(
+            f"{METAINFO}: the first <release> is {attributes.get('version')!r}, expected "
+            f"{version.base!r}; a version bump updates it"
+        )
+    try:
+        datetime.date.fromisoformat(attributes.get("date", ""))
+    except ValueError as exc:
+        raise ValueError(
+            f"{METAINFO}: the <release> date {attributes.get('date')!r} is not a YYYY-MM-DD date"
+        ) from exc
+
+
 def main() -> int:
     _check_python_runtime()
     _check_release_asset_hydration()
@@ -184,6 +206,7 @@ def main() -> int:
         )
     _check_only_current_release_notes(expected)
     _check_changelog_entry(expected)
+    _check_metainfo_release(expected)
 
     mismatches = {
         path: version

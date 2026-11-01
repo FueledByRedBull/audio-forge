@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=AudioForge
+GenericName=Microphone Processor
+Comment=Remove background noise and polish your voice for calls, streams and recordings
+Exec=audioforge
+Icon=io.github.FueledByRedBull.AudioForge
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=microphone;mic;noise;suppression;equalizer;voice;
+StartupNotify=true
+StartupWMClass=io.github.FueledByRedBull.AudioForge
+Actions=toggle-mute;
+
+[Desktop Action toggle-mute]
+Name=Toggle Output Mute
+Exec=audioforge --toggle-mute

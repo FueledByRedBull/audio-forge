@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import sys
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
@@ -22,6 +23,8 @@ from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.noise_suppression_state import NoiseSuppressionState
 from mic_eq.ui import desktop_integration
 from mic_eq.ui.theme import PALETTE, muted_icon
+
+_WIN32_HOTKEY = pytest.mark.skipif(sys.platform != "win32", reason="Win32 RegisterHotKey backend")
 
 
 class _ModeCombo:
@@ -124,6 +127,7 @@ def test_tray_close_keeps_audio_running_until_explicit_quit() -> None:
     event.accept.assert_called_once()
 
 
+@_WIN32_HOTKEY
 def test_hotkey_registration_is_idempotent_and_released(qapp, monkeypatch):
     register = Mock(return_value=True)
     unregister = Mock(return_value=True)
@@ -142,6 +146,7 @@ def test_hotkey_registration_is_idempotent_and_released(qapp, monkeypatch):
     assert not hotkey.registered
 
 
+@_WIN32_HOTKEY
 def test_failed_hotkey_registration_reports_the_error_of_the_failing_call(qapp, monkeypatch):
     def refuse(*_args):
         ctypes.set_last_error(1409)  # ERROR_HOTKEY_ALREADY_REGISTERED
@@ -155,6 +160,7 @@ def test_failed_hotkey_registration_reports_the_error_of_the_failing_call(qapp, 
     assert error is not None and "1409" in error
 
 
+@_WIN32_HOTKEY
 def test_user32_handle_keeps_the_error_code_of_a_failing_call():
     ctypes.set_last_error(0)
 
@@ -171,11 +177,75 @@ def test_failed_hotkey_registration_is_not_shown_or_saved_as_enabled(monkeypatch
         config=SimpleNamespace(mute_hotkey="Ctrl+Alt+M"),
         _unregister_mute_hotkey=lambda: None,
         _toggle_mute_from_hotkey=lambda: None,
+        _mute_hotkey_lost=lambda _error: None, _mute_hotkey_availability=lambda _reason: None,
+        _describe_mute_hotkey=lambda _reason: None,
         _mute_hotkey_action=Mock(), status_message=Mock(),
     )
+    owner._disable_mute_hotkey = lambda error: MainWindow._disable_mute_hotkey(owner, error)
     assert not MainWindow._register_mute_hotkey(owner, "Ctrl+Alt+M")
     assert owner.config.mute_hotkey == ""
     owner._mute_hotkey_action.setChecked.assert_called_once_with(False)
+
+
+class _DesktopHotkey:
+    """The desktop end of the shortcut; the window around it is real."""
+
+    made: list[_DesktopHotkey] = []
+
+    def __init__(self, shortcut, callback, on_failure, on_availability):
+        self.on_failure, self.on_availability = on_failure, on_availability
+        self.made.append(self)
+
+    def register(self):
+        return True, None
+
+    def unregister(self):
+        pass
+
+
+def test_a_desktop_that_cannot_hold_the_shortcut_keeps_the_saved_setting_and_says_so(
+    isolated_main_window, monkeypatch
+):
+    window: Any = isolated_main_window
+    _DesktopHotkey.made = []
+    monkeypatch.setattr("mic_eq.ui.main_window.GlobalMuteHotkey", _DesktopHotkey)
+    saved: list[str] = []
+    monkeypatch.setattr(
+        "mic_eq.ui.main_window.save_config", lambda config: saved.append(config.mute_hotkey) or True
+    )
+    action = window._mute_hotkey_action
+    label = action.text()
+
+    action.setChecked(True)
+    hotkey = _DesktopHotkey.made[-1]
+    assert saved == ["Ctrl+Alt+M"]
+
+    hotkey.on_availability("no GlobalShortcuts portal answered; bind the command `x --toggle-mute`")
+
+    assert window.config.mute_hotkey == "Ctrl+Alt+M" and saved == ["Ctrl+Alt+M"]
+    assert action.isChecked()
+    assert "unavailable" in action.text() and "no GlobalShortcuts portal" in action.toolTip()
+    assert "no GlobalShortcuts portal" in window.status_message.text
+
+    hotkey.on_availability("")  # the portal is back and holds the key
+    assert action.text() == label and window.config.mute_hotkey == "Ctrl+Alt+M"
+
+    hotkey.on_availability("the desktop portal went away")
+    action.setChecked(False)  # switching it off clears the setting and the warning
+    assert window.config.mute_hotkey == "" and action.text() == label
+
+
+def test_a_desktop_that_refuses_the_shortcut_still_clears_the_saved_setting(
+    isolated_main_window, monkeypatch
+):
+    window: Any = isolated_main_window
+    _DesktopHotkey.made = []
+    monkeypatch.setattr("mic_eq.ui.main_window.GlobalMuteHotkey", _DesktopHotkey)
+    window._mute_hotkey_action.setChecked(True)
+
+    _DesktopHotkey.made[-1].on_failure("BindShortcuts was refused by the desktop")
+
+    assert window.config.mute_hotkey == "" and not window._mute_hotkey_action.isChecked()
 
 
 def test_failed_model_switch_retains_previous_model_and_strength(qapp, monkeypatch):
@@ -257,3 +327,41 @@ def test_the_presets_folder_opens_through_the_desktop_services_or_says_it_cannot
         assert opened == [QUrl.fromLocalFile(str(folder))] and not shown
     else:
         assert not opened and str(folder) in shown[0]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux panels offer the tray over D-Bus")
+def test_a_panel_that_starts_after_the_app_still_gets_the_tray(
+    isolated_main_window, monkeypatch, session_bus, qapp
+):
+    import os
+    import time
+
+    from jeepney.bus_messages import message_bus  # pyright: ignore[reportMissingImports]
+    from jeepney.io.blocking import open_dbus_connection  # pyright: ignore[reportMissingImports]
+    from PySide6.QtDBus import QDBusConnection
+
+    from mic_eq.ui.main_window import TRAY_HOST_SERVICE
+
+    window: Any = isolated_main_window
+    # Qt keeps one session bus connection per process; hand the window the test's bus.
+    bus = QDBusConnection.connectToBus(os.environ["DBUS_SESSION_BUS_ADDRESS"], "audioforge-tray-test")
+    monkeypatch.setattr(QDBusConnection, "sessionBus", lambda: bus)
+    window._tray_host_watcher = None  # the window was built with no bus to watch
+    available = False
+    monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", lambda: available)
+    window._setup_desktop_integration(tray_only=True)
+    assert window._tray_icon is None
+
+    available = True
+    with open_dbus_connection("SESSION") as panel:
+        panel.send_and_get_reply(message_bus.RequestName(TRAY_HOST_SERVICE))
+        deadline = time.monotonic() + 5
+        while window._tray_icon is None and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+    try:
+        assert window._tray_icon is not None
+    finally:
+        if window._tray_icon is not None:
+            window._tray_icon.hide()
+        QDBusConnection.disconnectFromBus("audioforge-tray-test")

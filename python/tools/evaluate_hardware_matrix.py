@@ -12,7 +12,6 @@ from typing import Any
 from hardware_qualification import (
     MINIMUM_AUTOMATED_BASELINE_CASES,
     REQUIRED_DEVICE_CLASSES,
-    REQUIRED_OS_RELEASES,
     REQUIRED_SAMPLE_RATES,
     REQUIRED_SCENARIOS,
     SUPPORTED_DEVICE_CLASSES,
@@ -20,6 +19,8 @@ from hardware_qualification import (
     SUPPORTED_SAMPLE_RATES,
     SUPPORTED_SCENARIOS,
     coverage_missing,
+    os_release,
+    required_os_releases,
     validate_case,
 )
 from release_provenance import sha256_file
@@ -69,9 +70,7 @@ def aggregate(
         return case.get(field, default) if isinstance(case, dict) else default
 
     def machine_release(report: dict[str, Any]) -> str:
-        machine = report.get("machine")
-        value = machine.get("release") if isinstance(machine, dict) else ""
-        return value if isinstance(value, str) else ""
+        return os_release(report.get("machine")) or ""
 
     def sample_rate(report: dict[str, Any]) -> int:
         value = case_field(report, "nominal_sample_rate_hz", 0)
@@ -156,7 +155,7 @@ def aggregate(
             "required": {
                 "minimum_automated_baseline_cases": MINIMUM_AUTOMATED_BASELINE_CASES,
                 "minimum_health_duration_seconds": 1_800,
-                "required_os_releases": sorted(REQUIRED_OS_RELEASES),
+                "required_os_releases": sorted(required_os_releases(os_releases)),
                 "required_device_classes": sorted(REQUIRED_DEVICE_CLASSES),
                 "required_nominal_sample_rates_hz": sorted(REQUIRED_SAMPLE_RATES),
                 "required_scenarios": sorted(REQUIRED_SCENARIOS),
@@ -185,6 +184,7 @@ def aggregate(
             "Coverage is release-artifact and hardware specific; source-tree simulations do not satisfy this gate.",
             "Promotion requires the digest-bound baseline plus the required OS, device, sample-rate, and lifecycle dimensions listed in coverage.required.",
             "Windows 10, built-in input, 44.1 kHz and physical lifecycle recovery are not release-qualified unless corresponding cases are included.",
+            "The Windows archive and the Linux tarball are separate artifacts; each matrix covers only the reports for its own digest.",
             "Physical lifecycle cases require automated health metrics and an explicit operator-observed event.",
             "No device names or endpoint IDs are retained in case or matrix reports.",
         ],

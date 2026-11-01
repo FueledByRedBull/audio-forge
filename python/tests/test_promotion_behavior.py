@@ -17,6 +17,17 @@ import yaml
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "release-promote.yml"
 
 
+def _candidate_jobs(*, drop: str | None = None, fail: str | None = None) -> list[dict[str, str]]:
+    """The jobs of a Release package run that promotion requires on Linux."""
+    shards = [*json.loads((WORKFLOW.parents[1] / "pytest-shards.json").read_text(encoding="utf-8")), "rest"]
+    names = ["Build Linux release package", "Linux Rust tests and lint", *(f"linux-pytest ({shard})" for shard in shards)]
+    return [
+        {"name": name, "conclusion": "failure" if name == fail else "success"}
+        for name in names
+        if name != drop
+    ]
+
+
 def _origin_gate_script() -> str:
     source = WORKFLOW.read_text(encoding="utf-8")
     start = source.index("          $canonicalTag =")
@@ -37,6 +48,18 @@ def _origin_gate_script() -> str:
         (("tag_type", "commit"), "must be an annotated tag"),
         (("head", "b" * 40), "checkout is not the release tag commit"),
         (("attempt", 0), "invalid attempt number"),
+        (
+            ("jobs", _candidate_jobs(drop="Linux Rust tests and lint")),
+            "no successful 'Linux Rust tests and lint' job",
+        ),
+        (
+            ("jobs", _candidate_jobs(drop="linux-pytest (rest)")),
+            "no successful 'linux-pytest (rest)' job",
+        ),
+        (
+            ("jobs", _candidate_jobs(fail="Build Linux release package")),
+            "no successful 'Build Linux release package' job",
+        ),
     ],
 )
 def test_promotion_origin_gate_executes_commit_and_run_binding(
@@ -55,6 +78,7 @@ def test_promotion_origin_gate_executes_commit_and_run_binding(
         "conclusion": "success",
         "headSha": commit,
         "attempt": 1,
+        "jobs": _candidate_jobs(),
     }
     tag_type = "tag"
     head = commit
@@ -106,6 +130,7 @@ def test_promotion_origin_gate_executes_commit_and_run_binding(
     )
     result = subprocess.run(
         [shell, "-NoProfile", "-NonInteractive", "-Command", setup + _origin_gate_script()],
+        cwd=WORKFLOW.parents[2],
         env=env,
         capture_output=True,
         text=True,
@@ -210,6 +235,8 @@ def _verified_release(tmp_path: Path, tag: str = "v1.19.0") -> tuple[dict[str, s
         "archive": directory / f"AudioForge-{tag}-win64-ultra.7z",
         "installer": directory / f"AudioForge-{tag}-win64.msi",
         "source_archive": directory / f"AudioForge-{tag}-source.7z",
+        "linux_tarball": directory / f"AudioForge-{tag}-linux-x86_64.tar.gz",
+        "linux_appimage": directory / f"AudioForge-{tag}-x86_64.AppImage",
         "evidence_archive": directory / f"AudioForge-{tag}-evidence.7z",
     }
     for kind, path in files.items():
@@ -289,7 +316,7 @@ def test_publish_recheck_refuses_files_named_for_another_release(tmp_path: Path)
     result = _recheck(tmp_path, digests, digests[files["archive"].name])
 
     assert result.returncode != 0
-    assert "five release files of v1.19.0" in result.stdout + result.stderr
+    assert "seven release files of v1.19.0" in result.stdout + result.stderr
 
 
 def test_publish_recheck_refuses_an_archive_other_than_the_approved_one(tmp_path: Path) -> None:
@@ -370,6 +397,16 @@ def _candidate_artifact(cwd: Path) -> tuple[Path, dict[str, str]]:
     ]
     for name in names:
         (candidate / name).write_bytes(f"bytes of {name}".encode())
+    linux_candidate = cwd / "linux-candidate"
+    linux_candidate.mkdir()
+    tarball = f"AudioForge-{TAG}-linux-x86_64.tar.gz"
+    appimage = f"AudioForge-{TAG}-x86_64.AppImage"
+    for name in (
+        tarball, f"{tarball}.sha256", f"{tarball}.manifest.json", f"{tarball}.metadata.json",
+        appimage, f"{appimage}.sha256", f"{appimage}.manifest.json", f"{appimage}.metadata.json",
+        f"AudioForge-{TAG}-libdf.provenance.json",
+    ):
+        (linux_candidate / name).write_bytes(f"bytes of {name}".encode())
     (cwd / "validation").mkdir()
     (cwd / "validation" / "release-qualification.json").write_text("{}", encoding="utf-8")
     return candidate, {"archive": archive, "installer": installer, "source": source}
@@ -384,17 +421,27 @@ def test_the_candidate_files_are_found_by_their_exact_names(tmp_path: Path) -> N
 
     assert result.returncode == 0, result.stdout + result.stderr
     outputs = _outputs(tmp_path)
-    assert len(outputs) == 12
+    assert len(outputs) == 21
     assert Path(outputs["archive"]).name == f"AudioForge-{TAG}-win64-ultra.7z"
-    assert all(Path(path).parent == tmp_path / "candidate" for path in outputs.values())
+    assert all(
+        Path(path).parent == tmp_path / ("linux-candidate" if key.startswith("linux_") else "candidate")
+        for key, path in outputs.items()
+    )
 
 
 @pytest.mark.parametrize(
-    "missing", ["-win64-ultra.7z", "-win64-ultra.7z.metadata.json", "-source.7z.sha256", "-win64.msi", "-deepfilter.provenance.json"]
+    "missing",
+    [
+        "-win64-ultra.7z", "-win64-ultra.7z.metadata.json", "-source.7z.sha256", "-win64.msi",
+        "-deepfilter.provenance.json", "-linux-x86_64.tar.gz", "-linux-x86_64.tar.gz.manifest.json",
+        "-x86_64.AppImage.sha256", "-x86_64.AppImage.manifest.json",
+        "-x86_64.AppImage.metadata.json",
+        "-libdf.provenance.json",
+    ],
 )
 def test_a_candidate_without_one_of_its_files_is_refused(tmp_path: Path, missing: str) -> None:
     candidate, _names = _candidate_artifact(tmp_path)
-    next(candidate.glob(f"*{missing}")).unlink()
+    [*candidate.glob(f"*{missing}"), *(tmp_path / "linux-candidate").glob(f"*{missing}")][0].unlink()
 
     result = _run_step("verify-candidate", "Locate the candidate files", tmp_path, {"RELEASE_TAG": TAG})
 
@@ -430,7 +477,7 @@ function python {
 
 
 @pytest.mark.skipif(not SEVEN_ZIP.is_file(), reason="7-Zip is required to build the evidence archive")
-def test_staged_assets_are_the_exact_five_files_and_pass_the_publish_recheck(tmp_path: Path) -> None:
+def test_staged_assets_are_the_exact_seven_files_and_pass_the_publish_recheck(tmp_path: Path) -> None:
     staged = _stage(tmp_path)
 
     assert staged.returncode == 0, staged.stdout + staged.stderr
@@ -440,6 +487,8 @@ def test_staged_assets_are_the_exact_five_files_and_pass_the_publish_recheck(tmp
         f"AudioForge-{TAG}-win64-ultra.7z",
         f"AudioForge-{TAG}-win64.msi",
         f"AudioForge-{TAG}-source.7z",
+        f"AudioForge-{TAG}-linux-x86_64.tar.gz",
+        f"AudioForge-{TAG}-x86_64.AppImage",
         f"AudioForge-{TAG}-evidence.7z",
         f"AudioForge-{TAG}-SHA256SUMS.txt",
     ])

@@ -1,0 +1,304 @@
+name: Qualify Linux release candidate on hardware
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing Git tag, for example v1.10.2."
+        required: true
+        type: string
+      candidate_run_id:
+        description: "Successful Release package workflow run containing the exact candidate."
+        required: true
+        type: string
+      expected_archive_sha256:
+        description: "SHA-256 of the exact Linux tarball to qualify."
+        required: true
+        type: string
+      health_input:
+        description: "Physical microphone device name used for the sustained-health run."
+        required: true
+        type: string
+      health_output:
+        description: "Selected output device name used for the sustained-health run."
+        required: true
+        type: string
+      correlation_input:
+        description: "Loopback/capture input used for selected-route correlation."
+        required: true
+        type: string
+      correlation_output:
+        description: "Selected output used for selected-route correlation."
+        required: true
+        type: string
+      health_duration_seconds:
+        description: "Sustained-health duration; release qualification requires at least 1800 seconds."
+        required: true
+        default: "1800"
+        type: string
+      case_id:
+        description: "Portable matrix case ID, for example linux-usb-48k-baseline."
+        required: true
+        type: string
+      device_class:
+        description: "Input device class represented by this case."
+        required: true
+        type: choice
+        options:
+          - built_in
+          - usb
+          - virtual
+          - other
+      nominal_sample_rate_hz:
+        description: "PipeWire graph rate for this case."
+        required: true
+        type: choice
+        options:
+          - "44100"
+          - "48000"
+      scenario:
+        description: "Lifecycle scenario exercised during the sustained run."
+        required: true
+        type: choice
+        options:
+          - baseline
+          - device_reconnect
+          - default_device_change
+          - sleep_resume
+          - model_configuration_change
+      evidence_kind:
+        description: "Physical lifecycle scenarios require an operator-observed event."
+        required: true
+        type: choice
+        options:
+          - automated
+          - operator_observed
+      confirm_scenario_observed:
+        description: "Attest that the selected physical lifecycle event was actually performed during the run."
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: release-hardware-linux-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  qualify-hardware:
+    name: Qualify exact Linux candidate on AudioForge hardware
+    runs-on: [self-hosted, linux, x64, audioforge-hardware]
+    timeout-minutes: 60
+    # Repository settings limit this environment to master, which also binds a
+    # copy of this file that drops the first step.
+    environment: release
+    permissions:
+      actions: read
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Authorize the dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCHER: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+          if [[ $GITHUB_REF != refs/heads/master ]]; then
+            echo "This workflow runs only from refs/heads/master, not $GITHUB_REF." >&2
+            exit 1
+          fi
+          [[ $DISPATCHER =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || { echo "Unexpected dispatcher name." >&2; exit 1; }
+          permission="$RUNNER_TEMP/dispatcher-permission.json"
+          curl -fsSL -o "$permission" \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/collaborators/$DISPATCHER/permission"
+          role=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1]))['role_name'])" "$permission")
+          case $role in
+            admin|maintain) ;;
+            *) echo "$DISPATCHER needs the admin or maintain role to run this workflow, but has '$role'." >&2; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.release_tag }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13.17"
+          cache: pip
+          cache-dependency-path: requirements/runtime.txt
+
+      - name: Prepare isolated Python 3.13
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/audioforge-hardware-venv"
+          rm -rf -- "${venv:?}"
+          python -m venv "$venv"
+          echo "$venv/bin" >> "$GITHUB_PATH"
+          "$venv/bin/python" --version
+
+      - name: Verify the candidate run
+        id: producer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        run: |
+          set -euo pipefail
+          [[ $CANDIDATE_RUN_ID =~ ^[0-9]+$ ]] || { echo "candidate_run_id must contain only decimal digits." >&2; exit 1; }
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" > "$RUNNER_TEMP/candidate-run.json"
+          HEAD_SHA=$(git rev-parse HEAD) python - "$RUNNER_TEMP/candidate-run.json" <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, os, sys
+          run = json.load(open(sys.argv[1], encoding="utf-8"))
+          if (
+              run["name"] != "Release package"
+              or run["event"] != "workflow_dispatch"
+              or run["status"] != "completed"
+              or run["conclusion"] != "success"
+              or run["head_sha"] != os.environ["HEAD_SHA"]
+          ):
+              sys.exit("candidate_run_id must be a successful Release package run of the release tag commit.")
+          print(f"attempt={run['run_attempt']}")
+          EOF
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: audioforge-release-linux-${{ inputs.release_tag }}
+          path: ${{ runner.temp }}/audioforge-release-candidate
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_run_id }}
+
+      - name: Install pinned evaluation runtime
+        run: python -m pip install --require-hashes -r requirements/runtime.txt --no-compile
+
+      - name: Extract and verify exact candidate
+        id: candidate
+        env:
+          EXPECTED_SHA256: ${{ inputs.expected_archive_sha256 }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          CANDIDATE_RUN_ATTEMPT: ${{ steps.producer.outputs.attempt }}
+        run: |
+          set -euo pipefail
+          canonical_tag=$(python python/tools/release_version.py tag "$RELEASE_TAG")
+          if [[ $canonical_tag != "$RELEASE_TAG" ]]; then
+            echo "release_tag must be the canonical vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N tag." >&2
+            exit 1
+          fi
+          [[ $EXPECTED_SHA256 =~ ^[0-9a-fA-F]{64}$ ]] || { echo "expected_archive_sha256 must contain exactly 64 hexadecimal characters." >&2; exit 1; }
+          tag_commit=$(git rev-list -n 1 "$RELEASE_TAG" --)
+          if [[ $(git rev-parse HEAD) != "$tag_commit" ]]; then
+            echo "The checkout is not the release tag commit." >&2
+            exit 1
+          fi
+          candidate="$RUNNER_TEMP/audioforge-release-candidate"
+          archive="$candidate/AudioForge-$RELEASE_TAG-linux-x86_64.tar.gz"
+          extract="$RUNNER_TEMP/audioforge-hardware-candidate"
+          rm -rf -- "${extract:?}"
+          mkdir -p "$extract"
+          tar -xzf "$archive" -C "$extract"
+          bundle="$extract/AudioForge-$RELEASE_TAG-linux-x86_64/AudioForge"
+          python python/tools/release_provenance.py verify \
+            --bundle "$bundle" \
+            --archive "$archive" \
+            --checksum "$archive.sha256" \
+            --manifest "$archive.manifest.json" \
+            --metadata "$archive.metadata.json" \
+            --baseline evaluation/release-bundle-path-baseline-linux.json \
+            --expected-archive-sha256 "${EXPECTED_SHA256,,}" \
+            --expected-commit "$tag_commit" \
+            --expected-producer "Release package" "$CANDIDATE_RUN_ID" "$CANDIDATE_RUN_ATTEMPT" \
+            --require-source-distribution \
+            --native-attestation "$candidate/AudioForge-$RELEASE_TAG-libdf.provenance.json"
+          {
+            echo "archive=$archive"
+            echo "checksum=$archive.sha256"
+            echo "bundle=$bundle"
+            echo "vad_model=$bundle/_internal/models/silero_vad.onnx"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run exact-artifact hardware qualification
+        env:
+          EXPECTED_SHA256: ${{ inputs.expected_archive_sha256 }}
+          PYTHONPATH: ${{ github.workspace }}/python
+          VAD_MODEL_PATH: ${{ steps.candidate.outputs.vad_model }}
+          HEALTH_INPUT: ${{ inputs.health_input }}
+          HEALTH_OUTPUT: ${{ inputs.health_output }}
+          CORRELATION_INPUT: ${{ inputs.correlation_input }}
+          CORRELATION_OUTPUT: ${{ inputs.correlation_output }}
+          HEALTH_DURATION: ${{ inputs.health_duration_seconds }}
+          BUNDLE: ${{ steps.candidate.outputs.bundle }}
+          ARCHIVE: ${{ steps.candidate.outputs.archive }}
+          CHECKSUM: ${{ steps.candidate.outputs.checksum }}
+          CASE_ID: ${{ inputs.case_id }}
+          DEVICE_CLASS: ${{ inputs.device_class }}
+          NOMINAL_SAMPLE_RATE_HZ: ${{ inputs.nominal_sample_rate_hz }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SCENARIO: ${{ inputs.scenario }}
+          EVIDENCE_KIND: ${{ inputs.evidence_kind }}
+          CONFIRM_SCENARIO_OBSERVED: ${{ inputs.confirm_scenario_observed }}
+        run: |
+          set -euo pipefail
+          if ! python -c "import math, os, sys; d = float(os.environ['HEALTH_DURATION']); sys.exit(not (math.isfinite(d) and d >= 1800))"; then
+            echo "Release hardware qualification requires at least 1800 seconds." >&2
+            exit 1
+          fi
+          scenario_confirmation=()
+          report="$RUNNER_TEMP/release-hardware-qualification.json"
+          case $SCENARIO in
+            device_reconnect|default_device_change|sleep_resume)
+              if [[ $EVIDENCE_KIND != operator_observed || $CONFIRM_SCENARIO_OBSERVED != true ]]; then
+                echo "Physical lifecycle qualification requires explicit operator attestation." >&2
+                exit 1
+              fi
+              scenario_confirmation=(--confirm-scenario-observed)
+              ;;
+          esac
+          python python/tools/evaluate_hardware_validation.py \
+            --health-input "$HEALTH_INPUT" \
+            --health-output "$HEALTH_OUTPUT" \
+            --correlation-input "$CORRELATION_INPUT" \
+            --correlation-output "$CORRELATION_OUTPUT" \
+            --health-duration "$HEALTH_DURATION" \
+            --bundle-root "$BUNDLE" \
+            --archive "$ARCHIVE" \
+            --checksum "$CHECKSUM" \
+            --expected-archive-sha256 "${EXPECTED_SHA256,,}" \
+            --case-id "$CASE_ID" \
+            --device-class "$DEVICE_CLASS" \
+            --nominal-sample-rate-hz "$NOMINAL_SAMPLE_RATE_HZ" \
+            --scenario "$SCENARIO" \
+            --evidence-kind "$EVIDENCE_KIND" \
+            "${scenario_confirmation[@]}" \
+            --report "$report"
+          PRODUCER_HEAD_SHA=$(git rev-list -n 1 "$RELEASE_TAG" --) python - "$report" <<'EOF'
+          import json, os, re, sys
+          head_sha = os.environ["PRODUCER_HEAD_SHA"]
+          if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+              sys.exit("Unable to resolve the release tag commit for qualification provenance.")
+          report = json.load(open(sys.argv[1], encoding="utf-8"))
+          report["producer"] = {
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "event": os.environ["GITHUB_EVENT_NAME"],
+              "head_sha": head_sha,
+              "ref": os.environ["GITHUB_REF"],
+          }
+          json.dump(report, open(sys.argv[1], "w", encoding="utf-8"), indent=2)
+          EOF
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: audioforge-release-hardware-validation-${{ inputs.release_tag }}-${{ inputs.case_id }}
+          path: ${{ runner.temp }}/release-hardware-qualification.json
+          if-no-files-found: error
+          retention-days: 14

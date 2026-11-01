@@ -2,8 +2,6 @@ use super::routing::InputCleanupMode;
 use super::AudioProcessor;
 use crate::audio::input::InputChannelMode;
 use std::sync::atomic::Ordering;
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 impl AudioProcessor {
     /// Check if processing is running

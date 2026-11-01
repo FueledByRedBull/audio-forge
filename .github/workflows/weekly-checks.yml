@@ -66,6 +66,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
         with:
           toolchain: 1.94.0
+          components: rustfmt, clippy
       - name: Fetch and verify the pinned runtime assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -107,8 +108,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
         with:
           toolchain: 1.94.0
-      - name: Cache pinned cargo-audit and advisory database
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+          components: rustfmt, clippy
+      # Saved right after the install, so a later failure in the job does not
+      # cost the next run another cargo-audit build.
+      - name: Restore pinned cargo-audit and advisory database
+        id: cargo-audit
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/cargo-audit.exe
@@ -125,6 +130,14 @@ jobs:
           }
           $version = & $audit --version | Out-String
           if ($LASTEXITCODE -ne 0 -or $version -notmatch "0\.22\.2") { throw "cargo-audit 0.22.2 is not available." }
+      - name: Save pinned cargo-audit and advisory database
+        if: steps.cargo-audit.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/cargo-audit.exe
+            ~/.cargo/advisory-db
+          key: ${{ steps.cargo-audit.outputs.cache-primary-key }}
       - name: RustSec audit
         run: |
           cargo audit --deny warnings

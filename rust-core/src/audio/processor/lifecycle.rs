@@ -621,6 +621,10 @@ impl AudioProcessor {
                 ProAudioThread::enter(),
                 &shared.dsp.scheduling_degraded,
             );
+            // RTKit has the same degrade-and-report rule, and its answer is
+            // awaited here, before the streams start, for a bounded time.
+            #[cfg(target_os = "linux")]
+            dsp_loop.promote_to_realtime();
             let _ = dsp_ready_tx.send(Ok(()));
             dsp_loop.run();
             #[cfg(windows)]

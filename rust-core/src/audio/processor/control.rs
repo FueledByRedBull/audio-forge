@@ -9,8 +9,6 @@ use crate::dsp::{Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ, TruePeak
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
-#[cfg(not(windows))]
-use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 const CONTROL_SNAPSHOT_MAX_RETRIES: usize = 32;
 

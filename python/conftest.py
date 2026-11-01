@@ -19,7 +19,8 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QMessageBox,
 )
-from PySide6.QtCore import QCoreApplication, QEvent
+from PySide6.QtCore import QCoreApplication, QEvent, QLocale
+from PySide6.QtGui import QFont
 
 from mic_eq.ui.theme import apply_application_theme
 
@@ -30,7 +31,15 @@ def qapp():
     app = QApplication.instance()
     if app is None:
         app = QApplication([])
+    # Expected text uses the en-US formats Windows CI runs with; a developer's
+    # system locale (a decimal comma, say) must not change it.
+    QLocale.setDefault(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
     apply_application_theme(app)
+    # Subpixel text antialiasing (fontconfig rgba, the Ubuntu default) renders
+    # differently in a widget and in a QImage; the pixel comparisons need grayscale.
+    font = app.font()
+    font.setStyleStrategy(QFont.StyleStrategy.NoSubpixelAntialias)
+    app.setFont(font)
     yield app
     app.processEvents()
 
@@ -63,10 +72,13 @@ def isolated_settings_directory(monkeypatch, tmp_path_factory):
     home = tmp_path_factory.mktemp("home")
     appdata = home / "appdata"
     appdata.mkdir()
+    (home / "run").mkdir(mode=0o700)
     for name, path in {
         "APPDATA": appdata,
         "LOCALAPPDATA": home / "local",
         "XDG_CONFIG_HOME": home / "config",
+        # The single-instance lock and activation socket live here on Linux.
+        "XDG_RUNTIME_DIR": home / "run",
         "HOME": home,
         "USERPROFILE": home,
         "QML_DISK_CACHE_PATH": home / "qmlcache",
@@ -89,7 +101,10 @@ def _refuse(violations: list[str], message: str):
 
 @pytest.fixture(autouse=True)
 def refuse_real_user_state(monkeypatch, guard_violations):
-    """Fail a test that reaches the real Startup folder or the app's single-instance names."""
+    """Fail a test that reaches the real Startup folder or the app's single-instance names.
+
+    On Windows those names are global; elsewhere they sit under the isolated XDG_RUNTIME_DIR.
+    """
     from mic_eq.ui import desktop_integration, login_startup
 
     def startup_folder():
@@ -99,12 +114,59 @@ def refuse_real_user_state(monkeypatch, guard_violations):
     default_server = desktop_integration.SINGLE_INSTANCE_SERVER
 
     def coordinator_init(self, *, server_name=default_server, lock_path=None):
-        if lock_path is None or server_name == default_server:
+        if sys.platform == "win32" and (lock_path is None or server_name == default_server):
             _refuse(guard_violations, "test used the app's real single-instance lock or server name; pass both")
         original_init(self, server_name=server_name, lock_path=lock_path)
 
-    monkeypatch.setattr(login_startup, "startup_shortcut_path", startup_folder)
+    # Elsewhere the autostart entry lives under the isolated XDG_CONFIG_HOME above.
+    if sys.platform == "win32":
+        monkeypatch.setattr(login_startup, "startup_shortcut_path", startup_folder)
+    else:
+        # A real "AudioForge Mic" would appear on the developer's PipeWire graph.
+        monkeypatch.setattr("mic_eq.mic_eq_core.create_virtual_microphone", lambda: None, raising=False)
+        # Which also leaves the microphone's watch nothing to rebuild.
+        monkeypatch.setattr("mic_eq.mic_eq_core.virtual_microphone_running", lambda: True, raising=False)
+        # So would the app's bus name and portal sessions on the session bus; the
+        # session_bus fixture gives a test a private one.
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/audioforge-test-bus")
     monkeypatch.setattr(desktop_integration.SingleInstanceCoordinator, "__init__", coordinator_init)
+
+
+# A private bus that activates only the services a test puts in its own directory.
+_BUS_CONFIG = """<busconfig>
+  <type>session</type>
+  <listen>unix:dir={directory}</listen>
+  <auth>EXTERNAL</auth>
+  <servicedir>{directory}/services</servicedir>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+"""
+
+
+@pytest.fixture
+def session_bus(monkeypatch, tmp_path):
+    """Point the test at its own D-Bus session bus; yields its service file directory."""
+    import shutil
+    import subprocess
+
+    if shutil.which("dbus-daemon") is None:
+        pytest.skip("needs dbus-daemon")
+    (tmp_path / "services").mkdir()
+    config = tmp_path / "bus.conf"
+    config.write_text(_BUS_CONFIG.format(directory=tmp_path), encoding="utf-8")
+    daemon = subprocess.Popen(
+        ["dbus-daemon", f"--config-file={config}", "--nofork", "--print-address"],
+        stdout=subprocess.PIPE, text=True,
+    )
+    assert daemon.stdout is not None
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", daemon.stdout.readline().strip())
+    yield tmp_path / "services"
+    daemon.terminate()
+    daemon.wait(timeout=5)
 
 
 @pytest.fixture

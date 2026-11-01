@@ -127,10 +127,6 @@ a = Analysis(
         "PySide6.QtVirtualKeyboard",
         # Linux builds would ship GPL libreadline for an interactive prompt the app never shows.
         "readline",
-        *(
-            # The tray's Linux-only panel watcher imports it; PyInstaller can't see that branch.
-            ["PySide6.QtDBus"] if windows else []
-        ),
         "ssl",
         "_ssl",
         "_hashlib",
@@ -148,6 +144,10 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
+if windows:
+    # The tray's Linux-only panel watcher imports QtDBus; PyInstaller can't see that branch.
+    a.binaries = [entry for entry in a.binaries if "QtDBus" not in entry[0] and "Qt6DBus" not in entry[0]]
 
 if not windows:
     import os

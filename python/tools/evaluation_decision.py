@@ -61,6 +61,7 @@ LEGACY_OUTCOMES = {
     "product-joint-tuning-2026-09-report.json": "adopt",
     "product-joint-tuning-deepfilter-2026-09-report.json": "adopt",
     "product-joint-tuning-deepfilter-ll-2026-09-report.json": "adopt",
+    "release-bundle-path-baseline-linux.json": "measured",
     "release-bundle-path-baseline.json": "measured",
     "resampler-quality-2026-10-report.json": "adopt",
     "resampler-quality-report.json": "adopt",

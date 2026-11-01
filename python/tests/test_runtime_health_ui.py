@@ -467,6 +467,7 @@ def test_failed_diagnostics_still_service_recovery_when_presentation_is_hidden(q
         _reset_health_labels=Mock(),
         _set_health_chip=Mock(),
         _service_stream_recovery=Mock(),
+        _stop_for_own_microphone=Mock(return_value=False),
         shell_texts={"health_advice_label": Mock()},
     )
     MainWindow._update_diagnostics(window)

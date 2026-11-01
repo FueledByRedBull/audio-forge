@@ -74,6 +74,31 @@ fn parse_fixed_buffer_frames(value: Option<&str>) -> Option<u32> {
         .then_some(frames)
 }
 
+/// The PipeWire `default` metadata entry that names the default microphone.
+#[cfg(any(target_os = "linux", test))]
+const DEFAULT_SOURCE_KEY: &str = "default.audio.source";
+
+/// Whether the default microphone is the node `node_name` after the `default`
+/// metadata entry `key` changed to `value`; `current` is the answer before.
+/// The session manager writes the entry as `{"name":"<node.name>"}`. No `key`
+/// means every entry was cleared, and no `value` means this one was removed.
+#[cfg(any(target_os = "linux", test))]
+fn default_source_is_node(
+    key: Option<&str>,
+    value: Option<&str>,
+    node_name: &str,
+    current: bool,
+) -> bool {
+    match key {
+        None => false,
+        Some(DEFAULT_SOURCE_KEY) => value.is_some_and(|value| {
+            let compact: String = value.split_whitespace().collect();
+            compact.contains(&format!("\"name\":\"{node_name}\""))
+        }),
+        Some(_) => current,
+    }
+}
+
 fn supported_fixed_buffer_frames(frames: u32, supported: &SupportedBufferSize) -> bool {
     match supported {
         SupportedBufferSize::Range { min, max } => (*min..=*max).contains(&frames),
@@ -278,5 +303,31 @@ mod tests {
             );
             assert_eq!(restart.load(Ordering::Acquire), restarts, "{error:?}");
         }
+    }
+
+    #[test]
+    fn the_default_microphone_is_read_from_the_default_audio_source_entry() {
+        let own =
+            |key, value, current| default_source_is_node(key, value, "audioforge_mic", current);
+        let entry = Some(DEFAULT_SOURCE_KEY);
+
+        // Either spacing of the JSON value.
+        assert!(own(entry, Some(r#"{"name":"audioforge_mic"}"#), false));
+        assert!(own(entry, Some(r#"{ "name": "audioforge_mic" }"#), false));
+        // Another microphone, or a node whose name only starts with ours, is not ours.
+        assert!(!own(entry, Some(r#"{"name":"alsa_input.usb-mic"}"#), true));
+        assert!(!own(
+            entry,
+            Some(r#"{"name":"audioforge_mic_input"}"#),
+            true
+        ));
+        assert!(!own(entry, Some("not json"), true));
+        // The entry removed, or every entry cleared: nothing is the default.
+        assert!(!own(entry, None, true));
+        assert!(!own(None, None, true));
+        // Other entries (the default speakers, say) leave the answer as it was.
+        let sink = Some("default.audio.sink");
+        assert!(own(sink, Some(r#"{"name":"audioforge_mic"}"#), true));
+        assert!(!own(sink, Some(r#"{"name":"audioforge_mic"}"#), false));
     }
 }

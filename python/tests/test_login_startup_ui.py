@@ -10,8 +10,10 @@ from unittest.mock import Mock
 import pytest
 from PySide6.QtWidgets import QSystemTrayIcon
 
+from mic_eq import mic_eq_core
 from mic_eq.config import AppConfig, DeviceIdentity, DevicePresetBinding, build_device_route_key
-from mic_eq.ui import main_window
+from mic_eq.ui import device_selection, main_window
+from mic_eq.ui.device_selection import FOLLOW_DEFAULT_INPUT_ENDPOINT
 from mic_eq.ui.main_window import BUILTIN_PRESETS, MainWindow
 
 
@@ -137,6 +139,75 @@ def test_wait_is_bounded_and_does_not_retry_after_deadline(startup_window):
     assert devices["lookups"] == count
     window.processor.start.assert_not_called()
     assert "stopped" in window._login_startup_message.lower()
+
+
+@pytest.fixture
+def follow_default_login(startup_window, monkeypatch):
+    """A saved Follow-system-default input on a Linux desktop whose only default is AudioForge Mic."""
+    window, clock, devices = startup_window
+    follow = DeviceIdentity(
+        name="Follow system default", is_default=True,
+        endpoint_id=FOLLOW_DEFAULT_INPUT_ENDPOINT, direction="input",
+    )
+    devices["input"] = [_endpoint("Follow system default", FOLLOW_DEFAULT_INPUT_ENDPOINT)]
+    window._login_startup_route = (follow, window._login_startup_route[1])
+    desktop = SimpleNamespace(default_is_own=True)
+    monkeypatch.setattr(device_selection, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(
+        mic_eq_core, "default_source_is_virtual_microphone", lambda: desktop.default_is_own,
+        raising=False,
+    )
+    return window, clock, desktop
+
+
+def test_login_waits_for_a_microphone_when_the_only_default_is_audioforge_mic(follow_default_login):
+    window, clock, desktop = follow_default_login
+    window.begin_login_startup()
+    for _ in range(30):  # half a minute of retries
+        clock[0] += 1
+        window._service_login_startup()
+
+    window.processor.start.assert_not_called()
+    assert window._login_startup_deadline is not None
+    assert window._login_startup_message == "Login waiting for a microphone"
+    assert window.stop_btn_action.isEnabled()  # Stop still cancels the wait
+
+    desktop.default_is_own = False  # a late USB or Bluetooth microphone
+    clock[0] += 1
+    window._service_login_startup()
+
+    window.processor.start.assert_called_once()
+    assert window.processor.start.call_args.kwargs["input_device_endpoint_id"] == (
+        FOLLOW_DEFAULT_INPUT_ENDPOINT
+    )
+    assert window._login_startup_deadline is None
+    assert window.stop_btn_action.isEnabled() and not window.start_btn_action.isEnabled()
+
+
+def test_login_stops_at_the_deadline_and_names_the_missing_microphone(follow_default_login):
+    window, clock, _ = follow_default_login
+    window.begin_login_startup()
+    clock[0] += 61
+    window._service_login_startup()
+
+    window.processor.start.assert_not_called()
+    assert window._login_startup_deadline is None
+    assert window._login_startup_message == "Login stopped: no microphone is available"
+    assert window.status_message.text == "Login stopped: no microphone is available"
+
+
+def test_login_with_a_saved_specific_microphone_starts_at_once_whatever_the_default(
+    startup_window, monkeypatch
+):
+    window, _, _ = startup_window
+    monkeypatch.setattr(device_selection, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(
+        mic_eq_core, "default_source_is_virtual_microphone", lambda: True, raising=False
+    )
+
+    window.begin_login_startup()
+
+    window.processor.start.assert_called_once()
 
 
 def test_stop_cancels_pending_start_even_when_audio_was_never_running(startup_window):

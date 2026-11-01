@@ -180,6 +180,7 @@ _RUNTIME_NUMBERS = frozenset(
         "output_true_peak_headroom_db",
         "output_underrun_streak",
         "output_underrun_total",
+        "own_microphone_refusal_count",
         "rejected_control_value_count",
         "rt_buffer_overflow_count",
         "stream_restart_count",
@@ -199,6 +200,7 @@ _RUNTIME_NUMBERS = frozenset(
 )
 _RUNTIME_BOOLS = frozenset(
     {
+        "default_source_watch_failed",
         "dsp_scheduling_degraded",
         "gate_auto_relax_active",
         "input_cleanup_hum_detected",

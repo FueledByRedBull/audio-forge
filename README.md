@@ -169,8 +169,12 @@ described under [Download](#download).
 **AudioForge Mic** to PipeWire. AudioForge's **Output** is **AudioForge Mic
 Input**, which setup picks for you. In Discord, OBS, your browser, or any other
 app, choose **AudioForge Mic** as the microphone. The device goes away when
-AudioForge quits, even after a crash, and it never becomes your default
-microphone.
+AudioForge quits, even after a crash. AudioForge doesn't make it your default
+microphone, but with no other microphone connected your desktop may. An
+**Input** set to **Follow system default** would then record AudioForge's own
+output, so AudioForge refuses: Start says no microphone is available, and a
+running session stops. Connect a microphone or pick one in the **Input** list,
+then press Start.
 
 **Global mute.** Turning the global shortcut on under **Settings > Tray and
 background** asks your desktop for Ctrl+Alt+M through its global shortcuts

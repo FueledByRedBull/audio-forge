@@ -2,12 +2,70 @@
 
 from __future__ import annotations
 
+import sys
+import threading
+
 from ..config import DeviceIdentity, coerce_device_identity
 
 
 VIRTUAL_OUTPUT_MARKERS = ("cable", "vb-audio", "virtual")
 # The sink of AudioForge's own PipeWire virtual microphone (audio/virtual_mic.rs).
 AUDIOFORGE_MIC_ENDPOINT = "pipewire:audioforge_mic_input"
+# The input the PipeWire host lists as "Follow system default" (audio/device.rs).
+FOLLOW_DEFAULT_INPUT_ENDPOINT = "pipewire:input_default"
+OWN_MICROPHONE_MESSAGE = (
+    "No microphone is available: the system's default input is AudioForge Mic, which carries "
+    "AudioForge's own output, so recording from it would feed AudioForge back into itself. "
+    "Connect a microphone or choose one in the Input list, then press Start."
+)
+
+
+class OwnMicrophoneError(RuntimeError):
+    """The input would record AudioForge Mic, AudioForge's own output."""
+
+
+def records_own_microphone(input_device: object) -> bool:
+    """Linux: whether this input would record AudioForge Mic.
+
+    That is "Follow system default" while the session manager has made AudioForge
+    Mic the default microphone, as it does when no other microphone exists. The
+    answer is a cached flag from the native core, so it never waits.
+    """
+    if not sys.platform.startswith("linux"):
+        return False
+    identity = coerce_device_identity(input_device)
+    if identity is not None and identity.endpoint_id != FOLLOW_DEFAULT_INPUT_ENDPOINT:
+        return False
+    from .. import mic_eq_core
+
+    return bool(mic_eq_core.default_source_is_virtual_microphone())
+
+
+# Starts refused and running inputs stopped this session: a start can be refused on the
+# engine's worker thread while the window stops one, so the count is locked.
+_refusals_lock = threading.Lock()
+_refusals = 0
+
+
+def note_own_microphone_refusal() -> None:
+    global _refusals
+    with _refusals_lock:
+        _refusals += 1
+
+
+def own_microphone_diagnostics() -> dict[str, object]:
+    """Linux: what the support export says about the guard; nothing on other platforms."""
+    if not sys.platform.startswith("linux"):
+        return {}
+    from .. import mic_eq_core
+
+    with _refusals_lock:
+        refusals = _refusals
+    return {
+        "own_microphone_refusal_count": refusals,
+        # Without the metadata watch the guard sees no default microphone and stays off.
+        "default_source_watch_failed": bool(mic_eq_core.default_source_watch_failed()),
+    }
 
 
 def find_identity_index(
@@ -97,6 +155,9 @@ def start_processor_for_route(
     output_identity = coerce_device_identity(output_device)
     if output_identity is None:
         raise ValueError("Select a destination device before starting audio processing")
+    if records_own_microphone(input_identity):
+        note_own_microphone_refusal()
+        raise OwnMicrophoneError(OWN_MICROPHONE_MESSAGE)
     start = getattr(processor, "start")
     return start(
         input_identity.name if input_identity is not None else None,
@@ -141,11 +202,17 @@ def preferred_output_index(identities: list[DeviceIdentity | None]) -> int:
 
 __all__ = [
     "AUDIOFORGE_MIC_ENDPOINT",
+    "FOLLOW_DEFAULT_INPUT_ENDPOINT",
+    "OWN_MICROPHONE_MESSAGE",
     "VIRTUAL_OUTPUT_MARKERS",
+    "OwnMicrophoneError",
     "default_device_index",
     "device_name_ordinal",
     "find_identity_index",
     "identity_is_persistable",
+    "note_own_microphone_refusal",
+    "own_microphone_diagnostics",
     "preferred_output_index",
+    "records_own_microphone",
     "start_processor_for_route",
 ]

@@ -1,9 +1,9 @@
 AudioForge 1.20.0 runs natively on 64-bit Linux with PipeWire, as an AppImage,
 a tarball, or an AUR package for Arch. On Linux it creates its own **AudioForge
 Mic** microphone, so no virtual cable is needed. Windows audio is unchanged: it
-stays on cpal 0.17.3 with the same dependencies. A noise model chosen while
-Start is still opening the stream now takes effect, and the build and the
-packaged app move to Python 3.13.17.
+stays on cpal 0.17.3 with the same audio code. A noise model chosen in the short
+window while Start was still building its first engine now takes effect, and the
+build and the packaged app move to Python 3.13.17.
 
 **Settings format.** The settings file (`config.json`) stays at schema version 2
 and the preset format is unchanged. Presets saved by 1.20.0 are stamped 1.20.0,
@@ -57,7 +57,8 @@ is in the [Linux section](https://github.com/FueledByRedBull/audio-forge#linux).
   built again if PipeWire restarts.
 - **Devices.** The pickers show PipeWire's device names and offer "Follow system
   default". Sink monitors and AudioForge's own microphone are left out.
-- **Mute on Linux.** `audioforge --toggle-mute` mutes or unmutes the running
+- **Mute on Linux.** `audioforge --toggle-mute` (it also works on Windows, as
+  `AudioForge.exe --toggle-mute`) mutes or unmutes the running
   copy and never starts a second one. The application menu entry has the same
   **Toggle Output Mute** action. The global shortcut (Ctrl+Alt+M, under
   **Settings > Tray and background**) asks the desktop for its key through the
@@ -85,8 +86,8 @@ is in the [Linux section](https://github.com/FueledByRedBull/audio-forge#linux).
 
 ## Fixes
 
-- A noise model chosen while Start was still opening the stream could show as
-  selected while the previous model kept running. It now applies, including for
+- A noise model chosen in the short window while Start was still building its
+  first engine could show as selected while the previous model kept running. It now applies, including for
   a change made by a preset load, undo or redo, or an automatic restart. If the
   model fails to load, the previous one keeps running and the status line says
   to choose the model again and to check the model files or use Help > Export

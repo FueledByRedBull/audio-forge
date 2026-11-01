@@ -4,10 +4,10 @@
 
 ### Linux
 
-- AudioForge runs natively on 64-bit Linux with PipeWire: Ubuntu 24.04 or later, Fedora 40 or later, Debian 13, Arch, and distributions based on them. It ships as an AppImage and as a tarball whose `install.sh` adds it to the application menu. Arch users can instead install the `audioforge-bin` AUR package, which unpacks the tarball under `/opt/audioforge`.
+- AudioForge runs natively on 64-bit Linux with PipeWire: Ubuntu 24.04 or later, Fedora 40 or later, Debian 13, Arch, and distributions based on them. It ships as an AppImage and as a tarball whose `install.sh` adds it to the application menu. Arch users can instead install the `audioforge-bin` AUR package once it is updated after the release, which unpacks the tarball under `/opt/audioforge`.
 - While AudioForge runs it adds an **AudioForge Mic** microphone (mono, 48 kHz) that other apps record from, so Linux needs no virtual cable. Setup picks **AudioForge Mic Input** as the output. The microphone exists only while AudioForge runs, AudioForge does not make it the system default, and it is built again if PipeWire restarts.
 - The device lists show PipeWire's device names, offer "Follow system default", and leave out sink monitors and AudioForge's own microphone.
-- `audioforge --toggle-mute` mutes or unmutes the running copy and never starts a second one. The application menu entry has the same **Toggle Output Mute** action, and `gapplication action io.github.FueledByRedBull.AudioForge toggle-mute` reaches it too.
+- `audioforge --toggle-mute` (`AudioForge.exe --toggle-mute` on Windows) mutes or unmutes the running copy and never starts a second one. The application menu entry has the same **Toggle Output Mute** action, and `gapplication action io.github.FueledByRedBull.AudioForge toggle-mute` reaches it too.
 - The global mute shortcut asks the desktop for its key through the XDG GlobalShortcuts portal, which KDE Plasma, GNOME 48 and later, and Hyprland provide. With no portal, or if the desktop refuses the key, the status line says so and names the `--toggle-mute` command to bind in your keyboard settings.
 - Login startup writes an XDG autostart entry, under the same rules as the Windows shortcut. In an AppImage the entry names the image file, not its mount.
 - The processing thread asks RTKit for realtime priority, and so does PipeWire's callback thread. If RTKit is missing or refuses, the processing thread keeps running at normal priority and diagnostics say so.
@@ -18,7 +18,7 @@
 
 ### Noise suppression
 
-- A noise model chosen while Start is still opening the stream now applies once the stream runs. This includes a change made by loading a preset, by undo or redo, or during an automatic restart.
+- A noise model chosen in the short window while Start was still building its first engine could show as selected while the previous model kept running. It now applies once the stream runs. This includes a change made by loading a preset, by undo or redo, or during an automatic restart.
 - If the engine for that model fails to load, the previous model keeps running and the status line says to choose the model again and to check the model files or use Help > Export Diagnostics. The warning shows once per dropped selection. Diagnostics count them as `noise_selection_dropped_count`, shown as NSD in the Drops tooltip.
 
 ### Python
@@ -31,7 +31,7 @@
 
 ### Internal
 
-- Windows keeps cpal 0.17.3, and its Rust dependency tree is unchanged. Linux uses cpal 0.18.2 with its PipeWire host and RTKit support, and ONNX Runtime loads at run time there through `ORT_DYLIB_PATH`.
+- Windows stays on cpal 0.17.3 and its audio code is unchanged. Linux uses cpal 0.18.2 with its PipeWire host and RTKit support, and ONNX Runtime loads at run time there through `ORT_DYLIB_PATH`.
 - Presets and the autostart entry are published without replacing a file that appeared in the meantime. Where the filesystem refuses hard links, publishing falls back to an exclusive create.
 - `python/tools/build_deepfilter.py` builds `libdf.so` from the same pinned recipe as `build_deepfilter.ps1`, and `release-assets.json` records it with its attestation, beside the pinned Linux ONNX Runtime.
 - `build_linux.sh` and `python/tools/linux_package.py` build, check and package the Linux bundle. The bundle leaves out the system's audio, D-Bus, Kerberos, graphics, font, glib and C++ runtime libraries, refuses FFmpeg and host libraries outside a licence allowlist, and is gated by `evaluation/release-bundle-path-baseline-linux.json`.

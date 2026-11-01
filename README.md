@@ -158,8 +158,8 @@ The AppImage is one file with nothing to unpack. Take the tarball if you want
 a plain folder or want `install.sh` to add the menu entry. On Arch, the
 `audioforge-bin` AUR package repackages the tarball: it installs AudioForge
 under `/opt/audioforge` with an `audioforge` command and a menu entry, so
-pacman manages it. It follows final releases and is not one of the release
-files.
+pacman manages it. It follows final releases, is updated shortly after each
+one, and is not one of the release files.
 
 Check a download with `sha256sum <file>` against
 `AudioForge-v<version>-SHA256SUMS.txt`, or with `gh release verify-asset` as

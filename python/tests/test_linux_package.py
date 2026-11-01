@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -22,7 +23,7 @@ def _bundle(tmp_path, version="1.2.3"):
         "_internal/libdf.so",
         "_internal/AudioForge.ico",
         "_internal/mic_eq/mic_eq_core.cpython-313-x86_64-linux-gnu.so",
-        "_internal/libxcb-cursor.so.0",
+        *(f"_internal/{library}" for library in linux_package.XCB_LIBRARIES),
         *(f"_internal/models/{model}" for model in linux_package.MODELS),
     ):
         (bundle / relative).parent.mkdir(parents=True, exist_ok=True)
@@ -54,6 +55,49 @@ def test_system_libraries_readline_unused_plugins_and_a_stale_version_are_refuse
     assert len(errors) == 5
 
 
+def test_ffmpeg_and_a_bundle_without_the_xcb_libraries_are_refused(tmp_path):
+    bundle = _bundle(tmp_path)
+    (bundle / "_internal/PySide6/Qt/lib").mkdir(parents=True)
+    (bundle / "_internal/PySide6/Qt/lib/libavcodec.so.61").write_bytes(b"")
+    (bundle / "_internal/libswresample.so.5").write_bytes(b"")
+    (bundle / "_internal/libxcb-cursor.so.0").unlink()
+
+    errors = linux_package.check_bundle(bundle, "1.2.3")
+
+    assert "missing _internal/libxcb-cursor.so.0" in errors
+    assert "bundles FFmpeg, which the app never uses: _internal/PySide6/Qt/lib/libavcodec.so.61" in errors
+    assert "bundles FFmpeg, which the app never uses: _internal/libswresample.so.5" in errors
+    assert len(errors) == 3
+
+
+def test_the_xcb_libraries_are_the_ones_qt_links_and_no_system_policy_covers():
+    assert all(not name.startswith(linux_package.SYSTEM_LIBRARIES) for name in linux_package.XCB_LIBRARIES)
+
+
+def test_only_permissive_host_packages_may_ship_their_libraries(tmp_path, monkeypatch):
+    bundle = _bundle(tmp_path)
+    for package in ("zlib1g", "libgdbm6"):
+        notice = bundle / "_internal/licenses/system" / package / "copyright"
+        notice.parent.mkdir(parents=True)
+        notice.write_text("")
+
+    monkeypatch.setattr(linux_package.shutil, "which", lambda name: f"/usr/bin/{name}")
+    errors = linux_package.check_bundle(bundle, "1.2.3")
+    assert len(errors) == 1 and errors[0].startswith("copies a library from the host package libgdbm6,")
+
+    # A pacman host names its packages differently, so the Debian table cannot judge them.
+    monkeypatch.setattr(linux_package.shutil, "which", lambda name: None)
+    assert linux_package.check_bundle(bundle, "1.2.3") == []
+
+
+def test_no_host_package_is_listed_under_a_copyleft_license():
+    assert linux_package.HOST_LIBRARY_PACKAGES
+    assert not [
+        package for package, license_name in linux_package.HOST_LIBRARY_PACKAGES.items()
+        if "GPL" in license_name.upper()
+    ]
+
+
 def _dpkg_host(monkeypatch, listing):
     monkeypatch.setattr(linux_package.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
@@ -66,9 +110,10 @@ def test_a_host_library_ships_with_its_debian_copyright_file(monkeypatch):
     _dpkg_host(monkeypatch, "libffi8:amd64: /usr/lib/x86_64-linux-gnu/libffi.so.8\n")
     monkeypatch.setattr(linux_package.Path, "is_file", lambda path: True)
 
-    assert linux_package.host_library_notices(["/lib/x86_64-linux-gnu/libffi.so.8"]) == [
-        ("licenses/system/libffi8/copyright", "/usr/share/doc/libffi8/copyright", "DATA")
-    ]
+    [(destination, source, kind)] = linux_package.host_library_notices(["/lib/x86_64-linux-gnu/libffi.so.8"])
+    assert (destination, Path(source).as_posix(), kind) == (
+        "licenses/system/libffi8/copyright", "/usr/share/doc/libffi8/copyright", "DATA"
+    )
 
 
 def test_a_host_library_without_one_owner_or_a_copyright_file_stops_the_build(monkeypatch):

@@ -17,6 +17,17 @@ import yaml
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "release-promote.yml"
 
 
+def _candidate_jobs(*, drop: str | None = None, fail: str | None = None) -> list[dict[str, str]]:
+    """The jobs of a Release package run that promotion requires on Linux."""
+    shards = [*json.loads((WORKFLOW.parents[1] / "pytest-shards.json").read_text(encoding="utf-8")), "rest"]
+    names = ["Build Linux release package", "Linux Rust tests and lint", *(f"linux-pytest ({shard})" for shard in shards)]
+    return [
+        {"name": name, "conclusion": "failure" if name == fail else "success"}
+        for name in names
+        if name != drop
+    ]
+
+
 def _origin_gate_script() -> str:
     source = WORKFLOW.read_text(encoding="utf-8")
     start = source.index("          $canonicalTag =")
@@ -37,6 +48,18 @@ def _origin_gate_script() -> str:
         (("tag_type", "commit"), "must be an annotated tag"),
         (("head", "b" * 40), "checkout is not the release tag commit"),
         (("attempt", 0), "invalid attempt number"),
+        (
+            ("jobs", _candidate_jobs(drop="Linux Rust tests and lint")),
+            "no successful 'Linux Rust tests and lint' job",
+        ),
+        (
+            ("jobs", _candidate_jobs(drop="linux-pytest (rest)")),
+            "no successful 'linux-pytest (rest)' job",
+        ),
+        (
+            ("jobs", _candidate_jobs(fail="Build Linux release package")),
+            "no successful 'Build Linux release package' job",
+        ),
     ],
 )
 def test_promotion_origin_gate_executes_commit_and_run_binding(
@@ -55,6 +78,7 @@ def test_promotion_origin_gate_executes_commit_and_run_binding(
         "conclusion": "success",
         "headSha": commit,
         "attempt": 1,
+        "jobs": _candidate_jobs(),
     }
     tag_type = "tag"
     head = commit
@@ -106,6 +130,7 @@ def test_promotion_origin_gate_executes_commit_and_run_binding(
     )
     result = subprocess.run(
         [shell, "-NoProfile", "-NonInteractive", "-Command", setup + _origin_gate_script()],
+        cwd=WORKFLOW.parents[2],
         env=env,
         capture_output=True,
         text=True,
@@ -378,7 +403,7 @@ def _candidate_artifact(cwd: Path) -> tuple[Path, dict[str, str]]:
     appimage = f"AudioForge-{TAG}-x86_64.AppImage"
     for name in (
         tarball, f"{tarball}.sha256", f"{tarball}.manifest.json", f"{tarball}.metadata.json",
-        appimage, f"{appimage}.sha256",
+        appimage, f"{appimage}.sha256", f"{appimage}.manifest.json", f"{appimage}.metadata.json",
         f"AudioForge-{TAG}-libdf.provenance.json",
     ):
         (linux_candidate / name).write_bytes(f"bytes of {name}".encode())
@@ -396,7 +421,7 @@ def test_the_candidate_files_are_found_by_their_exact_names(tmp_path: Path) -> N
 
     assert result.returncode == 0, result.stdout + result.stderr
     outputs = _outputs(tmp_path)
-    assert len(outputs) == 19
+    assert len(outputs) == 21
     assert Path(outputs["archive"]).name == f"AudioForge-{TAG}-win64-ultra.7z"
     assert all(
         Path(path).parent == tmp_path / ("linux-candidate" if key.startswith("linux_") else "candidate")
@@ -409,7 +434,8 @@ def test_the_candidate_files_are_found_by_their_exact_names(tmp_path: Path) -> N
     [
         "-win64-ultra.7z", "-win64-ultra.7z.metadata.json", "-source.7z.sha256", "-win64.msi",
         "-deepfilter.provenance.json", "-linux-x86_64.tar.gz", "-linux-x86_64.tar.gz.manifest.json",
-        "-x86_64.AppImage.sha256",
+        "-x86_64.AppImage.sha256", "-x86_64.AppImage.manifest.json",
+        "-x86_64.AppImage.metadata.json",
         "-libdf.provenance.json",
     ],
 )

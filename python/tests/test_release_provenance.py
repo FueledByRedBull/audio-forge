@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ import release_provenance
 
 _EXPECTED_PRODUCER = ("Release package", "123", "1")
 _bundled_asset_errors = release_provenance._bundled_asset_errors
+_real_git_is_dirty = release_provenance._git_is_dirty
 
 
 @pytest.fixture(autouse=True)
@@ -940,3 +942,57 @@ def test_a_linux_bundle_binds_its_attestation_to_libdf_so(tmp_path):
         attestation.write_text(json.dumps({"output": {"name": name, "sha256": digest, "bytes": 7}}))
         errors = release_provenance._deepfilter_attestation_errors(attestation, bundle)
         assert any(expected in error for error in errors), errors
+
+
+def _release_checkout(root: Path) -> Path:
+    """A real git checkout with the project's own ignore rules, as the release job has."""
+    checkout = root / "checkout"
+    checkout.mkdir()
+    shutil.copy(Path(release_provenance.__file__).resolve().parents[2] / ".gitignore", checkout)
+    (checkout / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n', encoding="utf-8")
+    for args in (
+        ("init", "--quiet"),
+        ("add", "."),
+        ("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "--quiet", "-m", "release"),
+    ):
+        subprocess.run(["git", *args], cwd=checkout, check=True, capture_output=True)
+    return checkout
+
+
+def test_release_files_staged_outside_the_checkout_leave_the_source_tree_clean(tmp_path, monkeypatch):
+    # package-linux builds in the checkout (ignored: dist/, libdf.so, the extension) and
+    # stages its release files in $RUNNER_TEMP. Staging them in the checkout made
+    # `create` refuse every Linux candidate as a dirty tree.
+    checkout = _release_checkout(tmp_path)
+    monkeypatch.setattr(release_provenance, "REPO_ROOT", checkout)
+    monkeypatch.setattr(release_provenance, "_git_is_dirty", _real_git_is_dirty)
+    for variable in ("AUDIOFORGE_SOURCE_REVISION", "GITHUB_SHA"):
+        monkeypatch.delenv(variable, raising=False)
+    (checkout / "dist").mkdir()
+    (checkout / "dist" / "AudioForge-v1.2.3-x86_64.AppImage").write_bytes(b"image")
+    (checkout / "libdf.so").write_bytes(b"library")
+    bundle = _bundle(tmp_path)
+    stage = tmp_path / "linux-release"
+    stage.mkdir()
+    archive = stage / "AudioForge-v1.2.3-x86_64.AppImage"
+    archive.write_bytes(b"image")
+
+    _checksum, _manifest, metadata = release_provenance.create_sidecars(bundle, archive, stage)
+
+    assert json.loads(metadata.read_text(encoding="utf-8"))["source_dirty"] is False
+
+    # The folder the workflow used to create in the checkout is what the check refuses.
+    inside = checkout / "linux-release"
+    shutil.copytree(stage, inside)
+    with pytest.raises(ValueError, match=r"dirty source tree.*\?\? linux-release/"):
+        release_provenance.create_sidecars(bundle, inside / archive.name, inside)
+    shutil.rmtree(inside)
+
+    # A real change still refuses: an edited tracked file and a stray new one.
+    (checkout / "pyproject.toml").write_text('[project]\nversion = "1.2.4"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=r"dirty source tree.* M pyproject.toml"):
+        release_provenance.create_sidecars(bundle, archive, stage)
+    subprocess.run(["git", "checkout", "--quiet", "--", "pyproject.toml"], cwd=checkout, check=True)
+    (checkout / "stray.txt").write_text("not committed", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"dirty source tree.*\?\? stray.txt"):
+        release_provenance.create_sidecars(bundle, archive, stage)

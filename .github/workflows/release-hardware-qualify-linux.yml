@@ -210,6 +210,7 @@ jobs:
             --checksum "$archive.sha256" \
             --manifest "$archive.manifest.json" \
             --metadata "$archive.metadata.json" \
+            --baseline evaluation/release-bundle-path-baseline-linux.json \
             --expected-archive-sha256 "${EXPECTED_SHA256,,}" \
             --expected-commit "$tag_commit" \
             --expected-producer "Release package" "$CANDIDATE_RUN_ID" "$CANDIDATE_RUN_ATTEMPT" \

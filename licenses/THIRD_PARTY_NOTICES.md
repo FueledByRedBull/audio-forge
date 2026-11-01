@@ -41,8 +41,26 @@ included:
 | `df.dll`, `DeepFilterNet3_ll_onnx.tar.gz`, `DeepFilterNet3_onnx.tar.gz` | DeepFilterNet | `DeepFilterNet-LICENSE.txt` (MIT option) | https://github.com/Rikorose/DeepFilterNet |
 | `silero_vad.onnx` | Silero VAD | `Silero-VAD-LICENSE.txt` | https://github.com/snakers4/silero-vad |
 | `onnxruntime.dll`, `onnxruntime_providers_shared.dll` | ONNX Runtime 1.23.2 CPU package | `ONNXRuntime-LICENSE.txt` and complete `ONNXRuntime-ThirdPartyNotices.txt` | https://github.com/microsoft/onnxruntime/commit/a83fc4d58cb48eb68890dd689f94f28288cf2278 |
+| Runtime executable at the start of the AppImage (AppImage only) | AppImage type2-runtime 20251108 | MIT, `LICENSE` in the source archive | https://github.com/AppImage/type2-runtime/tree/20251108 |
+| Linked statically into that runtime (AppImage only) | libfuse 3.15.0 | LGPL-2.1-only, `LICENSE` and `LGPL2.txt` | https://github.com/libfuse/libfuse/releases/tag/fuse-3.15.0 |
+| Same | squashfuse 0.5.2 | BSD-2-Clause, `LICENSE` | https://github.com/vasi/squashfuse/tree/0.5.2 |
+| Same | zstd 1.5.6 | BSD-3-Clause or GPL-2.0-only, `LICENSE` and `COPYING` | https://github.com/facebook/zstd/releases/tag/v1.5.6 |
+| Same | zlib 1.3.1 | Zlib, `LICENSE` | https://github.com/madler/zlib/releases/tag/v1.3.1 |
+| Same | mimalloc 2.1.7 | MIT, `LICENSE` | https://github.com/microsoft/mimalloc/releases/tag/v2.1.7 |
+| Same | musl libc 1.2.5, with four Alpine patches | MIT, `COPYRIGHT` | https://musl.libc.org/releases/ |
 
 AudioForge's own license is included as `LICENSE`.
+
+The AppImage runtime and the libraries linked into it are in the AppImage only.
+The tarball and the Windows files carry copies of their license texts under
+`licenses/dependencies/`, with the other collected source notices, but not the
+code. libfuse is licensed under the LGPL-2.1. Its source, the type2-runtime
+build recipe and the libfuse patch `patches/libfuse/mount.c.diff` are pinned in
+`source-manifest.json` (ids `appimage-runtime-libfuse-3.15.0` and
+`appimage-runtime-type2-runtime-20251108`), and `SOURCE_DISTRIBUTION.md` explains
+how to rebuild the runtime with a modified libfuse and repack the AppImage. The
+LGPL-2.1 text is `LGPL2.txt` in the libfuse notices. appimagetool 1.9.1 packs
+the AppImage at build time and is not shipped in it.
 
 The release uses the official CPU-only ONNX Runtime package and does not ship
 DirectML. Its complete upstream notice file is retained beside the MIT license,

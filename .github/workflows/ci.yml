@@ -447,6 +447,10 @@ jobs:
             libpulse-dev libxkbcommon0 pkg-config
       - name: Install Python dependencies
         run: python -m pip install --require-hashes -r requirements/dev.txt --no-compile
+      # The static job runs on Windows, which skips the lock's sys_platform ==
+      # "linux" entries (jeepney); audit them where they install.
+      - name: Audit the locked runtime on Linux
+        run: python -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16; the toolchain input pins 1.94.0
         with:
           toolchain: 1.94.0
@@ -510,8 +514,11 @@ jobs:
       matrix:
         shard: [voice-setup, voice-capture, voice-flow, auto-eq, refusals, quick-ui, evaluation, tooling, rest]
     steps:
+      # Full history, as in pytest: the evaluation hygiene tests read it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
       - id: python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0

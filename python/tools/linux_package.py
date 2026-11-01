@@ -42,6 +42,34 @@ SYSTEM_LIBRARIES = (
     "libglib-2.0.so", "libgobject-2.0.so", "libgio-2.0.so", "libgmodule-2.0.so",
     "libgthread-2.0.so",
 )
+# What Qt's xcb platform plugin, libQt6XcbQpa and the GLX integration link and
+# the system policy above does not cover (read from the pinned PySide6 6.11.1
+# wheel). Most desktops lack them, and a bundle without them cannot start under
+# X11, so the build host provides them and the bundle must carry them.
+XCB_LIBRARIES = (
+    "libxcb-cursor.so.0", "libxcb-glx.so.0", "libxcb-icccm.so.4", "libxcb-image.so.0",
+    "libxcb-keysyms.so.1", "libxcb-randr.so.0", "libxcb-render-util.so.0", "libxcb-render.so.0",
+    "libxcb-shape.so.0", "libxcb-shm.so.0", "libxcb-sync.so.1", "libxcb-util.so.1",
+    "libxcb-xfixes.so.0", "libxcb-xkb.so.1",
+)
+# The app has no use for FFmpeg, and a build of it can carry GPL code.
+FFMPEG_LIBRARIES = (
+    "libavcodec", "libavdevice", "libavfilter", "libavformat", "libavutil", "libpostproc",
+    "libswresample", "libswscale", "libffmpegmediaplugin",
+)
+# The Debian packages the bundle may copy a library from, each with the license
+# of that library. Only permissive ones belong here: a package that is not
+# listed fails the check until its copyright file has been read.
+HOST_LIBRARY_PACKAGES = {
+    "libbrotli1": "MIT", "libbz2-1.0": "bzip2-1.0.6", "libexpat1": "MIT", "libffi8": "MIT",
+    "liblzma5": "public domain", "libmpdec3": "BSD-2-Clause", "libncursesw6": "X11",
+    "libsqlite3-0": "public domain", "libtinfo6": "X11", "libuuid1": "BSD-3-Clause",
+    "libxcb-cursor0": "MIT", "libxcb-glx0": "MIT", "libxcb-icccm4": "MIT",
+    "libxcb-image0": "MIT", "libxcb-keysyms1": "MIT", "libxcb-randr0": "MIT",
+    "libxcb-render-util0": "MIT", "libxcb-render0": "MIT", "libxcb-shape0": "MIT",
+    "libxcb-shm0": "MIT", "libxcb-sync1": "MIT", "libxcb-util1": "MIT", "libxcb-xfixes0": "MIT",
+    "libxcb-xkb1": "MIT", "libzstd1": "BSD-3-Clause", "zlib1g": "Zlib",
+}
 # Qt plugins the app never loads; the GTK theme alone drags in GTK's stack.
 # QAudioSink and QMediaDevices work without a multimedia backend, and the
 # FFmpeg one would ship FFmpeg's LGPL libraries for nothing.
@@ -145,6 +173,7 @@ def check_bundle(bundle: Path, version: str) -> list[str]:
             "_internal/libdf.so",
             "_internal/AudioForge.ico",
             *(f"_internal/models/{model}" for model in MODELS),
+            *(f"_internal/{library}" for library in XCB_LIBRARIES),
         )
         if not (bundle / relative).is_file()
     ]
@@ -162,8 +191,21 @@ def check_bundle(bundle: Path, version: str) -> list[str]:
             errors.append(f"bundles a library that must come from the system: {relative}")
         if path.name.startswith("libreadline.so"):
             errors.append(f"bundles GPL readline, which the app never uses: {relative}")
+        if path.name.startswith(FFMPEG_LIBRARIES):
+            errors.append(f"bundles FFmpeg, which the app never uses: {relative}")
         if any(f"PySide6/Qt/plugins/{plugin}" in relative for plugin in UNUSED_QT_PLUGINS):
             errors.append(f"bundles an unused Qt plugin: {relative}")
+    # Releases are built on Ubuntu; the table names Debian packages, so a pacman
+    # host (a local Arch build) cannot be checked against it.
+    notices = internal / "licenses" / "system"
+    packages = sorted(path.name for path in notices.iterdir()) if notices.is_dir() else []
+    for package in packages if shutil.which("dpkg-query") else []:
+        if package not in HOST_LIBRARY_PACKAGES:
+            errors.append(
+                f"copies a library from the host package {package}, which is not known to be "
+                f"permissive: read _internal/licenses/system/{package}/copyright and add it "
+                "to HOST_LIBRARY_PACKAGES only if it is"
+            )
     return errors
 
 

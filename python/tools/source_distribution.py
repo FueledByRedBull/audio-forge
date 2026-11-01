@@ -41,6 +41,8 @@ TRUSTED_SOURCE_HOSTS = frozenset(
         "download.qt.io",
         "files.pythonhosted.org",
         "github.com",
+        "gitlab.alpinelinux.org",
+        "musl.libc.org",
         "release-assets.githubusercontent.com",
         "raw.githubusercontent.com",
         "static.crates.io",
@@ -495,6 +497,144 @@ GCC_RUNTIME_SOURCE = {
     "build_role": "source for the libgfortran and libquadmath copies in NumPy's Linux wheel",
     "license": "GPL-3.0-or-later WITH GCC-exception-3.1; LGPL-2.1-or-later (libquadmath)",
 }
+
+# The Linux AppImage embeds the pinned AppImage type2-runtime (release-package.yml
+# APPIMAGE_RUNTIME_URL), a static-pie executable that links libfuse3, squashfuse,
+# zstd, zlib, mimalloc and musl. Its tag's scripts/docker/Dockerfile builds it on
+# Alpine 3.21: libfuse and squashfuse come from the pinned archives in
+# scripts/common/install-dependencies.sh, the rest from Alpine packages. The
+# Alpine versions are those of the aports 3.21-stable branch while the tag's
+# release assets were built (musl-dev 1.2.5-r9, zlib 1.3.1-r2, zstd 1.5.6-r2,
+# mimalloc2 2.1.7-r0; none changed between 2025-11-06 and 2025-12-08). Alpine's
+# zlib, zstd and mimalloc2 packages build the upstream archives below unpatched
+# (mimalloc2 only adds a CMake suffix patch); musl-dev adds four patches that
+# reach x86_64 code, pinned at the last commit that changed main/musl.
+APPIMAGE_RUNTIME_SOURCE = {
+    "id": "appimage-runtime-type2-runtime-20251108",
+    "name": "AppImage type2-runtime",
+    "version": "20251108",
+    "filename": "type2-runtime-20251108.tar.gz",
+    "url": "https://github.com/AppImage/type2-runtime/archive/refs/tags/20251108.tar.gz",
+    "sha256": "4c4f6df4647c9f01f871d7edd3716d8aeeffda9d22ffbebe3fccd95a6ab52c95",
+    "source_of_truth": "https://github.com/AppImage/type2-runtime/tree/20251108",
+    "build_role": (
+        "source and build recipe for the AppImage runtime the Linux AppImage embeds, "
+        "including scripts/docker/Dockerfile and patches/libfuse/mount.c.diff"
+    ),
+    "license": "MIT",
+    "license_paths": ["type2-runtime-20251108/LICENSE"],
+}
+_ALPINE_MUSL = "https://gitlab.alpinelinux.org/alpine/aports/-/{kind}/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/"
+APPIMAGE_RUNTIME_SOURCES = (
+    APPIMAGE_RUNTIME_SOURCE,
+    {
+        "id": "appimage-runtime-libfuse-3.15.0",
+        "name": "libfuse",
+        "version": "3.15.0",
+        "filename": "fuse-3.15.0.tar.xz",
+        "url": "https://github.com/libfuse/libfuse/releases/download/fuse-3.15.0/fuse-3.15.0.tar.xz",
+        "sha256": "70589cfd5e1cff7ccd6ac91c86c01be340b227285c5e200baa284e401eea2ca0",
+        "source_of_truth": "https://github.com/libfuse/libfuse/releases/tag/fuse-3.15.0",
+        "build_role": "libfuse3 static library linked into the AppImage runtime, built with the type2-runtime mount.c patch",
+        "license": "LGPL-2.1-only (lib/ and include/)",
+        "license_paths": ["fuse-3.15.0/LICENSE", "fuse-3.15.0/LGPL2.txt"],
+    },
+    {
+        "id": "appimage-runtime-squashfuse-0.5.2",
+        "name": "squashfuse",
+        "version": "0.5.2",
+        "filename": "squashfuse-0.5.2.tar.gz",
+        "url": "https://github.com/vasi/squashfuse/archive/0.5.2.tar.gz",
+        "sha256": "db0238c5981dabbd80ee09ae15387f390091668ca060a7bc38047912491443d3",
+        "source_of_truth": "https://github.com/vasi/squashfuse/tree/0.5.2",
+        "build_role": "squashfuse and squashfuse_ll static libraries linked into the AppImage runtime",
+        "license": "BSD-2-Clause",
+        "license_paths": ["squashfuse-0.5.2/LICENSE"],
+    },
+    {
+        "id": "appimage-runtime-zstd-1.5.6",
+        "name": "zstd",
+        "version": "1.5.6",
+        "filename": "zstd-1.5.6.tar.gz",
+        "url": "https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-1.5.6.tar.gz",
+        "sha256": "8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1",
+        "source_of_truth": "https://github.com/facebook/zstd/releases/tag/v1.5.6",
+        "build_role": "libzstd static library linked into the AppImage runtime (Alpine zstd-static 1.5.6-r2)",
+        "license": "BSD-3-Clause OR GPL-2.0-only",
+        "license_paths": ["zstd-1.5.6/LICENSE", "zstd-1.5.6/COPYING"],
+    },
+    {
+        "id": "appimage-runtime-zlib-1.3.1",
+        "name": "zlib",
+        "version": "1.3.1",
+        "filename": "zlib-1.3.1.tar.gz",
+        "url": "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz",
+        "sha256": "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23",
+        "source_of_truth": "https://github.com/madler/zlib/releases/tag/v1.3.1",
+        "build_role": "zlib static library linked into the AppImage runtime (Alpine zlib-static 1.3.1-r2)",
+        "license": "Zlib",
+        "license_paths": ["zlib-1.3.1/LICENSE"],
+    },
+    {
+        "id": "appimage-runtime-mimalloc-2.1.7",
+        "name": "mimalloc",
+        "version": "2.1.7",
+        "filename": "mimalloc-2.1.7.tar.gz",
+        "url": "https://github.com/microsoft/mimalloc/archive/refs/tags/v2.1.7.tar.gz",
+        "sha256": "0eed39319f139afde8515010ff59baf24de9e47ea316a315398e8027d198202d",
+        "source_of_truth": "https://github.com/microsoft/mimalloc/releases/tag/v2.1.7",
+        "build_role": "mimalloc static library linked into the AppImage runtime (Alpine mimalloc2-dev 2.1.7-r0, secure build)",
+        "license": "MIT",
+        "license_paths": ["mimalloc-2.1.7/LICENSE"],
+    },
+    {
+        "id": "appimage-runtime-musl-1.2.5",
+        "name": "musl libc",
+        "version": "1.2.5",
+        "filename": "musl-1.2.5.tar.gz",
+        "url": "https://musl.libc.org/releases/musl-1.2.5.tar.gz",
+        "sha256": "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4",
+        "source_of_truth": "https://musl.libc.org/releases/",
+        "build_role": "musl libc static library linked into the AppImage runtime (Alpine musl-dev 1.2.5-r9, with the patches below)",
+        "license": "MIT; portions under other permissive licenses listed in COPYRIGHT",
+        "license_paths": ["musl-1.2.5/COPYRIGHT"],
+    },
+    *(
+        {
+            "id": f"appimage-runtime-musl-patch-{short}",
+            "name": f"musl libc Alpine patch: {short}",
+            "version": "1.2.5-r9",
+            "filename": filename,
+            "url": _ALPINE_MUSL.format(kind="raw") + filename,
+            "sha256": sha256,
+            "source_of_truth": _ALPINE_MUSL.format(kind="blob") + "APKBUILD",
+            "build_role": "Alpine 3.21 patch applied to the musl libc linked into the AppImage runtime",
+            "license": "MIT",
+        }
+        for short, filename, sha256 in (
+            (
+                "handle-aux-at_base",
+                "handle-aux-at_base.patch",
+                "2a65e03b94217063d72fe998e5fb2e25cd01716078a3ba1b0ab574ab205111e6",
+            ),
+            (
+                "isatty-glibc-align",
+                "isatty-glibc-align.patch",
+                "1321d542b40921a4c248bb2d15dbd03fcbbf008c8725eb2043d3cab62faeba48",
+            ),
+            (
+                "ldso-early-page-size",
+                "ldso-fix-non-functional-fix-to-early-dynamic-PAGE_SI.patch",
+                "7f5806124d4a89536e53a07bfe95fcd0a8f1b7a27fc0dfc89c78c724dea1c924",
+            ),
+            (
+                "CVE-2025-26519",
+                "CVE-2025-26519.patch",
+                "ab382da2bb5e1cc32d8904be28fb13f8ad3ce813967bd4bf7f5b1c6baee33e17",
+            ),
+        )
+    ),
+)
 
 MESA_SOURCE = {
     "name": "Mesa llvmpipe",
@@ -969,6 +1109,7 @@ def build_manifest() -> dict[str, Any]:
             }
         )
     entries.append({**GCC_RUNTIME_SOURCE, "kind": "native-build-source"})
+    entries.extend({**source, "kind": "native-build-source"} for source in APPIMAGE_RUNTIME_SOURCES)
     entries.append(
         {
             **MESA_SOURCE,
@@ -1050,6 +1191,7 @@ def build_manifest() -> dict[str, Any]:
         "scope": (
             "Exact sources for the release Python runtime, PySide/Qt binding stack, "
             "PyInstaller bootloader, CPython, CPU ONNX Runtime graph, NumPy's Linux GCC runtimes, "
+            "the Linux AppImage runtime and its statically linked libraries, "
             "and resolved Windows and Linux Cargo graphs. "
             "Runtime models and redistributable binaries are recorded separately."
         ),
@@ -1208,6 +1350,7 @@ def _expected_static_source_entries(runtime: dict[str, str]) -> dict[str, dict[s
     static_sources = [
         ("mesa-llvmpipe-11.2.2", MESA_SOURCE),
         (str(GCC_RUNTIME_SOURCE["id"]), GCC_RUNTIME_SOURCE),
+        *[(str(source["id"]), source) for source in APPIMAGE_RUNTIME_SOURCES],
         (f"deepfilter-upstream-{DEEPFILTER_SOURCE['version'][:12]}", DEEPFILTER_SOURCE),
         ("deepfilter-tract-linalg-0.21.17", DEEPFILTER_TRACT_SOURCE),
         *[(str(source["id"]), source) for source in OPENBLAS_SOURCES],
@@ -1513,6 +1656,7 @@ def _validate_manifest(manifest: dict[str, Any], *, release: bool = False) -> No
         ),
         "mesa-llvmpipe-11.2.2",
         GCC_RUNTIME_SOURCE["id"],
+        *(source["id"] for source in APPIMAGE_RUNTIME_SOURCES),
         f"deepfilter-upstream-{DEEPFILTER_SOURCE['version'][:12]}",
         "deepfilter-tract-linalg-0.21.17",
         *(source["id"] for source in OPENBLAS_SOURCES),

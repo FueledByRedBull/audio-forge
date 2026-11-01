@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tarfile
@@ -267,6 +268,37 @@ def test_qt_sources_use_fixed_trusted_mirror():
         assert entry["source_of_truth"].startswith("https://download.qt.io/")
 
 
+def test_appimage_runtime_sources_are_pinned_in_the_manifest():
+    manifest = json.loads(source_tool.DEFAULT_MANIFEST.read_text(encoding="utf-8"))
+    by_id = {entry["id"]: entry for entry in manifest["entries"]}
+    sources = source_tool.APPIMAGE_RUNTIME_SOURCES
+    assert len(sources) == len({source["id"] for source in sources}) == 11
+    for source in sources:
+        assert source["id"].startswith("appimage-runtime-")
+        assert re.fullmatch(r"[0-9a-f]{64}", source["sha256"])
+        source_tool._validate_source_url(source["url"])
+        source_tool._validate_source_url(source["source_of_truth"])
+        assert by_id[source["id"]] == {**source, "kind": "native-build-source"}
+    # The release workflow pins the runtime by this tag.
+    runtime = source_tool.APPIMAGE_RUNTIME_SOURCE
+    assert runtime["url"].endswith(f"/refs/tags/{runtime['version']}.tar.gz")
+
+
+@_RELEASE_INTERPRETER
+@pytest.mark.parametrize("damage", ["omitted", "sha256"])
+def test_release_manifest_rejects_missing_or_changed_appimage_runtime_source(damage):
+    manifest = json.loads(source_tool.DEFAULT_MANIFEST.read_text(encoding="utf-8"))
+    libfuse = next(entry for entry in manifest["entries"] if entry["id"] == "appimage-runtime-libfuse-3.15.0")
+    if damage == "omitted":
+        manifest["entries"].remove(libfuse)
+        message = "lacks current source identity for appimage-runtime-libfuse-3.15.0"
+    else:
+        libfuse["sha256"] = "0" * 64
+        message = r"stale: appimage-runtime-libfuse-3.15.0 \(sha256\)"
+    with pytest.raises(SourceDistributionError, match=message):
+        source_tool._validate_manifest(manifest, release=True)
+
+
 @pytest.mark.parametrize("name", source_tool.PYSIDE_PACKAGES)
 def test_pyside_mapping_rejects_missing_or_different_wheel_versions(name):
     runtime = {package.casefold(): "6.11.1" for package in source_tool.PYSIDE_PACKAGES}
@@ -467,9 +499,11 @@ NOT_BUILT_FOR_RELEASES = {line.strip() for line in """
     block2 0.6.2
     bumpalo 3.20.2
     bytes 1.11.1
+    cesu8 1.1.0
     combine 4.6.7
     coreaudio-rs 0.14.2
     dispatch2 0.3.0
+    jni 0.21.1
     jni 0.22.4
     jni-macros 0.22.4
     jni-sys 0.3.0
@@ -477,6 +511,7 @@ NOT_BUILT_FOR_RELEASES = {line.strip() for line in """
     jni-sys-macros 0.4.1
     js-sys 0.3.90
     mach2 0.4.3
+    mach2 0.5.0
     mach2 0.6.0
     ndk 0.9.0
     ndk-context 0.1.1
@@ -509,6 +544,7 @@ NOT_BUILT_FOR_RELEASES = {line.strip() for line in """
     walkdir 2.5.0
     wasi 0.11.1+wasi-snapshot-preview1
     wasm-bindgen 0.2.113
+    wasm-bindgen-futures 0.4.63
     wasm-bindgen-macro 0.2.113
     wasm-bindgen-macro-support 0.2.113
     wasm-bindgen-shared 0.2.113
@@ -517,6 +553,15 @@ NOT_BUILT_FOR_RELEASES = {line.strip() for line in """
     winapi-i686-pc-windows-gnu 0.4.0
     winapi-util 0.1.11
     winapi-x86_64-pc-windows-gnu 0.4.0
+    windows-sys 0.45.0
+    windows-targets 0.42.2
+    windows_aarch64_gnullvm 0.42.2
+    windows_aarch64_msvc 0.42.2
+    windows_i686_gnu 0.42.2
+    windows_i686_msvc 0.42.2
+    windows_x86_64_gnu 0.42.2
+    windows_x86_64_gnullvm 0.42.2
+    windows_x86_64_msvc 0.42.2
 """.strip().splitlines()}
 
 

@@ -179,7 +179,8 @@ current model in the pull request, with the invariant tests green; the
 maintainer decides. State which hardware was covered and which was not. A model
 that ships also needs an entry in the explicit model list in `AudioForge.spec`,
 in `package_smoke.py`'s required files, and in the reviewed bundle paths,
-`evaluation/release-bundle-path-baseline.json`.
+`evaluation/release-bundle-path-baseline.json` and its Linux counterpart,
+`evaluation/release-bundle-path-baseline-linux.json`.
 
 ## Runtime assets and configuration
 

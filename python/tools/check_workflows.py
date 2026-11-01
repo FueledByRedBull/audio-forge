@@ -44,11 +44,40 @@ RELEASE_RUNTIME_FILES = (
     "models/silero_vad.onnx",
     "python/mic_eq/mic_eq_core*.pyd",
 )
+# The Linux counterpart: `package-linux` packages the files, `linux-tests` and
+# `linux-pytest` test the runtime ones, and promotion requires those jobs.
+RELEASE_LINUX_RUNTIME_ARTIFACT = "audioforge-release-linux-runtime"
+RELEASE_LINUX_PACKAGED_REF = "${{ needs.package-linux.outputs.source_revision }}"
+RELEASE_LINUX_NATIVE_SHA256 = "${{ needs.package-linux.outputs.native_sha256 }}"
+RELEASE_LINUX_RUNTIME_FILES = (
+    "libdf.so",
+    "target/deepfilter/libdf.so.provenance.json",
+    "target/onnxruntime-cpu/lib/libonnxruntime.so.1.23.2",
+    "models/DeepFilterNet3_ll_onnx.tar.gz",
+    "models/DeepFilterNet3_onnx.tar.gz",
+    "models/silero_vad.onnx",
+    "python/mic_eq/mic_eq_core*.so",
+)
+RELEASE_LINUX_PATH_BASELINE = "evaluation/release-bundle-path-baseline-linux.json"
 # Built or hydrated files never come from the Actions cache.
 RELEASE_UNCACHEABLE = (
-    "df.dll", "target/deepfilter", "target/onnxruntime", "models", "python/mic_eq", "dist",
+    "df.dll", "libdf.so", "target/deepfilter", "target/onnxruntime", "models", "python/mic_eq",
+    "dist",
 )
 RELEASE_TEST_JOBS = ("pytest", "rust-tests", "rust-stress")
+RELEASE_LINUX_TEST_JOBS = ("linux-tests", "linux-pytest")
+# The jobs that build the files a release ships.
+RELEASE_BUILD_JOBS = ("package-windows", "package-linux")
+# An existing release tag must be the commit a build job checked out; the step is
+# PowerShell in package-windows and bash in package-linux.
+RELEASE_TAG_BINDING = re.compile(
+    r'\$tagCommit -ne \$currentCommit|\[\[ \$tag_commit != "\$current_commit" \]\]'
+)
+RELEASE_TAG_BINDING_CONDITION = "inputs.release_tag != '' || github.ref_type == 'tag'"
+APPIMAGE_RUNTIME_URL = re.compile(
+    r"https://github\.com/AppImage/type2-runtime/releases/download/([^/]+)/runtime-x86_64"
+)
+SOURCE_MANIFEST_PATH = REPO_ROOT / "licenses" / "source-manifest.json"
 RELEASE_JOB_GATES = {
     "static": (
         "python/tools/check_versions.py",
@@ -69,6 +98,14 @@ RELEASE_JOB_GATES = {
         "cargo clippy --locked -p mic_eq_core --all-targets -- -D warnings",
     ),
     "rust-stress": ("cargo test --release --locked -p mic_eq_core --test stress_tests",),
+    # The Windows static job skips the lock's Linux-only entries (jeepney), so
+    # the Linux job audits the runtime lock where those entries install.
+    "linux-tests": (
+        "cargo test --locked -p mic_eq_core",
+        "cargo clippy --locked -p mic_eq_core --all-targets -- -D warnings",
+        "pip_audit --require-hashes -r requirements/runtime.txt",
+    ),
+    "linux-pytest": ("-m pytest",),
 }
 DEV_LOCK_PATH = REPO_ROOT / "requirements" / "dev.txt"
 DEEPFILTER_LOCK = "build-support/deepfilter/Cargo.lock"
@@ -230,6 +267,11 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                     TAG_COMMIT,
                     "git cat-file -t $tagRef",
                     '$run.event -ne "workflow_dispatch"',
+                    # The candidate run must have run the Linux build and tests.
+                    "Build Linux release package",
+                    "Linux Rust tests and lint",
+                    'linux-pytest ($_)',
+                    "pytest-shards.json",
                 ),
                 ("--require-hashes -r requirements/runtime.txt",),
                 (
@@ -254,6 +296,8 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                     "-deepfilter.provenance.json",
                     "Get-ChildItem -LiteralPath linux-candidate",
                     "-libdf.provenance.json",
+                    "$appImageName.manifest.json",
+                    "$appImageName.metadata.json",
                 ),
                 # The Linux files come from the same run; their libdf.so is the attested one.
                 (
@@ -263,6 +307,7 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                 (
                     "-evidence.7z",
                     "$env:LINUX_TARBALL_MANIFEST, $env:LINUX_TARBALL_METADATA",
+                    "$env:LINUX_APPIMAGE_MANIFEST, $env:LINUX_APPIMAGE_METADATA",
                     "$env:LINUX_TARBALL, $env:LINUX_APPIMAGE",
                     "validation/release-qualification.json",
                     "SHA256SUMS",
@@ -284,7 +329,9 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                     "--smoke-test",
                 ),
             ),
-            # The Linux tarball's sidecars bind it to the candidate run and tag commit.
+            # The Linux files' sidecars bind them to the candidate run and tag
+            # commit. The downloaded bytes are matched to the staged ones before
+            # anything is extracted, and the candidate runs only afterwards.
             "verify-linux-candidate": (
                 (
                     "actions/checkout@",
@@ -297,13 +344,22 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                     "run-id: ${{ inputs.candidate_run_id }}",
                 ),
                 (
+                    "ASSET_HASHES: ${{ needs.verify-candidate.outputs.asset_hashes }}",
+                    "hashlib.file_digest",
+                    "differs from the copy verify-candidate staged and hashed",
+                ),
+                (
                     "release_provenance.py verify",
+                    f"--baseline {RELEASE_LINUX_PATH_BASELINE}",
                     "--expected-commit",
                     "--expected-producer",
                     "--require-source-distribution",
                     "--native-attestation",
                     "TAG_COMMIT: ${{ needs.verify-candidate.outputs.tag_commit }}",
+                    "--appimage-extract",
+                    'tarball["files"] != appimage["files"]',
                 ),
+                ("--smoke-test", "--appimage-extract-and-run"),
             ),
             PROMOTE_PUBLISH_JOB: (
                 (
@@ -393,7 +449,12 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                     "name: audioforge-release-linux-${{ inputs.release_tag }}",
                     "path: ${{ runner.temp }}/audioforge-release-candidate",
                 ),
-                (CANONICAL_TAG, 'git rev-list -n 1 "$RELEASE_TAG" --', *PROVENANCE_GATES),
+                (
+                    CANONICAL_TAG,
+                    'git rev-list -n 1 "$RELEASE_TAG" --',
+                    *PROVENANCE_GATES,
+                    f"--baseline {RELEASE_LINUX_PATH_BASELINE}",
+                ),
                 (
                     "evaluate_hardware_validation.py",
                     "--confirm-scenario-observed",
@@ -494,6 +555,18 @@ RUST_SKIP_SCAN_STEP = (
     r"re:^\s*\$skipped = .*Select-String .*-Pattern '\\b\(skipped\|skipping\)\\b'",
     r"re:^\s*if \(\$skipped\.Count -gt 0\) \{ throw ",
 )
+# The same rule for the bash test jobs of the Linux half (ci.yml linux-tests,
+# release-package.yml linux-tests): the pipe keeps cargo's exit status, a
+# failing test run exits non-zero and any skip notice exits 1.
+LINUX_RUST_SKIP_SCAN_STEP = (
+    "cargo test --locked -p mic_eq_core",
+    "AUDIOFORGE_ENABLE_DEEPFILTER: 1",
+    "--nocapture",
+    "set -o pipefail",
+    r"re:^\s*cargo test --locked -p mic_eq_core .* 2>&1 \| tee ",
+    r"re:^\s*if grep -E '\\b\(skipped\|skipping\)\\b' .*; then$",
+    r"re:^\s*exit 1$",
+)
 # ci.yml's rust-tests also builds df.dll from the pinned source; the release
 # workflow's test jobs run on the runtime files its package job built.
 CI_RUST_DEEPFILTER_STEPS = (
@@ -513,6 +586,26 @@ CI_RUST_DEEPFILTER_STEPS = (
     ),
     RUST_SKIP_SCAN_STEP,
 )
+# The Linux counterpart in ci.yml's linux-tests: libdf.so and its attestation may
+# be restored, and the fetch step after that still checks both against the recipe.
+CI_LINUX_RUST_DEEPFILTER_STEPS = (
+    (
+        "target/deepfilter/libdf.so.provenance.json",
+        "actions/cache/restore@",
+        "hashFiles('python/tools/build_deepfilter.py', 'build-support/deepfilter/**', "
+        "'release-assets.json', 'rust-toolchain.toml')",
+    ),
+    (
+        "python/tools/fetch_release_assets.py",
+        "!--only-cpu-runtime",
+        "python/tools/verify_release_assets.py",
+        "GH_TOKEN: ${{ github.token }}",
+    ),
+    LINUX_RUST_SKIP_SCAN_STEP,
+)
+# Windows' static job skips the lock's Linux-only entries (jeepney), so ci.yml's
+# linux-tests audits the runtime lock where they install.
+CI_LINUX_AUDIT_STEPS = (("pip_audit --require-hashes -r requirements/runtime.txt",),)
 # ci.yml's static job lints the workflow definitions with the locked zizmor.
 CI_STATIC_STEPS = (("zizmor --no-progress .github/workflows", "GH_TOKEN: ${{ github.token }}"),)
 
@@ -760,8 +853,14 @@ def _check_required_gates(
     )
     required = shared
     if name == "release-package.yml":
+        # The Linux test jobs embed the setup-python interpreter and need no venv path.
+        windows_jobs = {
+            job_id: job
+            for job_id, job in _mapping(document.get("jobs"), f"{name}: jobs", errors).items()
+            if job_id not in RELEASE_LINUX_TEST_JOBS
+        }
         rust_test_steps = [
-            step for step in _active_steps(document)
+            step for step in _active_steps({"jobs": windows_jobs})
             if _active_run_has_marker(
                 str(step.get("run", "")).splitlines(), "cargo test --locked -p mic_eq_core"
             )
@@ -1123,12 +1222,20 @@ def _check_tag_checkouts(
         runs = "\n".join(str(step.get("run", "")) for step in steps)
         for step in steps:
             ref = str((step.get("with") or {}).get("ref", ""))
-            # release-package.yml's optional-tag ref has its own tag-commit gate.
             if (
                 not str(step.get("uses", "")).startswith("actions/checkout@")
                 or TAG_INPUT.search(ref) is None
-                or ref == RELEASE_SOURCE_REF
             ):
+                continue
+            # release-package.yml's optional-tag ref may be a bare tag name, so
+            # each job that builds release files binds an existing tag to its
+            # checked-out commit itself; `static` only reads the source.
+            if ref == RELEASE_SOURCE_REF:
+                if job_id in RELEASE_BUILD_JOBS and RELEASE_TAG_BINDING.search(runs) is None:
+                    errors.append(
+                        f"{name}: {job_id}: checkout of {ref} must be followed by a check "
+                        "that an existing release tag is the checked-out commit"
+                    )
                 continue
             if TAG_CHECKOUT_REF.fullmatch(ref) is None:
                 errors.append(f"{name}: {job_id}: checkout of {ref} must use refs/tags/")
@@ -1208,10 +1315,17 @@ def _check_ci_jobs(document: dict[str, Any], errors: list[str]) -> None:
             if f"needs.{part}.result" not in gate_text:
                 errors.append(f"ci.yml: {gate} does not check the result of {part}")
     _check_step_sequences(
-        "ci.yml", "DeepFilter", document, {"rust-tests": CI_RUST_DEEPFILTER_STEPS}, errors
+        "ci.yml",
+        "DeepFilter",
+        document,
+        {"rust-tests": CI_RUST_DEEPFILTER_STEPS, "linux-tests": CI_LINUX_RUST_DEEPFILTER_STEPS},
+        errors,
     )
     _check_step_sequences(
         "ci.yml", "workflow lint", document, {"static": CI_STATIC_STEPS}, errors
+    )
+    _check_step_sequences(
+        "ci.yml", "Linux audit", document, {"linux-tests": CI_LINUX_AUDIT_STEPS}, errors
     )
     for job_name in CI_CPU_RUNTIME_JOBS:
         job = jobs.get(job_name)
@@ -1241,11 +1355,29 @@ def _step_lines(step: dict[str, Any]) -> list[str]:
     ]
 
 
+def _appimage_runtime_source_errors(tag: str) -> list[str]:
+    """The source manifest must name the type2-runtime release the AppImage embeds."""
+    identifier = f"appimage-runtime-type2-runtime-{tag}"
+    try:
+        entries = json.loads(SOURCE_MANIFEST_PATH.read_text(encoding="utf-8"))["entries"]
+    except (OSError, KeyError, ValueError) as error:
+        return [f"cannot read the corresponding-source manifest: {error}"]
+    if not any(
+        isinstance(entry, dict) and entry.get("id") == identifier and entry.get("version") == tag
+        for entry in entries
+    ):
+        return [
+            f"package-linux embeds type2-runtime {tag}, but {SOURCE_MANIFEST_PATH.name} "
+            f"has no {identifier} entry for its corresponding source"
+        ]
+    return []
+
+
 def _check_release_jobs(document: dict[str, Any], errors: list[str]) -> None:
     """Require the gate layout of release-package.yml.
 
     Promotion accepts only a successful run, so every job must be unconditional
-    and blocking. The test jobs must run on the runtime files package-windows
+    and blocking. The test jobs must run on the runtime files their package job
     produced and verify them, including the packaged native module's SHA-256,
     before testing; validate-candidate compares the archive with that module.
     """
@@ -1270,29 +1402,54 @@ def _check_release_jobs(document: dict[str, Any], errors: list[str]) -> None:
             (step.get("with") or {}).get(key) == value for key, value in expected.items()
         )
 
-    def hashes_native_module(location: str) -> Any:
+    # (hash command, packaged module pattern, the package job's native SHA-256 output)
+    windows = ("Get-FileHash", "mic_eq_core*.pyd", RELEASE_NATIVE_SHA256)
+    linux = ("sha256sum", "mic_eq_core*.so", RELEASE_LINUX_NATIVE_SHA256)
+
+    def hashes_native_module(location: str, flavour: tuple[str, str, str]) -> Any:
+        tool, module, expected = flavour
+
         def check(step: dict[str, Any]) -> bool:
             env = step.get("env")
             run = str(step.get("run", ""))
             return (
                 isinstance(env, dict)
-                and RELEASE_NATIVE_SHA256 in env.values()
-                and all(part in run for part in ("Get-FileHash", "mic_eq_core*.pyd", location))
+                and expected in env.values()
+                and all(part in run for part in (tool, module, location))
             )
 
         return check
 
-    def needs_only_package(job_name: str) -> None:
+    def needs_only(job_name: str, package_job: str) -> None:
         needs = (jobs.get(job_name) or {}).get("needs")
-        if (needs if isinstance(needs, list) else [needs]) != ["package-windows"]:
-            fail(f"{job_name} must need exactly package-windows")
+        if (needs if isinstance(needs, list) else [needs]) != [package_job]:
+            fail(f"{job_name} must need exactly {package_job}")
 
     def checks_out(job_name: str, ref: str) -> None:
         checkouts = [s for s in job_steps(job_name) if uses("actions/checkout")(s)]
         if not checkouts or any((s.get("with") or {}).get("ref") != ref for s in checkouts):
             fail(f"{job_name} must check out ref {ref}")
 
-    for job_name in ("static", "package-windows", *RELEASE_TEST_JOBS, "validate-candidate"):
+    # Each family: its test jobs, the job that packages for them, the commit they
+    # check out, the same-run runtime artifact and how the module is hashed.
+    families = (
+        (RELEASE_TEST_JOBS, "package-windows", RELEASE_PACKAGED_REF, RELEASE_RUNTIME_ARTIFACT, windows),
+        (
+            RELEASE_LINUX_TEST_JOBS,
+            "package-linux",
+            RELEASE_LINUX_PACKAGED_REF,
+            RELEASE_LINUX_RUNTIME_ARTIFACT,
+            linux,
+        ),
+    )
+
+    for job_name in (
+        "static",
+        *RELEASE_BUILD_JOBS,
+        *RELEASE_TEST_JOBS,
+        *RELEASE_LINUX_TEST_JOBS,
+        "validate-candidate",
+    ):
         if not isinstance(jobs.get(job_name), dict):
             fail(f"required release job {job_name} is missing")
     for job_name, job in jobs.items():
@@ -1311,32 +1468,57 @@ def _check_release_jobs(document: dict[str, Any], errors: list[str]) -> None:
     if shards is not None:
         _check_pytest_job(document, shards, name, errors)
 
-    for job_name in ("static", "package-windows"):
+    for job_name in ("static", *RELEASE_BUILD_JOBS):
         checks_out(job_name, RELEASE_SOURCE_REF)
-    for job_name in (*RELEASE_TEST_JOBS, "validate-candidate"):
-        needs_only_package(job_name)
-        checks_out(job_name, RELEASE_PACKAGED_REF)
-    for job_name in RELEASE_TEST_JOBS:
-        steps = job_steps(job_name)
-        download = index(steps, uses("actions/download-artifact", name=RELEASE_RUNTIME_ARTIFACT))
-        verify = index(
-            steps,
-            lambda step: hashes_native_module("python/mic_eq")(step)
-            and runs("python/tools/verify_release_assets.py")(step),
-        )
-        if download < 0:
-            fail(f"{job_name} must download the {RELEASE_RUNTIME_ARTIFACT} artifact")
-        if verify < download or verify < 0:
-            fail(
-                f"{job_name} must verify the downloaded runtime assets and the native "
-                "module's SHA-256 after downloading them"
+    for test_jobs, package_job, packaged_ref, artifact, flavour in families:
+        for job_name in (*test_jobs, *(("validate-candidate",) if package_job == "package-windows" else ())):
+            needs_only(job_name, package_job)
+            checks_out(job_name, packaged_ref)
+        for job_name in test_jobs:
+            steps = job_steps(job_name)
+            download = index(steps, uses("actions/download-artifact", name=artifact))
+            verify = index(
+                steps,
+                lambda step: hashes_native_module("python/mic_eq", flavour)(step)
+                and runs("python/tools/verify_release_assets.py")(step),
             )
-        for marker in RELEASE_JOB_GATES[job_name]:
-            if 0 <= index(steps, runs(marker)) <= max(verify, download):
-                fail(f"{job_name} must run {marker!r} after verifying the runtime files")
-    if index(job_steps("validate-candidate"), hashes_native_module("_internal/mic_eq")) < 0:
+            if download < 0:
+                fail(f"{job_name} must download the {artifact} artifact")
+            if verify < download or verify < 0:
+                fail(
+                    f"{job_name} must verify the downloaded runtime assets and the native "
+                    "module's SHA-256 after downloading them"
+                )
+            for marker in RELEASE_JOB_GATES[job_name]:
+                if 0 <= index(steps, runs(marker)) <= max(verify, download):
+                    fail(f"{job_name} must run {marker!r} after verifying the runtime files")
+    if index(job_steps("validate-candidate"), hashes_native_module("_internal/mic_eq", windows)) < 0:
         fail("validate-candidate must compare the archive's native module with the tested SHA-256")
-    _check_step_sequences(name, "DeepFilter", document, {"rust-tests": (RUST_SKIP_SCAN_STEP,)}, errors)
+    _check_step_sequences(
+        name,
+        "DeepFilter",
+        document,
+        {"rust-tests": (RUST_SKIP_SCAN_STEP,), "linux-tests": (LINUX_RUST_SKIP_SCAN_STEP,)},
+        errors,
+    )
+
+    # An existing tag is bound to the commit each build job checked out, before
+    # that job hydrates anything.
+    for job_name in RELEASE_BUILD_JOBS:
+        steps = job_steps(job_name)
+        bind = index(
+            steps, lambda step: RELEASE_TAG_BINDING.search("\n".join(_step_lines(step))) is not None
+        )
+        hydrate = index(steps, runs("source_distribution.py bundle"))
+        if not 0 <= bind < hydrate:
+            fail(f"{job_name} must bind an existing release tag to the checked-out commit before it hydrates source")
+        elif steps[bind].get("if") != RELEASE_TAG_BINDING_CONDITION or not all(
+            part in str(steps[bind].get("run", "")) for part in ("git fetch --no-tags origin", "git rev-list -n 1")
+        ):
+            fail(
+                f"{job_name} must fetch the existing release tag and compare its commit "
+                f"when {RELEASE_TAG_BINDING_CONDITION}"
+            )
 
     package = job_steps("package-windows")
     outputs = (jobs.get("package-windows") or {}).get("outputs")
@@ -1365,6 +1547,8 @@ def _check_release_jobs(document: dict[str, Any], errors: list[str]) -> None:
             if path not in listed:
                 fail(f"the {RELEASE_RUNTIME_ARTIFACT} artifact must contain {path}")
 
+    _check_package_linux(jobs, job_steps("package-linux"), fail)
+
     for job_name in jobs:
         for step in job_steps(job_name):
             env = step.get("env")
@@ -1379,9 +1563,116 @@ def _check_release_jobs(document: dict[str, Any], errors: list[str]) -> None:
             for path in str((step.get("with") or {}).get("path", "")).split():
                 cached = path.replace("\\", "/").lstrip("./")
                 if cached.startswith(RELEASE_UNCACHEABLE) or (
-                    job_name == "package-windows" and cached.startswith("target")
+                    job_name in RELEASE_BUILD_JOBS and cached.startswith("target")
                 ):
                     fail(f"job {job_name} must not restore {path} from the Actions cache")
+
+
+def _check_package_linux(
+    jobs: dict[str, Any], package: list[dict[str, Any]], fail: Any
+) -> None:
+    """package-linux builds, stages and uploads the Linux files in a fixed order.
+
+    None of these steps has run on a hosted runner before the first dispatch, so
+    the layout that would fail there is checked here: the release files are
+    staged outside the working tree (release_provenance.py create refuses a tree
+    with untracked files), both archives get sidecars against the reviewed path
+    baseline, and the runtime artifact the Linux test jobs use is staged last.
+    """
+
+    def index(predicate: Any) -> int:
+        return next((i for i, step in enumerate(package) if predicate(step)), -1)
+
+    def runs(marker: str) -> Any:
+        return lambda step: _active_run_has_marker(_step_lines(step), marker)
+
+    def uploads(artifact: str) -> Any:
+        return lambda step: str(step.get("uses", "")).startswith("actions/upload-artifact@") and (
+            (step.get("with") or {}).get("name") == artifact
+        )
+
+    job = jobs.get("package-linux")
+    outputs = job.get("outputs") if isinstance(job, dict) else None
+    expected_outputs = {
+        "release_tag": "${{ steps.meta.outputs.release_tag }}",
+        "source_revision": "${{ steps.meta.outputs.source_revision }}",
+        "native_sha256": "${{ steps.runtime.outputs.native_sha256 }}",
+    }
+    if not isinstance(outputs, dict) or any(
+        outputs.get(key) != value for key, value in expected_outputs.items()
+    ):
+        fail("package-linux must output the release tag, the source revision and the packaged native module's SHA-256")
+
+    candidate_artifact = "audioforge-release-linux-${{ steps.meta.outputs.release_tag }}"
+    positions = {
+        "hydrate": index(runs("source_distribution.py bundle")),
+        "fetch": index(runs("python/tools/fetch_release_assets.py")),
+        "build": index(runs("build_linux.sh")),
+        "paths": index(runs("release_provenance.py write-baseline")),
+        "paths upload": index(uploads("audioforge-linux-bundle-paths")),
+        "package": index(runs("python/tools/linux_package.py")),
+        "smoke test": index(runs("--smoke-test")),
+        "stage": index(runs("release_provenance.py create")),
+        "candidate upload": index(uploads(candidate_artifact)),
+        "runtime stage": index(lambda step: step.get("id") == "runtime"),
+        "runtime upload": index(uploads(RELEASE_LINUX_RUNTIME_ARTIFACT)),
+    }
+    order = list(positions.values())
+    if not 0 <= order[0] < order[1] < order[2] < order[3] < order[4] < order[5] < order[6] < order[7] < order[8] < order[9] < order[10]:
+        fail(
+            "package-linux must hydrate source, fetch the runtime assets, build the bundle, "
+            "record its paths, package and smoke-test it, then stage and upload the release "
+            "files and the runtime artifact, in that order"
+        )
+
+    stage = positions["stage"]
+    if stage >= 0:
+        # Joined so that a call split over backslash continuations reads as one.
+        text = re.sub(r"\\\n\s*", " ", "\n".join(_step_lines(package[stage])))
+        calls = [line for line in text.splitlines() if "release_provenance.py create" in line]
+        if not all(
+            "--baseline" in call
+            and "--native-attestation" in call
+            and '--output-dir "$stage"' in call
+            for call in calls
+        ) or RELEASE_LINUX_PATH_BASELINE not in text or not all(
+            archive in text for archive in ('"$TARBALL"', '"$APPIMAGE"')
+        ):
+            fail(
+                "package-linux must create sidecars for the tarball and the AppImage against "
+                f"{RELEASE_LINUX_PATH_BASELINE} and the libdf.so attestation"
+            )
+        if 'stage="$RUNNER_TEMP/' not in text:
+            fail(
+                "package-linux must stage the release files under $RUNNER_TEMP: "
+                "release_provenance.py create refuses a working tree with untracked files"
+            )
+    upload = positions["candidate upload"]
+    if upload >= 0 and not str((package[upload].get("with") or {}).get("path", "")).startswith(
+        "${{ runner.temp }}/"
+    ):
+        fail("package-linux must upload the release files from the runner temp directory, not the working tree")
+
+    runtime = positions["runtime stage"]
+    if runtime >= 0 and not all(
+        part in str(package[runtime].get("run", ""))
+        for part in ("dist/AudioForge/_internal/mic_eq", "sha256sum", "native_sha256=")
+    ):
+        fail("package-linux must hash the native module packaged in dist/AudioForge")
+    runtime_upload = positions["runtime upload"]
+    if runtime_upload >= 0:
+        listed = str((package[runtime_upload].get("with") or {}).get("path", "")).split()
+        for path in RELEASE_LINUX_RUNTIME_FILES:
+            if path not in listed:
+                fail(f"the {RELEASE_LINUX_RUNTIME_ARTIFACT} artifact must contain {path}")
+
+    env = job.get("env") if isinstance(job, dict) else None
+    match = APPIMAGE_RUNTIME_URL.fullmatch(str(env.get("APPIMAGE_RUNTIME_URL")) if isinstance(env, dict) else "")
+    if match is None:
+        fail("package-linux must pin the AppImage runtime to a type2-runtime release asset")
+    else:
+        for message in _appimage_runtime_source_errors(match.group(1)):
+            fail(message)
 
 
 def _check_pytest_shards(document: dict[str, Any], errors: list[str]) -> None:

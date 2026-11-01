@@ -3,6 +3,161 @@
   "distribution_license": "MIT; bundled components retain their individual licenses",
   "entries": [
     {
+      "build_role": "libfuse3 static library linked into the AppImage runtime, built with the type2-runtime mount.c patch",
+      "filename": "fuse-3.15.0.tar.xz",
+      "id": "appimage-runtime-libfuse-3.15.0",
+      "kind": "native-build-source",
+      "license": "LGPL-2.1-only (lib/ and include/)",
+      "license_paths": [
+        "fuse-3.15.0/LICENSE",
+        "fuse-3.15.0/LGPL2.txt"
+      ],
+      "name": "libfuse",
+      "sha256": "70589cfd5e1cff7ccd6ac91c86c01be340b227285c5e200baa284e401eea2ca0",
+      "source_of_truth": "https://github.com/libfuse/libfuse/releases/tag/fuse-3.15.0",
+      "url": "https://github.com/libfuse/libfuse/releases/download/fuse-3.15.0/fuse-3.15.0.tar.xz",
+      "version": "3.15.0"
+    },
+    {
+      "build_role": "mimalloc static library linked into the AppImage runtime (Alpine mimalloc2-dev 2.1.7-r0, secure build)",
+      "filename": "mimalloc-2.1.7.tar.gz",
+      "id": "appimage-runtime-mimalloc-2.1.7",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "license_paths": [
+        "mimalloc-2.1.7/LICENSE"
+      ],
+      "name": "mimalloc",
+      "sha256": "0eed39319f139afde8515010ff59baf24de9e47ea316a315398e8027d198202d",
+      "source_of_truth": "https://github.com/microsoft/mimalloc/releases/tag/v2.1.7",
+      "url": "https://github.com/microsoft/mimalloc/archive/refs/tags/v2.1.7.tar.gz",
+      "version": "2.1.7"
+    },
+    {
+      "build_role": "musl libc static library linked into the AppImage runtime (Alpine musl-dev 1.2.5-r9, with the patches below)",
+      "filename": "musl-1.2.5.tar.gz",
+      "id": "appimage-runtime-musl-1.2.5",
+      "kind": "native-build-source",
+      "license": "MIT; portions under other permissive licenses listed in COPYRIGHT",
+      "license_paths": [
+        "musl-1.2.5/COPYRIGHT"
+      ],
+      "name": "musl libc",
+      "sha256": "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4",
+      "source_of_truth": "https://musl.libc.org/releases/",
+      "url": "https://musl.libc.org/releases/musl-1.2.5.tar.gz",
+      "version": "1.2.5"
+    },
+    {
+      "build_role": "Alpine 3.21 patch applied to the musl libc linked into the AppImage runtime",
+      "filename": "CVE-2025-26519.patch",
+      "id": "appimage-runtime-musl-patch-CVE-2025-26519",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "name": "musl libc Alpine patch: CVE-2025-26519",
+      "sha256": "ab382da2bb5e1cc32d8904be28fb13f8ad3ce813967bd4bf7f5b1c6baee33e17",
+      "source_of_truth": "https://gitlab.alpinelinux.org/alpine/aports/-/blob/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/APKBUILD",
+      "url": "https://gitlab.alpinelinux.org/alpine/aports/-/raw/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/CVE-2025-26519.patch",
+      "version": "1.2.5-r9"
+    },
+    {
+      "build_role": "Alpine 3.21 patch applied to the musl libc linked into the AppImage runtime",
+      "filename": "handle-aux-at_base.patch",
+      "id": "appimage-runtime-musl-patch-handle-aux-at_base",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "name": "musl libc Alpine patch: handle-aux-at_base",
+      "sha256": "2a65e03b94217063d72fe998e5fb2e25cd01716078a3ba1b0ab574ab205111e6",
+      "source_of_truth": "https://gitlab.alpinelinux.org/alpine/aports/-/blob/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/APKBUILD",
+      "url": "https://gitlab.alpinelinux.org/alpine/aports/-/raw/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/handle-aux-at_base.patch",
+      "version": "1.2.5-r9"
+    },
+    {
+      "build_role": "Alpine 3.21 patch applied to the musl libc linked into the AppImage runtime",
+      "filename": "isatty-glibc-align.patch",
+      "id": "appimage-runtime-musl-patch-isatty-glibc-align",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "name": "musl libc Alpine patch: isatty-glibc-align",
+      "sha256": "1321d542b40921a4c248bb2d15dbd03fcbbf008c8725eb2043d3cab62faeba48",
+      "source_of_truth": "https://gitlab.alpinelinux.org/alpine/aports/-/blob/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/APKBUILD",
+      "url": "https://gitlab.alpinelinux.org/alpine/aports/-/raw/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/isatty-glibc-align.patch",
+      "version": "1.2.5-r9"
+    },
+    {
+      "build_role": "Alpine 3.21 patch applied to the musl libc linked into the AppImage runtime",
+      "filename": "ldso-fix-non-functional-fix-to-early-dynamic-PAGE_SI.patch",
+      "id": "appimage-runtime-musl-patch-ldso-early-page-size",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "name": "musl libc Alpine patch: ldso-early-page-size",
+      "sha256": "7f5806124d4a89536e53a07bfe95fcd0a8f1b7a27fc0dfc89c78c724dea1c924",
+      "source_of_truth": "https://gitlab.alpinelinux.org/alpine/aports/-/blob/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/APKBUILD",
+      "url": "https://gitlab.alpinelinux.org/alpine/aports/-/raw/efd4d5df7be0ea48d98512671f676fc5ceb14899/main/musl/ldso-fix-non-functional-fix-to-early-dynamic-PAGE_SI.patch",
+      "version": "1.2.5-r9"
+    },
+    {
+      "build_role": "squashfuse and squashfuse_ll static libraries linked into the AppImage runtime",
+      "filename": "squashfuse-0.5.2.tar.gz",
+      "id": "appimage-runtime-squashfuse-0.5.2",
+      "kind": "native-build-source",
+      "license": "BSD-2-Clause",
+      "license_paths": [
+        "squashfuse-0.5.2/LICENSE"
+      ],
+      "name": "squashfuse",
+      "sha256": "db0238c5981dabbd80ee09ae15387f390091668ca060a7bc38047912491443d3",
+      "source_of_truth": "https://github.com/vasi/squashfuse/tree/0.5.2",
+      "url": "https://github.com/vasi/squashfuse/archive/0.5.2.tar.gz",
+      "version": "0.5.2"
+    },
+    {
+      "build_role": "source and build recipe for the AppImage runtime the Linux AppImage embeds, including scripts/docker/Dockerfile and patches/libfuse/mount.c.diff",
+      "filename": "type2-runtime-20251108.tar.gz",
+      "id": "appimage-runtime-type2-runtime-20251108",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "license_paths": [
+        "type2-runtime-20251108/LICENSE"
+      ],
+      "name": "AppImage type2-runtime",
+      "sha256": "4c4f6df4647c9f01f871d7edd3716d8aeeffda9d22ffbebe3fccd95a6ab52c95",
+      "source_of_truth": "https://github.com/AppImage/type2-runtime/tree/20251108",
+      "url": "https://github.com/AppImage/type2-runtime/archive/refs/tags/20251108.tar.gz",
+      "version": "20251108"
+    },
+    {
+      "build_role": "zlib static library linked into the AppImage runtime (Alpine zlib-static 1.3.1-r2)",
+      "filename": "zlib-1.3.1.tar.gz",
+      "id": "appimage-runtime-zlib-1.3.1",
+      "kind": "native-build-source",
+      "license": "Zlib",
+      "license_paths": [
+        "zlib-1.3.1/LICENSE"
+      ],
+      "name": "zlib",
+      "sha256": "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23",
+      "source_of_truth": "https://github.com/madler/zlib/releases/tag/v1.3.1",
+      "url": "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz",
+      "version": "1.3.1"
+    },
+    {
+      "build_role": "libzstd static library linked into the AppImage runtime (Alpine zstd-static 1.5.6-r2)",
+      "filename": "zstd-1.5.6.tar.gz",
+      "id": "appimage-runtime-zstd-1.5.6",
+      "kind": "native-build-source",
+      "license": "BSD-3-Clause OR GPL-2.0-only",
+      "license_paths": [
+        "zstd-1.5.6/LICENSE",
+        "zstd-1.5.6/COPYING"
+      ],
+      "name": "zstd",
+      "sha256": "8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1",
+      "source_of_truth": "https://github.com/facebook/zstd/releases/tag/v1.5.6",
+      "url": "https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-1.5.6.tar.gz",
+      "version": "1.5.6"
+    },
+    {
       "build_role": "resolved Rust dependency",
       "filename": "aho-corasick-1.1.5.crate",
       "id": "cargo-aho-corasick-1.1.5",
@@ -95,16 +250,16 @@
     },
     {
       "build_role": "resolved Rust dependency",
-      "filename": "audio_thread_priority-0.38.0.crate",
-      "id": "cargo-audio_thread_priority-0.38.0",
+      "filename": "audio_thread_priority-0.35.1.crate",
+      "id": "cargo-audio_thread_priority-0.35.1",
       "kind": "cargo-crate",
       "license": "MPL-2.0",
       "lock_file": "Cargo.lock",
       "name": "audio_thread_priority",
-      "sha256": "e0b30b2f3d2da482d0faeaafd8f88a38fbc62abb58d3b402cfa195793f4c92ab",
-      "source_of_truth": "https://crates.io/crates/audio_thread_priority/0.38.0",
-      "url": "https://crates.io/api/v1/crates/audio_thread_priority/0.38.0/download",
-      "version": "0.38.0"
+      "sha256": "7b1b4a0adbf971420cca66a75361a1190f34a6762d66361e5cde03dda35d1ed3",
+      "source_of_truth": "https://crates.io/crates/audio_thread_priority/0.35.1",
+      "url": "https://crates.io/api/v1/crates/audio_thread_priority/0.35.1/download",
+      "version": "0.35.1"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -251,6 +406,19 @@
     },
     {
       "build_role": "resolved Rust dependency",
+      "filename": "cpal-0.17.3.crate",
+      "id": "cargo-cpal-0.17.3",
+      "kind": "cargo-crate",
+      "license": "Apache-2.0",
+      "lock_file": "Cargo.lock",
+      "name": "cpal",
+      "sha256": "d8942da362c0f0d895d7cac616263f2f9424edc5687364dfd1d25ef7eba506d7",
+      "source_of_truth": "https://crates.io/crates/cpal/0.17.3",
+      "url": "https://crates.io/api/v1/crates/cpal/0.17.3/download",
+      "version": "0.17.3"
+    },
+    {
+      "build_role": "resolved Rust dependency",
       "filename": "cpal-0.18.2.crate",
       "id": "cargo-cpal-0.18.2",
       "kind": "cargo-crate",
@@ -303,16 +471,16 @@
     },
     {
       "build_role": "resolved Rust dependency",
-      "filename": "dbus-0.9.12.crate",
-      "id": "cargo-dbus-0.9.12",
+      "filename": "dbus-0.6.5.crate",
+      "id": "cargo-dbus-0.6.5",
       "kind": "cargo-crate",
       "license": "Apache-2.0/MIT",
       "lock_file": "Cargo.lock",
       "name": "dbus",
-      "sha256": "3ab69f03cc8c4340c9c8e315114e1658e6775a9b16a04357973aa21cec22b32e",
-      "source_of_truth": "https://crates.io/crates/dbus/0.9.12",
-      "url": "https://crates.io/api/v1/crates/dbus/0.9.12/download",
-      "version": "0.9.12"
+      "sha256": "48b5f0f36f1eebe901b0e6bee369a77ed3396334bf3f09abd46454a576f71819",
+      "source_of_truth": "https://crates.io/crates/dbus/0.6.5",
+      "url": "https://crates.io/api/v1/crates/dbus/0.6.5/download",
+      "version": "0.6.5"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -5207,6 +5375,6 @@
     }
   ],
   "schema_version": 1,
-  "scope": "Exact sources for the release Python runtime, PySide/Qt binding stack, PyInstaller bootloader, CPython, CPU ONNX Runtime graph, NumPy's Linux GCC runtimes, and resolved Windows and Linux Cargo graphs. Runtime models and redistributable binaries are recorded separately.",
+  "scope": "Exact sources for the release Python runtime, PySide/Qt binding stack, PyInstaller bootloader, CPython, CPU ONNX Runtime graph, NumPy's Linux GCC runtimes, the Linux AppImage runtime and its statically linked libraries, and resolved Windows and Linux Cargo graphs. Runtime models and redistributable binaries are recorded separately.",
   "status": "complete"
 }

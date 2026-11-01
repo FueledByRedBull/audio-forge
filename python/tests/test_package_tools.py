@@ -1006,8 +1006,8 @@ def test_tag_checkout_must_use_tag_ref_and_assert_head_is_the_tag_commit(
     check_workflows._check_tag_checkouts(
         workflow, check_workflows.yaml.safe_load(source.replace(old, new)), errors
     )
-    # One error for each job that checks the tag out.
-    assert errors and all(expected in error for error in errors)
+    # One error for each job that checks the tag out; the edit reaches all of them.
+    assert len(errors) == source.count(old) and all(expected in error for error in errors)
 
 
 def test_workflow_checker_rejects_privileged_triggers_and_run_interpolation():
@@ -1190,7 +1190,7 @@ def test_promotion_binds_portable_and_msi_to_the_candidate_run():
     assert "--report" not in commands[1]
 
 
-def test_promotion_binds_the_linux_tarball_to_the_candidate_run_and_tag():
+def test_promotion_binds_the_linux_tarball_and_appimage_to_the_candidate_run_and_tag():
     path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
     job = check_workflows.yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"]["verify-linux-candidate"]
     script = "\n".join(step["run"] for step in job["steps"] if isinstance(step.get("run"), str))
@@ -1200,7 +1200,12 @@ def test_promotion_binds_the_linux_tarball_to_the_candidate_run_and_tag():
     assert '--expected-commit "$TAG_COMMIT"' in command
     assert "--require-source-distribution" in command
     assert "--native-attestation" in command
-    assert '--bundle "$extract/' in command
+    assert f"--baseline {check_workflows.RELEASE_LINUX_PATH_BASELINE}" in command
+    # Each archive is verified against the bundle extracted from that archive, and the
+    # two manifests must list the same files.
+    assert 'verify "$tarball_root/AudioForge-$RELEASE_TAG-linux-x86_64/AudioForge" "$tarball"' in script
+    assert 'verify "$appimage_root/squashfs-root/usr/lib/audioforge" "$appimage"' in script
+    assert 'tarball["files"] != appimage["files"]' in script
 
 
 @pytest.mark.parametrize(

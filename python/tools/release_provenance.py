@@ -286,7 +286,7 @@ def _git_commit() -> str:
     return head
 
 
-def _git_is_dirty() -> bool:
+def _git_status() -> str:
     result = subprocess.run(
         ("git", "status", "--porcelain=v1", "--untracked-files=normal"),
         cwd=REPO_ROOT,
@@ -297,7 +297,21 @@ def _git_is_dirty() -> bool:
     )
     if result.returncode != 0:
         raise RuntimeError(f"git status failed: {result.stderr.strip()}")
-    return bool(result.stdout.strip())
+    return result.stdout
+
+
+def _git_is_dirty() -> bool:
+    return bool(_git_status().strip())
+
+
+def _dirty_paths_note() -> str:
+    """The first changed or untracked paths, so a refusal says what made the tree dirty."""
+    try:
+        paths = [line for line in _git_status().splitlines() if line.strip()]
+    except RuntimeError:
+        return ""
+    shown = "; ".join(paths[:10]) + ("; ..." if len(paths) > 10 else "")
+    return f" ({shown})" if shown else ""
 
 
 def _distribution_version(name: str) -> str:
@@ -914,6 +928,7 @@ def create_sidecars(
         raise ValueError(
             "release provenance refuses a dirty source tree; commit the exact "
             "candidate source or pass --allow-dirty for a non-promotable local artifact"
+            + _dirty_paths_note()
         )
 
     asset_errors = _bundled_asset_errors(bundle)

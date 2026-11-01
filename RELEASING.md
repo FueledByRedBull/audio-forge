@@ -6,9 +6,11 @@ Windows archive, the per-user MSI, the corresponding-source archive, the Linux
 tarball and AppImage, an evidence archive, and one `SHA256SUMS.txt`.
 
 `package-linux` builds the Linux files on Ubuntu 24.04, the oldest supported
-Linux release, from the same commit. Promotion takes them from the same
-candidate run as the approved Windows archive. It checks their sidecars, and it
-checks the `libdf.so` inside the tarball against its build attestation.
+Linux release, from the same commit. The tarball and the AppImage each get a
+checksum, a manifest and a metadata file that name this run and commit, and
+`libdf.so` gets its build attestation. Promotion takes all of them from the
+same candidate run as the approved Windows archive and checks them on Linux
+(step 6).
 
 ## Automated workflow
 
@@ -38,6 +40,26 @@ checks the `libdf.so` inside the tarball against its build attestation.
      module's SHA-256.
    - `validate-candidate` runs beside those jobs, extracts the archive, and
      checks that its native module has the same SHA-256 the tests ran on.
+   - `package-linux` runs beside `package-windows`. It binds an existing tag to
+     its checkout, hydrates the same corresponding source, builds `libdf.so`
+     and the bundle, packs the tarball and the AppImage, smoke-tests both, and
+     stages the release files outside the working tree (provenance refuses a
+     tree with untracked files). It then passes the packaged native module,
+     `libdf.so`, the models and the CPU ONNX Runtime to the Linux test jobs as
+     the `audioforge-release-linux-runtime` artifact.
+   - `linux-tests` and `linux-pytest` run on those files once `package-linux`
+     has finished. `linux-tests` runs Clippy and the Rust tests with `libdf.so`
+     and the models, and a skipped DeepFilter or Silero test fails it. It also
+     audits the runtime lock on Linux, because the Windows `static` job skips
+     the lock's Linux-only entries. `linux-pytest` runs the same shards as
+     `pytest`. Promotion refuses a candidate run in which `package-linux`, `linux-tests` or any
+     `linux-pytest` shard is missing or did not succeed.
+   - The Linux bundle's paths are gated by
+     `evaluation/release-bundle-path-baseline-linux.json`. Until that file
+     exists, `package-linux` uploads this build's list as the
+     `audioforge-linux-bundle-paths` artifact and stops before staging. Review
+     the list (no FFmpeg, no GPL libraries, only the host libraries named in
+     `linux_package.py`), commit it as that file, and dispatch again.
 
    Every job must pass: promotion refuses a run that is not successful. Fix
    failures on the branch without tagging or changing the version, and
@@ -83,10 +105,13 @@ checks the `libdf.so` inside the tarball against its build attestation.
    SHA-256 digests in preflight, and the final check downloads and hashes
    every published file.
 
-   `verify-linux-candidate` checks the Linux tarball on Linux: it extracts
-   it and verifies it against its manifest and metadata sidecars, its
-   `libdf.so` attestation, the tag commit and the candidate run, and its
-   bundled source status. `publish-release` waits for it too.
+   `verify-linux-candidate` checks the Linux files on Linux. It re-hashes the
+   tarball and the AppImage against the digests `verify-candidate` staged, then
+   extracts both and verifies each against its manifest and metadata sidecars,
+   the reviewed Linux path baseline, its `libdf.so` attestation, the tag commit
+   and the candidate run, and its bundled source status. The two manifests must
+   list the same files, so the AppImage holds the tarball's bundle. Only then
+   does it smoke-test both. `publish-release` waits for it too.
 
    Promotion's other two jobs share the work. `verify-candidate` installs the pinned pip packages
    and runs the candidate (the MSI and the executable) with a read-only token
@@ -499,8 +524,17 @@ logic behind items 4-8, 11 and 13 (`test_quick_undo.py`, `test_quick_shell.py`,
   duplicate top-level native-extension payloads, and rejects a stale
   bundle-version manifest.
 - `evaluation/release-bundle-path-baseline.json` gates reviewed bundle path
-  additions and removals. Its binary hashes are provenance, not
+  additions and removals, and `evaluation/release-bundle-path-baseline-linux.json`
+  does the same for the Linux bundle. Its binary hashes are provenance, not
   reproducible-build expectations.
+- `linux_package.py` refuses a Linux bundle that carries FFmpeg libraries,
+  lacks the libxcb libraries Qt's xcb plugin needs, or copies a library from a
+  build-host package that is not in its permissive list.
+- The AppImage runtime pinned in `package-linux` (URL and SHA-256) must have
+  a matching `appimage-runtime-type2-runtime-<tag>` entry in
+  `licenses/source-manifest.json`; `check_workflows.py` fails when it does not.
+  Moving to another runtime release means pinning the sources of the new
+  runtime and its libraries first (see `licenses/SOURCE_DISTRIBUTION.md`).
 - `prune_bundle.py` keeps every dependency `.dist-info` directory, removes a
   duplicate native-extension payload only when the canonical
   `_internal/mic_eq/mic_eq_core*.pyd` exists, and removes app-local

@@ -131,6 +131,7 @@ pub(crate) struct OutputFailure {
     pub(crate) rt_error_code: Arc<AtomicU32>,
     pub(crate) restart_requested: Arc<AtomicBool>,
     /// HRESULT that kept the stream off a short period or ended it there; 0 if none.
+    #[cfg(windows)]
     pub(crate) low_period_failure_code: Arc<AtomicU32>,
 }
 

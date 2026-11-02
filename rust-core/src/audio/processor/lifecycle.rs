@@ -482,6 +482,7 @@ impl AudioProcessor {
             error_count: Arc::clone(&self.shared.output.callback_error_count),
             rt_error_code: Arc::clone(&self.shared.dsp.rt_error_code),
             restart_requested: Arc::clone(&self.shared.stream.restart_requested),
+            #[cfg(windows)]
             low_period_failure_code: Arc::clone(&self.shared.output.low_period_failure_code),
         };
         let stream = AudioOutput::from_setup(

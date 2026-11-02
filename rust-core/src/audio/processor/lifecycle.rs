@@ -17,7 +17,7 @@ use super::{
 use crate::audio::buffer::{AudioConsumer, AudioProducer, AudioRingBuffer};
 use crate::audio::clock::now_micros;
 use crate::audio::input::{AudioInput, InputStreamOptions};
-use crate::audio::output::{AudioOutput, OutputProbeControl, OutputUnderruns};
+use crate::audio::output::{AudioOutput, OutputFailure, OutputProbeControl, OutputUnderruns};
 #[cfg(windows)]
 use crate::audio::scheduling::ProAudioThread;
 use crate::dsp::noise_suppressor::{
@@ -475,9 +475,16 @@ impl AudioProcessor {
             audio_queued_at_us: Arc::clone(&self.shared.output.last_write_time_us),
             priming_started_at_us: Arc::clone(&self.shared.output.priming_started_at_us),
             primed: Arc::clone(&self.shared.output.primed),
+            largest_request_frames: Arc::clone(&self.shared.output.largest_callback_frames),
+            sustained_request_frames: Arc::clone(&self.shared.output.sustained_callback_frames),
         };
-        let output_callback_error_count = Arc::clone(&self.shared.output.callback_error_count);
-        let rt_error_code_for_output = Arc::clone(&self.shared.dsp.rt_error_code);
+        let output_failure = OutputFailure {
+            error_count: Arc::clone(&self.shared.output.callback_error_count),
+            rt_error_code: Arc::clone(&self.shared.dsp.rt_error_code),
+            restart_requested: Arc::clone(&self.shared.stream.restart_requested),
+            #[cfg(windows)]
+            low_period_failure_code: Arc::clone(&self.shared.output.low_period_failure_code),
+        };
         let stream = AudioOutput::from_setup(
             setup,
             output_consumer,
@@ -485,9 +492,7 @@ impl AudioProcessor {
             output_muted,
             last_output_callback_time_us,
             output_underruns,
-            output_callback_error_count,
-            rt_error_code_for_output,
-            Arc::clone(&self.shared.stream.restart_requested),
+            output_failure,
             Some(output_probe),
         )
         .map_err(|e| format!("Failed to start audio output: {}", e))?;
@@ -495,6 +500,10 @@ impl AudioProcessor {
             .output
             .fixed_buffer_frames
             .store(stream.fixed_buffer_frames().unwrap_or(0), Ordering::Relaxed);
+        self.shared
+            .output
+            .low_period_frames
+            .store(stream.low_period_frames(), Ordering::Relaxed);
         Ok(OpenedOutput {
             stream,
             producer: output_producer,
@@ -654,6 +663,10 @@ impl AudioProcessor {
         self.shared
             .output
             .fixed_buffer_frames
+            .store(0, Ordering::Relaxed);
+        self.shared
+            .output
+            .low_period_frames
             .store(0, Ordering::Relaxed);
         if let Ok(mut producer) = self.shared.output.probe_producer.lock() {
             *producer = None;
@@ -852,6 +865,8 @@ mod startup_tests",
         for reset in [
             "self.output.last_write_time_us.store(0,Ordering::Relaxed);",
             "self.output.primed.store(false,Ordering::Relaxed);",
+            "self.output.largest_callback_frames.store(0,Ordering::Relaxed);",
+            "self.output.sustained_callback_frames.store(0,Ordering::Relaxed);",
             "self.output.priming_started_at_us",
         ] {
             assert!(counters.contains(reset), "{reset}");

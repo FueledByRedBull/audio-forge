@@ -11,7 +11,8 @@ use super::control::{
 };
 use super::diagnostics::{update_backend_status_rt, StreamRecoveryState};
 use super::output_writer::{
-    OutputWriteContext, OutputWriteCounters, OutputWriteLimits, SuppressorRecoveryFade,
+    active_queue_limits, short_queue_for, OutputWriteContext, OutputWriteCounters,
+    OutputWriteLimits, ShortCallbackQueue, SuppressorRecoveryFade,
 };
 use super::raw_recording::record_raw_recording_block;
 use super::resampling::{
@@ -481,6 +482,7 @@ struct OutputStage {
     limiter_release_ms: Cell<f32>,
     applied_limiter_release_ms: f32,
     limits: OutputWriteLimits,
+    short_queue: Option<ShortCallbackQueue>,
     resampler: Option<SincFixedIn<f64>>,
     resampler_out: Option<Vec<Vec<f64>>>,
     resample_queue: FixedAudioRing<f64, RT_RESAMPLE_QUEUE_CAPACITY>,
@@ -654,6 +656,13 @@ impl DspLoop {
             );
         }
 
+        let short_queue = short_queue_for(
+            cfg!(windows),
+            input_resampler.is_some(),
+            output_resampler.is_some(),
+            output_sample_rate,
+        );
+
         let now = Instant::now();
         let input_stage = InputStage {
             consumer: input,
@@ -696,6 +705,7 @@ impl DspLoop {
                 max_catchup_ratio: OUTPUT_MAX_CATCHUP_RATIO,
                 max_emergency_catchup_ratio: OUTPUT_MAX_EMERGENCY_CATCHUP_RATIO,
             },
+            short_queue,
             resampler_out: output_resampler
                 .as_ref()
                 .map(|r| r.output_buffer_allocate(true)),
@@ -2403,7 +2413,15 @@ impl OutputStage {
             limiter_enabled: &shared.limiter.enabled,
             output_ceiling_linear: &self.ceiling_linear,
             counters: OutputWriteCounters::new(shared),
-            limits: self.limits,
+            limits: active_queue_limits(
+                self.limits,
+                self.short_queue,
+                shared
+                    .output
+                    .sustained_callback_frames
+                    .load(Ordering::Relaxed) as usize,
+                shared.dsp.scheduling_degraded.load(Ordering::Relaxed),
+            ),
         };
         if let Some(output_resampler) = self.resampler.as_mut() {
             for &sample in samples {

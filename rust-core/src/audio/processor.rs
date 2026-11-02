@@ -67,6 +67,18 @@ const COMPRESSOR_DEFAULT_RELEASE_TENTH_MS: u64 = 2000; // 200ms * 10
 const OUTPUT_PRIME_MS: u32 = 30;
 const OUTPUT_TARGET_HIGH_MS: u32 = 40;
 const OUTPUT_HARD_BACKLOG_MS: u32 = 60;
+// While the device really calls back every 10 ms and no resampler writes in
+// 1024-sample chunks, the queue needs only one callback plus a reserve.
+const OUTPUT_SHORT_CALLBACK_MAX_MS: u32 = 12;
+const OUTPUT_SHORT_TARGET_LOW_MS: u32 = 10;
+const OUTPUT_SHORT_TARGET_HIGH_MS: u32 = 20;
+const OUTPUT_SHORT_HARD_BACKLOG_MS: u32 = 40;
+// On a short engine period (see `wasapi_render.rs`) a callback takes a few ms of
+// audio, so the same reserve sits on a much smaller callback.
+const OUTPUT_LOW_PERIOD_CALLBACK_MAX_MS: u32 = 6;
+const OUTPUT_LOW_PERIOD_TARGET_LOW_MS: u32 = 6;
+const OUTPUT_LOW_PERIOD_TARGET_HIGH_MS: u32 = 10;
+const OUTPUT_LOW_PERIOD_HARD_BACKLOG_MS: u32 = 30;
 const OUTPUT_DRIFT_MAX_RATIO_ADJUST: f32 = 0.008;
 const OUTPUT_DRIFT_MAX_EXPANSION_RATIO: f32 = 0.96;
 const DSP_THREAD_READY_TIMEOUT_MS: u64 = 5_000;

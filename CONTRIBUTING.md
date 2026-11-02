@@ -201,6 +201,9 @@ bundled asset. `VAD_MODEL_PATH` selects the Silero model for source runs.
 `AUDIOFORGE_FIXED_INPUT_BUFFER_FRAMES` and `AUDIOFORGE_FIXED_OUTPUT_BUFFER_FRAMES`
 are optional callback-size diagnostics. Values must be 16–8192 frames and fit the
 endpoint's advertised range; an unsupported request keeps the driver default.
+On Windows, when the output variable is unset and the output is VB-Cable, the
+stream runs on a shorter shared-mode engine period if the endpoint offers one; setting
+the variable to anything, 0 included, keeps the standard WASAPI path.
 
 ## Runtime checks and screenshots
 

@@ -211,6 +211,8 @@ pub mod rt;
 pub(crate) mod scheduling;
 #[cfg(target_os = "linux")]
 pub mod virtual_mic;
+#[cfg(windows)]
+pub(crate) mod wasapi_render;
 
 pub use buffer::{AudioConsumer, AudioProducer, AudioRingBuffer};
 pub use device::{list_input_devices, list_output_devices, DeviceInfo};

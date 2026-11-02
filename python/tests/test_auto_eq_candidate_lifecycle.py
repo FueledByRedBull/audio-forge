@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import replace
 from typing import Any
@@ -20,7 +22,7 @@ from mic_eq.config import (
     Preset,
     build_eq_candidate_settings,
 )
-from capture_helpers import finish_take
+from capture_helpers import _render, finish_take
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.calibration_support import AutoEqCandidate, chain_settings
 from mic_eq.ui.platform_text import SOUND_SETTINGS
@@ -221,10 +223,20 @@ def _capture(dialog: CalibrationDialog, monkeypatch, curve: str) -> None:
     finish_take(dialog, np.full(128, 0.1, dtype=np.float32))
 
 
-def test_retake_and_failed_next_analysis_cannot_apply_old_candidate(qapp, monkeypatch):
-    owner = _Owner()
+@contextmanager
+def _dialog_for(owner: QWidget) -> Iterator[CalibrationDialog]:
+    """A CalibrationDialog on ``owner``; leaving rejects it and closes the owner."""
     dialog = CalibrationDialog(owner)
     try:
+        yield dialog
+    finally:
+        dialog.reject()
+        owner.close()
+
+
+def test_retake_and_failed_next_analysis_cannot_apply_old_candidate(qapp, monkeypatch):
+    owner = _Owner()
+    with _dialog_for(owner) as dialog:
         _capture(dialog, monkeypatch, "broadcast")
         generation_a = dialog._analysis_generation
         assert dialog.recording_state == "analyzing"
@@ -258,9 +270,6 @@ def test_retake_and_failed_next_analysis_cannot_apply_old_candidate(qapp, monkey
         assert dialog.start_button.text() == "Record Again"
         dialog._apply_eq_settings()
         assert owner.eq_state.applied_bands is None
-    finally:
-        dialog.reject()
-        owner.close()
 
 
 def test_apply_uses_captured_target_and_enables_eq_after_bands(qapp, monkeypatch):
@@ -390,8 +399,7 @@ def test_candidate_is_stale_after_incumbent_tone_changes(qapp, monkeypatch):
     owner = _Owner()
     owner.preset = Preset(eq=_tone_eq())
     owner.eq_state.settings = owner.preset.eq
-    dialog = CalibrationDialog(owner)
-    try:
+    with _dialog_for(owner) as dialog:
         _capture(dialog, monkeypatch, "broadcast")
         dialog._on_analysis_complete(
             _candidate(1.0, owner.preset.eq), generation=dialog._analysis_generation
@@ -407,15 +415,11 @@ def test_candidate_is_stale_after_incumbent_tone_changes(qapp, monkeypatch):
         identity_error = dialog._candidate_identity_error(candidate, owner)
         assert identity_error is not None
         assert "changed after analysis" in identity_error
-    finally:
-        dialog.reject()
-        owner.close()
 
 
 def test_unavailable_headroom_never_enables_apply_or_audition(qapp, monkeypatch):
     owner = _Owner()
-    dialog = CalibrationDialog(owner)
-    try:
+    with _dialog_for(owner) as dialog:
         _capture(dialog, monkeypatch, "broadcast")
         result = _candidate(base_eq=owner.preset.eq)
         result["validated_candidate_eq"] = None
@@ -436,17 +440,6 @@ def test_unavailable_headroom_never_enables_apply_or_audition(qapp, monkeypatch)
         assert dialog.start_button.text() == "Record Again"
         assert "could not confirm the correction is safe" in dialog.warning_label.text()
         assert "native simulator unavailable" in dialog.warning_label.toolTip()
-    finally:
-        dialog.reject()
-        owner.close()
-
-
-def _render(headroom: float) -> dict[str, float]:
-    return {
-        "pre_limiter_true_peak_headroom_db": headroom,
-        "limiter_gain_reduction_db": 0.0,
-        "true_peak_limiter_gain_reduction_db": 0.0,
-    }
 
 
 def _owner_with(**stages: Any) -> _Owner:
@@ -581,8 +574,7 @@ def test_proposal_kept_over_the_rule_is_offered_with_the_cause_and_the_fix(qapp,
 
 def test_output_that_already_clips_with_the_limiter_off_gets_the_plain_warning(qapp, monkeypatch):
     owner = _owner_with(limiter=LimiterSettings(enabled=False))
-    dialog = CalibrationDialog(owner)
-    try:
+    with _dialog_for(owner) as dialog:
         _complete(
             dialog,
             monkeypatch,
@@ -596,15 +588,11 @@ def test_output_that_already_clips_with_the_limiter_off_gets_the_plain_warning(q
         assert _advice(text) == ("microphone gain", 2, "leave enough room")
         # The limiter is off, and turning it on would not make this check pass.
         assert "Turning the limiter on" in text and "would not make this check pass" in text
-    finally:
-        dialog.reject()
-        owner.close()
 
 
 def test_no_correction_over_the_rule_still_names_the_cause_and_the_fix(qapp, monkeypatch):
     owner = _owner_with()
-    dialog = CalibrationDialog(owner)
-    try:
+    with _dialog_for(owner) as dialog:
         _complete(dialog, monkeypatch, _no_correction(_over_the_rule(owner.preset.eq)))
 
         assert dialog._candidate_proposal is None
@@ -615,57 +603,50 @@ def test_no_correction_over_the_rule_still_names_the_cause_and_the_fix(qapp, mon
         assert "too little room" in text
         assert _advice(text) == ("microphone gain", 2, "record again")
         assert text.endswith("record again.")
-    finally:
-        dialog.reject()
-        owner.close()
 
 
-def test_a_working_compressor_gets_the_remedy_without_a_figure(qapp, monkeypatch):
-    owner = _owner_with(compressor=CompressorSettings(enabled=True))
-    dialog = CalibrationDialog(owner)
-    try:
-        _complete(dialog, monkeypatch, _over_the_rule(owner.preset.eq))
-
-        assert _advice(dialog.warning_label.text()) == ("microphone gain", None, "leave enough room")
-    finally:
-        dialog.reject()
-        owner.close()
-
-
-def test_automatic_makeup_sends_the_user_to_the_target_loudness(qapp, monkeypatch):
-    owner = _owner_with(compressor=CompressorSettings(enabled=True, auto_makeup_enabled=True))
-    dialog = CalibrationDialog(owner)
-    try:
-        _complete(dialog, monkeypatch, _no_correction(_over_the_rule(owner.preset.eq)))
+@pytest.mark.parametrize(
+    ("compressor", "left_out", "advice", "notes"),
+    [
+        (
+            CompressorSettings(enabled=True),
+            False,
+            ("microphone gain", None, "leave enough room"),
+            (),
+        ),
+        (
+            CompressorSettings(enabled=True, auto_makeup_enabled=True),
+            True,
+            ("compressor's target loudness", None, "record again"),
+            ("Automatic makeup would undo a lower microphone gain",),
+        ),
+        (
+            CompressorSettings(enabled=False, auto_makeup_enabled=True),
+            True,
+            ("microphone gain", 2, "record again"),
+            (),
+        ),
+    ],
+    ids=["working-compressor", "automatic-makeup", "disabled-compressor-with-automatic-makeup"],
+)
+def test_the_remedy_follows_the_compressor_and_makeup_state(
+    qapp, monkeypatch, compressor, left_out, advice, notes
+):
+    owner = _owner_with(compressor=compressor)
+    with _dialog_for(owner) as dialog:
+        result = _over_the_rule(owner.preset.eq)
+        _complete(dialog, monkeypatch, _no_correction(result) if left_out else result)
 
         text = dialog.warning_label.text()
-        assert _advice(text) == ("compressor's target loudness", None, "record again")
-        assert "Automatic makeup would undo a lower microphone gain" in text
-    finally:
-        dialog.reject()
-        owner.close()
-
-
-def test_a_disabled_compressor_with_automatic_makeup_left_on_gets_the_gain_wording(
-    qapp, monkeypatch
-):
-    owner = _owner_with(compressor=CompressorSettings(enabled=False, auto_makeup_enabled=True))
-    dialog = CalibrationDialog(owner)
-    try:
-        _complete(dialog, monkeypatch, _no_correction(_over_the_rule(owner.preset.eq)))
-
-        assert _advice(dialog.warning_label.text()) == ("microphone gain", 2, "record again")
-    finally:
-        dialog.reject()
-        owner.close()
+        assert _advice(text) == advice
+        assert all(note in text for note in notes)
 
 
 def test_a_correction_that_headroom_made_gentler_says_what_would_allow_the_full_one(
     qapp, monkeypatch
 ):
     owner = _owner_with()
-    dialog = CalibrationDialog(owner)
-    try:
+    with _dialog_for(owner) as dialog:
         result = _candidate(1.0, owner.preset.eq)
         result["headroom_validation"] = {
             "safe": True,
@@ -683,17 +664,13 @@ def test_a_correction_that_headroom_made_gentler_says_what_would_allow_the_full_
         assert _advice(text) == ("microphone gain", 1, "allow the full correction")
         assert "too little room" not in text  # the current EQ is fine; only the gain limits
         assert dialog.gain_scale_label.text() == "Headroom check: passed."
-    finally:
-        dialog.reject()
-        owner.close()
 
 
 def test_a_correction_over_the_rule_that_was_made_gentler_does_not_say_there_was_room(
     qapp, monkeypatch
 ):
     owner = _owner_with()
-    dialog = CalibrationDialog(owner)
-    try:
+    with _dialog_for(owner) as dialog:
         result = _over_the_rule(owner.preset.eq, {"gain_scale": 0.55})
         result.update(
             recommendation_status="reduced",
@@ -707,15 +684,11 @@ def test_a_correction_over_the_rule_that_was_made_gentler_does_not_say_there_was
         assert "leave enough headroom" not in text
         assert "too little room" in text
         assert _advice(text) == ("microphone gain", 2, "allow the full correction")
-    finally:
-        dialog.reject()
-        owner.close()
 
 
 def test_a_correction_left_out_for_leaving_less_room_says_so_and_offers_nothing(qapp, monkeypatch):
     owner = _owner_with()
-    dialog = CalibrationDialog(owner)
-    try:
+    with _dialog_for(owner) as dialog:
         _complete(dialog, monkeypatch, _left_out(owner.preset.eq))
 
         assert dialog._candidate_proposal is None
@@ -732,15 +705,11 @@ def test_a_correction_left_out_for_leaving_less_room_says_so_and_offers_nothing(
         assert "less room than your current EQ" in dialog.gain_scale_label.text()
         # The figures shown are the ones that ruled the full correction out.
         assert "-0.3 dB" in dialog.gain_scale_label.toolTip()
-    finally:
-        dialog.reject()
-        owner.close()
 
 
 def test_a_correction_left_out_is_never_offered_whatever_else_the_result_says(qapp, monkeypatch):
     owner = _owner_with()
-    dialog = CalibrationDialog(owner)
-    try:
+    with _dialog_for(owner) as dialog:
         result = _left_out(owner.preset.eq)
         result.update(
             apply_recommended=True,
@@ -752,9 +721,6 @@ def test_a_correction_left_out_is_never_offered_whatever_else_the_result_says(qa
         assert dialog._candidate_proposal is None
         assert dialog.eq_settings is None
         assert dialog.start_button.text() == "Record Again"
-    finally:
-        dialog.reject()
-        owner.close()
 
 
 def test_only_an_authoritative_not_worsened_result_opens_the_gate(qapp, monkeypatch):
@@ -805,8 +771,7 @@ def test_a_clipped_unreadable_or_silent_take_is_refused_before_any_analysis(
     qapp, monkeypatch, take, control, figure_db
 ):
     owner = _Owner()
-    dialog = CalibrationDialog(owner)
-    try:
+    with _dialog_for(owner) as dialog:
         _record(dialog, monkeypatch, take)
 
         text = dialog.warning_label.text()
@@ -819,9 +784,6 @@ def test_a_clipped_unreadable_or_silent_take_is_refused_before_any_analysis(
         assert dialog.analysis_worker is None
         assert dialog.audio_data is None and dialog.preview_audio_data is None
         assert dialog.start_button.isEnabled() is True
-    finally:
-        dialog.reject()
-        owner.close()
 
 
 class _ModeOwner(_Owner):
@@ -865,8 +827,7 @@ def test_headroom_checks_the_normal_path_where_the_eq_will_act(qapp, monkeypatch
 
 def test_the_abstention_tooltip_does_not_outlive_its_result(qapp, monkeypatch):
     owner = _Owner()
-    dialog = CalibrationDialog(owner)
-    try:
+    with _dialog_for(owner) as dialog:
         _complete(dialog, monkeypatch, _no_correction(_over_the_rule(owner.preset.eq)))
         assert dialog.warning_label.toolTip() == "headroom validation removed the usable correction"
 
@@ -881,15 +842,11 @@ def test_the_abstention_tooltip_does_not_outlive_its_result(qapp, monkeypatch):
         )
         dialog._on_retake_clicked()
         assert dialog.warning_label.toolTip() == ""
-    finally:
-        dialog.reject()
-        owner.close()
 
 
 def test_progress_is_a_busy_bar_while_the_analysis_runs(qapp, monkeypatch):
     owner = _Owner()
-    dialog = CalibrationDialog(owner)
-    try:
+    with _dialog_for(owner) as dialog:
         _capture(dialog, monkeypatch, "broadcast")
         generation = dialog._analysis_generation
         assert (dialog.progress_bar.minimum(), dialog.progress_bar.maximum()) == (0, 0)
@@ -904,9 +861,6 @@ def test_progress_is_a_busy_bar_while_the_analysis_runs(qapp, monkeypatch):
         assert dialog.progress_bar.maximum() == 0
         dialog._on_analysis_failed("B failed", generation=dialog._analysis_generation)
         assert dialog.progress_bar.maximum() == 100
-    finally:
-        dialog.reject()
-        owner.close()
 
 
 def test_the_tone_modes_are_named_for_what_they_do_and_keep_their_stored_values(
@@ -952,8 +906,7 @@ def test_no_text_in_the_dialog_claims_to_adapt_to_the_voice(qapp):
     from PySide6.QtWidgets import QComboBox, QLabel
 
     owner = _Owner()
-    dialog = CalibrationDialog(owner)
-    try:
+    with _dialog_for(owner) as dialog:
         texts = []
         for label in dialog.findChildren(QLabel):
             texts += [label.text(), label.toolTip()]
@@ -963,15 +916,11 @@ def test_no_text_in_the_dialog_claims_to_adapt_to_the_voice(qapp):
 
         for phrase in ("Adapt to my voice", "Exact tone preset", "suit your voice", "Adapting"):
             assert phrase not in shown
-    finally:
-        dialog.reject()
-        owner.close()
 
 
 def test_the_quiet_verdict_waits_out_the_pauses_between_words(qapp):
     owner = _Owner()
-    dialog = CalibrationDialog(owner)
-    try:
+    with _dialog_for(owner) as dialog:
         for rms_db in [-25.0] * 3 + [-70.0] * 14:
             dialog._on_level_update(rms_db, -12.0)
         assert _warning_state(dialog) == "ok"  # the level is good
@@ -985,15 +934,11 @@ def test_the_quiet_verdict_waits_out_the_pauses_between_words(qapp):
 
         dialog._on_level_update(-25.0, -12.0)
         assert _warning_state(dialog) == "ok"
-    finally:
-        dialog.reject()
-        owner.close()
 
 
 def test_the_level_verdict_waits_for_a_full_window_but_loudness_does_not(qapp):
     owner = _Owner()
-    dialog = CalibrationDialog(owner)
-    try:
+    with _dialog_for(owner) as dialog:
         dialog.warning_label.setText("Recording...")
         for _ in range(14):  # a speaker who has not started yet
             dialog._on_level_update(-70.0, -60.0)
@@ -1008,9 +953,6 @@ def test_the_level_verdict_waits_for_a_full_window_but_loudness_does_not(qapp):
             "Your voice peaks at -1.0 dB, close to the limit: lower the microphone level by about 5 dB "
             f"(in {SOUND_SETTINGS} or on the microphone)"
         )
-    finally:
-        dialog.reject()
-        owner.close()
 
 
 def test_a_new_take_starts_with_an_empty_level_window(qapp, monkeypatch):
@@ -1026,8 +968,7 @@ def test_a_new_take_starts_with_an_empty_level_window(qapp, monkeypatch):
 
     monkeypatch.setattr("mic_eq.ui.calibration_dialog.CaptureSession", _Session)
     owner = _Owner()
-    dialog = CalibrationDialog(owner)
-    try:
+    with _dialog_for(owner) as dialog:
         dialog._recent_rms_db.extend([-20.0] * 15)  # the last take's levels
         dialog._recent_peak_db.extend([-6.0] * 15)
         dialog.recording_state = "recording"
@@ -1037,9 +978,6 @@ def test_a_new_take_starts_with_an_empty_level_window(qapp, monkeypatch):
 
         assert len(dialog._recent_rms_db) == 0
         assert len(dialog._recent_peak_db) == 0
-    finally:
-        dialog.reject()
-        owner.close()
 
 
 def test_failed_typed_apply_does_not_enable_eq(qapp, monkeypatch):

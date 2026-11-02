@@ -423,18 +423,12 @@ def test_smoothing_matches_the_per_spectrum_recipe_on_edge_values(kind, strength
 
 
 @pytest.mark.parametrize(
-    "spectrum_db",
-    [np.zeros((5, 1)), np.zeros((1, 5)), np.zeros((5, 5)), np.float64(1.0), np.zeros(4), np.zeros(6)],
-    ids=["column", "row", "square", "scalar", "short", "long"],
+    "freqs,spectrum_db,strength_args",
+    [(np.linspace(100.0, 5000.0, 5), spectrum_db, ["balanced"]) for spectrum_db in (
+        np.zeros((5, 1)), np.zeros((1, 5)), np.zeros((5, 5)), np.float64(1.0), np.zeros(4), np.zeros(6))]
+    + [(np.float64(100.0), np.float64(1.0), []), (np.array([[100.0], [200.0]]), np.zeros((2, 1)), [])],
+    ids=["column", "row", "square", "scalar", "short", "long", "scalar-freqs", "two-dimensional-freqs"],
 )
-def test_smoothing_rejects_wrongly_shaped_spectra_with_index_error(spectrum_db):
-    freqs = np.linspace(100.0, 5000.0, 5)
+def test_smoothing_rejects_wrongly_shaped_input_with_index_error(freqs, spectrum_db, strength_args):
     with pytest.raises(IndexError, match="one-dimensional and the same length"):
-        smooth_spectrum_perceptual(freqs, spectrum_db, "balanced")
-
-
-def test_smoothing_rejects_scalar_and_two_dimensional_freqs_with_index_error():
-    with pytest.raises(IndexError, match="one-dimensional and the same length"):
-        smooth_spectrum_perceptual(np.float64(100.0), np.float64(1.0))
-    with pytest.raises(IndexError, match="one-dimensional and the same length"):
-        smooth_spectrum_perceptual(np.array([[100.0], [200.0]]), np.zeros((2, 1)))
+        smooth_spectrum_perceptual(freqs, spectrum_db, *strength_args)

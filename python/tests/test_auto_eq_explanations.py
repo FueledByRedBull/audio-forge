@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from capture_helpers import _render
 from mic_eq.analysis.auto_eq_parts.target import get_target_curve
 from mic_eq.ui.auto_eq_explanation import (
     TARGET_MODE_LABELS,
@@ -120,14 +121,6 @@ def test_missing_status_is_reported_as_unknown_not_reclassified() -> None:
     assert explanation.state == "idle"
 
 
-def _render(headroom: float, limiter: float = 0.0, true_peak: float = 0.0) -> dict[str, float]:
-    return {
-        "pre_limiter_true_peak_headroom_db": headroom,
-        "limiter_gain_reduction_db": limiter,
-        "true_peak_limiter_gain_reduction_db": true_peak,
-    }
-
-
 def _headroom(status: str, scale: float, before: dict, **extra: object) -> dict:
     return {
         "authoritative": True,
@@ -196,38 +189,6 @@ def _assert_advice(text: str, **expected: object) -> None:
     assert _advice_facts(text) == wanted
 
 
-def test_headroom_advice_for_the_owner_take_says_the_output_clips_and_lowers_two_decibels() -> None:
-    _assert_advice(
-        headroom_advice(_OWNER_TAKE, _NO_DYNAMICS, proposed=True),
-        figure_db=2,
-        opener="clips",
-        no_worse=True,
-        limiter_line=True,
-        purpose="leave enough room",
-    )
-
-
-def test_headroom_advice_for_a_flat_current_eq_and_a_hot_microphone() -> None:
-    headroom = _headroom(
-        "risk_not_worsened",
-        0.0,
-        _render(-1.9),
-        after=_render(0.4),
-        reference_excess_db=0.6,
-        flat_excess_db=0.6,
-        incumbent_excess_db=0.6,
-        incumbent_output_true_peak_db=-0.4,
-    )
-
-    _assert_advice(
-        headroom_advice(headroom, _NO_DYNAMICS, proposed=False),
-        figure_db=3,
-        opener="too little room",
-        limiter_line=True,
-        purpose="record again",
-    )
-
-
 _MAKEUP_ON = {
     "compressor": {"enabled": True, "auto_makeup_enabled": True},
     "limiter": {"enabled": True},
@@ -241,16 +202,6 @@ _ON_THE_LIMITER = _headroom(
     incumbent_excess_db=3.3,
     incumbent_output_true_peak_db=-1.5,
 )
-
-
-def test_headroom_advice_names_the_target_loudness_when_automatic_makeup_is_on() -> None:
-    _assert_advice(
-        headroom_advice(_ON_THE_LIMITER, _MAKEUP_ON, proposed=False),
-        lever="compressor's target loudness",
-        opener="too little room",
-        purpose="record again",
-        makeup_note=True,
-    )
 
 
 @pytest.mark.parametrize(
@@ -277,36 +228,11 @@ def test_headroom_advice_gives_a_figure_only_when_the_compressor_is_off(
     )
 
 
-def test_headroom_advice_without_a_chain_gives_no_figure() -> None:
-    _assert_advice(
-        headroom_advice(_ON_THE_LIMITER, None, proposed=False),
-        opener="too little room",
-        purpose="record again",
-    )
-
-
 @pytest.mark.parametrize("limiter", [{}, {"enabled": None}, {"enabled": True}, None])
 def test_headroom_advice_names_the_limiter_only_when_the_chain_says_it_is_off(limiter) -> None:
     chain = {"compressor": {"enabled": False}, "limiter": limiter}
 
     assert not _advice_facts(headroom_advice(_OWNER_TAKE, chain, proposed=True))["limiter_line"]
-
-
-def test_headroom_advice_does_not_call_a_current_eq_that_meets_the_rule_too_hot() -> None:
-    # The correction would leave less room than the current EQ, which is itself fine.
-    headroom = _headroom(
-        "risk_worse",
-        0.0,
-        _render(0.4),
-        reference_excess_db=-0.5,
-        flat_excess_db=0.6,
-        incumbent_excess_db=-0.5,
-        incumbent_output_true_peak_db=-3.0,
-    )
-
-    _assert_advice(
-        headroom_advice(headroom, _NO_DYNAMICS, proposed=False), figure_db=1, purpose="record again"
-    )
 
 
 def test_headroom_advice_keeps_the_relation_sentence_for_a_nearly_full_correction() -> None:
@@ -322,19 +248,6 @@ def test_headroom_advice_keeps_the_relation_sentence_for_a_nearly_full_correctio
         opener="too little room",
         limiter_line=True,
         purpose="allow the full correction",
-    )
-
-
-def test_headroom_advice_for_a_safe_result_that_headroom_made_gentler() -> None:
-    headroom = _headroom("safe", 0.55, _render(0.4))
-
-    _assert_advice(
-        headroom_advice(headroom, _NO_DYNAMICS, proposed=True),
-        figure_db=1,
-        purpose="allow the full correction",
-    )
-    _assert_advice(
-        headroom_advice(headroom, _NO_DYNAMICS, proposed=False), figure_db=1, purpose="record again"
     )
 
 
@@ -505,74 +418,142 @@ _BOOST_LEADS = _split("safe", 0.40, 0.6)
 _BOOST_ONLY = _split("safe", 0.40, -0.5)
 
 
-def test_headroom_advice_cuts_the_microphone_only_by_the_recordings_part_when_the_boost_leads() -> None:
-    _assert_advice(
-        headroom_advice(_BOOST_LEADS, _NO_DYNAMICS, proposed=True),
-        figure_db=1,
-        split_db=(2.8, 3.4),
-        purpose="give your own peaks enough room",
-    )
-    _assert_advice(
-        headroom_advice(_BOOST_LEADS, _NO_DYNAMICS, proposed=False),
-        figure_db=1,
-        split_db=(2.8, 3.4),
-        purpose="record again",
-    )
-
-
-def test_headroom_advice_leaves_the_microphone_alone_when_only_the_boost_is_too_much() -> None:
-    # No lever, no figure, no purpose: nothing to lower, and it says the level is fine.
-    _assert_advice(
-        headroom_advice(_BOOST_ONLY, _NO_DYNAMICS, proposed=True),
-        lever=None,
-        split_db=(3.4, 3.4),
-        mic_fine=True,
-    )
-
-
-def test_headroom_advice_gives_no_microphone_figure_for_the_boost_when_a_compressor_works() -> None:
-    chain = {"compressor": {"enabled": True}, "limiter": {"enabled": True}}
-
-    _assert_advice(
-        headroom_advice(_BOOST_LEADS, chain, proposed=True),
-        split_db=(2.8, 3.4),
-        purpose="give your own peaks enough room",
-    )
-
-
-def test_headroom_advice_keeps_the_full_figure_when_the_recording_leads() -> None:
-    headroom = _split("safe", 0.40, 3.0)
-
-    _assert_advice(
-        headroom_advice(headroom, _NO_DYNAMICS, proposed=True),
-        figure_db=4,
-        purpose="allow the full correction",
-    )
-
-
-def test_headroom_advice_does_not_split_when_the_current_eq_is_over_the_rule() -> None:
-    headroom = _split(
-        "risk_not_worsened", 1.0, 0.2, incumbent_excess_db=3.4, incumbent_output_true_peak_db=-0.6
-    )
-
-    _assert_advice(
-        headroom_advice(headroom, _NO_DYNAMICS, proposed=True),
-        figure_db=4,
-        opener="too little room",
-        no_worse=True,
-        limiter_line=True,
-        purpose="leave enough room",
-    )
-
-
-def test_headroom_advice_names_the_target_loudness_for_the_recordings_part_with_automatic_makeup() -> None:
-    _assert_advice(
-        headroom_advice(_BOOST_LEADS, _MAKEUP_ON, proposed=True),
-        lever="compressor's target loudness",
-        split_db=(2.8, 3.4),
-        purpose="give your own peaks enough room",
-        makeup_note=True,
-    )
+@pytest.mark.parametrize(
+    ("headroom", "chain", "proposed", "facts"),
+    [
+        (
+            _OWNER_TAKE,
+            _NO_DYNAMICS,
+            True,
+            dict(figure_db=2, opener="clips", no_worse=True, limiter_line=True, purpose="leave enough room"),
+        ),
+        (
+            _headroom(
+                "risk_not_worsened",
+                0.0,
+                _render(-1.9),
+                after=_render(0.4),
+                reference_excess_db=0.6,
+                flat_excess_db=0.6,
+                incumbent_excess_db=0.6,
+                incumbent_output_true_peak_db=-0.4,
+            ),
+            _NO_DYNAMICS,
+            False,
+            dict(figure_db=3, opener="too little room", limiter_line=True, purpose="record again"),
+        ),
+        (
+            _ON_THE_LIMITER,
+            _MAKEUP_ON,
+            False,
+            dict(
+                lever="compressor's target loudness",
+                opener="too little room",
+                purpose="record again",
+                makeup_note=True,
+            ),
+        ),
+        (_ON_THE_LIMITER, None, False, dict(opener="too little room", purpose="record again")),
+        # The correction would leave less room than the current EQ, which is itself fine.
+        (
+            _headroom(
+                "risk_worse",
+                0.0,
+                _render(0.4),
+                reference_excess_db=-0.5,
+                flat_excess_db=0.6,
+                incumbent_excess_db=-0.5,
+                incumbent_output_true_peak_db=-3.0,
+            ),
+            _NO_DYNAMICS,
+            False,
+            dict(figure_db=1, purpose="record again"),
+        ),
+        (
+            _headroom("safe", 0.55, _render(0.4)),
+            _NO_DYNAMICS,
+            True,
+            dict(figure_db=1, purpose="allow the full correction"),
+        ),
+        (
+            _headroom("safe", 0.55, _render(0.4)),
+            _NO_DYNAMICS,
+            False,
+            dict(figure_db=1, purpose="record again"),
+        ),
+        (
+            _BOOST_LEADS,
+            _NO_DYNAMICS,
+            True,
+            dict(figure_db=1, split_db=(2.8, 3.4), purpose="give your own peaks enough room"),
+        ),
+        (
+            _BOOST_LEADS,
+            _NO_DYNAMICS,
+            False,
+            dict(figure_db=1, split_db=(2.8, 3.4), purpose="record again"),
+        ),
+        # No lever, no figure, no purpose: nothing to lower, and it says the level is fine.
+        (_BOOST_ONLY, _NO_DYNAMICS, True, dict(lever=None, split_db=(3.4, 3.4), mic_fine=True)),
+        (
+            _BOOST_LEADS,
+            {"compressor": {"enabled": True}, "limiter": {"enabled": True}},
+            True,
+            dict(split_db=(2.8, 3.4), purpose="give your own peaks enough room"),
+        ),
+        (
+            _split("safe", 0.40, 3.0),
+            _NO_DYNAMICS,
+            True,
+            dict(figure_db=4, purpose="allow the full correction"),
+        ),
+        (
+            _split(
+                "risk_not_worsened", 1.0, 0.2, incumbent_excess_db=3.4, incumbent_output_true_peak_db=-0.6
+            ),
+            _NO_DYNAMICS,
+            True,
+            dict(
+                figure_db=4,
+                opener="too little room",
+                no_worse=True,
+                limiter_line=True,
+                purpose="leave enough room",
+            ),
+        ),
+        (
+            _BOOST_LEADS,
+            _MAKEUP_ON,
+            True,
+            dict(
+                lever="compressor's target loudness",
+                split_db=(2.8, 3.4),
+                purpose="give your own peaks enough room",
+                makeup_note=True,
+            ),
+        ),
+    ],
+    ids=[
+        "owner-take",
+        "flat-current-eq-and-hot-microphone",
+        "automatic-makeup-names-the-target-loudness",
+        "no-chain",
+        "current-eq-meets-the-rule",
+        "safe-but-gentler-proposed",
+        "safe-but-gentler-recording",
+        "boost-leads-proposed",
+        "boost-leads-recording",
+        "only-the-boost-is-too-much",
+        "boost-with-a-working-compressor",
+        "recording-leads",
+        "current-eq-over-the-rule",
+        "automatic-makeup-with-a-split",
+    ],
+)
+def test_headroom_advice_names_the_lever_the_figure_and_the_purpose(
+    headroom, chain, proposed, facts
+) -> None:
+    _assert_advice(headroom_advice(headroom, chain, proposed=proposed), **facts)
 
 
 def test_the_auto_eq_chip_says_the_result_and_the_numbers_are_in_the_tooltip() -> None:

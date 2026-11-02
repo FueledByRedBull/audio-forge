@@ -365,10 +365,12 @@ def test_a_slow_stop_is_not_repeated_while_the_engine_is_still_stopping(
     assert engine.lifecycle() == ["stop"] and _refusals() == 1
 
 
-def test_the_engines_own_restart_cannot_reopen_the_loop(window, desktop) -> None:
+@pytest.mark.parametrize("running", [True, False], ids=["engine-running", "failed-restart-left-streams-closed"])
+def test_the_engines_own_restart_cannot_reopen_the_loop(window, desktop, running) -> None:
     """A pulled USB microphone makes the engine ask for a restart, which would follow the default."""
     window, engine = window
     _running_on_the_default(window, engine, desktop)
+    engine.running = running
     engine.restart_requested = True
     desktop.default_is_own = True
 
@@ -377,19 +379,6 @@ def test_the_engines_own_restart_cannot_reopen_the_loop(window, desktop) -> None
     assert "reopened" not in engine.calls and not engine.running
     # The request was cancelled by the stop; it was never serviced into the loop.
     assert engine.lifecycle() == ["stop"] and not engine.restart_requested
-
-
-def test_a_restart_that_is_still_waiting_to_retry_is_cancelled_too(window, desktop) -> None:
-    window, engine = window
-    _running_on_the_default(window, engine, desktop)
-    engine.running = False  # a failed restart left the streams closed
-    engine.restart_requested = True
-    desktop.default_is_own = True
-
-    _tick(window, 8)
-
-    assert "reopened" not in engine.calls and not engine.running and not engine.restart_requested
-    assert engine.lifecycle() == ["stop"]
     assert window.status_message.text == OWN_MICROPHONE_MESSAGE
 
 

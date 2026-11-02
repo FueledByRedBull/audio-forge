@@ -213,65 +213,31 @@ def test_unknown_or_malformed_eq_schema_is_rejected(
         Preset.from_dict(payload)
 
 
-def test_eq_band_constructor_rejects_incoherent_bandwidth() -> None:
-    with pytest.raises(ValueError, match="bandwidth_octaves is required"):
-        EQBandSettings(
-            filter_type="bell",
-            frequency_hz=1000.0,
-            gain_db=0.0,
-            q=1.41,
-            bandwidth_mode="octaves",
-            bandwidth_octaves=None,
-        )
-
-
-@pytest.mark.parametrize("stage", ["correction", "tone"])
-def test_unimplemented_eq_stage_ownership_is_rejected(stage: str) -> None:
-    with pytest.raises(ValueError, match="unsupported EQ stage"):
-        EQBandSettings(
-            filter_type="bell",
-            frequency_hz=1000.0,
-            gain_db=0.0,
-            q=1.41,
-            stage=stage,
-        )
-
-
-def test_eq_band_constructor_rejects_conflicting_q_and_octave_sources() -> None:
-    with pytest.raises(ValueError, match="q must match"):
-        EQBandSettings(
-            filter_type="notch",
-            frequency_hz=1000.0,
-            gain_db=0.0,
-            q=1.41,
-            bandwidth_mode="octaves",
-            bandwidth_octaves=1.0,
-        )
-
-
-def test_eq_band_constructor_rejects_octave_mode_for_non_band_filters() -> None:
-    q = q_from_bandwidth_octaves(1000.0, 1.0)
-    with pytest.raises(ValueError, match="only for bell and notch"):
-        EQBandSettings(
-            filter_type="high_pass",
-            frequency_hz=1000.0,
-            gain_db=0.0,
-            q=q,
-            bandwidth_mode="octaves",
-            bandwidth_octaves=1.0,
-        )
-
-
-def test_q_mode_rejects_redundant_octave_bandwidth() -> None:
-    with pytest.raises(ValueError, match="must be null"):
-        EQBandSettings(
-            filter_type="bell",
-            frequency_hz=1000.0,
-            gain_db=0.0,
-            q=1.41,
-            bandwidth_mode="q",
-            bandwidth_octaves=1.0,
-        )
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        (dict(bandwidth_mode="octaves", bandwidth_octaves=None), "bandwidth_octaves is required"),
+        (dict(stage="correction"), "unsupported EQ stage"),
+        (dict(stage="tone"), "unsupported EQ stage"),
+        (dict(filter_type="notch", bandwidth_mode="octaves", bandwidth_octaves=1.0), "q must match"),
+        (
+            dict(
+                filter_type="high_pass",
+                q=q_from_bandwidth_octaves(1000.0, 1.0),
+                bandwidth_mode="octaves",
+                bandwidth_octaves=1.0,
+            ),
+            "only for bell and notch",
+        ),
+        (dict(bandwidth_mode="q", bandwidth_octaves=1.0), "must be null"),
+    ],
+    ids=["octave-mode-without-octaves", "correction-stage", "tone-stage", "conflicting-q-and-octaves",
+         "octave-mode-for-non-band-filter", "q-mode-with-octaves"],
+)
+def test_eq_band_constructor_rejects_incoherent_bandwidth_or_stage(overrides: dict, message: str) -> None:
+    band = dict(filter_type="bell", frequency_hz=1000.0, gain_db=0.0, q=1.41)
+    with pytest.raises(ValueError, match=message):
+        EQBandSettings(**{**band, **overrides})
 
 
 def test_independent_stages_roundtrip_and_combined_schema_migration():

@@ -10,7 +10,7 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QAccessible
 from PySide6.QtWidgets import QAbstractButton, QLabel
 
-from capture_helpers import finish_take
+from capture_helpers import _voice, finish_take
 from mic_eq.config import AppConfig
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.first_run_setup_dialog import FirstRunSetupDialog
@@ -20,7 +20,7 @@ from mic_eq.ui.theme import message_text_style
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from test_first_run_setup import _Owner, _Processor
 from test_listening_comparison import _settings
-from test_setup_level_check_flow import _voice, voice  # noqa: F401  (a fixture)
+from test_setup_level_check_flow import voice  # noqa: F401  (a fixture)
 from test_voice_setup_integration import real_main_window  # noqa: F401  (a fixture)
 
 
@@ -196,19 +196,14 @@ def test_a_recording_dialog_visits_its_fields_then_its_buttons_left_to_right(dia
     assert _left_to_right(dialog, buttons)
 
 
-def test_the_latency_dialog_visits_its_buttons_left_to_right(dialogs, qapp) -> None:
-    dialog = dialogs["latency"]
-    buttons = [dialog.close_button, dialog.reset_button, dialog.run_button, dialog.accept_button]
-    dialog.accept_button.setEnabled(True)
-    _show(dialog, qapp)
-    assert _visited(dialog, buttons) == buttons
-    assert _left_to_right(dialog, buttons)
-
-
-def test_the_listening_dialog_visits_reject_before_keep_as_they_sit(dialogs, qapp) -> None:
-    dialog = dialogs["listening"]
-    buttons = [dialog.reject_button, dialog.keep_button]
-    dialog.keep_button.setEnabled(True)
+@pytest.mark.parametrize(("name", "order", "enabled"), [
+    ("latency", ["close_button", "reset_button", "run_button", "accept_button"], "accept_button"),
+    ("listening", ["reject_button", "keep_button"], "keep_button"),
+], ids=["latency", "listening"])
+def test_the_latency_and_listening_dialogs_visit_their_buttons_left_to_right(dialogs, qapp, name, order, enabled) -> None:
+    dialog = dialogs[name]
+    buttons = [getattr(dialog, attr) for attr in order]
+    getattr(dialog, enabled).setEnabled(True)
     _show(dialog, qapp)
     assert _visited(dialog, buttons) == buttons
     assert _left_to_right(dialog, buttons)

@@ -76,8 +76,17 @@ def test_a_recovery_service_that_fails_every_tick_is_logged_once_per_streak(
     assert len(failures) == 2
 
 
+@pytest.mark.parametrize(
+    ("name", "target", "raising"),
+    [
+        ("Kept Sound", "mic_eq.ui.main_window.load_preset", True),
+        # The real ``open`` inside ``load_preset`` fails; its error arrives wrapped in PresetValidationError.
+        ("Locked Sound", "mic_eq.config_parts.presets.open", False),
+    ],
+    ids=["unreadable-preset", "locked-while-loading"],
+)
 def test_an_unreadable_last_preset_is_kept_for_the_next_launch(
-    qapp, monkeypatch, tmp_path, caplog
+    qapp, monkeypatch, tmp_path, name, target, raising
 ):
     from mic_eq.config import load_config
     from mic_eq.config_parts import shared
@@ -89,44 +98,7 @@ def test_an_unreadable_last_preset_is_kept_for_the_next_launch(
     window = MainWindow()
     try:
         preset = window._get_current_preset()
-        preset.name = "Kept Sound"
-        filepath = window._save_preset_file(preset)
-        assert filepath is not None
-    finally:
-        window.close()
-        window.deleteLater()
-        qapp.processEvents()
-
-    def locked(_path):
-        raise PermissionError(32, "being used by another process")
-
-    monkeypatch.setattr(main_window, "load_preset", locked)
-    restored = MainWindow()
-    try:
-        assert restored.config.last_preset == str(filepath)
-        assert "Could not restore the previous preset" in (restored.config.load_warning or "")
-    finally:
-        restored.close()
-        restored.deleteLater()
-        qapp.processEvents()
-    assert load_config().last_preset == str(filepath)
-
-
-def test_a_last_preset_locked_while_loading_is_kept_for_the_next_launch(
-    qapp, monkeypatch, tmp_path
-):
-    """The real ``open`` inside ``load_preset`` fails; its error arrives wrapped in PresetValidationError."""
-    from mic_eq.config import load_config
-    from mic_eq.config_parts import presets, shared
-
-    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
-    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
-    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
-
-    window = MainWindow()
-    try:
-        preset = window._get_current_preset()
-        preset.name = "Locked Sound"
+        preset.name = name
         filepath = window._save_preset_file(preset)
         assert filepath is not None
     finally:
@@ -137,7 +109,7 @@ def test_a_last_preset_locked_while_loading_is_kept_for_the_next_launch(
     def locked(*_args, **_kwargs):
         raise PermissionError(32, "being used by another process")
 
-    monkeypatch.setattr(presets, "open", locked, raising=False)
+    monkeypatch.setattr(target, locked, raising=raising)
     restored = MainWindow()
     try:
         assert restored.config.last_preset == str(filepath)

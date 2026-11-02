@@ -27,6 +27,7 @@ import release_provenance
 import check_versions
 import run_semgrep
 import check_workflows
+from test_linux_release_workflow import _ci_errors, _drop, _gate_errors, _workflow
 
 
 TOOLS_DIR = Path(__file__).parent.parent / "tools"
@@ -299,7 +300,7 @@ def test_workflow_action_parser_covers_inline_and_named_steps():
 
 
 def test_workflow_policy_rejects_mutable_action_reference(tmp_path, monkeypatch):
-    source = (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+    source = _workflow_text("ci.yml")
     action, ref = check_workflows.ACTION_REF.findall(source)[0]
     (tmp_path / "ci.yml").write_text(source.replace(f"{action}@{ref}", f"{action}@v7"), encoding="utf-8")
     monkeypatch.setattr(check_workflows, "WORKFLOW_DIR", tmp_path)
@@ -315,8 +316,12 @@ RUNTIME_AUDIT = "pip_audit --require-hashes -r requirements/runtime.txt --disabl
 MCP_IGNORE = "--ignore-vuln CVE-2026-59951"
 
 
+def _workflow_text(name):
+    return (check_workflows.WORKFLOW_DIR / name).read_text(encoding="utf-8")
+
+
 def _audit_ignore_errors(tmp_path, monkeypatch, audit, replacement, dev_lock=None):
-    source = (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+    source = _workflow_text("ci.yml")
     assert audit in source
     (tmp_path / "ci.yml").write_text(source.replace(audit, replacement), encoding="utf-8")
     monkeypatch.setattr(check_workflows, "WORKFLOW_DIR", tmp_path)
@@ -408,21 +413,30 @@ def test_each_audit_ignore_is_rejected_once_its_own_package_moves(
     assert stale in errors and "remove the ignore" in errors
 
 
-def test_a_third_audit_ignore_is_still_rejected(tmp_path, monkeypatch):
-    errors = _audit_ignore_errors(
-        tmp_path,
-        monkeypatch,
-        f"{DEV_AUDIT} {MCP_IGNORE} {OTEL_IGNORE}",
-        f"{DEV_AUDIT} {MCP_IGNORE} {OTEL_IGNORE} --ignore-vuln CVE-2000-0001",
-    )
+@pytest.mark.parametrize(
+    ("audit", "replacement", "message"),
+    [
+        (
+            f"{DEV_AUDIT} {MCP_IGNORE} {OTEL_IGNORE}",
+            f"{DEV_AUDIT} {MCP_IGNORE} {OTEL_IGNORE} --ignore-vuln CVE-2000-0001",
+            "CVE-2000-0001 is not an allowed audit ignore",
+        ),
+        (
+            "cargo audit --deny warnings\n",
+            "cargo audit --deny warnings --ignore RUSTSEC-2024-0436\n",
+            "cargo audit ignores ['RUSTSEC-2024-0436'], expected []",
+        ),
+    ],
+    ids=["third-pip-audit-ignore", "rustsec-ignore-on-the-application-lock"],
+)
+def test_an_audit_ignore_outside_the_allowed_table_is_rejected(tmp_path, monkeypatch, audit, replacement, message):
+    errors = _audit_ignore_errors(tmp_path, monkeypatch, audit, replacement)
 
-    assert "CVE-2000-0001 is not an allowed audit ignore" in errors
+    assert message in errors
 
 
 def test_ci_uploads_semgrep_results_with_scoped_code_scanning_permission():
-    workflow = check_workflows.yaml.safe_load(
-        (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
-    )
+    workflow = _workflow("ci.yml")
     triggers = workflow.get("on", workflow.get(True))
     assert set(triggers) == {"push", "pull_request"}
     assert triggers["push"] == {
@@ -476,9 +490,7 @@ def test_ci_uploads_semgrep_results_with_scoped_code_scanning_permission():
     ],
 )
 def test_workflow_permission_checker_rejects_unapproved_writes(scope, permissions):
-    workflow = check_workflows.yaml.safe_load(
-        (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
-    )
+    workflow = _workflow("ci.yml")
     target = workflow if scope == "top" else workflow["jobs"][scope]
     target["permissions"] = permissions
     errors: list[str] = []
@@ -495,9 +507,7 @@ def test_build_script_propagates_pyinstaller_failure_code():
 
 def test_msi_builder_accepts_the_wix_eula_only_when_asked():
     script = (check_workflows.REPO_ROOT / "build_msi.ps1").read_text(encoding="utf-8")
-    workflow = (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = _workflow_text("release-package.yml")
 
     assert script.index("if (-not $AcceptWixEula)") < script.index("eula accept wix7")
     assert workflow.count("build_msi.ps1") == workflow.count("-AcceptWixEula")
@@ -514,9 +524,7 @@ def test_msi_builder_accepts_explicit_python_path():
 
 
 def test_release_build_selects_python_313_and_pinned_cpu_ort_explicitly():
-    workflow = (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = _workflow_text("release-package.yml")
     errors: list[str] = []
 
     check_workflows._check_python_runtime("release-package.yml", workflow, errors)
@@ -525,9 +533,7 @@ def test_release_build_selects_python_313_and_pinned_cpu_ort_explicitly():
 
 
 def test_release_metadata_checks_each_native_version_command_immediately():
-    workflow = (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = _workflow_text("release-package.yml")
     lines = workflow.splitlines()
 
     msi_index = next(
@@ -552,7 +558,7 @@ def test_release_metadata_checks_each_native_version_command_immediately():
 
 
 def test_ci_workflow_hydrates_cpu_ort_in_every_native_job():
-    source = (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+    source = _workflow_text("ci.yml")
     errors: list[str] = []
 
     check_workflows._check_required_gates("ci.yml", source, errors)
@@ -561,22 +567,6 @@ def test_ci_workflow_hydrates_cpu_ort_in_every_native_job():
     assert source.count("fetch_release_assets.py --only-cpu-runtime --force") == len(
         check_workflows.CI_CPU_RUNTIME_JOBS
     )
-
-
-def _ci_errors(mutate):
-    workflow = check_workflows.yaml.safe_load(
-        (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
-    )
-    mutate(workflow["jobs"])
-    errors: list[str] = []
-    check_workflows._check_required_gates(
-        "ci.yml", check_workflows.yaml.safe_dump(workflow), errors
-    )
-    return "; ".join(errors)
-
-
-def _drop_step(job, name):
-    job["steps"] = [step for step in job["steps"] if step.get("name") != name]
 
 
 def _set_step_run(job, name, run):
@@ -593,7 +583,7 @@ def _set_step_run(job, name, run):
         (lambda jobs: jobs["static"].update({"continue-on-error": True}), "must not set continue-on-error"),
         (lambda jobs: jobs.update(extra=copy.deepcopy(jobs["static"])), "extra is not part of a required gate"),
         (
-            lambda jobs: _drop_step(jobs["pytest"], "Hydrate pinned CPU ONNX Runtime"),
+            lambda jobs: _drop(jobs["pytest"], "Hydrate pinned CPU ONNX Runtime"),
             "pytest must hydrate",
         ),
         (
@@ -619,9 +609,7 @@ def test_ci_gate_jobs_and_job_split_are_enforced(mutate, message):
 def test_ci_pytest_shard_lists_reject_renamed_duplicate_and_unmatched_files(
     tmp_path, monkeypatch
 ):
-    workflow = check_workflows.yaml.safe_load(
-        (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
-    )
+    workflow = _workflow("ci.yml")
     real = json.loads(check_workflows.PYTEST_SHARDS_PATH.read_text(encoding="utf-8"))
     last_listed = [path for files in real.values() for path in files][-1]
     first = next(iter(real))
@@ -646,9 +634,7 @@ def test_ci_pytest_shard_lists_reject_renamed_duplicate_and_unmatched_files(
 
 
 def test_release_workflow_binds_existing_tag_to_checked_out_commit():
-    source = (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(
-        encoding="utf-8"
-    )
+    source = _workflow_text("release-package.yml")
     errors: list[str] = []
 
     check_workflows._check_required_gates("release-package.yml", source, errors)
@@ -658,9 +644,7 @@ def test_release_workflow_binds_existing_tag_to_checked_out_commit():
 
 @pytest.mark.parametrize("location", ["comment", "other-step", "disabled-step"])
 def test_release_rust_tests_require_pythonpath_on_the_test_step(location):
-    source = (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(
-        encoding="utf-8"
-    )
+    source = _workflow_text("release-package.yml")
     workflow = check_workflows.yaml.safe_load(source)
     steps = workflow["jobs"]["rust-tests"]["steps"]
     rust_tests = next(step for step in steps if step.get("name") == "Rust tests")
@@ -680,9 +664,7 @@ def test_release_rust_tests_require_pythonpath_on_the_test_step(location):
 
 
 def test_release_candidate_can_be_validated_before_tagging():
-    workflow = check_workflows.yaml.safe_load(
-        (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(encoding="utf-8")
-    )
+    workflow = _workflow("release-package.yml")
     triggers = workflow.get("on", workflow.get(True))
     assert set(triggers) == {"workflow_dispatch"}
     jobs = workflow["jobs"]
@@ -699,9 +681,7 @@ def test_release_candidate_can_be_validated_before_tagging():
 
 
 def _release_job_errors(mutate):
-    workflow = check_workflows.yaml.safe_load(
-        (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(encoding="utf-8")
-    )
+    workflow = _workflow("release-package.yml")
     mutate(workflow["jobs"])
     errors: list[str] = []
     check_workflows._check_release_jobs(workflow, errors)
@@ -906,9 +886,7 @@ def test_release_job_layout_is_enforced(mutate, message):
 
 
 def test_release_job_layout_is_part_of_the_release_gate_check():
-    workflow = check_workflows.yaml.safe_load(
-        (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(encoding="utf-8")
-    )
+    workflow = _workflow("release-package.yml")
     _drop_steps(workflow["jobs"]["static"], _runs("-m ruff check"))
     errors: list[str] = []
 
@@ -941,16 +919,6 @@ def test_deepfilter_rustsec_audit_is_required(tmp_path, monkeypatch):
         tmp_path, monkeypatch, "--file build-support/deepfilter/Cargo.lock", "--file Cargo.lock"
     )
     assert "ci.yml: missing a cargo audit of build-support/deepfilter/Cargo.lock" in errors
-
-
-def test_rustsec_ignore_is_rejected_on_the_application_lock(tmp_path, monkeypatch):
-    errors = _audit_ignore_errors(
-        tmp_path,
-        monkeypatch,
-        "cargo audit --deny warnings\n",
-        "cargo audit --deny warnings --ignore RUSTSEC-2024-0436\n",
-    )
-    assert "cargo audit ignores ['RUSTSEC-2024-0436'], expected []" in errors
 
 
 @pytest.mark.parametrize(
@@ -994,7 +962,7 @@ def test_rustsec_ignore_is_rejected_on_the_application_lock(tmp_path, monkeypatc
 def test_tag_checkout_must_use_tag_ref_and_assert_head_is_the_tag_commit(
     workflow, old, new, expected
 ):
-    source = (check_workflows.WORKFLOW_DIR / workflow).read_text(encoding="utf-8")
+    source = _workflow_text(workflow)
     assert old in source
     errors: list[str] = []
 
@@ -1842,12 +1810,20 @@ def test_package_smoke_accepts_required_assets_and_metadata(tmp_path):
     assert package_smoke.check_dist_bundle(bundle) == []
 
 
-def test_package_smoke_requires_windows_audio_backend(tmp_path):
+@pytest.mark.parametrize(
+    ("omitted", "name"),
+    [
+        ("windowsmediaplugin.dll", "windowsmediaplugin.dll"),
+        ("_internal/licenses/ONNXRuntime-LICENSE.txt", "ONNXRuntime-LICENSE.txt"),
+    ],
+    ids=["windows-audio-backend", "onnxruntime-license-notice"],
+)
+def test_package_smoke_requires_the_windows_audio_backend_and_licence_notice(tmp_path, omitted, name):
     bundle = tmp_path / "AudioForge"
     (bundle / "AudioForge.exe").parent.mkdir(parents=True)
     (bundle / "AudioForge.exe").write_bytes(b"x")
     for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
-        if relative_path.endswith("windowsmediaplugin.dll"):
+        if relative_path.endswith(omitted):
             continue
         _write_bundle_file(bundle, relative_path)
     _write_valid_build_info(bundle)
@@ -1855,7 +1831,7 @@ def test_package_smoke_requires_windows_audio_backend(tmp_path):
 
     errors = package_smoke.check_dist_bundle(bundle)
 
-    assert any("windowsmediaplugin.dll" in error for error in errors)
+    assert any(name in error for error in errors)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows bundle layout (.pyd)")
@@ -1874,76 +1850,33 @@ def test_package_smoke_rejects_duplicate_native_extension(tmp_path):
     assert any("_internal/mic_eq_core/mic_eq_core*.pyd" in error for error in errors)
 
 
-def test_package_smoke_rejects_foreign_python_abi_extension(tmp_path):
+@pytest.mark.parametrize(
+    ("extra_files", "message"),
+    [
+        (("_internal/mic_eq/mic_eq_core.foreign.pyd",), "foreign Python ABI extensions"),
+        (("_internal/DirectML.dll",), "retired DirectML payload"),
+        (("_internal/licenses/DirectML-LICENSE.txt",), "retired DirectML license notice"),
+        (OPENSSL_PAYLOAD_FILES, "excluded OpenSSL payload"),
+        (
+            ("_internal/PySide6/avcodec-61.dll", "_internal/PySide6/plugins/multimedia/ffmpegmediaplugin.dll"),
+            "unused Qt FFmpeg payload",
+        ),
+    ],
+    ids=["foreign-python-abi-extension", "directml-payload", "directml-notice", "openssl-payload", "qt-ffmpeg-payload"],
+)
+def test_package_smoke_rejects_foreign_or_retired_bundle_payloads(tmp_path, extra_files, message):
     bundle = tmp_path / "AudioForge"
     (bundle / "AudioForge.exe").parent.mkdir(parents=True)
     (bundle / "AudioForge.exe").write_bytes(b"x")
     for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
         _write_bundle_file(bundle, relative_path)
     _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
-    _write_bundle_file(bundle, "_internal/mic_eq/mic_eq_core.foreign.pyd")
-
-    errors = package_smoke.check_dist_bundle(bundle)
-
-    assert any("foreign Python ABI extensions" in error for error in errors)
-
-
-def test_package_smoke_rejects_retired_directml_payload(tmp_path):
-    bundle = tmp_path / "AudioForge"
-    (bundle / "AudioForge.exe").parent.mkdir(parents=True)
-    (bundle / "AudioForge.exe").write_bytes(b"x")
-    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
-        _write_bundle_file(bundle, relative_path)
-    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
-    _write_bundle_file(bundle, "_internal/DirectML.dll")
-
-    errors = package_smoke.check_dist_bundle(bundle)
-
-    assert any("retired DirectML payload" in error for error in errors)
-
-
-def test_package_smoke_rejects_retired_directml_notice(tmp_path):
-    bundle = tmp_path / "AudioForge"
-    (bundle / "AudioForge.exe").parent.mkdir(parents=True)
-    (bundle / "AudioForge.exe").write_bytes(b"x")
-    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
-        _write_bundle_file(bundle, relative_path)
-    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
-    _write_bundle_file(bundle, "_internal/licenses/DirectML-LICENSE.txt")
-
-    errors = package_smoke.check_dist_bundle(bundle)
-
-    assert any("retired DirectML license notice" in error for error in errors)
-
-
-def test_package_smoke_rejects_excluded_openssl_payload(tmp_path):
-    bundle = tmp_path / "AudioForge"
-    (bundle / "AudioForge.exe").parent.mkdir(parents=True)
-    (bundle / "AudioForge.exe").write_bytes(b"x")
-    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
-        _write_bundle_file(bundle, relative_path)
-    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
-    for relative_path in OPENSSL_PAYLOAD_FILES:
+    for relative_path in extra_files:
         _write_bundle_file(bundle, relative_path)
 
     errors = package_smoke.check_dist_bundle(bundle)
 
-    assert any("excluded OpenSSL payload" in error for error in errors)
-
-
-def test_package_smoke_rejects_unused_qt_ffmpeg_payload(tmp_path):
-    bundle = tmp_path / "AudioForge"
-    (bundle / "AudioForge.exe").parent.mkdir(parents=True)
-    (bundle / "AudioForge.exe").write_bytes(b"x")
-    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
-        _write_bundle_file(bundle, relative_path)
-    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
-    _write_bundle_file(bundle, "_internal/PySide6/avcodec-61.dll")
-    _write_bundle_file(bundle, "_internal/PySide6/plugins/multimedia/ffmpegmediaplugin.dll")
-
-    errors = package_smoke.check_dist_bundle(bundle)
-
-    assert any("unused Qt FFmpeg payload" in error for error in errors)
+    assert any(message in error for error in errors)
 
 
 def test_package_smoke_rejects_pythonwin_mfc(tmp_path):
@@ -2224,22 +2157,6 @@ def test_package_smoke_rejects_misplaced_decoy_assets(tmp_path):
 
     assert any("_internal/df.dll" in error for error in errors)
     assert any("does not contain _internal/mic_eq/mic_eq_core" in error for error in errors)
-
-
-def test_package_smoke_rejects_bundle_without_required_license_notice(tmp_path):
-    bundle = tmp_path / "AudioForge"
-    (bundle / "AudioForge.exe").parent.mkdir(parents=True)
-    (bundle / "AudioForge.exe").write_bytes(b"x")
-    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
-        if relative_path == "_internal/licenses/ONNXRuntime-LICENSE.txt":
-            continue
-        _write_bundle_file(bundle, relative_path)
-    _write_valid_build_info(bundle)
-    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
-
-    errors = package_smoke.check_dist_bundle(bundle)
-
-    assert any("ONNXRuntime-LICENSE.txt" in error for error in errors)
 
 
 def test_package_smoke_rejects_stale_bundle_version(tmp_path):
@@ -2851,22 +2768,32 @@ def test_forced_hydration_rejects_bad_bytes_before_replacing_asset(
     assert installed.read_bytes() == b"good"
 
 
-def test_version_check_rejects_stale_readme_hydration_tag(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("readme", "releasing", "message"),
+    [
+        (
+            "The fallback release is pinned once in `release-assets.json`.\n"
+            "fetch_release_assets.py --release-tag v1.8.0\n",
+            "fetch_release_assets.py\n",
+            "stale fallback tag",
+        ),
+        (
+            "The fallback release is pinned once in `release-assets.json`.\n",
+            "fetch_release_assets.py --release-tag v1.8.0\n",
+            "RELEASING.md.*stale fallback tag",
+        ),
+    ],
+    ids=["readme", "releasing"],
+)
+def test_version_check_rejects_a_stale_hydration_tag_in_readme_or_releasing(tmp_path, monkeypatch, readme, releasing, message):
     (tmp_path / "python" / "tools").mkdir(parents=True)
     (tmp_path / ".github" / "workflows").mkdir(parents=True)
     (tmp_path / "release-assets.json").write_text(
         json.dumps({"fallback_release_tag": "v1.10.0"}),
         encoding="utf-8",
     )
-    (tmp_path / "README.md").write_text(
-        "The fallback release is pinned once in `release-assets.json`.\n"
-        "fetch_release_assets.py --release-tag v1.8.0\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "RELEASING.md").write_text(
-        "fetch_release_assets.py\n",
-        encoding="utf-8",
-    )
+    (tmp_path / "README.md").write_text(readme, encoding="utf-8")
+    (tmp_path / "RELEASING.md").write_text(releasing, encoding="utf-8")
     (tmp_path / "python" / "tools" / "fetch_release_assets.py").write_text(
         "default=_default_asset_source_tag()\n",
         encoding="utf-8",
@@ -2877,38 +2804,7 @@ def test_version_check_rejects_stale_readme_hydration_tag(tmp_path, monkeypatch)
     )
     monkeypatch.setattr(check_versions, "REPO_ROOT", tmp_path)
 
-    with pytest.raises(ValueError, match="stale fallback tag"):
-        check_versions._check_release_asset_hydration()
-
-
-def test_version_check_rejects_stale_releasing_hydration_tag(
-    tmp_path, monkeypatch
-):
-    (tmp_path / "python" / "tools").mkdir(parents=True)
-    (tmp_path / ".github" / "workflows").mkdir(parents=True)
-    (tmp_path / "release-assets.json").write_text(
-        json.dumps({"fallback_release_tag": "v1.10.0"}),
-        encoding="utf-8",
-    )
-    (tmp_path / "README.md").write_text(
-        "The fallback release is pinned once in `release-assets.json`.\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "RELEASING.md").write_text(
-        "fetch_release_assets.py --release-tag v1.8.0\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "python" / "tools" / "fetch_release_assets.py").write_text(
-        "default=_default_asset_source_tag()\n",
-        encoding="utf-8",
-    )
-    (tmp_path / ".github" / "workflows" / "release-package.yml").write_text(
-        ").fallback_release_tag\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(check_versions, "REPO_ROOT", tmp_path)
-
-    with pytest.raises(ValueError, match="RELEASING.md.*stale fallback tag"):
+    with pytest.raises(ValueError, match=message):
         check_versions._check_release_asset_hydration()
 
 
@@ -2974,17 +2870,6 @@ def test_version_check_rejects_extra_release_notes(tmp_path, monkeypatch):
     (notes / "release-notes-v9.8.6.md").write_text("Old.\n", encoding="utf-8")
     with pytest.raises(ValueError, match="must hold only release-notes-v9.8.7.md"):
         check_versions._check_only_current_release_notes(version)
-
-
-def _gate_errors(name, mutate):
-    """Errors of a workflow's gate check after `mutate` edits its parsed jobs."""
-    workflow = check_workflows.yaml.safe_load(
-        (check_workflows.WORKFLOW_DIR / name).read_text(encoding="utf-8")
-    )
-    mutate(workflow["jobs"])
-    errors: list[str] = []
-    check_workflows._check_required_gates(name, check_workflows.yaml.safe_dump(workflow), errors)
-    return "; ".join(errors)
 
 
 def _step_with(jobs, job, needle):
@@ -3196,9 +3081,7 @@ def test_only_the_publish_job_publishes_and_it_never_runs_the_candidate(mutate, 
     ],
 )
 def test_promotion_job_permissions_are_exact(job, permissions):
-    workflow = check_workflows.yaml.safe_load(
-        (check_workflows.WORKFLOW_DIR / "release-promote.yml").read_text(encoding="utf-8")
-    )
+    workflow = _workflow("release-promote.yml")
     workflow["jobs"][job]["permissions"] = permissions
     errors: list[str] = []
 
@@ -3214,9 +3097,7 @@ def test_promotion_job_permissions_are_exact(job, permissions):
 
 
 def test_only_the_publish_job_of_promotion_can_write():
-    workflow = check_workflows.yaml.safe_load(
-        (check_workflows.WORKFLOW_DIR / "release-promote.yml").read_text(encoding="utf-8")
-    )
+    workflow = _workflow("release-promote.yml")
     writers = [
         name for name, job in workflow["jobs"].items() if "write" in job["permissions"].values()
     ]
@@ -3234,7 +3115,7 @@ def test_only_the_publish_job_of_promotion_can_write():
     ("mutate", "message"),
     [
         (
-            lambda jobs: _drop_step(jobs["rust-tests"], "Build and verify the pinned DeepFilter runtime"),
+            lambda jobs: _drop(jobs["rust-tests"], "Build and verify the pinned DeepFilter runtime"),
             "missing required DeepFilter gate 'python/tools/fetch_release_assets.py'",
         ),
         (
@@ -3295,9 +3176,7 @@ def test_ci_rust_tests_scan_for_the_skip_lines_the_tests_print():
     """The scan pattern matches every skip notice in rust-core's tests and no test name."""
     import re
 
-    workflow = check_workflows.yaml.safe_load(
-        (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
-    )
+    workflow = _workflow("ci.yml")
     run = _step_named(workflow["jobs"]["rust-tests"], "Rust tests")["run"]
     scan = re.search(r"-Pattern '([^']+)'", run)
     assert scan is not None
@@ -3357,22 +3236,14 @@ def test_release_rust_tests_enable_deepfilter_and_fail_on_skips(mutate, message)
 def test_ci_and_release_scan_the_rust_test_output_for_the_same_skip_notices():
     scans = set()
     for workflow in ("ci.yml", "release-package.yml"):
-        document = check_workflows.yaml.safe_load(
-            (check_workflows.WORKFLOW_DIR / workflow).read_text(encoding="utf-8")
-        )
+        document = _workflow(workflow)
         run = _step_named(document["jobs"]["rust-tests"], "Rust tests")["run"]
         scans.add(next(line for line in run.splitlines() if "-Pattern" in line))
     assert len(scans) == 1
 
 
-def _package_check():
-    return check_workflows.yaml.safe_load(
-        (check_workflows.WORKFLOW_DIR / "package-check.yml").read_text(encoding="utf-8")
-    )
-
-
 def test_package_check_runs_on_master_pushes_and_on_pull_requests_touching_packaging():
-    workflow = _package_check()
+    workflow = _workflow("package-check.yml")
     triggers = workflow.get("on", workflow.get(True))
     assert set(triggers) == {"push", "pull_request"}
     assert triggers["push"] == {"branches": ["master"]}
@@ -3394,7 +3265,7 @@ def test_package_check_runs_on_master_pushes_and_on_pull_requests_touching_packa
 
 
 def test_package_check_accepts_the_wix_eula_in_every_msi_build():
-    runs = "\n".join(str(step.get("run", "")) for step in _package_check()["jobs"]["package"]["steps"])
+    runs = "\n".join(str(step.get("run", "")) for step in _workflow("package-check.yml")["jobs"]["package"]["steps"])
     assert runs.count("build_msi.ps1") == runs.count("-AcceptWixEula") == 2
 
 
@@ -3432,7 +3303,7 @@ def test_package_check_publishes_and_uploads_nothing(step):
 
 
 def test_package_check_builds_with_the_project_interpreter_and_the_pinned_ort():
-    source = (check_workflows.WORKFLOW_DIR / "package-check.yml").read_text(encoding="utf-8")
+    source = _workflow_text("package-check.yml")
     errors: list[str] = []
 
     check_workflows._check_python_runtime("package-check.yml", source, errors)
@@ -3574,12 +3445,6 @@ def test_semgrep_run_fails_before_scanning_when_a_collection_cannot_be_fetched(
     assert "git fetch failed" in capsys.readouterr().err
 
 
-def _load_workflow(name):
-    return check_workflows.yaml.safe_load(
-        (check_workflows.WORKFLOW_DIR / name).read_text(encoding="utf-8")
-    )
-
-
 @pytest.mark.parametrize("workflow", sorted(check_workflows.DISPATCH_WORKFLOWS))
 @pytest.mark.parametrize(
     "triggers",
@@ -3594,7 +3459,7 @@ def _load_workflow(name):
     ],
 )
 def test_dispatch_workflows_accept_no_trigger_but_workflow_dispatch(workflow, triggers):
-    document = _load_workflow(workflow)
+    document = _workflow(workflow)
     errors: list[str] = []
     check_workflows._check_triggers_and_expressions(workflow, document, errors)
     assert errors == []
@@ -3607,7 +3472,7 @@ def test_dispatch_workflows_accept_no_trigger_but_workflow_dispatch(workflow, tr
 
 
 def test_other_workflows_may_keep_their_own_triggers():
-    document = _load_workflow("ci.yml")
+    document = _workflow("ci.yml")
     errors: list[str] = []
     check_workflows._check_triggers_and_expressions("ci.yml", document, errors)
     assert errors == []
@@ -3623,7 +3488,7 @@ def test_other_workflows_may_keep_their_own_triggers():
     ),
 )
 def test_no_checkout_keeps_its_token(workflow):
-    document = _load_workflow(workflow)
+    document = _workflow(workflow)
     checkouts = [
         step
         for job in document["jobs"].values()
@@ -3651,7 +3516,7 @@ def test_no_checkout_keeps_its_token(workflow):
 def test_the_privileged_job_of_each_dispatch_workflow_is_bound_to_the_release_environment(
     workflow, job
 ):
-    assert _load_workflow(workflow)["jobs"][job]["environment"] == "release"
+    assert _workflow(workflow)["jobs"][job]["environment"] == "release"
     assert f"{job} must use environment: release" in _gate_errors(
         workflow, lambda jobs: jobs[job].pop("environment")
     )
@@ -3669,7 +3534,7 @@ def test_the_read_only_verification_job_declares_no_environment():
 
 
 def test_promotion_stages_and_uploads_the_release_files_before_the_candidate_runs():
-    steps = _load_workflow("release-promote.yml")["jobs"]["verify-candidate"]["steps"]
+    steps = _workflow("release-promote.yml")["jobs"]["verify-candidate"]["steps"]
     names = [step.get("name", step.get("uses", "")) for step in steps]
     stage = names.index("Stage the release assets")
     upload = next(i for i, step in enumerate(steps) if str(step.get("uses", "")).startswith("actions/upload-artifact@"))
@@ -3732,7 +3597,7 @@ def test_the_rust_skip_scan_must_fail_the_step(workflow, edit, expected):
 
 
 def test_package_check_watches_every_input_of_the_bundle_build():
-    workflow = _package_check()
+    workflow = _workflow("package-check.yml")
     paths = workflow.get("on", workflow.get(True))["pull_request"]["paths"]
     for packaged in (
         "rust-toolchain.toml",
@@ -3842,7 +3707,7 @@ def test_cache_cleanup_stays_a_bare_gh_script():
 
 
 def test_actions_write_belongs_to_the_cache_cleanup_job_alone():
-    cleanup = _load_workflow("cache-cleanup.yml")
+    cleanup = _workflow("cache-cleanup.yml")
     errors: list[str] = []
     check_workflows._check_permissions("cache-cleanup.yml", cleanup, errors)
     assert errors == []
@@ -3851,7 +3716,7 @@ def test_actions_write_belongs_to_the_cache_cleanup_job_alone():
     check_workflows._check_permissions("cache-cleanup.yml", cleanup, errors)
     assert errors == ["cache-cleanup.yml: cleanup must have only actions: write"]
 
-    weekly = _load_workflow("weekly-checks.yml")
+    weekly = _workflow("weekly-checks.yml")
     weekly["jobs"]["audit"]["permissions"] = {"actions": "write"}
     errors = []
     check_workflows._check_permissions("weekly-checks.yml", weekly, errors)
@@ -3881,7 +3746,7 @@ def test_weekly_checks_publish_nothing_and_hydrate_source_uncached():
     ],
 )
 def test_ci_keeps_the_deepfilter_restore_and_the_workflow_lint(job, step, expected):
-    assert expected in _ci_errors(lambda jobs: _drop_step(jobs[job], step))
+    assert expected in _ci_errors(lambda jobs: _drop(jobs[job], step))
 
 
 def test_the_cached_deepfilter_runtime_is_keyed_on_the_recipe():

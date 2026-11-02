@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 from mic_eq import config
 from mic_eq.config import GateSettings, Preset, load_preset, save_preset
 
@@ -67,62 +69,39 @@ def test_backward_compatibility_defaults():
     assert loaded.gate.gate_margin_db == 10.0
 
 
-def test_legacy_explicit_vad_value_is_preserved_without_retroactive_guessing():
-    old_preset_data = {
-        "name": "Legacy VAD Default",
-        "version": "1.5.0",
-        "gate": {
-            "enabled": True,
-            "threshold_db": -40.0,
-            "attack_ms": 10.0,
-            "release_ms": 100.0,
-            "vad_threshold": 0.5,
-        },
-    }
+@pytest.mark.parametrize(
+    ("version", "gate", "provenance", "threshold", "recorded"),
+    [
+        (
+            "1.5.0",
+            {
+                "enabled": True,
+                "threshold_db": -40.0,
+                "attack_ms": 10.0,
+                "release_ms": 100.0,
+                "vad_threshold": 0.5,
+            },
+            None,
+            0.5,
+            "explicit",
+        ),
+        ("1.9.0", {"vad_threshold": 0.4}, None, 0.4, "explicit"),
+        ("1.9.0", {"vad_threshold": 0.4}, {"gate.vad_threshold": "migration_default"}, 0.48, "migration_default"),
+        ("1.9.0", {"vad_threshold": 0.43}, None, 0.43, "explicit"),
+    ],
+    ids=["legacy-explicit", "v19-explicit", "known-migration-default", "nondefault-v19"],
+)
+def test_migration_keeps_explicit_vad_values_and_moves_the_known_default(
+    version, gate, provenance, threshold, recorded
+):
+    payload = {"name": "VAD threshold migration", "version": version, "gate": gate}
+    if provenance is not None:
+        payload["value_provenance"] = provenance
 
-    loaded = Preset.from_dict(old_preset_data)
+    loaded = Preset.from_dict(payload)
 
-    assert loaded.gate.vad_threshold == 0.5
-    assert loaded.value_provenance["gate.vad_threshold"] == "explicit"
-
-
-def test_v19_explicit_vad_value_is_preserved_without_retroactive_guessing():
-    loaded = Preset.from_dict(
-        {
-            "name": "Version 1.9 VAD Default",
-            "version": "1.9.0",
-            "gate": {"vad_threshold": 0.4},
-        }
-    )
-
-    assert loaded.gate.vad_threshold == 0.4
-    assert loaded.value_provenance["gate.vad_threshold"] == "explicit"
-
-
-def test_known_migration_default_can_move_to_current_calibration():
-    loaded = Preset.from_dict(
-        {
-            "name": "Version 1.9 inherited VAD default",
-            "version": "1.9.0",
-            "gate": {"vad_threshold": 0.4},
-            "value_provenance": {"gate.vad_threshold": "migration_default"},
-        }
-    )
-
-    assert loaded.gate.vad_threshold == 0.48
-    assert loaded.value_provenance["gate.vad_threshold"] == "migration_default"
-
-
-def test_nondefault_v19_vad_threshold_is_preserved():
-    loaded = Preset.from_dict(
-        {
-            "name": "Version 1.9 Custom VAD",
-            "version": "1.9.0",
-            "gate": {"vad_threshold": 0.43},
-        }
-    )
-
-    assert loaded.gate.vad_threshold == 0.43
+    assert loaded.gate.vad_threshold == threshold
+    assert loaded.value_provenance["gate.vad_threshold"] == recorded
 
 
 def test_preset_migration_does_not_mutate_caller_payload():

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+from typing import Any
 
 import pytest
 
@@ -16,7 +17,7 @@ import check_versions
 import check_workflows
 
 
-def _workflow(name: str = "release-package.yml") -> dict:
+def _workflow(name: str = "release-package.yml") -> Any:
     return check_workflows.yaml.safe_load(
         (check_workflows.WORKFLOW_DIR / name).read_text(encoding="utf-8")
     )

@@ -83,13 +83,14 @@ def test_deepfilter_bootstrap_ignores_cwd_assets(tmp_path, monkeypatch):
     assert registrations == []
 
 
-def test_deepfilter_bootstrap_uses_trusted_runtime_root(tmp_path, monkeypatch, restore_deepfilter_enable):
+@pytest.mark.parametrize("low_latency", [True, False], ids=["low-latency-model", "standard-model-when-ll-absent"])
+def test_deepfilter_bootstrap_uses_trusted_runtime_root(tmp_path, monkeypatch, restore_deepfilter_enable, low_latency):
     cwd = tmp_path / "cwd"
     trusted = tmp_path / "trusted"
     cwd.mkdir()
     trusted.mkdir()
     _write_deepfilter_assets(cwd)
-    _write_deepfilter_assets(trusted)
+    _write_deepfilter_assets(trusted, low_latency=low_latency)
     monkeypatch.chdir(cwd)
     monkeypatch.delenv("AUDIOFORGE_ENABLE_DEEPFILTER", raising=False)
     monkeypatch.delenv("DEEPFILTER_LIB_PATH", raising=False)
@@ -129,23 +130,6 @@ def test_deepfilter_bootstrap_registers_bundled_assets_without_trusting_external
 
     assert app_bootstrap.os.environ["DEEPFILTER_LIB_PATH"] == str(external)
     assert app_bootstrap.os.environ["DEEPFILTER_MODEL_PATH"] == str(external_model)
-    assert registrations == [
-        (str(trusted / _deepfilter_lib_name()), str(trusted / "models"))
-    ]
-
-
-def test_deepfilter_bootstrap_uses_standard_model_when_ll_absent(tmp_path, monkeypatch, restore_deepfilter_enable):
-    trusted = tmp_path / "trusted"
-    trusted.mkdir()
-    _write_deepfilter_assets(trusted, low_latency=False)
-    monkeypatch.delenv("AUDIOFORGE_ENABLE_DEEPFILTER", raising=False)
-    monkeypatch.delenv("DEEPFILTER_LIB_PATH", raising=False)
-    monkeypatch.delenv("DEEPFILTER_MODEL_PATH", raising=False)
-    monkeypatch.setattr(app_bootstrap, "_trusted_runtime_roots", lambda: [trusted])
-    registrations = _capture_deepfilter_registration(monkeypatch)
-
-    app_bootstrap.configure_deepfilter_env()
-
     assert registrations == [
         (str(trusted / _deepfilter_lib_name()), str(trusted / "models"))
     ]

@@ -24,6 +24,7 @@ from mic_eq.analysis.failure_detection import validate_analysis
 from mic_eq.analysis.spectrum import analyze_voice_spectrum, smooth_spectrum_perceptual
 from mic_eq.ui.auto_eq_explanation import headroom_advice
 from mic_eq.ui.platform_text import SOUND_SETTINGS
+from capture_helpers import _render
 
 calculate_eq_bands = auto_eq.calculate_eq_bands
 analyze_auto_eq = auto_eq.analyze_auto_eq
@@ -553,17 +554,6 @@ def test_15a_tilt_removal_accepts_perfect_nonzero_intercept():
     assert np.allclose(detrended, np.full_like(detrended, detrended[0]))
 
 
-def test_15b_tilt_removal_rejects_flat_response():
-    freqs = _default_freqs()
-    measured_db = np.full_like(freqs, 6.0)
-
-    tilt, slope, _fit_r2 = _spectral_tilt_fit(freqs, measured_db)
-    detrended = measured_db - tilt
-
-    assert slope == 0.0
-    assert np.allclose(detrended, measured_db)
-
-
 def test_15c_tilt_removal_accepts_noisy_tilt_above_fit_threshold():
     freqs = _default_freqs()
     x = np.log10(freqs)
@@ -579,12 +569,13 @@ def test_15c_tilt_removal_accepts_noisy_tilt_above_fit_threshold():
     assert abs(residual_slope) < 0.2
 
 
-def test_15d_tilt_removal_rejects_random_response_below_fit_threshold():
-    freqs = _default_freqs()
-    rng = np.random.default_rng(1504)
-    measured_db = rng.normal(0.0, 4.0, size=freqs.size)
-
-    tilt, slope, _fit_r2 = _spectral_tilt_fit(freqs, measured_db)
+@pytest.mark.parametrize(
+    "measured_db",
+    [np.full_like(_default_freqs(), 6.0), np.random.default_rng(1504).normal(0.0, 4.0, size=_default_freqs().size)],
+    ids=["flat", "random_below_fit_threshold"],
+)
+def test_15d_tilt_removal_leaves_a_response_with_no_real_tilt_alone(measured_db):
+    tilt, slope, _fit_r2 = _spectral_tilt_fit(_default_freqs(), measured_db)
     detrended = measured_db - tilt
 
     assert slope == 0.0
@@ -1324,14 +1315,6 @@ def _harmonic_spectrum():
     return spectrum_db, freqs
 
 
-def _render(headroom, limiter=0.0, true_peak=0.0):
-    return {
-        "pre_limiter_true_peak_headroom_db": headroom,
-        "limiter_gain_reduction_db": limiter,
-        "true_peak_limiter_gain_reduction_db": true_peak,
-    }
-
-
 @pytest.mark.parametrize(
     ("full_correction", "advice"),
     [
@@ -1404,26 +1387,23 @@ def test_headroom_refusal_cuts_only_the_recordings_part_when_the_correction_adds
     assert refuse(2.5) == prefix + "Lower the gain by about 3 dB, then record again."
 
 
-@pytest.mark.parametrize("status", ["risk_not_worsened", "risk_worse"])
-def test_headroom_that_the_dialog_explains_is_not_a_refusal(status):
+@pytest.mark.parametrize(
+    "headroom",
+    [
+        {"safe": False, "authoritative": True, "status": "risk_not_worsened", "before": _render(-0.2),
+         "reference_excess_db": 1.2},
+        {"safe": False, "authoritative": True, "status": "risk_worse", "before": _render(-0.2),
+         "reference_excess_db": 1.2},
+        {"safe": False, "authoritative": False, "status": "unavailable", "reason": "native simulator unavailable"},
+    ],
+    ids=["risk_not_worsened", "risk_worse", "unavailable"],
+)
+def test_unsafe_or_unavailable_headroom_is_not_a_refusal(headroom):
     spectrum_db, freqs = _harmonic_spectrum()
 
-    validation = validate_analysis(
-        {
-            "band_gains": [0.0] * 10,
-            "headroom_validation": {
-                "safe": False,
-                "authoritative": True,
-                "status": status,
-                "before": _render(-0.2),
-                "reference_excess_db": 1.2,
-            },
-        },
-        spectrum_db,
-        freqs,
-    )
+    validation = validate_analysis({"band_gains": [0.0] * 10, "headroom_validation": headroom}, spectrum_db, freqs)
 
-    assert all("headroom" not in reason for reason in validation.details["failures"])
+    assert all("headroom" not in reason.lower() for reason in validation.details["failures"])
     assert validation.details["headroom_safe"] is False
 
 
@@ -1495,36 +1475,6 @@ def test_the_pipeline_raises_a_value_error_that_carries_the_failures(
 
     assert isinstance(raised.value, AnalysisValidationError)
     assert raised.value.failures == failures
-
-
-def test_unavailable_headroom_is_unknown_not_a_capture_quality_failure():
-    sample_rate = 48_000
-    time = np.arange(sample_rate * 3) / sample_rate
-    freqs = np.fft.rfftfreq(time.size, 1.0 / sample_rate)
-    audio = sum(
-        0.1 / harmonic * np.sin(2 * np.pi * 150 * harmonic * time)
-        for harmonic in range(1, 26)
-    )
-    spectrum_db = 10.0 * np.log10(
-        np.maximum(np.square(np.abs(np.fft.rfft(audio))), 1.0e-12)
-    )
-
-    validation = validate_analysis(
-        {
-            "band_gains": [0.0] * 10,
-            "headroom_validation": {
-                "safe": False,
-                "authoritative": False,
-                "status": "unavailable",
-                "reason": "native simulator unavailable",
-            },
-        },
-        spectrum_db,
-        freqs,
-    )
-
-    assert all("headroom" not in reason.lower() for reason in validation.details["failures"])
-    assert validation.details["headroom_safe"] is False
 
 
 def test_28_unavailable_headroom_does_not_fabricate_metrics(monkeypatch):
@@ -1977,31 +1927,21 @@ def test_headroom_takes_the_typed_fields_of_a_payload_shaped_like_the_eq_state()
     assert config.EQSettings.from_dict(typed).to_dict() == config.EQSettings().to_dict()
 
 
-def test_headroom_accepts_the_eq_state_payload_as_the_incumbent(monkeypatch):
-    _fake_chain(monkeypatch, headroom=4.0)
-    state_payload = config.EQSettings().to_dict() | {
-        "band_freqs": list(EQ_FREQUENCIES),
-        "band_gains": [0.0] * 10,
-        "band_qs": [1.41] * 10,
-    }
-
-    result = apply_headroom_validation(
-        np.zeros(480, dtype=np.float32), 48_000, _candidate_fit(CUT_HEAVY), _FULL_CHAIN,
-        candidate_base_eq_settings=state_payload,
-    )
-
-    assert result["headroom_validation"]["status"] == "safe"
-    assert result["validated_candidate_eq"] is not None
-
-
-def test_headroom_still_takes_a_legacy_only_incumbent(monkeypatch):
+@pytest.mark.parametrize(
+    "incumbent",
+    [
+        config.EQSettings().to_dict()
+        | {"band_freqs": list(EQ_FREQUENCIES), "band_gains": [0.0] * 10, "band_qs": [1.41] * 10},
+        {"band_freqs": list(EQ_FREQUENCIES), "band_gains": [0.0] * 10, "band_qs": [1.41] * 10},
+    ],
+    ids=["eq_state_payload", "legacy_only"],
+)
+def test_headroom_accepts_the_eq_state_payload_or_legacy_bands_as_the_incumbent(monkeypatch, incumbent):
     _fake_chain(monkeypatch, headroom=4.0)
 
     result = apply_headroom_validation(
         np.zeros(480, dtype=np.float32), 48_000, _candidate_fit(CUT_HEAVY), _FULL_CHAIN,
-        candidate_base_eq_settings={
-            "band_freqs": list(EQ_FREQUENCIES), "band_gains": [0.0] * 10, "band_qs": [1.41] * 10,
-        },
+        candidate_base_eq_settings=incumbent,
     )
 
     assert result["headroom_validation"]["status"] == "safe"

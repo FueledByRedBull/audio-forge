@@ -210,23 +210,17 @@ def test_login_with_a_saved_specific_microphone_starts_at_once_whatever_the_defa
     window.processor.start.assert_called_once()
 
 
-def test_stop_cancels_pending_start_even_when_audio_was_never_running(startup_window):
+@pytest.mark.parametrize("cancel", [
+    lambda window, _monkeypatch: window.stop_btn_action.trigger(),
+    lambda _window, monkeypatch: monkeypatch.setattr(
+        main_window.login_startup, "registration_state", lambda _: "absent"
+    ),
+], ids=["stop", "external-opt-out"])
+def test_stop_or_opt_out_cancels_pending_start_even_when_audio_was_never_running(startup_window, monkeypatch, cancel):
     window, clock, devices = startup_window
     devices["output"] = []
     window.begin_login_startup()
-    window.stop_btn_action.trigger()
-    devices["output"] = [_endpoint("Cable", "render-A")]
-    clock[0] += 2
-    window._service_login_startup()
-    window.processor.start.assert_not_called()
-    assert window._login_startup_deadline is None
-
-
-def test_external_opt_out_cancels_pending_start(startup_window, monkeypatch):
-    window, clock, devices = startup_window
-    devices["output"] = []
-    window.begin_login_startup()
-    monkeypatch.setattr(main_window.login_startup, "registration_state", lambda _: "absent")
+    cancel(window, monkeypatch)
     devices["output"] = [_endpoint("Cable", "render-A")]
     clock[0] += 2
     window._service_login_startup()

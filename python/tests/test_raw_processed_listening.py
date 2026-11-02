@@ -1,4 +1,6 @@
 """Checks for the two-clip Raw/Processed dialog and its capture entry point."""
+# pyright: reportMissingImports=false
+# (the sibling test modules are found by pytest at run time)
 
 from __future__ import annotations
 
@@ -18,15 +20,7 @@ from mic_eq.ui.listening_comparison_dialog import (
     RawProcessedDialog,
     open_test_my_sound,
 )
-
-
-def _settings() -> dict:
-    return {
-        "enabled": True,
-        "band_freqs": [100.0, 200.0, 400.0, 800.0, 1200.0, 2400.0, 4800.0, 8000.0, 12000.0, 16000.0],
-        "band_gains": [0.0] * 10,
-        "band_qs": [1.41] * 10,
-    }
+from test_listening_comparison import _settings
 
 
 @pytest.fixture

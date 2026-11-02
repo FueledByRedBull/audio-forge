@@ -9,7 +9,7 @@ import json
 import numpy as np
 import pytest
 
-from mic_eq.config import AppConfig, Preset, build_eq_candidate_settings
+from mic_eq.config import Preset, build_eq_candidate_settings
 from mic_eq.config_parts.shared import PresetValidationError
 from mic_eq.ui.config_history import (
     BoundedConfigurationHistory,
@@ -142,28 +142,18 @@ def test_routing_back_to_a_calibrated_route_is_not_an_entry_and_undo_restores_it
     assert history.current.label == "E1"
 
 
-def test_a_route_that_drops_out_and_comes_back_is_not_an_entry() -> None:
-    history = BoundedConfigurationHistory()
-    history.initialize(_on_route(-40.0, "K1", 0.7))
+@pytest.mark.parametrize(("records", "size"), [
     # A device briefly gone leaves no route key; coming back returns the saved calibration.
-    assert not history.record(_on_route(-40.0, None, 0.0))
-    assert not history.record(_on_route(-40.0, "K1", 0.7))
-    assert history.size == 1
-
-
-def test_clearing_a_calibration_on_the_same_route_is_one_entry() -> None:
+    ([(None, 0.0, False), ("K1", 0.7, False)], 1),
+    ([("K1", 0.0, True)], 2),
+    ([("K2", 0.0, False), ("K2", 0.7, True)], 2),
+], ids=["route-drops-out-and-returns", "calibration-cleared-on-same-route", "recalibration-matches-old-route"])
+def test_a_route_gap_is_not_an_entry_but_a_calibration_change_is(records, size) -> None:
     history = BoundedConfigurationHistory()
     history.initialize(_on_route(-40.0, "K1", 0.7))
-    assert history.record(_on_route(-40.0, "K1", 0.0))
-    assert history.size == 2
-
-
-def test_a_recalibration_matching_the_old_routes_reliability_is_one_entry() -> None:
-    history = BoundedConfigurationHistory()
-    history.initialize(_on_route(-40.0, "K1", 0.7))
-    assert not history.record(_on_route(-40.0, "K2", 0.0))
-    assert history.record(_on_route(-40.0, "K2", 0.7))
-    assert history.size == 2
+    for route, reliability, recorded in records:
+        assert history.record(_on_route(-40.0, route, reliability)) is recorded
+    assert history.size == size
 
 
 def test_the_redo_branch_survives_a_route_change() -> None:
@@ -570,10 +560,7 @@ def test_failed_configuration_restores_sound_or_stops_muted(window, monkeypatch,
 def test_configuration_rollback_stop_failure_keeps_mute_and_reports_stop_failure(
     qapp, monkeypatch
 ):
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    for name in ("list_presets", "list_input_devices", "list_output_devices"):
-        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
+    quick_shell._load_config_without_devices(monkeypatch)
     window = MainWindow()
     original_processor = window.processor
 

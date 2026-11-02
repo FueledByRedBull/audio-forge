@@ -372,46 +372,38 @@ def test_historical_hardware_report_requires_redaction_provenance(tmp_path: Path
     assert any("lacks privacy-redaction provenance" in error for error in errors)
 
 
-def test_nonfinite_numeric_values_are_rejected_recursively(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ('{"nested": {"value": 1e1000}}', "non-finite numeric value"),
+        ('{"nested": [NaN]}', "invalid JSON"),
+    ],
+    ids=["overflowing-number", "nonstandard-constant"],
+)
+def test_nonfinite_numeric_values_are_rejected_recursively(tmp_path: Path, text: str, message: str):
     path = tmp_path / "report.json"
-    path.write_text('{"nested": {"value": 1e1000}}', encoding="utf-8")
+    path.write_text(text, encoding="utf-8")
 
     errors = hygiene.validate_report(path)
 
-    assert any("non-finite numeric value" in error for error in errors)
+    assert any(message in error for error in errors)
 
 
-def test_nonstandard_json_constants_are_rejected(tmp_path: Path):
-    path = tmp_path / "report.json"
-    path.write_text('{"nested": [NaN]}', encoding="utf-8")
-
-    errors = hygiene.validate_report(path)
-
-    assert any("invalid JSON" in error for error in errors)
-
-
-def test_runtime_metrics_must_be_nonnegative_numbers(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [(-0.001, "non-negative"), (True, "finite nonnegative number")],
+    ids=["negative", "boolean"],
+)
+def test_runtime_metrics_must_be_nonnegative_numbers(tmp_path: Path, value, message: str):
     path = tmp_path / "report.json"
     contract = _contract()
-    contract["runtime"] = {"max_p99_frame_seconds": -0.001}
+    contract["runtime"] = {"max_p99_frame_seconds": value}
     _write(path, _audible_report(evaluation_contract=contract))
 
     errors = hygiene.validate_report(path)
 
     assert any("runtime.max_p99_frame_seconds" in error for error in errors)
-    assert any("non-negative" in error for error in errors)
-
-
-def test_runtime_boolean_measurements_are_rejected(tmp_path: Path):
-    path = tmp_path / "report.json"
-    contract = _contract()
-    contract["runtime"] = {"max_p99_frame_seconds": True}
-    _write(path, _audible_report(evaluation_contract=contract))
-
-    errors = hygiene.validate_report(path)
-
-    assert any("runtime.max_p99_frame_seconds" in error for error in errors)
-    assert any("finite nonnegative number" in error for error in errors)
+    assert any(message in error for error in errors)
 
 
 @pytest.mark.parametrize("value", ["1", {}, [], None, True])

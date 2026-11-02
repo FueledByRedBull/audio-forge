@@ -470,14 +470,9 @@ def _anonymous(window, qapp) -> list[str]:
     return found
 
 
-def test_no_interactive_item_in_the_scene_is_without_a_name(quick_window, qapp) -> None:
+def test_no_interactive_item_in_the_scene_is_without_a_name(either_window, qapp) -> None:
     with _AccessibleScene():
-        assert _anonymous(quick_window, qapp) == []
-
-
-def test_no_interactive_item_is_without_a_name_with_the_icon_font(icon_window, qapp) -> None:
-    with _AccessibleScene():
-        assert _anonymous(icon_window, qapp) == []
+        assert _anonymous(either_window, qapp) == []
 
 
 def test_names_are_short_labels_and_none_starts_with_a_colon(icon_window, qapp) -> None:

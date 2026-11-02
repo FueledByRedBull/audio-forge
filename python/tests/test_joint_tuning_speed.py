@@ -11,6 +11,7 @@ import pytest
 
 from mic_eq.analysis import joint_tuning
 from mic_eq.config import Preset
+from capture_helpers import _downstream_metrics
 
 
 def _args() -> tuple[Any, ...]:
@@ -29,21 +30,6 @@ def _args() -> tuple[Any, ...]:
         asdict(preset.deesser),
         asdict(preset.limiter),
     )
-
-
-def _downstream_metrics(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-    return {
-        "simulation_backend": "rust",
-        "compressor_gain_reduction_p95_db": 3.5,
-        "compressor_gain_reduction_median_db": 1.47,
-        "compressor_gain_reduction_db": 4.0,
-        "compressor_pumping_score_db": 0.0,
-        "output_true_peak_db": -1.0,
-        "limiter_effective_ceiling_db": -0.5,
-        "pre_limiter_true_peak_headroom_db": 1.0,
-        "non_finite_output": False,
-        "candidate_runtime_ms": 0.0,
-    }
 
 
 class _FakeSuppressor:

@@ -199,16 +199,10 @@ def test_the_reason_is_read_only_selectable_and_cannot_push_the_buttons_off_scre
         assert button.mapTo(failed_window, button.rect().bottomLeft()).y() < failed_window.height()
 
 
-def test_a_failed_bridge_leaves_no_live_bridge_behind(qapp, monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("failure", [_bridge_raises, _scene_not_ready], ids=["bridge-raises", "scene-not-ready"])
+def test_a_failed_bridge_leaves_no_live_bridge_behind(qapp, monkeypatch, tmp_path, failure) -> None:
     _load_config_without_devices(monkeypatch)
-    window, *_ = _bridge_raises(MainWindow, monkeypatch, tmp_path)
-    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-    assert window.findChildren(QuickBridge) == []
-
-
-def test_a_scene_that_does_not_load_leaves_no_live_bridge_behind(qapp, monkeypatch, tmp_path) -> None:
-    _load_config_without_devices(monkeypatch)
-    window, *_ = _scene_not_ready(MainWindow, monkeypatch, tmp_path)
+    window, *_ = failure(MainWindow, monkeypatch, tmp_path)
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     assert window.findChildren(QuickBridge) == []
 

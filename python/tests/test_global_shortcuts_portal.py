@@ -309,20 +309,9 @@ def test_a_refused_portal_bind_disables_the_hotkey(qapp, session_bus):
     assert not hotkey.registered
 
 
-def test_without_the_portal_the_hotkey_asks_for_a_desktop_key_binding(qapp, session_bus):
-    from mic_eq.ui.desktop_integration import GlobalMuteHotkey
-
-    reasons, failures = [], []
-    hotkey = GlobalMuteHotkey("Ctrl+Alt+M", lambda: None, failures.append, reasons.append)
-    try:
-        assert hotkey.register() == (True, None)
-        assert _wait_for(qapp, lambda: reasons)
-    finally:
-        hotkey.unregister()
-    assert "--toggle-mute" in reasons[0] and failures == []
-
-
-def test_without_a_session_bus_the_hotkey_asks_for_a_desktop_key_binding(qapp, no_session_bus):
+@pytest.mark.parametrize("bus", ["session_bus", "no_session_bus"], ids=["no-portal", "no-session-bus"])
+def test_without_the_portal_the_hotkey_asks_for_a_desktop_key_binding(qapp, request, bus):
+    request.getfixturevalue(bus)
     from mic_eq.ui.desktop_integration import GlobalMuteHotkey
 
     reasons, failures = [], []

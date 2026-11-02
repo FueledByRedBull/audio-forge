@@ -42,11 +42,7 @@ from mic_eq.ui.theme import PALETTE
 
 @pytest.fixture
 def quick_window(qapp, monkeypatch):
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
-    monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
-    monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
+    _load_config_without_devices(monkeypatch)
     scene_messages: list[str] = []
     previous = qInstallMessageHandler(
         lambda _mode, _context, message: scene_messages.append(message)
@@ -254,10 +250,7 @@ def test_a_quick_session_keeps_the_scene_from_start_to_close(quick_window, monke
 
 
 def test_failed_gate_initialization_retains_configuration_recovery_barrier(qapp, monkeypatch) -> None:
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    for name in ("list_presets", "list_input_devices", "list_output_devices"):
-        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
+    _load_config_without_devices(monkeypatch)
 
     def fail_gate(*_args):
         raise RuntimeError("gate unavailable during initialization and recovery")

@@ -223,14 +223,6 @@ def test_clipping_is_held_for_the_window_and_says_so_more_strongly(running_windo
     assert window.shell_texts["input_health_label"].state == "bad"
 
 
-def test_the_old_input_clip_counter_no_longer_drives_the_input_line(running_window):
-    window = running_window
-    window.engine.diagnostics = {"clip_event_count": 40}
-    window._update_meters()
-    _tick_diagnostics(window)
-    assert window.shell_texts["input_health_label"].state == "ok"
-
-
 def test_the_old_clip_counters_do_not_raise_the_drops_row_or_the_summary(running_window):
     window = running_window
     window.engine.diagnostics = {"clip_event_count": 40, "output_clip_event_count": 3}

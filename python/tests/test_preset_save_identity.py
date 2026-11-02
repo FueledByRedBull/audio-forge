@@ -19,13 +19,7 @@ from test_eq_editing_state import eq_control
 from test_gate_controls_state import window_gate_control
 
 
-def test_saved_processing_settings_restore_on_next_launch(qapp, monkeypatch, tmp_path):
-    from mic_eq.config_parts import shared
-
-    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
-    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
-    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
-
+def test_saved_processing_settings_restore_on_next_launch(qapp, config_in_tmp_without_devices):
     window = MainWindow()
     try:
         eq_control(window, "gain", 4).setValue(23.0)
@@ -54,14 +48,9 @@ def test_saved_processing_settings_restore_on_next_launch(qapp, monkeypatch, tmp
 
 
 def test_raw_mode_save_is_session_only_and_close_save_reloads_normal(
-    qapp, monkeypatch, tmp_path
+    qapp, config_in_tmp_without_devices, monkeypatch
 ):
     from mic_eq.config import get_presets_dir, load_preset
-    from mic_eq.config_parts import shared
-
-    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
-    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
-    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
 
     window = MainWindow()
     restored = None
@@ -119,14 +108,9 @@ def test_raw_mode_save_is_session_only_and_close_save_reloads_normal(
 
 
 def test_invalid_last_used_preset_falls_back_with_persistent_warning(
-    qapp, monkeypatch, tmp_path
+    qapp, config_in_tmp_without_devices
 ):
     from mic_eq.config import get_presets_dir
-    from mic_eq.config_parts import shared
-
-    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
-    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
-    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
 
     broken = get_presets_dir() / "broken.json"
     broken.write_text("{invalid json", encoding="utf-8")
@@ -143,6 +127,15 @@ def test_invalid_last_used_preset_falls_back_with_persistent_warning(
         window.close()
         window.deleteLater()
         qapp.processEvents()
+
+
+@pytest.fixture
+def config_in_tmp_without_devices(monkeypatch, tmp_path):
+    from mic_eq.config_parts import shared
+
+    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
+    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
 
 
 def _save_window(tmp_path: Path) -> MainWindow:
@@ -210,13 +203,11 @@ def test_import_collision_preserves_previous_preset(qapp, monkeypatch, tmp_path,
 
 
 @pytest.mark.parametrize("strength", [0.735, 0.29, 0.0, 1.0])
-def test_preset_strength_round_trip_matches_live_processor(qapp, monkeypatch, tmp_path, strength):
+def test_preset_strength_round_trip_matches_live_processor(
+    qapp, config_in_tmp_without_devices, strength
+):
     from mic_eq.config import load_preset
-    from mic_eq.config_parts import shared
 
-    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
-    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
-    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
     window = MainWindow()
     strength_control = next(
         row["proxy"] for row in cast(Any, window).quick_bridge.model["stages"][0]["rows"]
@@ -287,13 +278,8 @@ def test_non_grid_dynamics_values_survive_restore_and_snapshot(qapp, monkeypatch
     False, OSError("disk full"), pytest.param(ValueError("non-finite value"), id="write_result3"),
 ])
 def test_close_stops_processing_before_reporting_settings_failure(
-    qapp, monkeypatch, tmp_path, write_result,
+    qapp, config_in_tmp_without_devices, monkeypatch, write_result,
 ):
-    from mic_eq.config_parts import shared
-
-    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
-    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
-    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
     window = MainWindow()
     events = []
     original_processor = window.processor
@@ -593,36 +579,23 @@ def test_route_preset_file_id_takes_precedence_over_legacy_name_collision(
     assert loaded_paths == [filename_match]
 
 
-def test_route_preset_ambiguous_legacy_name_is_rejected(monkeypatch, tmp_path):
-    presets = [
-        ("Duplicate", tmp_path / "first.json"),
-        ("Duplicate", tmp_path / "second.json"),
-    ]
-    monkeypatch.setattr(main_window, "list_presets", lambda: presets)
-    apply_preset = Mock(return_value=True)
-    window = cast(Any, MainWindow.__new__(MainWindow))
-    window._apply_preset = apply_preset
-
-    assert not MainWindow._load_device_preset_id(window, "custom:Duplicate")
-    apply_preset.assert_not_called()
-
-
-def test_route_preset_legacy_filename_collision_with_display_name_is_rejected(
-    monkeypatch, tmp_path
-):
-    filename_match = tmp_path / "Shared.json"
-    display_name_match = tmp_path / "other.json"
-    presets = [
-        ("First", filename_match),
-        ("Shared.json", display_name_match),
-    ]
+@pytest.mark.parametrize(
+    ("entries", "preset_id"),
+    [
+        ((("Duplicate", "first.json"), ("Duplicate", "second.json")), "custom:Duplicate"),
+        ((("First", "Shared.json"), ("Shared.json", "other.json")), "custom:Shared.json"),
+    ],
+    ids=["duplicate_display_name", "filename_matches_another_display_name"],
+)
+def test_route_preset_ambiguous_legacy_name_is_rejected(monkeypatch, tmp_path, entries, preset_id):
+    presets = [(name, tmp_path / filename) for name, filename in entries]
     monkeypatch.setattr(main_window, "list_presets", lambda: presets)
     monkeypatch.setattr(main_window, "load_preset", lambda _path: Preset())
     apply_preset = Mock(return_value=True)
     window = cast(Any, MainWindow.__new__(MainWindow))
     window._apply_preset = apply_preset
 
-    assert not MainWindow._load_device_preset_id(window, "custom:Shared.json")
+    assert not MainWindow._load_device_preset_id(window, preset_id)
     apply_preset.assert_not_called()
 
 
@@ -760,14 +733,9 @@ def test_unsaved_decision_preserves_failed_or_cancelled_saves(monkeypatch, reply
     assert window._save_preset.call_count == int(reply == QMessageBox.StandardButton.Save)
 
 
-def test_active_preset_identity_tracks_edit_history_and_restart(qapp, monkeypatch, tmp_path) -> None:
-    from mic_eq.config_parts import shared
-    from mic_eq.ui import main_window
-
-    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
-    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
-    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
-
+def test_active_preset_identity_tracks_edit_history_and_restart(
+    qapp, config_in_tmp_without_devices
+) -> None:
     window = MainWindow()
     try:
         preset = window._get_current_preset()

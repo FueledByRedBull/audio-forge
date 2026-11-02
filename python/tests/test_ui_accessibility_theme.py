@@ -46,6 +46,7 @@ from mic_eq.ui.theme import (
     windows_contrast_colors,
 )
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+from test_quick_shell import _load_config_without_devices
 
 
 UI_ROOT = Path(__file__).resolve().parents[1] / "mic_eq" / "ui"
@@ -439,11 +440,7 @@ def test_reduced_motion_keeps_the_meters_at_their_normal_refresh(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("AUDIOFORGE_REDUCED_MOTION", "1")
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
-    monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
-    monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
+    _load_config_without_devices(monkeypatch)
     window = MainWindow()
     assert window.meter_timer.interval() == 16
     window.processor.stop()

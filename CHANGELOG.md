@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.21.0
+
+### Output delay
+
+- Output to VB-CABLE and other VB-Audio devices on Windows opens on a 128-frame audio engine period (about 2.7 ms at 48 kHz) when the device offers one and its mix is 32-bit float at the stream's rate and channel count. Every other output keeps the standard path. The period applies to every app using the device. If the shorter stream fails while running, that device uses the standard path until the app restarts. Setting `AUDIOFORGE_FIXED_OUTPUT_BUFFER_FRAMES` to anything, 0 included, keeps the standard path.
+- Windows keeps less audio queued for output when no resampler runs: 15 ms on 10 ms callbacks and 8 ms on callbacks up to 6 ms, instead of 35 ms. Degraded scheduling keeps the older target.
+- With a USB microphone and DeepFilterNet, the delay from the microphone to CABLE Output drops from about 198 ms to about 134 ms. VB-CABLE's own delay moves by about 10 ms between starts.
+- A saved route latency reads high until you measure it again, by up to about 48 ms on VB-CABLE. This affects the displayed estimate only, never the audio.
+
+### Starting
+
+- A start plays silence until the output queue holds one callback's worth of audio plus 15 ms, which removes the dropouts most starts logged in their first half second. This applies on Windows and Linux.
+
+### Diagnostics
+
+- Exports gain `output_low_period_frames`, `output_low_period_failure_code`, `output_largest_callback_frames` and `output_sustained_callback_frames`.
+
+### Settings and presets
+
+- The config schema stays 2 and the preset format is unchanged; presets saved by 1.21.0 are stamped 1.21.0, so 1.20.0 and older refuse them as newer.
+
+### Internal
+
+- About 66 duplicate test functions and their repeated setup are gone, with no change to production code.
+
 ## v1.20.0
 
 ### Linux

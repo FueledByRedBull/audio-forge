@@ -89,9 +89,9 @@ A transition fix keeps the steady-state blocks and may only shrink the artifact
 numbers, and it regenerates the transition cases in its own pull request; the
 regenerated file differs from the old one in those cases only.
 
-Preserve strict realtime constraints in CPAL callbacks and the DSP loop after
-startup: no allocation, vector growth or Vec-returning suppressor helpers,
-formatting/logging, I/O, blocking locks, or `try_lock`. Keep parameter updates in
+Preserve strict realtime constraints in CPAL callbacks, the WASAPI render loop
+and the DSP loop after startup: no allocation, vector growth or Vec-returning
+suppressor helpers, formatting/logging, I/O, blocking locks, or `try_lock`. Keep parameter updates in
 atomic snapshots or bounded queues, and model loading and suppressor construction
 outside those regions. Live DeepFilter inference runs on a worker the DSP loop
 never waits on; the loop only polls it, and the RT scan forbids `.unpark(`.
@@ -201,9 +201,15 @@ bundled asset. `VAD_MODEL_PATH` selects the Silero model for source runs.
 `AUDIOFORGE_FIXED_INPUT_BUFFER_FRAMES` and `AUDIOFORGE_FIXED_OUTPUT_BUFFER_FRAMES`
 are optional callback-size diagnostics. Values must be 16–8192 frames and fit the
 endpoint's advertised range; an unsupported request keeps the driver default.
-On Windows, when the output variable is unset and the output is VB-Cable, the
-stream runs on a shorter shared-mode engine period if the endpoint offers one; setting
-the variable to anything, 0 included, keeps the standard WASAPI path.
+On Windows, when the output variable is unset and the output endpoint's name
+contains `VB-Audio`, the stream runs on a shorter shared-mode engine period if the
+endpoint offers one and its mix is 32-bit float at the stream's rate and channel
+count; setting the variable to anything, 0 included, keeps the standard WASAPI
+path. In a diagnostics export, `output_low_period_frames` is the period in use (0
+on the standard path) and `output_low_period_failure_code` is the Windows error
+that kept or took the stream off it. An endpoint whose short-period stream fails
+while running stays on the standard path until the app restarts, unless the device
+was removed.
 
 ## Runtime checks and screenshots
 

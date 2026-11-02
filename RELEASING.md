@@ -352,7 +352,9 @@ criteria come from a one-hour pilot on 2026-10-15.
    ```
 
 2. Choose the real microphone as input and an output endpoint nobody listens
-   to, and turn the top-bar **Mute** toggle on. Change nothing else, and don't
+   to (**CABLE Input** when the release changes the output path, since only
+   VB-Audio endpoints use the shorter period), and turn the top-bar **Mute**
+   toggle on. Change nothing else, and don't
    press **Reset drop counter**. Press **Start** (minute 0), then
    run this in a second PowerShell window:
 
@@ -387,9 +389,11 @@ It passes only if all of these hold:
 - Median CPU is under 15 seconds a minute (a quarter of one core), from the
   differences between consecutive `cpu_seconds` values.
 
-Threads, handles, `jitter_dropped_samples` and `output_retime_adjustment_count`
-are recorded, not gated. A steady climb in threads or handles is a finding to
-explain before tagging. The jitter counter adds up the samples that output drift
+Threads, handles, `jitter_dropped_samples`, `output_retime_adjustment_count`,
+`output_low_period_frames` and `output_low_period_failure_code` are recorded, not
+gated. Zero frames or a nonzero failure code means the stream wasn't on the shorter
+period, so the run didn't test it. A steady climb in threads or handles is a finding
+to explain before tagging. The jitter counter adds up the samples that output drift
 retiming trims. A route whose input and output run on separate clocks retimes
 all the time, and the Health page counts these samples neither as drops nor as
 an engine fault. Not covered: other machines and microphone routes, non-factory

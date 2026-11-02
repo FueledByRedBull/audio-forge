@@ -51,7 +51,7 @@ Screenshots use example devices and settings.
 
 ## Download
 
-Current version: `v1.20.0` ([release notes](release-notes/release-notes-v1.20.0.md)).
+Current version: `v1.21.0` ([release notes](release-notes/release-notes-v1.21.0.md)).
 This is the source-checkout version; the latest published package may be older.
 Open the [latest release](https://github.com/FueledByRedBull/audio-forge/releases/latest)
 and download **one** of these files. **Not sure? Choose the installer.**
@@ -375,7 +375,10 @@ moving it after suppression clipped the starts of phrases in testing. See
 includes engine and noise-suppression delay (about 15 ms for DeepFilterNet LL
 and 35 ms for standard DeepFilterNet), plus your measured route when you
 calibrate it. End-to-end latency still depends on your devices, driver,
-buffer sizes, and routing.
+buffer sizes, and routing. On Windows, output to VB-CABLE and other VB-Audio
+devices runs on a shorter audio engine period when the device offers one, and
+the period applies to every app using that device. Other outputs keep the
+standard period.
 
 ## Help and Contributing
 

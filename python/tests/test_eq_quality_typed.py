@@ -12,17 +12,6 @@ from mic_eq.analysis.auto_eq_parts.constants import SAMPLE_RATE
 from mic_eq.config import EQSettings
 
 
-def test_band_zero_bell_is_not_misidentified_as_a_low_shelf() -> None:
-    metrics = evaluate_eq_quality(
-        [80.0, 160.0, 250.0],
-        [4.0, 4.0, 0.0],
-        [1.0, 1.0, 1.0],
-        filter_types=["bell", "bell", "bell"],
-    )
-
-    assert metrics.shelf_peak_stacking == 0
-
-
 def test_frequency_reordered_middle_band_keeps_its_filter_type() -> None:
     metrics = evaluate_eq_quality(
         [200.0, 400.0, 240.0],
@@ -56,44 +45,24 @@ def test_only_enabled_real_shelf_and_bell_overlap_warn() -> None:
     assert disabled.shelf_peak_stacking == 0
 
 
-def test_distant_shelf_and_peak_do_not_warn_as_nearby_stacking() -> None:
-    metrics = evaluate_eq_quality(
-        [20.0, 320.0],
-        [3.0, 3.0],
-        [1.0, 1.0],
-        filter_types=["low_shelf", "bell"],
-    )
+@pytest.mark.parametrize(
+    ("frequencies", "gains", "filter_types", "stacking"),
+    [
+        ([80.0, 160.0, 250.0], [4.0, 4.0, 0.0], ["bell", "bell", "bell"], 0),
+        ([20.0, 320.0], [3.0, 3.0], ["low_shelf", "bell"], 0),
+        ([100.0, 20.0], [3.0, 3.0], ["low_shelf", "bell"], 1),
+        ([7_000.0, 16_000.0], [3.0, 3.0], ["high_shelf", "bell"], 1),
+        ([16_000.0, 7_000.0], [3.0, 3.0], ["high_shelf", "bell"], 0),
+    ],
+    ids=["band-zero-bell", "distant-shelf-and-peak", "peak-on-low-shelf-plateau", "high-shelf-plateau",
+         "high-shelf-transition-side"],
+)
+def test_shelf_stacking_follows_the_shelf_plateau_direction(
+    frequencies: list[float], gains: list[float], filter_types: list[str], stacking: int
+) -> None:
+    metrics = evaluate_eq_quality(frequencies, gains, [1.0] * len(frequencies), filter_types=filter_types)
 
-    assert metrics.shelf_peak_stacking == 0
-
-
-def test_peak_on_low_shelf_plateau_still_warns_despite_center_distance() -> None:
-    metrics = evaluate_eq_quality(
-        [100.0, 20.0],
-        [3.0, 3.0],
-        [1.0, 1.0],
-        filter_types=["low_shelf", "bell"],
-    )
-
-    assert metrics.shelf_peak_stacking == 1
-
-
-def test_high_shelf_warning_follows_the_shelf_plateau_direction() -> None:
-    plateau = evaluate_eq_quality(
-        [7_000.0, 16_000.0],
-        [3.0, 3.0],
-        [1.0, 1.0],
-        filter_types=["high_shelf", "bell"],
-    )
-    transition_side = evaluate_eq_quality(
-        [16_000.0, 7_000.0],
-        [3.0, 3.0],
-        [1.0, 1.0],
-        filter_types=["high_shelf", "bell"],
-    )
-
-    assert plateau.shelf_peak_stacking == 1
-    assert transition_side.shelf_peak_stacking == 0
+    assert metrics.shelf_peak_stacking == stacking
 
 
 @pytest.mark.parametrize(

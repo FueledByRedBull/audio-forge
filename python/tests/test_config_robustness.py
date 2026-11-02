@@ -141,19 +141,6 @@ def test_overwriting_a_preset_retries_a_transient_permission_error(tmp_path, mon
 # PC-006
 
 
-def test_publishing_never_replaces_an_existing_file(tmp_path):
-    destination = tmp_path / "taken.json"
-    destination.write_text("occupied", encoding="utf-8")
-    staged = tmp_path / "staged.tmp"
-    staged.write_text("new", encoding="utf-8")
-
-    with pytest.raises(FileExistsError):
-        presets_module.publish_exclusive(staged, destination)
-
-    assert destination.read_text(encoding="utf-8") == "occupied"
-    assert staged.read_text(encoding="utf-8") == "new"
-
-
 @pytest.fixture
 def no_hard_links(monkeypatch):
     """A POSIX volume that refuses hard links: FAT, exFAT, some FUSE and network mounts."""
@@ -176,14 +163,21 @@ def test_publishing_without_hard_links_moves_the_file_into_place(no_hard_links, 
     assert not staged.exists()
 
 
-def test_publishing_without_hard_links_still_never_replaces_an_existing_file(no_hard_links, tmp_path):
+@pytest.mark.parametrize(
+    ("publisher", "links_refused"),
+    [(presets_module, False), (shared_module, True)],
+    ids=["hard-links", "without-hard-links"],
+)
+def test_publishing_never_replaces_an_existing_file(publisher, links_refused, tmp_path, request):
+    if links_refused:
+        request.getfixturevalue("no_hard_links")
     destination = tmp_path / "taken.json"
     destination.write_text("occupied", encoding="utf-8")
     staged = tmp_path / "staged.tmp"
     staged.write_text("new", encoding="utf-8")
 
     with pytest.raises(FileExistsError):
-        shared_module.publish_exclusive(staged, destination)
+        publisher.publish_exclusive(staged, destination)
 
     assert destination.read_text(encoding="utf-8") == "occupied"
     assert staged.read_text(encoding="utf-8") == "new"

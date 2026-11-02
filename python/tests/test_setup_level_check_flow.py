@@ -12,17 +12,9 @@ from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.platform_text import SOUND_SETTINGS
 from mic_eq.ui.theme import message_text_style
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
-from capture_helpers import finish_take
+from capture_helpers import RATE, _voice, finish_take
 from test_auto_eq_candidate_lifecycle import _Owner
 from test_voice_setup_integration import real_main_window  # noqa: F401  (a fixture)
-
-RATE = 48_000
-
-
-def _voice(level: float, seconds: float = 3.0) -> np.ndarray:
-    t = np.arange(int(RATE * seconds)) / RATE
-    return (level * np.sin(2 * np.pi * 180.0 * t)).astype(np.float32)
-
 
 GOOD = _voice(0.3)
 HOT = _voice(0.95)
@@ -206,17 +198,6 @@ def test_the_check_meter_speaks_the_same_words_as_the_verdict(voice) -> None:
     assert voice.warning_label.text() == HOT_MESSAGE
 
 
-def test_the_voice_setup_meter_names_the_window_peak_in_a_pause(voice) -> None:
-    voice._on_start_clicked()
-    voice._capture_start_timer.stop()
-
-    voice._update_level(-25.0, -7.0)  # a loud word
-    for _ in range(14):
-        voice._update_level(-70.0, -34.8)  # the pause after it
-
-    assert voice.warning_label.text() == "The level is good: your voice peaks at -7.0 dB."
-
-
 # --- Auto-EQ -----------------------------------------------------------------------------
 
 
@@ -322,15 +303,22 @@ def test_auto_eq_keeps_ownership_of_a_processor_it_started_for_the_check(auto_eq
     assert auto_eq._started_processor is True
 
 
-def test_auto_eq_meter_names_the_window_peak_in_a_pause(auto_eq) -> None:
-    auto_eq._on_start_clicked()
-    auto_eq._capture_start_timer.stop()
+@pytest.mark.parametrize(
+    ("fixture", "update_method"),
+    [("voice", "_update_level"), ("auto_eq", "_on_level_update")],
+    ids=["voice_setup", "auto_eq"],
+)
+def test_the_meter_names_the_window_peak_in_a_pause(request, fixture, update_method) -> None:
+    dialog = request.getfixturevalue(fixture)
+    update = getattr(dialog, update_method)
+    dialog._on_start_clicked()
+    dialog._capture_start_timer.stop()
 
-    auto_eq._on_level_update(-25.0, -7.0)  # a loud word
+    update(-25.0, -7.0)  # a loud word
     for _ in range(14):
-        auto_eq._on_level_update(-70.0, -34.8)  # the pause after it
+        update(-70.0, -34.8)  # the pause after it
 
-    assert auto_eq.warning_label.text() == "The level is good: your voice peaks at -7.0 dB."
+    assert dialog.warning_label.text() == "The level is good: your voice peaks at -7.0 dB."
 
 
 def test_auto_eq_closing_during_the_check_releases_the_capture(auto_eq) -> None:

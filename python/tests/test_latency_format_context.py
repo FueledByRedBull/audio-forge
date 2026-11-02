@@ -59,6 +59,27 @@ def _close_owner(owner: Any, qapp) -> None:
     qapp.processEvents()
 
 
+def _wasapi_route() -> tuple[DeviceIdentity, DeviceIdentity]:
+    return (
+        DeviceIdentity(
+            name="Mic",
+            endpoint_id="input-route",
+            host_api="WASAPI",
+            direction="input",
+            sample_rate=48_000,
+            channels=1,
+        ),
+        DeviceIdentity(
+            name="Cable",
+            endpoint_id="output-route",
+            host_api="WASAPI",
+            direction="output",
+            sample_rate=48_000,
+            channels=2,
+        ),
+    )
+
+
 @pytest.mark.parametrize("operation", ["save", "reset"])
 @pytest.mark.parametrize("write_error", [False, True])
 def test_latency_profile_write_failure_preserves_previous_profile_and_allows_retry(
@@ -135,22 +156,7 @@ def test_cancelled_latency_dialog_does_not_report_an_old_profile_as_saved(monkey
 
 
 def test_same_route_with_changed_sample_rate_or_channels_drops_old_compensation(qapp):
-    input_identity = DeviceIdentity(
-        name="Mic",
-        endpoint_id="input-route",
-        host_api="WASAPI",
-        direction="input",
-        sample_rate=48_000,
-        channels=1,
-    )
-    output_identity = DeviceIdentity(
-        name="Cable",
-        endpoint_id="output-route",
-        host_api="WASAPI",
-        direction="output",
-        sample_rate=48_000,
-        channels=2,
-    )
+    input_identity, output_identity = _wasapi_route()
     profile = _profile((48_000, 1, 48_000, 2))
     owner = _owner(input_identity, output_identity, profile)
     try:
@@ -175,22 +181,7 @@ def test_same_route_with_changed_sample_rate_or_channels_drops_old_compensation(
 
 
 def test_matching_format_reuses_profile_without_relabeling_context(qapp):
-    input_identity = DeviceIdentity(
-        name="Mic",
-        endpoint_id="input-route",
-        host_api="WASAPI",
-        direction="input",
-        sample_rate=48_000,
-        channels=1,
-    )
-    output_identity = DeviceIdentity(
-        name="Cable",
-        endpoint_id="output-route",
-        host_api="WASAPI",
-        direction="output",
-        sample_rate=48_000,
-        channels=2,
-    )
+    input_identity, output_identity = _wasapi_route()
     profile = _profile((48_000, 1, 48_000, 2))
     config = SimpleNamespace(
         use_measured_latency=True,
@@ -243,22 +234,7 @@ def test_running_processor_context_uses_negotiated_sample_rates(qapp):
 
 
 def test_restart_preserves_context_but_legacy_profile_is_not_applied(qapp):
-    input_identity = DeviceIdentity(
-        name="Mic",
-        endpoint_id="input-route",
-        host_api="WASAPI",
-        direction="input",
-        sample_rate=48_000,
-        channels=1,
-    )
-    output_identity = DeviceIdentity(
-        name="Cable",
-        endpoint_id="output-route",
-        host_api="WASAPI",
-        direction="output",
-        sample_rate=48_000,
-        channels=2,
-    )
+    input_identity, output_identity = _wasapi_route()
     route_key = build_device_route_key(input_identity, output_identity)
     config = AppConfig(
         use_measured_latency=True,
@@ -449,22 +425,7 @@ def test_calibration_context_tracks_endpoint_format_without_changing_route_key(q
     owner.config = SimpleNamespace(
         input_channel_mode="phase_safe_mono", input_cleanup_mode="off"
     )
-    input_identity = DeviceIdentity(
-        name="Mic",
-        endpoint_id="input-route",
-        host_api="WASAPI",
-        direction="input",
-        sample_rate=48_000,
-        channels=1,
-    )
-    output_identity = DeviceIdentity(
-        name="Cable",
-        endpoint_id="output-route",
-        host_api="WASAPI",
-        direction="output",
-        sample_rate=48_000,
-        channels=2,
-    )
+    input_identity, output_identity = _wasapi_route()
     owner.input_choice.addItem("Mic", input_identity)
     owner.output_choice.addItem("Cable", output_identity)
     try:

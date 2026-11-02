@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import replace
 import time
@@ -26,6 +27,7 @@ from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from capture_helpers import finish_take
 from test_auto_eq_candidate_lifecycle import _CalibrationOwner
+from test_voice_setup import _full_voice_candidate_metadata
 
 
 @pytest.fixture
@@ -53,6 +55,15 @@ def real_main_window(qapp, monkeypatch, tmp_path):
         window.close()
         window.deleteLater()
         qapp.processEvents()
+
+
+@contextmanager
+def _dismissed(dialog: Any):
+    try:
+        yield dialog
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
 
 
 def _voice_setup_result(
@@ -306,16 +317,13 @@ def test_voice_setup_rejects_a_different_route_before_applying(
         lambda _parent, _title, message: messages.append(message),
     )
     monkeypatch.setattr(window, "_calibration_context_key", lambda: "route-b")
-    try:
+    with _dismissed(dialog):
         dialog._apply_setup()
         assert window._get_current_preset().to_dict() == before
         message = messages[-1]
         assert "microphone or its settings changed after you recorded" in message
         assert "Record again so the settings match your microphone" in message
         assert "Nothing was changed" in message
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 @pytest.mark.parametrize("mode", ["raw", "bypass"])
@@ -377,7 +385,7 @@ def test_repeated_bad_verification_takes_stop_and_restore(real_main_window, monk
             "reasons": ["verification passage was clipped; lower microphone gain"],
         },
     )
-    try:
+    with _dismissed(dialog):
         for attempt in range(3):
             dialog._complete_verification(speech)
             timer = QElapsedTimer()
@@ -391,9 +399,6 @@ def test_repeated_bad_verification_takes_stop_and_restore(real_main_window, monk
         assert dialog.setup_state == "completed"
         assert window._get_current_preset().to_dict() == before
         assert "clipped" in dialog.warning_label.text()
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 @pytest.mark.parametrize("sample", [np.nan, np.inf], ids=["nan", "infinite"])
@@ -410,7 +415,7 @@ def test_an_unreadable_verification_take_restores_and_offers_another_try(
     take = speech.copy()
     take[100] = sample
     dialog.setup_state = "verification_recording"
-    try:
+    with _dismissed(dialog):
         dialog._on_recording_complete(take)
 
         assert dialog.setup_state == "completed"
@@ -425,9 +430,6 @@ def test_an_unreadable_verification_take_restores_and_offers_another_try(
 
         dialog._on_start_clicked()
         assert dialog.setup_state == "verification_ready"
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 DULLING_SENTENCE = (
@@ -522,14 +524,11 @@ DULLING_MESSAGES = [
 
 def _verification_warning(window, monkeypatch, decision, setup, *, has_advice: bool) -> str:
     dialog, speech = _verifying_dialog(window)
-    try:
+    with _dismissed(dialog):
         if setup is not None:
             setup(dialog, speech, monkeypatch)
         dialog._on_verification_complete(_verdict_with_dulling_advisory(decision, advised=has_advice))
         return dialog.warning_label.text()
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 @pytest.mark.parametrize(("decision", "setup", "tokens", "advised"), DULLING_MESSAGES)
@@ -579,13 +578,10 @@ def test_the_verified_box_carries_the_dulling_advice_past_the_comparison(
     monkeypatch.setattr(
         "mic_eq.ui.listening_comparison_dialog.ListeningComparisonDialog", _AcceptedComparison
     )
-    try:
+    with _dismissed(dialog):
         dialog._on_verification_complete(_verdict_with_dulling_advisory("accept", advised=has_advice))
         assert dialog.setup_state == "final_comparison_ready"
         dialog._on_start_clicked()
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
     assert len(boxes) == 1
     if has_advice:
@@ -606,7 +602,7 @@ def test_stage_reductions_change_only_relevant_live_controls(real_main_window, t
     result["compressor_settings"].update(auto_makeup_enabled=auto_makeup, makeup_gain_db=4.0)
     _apply_complete_candidate(window, dialog, result)
     before = window._get_current_preset().to_dict()
-    try:
+    with _dismissed(dialog):
         changed, _ = dialog._apply_verification_reduction(window, [target])
         assert changed
         after = window._get_current_preset().to_dict()
@@ -622,9 +618,6 @@ def test_stage_reductions_change_only_relevant_live_controls(real_main_window, t
                 assert dialog.setup_result is not None
                 assert dialog.setup_result["verification_adjusted_target_lufs"] == after["compressor"][field]
         assert after == expected
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 @pytest.mark.parametrize("converges", [True, False])
@@ -654,7 +647,7 @@ def test_verification_adjustments_reuse_take_and_stop(real_main_window, monkeypa
         dialog, "_start_recording_phase",
         lambda *_args: pytest.fail("Valid verification audio must be reused"),
     )
-    try:
+    with _dismissed(dialog):
         dialog._complete_verification(speech)
         timer = QElapsedTimer()
         timer.start()
@@ -673,9 +666,6 @@ def test_verification_adjustments_reuse_take_and_stop(real_main_window, monkeypa
             assert len(calls) == 2
             assert dialog.setup_state == "completed"
         assert window._get_current_preset().to_dict() == before
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 def test_voice_setup_tone_and_lufs_survive_apply_save_and_restart(real_main_window) -> None:
@@ -754,7 +744,7 @@ def test_the_analysis_builds_the_typed_candidate_eq_from_what_the_dialog_sends(
         return analyze(*args, **kwargs)
 
     monkeypatch.setattr(voice_setup_dialog, "analyze_voice_setup", recording_analysis)
-    try:
+    with _dismissed(dialog):
         dialog._start_analysis()
         worker = dialog.analysis_worker
         assert worker is not None
@@ -780,9 +770,6 @@ def test_the_analysis_builds_the_typed_candidate_eq_from_what_the_dialog_sends(
         assert diagnostics["offline_validation_passed"] is True
         reasons = diagnostics["uncertainty_reasons"]
         assert not [reason for reason in reasons if "unavailable" in reason or "validation" in reason]
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 @pytest.mark.parametrize(
@@ -800,7 +787,7 @@ def test_the_summary_row_does_not_call_advisory_settings_highly_confident(
     _bind_capture_context(dialog, *_short_voice_captures(int(window.processor.sample_rate())))
     result = _voice_setup_result(window, dialog)
     result["diagnostics"]["apply_recommended"] = apply_recommended
-    try:
+    with _dismissed(dialog):
         dialog._on_analysis_complete(result)
 
         overall = dialog.overall_label.text()
@@ -812,9 +799,6 @@ def test_the_summary_row_does_not_call_advisory_settings_highly_confident(
         assert ("did not pass every check" in overall) == (not apply_recommended)
         assert ("did not pass every check" in warning) == (not apply_recommended)
         assert warning.startswith("All checks passed" if apply_recommended else "These settings did not pass")
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 @pytest.mark.parametrize("outcome", ["accept", "rollback", "retry", "recording-failed"])
@@ -823,7 +807,7 @@ def test_the_review_page_keeps_the_proposal_after_the_verification_take(
 ) -> None:
     dialog, _speech = _verifying_dialog(real_main_window)
     monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: True)
-    try:
+    with _dismissed(dialog):
         assert dialog.summary_group.isVisibleTo(dialog)
         dialog._on_start_clicked()
         dialog._capture_start_timer.stop()
@@ -836,9 +820,6 @@ def test_the_review_page_keeps_the_proposal_after_the_verification_take(
         assert dialog.setup_state in {"final_comparison_ready", "completed", "verification_ready"}
         assert dialog.review_page.isVisibleTo(dialog)
         assert dialog.summary_group.isVisibleTo(dialog)
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 def _start_noise_take(dialog: VoiceSetupDialog) -> None:
@@ -865,7 +846,7 @@ def test_a_new_take_starts_with_an_empty_level_window(real_main_window, monkeypa
 
     monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.CaptureSession", _Session)
     dialog = VoiceSetupDialog(parent=real_main_window)
-    try:
+    with _dismissed(dialog):
         dialog._recent_rms_db.extend([-20.0] * 15)  # the last take's levels
         dialog._recent_peak_db.extend([-6.0] * 15)
         dialog.setup_state = "noise_recording"
@@ -875,9 +856,6 @@ def test_a_new_take_starts_with_an_empty_level_window(real_main_window, monkeypa
 
         assert len(dialog._recent_rms_db) == 0
         assert len(dialog._recent_peak_db) == 0
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 @pytest.mark.parametrize("capture", ["noise", "voice"])
@@ -885,7 +863,7 @@ def test_a_rejected_capture_gives_the_target_controls_back(real_main_window, mon
     window = real_main_window
     dialog = VoiceSetupDialog(parent=window)
     monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: True)
-    try:
+    with _dismissed(dialog):
         if capture == "voice":
             dialog.noise_audio = np.zeros(4800, dtype=np.float32)
             dialog.setup_state = "noise_ready"
@@ -903,15 +881,12 @@ def test_a_rejected_capture_gives_the_target_controls_back(real_main_window, mon
         assert dialog.curve_combo.isEnabled()
         assert dialog.dynamics_group.isEnabled()
         assert dialog.target_lufs_spin.isEnabled()
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 def test_a_clipped_room_noise_take_leaves_the_target_page_usable(real_main_window, monkeypatch) -> None:
     dialog = VoiceSetupDialog(parent=real_main_window)
     monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: True)
-    try:
+    with _dismissed(dialog):
         _start_noise_take(dialog)
         finish_take(dialog, np.ones(48_000, dtype=np.float32))
 
@@ -919,9 +894,6 @@ def test_a_clipped_room_noise_take_leaves_the_target_page_usable(real_main_windo
         assert dialog.phase_label.text() == "Room-noise capture rejected"
         assert dialog.dynamics_group.isEnabled()
         assert dialog.target_lufs_spin.isEnabled()
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 @pytest.mark.parametrize(
@@ -943,13 +915,10 @@ def test_the_review_says_whether_the_compressor_is_on(real_main_window, before_e
     window.compressor_state.set_settings({"enabled": before_enabled, "auto_makeup_enabled": True})
     result =_voice_setup_result(window, dialog, target_lufs=-18.0)
     result["compressor_settings"].update(enabled=True, auto_makeup_enabled=True)
-    try:
+    with _dismissed(dialog):
         dialog._show_summary(result)
 
         assert dialog.compressor_label.text() == expected
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 def test_a_context_change_during_setup_names_everything_the_context_holds(
@@ -961,16 +930,13 @@ def test_a_context_change_during_setup_names_everything_the_context_holds(
     dialog.setup_state = "voice_recording"
     dialog._capture_context_key = "route-a"
     monkeypatch.setattr(window, "_calibration_context_key", lambda: "route-b")
-    try:
+    with _dismissed(dialog):
         dialog._begin_recording_capture()
 
         warning = dialog.warning_label.text()
         assert "audio route, input settings or processing mode changed during setup" in warning
         assert "Start the setup again without changing them" in warning
         assert dialog.setup_state == "noise_ready"
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 def test_declining_the_device_switch_keeps_the_state_the_dialog_had(real_main_window, monkeypatch) -> None:
@@ -984,7 +950,7 @@ def test_declining_the_device_switch_keeps_the_state_the_dialog_had(real_main_wi
     monkeypatch.setattr(
         QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.StandardButton.No
     )
-    try:
+    with _dismissed(dialog):
         assert dialog.setup_state == "verification_ready"
         text = dialog.start_button.text()
         curve_enabled = dialog.curve_combo.isEnabled()
@@ -999,9 +965,6 @@ def test_declining_the_device_switch_keeps_the_state_the_dialog_had(real_main_wi
         warning = dialog.warning_label.text()
         assert "Setup canceled" in warning
         assert "microphone and speakers that were already running were kept" in warning
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 def _legacy_eq(window: MainWindow, gains: list[float]) -> dict[str, Any]:
@@ -1105,13 +1068,10 @@ def test_the_analysis_assumes_the_processing_the_candidate_will_run(
 
     monkeypatch.setattr(voice_setup_dialog, "VoiceSetupWorker", _Worker)
     dialog, _speech = _review_dialog(window)
-    try:
+    with _dismissed(dialog):
         dialog._start_analysis()
 
         assert sent[0]["processing_mode"] == "normal"
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 @pytest.mark.parametrize("mode", ["normal", "bypass"])
@@ -1126,7 +1086,7 @@ def test_the_pre_apply_comparison_plays_the_eq_that_apply_writes(
     result["eq_settings"] = _legacy_eq(window, [1.5] * 10)
     shown: dict[str, Any] = {}
     _comparison_dialog(monkeypatch, shown)
-    try:
+    with _dismissed(dialog):
         dialog._on_analysis_complete(result)
         dialog._compare_recording()
 
@@ -1139,70 +1099,46 @@ def test_the_pre_apply_comparison_plays_the_eq_that_apply_writes(
         dialog._apply_setup()
 
         assert window.eq_state.get_eq_settings().to_dict() == shown["proposed_settings"]
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
+
+
+_TONE_LINE = "Tone: max correction 1.0 dB\nBefore: max correction"
+_SWITCH_ON = "\nThe EQ is off now; Apply will switch it on"
 
 
 @pytest.mark.parametrize(
-    ("live", "before"),
+    ("live", "expected"),
     [
-        ({"correction": [4.0] * 10}, "4.0"),
-        ({"tone": [12.0] + [0.0] * 9}, "0.0"),
-        ({"correction": [2.0, 0.0, 0.0, 6.0] + [0.0] * 6, "off_bands": (3,)}, "2.0"),
+        ({"correction": [4.0] * 10}, f"{_TONE_LINE} 4.0 dB"),
+        ({"tone": [12.0] + [0.0] * 9}, f"{_TONE_LINE} 0.0 dB"),
+        (
+            {"correction": [2.0, 0.0, 0.0, 6.0] + [0.0] * 6, "off_bands": (3,)},
+            f"{_TONE_LINE} 2.0 dB",
+        ),
+        ({"tone": None, "enabled": False}, f"{_TONE_LINE} 0.0 dB{_SWITCH_ON}."),
+        (
+            {"tone": [3.0] + [0.0] * 9, "enabled": False},
+            f"{_TONE_LINE} 0.0 dB{_SWITCH_ON}, and your current tone settings will take effect too.",
+        ),
+        ({"tone": [3.0] + [0.0] * 9, "enabled": True}, f"{_TONE_LINE} 0.0 dB"),
+        ({"correction": [1.0] * 10}, "Tone: max correction 1.0 dB (unchanged)"),
     ],
-    ids=["correction-only", "tone-only", "disabled-band"],
+    ids=[
+        "correction-only", "tone-only", "disabled-band", "off-without-tone", "off-with-tone",
+        "on", "same-correction-is-unchanged",
+    ],
 )
-def test_the_tone_line_compares_correction_layers_with_enabled_bands(
-    real_main_window, live, before
+def test_the_tone_line_compares_correction_layers_and_notes_eq_off_or_unchanged(
+    real_main_window, live, expected
 ) -> None:
     window = real_main_window
     _set_live_eq(window, **live)
     dialog, _speech = _review_dialog(window)
     result = _voice_setup_result(window, dialog)
     result["eq_settings"] = _legacy_eq(window, [1.0] * 10)
-    try:
+    with _dismissed(dialog):
         dialog._show_summary(result)
 
-        assert dialog.eq_label.text() == (
-            f"Tone: max correction 1.0 dB\nBefore: max correction {before} dB"
-        )
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
-
-
-@pytest.mark.parametrize(
-    ("tone", "enabled", "note"),
-    [
-        (None, False, "\nThe EQ is off now; Apply will switch it on."),
-        (
-            [3.0] + [0.0] * 9,
-            False,
-            "\nThe EQ is off now; Apply will switch it on, "
-            "and your current tone settings will take effect too.",
-        ),
-        ([3.0] + [0.0] * 9, True, ""),
-    ],
-    ids=["off-without-tone", "off-with-tone", "on"],
-)
-def test_the_tone_line_says_when_apply_switches_the_eq_on(
-    real_main_window, tone, enabled, note
-) -> None:
-    window = real_main_window
-    _set_live_eq(window, tone=tone, enabled=enabled)
-    dialog, _speech = _review_dialog(window)
-    result = _voice_setup_result(window, dialog)
-    result["eq_settings"] = _legacy_eq(window, [1.0] * 10)
-    try:
-        dialog._show_summary(result)
-
-        assert dialog.eq_label.text() == (
-            "Tone: max correction 1.0 dB\nBefore: max correction 0.0 dB" + note
-        )
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
+        assert dialog.eq_label.text() == expected
 
 
 def _abstained_result(window: MainWindow, dialog: VoiceSetupDialog) -> dict[str, Any]:
@@ -1236,7 +1172,7 @@ def test_applying_after_an_abstention_keeps_the_users_eq_and_still_verifies(
         "mic_eq.ui.voice_setup_dialog.QMessageBox.question",
         lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
     )
-    try:
+    with _dismissed(dialog):
         _apply_complete_candidate(window, dialog, result)
 
         assert window._get_current_preset().eq.to_dict() == eq_before
@@ -1251,9 +1187,6 @@ def test_applying_after_an_abstention_keeps_the_users_eq_and_still_verifies(
             "broadcast",
         )
         assert outcome["decision"] != "rollback"
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 def test_the_comparison_and_tone_line_do_not_switch_the_eq_on_after_an_abstention(
@@ -1265,15 +1198,12 @@ def test_the_comparison_and_tone_line_do_not_switch_the_eq_on_after_an_abstentio
     dialog, _speech = _review_dialog(window)
     shown: dict[str, Any] = {}
     _comparison_dialog(monkeypatch, shown)
-    try:
+    with _dismissed(dialog):
         dialog._on_analysis_complete(_abstained_result(window, dialog))
         dialog._compare_recording()
 
         assert shown["proposed_settings"] == eq_before
         assert dialog.eq_label.text() == "Tone: kept as it is"
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 def test_a_result_without_an_eq_says_nothing_still_applies(
@@ -1290,7 +1220,7 @@ def test_a_result_without_an_eq_says_nothing_still_applies(
         lambda _parent, _title, message: messages.append(message),
     )
     before = window._get_current_preset().to_dict()
-    try:
+    with _dismissed(dialog):
         dialog._on_analysis_complete(result)
         dialog._apply_setup()
 
@@ -1298,9 +1228,6 @@ def test_a_result_without_an_eq_says_nothing_still_applies(
         assert "still applies" not in dialog.eq_label.text()
         assert "Nothing was changed" in messages[-1]
         assert window._get_current_preset().to_dict() == before
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 def test_a_verified_setup_lists_every_stage(real_main_window, monkeypatch) -> None:
@@ -1308,7 +1235,7 @@ def test_a_verified_setup_lists_every_stage(real_main_window, monkeypatch) -> No
     dialog, _speech = _review_dialog(window)
     monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.QMessageBox.information", lambda *_a, **_k: None)
     monkeypatch.setattr(window, "_prompt_save_current_preset", lambda **_kwargs: None)
-    try:
+    with _dismissed(dialog):
         _apply_complete_candidate(window, dialog, _voice_setup_result(window, dialog))
         dialog._finalize_verified_setup()
 
@@ -1316,9 +1243,6 @@ def test_a_verified_setup_lists_every_stage(real_main_window, monkeypatch) -> No
         assert window.config.calibration_results[0].verified_stages == expected
         assert dialog.setup_result is not None
         assert tuple(dialog.setup_result["_candidate"]["verified_stages"]) == expected
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 def test_the_applied_voice_setup_is_offered_as_a_preset_tuned_for_its_target(
@@ -1349,7 +1273,7 @@ def test_a_verification_reduction_refreshes_the_compressor_line_and_keeps_its_be
     assert before_line == "Before: on, 4.0:1 above -20.0 dB, 0.0 dB makeup"
     dialog._verification_audio = speech
     monkeypatch.setattr(dialog, "_start_verification_worker", lambda *_args: None)
-    try:
+    with _dismissed(dialog):
         dialog._on_verification_complete(
             {
                 "decision": "reduce",
@@ -1364,9 +1288,6 @@ def test_a_verification_reduction_refreshes_the_compressor_line_and_keeps_its_be
             f"Compressor: on, {applied['ratio']:.1f}:1 above "
             f"{applied['threshold_db']:.1f} dB, 0.0 dB makeup\n{before_line}"
         )
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 def _assert_advisory_row(dialog: VoiceSetupDialog) -> None:
@@ -1393,7 +1314,7 @@ def test_the_confidence_row_follows_the_verification_and_the_restore(
     from mic_eq.ui.theme import status_chip_style
 
     _comparison_dialog(monkeypatch, {})
-    try:
+    with _dismissed(dialog):
         _assert_advisory_row(dialog)
 
         dialog._on_verification_complete(_verdict_with_dulling_advisory("accept", advised=False))
@@ -1407,9 +1328,6 @@ def test_the_confidence_row_follows_the_verification_and_the_restore(
 
         assert dialog.setup_state == "completed"
         _assert_advisory_row(dialog)
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 def test_the_final_comparison_opens_from_the_enabled_primary_button(
@@ -1424,7 +1342,7 @@ def test_the_final_comparison_opens_from_the_enabled_primary_button(
     _apply_complete_candidate(window, dialog, result)
     shown: dict[str, Any] = {}
     _comparison_dialog(monkeypatch, shown)
-    try:
+    with _dismissed(dialog):
         dialog._on_verification_complete(_verdict_with_dulling_advisory("accept", advised=False))
 
         assert dialog.setup_state == "final_comparison_ready"
@@ -1435,9 +1353,6 @@ def test_the_final_comparison_opens_from_the_enabled_primary_button(
 
         assert shown
         assert dialog.setup_state == "completed"
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 def test_the_manual_makeup_gain_is_named_instead_of_a_loudness_target(
@@ -1448,16 +1363,13 @@ def test_the_manual_makeup_gain_is_named_instead_of_a_loudness_target(
     window.compressor_state.set_settings({"auto_makeup_enabled": False, "makeup_gain_db": 3.0})
     result = _voice_setup_result(window, dialog)
     result["compressor_settings"].update(auto_makeup_enabled=False, makeup_gain_db=5.0)
-    try:
+    with _dismissed(dialog):
         dialog._show_summary(result)
 
         assert dialog.compressor_label.text() == (
             "Compressor: on, 4.0:1 above -20.0 dB, 5.0 dB makeup\n"
             "Before: on, 4.0:1 above -20.0 dB, 3.0 dB makeup"
         )
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 def test_a_failed_verification_take_clears_the_recording_status(
@@ -1465,7 +1377,7 @@ def test_a_failed_verification_take_clears_the_recording_status(
 ) -> None:
     dialog, _speech = _verifying_dialog(real_main_window)
     monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: True)
-    try:
+    with _dismissed(dialog):
         dialog._on_start_clicked()
         dialog._capture_start_timer.stop()
         assert dialog.phase_label.text() == "Capturing a second passage"
@@ -1477,9 +1389,6 @@ def test_a_failed_verification_take_clears_the_recording_status(
         assert dialog.phase_label.text() == "Second recording failed; previous settings put back"
         assert dialog.retake_btn.isVisibleTo(dialog)
         assert dialog.compare_button.isEnabled()
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 def _roll_back(dialog, _speech, _monkeypatch) -> None:
@@ -1509,16 +1418,13 @@ def test_the_comparison_comes_back_wherever_the_dialog_returns_to_completed(
     real_main_window, monkeypatch, leave
 ) -> None:
     dialog, speech = _verifying_dialog(real_main_window)
-    try:
+    with _dismissed(dialog):
         assert not dialog.compare_button.isEnabled()
 
         leave(dialog, speech, monkeypatch)
 
         assert dialog.setup_state == "completed"
         assert dialog.compare_button.isEnabled()
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 def test_the_tone_line_and_confidence_row_follow_apply_and_restore(
@@ -1535,7 +1441,7 @@ def test_the_tone_line_and_confidence_row_follow_apply_and_restore(
     )
     tone = "Tone: max correction 1.0 dB\nBefore: max correction 0.0 dB"
     note = "\nThe EQ is off now; Apply will switch it on."
-    try:
+    with _dismissed(dialog):
         dialog._on_analysis_complete(result)
         assert dialog.eq_label.text() == tone + note
 
@@ -1550,9 +1456,6 @@ def test_the_tone_line_and_confidence_row_follow_apply_and_restore(
         assert not window.eq_state.get_settings()["enabled"]
         assert dialog.eq_label.text() == tone + note
         _assert_advisory_row(dialog)
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 @pytest.mark.parametrize(
@@ -1576,13 +1479,10 @@ def test_leaving_an_unprocessed_mode_is_said_on_apply_and_in_the_verified_box(
     monkeypatch.setattr(window, "_prompt_save_current_preset", lambda **_kwargs: None)
     _comparison_dialog(monkeypatch, {}, keep=True)
     dialog, _speech = _verifying_dialog(window)
-    try:
+    with _dismissed(dialog):
         applied = dialog.warning_label.text()
         dialog._on_verification_complete(_verdict_with_dulling_advisory("accept", advised=False))
         dialog._compare_recording()
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
     assert len(boxes) == 1
     for text in (applied, boxes[0]):
@@ -1592,23 +1492,6 @@ def test_leaving_an_unprocessed_mode_is_said_on_apply_and_in_the_verified_box(
             assert "switched to Normal" not in text
 
 
-def test_the_tone_line_is_unchanged_when_the_correction_layer_is_the_same(
-    real_main_window
-) -> None:
-    window = real_main_window
-    _set_live_eq(window, correction=[1.0] * 10)
-    dialog, _speech = _review_dialog(window)
-    result = _voice_setup_result(window, dialog)
-    result["eq_settings"] = _legacy_eq(window, [1.0] * 10)
-    try:
-        dialog._show_summary(result)
-
-        assert dialog.eq_label.text() == "Tone: max correction 1.0 dB (unchanged)"
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
-
-
 def test_a_zero_gain_filter_still_counts_as_a_tone_setting(real_main_window) -> None:
     window = real_main_window
     _set_live_eq(window, enabled=False)
@@ -1616,15 +1499,12 @@ def test_a_zero_gain_filter_still_counts_as_a_tone_setting(real_main_window) -> 
     dialog, _speech = _review_dialog(window)
     result = _voice_setup_result(window, dialog)
     result["eq_settings"] = _legacy_eq(window, [1.0] * 10)
-    try:
+    with _dismissed(dialog):
         dialog._show_summary(result)
 
         assert dialog.eq_label.text().endswith(
             "Apply will switch it on, and your current tone settings will take effect too."
         )
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 def test_a_stale_final_candidate_restores_the_review_and_ends_the_sentence(
@@ -1640,7 +1520,7 @@ def test_a_stale_final_candidate_restores_the_review_and_ends_the_sentence(
     monkeypatch.setattr(QMessageBox, "warning", lambda *_args, **_kwargs: None)
     before = window._get_current_preset().to_dict()
     _apply_complete_candidate(window, dialog, result)
-    try:
+    with _dismissed(dialog):
         dialog._on_verification_complete(_verdict_with_dulling_advisory("accept", advised=False))
         assert "passed the check" in dialog.overall_label.text()
         monkeypatch.setattr(window, "_calibration_context_key", lambda: "route-b")
@@ -1654,9 +1534,6 @@ def test_a_stale_final_candidate_restores_the_review_and_ends_the_sentence(
         assert "Record again so the settings match your microphone" in warning
         assert "Your previous settings were put back" in warning
         assert window._get_current_preset().to_dict() == before
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
 
 @pytest.mark.parametrize("restored", [True, False], ids=["restored", "restore-failed"])
@@ -1666,16 +1543,13 @@ def test_every_rollback_text_follows_the_actual_restore_result(
 ) -> None:
     dialog, _speech = _verifying_dialog(real_main_window)
     monkeypatch.setattr(dialog, "_restore_pre_setup_snapshot", lambda: restored)
-    try:
+    with _dismissed(dialog):
         if last_take:
             dialog._verification_bad_capture_count = 2
         dialog._on_verification_complete(
             _verdict_with_dulling_advisory("retry" if last_take else "rollback", advised=False)
         )
         phase, warning = dialog.phase_label.text(), dialog.warning_label.text()
-    finally:
-        dialog.reject()
-        dialog.deleteLater()
 
     if restored:
         assert phase.endswith("previous settings put back")
@@ -1689,6 +1563,10 @@ def test_every_rollback_text_follows_the_actual_restore_result(
     else:
         assert phase.startswith("The new settings did not pass the check;")
         assert ("Your previous settings were put back." in warning) == restored
+        assert warning.count("put back") == 1
+        assert warning.startswith(
+            "Your voice stood out from the background noise by 5.0 dB less than before."
+        )
 
 
 class _RestoreStage:
@@ -1751,32 +1629,6 @@ class _ContextRestoreOwner(_RestoreOwner):
 
     def _calibration_context_key(self) -> str | None:
         return self.context_key
-
-
-def _voice_candidate_metadata(context_key: str | None = None) -> dict:
-    return {
-        "scope": "full_voice_setup",
-        "allowed_scope": ["eq", "gate", "deesser", "compressor", "limiter"],
-        "target": {
-            "curve": "broadcast",
-            "target_lufs": -18.0,
-            "dynamics_intensity": "balanced",
-        },
-        "capture_identity": {
-            "generation": 1,
-            "sample_rate": 48_000,
-            "noise_samples": 16,
-            "voice_samples": 16,
-            "context_key": context_key,
-        },
-        "options": {
-            "vad_available": False,
-            "dynamics_intensity": "balanced",
-            "custom_target_p95_db": 3.5,
-            "custom_peak_cap_db": 8.0,
-        },
-        "verified_stages": [],
-    }
 
 
 def test_voice_rollback_uses_shared_transaction_and_keeps_failed_snapshot(
@@ -1874,7 +1726,7 @@ def test_voice_close_and_reset_block_when_restore_owner_is_missing(qapp, monkeyp
 def test_voice_verification_marks_only_accepted_stages(qapp, monkeypatch) -> None:
     owner = _CalibrationOwner()
     dialog = VoiceSetupDialog(owner)
-    candidate = _voice_candidate_metadata()
+    candidate = _full_voice_candidate_metadata()
     dialog.setup_result = {"_candidate": deepcopy(candidate)}
     dialog._candidate_metadata = deepcopy(candidate)
     dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
@@ -1895,7 +1747,7 @@ def test_voice_verification_marks_only_accepted_stages(qapp, monkeypatch) -> Non
 def test_verification_callback_uses_capture_generation_after_launch(qapp, monkeypatch) -> None:
     owner = _CalibrationOwner()
     dialog = VoiceSetupDialog(owner)
-    candidate = _voice_candidate_metadata()
+    candidate = _full_voice_candidate_metadata()
     dialog.setup_result = {"_candidate": deepcopy(candidate)}
     dialog._candidate_metadata = deepcopy(candidate)
     dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)

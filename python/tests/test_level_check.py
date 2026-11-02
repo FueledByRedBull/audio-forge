@@ -1,4 +1,6 @@
 """The shared microphone level verdicts."""
+# pyright: reportMissingImports=false
+# (the sibling test modules are found by pytest at run time)
 
 from __future__ import annotations
 
@@ -18,13 +20,7 @@ from mic_eq.ui.level_check import (
     verdict_from_levels,
 )
 from mic_eq.ui.platform_text import SOUND_SETTINGS
-
-RATE = 48_000
-
-
-def _voice(level: float, seconds: float = 3.0) -> np.ndarray:
-    t = np.arange(int(RATE * seconds)) / RATE
-    return (level * np.sin(2 * np.pi * 180.0 * t)).astype(np.float32)
+from capture_helpers import RATE, _voice
 
 
 def test_a_comfortable_voice_is_good():
@@ -43,23 +39,6 @@ def test_a_hot_voice_gets_the_lowering_advice_from_its_peak():
     assert "then check again" in verdict.message
     assert verdict.change_db == -6
     assert verdict.can_override
-
-
-def test_a_clipped_voice_is_hot_and_says_so():
-    take = _voice(0.5)
-    take[1000:1010] = 1.0  # a flat top
-
-    verdict = verdict_from_audio(take, RATE)
-
-    assert verdict.code == "too_hot"
-    assert verdict.message.startswith("Your voice is clipping")
-
-
-def test_one_stray_sample_does_not_make_a_quiet_voice_hot():
-    take = _voice(0.2)
-    take[500] = 1.0
-
-    assert verdict_from_audio(take, RATE).code == "good"
 
 
 def test_a_quiet_voice_may_continue_with_a_warning_and_says_how_much_to_raise():
@@ -141,15 +120,25 @@ def test_the_room_noise_message_names_the_level_when_the_room_is_loud():
     assert room_noise_message([-50.0]) == ("The room is quiet enough.", "ok")
 
 
-def _clicked(width: int, level: float = 0.05) -> np.ndarray:
+def _clicked(width: int, level: float, position: int) -> np.ndarray:
     take = _voice(level)
-    take[5000 : 5000 + width] = 1.0
+    take[position : position + width] = 1.0
     return take
 
 
-@pytest.mark.parametrize(("width", "code"), [(1, "good"), (3, "good"), (6, "too_hot")])
-def test_a_click_is_judged_by_the_rule_that_refuses_a_take(width, code):
-    take = _clicked(width)
+@pytest.mark.parametrize(
+    ("width", "level", "position", "code"),
+    [
+        (1, 0.05, 5000, "good"),
+        (3, 0.05, 5000, "good"),
+        (6, 0.05, 5000, "too_hot"),
+        (10, 0.5, 1000, "too_hot"),
+        (1, 0.2, 500, "good"),
+    ],
+    ids=["one_sample", "three_samples", "six_samples", "flat_top_in_a_loud_voice", "stray_sample_in_a_quiet_voice"],
+)
+def test_a_click_is_judged_by_the_rule_that_refuses_a_take(width, level, position, code):
+    take = _clicked(width, level, position)
 
     verdict = verdict_from_audio(take, RATE)
 

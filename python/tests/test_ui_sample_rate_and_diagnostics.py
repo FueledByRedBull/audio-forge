@@ -60,6 +60,7 @@ from mic_eq.config import (
     build_input_device_preference_key,
     legacy_latency_profile_key,
 )
+from test_quick_shell import _load_config_without_devices
 
 
 def _freeze_throttle_clock(monkeypatch) -> None:
@@ -90,11 +91,7 @@ def _status_log(window) -> list[str]:
 @pytest.fixture
 def window(qapp, monkeypatch):
     """A real MainWindow; tests stand in for the audio processor, never for Qt."""
-    monkeypatch.setattr(main_window, "load_config", AppConfig)
-    monkeypatch.setattr(main_window, "save_config", lambda _config: True)
-    monkeypatch.setattr(main_window, "list_presets", lambda: [])
-    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
-    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
+    _load_config_without_devices(monkeypatch)
     window = MainWindow()
     native = window.processor
     # Tests drive updates directly instead of through the event loop.
@@ -404,6 +401,33 @@ def _recovery_setup(window, processor=None):
     window._processing = True
 
 
+def _diag_counters(**overrides):
+    """The runtime counters every diagnostics test starts from, all quiet; each test adds its own."""
+    diagnostics = {
+        "input_dropped_samples": 0,
+        "lock_contention_count": 0,
+        "suppressor_non_finite_count": 0,
+        "stream_restart_count": 0,
+        "output_underrun_total": 0,
+        "output_underrun_streak": 0,
+        "output_recovery_event_count": 0,
+        "output_recovery_count": 0,
+        "output_short_write_dropped_samples": 0,
+        "rt_buffer_overflow_count": 0,
+        "input_callback_error_count": 0,
+        "output_callback_error_count": 0,
+        "rt_error_name": "none",
+        "noise_model": "rnnoise",
+        "noise_backend_available": True,
+        "noise_backend_failed": False,
+        "noise_backend_error": None,
+        "recovery_suppressed": False,
+        "last_restart_reason": None,
+    }
+    diagnostics.update(overrides)
+    return diagnostics
+
+
 def _healthy_runtime_diagnostics(**overrides):
     diagnostics = {
         "input_dropped_samples": 0,
@@ -474,27 +498,22 @@ def _process_events_for(qapp, duration_ms: int) -> None:
     loop.exec()
 
 
-def test_calibration_cancel_invalidates_delayed_capture_start(qapp, window):
+@pytest.mark.parametrize(
+    ("dialog_class", "state_attribute", "recording_state"),
+    [
+        (CalibrationDialog, "recording_state", "recording"),
+        (VoiceSetupDialog, "setup_state", "voice_recording"),
+    ],
+    ids=["calibration", "voice-setup"],
+)
+def test_calibration_and_voice_setup_cancel_invalidate_delayed_capture_start(
+    qapp, window, dialog_class, state_attribute, recording_state
+):
     processor = Mock()
     processor.sample_rate.return_value = 48_000
     _use_processor(window, processor)
-    dialog = CalibrationDialog(parent=window)
-    dialog.recording_state = "recording"
-    dialog._capture_start_timer.start(1)
-
-    dialog.reject()
-    _process_events_for(qapp, 25)
-
-    processor.start_raw_recording.assert_not_called()
-    assert not dialog._capture_start_timer.isActive()
-
-
-def test_voice_setup_cancel_invalidates_delayed_capture_start(qapp, window):
-    processor = Mock()
-    processor.sample_rate.return_value = 48_000
-    _use_processor(window, processor)
-    dialog = VoiceSetupDialog(parent=window)
-    dialog.setup_state = "voice_recording"
+    dialog = dialog_class(parent=window)
+    setattr(dialog, state_attribute, recording_state)
     dialog._capture_start_timer.start(1)
 
     dialog.reject()
@@ -1174,29 +1193,7 @@ def test_refresh_devices_defers_while_processing(window, monkeypatch):
 
 def test_input_phase_warning_marks_diagnostics_warn(window):
     _recovery_setup(window)
-    diagnostics = {
-        "input_dropped_samples": 0,
-        "lock_contention_count": 0,
-        "suppressor_non_finite_count": 0,
-        "stream_restart_count": 0,
-        "output_underrun_total": 0,
-        "output_underrun_streak": 0,
-        "output_recovery_event_count": 0,
-        "output_recovery_count": 0,
-        "output_short_write_dropped_samples": 0,
-        "rt_buffer_overflow_count": 0,
-        "input_callback_error_count": 0,
-        "output_callback_error_count": 0,
-        "rt_error_name": "none",
-        "input_phase_warning_count": 1,
-        "input_stereo_correlation": -0.91,
-        "noise_model": "rnnoise",
-        "noise_backend_available": True,
-        "noise_backend_failed": False,
-        "noise_backend_error": None,
-        "recovery_suppressed": False,
-        "last_restart_reason": None,
-    }
+    diagnostics = _diag_counters(input_phase_warning_count=1, input_stereo_correlation=-0.91)
 
     window._update_diagnostic_labels(
         diagnostics=diagnostics,
@@ -1216,86 +1213,52 @@ def test_input_phase_warning_marks_diagnostics_warn(window):
     assert window.shell_texts["dropped_label"].state == "warn"
 
 
-def test_device_selection_policy_matches_exact_then_unique_name():
-    identities = [
-        DeviceIdentity(name="Mic A", is_default=False),
-        DeviceIdentity(name="Mic B", is_default=True),
-    ]
-
-    assert (
-        find_identity_index(identities, DeviceIdentity(name="Mic B", is_default=True))
-        == 1
-    )
-    assert (
-        find_identity_index(identities, DeviceIdentity(name="Mic B", is_default=False))
-        == 1
-    )
-    assert (
-        find_identity_index(
-            identities, DeviceIdentity(name="Missing", is_default=False)
-        )
-        == -1
-    )
+_TWO_MICS = [
+    DeviceIdentity(name="Mic A", is_default=False),
+    DeviceIdentity(name="Mic B", is_default=True),
+]
+_USB_PAIR = [
+    DeviceIdentity(name="USB Audio", endpoint_id="endpoint-a", direction="input", name_ordinal=0),
+    DeviceIdentity(name="USB Audio", endpoint_id="endpoint-b", direction="input", name_ordinal=1),
+]
+_REPLACEMENT_ENDPOINT = [
+    DeviceIdentity(name="USB Audio", endpoint_id="replacement-endpoint", direction="input")
+]
 
 
-def test_device_selection_policy_uses_endpoint_id_across_rename_and_rejects_ambiguity():
-    identities = [
-        DeviceIdentity(
-            name="USB Audio",
-            endpoint_id="endpoint-a",
-            direction="input",
-            name_ordinal=0,
-        ),
-        DeviceIdentity(
-            name="USB Audio",
-            endpoint_id="endpoint-b",
-            direction="input",
-            name_ordinal=1,
-        ),
-    ]
-
-    assert (
-        find_identity_index(
-            identities,
+@pytest.mark.parametrize(
+    ("identities", "wanted", "index"),
+    [
+        (_TWO_MICS, DeviceIdentity(name="Mic B", is_default=True), 1),
+        (_TWO_MICS, DeviceIdentity(name="Mic B", is_default=False), 1),
+        (_TWO_MICS, DeviceIdentity(name="Missing", is_default=False), -1),
+        (
+            _USB_PAIR,
             DeviceIdentity(
-                name="Old Microphone Name",
-                endpoint_id="endpoint-b",
-                direction="input",
-                name_ordinal=0,
+                name="Old Microphone Name", endpoint_id="endpoint-b", direction="input", name_ordinal=0
             ),
-        )
-        == 1
-    )
-    assert find_identity_index(identities, DeviceIdentity(name="USB Audio")) == -1
-    assert (
-        find_identity_index(
-            identities,
-            DeviceIdentity(name="USB Audio", direction="input", name_ordinal=1),
-        )
-        == -1
-    )
-
-
-def test_endpoint_identity_does_not_fall_back_to_replacement_with_same_name():
-    identities = [
-        DeviceIdentity(
-            name="USB Audio",
-            endpoint_id="replacement-endpoint",
-            direction="input",
-        )
-    ]
-
-    assert (
-        find_identity_index(
-            identities,
-            DeviceIdentity(
-                name="USB Audio",
-                endpoint_id="disconnected-endpoint",
-                direction="input",
-            ),
-        )
-        == -1
-    )
+            1,
+        ),
+        (_USB_PAIR, DeviceIdentity(name="USB Audio"), -1),
+        (_USB_PAIR, DeviceIdentity(name="USB Audio", direction="input", name_ordinal=1), -1),
+        (
+            _REPLACEMENT_ENDPOINT,
+            DeviceIdentity(name="USB Audio", endpoint_id="disconnected-endpoint", direction="input"),
+            -1,
+        ),
+    ],
+    ids=[
+        "exact-default",
+        "name-only-unique",
+        "missing-name",
+        "endpoint-id-across-rename",
+        "ambiguous-name",
+        "ambiguous-ordinal",
+        "no-fallback-to-replacement-with-same-name",
+    ],
+)
+def test_device_selection_policy_matches_endpoint_then_exact_then_unique_name(identities, wanted, index):
+    assert find_identity_index(identities, wanted) == index
 
 
 def test_duplicate_name_without_endpoint_id_is_not_persistable():
@@ -1308,7 +1271,30 @@ def test_duplicate_name_without_endpoint_id_is_not_persistable():
     assert identity_is_persistable([identities[0]], identities[0]) is True
 
 
-def test_start_processor_for_route_forwards_duplicate_name_ordinals():
+@pytest.mark.parametrize(
+    ("input_identity", "output_identity", "expected_args", "expected_kwargs"),
+    [
+        (
+            DeviceIdentity(name="USB Audio", name_ordinal=1),
+            DeviceIdentity(name="USB Audio", name_ordinal=2),
+            ("USB Audio", "USB Audio", 1, 2),
+            {"input_device_endpoint_id": None, "output_device_endpoint_id": None},
+        ),
+        (
+            DeviceIdentity(name="USB Audio", endpoint_id="input-endpoint"),
+            DeviceIdentity(name="USB Audio", endpoint_id="output-endpoint"),
+            ("USB Audio", "USB Audio", 0, 0),
+            {
+                "input_device_endpoint_id": "input-endpoint",
+                "output_device_endpoint_id": "output-endpoint",
+            },
+        ),
+    ],
+    ids=["duplicate-name-ordinals", "endpoint-ids"],
+)
+def test_start_processor_for_route_forwards_name_ordinals_and_endpoint_ids(
+    input_identity, output_identity, expected_args, expected_kwargs
+):
     class Processor:
         def __init__(self):
             self.args = None
@@ -1320,41 +1306,11 @@ def test_start_processor_for_route_forwards_duplicate_name_ordinals():
             return "started"
 
     processor = Processor()
-    result = start_processor_for_route(
-        processor,
-        DeviceIdentity(name="USB Audio", name_ordinal=1),
-        DeviceIdentity(name="USB Audio", name_ordinal=2),
-    )
+    result = start_processor_for_route(processor, input_identity, output_identity)
 
     assert result == "started"
-    assert processor.args == ("USB Audio", "USB Audio", 1, 2)
-    assert processor.kwargs == {
-        "input_device_endpoint_id": None,
-        "output_device_endpoint_id": None,
-    }
-
-
-def test_start_processor_for_route_forwards_endpoint_ids():
-    class Processor:
-        def __init__(self):
-            self.kwargs = None
-
-        def start(self, *_args, **kwargs):
-            self.kwargs = kwargs
-            return "started"
-
-    processor = Processor()
-    result = start_processor_for_route(
-        processor,
-        DeviceIdentity(name="USB Audio", endpoint_id="input-endpoint"),
-        DeviceIdentity(name="USB Audio", endpoint_id="output-endpoint"),
-    )
-
-    assert result == "started"
-    assert processor.kwargs == {
-        "input_device_endpoint_id": "input-endpoint",
-        "output_device_endpoint_id": "output-endpoint",
-    }
+    assert processor.args == expected_args
+    assert processor.kwargs == expected_kwargs
 
 
 def test_start_processor_for_route_rejects_missing_output_device():
@@ -1551,11 +1507,7 @@ def test_startup_preset_write_failure_keeps_previous_selection(window, monkeypat
     previous = _startup_builtin_id("flat")
     window.config.startup_preset = previous
     window._update_startup_preset_menu()
-    save = Mock(
-        side_effect=write_failure if isinstance(write_failure, Exception) else None,
-        return_value=write_failure,
-    )
-    monkeypatch.setattr(main_window, "save_config", save)
+    monkeypatch.setattr(main_window, "save_config", _failing_save(write_failure))
     actions = {
         action.data(): action
         for action in window._startup_preset_menu.actions()
@@ -1580,38 +1532,14 @@ def test_refresh_device_write_failure_keeps_live_route_and_reports_session_state
     monkeypatch.setattr(
         main_window,
         "list_input_devices",
-        lambda: [
-            SimpleNamespace(
-                name="Mic",
-                is_default=True,
-                endpoint_id="input-id",
-                host_api="WASAPI",
-                sample_rate=48_000,
-                channels=1,
-                name_ordinal=0,
-            )
-        ],
+        lambda: [_fake_audio_device("Mic", "input-id", "input")],
     )
     monkeypatch.setattr(
         main_window,
         "list_output_devices",
-        lambda: [
-            SimpleNamespace(
-                name="Cable",
-                is_default=True,
-                endpoint_id="output-id",
-                host_api="WASAPI",
-                sample_rate=48_000,
-                channels=2,
-                name_ordinal=0,
-            )
-        ],
+        lambda: [_fake_audio_device("Cable", "output-id", "output")],
     )
-    save = Mock(
-        side_effect=write_failure if isinstance(write_failure, Exception) else None,
-        return_value=write_failure,
-    )
-    monkeypatch.setattr(main_window, "save_config", save)
+    monkeypatch.setattr(main_window, "save_config", _failing_save(write_failure))
 
     window._refresh_devices()
 
@@ -1637,11 +1565,7 @@ def test_restore_write_failure_keeps_canonicalized_route_in_session(
         last_input_device_identity=DeviceIdentity(name="Mic", direction="input"),
         last_output_device_identity=DeviceIdentity(name="Cable", direction="output"),
     )
-    save = Mock(
-        side_effect=write_failure if isinstance(write_failure, Exception) else None,
-        return_value=write_failure,
-    )
-    monkeypatch.setattr(main_window, "save_config", save)
+    monkeypatch.setattr(main_window, "save_config", _failing_save(write_failure))
 
     window._restore_from_config()
 
@@ -1661,11 +1585,7 @@ def test_device_change_write_failure_keeps_active_route(window, monkeypatch, wri
     )
     window.input_choice.addItem("Mic", input_identity)
     window.output_choice.addItem("Cable", output_identity)
-    save = Mock(
-        side_effect=write_failure if isinstance(write_failure, Exception) else None,
-        return_value=write_failure,
-    )
-    monkeypatch.setattr(main_window, "save_config", save)
+    monkeypatch.setattr(main_window, "save_config", _failing_save(write_failure))
 
     window._on_device_changed()
 
@@ -1817,34 +1737,11 @@ def test_the_dropped_selection_warning_is_announced_to_assistive_technology(wind
 def test_stale_output_underrun_and_recovery_totals_do_not_warn(window, monkeypatch):
     monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: 10.0)
     _recovery_setup(window)
-    diagnostics = {
-        "input_dropped_samples": 0,
-        "lock_contention_count": 0,
-        "suppressor_non_finite_count": 0,
-        "stream_restart_count": 0,
-        "output_underrun_total": 4,
-        "output_underrun_streak": 0,
-        "output_retime_adjustment_count": 606,
-        "output_recovery_event_count": 0,
-        "output_recovery_count": 0,
-        "output_short_write_dropped_samples": 0,
-        "rt_buffer_overflow_count": 0,
-        "input_callback_error_count": 0,
-        "output_callback_error_count": 0,
-        "rt_error_name": "none",
-        "input_backlog_recovery_count": 0,
-        "input_backlog_dropped_samples": 0,
-        "clip_event_count": 0,
-        "clip_peak_db": -120.0,
-        "input_resampler_active": False,
-        "output_resampler_active": False,
-        "noise_model": "deepfilter",
-        "noise_backend_available": True,
-        "noise_backend_failed": False,
-        "noise_backend_error": None,
-        "recovery_suppressed": False,
-        "last_restart_reason": None,
-    }
+    diagnostics = _diag_counters(
+        output_underrun_total=4, output_retime_adjustment_count=606, input_backlog_recovery_count=0,
+        input_backlog_dropped_samples=0, clip_event_count=0, clip_peak_db=-120.0,
+        input_resampler_active=False, output_resampler_active=False, noise_model="deepfilter",
+    )
     window._stream_health = RecentStreamHealth()
     window._stream_health.observe(diagnostics, now=0.0)
     window._last_output_underrun_total = 4
@@ -1868,28 +1765,7 @@ def test_new_output_underrun_total_warns_for_stability_window(window, monkeypatc
     clock = [10.0]
     monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
     _recovery_setup(window)
-    diagnostics = {
-        "input_dropped_samples": 0,
-        "lock_contention_count": 0,
-        "suppressor_non_finite_count": 0,
-        "stream_restart_count": 0,
-        "output_underrun_total": 5,
-        "output_underrun_streak": 0,
-        "output_retime_adjustment_count": 0,
-        "output_recovery_event_count": 0,
-        "output_recovery_count": 0,
-        "output_short_write_dropped_samples": 0,
-        "rt_buffer_overflow_count": 0,
-        "input_callback_error_count": 0,
-        "output_callback_error_count": 0,
-        "rt_error_name": "none",
-        "noise_model": "rnnoise",
-        "noise_backend_available": True,
-        "noise_backend_failed": False,
-        "noise_backend_error": None,
-        "recovery_suppressed": False,
-        "last_restart_reason": None,
-    }
+    diagnostics = _diag_counters(output_underrun_total=5, output_retime_adjustment_count=0)
     window._last_output_underrun_total = 4
 
     window._update_diagnostic_labels(
@@ -1918,33 +1794,10 @@ def test_new_output_underrun_total_warns_for_stability_window(window, monkeypatc
 
 def test_the_output_clip_counter_is_a_support_counter_and_does_not_warn(window):
     _recovery_setup(window)
-    diagnostics = {
-        "input_dropped_samples": 0,
-        "lock_contention_count": 0,
-        "suppressor_non_finite_count": 0,
-        "stream_restart_count": 0,
-        "output_underrun_total": 0,
-        "output_underrun_streak": 0,
-        "output_retime_adjustment_count": 0,
-        "output_recovery_event_count": 0,
-        "output_recovery_count": 0,
-        "output_short_write_dropped_samples": 0,
-        "rt_buffer_overflow_count": 0,
-        "input_callback_error_count": 0,
-        "output_callback_error_count": 0,
-        "rt_error_name": "none",
-        "clip_event_count": 0,
-        "clip_peak_db": -120.0,
-        "output_clip_event_count": 1,
-        "output_clip_peak_db": -0.25,
-        "limiter_effective_ceiling_db": -1.5,
-        "noise_model": "rnnoise",
-        "noise_backend_available": True,
-        "noise_backend_failed": False,
-        "noise_backend_error": None,
-        "recovery_suppressed": False,
-        "last_restart_reason": None,
-    }
+    diagnostics = _diag_counters(
+        output_retime_adjustment_count=0, clip_event_count=0, clip_peak_db=-120.0,
+        output_clip_event_count=1, output_clip_peak_db=-0.25, limiter_effective_ceiling_db=-1.5,
+    )
 
     window._update_diagnostic_labels(
         diagnostics=diagnostics,
@@ -1963,35 +1816,11 @@ def test_the_output_clip_counter_is_a_support_counter_and_does_not_warn(window):
 
 def test_new_output_true_peak_event_warns_once(window):
     _recovery_setup(window)
-    diagnostics = {
-        "input_dropped_samples": 0,
-        "lock_contention_count": 0,
-        "suppressor_non_finite_count": 0,
-        "stream_restart_count": 0,
-        "output_underrun_total": 0,
-        "output_underrun_streak": 0,
-        "output_retime_adjustment_count": 0,
-        "output_recovery_event_count": 0,
-        "output_recovery_count": 0,
-        "output_short_write_dropped_samples": 0,
-        "rt_buffer_overflow_count": 0,
-        "input_callback_error_count": 0,
-        "output_callback_error_count": 0,
-        "rt_error_name": "none",
-        "clip_event_count": 0,
-        "clip_peak_db": -120.0,
-        "output_clip_event_count": 0,
-        "output_clip_peak_db": -120.0,
-        "output_true_peak_event_count": 1,
-        "output_true_peak_db": 0.4,
-        "limiter_effective_ceiling_db": -1.5,
-        "noise_model": "rnnoise",
-        "noise_backend_available": True,
-        "noise_backend_failed": False,
-        "noise_backend_error": None,
-        "recovery_suppressed": False,
-        "last_restart_reason": None,
-    }
+    diagnostics = _diag_counters(
+        output_retime_adjustment_count=0, clip_event_count=0, clip_peak_db=-120.0,
+        output_clip_event_count=0, output_clip_peak_db=-120.0, output_true_peak_event_count=1,
+        output_true_peak_db=0.4, limiter_effective_ceiling_db=-1.5,
+    )
 
     window._update_diagnostic_labels(
         diagnostics=diagnostics,
@@ -2026,33 +1855,10 @@ def test_new_gate_chatter_event_warns_for_stability_window(window, monkeypatch):
     clock = [10.0]
     monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
     _recovery_setup(window)
-    diagnostics = {
-        "input_dropped_samples": 0,
-        "lock_contention_count": 0,
-        "suppressor_non_finite_count": 0,
-        "stream_restart_count": 0,
-        "output_underrun_total": 0,
-        "output_underrun_streak": 0,
-        "output_retime_adjustment_count": 0,
-        "output_recovery_event_count": 0,
-        "output_recovery_count": 0,
-        "output_short_write_dropped_samples": 0,
-        "rt_buffer_overflow_count": 0,
-        "input_callback_error_count": 0,
-        "output_callback_error_count": 0,
-        "rt_error_name": "none",
-        "clip_event_count": 0,
-        "clip_peak_db": -120.0,
-        "output_clip_event_count": 0,
-        "output_clip_peak_db": -120.0,
-        "gate_chatter_event_count": 1,
-        "noise_model": "rnnoise",
-        "noise_backend_available": True,
-        "noise_backend_failed": False,
-        "noise_backend_error": None,
-        "recovery_suppressed": False,
-        "last_restart_reason": None,
-    }
+    diagnostics = _diag_counters(
+        output_retime_adjustment_count=0, clip_event_count=0, clip_peak_db=-120.0,
+        output_clip_event_count=0, output_clip_peak_db=-120.0, gate_chatter_event_count=1,
+    )
 
     window._update_diagnostic_labels(
         diagnostics=diagnostics,
@@ -2304,16 +2110,19 @@ def _latency_window(window, processor):
     return window
 
 
-def test_latency_calibration_failure_stops_owned_processor(window):
-    processor = _LatencyProcessor(running=False)
+@pytest.mark.parametrize(
+    ("running", "started", "stopped"), [(False, 1, 1), (True, 0, 0)], ids=["owned", "preexisting"]
+)
+def test_latency_calibration_failure_stops_only_a_processor_it_started(window, running, started, stopped):
+    processor = _LatencyProcessor(running=running)
     owner = _latency_window(window, processor)
     dialog = LatencyCalibrationDialog(owner)
 
     dialog._on_run_clicked()
 
-    assert processor.started == 1
-    assert processor.stopped == 1
-    assert not processor.running
+    assert processor.started == started
+    assert processor.stopped == stopped
+    assert processor.running is running
 
 
 def test_latency_calibration_respects_user_mute(window, monkeypatch):
@@ -2330,18 +2139,6 @@ def test_latency_calibration_respects_user_mute(window, monkeypatch):
     notice.assert_called_once()
     dialog.reject()
     processor.set_output_mute.assert_not_called()
-
-
-def test_latency_calibration_failure_does_not_stop_preexisting_processor(window):
-    processor = _LatencyProcessor(running=True)
-    owner = _latency_window(window, processor)
-    dialog = LatencyCalibrationDialog(owner)
-
-    dialog._on_run_clicked()
-
-    assert processor.started == 0
-    assert processor.stopped == 0
-    assert processor.running
 
 
 def test_voice_setup_dynamics_intensity_controls_custom_targets(qapp):
@@ -2513,42 +2310,39 @@ def test_legacy_global_modes_without_stable_identity_use_safe_defaults() -> None
     assert MainWindow._input_preference_for_current_route(owner) == InputDevicePreference()
 
 
-def test_missing_route_override_does_not_fall_back_to_global_modes() -> None:
+@pytest.mark.parametrize(
+    ("config", "route_key", "input_key"),
+    [
+        (
+            AppConfig(
+                input_channel_mode="left",
+                input_cleanup_mode="gentle",
+                route_input_preferences={"another-route": InputDevicePreference("right", "strong")},
+            ),
+            "missing-route",
+            None,
+        ),
+        (
+            AppConfig(
+                input_device_preferences={
+                    build_input_device_preference_key(
+                        DeviceIdentity(name="Mic", endpoint_id="old-endpoint", direction="input")
+                    ): InputDevicePreference("left", "gentle")
+                }
+            ),
+            None,
+            build_input_device_preference_key(
+                DeviceIdentity(name="Mic", endpoint_id="new-endpoint", direction="input")
+            ),
+        ),
+    ],
+    ids=["missing-route-override", "new-input-endpoint"],
+)
+def test_missing_route_or_input_override_does_not_fall_back_to_global_modes(config, route_key, input_key) -> None:
     owner = cast(Any, MainWindow.__new__(MainWindow))
-    owner.config = AppConfig(
-        input_channel_mode="left",
-        input_cleanup_mode="gentle",
-        route_input_preferences={"another-route": InputDevicePreference("right", "strong")},
-    )
-    owner._current_device_route_key = lambda: "missing-route"
-    owner._current_input_preference_key = lambda: None
-
-    assert MainWindow._input_preference_for_current_route(owner) == InputDevicePreference()
-
-
-def test_new_input_endpoint_does_not_inherit_another_device_preference() -> None:
-    old_identity = DeviceIdentity(
-        name="Mic",
-        endpoint_id="old-endpoint",
-        direction="input",
-    )
-    new_identity = DeviceIdentity(
-        name="Mic",
-        endpoint_id="new-endpoint",
-        direction="input",
-    )
-    owner = cast(Any, MainWindow.__new__(MainWindow))
-    owner.config = AppConfig(
-        input_device_preferences={
-            build_input_device_preference_key(old_identity): InputDevicePreference(
-                "left", "gentle"
-            )
-        }
-    )
-    owner._current_device_route_key = lambda: None
-    owner._current_input_preference_key = lambda: build_input_device_preference_key(
-        new_identity
-    )
+    owner.config = config
+    owner._current_device_route_key = lambda: route_key
+    owner._current_input_preference_key = lambda: input_key
 
     assert MainWindow._input_preference_for_current_route(owner) == InputDevicePreference()
 
@@ -2560,28 +2354,8 @@ def test_route_input_preference_action_saves_visible_controls_for_current_route(
     from mic_eq.ui import main_window
 
     monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
-    monkeypatch.setattr(main_window, "list_input_devices", lambda: [
-        SimpleNamespace(
-            name="Mic",
-            is_default=True,
-            endpoint_id="input-route",
-            host_api="WASAPI",
-            sample_rate=48_000,
-            channels=1,
-            name_ordinal=0,
-        )
-    ])
-    monkeypatch.setattr(main_window, "list_output_devices", lambda: [
-        SimpleNamespace(
-            name="Cable",
-            is_default=True,
-            endpoint_id="output-route",
-            host_api="WASAPI",
-            sample_rate=48_000,
-            channels=2,
-            name_ordinal=0,
-        )
-    ])
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: [_fake_audio_device("Mic", "input-route", "input")])
+    monkeypatch.setattr(main_window, "list_output_devices", lambda: [_fake_audio_device("Cable", "output-route", "output")])
 
     window = MainWindow()
     try:
@@ -2604,6 +2378,14 @@ def test_route_input_preference_action_saves_visible_controls_for_current_route(
         qapp.processEvents()
 
 
+def _failing_save(write_failure) -> Mock:
+    """A save_config that raises ``write_failure`` if it is an exception, else returns it."""
+    return Mock(
+        side_effect=write_failure if isinstance(write_failure, Exception) else None,
+        return_value=write_failure,
+    )
+
+
 def _fake_audio_device(name: str, endpoint_id: str, direction: str, **formats: int):
     return SimpleNamespace(
         name=name,
@@ -2616,16 +2398,33 @@ def _fake_audio_device(name: str, endpoint_id: str, direction: str, **formats: i
     )
 
 
-def test_refresh_reapplies_latency_and_route_preset_after_reconnect(
-    qapp, monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    ("initial", "changed", "preset_calls"),
+    [
+        (
+            ("Mic A", "input-a", "Cable A", "output-a"),
+            _fake_audio_device("Mic B", "input-b", "input"),
+            1,
+        ),
+        (
+            ("Mic", "input-route", "Cable", "output-route"),
+            _fake_audio_device("Mic", "input-route", "input", sample_rate=44_100, channels=2),
+            0,
+        ),
+    ],
+    ids=["reconnected-as-another-device", "endpoint-format-changed"],
+)
+def test_refresh_reapplies_latency_but_the_route_preset_only_for_another_device(
+    qapp, monkeypatch, tmp_path, initial, changed, preset_calls
 ) -> None:
     from mic_eq.config_parts import shared
     from mic_eq.ui import main_window
 
+    input_name, input_id, output_name, output_id = initial
     monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
     devices = {
-        "input": [_fake_audio_device("Mic A", "input-a", "input")],
-        "output": [_fake_audio_device("Cable A", "output-a", "output")],
+        "input": [_fake_audio_device(input_name, input_id, "input")],
+        "output": [_fake_audio_device(output_name, output_id, "output")],
     }
     monkeypatch.setattr(main_window, "list_input_devices", lambda: devices["input"])
     monkeypatch.setattr(main_window, "list_output_devices", lambda: devices["output"])
@@ -2635,45 +2434,11 @@ def test_refresh_reapplies_latency_and_route_preset_after_reconnect(
         window._on_device_changed()
         window._apply_latency_compensation_for_current_devices = Mock()
         window._apply_bound_preset_for_current_route = Mock(return_value=False)
-        devices["input"] = [_fake_audio_device("Mic B", "input-b", "input")]
+        devices["input"] = [changed]
         window._refresh_devices()
 
         window._apply_latency_compensation_for_current_devices.assert_called_once()
-        window._apply_bound_preset_for_current_route.assert_called_once()
-    finally:
-        window.close()
-        window.deleteLater()
-        qapp.processEvents()
-
-
-def test_refresh_reapplies_latency_when_endpoint_format_changes(
-    qapp, monkeypatch, tmp_path
-) -> None:
-    from mic_eq.config_parts import shared
-    from mic_eq.ui import main_window
-
-    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
-    devices = {
-        "input": [_fake_audio_device("Mic", "input-route", "input")],
-        "output": [_fake_audio_device("Cable", "output-route", "output")],
-    }
-    monkeypatch.setattr(main_window, "list_input_devices", lambda: devices["input"])
-    monkeypatch.setattr(main_window, "list_output_devices", lambda: devices["output"])
-
-    window = MainWindow()
-    try:
-        window._on_device_changed()
-        window._apply_latency_compensation_for_current_devices = Mock()
-        window._apply_bound_preset_for_current_route = Mock(return_value=False)
-        devices["input"] = [
-            _fake_audio_device(
-                "Mic", "input-route", "input", sample_rate=44_100, channels=2
-            )
-        ]
-        window._refresh_devices()
-
-        window._apply_latency_compensation_for_current_devices.assert_called_once()
-        window._apply_bound_preset_for_current_route.assert_not_called()
+        assert window._apply_bound_preset_for_current_route.call_count == preset_calls
     finally:
         window.close()
         window.deleteLater()

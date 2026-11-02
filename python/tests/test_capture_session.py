@@ -288,19 +288,21 @@ class _RouteProcessor:
         return "started"
 
 
+_OLD_ROUTE = (
+    DeviceIdentity(name="Mic", endpoint_id="old-mic", direction="input"),
+    DeviceIdentity(name="Speaker", endpoint_id="old-speaker", direction="output"),
+)
+_SELECTED_ROUTE = (
+    DeviceIdentity(name="Mic", endpoint_id="new-mic", direction="input"),
+    DeviceIdentity(name="Speaker", endpoint_id="new-speaker", direction="output"),
+)
+
+
 def test_route_handoff_restores_previous_route_after_selected_start_failure() -> None:
-    old_route = (
-        DeviceIdentity(name="Mic", endpoint_id="old-mic", direction="input"),
-        DeviceIdentity(name="Speaker", endpoint_id="old-speaker", direction="output"),
-    )
-    selected_route = (
-        DeviceIdentity(name="Mic", endpoint_id="new-mic", direction="input"),
-        DeviceIdentity(name="Speaker", endpoint_id="new-speaker", direction="output"),
-    )
     processor = _RouteProcessor(fail_endpoint_ids={"new-mic"})
 
     try:
-        _restart_processor_for_route(processor, selected_route, old_route)
+        _restart_processor_for_route(processor, _SELECTED_ROUTE, _OLD_ROUTE)
     except RuntimeError as exc:
         assert "previous route restored" in str(exc)
     else:
@@ -313,18 +315,10 @@ def test_route_handoff_restores_previous_route_after_selected_start_failure() ->
 
 
 def test_route_handoff_reports_restore_failure() -> None:
-    old_route = (
-        DeviceIdentity(name="Mic", endpoint_id="old-mic", direction="input"),
-        DeviceIdentity(name="Speaker", endpoint_id="old-speaker", direction="output"),
-    )
-    selected_route = (
-        DeviceIdentity(name="Mic", endpoint_id="new-mic", direction="input"),
-        DeviceIdentity(name="Speaker", endpoint_id="new-speaker", direction="output"),
-    )
     processor = _RouteProcessor(fail_endpoint_ids={"new-mic", "old-mic"})
 
     try:
-        _restart_processor_for_route(processor, selected_route, old_route)
+        _restart_processor_for_route(processor, _SELECTED_ROUTE, _OLD_ROUTE)
     except RuntimeError as exc:
         assert "failed to restore previous route" in str(exc)
     else:
@@ -334,17 +328,9 @@ def test_route_handoff_reports_restore_failure() -> None:
 
 
 def test_route_handoff_starts_selected_route_normally() -> None:
-    old_route = (
-        DeviceIdentity(name="Mic", endpoint_id="old-mic", direction="input"),
-        DeviceIdentity(name="Speaker", endpoint_id="old-speaker", direction="output"),
-    )
-    selected_route = (
-        DeviceIdentity(name="Mic", endpoint_id="new-mic", direction="input"),
-        DeviceIdentity(name="Speaker", endpoint_id="new-speaker", direction="output"),
-    )
     processor = _RouteProcessor()
 
-    assert _restart_processor_for_route(processor, selected_route, old_route) == "started"
+    assert _restart_processor_for_route(processor, _SELECTED_ROUTE, _OLD_ROUTE) == "started"
     assert processor.running is True
     assert processor.starts[-1][4] == "new-mic"
     assert processor.starts[-1][5] == "new-speaker"

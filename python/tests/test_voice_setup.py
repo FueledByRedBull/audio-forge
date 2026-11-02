@@ -1811,20 +1811,21 @@ def test_verification_worker_reports_failure(monkeypatch):
     assert errors == ["sentinel"]
 
 
-def test_candidate_uses_live_controls_and_restores_on_failure_and_close(qapp, monkeypatch):
+@pytest.fixture
+def owner(isolated_main_window):
+    """The main window a Voice Setup dialog is parented to, with its timers stopped."""
+    isolated_main_window.meter_timer.stop()
+    isolated_main_window.diagnostics_timer.stop()
+    return isolated_main_window
+
+
+def test_candidate_uses_live_controls_and_restores_on_failure_and_close(
+    qapp, monkeypatch, owner
+):
     from unittest.mock import Mock
-    from mic_eq.config import AppConfig
-    from mic_eq.ui.main_window import MainWindow
     from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    for name in ("list_presets", "list_input_devices", "list_output_devices"):
-        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
-    owner = MainWindow()
     monkeypatch.setattr(owner, "_calibration_context_key", lambda: "test-route")
-    owner.meter_timer.stop()
-    owner.diagnostics_timer.stop()
     owner.compressor_state.set_settings({"noise_reference_reliability": 0.7})
     owner.eq_state.set_settings({"enabled": False})
     old_compressor = owner.compressor_state.get_settings(include_calibration=True)
@@ -1927,42 +1928,11 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(qapp, mo
         qapp.processEvents()
         dialog.reject()
         dialog.deleteLater()
-        owner.close()
-        owner.deleteLater()
-        qapp.processEvents()
 
 
-@pytest.mark.parametrize(
-    ("field", "value", "reason"),
-    [
-        ("eq_settings", {"band_freqs": [60.0]}, "candidate EQ bands are incomplete"),
-        ("limiter_settings", {}, "candidate limiter settings are incomplete"),
-    ],
-)
-def test_incomplete_candidate_offers_retake_instead_of_apply(
-    qapp, monkeypatch, field, value, reason
-):
-    from unittest.mock import Mock
-
-    from mic_eq.config import AppConfig
-    from mic_eq.ui.main_window import MainWindow
-    from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
-
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    for name in ("list_presets", "list_input_devices", "list_output_devices"):
-        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
-    owner = MainWindow()
-    owner.meter_timer.stop()
-    owner.diagnostics_timer.stop()
-    dialog = VoiceSetupDialog(parent=owner)
-    limiter = {
-        "enabled": False,
-        "ceiling_db": -2.5,
-        "release_ms": 175.0,
-        "careful_output_enabled": False,
-    }
-    result = {
+def _advisory_result(owner) -> dict:
+    """A complete candidate whose capture was too weak for the analysis to recommend it."""
+    return {
         "_candidate": _full_voice_candidate_metadata(),
         "diagnostics": {
             "apply_recommended": False,
@@ -1977,13 +1947,35 @@ def test_incomplete_candidate_offers_retake_instead_of_apply(
         "compressor_settings": owner.compressor_state.get_settings(
             include_calibration=True
         ),
-        "limiter_settings": limiter,
+        "limiter_settings": {
+            "enabled": False,
+            "ceiling_db": -2.5,
+            "release_ms": 175.0,
+            "careful_output_enabled": False,
+        },
         "eq_settings": {
             "band_freqs": list(np.geomspace(60.0, 16_000.0, 10)),
             "band_gains": [1.0] * 10,
             "band_qs": [1.41] * 10,
         },
     }
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("eq_settings", {"band_freqs": [60.0]}, "candidate EQ bands are incomplete"),
+        ("limiter_settings", {}, "candidate limiter settings are incomplete"),
+    ],
+)
+def test_incomplete_candidate_offers_retake_instead_of_apply(
+    monkeypatch, owner, field, value, reason
+):
+    from unittest.mock import Mock
+    from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+
+    dialog = VoiceSetupDialog(parent=owner)
+    result = _advisory_result(owner)
     result[field] = value
     dialog._candidate_metadata = deepcopy(result["_candidate"])
     dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
@@ -2012,52 +2004,14 @@ def test_incomplete_candidate_offers_retake_instead_of_apply(
     finally:
         dialog.reject()
         dialog.deleteLater()
-        owner.close()
-        owner.deleteLater()
-        qapp.processEvents()
 
 
-def test_complete_advisory_candidate_still_offers_apply(qapp, monkeypatch):
-    from mic_eq.config import AppConfig
-    from mic_eq.ui.main_window import MainWindow
+def test_complete_advisory_candidate_still_offers_apply(owner):
     from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    for name in ("list_presets", "list_input_devices", "list_output_devices"):
-        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
-    owner = MainWindow()
-    owner.meter_timer.stop()
-    owner.diagnostics_timer.stop()
     dialog = VoiceSetupDialog(parent=owner)
     try:
-        result = {
-            "_candidate": _full_voice_candidate_metadata(),
-            "diagnostics": {
-                "apply_recommended": False,
-                "uncertainty_reasons": ["capture confidence is weak"],
-                "setup_confidence": 0.62,
-                "capture_confidence": 0.7,
-                "recommendation_uncertainty": 0.4,
-                "gate_mode_label": "VAD Assisted",
-            },
-            "gate_settings": owner.gate_state.get_settings(),
-            "deesser_settings": owner.deesser_state.get_settings(),
-            "compressor_settings": owner.compressor_state.get_settings(
-                include_calibration=True
-            ),
-            "limiter_settings": {
-                "enabled": False,
-                "ceiling_db": -2.5,
-                "release_ms": 175.0,
-                "careful_output_enabled": False,
-            },
-            "eq_settings": {
-                "band_freqs": list(np.geomspace(60.0, 16_000.0, 10)),
-                "band_gains": [1.0] * 10,
-                "band_qs": [1.41] * 10,
-            },
-        }
+        result = _advisory_result(owner)
         dialog._candidate_metadata = deepcopy(result["_candidate"])
         dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
         dialog._analysis_generation = 1
@@ -2077,23 +2031,11 @@ def test_complete_advisory_candidate_still_offers_apply(qapp, monkeypatch):
     finally:
         dialog.reject()
         dialog.deleteLater()
-        owner.close()
-        owner.deleteLater()
-        qapp.processEvents()
 
 
-def test_review_shows_settings_before_and_after(qapp, monkeypatch):
-    from mic_eq.config import AppConfig
-    from mic_eq.ui.main_window import MainWindow
+def test_review_shows_settings_before_and_after(owner):
     from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    for name in ("list_presets", "list_input_devices", "list_output_devices"):
-        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
-    owner = MainWindow()
-    owner.meter_timer.stop()
-    owner.diagnostics_timer.stop()
     dialog = VoiceSetupDialog(parent=owner)
     orphan = VoiceSetupDialog()
     try:
@@ -2148,9 +2090,6 @@ def test_review_shows_settings_before_and_after(qapp, monkeypatch):
         for widget in (dialog, orphan):
             widget.reject()
             widget.deleteLater()
-        owner.close()
-        owner.deleteLater()
-        qapp.processEvents()
 
 
 def test_native_chain_reports_robust_reduction_and_can_return_rendered_audio():
@@ -2187,25 +2126,16 @@ def test_native_chain_reports_robust_reduction_and_can_return_rendered_audio():
     )
 
 
-def test_silent_room_noise_moves_on_and_a_leaky_gate_is_a_weak_reference(qapp, monkeypatch):
+def test_silent_room_noise_moves_on_and_a_leaky_gate_is_a_weak_reference(owner):
     # A headset that mutes itself between words records silence as room noise.
     from mic_eq.analysis.noise_reference import (
         SILENT_REFERENCE_GUIDANCE,
         analyze_noise_reference,
     )
-    from mic_eq.config import AppConfig
-    from mic_eq.ui.main_window import MainWindow
     from mic_eq.ui.setup_messages import plain_reasons
     from mic_eq.ui.theme import message_text_style
     from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    for name in ("list_presets", "list_input_devices", "list_output_devices"):
-        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
-    owner = MainWindow()
-    owner.meter_timer.stop()
-    owner.diagnostics_timer.stop()
     dialog = VoiceSetupDialog(parent=owner)
     try:
         dialog.setup_state = "noise_recording"
@@ -2235,32 +2165,17 @@ def test_silent_room_noise_moves_on_and_a_leaky_gate_is_a_weak_reference(qapp, m
     finally:
         dialog.reject()
         dialog.deleteLater()
-        owner.close()
-        owner.deleteLater()
-        qapp.processEvents()
 
 
 @pytest.fixture
-def voice_dialog(qapp, monkeypatch):
-    from mic_eq.config import AppConfig
-    from mic_eq.ui.main_window import MainWindow
+def voice_dialog(monkeypatch, owner):
     from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    for name in ("list_presets", "list_input_devices", "list_output_devices"):
-        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
-    owner = MainWindow()
-    owner.meter_timer.stop()
-    owner.diagnostics_timer.stop()
     dialog = VoiceSetupDialog(parent=owner)
     monkeypatch.setattr(dialog, "_start_analysis", lambda: None)
     yield dialog
     dialog.reject()
     dialog.deleteLater()
-    owner.close()
-    owner.deleteLater()
-    qapp.processEvents()
 
 
 def _finish_take(dialog, step, audio):

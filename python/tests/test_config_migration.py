@@ -727,35 +727,30 @@ def test_app_config_non_object_payload_returns_defaults(payload):
     assert restored == AppConfig()
 
 
-def test_app_config_restores_false_boolean_without_truthy_coercion():
-    restored = AppConfig.from_dict({"use_measured_latency": False})
+@pytest.mark.parametrize(
+    ("value", "expected"), [(False, False), ("false", True)], ids=["false-boolean", "corrupt-string-to-default"]
+)
+def test_app_config_restores_a_boolean_and_defaults_a_corrupt_one(value, expected):
+    restored = AppConfig.from_dict({"use_measured_latency": value})
 
-    assert restored.use_measured_latency is False
-
-
-def test_app_config_rejects_corrupt_boolean_to_default():
-    restored = AppConfig.from_dict({"use_measured_latency": "false"})
-
-    assert restored.use_measured_latency is True
+    assert restored.use_measured_latency is expected
 
 
-@pytest.mark.parametrize("value", ["bad", "", 1, True, None, ["left"]])
-def test_app_config_normalizes_invalid_input_channel_mode(value):
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(value, "phase_safe_mono") for value in ["bad", "", 1, True, None, ["left"]]]
+    + [(value, value) for value in ["average", "left", "right", "max_rms"]],
+    ids=["bad", "empty", "int", "bool", "none", "list", "average", "left", "right", "max_rms"],
+)
+def test_app_config_normalizes_input_channel_mode(value, expected):
     restored = AppConfig.from_dict({"input_channel_mode": value})
 
-    assert restored.input_channel_mode == "phase_safe_mono"
+    assert restored.input_channel_mode == expected
 
 
 def test_app_config_uses_phase_safe_input_for_new_config():
     assert AppConfig().input_channel_mode == "phase_safe_mono"
     assert AppConfig.from_dict({}).input_channel_mode == "phase_safe_mono"
-
-
-@pytest.mark.parametrize("value", ["average", "left", "right", "max_rms"])
-def test_app_config_preserves_valid_input_channel_mode(value):
-    restored = AppConfig.from_dict({"input_channel_mode": value})
-
-    assert restored.input_channel_mode == value
 
 
 @pytest.mark.parametrize("payload", [[], "bad", None])
@@ -812,12 +807,6 @@ def test_oversized_integer_in_config_json_keeps_the_other_settings(
     assert loaded.last_preset == "Keep"
     assert loaded.calibration_results == []
     assert not filepath.with_name("config.json.corrupt").exists()
-
-
-def test_app_config_preserves_valid_last_preset_string():
-    restored = AppConfig.from_dict({"last_preset": "builtin:voice"})
-
-    assert restored.last_preset == "builtin:voice"
 
 
 @pytest.mark.parametrize(

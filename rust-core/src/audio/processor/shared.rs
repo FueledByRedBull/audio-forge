@@ -268,6 +268,14 @@ pub(super) struct OutputShared {
     pub(super) priming_underrun_total: Arc<AtomicU64>,
     /// Output callback has fully served a request after real audio was queued
     pub(super) primed: Arc<AtomicBool>,
+    /// Short engine period the output stream runs on; 0 on the cpal path
+    pub(super) low_period_frames: AtomicU32,
+    /// HRESULT that kept the output stream off a short period or ended it there; 0 if none
+    pub(super) low_period_failure_code: Arc<AtomicU32>,
+    /// Largest output callback request since the stream was primed (diagnostic)
+    pub(super) largest_callback_frames: Arc<AtomicU32>,
+    /// Largest request that the last few output callbacks all reached; gates the short queue
+    pub(super) sustained_callback_frames: Arc<AtomicU32>,
     /// Callback time the current start's priming bound runs from (0 until first underrun after real audio)
     pub(super) priming_started_at_us: Arc<AtomicU64>,
     /// Samples dropped by DSP-side jitter buffer control
@@ -626,6 +634,10 @@ impl Shared {
                 underrun_total: Arc::new(AtomicU64::new(0)),
                 priming_underrun_total: Arc::new(AtomicU64::new(0)),
                 primed: Arc::new(AtomicBool::new(false)),
+                low_period_frames: AtomicU32::new(0),
+                low_period_failure_code: Arc::new(AtomicU32::new(0)),
+                largest_callback_frames: Arc::new(AtomicU32::new(0)),
+                sustained_callback_frames: Arc::new(AtomicU32::new(0)),
                 priming_started_at_us: Arc::new(AtomicU64::new(0)),
                 jitter_dropped_samples: AtomicU64::new(0),
                 retime_adjustment_count: AtomicU64::new(0),
@@ -841,6 +853,16 @@ impl Shared {
             .last_signal_write_time_us
             .store(0, Ordering::Relaxed);
         self.output.primed.store(false, Ordering::Relaxed);
+        self.output.low_period_frames.store(0, Ordering::Relaxed);
+        self.output
+            .low_period_failure_code
+            .store(0, Ordering::Relaxed);
+        self.output
+            .largest_callback_frames
+            .store(0, Ordering::Relaxed);
+        self.output
+            .sustained_callback_frames
+            .store(0, Ordering::Relaxed);
         self.output
             .priming_started_at_us
             .store(0, Ordering::Relaxed);

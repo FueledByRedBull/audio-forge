@@ -3069,6 +3069,38 @@ impl PyAudioProcessor {
                 self.processor.output_fixed_buffer_frames(),
             )?;
             diagnostics.set_item(
+                "output_low_period_frames",
+                self.processor
+                    .shared
+                    .output
+                    .low_period_frames
+                    .load(Ordering::Relaxed),
+            )?;
+            diagnostics.set_item(
+                "output_low_period_failure_code",
+                self.processor
+                    .shared
+                    .output
+                    .low_period_failure_code
+                    .load(Ordering::Relaxed),
+            )?;
+            diagnostics.set_item(
+                "output_largest_callback_frames",
+                self.processor
+                    .shared
+                    .output
+                    .largest_callback_frames
+                    .load(Ordering::Relaxed),
+            )?;
+            diagnostics.set_item(
+                "output_sustained_callback_frames",
+                self.processor
+                    .shared
+                    .output
+                    .sustained_callback_frames
+                    .load(Ordering::Relaxed),
+            )?;
+            diagnostics.set_item(
                 "input_fixed_buffer_frames",
                 self.processor.input_fixed_buffer_frames(),
             )?;

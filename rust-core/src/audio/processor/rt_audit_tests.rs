@@ -287,6 +287,14 @@ fn failed_start_attempt_leaves_the_clean_stopped_state() {
     assert_eq!(processor.input_fixed_buffer_frames(), 0);
     assert_eq!(processor.output_fixed_buffer_frames(), 0);
     assert_eq!(
+        processor
+            .shared
+            .output
+            .low_period_frames
+            .load(Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
         processor.output_sample_rate(),
         96_000,
         "the failed attempt's rate must not stay"

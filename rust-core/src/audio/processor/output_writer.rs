@@ -1,12 +1,18 @@
 use super::shared::Shared;
 use super::{
-    resampling::{retime_audio_block, DriftRetimer},
+    resampling::{duration_samples, retime_audio_block, DriftRetimer},
     routing::{
         record_level_extremes, sanitize_and_clamp_output_inplace_with_metrics,
         sanitize_non_finite_inplace, update_decaying_peak_db,
     },
 };
-use super::{OUTPUT_DRIFT_MAX_EXPANSION_RATIO, OUTPUT_DRIFT_MAX_RATIO_ADJUST};
+use super::{
+    OUTPUT_DRIFT_MAX_EXPANSION_RATIO, OUTPUT_DRIFT_MAX_RATIO_ADJUST,
+    OUTPUT_LOW_PERIOD_CALLBACK_MAX_MS, OUTPUT_LOW_PERIOD_HARD_BACKLOG_MS,
+    OUTPUT_LOW_PERIOD_TARGET_HIGH_MS, OUTPUT_LOW_PERIOD_TARGET_LOW_MS,
+    OUTPUT_SHORT_CALLBACK_MAX_MS, OUTPUT_SHORT_HARD_BACKLOG_MS, OUTPUT_SHORT_TARGET_HIGH_MS,
+    OUTPUT_SHORT_TARGET_LOW_MS,
+};
 use crate::audio::buffer::AudioProducer;
 use crate::audio::clock::now_micros;
 use crate::audio::rt::{store_rt_error, FixedAudioBuffer, RtErrorCode};
@@ -73,6 +79,79 @@ pub(super) struct OutputWriteLimits {
     pub(super) discontinuity_fade_samples: usize,
     pub(super) max_catchup_ratio: f32,
     pub(super) max_emergency_catchup_ratio: f32,
+}
+
+/// Lower queue targets for a stream whose callbacks are short.
+#[derive(Clone, Copy)]
+pub(super) struct ShortCallbackQueue {
+    pub(super) max_callback_frames: usize,
+    pub(super) target_center_samples: usize,
+    pub(super) hard_backlog_samples: usize,
+    pub(super) low_period_max_callback_frames: usize,
+    pub(super) low_period_target_center_samples: usize,
+    pub(super) low_period_hard_backlog_samples: usize,
+}
+
+/// The short queue exists only on Windows with no resampler on either side.
+pub(super) fn short_queue_for(
+    is_windows: bool,
+    input_resampled: bool,
+    output_resampled: bool,
+    output_sample_rate: u32,
+) -> Option<ShortCallbackQueue> {
+    (is_windows && !input_resampled && !output_resampled).then(|| ShortCallbackQueue {
+        max_callback_frames: duration_samples(output_sample_rate, OUTPUT_SHORT_CALLBACK_MAX_MS),
+        target_center_samples: (duration_samples(output_sample_rate, OUTPUT_SHORT_TARGET_LOW_MS)
+            + duration_samples(output_sample_rate, OUTPUT_SHORT_TARGET_HIGH_MS))
+        .div_ceil(2),
+        hard_backlog_samples: duration_samples(output_sample_rate, OUTPUT_SHORT_HARD_BACKLOG_MS),
+        low_period_max_callback_frames: duration_samples(
+            output_sample_rate,
+            OUTPUT_LOW_PERIOD_CALLBACK_MAX_MS,
+        ),
+        low_period_target_center_samples: (duration_samples(
+            output_sample_rate,
+            OUTPUT_LOW_PERIOD_TARGET_LOW_MS,
+        ) + duration_samples(
+            output_sample_rate,
+            OUTPUT_LOW_PERIOD_TARGET_HIGH_MS,
+        ))
+        .div_ceil(2),
+        low_period_hard_backlog_samples: duration_samples(
+            output_sample_rate,
+            OUTPUT_LOW_PERIOD_HARD_BACKLOG_MS,
+        ),
+    })
+}
+
+/// The targets for the callbacks seen so far: the qualified ones until the
+/// callbacks are short, for good once they sustain a long request, and whenever
+/// the DSP thread's scheduling is degraded.
+pub(super) fn active_queue_limits(
+    qualified: OutputWriteLimits,
+    short: Option<ShortCallbackQueue>,
+    sustained_callback_frames: usize,
+    scheduling_degraded: bool,
+) -> OutputWriteLimits {
+    match short.filter(|_| !scheduling_degraded) {
+        Some(short)
+            if (1..=short.low_period_max_callback_frames).contains(&sustained_callback_frames) =>
+        {
+            OutputWriteLimits {
+                output_target_center_samples: short.low_period_target_center_samples,
+                output_hard_backlog_samples: short.low_period_hard_backlog_samples,
+                ..qualified
+            }
+        }
+        Some(short) if (1..=short.max_callback_frames).contains(&sustained_callback_frames) => {
+            OutputWriteLimits {
+                output_target_center_samples: short.target_center_samples,
+                output_hard_backlog_samples: short.hard_backlog_samples,
+                ..qualified
+            }
+        }
+        _ => qualified,
+    }
 }
 
 pub(super) struct OutputWriteContext<

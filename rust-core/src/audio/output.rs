@@ -17,7 +17,11 @@ use super::buffer::AudioConsumer;
 use super::clock::now_micros;
 use super::device::{device_for_endpoint_id, device_name, persisted_endpoint_id};
 use super::input::{AudioDeviceInfo, AudioError, TARGET_SAMPLE_RATE};
+#[cfg(windows)]
+use super::rt::store_rt_error;
 use super::rt::RtErrorCode;
+#[cfg(windows)]
+use super::wasapi_render::{short_period_is_verified, LowPeriodStream, Opened};
 use super::{
     find_48khz_config, handle_stream_error, parse_fixed_buffer_frames, stream_config_arg,
     supported_fixed_buffer_frames, validate_stream_format,
@@ -39,6 +43,11 @@ pub(crate) struct OutputProbeControl {
 /// buffer, a DSP slower than real time).
 pub(crate) const OUTPUT_PRIMING_MAX_US: u64 = 1_000_000;
 
+/// What the queue must hold beyond one request before a start's first real audio
+/// plays. Blocks arrive every 10 ms, so a stream that starts on less runs dry
+/// before the next one on a short callback, and the first blocks come unevenly.
+const OUTPUT_START_RESERVE_MS: u32 = 15;
+
 /// Frames over which an underrun fades out to silence and the next audio fades back in.
 const UNDERRUN_FADE_FRAMES: usize = 64;
 
@@ -46,7 +55,8 @@ const UNDERRUN_FADE_FRAMES: usize = 64;
 pub(crate) struct OutputUnderruns {
     pub(crate) streak: Arc<AtomicU32>,
     pub(crate) total: Arc<AtomicU64>,
-    /// Empty-queue callbacks before the stream is primed (see `primed`).
+    /// Callbacks with nothing or too little to play before the stream is primed
+    /// (see `primed`); a shorter callback counts more of them per second.
     pub(crate) priming_total: Arc<AtomicU64>,
     /// Time of the DSP loop's first queued write (0 until then); a start resets it.
     pub(crate) audio_queued_at_us: Arc<AtomicU64>,
@@ -56,13 +66,175 @@ pub(crate) struct OutputUnderruns {
     /// Set by the callback once it fully serves a request after real audio was
     /// queued, i.e. the queue has a cushion; a start resets it.
     pub(crate) primed: Arc<AtomicBool>,
+    /// Largest request since the stream was primed; the first ones can ask for
+    /// the whole device buffer. Diagnostic only; a start resets it.
+    pub(crate) largest_request_frames: Arc<AtomicU32>,
+    /// Largest request that the last few callbacks all reached. One late
+    /// callback asks for the whole device buffer, so it cannot move this. A
+    /// start resets it.
+    pub(crate) sustained_request_frames: Arc<AtomicU32>,
+}
+
+const REQUEST_HISTORY_LEN: usize = 4;
+
+/// The last few output request sizes of one stream.
+#[derive(Default)]
+struct RequestHistory {
+    recent: [u32; REQUEST_HISTORY_LEN],
+    filled: usize,
+    next: usize,
+}
+
+impl RequestHistory {
+    /// The smallest of the last `REQUEST_HISTORY_LEN` requests, once that many
+    /// have been recorded.
+    fn record(&mut self, frames: u32) -> Option<u32> {
+        self.recent[self.next] = frames;
+        self.next = (self.next + 1) % REQUEST_HISTORY_LEN;
+        self.filled = (self.filled + 1).min(REQUEST_HISTORY_LEN);
+        (self.filled == REQUEST_HISTORY_LEN).then(|| {
+            self.recent
+                .iter()
+                .fold(u32::MAX, |min, &frames| min.min(frames))
+        })
+    }
+}
+
+impl OutputUnderruns {
+    fn record_request(&self, history: &mut RequestHistory, frames: usize) {
+        let frames = frames as u32;
+        self.largest_request_frames
+            .fetch_max(frames, Ordering::Relaxed);
+        if let Some(sustained) = history.record(frames) {
+            self.sustained_request_frames
+                .fetch_max(sustained, Ordering::Relaxed);
+        }
+    }
+}
+
+enum OutputBackend {
+    Cpal(Stream),
+    #[cfg(windows)]
+    LowPeriod(LowPeriodStream),
 }
 
 /// Audio output stream
 pub struct AudioOutput {
-    stream: Stream,
+    stream: OutputBackend,
     device_info: AudioDeviceInfo,
     fixed_buffer_frames: Option<u32>,
+}
+
+/// Where a running output stream reports that it has died.
+pub(crate) struct OutputFailure {
+    pub(crate) error_count: Arc<AtomicU64>,
+    pub(crate) rt_error_code: Arc<AtomicU32>,
+    pub(crate) restart_requested: Arc<AtomicBool>,
+    /// HRESULT that kept the stream off a short period or ended it there; 0 if none.
+    pub(crate) low_period_failure_code: Arc<AtomicU32>,
+}
+
+#[cfg(windows)]
+impl OutputFailure {
+    /// The same as a cpal stream that reports its device gone.
+    pub(crate) fn report(&self, hresult: u32) {
+        self.low_period_failure_code
+            .store(hresult, Ordering::Relaxed);
+        self.error_count.fetch_add(1, Ordering::Relaxed);
+        store_rt_error(&self.rt_error_code, RtErrorCode::OutputStreamError);
+        self.restart_requested.store(true, Ordering::Release);
+    }
+}
+
+/// What the output callback owns, on either backend.
+pub(crate) struct OutputRenderer {
+    consumer: AudioConsumer,
+    num_channels: usize,
+    mono_scratch: Vec<f32>,
+    output_probe: Option<OutputProbeControl>,
+    request_history: RequestHistory,
+    recording_active: Arc<AtomicBool>,
+    output_muted: Arc<AtomicBool>,
+    last_callback_time_us: Arc<AtomicU64>,
+    underruns: OutputUnderruns,
+    start_reserve_frames: usize,
+}
+
+impl OutputRenderer {
+    pub(crate) fn render<T>(&mut self, data: &mut [T])
+    where
+        T: SizedSample + FromSample<f32>,
+    {
+        // RT_REGION_START: cpal_output_callback
+        let num_channels = self.num_channels;
+        let now_us = now_micros();
+        self.last_callback_time_us.store(now_us, Ordering::Relaxed);
+
+        if let Some(probe) = self.output_probe.as_mut() {
+            if probe.cancel_requested.load(Ordering::Acquire)
+                || self.output_muted.load(Ordering::Acquire)
+            {
+                AudioOutput::discard_probe(probe, &mut self.mono_scratch);
+            } else if probe.active.load(Ordering::Acquire) {
+                let frames_needed = if num_channels == 1 {
+                    data.len()
+                } else {
+                    data.len() / num_channels
+                };
+                AudioOutput::drain_muted_consumer(
+                    &mut self.consumer,
+                    frames_needed,
+                    &mut self.mono_scratch,
+                );
+                self.underruns.streak.store(0, Ordering::Relaxed);
+                let complete =
+                    AudioOutput::render_probe(data, num_channels, probe, &mut self.mono_scratch);
+                if complete {
+                    probe.active.store(false, Ordering::Release);
+                    probe.complete.store(true, Ordering::Release);
+                }
+                return;
+            }
+        }
+
+        if self.recording_active.load(Ordering::Relaxed)
+            || self.output_muted.load(Ordering::Relaxed)
+        {
+            AudioOutput::render_muted(
+                data,
+                num_channels,
+                &mut self.consumer,
+                &mut self.mono_scratch,
+            );
+            self.underruns.streak.store(0, Ordering::Relaxed);
+            return;
+        }
+
+        if AudioOutput::hold_for_start_reserve(
+            data,
+            num_channels,
+            &mut self.consumer,
+            now_us,
+            &self.underruns,
+            self.start_reserve_frames,
+        ) {
+            return;
+        }
+
+        if self.underruns.primed.load(Ordering::Relaxed) {
+            self.underruns
+                .record_request(&mut self.request_history, data.len() / num_channels);
+        }
+        AudioOutput::render_output(
+            data,
+            num_channels,
+            &mut self.consumer,
+            &mut self.mono_scratch,
+            now_us,
+            &self.underruns,
+        );
+        // RT_REGION_END: cpal_output_callback
+    }
 }
 
 pub(crate) struct OutputStreamSetup {
@@ -250,6 +422,45 @@ impl AudioOutput {
         consumer.set_resume_fade_remaining(remaining - count);
         // A tail starting inside the fade must fade from what was played.
         consumer.set_last_sample(samples[samples.len() - 1]);
+    }
+
+    /// Plays silence, as priming, while a start's first real audio is too little
+    /// to last until the next block. Bounded like priming, so a stream that never
+    /// builds the reserve plays what it has and shows its dropouts.
+    fn hold_for_start_reserve<T>(
+        data: &mut [T],
+        num_channels: usize,
+        consumer: &mut AudioConsumer,
+        now_us: u64,
+        underruns: &OutputUnderruns,
+        reserve_frames: usize,
+    ) -> bool
+    where
+        T: SizedSample + FromSample<f32>,
+    {
+        if underruns.primed.load(Ordering::Relaxed)
+            || underruns.audio_queued_at_us.load(Ordering::Relaxed) == 0
+            || consumer.len() >= data.len() / num_channels + reserve_frames
+        {
+            return false;
+        }
+        let started_us = match underruns.priming_started_at_us.compare_exchange(
+            0,
+            now_us,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => now_us,
+            Err(earlier_us) => earlier_us,
+        };
+        if now_us.saturating_sub(started_us) >= OUTPUT_PRIMING_MAX_US {
+            return false;
+        }
+        underruns.priming_total.fetch_add(1, Ordering::Relaxed);
+        Self::fill_underrun_tail(data, 0, num_channels, 0.0);
+        consumer.set_last_sample(0.0);
+        consumer.set_resume_fade_remaining(UNDERRUN_FADE_FRAMES);
+        true
     }
 
     fn render_output<T>(
@@ -447,106 +658,31 @@ impl AudioOutput {
         probe.complete.store(true, Ordering::Release);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn build_stream<T>(
         device: Device,
         stream_config: StreamConfig,
-        device_info: AudioDeviceInfo,
-        consumer: AudioConsumer,
-        recording_active: Arc<AtomicBool>,
-        output_muted: Arc<AtomicBool>,
-        last_callback_time_us: Arc<AtomicU64>,
-        underruns: OutputUnderruns,
-        error_count: Arc<AtomicU64>,
-        rt_error_code: Arc<AtomicU32>,
-        restart_requested: Arc<AtomicBool>,
-        output_probe: Option<OutputProbeControl>,
-        fixed_buffer_frames: Option<u32>,
-    ) -> Result<Self, AudioError>
+        mut renderer: OutputRenderer,
+        failure: OutputFailure,
+    ) -> Result<Stream, AudioError>
     where
         T: SizedSample + FromSample<f32>,
     {
-        let mut consumer = consumer;
-        let num_channels = device_info.channels as usize;
-
-        const OUTPUT_SCRATCH_CAPACITY: usize = 8192;
-        let mut mono_scratch: Vec<f32> = vec![0.0; OUTPUT_SCRATCH_CAPACITY];
-        let mut output_probe = output_probe;
-
-        let recording_active_clone = Arc::clone(&recording_active);
-        let output_muted_clone = Arc::clone(&output_muted);
-
-        let stream = device
+        device
             .build_output_stream(
                 stream_config_arg(&stream_config),
-                move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-                    // RT_REGION_START: cpal_output_callback
-                    let now_us = now_micros();
-                    last_callback_time_us.store(now_us, Ordering::Relaxed);
-
-                    if let Some(probe) = output_probe.as_mut() {
-                        if probe.cancel_requested.load(Ordering::Acquire)
-                            || output_muted_clone.load(Ordering::Acquire)
-                        {
-                            Self::discard_probe(probe, &mut mono_scratch);
-                        } else if probe.active.load(Ordering::Acquire) {
-                            let frames_needed = if num_channels == 1 {
-                                data.len()
-                            } else {
-                                data.len() / num_channels
-                            };
-                            Self::drain_muted_consumer(
-                                &mut consumer,
-                                frames_needed,
-                                &mut mono_scratch,
-                            );
-                            underruns.streak.store(0, Ordering::Relaxed);
-                            let complete =
-                                Self::render_probe(data, num_channels, probe, &mut mono_scratch);
-                            if complete {
-                                probe.active.store(false, Ordering::Release);
-                                probe.complete.store(true, Ordering::Release);
-                            }
-                            return;
-                        }
-                    }
-
-                    if recording_active_clone.load(Ordering::Relaxed)
-                        || output_muted_clone.load(Ordering::Relaxed)
-                    {
-                        Self::render_muted(data, num_channels, &mut consumer, &mut mono_scratch);
-                        underruns.streak.store(0, Ordering::Relaxed);
-                        return;
-                    }
-
-                    Self::render_output(
-                        data,
-                        num_channels,
-                        &mut consumer,
-                        &mut mono_scratch,
-                        now_us,
-                        &underruns,
-                    );
-                    // RT_REGION_END: cpal_output_callback
-                },
+                move |data: &mut [T], _: &cpal::OutputCallbackInfo| renderer.render(data),
                 move |err| {
                     handle_stream_error(
                         &err,
                         RtErrorCode::OutputStreamError,
-                        &error_count,
-                        &rt_error_code,
-                        &restart_requested,
+                        &failure.error_count,
+                        &failure.rt_error_code,
+                        &failure.restart_requested,
                     );
                 },
                 None,
             )
-            .map_err(|e| AudioError::BuildStream(e.to_string()))?;
-
-        Ok(Self {
-            stream,
-            device_info,
-            fixed_buffer_frames,
-        })
+            .map_err(|e| AudioError::BuildStream(e.to_string()))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -557,11 +693,69 @@ impl AudioOutput {
         output_muted: Arc<AtomicBool>,
         last_callback_time_us: Arc<AtomicU64>,
         underruns: OutputUnderruns,
-        error_count: Arc<AtomicU64>,
-        rt_error_code: Arc<AtomicU32>,
-        restart_requested: Arc<AtomicBool>,
+        failure: OutputFailure,
         output_probe: Option<OutputProbeControl>,
     ) -> Result<Self, AudioError> {
+        const OUTPUT_SCRATCH_CAPACITY: usize = 8192;
+        let renderer = OutputRenderer {
+            consumer,
+            num_channels: setup.device_info.channels as usize,
+            mono_scratch: vec![0.0; OUTPUT_SCRATCH_CAPACITY],
+            output_probe,
+            request_history: RequestHistory::default(),
+            recording_active,
+            output_muted,
+            last_callback_time_us,
+            underruns,
+            start_reserve_frames: (setup.device_info.sample_rate * OUTPUT_START_RESERVE_MS / 1000)
+                as usize,
+        };
+
+        #[cfg(windows)]
+        let renderer = {
+            let mut renderer = renderer;
+            // The variable asks for a cpal buffer, and 0 keeps cpal's default.
+            let opted_out = std::env::var_os("AUDIOFORGE_FIXED_OUTPUT_BUFFER_FRAMES").is_some();
+            let endpoint_id = setup
+                .device_info
+                .endpoint_id
+                .clone()
+                .filter(|_| !opted_out && short_period_is_verified(&setup.device_info.name));
+            if let Some(endpoint_id) = endpoint_id {
+                let reports = OutputFailure {
+                    error_count: Arc::clone(&failure.error_count),
+                    rt_error_code: Arc::clone(&failure.rt_error_code),
+                    restart_requested: Arc::clone(&failure.restart_requested),
+                    low_period_failure_code: Arc::clone(&failure.low_period_failure_code),
+                };
+                match LowPeriodStream::open(
+                    endpoint_id,
+                    setup.device_info.sample_rate,
+                    setup.device_info.channels,
+                    renderer,
+                    reports,
+                )? {
+                    Opened::Running(stream) => {
+                        return Ok(Self {
+                            stream: OutputBackend::LowPeriod(stream),
+                            device_info: setup.device_info,
+                            fixed_buffer_frames: None,
+                        });
+                    }
+                    Opened::Declined {
+                        renderer: returned,
+                        failure_code: code,
+                    } => {
+                        renderer = *returned;
+                        failure
+                            .low_period_failure_code
+                            .store(code, Ordering::Relaxed);
+                    }
+                }
+            }
+            renderer
+        };
+
         let sample_format = setup.supported_config.sample_format();
         let mut stream_config = setup.supported_config.config();
         let mut fixed_buffer_frames = None;
@@ -578,39 +772,44 @@ impl AudioOutput {
             }
         }
 
-        dispatch_sample_format!(
+        let stream = dispatch_sample_format!(
             sample_format,
-            S => Self::build_stream::<S>(
-                setup.device,
-                stream_config,
-                setup.device_info,
-                consumer,
-                recording_active,
-                output_muted,
-                last_callback_time_us,
-                underruns,
-                error_count,
-                rt_error_code,
-                restart_requested,
-                output_probe,
-                fixed_buffer_frames,
-            ),
+            S => Self::build_stream::<S>(setup.device, stream_config, renderer, failure),
             _ => Err(AudioError::UnsupportedSampleFormat(sample_format.to_string()))
-        )
+        )?;
+        Ok(Self {
+            stream: OutputBackend::Cpal(stream),
+            device_info: setup.device_info,
+            fixed_buffer_frames,
+        })
     }
 
     /// Start playing audio
     pub fn start(&self) -> Result<(), AudioError> {
-        self.stream
-            .play()
-            .map_err(|e| AudioError::PlayStream(e.to_string()))
+        match &self.stream {
+            OutputBackend::Cpal(stream) => stream
+                .play()
+                .map_err(|e| AudioError::PlayStream(e.to_string())),
+            #[cfg(windows)]
+            OutputBackend::LowPeriod(stream) => {
+                stream.start();
+                Ok(())
+            }
+        }
     }
 
     /// Pause audio playback
     pub fn pause(&self) -> Result<(), AudioError> {
-        self.stream
-            .pause()
-            .map_err(|e| AudioError::PlayStream(e.to_string()))
+        match &self.stream {
+            OutputBackend::Cpal(stream) => stream
+                .pause()
+                .map_err(|e| AudioError::PlayStream(e.to_string())),
+            #[cfg(windows)]
+            OutputBackend::LowPeriod(stream) => {
+                stream.pause();
+                Ok(())
+            }
+        }
     }
 
     /// Get device information
@@ -620,6 +819,15 @@ impl AudioOutput {
 
     pub fn fixed_buffer_frames(&self) -> Option<u32> {
         self.fixed_buffer_frames
+    }
+
+    /// The short engine period this stream runs on; 0 on the cpal path.
+    pub fn low_period_frames(&self) -> u32 {
+        match &self.stream {
+            OutputBackend::Cpal(_) => 0,
+            #[cfg(windows)]
+            OutputBackend::LowPeriod(stream) => stream.period_frames(),
+        }
     }
 }
 
@@ -669,7 +877,64 @@ mod tests {
             audio_queued_at_us: Arc::new(AtomicU64::new(1)),
             priming_started_at_us: Arc::new(AtomicU64::new(0)),
             primed: Arc::new(AtomicBool::new(true)),
+            largest_request_frames: Arc::new(AtomicU32::new(0)),
+            sustained_request_frames: Arc::new(AtomicU32::new(0)),
         }
+    }
+
+    #[test]
+    fn test_request_history_reports_after_four_requests() {
+        let mut history = RequestHistory::default();
+        assert_eq!(history.record(480), None);
+        assert_eq!(history.record(480), None);
+        assert_eq!(history.record(960), None);
+        assert_eq!(history.record(480), Some(480));
+    }
+
+    #[test]
+    fn test_request_history_ignores_a_single_late_callback() {
+        let mut history = RequestHistory::default();
+        let mut sustained = 0;
+        for frames in [480, 480, 960, 480, 480, 480, 480, 960, 480, 480] {
+            sustained = sustained.max(history.record(frames).unwrap_or(0));
+        }
+        assert_eq!(sustained, 480);
+    }
+
+    #[test]
+    fn test_request_history_follows_a_real_longer_period() {
+        let mut history = RequestHistory::default();
+        for _ in 0..4 {
+            history.record(960);
+        }
+        assert_eq!(history.record(960), Some(960));
+
+        let mut history = RequestHistory::default();
+        for _ in 0..4 {
+            history.record(480);
+        }
+        let mut last = None;
+        for _ in 0..4 {
+            last = history.record(960);
+        }
+        assert_eq!(last, Some(960));
+    }
+
+    #[test]
+    fn test_record_request_keeps_largest_and_sustained_apart() {
+        let underruns = queued_underruns(0, 0);
+        let mut history = RequestHistory::default();
+        for frames in [480, 480, 960, 480, 480] {
+            underruns.record_request(&mut history, frames);
+        }
+        assert_eq!(
+            underruns.largest_request_frames.load(Ordering::Relaxed),
+            960
+        );
+        assert_eq!(
+            underruns.sustained_request_frames.load(Ordering::Relaxed),
+            480
+        );
     }
 
     /// State right after a start: nothing but the silent prime has been queued.
@@ -1058,6 +1323,237 @@ mod tests {
         render_empty_queue(&underruns);
 
         assert_eq!(counts(&underruns), (1, 2, 2));
+    }
+
+    const TEST_RESERVE: usize = 720;
+
+    fn hold(underruns: &OutputUnderruns, queued: usize, now_us: u64) -> (bool, [f32; 8], usize) {
+        let rb = crate::audio::AudioRingBuffer::new(1024);
+        let (mut producer, mut consumer) = rb.split();
+        producer.write(&vec![0.25_f32; queued]);
+        let mut output = [9.0_f32; 8];
+        let mut held = false;
+        crate::test_alloc::assert_no_allocations("output start hold", || {
+            held = AudioOutput::hold_for_start_reserve(
+                &mut output,
+                2,
+                &mut consumer,
+                now_us,
+                underruns,
+                TEST_RESERVE,
+            );
+        });
+        (held, output, consumer.len())
+    }
+
+    #[test]
+    fn test_first_real_audio_waits_for_one_request_plus_the_reserve() {
+        let underruns = priming_underruns();
+        underruns.audio_queued_at_us.store(42, Ordering::Relaxed);
+        let enough = 4 + TEST_RESERVE;
+
+        let (held, output, left) = hold(&underruns, enough - 1, 0);
+        assert!(held);
+        assert_eq!(output, [0.0; 8]);
+        assert_eq!(left, enough - 1, "a held callback reads nothing");
+        assert_eq!(counts(&underruns), (1, 0, 0));
+        assert!(!underruns.primed.load(Ordering::Relaxed));
+
+        let (held, output, left) = hold(&underruns, enough, 10);
+        assert!(!held);
+        assert_eq!(output, [9.0; 8], "the normal path renders this one");
+        assert_eq!(left, enough);
+    }
+
+    #[test]
+    fn test_held_start_fades_in_its_first_audio() {
+        let underruns = priming_underruns();
+        underruns.audio_queued_at_us.store(42, Ordering::Relaxed);
+        let rb = crate::audio::AudioRingBuffer::new(16);
+        let (_producer, mut consumer) = rb.split();
+        let mut output = [9.0_f32; 8];
+        assert!(AudioOutput::hold_for_start_reserve(
+            &mut output,
+            2,
+            &mut consumer,
+            0,
+            &underruns,
+            TEST_RESERVE,
+        ));
+        assert_eq!(consumer.resume_fade_remaining(), UNDERRUN_FADE_FRAMES);
+    }
+
+    #[test]
+    fn test_hold_needs_real_audio_and_an_unprimed_stream() {
+        // Before the first write the supervisor's write-age check applies.
+        let underruns = priming_underruns();
+        assert!(!hold(&underruns, 0, 0).0);
+        // Later a short queue is a dropout, not a start.
+        let underruns = queued_underruns(0, 0);
+        assert!(!hold(&underruns, 0, 0).0);
+    }
+
+    #[test]
+    fn test_hold_ends_at_the_priming_bound() {
+        let underruns = priming_underruns();
+        underruns.audio_queued_at_us.store(42, Ordering::Relaxed);
+        assert!(hold(&underruns, 1, 5_000_000).0);
+        assert!(hold(&underruns, 1, 5_000_000 + OUTPUT_PRIMING_MAX_US - 1).0);
+        assert!(!hold(&underruns, 1, 5_000_000 + OUTPUT_PRIMING_MAX_US).0);
+    }
+
+    /// Real dropouts over a start on 128-frame callbacks, where the first 10 ms
+    /// blocks come unevenly: 480 samples at 0, 30, 40, 50 ... ms.
+    fn dropouts_over_an_uneven_start(reserve_frames: usize) -> u64 {
+        const CALLBACK_US: u64 = 2_667;
+        let underruns = priming_underruns();
+        let rb = crate::audio::AudioRingBuffer::new(4096);
+        let (mut producer, mut consumer) = rb.split();
+        let mut output = [0.0_f32; 128];
+        let mut scratch = [0.0_f32; 256];
+        let mut next_write_us = 0;
+        let mut now_us = 0;
+        while now_us < 200_000 {
+            if now_us >= next_write_us {
+                producer.write(&[0.25_f32; 480]);
+                underruns
+                    .audio_queued_at_us
+                    .store(now_us + 1, Ordering::Relaxed);
+                next_write_us += if next_write_us == 0 { 30_000 } else { 10_000 };
+            }
+            if !AudioOutput::hold_for_start_reserve(
+                &mut output,
+                1,
+                &mut consumer,
+                now_us,
+                &underruns,
+                reserve_frames,
+            ) {
+                AudioOutput::render_output(
+                    &mut output,
+                    1,
+                    &mut consumer,
+                    &mut scratch,
+                    now_us,
+                    &underruns,
+                );
+            }
+            now_us += CALLBACK_US;
+        }
+        underruns.total.load(Ordering::Relaxed)
+    }
+
+    #[test]
+    fn test_start_reserve_removes_the_dropouts_of_an_uneven_start() {
+        assert!(dropouts_over_an_uneven_start(0) > 0);
+        assert_eq!(dropouts_over_an_uneven_start(TEST_RESERVE), 0);
+    }
+
+    fn renderer_for_test(consumer: AudioConsumer, underruns: OutputUnderruns) -> OutputRenderer {
+        OutputRenderer {
+            consumer,
+            num_channels: 2,
+            mono_scratch: vec![0.0; 256],
+            output_probe: None,
+            request_history: RequestHistory::default(),
+            recording_active: Arc::new(AtomicBool::new(false)),
+            output_muted: Arc::new(AtomicBool::new(false)),
+            last_callback_time_us: Arc::new(AtomicU64::new(0)),
+            underruns,
+            start_reserve_frames: TEST_RESERVE,
+        }
+    }
+
+    #[test]
+    fn test_muted_callback_never_holds() {
+        let underruns = priming_underruns();
+        underruns.audio_queued_at_us.store(42, Ordering::Relaxed);
+        let rb = crate::audio::AudioRingBuffer::new(16);
+        let (_producer, consumer) = rb.split();
+        let mut renderer = renderer_for_test(consumer, underruns);
+        renderer.output_muted.store(true, Ordering::Relaxed);
+
+        renderer.render(&mut [9.0_f32; 8]);
+
+        assert_eq!(renderer.underruns.priming_total.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_held_callback_records_no_request_and_a_primed_one_does() {
+        let underruns = priming_underruns();
+        underruns.audio_queued_at_us.store(42, Ordering::Relaxed);
+        let rb = crate::audio::AudioRingBuffer::new(16);
+        let (_producer, consumer) = rb.split();
+        let mut renderer = renderer_for_test(consumer, underruns);
+
+        renderer.render(&mut [9.0_f32; 8]);
+        assert_eq!(renderer.underruns.priming_total.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            renderer
+                .underruns
+                .largest_request_frames
+                .load(Ordering::Relaxed),
+            0
+        );
+
+        renderer.underruns.primed.store(true, Ordering::Relaxed);
+        renderer.render(&mut [9.0_f32; 8]);
+        assert_eq!(
+            renderer
+                .underruns
+                .largest_request_frames
+                .load(Ordering::Relaxed),
+            4
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_stream_failure_reports_its_code_and_asks_for_a_restart() {
+        let failure = OutputFailure {
+            error_count: Arc::new(AtomicU64::new(0)),
+            rt_error_code: Arc::new(AtomicU32::new(0)),
+            restart_requested: Arc::new(AtomicBool::new(false)),
+            low_period_failure_code: Arc::new(AtomicU32::new(0)),
+        };
+
+        failure.report(0x8000_4005);
+
+        assert_eq!(failure.error_count.load(Ordering::Relaxed), 1);
+        assert_ne!(failure.rt_error_code.load(Ordering::Relaxed), 0);
+        assert!(failure.restart_requested.load(Ordering::Acquire));
+        assert_eq!(
+            failure.low_period_failure_code.load(Ordering::Relaxed),
+            0x8000_4005
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_unknown_endpoint_hands_the_renderer_back_with_its_error() {
+        let underruns = priming_underruns();
+        let rb = crate::audio::AudioRingBuffer::new(16);
+        let (_producer, consumer) = rb.split();
+        let failure = OutputFailure {
+            error_count: Arc::new(AtomicU64::new(0)),
+            rt_error_code: Arc::new(AtomicU32::new(0)),
+            restart_requested: Arc::new(AtomicBool::new(false)),
+            low_period_failure_code: Arc::new(AtomicU32::new(0)),
+        };
+
+        let opened = LowPeriodStream::open(
+            "no-such-endpoint".to_string(),
+            48_000,
+            2,
+            renderer_for_test(consumer, underruns),
+            failure,
+        )
+        .unwrap();
+
+        match opened {
+            Opened::Declined { failure_code, .. } => assert_ne!(failure_code, 0),
+            Opened::Running(_) => panic!("an unknown endpoint cannot run"),
+        }
     }
 
     #[test]

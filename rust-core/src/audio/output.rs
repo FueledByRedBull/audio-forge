@@ -92,11 +92,11 @@ impl RequestHistory {
         self.recent[self.next] = frames;
         self.next = (self.next + 1) % REQUEST_HISTORY_LEN;
         self.filled = (self.filled + 1).min(REQUEST_HISTORY_LEN);
-        (self.filled == REQUEST_HISTORY_LEN).then(|| {
-            self.recent
-                .iter()
-                .fold(u32::MAX, |min, &frames| min.min(frames))
-        })
+        if self.filled == REQUEST_HISTORY_LEN {
+            self.recent.iter().copied().min()
+        } else {
+            None
+        }
     }
 }
 
@@ -126,6 +126,7 @@ pub struct AudioOutput {
 }
 
 /// Where a running output stream reports that it has died.
+#[derive(Clone)]
 pub(crate) struct OutputFailure {
     pub(crate) error_count: Arc<AtomicU64>,
     pub(crate) rt_error_code: Arc<AtomicU32>,
@@ -425,6 +426,20 @@ impl AudioOutput {
         consumer.set_last_sample(samples[samples.len() - 1]);
     }
 
+    /// Stamps the start of priming on first use; true until the bound has passed.
+    fn priming_bound_open(underruns: &OutputUnderruns, now_us: u64) -> bool {
+        let started_us = match underruns.priming_started_at_us.compare_exchange(
+            0,
+            now_us,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => now_us,
+            Err(earlier_us) => earlier_us,
+        };
+        now_us.saturating_sub(started_us) < OUTPUT_PRIMING_MAX_US
+    }
+
     /// Plays silence, as priming, while a start's first real audio is too little
     /// to last until the next block. Bounded like priming, so a stream that never
     /// builds the reserve plays what it has and shows its dropouts.
@@ -442,19 +457,8 @@ impl AudioOutput {
         if underruns.primed.load(Ordering::Relaxed)
             || underruns.audio_queued_at_us.load(Ordering::Relaxed) == 0
             || consumer.len() >= data.len() / num_channels + reserve_frames
+            || !Self::priming_bound_open(underruns, now_us)
         {
-            return false;
-        }
-        let started_us = match underruns.priming_started_at_us.compare_exchange(
-            0,
-            now_us,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => now_us,
-            Err(earlier_us) => earlier_us,
-        };
-        if now_us.saturating_sub(started_us) >= OUTPUT_PRIMING_MAX_US {
             return false;
         }
         underruns.priming_total.fetch_add(1, Ordering::Relaxed);
@@ -519,18 +523,7 @@ impl AudioOutput {
             // bound runs from its own start stamp. Before the first write (marker
             // 0) the supervisor's write-age check applies.
             let priming = !underruns.primed.load(Ordering::Relaxed)
-                && (queued_at_us == 0 || {
-                    let started_us = match underruns.priming_started_at_us.compare_exchange(
-                        0,
-                        now_us,
-                        Ordering::Relaxed,
-                        Ordering::Relaxed,
-                    ) {
-                        Ok(_) => now_us,
-                        Err(earlier_us) => earlier_us,
-                    };
-                    now_us.saturating_sub(started_us) < OUTPUT_PRIMING_MAX_US
-                });
+                && (queued_at_us == 0 || Self::priming_bound_open(underruns, now_us));
             if priming {
                 underruns.priming_total.fetch_add(1, Ordering::Relaxed);
             } else {
@@ -723,18 +716,12 @@ impl AudioOutput {
                 .clone()
                 .filter(|_| !opted_out && short_period_is_verified(&setup.device_info.name));
             if let Some(endpoint_id) = endpoint_id {
-                let reports = OutputFailure {
-                    error_count: Arc::clone(&failure.error_count),
-                    rt_error_code: Arc::clone(&failure.rt_error_code),
-                    restart_requested: Arc::clone(&failure.restart_requested),
-                    low_period_failure_code: Arc::clone(&failure.low_period_failure_code),
-                };
                 match LowPeriodStream::open(
                     endpoint_id,
                     setup.device_info.sample_rate,
                     setup.device_info.channels,
                     renderer,
-                    reports,
+                    failure.clone(),
                 )? {
                     Opened::Running(stream) => {
                         return Ok(Self {

@@ -419,15 +419,16 @@ fn test_short_queue_applies_only_while_callbacks_are_short() {
         max_emergency_catchup_ratio: 1.02,
     };
     let short = ShortCallbackQueue {
-        max_callback_frames: duration_samples(48_000, OUTPUT_SHORT_CALLBACK_MAX_MS),
-        target_center_samples: duration_samples(48_000, 15),
-        hard_backlog_samples: duration_samples(48_000, OUTPUT_SHORT_HARD_BACKLOG_MS),
-        low_period_max_callback_frames: duration_samples(48_000, OUTPUT_LOW_PERIOD_CALLBACK_MAX_MS),
-        low_period_target_center_samples: duration_samples(48_000, 8),
-        low_period_hard_backlog_samples: duration_samples(
-            48_000,
-            OUTPUT_LOW_PERIOD_HARD_BACKLOG_MS,
-        ),
+        standard: QueueTier {
+            max_callback_frames: duration_samples(48_000, OUTPUT_SHORT_CALLBACK_MAX_MS),
+            target_center_samples: duration_samples(48_000, 15),
+            hard_backlog_samples: duration_samples(48_000, OUTPUT_SHORT_HARD_BACKLOG_MS),
+        },
+        low_period: QueueTier {
+            max_callback_frames: duration_samples(48_000, OUTPUT_LOW_PERIOD_CALLBACK_MAX_MS),
+            target_center_samples: duration_samples(48_000, 8),
+            hard_backlog_samples: duration_samples(48_000, OUTPUT_LOW_PERIOD_HARD_BACKLOG_MS),
+        },
     };
     let center = |short, sustained| {
         active_queue_limits(qualified, short, sustained, false).output_target_center_samples
@@ -445,8 +446,14 @@ fn test_short_queue_applies_only_while_callbacks_are_short() {
     );
     assert_eq!(center(None, 480), qualified.output_target_center_samples);
     // A 10 ms callback gets the short queue, up to the limit and not past it.
-    assert_eq!(center(Some(short), 480), short.target_center_samples);
-    assert_eq!(center(Some(short), 576), short.target_center_samples);
+    assert_eq!(
+        center(Some(short), 480),
+        short.standard.target_center_samples
+    );
+    assert_eq!(
+        center(Some(short), 576),
+        short.standard.target_center_samples
+    );
     assert_eq!(
         center(Some(short), 577),
         qualified.output_target_center_samples
@@ -454,22 +461,25 @@ fn test_short_queue_applies_only_while_callbacks_are_short() {
     let limits = active_queue_limits(qualified, Some(short), 480, false);
     assert_eq!(
         limits.output_hard_backlog_samples,
-        short.hard_backlog_samples
+        short.standard.hard_backlog_samples
     );
     assert_eq!(limits.max_catchup_ratio, qualified.max_catchup_ratio);
     // A short engine period gets the smaller queue, up to its limit and not past it.
     assert_eq!(
         center(Some(short), 128),
-        short.low_period_target_center_samples
+        short.low_period.target_center_samples
     );
     assert_eq!(
         center(Some(short), 288),
-        short.low_period_target_center_samples
+        short.low_period.target_center_samples
     );
-    assert_eq!(center(Some(short), 289), short.target_center_samples);
+    assert_eq!(
+        center(Some(short), 289),
+        short.standard.target_center_samples
+    );
     assert_eq!(
         active_queue_limits(qualified, Some(short), 128, false).output_hard_backlog_samples,
-        short.low_period_hard_backlog_samples
+        short.low_period.hard_backlog_samples
     );
     // Degraded scheduling leaves it for the qualified headroom too.
     assert_eq!(
@@ -513,17 +523,17 @@ fn test_short_queue_for_needs_windows_and_no_resampler() {
     for sample_rate in [44_100, 48_000, 96_000] {
         let short = short_queue_for(true, false, false, sample_rate).unwrap();
         assert_eq!(
-            short.max_callback_frames,
+            short.standard.max_callback_frames,
             duration_samples(sample_rate, OUTPUT_SHORT_CALLBACK_MAX_MS)
         );
         assert_eq!(
-            short.target_center_samples,
+            short.standard.target_center_samples,
             (duration_samples(sample_rate, OUTPUT_SHORT_TARGET_LOW_MS)
                 + duration_samples(sample_rate, OUTPUT_SHORT_TARGET_HIGH_MS))
             .div_ceil(2)
         );
         assert_eq!(
-            short.hard_backlog_samples,
+            short.standard.hard_backlog_samples,
             duration_samples(sample_rate, OUTPUT_SHORT_HARD_BACKLOG_MS)
         );
     }
@@ -535,17 +545,18 @@ fn test_short_queue_center_leaves_a_reserve_after_one_callback() {
     const RESERVE_AFTER_LIMIT_CALLBACK_MS: u32 = 3;
     for sample_rate in [44_100, 48_000, 96_000] {
         let short = short_queue_for(true, false, false, sample_rate).unwrap();
-        let center = short.target_center_samples;
+        let center = short.standard.target_center_samples;
         assert!(
             center - duration_samples(sample_rate, 10)
                 >= duration_samples(sample_rate, RESERVE_AFTER_10_MS_CALLBACK_MS)
         );
         assert!(
-            center - short.max_callback_frames
+            center - short.standard.max_callback_frames
                 >= duration_samples(sample_rate, RESERVE_AFTER_LIMIT_CALLBACK_MS)
         );
         assert!(
-            short.hard_backlog_samples > duration_samples(sample_rate, OUTPUT_SHORT_TARGET_HIGH_MS)
+            short.standard.hard_backlog_samples
+                > duration_samples(sample_rate, OUTPUT_SHORT_TARGET_HIGH_MS)
         );
     }
 }
@@ -556,17 +567,17 @@ fn test_low_period_center_leaves_a_reserve_after_one_callback() {
     const RESERVE_AFTER_LIMIT_CALLBACK_MS: u32 = 2;
     for sample_rate in [44_100, 48_000, 96_000] {
         let short = short_queue_for(true, false, false, sample_rate).unwrap();
-        let center = short.low_period_target_center_samples;
+        let center = short.low_period.target_center_samples;
         assert!(
             center - sample_rate.div_ceil(375) as usize
                 >= duration_samples(sample_rate, RESERVE_AFTER_128_FRAME_CALLBACK_MS)
         );
         assert!(
-            center - short.low_period_max_callback_frames
+            center - short.low_period.max_callback_frames
                 >= duration_samples(sample_rate, RESERVE_AFTER_LIMIT_CALLBACK_MS)
         );
         assert!(
-            short.low_period_hard_backlog_samples
+            short.low_period.hard_backlog_samples
                 > duration_samples(sample_rate, OUTPUT_LOW_PERIOD_TARGET_HIGH_MS)
         );
     }

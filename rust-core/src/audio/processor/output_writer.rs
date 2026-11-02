@@ -81,15 +81,31 @@ pub(super) struct OutputWriteLimits {
     pub(super) max_emergency_catchup_ratio: f32,
 }
 
-/// Lower queue targets for a stream whose callbacks are short.
+/// Queue targets for callbacks up to a given size.
 #[derive(Clone, Copy)]
-pub(super) struct ShortCallbackQueue {
+pub(super) struct QueueTier {
     pub(super) max_callback_frames: usize,
     pub(super) target_center_samples: usize,
     pub(super) hard_backlog_samples: usize,
-    pub(super) low_period_max_callback_frames: usize,
-    pub(super) low_period_target_center_samples: usize,
-    pub(super) low_period_hard_backlog_samples: usize,
+}
+
+impl QueueTier {
+    fn at(sample_rate: u32, max_callback_ms: u32, low_ms: u32, high_ms: u32, hard_ms: u32) -> Self {
+        Self {
+            max_callback_frames: duration_samples(sample_rate, max_callback_ms),
+            target_center_samples: (duration_samples(sample_rate, low_ms)
+                + duration_samples(sample_rate, high_ms))
+            .div_ceil(2),
+            hard_backlog_samples: duration_samples(sample_rate, hard_ms),
+        }
+    }
+}
+
+/// Lower queue targets for a stream whose callbacks are short.
+#[derive(Clone, Copy)]
+pub(super) struct ShortCallbackQueue {
+    pub(super) standard: QueueTier,
+    pub(super) low_period: QueueTier,
 }
 
 /// The short queue exists only on Windows with no resampler on either side.
@@ -100,25 +116,18 @@ pub(super) fn short_queue_for(
     output_sample_rate: u32,
 ) -> Option<ShortCallbackQueue> {
     (is_windows && !input_resampled && !output_resampled).then(|| ShortCallbackQueue {
-        max_callback_frames: duration_samples(output_sample_rate, OUTPUT_SHORT_CALLBACK_MAX_MS),
-        target_center_samples: (duration_samples(output_sample_rate, OUTPUT_SHORT_TARGET_LOW_MS)
-            + duration_samples(output_sample_rate, OUTPUT_SHORT_TARGET_HIGH_MS))
-        .div_ceil(2),
-        hard_backlog_samples: duration_samples(output_sample_rate, OUTPUT_SHORT_HARD_BACKLOG_MS),
-        low_period_max_callback_frames: duration_samples(
+        standard: QueueTier::at(
+            output_sample_rate,
+            OUTPUT_SHORT_CALLBACK_MAX_MS,
+            OUTPUT_SHORT_TARGET_LOW_MS,
+            OUTPUT_SHORT_TARGET_HIGH_MS,
+            OUTPUT_SHORT_HARD_BACKLOG_MS,
+        ),
+        low_period: QueueTier::at(
             output_sample_rate,
             OUTPUT_LOW_PERIOD_CALLBACK_MAX_MS,
-        ),
-        low_period_target_center_samples: (duration_samples(
-            output_sample_rate,
             OUTPUT_LOW_PERIOD_TARGET_LOW_MS,
-        ) + duration_samples(
-            output_sample_rate,
             OUTPUT_LOW_PERIOD_TARGET_HIGH_MS,
-        ))
-        .div_ceil(2),
-        low_period_hard_backlog_samples: duration_samples(
-            output_sample_rate,
             OUTPUT_LOW_PERIOD_HARD_BACKLOG_MS,
         ),
     })
@@ -133,24 +142,18 @@ pub(super) fn active_queue_limits(
     sustained_callback_frames: usize,
     scheduling_degraded: bool,
 ) -> OutputWriteLimits {
-    match short.filter(|_| !scheduling_degraded) {
-        Some(short)
-            if (1..=short.low_period_max_callback_frames).contains(&sustained_callback_frames) =>
-        {
-            OutputWriteLimits {
-                output_target_center_samples: short.low_period_target_center_samples,
-                output_hard_backlog_samples: short.low_period_hard_backlog_samples,
-                ..qualified
-            }
-        }
-        Some(short) if (1..=short.max_callback_frames).contains(&sustained_callback_frames) => {
-            OutputWriteLimits {
-                output_target_center_samples: short.target_center_samples,
-                output_hard_backlog_samples: short.hard_backlog_samples,
-                ..qualified
-            }
-        }
-        _ => qualified,
+    let fits =
+        |tier: &QueueTier| (1..=tier.max_callback_frames).contains(&sustained_callback_frames);
+    let tier = short
+        .filter(|_| !scheduling_degraded)
+        .and_then(|short| [short.low_period, short.standard].into_iter().find(fits));
+    match tier {
+        Some(tier) => OutputWriteLimits {
+            output_target_center_samples: tier.target_center_samples,
+            output_hard_backlog_samples: tier.hard_backlog_samples,
+            ..qualified
+        },
+        None => qualified,
     }
 }
 

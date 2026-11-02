@@ -7,7 +7,7 @@
 //! time from writing a sample to reading it back from CABLE Output. A device
 //! that offers nothing shorter, or refuses the stream, stays on cpal, and so does
 //! one whose short-period stream fails later, until the app restarts. VB-Cable is
-//! the only endpoint measured this way, so nothing else is tried: the period
+//! the only endpoint measured this way, so only VB-Audio's are tried: the period
 //! belongs to the endpoint, and a hardware device has more to lose from it.
 
 use super::input::AudioError;
@@ -450,20 +450,16 @@ impl Client {
             check((audio.vtbl().set_event_handle)(
                 audio.raw(),
                 audio_event.raw(),
-            ))
-            .and_then(|()| {
-                check((audio.vtbl().get_buffer_size)(
-                    audio.raw(),
-                    &mut buffer_frames,
-                ))
-            })
-            .and_then(|()| {
-                Com::own(
-                    (audio.vtbl().get_service)(audio.raw(), &IID_AUDIO_RENDER_CLIENT, &mut render),
-                    render,
-                )
-            })
-        }?;
+            ))?;
+            check((audio.vtbl().get_buffer_size)(
+                audio.raw(),
+                &mut buffer_frames,
+            ))?;
+            Com::own(
+                (audio.vtbl().get_service)(audio.raw(), &IID_AUDIO_RENDER_CLIENT, &mut render),
+                render,
+            )?
+        };
         Ok(Some(Self {
             audio,
             render,
@@ -744,7 +740,7 @@ mod tests {
     }
 
     #[test]
-    fn short_period_is_tried_only_on_vb_cable() {
+    fn short_period_is_tried_only_on_vb_audio() {
         assert!(short_period_is_verified(
             "CABLE Input (VB-Audio Virtual Cable)"
         ));

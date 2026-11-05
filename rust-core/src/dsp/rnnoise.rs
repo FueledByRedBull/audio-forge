@@ -235,6 +235,14 @@ impl RNNoiseProcessor {
         if self.enabled != enabled {
             self.gate_compensation.reset();
         }
+        if enabled && !self.enabled {
+            // The delayed dry frame and the model's first output (its overlap
+            // with the last pre-bypass frame) are from before the bypass.
+            // Playing either in the first frame after re-enabling would replay
+            // stale audio, at full strength too, where the dry frame is unused.
+            self.dry_delay_frame.fill(0.0);
+            self.invalid_wet_samples = RNNOISE_FRAME_SIZE;
+        }
         self.enabled = enabled;
     }
 
@@ -642,6 +650,53 @@ mod tests {
         processor.process_frames();
         assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
         assert_eq!(output.as_slice(), input.as_slice());
+    }
+
+    #[test]
+    fn test_rnnoise_reenable_does_not_replay_audio_from_before_the_bypass() {
+        let frame = |offset: f32| -> Vec<f32> {
+            (0..RNNOISE_FRAME_SIZE)
+                .map(|index| 0.2 * (index as f32 * 0.031 + offset).sin())
+                .collect()
+        };
+        let (before, bypassed, after, next) = (frame(0.0), frame(1.0), frame(2.0), frame(3.0));
+        for strength in [0.0_f32, 0.37, 1.0] {
+            let mut processor = RNNoiseProcessor::new(Arc::new(AtomicU32::new(strength.to_bits())));
+            let mut output = [0.0; RNNOISE_FRAME_SIZE];
+            // Warm the model up so its overlap and the dry delay hold audio.
+            for _ in 0..20 {
+                processor.push_samples(&before);
+                processor.process_frames();
+                assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
+            }
+            assert!(output.iter().any(|sample| *sample != 0.0), "{strength}");
+
+            processor.set_enabled(false);
+            processor.push_samples(&bypassed);
+            processor.process_frames();
+            assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
+            assert_eq!(output.as_slice(), bypassed.as_slice());
+
+            processor.set_enabled(true);
+            processor.push_samples(&after);
+            processor.process_frames();
+            assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
+            // The first frame is the reported latency; it must hold neither the
+            // dry frame nor the model's overlap from before the bypass.
+            assert!(output.iter().all(|sample| *sample == 0.0), "{strength}");
+
+            // Steady state is unchanged: output resumes, and fully dry it is
+            // the aligned dry frame.
+            processor.push_samples(&next);
+            processor.process_frames();
+            assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
+            if strength == 0.0 {
+                assert_eq!(output.as_slice(), after.as_slice());
+            } else {
+                assert!(output.iter().any(|sample| *sample != 0.0), "{strength}");
+                assert!(output.iter().all(|sample| sample.is_finite()), "{strength}");
+            }
+        }
     }
 
     #[test]

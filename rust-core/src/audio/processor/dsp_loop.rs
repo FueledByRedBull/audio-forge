@@ -296,7 +296,7 @@ pub(super) fn run_guarded_dsp_loop(
 
 /// Real-time scheduling is an optimisation: without it the DSP thread runs at
 /// normal priority, which still works. Report the fallback through diagnostics.
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(super) fn tolerate_scheduling_failure<G, E>(
     registration: Result<G, E>,
     degraded: &AtomicBool,
@@ -829,6 +829,31 @@ fn run_bounded(
     }
 }
 
+/// `run_bounded` for the RTKit promotion, with the request thread recording its
+/// own answer in the scheduling-degraded diagnostic so a grant that arrives
+/// after the timeout still clears it. The answer is recorded only while no
+/// `stop` has happened since the call: a request from an earlier start can
+/// finish during a later session and must not overwrite that session's value.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn run_bounded_promotion(
+    timeout: Duration,
+    shared: &Arc<Shared>,
+    request: impl FnOnce() -> Result<(), String> + Send + 'static,
+) -> Result<(), String> {
+    let stop_epoch = shared.stream.stop_epoch.load(Ordering::Acquire);
+    let shared = Arc::clone(shared);
+    run_bounded(timeout, move || {
+        let answer = request();
+        if shared.stream.stop_epoch.load(Ordering::Acquire) == stop_epoch {
+            shared
+                .dsp
+                .scheduling_degraded
+                .store(answer.is_err(), Ordering::Relaxed);
+        }
+        answer
+    })
+}
+
 #[cfg(target_os = "linux")]
 impl DspLoop {
     /// Ask RTKit to make the DSP thread realtime. It runs on the DSP thread
@@ -849,17 +874,23 @@ impl DspLoop {
     /// leaves it lowered. That is harmless: the limit only applies to realtime
     /// threads, and each later promotion in this process (cpal's included) sets
     /// it again with the same RTKit maximum as the hard limit.
-    // shortcut: a grant that arrives after the timeout leaves the thread
-    // realtime while the diagnostic says degraded; upgrade if that is ever seen.
+    ///
+    /// The diagnostic reads degraded until RTKit answers, and the request
+    /// thread itself records the answer (see `run_bounded_promotion`), so a
+    /// grant that arrives after the timeout still clears it.
     pub(super) fn promote_to_realtime(&self) {
         let sample_rate = self.pacing.sample_rate;
-        let promotion = ignore_sigxcpu()
+        self.shared
+            .dsp
+            .scheduling_degraded
+            .store(true, Ordering::Relaxed);
+        let _ = ignore_sigxcpu()
             .map_err(|error| format!("could not ignore SIGXCPU: {error}"))
             .and_then(|()| {
                 audio_thread_priority::get_current_thread_info().map_err(|error| error.to_string())
             })
             .and_then(|thread| {
-                run_bounded(REALTIME_PROMOTION_TIMEOUT, move || {
+                run_bounded_promotion(REALTIME_PROMOTION_TIMEOUT, &self.shared, move || {
                     audio_thread_priority::promote_thread_to_real_time(
                         thread,
                         sample_rate,
@@ -872,7 +903,6 @@ impl DspLoop {
             .inspect_err(|_e| {
                 processor_debug_log!("Warning: RTKit realtime priority unavailable: {}", _e);
             });
-        tolerate_scheduling_failure(promotion, &self.shared.dsp.scheduling_degraded);
     }
 }
 
@@ -2744,5 +2774,73 @@ mod realtime_tests {
     fn a_bounded_request_that_panics_reports_it() {
         let error = run_bounded(Duration::from_secs(5), || panic!("RTKit exploded")).unwrap_err();
         assert!(error.contains("without an answer"), "{error}");
+    }
+
+    /// Time out a promotion whose answer is held back, then let the answer
+    /// arrive after `after_timeout` ran, and wait for the request thread.
+    fn late_promotion_answer(
+        shared: &Arc<Shared>,
+        answer: Result<(), String>,
+        after_timeout: impl FnOnce(),
+    ) {
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let error = run_bounded_promotion(Duration::from_millis(50), shared, move || {
+            let _ = release_rx.recv();
+            answer
+        })
+        .unwrap_err();
+        assert!(error.contains("did not answer"), "{error}");
+        after_timeout();
+        release_tx.send(()).unwrap();
+        // The request thread holds its own `Arc` until it has recorded the
+        // answer, so a count of one means it is done.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while Arc::strong_count(shared) > 1 {
+            assert!(std::time::Instant::now() < deadline, "request thread hung");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn a_late_promotion_grant_clears_the_degraded_flag_of_the_same_start() {
+        let shared = Arc::new(Shared::new(48_000));
+        shared
+            .dsp
+            .scheduling_degraded
+            .store(true, Ordering::Relaxed);
+        late_promotion_answer(&shared, Ok(()), || {
+            assert!(shared.dsp.scheduling_degraded.load(Ordering::Relaxed));
+        });
+        assert!(!shared.dsp.scheduling_degraded.load(Ordering::Relaxed));
+
+        late_promotion_answer(&shared, Err("refused".to_string()), || {});
+        assert!(shared.dsp.scheduling_degraded.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_promotion_answer_from_an_earlier_start_leaves_the_flag_alone() {
+        let shared = Arc::new(Shared::new(48_000));
+        shared
+            .dsp
+            .scheduling_degraded
+            .store(true, Ordering::Relaxed);
+        late_promotion_answer(&shared, Ok(()), || {
+            // Stop, then a later start pre-sets the diagnostic.
+            shared.stream.stop_epoch.fetch_add(1, Ordering::AcqRel);
+            shared
+                .dsp
+                .scheduling_degraded
+                .store(true, Ordering::Relaxed);
+        });
+        assert!(shared.dsp.scheduling_degraded.load(Ordering::Relaxed));
+
+        shared
+            .dsp
+            .scheduling_degraded
+            .store(false, Ordering::Relaxed);
+        late_promotion_answer(&shared, Err("refused".to_string()), || {
+            shared.stream.stop_epoch.fetch_add(1, Ordering::AcqRel);
+        });
+        assert!(!shared.dsp.scheduling_degraded.load(Ordering::Relaxed));
     }
 }

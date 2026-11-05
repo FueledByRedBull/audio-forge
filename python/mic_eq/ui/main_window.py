@@ -65,7 +65,7 @@ from .latency_calibration_dialog import (
     engine_config_signature,
 )
 from .voice_setup_dialog import VoiceSetupDialog
-from .first_run_setup_dialog import FirstRunSetupDialog
+from .first_run_setup_dialog import FirstRunSetupDialog, FirstRunSetupLoadError
 from .app_bootstrap import run_qt_app
 from .device_selection import (
     OWN_MICROPHONE_MESSAGE,
@@ -2022,7 +2022,17 @@ class MainWindow(QMainWindow):
     def _show_first_run_setup(
         self, _checked: bool = False, *, restart_completed: bool = True
     ) -> None:
-        _exec_and_release(FirstRunSetupDialog(self, restart_completed=restart_completed))
+        try:
+            dialog = FirstRunSetupDialog(self, restart_completed=restart_completed)
+        except FirstRunSetupLoadError as error:
+            logger.error("Guided Setup did not open: %s", error)
+            QMessageBox.critical(
+                self,
+                "Guided Setup",
+                f"The setup window could not open.\n\n{error}",
+            )
+            return
+        _exec_and_release(dialog)
 
     def _current_device_route_key(self) -> str | None:
         input_identity = self._combo_device_identity(self.input_choice)

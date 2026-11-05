@@ -6,41 +6,28 @@ import logging
 import sys
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import (
-    QDialog,
-    QComboBox,
-    QGridLayout,
-    QHBoxLayout,
-    QLabel,
-    QMessageBox,
-    QProgressBar,
-    QPushButton,
-    QVBoxLayout,
-)
+from PySide6.QtQuickWidgets import QQuickWidget
+from PySide6.QtWidgets import QDialog, QMessageBox, QVBoxLayout
 
 from ..config import coerce_device_identity, save_config
 from ..config_parts.app_config import FIRST_RUN_SETUP_STEPS
-from .accessibility import bind_label, set_accessible_group
-from .components import Card, ToggleSwitch, form_layout, update_label
+from .first_run_setup_view import FirstRunSetupView
 from .health import RecentStreamHealth
-from .layout_constants import (
-    MARGIN_PANEL,
-    PRIMARY_ACTION_BUTTON_STYLE,
-    SPACING_NORMAL,
-    SPACING_SECTION,
-    configure_resizable_dialog,
-    configure_responsive_combo,
-    create_scrollable_dialog_body,
-)
-from .level_meter import LevelMeter, MeterWidget
-from .theme import DESCRIPTION_LABEL_STYLE, message_text_style, status_chip_style
+from .layout_constants import configure_resizable_dialog
+from .quick_scene import QML_DIR, load_scene, quick_theme
+from .quick_shell import register_qml_types
 
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SETUP_STEPS = ("devices", "route", "voice")
+
+MUTE_TIP = (
+    "Keep transmission muted until you turn this off. "
+    "Calibration and stream recovery may use a separate temporary mute."
+)
 
 
 STEP_CONTENT = {
@@ -76,6 +63,10 @@ STEP_CONTENT = {
         "Open Voice Setup",
     ),
 }
+
+
+# The main button says one of these; the scene sizes the dialog for the longest.
+ACTION_LABELS = [*(content[2] for content in STEP_CONTENT.values()), "Confirm signal", "Retry save"]
 
 
 def route_health_reason(
@@ -156,18 +147,24 @@ def route_health_reason(
     )
 
 
+class FirstRunSetupLoadError(RuntimeError):
+    """The dialog's Qt Quick scene did not load, so there is nothing to show."""
+
+
 class FirstRunSetupDialog(QDialog):
     """Persisted setup flow for selecting a route and running checks."""
 
     def __init__(self, owner: Any, *, restart_completed: bool = False):
         super().__init__(owner)
         self.owner = owner
+        self.setWindowTitle("AudioForge Setup")
+        self.setModal(True)
+        # The scene comes first: if it cannot load, the saved progress is left as it was.
+        self._setup_ui()
         self._stream_health = getattr(owner, "_stream_health", None) or RecentStreamHealth()
         self.config = owner.config
         self._finalized = False
         self._progress_unsaved = False
-        self.setWindowTitle("AudioForge Setup")
-        self.setModal(True)
         # A re-run never writes "in_progress", so quitting mid-run cannot re-prompt at launch.
         self._exit_state = (
             self.config.first_run_setup_state
@@ -220,164 +217,64 @@ class FirstRunSetupDialog(QDialog):
         self._route_feedback_timer.setInterval(100)
         self._route_feedback_timer.timeout.connect(self._update_route_feedback)
 
-        outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(0, 0, 0, 0)
-        self.content_scroll_area, layout = create_scrollable_dialog_body(self)
-        self.content_scroll_area.setAccessibleName("Audio setup content")
-        outer_layout.addWidget(self.content_scroll_area, stretch=1)
-        layout.setSpacing(SPACING_SECTION)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, len(DEFAULT_SETUP_STEPS))
-        self.progress.setTextVisible(True)
-        layout.addWidget(self.progress)
-
-        self.title_label = QLabel()
-        self.title_label.setWordWrap(True)
-        layout.addWidget(self.title_label)
-
-        self.description_label = QLabel()
-        self.description_label.setWordWrap(True)
-        self.description_label.setStyleSheet(DESCRIPTION_LABEL_STYLE)
-        layout.addWidget(self.description_label)
-
-        self.status_label = QLabel()
-        self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet(message_text_style("info"))
-        layout.addWidget(self.status_label)
-
-        self.route_feedback_group = Card("Speech and clipping")
-        feedback_layout = QGridLayout()
-        self.route_feedback_group.body.addLayout(feedback_layout)
-        self.route_input_meter = LevelMeter("IN", show_scale=True)
-        self.route_output_meter = LevelMeter("OUT", show_scale=True)
-        route_input_widget = MeterWidget(self.route_input_meter)
-        route_output_widget = MeterWidget(self.route_output_meter)
-        route_input_widget.setFixedWidth(60)
-        route_output_widget.setFixedWidth(60)
-        self.route_input_health_label = QLabel("Input: --")
-        self.route_output_health_label = QLabel("Output: --")
-        for label in (self.route_input_health_label, self.route_output_health_label):
-            label.setWordWrap(True)
-        feedback_layout.addWidget(route_input_widget, 0, 0, Qt.AlignmentFlag.AlignHCenter)
-        feedback_layout.addWidget(route_output_widget, 0, 1, Qt.AlignmentFlag.AlignHCenter)
-        feedback_layout.addWidget(self.route_input_health_label, 1, 0)
-        feedback_layout.addWidget(self.route_output_health_label, 1, 1)
-        feedback_layout.setColumnStretch(0, 1)
-        feedback_layout.setColumnStretch(1, 1)
-        layout.addWidget(self.route_feedback_group)
-
-        self.mute_checkbox = ToggleSwitch("Mute output")
-        self.mute_checkbox.setToolTip(
-            "Keep transmission muted until you turn this off. "
-            "Calibration and stream recovery may use a separate temporary mute."
-        )
-        self.mute_checkbox.setChecked(bool(getattr(self.owner, "user_muted", False)))
-        self.mute_checkbox.toggled.connect(self._on_mute_toggled)
-        layout.addWidget(self.mute_checkbox)
-
-        self.device_selection_group = Card("Audio route")
-        device_layout = form_layout()
-        self.device_selection_group.body.addLayout(device_layout)
-        input_label = QLabel("Microphone")
-        self.input_device_selector = QComboBox()
-        configure_responsive_combo(self.input_device_selector)
-        bind_label(
-            input_label,
-            self.input_device_selector,
-            name="Setup microphone",
-        )
-        device_layout.addRow(input_label, self.input_device_selector)
-
-        output_label = QLabel("Destination")
-        self.output_device_selector = QComboBox()
-        configure_responsive_combo(self.output_device_selector)
-        bind_label(
-            output_label,
-            self.output_device_selector,
-            name="Setup destination",
-        )
-        device_layout.addRow(output_label, self.output_device_selector)
-        layout.addWidget(self.device_selection_group)
-        for selector, choices in ((self.input_device_selector, self.owner.input_choice),
-                                  (self.output_device_selector, self.owner.output_choice)):
-            selector.clear()
-            for index in range(choices.count()):
-                selector.addItem(choices.itemText(index), choices.itemData(index))
-        self.input_device_selector.setCurrentIndex(
-            self.owner.input_choice.currentIndex()
-        )
-        self.output_device_selector.setCurrentIndex(
-            self.owner.output_choice.currentIndex()
-        )
-
-        self.advanced_latency_button = QPushButton("Advanced latency calibration...")
-        self.advanced_latency_button.clicked.connect(self._run_latency_calibration)
-        self.advanced_latency_button.setEnabled(
-            callable(getattr(self.owner, "_on_latency_calibration_clicked", None))
-        )
-        layout.addWidget(
-            self.advanced_latency_button, alignment=Qt.AlignmentFlag.AlignLeft
-        )
-        layout.addStretch(1)
-
-        self.back_button = QPushButton("Back")
-        self.back_button.clicked.connect(self._go_back)
-
-        self.skip_button = QPushButton("Skip this step")
-        self.skip_button.clicked.connect(self._skip_step)
-
-        self.pause_button = QPushButton("Pause setup")
-        self.pause_button.clicked.connect(self.reject)
-
-        self.action_button = QPushButton()
-        self.action_button.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
-        self.action_button.clicked.connect(self._run_current_step)
-
-        # The actions stay in view while the page above them scrolls.
-        button_row = QHBoxLayout()
-        button_row.setContentsMargins(MARGIN_PANEL, 0, MARGIN_PANEL, MARGIN_PANEL)
-        button_row.setSpacing(SPACING_NORMAL)
-        button_row.addWidget(self.pause_button)
-        button_row.addWidget(self.back_button)
-        button_row.addWidget(self.skip_button)
-        button_row.addStretch(1)
-        button_row.addWidget(self.action_button)
-        outer_layout.addLayout(button_row)
-
-        set_accessible_group(
-            (
-                (self.progress, "Setup progress", None),
-                (route_input_widget, "Live microphone level", None),
-                (route_output_widget, "Live destination level", None),
-                (self.mute_checkbox, "Mute output during setup", None),
-                (self.input_device_selector, "Setup microphone", None),
-                (self.output_device_selector, "Setup destination", None),
-                (self.pause_button, "Pause setup", None),
-                (
-                    self.advanced_latency_button,
-                    "Open advanced latency calibration",
-                    None,
-                ),
-            )
-        )
-        self.setTabOrder(self.mute_checkbox, self.input_device_selector)
-        self.setTabOrder(self.input_device_selector, self.output_device_selector)
-        self.setTabOrder(self.output_device_selector, self.advanced_latency_button)
-        self.setTabOrder(self.advanced_latency_button, self.pause_button)
-        self.setTabOrder(self.pause_button, self.back_button)
-        self.setTabOrder(self.back_button, self.skip_button)
-        self.setTabOrder(self.skip_button, self.action_button)
         owner_mute_checkbox = getattr(self.owner, "user_mute_checkbox_action", None)
         if owner_mute_checkbox is not None and hasattr(owner_mute_checkbox, "toggled"):
             owner_mute_checkbox.toggled.connect(self._sync_mute_control)
         self._render_step()
+        # The scene's own minimum grows with the text size; the dialog opens at least that wide.
+        minimum_width = max(440, int(self.quick_view.rootObject().property("minimumWidth")))
         configure_resizable_dialog(
             self,
-            preferred_width=620,
+            preferred_width=max(620, minimum_width),
             preferred_height=660,
-            minimum_width=440,
+            minimum_width=minimum_width,
             minimum_height=340,
         )
+
+    def _setup_ui(self) -> None:
+        input_choice, output_choice = self.owner.input_choice, self.owner.output_choice
+        # The dialog holds a snapshot; a device refresh can reorder the owner.
+        self._input_identities = [
+            input_choice.itemData(index) for index in range(input_choice.count())
+        ]
+        self._output_identities = [
+            output_choice.itemData(index) for index in range(output_choice.count())
+        ]
+        self.view_model = FirstRunSetupView(
+            pause=self.reject,
+            back=self._go_back,
+            skip=self._skip_step,
+            act=self._run_current_step,
+            open_latency=self._run_latency_calibration,
+            request_mute=self._on_mute_toggled,
+            action_labels=ACTION_LABELS,
+            inputs=[input_choice.itemText(index) for index in range(input_choice.count())],
+            outputs=[output_choice.itemText(index) for index in range(output_choice.count())],
+            input_index=input_choice.currentIndex(),
+            output_index=output_choice.currentIndex(),
+            mute_tip=MUTE_TIP,
+            parent=self,
+        )
+        self.view_model.set_muted(bool(getattr(self.owner, "user_muted", False)))
+        self.view_model.set_page(
+            latencyEnabled=callable(getattr(self.owner, "_on_latency_calibration_clicked", None))
+        )
+        register_qml_types()
+        self.quick_view = QQuickWidget(self)
+        reason = load_scene(
+            self.quick_view,
+            QML_DIR / "FirstRunSetup.qml",
+            quick_theme(),
+            {"vm": self.view_model},
+        )
+        if reason is not None:
+            # Nothing is connected yet; leave the parent without a half-built child.
+            self.setParent(None)
+            raise FirstRunSetupLoadError(f"The setup view did not load: {reason}")
+        self.quick_view.setAccessibleName("Audio setup content")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.quick_view)
 
     def _initial_step_index(self) -> int:
         current = self.config.first_run_setup_step
@@ -404,16 +301,16 @@ class FirstRunSetupDialog(QDialog):
             return
 
         self._route_feedback_timer.stop()
-        for meter in (self.route_input_meter, self.route_output_meter):
+        for meter in (self.view_model.input_meter, self.view_model.output_meter):
             meter.decay_timer.stop()
 
     def _update_route_feedback(self) -> None:
         if self.current_step != "route":
             return
         running = self.owner.processor.is_running()
-        for direction, meter, label in (
-            ("input", self.route_input_meter, self.route_input_health_label),
-            ("output", self.route_output_meter, self.route_output_health_label),
+        for direction, meter in (
+            ("input", self.view_model.input_meter),
+            ("output", self.view_model.output_meter),
         ):
             if running:
                 source_meter = getattr(self.owner, f"{direction}_meter")
@@ -424,11 +321,11 @@ class FirstRunSetupDialog(QDialog):
                     meter.set_rms_level(source_meter.rms_db)
                 else:
                     meter.set_levels(source_meter.rms_db, source_meter.peak_db)
-                text, style = source.text, status_chip_style(source.state)
+                text, state = source.text, source.state
             else:
                 meter.set_unavailable()
-                text, style = f"{direction.title()}: --", message_text_style("idle")
-            update_label(label, text, style)
+                text, state = f"{direction.title()}: --", "idle"
+            self.view_model.set_health(direction, text, state)
 
     def _save_progress(self) -> bool:
         self.config.first_run_setup_step = self.current_step
@@ -452,7 +349,6 @@ class FirstRunSetupDialog(QDialog):
             self._route_check_pending = False
             self._started_processing = False
             self._route_check_phase = "speech"
-            self.action_button.setEnabled(True)
             self._set_route_feedback_active(False)
         else:
             self._set_route_feedback_active(True)
@@ -462,80 +358,85 @@ class FirstRunSetupDialog(QDialog):
             self.config.first_run_setup_steps.get(default_step) == "completed"
             for default_step in DEFAULT_SETUP_STEPS
         )
-        self.progress.setValue(completed_count)
-        self.progress.setFormat(
-            f"{completed_count} of {len(DEFAULT_SETUP_STEPS)} steps completed"
-        )
-        self.title_label.setText(f"<h2>{title}</h2>")
-        self.description_label.setText(description)
-        self.device_selection_group.setVisible(step == "devices")
-        self.route_feedback_group.setVisible(step == "route")
-        self.advanced_latency_button.setVisible(step != "latency")
-        self._sync_mute_control()
-        if self._progress_unsaved:
-            self.status_label.setText(
-                "Progress is unsaved. You can continue, but some steps may need to be "
-                "repeated if settings cannot be saved."
-            )
-            self.status_label.setStyleSheet(message_text_style("warn"))
-        else:
-            self.status_label.setText(
-                "This step was completed. You can run it again or continue."
-                if state == "completed"
-                else "Ready. Progress is saved if you close this window."
-            )
-            self.status_label.setStyleSheet(message_text_style("info"))
         if (
             step == "voice"
             and self._progress_unsaved
             and self._default_setup_finished()
         ):
-            self.action_button.setText("Retry save")
+            action = "Retry save"
         elif step == "route" and self._route_check_phase == "destination":
-            self.action_button.setText("Confirm signal")
-        else:
-            self.action_button.setText(action)
-        self.back_button.setEnabled(
-            self._advanced_latency_mode or self._step_index > 0
+            action = "Confirm signal"
+        self.view_model.set_page(
+            title=title,
+            description=description,
+            progressCount=completed_count,
+            progressTotal=len(DEFAULT_SETUP_STEPS),
+            progressText=f"{completed_count} of {len(DEFAULT_SETUP_STEPS)} steps completed",
+            devicesShown=step == "devices",
+            routeShown=step == "route",
+            latencyShown=step != "latency",
+            actionText=action,
+            backEnabled=self._advanced_latency_mode or self._step_index > 0,
+            **({} if step == "route" else {"actionEnabled": True}),
         )
+        self._sync_mute_control()
+        if self._progress_unsaved:
+            self.view_model.set_status(
+                "Progress is unsaved. You can continue, but some steps may need to be "
+                "repeated if settings cannot be saved.",
+                "warn",
+            )
+        else:
+            self.view_model.set_status(
+                "This step was completed. You can run it again or continue."
+                if state == "completed"
+                else "Ready. Progress is saved if you close this window.",
+                "info",
+            )
 
     def _set_status(self, message: str, state: str) -> None:
         if self._progress_unsaved:
             message += " Progress is unsaved."
-        self.status_label.setText(message)
-        self.status_label.setStyleSheet(message_text_style(state))
+        self.view_model.set_status(message, state)
 
     def _on_mute_toggled(self, checked: bool) -> None:
         """Route the onboarding control through the main window's mute owner."""
+        self.view_model.set_muted(checked)
         self.owner.user_mute_checkbox_action.setChecked(checked)
 
     def _sync_mute_control(self, _checked: bool | None = None) -> None:
         """Mirror the live mute owner when a hotkey or tray action changes it."""
-        checked = bool(getattr(self.owner, "user_muted", False))
-        self.mute_checkbox.blockSignals(True)
-        self.mute_checkbox.setChecked(checked)
-        self.mute_checkbox.blockSignals(False)
+        self.view_model.set_muted(bool(getattr(self.owner, "user_muted", False)))
+
+    def _picked_identity(self, identities: list, index: int) -> Any:
+        return identities[index] if 0 <= index < len(identities) else None
 
     def _selected_devices_ready(self) -> bool:
-        input_combo = self.input_device_selector
-        output_combo = self.output_device_selector
-        if self.current_step != "devices":
-            input_combo = self.owner.input_choice
-            output_combo = self.owner.output_choice
-        input_identity = coerce_device_identity(
-            input_combo.currentData()
+        if self.current_step == "devices":
+            input_data = self._picked_identity(
+                self._input_identities, self.view_model.input_index
+            )
+            output_data = self._picked_identity(
+                self._output_identities, self.view_model.output_index
+            )
+        else:
+            input_data = self.owner.input_choice.currentData()
+            output_data = self.owner.output_choice.currentData()
+        return (
+            coerce_device_identity(input_data) is not None
+            and coerce_device_identity(output_data) is not None
         )
-        output_identity = coerce_device_identity(
-            output_combo.currentData()
-        )
-        return input_identity is not None and output_identity is not None
 
     def _apply_selected_devices(self) -> bool:
         input_combo = self.owner.input_choice
         output_combo = self.owner.output_choice
         # The dialog holds a snapshot; a device refresh can reorder the owner.
-        input_identity = self.input_device_selector.currentData()
-        output_identity = self.output_device_selector.currentData()
+        input_identity = self._picked_identity(
+            self._input_identities, self.view_model.input_index
+        )
+        output_identity = self._picked_identity(
+            self._output_identities, self.view_model.output_index
+        )
         if input_identity is None or output_identity is None:
             return False
         input_index = input_combo.findData(input_identity)
@@ -612,14 +513,14 @@ class FirstRunSetupDialog(QDialog):
                 if not healthy:
                     self._route_check_phase = "speech"
                     self._set_status(reason, "bad")
-                    self.action_button.setText("Check levels")
+                    self.view_model.set_page(actionText="Check levels")
                     return
                 self._complete_step("You confirmed the destination signal.")
                 return
             if not self.owner.processor.is_running():
                 self.owner._start_processing()
                 self._started_processing = self.owner.processor.is_running()
-            self.action_button.setEnabled(False)
+            self.view_model.set_page(actionEnabled=False)
             self._route_check_pending = True
             self._set_status("Checking the audio stream...", "info")
             self._route_check_timer.start(750)
@@ -655,7 +556,7 @@ class FirstRunSetupDialog(QDialog):
             return
         self._route_check_timer.stop()
         self._route_check_pending = False
-        self.action_button.setEnabled(True)
+        self.view_model.set_page(actionEnabled=True)
         healthy, reason = route_health_reason(
             self.owner.processor, health_window=self._stream_health
         )
@@ -666,10 +567,10 @@ class FirstRunSetupDialog(QDialog):
                 "your microphone signal.",
                 "ok",
             )
-            self.action_button.setText("Confirm signal")
+            self.view_model.set_page(actionText="Confirm signal")
         else:
             self._route_check_phase = "speech"
-            self.action_button.setText("Check levels")
+            self.view_model.set_page(actionText="Check levels")
             self._set_status(reason, "bad")
 
     def _run_latency_calibration(self) -> None:
@@ -767,7 +668,7 @@ class FirstRunSetupDialog(QDialog):
     def hideEvent(self, event) -> None:
         self._route_check_timer.stop()
         self._route_check_pending = False
-        self.action_button.setEnabled(True)
+        self.view_model.set_page(actionEnabled=True)
         self._set_route_feedback_active(False)
         super().hideEvent(event)
 

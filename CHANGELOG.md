@@ -1,12 +1,54 @@
 # Changelog
 
-## Unreleased
+## v1.22.0
 
 ### Latency display
 
-- On Windows the latency in Health now includes the output device's own buffer and half a callback period, which the old figure left out (about 27 ms on a default output). The output queue's share is averaged, so the figure no longer jumps by several milliseconds between readings.
+- On Windows the latency in Health now includes the output device's own buffer and half a callback period, which the old figure left out (about 27 ms on the one output it was measured on). The output queue's share is averaged, so the figure no longer jumps by several milliseconds between readings.
 - Until you measure the route, Health reads "at least N ms" and its tooltip says the figure is a lower bound; Measure Route Latency in Settings gives the full delay. With a saved route in use it still reads "about N ms", and saved route measurements are unaffected. Audio is unchanged.
 - Exports gain `output_device_latency_ms`, `output_device_buffer_frames`, `output_device_period_frames`, `output_device_buffer_known`, `output_device_buffer_failure_code` and `latency_compensation_ms`. A zero buffer with a failure code means the device buffer could not be read and counts as 0.
+- On Linux the figure has no output device term yet, since the buffer can't be read there. The tooltip says the buffer is not included.
+
+### Health
+
+- Right after a restart, Health could report "Gate: CHATTERING (0 times)", because a counter falling back to 0 counted as a recent event. A counter that goes down now ends its old event, and whatever the new stream has already counted is treated as new.
+
+### Start and Stop
+
+- Start is ignored for 0.5 s after a click on Stop. The single button swaps to Start about 120 ms after a stop, so a double-click on Stop used to restart audio. Login startup, first-run setup and the device-recovery start are not affected.
+
+### Noise suppression
+
+- With noise suppression off, a DeepFilterNet worker woke about 1000 times a second. After 500 ms without a frame it now polls every 3 ms, and the next frame puts it back on the fast poll, so the first frame after a pause is picked up up to 3 ms later.
+- Turning RNNoise back on no longer replays audio from before it was bypassed. The first frame after re-enabling is silent, then output resumes. Before, the old audio came through the dry delay at partial strength and through the model's overlap frame at any strength.
+
+### Dialogs
+
+- The latency calibration dialog and Guided Setup are rebuilt in QML, the toolkit the main window uses. Their steps, order, saved progress and wording are unchanged.
+- The minimum width grows with the text, so readings and labels are not cut off at large font sizes; the old fixed widths (440 px for Guided Setup, 460 px for calibration) stay the smallest size.
+- Tab goes first to the scrollable page, which shows a focus ring and scrolls with the arrow keys, Page Up, Page Down, Home and End, and then to the controls. A focused control scrolls into view.
+- Enter on a focused button presses it. With no button focused, Enter in the calibration dialog presses Accept when it is enabled and Run otherwise, and in Guided Setup it presses the main button when that is enabled.
+- Screen readers read each reading once, for example "Total latency: 12.00 ms". The device pickers' names carry the current choice ("Setup microphone: <device>"), and the progress text sits under the bar and is read as its description.
+- The tip on Guided Setup's mute switch also shows when the switch has keyboard focus. In Guided Setup, focus returns to the button that opened Voice Setup or latency calibration when it closes.
+- Guided Setup's texts can be read through UI Automation. With the old dialog those reads timed out.
+- If either dialog fails to load, you get a short "could not open" message and the details go to the log.
+- The About window title carries the version, so UI Automation and screen readers can read it.
+
+### Linux
+
+- Realtime priority that RTKit grants after the 2 s wait now shows in diagnostics. Before, the thread could run at realtime while diagnostics said normal priority. An answer left over from an earlier start is ignored.
+- After `xdg-desktop-portal --replace`, the global mute shortcut binds again. Before, it stayed dead until AudioForge restarted. The portal starting for the first time does not trigger a second bind.
+- The D-Bus session address that AudioForge builds from `XDG_RUNTIME_DIR` is now percent-escaped, so a path containing `,`, `;` or `%` works.
+
+### Settings and presets
+
+- The config schema stays 2 and the preset format is unchanged; presets saved by 1.22.0 are stamped 1.22.0, so 1.21.0 and older refuse them as newer.
+
+### Internal
+
+- Unused code is gone: native methods the app never called, re-exports, unused parameters and duplicate helpers. Behaviour, output and saved formats are unchanged.
+- Semgrep suppressions in Rust test code now sit on the lines they cover, and a Guided Setup scroll test waits for the layout to settle after a status change. No production code changed.
+- `aur_package.py` writes the `PKGBUILD` and `.SRCINFO` of `audioforge-bin` with LF line endings on every platform; makepkg refuses CRLF.
 
 ## v1.21.0
 

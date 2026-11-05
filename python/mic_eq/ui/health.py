@@ -55,12 +55,14 @@ class RecentStreamHealth:
             counts[name] = int(value)
         for name, count in counts.items():
             previous = self._counts.get(name, 0)
+            if count < previous:
+                # The counter restarted with a new stream: its recent event
+                # belongs to the old one and would read "(0 times)". Whatever
+                # the new stream has counted already is new.
+                self._last_events.pop(name, None)
+                previous = 0
             if count > previous:
                 self._last_events[name] = current
-            elif count < previous:
-                # The counter restarted with a new stream: its recent event
-                # belongs to the old one and would read "(0 times)".
-                self._last_events.pop(name, None)
         self._counts = counts
         self._last_events = {
             name: timestamp for name, timestamp in self._last_events.items()

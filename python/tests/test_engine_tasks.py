@@ -205,20 +205,19 @@ def test_stop_runs_on_the_worker_and_locks_the_controls_until_it_is_done(engine_
 
 def test_a_double_click_on_stop_does_not_start_the_audio_again(engine_window, qapp):
     # The button turns back into Start about 120 ms after a stop, inside a double-click.
-    import mic_eq.ui.main_window as main_window_module
-
     window, engine = engine_window
     window._start_processing()
     engine.calls.clear()
 
+    clicked_after = time.monotonic()
     window.stop_btn_action.trigger()
+    assert window._stop_clicked_at >= clicked_after
     wait_until(qapp, lambda: window.start_btn_action.isEnabled())
-    window._stop_clicked_at = time.monotonic()  # the second click lands at once
-    window.start_btn_action.trigger()
+    window.start_btn_action.trigger()  # the second click lands at once
     run_loop_for(qapp, 0.1)
     assert engine.lifecycle() == ["stop"] and not engine.running
 
-    window._stop_clicked_at -= main_window_module.START_AFTER_STOP_LOCKOUT_S
+    window._stop_clicked_at -= main_window.START_AFTER_STOP_LOCKOUT_S
     window.start_btn_action.trigger()
     wait_until(qapp, lambda: window.stop_btn_action.isEnabled())
     assert engine.lifecycle() == ["stop", "start"]

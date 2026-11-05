@@ -233,9 +233,12 @@ class GlobalShortcutsSession:
             elif signal.body[0] == PORTAL_SERVICE:
                 if not signal.body[2]:
                     raise PortalUnavailable("the desktop portal went away")
-                # A portal replaced in one step (xdg-desktop-portal --replace) has its
-                # new owner at once, and the session died with the old one: bind again.
-                return
+                if signal.body[1]:
+                    # A portal replaced in one step (xdg-desktop-portal --replace) has its
+                    # new owner at once, and the session died with the old one: bind again.
+                    return
+                # Otherwise the name only gained its first owner: our own first call
+                # activated the portal, and the session we just made is on it.
 
     def _wait_for_portal(self, connection: DBusConnection, events: deque, retry_after: float | None = None) -> None:
         """Return once the portal's bus name has an owner again, or after ``retry_after`` seconds."""

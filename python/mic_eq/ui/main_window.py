@@ -95,6 +95,8 @@ from .shell_specs import (
     HEALTH_LAYOUT_KEYS,
     INPUT_CHANNEL_MODE_OPTIONS,
     INPUT_CLEANUP_MODE_OPTIONS,
+    LATENCY_LOWER_BOUND_NOTE,
+    LATENCY_LOWER_BOUND_NOTE_NO_BUFFER,
     PROCESSING_MODE_OPTIONS,
     TEXT_SPECS,
 )
@@ -690,7 +692,7 @@ class MainWindow(QMainWindow):
             self._set_health_chip(key, TEXT_SPECS[key].text, "idle")
         # What the last reading explained must not outlive it.
         self.shell_texts["health_advice_label"].update(text=TEXT_SPECS["health_advice_label"].text)
-        for key in ("health_summary_label", "recovery_diag_label", "dropped_label"):
+        for key in ("health_summary_label", "recovery_diag_label", "dropped_label", "latency_label"):
             self.shell_texts[key].update(tip=TEXT_SPECS[key].tip)
 
     @staticmethod
@@ -3917,11 +3919,25 @@ class MainWindow(QMainWindow):
                     recovery_pending = recovery_pending or bool(getter())
                 except (OSError, RuntimeError, TypeError, ValueError):
                     recovery_pending = True
+        # A measured route holds everything after the engine; without one the
+        # figure covers AudioForge, plus the output buffer when it was read.
+        measured_route = float(diagnostics.get("latency_compensation_ms", 0.0) or 0.0) > 0.0
+        latency_tip = TEXT_SPECS["latency_label"].tip
+        if measured_route:
+            bound = "about"
+        else:
+            bound = "at least"
+            latency_tip += (
+                LATENCY_LOWER_BOUND_NOTE
+                if diagnostics.get("output_device_buffer_known")
+                else LATENCY_LOWER_BOUND_NOTE_NO_BUFFER
+            )
         self._set_health_chip(
             "latency_label",
-            f"Latency: about {latency_ms:.0f} ms (processing {dsp_time_ms:.1f} ms)",
+            f"Latency: {bound} {latency_ms:.0f} ms (processing {dsp_time_ms:.1f} ms)",
             "info",
         )
+        self.shell_texts["latency_label"].update(tip=latency_tip)
 
         pipeline_buf = input_buf + rnnoise_buf
         if pipeline_buf < 960:

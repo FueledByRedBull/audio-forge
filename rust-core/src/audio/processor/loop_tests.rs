@@ -406,6 +406,36 @@ fn latency_is_published_on_idle_passes_and_in_every_path() {
 }
 
 #[test]
+fn the_published_latency_follows_a_smoothed_output_queue_fill() {
+    let processor = AudioProcessor::new();
+    let mut offline = OfflineLoop::new(&processor, OfflineLoopConfig::default());
+    let latency = || processor.shared.dsp.latency_us.load(Ordering::Relaxed);
+    let publish_with_fill = |offline: &mut OfflineLoop, fill: u32| {
+        processor
+            .shared
+            .output
+            .buffer_len
+            .store(fill, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(110));
+        assert!(matches!(offline.pass(), Pass::Idle { .. }));
+        latency()
+    };
+
+    let steady = publish_with_fill(&mut offline, 480);
+    // A jump of 4320 samples (90 ms) moves the figure by a fraction of it.
+    let after_jump = publish_with_fill(&mut offline, 4_800);
+    assert!(after_jump > steady, "{after_jump} vs {steady}");
+    assert!(after_jump - steady < 45_000, "{} us", after_jump - steady);
+    // The rest of the figure does not depend on the fill, so settling on the
+    // new fill takes the whole jump.
+    let mut settled = after_jump;
+    for _ in 0..15 {
+        settled = publish_with_fill(&mut offline, 4_800);
+    }
+    assert!(settled - steady > 60_000, "{} us", settled - steady);
+}
+
+#[test]
 fn idle_passes_back_off_and_input_resets_the_back_off() {
     let processor = AudioProcessor::new();
     let mut offline = OfflineLoop::new(&processor, OfflineLoopConfig::default());

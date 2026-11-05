@@ -65,6 +65,25 @@ def test_hardware_result_parsers_require_success_and_evidence() -> None:
     assert parsed_health["runtime_diagnostics"]["input_dropped_samples"] == 0
 
 
+def test_configured_compensation_is_the_reported_route_not_the_device_buffer() -> None:
+    # No route set: the total holds the 27 ms device buffer, which nobody configured.
+    no_route = {
+        "engine_latency_ms": 30.0,
+        "total_latency_ms": 57.0,
+        "output_device_latency_ms": 27.0,
+        "latency_compensation_ms": 0.0,
+    }
+    assert TOOL._configured_compensation_ms(no_route) == 0.0
+
+    # A measured route replaces the device buffer in the total.
+    route = {**no_route, "total_latency_ms": 47.25, "latency_compensation_ms": 17.25}
+    assert TOOL._configured_compensation_ms(route) == 17.25
+
+    # The tool reads diagnostics the run just reported, so a missing key is missing evidence.
+    assert TOOL._configured_compensation_ms({"engine_latency_ms": 30.0}) is None
+    assert TOOL._configured_compensation_ms({"latency_compensation_ms": None}) is None
+
+
 def test_hardware_sample_rate_evidence_rejects_missing_or_non_integer_values() -> None:
     assert TOOL._diagnostic_input_sample_rate({}) is None
     assert TOOL._diagnostic_input_sample_rate({"input_sample_rate": True}) is None

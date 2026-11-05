@@ -504,6 +504,17 @@ impl AudioProcessor {
             .output
             .low_period_frames
             .store(stream.low_period_frames(), Ordering::Relaxed);
+        let device_buffer = stream.device_buffer();
+        let output = &self.shared.output;
+        output
+            .device_buffer_frames
+            .store(device_buffer.frames, Ordering::Relaxed);
+        output
+            .device_period_frames
+            .store(device_buffer.period_frames, Ordering::Relaxed);
+        output
+            .device_buffer_failure_code
+            .store(device_buffer.failure_code, Ordering::Relaxed);
         Ok(OpenedOutput {
             stream,
             producer: output_producer,
@@ -667,6 +678,12 @@ impl AudioProcessor {
         self.shared
             .output
             .low_period_frames
+            .store(0, Ordering::Relaxed);
+        let output = &self.shared.output;
+        output.device_buffer_frames.store(0, Ordering::Relaxed);
+        output.device_period_frames.store(0, Ordering::Relaxed);
+        output
+            .device_buffer_failure_code
             .store(0, Ordering::Relaxed);
         if let Ok(mut producer) = self.shared.output.probe_producer.lock() {
             *producer = None;

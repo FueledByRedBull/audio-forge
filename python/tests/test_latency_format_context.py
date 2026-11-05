@@ -17,7 +17,7 @@ from mic_eq.config import (
     build_device_route_key,
 )
 from mic_eq.ui.main_window import MainWindow
-from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog
+from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog, LatencyCalibrationLoadError
 
 
 def _profile(context: tuple[int | None, ...] | None) -> LatencyCalibrationProfile:
@@ -128,7 +128,7 @@ def test_latency_dialog_waits_for_successful_save_before_accepting(qapp):
         dialog._on_accept_clicked()
         assert dialog.result() == dialog.DialogCode.Rejected
         assert dialog._latest_profile == profile
-        assert "could not be saved" in dialog.status_label.text()
+        assert "could not be saved" in dialog.view_model.status_text
 
         owner._on_latency_calibration_saved.return_value = True
         dialog._on_accept_clicked()
@@ -153,6 +153,27 @@ def test_cancelled_latency_dialog_does_not_report_an_old_profile_as_saved(monkey
     monkeypatch.setattr("mic_eq.ui.main_window.LatencyCalibrationDialog", lambda *args, **kwargs: dialog)
     assert MainWindow._on_latency_calibration_clicked(cast(Any, owner)) is False
     assert owner._calibration_dialog_open is False
+
+
+def test_a_latency_dialog_that_cannot_load_tells_the_user_and_reports_nothing_saved(monkeypatch, caplog):
+    owner = SimpleNamespace(
+        _latency_profile_key=lambda: "route",
+        _current_latency_profile=lambda: None,
+        _calibration_dialog_open=False,
+        processor=Mock(is_recovery_suppressed=Mock(return_value=False)),
+    )
+
+    def broken(*_args, **_kwargs):
+        raise LatencyCalibrationLoadError("The latency calibration view did not load: no details")
+
+    shown: list[tuple] = []
+    monkeypatch.setattr("mic_eq.ui.main_window.LatencyCalibrationDialog", broken)
+    monkeypatch.setattr("mic_eq.ui.main_window.QMessageBox.critical", lambda *args: shown.append(args))
+    assert MainWindow._on_latency_calibration_clicked(cast(Any, owner)) is False
+    assert owner._calibration_dialog_open is False
+    assert len(shown) == 1 and "could not open" in shown[0][2]
+    assert "no details" not in shown[0][2], "the details are for the log, not the message box"
+    assert "no details" in caplog.text
 
 
 def test_same_route_with_changed_sample_rate_or_channels_drops_old_compensation(qapp):
@@ -304,7 +325,7 @@ def test_dialog_rejects_result_after_route_context_changes(qapp):
     owner.route = "route-b"
     dialog._on_accept_clicked()
 
-    assert "stale" in dialog.status_label.text().lower()
+    assert "stale" in dialog.view_model.status_text.lower()
     dialog.close()
     owner.deleteLater()
     qapp.processEvents()
@@ -412,7 +433,7 @@ def test_running_stream_on_different_route_is_rejected(qapp, monkeypatch):
     dialog._on_run_clicked()
 
     start.assert_not_called()
-    assert "selected route" in dialog.status_label.text().lower()
+    assert "selected route" in dialog.view_model.status_text.lower()
     dialog.close()
     owner.deleteLater()
     qapp.processEvents()

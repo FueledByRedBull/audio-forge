@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Latency display
+
+- On Windows the latency in Health now includes the output device's own buffer and half a callback period, which the old figure left out (about 27 ms on a default output). The output queue's share is averaged, so the figure no longer jumps by several milliseconds between readings.
+- Until you measure the route, Health reads "at least N ms" and its tooltip says the figure is a lower bound; Measure Route Latency in Settings gives the full delay. With a saved route in use it still reads "about N ms", and saved route measurements are unaffected. Audio is unchanged.
+- Exports gain `output_device_latency_ms`, `output_device_buffer_frames`, `output_device_period_frames`, `output_device_buffer_known`, `output_device_buffer_failure_code` and `latency_compensation_ms`. A zero buffer with a failure code means the device buffer could not be read and counts as 0.
+
 ## v1.21.0
 
 ### Output delay

@@ -12,7 +12,11 @@ from PySide6.QtWidgets import QWidget
 from mic_eq.ui.first_run_setup_dialog import route_health_reason
 from mic_eq.ui.health import RecentStreamHealth, advice_for
 from mic_eq.ui.main_window import MainWindow
-from mic_eq.ui.shell_specs import TEXT_SPECS
+from mic_eq.ui.shell_specs import (
+    LATENCY_LOWER_BOUND_NOTE,
+    LATENCY_LOWER_BOUND_NOTE_NO_BUFFER,
+    TEXT_SPECS,
+)
 from mic_eq.ui.shell_state import TextState
 from mic_eq.ui.theme import PALETTE
 
@@ -202,6 +206,48 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
     diagnostics["input_callback_error_count"] += 1
     MainWindow._update_diagnostic_labels(window, **args)
     assert texts["health_summary_label"].state == "warn"
+
+
+def test_latency_chip_is_a_lower_bound_until_the_route_is_measured(qapp):
+    spec_tip = TEXT_SPECS["latency_label"].tip
+    window, _processor, args = _diagnostic_window({})
+    chip = window.shell_texts["latency_label"]
+
+    MainWindow._update_diagnostic_labels(window, **args)
+
+    assert chip.text == "Latency: at least 10 ms (processing 0.2 ms)"
+    assert chip.state == "info"
+    assert chip.toolTip == spec_tip + LATENCY_LOWER_BOUND_NOTE_NO_BUFFER
+    assert "lower bound" in chip.toolTip
+    assert "Measure Route Latency" in chip.toolTip
+
+    # With the output buffer read, the note says it is counted.
+    MainWindow._update_diagnostic_labels(
+        window, **{**args, "diagnostics": {"output_device_buffer_known": True}}
+    )
+
+    assert chip.text == "Latency: at least 10 ms (processing 0.2 ms)"
+    assert chip.toolTip == spec_tip + LATENCY_LOWER_BOUND_NOTE
+    assert "Windows" not in chip.toolTip
+
+    # A measured route holds the whole delay, so the figure reads as an estimate again.
+    MainWindow._update_diagnostic_labels(
+        window, **{**args, "diagnostics": {"latency_compensation_ms": 48.0}}
+    )
+
+    assert chip.text == "Latency: about 10 ms (processing 0.2 ms)"
+    assert chip.toolTip == spec_tip
+
+
+def test_resetting_the_health_labels_drops_the_lower_bound_note(isolated_main_window):
+    window = isolated_main_window
+    chip = window.shell_texts["latency_label"]
+    chip.update(tip=chip.toolTip + LATENCY_LOWER_BOUND_NOTE)
+
+    window._reset_health_labels()
+
+    assert chip.toolTip == TEXT_SPECS["latency_label"].tip
+    assert chip.text == TEXT_SPECS["latency_label"].text
 
 
 def test_recovery_chip_says_the_restarts_are_paused_during_setup(qapp):

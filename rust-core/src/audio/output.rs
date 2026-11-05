@@ -21,7 +21,9 @@ use super::input::{AudioDeviceInfo, AudioError, TARGET_SAMPLE_RATE};
 use super::rt::store_rt_error;
 use super::rt::RtErrorCode;
 #[cfg(windows)]
-use super::wasapi_render::{short_period_is_verified, LowPeriodStream, Opened};
+use super::wasapi_render::{
+    probe_standard_buffer, short_period_is_verified, LowPeriodStream, Opened,
+};
 use super::{
     find_48khz_config, handle_stream_error, parse_fixed_buffer_frames, stream_config_arg,
     supported_fixed_buffer_frames, validate_stream_format,
@@ -118,11 +120,24 @@ enum OutputBackend {
     LowPeriod(LowPeriodStream),
 }
 
+/// What the output device's own buffering holds after the queue, read once when
+/// the stream opens. Frames are at the stream's sample rate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OutputDeviceBuffer {
+    /// Frames the device buffers ahead of the speaker; 0 when unknown.
+    pub frames: u32,
+    /// The callback period in frames.
+    pub period_frames: u32,
+    /// HRESULT of the failed read; 0 when it was read or not attempted.
+    pub failure_code: u32,
+}
+
 /// Audio output stream
 pub struct AudioOutput {
     stream: OutputBackend,
     device_info: AudioDeviceInfo,
     fixed_buffer_frames: Option<u32>,
+    device_buffer: OutputDeviceBuffer,
 }
 
 /// Where a running output stream reports that it has died.
@@ -725,6 +740,7 @@ impl AudioOutput {
                 )? {
                     Opened::Running(stream) => {
                         return Ok(Self {
+                            device_buffer: stream.device_buffer(),
                             stream: OutputBackend::LowPeriod(stream),
                             device_info: setup.device_info,
                             fixed_buffer_frames: None,
@@ -760,6 +776,16 @@ impl AudioOutput {
             }
         }
 
+        #[cfg(windows)]
+        let device_buffer = probe_standard_buffer(
+            setup.device_info.endpoint_id.as_deref(),
+            setup.device_info.sample_rate,
+            setup.device_info.channels,
+            fixed_buffer_frames,
+        );
+        #[cfg(not(windows))]
+        let device_buffer = OutputDeviceBuffer::default();
+
         let stream = dispatch_sample_format!(
             sample_format,
             S => Self::build_stream::<S>(setup.device, stream_config, renderer, failure),
@@ -769,6 +795,7 @@ impl AudioOutput {
             stream: OutputBackend::Cpal(stream),
             device_info: setup.device_info,
             fixed_buffer_frames,
+            device_buffer,
         })
     }
 
@@ -807,6 +834,11 @@ impl AudioOutput {
 
     pub fn fixed_buffer_frames(&self) -> Option<u32> {
         self.fixed_buffer_frames
+    }
+
+    /// The device buffering read when the stream opened.
+    pub fn device_buffer(&self) -> OutputDeviceBuffer {
+        self.device_buffer
     }
 
     /// The short engine period this stream runs on; 0 on the cpal path.

@@ -1,3 +1,4 @@
+use super::resampling::{displayed_latency_us, output_device_latency_us};
 use super::AudioProcessor;
 use crate::audio::clock::now_micros;
 use crate::audio::rt::RtErrorCode;
@@ -103,21 +104,43 @@ impl AudioProcessor {
         )
     }
 
-    /// Get current processing latency in milliseconds
+    /// Get the latency to show in milliseconds: the engine, plus the measured
+    /// route when one is set, or the output device's buffering when not. The
+    /// compensation is read once, so the rule holds between engine publishes.
     pub fn get_latency_ms(&self) -> f32 {
-        let latency_us = self.shared.dsp.latency_us.load(Ordering::Relaxed);
-        latency_us as f32 / 1000.0
-    }
-
-    /// Get engine latency excluding measured external route compensation.
-    pub fn get_engine_latency_ms(&self) -> f32 {
-        let latency_us = self.shared.dsp.latency_us.load(Ordering::Relaxed);
+        let engine_us = self.shared.dsp.latency_us.load(Ordering::Relaxed);
         let compensation_us = self
             .shared
             .dsp
             .latency_compensation_us
             .load(Ordering::Relaxed);
-        latency_us.saturating_sub(compensation_us) as f32 / 1000.0
+        displayed_latency_us(engine_us, compensation_us, self.output_device_latency_us()) as f32
+            / 1000.0
+    }
+
+    /// The output device's buffer and half a callback period in milliseconds,
+    /// read when the stream opened; zero when unknown.
+    pub fn get_output_device_latency_ms(&self) -> f32 {
+        self.output_device_latency_us() as f32 / 1000.0
+    }
+
+    fn output_device_latency_us(&self) -> u64 {
+        output_device_latency_us(
+            self.shared
+                .output
+                .device_buffer_frames
+                .load(Ordering::Relaxed),
+            self.shared
+                .output
+                .device_period_frames
+                .load(Ordering::Relaxed),
+            self.shared.output.sample_rate.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Get engine latency excluding measured external route compensation.
+    pub fn get_engine_latency_ms(&self) -> f32 {
+        self.shared.dsp.latency_us.load(Ordering::Relaxed) as f32 / 1000.0
     }
 
     /// Set user latency compensation in milliseconds (added to reported latency).

@@ -61,10 +61,11 @@ from .health import output_health_state as build_output_health_state
 from .calibration_dialog import CalibrationDialog
 from .latency_calibration_dialog import (
     LatencyCalibrationDialog,
+    LatencyCalibrationLoadError,
     engine_config_signature,
 )
 from .voice_setup_dialog import VoiceSetupDialog
-from .first_run_setup_dialog import FirstRunSetupDialog
+from .first_run_setup_dialog import FirstRunSetupDialog, FirstRunSetupLoadError
 from .app_bootstrap import run_qt_app
 from .device_selection import (
     OWN_MICROPHONE_MESSAGE,
@@ -94,6 +95,8 @@ from .shell_specs import (
     HEALTH_LAYOUT_KEYS,
     INPUT_CHANNEL_MODE_OPTIONS,
     INPUT_CLEANUP_MODE_OPTIONS,
+    LATENCY_LOWER_BOUND_NOTE,
+    LATENCY_LOWER_BOUND_NOTE_NO_BUFFER,
     PROCESSING_MODE_OPTIONS,
     TEXT_SPECS,
 )
@@ -212,6 +215,9 @@ PAGE_NAMES = ("Mic", "Health", "Settings")
 NO_DESTINATION_WARNING = "Warning: No output device is selected. Choose one in the Output list, then press Start."
 # Windows allows a program a few seconds to end a session, and the save comes after this wait.
 ENGINE_CALL_WAIT_MS = 3_000
+# Start and Stop share one button that turns back into Start as soon as a stop ends (about
+# 120 ms), so a Start this soon after a Stop click is the second click of a double-click.
+START_AFTER_STOP_LOCKOUT_S = 0.5
 # Set on the app while Qt asks to commit data for a sign-out or shutdown; the dialogs read it too.
 SESSION_ENDING_PROPERTY = "audioforge_session_ending"
 SAVE_PROBLEM = "Settings could not be saved, so recent changes may be lost when AudioForge closes."
@@ -686,7 +692,7 @@ class MainWindow(QMainWindow):
             self._set_health_chip(key, TEXT_SPECS[key].text, "idle")
         # What the last reading explained must not outlive it.
         self.shell_texts["health_advice_label"].update(text=TEXT_SPECS["health_advice_label"].text)
-        for key in ("health_summary_label", "recovery_diag_label", "dropped_label"):
+        for key in ("health_summary_label", "recovery_diag_label", "dropped_label", "latency_label"):
             self.shell_texts[key].update(tip=TEXT_SPECS[key].tip)
 
     @staticmethod
@@ -2021,7 +2027,17 @@ class MainWindow(QMainWindow):
     def _show_first_run_setup(
         self, _checked: bool = False, *, restart_completed: bool = True
     ) -> None:
-        _exec_and_release(FirstRunSetupDialog(self, restart_completed=restart_completed))
+        try:
+            dialog = FirstRunSetupDialog(self, restart_completed=restart_completed)
+        except FirstRunSetupLoadError as error:
+            logger.error("Guided Setup did not open: %s", error)
+            QMessageBox.critical(
+                self,
+                "Guided Setup",
+                "The setup window could not open. The log has the details.",
+            )
+            return
+        _exec_and_release(dialog)
 
     def _current_device_route_key(self) -> str | None:
         input_identity = self._combo_device_identity(self.input_choice)
@@ -2387,7 +2403,16 @@ class MainWindow(QMainWindow):
             self._refresh_latency_profile_engine(profile)
         existing_profile = profile.to_dict() if profile is not None else None
 
-        dialog = LatencyCalibrationDialog(self, existing_profile=existing_profile)
+        try:
+            dialog = LatencyCalibrationDialog(self, existing_profile=existing_profile)
+        except LatencyCalibrationLoadError as error:
+            logger.error("Latency calibration did not open: %s", error)
+            QMessageBox.critical(
+                self,
+                "Latency Calibration",
+                "The latency calibration window could not open. The log has the details.",
+            )
+            return False
         self._calibration_dialog_open = True
         try:
             with recovery_paused(self.processor):
@@ -2972,6 +2997,9 @@ class MainWindow(QMainWindow):
         """Start from the button or menu; the engine starts on the worker, so the window stays alive."""
         if self.__dict__.get("_engine_busy"):
             return
+        stop_clicked_at = self.__dict__.get("_stop_clicked_at")
+        if stop_clicked_at is not None and time.monotonic() - stop_clicked_at < START_AFTER_STOP_LOCKOUT_S:
+            return
         if self.__dict__.get("_recovery_polling"):
             # Queued behind that call, the start would meet the streams a retry reopened.
             self._start_after_recovery = True
@@ -3135,6 +3163,7 @@ class MainWindow(QMainWindow):
     def _on_stop_clicked(self) -> None:
         """Stop from the button or menu; the engine stops on the worker, so the window stays alive."""
         if not self.__dict__.get("_engine_busy") and self._prepare_stop():
+            self._stop_clicked_at = time.monotonic()
             self._run_engine("stop", self.processor.stop, self._finish_stop)
 
     def _prepare_stop(self) -> bool:
@@ -3890,11 +3919,25 @@ class MainWindow(QMainWindow):
                     recovery_pending = recovery_pending or bool(getter())
                 except (OSError, RuntimeError, TypeError, ValueError):
                     recovery_pending = True
+        # A measured route holds everything after the engine; without one the
+        # figure covers AudioForge, plus the output buffer when it was read.
+        measured_route = float(diagnostics.get("latency_compensation_ms", 0.0) or 0.0) > 0.0
+        latency_tip = TEXT_SPECS["latency_label"].tip
+        if measured_route:
+            bound = "about"
+        else:
+            bound = "at least"
+            latency_tip += (
+                LATENCY_LOWER_BOUND_NOTE
+                if diagnostics.get("output_device_buffer_known")
+                else LATENCY_LOWER_BOUND_NOTE_NO_BUFFER
+            )
         self._set_health_chip(
             "latency_label",
-            f"Latency: about {latency_ms:.0f} ms (processing {dsp_time_ms:.1f} ms)",
+            f"Latency: {bound} {latency_ms:.0f} ms (processing {dsp_time_ms:.1f} ms)",
             "info",
         )
+        self.shell_texts["latency_label"].update(tip=latency_tip)
 
         pipeline_buf = input_buf + rnnoise_buf
         if pipeline_buf < 960:
@@ -4438,7 +4481,9 @@ class MainWindow(QMainWindow):
         """Show about dialog."""
         QMessageBox.about(
             self,
-            "About AudioForge",
+            # The version is in the title too: UI Automation reads a window title
+            # reliably, but not the rich text of a message box.
+            f"About AudioForge v{__version__}",
             f"<h2>AudioForge v{__version__}</h2>"
             "<p>Low-latency microphone audio processor</p>"
             "<p>AudioForge source: MIT. Uses Qt and PySide6 under LGPLv3, "

@@ -6,7 +6,9 @@ from typing import Any
 from unittest.mock import Mock
 
 import numpy as np
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QAccessible
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QWidget
 
 from mic_eq.ui import latency_calibration_dialog as latency_ui
@@ -15,7 +17,6 @@ from mic_eq.ui.control_specs import control_label
 from mic_eq.ui.desktop_integration import TRAY_TOOLTIP_LIMIT, build_tray_tooltip
 from mic_eq.ui.health import advice_for
 from mic_eq.ui.main_window import NO_DESTINATION_WARNING
-from mic_eq.ui.theme import PRIMARY_ACTION_BUTTON_STYLE
 
 LONG_INPUT = "Microphone (Realtek High Definition Audio(SST)) with a very long suffix"
 LONG_OUTPUT = "CABLE Input (VB-Audio Virtual Cable) with a very long suffix on it too"
@@ -118,14 +119,32 @@ def _latency_dialog(profile: dict | None = None) -> Any:
     return dialog
 
 
+def _scene_item(dialog: Any, name: str) -> Any:
+    pending = [dialog.quick_view.rootObject()]
+    while pending:
+        parent = pending.pop()
+        for child in parent.childItems():
+            if child.objectName() == name:
+                return child
+            pending.append(child)
+    raise AssertionError(name)
+
+
+def _click_scene_item(dialog: Any, item: Any, qapp) -> None:
+    centre = item.mapToScene(item.boundingRect().center()).toPoint()
+    QTest.mouseClick(dialog.quick_view, Qt.MouseButton.LeftButton, pos=centre)
+    qapp.processEvents()
+
+
 def test_latency_dialog_makes_run_the_main_action_until_there_is_a_result(qapp):
     dialog = _latency_dialog()
     try:
-        assert not dialog.accept_button.isEnabled()
-        assert dialog.run_button.styleSheet() == PRIMARY_ACTION_BUTTON_STYLE
-        dialog._set_accept_enabled(True)
-        assert dialog.run_button.styleSheet() == ""
-        assert dialog.accept_button.styleSheet() == PRIMARY_ACTION_BUTTON_STYLE
+        run, accept = _scene_item(dialog, "runButton"), _scene_item(dialog, "acceptButton")
+        assert not dialog.view_model.acceptEnabled and not accept.property("enabled")
+        assert run.property("look") == "primary"
+        dialog.view_model.set_accept_enabled(True)
+        assert run.property("look") == "plain"
+        assert accept.property("enabled") and accept.property("look") == "primary"
     finally:
         dialog.close()
 
@@ -135,14 +154,16 @@ def test_latency_dialog_shows_the_two_readings_that_matter_and_keeps_the_rest_be
     try:
         dialog.show()
         qapp.processEvents()
-        assert dialog.total_label.isVisibleTo(dialog) and dialog.confidence_label.isVisibleTo(dialog)
-        for label in (dialog.round_trip_label, dialog.agreement_label, dialog.ambiguity_label, dialog.engine_label):
-            assert not label.isVisibleTo(dialog)
+        details, button = _scene_item(dialog, "detailsPanel"), _scene_item(dialog, "detailsButton")
+        assert _scene_item(dialog, "totalReading").isVisible()
+        assert _scene_item(dialog, "confidenceReading").isVisible()
+        agreement = _scene_item(dialog, "agreementReading")
+        assert not details.isVisible() and not agreement.isVisible() and button.property("text") == "Show details"
 
-        dialog.details_button.click()
-        assert dialog.agreement_label.isVisibleTo(dialog) and dialog.details_button.text() == "Hide details"
-        dialog.details_button.click()
-        assert not dialog.agreement_label.isVisibleTo(dialog)
+        _click_scene_item(dialog, button, qapp)
+        assert details.isVisible() and agreement.isVisible() and button.property("text") == "Hide details"
+        _click_scene_item(dialog, button, qapp)
+        assert not details.isVisible() and not agreement.isVisible()
     finally:
         dialog.close()
 

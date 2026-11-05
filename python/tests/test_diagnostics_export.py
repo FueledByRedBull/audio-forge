@@ -58,6 +58,12 @@ def _runtime() -> dict[str, object]:
     return {
         "input_dropped_samples": 2,
         "output_largest_callback_frames": 960,
+        "output_device_buffer_failure_code": 0,
+        "output_device_buffer_frames": 1056,
+        "output_device_buffer_known": True,
+        "output_device_latency_ms": 27.0,
+        "output_device_period_frames": 480,
+        "latency_compensation_ms": 0.0,
         "output_low_period_failure_code": 0,
         "output_low_period_frames": 128,
         "output_priming_underrun_total": 3,
@@ -169,6 +175,12 @@ def test_snapshot_is_deterministic_finite_bounded_and_private() -> None:
     assert first["runtime"]["output_low_period_frames"] == 128
     assert first["runtime"]["output_low_period_failure_code"] == 0
     assert first["runtime"]["output_sustained_callback_frames"] == 480
+    assert first["runtime"]["output_device_buffer_frames"] == 1056
+    assert first["runtime"]["output_device_period_frames"] == 480
+    assert first["runtime"]["output_device_latency_ms"] == 27.0
+    assert first["runtime"]["output_device_buffer_known"] is True
+    assert first["runtime"]["output_device_buffer_failure_code"] == 0
+    assert first["runtime"]["latency_compensation_ms"] == 0.0
     assert first["runtime"]["backend_error_present"] is True
     assert first["runtime"]["stream_error_present"] is True
     assert first["runtime"]["downstream_non_finite_count"] == 4

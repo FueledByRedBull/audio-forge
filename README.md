@@ -373,12 +373,13 @@ The noise gate runs before suppression: with the default threshold gate,
 moving it after suppression clipped the starts of phrases in testing. See
 **Processing mode** above for Bypass and Raw. The latency shown in the app
 includes engine and noise-suppression delay (about 15 ms for DeepFilterNet LL
-and 35 ms for standard DeepFilterNet), plus your measured route when you
-calibrate it. End-to-end latency still depends on your devices, driver,
-buffer sizes, and routing. On Windows, output to VB-CABLE and other VB-Audio
-devices runs on a shorter audio engine period when the device offers one, and
-the period applies to every app using that device. Other outputs keep the
-standard period.
+and 35 ms for standard DeepFilterNet) and, on Windows, the output device's
+buffer. Until you measure your route it reads as a lower bound; with a measured
+route it adds that route in place of the device buffer. End-to-end latency
+still depends on your devices, driver, buffer sizes, and routing. On Windows,
+output to VB-CABLE and other VB-Audio devices runs on a shorter audio engine
+period when the device offers one, and the period applies to every app using
+that device. Other outputs keep the standard period.
 
 ## Help and Contributing
 

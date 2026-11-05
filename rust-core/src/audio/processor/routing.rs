@@ -946,15 +946,11 @@ pub(super) fn publish_reported_latency(
     latency_us: &AtomicU64,
     mut components: LatencyComponents,
     path: ProcessingPath,
-    compensation_us: u64,
 ) {
     if path != ProcessingPath::Full {
         components.limiter_lookahead_samples = 0;
     }
-    latency_us.store(
-        total_reported_latency_us(components, compensation_us),
-        Ordering::Relaxed,
-    );
+    latency_us.store(total_reported_latency_us(components), Ordering::Relaxed);
 }
 
 #[inline]

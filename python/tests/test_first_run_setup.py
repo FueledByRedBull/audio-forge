@@ -6,8 +6,11 @@ import logging
 
 import pytest
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QCheckBox, QComboBox, QWidget
 
 from mic_eq.config import AppConfig, DeviceIdentity
@@ -18,7 +21,7 @@ from mic_eq.ui.first_run_setup_dialog import (
 )
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.shell_state import TextState
-from mic_eq.ui.theme import status_chip_style
+from mic_eq.ui.theme import PALETTE
 
 
 class _Processor:
@@ -139,6 +142,93 @@ def save_config_ok(monkeypatch):
     )
 
 
+def opening_setup_dialogs(qapp):
+    """Build the dialog and show it, so the scene takes real clicks and keys.
+
+    The generator behind the `open_setup` fixtures of the modules that drive the scene.
+    """
+    made: list[FirstRunSetupDialog] = []
+
+    def make(owner: Any, **kwargs: Any) -> FirstRunSetupDialog:
+        dialog = FirstRunSetupDialog(owner, **kwargs)
+        made.append(dialog)
+        dialog.show()
+        qapp.processEvents()
+        dialog.activateWindow()
+        dialog.quick_view.setFocus()
+        qapp.processEvents()
+        return dialog
+
+    yield make
+    for dialog in made:
+        dialog.hide()
+        dialog.deleteLater()
+    qapp.processEvents()
+
+
+@pytest.fixture
+def open_setup(qapp):
+    yield from opening_setup_dialogs(qapp)
+
+
+def scene_items(root: Any, *, only_visible: bool = False):
+    """The scene's items by their visual parents: a Repeater's items are not QObject children."""
+    for child in root.childItems():
+        if child.isVisible() or not only_visible:
+            yield child
+            yield from scene_items(child, only_visible=only_visible)
+
+
+def scene_item(dialog: Any, name: str) -> Any:
+    item = next(
+        (i for i in scene_items(dialog.quick_view.rootObject()) if i.objectName() == name), None
+    )
+    assert item is not None, name
+    return item
+
+
+def scene_text(dialog: Any, name: str) -> str:
+    return scene_item(dialog, name).property("text")
+
+
+def at_scene_minimum(dialog: Any, qapp: Any) -> None:
+    """Size the dialog to the narrowest its scene allows, at the smallest height.
+
+    The dialog is never wider than its screen, and a screen without fonts (the offscreen one)
+    cannot hold the scene's minimum; the scene is judged at its own minimum all the same.
+    """
+    width = max(dialog.minimumWidth(), int(dialog.quick_view.rootObject().property("minimumWidth")))
+    dialog.resize(width, dialog.minimumHeight())
+    qapp.processEvents()
+    qapp.processEvents()
+
+
+def cut_short_texts(dialog: Any) -> list[tuple[str, str]]:
+    """The visible texts of the scene that show an ellipsis: (item name, text)."""
+    return [
+        (item.objectName(), item.property("text"))
+        for item in scene_items(dialog.quick_view.rootObject(), only_visible=True)
+        if item.property("truncated")
+    ]
+
+
+def press(dialog: Any, name: str) -> None:
+    """Click the middle of a scene item, as a mouse does."""
+    item = scene_item(dialog, name)
+    centre = item.mapToScene(item.boundingRect().center()).toPoint()
+    QTest.mouseClick(dialog.quick_view, Qt.MouseButton.LeftButton, pos=centre)
+
+
+def choose(dialog: Any, picker: str, index: int) -> None:
+    """Pick the choice at `index` of a drop-down with the arrow keys."""
+    item = scene_item(dialog, picker)
+    item.forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    key = Qt.Key.Key_Down if index > item.property("currentIndex") else Qt.Key.Key_Up
+    for _ in range(abs(index - item.property("currentIndex"))):
+        QTest.keyClick(dialog.quick_view, key)
+    assert item.property("currentIndex") == index
+
+
 def _route_step_config() -> AppConfig:
     return AppConfig(
         first_run_setup_state="in_progress",
@@ -219,20 +309,21 @@ def test_route_health_ignores_output_drift_retiming():
     assert route_health_reason(processor, health_window=window, now=1.0)[0]
 
 
-def test_setup_resumes_at_saved_step_and_delegates_route_check(qapp, save_config_ok):
+def test_setup_resumes_at_saved_step_and_delegates_route_check(qapp, save_config_ok, open_setup):
     config = _route_step_config()
     owner = _Owner(config, _Processor())
-    dialog = FirstRunSetupDialog(owner)
+    dialog = open_setup(owner)
 
     assert dialog.current_step == "route"
-    dialog._run_current_step()
+    press(dialog, "actionButton")
     assert owner.start_calls == 1
     assert dialog._route_check_timer.isActive()
+    assert not scene_item(dialog, "actionButton").isEnabled()
     dialog._finish_route_check()
     assert not dialog._route_check_timer.isActive()
     assert config.first_run_setup_steps["route"] == "pending"
-    assert "Confirm signal" in dialog.action_button.text()
-    dialog._run_current_step()
+    assert "Confirm signal" in scene_text(dialog, "actionButton")
+    press(dialog, "actionButton")
     assert config.first_run_setup_steps["route"] == "completed"
     assert dialog.current_step == "voice"
 
@@ -257,15 +348,16 @@ def test_closing_during_level_check_stops_only_processing_it_started(
     assert owner.processor.running is running_before
 
 
-def test_setup_mute_control_tracks_external_owner_changes(qapp):
+def test_setup_mute_control_tracks_external_owner_changes(qapp, open_setup):
     owner = _Owner(AppConfig(), _Processor())
-    dialog = FirstRunSetupDialog(owner)
+    dialog = open_setup(owner)
+    mute = scene_item(dialog, "muteSwitch")
 
-    assert not dialog.mute_checkbox.isChecked()
+    assert not mute.property("checked")
     owner.user_mute_checkbox.setChecked(True)
-    assert dialog.mute_checkbox.isChecked()
+    assert mute.property("checked")
     owner.user_mute_checkbox.setChecked(False)
-    assert not dialog.mute_checkbox.isChecked()
+    assert not mute.property("checked")
 
 
 def test_setup_records_skips_and_can_resume_them(qapp, save_config_ok):
@@ -292,7 +384,7 @@ def test_setup_records_skips_and_can_resume_them(qapp, save_config_ok):
     assert config.first_run_setup_steps["latency"] == "pending"
 
 
-def test_setup_applies_selected_route_from_wizard(qapp, save_config_ok):
+def test_setup_applies_selected_route_from_wizard(qapp, save_config_ok, open_setup):
     config = AppConfig()
     owner = _Owner(config, _Processor())
     input_desired = DeviceIdentity(
@@ -310,10 +402,10 @@ def test_setup_applies_selected_route_from_wizard(qapp, save_config_ok):
     owner.input_choice.addItem(input_desired.name, input_desired)
     owner.output_choice.addItem(output_desired.name, output_desired)
 
-    dialog = FirstRunSetupDialog(owner)
-    dialog.input_device_selector.setCurrentIndex(1)
-    dialog.output_device_selector.setCurrentIndex(1)
-    dialog._run_current_step()
+    dialog = open_setup(owner)
+    choose(dialog, "inputPicker", 1)
+    choose(dialog, "outputPicker", 1)
+    press(dialog, "actionButton")
 
     assert owner.input_choice.currentData() == input_desired
     assert owner.output_choice.currentData() == output_desired
@@ -323,15 +415,15 @@ def test_setup_applies_selected_route_from_wizard(qapp, save_config_ok):
     assert dialog.current_step == "route"
 
 
-def test_setup_applies_snapshot_identities_after_owner_choices_reorder(qapp):
+def test_setup_applies_snapshot_identities_after_owner_choices_reorder(qapp, open_setup):
     owner = _Owner(AppConfig(), _Processor())
     selected_input = DeviceIdentity(name="Selected Mic", endpoint_id="mic-2", direction="input")
     selected_output = DeviceIdentity(name="Selected Cable", endpoint_id="cable-2", direction="output")
     owner.input_choice.addItem("Selected Mic", selected_input)
     owner.output_choice.addItem("Selected Cable", selected_output)
-    dialog = FirstRunSetupDialog(owner)
-    dialog.input_device_selector.setCurrentIndex(1)
-    dialog.output_device_selector.setCurrentIndex(1)
+    dialog = open_setup(owner)
+    choose(dialog, "inputPicker", 1)
+    choose(dialog, "outputPicker", 1)
 
     owner.input_choice.clear()
     owner.input_choice.addItem("Replacement", DeviceIdentity(name="Replacement", endpoint_id="mic-1", direction="input"))
@@ -346,13 +438,13 @@ def test_setup_applies_snapshot_identities_after_owner_choices_reorder(qapp):
     assert owner.device_change_routes == [(selected_input, selected_output)]
 
 
-def test_setup_rejects_snapshot_identity_removed_from_owner_choices(qapp):
+def test_setup_rejects_snapshot_identity_removed_from_owner_choices(qapp, open_setup):
     owner = _Owner(AppConfig(), _Processor())
     selected_input = DeviceIdentity(name="Selected Mic", endpoint_id="mic-2", direction="input")
     owner.input_choice.addItem("Selected Mic", selected_input)
-    dialog = FirstRunSetupDialog(owner)
-    dialog.input_device_selector.setCurrentIndex(1)
-    dialog.output_device_selector.setCurrentIndex(1)
+    dialog = open_setup(owner)
+    choose(dialog, "inputPicker", 1)
+    choose(dialog, "outputPicker", 0)
 
     owner.input_choice.clear()
     replacement = DeviceIdentity(name="Replacement", endpoint_id="mic-1", direction="input")
@@ -363,7 +455,7 @@ def test_setup_rejects_snapshot_identity_removed_from_owner_choices(qapp):
     assert owner.device_change_calls == 0
 
 
-def test_setup_restarts_processing_for_new_route(qapp, save_config_ok):
+def test_setup_restarts_processing_for_new_route(qapp, save_config_ok, open_setup):
     config = AppConfig()
     processor = _Processor(running=True)
     owner = _Owner(config, processor)
@@ -386,14 +478,14 @@ def test_setup_restarts_processing_for_new_route(qapp, save_config_ok):
         ),
     )
 
-    dialog = FirstRunSetupDialog(owner)
-    dialog.input_device_selector.setCurrentIndex(1)
-    dialog.output_device_selector.setCurrentIndex(1)
-    dialog._run_current_step()
+    dialog = open_setup(owner)
+    choose(dialog, "inputPicker", 1)
+    choose(dialog, "outputPicker", 1)
+    press(dialog, "actionButton")
 
     assert owner.stop_calls == 1
     assert processor.is_running() is False
-    dialog._run_current_step()
+    press(dialog, "actionButton")
     assert owner.start_calls == 1
     assert dialog._route_check_timer.isActive()
 
@@ -420,13 +512,13 @@ def test_setup_destination_confirmation_rechecks_mute_and_stream(qapp, save_conf
     owner.user_muted = True
     dialog._run_current_step()
     assert config.first_run_setup_steps["route"] == "pending"
-    assert "Output is muted" in dialog.status_label.text()
+    assert "Output is muted" in scene_text(dialog, "statusText")
 
     owner.user_muted = False
     processor.running = False
     dialog._run_current_step()
     assert dialog._route_check_phase == "speech"
-    assert "did not start" in dialog.status_label.text()
+    assert "did not start" in scene_text(dialog, "statusText")
 
 
 def test_setup_ignores_late_route_timer_after_navigation(qapp, save_config_ok):
@@ -441,8 +533,8 @@ def test_setup_ignores_late_route_timer_after_navigation(qapp, save_config_ok):
 
     assert dialog.current_step == "devices"
     assert config.first_run_setup_steps["route"] == "pending"
-    assert "Confirm Destination" not in dialog.action_button.text()
-    assert dialog.action_button.isEnabled()
+    assert "Confirm Destination" not in scene_text(dialog, "actionButton")
+    assert scene_item(dialog, "actionButton").isEnabled()
 
 
 def test_setup_missing_devices_stays_on_route_selection(qapp, save_config_ok):
@@ -454,29 +546,29 @@ def test_setup_missing_devices_stays_on_route_selection(qapp, save_config_ok):
 
     assert dialog.current_step == "devices"
     assert owner.config.first_run_setup_steps["devices"] == "pending"
-    assert "must be available" in dialog.status_label.text()
+    assert "must be available" in scene_text(dialog, "statusText")
 
 
-def test_setup_keeps_latency_optional_and_advanced(qapp, save_config_ok):
+def test_setup_keeps_latency_optional_and_advanced(qapp, save_config_ok, open_setup):
     config = AppConfig()
     owner = _Owner(config, _Processor())
     owner.latency_saved = True
-    dialog = FirstRunSetupDialog(owner)
+    dialog = open_setup(owner)
 
-    dialog._skip_step()
-    dialog._skip_step()
+    press(dialog, "skipButton")
+    press(dialog, "skipButton")
     assert dialog.current_step == "voice"
     assert config.first_run_setup_steps["latency"] == "pending"
-    assert dialog.advanced_latency_button.isEnabled()
+    assert scene_item(dialog, "latencyButton").isEnabled()
 
-    dialog._run_latency_calibration()
+    press(dialog, "latencyButton")
     assert config.first_run_setup_steps["latency"] == "completed"
     assert dialog.current_step == "voice"
 
 
 @pytest.mark.parametrize("step", ["latency", "voice"])
 def test_a_failing_setup_step_is_logged_with_its_traceback(
-    qapp, save_config_ok, monkeypatch, caplog, step
+    qapp, save_config_ok, monkeypatch, caplog, step, open_setup
 ):
     config = AppConfig(
         first_run_setup_state="in_progress",
@@ -492,19 +584,20 @@ def test_a_failing_setup_step_is_logged_with_its_traceback(
 
     monkeypatch.setattr(owner, "_on_latency_calibration_clicked", broken)
     monkeypatch.setattr(owner, "_on_auto_voice_setup_clicked", broken)
-    dialog = FirstRunSetupDialog(owner)
+    dialog = open_setup(owner)
 
     if step == "latency":
-        dialog._run_latency_calibration()
+        press(dialog, "latencyButton")
     else:
         assert dialog.current_step == "voice"
-        dialog._run_current_step()
+        press(dialog, "actionButton")
 
     assert any(
         r.levelno >= logging.ERROR and r.exc_info and "could not be built" in str(r.exc_info[1])
         for r in caplog.records
     )
-    assert dialog.status_label.text()
+    assert scene_text(dialog, "statusText")
+    assert dialog.isVisible(), "the dialog is back after the failed step"
 
 
 def test_setup_resumes_legacy_saved_latency_step(qapp, save_config_ok):
@@ -528,19 +621,21 @@ def test_setup_resumes_legacy_saved_latency_step(qapp, save_config_ok):
     assert dialog.current_step == "voice"
 
 
-def test_setup_mute_control_preserves_temporary_mute_owner(qapp, save_config_ok):
+def test_setup_mute_control_preserves_temporary_mute_owner(qapp, save_config_ok, open_setup):
     owner = _Owner(AppConfig(), _Processor())
-    dialog = FirstRunSetupDialog(owner)
+    dialog = open_setup(owner)
 
-    dialog.mute_checkbox.setChecked(True)
+    press(dialog, "muteSwitch")
 
     assert owner.user_muted is True
     assert owner.mute_toggles == [True]
     assert owner.user_mute_checkbox.isChecked()
-    dialog.mute_checkbox.setChecked(False)
+    assert scene_item(dialog, "muteSwitch").property("checked")
+    press(dialog, "muteSwitch")
     assert owner.user_muted is False
     assert owner.mute_toggles == [True, False]
     assert not owner.user_mute_checkbox.isChecked()
+    assert not scene_item(dialog, "muteSwitch").property("checked")
     assert owner._temporary_mute_reasons == {"calibration"}
 
 
@@ -556,10 +651,10 @@ def test_setup_save_false_keeps_navigation_usable_and_marks_progress_unsaved(
     dialog._run_current_step()
 
     assert dialog.current_step == "route"
-    assert "Check speech" in dialog.title_label.text()
+    assert "Check speech" in scene_text(dialog, "titleText")
     assert owner.config.first_run_setup_steps["devices"] == "completed"
     assert dialog._progress_unsaved is True
-    assert "Progress is unsaved" in dialog.status_label.text()
+    assert "Progress is unsaved" in scene_text(dialog, "statusText")
 
 
 @pytest.mark.parametrize("failure", [OSError("read-only"), TypeError("bad JSON")])
@@ -574,7 +669,7 @@ def test_setup_save_exceptions_keep_dialog_usable(qapp, monkeypatch, failure):
 
     assert dialog.current_step == "devices"
     assert dialog._progress_unsaved is True
-    assert "Progress is unsaved" in dialog.status_label.text()
+    assert "Progress is unsaved" in scene_text(dialog, "statusText")
 
     event = QCloseEvent()
     dialog.closeEvent(event)
@@ -608,9 +703,9 @@ def test_setup_failed_finish_offers_retry_without_repeating_voice(qapp, monkeypa
     assert config.first_run_setup_steps["voice"] == "completed"
     assert config.first_run_setup_state == "in_progress"
     assert dialog._finalized is False
-    assert dialog.action_button.text() == "Retry save"
+    assert scene_text(dialog, "actionButton") == "Retry save"
     assert owner.voice_setup_calls == 1
-    assert "Progress is unsaved" in dialog.status_label.text()
+    assert "Progress is unsaved" in scene_text(dialog, "statusText")
 
     dialog._run_current_step()
 
@@ -620,45 +715,50 @@ def test_setup_failed_finish_offers_retry_without_repeating_voice(qapp, monkeypa
 
 
 def test_route_feedback_mirrors_main_window_and_stops_timers_when_leaving(
-    qapp, save_config_ok
+    qapp, save_config_ok, open_setup
 ):
     config = _route_step_config()
     processor = _Processor(running=True)
     owner = _Owner(config, processor)
-    dialog = FirstRunSetupDialog(owner)
+    dialog = open_setup(owner)
+    input_meter, output_meter = dialog.view_model.input_meter, dialog.view_model.output_meter
 
-    assert not dialog.route_feedback_group.isHidden()
+    assert scene_item(dialog, "routePanel").isVisible()
     assert dialog._route_feedback_timer.isActive()
-    assert dialog.route_input_meter.rms_db == processor.input_rms
-    assert "Input: OK" in dialog.route_input_health_label.text()
+    assert input_meter.rms_db == processor.input_rms
+    assert "Input: OK" in scene_text(dialog, "inputHealth")
 
     processor.input_peak = 0.0
     processor.diagnostics["clip_event_count"] = 1
     owner.input_meter.peak_db = processor.input_peak
     owner.shell_texts["input_health_label"].update(text="Input: CLIPPING", status="bad")
     dialog._update_route_feedback()
-    assert "Input: CLIPPING" in dialog.route_input_health_label.text()
-    assert dialog.route_input_health_label.styleSheet() == status_chip_style("bad")
+    chip = scene_item(dialog, "inputHealth")
+    assert "Input: CLIPPING" in chip.property("text")
+    assert chip.property("tone") == "bad"
+    assert chip.property("color").name() == PALETTE.status_bad_surface
 
-    dialog.show()
-    dialog.resize(440, 340)
+    dialog.resize(dialog.minimumSize())
     qapp.processEvents()
-    scrollbar = dialog.content_scroll_area.verticalScrollBar()
-    assert scrollbar is not None and scrollbar.maximum() > 0
-    assert dialog.action_button.height() >= dialog.action_button.minimumSizeHint().height()
+    qapp.processEvents()
+    scroll = scene_item(dialog, "contentScroll")
+    assert scroll.property("contentHeight") > scroll.height()
+    action = scene_item(dialog, "actionButton")
+    assert action.height() >= action.property("implicitHeight")
+    assert action.mapToScene(action.boundingRect().bottomRight()).y() <= dialog.quick_view.height()
     dialog.hide()
     assert not dialog._route_feedback_timer.isActive()
-    assert not dialog.route_input_meter.decay_timer.isActive()
+    assert not input_meter.decay_timer.isActive()
     dialog.show()
     assert dialog._route_feedback_timer.isActive()
 
-    dialog._go_back()
+    press(dialog, "backButton")
 
     assert dialog.current_step == "devices"
-    assert dialog.route_feedback_group.isHidden()
+    assert not scene_item(dialog, "routePanel").isVisible()
     assert not dialog._route_feedback_timer.isActive()
-    assert not dialog.route_input_meter.decay_timer.isActive()
-    assert not dialog.route_output_meter.decay_timer.isActive()
+    assert not input_meter.decay_timer.isActive()
+    assert not output_meter.decay_timer.isActive()
 
 
 def test_resume_skipped_voice_does_not_enter_optional_latency(qapp, save_config_ok):
@@ -678,16 +778,18 @@ def test_route_feedback_shows_idle_levels_when_processor_stops(qapp, save_config
     config = _route_step_config()
     processor = _Processor(running=True)
     dialog = FirstRunSetupDialog(_Owner(config, processor))
+    input_meter, output_meter = dialog.view_model.input_meter, dialog.view_model.output_meter
 
     processor.running = False
     dialog._update_route_feedback()
 
-    assert dialog.route_input_meter.rms_db == -60.0
-    assert dialog.route_output_meter.rms_db == -60.0
-    assert not dialog.route_input_meter.measurement_available
-    assert not dialog.route_output_meter.measurement_available
-    assert dialog.route_input_health_label.text() == "Input: --"
-    assert dialog.route_output_health_label.text() == "Output: --"
+    assert input_meter.rms_db == -60.0
+    assert output_meter.rms_db == -60.0
+    assert not input_meter.measurement_available
+    assert not output_meter.measurement_available
+    assert scene_text(dialog, "inputHealth") == "Input: --"
+    assert scene_text(dialog, "outputHealth") == "Output: --"
+    assert scene_item(dialog, "inputHealth").property("tone") == "idle"
 
 
 @pytest.mark.parametrize("entry_state", ["completed", "completed_with_skips"])
@@ -864,7 +966,7 @@ def test_rerun_failed_save_messages_do_not_promise_a_launch_prompt(qapp, monkeyp
     config = AppConfig(first_run_setup_state="completed")
     dialog = FirstRunSetupDialog(_Owner(config, _Processor()), restart_completed=True)
 
-    assert "launch" not in dialog.status_label.text()
+    assert "launch" not in scene_text(dialog, "statusText")
     dialog.reject()
 
     assert "launch" not in dialog.owner.status_message.showMessage.call_args.args[0]
@@ -896,7 +998,7 @@ def test_onboarding_route_check_stops_for_user_mute(qapp, save_config_ok) -> Non
     try:
         dialog._run_current_step()
         assert owner.start_calls == 0
-        assert "Output is muted" in dialog.status_label.text()
+        assert "Output is muted" in scene_text(dialog, "statusText")
     finally:
         dialog.close()
         owner.deleteLater()

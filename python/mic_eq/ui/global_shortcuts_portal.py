@@ -230,10 +230,15 @@ class GlobalShortcutsSession:
             elif member == "Closed":
                 if fields.get(HeaderFields.path) == session:
                     raise PortalUnavailable("the desktop closed the shortcut session")
-            # shortcut: only a portal that leaves is noticed; one replaced in a single step
-            # (xdg-desktop-portal --replace) keeps a dead session until AudioForge restarts.
-            elif signal.body[0] == PORTAL_SERVICE and not signal.body[2]:
-                raise PortalUnavailable("the desktop portal went away")
+            elif signal.body[0] == PORTAL_SERVICE:
+                if not signal.body[2]:
+                    raise PortalUnavailable("the desktop portal went away")
+                if signal.body[1]:
+                    # A portal replaced in one step (xdg-desktop-portal --replace) has its
+                    # new owner at once, and the session died with the old one: bind again.
+                    return
+                # Otherwise the name only gained its first owner: our own first call
+                # activated the portal, and the session we just made is on it.
 
     def _wait_for_portal(self, connection: DBusConnection, events: deque, retry_after: float | None = None) -> None:
         """Return once the portal's bus name has an owner again, or after ``retry_after`` seconds."""

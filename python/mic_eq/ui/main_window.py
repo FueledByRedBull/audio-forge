@@ -213,6 +213,9 @@ PAGE_NAMES = ("Mic", "Health", "Settings")
 NO_DESTINATION_WARNING = "Warning: No output device is selected. Choose one in the Output list, then press Start."
 # Windows allows a program a few seconds to end a session, and the save comes after this wait.
 ENGINE_CALL_WAIT_MS = 3_000
+# Start and Stop share one button that turns back into Start as soon as a stop ends (about
+# 120 ms), so a Start this soon after a Stop click is the second click of a double-click.
+START_AFTER_STOP_LOCKOUT_S = 0.5
 # Set on the app while Qt asks to commit data for a sign-out or shutdown; the dialogs read it too.
 SESSION_ENDING_PROPERTY = "audioforge_session_ending"
 SAVE_PROBLEM = "Settings could not be saved, so recent changes may be lost when AudioForge closes."
@@ -2982,6 +2985,9 @@ class MainWindow(QMainWindow):
         """Start from the button or menu; the engine starts on the worker, so the window stays alive."""
         if self.__dict__.get("_engine_busy"):
             return
+        stop_clicked_at = self.__dict__.get("_stop_clicked_at")
+        if stop_clicked_at is not None and time.monotonic() - stop_clicked_at < START_AFTER_STOP_LOCKOUT_S:
+            return
         if self.__dict__.get("_recovery_polling"):
             # Queued behind that call, the start would meet the streams a retry reopened.
             self._start_after_recovery = True
@@ -3145,6 +3151,7 @@ class MainWindow(QMainWindow):
     def _on_stop_clicked(self) -> None:
         """Stop from the button or menu; the engine stops on the worker, so the window stays alive."""
         if not self.__dict__.get("_engine_busy") and self._prepare_stop():
+            self._stop_clicked_at = time.monotonic()
             self._run_engine("stop", self.processor.stop, self._finish_stop)
 
     def _prepare_stop(self) -> bool:
@@ -4448,7 +4455,9 @@ class MainWindow(QMainWindow):
         """Show about dialog."""
         QMessageBox.about(
             self,
-            "About AudioForge",
+            # The version is in the title too: UI Automation reads a window title
+            # reliably, but not the rich text of a message box.
+            f"About AudioForge v{__version__}",
             f"<h2>AudioForge v{__version__}</h2>"
             "<p>Low-latency microphone audio processor</p>"
             "<p>AudioForge source: MIT. Uses Qt and PySide6 under LGPLv3, "

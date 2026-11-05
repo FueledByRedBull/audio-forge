@@ -25,8 +25,18 @@ REQUIRED_BUNDLE_FILES = (
     "_internal/PySide6/Qt6Multimedia.dll",
     # Listening comparison sends raw PCM through QAudioSink on Windows.
     "_internal/PySide6/plugins/multimedia/windowsmediaplugin.dll",
-    # The main window is a Qt Quick scene using the Basic controls style.
+    # The main window and the latency dialog are Qt Quick scenes using the Basic controls
+    # style; the shared types beside them need their qmldir.
     "_internal/mic_eq/ui/qml/Main.qml",
+    "_internal/mic_eq/ui/qml/LatencyCalibration.qml",
+    "_internal/mic_eq/ui/qml/qmldir",
+    "_internal/mic_eq/ui/qml/Look.qml",
+    "_internal/mic_eq/ui/qml/FocusRing.qml",
+    "_internal/mic_eq/ui/qml/KeyButton.qml",
+    "_internal/mic_eq/ui/qml/MutedText.qml",
+    "_internal/mic_eq/ui/qml/PushButton.qml",
+    "_internal/mic_eq/ui/qml/Surface.qml",
+    "_internal/mic_eq/ui/qml/Title.qml",
     "_internal/PySide6/Qt6Quick.dll",
     # Qt6Quick.dll links Qt6OpenGL.dll at load time, and libshiboken imports the
     # QtOpenGL binding when the Qt Quick bindings load: the frozen app fails without both.

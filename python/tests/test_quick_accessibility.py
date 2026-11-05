@@ -45,7 +45,7 @@ def no_qml_warnings():
     """
     messages: list[str] = []
     previous = qInstallMessageHandler(
-        lambda _mode, _context, message: messages.append(message) if "Main.qml" in message else None
+        lambda _mode, _context, message: messages.append(message) if ".qml" in message else None
     )
     yield messages
     qInstallMessageHandler(previous)
@@ -929,8 +929,8 @@ def test_no_text_in_the_scene_is_a_literal_pixel_size_or_smaller_than_twelve() -
     import re
     from pathlib import Path
 
-    qml = (Path(__file__).parents[1] / "mic_eq" / "ui" / "qml" / "Main.qml").read_text(encoding="utf-8")
-    assert re.findall(r"pixelSize:\s*\d", qml) == []
+    for path in (Path(__file__).parents[1] / "mic_eq" / "ui" / "qml").glob("*.qml"):
+        assert re.findall(r"pixelSize:\s*\d", path.read_text(encoding="utf-8")) == [], path.name
 
 
 def test_text_sizes_follow_the_app_font_and_none_is_below_twelve(quick_window, qapp) -> None:
@@ -1000,7 +1000,7 @@ def test_a_stage_that_is_off_says_so_and_keeps_its_controls_at_full_strength(qui
 
 @pytest.fixture
 def no_icon_font_window(request, monkeypatch):
-    monkeypatch.setattr("mic_eq.ui.quick_shell.icon_font", lambda: None)
+    monkeypatch.setattr("mic_eq.ui.quick_scene.icon_font", lambda: None)
     return request.getfixturevalue("quick_window")
 
 
@@ -1439,10 +1439,10 @@ def _text_blocks(source: str):
 def test_no_text_in_the_scene_reads_the_strings_it_shows_as_markup() -> None:
     from pathlib import Path
 
-    qml = (Path(__file__).parents[1] / "mic_eq" / "ui" / "qml" / "Main.qml").read_text(encoding="utf-8")
-    blocks = list(_text_blocks(qml))
+    files = sorted((Path(__file__).parents[1] / "mic_eq" / "ui" / "qml").glob("*.qml"))
+    blocks = [(path.name, line, body) for path in files for line, body in _text_blocks(path.read_text(encoding="utf-8"))]
     assert len(blocks) > 25
-    assert [line for line, body in blocks if "textFormat: Text.PlainText" not in body] == []
+    assert [(name, line) for name, line, body in blocks if "textFormat: Text.PlainText" not in body] == []
 
 
 def test_names_and_messages_with_markup_are_shown_as_typed(quick_window, qapp) -> None:
@@ -1526,7 +1526,7 @@ def themed_window(request, monkeypatch):
     from mic_eq.ui.theme import build_palette
 
     if request.param == "contrast":
-        monkeypatch.setattr("mic_eq.ui.quick_shell.PALETTE", build_palette(CONTRAST_COLORS))
+        monkeypatch.setattr("mic_eq.ui.quick_scene.PALETTE", build_palette(CONTRAST_COLORS))
     window = request.getfixturevalue("quick_window")
     window.contrast = request.param == "contrast"
     return window

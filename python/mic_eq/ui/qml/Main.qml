@@ -3,9 +3,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
-import QtQuick.Effects
 import QtQuick.Layouts
-import QtQuick.Templates as T
 import AudioForge
 
 Rectangle {
@@ -13,21 +11,18 @@ Rectangle {
 
     required property QuickBridge ui
     readonly property var m: ui.model
-    readonly property var t: m.theme
-    readonly property bool hasIcons: t.iconFont !== ""
-    readonly property bool effects: GraphicsInfo.api !== GraphicsInfo.Software
+    readonly property var t: Look.t
+    readonly property bool hasIcons: Look.hasIcons
     readonly property bool wide: width >= 1200
     // The band editor needs more room than the rest of the page for two columns.
     readonly property bool roomy: width >= 1400
     readonly property bool running: m.top.stop.enabled
     readonly property bool pressing: pointer.active
-    // The sizes of text, in pixels, follow the app font (9 pt is 12 px); nothing is smaller than 12.
-    readonly property real zoom: Application.font.pointSize > 0 ? Application.font.pointSize / 9 : 1
-    readonly property int fsCaption: Math.round(12 * zoom)
-    readonly property int fsBody: Math.round(13 * zoom)
-    readonly property int fsLead: Math.round(15 * zoom)
-    readonly property int fsHeading: Math.round(18 * zoom)
-    readonly property int fsTitle: Math.round(20 * zoom)
+    readonly property int fsCaption: Look.fsCaption
+    readonly property int fsBody: Look.fsBody
+    readonly property int fsLead: Look.fsLead
+    readonly property int fsHeading: Look.fsHeading
+    readonly property int fsTitle: Look.fsTitle
     // When the last tooltip closed; the next one opens at once if it follows closely.
     property double tipClosedAt: 0
 
@@ -103,20 +98,6 @@ Rectangle {
         }
     }
 
-    // The one focus indicator: a ring that hover never draws. `outset` is how far it sits outside
-    // the control; a negative value draws it inside.
-    component FocusRing: Rectangle {
-        property T.Control control
-        property int outset: 3
-        anchors.fill: parent
-        anchors.margins: -outset
-        radius: height / 2 < 9 ? height / 2 : 9
-        color: "transparent"
-        border.width: 2
-        border.color: root.t.accent
-        visible: control.visualFocus
-    }
-
     component FadeIn: NumberAnimation {
         from: 0
         to: 1
@@ -124,12 +105,8 @@ Rectangle {
         easing.type: Easing.OutCubic
     }
 
-    component Caption: Text {
+    component Caption: MutedText {
         property string tip: ""
-        textFormat: Text.PlainText
-        color: root.t.text_muted
-        font.pixelSize: root.fsBody
-        elide: Text.ElideRight
         Hint { text: parent.tip }
     }
 
@@ -137,51 +114,6 @@ Rectangle {
     component StatusText: Caption {
         Accessible.role: Accessible.StaticText
         Accessible.name: text
-    }
-
-    component Title: Text {
-        textFormat: Text.PlainText
-        color: root.t.text_primary
-        font.pixelSize: root.fsBody
-        font.weight: Font.DemiBold
-        font.letterSpacing: 1.1
-        font.capitalization: Font.AllUppercase
-    }
-
-    component Surface: Item {
-        id: surface
-        default property alias content: body.data
-        property int pad: 18
-        property alias spacing: body.spacing
-        implicitHeight: body.implicitHeight + 2 * pad
-        Rectangle {
-            anchors.fill: parent
-            radius: root.t.radiusCard + 2
-            color: root.t.card_surface
-            border.color: root.t.border
-            layer.enabled: root.effects
-            layer.effect: MultiEffect {
-                shadowEnabled: true
-                shadowColor: "black"
-                shadowOpacity: 0.4
-                shadowBlur: 0.8
-                shadowVerticalOffset: 5
-            }
-        }
-        ColumnLayout {
-            id: body
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.margins: surface.pad
-            spacing: 14
-        }
-    }
-
-    // Return and Enter press a button as Space does; a held key presses it once.
-    component KeyButton: AbstractButton {
-        Keys.onReturnPressed: event => { if (!event.isAutoRepeat) click() }
-        Keys.onEnterPressed: event => { if (!event.isAutoRepeat) click() }
     }
 
     // A button whose check state belongs to the model. Every way of switching it (pointer, keys,
@@ -492,45 +424,17 @@ Rectangle {
         }
     }
 
-    component Btn: KeyButton {
+    // A PushButton that acts through a shared command, `look` as there.
+    component Btn: PushButton {
         id: btn
         property var proxy
-        // "plain", "primary" or "danger"
-        property string look: "plain"
         property string help: proxy ? proxy.toolTip : ""
         text: proxy ? proxy.text : ""
         enabled: proxy ? proxy.enabled : false
-        opacity: enabled ? 1 : 0.45
-        implicitHeight: 32
-        implicitWidth: caption.implicitWidth + 28
         onClicked: if (proxy) root.press(this, proxy)
-        Accessible.role: Accessible.Button
         Accessible.name: proxy && proxy.name !== "" ? proxy.name : text
         Accessible.description: help
         Hint { text: btn.help }
-        background: Rectangle {
-            radius: root.t.radiusControl
-            color: btn.look === "primary" ? (btn.hovered ? root.t.accent_hover : root.t.accent)
-                 : btn.look === "danger" ? root.t.action_destructive
-                 : btn.hovered ? root.t.control_hover : root.t.control_surface
-            border.color: btn.look === "plain" ? root.t.control_edge
-                        : btn.look === "danger" ? root.t.action_destructive_border : "transparent"
-            scale: btn.pressed ? 0.98 : 1
-            FocusRing { control: btn }
-        }
-        contentItem: Text {
-            id: caption
-            text: btn.text
-            textFormat: Text.PlainText
-            color: btn.look === "primary" ? root.t.text_on_accent
-                 : btn.look === "danger" ? root.t.text_on_emphasis
-                 : btn.hovered ? root.t.hover_text : root.t.text_primary
-            font.pixelSize: root.fsBody
-            font.weight: btn.look === "plain" ? Font.Normal : Font.DemiBold
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-            elide: Text.ElideRight
-        }
     }
 
     component IconBtn: KeyButton {

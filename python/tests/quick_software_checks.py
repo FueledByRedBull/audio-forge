@@ -35,14 +35,19 @@ def test_the_scene_renders_with_the_software_adapter_and_without_shadows(quick_w
     root = quick_window.centralWidget().rootObject()
     assert graphics_api(quick_window) == "software"
     assert quick_window._interface_snapshot()["graphics_api"] == "software"
-    assert root.property("effects") is False
 
     # No card builds a shadow effect, and the window still paints.
     pending: list[QQuickItem] = [root]
+    cards = 0
     while pending:
         item = pending.pop()
-        assert "MultiEffect" not in item.metaObject().className()
+        class_name = item.metaObject().className()
+        assert "MultiEffect" not in class_name
+        if class_name.startswith("Surface_"):
+            cards += 1
+            assert item.property("shadows") is False
         pending.extend(item.childItems())
+    assert cards > 0
     assert not quick_window.centralWidget().grabFramebuffer().isNull()
 
 

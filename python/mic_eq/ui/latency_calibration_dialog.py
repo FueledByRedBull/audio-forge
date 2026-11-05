@@ -10,17 +10,13 @@ from math import gcd
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QThread, QTimer, Signal
+from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
-    QHBoxLayout,
-    QLabel,
     QMessageBox,
-    QPushButton,
-    QProgressBar,
     QVBoxLayout,
-    QWidget,
 )
 from ..analysis.latency_calibration import (
     analyze_latency,
@@ -28,9 +24,8 @@ from ..analysis.latency_calibration import (
     result_to_profile,
 )
 from ..analysis.signal_processing import resample_poly
-from .accessibility import set_accessible_group
-from .components import Card, form_layout, session_is_ending
-from .level_meter import LevelMeter, MeterWidget
+from .components import session_is_ending
+from .latency_calibration_view import NO_READINGS, LatencyCalibrationView
 from .capture_session import (
     CaptureSession,
     active_device_identities as _active_device_identities,
@@ -42,14 +37,9 @@ from .capture_session import (
     selected_device_identities as _selected_device_identities,
     start_selected_route,
 )
-from .layout_constants import (
-    MARGIN_PANEL,
-    PRIMARY_ACTION_BUTTON_STYLE,
-    SPACING_NORMAL,
-    SPACING_SECTION,
-    configure_resizable_dialog,
-    create_scrollable_dialog_body,
-)
+from .layout_constants import configure_resizable_dialog
+from .quick_scene import QML_DIR, load_scene, quick_theme
+from .quick_shell import register_qml_types
 
 
 logger = logging.getLogger(__name__)
@@ -159,6 +149,10 @@ class LatencyCalibrationWorker(QThread):
         self._stop_event.set()
 
 
+class LatencyCalibrationLoadError(RuntimeError):
+    """The dialog's Qt Quick scene did not load, so there is nothing to show."""
+
+
 class LatencyCalibrationDialog(QDialog):
     """Dialog that runs and applies latency calibration."""
 
@@ -200,142 +194,49 @@ class LatencyCalibrationDialog(QDialog):
                 existing_profile.get("capture_format_context")
             )
 
+        self._setup_ui(existing_profile)
+        # The scene's own minimum grows with the text size; the dialog opens at least that wide.
+        minimum_width = max(460, int(self.quick_view.rootObject().property("minimumWidth")))
+        configure_resizable_dialog(
+            self,
+            preferred_width=max(620, minimum_width),
+            preferred_height=620,
+            minimum_width=minimum_width,
+            minimum_height=360,
+        )
+
         app = QApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self._wait_for_worker)
 
-        self._setup_ui(existing_profile)
-        configure_resizable_dialog(
-            self,
-            preferred_width=620,
-            preferred_height=620,
-            minimum_width=460,
-            minimum_height=360,
-        )
-
     def _setup_ui(self, existing_profile: dict | None):
-        outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(0, 0, 0, 0)
-        self.content_scroll_area, layout = create_scrollable_dialog_body(self)
-        self.content_scroll_area.setAccessibleName("Latency calibration content")
-        outer_layout.addWidget(self.content_scroll_area, stretch=1)
-        layout.setSpacing(SPACING_SECTION)
-
-        instructions = QLabel(
-            "Measure the delay of the selected microphone and output. For the best "
-            "result, use a loopback cable or a speaker-to-microphone path in a "
-            "quiet room. The measured delay corrects the latency AudioForge "
-            "reports. It does not reduce audio delay."
+        self.view_model = LatencyCalibrationView(
+            run=self._on_run_clicked,
+            accept=self._on_accept_clicked,
+            reset=self._on_reset_clicked,
+            close=self._on_close_clicked,
+            parent=self,
         )
-        instructions.setWordWrap(True)
-        layout.addWidget(instructions)
-
-        status_group = Card("Measured latency")
-        status_layout = form_layout()
-        status_layout.setHorizontalSpacing(SPACING_SECTION)
-        status_group.body.addLayout(status_layout)
-
-        self.total_label = QLabel("-- ms")
-        status_layout.addRow("Total latency", self.total_label)
-
-        self.confidence_label = QLabel("--")
-        status_layout.addRow("Confidence", self.confidence_label)
-
-        # The other readings are for checking a result; they stay out of the way until asked for.
-        self.details_button = QPushButton("Show details")
-        self.details_button.setCheckable(True)
-        self.details_panel = QWidget()
-        details_layout = form_layout(self.details_panel)
-        details_layout.setHorizontalSpacing(SPACING_SECTION)
-        self.details_panel.setVisible(False)
-        self.details_button.toggled.connect(self._on_details_toggled)
-        status_group.body.addWidget(self.details_button, alignment=Qt.AlignmentFlag.AlignLeft)
-        status_group.body.addWidget(self.details_panel)
-
-        self.round_trip_label = QLabel("-- ms")
-        details_layout.addRow("Measured route", self.round_trip_label)
-
-        self.one_way_label = QLabel("-- ms")
-        details_layout.addRow("Directional estimate", self.one_way_label)
-
-        self.comp_label = QLabel("-- ms")
-        details_layout.addRow("Route delay for reporting", self.comp_label)
-
-        self.agreement_label = QLabel("--")
-        details_layout.addRow("Probe agreement", self.agreement_label)
-
-        self.ambiguity_label = QLabel("--")
-        details_layout.addRow("Echo ambiguity", self.ambiguity_label)
-
-        self.engine_label = QLabel("-- ms")
-        details_layout.addRow("Engine latency", self.engine_label)
-
-        layout.addWidget(status_group)
-
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        self.progress.setAccessibleName("Latency calibration progress")
-        layout.addWidget(self.progress)
-
-        self.status_label = QLabel("Ready")
-        self.status_label.setWordWrap(True)
-        layout.addWidget(self.status_label)
-
-        self.level_meter = LevelMeter("Level", show_scale=True)
-        self.level_meter_widget = MeterWidget(self.level_meter)
-        self.level_meter_widget.setAccessibleName("Latency calibration capture level")
-        layout.addWidget(self.level_meter_widget)
-        layout.addStretch(1)
-
-        self.run_button = QPushButton("Run calibration")
-        self.run_button.clicked.connect(self._on_run_clicked)
-
-        self.accept_button = QPushButton("Accept")
-        self.accept_button.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
-        self._set_accept_enabled(existing_profile is not None)
-        self.accept_button.clicked.connect(self._on_accept_clicked)
-
-        self.reset_button = QPushButton("Reset")
-        self.reset_button.clicked.connect(self._on_reset_clicked)
-
-        self.close_button = QPushButton("Close")
-        self.close_button.clicked.connect(self._on_close_clicked)
-
-        # The actions stay in view while the page above them scrolls.
-        button_row = QHBoxLayout()
-        button_row.setContentsMargins(MARGIN_PANEL, 0, MARGIN_PANEL, MARGIN_PANEL)
-        button_row.setSpacing(SPACING_NORMAL)
-        button_row.addWidget(self.close_button)
-        button_row.addWidget(self.reset_button)
-        button_row.addStretch(1)
-        button_row.addWidget(self.run_button)
-        button_row.addWidget(self.accept_button)
-
-        set_accessible_group(
-            (
-                (self.accept_button, "Accept latency calibration", None),
-                (self.reset_button, "Reset latency calibration", None),
-                (self.close_button, "Close latency calibration", None),
-            )
-        )
-        self.setTabOrder(self.close_button, self.reset_button)
-        self.setTabOrder(self.reset_button, self.run_button)
-        self.setTabOrder(self.run_button, self.accept_button)
-
-        outer_layout.addLayout(button_row)
-
+        self.view_model.set_accept_enabled(existing_profile is not None)
         if existing_profile:
             self._apply_profile_to_labels(existing_profile)
 
-    def _on_details_toggled(self, shown: bool) -> None:
-        self.details_panel.setVisible(shown)
-        self.details_button.setText("Hide details" if shown else "Show details")
-
-    def _set_accept_enabled(self, enabled: bool) -> None:
-        """Accept is the main action once there is a result; until then it is Run."""
-        self.accept_button.setEnabled(enabled)
-        self.run_button.setStyleSheet("" if enabled else PRIMARY_ACTION_BUTTON_STYLE)
+        register_qml_types()
+        self.quick_view = QQuickWidget(self)
+        reason = load_scene(
+            self.quick_view,
+            QML_DIR / "LatencyCalibration.qml",
+            quick_theme(),
+            {"vm": self.view_model},
+        )
+        if reason is not None:
+            # Nothing is connected yet; leave the parent without a half-built child.
+            self.setParent(None)
+            raise LatencyCalibrationLoadError(f"The latency calibration view did not load: {reason}")
+        self.quick_view.setAccessibleName("Latency calibration content")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.quick_view)
 
     def _get_processor_owner(self) -> Any | None:
         parent: Any = self.parent()
@@ -345,7 +246,7 @@ class LatencyCalibrationDialog(QDialog):
 
     def _on_run_clicked(self):
         if self._close_requested or (self.worker is not None and self.worker.isRunning()):
-            self.status_label.setText("Wait for the previous latency analysis to stop.")
+            self.view_model.set_status("Wait for the previous latency analysis to stop.")
             return
         owner = self._get_processor_owner()
         if owner is None:
@@ -363,7 +264,7 @@ class LatencyCalibrationDialog(QDialog):
         self._measurement_format_context = None
         self._measurement_context_key = None
         self._apply_profile_to_labels(None)
-        self._set_accept_enabled(False)
+        self.view_model.set_accept_enabled(False)
 
         if owner.processor.is_running():
             selected_identities = _selected_device_identities(owner)
@@ -399,10 +300,10 @@ class LatencyCalibrationDialog(QDialog):
             )
             return
 
-        self.run_button.setEnabled(False)
-        self._set_accept_enabled(False)
-        self.progress.setValue(0)
-        self.status_label.setText("Preparing probe...")
+        self.view_model.set_run_enabled(False)
+        self.view_model.set_accept_enabled(False)
+        self.view_model.set_progress(0)
+        self.view_model.set_status("Preparing probe...")
 
         try:
             self._capture_sample_rate = _capture_sample_rate(owner)
@@ -443,7 +344,7 @@ class LatencyCalibrationDialog(QDialog):
             if np.isfinite(engine_latency) and engine_latency >= 0.0:
                 self._engine_latency_samples.append(engine_latency)
             if (not self._probe_started) and elapsed >= self._playback_delay_s:
-                self.status_label.setText("Playing probe signal...")
+                self.view_model.set_status("Playing probe signal...")
                 self._probe_started = True
                 self._probe_started_at = time.monotonic()
                 if self._playback_probe is None:
@@ -456,7 +357,7 @@ class LatencyCalibrationDialog(QDialog):
 
             self._on_level_update(float(owner.processor.recording_level_db()))
             progress = int(min(99.0, (elapsed / self._recording_duration_s) * 100.0))
-            self.progress.setValue(progress)
+            self.view_model.set_progress(progress)
 
             if (
                 elapsed < self._recording_duration_s
@@ -470,7 +371,7 @@ class LatencyCalibrationDialog(QDialog):
                 self._on_worker_failed("Probe signal was not played.")
                 return
 
-            self.status_label.setText("Analyzing captured signal...")
+            self.view_model.set_status("Analyzing captured signal...")
             session, self._capture_session = self._capture_session, None
             raw = (
                 session.stop_recording()
@@ -518,7 +419,7 @@ class LatencyCalibrationDialog(QDialog):
             )
 
     def _on_level_update(self, rms_db: float):
-        self.level_meter.set_rms_level(rms_db)
+        self.view_model.level_meter.set_rms_level(rms_db)
 
     def _on_worker_finished(self, payload: dict):
         if self._close_requested:
@@ -535,20 +436,20 @@ class LatencyCalibrationDialog(QDialog):
         self._latest_profile = profile
         self._apply_profile_to_labels(profile)
 
-        self.progress.setValue(100)
+        self.view_model.set_progress(100)
         ambiguity = (
             float(profile.get("ambiguity_score", 0.0) or 0.0) if profile else 0.0
         )
         if ambiguity >= 0.75:
-            self.status_label.setText(
+            self.view_model.set_status(
                 "Calibration found the direct path, but echoes are close. Review before accepting."
             )
         else:
-            self.status_label.setText(
+            self.view_model.set_status(
                 "Calibration succeeded. Review the values, then select Accept."
             )
-        self.run_button.setEnabled(True)
-        self._set_accept_enabled(True)
+        self.view_model.set_run_enabled(True)
+        self.view_model.set_accept_enabled(True)
 
         if analysis is not None and DEBUG:
             logger.debug(
@@ -562,34 +463,19 @@ class LatencyCalibrationDialog(QDialog):
     def _on_worker_failed(self, message: str):
         if self._close_requested:
             return
-        self.status_label.setText(message)
-        self.run_button.setEnabled(True)
-        self._set_accept_enabled(self._latest_profile is not None)
+        self.view_model.set_status(message)
+        self.view_model.set_run_enabled(True)
+        self.view_model.set_accept_enabled(self._latest_profile is not None)
 
         self._teardown_worker()
         self._stop_owned_processor()
 
     def _apply_profile_to_labels(self, profile: dict | None):
         if not profile:
-            self.round_trip_label.setText("-- ms")
-            self.one_way_label.setText("-- ms")
-            self.comp_label.setText("-- ms")
-            self.confidence_label.setText("--")
-            self.agreement_label.setText("--")
-            self.ambiguity_label.setText("--")
-            self.engine_label.setText("-- ms")
-            self.total_label.setText("-- ms")
+            self.view_model.set_readings(NO_READINGS)
             return
 
-        self.round_trip_label.setText(
-            f"{profile.get('measured_round_trip_ms', 0.0):.2f} ms"
-        )
         directional = profile.get("directional_latency_ms")
-        self.one_way_label.setText(
-            f"{float(directional):.2f} ms"
-            if directional is not None
-            else "Not inferred"
-        )
         route_latency = float(profile.get("route_latency_ms", 0.0) or 0.0)
         if route_latency <= 0.0:
             route_latency = float(
@@ -599,14 +485,22 @@ class LatencyCalibrationDialog(QDialog):
                 )
                 or 0.0
             )
-        self.comp_label.setText(f"{route_latency:.2f} ms")
-        self.confidence_label.setText(f"{profile.get('confidence', 0.0):.2f}")
-        self.agreement_label.setText(
-            f"{profile.get('agreement_ms', 0.0):.2f} ms across probes"
+        self.view_model.set_readings(
+            {
+                "total": f"{profile.get('total_latency_ms', 0.0):.2f} ms",
+                "confidence": f"{profile.get('confidence', 0.0):.2f}",
+                "roundTrip": f"{profile.get('measured_round_trip_ms', 0.0):.2f} ms",
+                "oneWay": (
+                    f"{float(directional):.2f} ms"
+                    if directional is not None
+                    else "Not inferred"
+                ),
+                "comp": f"{route_latency:.2f} ms",
+                "agreement": f"{profile.get('agreement_ms', 0.0):.2f} ms across probes",
+                "ambiguity": f"{profile.get('ambiguity_score', 0.0):.2f}",
+                "engine": f"{profile.get('engine_latency_ms', 0.0):.2f} ms",
+            }
         )
-        self.ambiguity_label.setText(f"{profile.get('ambiguity_score', 0.0):.2f}")
-        self.engine_label.setText(f"{profile.get('engine_latency_ms', 0.0):.2f} ms")
-        self.total_label.setText(f"{profile.get('total_latency_ms', 0.0):.2f} ms")
 
     def _on_accept_clicked(self):
         if not self._latest_profile:
@@ -624,13 +518,13 @@ class LatencyCalibrationDialog(QDialog):
             or context.context_key != self._measurement_context_key
             or profile_context != self._measurement_format_context
         ):
-            self.status_label.setText(
+            self.view_model.set_status(
                 "Calibration is stale because the route or format changed. Run it again."
             )
             return
 
         if owner is None or not owner._on_latency_calibration_saved(self._latest_profile):
-            self.status_label.setText(
+            self.view_model.set_status(
                 "Calibration could not be saved. Check settings-folder access and retry."
             )
             return
@@ -639,12 +533,12 @@ class LatencyCalibrationDialog(QDialog):
     def _on_reset_clicked(self):
         owner = self._get_processor_owner()
         if owner is None or not owner._on_latency_calibration_reset():
-            self.status_label.setText("Calibration reset could not be saved. Retry when settings can be saved.")
+            self.view_model.set_status("Calibration reset could not be saved. Retry when settings can be saved.")
             return
         self._latest_profile = None
         self._apply_profile_to_labels(None)
-        self._set_accept_enabled(False)
-        self.status_label.setText("Calibration reset. Using estimated latency.")
+        self.view_model.set_accept_enabled(False)
+        self.view_model.set_status("Calibration reset. Using estimated latency.")
 
     def _on_close_clicked(self):
         self.reject()
@@ -714,9 +608,9 @@ class LatencyCalibrationDialog(QDialog):
         self._teardown_worker()
         self._stop_owned_processor()
         if self.worker is not None:
-            self.run_button.setEnabled(False)
-            self._set_accept_enabled(False)
-            self.status_label.setText("Canceling latency analysis...")
+            self.view_model.set_run_enabled(False)
+            self.view_model.set_accept_enabled(False)
+            self.view_model.set_status("Canceling latency analysis...")
             return
         self._finish_close()
 

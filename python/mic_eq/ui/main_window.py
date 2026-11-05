@@ -61,6 +61,7 @@ from .health import output_health_state as build_output_health_state
 from .calibration_dialog import CalibrationDialog
 from .latency_calibration_dialog import (
     LatencyCalibrationDialog,
+    LatencyCalibrationLoadError,
     engine_config_signature,
 )
 from .voice_setup_dialog import VoiceSetupDialog
@@ -2387,7 +2388,16 @@ class MainWindow(QMainWindow):
             self._refresh_latency_profile_engine(profile)
         existing_profile = profile.to_dict() if profile is not None else None
 
-        dialog = LatencyCalibrationDialog(self, existing_profile=existing_profile)
+        try:
+            dialog = LatencyCalibrationDialog(self, existing_profile=existing_profile)
+        except LatencyCalibrationLoadError as error:
+            logger.error("Latency calibration did not open: %s", error)
+            QMessageBox.critical(
+                self,
+                "Latency Calibration",
+                f"The latency calibration window could not open.\n\n{error}",
+            )
+            return False
         self._calibration_dialog_open = True
         try:
             with recovery_paused(self.processor):

@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QEvent, QRect, QSize
+from PySide6.QtCore import QEvent, QPointF, QRect, QSize
 from PySide6.QtGui import QColor, QIcon, QPalette, QPixmap
 from PySide6.QtWidgets import QScrollArea, QWidget
 
@@ -29,6 +29,7 @@ from mic_eq.ui.main_window import (
 from mic_eq.ui.level_meter import SCALE_TEXT_GAP, _scale_mark_geometry
 from mic_eq.ui.shell_specs import TEXT_SPECS
 from mic_eq.ui import theme
+from test_first_run_setup import at_scene_minimum, cut_short_texts, scene_item, scene_items
 from mic_eq.ui.theme import (
     CONTROL_BOUNDARY_PAIRS,
     PALETTE,
@@ -411,23 +412,29 @@ def test_first_run_setup_buttons_fit_the_minimum_dialog(
     )
     isolated_main_window.config.first_run_setup_step = step
     dialog = FirstRunSetupDialog(isolated_main_window)
-    dialog.resize(440, 340)
+    minimum = dialog.minimumSize()
     dialog.show()
     qapp.processEvents()
-    qapp.processEvents()
+    # The scene's own minimum width, which a small or font-less screen cannot hold.
+    at_scene_minimum(dialog, qapp)
 
-    scrollbar = dialog.content_scroll_area.horizontalScrollBar()
-    assert scrollbar is not None
-    assert scrollbar.maximum() == 0
-    # The action row sits below the scrolling page, so it cannot scroll into view.
-    assert (dialog.width(), dialog.height()) == (440, 340)
-    for button in (
-        dialog.back_button,
-        dialog.skip_button,
-        dialog.pause_button,
-        dialog.action_button,
-    ):
-        assert dialog.rect().contains(button.geometry())
+    # The page scrolls only vertically; the actions sit below it, so they cannot scroll away.
+    assert dialog.height() == minimum.height() and dialog.width() >= minimum.width()
+    scroll = scene_item(dialog, "contentScroll")
+    right = scroll.mapToScene(QPointF(scroll.width(), 0)).x()
+    wide = [
+        item.objectName()
+        for item in scene_items(scene_item(dialog, "contentColumn"), only_visible=True)
+        if item.mapToScene(QPointF(item.width(), 0)).x() > right + 0.5
+    ]
+    assert wide == [], "items run past the right edge of the page"
+    view = dialog.quick_view
+    for name in ("pauseButton", "backButton", "skipButton", "actionButton"):
+        button = scene_item(dialog, name)
+        left = button.mapToScene(QPointF(0, 0))
+        edge = button.mapToScene(QPointF(button.width(), button.height()))
+        assert 0 <= left.x() and edge.x() <= view.width() and edge.y() <= view.height(), name
+    assert cut_short_texts(dialog) == [], "no button text, or any other, is elided"
 
     dialog.close()
     dialog.deleteLater()

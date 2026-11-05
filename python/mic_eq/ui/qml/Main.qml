@@ -38,28 +38,11 @@ Rectangle {
     }
 
     // One shared tooltip, so long help text wraps and matches the theme.
-    ToolTip {
+    Tip {
         id: tip
         objectName: "tooltip"
         delay: 500
-        padding: 10
-        // Hover help is not animated, and the ToolTip style's own fade is not either.
-        enter: null
-        exit: null
         onClosed: root.tipClosedAt = Date.now()
-        contentItem: Text {
-            text: tip.text
-            textFormat: Text.PlainText
-            color: root.t.text_primary
-            font.pixelSize: root.fsCaption
-            wrapMode: Text.Wrap
-            width: Math.min(implicitWidth, 360)
-        }
-        background: Rectangle {
-            color: root.t.control_surface
-            border.color: root.t.border_strong
-            radius: root.t.radiusControl
-        }
     }
 
     // A tip asked for by a click or key opens at once and goes away by itself.
@@ -116,70 +99,15 @@ Rectangle {
         Accessible.name: text
     }
 
-    // A button whose check state belongs to the model. Every way of switching it (pointer, keys,
-    // assistive technology) changes `checked`, so requested() follows that; the model decides,
-    // and the button goes back to the model's state `on`.
-    component ModelButton: KeyButton {
-        property bool on
-        signal requested()
-        // The real check state, so assistive technology also hears it before the first change.
-        checkable: true
-        checked: on
-        onCheckedChanged: if (checked !== on) {
-            if (enabled) requested()
-            checked = Qt.binding(() => on)
-        }
-        Accessible.onPressAction: click()
-    }
-
-    component Toggle: ModelButton {
+    component Toggle: SwitchButton {
         id: toggle
         property var proxy
         on: proxy ? proxy.checked : false
-        // Colors follow this rather than `enabled`, so a row can own the click.
-        property bool live: enabled
         enabled: proxy ? proxy.enabled : false
-        implicitHeight: 22
-        implicitWidth: track.width + (label.text === "" ? 0 : label.implicitWidth + 10)
         onRequested: proxy.click()
-        Accessible.role: Accessible.CheckBox
         Accessible.name: proxy && proxy.name !== "" ? proxy.name : text
         Accessible.description: proxy ? proxy.toolTip : ""
         Hint { text: toggle.proxy ? toggle.proxy.toolTip : "" }
-        background: null
-        contentItem: Item {
-            Rectangle {
-                id: track
-                width: 40
-                height: 22
-                radius: 11
-                color: !toggle.live ? root.t.action_disabled
-                       : toggle.on ? root.t.accent : root.t.control_edge
-                Behavior on color { ColorAnimation { duration: root.t.motion } }
-                Rectangle {
-                    width: 16
-                    height: 16
-                    radius: 8
-                    y: 3
-                    x: toggle.on ? 21 : 3
-                    color: toggle.live ? root.t.text_primary : root.t.action_disabled_text
-                    Behavior on x {
-                        NumberAnimation { duration: root.t.motion; easing.type: Easing.OutCubic }
-                    }
-                }
-                FocusRing { control: toggle }
-            }
-            Text {
-                id: label
-                anchors.left: track.right
-                anchors.leftMargin: 10
-                anchors.verticalCenter: track.verticalCenter
-                text: toggle.text
-                textFormat: Text.PlainText
-                color: toggle.enabled ? root.t.text_primary : root.t.action_disabled_text
-                font.pixelSize: root.fsBody
-            }
-        }
     }
 
     component Fader: Slider {
@@ -310,116 +238,25 @@ Rectangle {
         }
     }
 
-    component Picker: ComboBox {
+    component Picker: ChoiceBox {
         id: picker
         property var proxy
-        // Set for a choice that changes what the sound does, so it does not read as the default.
-        // Colour is not the only cue (a contrast theme has one text colour): the edge is thicker
-        // and the text bolder.
-        property bool alert: false
         model: proxy ? proxy.items : []
         currentIndex: proxy ? proxy.index : -1
         enabled: proxy ? proxy.enabled : false
-        opacity: enabled ? 1 : 0.45
-        implicitHeight: 32
-        implicitWidth: 170
-        leftPadding: 10
-        rightPadding: 26
         onActivated: index => proxy.setIndex(index)
         // Replacing the model resets the index; read it again afterwards.
         onModelChanged: currentIndex = Qt.binding(() => proxy ? proxy.index : -1)
-        // A combo box has no value channel in QML, and a name change is spoken where a description
-        // change often is not: the label stays first, so the visible text is still in the name.
-        Accessible.name: proxy ? proxy.name + (shown.text !== "" ? ": " + shown.text : "") : ""
+        label: proxy ? proxy.name : ""
         Accessible.description: proxy ? proxy.toolTip : ""
+        prompting: currentIndex < 0 && !!proxy
+        prompt: proxy ? (proxy.placeholder ?? "") : ""
+        expandGlyph: root.m.glyphs.expand
         // A name cut short by a narrow window is shown whole in the tooltip.
         Hint {
             text: {
                 const tip = picker.proxy ? picker.proxy.toolTip : ""
-                return shown.truncated ? shown.text + (tip !== "" ? "\n" + tip : "") : tip
-            }
-        }
-        // With nothing chosen the box shows its prompt, set apart from a real choice.
-        readonly property bool prompting: currentIndex < 0 && !!proxy
-        contentItem: Text {
-            id: shown
-            text: picker.prompting ? (picker.proxy.placeholder ?? "") : picker.displayText
-            textFormat: Text.PlainText
-            color: picker.hovered || picker.down ? root.t.hover_text
-                 : picker.prompting ? root.t.text_muted
-                 : picker.alert ? root.t.status_warn_text : root.t.text_primary
-            font.pixelSize: root.fsBody
-            font.italic: picker.prompting
-            font.weight: picker.alert ? Font.DemiBold : Font.Normal
-            elide: Text.ElideRight
-            verticalAlignment: Text.AlignVCenter
-        }
-        indicator: Text {
-            x: picker.width - width - 11
-            y: (picker.height - height) / 2
-            text: root.m.glyphs.expand
-            textFormat: Text.PlainText
-            font.family: root.t.iconFont
-            font.pixelSize: root.fsCaption
-            color: picker.hovered || picker.down ? root.t.hover_text : root.t.text_muted
-        }
-        background: Rectangle {
-            radius: root.t.radiusControl
-            color: picker.hovered || picker.down ? root.t.control_hover : root.t.control_surface
-            border.width: picker.alert ? 2 : 1
-            border.color: picker.prompting ? root.t.status_warn_border
-                        : picker.alert ? root.t.status_warn_text : root.t.control_edge
-            FocusRing { control: picker }
-        }
-        delegate: ItemDelegate {
-            id: option
-            required property int index
-            required property var modelData
-            width: ListView.view ? ListView.view.width : 0
-            height: 30
-            highlighted: picker.highlightedIndex === index
-            contentItem: Text {
-                text: option.modelData
-                textFormat: Text.PlainText
-                color: option.highlighted ? root.t.hover_text : root.t.text_primary
-                font.pixelSize: root.fsBody
-                elide: Text.ElideRight
-                verticalAlignment: Text.AlignVCenter
-            }
-            background: Rectangle {
-                radius: 4
-                color: option.highlighted ? root.t.control_hover : "transparent"
-            }
-        }
-        popup: Popup {
-            y: picker.height + 4
-            width: Math.max(picker.width, 240)
-            padding: 4
-            // Kept inside the window, as the stock combo box does.
-            topMargin: 6
-            bottomMargin: 6
-            implicitHeight: Math.min(contentItem.implicitHeight + 8, 320, root.height - 12)
-            contentItem: ListView {
-                clip: true
-                implicitHeight: contentHeight
-                model: picker.delegateModel
-                currentIndex: picker.highlightedIndex
-                footer: Text {
-                    width: ListView.view ? ListView.view.width : 0
-                    height: picker.count === 0 ? 30 : 0
-                    visible: picker.count === 0
-                    text: "No choices available"
-                    textFormat: Text.PlainText
-                    color: root.t.text_muted
-                    font.pixelSize: root.fsBody
-                    leftPadding: 8
-                    verticalAlignment: Text.AlignVCenter
-                }
-            }
-            background: Rectangle {
-                color: root.t.control_surface
-                border.color: root.t.border_strong
-                radius: root.t.radiusControl
+                return picker.shown.truncated ? picker.shown.text + (tip !== "" ? "\n" + tip : "") : tip
             }
         }
     }

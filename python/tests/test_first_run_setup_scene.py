@@ -360,6 +360,13 @@ def _seen_while_scrolling(dialog: Any, qapp: Any) -> set[str]:
     return seen
 
 
+def _show_status(dialog: Any, message: str) -> None:
+    """Set a warning and wait for the layout to give the rewrapped text its new height."""
+    dialog.view_model.set_status(message, "warn")
+    status = scene_item(dialog, "statusText")
+    assert _wait_until(lambda: status.height() == status.implicitHeight())
+
+
 @pytest.mark.parametrize("step", STEPS)
 def test_the_keyboard_alone_scrolls_a_small_dialog_to_every_part_of_the_page(qapp, open_setup, step) -> None:
     dialog = open_setup(_owner(step, running=True))
@@ -371,7 +378,7 @@ def test_the_keyboard_alone_scrolls_a_small_dialog_to_every_part_of_the_page(qap
     expected |= {"devicesPanel", "inputPicker", "outputPicker"} if step == "devices" else set()
     expected |= {"routePanel", "inputMeter", "outputMeter", "inputHealth", "outputHealth"} if step == "route" else set()
     for message in MESSAGES:
-        dialog.view_model.set_status(message, "warn")
+        _show_status(dialog, message)
         assert expected <= _seen_while_scrolling(dialog, qapp), message
 
     def press_key(key: Qt.Key) -> float:
@@ -379,8 +386,7 @@ def test_the_keyboard_alone_scrolls_a_small_dialog_to_every_part_of_the_page(qap
         qapp.processEvents()
         return scroll.property("contentY")
 
-    dialog.view_model.set_status(MESSAGES[0], "warn")
-    qapp.processEvents()
+    _show_status(dialog, MESSAGES[0])
     if scroll.property("contentHeight") <= scroll.height():
         assert step == "voice"  # a page that fits has nothing to scroll
         return

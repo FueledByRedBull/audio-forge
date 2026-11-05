@@ -1106,6 +1106,151 @@ fn test_engine_latency_excludes_route_compensation() {
     assert_eq!(processor.get_engine_latency_ms(), 25.25);
 }
 
+const DEVICE_BUFFER_FRAMES: u32 = 1056;
+const DEVICE_PERIOD_FRAMES: u32 = 480;
+
+fn set_device_buffer(processor: &AudioProcessor, frames: u32, period_frames: u32) {
+    let output = &processor.shared.output;
+    output.sample_rate.store(48_000, Ordering::Relaxed);
+    output.device_buffer_frames.store(frames, Ordering::Relaxed);
+    output
+        .device_period_frames
+        .store(period_frames, Ordering::Relaxed);
+}
+
+#[test]
+fn test_output_device_latency_is_the_buffer_plus_half_a_period() {
+    use super::resampling::output_device_latency_us;
+    // 22 ms of buffer and half of a 10 ms period.
+    assert_eq!(output_device_latency_us(1056, 480, 48_000), 27_000);
+    assert_eq!(output_device_latency_us(960, 240, 48_000), 22_500);
+    // The rate converts frames; an unknown buffer claims nothing.
+    assert_eq!(output_device_latency_us(441, 441, 44_100), 15_000);
+    assert_eq!(output_device_latency_us(0, 480, 48_000), 0);
+    assert_eq!(output_device_latency_us(1056, 480, 0), 0);
+}
+
+#[test]
+fn test_displayed_latency_adds_the_device_only_without_a_measured_route() {
+    use super::resampling::displayed_latency_us;
+    // No compensation: the published total is the engine alone.
+    assert_eq!(displayed_latency_us(30_000, 0, 27_000), 57_000);
+    // A measured route holds the device's buffering already.
+    assert_eq!(displayed_latency_us(47_250, 17_250, 27_000), 47_250);
+    assert_eq!(displayed_latency_us(30_000, 0, 0), 30_000);
+    assert_eq!(displayed_latency_us(u64::MAX, 0, 1), u64::MAX);
+}
+
+#[test]
+fn test_latency_getters_split_engine_route_and_device() {
+    let processor = AudioProcessor::new();
+    let shared = &processor.shared;
+    set_device_buffer(&processor, DEVICE_BUFFER_FRAMES, DEVICE_PERIOD_FRAMES);
+
+    // Without compensation the device terms join the engine figure.
+    shared.dsp.latency_us.store(30_000, Ordering::Relaxed);
+    assert_eq!(processor.get_engine_latency_ms(), 30.0);
+    assert_eq!(processor.get_output_device_latency_ms(), 27.0);
+    assert_eq!(processor.get_latency_ms(), 57.0);
+
+    // With a measured route the total is engine plus route, as before, and the
+    // engine figure kept for stored profiles does not move.
+    processor.set_latency_compensation_ms(17.25);
+    shared.dsp.latency_us.store(47_250, Ordering::Relaxed);
+    assert_eq!(processor.get_engine_latency_ms(), 30.0);
+    assert_eq!(processor.get_output_device_latency_ms(), 27.0);
+    assert_eq!(processor.get_latency_ms(), 47.25);
+}
+
+#[test]
+fn test_unknown_device_buffer_adds_nothing_and_is_reported() {
+    let wrapper = PyAudioProcessor {
+        processor: AudioProcessor::new(),
+    };
+    let processor = &wrapper.processor;
+    processor
+        .shared
+        .dsp
+        .latency_us
+        .store(30_000, Ordering::Relaxed);
+    processor
+        .shared
+        .output
+        .sample_rate
+        .store(48_000, Ordering::Relaxed);
+    processor
+        .shared
+        .output
+        .device_buffer_failure_code
+        .store(0x8889_0004, Ordering::Relaxed);
+    assert_eq!(processor.get_output_device_latency_ms(), 0.0);
+    assert_eq!(processor.get_latency_ms(), 30.0);
+
+    let read = |wrapper: &PyAudioProcessor| {
+        Python::attach(|py| {
+            let diagnostics = wrapper.get_runtime_diagnostics(py).unwrap();
+            let diagnostics = diagnostics.bind(py).cast::<PyDict>().unwrap().clone();
+            let known = diagnostics
+                .get_item("output_device_buffer_known")
+                .unwrap()
+                .unwrap()
+                .extract::<bool>()
+                .unwrap();
+            let failure = diagnostics
+                .get_item("output_device_buffer_failure_code")
+                .unwrap()
+                .unwrap()
+                .extract::<u32>()
+                .unwrap();
+            let latency = diagnostics
+                .get_item("output_device_latency_ms")
+                .unwrap()
+                .unwrap()
+                .extract::<f32>()
+                .unwrap();
+            (known, failure, latency)
+        })
+    };
+    Python::initialize();
+    assert_eq!(read(&wrapper), (false, 0x8889_0004, 0.0));
+
+    set_device_buffer(
+        &wrapper.processor,
+        DEVICE_BUFFER_FRAMES,
+        DEVICE_PERIOD_FRAMES,
+    );
+    wrapper
+        .processor
+        .shared
+        .output
+        .device_buffer_failure_code
+        .store(0, Ordering::Relaxed);
+    assert_eq!(read(&wrapper), (true, 0, 27.0));
+}
+
+#[test]
+fn test_queue_fill_smoothing_follows_a_fixed_sequence() {
+    use super::dsp_loop::advance_queue_fill_ema;
+    // The raw fill saw-tooths between 1100 and 1590 samples, read every
+    // 100 ms; the first reading seeds the average.
+    let mut state = None;
+    let raw = [1100, 1590, 1100, 1590, 1100, 1590, 1345];
+    let smoothed: Vec<u64> = raw
+        .iter()
+        .map(|&fill| advance_queue_fill_ema(&mut state, fill, 100.0))
+        .collect();
+    assert_eq!(smoothed, [1100, 1147, 1142, 1185, 1177, 1216, 1228]);
+
+    // Elapsed time, not the number of updates, sets the pace.
+    let (mut one_step, mut two_steps) = (None, None);
+    advance_queue_fill_ema(&mut one_step, 1000, 200.0);
+    advance_queue_fill_ema(&mut two_steps, 1000, 100.0);
+    let one = advance_queue_fill_ema(&mut one_step, 2000, 200.0);
+    advance_queue_fill_ema(&mut two_steps, 2000, 100.0);
+    let two = advance_queue_fill_ema(&mut two_steps, 2000, 100.0);
+    assert!(one.abs_diff(two) <= 1, "{one} vs {two}");
+}
+
 #[test]
 fn test_user_mute_does_not_disable_stall_recovery() {
     let processor = AudioProcessor::new();

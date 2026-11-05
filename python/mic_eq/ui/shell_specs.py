@@ -23,6 +23,10 @@ PROCESSING_MODE_OPTIONS = (
 )
 DEVICES_LOCKED_TIP = "Stop processing to change devices."
 DROPPED_DIAGNOSTICS_TOOLTIP = "Audio that was dropped, with the engine's other warning counters."
+LATENCY_LOWER_BOUND_NOTE = (
+    "\n\nThis is a lower bound: it counts AudioForge and its output buffer, not Windows or the "
+    "audio route after it. In Settings, Measure Route Latency gives the full delay."
+)
 
 
 class _TextSpec(NamedTuple):

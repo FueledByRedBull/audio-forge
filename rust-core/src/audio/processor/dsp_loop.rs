@@ -265,6 +265,19 @@ pub(super) fn advance_time_ema(
     *state += alpha * (sample - *state);
 }
 
+/// Advance the smoothed output-queue fill by one latency update and return it
+/// in samples. The first reading seeds the average.
+pub(super) fn advance_queue_fill_ema(
+    state: &mut Option<f32>,
+    queued_samples: u32,
+    elapsed_ms: f32,
+) -> u64 {
+    let sample = queued_samples as f32;
+    let smoothed = state.get_or_insert(sample);
+    advance_time_ema(smoothed, sample, elapsed_ms, LATENCY_QUEUE_TAU_MS);
+    smoothed.round() as u64
+}
+
 /// Keep why the DSP thread died where `last_restart_reason` reports it; the
 /// panic message otherwise goes to a stderr nobody reads in the windowed app.
 /// `requests_restart` marks the reason as the cause of the pending restart.
@@ -371,6 +384,10 @@ pub(super) struct DspLoop {
 /// Time constant of the block-rate and fill-level metrics.
 const TAU_MS: f32 = 200.0;
 const LATENCY_UPDATE_INTERVAL: Duration = Duration::from_millis(100);
+/// Time constant of the queue-fill term in the reported latency. The queue fill
+/// saw-tooths by a callback period, so a raw reading every 100 ms would move
+/// the figure by several milliseconds.
+const LATENCY_QUEUE_TAU_MS: f32 = 1000.0;
 /// Longest stretch without blocking the loop ever allows itself: half of
 /// RTKit's default 200 ms RLIMIT_RTTIME budget.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -414,6 +431,7 @@ struct Pacing {
     last_latency_update: Instant,
     last_input_smoothing: Instant,
     smoothed_input_len: f32,
+    smoothed_output_queue_len: Option<f32>,
     consecutive_idle_wakeups: u32,
     input_resampler_delay_samples: u64,
     output_resampler_delay_samples: u64,
@@ -767,6 +785,7 @@ impl DspLoop {
                 last_latency_update: now,
                 last_input_smoothing: now,
                 smoothed_input_len: 0.0,
+                smoothed_output_queue_len: None,
                 consecutive_idle_wakeups: 0,
                 input_resampler_delay_samples,
                 output_resampler_delay_samples,
@@ -1038,7 +1057,13 @@ impl Pacing {
         if now.duration_since(self.last_latency_update) < LATENCY_UPDATE_INTERVAL {
             return;
         }
+        let elapsed_ms = now.duration_since(self.last_latency_update).as_secs_f32() * 1000.0;
         self.last_latency_update = now;
+        let output_buffer_samples = advance_queue_fill_ema(
+            &mut self.smoothed_output_queue_len,
+            shared.output.buffer_len.load(Ordering::Relaxed),
+            elapsed_ms,
+        );
         let suppressor_latency_samples = if shared.suppressor.enabled.load(Ordering::Acquire) {
             shared.suppressor.latency_samples.load(Ordering::Relaxed) as u64
         } else {
@@ -1048,7 +1073,7 @@ impl Pacing {
             &shared.dsp.latency_us,
             LatencyComponents {
                 input_resampler_delay_samples: self.input_resampler_delay_samples,
-                output_buffer_samples: shared.output.buffer_len.load(Ordering::Relaxed) as u64,
+                output_buffer_samples,
                 output_sample_rate: self.output_sample_rate,
                 output_resampler_delay_samples: self.output_resampler_delay_samples,
                 suppressor_latency_samples,

@@ -11,7 +11,7 @@
 //! belongs to the endpoint, and a hardware device has more to lose from it.
 
 use super::input::AudioError;
-use super::output::{OutputFailure, OutputRenderer};
+use super::output::{OutputDeviceBuffer, OutputFailure, OutputRenderer};
 use super::scheduling::ProAudioThread;
 use std::ffi::c_void;
 use std::marker::PhantomData;
@@ -53,7 +53,16 @@ const IID_AUDIO_RENDER_CLIENT: Guid = Guid(
 
 const COINIT_MULTITHREADED: u32 = 0;
 const CLSCTX_ALL: u32 = 23;
+const AUDCLNT_SHAREMODE_SHARED: u32 = 0;
 const AUDCLNT_STREAMFLAGS_EVENTCALLBACK: u32 = 0x0004_0000;
+const AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY: u32 = 0x0800_0000;
+const AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM: u32 = 0x8000_0000;
+/// The flags cpal opens its shared-mode streams with.
+const CPAL_STREAM_FLAGS: u32 = AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+    | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
+    | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM;
+/// 100 ns units in a second, the unit of buffer durations and device periods.
+const HNS_PER_SECOND: i64 = 10_000_000;
 const WAIT_OBJECT_0: u32 = 0;
 const WAIT_OBJECT_1: u32 = 1;
 const WAIT_TIMEOUT: u32 = 258;
@@ -136,13 +145,21 @@ struct DeviceVtbl {
 #[repr(C)]
 struct AudioClient3Vtbl {
     unknown: UnknownVtbl,
-    initialize: Unused,
+    initialize: unsafe extern "system" fn(
+        *mut c_void,
+        u32,
+        u32,
+        i64,
+        i64,
+        *const u8,
+        *const Guid,
+    ) -> Hresult,
     get_buffer_size: unsafe extern "system" fn(*mut c_void, *mut u32) -> Hresult,
     get_stream_latency: Unused,
     get_current_padding: unsafe extern "system" fn(*mut c_void, *mut u32) -> Hresult,
     is_format_supported: Unused,
     get_mix_format: unsafe extern "system" fn(*mut c_void, *mut *mut u8) -> Hresult,
-    get_device_period: Unused,
+    get_device_period: unsafe extern "system" fn(*mut c_void, *mut i64, *mut i64) -> Hresult,
     start: unsafe extern "system" fn(*mut c_void) -> Hresult,
     stop: unsafe extern "system" fn(*mut c_void) -> Hresult,
     reset: Unused,
@@ -589,6 +606,110 @@ impl Client {
     }
 }
 
+/// Frames of a duration in 100 ns units at `sample_rate`.
+fn hns_to_frames(hns: i64, sample_rate: u32) -> u32 {
+    let frames = (hns.max(0) as u64 * u64::from(sample_rate) + 5_000_000) / HNS_PER_SECOND as u64;
+    u32::try_from(frames).unwrap_or(u32::MAX)
+}
+
+/// The buffer duration cpal asks for: its fixed size, or 0 for the engine's default.
+fn buffer_duration_hns(fixed_frames: Option<u32>, sample_rate: u32) -> i64 {
+    fixed_frames.map_or(0, |frames| {
+        i64::from(frames) * HNS_PER_SECOND / i64::from(sample_rate.max(1))
+    })
+}
+
+/// The WAVEFORMATEXTENSIBLE cpal builds for a 32-bit float stream.
+fn float32_format(sample_rate: u32, channels: u16) -> [u8; WAVEFORMATEXTENSIBLE_LEN] {
+    let block_align = channels.saturating_mul(4);
+    let mut format = [0; WAVEFORMATEXTENSIBLE_LEN];
+    format[0..2].copy_from_slice(&WAVE_FORMAT_EXTENSIBLE.to_le_bytes());
+    format[2..4].copy_from_slice(&channels.to_le_bytes());
+    format[4..8].copy_from_slice(&sample_rate.to_le_bytes());
+    format[8..12].copy_from_slice(
+        &sample_rate
+            .saturating_mul(u32::from(block_align))
+            .to_le_bytes(),
+    );
+    format[12..14].copy_from_slice(&block_align.to_le_bytes());
+    format[14..16].copy_from_slice(&32_u16.to_le_bytes());
+    format[16..18]
+        .copy_from_slice(&((WAVEFORMATEXTENSIBLE_LEN - WAVEFORMATEX_LEN) as u16).to_le_bytes());
+    // Valid bits per sample; the channel mask stays 0, the direct-out layout.
+    format[18..20].copy_from_slice(&32_u16.to_le_bytes());
+    format[24..40].copy_from_slice(&FLOAT_SUBFORMAT);
+    format
+}
+
+/// The buffer and callback period a standard shared-mode stream gets on this
+/// endpoint, read from a client opened the way cpal opens its own and dropped
+/// at once. It runs on a thread of its own, which brings its own COM apartment.
+/// On failure the buffer stays 0 and `failure_code` holds the HRESULT.
+pub(crate) fn probe_standard_buffer(
+    endpoint_id: Option<&str>,
+    sample_rate: u32,
+    channels: u16,
+    fixed_frames: Option<u32>,
+) -> OutputDeviceBuffer {
+    let read = match endpoint_id {
+        Some(endpoint_id) => {
+            let endpoint_id = endpoint_id.to_owned();
+            std::thread::Builder::new()
+                .name("audioforge-output-probe".into())
+                .spawn(move || {
+                    read_standard_buffer(&endpoint_id, sample_rate, channels, fixed_frames)
+                })
+                .map_err(|error| win32_hresult(&error))
+                .and_then(|thread| thread.join().unwrap_or(Err(E_FAIL)))
+        }
+        None => Err(E_POINTER),
+    };
+    read.unwrap_or_else(|hresult| OutputDeviceBuffer {
+        failure_code: hresult as u32,
+        ..OutputDeviceBuffer::default()
+    })
+}
+
+fn read_standard_buffer(
+    endpoint_id: &str,
+    sample_rate: u32,
+    channels: u16,
+    fixed_frames: Option<u32>,
+) -> Result<OutputDeviceBuffer, Hresult> {
+    let _apartment = Apartment::enter()?;
+    let audio = Client::activate(endpoint_id)?;
+    let format = float32_format(sample_rate, channels);
+    let (mut frames, mut default_period, mut minimum_period) = (0, 0, 0);
+    // SAFETY: The client is live, the format outlives the call, which copies it,
+    // and the out pointers are valid.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    unsafe {
+        check((audio.vtbl().initialize)(
+            audio.raw(),
+            AUDCLNT_SHAREMODE_SHARED,
+            CPAL_STREAM_FLAGS,
+            buffer_duration_hns(fixed_frames, sample_rate),
+            0,
+            format.as_ptr(),
+            null(),
+        ))?;
+        check((audio.vtbl().get_buffer_size)(audio.raw(), &mut frames))?;
+        check((audio.vtbl().get_device_period)(
+            audio.raw(),
+            &mut default_period,
+            &mut minimum_period,
+        ))?;
+    }
+    if frames == 0 {
+        return Err(E_FAIL);
+    }
+    Ok(OutputDeviceBuffer {
+        frames,
+        period_frames: hns_to_frames(default_period, sample_rate),
+        failure_code: 0,
+    })
+}
+
 /// What the attempt came to; a refusal hands the renderer back for cpal.
 pub(crate) enum Opened {
     Running(LowPeriodStream),
@@ -603,10 +724,10 @@ pub(crate) struct LowPeriodStream {
     started: Arc<Event>,
     stop: Arc<Event>,
     thread: Option<JoinHandle<()>>,
-    period_frames: u32,
+    device_buffer: OutputDeviceBuffer,
 }
 
-type Ready = Result<u32, (OutputRenderer, u32)>;
+type Ready = Result<OutputDeviceBuffer, (OutputRenderer, u32)>;
 
 impl LowPeriodStream {
     pub(crate) fn open(
@@ -644,11 +765,11 @@ impl LowPeriodStream {
                 .map_err(|error| AudioError::BuildStream(error.to_string()))?
         };
         match ready_rx.recv() {
-            Ok(Ok(period_frames)) => Ok(Opened::Running(Self {
+            Ok(Ok(device_buffer)) => Ok(Opened::Running(Self {
                 started,
                 stop,
                 thread: Some(thread),
-                period_frames,
+                device_buffer,
             })),
             Ok(Err((renderer, failure_code))) => {
                 let _ = thread.join();
@@ -673,7 +794,11 @@ impl LowPeriodStream {
     }
 
     pub(crate) fn period_frames(&self) -> u32 {
-        self.period_frames
+        self.device_buffer.period_frames
+    }
+
+    pub(crate) fn device_buffer(&self) -> OutputDeviceBuffer {
+        self.device_buffer
     }
 }
 
@@ -714,7 +839,12 @@ fn render_thread(
         Ok(pro_audio) => pro_audio,
         Err(error) => return decline(renderer, win32_hresult(&error)),
     };
-    if ready.send(Ok(client.period_frames)).is_err() {
+    let device_buffer = OutputDeviceBuffer {
+        frames: client.buffer_frames,
+        period_frames: client.period_frames,
+        failure_code: 0,
+    };
+    if ready.send(Ok(device_buffer)).is_err() {
         return;
     }
     if let Err(hresult) = client.run(&mut renderer, started, stop) {
@@ -737,6 +867,42 @@ mod tests {
             min,
             max,
         }
+    }
+
+    #[test]
+    fn durations_in_100_ns_units_become_frames_at_the_stream_rate() {
+        assert_eq!(hns_to_frames(100_000, 48_000), 480);
+        assert_eq!(hns_to_frames(220_000, 48_000), 1056);
+        assert_eq!(hns_to_frames(100_000, 44_100), 441);
+        assert_eq!(hns_to_frames(-1, 48_000), 0);
+    }
+
+    #[test]
+    fn cpal_asks_for_its_fixed_buffer_or_the_engine_default() {
+        assert_eq!(buffer_duration_hns(None, 48_000), 0);
+        assert_eq!(buffer_duration_hns(Some(480), 48_000), 100_000);
+        assert_eq!(buffer_duration_hns(Some(480), 0), 4_800_000_000);
+    }
+
+    #[test]
+    fn the_probe_format_is_cpals_float_format() {
+        let format = float32_format(48_000, 2);
+        assert!(is_float32_mix(&format, 48_000, 2));
+        assert_eq!(&format[8..12], &(48_000_u32 * 8).to_le_bytes());
+        assert_eq!(&format[16..18], &22_u16.to_le_bytes());
+        assert_eq!(&format[20..24], &[0; 4]);
+    }
+
+    #[test]
+    fn a_probe_that_cannot_read_leaves_the_buffer_unknown_with_its_code() {
+        let no_endpoint = probe_standard_buffer(None, 48_000, 2, None);
+        assert_eq!(no_endpoint.frames, 0);
+        assert_eq!(no_endpoint.failure_code, E_POINTER as u32);
+
+        let missing = probe_standard_buffer(Some("no-such-endpoint"), 48_000, 2, None);
+        assert_eq!(missing.frames, 0);
+        assert_eq!(missing.period_frames, 0);
+        assert_ne!(missing.failure_code, 0);
     }
 
     #[test]

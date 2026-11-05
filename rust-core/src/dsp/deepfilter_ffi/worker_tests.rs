@@ -814,3 +814,21 @@ fn idle_worker_looks_less_often_but_answers_within_a_frame() {
     // under the late threshold.
     assert!(IDLE_POLL_INTERVAL + Duration::from_micros(6_200) < WORKER_LATE_AFTER);
 }
+
+#[test]
+fn a_frame_after_an_idle_stretch_puts_the_worker_back_on_the_busy_poll() {
+    let fake = Fake::new();
+    let mut processor = worker_processor(&fake, LL, 1.0);
+    wait_until("the worker to go idle", || {
+        link(&processor).worker().idle_polls() > 0
+    });
+    push_level(&mut processor, 0);
+    wait_until("the frame to be answered", || {
+        link(&processor).worker().inferred_frames() >= 1
+    });
+    // No frame can end the idle wait any more; from here the worker has just
+    // had a frame and must not look at the idle interval again for IDLE_AFTER.
+    let idle_polls = link(&processor).worker().idle_polls();
+    std::thread::sleep(IDLE_AFTER / 5);
+    assert_eq!(link(&processor).worker().idle_polls(), idle_polls);
+}

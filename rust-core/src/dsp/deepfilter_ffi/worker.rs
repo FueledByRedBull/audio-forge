@@ -74,6 +74,9 @@ struct WorkerShared {
     /// A `TestFault` the tests ask for; always 0 in production.
     #[cfg_attr(not(test), allow(dead_code))]
     fault: AtomicU8,
+    /// Looks the worker took at the idle interval; counted by the tests only.
+    #[cfg_attr(not(test), allow(dead_code))]
+    idle_polls: AtomicU64,
 }
 
 /// The loop's end of the worker: its queues and a way to stop it. The thread
@@ -139,6 +142,11 @@ impl InferenceWorker {
     #[cfg(test)]
     pub(super) fn inject_fault(&self, fault: TestFault) {
         self.shared.fault.store(fault as u8, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(super) fn idle_polls(&self) -> u64 {
+        self.shared.idle_polls.load(Ordering::Relaxed)
     }
 }
 
@@ -385,7 +393,12 @@ fn serve(
             return;
         }
         if input.len() < DEEPFILTER_FRAME_SIZE {
-            std::thread::sleep(poll_interval(last_frame.elapsed()));
+            let interval = poll_interval(last_frame.elapsed());
+            #[cfg(test)]
+            if interval == IDLE_POLL_INTERVAL {
+                shared.idle_polls.fetch_add(1, Ordering::Relaxed);
+            }
+            std::thread::sleep(interval);
             continue;
         }
         last_frame = Instant::now();

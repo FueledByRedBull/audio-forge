@@ -126,8 +126,8 @@ fn library() -> DeepFilterLib {
 pub(crate) fn scratch_file(name: &str, contents: &[u8]) -> PathBuf {
     // Test fixture without privileged or secret data.
     // nosemgrep: rust.lang.security.temp-dir.temp-dir
-    let path =
-        std::env::temp_dir().join(format!("audioforge-{name}-{}.tar.gz", std::process::id()));
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("audioforge-{name}-{}.tar.gz", std::process::id()));
     std::fs::write(&path, contents).unwrap();
     path
 }

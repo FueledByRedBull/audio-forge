@@ -364,7 +364,6 @@ def test_workflow_dialogs_have_named_controls(
     (
         (CalibrationDialog, 480, 360),
         (VoiceSetupDialog, 500, 380),
-        (LatencyCalibrationDialog, 460, 360),
     ),
 )
 def test_workflow_dialogs_scroll_vertically_without_horizontal_overflow(

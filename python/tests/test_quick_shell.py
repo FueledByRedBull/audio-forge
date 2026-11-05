@@ -46,7 +46,7 @@ def quick_window(qapp, monkeypatch):
     scene_messages: list[str] = []
     previous = qInstallMessageHandler(
         lambda _mode, _context, message: scene_messages.append(message)
-        if "Main.qml" in message
+        if ".qml" in message
         else None
     )
     window = MainWindow()

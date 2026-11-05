@@ -84,7 +84,6 @@ def test_a_status_label_that_changes_is_read_with_its_new_text(dialogs, qapp) ->
     for label in (
         voice_dialog.phase_label, voice_dialog.time_label, voice_dialog.warning_label,
         auto_eq.time_label, auto_eq.warning_label,
-        dialogs["latency"].status_label,
         dialogs["listening"].status_label, dialogs["listening"].progress_label,
     ):
         label.setText("Moving closer helps")
@@ -196,14 +195,11 @@ def test_a_recording_dialog_visits_its_fields_then_its_buttons_left_to_right(dia
     assert _left_to_right(dialog, buttons)
 
 
-@pytest.mark.parametrize(("name", "order", "enabled"), [
-    ("latency", ["close_button", "reset_button", "run_button", "accept_button"], "accept_button"),
-    ("listening", ["reject_button", "keep_button"], "keep_button"),
-], ids=["latency", "listening"])
-def test_the_latency_and_listening_dialogs_visit_their_buttons_left_to_right(dialogs, qapp, name, order, enabled) -> None:
-    dialog = dialogs[name]
-    buttons = [getattr(dialog, attr) for attr in order]
-    getattr(dialog, enabled).setEnabled(True)
+def test_the_listening_dialog_visits_its_buttons_left_to_right(dialogs, qapp) -> None:
+    # The latency dialog is a Qt Quick scene; test_latency_calibration_scene.py walks its buttons.
+    dialog = dialogs["listening"]
+    buttons = [dialog.reject_button, dialog.keep_button]
+    dialog.keep_button.setEnabled(True)
     _show(dialog, qapp)
     assert _visited(dialog, buttons) == buttons
     assert _left_to_right(dialog, buttons)

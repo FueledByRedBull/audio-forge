@@ -62,7 +62,7 @@ def test_cancel_keeps_running_latency_worker_owned_until_it_stops(qapp, monkeypa
         assert worker.isRunning()
         assert dialog.worker is worker
         assert dialog.isVisible()
-        assert "cancel" in dialog.status_label.text().lower()
+        assert "cancel" in dialog.view_model.status_text.lower()
 
         deadline = time.monotonic() + 1.65
         while time.monotonic() < deadline:
@@ -72,7 +72,7 @@ def test_cancel_keeps_running_latency_worker_owned_until_it_stops(qapp, monkeypa
         assert worker.isRunning()
         assert dialog.worker is worker
         assert dialog.isVisible()
-        assert "cancel" in dialog.status_label.text().lower()
+        assert "cancel" in dialog.view_model.status_text.lower()
 
         release.set()
         deadline = time.monotonic() + 5.0
@@ -96,10 +96,11 @@ def test_latency_meter_shows_measured_rms_without_inventing_peak(qapp):
     try:
         dialog._on_level_update(-20.0)
 
-        assert dialog.level_meter.rms_db == -20.0
-        assert dialog.level_meter.peak_db == dialog.level_meter.DB_MIN
-        assert dialog.level_meter.peak_hold_db == dialog.level_meter.DB_MIN
-        assert dialog.level_meter.is_clipping is False
+        meter = dialog.view_model.level_meter
+        assert meter.rms_db == -20.0
+        assert meter.peak_db == meter.DB_MIN
+        assert meter.peak_hold_db == meter.DB_MIN
+        assert meter.is_clipping is False
     finally:
         dialog.close()
         owner.close()

@@ -336,7 +336,9 @@ wasn't covered) with the other unpublished evidence, as in step 5.
 
 The soak shows that a started AudioForge keeps memory, threads and handles flat
 and neither drops audio nor restarts or recovers a stream for an hour. Its
-criteria come from a one-hour pilot on 2026-10-15.
+criteria come from a one-hour pilot on 2026-10-15; the first unmuted runs, on
+1.21.0 to CABLE Input and to Realtek Digital Output, logged no dropouts after
+priming.
 
 1. From PowerShell in the extracted folder, with sleep and screen lock off,
    start the app with factory settings in a scratch `APPDATA` that skips the
@@ -395,12 +397,14 @@ Threads, handles, `jitter_dropped_samples`, `output_retime_adjustment_count`,
 `output_low_period_frames`, `output_low_period_failure_code` and
 `output_sustained_callback_frames` are recorded, not gated. Zero frames or a
 nonzero failure code means the stream wasn't on the shorter period, so the run
-didn't test it; a sustained callback size of 0 means the output was muted. A steady climb in threads or handles is a finding
-to explain before tagging. The jitter counter adds up the samples that output drift
+didn't test it. A sustained callback size of 0 usually means the output was
+muted or never primed. A steady climb in threads or handles is a finding to
+explain before tagging. The jitter counter adds up the samples that output drift
 retiming trims. A route whose input and output run on separate clocks retimes
 all the time, and the Health page counts these samples neither as drops nor as
 an engine fault. Not covered: other machines and microphone routes, non-factory
-settings, an audible output, device changes, sleep or resume, other audio applications.
+settings, an audible output, device changes, sleep or resume, other audio
+applications.
 The fault criterion can fail: it would have failed 1.16.0, whose Drops row
 called gate chatter an engine fault (see CHANGELOG).
 

@@ -40,8 +40,10 @@ def test_an_unsupported_shortcut_is_refused():
 class FakePortal:
     """Answers the GlobalShortcuts calls the way xdg-desktop-portal does."""
 
-    def __init__(self, *, bind_code=0, activations=1, silent=False, ignoring=()):
+    def __init__(self, *, bind_code=0, activations=1, silent=False, ignoring=(), name_flags=0, activating=False):
         self.bind_code = bind_code
+        self.activating = activating  # announces its own start on the first call, as a D-Bus-activated portal does
+        self.sessions_created = 0
         self.activations = activations
         self.silent = silent  # owns the name but answers nothing, like a portal still starting up
         self.ignoring = set(ignoring)  # method names it stalls on
@@ -54,7 +56,7 @@ class FakePortal:
         self.connection.send_and_get_reply(message_bus.AddMatch(
             "type='signal',sender='org.freedesktop.DBus',member='NameOwnerChanged'"
         ))
-        self.connection.send_and_get_reply(message_bus.RequestName(portal.PORTAL_SERVICE))
+        self.connection.send_and_get_reply(message_bus.RequestName(portal.PORTAL_SERVICE, name_flags))
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
 
@@ -87,8 +89,14 @@ class FakePortal:
             if member == "Get":
                 reply = new_method_return(message, "v", (("u", 1),))
             elif member == "Register":
+                if self.activating:
+                    self.connection.send(new_signal(
+                        DBusAddress("/org/freedesktop/DBus", interface=portal.BUS_INTERFACE),
+                        "NameOwnerChanged", "sss", (portal.PORTAL_SERVICE, "", self.connection.unique_name),
+                    ))
                 reply = new_method_return(message)
             elif member == "CreateSession":
+                self.sessions_created += 1
                 path = self._respond(sender, message.body[0], 0, {"session_handle": ("s", session)})
                 reply = new_method_return(message, "o", (path,))
             elif member == "BindShortcuts":
@@ -206,6 +214,47 @@ def test_a_portal_that_leaves_and_returns_gets_the_shortcut_bound_again(session_
         fake = FakePortal(activations=1)
         assert states.get(timeout=10) == ""
         assert activated.acquire(timeout=5)
+    finally:
+        session.close()
+        fake.close()
+
+
+def test_a_portal_replaced_in_one_step_gets_the_shortcut_bound_again(session_bus):
+    # xdg-desktop-portal --replace: the name passes straight to the new portal, and the
+    # old portal's session goes with it.
+    allow_replacement, replace_existing = 1, 2
+    old = FakePortal(activations=0, name_flags=allow_replacement)
+    states = queue.Queue()
+    activated = threading.Semaphore(0)
+    session = _session(activated.release, lambda error: None, states.put)
+    new = None
+    try:
+        session.start()
+        assert states.get(timeout=5) == ""
+        new = FakePortal(activations=1, name_flags=replace_existing)
+        assert states.get(timeout=10) == ""
+        assert activated.acquire(timeout=5)
+        assert new.bound
+    finally:
+        session.close()
+        old.close()
+        if new is not None:
+            new.close()
+
+
+def test_a_portal_our_own_call_started_keeps_the_session_it_made(session_bus):
+    # The first call activates xdg-desktop-portal, whose name then gains its first owner
+    # (old owner empty). That signal is already queued by the time the shortcut is bound.
+    fake = FakePortal(activations=1, activating=True)
+    states = queue.Queue()
+    activated = threading.Semaphore(0)
+    session = _session(activated.release, lambda error: None, states.put)
+    try:
+        session.start()
+        assert states.get(timeout=5) == ""
+        assert activated.acquire(timeout=5)
+        assert not activated.acquire(timeout=1)  # a second bind would activate again
+        assert fake.sessions_created == 1 and states.empty()
     finally:
         session.close()
         fake.close()

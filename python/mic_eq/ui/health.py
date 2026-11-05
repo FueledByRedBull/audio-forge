@@ -54,7 +54,14 @@ class RecentStreamHealth:
                 raise ValueError(f"Invalid stream event counter: {name}")
             counts[name] = int(value)
         for name, count in counts.items():
-            if count > self._counts.get(name, 0):
+            previous = self._counts.get(name, 0)
+            if count < previous:
+                # The counter restarted with a new stream: its recent event
+                # belongs to the old one and would read "(0 times)". Whatever
+                # the new stream has counted already is new.
+                self._last_events.pop(name, None)
+                previous = 0
+            if count > previous:
                 self._last_events[name] = current
         self._counts = counts
         self._last_events = {

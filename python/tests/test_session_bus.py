@@ -54,3 +54,14 @@ def test_the_login_managers_bus_at_the_runtime_directory_is_used_without_an_addr
 
     with open_session_bus() as connection:
         assert connection.unique_name
+
+
+def test_a_runtime_directory_with_address_syntax_in_its_name_still_finds_the_bus(session_bus, monkeypatch, tmp_path):
+    runtime = tmp_path / "run,time;=100%"
+    runtime.mkdir()
+    (runtime / "bus").symlink_to(_bus_socket())
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+
+    with open_session_bus() as connection:
+        assert connection.unique_name

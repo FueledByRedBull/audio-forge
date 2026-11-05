@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 import tomllib
 
-from verify_release_assets import load_asset_manifest
+from verify_release_assets import load_asset_manifest, sha256_file as _sha256
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1704,11 +1704,6 @@ def _archive_target(root: Path, entry: dict[str, Any]) -> Path:
 def _is_derived_runtime_entry(entry: dict[str, Any]) -> bool:
     """Return whether an asset is verified by its source build attestation."""
     return entry.get("kind") == "runtime-asset" and entry.get("source_build") is True
-
-
-def _sha256(path: Path) -> str:
-    with path.open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def _recipe_sha256(path: Path) -> str:

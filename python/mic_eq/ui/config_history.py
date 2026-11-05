@@ -268,7 +268,6 @@ def explicit_provenance_after_edit(
 __all__ = [
     "BoundedConfigurationHistory",
     "ConfigurationSnapshot",
-    "DEFAULT_HISTORY_LIMIT",
     "changed_configuration_paths",
     "explicit_provenance_after_edit",
 ]

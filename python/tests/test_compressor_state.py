@@ -229,7 +229,7 @@ def test_numeric_compressor_preset_marks_intensity_custom_without_marker(qapp) -
     }
     for intensity in ("gentle", "balanced", "dense"):
         settings, _ = _recommend_compressor_settings(
-            target_preset="broadcast", dynamics_intensity=intensity, **common
+            dynamics_intensity=intensity, **common
         )
         source = CompressorState(Mock())
         restored = CompressorState(Mock())

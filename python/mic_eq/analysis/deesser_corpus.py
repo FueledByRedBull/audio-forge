@@ -294,8 +294,6 @@ __all__ = [
     "CORPUS_CASES",
     "CORPUS_LICENSE",
     "CORPUS_VERSION",
-    "DeEsserCorpusCase",
-    "GeneratedDeEsserCase",
     "generate_deesser_case",
     "labels_for_analysis_frames",
 ]

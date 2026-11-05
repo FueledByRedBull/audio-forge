@@ -558,11 +558,9 @@ def render_comparison(
 
 __all__ = [
     "ComparisonRenderResult",
-    "EXCLUDED_STAGES",
     "MAX_COMPARISON_SECONDS",
     "MAX_LEVEL_MATCH_DB",
     "PLAYBACK_PEAK_DB",
-    "RENDERED_STAGES",
     "RenderedComparisonClip",
     "render_comparison",
 ]

@@ -431,7 +431,6 @@ def test_static_microphone_brightness_does_not_trigger_deesser(monkeypatch):
 
 def test_dynamics_intensity_is_separate_from_target_loudness():
     gentle, gentle_diag = _recommend_compressor_settings(
-        target_preset="broadcast",
         speech_body_db=-22.0,
         speech_loudness_lufs=-20.0,
         loudness_range_db=5.0,
@@ -442,7 +441,6 @@ def test_dynamics_intensity_is_separate_from_target_loudness():
         custom_peak_cap_db=8.0,
     )
     dense, dense_diag = _recommend_compressor_settings(
-        target_preset="broadcast",
         speech_body_db=-22.0,
         speech_loudness_lufs=-20.0,
         loudness_range_db=5.0,
@@ -462,28 +460,8 @@ def test_dynamics_intensity_is_separate_from_target_loudness():
     assert gentle_diag["peak_reduction_cap_db"] < dense_diag["peak_reduction_cap_db"]
 
 
-def test_explicit_lufs_target_is_independent_of_tone_curve() -> None:
-    common = {
-        "speech_body_db": -22.0,
-        "speech_loudness_lufs": -20.0,
-        "loudness_range_db": 5.0,
-        "speech_snr_db": 20.0,
-        "capture_confidence": 0.8,
-        "dynamics_intensity": "balanced",
-        "custom_target_p95_db": 3.5,
-        "custom_peak_cap_db": 8.0,
-        "target_lufs": -19.0,
-    }
-    broadcast, _ = _recommend_compressor_settings(
-        target_preset="broadcast", **common
-    )
-    podcast, _ = _recommend_compressor_settings(target_preset="podcast", **common)
-    assert broadcast["target_lufs"] == podcast["target_lufs"] == -19.0
-
-
 def test_custom_dynamics_targets_are_bounded():
     settings, diagnostics = _recommend_compressor_settings(
-        target_preset="flat",
         speech_body_db=-24.0,
         speech_loudness_lufs=-21.0,
         loudness_range_db=4.0,
@@ -501,7 +479,6 @@ def test_custom_dynamics_targets_are_bounded():
 
 def test_automatic_makeup_needs_a_reliable_capture_and_a_good_score():
     inputs: dict[str, Any] = dict(
-        target_preset="broadcast",
         speech_body_db=-22.0,
         speech_loudness_lufs=-20.0,
         loudness_range_db=5.0,

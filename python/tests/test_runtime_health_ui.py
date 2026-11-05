@@ -164,7 +164,6 @@ def _diagnostic_window(diagnostics: dict[str, Any]):
         latency_ms=10.0,
         dsp_time_ms=0.2,
         input_buf=0,
-        output_buf=128,
         rnnoise_buf=0,
         input_rms_db=-20.0,
         output_rms_db=-20.0,

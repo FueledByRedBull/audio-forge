@@ -306,7 +306,6 @@ def headroom_advice(
 
 
 __all__ = [
-    "AutoEqExplanation",
     "reason_message",
     "TARGET_MODE_LABELS",
     "explain_auto_eq",

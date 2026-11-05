@@ -162,7 +162,7 @@ def test_a_quick_session_keeps_the_scene_from_start_to_close(quick_window, monke
     window._update_meters()
     window._update_diagnostics()
     window._update_diagnostic_labels(
-        diagnostics={}, latency_ms=10.0, dsp_time_ms=0.2, input_buf=0, output_buf=0, rnnoise_buf=0,
+        diagnostics={}, latency_ms=10.0, dsp_time_ms=0.2, input_buf=0, rnnoise_buf=0,
     )
     window._set_health_chip("input_health_label", "Input: hot", "warn")
     window.quick_bridge.stepBand(1)
@@ -1502,7 +1502,7 @@ def test_the_drops_tooltip_does_not_promise_a_right_click_quick_lacks(quick_wind
     drops = quick_window.shell_texts["dropped_label"]
     assert "right-click" not in drops.toolTip.lower()
     quick_window._update_diagnostic_labels(
-        diagnostics={}, latency_ms=10.0, dsp_time_ms=0.2, input_buf=0, output_buf=0, rnnoise_buf=0,
+        diagnostics={}, latency_ms=10.0, dsp_time_ms=0.2, input_buf=0, rnnoise_buf=0,
     )
     assert "Technical counters" in drops.toolTip
     assert "right-click" not in drops.toolTip.lower()
@@ -1601,7 +1601,7 @@ def _status_dot(window):
 
 def _diagnostic_labels(window, **changes) -> None:
     window._update_diagnostic_labels(**{
-        "diagnostics": {}, "latency_ms": 10.0, "dsp_time_ms": 0.2, "input_buf": 0, "output_buf": 0,
+        "diagnostics": {}, "latency_ms": 10.0, "dsp_time_ms": 0.2, "input_buf": 0,
         "rnnoise_buf": 0, "input_rms_db": -30.0, "output_rms_db": -30.0,
         "input_callback_age_ms": 0, "output_callback_age_ms": 0, **changes,
     })

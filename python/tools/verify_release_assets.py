@@ -55,7 +55,7 @@ def current_asset_platform() -> str:
     raise RuntimeError(f"unsupported release asset platform: {sys.platform}")
 
 
-def _sha256(path: Path) -> str:
+def sha256_file(path: Path) -> str:
     with path.open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
@@ -315,7 +315,7 @@ def _verify_source_build_attestation(
         if not isinstance(output_sha, str) or not HEX_SHA256.fullmatch(output_sha):
             errors.append(f"{raw_path}: attestation output.sha256 must be a 64-character hex string")
         else:
-            actual_sha = _sha256(path)
+            actual_sha = sha256_file(path)
             if actual_sha.lower() != output_sha.lower():
                 errors.append(
                     f"{raw_path}: attestation output sha256 mismatch, expected {output_sha}, got {actual_sha}"
@@ -440,7 +440,7 @@ def verify_assets(
         if source_built:
             errors.extend(_verify_source_build_attestation(asset, path, raw_path, staged_paths))
         else:
-            actual_sha = _sha256(path)
+            actual_sha = sha256_file(path)
             if actual_sha.lower() != expected_sha.lower():
                 errors.append(f"{raw_path}: sha256 mismatch, expected {expected_sha}, got {actual_sha}")
 

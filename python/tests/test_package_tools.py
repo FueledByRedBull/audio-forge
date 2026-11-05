@@ -2346,7 +2346,7 @@ def test_verify_release_assets_accepts_attested_source_build(tmp_path, monkeypat
         json.dumps(provenance), encoding="utf-8"
     )
     recipe_files = {
-        relative: verify_release_assets._sha256(tmp_path / relative)
+        relative: verify_release_assets.sha256_file(tmp_path / relative)
         for relative in release_provenance.DEEPFILTER_RECIPE_FILES
     }
     attestation = {
@@ -2355,7 +2355,7 @@ def test_verify_release_assets_accepts_attested_source_build(tmp_path, monkeypat
         "output": {
             "name": "df.dll",
             "bytes": dll.stat().st_size,
-            "sha256": verify_release_assets._sha256(dll),
+            "sha256": verify_release_assets.sha256_file(dll),
         },
         "source": {
             "repository": provenance["upstream"]["repository"],

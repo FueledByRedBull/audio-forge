@@ -836,7 +836,7 @@ def smooth_spectrum_octave(freqs, spectrum_db, fraction=6):
     f_center, f_lower, f_upper = get_octave_frequencies(fraction)
 
     smoothed_bands = []
-    for fc, fl, fu in zip(f_center, f_lower, f_upper):
+    for _, fl, fu in zip(f_center, f_lower, f_upper):
         # Find FFT bins within this band
         mask = (freqs >= fl) & (freqs <= fu)
         if np.any(mask):

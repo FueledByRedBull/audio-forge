@@ -16,7 +16,7 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-from verify_release_assets import load_asset_manifest
+from verify_release_assets import load_asset_manifest, sha256_file
 
 from hardware_qualification import (
     REQUIRED_DEVICE_CLASSES,
@@ -83,11 +83,6 @@ def bundle_platform(bundle: Path) -> str:
     return "windows"
 
 
-def sha256_file(path: Path) -> str:
-    with path.open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
-
-
 def _json_bytes(value: object) -> bytes:
     return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
@@ -140,8 +135,6 @@ def _bundle_component(path: str) -> str:
         return "Licenses"
     if relative.startswith(("pyqt6/", "pyside6/", "shiboken6/")):
         return "Qt and bindings"
-    if relative.startswith(("scipy/", "scipy.libs/")):
-        return "SciPy and bundled BLAS"
     if relative.startswith(("numpy/", "numpy.libs/")):
         return "NumPy and bundled BLAS"
     if relative.startswith("models/deepfilternet3_ll_onnx"):

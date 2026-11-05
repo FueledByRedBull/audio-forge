@@ -191,6 +191,27 @@ def scene_text(dialog: Any, name: str) -> str:
     return scene_item(dialog, name).property("text")
 
 
+def at_scene_minimum(dialog: Any, qapp: Any) -> None:
+    """Size the dialog to the narrowest its scene allows, at the smallest height.
+
+    The dialog is never wider than its screen, and a screen without fonts (the offscreen one)
+    cannot hold the scene's minimum; the scene is judged at its own minimum all the same.
+    """
+    width = max(dialog.minimumWidth(), int(dialog.quick_view.rootObject().property("minimumWidth")))
+    dialog.resize(width, dialog.minimumHeight())
+    qapp.processEvents()
+    qapp.processEvents()
+
+
+def cut_short_texts(dialog: Any) -> list[tuple[str, str]]:
+    """The visible texts of the scene that show an ellipsis: (item name, text)."""
+    return [
+        (item.objectName(), item.property("text"))
+        for item in scene_items(dialog.quick_view.rootObject(), only_visible=True)
+        if item.property("truncated")
+    ]
+
+
 def press(dialog: Any, name: str) -> None:
     """Click the middle of a scene item, as a mouse does."""
     item = scene_item(dialog, name)

@@ -2029,7 +2029,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self,
                 "Guided Setup",
-                f"The setup window could not open.\n\n{error}",
+                "The setup window could not open. The log has the details.",
             )
             return
         _exec_and_release(dialog)
@@ -2405,7 +2405,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self,
                 "Latency Calibration",
-                f"The latency calibration window could not open.\n\n{error}",
+                "The latency calibration window could not open. The log has the details.",
             )
             return False
         self._calibration_dialog_open = True

@@ -6,8 +6,9 @@ import logging
 import sys
 from typing import Any
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent
+from PySide6.QtQuick import QQuickItem
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QDialog, QMessageBox, QVBoxLayout
 
@@ -532,6 +533,7 @@ class FirstRunSetupDialog(QDialog):
             if self._progress_unsaved and self._default_setup_finished():
                 self._finish_setup()
                 return
+            launcher = self._scene_focus()
             self.hide()
             try:
                 applied = bool(self.owner._on_auto_voice_setup_clicked())
@@ -540,6 +542,7 @@ class FirstRunSetupDialog(QDialog):
                 applied = False
             finally:
                 self.show()
+                self._restore_scene_focus(launcher)
             if applied:
                 self._complete_step(
                     "Voice setup applied settings after downstream validation. "
@@ -573,8 +576,20 @@ class FirstRunSetupDialog(QDialog):
             self.view_model.set_page(actionText="Check levels")
             self._set_status(reason, "bad")
 
+    def _scene_focus(self) -> QQuickItem | None:
+        return self.quick_view.quickWindow().activeFocusItem()
+
+    def _restore_scene_focus(self, item: QQuickItem | None) -> None:
+        """Hiding the dialog drops the scene's focus; give it back to the button that was used."""
+        if item is None or not item.isVisible() or not item.isEnabled():
+            item = self.quick_view.rootObject().findChild(QQuickItem, "actionButton")
+        if item is not None:
+            keyboard = bool(item.property("visualFocus"))  # the focus ring follows the keyboard
+            item.forceActiveFocus(Qt.FocusReason.TabFocusReason if keyboard else Qt.FocusReason.OtherFocusReason)
+
     def _run_latency_calibration(self) -> None:
         self._set_route_feedback_active(False)
+        launcher = self._scene_focus()
         self.hide()
         try:
             saved = bool(self.owner._on_latency_calibration_clicked())
@@ -583,6 +598,7 @@ class FirstRunSetupDialog(QDialog):
             saved = False
         finally:
             self.show()
+            self._restore_scene_focus(launcher)
             self._set_route_feedback_active(self.current_step == "route")
         if saved:
             self.config.first_run_setup_steps["latency"] = "completed"
@@ -693,4 +709,4 @@ class FirstRunSetupDialog(QDialog):
         super().reject()
 
 
-__all__ = ["FirstRunSetupDialog", "route_health_reason"]
+__all__ = ["FirstRunSetupDialog", "FirstRunSetupLoadError", "route_health_reason"]

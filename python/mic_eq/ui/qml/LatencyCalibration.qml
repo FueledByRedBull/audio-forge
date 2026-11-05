@@ -2,7 +2,6 @@
 // `vm` is its LatencyCalibrationView: what is shown here, and the commands sent back.
 pragma ComponentBehavior: Bound
 import QtQuick
-import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import AudioForge
 

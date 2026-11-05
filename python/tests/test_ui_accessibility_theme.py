@@ -1,5 +1,4 @@
-# pyright: reportAttributeAccessIssue=false, reportMissingImports=false
-# (the sibling test modules are found by pytest at run time)
+# pyright: reportAttributeAccessIssue=false
 """Deterministic accessibility and semantic-theme contract tests."""
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ from mic_eq.ui.main_window import (
 from mic_eq.ui.level_meter import SCALE_TEXT_GAP, _scale_mark_geometry
 from mic_eq.ui.shell_specs import TEXT_SPECS
 from mic_eq.ui import theme
-from test_first_run_setup import scene_item, scene_items
+from test_first_run_setup import at_scene_minimum, cut_short_texts, scene_item, scene_items
 from mic_eq.ui.theme import (
     CONTROL_BOUNDARY_PAIRS,
     PALETTE,
@@ -414,13 +413,13 @@ def test_first_run_setup_buttons_fit_the_minimum_dialog(
     isolated_main_window.config.first_run_setup_step = step
     dialog = FirstRunSetupDialog(isolated_main_window)
     minimum = dialog.minimumSize()
-    dialog.resize(minimum)
     dialog.show()
     qapp.processEvents()
-    qapp.processEvents()
+    # The scene's own minimum width, which a small or font-less screen cannot hold.
+    at_scene_minimum(dialog, qapp)
 
     # The page scrolls only vertically; the actions sit below it, so they cannot scroll away.
-    assert (dialog.width(), dialog.height()) == (minimum.width(), minimum.height())
+    assert dialog.height() == minimum.height() and dialog.width() >= minimum.width()
     scroll = scene_item(dialog, "contentScroll")
     right = scroll.mapToScene(QPointF(scroll.width(), 0)).x()
     wide = [
@@ -435,6 +434,7 @@ def test_first_run_setup_buttons_fit_the_minimum_dialog(
         left = button.mapToScene(QPointF(0, 0))
         edge = button.mapToScene(QPointF(button.width(), button.height()))
         assert 0 <= left.x() and edge.x() <= view.width() and edge.y() <= view.height(), name
+    assert cut_short_texts(dialog) == [], "no button text, or any other, is elided"
 
     dialog.close()
     dialog.deleteLater()

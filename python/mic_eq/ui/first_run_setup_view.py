@@ -9,6 +9,7 @@ from PySide6.QtCore import Property, QObject, Signal, Slot
 from .components import Glyph
 from .level_meter import LevelMeter
 
+STATES = frozenset({"ok", "warn", "bad", "info", "idle"})
 NO_HEALTH = {"text": "", "state": "idle"}
 # What the page shows before the dialog has rendered its first step.
 EMPTY_PAGE = {
@@ -96,10 +97,6 @@ class FirstRunSetupView(QObject):
     def output_index(self) -> int:
         return self._output_index
 
-    @property
-    def is_muted(self) -> bool:
-        return self._muted
-
     def set_page(self, **fields: object) -> None:
         """Change the parts of the page that follow the step; unchanged fields are left alone."""
         page = {**self._page, **fields}
@@ -108,11 +105,13 @@ class FirstRunSetupView(QObject):
             self.pageChanged.emit()
 
     def set_status(self, text: str, state: str) -> None:
+        state = state if state in STATES else "idle"
         if (text, state) != (self.status_text, self.status_state):
             self.status_text, self.status_state = text, state
             self.statusChanged.emit()
 
     def set_health(self, direction: str, text: str, state: str) -> None:
+        state = state if state in STATES else "idle"
         if self._health[direction] != {"text": text, "state": state}:
             self._health = {**self._health, direction: {"text": text, "state": state}}
             self.healthChanged.emit()

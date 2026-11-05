@@ -1,6 +1,4 @@
 """The Guided Setup dialog is a Qt Quick scene: it loads, names its controls and takes the keyboard."""
-# pyright: reportMissingImports=false
-# (the sibling test modules are found by pytest at run time)
 
 from __future__ import annotations
 
@@ -29,14 +27,16 @@ from mic_eq.ui.theme import PALETTE
 from test_first_run_setup import (
     _Owner,
     _Processor,
+    at_scene_minimum,
     choose,
+    cut_short_texts,
     opening_setup_dialogs,
     press,
     scene_item,
     scene_items,
     scene_text,
 )
-from test_quick_shell import _AccessibleScene
+from test_quick_shell import _AccessibleScene, _wait_until
 
 STEPS = ["devices", "route", "voice"]
 ACTION = {"devices": "Use this route", "route": "Check levels", "voice": "Open Voice Setup"}
@@ -101,20 +101,6 @@ def _at_minimum_size(dialog: Any, qapp: Any) -> None:
     dialog.resize(dialog.minimumSize())
     qapp.processEvents()
     qapp.processEvents()
-
-
-def _scene_minimum_fits(dialog: Any) -> bool:
-    """Whether the screen is wide enough for the scene's own minimum.
-
-    A dialog is never made wider than its screen allows; on a narrower screen nothing in it can
-    be asked to fit.
-    """
-    needed = int(dialog.quick_view.rootObject().property("minimumWidth"))
-    if dialog.minimumWidth() >= needed:
-        return True
-    available = dialog.screen().availableGeometry().width() - 48
-    assert dialog.minimumWidth() == available, "the dialog is as wide as its screen allows"
-    return False
 
 
 @contextmanager
@@ -236,6 +222,18 @@ def test_a_message_is_set_in_the_colour_of_its_state(qapp, open_setup, state) ->
     dialog = open_setup(_owner())
     dialog.view_model.set_status("A message", state)
     assert scene_item(dialog, "statusText").property("color").name() == getattr(PALETTE, f"status_{state}_text")
+
+
+@pytest.mark.parametrize("state", ["error", "success", "", "OK"])
+def test_a_state_the_scene_has_no_colours_for_is_shown_as_idle(qapp, open_setup, state) -> None:
+    dialog = open_setup(_owner("route", running=True))
+    dialog.view_model.set_status("A message", state)
+    dialog.view_model.set_health("output", "Output: reading", state)
+    assert dialog.view_model.status_state == "idle"
+    assert scene_item(dialog, "statusText").property("color").name() == PALETTE.status_idle_text
+    chip = scene_item(dialog, "outputHealth")
+    assert chip.property("tone") == "idle"
+    assert chip.property("color").name() == PALETTE.status_idle_surface
 
 
 @pytest.mark.parametrize("state", ["ok", "warn", "bad", "info", "idle"])
@@ -422,15 +420,11 @@ def test_a_control_that_takes_the_keyboard_is_scrolled_into_view(qapp, open_setu
 def test_no_text_is_cut_short_and_nothing_overflows_at_the_smallest_size(qapp, step, large, open_setup) -> None:
     with _text_size(qapp, large):
         dialog = open_setup(_owner(step, running=True))
-        _at_minimum_size(dialog, qapp)
-        if not _scene_minimum_fits(dialog):
-            return
-        cut = [
-            (item.objectName() or item.property("text"), item.width(), item.property("implicitWidth"))
-            for item in scene_items(dialog.quick_view.rootObject(), only_visible=True)
-            if item.property("truncated")
-        ]
-        assert cut == []
+        # Judged at the scene's own minimum, which a small or font-less screen cannot hold.
+        at_scene_minimum(dialog, qapp)
+        for key in BUTTONS:  # a text that is not there cannot be seen to be cut short
+            assert [i for i in scene_items(scene_item(dialog, key)) if i.property("truncated") is not None], key
+        assert cut_short_texts(dialog) == []
         column = scene_item(dialog, "contentColumn")
         scroll = scene_item(dialog, "contentScroll")
         right = scroll.mapToScene(QPointF(scroll.width(), 0)).x()
@@ -442,6 +436,51 @@ def test_no_text_is_cut_short_and_nothing_overflows_at_the_smallest_size(qapp, s
         for key in BUTTONS:
             button = scene_item(dialog, key)
             assert button.mapToScene(QPointF(button.width(), 0)).x() <= dialog.quick_view.width(), key
+
+
+@pytest.mark.parametrize(
+    ("step", "button", "owner_method"),
+    [
+        ("voice", "actionButton", "_on_auto_voice_setup_clicked"),
+        ("devices", "latencyButton", "_on_latency_calibration_clicked"),
+        ("route", "latencyButton", "_on_latency_calibration_clicked"),
+    ],
+)
+@pytest.mark.parametrize("how", ["mouse", "keyboard"])
+def test_the_keyboard_comes_back_to_the_button_that_opened_a_sub_dialog(
+    qapp, open_setup, step, button, owner_method, how
+) -> None:
+    owner = _owner(step)
+    calls: list[str] = []
+    vars(owner)[owner_method] = lambda: calls.append(owner_method) or False
+    dialog = open_setup(owner)
+    item = scene_item(dialog, button)
+    item.forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    assert _focus_name(dialog) == button
+    if how == "mouse":
+        press(dialog, button)
+    else:
+        QTest.keyClick(dialog.quick_view, Qt.Key.Key_Space)
+    qapp.processEvents()
+    assert calls == [owner_method] and dialog.isVisible()
+    assert _focus_name(dialog) == button
+
+
+def test_the_keyboard_goes_to_the_main_button_when_the_launching_button_is_gone(qapp, open_setup) -> None:
+    owner = _owner("devices")
+    dialog = open_setup(owner)
+    latency = scene_item(dialog, "latencyButton")
+    latency.forceActiveFocus(Qt.FocusReason.TabFocusReason)
+
+    def hides_its_launcher() -> bool:
+        dialog.view_model.set_page(latencyShown=False)
+        return False
+
+    vars(owner)["_on_latency_calibration_clicked"] = hides_its_launcher
+    dialog._run_latency_calibration()
+    qapp.processEvents()
+    assert not latency.isVisible()
+    assert _focus_name(dialog) == "actionButton"
 
 
 def test_the_dialog_is_never_narrower_than_its_widest_main_button(qapp, open_setup) -> None:
@@ -532,11 +571,10 @@ def test_the_mute_switch_explains_itself_when_it_has_the_keyboard(qapp, open_set
     tips = [child for child in switch.children() if child.metaObject().className().startswith("Tip")]
     assert len(tips) == 1 and not tips[0].property("visible")
     switch.forceActiveFocus(Qt.FocusReason.TabFocusReason)
-    QTest.qWait(700)
-    assert tips[0].property("visible") and tips[0].property("text") == MUTE_TIP
+    assert _wait_until(lambda: tips[0].property("visible")), "the tip shows after its delay"
+    assert tips[0].property("text") == MUTE_TIP
     scene_item(dialog, "skipButton").forceActiveFocus(Qt.FocusReason.TabFocusReason)
-    QTest.qWait(50)
-    assert not tips[0].property("visible")
+    assert _wait_until(lambda: not tips[0].property("visible")), "the tip goes when the focus does"
 
 
 @pytest.mark.parametrize("how", ["mouse", "keyboard"])
@@ -676,7 +714,7 @@ def test_the_view_model_reports_changes_once_and_forwards_its_commands(qapp) -> 
     assert changes == ["status", "status", "page", "health", "muted"]
     page, health = cast(Any, model).page, cast(Any, model).health
     assert page["title"] == "One" and health["input"]["text"] == "Input: OK"
-    assert health["output"]["state"] == "idle" and model.is_muted
+    assert health["output"]["state"] == "idle" and cast(Any, model).muted
     model.pickInput(0)
     model.pickOutput(0)
     model.pause()
@@ -708,7 +746,7 @@ def test_a_scene_that_does_not_load_raises_before_progress_is_touched(qapp, monk
     qapp.processEvents()
 
 
-def test_a_setup_that_cannot_load_tells_the_user_and_opens_nothing(monkeypatch) -> None:
+def test_a_setup_that_cannot_load_tells_the_user_and_opens_nothing(monkeypatch, caplog) -> None:
     def broken(*_args, **_kwargs):
         raise FirstRunSetupLoadError("The setup view did not load: no details")
 
@@ -716,5 +754,7 @@ def test_a_setup_that_cannot_load_tells_the_user_and_opens_nothing(monkeypatch) 
     monkeypatch.setattr("mic_eq.ui.main_window.FirstRunSetupDialog", broken)
     monkeypatch.setattr("mic_eq.ui.main_window.QMessageBox.critical", lambda *args: shown.append(args))
     MainWindow._show_first_run_setup(cast(Any, SimpleNamespace()))
-    assert len(shown) == 1 and "did not load" in shown[0][2]
+    assert len(shown) == 1 and "could not open" in shown[0][2]
+    assert "no details" not in shown[0][2], "the details are for the log, not the message box"
+    assert "no details" in caplog.text
     assert isinstance(shown[0][0], SimpleNamespace) or isinstance(shown[0][0], QWidget)

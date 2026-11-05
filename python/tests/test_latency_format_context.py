@@ -155,7 +155,7 @@ def test_cancelled_latency_dialog_does_not_report_an_old_profile_as_saved(monkey
     assert owner._calibration_dialog_open is False
 
 
-def test_a_latency_dialog_that_cannot_load_tells_the_user_and_reports_nothing_saved(monkeypatch):
+def test_a_latency_dialog_that_cannot_load_tells_the_user_and_reports_nothing_saved(monkeypatch, caplog):
     owner = SimpleNamespace(
         _latency_profile_key=lambda: "route",
         _current_latency_profile=lambda: None,
@@ -171,7 +171,9 @@ def test_a_latency_dialog_that_cannot_load_tells_the_user_and_reports_nothing_sa
     monkeypatch.setattr("mic_eq.ui.main_window.QMessageBox.critical", lambda *args: shown.append(args))
     assert MainWindow._on_latency_calibration_clicked(cast(Any, owner)) is False
     assert owner._calibration_dialog_open is False
-    assert len(shown) == 1 and "did not load" in shown[0][2]
+    assert len(shown) == 1 and "could not open" in shown[0][2]
+    assert "no details" not in shown[0][2], "the details are for the log, not the message box"
+    assert "no details" in caplog.text
 
 
 def test_same_route_with_changed_sample_rate_or_channels_drops_old_compensation(qapp):

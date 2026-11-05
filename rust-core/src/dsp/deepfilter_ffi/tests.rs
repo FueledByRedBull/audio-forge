@@ -870,6 +870,8 @@ mod tests {
                 eprintln!("SKIPPED: {} is absent", library.display());
                 return;
             }
+            // The test re-runs its own binary in a child process, which may abort.
+            // nosemgrep: rust.lang.security.current-exe.current-exe
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "--nocapture"])
                 .arg("dsp::deepfilter_ffi::tests::the_real_library_reports_a_corrupt_model_instead_of_aborting")

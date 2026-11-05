@@ -39,6 +39,8 @@ mod tests {
             return;
         }
 
+        // The test re-runs its own binary in a child process to get a fresh process state.
+        // nosemgrep: rust.lang.security.current-exe.current-exe
         let output = Command::new(std::env::current_exe().expect("test executable path"))
             .arg("test_vad_commits_telemetry_opt_out_before_first_session")
             .arg("--nocapture")
@@ -76,6 +78,8 @@ mod tests {
             return;
         }
 
+        // The test re-runs its own binary in a child process to get a fresh process state.
+        // nosemgrep: rust.lang.security.current-exe.current-exe
         let output = Command::new(std::env::current_exe().expect("test executable path"))
             .arg("test_vad_rejects_preconfigured_ort_environment")
             .arg("--nocapture")

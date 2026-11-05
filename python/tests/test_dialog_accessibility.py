@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QAccessible
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QAbstractButton, QLabel
 
 from capture_helpers import _voice, finish_take
@@ -16,11 +17,12 @@ from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.first_run_setup_dialog import FirstRunSetupDialog
 from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog
 from mic_eq.ui.listening_comparison_dialog import ListeningComparisonDialog, RawProcessedDialog
-from mic_eq.ui.theme import message_text_style
+from mic_eq.ui.theme import PALETTE
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
-from test_first_run_setup import _Owner, _Processor
+from test_first_run_setup import _Owner, _Processor, press, scene_item, scene_text
 from test_listening_comparison import _settings
 from test_setup_level_check_flow import voice  # noqa: F401  (a fixture)
+from test_quick_shell import _AccessibleScene
 from test_voice_setup_integration import real_main_window  # noqa: F401  (a fixture)
 
 
@@ -30,7 +32,9 @@ def _name(widget) -> str:
     return interface.text(QAccessible.Text.Name)
 
 
-def _first_run(monkeypatch, step: str = "devices") -> tuple[FirstRunSetupDialog, _Owner]:
+def _first_run(
+    monkeypatch, step: str = "devices", *, microphones: bool = True
+) -> tuple[FirstRunSetupDialog, _Owner]:
     monkeypatch.setattr("mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: True)
     config = AppConfig(
         first_run_setup_state="in_progress",
@@ -38,7 +42,18 @@ def _first_run(monkeypatch, step: str = "devices") -> tuple[FirstRunSetupDialog,
         first_run_setup_steps={name: "pending" for name in ("devices", "route", "latency", "voice")},
     )
     owner = _Owner(config, _Processor())
+    if not microphones:
+        owner.input_choice.clear()
     return FirstRunSetupDialog(owner), owner
+
+
+def _open(dialog, qapp) -> None:
+    """Show the dialog and give its scene the keyboard."""
+    dialog.show()
+    qapp.processEvents()
+    dialog.activateWindow()
+    dialog.quick_view.setFocus()
+    qapp.processEvents()
 
 
 def _listening(monkeypatch, *, test_my_sound: bool = False):
@@ -84,7 +99,6 @@ def test_a_status_label_that_changes_is_read_with_its_new_text(dialogs, qapp) ->
     for label in (
         voice_dialog.phase_label, voice_dialog.time_label, voice_dialog.warning_label,
         auto_eq.time_label, auto_eq.warning_label,
-        dialogs["latency"].status_label,
         dialogs["listening"].status_label, dialogs["listening"].progress_label,
     ):
         label.setText("Moving closer helps")
@@ -95,19 +109,17 @@ def _visible_text(button: QAbstractButton) -> str:
     return " ".join(button.text().replace("&", "").split()).rstrip(".").casefold()
 
 
-def test_a_button_name_contains_what_the_button_says(dialogs, monkeypatch) -> None:
+def test_a_button_name_contains_what_the_button_says(dialogs) -> None:
     voice_dialog, auto_eq = dialogs["voice"], dialogs["auto_eq"]
     # The buttons that appear later in a run are named too.
     for dialog in (voice_dialog, auto_eq):
         dialog.level_override_btn.setText("Continue Anyway")
         dialog.level_override_btn.setVisible(True)
         dialog.retake_btn.setVisible(True)
-    candidates = dict(dialogs)
-    for step in ("route", "voice"):
-        candidates[f"first_run_{step}"], _owner = _first_run(monkeypatch, step)
+    # The first-run dialog is a Qt Quick scene; test_first_run_setup_scene.py reads its names.
     mismatched = [
         f"{key}: {button.text()!r} is named {button.accessibleName()!r}"
-        for key, dialog in candidates.items()
+        for key, dialog in dialogs.items()
         for button in dialog.findChildren(QAbstractButton)
         if button.accessibleName() and _visible_text(button) not in button.accessibleName().casefold()
     ]
@@ -116,36 +128,43 @@ def test_a_button_name_contains_what_the_button_says(dialogs, monkeypatch) -> No
 
 def test_the_setup_action_button_is_named_by_the_text_it_shows_at_each_step(monkeypatch, qapp) -> None:
     dialog, owner = _first_run(monkeypatch, "route")
-    assert dialog.action_button.text() == "Check levels"
-    assert _name(dialog.action_button) == "Check levels"
-    dialog._run_current_step()
-    dialog._finish_route_check()
-    assert dialog.action_button.text() == "Confirm signal"
-    assert _name(dialog.action_button) == "Confirm signal"
-    assert _name(dialog.back_button) == "Back" and _name(dialog.skip_button) == "Skip this step"
-    dialog._run_current_step()
-    assert dialog.current_step == "voice"
-    assert _name(dialog.action_button) == "Open Voice Setup"
+    _open(dialog, qapp)
+    with _AccessibleScene() as scene:
+        action = scene_item(dialog, "actionButton")
+        assert scene_text(dialog, "actionButton") == "Check levels"
+        assert scene.name(action) == "Check levels"
+        press(dialog, "actionButton")
+        dialog._finish_route_check()
+        assert scene_text(dialog, "actionButton") == "Confirm signal"
+        assert scene.name(action) == "Confirm signal"
+        assert scene.name(scene_item(dialog, "backButton")) == "Back"
+        assert scene.name(scene_item(dialog, "skipButton")) == "Skip this step"
+        press(dialog, "actionButton")
+        assert dialog.current_step == "voice"
+        assert scene.name(action) == "Open Voice Setup"
+    dialog.hide()
     dialog.deleteLater()
 
 
 def test_the_setup_status_uses_the_failure_and_success_colours(monkeypatch, qapp) -> None:
-    dialog, owner = _first_run(monkeypatch)
-    dialog.input_device_selector.clear()
+    def colour(dialog) -> str:
+        return scene_item(dialog, "statusText").property("color").name()
+
+    dialog, owner = _first_run(monkeypatch, microphones=False)
     dialog._run_current_step()
-    assert "must be available" in dialog.status_label.text()
-    assert dialog.status_label.styleSheet() == message_text_style("bad") != message_text_style("idle")
+    assert "must be available" in scene_text(dialog, "statusText")
+    assert colour(dialog) == PALETTE.status_bad_text != PALETTE.status_idle_text
 
     dialog, owner = _first_run(monkeypatch, "route")
     dialog._run_current_step()
     owner.processor.running = False
     dialog._finish_route_check()
-    assert dialog.status_label.styleSheet() == message_text_style("bad")
+    assert colour(dialog) == PALETTE.status_bad_text
     owner.processor.running = True
     dialog._run_current_step()
     dialog._finish_route_check()
-    assert "Confirm" in dialog.status_label.text() or "confirm" in dialog.status_label.text()
-    assert dialog.status_label.styleSheet() == message_text_style("ok") != message_text_style("idle")
+    assert "Confirm" in scene_text(dialog, "statusText") or "confirm" in scene_text(dialog, "statusText")
+    assert colour(dialog) == PALETTE.status_ok_text != PALETTE.status_idle_text
 
 
 def _visited(dialog, named: list) -> list:
@@ -196,14 +215,11 @@ def test_a_recording_dialog_visits_its_fields_then_its_buttons_left_to_right(dia
     assert _left_to_right(dialog, buttons)
 
 
-@pytest.mark.parametrize(("name", "order", "enabled"), [
-    ("latency", ["close_button", "reset_button", "run_button", "accept_button"], "accept_button"),
-    ("listening", ["reject_button", "keep_button"], "keep_button"),
-], ids=["latency", "listening"])
-def test_the_latency_and_listening_dialogs_visit_their_buttons_left_to_right(dialogs, qapp, name, order, enabled) -> None:
-    dialog = dialogs[name]
-    buttons = [getattr(dialog, attr) for attr in order]
-    getattr(dialog, enabled).setEnabled(True)
+def test_the_listening_dialog_visits_its_buttons_left_to_right(dialogs, qapp) -> None:
+    # The latency dialog is a Qt Quick scene; test_latency_calibration_scene.py walks its buttons.
+    dialog = dialogs["listening"]
+    buttons = [dialog.reject_button, dialog.keep_button]
+    dialog.keep_button.setEnabled(True)
     _show(dialog, qapp)
     assert _visited(dialog, buttons) == buttons
     assert _left_to_right(dialog, buttons)
@@ -214,17 +230,25 @@ def test_the_first_run_dialog_visits_top_to_bottom_then_its_buttons_left_to_righ
     monkeypatch, qapp, step
 ) -> None:
     dialog, _owner = _first_run(monkeypatch, step)
-    dialog.back_button.setEnabled(True)
-    _show(dialog, qapp)
-    page = [dialog.mute_checkbox, dialog.input_device_selector, dialog.output_device_selector,
-            dialog.advanced_latency_button]
-    buttons = [dialog.pause_button, dialog.back_button, dialog.skip_button, dialog.action_button]
-    visited = _visited(dialog, [*page, *buttons])
-    assert visited == [widget for widget in (*page, *buttons) if widget.isVisibleTo(dialog)]
-    assert visited[-4:] == buttons and _left_to_right(dialog, buttons)
-    ys = [widget.mapTo(dialog, QPoint(0, 0)).y() for widget in visited[:-4]]
-    assert ys == sorted(ys)
-    dialog.close()
+    dialog.view_model.set_page(backEnabled=True)
+    _open(dialog, qapp)
+    view = dialog.quick_view
+    visited: list[str] = []
+    for _ in range(20):
+        QTest.keyClick(view, Qt.Key.Key_Tab)
+        name = view.quickWindow().activeFocusItem().objectName()
+        if name in visited:
+            break
+        visited.append(name)
+    buttons = ["pauseButton", "backButton", "skipButton", "actionButton"]
+    # The page is a tab stop of its own, so the keyboard can scroll it.
+    page = ["contentScroll", "muteSwitch", *(["inputPicker", "outputPicker"] if step == "devices" else []),
+            "latencyButton"]
+    assert visited == [*page, *buttons]
+    ys = [scene_item(dialog, name).mapToScene(QPointF(0, 0)).y() for name in page]
+    xs = [scene_item(dialog, name).mapToScene(QPointF(0, 0)).x() for name in buttons]
+    assert ys == sorted(ys) and xs == sorted(xs)
+    dialog.hide()
     dialog.deleteLater()
 
 

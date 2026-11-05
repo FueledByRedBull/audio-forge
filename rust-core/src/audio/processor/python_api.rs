@@ -3087,6 +3087,52 @@ impl PyAudioProcessor {
             diagnostics.set_item("engine_latency_ms", self.processor.get_engine_latency_ms())?;
             diagnostics.set_item("total_latency_ms", self.processor.get_latency_ms())?;
             diagnostics.set_item(
+                "output_device_latency_ms",
+                self.processor.get_output_device_latency_ms(),
+            )?;
+            diagnostics.set_item(
+                "output_device_buffer_frames",
+                self.processor
+                    .shared
+                    .output
+                    .device_buffer_frames
+                    .load(Ordering::Relaxed),
+            )?;
+            diagnostics.set_item(
+                "output_device_period_frames",
+                self.processor
+                    .shared
+                    .output
+                    .device_period_frames
+                    .load(Ordering::Relaxed),
+            )?;
+            diagnostics.set_item(
+                "output_device_buffer_known",
+                self.processor
+                    .shared
+                    .output
+                    .device_buffer_frames
+                    .load(Ordering::Relaxed)
+                    != 0,
+            )?;
+            diagnostics.set_item(
+                "output_device_buffer_failure_code",
+                self.processor
+                    .shared
+                    .output
+                    .device_buffer_failure_code
+                    .load(Ordering::Relaxed),
+            )?;
+            diagnostics.set_item(
+                "latency_compensation_ms",
+                self.processor
+                    .shared
+                    .dsp
+                    .latency_compensation_us
+                    .load(Ordering::Relaxed) as f32
+                    / 1000.0,
+            )?;
+            diagnostics.set_item(
                 "recovery_suppressed",
                 self.processor.is_recovery_suppressed(),
             )?;

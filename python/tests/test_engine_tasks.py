@@ -203,6 +203,26 @@ def test_stop_runs_on_the_worker_and_locks_the_controls_until_it_is_done(engine_
     assert not window.stop_btn_action.isEnabled()
 
 
+def test_a_double_click_on_stop_does_not_start_the_audio_again(engine_window, qapp):
+    # The button turns back into Start about 120 ms after a stop, inside a double-click.
+    window, engine = engine_window
+    window._start_processing()
+    engine.calls.clear()
+
+    clicked_after = time.monotonic()
+    window.stop_btn_action.trigger()
+    assert window._stop_clicked_at >= clicked_after
+    wait_until(qapp, lambda: window.start_btn_action.isEnabled())
+    window.start_btn_action.trigger()  # the second click lands at once
+    run_loop_for(qapp, 0.1)
+    assert engine.lifecycle() == ["stop"] and not engine.running
+
+    window._stop_clicked_at -= main_window.START_AFTER_STOP_LOCKOUT_S
+    window.start_btn_action.trigger()
+    wait_until(qapp, lambda: window.stop_btn_action.isEnabled())
+    assert engine.lifecycle() == ["stop", "start"]
+
+
 def test_a_start_that_fails_is_reported_as_before(engine_window, qapp, monkeypatch):
     window, engine = engine_window
     engine.start_error = RuntimeError("audio device is busy")

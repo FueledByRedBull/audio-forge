@@ -9,9 +9,7 @@ from __future__ import annotations
 import logging
 import os
 from collections import deque
-from dataclasses import asdict
 from functools import cache
-from pathlib import Path
 
 from PySide6.QtCore import (
     Property,
@@ -21,7 +19,6 @@ from PySide6.QtCore import (
     QPointF,
     Qt,
     QTimer,
-    QUrl,
     Signal,
     Slot,
 )
@@ -30,26 +27,20 @@ from PySide6.QtQml import qmlRegisterType, qmlRegisterUncreatableType
 from PySide6.QtQuick import QQuickPaintedItem, QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 
-from .components import Glyph, icon_font
+from .components import Glyph
 from .desktop_integration import RENDERER_RELAUNCH_ENV, relaunch_with_software_rendering
 from .control_specs import control_label
 from .eq_controls import EQControl
 from .eq_quick_graph import EQGraphItem
 from .quick_meter import QuickMeterItem
+from .quick_scene import QML_DIR, load_scene, quick_theme
 from .shell_specs import ACTION_SPECS
 from .shell_state import ActionControl
 from .noise_controls import NoiseControl
 from .quick_error_screen import show_quick_error
 from .processing_controls import SettingControl, GateText
-from .theme import (
-    PALETTE,
-    RADIUS_CARD,
-    RADIUS_CONTROL,
-    prefers_reduced_motion,
-    qcolor,
-)
+from .theme import PALETTE, RADIUS_CONTROL, qcolor
 
-QML_DIR = Path(__file__).parent / "qml"
 # Level history behind the noise suppression trace: 6 seconds at 20 Hz.
 TRACE_INTERVAL_MS = 50
 TRACE_POINTS = 120
@@ -341,16 +332,8 @@ class QuickBridge(QObject):
 
         settings_cards = w.shell_settings_cards
 
-        font = icon_font()
         return {
-            "theme": {
-                **{k: v for k, v in asdict(PALETTE).items() if isinstance(v, str)},
-                "bandColors": list(PALETTE.eq_band_colors),
-                "iconFont": font.family() if font is not None else "",
-                "radiusCard": RADIUS_CARD,
-                "radiusControl": RADIUS_CONTROL,
-                "motion": 0 if prefers_reduced_motion() else 140,
-            },
+            "theme": quick_theme(),
             "glyphs": {
                 "mic": Glyph.MICROPHONE,
                 "health": Glyph.HEALTH,
@@ -461,7 +444,7 @@ def graphics_api(window) -> str:
 
 
 @cache
-def _register_qml_types() -> None:
+def register_qml_types() -> None:
     """Register the scene's Python types with QML; Qt keeps every registration for the process."""
 
     qmlRegisterType(EQGraphItem, "AudioForge", 1, 0, "EQGraphItem")  # type: ignore[call-overload]
@@ -473,7 +456,7 @@ def _register_qml_types() -> None:
 def install_quick_shell(window) -> None:
     """Make the QML scene the window's content, or the error screen if it cannot start."""
 
-    _register_qml_types()
+    register_qml_types()
     try:
         bridge = QuickBridge(window)
     except Exception as error:
@@ -481,12 +464,8 @@ def install_quick_shell(window) -> None:
         show_quick_error(window, "bridge_failed", f"{type(error).__name__}: {error}")
         return
     view = QQuickWidget(window)
-    view.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-    view.setClearColor(qcolor(PALETTE.app_surface))
-    view.setInitialProperties({"ui": bridge})
-    view.setSource(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
-    if view.status() != QQuickWidget.Status.Ready:
-        reason = "; ".join(error.toString() for error in view.errors()) or "no details were reported"
+    reason = load_scene(view, QML_DIR / "Main.qml", bridge._model["theme"], {"ui": bridge})
+    if reason is not None:
         _LOG.error("Qt Quick view failed to load: %s", reason)
         view.deleteLater()
         bridge.release()

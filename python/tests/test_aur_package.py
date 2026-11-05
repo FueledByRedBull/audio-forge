@@ -36,3 +36,16 @@ def test_the_tarball_digest_is_read_from_the_release_checksums(tmp_path):
 
     with pytest.raises(ValueError, match="exactly once"):
         aur_package.read_checksum(checksums, "AudioForge-v1.2.4-linux-x86_64.tar.gz")
+
+
+def test_the_files_are_written_with_unix_line_endings(tmp_path, monkeypatch):
+    # makepkg refuses CRLF, which Windows' default text mode would write.
+    checksums = tmp_path / "SHA256SUMS.txt"
+    checksums.write_text(f"{DIGEST}  {TARBALL}\n", encoding="utf-8")
+    output = tmp_path / "aur"
+    monkeypatch.setattr(
+        "sys.argv", ["aur_package.py", "--tag", "v1.2.3", "--checksums", str(checksums), "--output", str(output)]
+    )
+    assert aur_package.main() == 0
+    for name in ("PKGBUILD", ".SRCINFO"):
+        assert b"\r" not in (output / name).read_bytes()

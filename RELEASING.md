@@ -336,7 +336,9 @@ wasn't covered) with the other unpublished evidence, as in step 5.
 
 The soak shows that a started AudioForge keeps memory, threads and handles flat
 and neither drops audio nor restarts or recovers a stream for an hour. Its
-criteria come from a one-hour pilot on 2026-10-15.
+criteria come from a one-hour pilot on 2026-10-15; the first unmuted runs, on
+1.21.0 to CABLE Input and to Realtek Digital Output, logged no dropouts after
+priming.
 
 1. From PowerShell in the extracted folder, with sleep and screen lock off,
    start the app with factory settings in a scratch `APPDATA` that skips the
@@ -353,8 +355,10 @@ criteria come from a one-hour pilot on 2026-10-15.
 
 2. Choose the real microphone as input and an output endpoint nobody listens
    to (**CABLE Input** when the release changes the output path, since only
-   VB-Audio endpoints use the shorter period), and turn the top-bar **Mute**
-   toggle on. Change nothing else, and don't
+   VB-Audio endpoints use the shorter period). Leave the top-bar **Mute**
+   toggle off: a muted output empties the queue without counting underruns or
+   callback sizes, so a muted run never tests the output queue. Make sure
+   nothing records or plays that endpoint. Change nothing else, and don't
    press **Reset drop counter**. Press **Start** (minute 0), then
    run this in a second PowerShell window:
 
@@ -390,15 +394,17 @@ It passes only if all of these hold:
   differences between consecutive `cpu_seconds` values.
 
 Threads, handles, `jitter_dropped_samples`, `output_retime_adjustment_count`,
-`output_low_period_frames` and `output_low_period_failure_code` are recorded, not
-gated. Zero frames or a nonzero failure code means the stream wasn't on the shorter
-period, so the run didn't test it. A steady climb in threads or handles is a finding
-to explain before tagging. The jitter counter adds up the samples that output drift
+`output_low_period_frames`, `output_low_period_failure_code` and
+`output_sustained_callback_frames` are recorded, not gated. Zero frames or a
+nonzero failure code means the stream wasn't on the shorter period, so the run
+didn't test it. A sustained callback size of 0 usually means the output was
+muted or never primed. A steady climb in threads or handles is a finding to
+explain before tagging. The jitter counter adds up the samples that output drift
 retiming trims. A route whose input and output run on separate clocks retimes
 all the time, and the Health page counts these samples neither as drops nor as
 an engine fault. Not covered: other machines and microphone routes, non-factory
-settings, an audible output (a muted Output row doesn't count toward the
-verdict), device changes, sleep or resume, other audio applications.
+settings, an audible output, device changes, sleep or resume, other audio
+applications.
 The fault criterion can fail: it would have failed 1.16.0, whose Drops row
 called gate chatter an engine fault (see CHANGELOG).
 
@@ -492,9 +498,10 @@ every part of its criterion holds; record "not run" for any skipped.
     the alert look, Normal returns to the ordinary look, and audio keeps
     flowing through all three.
 15. **DeepFilterNet latency labels.** While running with audio flowing, select
-    **DeepFilterNet LL**, then **DeepFilterNet**. Pass: the latency label reads
-    about 15 ms, then about 35 ms, audio keeps flowing, and Health shows no
-    DeepFilter error.
+    **DeepFilterNet LL**, then **DeepFilterNet**. Pass: the latency label (an
+    "at least N ms" figure while no route is measured) rises by about 15 ms for
+    DeepFilterNet LL and by about 35 ms for DeepFilterNet compared with the
+    suppressor off, audio keeps flowing, and Health shows no DeepFilter error.
 16. **Recovery during setup.** Open **Auto Voice Setup** (or latency
     calibration) while running. Pass: Health shows automatic recovery as paused
     while the dialog is open and normal again after it closes.

@@ -36,6 +36,23 @@ def test_recent_health_recovers_without_erasing_cumulative_counts():
     assert not health.observe(diagnostics, now=11.0)
 
 
+def test_a_counter_reset_ends_its_recent_event():
+    # A restart within the five-second window used to leave the old event
+    # standing while the counter read 0: "Gate: CHATTERING (0 times)".
+    from mic_eq.ui.health import RecentStreamHealth
+
+    health = RecentStreamHealth()
+    assert health.observe({"gate_chatter_event_count": 12}, now=0.0) == {"gate_chatter_event_count"}
+    assert not health.observe({"gate_chatter_event_count": 0}, now=1.0)
+    assert health.observe({"gate_chatter_event_count": 1}, now=2.0) == {"gate_chatter_event_count"}
+
+    # Events the new stream counted before the next tick are real ones.
+    health = RecentStreamHealth()
+    assert health.observe({"gate_chatter_event_count": 12}, now=0.0) == {"gate_chatter_event_count"}
+    assert health.observe({"gate_chatter_event_count": 3}, now=1.0) == {"gate_chatter_event_count"}
+    assert not health.observe({"gate_chatter_event_count": 3}, now=7.0)
+
+
 def test_output_drift_retiming_is_not_a_recent_stream_event():
     from mic_eq.ui.health import RecentStreamHealth
 

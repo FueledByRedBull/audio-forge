@@ -272,6 +272,13 @@ pub(super) struct OutputShared {
     pub(super) low_period_frames: AtomicU32,
     /// HRESULT that kept the output stream off a short period or ended it there; 0 if none
     pub(super) low_period_failure_code: Arc<AtomicU32>,
+    /// Frames the output device buffers ahead of the speaker, read when the stream
+    /// opened; 0 when unknown (the read failed, or the platform has no reader)
+    pub(super) device_buffer_frames: AtomicU32,
+    /// The output device's callback period in frames, read with the buffer size
+    pub(super) device_period_frames: AtomicU32,
+    /// HRESULT of the failed device buffer read; 0 when it was read or not attempted
+    pub(super) device_buffer_failure_code: AtomicU32,
     /// Largest output callback request since the stream was primed (diagnostic)
     pub(super) largest_callback_frames: Arc<AtomicU32>,
     /// Largest request that the last few output callbacks all reached; gates the short queue
@@ -409,7 +416,8 @@ pub(super) struct VadShared {
 
 /// DSP loop timing, latency and RT error counters.
 pub(super) struct DspShared {
-    /// Processing latency in microseconds (measured from input to output)
+    /// Engine latency in microseconds (measured from input to output), without
+    /// the route compensation.
     pub(super) latency_us: AtomicU64,
     /// User-configured compensation added to reported latency (microseconds).
     pub(super) latency_compensation_us: AtomicU64,
@@ -636,6 +644,9 @@ impl Shared {
                 primed: Arc::new(AtomicBool::new(false)),
                 low_period_frames: AtomicU32::new(0),
                 low_period_failure_code: Arc::new(AtomicU32::new(0)),
+                device_buffer_frames: AtomicU32::new(0),
+                device_period_frames: AtomicU32::new(0),
+                device_buffer_failure_code: AtomicU32::new(0),
                 largest_callback_frames: Arc::new(AtomicU32::new(0)),
                 sustained_callback_frames: Arc::new(AtomicU32::new(0)),
                 priming_started_at_us: Arc::new(AtomicU64::new(0)),
@@ -856,6 +867,11 @@ impl Shared {
         self.output.low_period_frames.store(0, Ordering::Relaxed);
         self.output
             .low_period_failure_code
+            .store(0, Ordering::Relaxed);
+        self.output.device_buffer_frames.store(0, Ordering::Relaxed);
+        self.output.device_period_frames.store(0, Ordering::Relaxed);
+        self.output
+            .device_buffer_failure_code
             .store(0, Ordering::Relaxed);
         self.output
             .largest_callback_frames

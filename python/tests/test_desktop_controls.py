@@ -365,3 +365,15 @@ def test_a_panel_that_starts_after_the_app_still_gets_the_tray(
         if window._tray_icon is not None:
             window._tray_icon.hide()
         QDBusConnection.disconnectFromBus("audioforge-tray-test")
+
+
+def test_the_about_box_names_the_version_in_its_title(isolated_main_window, monkeypatch):
+    from mic_eq import __version__
+    from mic_eq.ui import main_window as main_window_module
+
+    shown = []
+    monkeypatch.setattr(
+        main_window_module.QMessageBox, "about", lambda _parent, title, text: shown.append((title, text))
+    )
+    isolated_main_window._show_about()
+    assert shown and shown[0][0] == f"About AudioForge v{__version__}"

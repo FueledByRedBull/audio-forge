@@ -124,8 +124,9 @@ def main() -> int:
     except ValueError as error:
         parser.error(str(error))
     args.output.mkdir(parents=True, exist_ok=True)
-    (args.output / "PKGBUILD").write_text(pkgbuild, encoding="utf-8")
-    (args.output / ".SRCINFO").write_text(srcinfo, encoding="utf-8")
+    # makepkg refuses CRLF, which write_text would produce on Windows.
+    (args.output / "PKGBUILD").write_text(pkgbuild, encoding="utf-8", newline="\n")
+    (args.output / ".SRCINFO").write_text(srcinfo, encoding="utf-8", newline="\n")
     return 0
 
 

@@ -472,10 +472,7 @@ fn dsp_block_sources_hold_no_blocking_or_allocating_apis() {
         (
             "dsp/loudness.rs",
             include_str!("dsp/loudness.rs"),
-            &[
-                ("LoudnessMeter::new", SETUP),
-                ("integrated_loudness_lufs", OFFLINE),
-            ][..],
+            &[("LoudnessMeter::new", SETUP)][..],
         ),
         (
             "dsp/noise_suppressor.rs",

@@ -201,13 +201,10 @@ def preferred_output_index(identities: list[DeviceIdentity | None]) -> int:
 
 
 __all__ = [
-    "AUDIOFORGE_MIC_ENDPOINT",
     "FOLLOW_DEFAULT_INPUT_ENDPOINT",
     "OWN_MICROPHONE_MESSAGE",
-    "VIRTUAL_OUTPUT_MARKERS",
     "OwnMicrophoneError",
     "default_device_index",
-    "device_name_ordinal",
     "find_identity_index",
     "identity_is_persistable",
     "note_own_microphone_refusal",

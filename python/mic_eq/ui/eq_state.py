@@ -19,6 +19,7 @@ from ..config import (
 )
 from ..config_parts.settings import _default_filter_type
 from .auto_eq_explanation import explain_auto_eq, target_profile_text
+from .calibration_support import format_db, format_percent
 from .rate_limiter import RateLimiter
 
 
@@ -56,20 +57,6 @@ def _bands_from_arrays(
         )
         for index, gain in enumerate(gains[:10])
     )
-
-
-def _percent(value: Any) -> str:
-    try:
-        return f"{float(value) * 100.0:.0f}%"
-    except (TypeError, ValueError):
-        return "--"
-
-
-def _db_value(value: Any) -> str:
-    try:
-        return f"{float(value):.1f} dB"
-    except (TypeError, ValueError):
-        return "--"
 
 
 def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str]:
@@ -123,10 +110,10 @@ def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str
         )
         tooltip_extra = (
             f"\nHeadroom status: {tooltip_status}"
-            f"\nPre-limiter true-peak headroom: {_db_value(pre_tp_headroom)}"
-            f"\nLimiter gain reduction: {_db_value(limiter_gr)}"
-            f"\nTrue-peak limiter gain reduction: {_db_value(true_peak_gr)}"
-            f"\nHeadroom gain scale: {_percent(headroom_scale)}"
+            f"\nPre-limiter true-peak headroom: {format_db(pre_tp_headroom)}"
+            f"\nLimiter gain reduction: {format_db(limiter_gr)}"
+            f"\nTrue-peak limiter gain reduction: {format_db(true_peak_gr)}"
+            f"\nHeadroom gain scale: {format_percent(headroom_scale)}"
         )
     else:
         tooltip_extra = ""
@@ -140,13 +127,13 @@ def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str
         f"{explanation_details}\n"
         f"Raw recommendation status: "
         f"{diagnostics.get('recommendation_status', '--')}\n"
-        f"Overall confidence: {_percent(confidence)}\n"
-        f"EQ confidence: {_percent(eq_confidence)}\n"
-        f"Capture confidence: {_percent(capture_confidence)}\n"
-        f"Validation confidence: {_percent(validation_confidence)}\n"
-        f"Weighted target error before: {_db_value(before)}\n"
-        f"Weighted target error after: {_db_value(after)}\n"
-        f"Validation gain scale: {_percent(scale)}\n"
+        f"Overall confidence: {format_percent(confidence)}\n"
+        f"EQ confidence: {format_percent(eq_confidence)}\n"
+        f"Capture confidence: {format_percent(capture_confidence)}\n"
+        f"Validation confidence: {format_percent(validation_confidence)}\n"
+        f"Weighted target error before: {format_db(before)}\n"
+        f"Weighted target error after: {format_db(after)}\n"
+        f"Validation gain scale: {format_percent(scale)}\n"
         f"Target profile: {target_profile_text(diagnostics.get('target_profile'))}\n"
         f"Fallback analysis: {'yes' if used_fallback else 'no'}"
         f"{low_confidence_line}"

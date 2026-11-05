@@ -216,7 +216,7 @@ def test_k_weighting_preserves_windows_features_and_recommendation_decisions(
     for confidence, snr in ((0.54, 20.0), (0.55, 10.0), (0.9, 9.99)):
         def recommend(features):
             return voice_setup._recommend_compressor_settings(
-                target_preset="natural", speech_body_db=-25.0,
+                speech_body_db=-25.0,
                 speech_loudness_lufs=features["short_term_lufs"],
                 loudness_range_db=features["loudness_range_db"], speech_snr_db=snr,
                 capture_confidence=confidence, dynamics_intensity="balanced",

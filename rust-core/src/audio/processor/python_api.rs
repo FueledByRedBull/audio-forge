@@ -2203,26 +2203,6 @@ impl PyAudioProcessor {
         self.processor.is_vad_available()
     }
 
-    /// Set VAD probability threshold (0.0-1.0)
-    #[cfg(feature = "vad")]
-    fn set_vad_threshold(&self, threshold: f32) {
-        self.processor.set_vad_threshold(threshold);
-    }
-
-    /// Set VAD hold time in milliseconds
-    #[cfg(feature = "vad")]
-    fn set_vad_hold_time(&self, hold_ms: f32) {
-        self.processor.set_vad_hold_time(hold_ms);
-    }
-
-    /// Set VAD pre-gain to boost weak signals for better speech detection
-    /// Default is 1.0 (no gain). Values > 1.0 boost the signal.
-    /// This helps with quiet microphones where VAD can't detect speech.
-    #[cfg(feature = "vad")]
-    fn set_vad_pre_gain(&self, gain: f32) {
-        self.processor.set_vad_pre_gain(gain);
-    }
-
     /// Enable/disable auto-threshold mode (automatically adjusts gate threshold based on noise floor)
     #[cfg(feature = "vad")]
     fn set_auto_threshold(&self, enabled: bool) {

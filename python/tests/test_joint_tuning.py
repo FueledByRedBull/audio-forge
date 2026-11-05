@@ -54,7 +54,6 @@ def test_vad_alignment_waits_for_a_window_finished_before_the_block():
     aligned = joint_tuning._align_probabilities(
         np.asarray([0.2, 0.8], dtype=np.float32),
         4_800,
-        4_800,
     )
 
     np.testing.assert_allclose(

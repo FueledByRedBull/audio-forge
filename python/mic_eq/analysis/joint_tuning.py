@@ -93,7 +93,6 @@ def _to_simulation_rate(audio: np.ndarray, sample_rate: int) -> np.ndarray:
 
 def _align_probabilities(
     probabilities: np.ndarray | None,
-    source_sample_count: int,
     target_sample_count: int,
 ) -> np.ndarray:
     target_count = max(1, (int(target_sample_count) + _FRAME_SAMPLES - 1) // _FRAME_SAMPLES)
@@ -148,7 +147,6 @@ def _candidate_settings(
     gate_settings: Mapping[str, Any],
     *,
     noise_floor_db: float,
-    strength: float,
     threshold_delta_db: float,
     release_delta_ms: float,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -705,11 +703,9 @@ def tune_gate_suppression_dynamics(
     speech_probabilities = _align_probabilities(
         vad_probabilities,
         simulation_speech.size,
-        simulation_speech.size,
     )
     noise_probabilities = _align_probabilities(
         noise_vad_probabilities,
-        simulation_noise.size,
         simulation_noise.size,
     )
     if vad_probabilities is None:
@@ -796,11 +792,9 @@ def tune_gate_suppression_dynamics(
                 _align_probabilities(
                     speech_raw,
                     simulation_speech.size,
-                    simulation_speech.size,
                 ),
                 _align_probabilities(
                     noise_raw,
-                    simulation_noise.size,
                     simulation_noise.size,
                 ),
                 True,
@@ -913,7 +907,6 @@ def tune_gate_suppression_dynamics(
         candidate_gate, simulator_gate = _candidate_settings(
             candidate_base,
             noise_floor_db=measured_noise_floor,
-            strength=candidate_strength,
             threshold_delta_db=threshold_delta,
             release_delta_ms=release_delta,
         )
@@ -1147,7 +1140,6 @@ def tune_gate_suppression_dynamics(
             _candidate_gate, simulator_gate = _candidate_settings(
                 candidate_base,
                 noise_floor_db=measured_noise_floor,
-                strength=requested_strength,
                 threshold_delta_db=threshold_delta,
                 release_delta_ms=release_delta,
             )
@@ -1208,7 +1200,6 @@ def tune_gate_suppression_dynamics(
                 candidate_gate, _simulator_gate = _candidate_settings(
                     candidate_base,
                     noise_floor_db=measured_noise_floor,
-                    strength=requested_strength,
                     threshold_delta_db=threshold_delta,
                     release_delta_ms=release_delta,
                 )

@@ -195,24 +195,6 @@ impl AtomicGateControlState {
     }
 
     #[cfg(feature = "vad")]
-    pub(super) fn set_vad_threshold(&self, threshold: f32) {
-        self.update(|state| {
-            state
-                .vad_threshold_bits
-                .store(threshold.to_bits(), Ordering::Relaxed);
-        });
-    }
-
-    #[cfg(feature = "vad")]
-    pub(super) fn set_hold_ms(&self, hold_ms: f32) {
-        self.update(|state| {
-            state
-                .hold_ms_bits
-                .store(hold_ms.to_bits(), Ordering::Relaxed);
-        });
-    }
-
-    #[cfg(feature = "vad")]
     pub(super) fn set_pre_gain(&self, pre_gain: f32) {
         self.update(|state| {
             state

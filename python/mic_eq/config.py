@@ -31,19 +31,14 @@ from .config_parts.settings import (
     EQBandSettings,
     EQSettings,
     build_eq_candidate_settings,
-    EQ_BANDWIDTH_MODES,
     EQ_BAND_COUNT,
-    EQ_FILTER_TYPES,
     EQ_FREQUENCIES,
-    EQ_RUNTIME_SAMPLE_RATE,
     EQ_SCHEMA_VERSION,
     EQ_SLOPES_DB_PER_OCTAVE,
-    EQ_STAGES,
     GateSettings,
     LatencyCalibrationProfile,
     LimiterSettings,
     RNNoiseSettings,
-    TargetCurve,
     q_from_bandwidth_octaves,
 )
 from .config_parts.shared import (
@@ -60,7 +55,6 @@ from .config_parts.shared import (
     legacy_latency_profile_key,
     parse_latency_profile_key,
 )
-from .config_parts.validation import VALIDATION_RANGES
 
 
 BUILTIN_PRESETS = build_builtin_presets()
@@ -87,14 +81,10 @@ __all__ = [
     "EQBandSettings",
     "EQSettings",
     "build_eq_candidate_settings",
-    "EQ_BANDWIDTH_MODES",
     "EQ_BAND_COUNT",
-    "EQ_FILTER_TYPES",
     "EQ_FREQUENCIES",
-    "EQ_RUNTIME_SAMPLE_RATE",
     "EQ_SCHEMA_VERSION",
     "EQ_SLOPES_DB_PER_OCTAVE",
-    "EQ_STAGES",
     "GateSettings",
     "LatencyCalibrationProfile",
     "LEGACY_APPDATA_DIR_NAME",
@@ -103,8 +93,6 @@ __all__ = [
     "PresetValidationError",
     "RNNoiseSettings",
     "TARGET_CURVES",
-    "TargetCurve",
-    "VALIDATION_RANGES",
     "build_device_route_key",
     "build_input_device_preference_key",
     "coerce_device_identity",

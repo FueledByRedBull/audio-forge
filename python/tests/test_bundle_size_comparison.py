@@ -37,8 +37,6 @@ def test_size_comparison_rejects_invalid_manifest(files):
 def test_size_comparison_attributes_components_without_double_counting():
     old = {"files": [
         {"path": "_internal/PySide6/Qt6/bin/Qt6Core.dll", "size": 200},
-        {"path": "_internal/scipy/signal/_signal.pyd", "size": 80},
-        {"path": "_internal/scipy.libs/libscipy_openblas.dll", "size": 120},
     ]}
     new = {"files": [
         {"path": "_internal/PySide6/Qt6Core.dll", "size": 180},
@@ -58,11 +56,10 @@ def test_size_comparison_attributes_components_without_double_counting():
         {"path": "unrecognized.dll", "size": 7},
     ]}
     output = release_provenance.compare_bundle_sizes(new, old)
-    assert "400 -> 595 bytes (+195)" in output
+    assert "200 -> 595 bytes (+395)" in output
     component_section = output.split("| Component |", 1)[1].split("| Largest file", 1)[0]
     expected = {
         "Qt and bindings": (200, 200, 0),
-        "SciPy and bundled BLAS": (200, 0, -200),
         "NumPy and bundled BLAS": (0, 100, 100),
         "DeepFilter LL model": (0, 50, 50),
         "DeepFilter Standard model": (0, 70, 70),

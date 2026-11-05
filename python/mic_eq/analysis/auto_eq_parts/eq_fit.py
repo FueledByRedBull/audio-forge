@@ -123,7 +123,7 @@ def solve_lsq_trust_region(n, m, uf, s, V, Delta, initial_alpha=None, rtol=0.01,
     if full_rank:
         p = -V.dot(uf / s)
         if norm(p) <= Delta:
-            return p, 0.0, 0
+            return p, 0.0
 
     alpha_upper = norm(suf) / Delta
 
@@ -138,8 +138,7 @@ def solve_lsq_trust_region(n, m, uf, s, V, Delta, initial_alpha=None, rtol=0.01,
     else:
         alpha = initial_alpha
 
-    it = 0
-    for it in range(max_iter):
+    for _ in range(max_iter):
         if alpha < alpha_lower or alpha > alpha_upper:
             alpha = max(0.001 * alpha_upper, (alpha_lower * alpha_upper) ** 0.5)
 
@@ -162,7 +161,7 @@ def solve_lsq_trust_region(n, m, uf, s, V, Delta, initial_alpha=None, rtol=0.01,
     # cause problems later).
     p *= Delta / norm(p)
 
-    return p, alpha, it + 1
+    return p, alpha
 
 
 def update_tr_radius(Delta, actual_reduction, predicted_reduction, step_norm, bound_hit):
@@ -630,7 +629,7 @@ def _trf_bounds(fun, jac, x0, f0, J0, lb, ub, ftol, xtol, gtol, max_nfev, x_scal
 
         actual_reduction = -1
         while actual_reduction <= 0 and nfev < max_nfev:
-            p_h, alpha, n_iter = solve_lsq_trust_region(n, m, uf, s, V, Delta, initial_alpha=alpha)
+            p_h, alpha = solve_lsq_trust_region(n, m, uf, s, V, Delta, initial_alpha=alpha)
 
             p = d * p_h  # Trust-region solution in the original space.
             step, step_h, predicted_reduction = select_step(

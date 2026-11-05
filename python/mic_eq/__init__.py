@@ -75,7 +75,6 @@ try:
         DeviceInfo,
         analyze_vad_probabilities,
         configure_deepfilter_runtime_paths,
-        eq_magnitude_response,
         eq_magnitude_response_v2,
         input_prefilter_response_db,
         list_input_devices,
@@ -103,7 +102,6 @@ except ImportError as error:
     list_output_devices = _missing_core
     configure_deepfilter_runtime_paths = _missing_core
     analyze_vad_probabilities = _missing_core
-    eq_magnitude_response = _missing_core
     eq_magnitude_response_v2 = _missing_core
     input_prefilter_response_db = _missing_core
 
@@ -120,7 +118,6 @@ __all__ = [
     "DeviceInfo",
     "list_input_devices",
     "list_output_devices",
-    "eq_magnitude_response",
     "eq_magnitude_response_v2",
     "input_prefilter_response_db",
     "analyze_vad_probabilities",

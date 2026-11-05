@@ -58,35 +58,6 @@ impl AudioProcessor {
     }
 
     #[cfg(feature = "vad")]
-    /// Set VAD probability threshold (0.0-1.0)
-    pub fn set_vad_threshold(&self, threshold: f32) {
-        let Some(threshold) =
-            self.clamp_live_control_f32(threshold, VAD_THRESHOLD_MIN, VAD_THRESHOLD_MAX)
-        else {
-            return;
-        };
-        if let Ok(mut control) = self.shared.gate.control.lock() {
-            control.vad_threshold = threshold;
-        }
-        self.shared.gate.rt_control.set_vad_threshold(threshold);
-        self.shared.gate.dirty.store(true, Ordering::Release);
-    }
-
-    #[cfg(feature = "vad")]
-    /// Set VAD hold time in milliseconds
-    pub fn set_vad_hold_time(&self, hold_ms: f32) {
-        let Some(hold_ms) = self.clamp_live_control_f32(hold_ms, VAD_HOLD_MIN_MS, VAD_HOLD_MAX_MS)
-        else {
-            return;
-        };
-        if let Ok(mut control) = self.shared.gate.control.lock() {
-            control.hold_ms = hold_ms;
-        }
-        self.shared.gate.rt_control.set_hold_ms(hold_ms);
-        self.shared.gate.dirty.store(true, Ordering::Release);
-    }
-
-    #[cfg(feature = "vad")]
     /// Set VAD pre-gain to boost weak signals for better speech detection
     /// Default is 1.0 (no gain). Values > 1.0 boost the signal.
     /// This helps with quiet microphones where VAD can't detect speech.

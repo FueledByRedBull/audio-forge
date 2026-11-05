@@ -706,7 +706,6 @@ def _recommend_deesser_settings(
 
 def _recommend_compressor_settings(
     *,
-    target_preset: str,
     speech_body_db: float,
     speech_loudness_lufs: float,
     loudness_range_db: float,
@@ -1134,7 +1133,6 @@ def analyze_voice_setup(
         frame_evidence=features["deesser_frame_evidence"],
     )
     compressor_settings, compressor_diag = _recommend_compressor_settings(
-        target_preset=target_preset,
         speech_body_db=speech_body_db,
         speech_loudness_lufs=float(features["short_term_lufs"]),
         loudness_range_db=speech_dynamic_range_db,
@@ -2303,7 +2301,6 @@ def reduce_for_verification(
 
 
 __all__ = [
-    "DYNAMICS_PROFILES",
     "GATE_MODE_LABELS",
     "analyze_voice_setup",
     "validate_voice_setup_verification",

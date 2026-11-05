@@ -944,5 +944,4 @@ __all__ = [
     "list_presets",
     "load_preset",
     "save_preset",
-    "validate_preset_file_size",
 ]

@@ -255,48 +255,6 @@ pub(crate) fn validate_sample_rate(sample_rate: f64) -> PyResult<()> {
     Ok(())
 }
 
-#[pyfunction]
-fn eq_magnitude_response(
-    frequencies_hz: Vec<f64>,
-    bands: Vec<(f64, f64, f64)>,
-    sample_rate: f64,
-) -> PyResult<Vec<f64>> {
-    catch_panic(|| {
-        validate_sample_rate(sample_rate)?;
-        if bands.len() != dsp::eq::NUM_BANDS {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "expected {} EQ bands, got {}",
-                dsp::eq::NUM_BANDS,
-                bands.len()
-            )));
-        }
-        let nyquist = sample_rate / 2.0;
-        for (index, (frequency_hz, gain_db, q)) in bands.iter().copied().enumerate() {
-            dsp::eq::validate_eq_frequency_hz(frequency_hz, sample_rate)
-                .and_then(|()| dsp::eq::validate_eq_gain_db(gain_db))
-                .and_then(|()| dsp::eq::validate_eq_q(q))
-                .map_err(|message| {
-                    pyo3::exceptions::PyValueError::new_err(format!("band {index}: {message}"))
-                })?;
-        }
-        if frequencies_hz.iter().any(|frequency_hz| {
-            !frequency_hz.is_finite() || *frequency_hz < 0.0 || *frequency_hz > nyquist
-        }) {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "response frequencies must be finite and between 0 Hz and Nyquist",
-            ));
-        }
-
-        let mut eq = ParametricEQ::new(sample_rate);
-        for (index, (frequency_hz, gain_db, q)) in bands.into_iter().enumerate() {
-            eq.set_band_frequency(index, frequency_hz);
-            eq.set_band_gain(index, gain_db);
-            eq.set_band_q(index, q);
-        }
-        Ok(eq.magnitude_response_db(&frequencies_hz))
-    })
-}
-
 type PyEqBandV2 = (String, f64, f64, f64, u8, bool);
 
 fn parse_eq_v2_bands(bands: &[PyEqBandV2], sample_rate: f64) -> PyResult<Vec<dsp::EqBandConfig>> {
@@ -463,19 +421,6 @@ fn simulate_eq_v2(
 }
 
 #[pyfunction]
-fn measure_integrated_loudness(
-    py: Python<'_>,
-    audio: numpy::PyReadonlyArray1<'_, f32>,
-    sample_rate: u32,
-) -> PyResult<f64> {
-    let samples = audio.as_slice()?.to_vec();
-    catch_panic(|| {
-        py.detach(move || dsp::loudness::integrated_loudness_lufs(&samples, sample_rate))
-            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
-    })
-}
-
-#[pyfunction]
 fn _k_weighted_48k<'py>(
     py: Python<'py>,
     audio: numpy::PyReadonlyArray1<'py, f64>,
@@ -525,14 +470,12 @@ fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         audio::processor::simulate_gate_suppressor_order,
         m
     )?)?;
-    m.add_function(wrap_pyfunction!(eq_magnitude_response, m)?)?;
     m.add_function(wrap_pyfunction!(eq_magnitude_response_v2, m)?)?;
     m.add_function(wrap_pyfunction!(
         audio::processor::input_prefilter_response_db,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(simulate_eq_v2, m)?)?;
-    m.add_function(wrap_pyfunction!(measure_integrated_loudness, m)?)?;
     m.add_function(wrap_pyfunction!(_k_weighted_48k, m)?)?;
 
     #[cfg(feature = "vad")]
@@ -562,10 +505,6 @@ fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
             audio::virtual_mic::default_source_watch_failed,
             m
         )?)?;
-        m.add_function(wrap_pyfunction!(
-            audio::virtual_mic::destroy_virtual_microphone,
-            m
-        )?)?;
     }
 
     Ok(())
@@ -588,40 +527,8 @@ fn configure_deepfilter_runtime_paths(
 mod boundary_tests {
     use super::*;
 
-    fn default_bands() -> Vec<(f64, f64, f64)> {
+    fn default_bands() -> Vec<PyEqBandV2> {
         (0..dsp::eq::NUM_BANDS)
-            .map(|index| (100.0 * (index + 1) as f64, 0.0, 1.0))
-            .collect()
-    }
-
-    fn eq_response_error(bands: Vec<(f64, f64, f64)>, sample_rate: f64) -> String {
-        eq_magnitude_response(vec![1000.0], bands, sample_rate)
-            .expect_err("out-of-range input must be rejected")
-            .to_string()
-    }
-
-    #[test]
-    fn eq_response_v1_rejects_values_outside_the_live_eq_ranges() {
-        assert!(eq_magnitude_response(vec![1000.0], default_bands(), 48_000.0).is_ok());
-
-        let mut bands = default_bands();
-        bands[3].1 = 1e300;
-        assert!(eq_response_error(bands, 48_000.0).contains("band 3"));
-
-        let mut bands = default_bands();
-        bands[4].2 = 1e300;
-        assert!(eq_response_error(bands, 48_000.0).contains("band 4"));
-
-        let mut bands = default_bands();
-        bands[5].0 = 1e-3;
-        assert!(eq_response_error(bands, 48_000.0).contains("band 5"));
-
-        assert!(eq_response_error(default_bands(), 1e300).contains("sample_rate"));
-    }
-
-    #[test]
-    fn eq_response_v2_bounds_sample_rate_like_simulate_eq_v2() {
-        let bands = (0..dsp::eq::NUM_BANDS)
             .map(|index| {
                 (
                     "bell".to_string(),
@@ -632,7 +539,37 @@ mod boundary_tests {
                     true,
                 )
             })
-            .collect::<Vec<_>>();
+            .collect()
+    }
+
+    fn eq_response_error(bands: Vec<PyEqBandV2>, sample_rate: f64) -> String {
+        eq_magnitude_response_v2(vec![1000.0], bands, sample_rate)
+            .expect_err("out-of-range input must be rejected")
+            .to_string()
+    }
+
+    #[test]
+    fn eq_response_v2_rejects_values_outside_the_live_eq_ranges() {
+        assert!(eq_magnitude_response_v2(vec![1000.0], default_bands(), 48_000.0).is_ok());
+
+        let mut bands = default_bands();
+        bands[3].2 = 1e300;
+        assert!(eq_response_error(bands, 48_000.0).contains("Band 3"));
+
+        let mut bands = default_bands();
+        bands[4].3 = 1e300;
+        assert!(eq_response_error(bands, 48_000.0).contains("Band 4"));
+
+        let mut bands = default_bands();
+        bands[5].1 = 1e-3;
+        assert!(eq_response_error(bands, 48_000.0).contains("Band 5"));
+
+        assert!(eq_response_error(default_bands(), 1e300).contains("sample_rate"));
+    }
+
+    #[test]
+    fn eq_response_v2_bounds_sample_rate_like_simulate_eq_v2() {
+        let bands = default_bands();
         for sample_rate in [1e9, 1_000.0] {
             let error = eq_magnitude_response_v2(vec![1000.0], bands.clone(), sample_rate)
                 .expect_err("sample rate outside 8-768 kHz must be rejected");
@@ -678,7 +615,7 @@ mod boundary_tests",
                 checked += 1;
             }
         }
-        assert!(checked >= 15, "only {checked} pyfunctions found");
+        assert!(checked >= 13, "only {checked} pyfunctions found");
     }
 
     #[test]

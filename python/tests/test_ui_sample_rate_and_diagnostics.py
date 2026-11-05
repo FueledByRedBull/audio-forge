@@ -849,7 +849,6 @@ def test_health_panel_reports_input_output_and_callback_states(window):
         latency_ms=24.0,
         dsp_time_ms=0.5,
         input_buf=128,
-        output_buf=256,
         rnnoise_buf=0,
         input_rms_db=-72.0,
         output_rms_db=-18.0,
@@ -874,7 +873,6 @@ def test_health_panel_reports_input_output_and_callback_states(window):
         latency_ms=24.0,
         dsp_time_ms=0.5,
         input_buf=128,
-        output_buf=256,
         rnnoise_buf=0,
         input_rms_db=-12.0,
         output_rms_db=-0.5,
@@ -905,7 +903,7 @@ def _nothing_dropped(text: str) -> bool:
 def _labels(window, **changes):
     args = dict(
         diagnostics=_healthy_runtime_diagnostics(),
-        latency_ms=24.0, dsp_time_ms=0.5, input_buf=128, output_buf=256, rnnoise_buf=0,
+        latency_ms=24.0, dsp_time_ms=0.5, input_buf=128, rnnoise_buf=0,
         input_rms_db=-18.0, output_rms_db=-18.0,
         input_callback_age_ms=10, output_callback_age_ms=10,
     )
@@ -1078,7 +1076,6 @@ def test_health_panel_reports_gate_chatter_and_underruns(window):
         latency_ms=24.0,
         dsp_time_ms=0.5,
         input_buf=128,
-        output_buf=256,
         rnnoise_buf=0,
         input_rms_db=-18.0,
         output_rms_db=-18.0,
@@ -1200,7 +1197,6 @@ def test_input_phase_warning_marks_diagnostics_warn(window):
         latency_ms=24.0,
         dsp_time_ms=0.5,
         input_buf=128,
-        output_buf=512,
         rnnoise_buf=0,
     )
 
@@ -1751,7 +1747,6 @@ def test_stale_output_underrun_and_recovery_totals_do_not_warn(window, monkeypat
         latency_ms=64.0,
         dsp_time_ms=0.6,
         input_buf=512,
-        output_buf=512,
         rnnoise_buf=0,
     )
 
@@ -1773,7 +1768,6 @@ def test_new_output_underrun_total_warns_for_stability_window(window, monkeypatc
         latency_ms=64.0,
         dsp_time_ms=0.6,
         input_buf=512,
-        output_buf=512,
         rnnoise_buf=0,
     )
 
@@ -1785,7 +1779,6 @@ def test_new_output_underrun_total_warns_for_stability_window(window, monkeypatc
         latency_ms=64.0,
         dsp_time_ms=0.6,
         input_buf=512,
-        output_buf=512,
         rnnoise_buf=0,
     )
 
@@ -1804,7 +1797,6 @@ def test_the_output_clip_counter_is_a_support_counter_and_does_not_warn(window):
         latency_ms=32.0,
         dsp_time_ms=0.4,
         input_buf=256,
-        output_buf=256,
         rnnoise_buf=0,
     )
 
@@ -1827,7 +1819,6 @@ def test_new_output_true_peak_event_warns_once(window):
         latency_ms=32.0,
         dsp_time_ms=0.4,
         input_buf=256,
-        output_buf=256,
         rnnoise_buf=0,
     )
 
@@ -1842,7 +1833,6 @@ def test_new_output_true_peak_event_warns_once(window):
         latency_ms=32.0,
         dsp_time_ms=0.4,
         input_buf=256,
-        output_buf=256,
         rnnoise_buf=0,
         output_rms_db=-18.0,
     )
@@ -1865,7 +1855,6 @@ def test_new_gate_chatter_event_warns_for_stability_window(window, monkeypatch):
         latency_ms=32.0,
         dsp_time_ms=0.4,
         input_buf=256,
-        output_buf=256,
         rnnoise_buf=0,
     )
 
@@ -1878,7 +1867,6 @@ def test_new_gate_chatter_event_warns_for_stability_window(window, monkeypatch):
         latency_ms=32.0,
         dsp_time_ms=0.4,
         input_buf=256,
-        output_buf=256,
         rnnoise_buf=0,
     )
 

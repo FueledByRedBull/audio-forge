@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from mic_eq import eq_magnitude_response, input_prefilter_response_db
+from mic_eq import eq_magnitude_response_v2, input_prefilter_response_db
 from mic_eq.analysis.auto_eq_parts.response import _predict_eq_response
 from mic_eq.analysis.eq_quality import evaluate_eq_quality
 from mic_eq.mic_eq_core import simulate_auto_eq_chain
@@ -25,13 +25,22 @@ DEFAULT_BANDS = [
 ]
 
 
+def _typed(bands):
+    """The legacy (frequency, gain, Q) layout as typed bands: shelves at both ends, bells between."""
+    last = len(bands) - 1
+    return [
+        ("low_shelf" if index == 0 else "high_shelf" if index == last else "bell", *band, 12, True)
+        for index, band in enumerate(bands)
+    ]
+
+
 def test_native_eq_response_validates_contract():
     with pytest.raises(ValueError, match="expected 10 EQ bands"):
-        eq_magnitude_response([1000.0], DEFAULT_BANDS[:-1], 48_000.0)
+        eq_magnitude_response_v2([1000.0], _typed(DEFAULT_BANDS)[:-1], 48_000.0)
     with pytest.raises(ValueError, match="sample_rate"):
-        eq_magnitude_response([1000.0], DEFAULT_BANDS, 0.0)
+        eq_magnitude_response_v2([1000.0], _typed(DEFAULT_BANDS), 0.0)
     with pytest.raises(ValueError, match="Nyquist"):
-        eq_magnitude_response([24_001.0], DEFAULT_BANDS, 48_000.0)
+        eq_magnitude_response_v2([24_001.0], _typed(DEFAULT_BANDS), 48_000.0)
 
 
 @pytest.mark.parametrize(
@@ -51,7 +60,7 @@ def test_native_peaking_response_reaches_configured_center_gain(
     bands = list(DEFAULT_BANDS)
     bands[band_index] = (frequency_hz, gain_db, q)
 
-    response = eq_magnitude_response([frequency_hz], bands, 48_000.0)
+    response = eq_magnitude_response_v2([frequency_hz], _typed(bands), 48_000.0)
 
     assert response[0] == pytest.approx(gain_db, abs=1.0e-8)
 
@@ -78,7 +87,7 @@ def test_python_eq_prediction_matches_native_at_capture_rate(sample_rate: float)
         [frequency for frequency, _, _ in bands],
         sample_rate=sample_rate,
     )
-    native = np.asarray(eq_magnitude_response(frequencies.tolist(), bands, sample_rate))
+    native = np.asarray(eq_magnitude_response_v2(frequencies.tolist(), _typed(bands), sample_rate))
 
     np.testing.assert_allclose(predicted, native, rtol=0.0, atol=1.0e-8)
 
@@ -102,7 +111,7 @@ def test_eq_quality_uses_capture_rate_for_response_metrics(sample_rate: float):
         np.log10(min(20_000.0, sample_rate / 2.0 - 1.0)),
         256,
     )
-    native = np.asarray(eq_magnitude_response(frequencies.tolist(), bands, sample_rate))
+    native = np.asarray(eq_magnitude_response_v2(frequencies.tolist(), _typed(bands), sample_rate))
     metrics = evaluate_eq_quality(
         [frequency for frequency, _, _ in bands],
         [gain for _, gain, _ in bands],

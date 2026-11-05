@@ -24,8 +24,6 @@ use pw::metadata::{Metadata, MetadataListener};
 use pw::types::ObjectType;
 use pyo3::prelude::*;
 
-/// The sink AudioForge's output stream plays into.
-pub const SINK_NODE_NAME: &str = "audioforge_mic_input";
 /// The source Discord, OBS and browsers record from.
 pub const SOURCE_NODE_NAME: &str = "audioforge_mic";
 
@@ -51,7 +49,6 @@ const LOOPBACK_ARGS: &str = r#"{
 const READY_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct VirtualMic {
-    quit: pw::channel::Sender<()>,
     thread: JoinHandle<()>,
 }
 
@@ -77,9 +74,9 @@ fn alive(slot: &Option<VirtualMic>) -> bool {
     slot.as_ref().is_some_and(|mic| !mic.thread.is_finished())
 }
 
-/// Whether the virtual microphone exists: false before `create`, after
-/// `destroy` and after PipeWire dropped the connection. Never waits, so it is
-/// false while a `create` is still building the microphone.
+/// Whether the virtual microphone exists: false before `create` and after
+/// PipeWire dropped the connection. Never waits, so it is false while a
+/// `create` is still building the microphone.
 pub fn is_running() -> bool {
     match VIRTUAL_MIC.try_lock() {
         Ok(slot) => alive(&slot),
@@ -115,10 +112,7 @@ pub fn create() -> Result<(), String> {
     };
     match result {
         Ok(()) => {
-            *slot = Some(VirtualMic {
-                quit: quit_tx,
-                thread,
-            });
+            *slot = Some(VirtualMic { thread });
             Ok(())
         }
         Err(error) => {
@@ -126,18 +120,6 @@ pub fn create() -> Result<(), String> {
             let _ = thread.join();
             Err(error)
         }
-    }
-}
-
-/// Remove the virtual microphone; apps recording from it lose the device.
-pub fn destroy() {
-    let mic = VIRTUAL_MIC
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .take();
-    if let Some(mic) = mic {
-        let _ = mic.quit.send(());
-        let _ = mic.thread.join();
     }
 }
 
@@ -286,11 +268,11 @@ pub fn create_virtual_microphone(py: Python<'_>) -> PyResult<()> {
 
 /// Whether the virtual microphone exists right now.
 ///
-/// False before `create_virtual_microphone`, after `destroy_virtual_microphone`
-/// and once PipeWire dropped the connection (the daemon restarted or went
-/// away). Then `create_virtual_microphone` builds it again, and raises
-/// RuntimeError while PipeWire is still unavailable. Never waits for PipeWire,
-/// so it is also false while a `create_virtual_microphone` is still running.
+/// False before `create_virtual_microphone` and once PipeWire dropped the
+/// connection (the daemon restarted or went away). Then
+/// `create_virtual_microphone` builds it again, and raises RuntimeError while
+/// PipeWire is still unavailable. Never waits for PipeWire, so it is also false
+/// while a `create_virtual_microphone` is still running.
 #[pyfunction]
 pub fn virtual_microphone_running() -> bool {
     is_running()
@@ -319,24 +301,12 @@ pub fn default_source_watch_failed() -> bool {
     DEFAULT_SOURCE_WATCH_FAILED.load(Ordering::Relaxed)
 }
 
-/// Remove the virtual microphone created by `create_virtual_microphone`.
-#[pyfunction]
-pub fn destroy_virtual_microphone(py: Python<'_>) -> PyResult<()> {
-    py.detach(|| {
-        crate::catch_panic(|| {
-            destroy();
-            Ok(())
-        })
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn microphone(thread: JoinHandle<()>) -> Option<VirtualMic> {
-        let (quit, _receiver) = pw::channel::channel();
-        Some(VirtualMic { quit, thread })
+        Some(VirtualMic { thread })
     }
 
     #[test]

@@ -174,7 +174,6 @@ __all__ = [
     "FRAME_FEATURE_NAMES",
     "FRAME_INTERCEPT",
     "MODEL_VERSION",
-    "PERSISTENT_SHAPE_VERSION",
     "persistent_shape_evidence",
     "predict_clip_probability",
     "predict_frame_probabilities",

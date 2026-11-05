@@ -235,6 +235,11 @@ impl RNNoiseProcessor {
         if self.enabled != enabled {
             self.gate_compensation.reset();
         }
+        if enabled && !self.enabled {
+            // The delayed dry frame is from before the bypass; mixing it into
+            // the first frame after re-enabling would replay stale audio.
+            self.dry_delay_frame.fill(0.0);
+        }
         self.enabled = enabled;
     }
 
@@ -642,6 +647,42 @@ mod tests {
         processor.process_frames();
         assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
         assert_eq!(output.as_slice(), input.as_slice());
+    }
+
+    #[test]
+    fn test_rnnoise_reenable_does_not_replay_the_dry_frame_from_before_the_bypass() {
+        // Fully dry, so the output is exactly the delayed dry frame.
+        let mut processor = RNNoiseProcessor::new(Arc::new(AtomicU32::new(0.0_f32.to_bits())));
+        let frame = |offset: f32| -> Vec<f32> {
+            (0..RNNOISE_FRAME_SIZE)
+                .map(|index| 0.2 * (index as f32 * 0.031 + offset).sin())
+                .collect()
+        };
+        let (before, bypassed, after, next) = (frame(0.0), frame(1.0), frame(2.0), frame(3.0));
+        let mut output = [0.0; RNNOISE_FRAME_SIZE];
+        processor.push_samples(&before);
+        processor.process_frames();
+        assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
+
+        processor.set_enabled(false);
+        processor.push_samples(&bypassed);
+        processor.process_frames();
+        assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
+        assert_eq!(output.as_slice(), bypassed.as_slice());
+
+        processor.set_enabled(true);
+        processor.push_samples(&after);
+        processor.process_frames();
+        assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
+        // Before the fix this frame was `before`, audio from before the bypass.
+        let stale_energy: f32 = output.iter().map(|sample| sample * sample).sum();
+        assert_eq!(stale_energy, 0.0);
+
+        // Steady state is unchanged: the next frame is the aligned dry frame.
+        processor.push_samples(&next);
+        processor.process_frames();
+        assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
+        assert_eq!(output.as_slice(), after.as_slice());
     }
 
     #[test]

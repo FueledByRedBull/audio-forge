@@ -849,30 +849,41 @@ impl DspLoop {
     /// leaves it lowered. That is harmless: the limit only applies to realtime
     /// threads, and each later promotion in this process (cpal's included) sets
     /// it again with the same RTKit maximum as the hard limit.
-    // shortcut: a grant that arrives after the timeout leaves the thread
-    // realtime while the diagnostic says degraded; upgrade if that is ever seen.
+    ///
+    /// The diagnostic reads degraded until RTKit answers, and the request
+    /// thread itself records the answer, so a grant that arrives after the
+    /// timeout still clears it.
     pub(super) fn promote_to_realtime(&self) {
         let sample_rate = self.pacing.sample_rate;
-        let promotion = ignore_sigxcpu()
+        self.shared
+            .dsp
+            .scheduling_degraded
+            .store(true, Ordering::Relaxed);
+        let shared = Arc::clone(&self.shared);
+        let _ = ignore_sigxcpu()
             .map_err(|error| format!("could not ignore SIGXCPU: {error}"))
             .and_then(|()| {
                 audio_thread_priority::get_current_thread_info().map_err(|error| error.to_string())
             })
             .and_then(|thread| {
                 run_bounded(REALTIME_PROMOTION_TIMEOUT, move || {
-                    audio_thread_priority::promote_thread_to_real_time(
+                    let promotion = audio_thread_priority::promote_thread_to_real_time(
                         thread,
                         sample_rate,
                         sample_rate,
                     )
                     .map(|_| ())
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| error.to_string());
+                    shared
+                        .dsp
+                        .scheduling_degraded
+                        .store(promotion.is_err(), Ordering::Relaxed);
+                    promotion
                 })
             })
             .inspect_err(|_e| {
                 processor_debug_log!("Warning: RTKit realtime priority unavailable: {}", _e);
             });
-        tolerate_scheduling_failure(promotion, &self.shared.dsp.scheduling_degraded);
     }
 }
 

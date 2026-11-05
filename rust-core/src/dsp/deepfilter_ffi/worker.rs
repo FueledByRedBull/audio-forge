@@ -34,7 +34,7 @@ pub(crate) const WORKER_TRANSIT_SAMPLES: usize = 240;
 /// A frame that has been at the worker longer than this (a frame's own length)
 /// counts as a backlog in the published latency: the healthy transit is half of
 /// it at most, and the worker is behind if a frame outlasts the next one.
-const WORKER_LATE_AFTER: Duration = Duration::from_millis(10);
+pub(super) const WORKER_LATE_AFTER: Duration = Duration::from_millis(10);
 /// The worker is stalled once it has owed a result for this long without
 /// sending one, as the loop saw it. The loop's backlog recovery keeps 100 ms
 /// of input, so a freeze of that length must never look like a stall.
@@ -46,6 +46,23 @@ const WORKER_STALL_TIME: Duration = Duration::from_millis(300);
 const WORKER_STALL_STEP: Duration = Duration::from_millis(50);
 /// How often an idle worker looks for a frame.
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
+/// With no frame for this long (the stage is off, or processing stopped), the
+/// worker looks less often, so a loaded but unused model costs no 1000 wakeups
+/// a second.
+pub(super) const IDLE_AFTER: Duration = Duration::from_millis(500);
+/// How often a worker idle for `IDLE_AFTER` looks. The first frame after the
+/// pause waits at most this much longer, which keeps it well inside
+/// `WORKER_LATE_AFTER` with the model's worst measured time added.
+pub(super) const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(3);
+
+/// How long to sleep before the next look, given how long no frame came.
+pub(super) fn poll_interval(idle_for: Duration) -> Duration {
+    if idle_for >= IDLE_AFTER {
+        IDLE_POLL_INTERVAL
+    } else {
+        POLL_INTERVAL
+    }
+}
 
 #[derive(Default)]
 struct WorkerShared {
@@ -361,15 +378,17 @@ fn serve(
 ) {
     let mut frame = [0.0_f32; DEEPFILTER_FRAME_SIZE];
     let mut wet = [0.0_f32; DEEPFILTER_FRAME_SIZE];
+    let mut last_frame = Instant::now();
     while !shared.stop.load(Ordering::Acquire) {
         #[cfg(test)]
         if shared.fault.load(Ordering::Acquire) == TestFault::Exit as u8 {
             return;
         }
         if input.len() < DEEPFILTER_FRAME_SIZE {
-            std::thread::sleep(POLL_INTERVAL);
+            std::thread::sleep(poll_interval(last_frame.elapsed()));
             continue;
         }
+        last_frame = Instant::now();
         input.read(&mut frame);
         let inference = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             #[cfg(test)]

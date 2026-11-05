@@ -5,7 +5,10 @@
 //! delay is kept), and 0 for the frame a reset leaves invalid.
 
 use super::fake::{inline_processor, worker_processor, Fake};
-use super::worker::{TestFault, WORKER_QUEUE_FRAMES, WORKER_TRANSIT_SAMPLES};
+use super::worker::{
+    poll_interval, TestFault, IDLE_AFTER, IDLE_POLL_INTERVAL, WORKER_LATE_AFTER,
+    WORKER_QUEUE_FRAMES, WORKER_TRANSIT_SAMPLES,
+};
 use super::*;
 use std::time::{Duration, Instant};
 
@@ -794,4 +797,20 @@ fn a_worker_that_falls_behind_pushes_the_published_latency_out_of_the_tools_wind
     assert!(published[published.len() - 1] >= base + 3 * FRAME);
     assert!(link(&worker).owed_results() > 3);
     assert!(!worker.backend_failed());
+}
+
+#[test]
+fn idle_worker_looks_less_often_but_answers_within_a_frame() {
+    // Busy: every millisecond. Idle past `IDLE_AFTER`: less often, but never so
+    // rarely that the first frame after a pause counts as late.
+    assert_eq!(poll_interval(Duration::ZERO), Duration::from_millis(1));
+    assert_eq!(
+        poll_interval(IDLE_AFTER - Duration::from_millis(1)),
+        Duration::from_millis(1)
+    );
+    assert_eq!(poll_interval(IDLE_AFTER), IDLE_POLL_INTERVAL);
+    assert!(IDLE_POLL_INTERVAL > Duration::from_millis(1));
+    // The worst measured model time (6.2 ms, LL) plus the longer wait stays
+    // under the late threshold.
+    assert!(IDLE_POLL_INTERVAL + Duration::from_micros(6_200) < WORKER_LATE_AFTER);
 }

@@ -40,7 +40,7 @@ def test_an_unsupported_shortcut_is_refused():
 class FakePortal:
     """Answers the GlobalShortcuts calls the way xdg-desktop-portal does."""
 
-    def __init__(self, *, bind_code=0, activations=1, silent=False, ignoring=()):
+    def __init__(self, *, bind_code=0, activations=1, silent=False, ignoring=(), name_flags=0):
         self.bind_code = bind_code
         self.activations = activations
         self.silent = silent  # owns the name but answers nothing, like a portal still starting up
@@ -54,7 +54,7 @@ class FakePortal:
         self.connection.send_and_get_reply(message_bus.AddMatch(
             "type='signal',sender='org.freedesktop.DBus',member='NameOwnerChanged'"
         ))
-        self.connection.send_and_get_reply(message_bus.RequestName(portal.PORTAL_SERVICE))
+        self.connection.send_and_get_reply(message_bus.RequestName(portal.PORTAL_SERVICE, name_flags))
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
 
@@ -209,6 +209,29 @@ def test_a_portal_that_leaves_and_returns_gets_the_shortcut_bound_again(session_
     finally:
         session.close()
         fake.close()
+
+
+def test_a_portal_replaced_in_one_step_gets_the_shortcut_bound_again(session_bus):
+    # xdg-desktop-portal --replace: the name passes straight to the new portal, and the
+    # old portal's session goes with it.
+    allow_replacement, replace_existing = 1, 2
+    old = FakePortal(activations=0, name_flags=allow_replacement)
+    states = queue.Queue()
+    activated = threading.Semaphore(0)
+    session = _session(activated.release, lambda error: None, states.put)
+    new = None
+    try:
+        session.start()
+        assert states.get(timeout=5) == ""
+        new = FakePortal(activations=1, name_flags=replace_existing)
+        assert states.get(timeout=10) == ""
+        assert activated.acquire(timeout=5)
+        assert new.bound
+    finally:
+        session.close()
+        old.close()
+        if new is not None:
+            new.close()
 
 
 def test_a_portal_that_starts_after_the_session_gets_the_shortcut_bound(session_bus):

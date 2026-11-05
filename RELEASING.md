@@ -492,9 +492,10 @@ every part of its criterion holds; record "not run" for any skipped.
     the alert look, Normal returns to the ordinary look, and audio keeps
     flowing through all three.
 15. **DeepFilterNet latency labels.** While running with audio flowing, select
-    **DeepFilterNet LL**, then **DeepFilterNet**. Pass: the latency label reads
-    about 15 ms, then about 35 ms, audio keeps flowing, and Health shows no
-    DeepFilter error.
+    **DeepFilterNet LL**, then **DeepFilterNet**. Pass: the latency label (an
+    "at least N ms" figure while no route is measured) rises by about 15 ms for
+    DeepFilterNet LL and by about 35 ms for DeepFilterNet compared with the
+    suppressor off, audio keeps flowing, and Health shows no DeepFilter error.
 16. **Recovery during setup.** Open **Auto Voice Setup** (or latency
     calibration) while running. Pass: Health shows automatic recovery as paused
     while the dialog is open and normal again after it closes.

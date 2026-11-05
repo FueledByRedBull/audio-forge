@@ -94,10 +94,7 @@ pub(super) struct LatencyComponents {
     pub(super) processing_sample_rate: u32,
 }
 
-pub(super) fn total_reported_latency_us(
-    components: LatencyComponents,
-    compensation_us: u64,
-) -> u64 {
+pub(super) fn total_reported_latency_us(components: LatencyComponents) -> u64 {
     let input_resampler_latency_us = samples_to_micros(
         components.input_resampler_delay_samples,
         components.processing_sample_rate,
@@ -129,7 +126,6 @@ pub(super) fn total_reported_latency_us(
         .saturating_add(output_resampler_latency_us)
         .saturating_add(suppressor_latency_us)
         .saturating_add(limiter_latency_us)
-        .saturating_add(compensation_us)
 }
 
 /// What the output device holds after the queue: its whole buffer, which the
@@ -147,19 +143,15 @@ pub(super) fn output_device_latency_us(
         .saturating_add(samples_to_micros(u64::from(period_frames), sample_rate) / 2)
 }
 
-/// The latency to show. A measured route already holds the device's buffering,
-/// so the device terms are added only when no route compensation is active.
-/// `engine_and_compensation_us` is the published total, compensation included.
-pub(super) fn displayed_latency_us(
-    engine_and_compensation_us: u64,
-    compensation_us: u64,
-    device_us: u64,
-) -> u64 {
-    if compensation_us > 0 {
-        engine_and_compensation_us
+/// The latency to show: the engine plus exactly one of the measured route or
+/// the output device's buffering. A measured route already holds the device's
+/// buffering, so the device terms are added only when no route is set.
+pub(super) fn displayed_latency_us(engine_us: u64, compensation_us: u64, device_us: u64) -> u64 {
+    engine_us.saturating_add(if compensation_us > 0 {
+        compensation_us
     } else {
-        engine_and_compensation_us.saturating_add(device_us)
-    }
+        device_us
+    })
 }
 
 #[derive(Default)]

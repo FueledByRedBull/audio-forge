@@ -594,19 +594,16 @@ fn test_total_reported_latency_includes_limiter_lookahead_across_sample_rates() 
     for (sample_rate, expected_us) in [(44_100_u32, 498_u64), (48_000, 500), (96_000, 500)] {
         let limiter = Limiter::default_settings(sample_rate as f64);
         let lookahead_samples = limiter.lookahead_samples() as u64;
-        let total = total_reported_latency_us(
-            LatencyComponents {
-                input_resampler_delay_samples: 0,
-                output_buffer_samples: 0,
-                output_sample_rate: sample_rate,
-                output_resampler_delay_samples: 0,
-                suppressor_latency_samples: 0,
-                limiter_lookahead_samples: lookahead_samples,
-                true_peak_lookahead_samples: 20,
-                processing_sample_rate: sample_rate,
-            },
-            0,
-        );
+        let total = total_reported_latency_us(LatencyComponents {
+            input_resampler_delay_samples: 0,
+            output_buffer_samples: 0,
+            output_sample_rate: sample_rate,
+            output_resampler_delay_samples: 0,
+            suppressor_latency_samples: 0,
+            limiter_lookahead_samples: lookahead_samples,
+            true_peak_lookahead_samples: 20,
+            processing_sample_rate: sample_rate,
+        });
         assert_eq!(total, expected_us + samples_to_micros(20, sample_rate));
     }
 }
@@ -617,7 +614,6 @@ fn test_published_latency_counts_lookahead_limiter_only_on_full_path() {
         let lookahead = Limiter::default_settings(sample_rate as f64).lookahead_samples() as u64;
         let true_peak =
             TruePeakLimiter::default_settings(sample_rate as f32).lookahead_samples() as u64;
-        let compensation_us = 7_000;
         let published = AtomicU64::new(0);
         let publish = |raw_monitor: bool, bypass: bool| {
             publish_reported_latency(
@@ -633,13 +629,11 @@ fn test_published_latency_counts_lookahead_limiter_only_on_full_path() {
                     processing_sample_rate: sample_rate,
                 },
                 select_processing_path(raw_monitor, bypass),
-                compensation_us,
             );
             published.load(Ordering::Relaxed)
         };
-        let without_limiter = samples_to_micros(480, sample_rate)
-            + samples_to_micros(true_peak, sample_rate)
-            + compensation_us;
+        let without_limiter =
+            samples_to_micros(480, sample_rate) + samples_to_micros(true_peak, sample_rate);
         let normal = without_limiter + samples_to_micros(lookahead, sample_rate);
 
         // A processor started in Raw publishes the true figure at once.
@@ -1063,19 +1057,16 @@ fn test_full_chain_gates_each_block_with_a_vad_result_finished_before_it() {
 
 #[test]
 fn test_total_reported_latency_respects_output_vs_processing_rates() {
-    let total = total_reported_latency_us(
-        LatencyComponents {
-            input_resampler_delay_samples: 96,
-            output_buffer_samples: 882,
-            output_sample_rate: 44_100,
-            output_resampler_delay_samples: 64,
-            suppressor_latency_samples: 480,
-            limiter_lookahead_samples: 96,
-            true_peak_lookahead_samples: 20,
-            processing_sample_rate: 48_000,
-        },
-        500,
-    );
+    let total = total_reported_latency_us(LatencyComponents {
+        input_resampler_delay_samples: 96,
+        output_buffer_samples: 882,
+        output_sample_rate: 44_100,
+        output_resampler_delay_samples: 64,
+        suppressor_latency_samples: 480,
+        limiter_lookahead_samples: 96,
+        true_peak_lookahead_samples: 20,
+        processing_sample_rate: 48_000,
+    });
     assert_eq!(
         total,
         20_000
@@ -1084,7 +1075,6 @@ fn test_total_reported_latency_respects_output_vs_processing_rates() {
             + 10_000
             + 2_000
             + samples_to_micros(20, 44_100)
-            + 500
     );
 }
 
@@ -1095,7 +1085,7 @@ fn test_engine_latency_excludes_route_compensation() {
         .shared
         .dsp
         .latency_us
-        .store(42_500, Ordering::Relaxed);
+        .store(25_250, Ordering::Relaxed);
     processor
         .shared
         .dsp
@@ -1133,10 +1123,10 @@ fn test_output_device_latency_is_the_buffer_plus_half_a_period() {
 #[test]
 fn test_displayed_latency_adds_the_device_only_without_a_measured_route() {
     use super::resampling::displayed_latency_us;
-    // No compensation: the published total is the engine alone.
+    // No compensation: the device terms join the engine.
     assert_eq!(displayed_latency_us(30_000, 0, 27_000), 57_000);
     // A measured route holds the device's buffering already.
-    assert_eq!(displayed_latency_us(47_250, 17_250, 27_000), 47_250);
+    assert_eq!(displayed_latency_us(30_000, 17_250, 27_000), 47_250);
     assert_eq!(displayed_latency_us(30_000, 0, 0), 30_000);
     assert_eq!(displayed_latency_us(u64::MAX, 0, 1), u64::MAX);
 }
@@ -1156,10 +1146,30 @@ fn test_latency_getters_split_engine_route_and_device() {
     // With a measured route the total is engine plus route, as before, and the
     // engine figure kept for stored profiles does not move.
     processor.set_latency_compensation_ms(17.25);
-    shared.dsp.latency_us.store(47_250, Ordering::Relaxed);
     assert_eq!(processor.get_engine_latency_ms(), 30.0);
     assert_eq!(processor.get_output_device_latency_ms(), 27.0);
     assert_eq!(processor.get_latency_ms(), 47.25);
+}
+
+#[test]
+fn test_compensation_change_moves_the_total_before_the_next_publish() {
+    let processor = AudioProcessor::new();
+    set_device_buffer(&processor, DEVICE_BUFFER_FRAMES, DEVICE_PERIOD_FRAMES);
+    // The engine figure stays as last published while the compensation moves.
+    processor
+        .shared
+        .dsp
+        .latency_us
+        .store(30_000, Ordering::Relaxed);
+
+    // Setting a route swaps the device buffer for it, never adds to it.
+    assert_eq!(processor.get_latency_ms(), 57.0);
+    processor.set_latency_compensation_ms(17.25);
+    assert_eq!(processor.get_latency_ms(), 47.25);
+    // Clearing it brings the device buffer back, with no leftover route.
+    processor.set_latency_compensation_ms(0.0);
+    assert_eq!(processor.get_latency_ms(), 57.0);
+    assert_eq!(processor.get_engine_latency_ms(), 30.0);
 }
 
 #[test]

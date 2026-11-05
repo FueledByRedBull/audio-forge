@@ -416,7 +416,8 @@ pub(super) struct VadShared {
 
 /// DSP loop timing, latency and RT error counters.
 pub(super) struct DspShared {
-    /// Processing latency in microseconds (measured from input to output)
+    /// Engine latency in microseconds (measured from input to output), without
+    /// the route compensation.
     pub(super) latency_us: AtomicU64,
     /// User-configured compensation added to reported latency (microseconds).
     pub(super) latency_compensation_us: AtomicU64,

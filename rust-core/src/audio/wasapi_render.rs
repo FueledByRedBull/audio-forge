@@ -651,6 +651,7 @@ pub(crate) fn probe_standard_buffer(
     channels: u16,
     fixed_frames: Option<u32>,
 ) -> OutputDeviceBuffer {
+    // The join has no timeout: the wait is bounded by the driver's Initialize.
     let read = match endpoint_id {
         Some(endpoint_id) => {
             let endpoint_id = endpoint_id.to_owned();

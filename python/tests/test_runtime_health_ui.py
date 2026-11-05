@@ -12,7 +12,11 @@ from PySide6.QtWidgets import QWidget
 from mic_eq.ui.first_run_setup_dialog import route_health_reason
 from mic_eq.ui.health import RecentStreamHealth, advice_for
 from mic_eq.ui.main_window import MainWindow
-from mic_eq.ui.shell_specs import LATENCY_LOWER_BOUND_NOTE, TEXT_SPECS
+from mic_eq.ui.shell_specs import (
+    LATENCY_LOWER_BOUND_NOTE,
+    LATENCY_LOWER_BOUND_NOTE_NO_BUFFER,
+    TEXT_SPECS,
+)
 from mic_eq.ui.shell_state import TextState
 from mic_eq.ui.theme import PALETTE
 
@@ -213,9 +217,18 @@ def test_latency_chip_is_a_lower_bound_until_the_route_is_measured(qapp):
 
     assert chip.text == "Latency: at least 10 ms (processing 0.2 ms)"
     assert chip.state == "info"
-    assert chip.toolTip.startswith(spec_tip)
+    assert chip.toolTip == spec_tip + LATENCY_LOWER_BOUND_NOTE_NO_BUFFER
     assert "lower bound" in chip.toolTip
     assert "Measure Route Latency" in chip.toolTip
+
+    # With the output buffer read, the note says it is counted.
+    MainWindow._update_diagnostic_labels(
+        window, **{**args, "diagnostics": {"output_device_buffer_known": True}}
+    )
+
+    assert chip.text == "Latency: at least 10 ms (processing 0.2 ms)"
+    assert chip.toolTip == spec_tip + LATENCY_LOWER_BOUND_NOTE
+    assert "Windows" not in chip.toolTip
 
     # A measured route holds the whole delay, so the figure reads as an estimate again.
     MainWindow._update_diagnostic_labels(

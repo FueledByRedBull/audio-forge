@@ -475,6 +475,18 @@ def _parse_health(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _configured_compensation_ms(diagnostics: dict[str, Any]) -> float | None:
+    """The route compensation the run set, read from the diagnostics the run reported.
+
+    The total also holds the output device's buffer when no route is set, so it
+    minus the engine figure is not the compensation.
+    """
+    value = diagnostics.get("latency_compensation_ms")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 def _diagnostic_input_sample_rate(diagnostics: dict[str, Any]) -> int | None:
     value = diagnostics.get("input_sample_rate")
     if not _is_valid_input_sample_rate(value):
@@ -1632,13 +1644,7 @@ def evaluate(
             "route_round_trip_ms": parsed_self_test["route_latency_ms"],
             "engine_ms": diagnostics.get("engine_latency_ms"),
             "total_ms": diagnostics.get("total_latency_ms"),
-            "configured_compensation_ms": (
-                float(diagnostics.get("total_latency_ms", 0.0))
-                - float(diagnostics.get("engine_latency_ms", 0.0))
-                if isinstance(diagnostics.get("total_latency_ms"), (int, float))
-                and isinstance(diagnostics.get("engine_latency_ms"), (int, float))
-                else None
-            ),
+            "configured_compensation_ms": _configured_compensation_ms(diagnostics),
         },
         "passed": passed,
         "limitations": [

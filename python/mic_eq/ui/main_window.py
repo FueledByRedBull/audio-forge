@@ -95,6 +95,7 @@ from .shell_specs import (
     INPUT_CHANNEL_MODE_OPTIONS,
     INPUT_CLEANUP_MODE_OPTIONS,
     LATENCY_LOWER_BOUND_NOTE,
+    LATENCY_LOWER_BOUND_NOTE_NO_BUFFER,
     PROCESSING_MODE_OPTIONS,
     TEXT_SPECS,
 )
@@ -3892,14 +3893,18 @@ class MainWindow(QMainWindow):
                 except (OSError, RuntimeError, TypeError, ValueError):
                     recovery_pending = True
         # A measured route holds everything after the engine; without one the
-        # figure covers only AudioForge and its output buffer.
+        # figure covers AudioForge, plus the output buffer when it was read.
         measured_route = float(diagnostics.get("latency_compensation_ms", 0.0) or 0.0) > 0.0
         latency_tip = TEXT_SPECS["latency_label"].tip
         if measured_route:
             bound = "about"
         else:
             bound = "at least"
-            latency_tip += LATENCY_LOWER_BOUND_NOTE
+            latency_tip += (
+                LATENCY_LOWER_BOUND_NOTE
+                if diagnostics.get("output_device_buffer_known")
+                else LATENCY_LOWER_BOUND_NOTE_NO_BUFFER
+            )
         self._set_health_chip(
             "latency_label",
             f"Latency: {bound} {latency_ms:.0f} ms (processing {dsp_time_ms:.1f} ms)",

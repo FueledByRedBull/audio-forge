@@ -1085,7 +1085,6 @@ impl Pacing {
                 shared.mode.raw_monitor.load(Ordering::Acquire),
                 shared.mode.bypass.load(Ordering::SeqCst),
             ),
-            shared.dsp.latency_compensation_us.load(Ordering::Relaxed),
         );
     }
 

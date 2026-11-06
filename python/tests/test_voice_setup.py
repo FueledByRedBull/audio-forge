@@ -11,7 +11,6 @@ from typing import Any
 import numpy as np
 import pytest
 
-import mic_eq
 from mic_eq.analysis import voice_setup as voice_setup_module
 from mic_eq.analysis import vad as vad_analysis
 from mic_eq.analysis.auto_eq_parts.headroom import _is_headroom_safe
@@ -40,33 +39,6 @@ from mic_eq.ui.voice_setup_dialog import (
     VoiceSetupVerificationWorker,
     _candidate_settings_error,
 )
-
-
-def test_offline_vad_applies_live_pre_gain_before_inference(monkeypatch):
-    observed: dict[str, Any] = {}
-
-    def fake_analyze(samples, sample_rate, threshold):
-        observed["samples"] = np.asarray(samples).copy()
-        observed["sample_rate"] = sample_rate
-        observed["threshold"] = threshold
-        return [0.7]
-
-    monkeypatch.setattr(mic_eq, "CORE_AVAILABLE", True)
-    monkeypatch.setattr(mic_eq, "analyze_vad_probabilities", fake_analyze)
-
-    probabilities, backend = vad_analysis.analyze_offline_vad(
-        np.asarray([0.5, -0.25], dtype=np.float32),
-        48_000,
-        threshold=0.43,
-        pre_gain=2.0,
-    )
-
-    np.testing.assert_allclose(observed["samples"], [1.0, -0.5])
-    assert observed["sample_rate"] == 48_000
-    assert observed["threshold"] == 0.43
-    assert probabilities is not None
-    np.testing.assert_allclose(probabilities, [0.7])
-    assert backend == "silero"
 
 
 def test_offline_vad_posteriors_do_not_depend_on_the_threshold():

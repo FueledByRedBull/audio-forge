@@ -267,6 +267,51 @@ def analyze_vad_probabilities(
 ) -> list[float]:
     """Require 8–192 kHz with integral 32 ms windows; use analyze_offline_vad for 44.1 kHz."""
     ...
+def analyze_offline_vad(
+    audio: npt.ArrayLike,
+    sample_rate: int,
+    *,
+    threshold: float = 0.48,
+    pre_gain: float = 1.0,
+) -> tuple[npt.NDArray[np.float64] | None, str]:
+    """Silero posteriors and "silero", or (None, "energy_fallback").
+
+    Rates without whole 32 ms windows are resampled to 48 kHz; pre_gain (at
+    least 0.1) is applied before inference. A non-positive or non-finite gain,
+    an empty capture, an invalid threshold, non-finite samples or a model
+    failure falls back.
+    """
+    ...
+def map_causal_vad_probabilities(
+    probabilities: npt.ArrayLike | None,
+    positions: npt.ArrayLike,
+    sample_rate: int,
+) -> npt.NDArray[np.float32] | None:
+    """Per position, the newest posterior whose window ended by it, clipped to [0, 1].
+
+    None for missing, empty or non-finite posteriors, no positions, or a
+    non-positive rate.
+    """
+    ...
+def clamp(value: float, low: float, high: float) -> float:
+    """Python's max(low, min(high, value)): a NaN value yields high."""
+    ...
+def band_mean(
+    freqs: npt.ArrayLike, values: npt.ArrayLike, low: float, high: float
+) -> float:
+    """float64 mean of values over low..high Hz, or of all values when no bin falls in it."""
+    ...
+def resample_poly(samples: npt.ArrayLike, up: int, down: int) -> npt.NDArray[Any]:
+    """SciPy-default Kaiser polyphase resampling of 1-D real audio.
+
+    float32 input stays float32; any other real dtype returns float64.
+    """
+    ...
+def find_peaks_distance_prominence(
+    samples: npt.ArrayLike, *, distance: int, prominence: float
+) -> npt.NDArray[np.intp]:
+    """1-D local maxima with SciPy find_peaks' distance and prominence semantics."""
+    ...
 def simulate_auto_eq_chain(
     audio: npt.NDArray[np.float32],
     sample_rate: float,

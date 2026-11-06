@@ -181,6 +181,8 @@ mod vad_worker;
 
 pub use block_processor::{OfflineDspBlockProcessor, OfflineDspBlockStats};
 #[cfg(feature = "vad")]
+pub(crate) use python_api::silero_offline_probabilities;
+#[cfg(feature = "vad")]
 pub use python_api::{analyze_vad_probabilities, simulate_gate_suppressor_order, PyGateMode};
 pub use python_api::{
     input_prefilter_response_db, simulate_auto_eq_chain, simulate_auto_makeup_control,

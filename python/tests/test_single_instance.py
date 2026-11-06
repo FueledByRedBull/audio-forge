@@ -22,6 +22,14 @@ def _server_name() -> str:
     return f"AudioForge.test.{uuid4().hex}"
 
 
+def _pump_until(qapp, condition, timeout: float = 5.0) -> None:
+    """Process events until the forwarded message has been handled."""
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.005)
+
+
 def test_tray_tooltip_reflects_processing_mute_health_and_route():
     tooltip = desktop_integration.build_tray_tooltip(
         processing=True,
@@ -73,8 +81,7 @@ def test_second_instance_forwards_activation_without_removing_primary_server(
     try:
         assert primary.acquire() == primary.ACQUIRED
         assert secondary.acquire() == secondary.FORWARDED
-        for _ in range(10):
-            qapp.processEvents()
+        _pump_until(qapp, lambda: bool(seen))
 
         assert seen == [True]
         assert secondary.acquire() == secondary.FORWARDED
@@ -291,8 +298,7 @@ def test_login_duplicate_does_not_connect_or_activate_existing_window(qapp, tmp_
             qapp.processEvents()
         activate.assert_not_called()
         assert duplicate.acquire() == duplicate.FORWARDED
-        for _ in range(10):
-            qapp.processEvents()
+        _pump_until(qapp, lambda: activate.called)
         activate.assert_called_once()
     finally:
         duplicate.close()

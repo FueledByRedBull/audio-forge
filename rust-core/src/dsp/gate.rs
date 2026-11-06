@@ -67,6 +67,8 @@ pub struct NoiseGate {
     rms_coeff: f64,
     /// Current detector level (dBFS) used for expander decisions.
     detector_level_db: f64,
+    /// Hold time after the detector drops below threshold, in samples.
+    detector_hold_samples: usize,
     /// Remaining hold time after the detector drops below threshold.
     hold_remaining_samples: usize,
     /// Current linear gain applied to the signal.
@@ -142,6 +144,7 @@ impl NoiseGate {
             rms_envelope_sq: 0.0,
             rms_coeff,
             detector_level_db: -120.0,
+            detector_hold_samples: (sample_rate * DETECTOR_HOLD_MS / 1000.0).round() as usize,
             hold_remaining_samples: 0,
             current_gain: 0.0,
             sample_rate,
@@ -233,8 +236,7 @@ impl NoiseGate {
 
         if self.detector_level_db >= threshold_db {
             self.is_open = true;
-            self.hold_remaining_samples =
-                (self.sample_rate * DETECTOR_HOLD_MS / 1000.0).round() as usize;
+            self.hold_remaining_samples = self.detector_hold_samples;
         } else if self.hold_remaining_samples > 0 {
             self.hold_remaining_samples -= 1;
             self.is_open = true;
@@ -597,7 +599,6 @@ impl NoiseGate {
         buffer: &mut [f32],
         controls: &mut [super::noise_suppressor::GateControl],
     ) {
-        assert_eq!(buffer.len(), controls.len());
         self.process_block_with_controls(buffer, Some(controls));
     }
 
@@ -681,8 +682,11 @@ impl NoiseGate {
                             let effective_open = !force_close && probabilistic_open;
                             self.track_gate_transition(effective_open);
                             *sample = self.apply_gain(input_f64, target_gr_db);
-                            if let Some(controls) = controls.as_deref_mut() {
-                                controls[index] = super::noise_suppressor::GateControl {
+                            if let Some(control) = controls
+                                .as_deref_mut()
+                                .and_then(|controls| controls.get_mut(index))
+                            {
+                                *control = super::noise_suppressor::GateControl {
                                     gain: self.current_gain(),
                                     open: effective_open,
                                 };
@@ -697,8 +701,11 @@ impl NoiseGate {
 
         for (index, sample) in buffer.iter_mut().enumerate() {
             *sample = self.process_sample(*sample);
-            if let Some(controls) = controls.as_deref_mut() {
-                controls[index] = super::noise_suppressor::GateControl {
+            if let Some(control) = controls
+                .as_deref_mut()
+                .and_then(|controls| controls.get_mut(index))
+            {
+                *control = super::noise_suppressor::GateControl {
                     gain: self.current_gain(),
                     open: self.effective_gate_open,
                 };
@@ -1514,5 +1521,77 @@ mod tests {
         gate.process_block_inplace(&mut buffer);
         assert!(buffer.iter().all(|sample| sample.is_finite()));
         assert!(gate.current_gain().is_finite());
+    }
+
+    /// FNV-1a over the output bits of a gate run on bursts separated by pauses
+    /// shorter and longer than the hold time, at each of three sample rates.
+    fn burst_run_hash(sample_rate: f64) -> u64 {
+        let mut gate = NoiseGate::new(-40.0, 2.0, 60.0, sample_rate);
+        let mut seed = 0x0bad_cafe_u32;
+        let len = (sample_rate * 1.5) as usize;
+        let mut buffer: Vec<f32> = (0..len)
+            .map(|index| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let noise = (seed >> 8) as f32 / (1 << 24) as f32 - 0.5;
+                let second = index as f64 / sample_rate;
+                let burst = matches!(second, s if s < 0.2 || (0.25..0.4).contains(&s) || (0.8..0.9).contains(&s));
+                (if burst { 0.3 } else { 0.002 }) * noise
+            })
+            .collect();
+        for block in buffer.chunks_mut(480) {
+            gate.process_block_inplace(block);
+        }
+        buffer
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, sample| {
+                (hash ^ u64::from(sample.to_bits())).wrapping_mul(0x0100_0000_01b3)
+            })
+    }
+
+    #[test]
+    fn precomputed_hold_keeps_the_gate_output_as_recorded() {
+        for (rate, hash) in [
+            (16_000.0, 3_584_068_488_446_927_478_u64),
+            (44_100.0, 13_517_489_480_684_409_456),
+            (48_000.0, 5_016_598_169_052_868_533),
+        ] {
+            assert_eq!(burst_run_hash(rate), hash, "{rate} Hz");
+        }
+    }
+
+    #[test]
+    fn mismatched_control_length_neither_panics_nor_changes_the_audio() {
+        use super::super::noise_suppressor::GateControl;
+        let marker = GateControl {
+            gain: 0.5,
+            open: true,
+        };
+        let input: Vec<f32> = (0..960)
+            .map(|index| (index as f32 * 0.07).sin() * if index < 500 { 0.3 } else { 0.001 })
+            .collect();
+        let mut plain_gate = NoiseGate::new(-40.0, 5.0, 60.0, 48_000.0);
+        let mut plain = input.clone();
+        plain_gate.process_block_inplace(&mut plain);
+        let mut full_controls = vec![marker; input.len()];
+        let mut full_gate = NoiseGate::new(-40.0, 5.0, 60.0, 48_000.0);
+        let mut full = input.clone();
+        full_gate.process_block_with_gate_control(&mut full, &mut full_controls);
+
+        for controls_len in [300, 1_200] {
+            let mut gate = NoiseGate::new(-40.0, 5.0, 60.0, 48_000.0);
+            let mut audio = input.clone();
+            let mut controls = vec![marker; controls_len];
+            gate.process_block_with_gate_control(&mut audio, &mut controls);
+
+            assert_eq!(audio, plain, "controls_len={controls_len}");
+            let written = controls_len.min(input.len());
+            for (index, control) in controls.iter().take(written).enumerate() {
+                assert_eq!(control.gain, full_controls[index].gain, "{index}");
+                assert_eq!(control.open, full_controls[index].open, "{index}");
+            }
+            for control in &controls[written..] {
+                assert_eq!((control.gain, control.open), (marker.gain, marker.open));
+            }
+        }
     }
 }

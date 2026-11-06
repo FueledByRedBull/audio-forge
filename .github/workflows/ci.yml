@@ -340,9 +340,9 @@ jobs:
       # Only this job restores df.dll and its build attestation; Package check and
       # Release package build the DLL from source on every run. The key covers
       # every input of the recipe, with no restore-keys fallback. On a hit the
-      # next step still runs: fetch_release_assets.py skips the build because
-      # df.dll is present, and verify_release_assets.py checks the DLL against
-      # its attestation and the attestation against the recipe files.
+      # next step still runs: fetch_release_assets.py keeps df.dll only if it
+      # verifies and rebuilds it otherwise, and verify_release_assets.py checks the
+      # DLL against its attestation and the attestation against the recipe files.
       - name: Restore DeepFilter runtime
         id: deepfilter
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -473,7 +473,7 @@ jobs:
           path: |
             libdf.so
             target/deepfilter/libdf.so.provenance.json
-          key: ${{ runner.os }}-${{ runner.arch }}-deepfilter-so-v1-${{ hashFiles('python/tools/build_deepfilter.py', 'build-support/deepfilter/**', 'release-assets.json', 'rust-toolchain.toml') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-deepfilter-so-v1-${{ hashFiles('python/tools/build_deepfilter.py', 'python/tools/bounded_download.py', 'build-support/deepfilter/**', 'release-assets.json', 'rust-toolchain.toml') }}
       - name: Build and verify the pinned DeepFilter runtime
         env:
           GH_TOKEN: ${{ github.token }}

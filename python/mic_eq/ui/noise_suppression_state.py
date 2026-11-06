@@ -5,23 +5,23 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import asdict
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject
 
-from ..config import PresetValidationError, RNNoiseSettings
-from ..config_parts.validation import (
-    VALIDATION_RANGES,
-    _validate_bool,
-    _validate_range,
-)
+from ..config import RNNoiseSettings
+from ..config_parts.validation import VALIDATION_RANGES
+from .stage_state import StageState, validated_settings
 
 
-class NoiseSuppressionState(QObject):
+def _noise_model(value: object) -> str:
+    if not isinstance(value, str) or value not in VALIDATION_RANGES["rnnoise"]["model"]:
+        raise ValueError(f"Unknown noise model: {value!r}")
+    return value
+
+
+class NoiseSuppressionState(StageState[dict]):
     """Own exact settings and report rejected backend switches to the view."""
 
-    changed = Signal()
-    configurationEdited = Signal(str)
-    writeFailed = Signal(str)
-    recoveryFailed = Signal(str)
+    _stage_name = "Noise suppression"
 
     def __init__(
         self,
@@ -30,11 +30,7 @@ class NoiseSuppressionState(QObject):
         *,
         stop_audio: Callable[[], object] | None = None,
     ):
-        super().__init__(parent)
-        self.processor = processor
-        # Where the app routes a failure stop off the GUI thread; alone, the processor is stopped here.
-        self._stop_audio = stop_audio
-        self._settings = asdict(RNNoiseSettings())
+        super().__init__(processor, asdict(RNNoiseSettings()), parent, stop_audio=stop_audio)
         self.models = tuple(processor.list_noise_models())
 
     def get_settings(self) -> dict:
@@ -50,37 +46,29 @@ class NoiseSuppressionState(QObject):
         return "Latency: ~10ms (RNNoise)"
 
     def _validated(self, settings: dict) -> dict:
-        candidate = self._settings.copy()
-        for name, value in settings.items():
-            try:
-                if name == "enabled":
-                    candidate[name] = _validate_bool(value, name, "rnnoise")
-                elif name == "strength":
-                    candidate[name] = _validate_range(
-                        value, *VALIDATION_RANGES["rnnoise"][name], name, "rnnoise",
-                        strict=True,
-                    )
-                elif name == "model":
-                    if not isinstance(value, str) or value not in VALIDATION_RANGES["rnnoise"][name]:
-                        raise ValueError(f"Unknown noise model: {value!r}")
-                    candidate[name] = value
-                else:
-                    raise ValueError(f"Unknown noise suppression setting: {name}")
-            except PresetValidationError as error:
-                raise ValueError(str(error)) from error
-        return candidate
+        return validated_settings(
+            self._settings, settings, section="rnnoise", noun="noise suppression",
+            booleans={"enabled"},
+            ranges={"strength": VALIDATION_RANGES["rnnoise"]["strength"]},
+            special={"model": _noise_model},
+        )
 
     def set_value(self, name: str, value: object) -> None:
         candidate = self._validated({name: value})
         if candidate != self._settings:
-            self._apply(candidate, (name,), edited=True)
+            self._apply(
+                candidate, label="Noise suppression edit",
+                write=lambda settings: self._write(settings, (name,)),
+            )
 
     def set_settings(self, settings: dict) -> None:
         """Apply a preset inline, checking its model before other native writes."""
         candidate = self._validated(settings)
-        self._apply(candidate, ("model", "enabled", "strength"), edited=False)
+        self._apply(candidate)
 
-    def _write(self, settings: dict, names: tuple[str, ...]) -> None:
+    def _write(
+        self, settings: dict, names: tuple[str, ...] = ("model", "enabled", "strength"),
+    ) -> None:
         for name in names:
             if name == "model":
                 model = settings[name]
@@ -92,31 +80,3 @@ class NoiseSuppressionState(QObject):
                 self.processor.set_rnnoise_enabled(settings[name])
             else:
                 self.processor.set_rnnoise_strength(settings[name])
-
-    def _apply(self, candidate: dict, names: tuple[str, ...], *, edited: bool) -> None:
-        previous = self._settings
-        try:
-            self._write(candidate, names)
-        except Exception as error:
-            self.changed.emit()
-            try:
-                self._write(previous, names)
-            except Exception as rollback_error:
-                message = (
-                    f"Noise suppression update failed: {error}; "
-                    f"restoring its previous settings also failed: {rollback_error}"
-                )
-                self.recoveryFailed.emit(message)
-                try:
-                    (self._stop_audio or self.processor.stop)()
-                except Exception as stop_error:
-                    message += f"; stopping audio also failed: {stop_error}"
-                self.writeFailed.emit(message)
-                raise RuntimeError(message) from error
-            self.writeFailed.emit(str(error))
-            raise RuntimeError(str(error)) from error
-        self._settings = candidate
-        if candidate != previous:
-            self.changed.emit()
-            if edited:
-                self.configurationEdited.emit("Noise suppression edit")

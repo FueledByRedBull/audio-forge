@@ -20,7 +20,7 @@ from ..config import (
 from ..config_parts.settings import _default_filter_type
 from .auto_eq_explanation import explain_auto_eq, target_profile_text
 from .calibration_support import format_db, format_percent
-from .rate_limiter import RateLimiter
+from .stage_state import RateLimitedStageState
 
 
 EQ_FILTER_OPTIONS = (
@@ -142,16 +142,13 @@ def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str
     return text, state, tooltip
 
 
-class EQState(QObject):
+class EQState(RateLimitedStageState[EQSettings]):
     """Own one typed settings snapshot; band editors are commands and views."""
 
-    changed = Signal()
     presentationChanged = Signal()
     configurationEditStarted = Signal()
     configurationEditFinished = Signal(str)
-    configurationEdited = Signal(str)
-    writeFailed = Signal(str)
-    recoveryFailed = Signal(str)
+    _stage_name = "EQ"
 
     def __init__(
         self,
@@ -160,14 +157,7 @@ class EQState(QObject):
         *,
         stop_audio: Callable[[], object] | None = None,
     ):
-        super().__init__(parent)
-        self.processor = processor
-        # Where the app routes a failure stop off the GUI thread; alone, the processor is stopped here.
-        self._stop_audio = stop_audio
-        self._settings = EQSettings()
-        self._applied_settings = copy(self._settings)
-        self._rate_limiter = RateLimiter(interval_ms=33)
-        self._rate_limiter._timer.setParent(self)
+        super().__init__(processor, EQSettings(), parent, stop_audio=stop_audio)
         self._curve_rate_limiter = self._rate_limiter
         self._curve_edit_origin: tuple[int, EQBandSettings] | None = None
         self.selected_band: int | None = None
@@ -251,12 +241,7 @@ class EQState(QObject):
         if candidate == self._settings:
             return
         self.set_auto_eq_diagnostics(None)
-        self._settings = candidate
-        if notify:
-            self.changed.emit()
-        self._rate_limiter.call(
-            lambda: self._apply(candidate, label=label, notify=not notify)
-        )
+        self._queue(candidate, label=label, notify=notify)
 
     def _write(self, settings: EQSettings) -> None:
         self.processor.set_eq_enabled(settings.enabled)
@@ -265,52 +250,6 @@ class EQState(QObject):
             [band.to_native() for band in correction],
             [band.to_native() for band in settings.bands],
         )
-
-    def _apply(
-        self,
-        candidate: EQSettings,
-        *,
-        label: str | None = None,
-        notify: bool = False,
-    ) -> None:
-        previous = self._applied_settings
-        try:
-            self._write(candidate)
-        except Exception as error:
-            self.cancel()
-            try:
-                self._write(previous)
-            except Exception as rollback_error:
-                message = f"EQ update failed: {error}; restoring its previous settings also failed: {rollback_error}"
-                self.recoveryFailed.emit(message)
-                try:
-                    (self._stop_audio or self.processor.stop)()
-                except Exception as stop_error:
-                    message += f"; stopping audio also failed: {stop_error}"
-                self.writeFailed.emit(message)
-                raise RuntimeError(message) from error
-            self.writeFailed.emit(str(error))
-            raise RuntimeError(str(error)) from error
-        self._applied_settings = copy(candidate)
-        if self._settings != candidate:
-            self._settings = candidate
-            notify = True
-        if notify:
-            self.changed.emit()
-        if label and candidate != previous:
-            self.configurationEdited.emit(label)
-
-    def flush(self) -> None:
-        self._rate_limiter.flush()
-
-    def cancel(self) -> None:
-        self._rate_limiter.cancel()
-        if self._settings != self._applied_settings:
-            self._settings = copy(self._applied_settings)
-            self.changed.emit()
-
-    def _apply_inline(self, candidate: EQSettings, *, label: str | None = None) -> None:
-        self._rate_limiter.call_now(lambda: self._apply(candidate, label=label))
 
     def set_settings(self, settings: dict) -> None:
         if "bands" in settings:

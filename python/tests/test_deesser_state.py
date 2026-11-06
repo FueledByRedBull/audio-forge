@@ -52,7 +52,9 @@ def test_deesser_coalesces_exact_edits_and_preset_cancels_stale_work(qapp):
     calls = len(processor.calls)
     state.flush()
     assert len(processor.calls) == calls
-    assert processor.settings == asdict(DeEsserSettings()) | {"auto_amount": 0.234567}
+    assert processor.settings == asdict(DeEsserSettings()) | {
+        "threshold_db": -32.123456, "auto_enabled": False, "auto_amount": 0.234567,
+    }
     assert state.get_settings() == processor.settings
     assert edits == ["De-esser edit"]
 
@@ -150,3 +152,15 @@ def test_auto_control_availability_and_cancel_follow_shared_state(qapp):
     state.flush()
     assert not state.control_enabled("threshold_db")
     assert state.get_settings()["auto_enabled"]
+
+
+def test_set_settings_keeps_current_values_for_omitted_keys(qapp):
+    processor = RecordingProcessor()
+    state = DeEsserState(processor)
+    state.set_settings({"threshold_db": -20.0, "auto_enabled": False})
+    state.set_settings({"ratio": 3.0})
+
+    assert state.get_settings() == asdict(DeEsserSettings()) | {
+        "threshold_db": -20.0, "auto_enabled": False, "ratio": 3.0,
+    }
+    assert processor.settings == state.get_settings()

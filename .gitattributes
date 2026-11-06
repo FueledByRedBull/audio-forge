@@ -27,3 +27,9 @@ requirements/*.txt text eol=lf
 *.7z binary
 *.gz binary
 *.zip binary
+
+python/tests/** linguist-vendored
+python/tools/** linguist-vendored
+rust-core/tests/** linguist-vendored
+rust-core/src/**/tests.rs linguist-vendored
+rust-core/src/**/*_tests.rs linguist-vendored

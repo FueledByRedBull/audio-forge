@@ -5523,7 +5523,7 @@ fn a_processing_path_change_resets_every_stage_without_allocating() {
     }
 
     crate::test_alloc::assert_no_allocations("processing path change resets", || {
-        gate.reset();
+        gate.reset_signal_state();
         eq.reset();
         compressor.reset();
         deesser.reset();
@@ -5541,9 +5541,10 @@ fn a_processing_path_change_resets_every_stage_without_allocating() {
     );
     assert_eq!(
         path_change.matches(".reset()").count(),
-        6,
+        5,
         "a stage reset was added to or removed from the path change: update this test"
     );
+    assert_eq!(path_change.matches(".reset_signal_state()").count(), 1);
     assert_eq!(path_change.matches(".soft_reset()").count(), 1);
     assert_eq!(path_change.matches("reset_dynamic_state()").count(), 1);
 }

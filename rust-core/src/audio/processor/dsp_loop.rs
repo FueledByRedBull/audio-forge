@@ -1420,7 +1420,7 @@ impl Pipeline {
             .discontinuity_fade_remaining
             .set(self.output.discontinuity_fade_samples);
 
-        self.gate.reset();
+        self.gate.reset_signal_state();
         if let Some(control) = rearm_unless_stable(
             shared.gate.rt_control.snapshot(),
             &shared.gate.dirty,
@@ -1856,7 +1856,7 @@ impl Pipeline {
 
     /// Restart everything that depends on contiguous input after a gap.
     fn reset_after_input_gap(&mut self, shared: &Shared) {
-        self.gate.reset();
+        self.gate.reset_signal_state();
         self.suppressor.engine.soft_reset();
         self.suppressor.output.clear();
         shared.suppressor.buffer_len.store(0, Ordering::Relaxed);
@@ -2571,7 +2571,7 @@ mod input_continuity_tests {
         gate.process_block_inplace(&mut audio);
         crate::test_alloc::assert_no_allocations("input gap resampler and gate reset", || {
             resampler.reset();
-            gate.reset();
+            gate.reset_signal_state();
             audio.fill(0.0);
             gate.process_block_inplace(&mut audio);
             let (_, written) = resampler

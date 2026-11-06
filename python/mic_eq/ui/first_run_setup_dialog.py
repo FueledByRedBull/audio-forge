@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QDialog, QMessageBox, QVBoxLayout
 
 from ..config import coerce_device_identity, save_config
 from ..config_parts.app_config import FIRST_RUN_SETUP_STEPS
+from ..runtime_snapshot import RuntimeSnapshot
 from .first_run_setup_view import FirstRunSetupView
 from .health import RecentStreamHealth
 from .layout_constants import configure_resizable_dialog
@@ -88,11 +89,10 @@ def route_health_reason(
         diagnostics = diagnostics_getter() if callable(diagnostics_getter) else {}
     except Exception:
         return False, "Audio stream health could not be read. Retry the route."
-    if not isinstance(diagnostics, dict):
-        diagnostics = {}
+    snapshot = RuntimeSnapshot.parse(diagnostics if isinstance(diagnostics, dict) else {})
     window = health_window if health_window is not None else RecentStreamHealth()
     try:
-        recent_events = window.observe(diagnostics, now=now)
+        recent_events = window.observe(snapshot, now=now)
     except ValueError:
         return (
             False,

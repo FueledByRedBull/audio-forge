@@ -18,15 +18,7 @@ from PySide6.QtMultimedia import (
     QMediaDevices,
 )
 from PySide6.QtQuickWidgets import QQuickWidget
-from PySide6.QtWidgets import (
-    QApplication,
-    QDialog,
-    QLabel,
-    QMessageBox,
-    QPushButton,
-    QProgressBar,
-    QVBoxLayout,
-)
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QVBoxLayout
 
 from ..analysis.cancellation import AnalysisCancelled
 from ..analysis.listening_comparison import (
@@ -49,11 +41,10 @@ from .capture_session import (
     start_selected_route,
     sync_owner_processing_controls,
 )
-from .components import live_output_muted_notice, session_is_ending
+from .components import session_is_ending
 from .layout_constants import configure_resizable_dialog
-from .listening_comparison_view import ListeningComparisonView
+from .listening_comparison_view import ListeningComparisonView, RecordingProgressView
 from .quick_scene import QML_DIR, load_scene, quick_theme
-from .theme import PROGRESS_BAR_STYLE, SECONDARY_ACTION_BUTTON_STYLE
 
 logger = logging.getLogger(__name__)
 
@@ -855,52 +846,56 @@ TEST_CAPTURE_SECONDS = 5.0
 _TEST_MY_SOUND_REASON = "test_my_sound"
 
 
+def _show_recording_progress(dialog: QDialog) -> RecordingProgressView:
+    """Give the recording window its scene; raise when the scene does not load."""
+    dialog.setWindowTitle("Test my sound")
+    dialog.setModal(True)
+    view = RecordingProgressView(
+        prompt=f"Recording. Speak normally for {TEST_CAPTURE_SECONDS:.0f} seconds.",
+        cancel=dialog.reject,
+        parent=dialog,
+    )
+    quick_view = QQuickWidget(dialog)
+    reason = load_scene(quick_view, QML_DIR / "RecordingProgress.qml", quick_theme(), {"vm": view})
+    if reason is not None:
+        raise RuntimeError(f"The recording window could not open: {reason}")
+    quick_view.setAccessibleName("Test my sound recording")
+    quick_view.setMinimumSize(quick_view.sizeHint())
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(quick_view)
+    return view
+
+
 def _record_test_clip(window: Any) -> np.ndarray | None:
     """Record one raw clip behind a modal progress dialog; None when canceled."""
     session = CaptureSession(window, _TEST_MY_SOUND_REASON)
     session.start(TEST_CAPTURE_SECONDS, before_cleanup=True)
 
     dialog = QDialog(window)
-    dialog.setWindowTitle("Test my sound")
-    dialog.setModal(True)
-    layout = QVBoxLayout(dialog)
-    layout.addWidget(
-        QLabel(f"Recording. Speak normally for {TEST_CAPTURE_SECONDS:.0f} seconds.")
-    )
-    layout.addWidget(live_output_muted_notice())
-    bar = QProgressBar()
-    bar.setRange(0, 100)
-    bar.setTextVisible(False)
-    bar.setStyleSheet(PROGRESS_BAR_STYLE)
-    bar.setAccessibleName("Recording progress")
-    layout.addWidget(bar)
-    cancel_button = QPushButton("Cancel")
-    cancel_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
-    cancel_button.clicked.connect(dialog.reject)
-    layout.addWidget(cancel_button)
-
     failures: list[str] = []
     timer = QTimer(dialog)
     timer.setInterval(50)
-
-    def poll() -> None:
-        try:
-            progress = float(window.processor.recording_progress())
-            failure = session.failure_reason(progress)
-            if failure is not None:
-                raise RuntimeError(failure)
-            bar.setValue(int(progress * 100))
-            if progress >= 1.0 or window.processor.is_recording_complete():
-                timer.stop()
-                dialog.accept()
-        except Exception as exc:
-            timer.stop()
-            failures.append(str(exc))
-            dialog.reject()
-
-    timer.timeout.connect(poll)
-    timer.start()
     try:
+        view = _show_recording_progress(dialog)
+
+        def poll() -> None:
+            try:
+                progress = float(window.processor.recording_progress())
+                failure = session.failure_reason(progress)
+                if failure is not None:
+                    raise RuntimeError(failure)
+                view.set_progress(int(progress * 100))
+                if progress >= 1.0 or window.processor.is_recording_complete():
+                    timer.stop()
+                    dialog.accept()
+            except Exception as exc:
+                timer.stop()
+                failures.append(str(exc))
+                dialog.reject()
+
+        timer.timeout.connect(poll)
+        timer.start()
         accepted = dialog.exec() == int(QDialog.DialogCode.Accepted)
         if failures:
             raise RuntimeError(failures[0])

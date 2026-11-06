@@ -622,6 +622,7 @@
     "_internal/mic_eq/ui/qml/ProgressTrack.qml",
     "_internal/mic_eq/ui/qml/PushButton.qml",
     "_internal/mic_eq/ui/qml/qmldir",
+    "_internal/mic_eq/ui/qml/RecordingProgress.qml",
     "_internal/mic_eq/ui/qml/ScrollPage.qml",
     "_internal/mic_eq/ui/qml/Surface.qml",
     "_internal/mic_eq/ui/qml/SwitchButton.qml",

@@ -9,21 +9,23 @@ from typing import Any
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QPointF, Qt, qInstallMessageHandler
+from PySide6.QtCore import QPointF, Qt, QTimer, qInstallMessageHandler
 from PySide6.QtGui import QAccessible, QFont
 from PySide6.QtMultimedia import QAudioDevice, QMediaDevices
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QDialog
+from PySide6.QtWidgets import QApplication, QDialog
 
 from mic_eq.analysis.listening_comparison import ComparisonRenderResult, RenderedComparisonClip
 from mic_eq.ui.capture_session import LIVE_OUTPUT_MUTED_NOTICE
+from mic_eq.ui import listening_comparison_dialog as module
 from mic_eq.ui.listening_comparison_dialog import ListeningComparisonDialog, RawProcessedDialog
 from mic_eq.ui.listening_comparison_view import ListeningComparisonView
 from mic_eq.ui.theme import PALETTE
 from test_first_run_setup import at_scene_minimum, choose, cut_short_texts, press, scene_item, scene_items, scene_text
 from test_listening_comparison import _settings
-from test_quick_shell import _AccessibleScene
+from test_quick_shell import _AccessibleScene, _wait_until
+from test_raw_processed_listening import _Processor, _Window
 
 REJECTED, ACCEPTED = int(QDialog.DialogCode.Rejected), int(QDialog.DialogCode.Accepted)
 PLAYS = {False: ["originalPlayButton", "currentPlayButton", "proposedPlayButton"],
@@ -352,3 +354,95 @@ def test_a_scene_that_does_not_load_says_so_and_closes_without_rendering(qapp, m
     assert rendered == [] and connected == []
     dialog.deleteLater()
     qapp.processEvents()
+
+
+def _while_recording(qapp: Any, action: Any) -> tuple[Any, _Window]:
+    """Record a Test my sound clip that stays at half way, and run `action(scene)` on its window."""
+    window = _Window(_Processor())
+    window.processor.progress = 0.5
+
+    def act() -> None:
+        dialog: Any = QApplication.activeModalWidget()
+        quick = dialog.findChild(QQuickWidget)
+        quick.setFocus()
+        qapp.processEvents()
+        action(SimpleNamespace(quick_view=quick, dialog=dialog))
+
+    QTimer.singleShot(100, act)
+    return module._record_test_clip(window), window
+
+
+def test_the_recording_window_loads_names_its_parts_and_shows_the_progress(qapp) -> None:
+    seen: dict[str, Any] = {}
+
+    def look(scene: Any) -> None:
+        assert scene.quick_view.status() == QQuickWidget.Status.Ready
+        assert _wait_until(lambda: scene_item(scene, "progressBar").property("fraction") > 0)
+        seen["focus"] = _focus_name(scene)
+        with _AccessibleScene() as access:
+            seen["names"] = {key: access.name(scene_item(scene, key)) for key in
+                             ("promptText", "mutedNotice", "progressBar", "cancelButton")}
+            seen["progress"] = access.description(scene_item(scene, "progressBar"))
+            seen["view"] = QAccessible.queryAccessibleInterface(scene.quick_view).text(QAccessible.Text.Name)
+        seen["fraction"] = scene_item(scene, "progressBar").property("fraction")
+        scene.dialog.reject()
+
+    audio, window = _while_recording(qapp, look)
+    assert audio is None
+    assert seen["names"] == {
+        "promptText": "Recording. Speak normally for 5 seconds.",
+        "mutedNotice": LIVE_OUTPUT_MUTED_NOTICE,
+        "progressBar": "Recording progress",
+        "cancelButton": "Cancel",
+    }
+    assert seen["view"] == "Test my sound recording" and seen["focus"] == "cancelButton"
+    assert (seen["progress"], seen["fraction"]) == ("50 percent", 0.5)
+    assert window.mutes == [(True, "test_my_sound"), (False, "test_my_sound")], "the capture is released"
+
+
+@pytest.mark.parametrize("how", ["space", "return", "enter", "escape", "click"])
+def test_the_recording_window_cancels_by_keyboard_or_mouse(qapp, how) -> None:
+    keys = {"space": Qt.Key.Key_Space, "return": Qt.Key.Key_Return, "enter": Qt.Key.Key_Enter,
+            "escape": Qt.Key.Key_Escape}
+
+    def cancel(scene: Any) -> None:
+        if how == "click":
+            press(scene, "cancelButton")
+        else:
+            QTest.keyClick(scene.quick_view, keys[how])
+
+    audio, window = _while_recording(qapp, cancel)
+    assert audio is None and QApplication.activeModalWidget() is None
+    assert window.processor.calls == ["record 5 before_cleanup=True"]
+    assert window.mutes == [(True, "test_my_sound"), (False, "test_my_sound")]
+
+
+def test_the_recording_window_fits_its_text_at_a_large_size(qapp) -> None:
+    previous = qapp.font()
+    bigger = QFont(previous)
+    bigger.setPointSize(14)
+    qapp.setFont(bigger)
+    seen: dict[str, Any] = {}
+
+    def measure(scene: Any) -> None:
+        root = scene.quick_view.rootObject()
+        seen["cut"] = cut_short_texts(scene)
+        seen["wide"] = [i.objectName() for i in scene_items(root, only_visible=True)
+                        if i.mapToScene(QPointF(i.width(), 0)).x() > scene.quick_view.width() + 0.5]
+        seen["tall"] = root.property("implicitHeight") > scene.quick_view.height() + 0.5
+        scene.dialog.reject()
+
+    try:
+        _while_recording(qapp, measure)
+    finally:
+        qapp.setFont(previous)
+    assert seen == {"cut": [], "wide": [], "tall": False}
+
+
+def test_a_recording_window_that_does_not_load_releases_the_capture(qapp, monkeypatch) -> None:
+    monkeypatch.setattr(module, "load_scene", lambda *_args: "no such file")
+    window = _Window(_Processor())
+    with pytest.raises(RuntimeError, match="The recording window could not open: no such file"):
+        module._record_test_clip(window)
+    assert window.mutes == [(True, "test_my_sound"), (False, "test_my_sound")]
+    assert QApplication.activeModalWidget() is None

@@ -154,3 +154,31 @@ class ListeningComparisonView(QObject):
     @Slot()
     def reject(self) -> None:
         self._commands["reject"]()
+
+
+class RecordingProgressView(QObject):
+    """The view model of ``RecordingProgress.qml``: the progress of the Test my sound recording."""
+
+    progressChanged = Signal()
+
+    def __init__(self, *, prompt: str, cancel: Callable[[], None], parent: QObject | None = None):
+        super().__init__(parent)
+        self._prompt, self._cancel = prompt, cancel
+        self._progress = 0
+
+    prompt = Property(str, lambda self: self._prompt, constant=True)
+    progress = Property(int, lambda self: self._progress, notify=progressChanged)
+    mutedNotice = Property(str, lambda self: LIVE_OUTPUT_MUTED_NOTICE, constant=True)
+
+    @property
+    def progress_percent(self) -> int:
+        return self._progress
+
+    def set_progress(self, progress: int) -> None:
+        if progress != self._progress:
+            self._progress = progress
+            self.progressChanged.emit()
+
+    @Slot()
+    def cancel(self) -> None:
+        self._cancel()

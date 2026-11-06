@@ -31,6 +31,7 @@ REQUIRED_BUNDLE_FILES = (
     "_internal/mic_eq/ui/qml/LatencyCalibration.qml",
     "_internal/mic_eq/ui/qml/FirstRunSetup.qml",
     "_internal/mic_eq/ui/qml/ListeningComparison.qml",
+    "_internal/mic_eq/ui/qml/RecordingProgress.qml",
     "_internal/mic_eq/ui/qml/qmldir",
     "_internal/mic_eq/ui/qml/Look.qml",
     "_internal/mic_eq/ui/qml/BodyText.qml",

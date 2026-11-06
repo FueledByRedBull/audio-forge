@@ -1036,6 +1036,6 @@ def test_qml_import_paths_taken_from_the_environment_reach_each_scene(qapp, monk
     view = QQuickWidget()
     try:
         assert quick_scene.load_scene(view, scene, {}, {}) is None
-        assert str(tmp_path) in view.engine().importPathList()
+        assert tmp_path.as_posix() in view.engine().importPathList()  # Qt reports paths with forward slashes
     finally:
         view.deleteLater()

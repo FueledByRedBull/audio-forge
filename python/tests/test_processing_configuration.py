@@ -220,16 +220,21 @@ def test_a_refused_apply_restores_the_previous_sound_and_releases_the_mute(harne
         harness.preset(), noise_reference_reliability=0.7, processing_mode="raw",
         compressor_metadata={"dynamics_profile": "dense"},
     )
+    configuration.start_history()
     before = preset_payload(configuration.current)
+    identity, cursor = configuration.identity, configuration.history.cursor
     calibration = harness.states.compressor.get_settings(include_calibration=True)
+    harness.host.held.add("user")  # the user's own mute is not the configuration's to release
     _fail_once_after_writing(monkeypatch, getattr(harness.states, stage))
 
     with pytest.raises(ConfigurationNotApplied, match="previous sound restored: injected failure"):
         configuration.apply(harness.preset(threshold_db=-25.0))
 
     assert preset_payload(configuration.current) == before
-    assert harness.host.mode == "raw" and not harness.host.held
+    assert harness.host.mode == "raw" and harness.host.held == {"user"}
     assert harness.states.compressor.get_settings(include_calibration=True) == calibration
+    assert configuration.identity == identity and configuration.history.cursor == cursor
+    assert harness.config.last_preset == "" and harness.saves == []
 
 
 def test_a_failed_restore_keeps_the_output_muted_and_stops_audio(harness, monkeypatch) -> None:
@@ -687,12 +692,17 @@ def test_edits_inside_a_gesture_or_dialog_session_are_one_entry(started) -> None
     configuration = started.configuration
     eq = started.states.eq
     size = configuration.history.size
+    frequency = eq.get_eq_settings().band_freqs[4]
     eq.begin_curve_edit(4)
     eq.edit_curve_band(4, 2500.0, 2.0)
     eq.edit_curve_band(4, 3000.0, 2.2)
     assert not started.debouncer.pending
     eq.finish_curve_edit(4, 3000.0, 2.2)
     assert configuration.history.size == size + 1
+    assert configuration.undo() is not None
+    assert eq.get_eq_settings().band_freqs[4] == pytest.approx(frequency)
+    assert configuration.redo() is not None
+    assert eq.get_eq_settings().band_freqs[4] == pytest.approx(3000.0)
 
     with configuration.dialog_session():
         started.states.gate.set_settings({"threshold_db": -35.0})
@@ -701,3 +711,27 @@ def test_edits_inside_a_gesture_or_dialog_session_are_one_entry(started) -> None
         assert configuration.commit_edit(label="Auto-EQ (Broadcast)", source="auto_eq")
     assert configuration.history.size == size + 2
     assert configuration.undo() == "Auto-EQ (Broadcast)"
+
+
+def test_a_model_the_engine_fails_to_load_is_refused_before_any_other_stage_is_written(logged) -> None:
+    harness, engine = logged
+
+    def set_noise_model(model):
+        if model == "deepfilter":
+            raise RuntimeError("model load failed")
+        return True
+
+    engine.set_noise_model.side_effect = set_noise_model
+    harness.states.noise_suppression.models = [("rnnoise", "RNNoise"), ("deepfilter", "DeepFilter")]
+    preset = harness.preset(threshold_db=harness.threshold() + 4)
+    preset.rnnoise.model = "deepfilter"  # offered, but loading it fails
+    queued = len(engine.mock_calls)
+
+    with pytest.raises(ConfigurationNotApplied, match="model load failed"):
+        harness.configuration.apply(preset)
+
+    calls = engine.mock_calls[queued:]
+    refusal = calls.index(call.set_noise_model("deepfilter"))
+    assert [name for name, _args, _kwargs in calls[:refusal] if name != "set_output_mute"] == []
+    assert harness.states.noise_suppression.get_settings()["model"] == "rnnoise"
+    assert not harness.configuration.replaying

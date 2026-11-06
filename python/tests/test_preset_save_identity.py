@@ -321,11 +321,13 @@ def test_saved_file_without_identity_persistence_is_reported(
     assert "could not remember" in str(save_window.status_message.text)
 
 
-def test_a_load_that_cannot_be_remembered_says_so(isolated_main_window, monkeypatch, tmp_path):
+@pytest.mark.parametrize("refusal", [False, TypeError("invalid config")], ids=["false", "raises"])
+def test_a_load_that_cannot_be_remembered_says_so(isolated_main_window, monkeypatch, tmp_path, refusal):
     window = isolated_main_window
     loaded = Preset(name="Loaded")
+    save = Mock(side_effect=refusal) if isinstance(refusal, Exception) else Mock(return_value=refusal)
     with monkeypatch.context() as patch:  # the window's close must save again
-        patch.setattr(main_window, "save_config", Mock(return_value=False))
+        patch.setattr(main_window, "save_config", save)
         assert window._report_load(
             window.configuration.load(loaded, PresetOrigin(path=tmp_path / "loaded.json"), remember=True)
         )

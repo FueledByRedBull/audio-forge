@@ -6,15 +6,11 @@ from collections.abc import Callable
 from dataclasses import asdict
 import math
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject
 
-from ..config import CompressorSettings, PresetValidationError
-from ..config_parts.validation import (
-    _validate_bool,
-    _validate_range,
-)
+from ..config import CompressorSettings
 from .control_specs import CONTROL_RANGES
-from .rate_limiter import RateLimiter
+from .stage_state import RateLimitedStageState, validated_settings
 
 
 _BOOLEAN_SETTINGS = {
@@ -25,13 +21,10 @@ _PARAMETER_KEYS = frozenset(asdict(CompressorSettings()))
 _INTENSITY_KEYS = _PARAMETER_KEYS - {"target_lufs"}
 
 
-class CompressorState(QObject):
+class CompressorState(RateLimitedStageState[dict]):
     """Own write ordering, coalescing and calibration provenance."""
 
-    changed = Signal()
-    configurationEdited = Signal(str)
-    writeFailed = Signal(str)
-    recoveryFailed = Signal(str)
+    _stage_name = "Compressor"
 
     def __init__(
         self,
@@ -40,19 +33,17 @@ class CompressorState(QObject):
         *,
         stop_audio: Callable[[], object] | None = None,
     ):
-        super().__init__(parent)
-        self.processor = processor
-        # Where the app routes a failure stop off the GUI thread; alone, the processor is stopped here.
-        self._stop_audio = stop_audio
-        self._settings = asdict(CompressorSettings()) | {
-            "noise_reference_reliability": 0.0,
-            "dynamics_profile": "balanced",
-            "dynamics_customized": False,
-        }
-        self._applied_settings = self._settings.copy()
+        super().__init__(
+            processor,
+            asdict(CompressorSettings()) | {
+                "noise_reference_reliability": 0.0,
+                "dynamics_profile": "balanced",
+                "dynamics_customized": False,
+            },
+            parent,
+            stop_audio=stop_audio,
+        )
         self._calibrated_controls: dict | None = None
-        self._rate_limiter = RateLimiter(interval_ms=33)
-        self._rate_limiter._timer.setParent(self)
 
     def get_settings(self, *, include_calibration: bool = False) -> dict:
         """Return desired settings; interactive values may still be queued."""
@@ -89,20 +80,10 @@ class CompressorState(QObject):
         return True
 
     def _validated(self, settings: dict) -> dict:
-        candidate = self._settings.copy()
-        for name, value in settings.items():
-            try:
-                if name in _BOOLEAN_SETTINGS:
-                    candidate[name] = _validate_bool(value, name, "compressor")
-                elif name in COMPRESSOR_RANGES:
-                    candidate[name] = _validate_range(
-                        value, *COMPRESSOR_RANGES[name], name, "compressor", strict=True,
-                    )
-                else:
-                    raise ValueError(f"Unknown compressor setting: {name}")
-            except PresetValidationError as error:
-                raise ValueError(str(error)) from error
-        return candidate
+        return validated_settings(
+            self._settings, settings, section="compressor", noun="compressor",
+            booleans=_BOOLEAN_SETTINGS, ranges=COMPRESSOR_RANGES,
+        )
 
     def set_value(self, name: str, value: object) -> None:
         if name not in _PARAMETER_KEYS:
@@ -119,20 +100,15 @@ class CompressorState(QObject):
         baseline = self._calibrated_controls
         if baseline is not None and any(candidate[key] != baseline[key] for key in _INTENSITY_KEYS):
             candidate["dynamics_customized"] = True
-        self._settings = candidate
-        self.changed.emit()
         label = (
             "Adaptive release edit" if name in {"adaptive_release", "base_release_ms"}
             else "Auto makeup edit" if name in {"auto_makeup_enabled", "target_lufs"}
             else "Compressor edit"
         )
-        def apply():
-            self._apply(candidate, baseline, label=label)
-
-        if immediate:
-            self._rate_limiter.call_now(apply)
-        else:
-            self._rate_limiter.call(apply)
+        self._queue(
+            candidate, label=label, immediate=immediate,
+            on_accepted=self._calibrated(baseline),
+        )
 
     def set_settings(self, settings: dict) -> None:
         """Apply a preset inline; omission invalidates transient noise evidence."""
@@ -158,46 +134,14 @@ class CompressorState(QObject):
             reliability = math.nan
         if math.isfinite(reliability):
             candidate["noise_reference_reliability"] = min(1.0, max(0.0, reliability))
-        self._rate_limiter.call_now(lambda: self._apply(candidate, baseline))
+        self._apply_inline(candidate, on_accepted=self._calibrated(baseline))
 
-    def flush(self) -> None:
-        self._rate_limiter.flush()
+    def _calibrated(self, baseline: dict | None) -> Callable[[], None]:
+        """Adopt a calibration baseline only once the write carrying it is accepted."""
+        def accept() -> None:
+            self._calibrated_controls = baseline
 
-    def cancel(self) -> None:
-        self._rate_limiter.cancel()
-        if self._settings != self._applied_settings:
-            self._settings = self._applied_settings.copy()
-            self.changed.emit()
+        return accept
 
     def _write(self, settings: dict) -> None:
         self.processor.apply_compressor_settings(settings)
-
-    def _apply(self, candidate: dict, baseline: dict | None, *, label: str | None = None) -> None:
-        previous = self._applied_settings
-        try:
-            self._write(candidate)
-        except Exception as error:
-            self.cancel()
-            try:
-                self._write(previous)
-            except Exception as rollback_error:
-                message = (
-                    f"Compressor update failed: {error}; "
-                    f"restoring its previous settings also failed: {rollback_error}"
-                )
-                self.recoveryFailed.emit(message)
-                try:
-                    (self._stop_audio or self.processor.stop)()
-                except Exception as stop_error:
-                    message += f"; stopping audio also failed: {stop_error}"
-                self.writeFailed.emit(message)
-                raise RuntimeError(message) from error
-            self.writeFailed.emit(str(error))
-            raise RuntimeError(str(error)) from error
-        self._applied_settings = candidate.copy()
-        self._calibrated_controls = baseline
-        if self._settings != candidate:
-            self._settings = candidate
-            self.changed.emit()
-        if label is not None and candidate != previous:
-            self.configurationEdited.emit(label)

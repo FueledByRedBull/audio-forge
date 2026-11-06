@@ -5351,7 +5351,11 @@
         },
         {
           "path": "python/tools/build_deepfilter.py",
-          "sha256": "fb41854308766052839b1b8a6a3734a34f08f31c2cd38505f7cf3600779f3980"
+          "sha256": "5ce7388c2505b91df856cb9d9ed9d1990213df8da723286b4f8879a033af46d3"
+        },
+        {
+          "path": "python/tools/bounded_download.py",
+          "sha256": "b4893d0508b4162690c546e7f11cb30e34e60c3d279345226d7e2309d24a297b"
         },
         {
           "path": "build-support/deepfilter/Cargo.toml",

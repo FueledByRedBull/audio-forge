@@ -1,0 +1,49 @@
+name: Authorize the dispatch
+description: >-
+  Refuse unless the run is on refs/heads/master and github.triggering_actor has
+  the admin or maintain role. Every job of the privileged and hardware release
+  workflows runs it first; check_workflows.py requires it and checks this file.
+
+runs:
+  using: composite
+  steps:
+    - name: Authorize the dispatch (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      env:
+        GH_TOKEN: ${{ github.token }}
+        DISPATCHER: ${{ github.triggering_actor }}
+      run: |
+        if ($env:GITHUB_REF -ne "refs/heads/master") {
+          throw "This workflow runs only from refs/heads/master, not $env:GITHUB_REF."
+        }
+        $permission = Invoke-RestMethod `
+          -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" } `
+          -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/collaborators/$([uri]::EscapeDataString($env:DISPATCHER))/permission"
+        if ($permission.role_name -notin @("admin", "maintain")) {
+          throw "$env:DISPATCHER needs the admin or maintain role to run this workflow, but has '$($permission.role_name)'."
+        }
+
+    # bash and curl alone: a self-hosted Linux runner may have no PowerShell.
+    - name: Authorize the dispatch (Linux)
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        DISPATCHER: ${{ github.triggering_actor }}
+      run: |
+        set -euo pipefail
+        if [[ $GITHUB_REF != refs/heads/master ]]; then
+          echo "This workflow runs only from refs/heads/master, not $GITHUB_REF." >&2
+          exit 1
+        fi
+        [[ $DISPATCHER =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || { echo "Unexpected dispatcher name." >&2; exit 1; }
+        permission="$RUNNER_TEMP/dispatcher-permission.json"
+        curl -fsSL -o "$permission" \
+          -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+          "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/collaborators/$DISPATCHER/permission"
+        role=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1]))['role_name'])" "$permission")
+        case $role in
+          admin|maintain) ;;
+          *) echo "$DISPATCHER needs the admin or maintain role to run this workflow, but has '$role'." >&2; exit 1 ;;
+        esac

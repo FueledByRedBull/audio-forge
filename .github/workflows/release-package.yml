@@ -46,9 +46,32 @@ jobs:
       # Full history with blobs, as in ci.yml static.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.release_tag || github.sha }}
+          ref: ${{ inputs.release_tag != '' && format('refs/tags/{0}', inputs.release_tag) || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Bind existing release tag to checked-out commit
+        if: inputs.release_tag != '' || github.ref_type == 'tag'
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          $currentCommit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $currentCommit -notmatch '^[0-9a-f]{40}$') {
+            throw "Checked-out source revision is not a full commit: $currentCommit"
+          }
+          $tagRef = "refs/tags/$($env:RELEASE_TAG)"
+          $tagFetchSpec = "$tagRef`:$tagRef"
+          git fetch --no-tags origin $tagFetchSpec
+          if ($LASTEXITCODE -ne 0) {
+            throw "Existing release tag '$env:RELEASE_TAG' could not be fetched from origin."
+          }
+          $tagCommit = (git rev-list -n 1 $tagRef --).Trim()
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -notmatch '^[0-9a-f]{40}$') {
+            throw "Existing release tag '$env:RELEASE_TAG' does not resolve to a full commit: $tagCommit"
+          }
+          if ($tagCommit -ne $currentCommit) {
+            throw "Existing release tag '$env:RELEASE_TAG' must resolve to the checked-out commit $currentCommit, but resolves to $tagCommit."
+          }
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -185,7 +208,7 @@ jobs:
       # run works on the same source.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.release_tag || github.sha }}
+          ref: ${{ inputs.release_tag != '' && format('refs/tags/{0}', inputs.release_tag) || github.sha }}
           fetch-depth: 0
           filter: blob:none
           persist-credentials: false
@@ -303,7 +326,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Existing release tag '$env:RELEASE_TAG' could not be fetched from origin."
           }
-          $tagCommit = (git rev-list -n 1 $env:RELEASE_TAG --).Trim()
+          $tagCommit = (git rev-list -n 1 $tagRef --).Trim()
           if ($LASTEXITCODE -ne 0 -or $tagCommit -notmatch '^[0-9a-f]{40}$') {
             throw "Existing release tag '$env:RELEASE_TAG' does not resolve to a full commit: $tagCommit"
           }
@@ -663,7 +686,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.release_tag || github.sha }}
+          ref: ${{ inputs.release_tag != '' && format('refs/tags/{0}', inputs.release_tag) || github.sha }}
           persist-credentials: false
 
       # The libxcb libraries are the ones Qt's xcb plugin links (linux_package.py

@@ -687,6 +687,26 @@ def test_verifier_matches_expected_producer_exactly(
     assert bool(errors) is (not matches)
 
 
+def test_verifier_reports_a_corrupt_checksum_sidecar_instead_of_raising(
+    tmp_path, monkeypatch
+):
+    bundle = _bundle(tmp_path)
+    archive = tmp_path / "AudioForge-v1.2.3-win64-ultra.7z"
+    archive.write_bytes(b"archive")
+    monkeypatch.setattr(release_provenance, "_project_version", lambda: "1.2.3")
+    monkeypatch.setattr(release_provenance, "_git_commit", lambda: "a" * 40)
+    checksum, manifest, metadata = release_provenance.create_sidecars(
+        bundle, archive, tmp_path
+    )
+    checksum.write_bytes(bytes([0xFF, 0xFE]) + b" not ascii")
+
+    errors = release_provenance.verify_sidecars(
+        archive, checksum, manifest, metadata, bundle=bundle
+    )
+
+    assert any("checksum sidecar" in error for error in errors)
+
+
 def test_verify_cli_forwards_expected_workflow_identity(monkeypatch):
     def capture(*args, **kwargs):
         assert kwargs["expected_producer"] == list(_EXPECTED_PRODUCER)

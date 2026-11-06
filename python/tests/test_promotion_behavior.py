@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -17,15 +18,28 @@ import yaml
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "release-promote.yml"
 
 
-def _candidate_jobs(*, drop: str | None = None, fail: str | None = None) -> list[dict[str, str]]:
-    """The jobs of a Release package run that promotion requires on Linux."""
+def _candidate_jobs(
+    *, drop: str | None = None, fail: str | None = None, extra: dict[str, str] | None = None
+) -> list[dict[str, str]]:
+    """The jobs of a Release package run that promotion requires, Windows and Linux."""
     shards = [*json.loads((WORKFLOW.parents[1] / "pytest-shards.json").read_text(encoding="utf-8")), "rest"]
-    names = ["Build Linux release package", "Linux Rust tests and lint", *(f"linux-pytest ({shard})" for shard in shards)]
-    return [
+    names = [
+        "Static checks and audits",
+        "Build Windows release package",
+        "Rust tests and lint",
+        "Rust contention stress (release mode)",
+        "Validate the exact archived candidate",
+        "Build Linux release package",
+        "Linux Rust tests and lint",
+        *(f"pytest ({shard})" for shard in shards),
+        *(f"linux-pytest ({shard})" for shard in shards),
+    ]
+    jobs = [
         {"name": name, "conclusion": "failure" if name == fail else "success"}
         for name in names
         if name != drop
     ]
+    return jobs + [{"name": name, "conclusion": conclusion} for name, conclusion in (extra or {}).items()]
 
 
 def _origin_gate_script() -> str:
@@ -59,6 +73,35 @@ def _origin_gate_script() -> str:
         (
             ("jobs", _candidate_jobs(fail="Build Linux release package")),
             "no successful 'Build Linux release package' job",
+        ),
+        (
+            ("jobs", _candidate_jobs(drop="Static checks and audits")),
+            "no successful 'Static checks and audits' job",
+        ),
+        (
+            ("jobs", _candidate_jobs(drop="Rust contention stress (release mode)")),
+            "no successful 'Rust contention stress (release mode)' job",
+        ),
+        (
+            ("jobs", _candidate_jobs(drop="Validate the exact archived candidate")),
+            "no successful 'Validate the exact archived candidate' job",
+        ),
+        (
+            ("jobs", _candidate_jobs(drop="pytest (rest)")),
+            "no successful 'pytest (rest)' job",
+        ),
+        (
+            ("jobs", _candidate_jobs(fail="Rust tests and lint")),
+            "no successful 'Rust tests and lint' job",
+        ),
+        (
+            ("jobs", _candidate_jobs(fail="Build Windows release package")),
+            "no successful 'Build Windows release package' job",
+        ),
+        # A skipped job leaves its run successful, so promotion reads each job.
+        (
+            ("jobs", _candidate_jobs(extra={"Some new gate": "skipped"})),
+            "job 'Some new gate' with conclusion 'skipped'",
         ),
     ],
 )
@@ -145,12 +188,15 @@ def test_promotion_origin_gate_executes_commit_and_run_binding(
 
 
 WORKFLOWS = WORKFLOW.parent
+ACTION = WORKFLOW.parents[1] / "actions" / "authorize-dispatch" / "action.yml"
 # (workflow, job): every job that runs privileged or physical work starts with
-# the authorization step.
+# the shared authorization action, before any checkout.
 DISPATCH_JOBS = [
     ("release-promote.yml", "verify-candidate"),
+    ("release-promote.yml", "verify-linux-candidate"),
     ("release-promote.yml", "publish-release"),
     ("release-hardware-qualify.yml", "qualify-hardware"),
+    ("release-hardware-qualify-linux.yml", "qualify-hardware"),
     ("release-hardware-matrix.yml", "assemble"),
 ]
 
@@ -168,27 +214,54 @@ def _shell_for(job: dict) -> str:
 
 
 @pytest.mark.parametrize(("workflow", "job_id"), DISPATCH_JOBS)
-@pytest.mark.parametrize(
-    ("ref", "role", "expected_error"),
-    [
-        ("refs/heads/master", "admin", None),
-        ("refs/heads/master", "maintain", None),
-        ("refs/heads/master", "write", "needs the admin or maintain role"),
-        ("refs/heads/master", "triage", "needs the admin or maintain role"),
-        ("refs/heads/master", "", "needs the admin or maintain role"),
-        ("refs/heads/master", "api-error", "api unavailable"),
-        ("refs/heads/feature/x", "admin", "only from refs/heads/master"),
-        ("refs/heads/master-copy", "admin", "only from refs/heads/master"),
-        ("refs/tags/v1.19.0", "admin", "only from refs/heads/master"),
-    ],
-)
-def test_dispatch_authorization_needs_master_and_a_maintainer(
-    tmp_path: Path, workflow: str, job_id: str, ref: str, role: str, expected_error: str | None
+def test_every_dispatch_job_runs_the_shared_authorization_first(workflow: str, job_id: str) -> None:
+    steps = _job(workflow, job_id)["steps"]
+
+    assert steps[0]["uses"] == "$/.github/actions/authorize-dispatch"
+    assert not {"if", "continue-on-error", "run"} & set(steps[0])
+    assert not any("collaborators" in str(step.get("run", "")) for step in steps)
+
+
+AUTHORIZATION_CASES = [
+    ("refs/heads/master", "admin", None),
+    ("refs/heads/master", "maintain", None),
+    ("refs/heads/master", "write", "needs the admin or maintain role"),
+    ("refs/heads/master", "triage", "needs the admin or maintain role"),
+    ("refs/heads/master", "", "needs the admin or maintain role"),
+    ("refs/heads/master", "api-error", "api unavailable"),
+    ("refs/heads/feature/x", "admin", "only from refs/heads/master"),
+    ("refs/heads/master-copy", "admin", "only from refs/heads/master"),
+    ("refs/tags/v1.19.0", "admin", "only from refs/heads/master"),
+]
+
+
+def _authorization_step(windows: bool) -> dict:
+    steps = yaml.safe_load(ACTION.read_text(encoding="utf-8"))["runs"]["steps"]
+    return steps[0] if windows else steps[1]
+
+
+def _assert_authorization(
+    result: subprocess.CompletedProcess, uri_file: Path, expected_error: str | None, uri: str
 ) -> None:
-    job = _job(workflow, job_id)
-    shell = _shell_for(job)
-    first = job["steps"][0]
-    assert first["name"] == "Authorize the dispatch"
+    diagnostics = result.stdout + result.stderr
+    if expected_error is None:
+        assert result.returncode == 0, diagnostics
+        assert uri_file.read_text(encoding="utf-8").strip() == uri
+    else:
+        assert result.returncode != 0, diagnostics
+        assert expected_error in diagnostics
+        if "refs/heads/master" in expected_error:
+            assert not uri_file.exists(), "the token must not be sent for a refused ref"
+
+
+@pytest.mark.parametrize("shell_name", ["pwsh", "powershell"])
+@pytest.mark.parametrize(("ref", "role", "expected_error"), AUTHORIZATION_CASES)
+def test_dispatch_authorization_needs_master_and_a_maintainer(
+    tmp_path: Path, shell_name: str, ref: str, role: str, expected_error: str | None
+) -> None:
+    shell = shutil.which(shell_name)
+    if shell is None:
+        pytest.skip(f"{shell_name} is required for the Windows dispatch authorization")
     uri_file = tmp_path / "uri.txt"
     setup = """
 $ErrorActionPreference = 'Stop'
@@ -201,7 +274,7 @@ function Invoke-RestMethod {
 }
 """
     result = subprocess.run(
-        [shell, "-NoProfile", "-NonInteractive", "-Command", setup + first["run"]],
+        [shell, "-NoProfile", "-NonInteractive", "-Command", setup + _authorization_step(True)["run"]],
         env={
             **os.environ,
             "GITHUB_REF": ref,
@@ -215,17 +288,58 @@ function Invoke-RestMethod {
         capture_output=True,
         text=True,
     )
-    diagnostics = result.stdout + result.stderr
-    if expected_error is None:
-        assert result.returncode == 0, diagnostics
-        assert uri_file.read_text(encoding="utf-8").strip() == (
-            "https://api.example.test/repos/owner/repo/collaborators/some%20user/permission"
-        )
-    else:
-        assert result.returncode != 0, diagnostics
-        assert expected_error in diagnostics
-        if "refs/heads/master" in expected_error:
-            assert not uri_file.exists(), "the token must not be sent for a refused ref"
+    _assert_authorization(
+        result, uri_file, expected_error,
+        "https://api.example.test/repos/owner/repo/collaborators/some%20user/permission",
+    )
+
+
+@pytest.mark.parametrize(("ref", "role", "expected_error"), AUTHORIZATION_CASES)
+def test_linux_dispatch_authorization_needs_master_and_a_maintainer(
+    tmp_path: Path, ref: str, role: str, expected_error: str | None
+) -> None:
+    shell = shutil.which("bash")
+    if shell is None:
+        pytest.skip("bash is required for the Linux dispatch authorization")
+    uri_file = tmp_path / "uri.txt"
+    # curl and python3 are stood in for: the first writes the API reply, the second is this interpreter.
+    setup = f"""
+python3() {{ "{Path(sys.executable).as_posix()}" "$@"; }}
+curl() {{
+  local out="" url=""
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -o) out=$2; shift 2 ;;
+      -H) [[ $2 != Authorization:* || $2 == "Authorization: Bearer test-token" ]] || {{ echo 'unexpected token header' >&2; return 1; }}; shift 2 ;;
+      -*) shift ;;
+      *) url=$1; shift ;;
+    esac
+  done
+  [[ $TEST_ROLE != api-error ]] || {{ echo 'api unavailable' >&2; return 22; }}
+  echo "$url" > "$TEST_URI_FILE"
+  printf '{{"role_name": "%s"}}' "$TEST_ROLE" > "$out"
+}}
+"""
+    result = subprocess.run(
+        [shell, "-c", setup + _authorization_step(False)["run"]],
+        env={
+            **os.environ,
+            "GITHUB_REF": ref,
+            "GITHUB_API_URL": "https://api.example.test",
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GH_TOKEN": "test-token",
+            "DISPATCHER": "some-user",
+            "RUNNER_TEMP": str(tmp_path),
+            "TEST_ROLE": role,
+            "TEST_URI_FILE": str(uri_file),
+        },
+        capture_output=True,
+        text=True,
+    )
+    _assert_authorization(
+        result, uri_file, expected_error,
+        "https://api.example.test/repos/owner/repo/collaborators/some-user/permission",
+    )
 
 
 def _verified_release(tmp_path: Path, tag: str = "v1.19.0") -> tuple[dict[str, str], dict[str, Path]]:
@@ -353,6 +467,163 @@ def test_publish_recheck_refuses_a_checksum_list_that_disagrees(tmp_path: Path) 
 
 TAG = "v1.19.0"
 SEVEN_ZIP = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "7-Zip" / "7z.exe"
+
+
+def _publish_step(name: str) -> tuple[str, dict]:
+    job = _job("release-promote.yml", "publish-release")
+    step = next(s for s in job["steps"] if s.get("name") == name)
+    return _shell_for(job), step
+
+
+RECHECK_TAG_STEP = "Re-check that the release tag still points at the approved commit"
+
+
+@pytest.mark.parametrize(
+    ("remote", "expected_error"),
+    [
+        ({"peeled": "a" * 40}, None),
+        ({"peeled": "b" * 40}, f"now points at {'b' * 40}, not the approved commit {'a' * 40}"),
+        ({"peeled": None}, "must be an annotated tag that exists on origin"),
+        ({"missing": True}, "must be an annotated tag that exists on origin"),
+        ({"fail": True}, "Unable to read release tag"),
+    ],
+)
+def test_publish_refuses_a_release_tag_that_moved_after_verification(
+    tmp_path: Path, remote: dict, expected_error: str | None
+) -> None:
+    shell, step = _publish_step(RECHECK_TAG_STEP)
+    setup = """
+$ErrorActionPreference = 'Stop'
+function git {
+  param([Parameter(ValueFromRemainingArguments=$true)][string[]]$CommandArgs)
+  if ($CommandArgs[0] -ne 'ls-remote') { throw "unexpected git command" }
+  $global:LASTEXITCODE = [int]$env:TEST_LS_REMOTE_EXIT
+  if ($env:TEST_LS_REMOTE) { $env:TEST_LS_REMOTE -split "\\|" -replace '@', "`t" }
+}
+"""
+    lines = []
+    if not remote.get("missing") and not remote.get("fail"):
+        lines.append(f"{'c' * 40}@refs/tags/{TAG}")
+        if remote["peeled"]:
+            lines.append(f"{remote['peeled']}@refs/tags/{TAG}^{{}}")
+    result = subprocess.run(
+        [shell, "-NoProfile", "-NonInteractive", "-Command", setup + step["run"]],
+        env={
+            **os.environ,
+            "RELEASE_TAG": TAG,
+            "TAG_COMMIT": "a" * 40,
+            "TEST_LS_REMOTE": "|".join(lines),
+            "TEST_LS_REMOTE_EXIT": "128" if remote.get("fail") else "0",
+        },
+        capture_output=True,
+        text=True,
+    )
+    diagnostics = result.stdout + result.stderr
+    if expected_error is None:
+        assert result.returncode == 0, diagnostics
+    else:
+        assert result.returncode != 0, diagnostics
+        assert expected_error in diagnostics
+
+
+UPLOAD_STEP = "Upload exact validated assets to GitHub Release"
+
+
+def _publish_upload(
+    tmp_path: Path, *, draft: bool, missing: str | None
+) -> tuple[subprocess.CompletedProcess, str]:
+    """Run the upload step against a stubbed gh whose release holds every file but `missing`."""
+    shell, step = _publish_step(UPLOAD_STEP)
+    digests, files = _verified_release(tmp_path)
+    present = [
+        {"name": path.name, "digest": f"sha256:{digests[path.name]}"}
+        for path in files.values()
+        if path.name != missing
+    ]
+    complete = [{"name": path.name, "digest": f"sha256:{digests[path.name]}"} for path in files.values()]
+
+    def view(assets: list[dict], is_draft: bool) -> str:
+        return json.dumps({"isDraft": is_draft, "isPrerelease": False, "assets": assets})
+
+    log = tmp_path / "gh.log"
+    log.write_text("", encoding="utf-8")
+    setup = """
+$ErrorActionPreference = 'Stop'
+function git {
+  param([Parameter(ValueFromRemainingArguments=$true)][string[]]$CommandArgs)
+  $global:LASTEXITCODE = 0
+  'release notes'
+}
+function gh {
+  param([Parameter(ValueFromRemainingArguments=$true)][string[]]$CommandArgs)
+  $global:LASTEXITCODE = 0
+  Add-Content -LiteralPath $env:TEST_GH_LOG -Value ($CommandArgs -join ' ')
+  if ($CommandArgs[0] -eq 'release' -and $CommandArgs[1] -eq 'view') {
+    if ((Get-Content -LiteralPath $env:TEST_GH_LOG -Raw) -match 'release upload') { $env:TEST_RELEASE_AFTER } else { $env:TEST_RELEASE_BEFORE }
+    return
+  }
+  if ($CommandArgs[0] -eq 'release' -and $CommandArgs[1] -eq 'download') {
+    $name = $CommandArgs[[array]::IndexOf($CommandArgs, '--pattern') + 1]
+    $dir = $CommandArgs[[array]::IndexOf($CommandArgs, '--dir') + 1]
+    Copy-Item -LiteralPath (Join-Path $env:TEST_ASSET_DIR $name) -Destination (Join-Path $dir $name) -Force
+  }
+}
+"""
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    result = subprocess.run(
+        [shell, "-NoProfile", "-NonInteractive", "-Command", setup + step["run"]],
+        env={
+            **os.environ,
+            "GH_TOKEN": "test-token",
+            "RELEASE_TAG": TAG,
+            "ARCHIVE": str(files["archive"]),
+            "INSTALLER": str(files["installer"]),
+            "SOURCE_ARCHIVE": str(files["source_archive"]),
+            "LINUX_TARBALL": str(files["linux_tarball"]),
+            "LINUX_APPIMAGE": str(files["linux_appimage"]),
+            "EVIDENCE_ARCHIVE": str(files["evidence_archive"]),
+            "CHECKSUMS": str(files["checksums"]),
+            "PUBLIC_VERSION": "1.19.0",
+            "EXPECTED_PRERELEASE": "false",
+            "GITHUB_SHA": "a" * 40,
+            "GITHUB_REPOSITORY": "owner/repo",
+            "RUNNER_TEMP": str(runner_temp),
+            "TEST_GH_LOG": str(log),
+            "TEST_ASSET_DIR": str(files["archive"].parent),
+            "TEST_RELEASE_BEFORE": view(present, draft),
+            "TEST_RELEASE_AFTER": view(complete, draft),
+        },
+        capture_output=True,
+        text=True,
+    )
+    return result, log.read_text(encoding="utf-8")
+
+
+def test_publish_leaves_an_already_published_complete_release_untouched(tmp_path: Path) -> None:
+    result, log = _publish_upload(tmp_path, draft=False, missing=None)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "release upload" not in log
+    assert "release edit" not in log
+
+
+def test_publish_refuses_to_upload_into_a_published_release_with_missing_assets(tmp_path: Path) -> None:
+    result, log = _publish_upload(tmp_path, draft=False, missing=f"AudioForge-{TAG}-evidence.7z")
+
+    assert result.returncode != 0
+    assert f"missing: AudioForge-{TAG}-evidence.7z" in result.stdout + result.stderr
+    assert "release upload" not in log
+
+
+def test_publish_completes_a_draft_that_lacks_an_asset(tmp_path: Path) -> None:
+    result, log = _publish_upload(tmp_path, draft=True, missing=f"AudioForge-{TAG}-evidence.7z")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"AudioForge-{TAG}-evidence.7z" in next(
+        line for line in log.splitlines() if line.startswith("release upload")
+    )
+    assert "--draft=false" in log
 
 
 def _run_step(job_id: str, step_name: str, cwd: Path, env: dict[str, str], prelude: str = ""):

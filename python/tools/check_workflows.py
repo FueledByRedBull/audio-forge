@@ -30,7 +30,11 @@ CI_LAST_PYTEST_SHARD = "rest"
 # `package-windows`; the test jobs run on the runtime files it produced and
 # `validate-candidate` compares the archive's native module with the tested one.
 RELEASE_RUNTIME_ARTIFACT = "audioforge-release-runtime"
-RELEASE_SOURCE_REF = "${{ inputs.release_tag || github.sha }}"
+# An optional tag input checks out refs/tags/<tag>: a bare name could resolve to
+# a branch of that name.
+RELEASE_SOURCE_REF = (
+    "${{ inputs.release_tag != '' && format('refs/tags/{0}', inputs.release_tag) || github.sha }}"
+)
 RELEASE_PACKAGED_REF = "${{ needs.package-windows.outputs.source_revision }}"
 RELEASE_NATIVE_SHA256 = "${{ needs.package-windows.outputs.native_sha256 }}"
 RELEASE_RUNTIME_FILES = (
@@ -68,8 +72,10 @@ RELEASE_TEST_JOBS = ("pytest", "rust-tests", "rust-stress")
 RELEASE_LINUX_TEST_JOBS = ("linux-tests", "linux-pytest")
 # The jobs that build the files a release ships.
 RELEASE_BUILD_JOBS = ("package-windows", "package-linux")
-# An existing release tag must be the commit a build job checked out; the step is
-# PowerShell in package-windows and bash in package-linux.
+# `static` audits the same source, so it binds an existing tag as the build jobs do.
+RELEASE_TAG_BOUND_JOBS = ("static", *RELEASE_BUILD_JOBS)
+# An existing release tag must be the commit a bound job checked out; the step is
+# PowerShell in static and package-windows and bash in package-linux.
 RELEASE_TAG_BINDING = re.compile(
     r'\$tagCommit -ne \$currentCommit|\[\[ \$tag_commit != "\$current_commit" \]\]'
 )
@@ -219,6 +225,19 @@ CACHE_CLEANUP_JOB = "cleanup"
 # weekly-checks.yml re-runs the checks that read the outside world, with nothing
 # cached, and publishes nothing.
 WEEKLY_WORKFLOW = "weekly-checks.yml"
+# Each job of those workflows starts by running one shared composite action,
+# whose two steps (one per shell family) hold the refusal. The `$/` form resolves
+# the action in this repository at the running commit with no checkout, so
+# authorization precedes everything, including the first checkout.
+AUTHORIZE_ACTION = "$/.github/actions/authorize-dispatch"
+AUTHORIZE_ACTION_PATH = REPO_ROOT / ".github" / "actions" / "authorize-dispatch" / "action.yml"
+# publish-release reads the release notes and asks origin about the tag from the
+# workflow revision, so it checks that out once authorized.
+WORKFLOW_REVISION_CHECKOUT = (
+    "actions/checkout@",
+    "ref: ${{ github.sha }}",
+    "persist-credentials: false",
+)
 DISPATCH_AUTHORIZATION = (
     "GH_TOKEN: ${{ github.token }}",
     "DISPATCHER: ${{ github.triggering_actor }}",
@@ -227,7 +246,7 @@ DISPATCH_AUTHORIZATION = (
     "/permission",
     '$permission.role_name -notin @("admin", "maintain")',
 )
-# The same refusal in bash, for a self-hosted Linux runner without PowerShell.
+# The same refusal in bash, for a Linux runner (a self-hosted one may have no PowerShell).
 DISPATCH_AUTHORIZATION_BASH = (
     "GH_TOKEN: ${{ github.token }}",
     "DISPATCHER: ${{ github.triggering_actor }}",
@@ -236,6 +255,8 @@ DISPATCH_AUTHORIZATION_BASH = (
     "/permission",
     "admin|maintain) ;;",
 )
+# The step that starts every job of a dispatch workflow.
+AUTHORIZE_STEPS = ((AUTHORIZE_ACTION,),)
 CANONICAL_TAG = (
     "release_tag must be the canonical vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N tag"
 )
@@ -257,6 +278,7 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
         "promotion",
         {
             "verify-candidate": (
+                *AUTHORIZE_STEPS,
                 (
                     "actions/checkout@",
                     "ref: refs/tags/${{ inputs.release_tag }}",
@@ -267,11 +289,20 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                     TAG_COMMIT,
                     "git cat-file -t $tagRef",
                     '$run.event -ne "workflow_dispatch"',
-                    # The candidate run must have run the Linux build and tests.
+                    # The candidate run must have run, and passed, every one of its
+                    # jobs: the Windows and the Linux half, each pytest shard, and
+                    # nothing in it skipped.
+                    "Static checks and audits",
+                    "Build Windows release package",
+                    "Rust tests and lint",
+                    "Rust contention stress (release mode)",
+                    "Validate the exact archived candidate",
                     "Build Linux release package",
                     "Linux Rust tests and lint",
+                    'pytest ($_)',
                     'linux-pytest ($_)',
                     "pytest-shards.json",
+                    '$job.conclusion -ne "success"',
                 ),
                 ("--require-hashes -r requirements/runtime.txt",),
                 (
@@ -333,6 +364,7 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
             # commit. The downloaded bytes are matched to the staged ones before
             # anything is extracted, and the candidate runs only afterwards.
             "verify-linux-candidate": (
+                *AUTHORIZE_STEPS,
                 (
                     "actions/checkout@",
                     "ref: refs/tags/${{ inputs.release_tag }}",
@@ -362,11 +394,8 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                 ("--smoke-test", "--appimage-extract-and-run"),
             ),
             PROMOTE_PUBLISH_JOB: (
-                (
-                    "actions/checkout@",
-                    "ref: ${{ github.sha }}",
-                    "persist-credentials: false",
-                ),
+                *AUTHORIZE_STEPS,
+                WORKFLOW_REVISION_CHECKOUT,
                 (
                     "actions/download-artifact@",
                     "name: audioforge-verified-release-${{ inputs.release_tag }}",
@@ -378,6 +407,12 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                     'archive = "AudioForge-$tag-win64-ultra.7z"',
                     'checksums = "AudioForge-$tag-SHA256SUMS.txt"',
                     "Get-FileHash",
+                ),
+                # The tag must still be the commit the verification jobs approved.
+                (
+                    "git ls-remote origin $tagRef $peeled",
+                    "TAG_COMMIT: ${{ needs.verify-candidate.outputs.tag_commit }}",
+                    "$currentCommit -ne $env:TAG_COMMIT",
                 ),
                 (
                     "Set-Content -LiteralPath $notesPath",
@@ -397,6 +432,7 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
         "matrix",
         {
             "assemble": (
+                *AUTHORIZE_STEPS,
                 ("actions/checkout@", "ref: refs/tags/${{ inputs.release_tag }}"),
                 ("gh run download", CANONICAL_TAG, TAG_COMMIT),
                 (
@@ -415,6 +451,7 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
         "hardware",
         {
             "qualify-hardware": (
+                *AUTHORIZE_STEPS,
                 ("actions/checkout@", "ref: refs/tags/${{ inputs.release_tag }}"),
                 (
                     "actions/download-artifact@",
@@ -443,6 +480,7 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
         "hardware",
         {
             "qualify-hardware": (
+                *AUTHORIZE_STEPS,
                 ("actions/checkout@", "ref: refs/tags/${{ inputs.release_tag }}"),
                 (
                     "actions/download-artifact@",
@@ -592,8 +630,8 @@ CI_LINUX_RUST_DEEPFILTER_STEPS = (
     (
         "target/deepfilter/libdf.so.provenance.json",
         "actions/cache/restore@",
-        "hashFiles('python/tools/build_deepfilter.py', 'build-support/deepfilter/**', "
-        "'release-assets.json', 'rust-toolchain.toml')",
+        "hashFiles('python/tools/build_deepfilter.py', 'python/tools/bounded_download.py', "
+        "'build-support/deepfilter/**', 'release-assets.json', 'rust-toolchain.toml')",
     ),
     (
         "python/tools/fetch_release_assets.py",
@@ -1004,25 +1042,53 @@ def _check_step_sequences(
 def _check_dispatch_authorization(
     name: str, document: dict[str, Any], errors: list[str]
 ) -> None:
-    """Every job starts by refusing all but a maintainer dispatching from master."""
+    """Every job starts by running the shared authorization, which refuses all but a maintainer on master."""
     jobs = _mapping(document.get("jobs"), f"{name}: jobs", errors)
     for job_id, job in jobs.items():
         job = job if isinstance(job, dict) else {}
-        steps = job.get("steps")
-        first = steps[0] if isinstance(steps, list) and steps and isinstance(steps[0], dict) else {}
-        missing = min(
-            ([needle for needle in form if not _step_has(first, needle)]
-             for form in (DISPATCH_AUTHORIZATION, DISPATCH_AUTHORIZATION_BASH)),
-            key=len,
-        )
-        if missing:
+        raw_steps = job.get("steps")
+        steps = [step if isinstance(step, dict) else {} for step in raw_steps] if isinstance(raw_steps, list) else []
+        authorize = steps[0] if steps else {}
+        if authorize.get("uses") != AUTHORIZE_ACTION:
             errors.append(
-                f"{name}: {job_id}: the first step must authorize the dispatch; missing {missing}"
+                f"{name}: {job_id}: the first step must authorize the dispatch with {AUTHORIZE_ACTION}"
             )
-        if any(key in scope for scope in (first, job) for key in ("if", "continue-on-error")):
+        if any(key in scope for scope in (authorize, job) for key in ("if", "continue-on-error")):
             errors.append(
                 f"{name}: {job_id}: the dispatch authorization must be unconditional and blocking"
             )
+
+
+def _check_authorization_action(errors: list[str], path: Path = AUTHORIZE_ACTION_PATH) -> None:
+    """The shared action refuses off-master runs and non-maintainers, in PowerShell and bash."""
+    label = path.relative_to(REPO_ROOT).as_posix() if path.is_relative_to(REPO_ROOT) else path.name
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        errors.append(f"{label}: cannot read the dispatch authorization action: {error}")
+        return
+    runs = document.get("runs") if isinstance(document, dict) else None
+    steps = runs.get("steps") if isinstance(runs, dict) else None
+    if not isinstance(runs, dict) or runs.get("using") != "composite" or not isinstance(steps, list):
+        errors.append(f"{label}: must be a composite action")
+        return
+    # One step per shell family; the conditions must cover every runner between them.
+    forms = (
+        ("runner.os == 'Windows'", DISPATCH_AUTHORIZATION),
+        ("runner.os != 'Windows'", DISPATCH_AUTHORIZATION_BASH),
+    )
+    if len(steps) != len(forms):
+        errors.append(f"{label}: must hold exactly the {len(forms)} authorization steps")
+        return
+    for step, (condition, needles) in zip(steps, forms):
+        step = step if isinstance(step, dict) else {}
+        if step.get("if") != condition or "continue-on-error" in step:
+            errors.append(f"{label}: the step for '{condition}' must have exactly that condition and block")
+        missing = [needle for needle in needles if not _step_has(step, needle)]
+        if missing:
+            errors.append(f"{label}: the step for '{condition}' must authorize the dispatch; missing {missing}")
+        if RUN_EXPRESSION.search(str(step.get("run", ""))):
+            errors.append(f"{label}: run text must not interpolate expressions; pass them through env")
 
 
 def _check_release_environment(name: str, document: dict[str, Any], errors: list[str]) -> None:
@@ -1120,6 +1186,15 @@ def _check_weekly_checks(name: str, document: dict[str, Any], errors: list[str])
         use.startswith("actions/cache") for use in _active_uses({"jobs": {"source": source}})
     ):
         errors.append(f"{name}: source must hydrate without the Actions cache")
+    # cargo audit fetches the advisories on every run; a cached copy is saved
+    # once per key and only ages, so only the pinned binary may be cached.
+    audit = jobs.get("audit")
+    if isinstance(audit, dict) and any(
+        "advisory-db" in str((step.get("with") or {}).get("path", ""))
+        for step in _job_steps("audit", audit)
+        if str(step.get("uses", "")).startswith("actions/cache")
+    ):
+        errors.append(f"{name}: audit must read the current advisory database, not a cached one")
 
 
 def _check_cargo_locked(
@@ -1227,11 +1302,11 @@ def _check_tag_checkouts(
                 or TAG_INPUT.search(ref) is None
             ):
                 continue
-            # release-package.yml's optional-tag ref may be a bare tag name, so
-            # each job that builds release files binds an existing tag to its
-            # checked-out commit itself; `static` only reads the source.
+            # release-package.yml's optional-tag ref is the tag when one is given
+            # and the dispatch commit otherwise, so each job that reads the
+            # release source binds an existing tag to its checked-out commit itself.
             if ref == RELEASE_SOURCE_REF:
-                if job_id in RELEASE_BUILD_JOBS and RELEASE_TAG_BINDING.search(runs) is None:
+                if job_id in RELEASE_TAG_BOUND_JOBS and RELEASE_TAG_BINDING.search(runs) is None:
                     errors.append(
                         f"{name}: {job_id}: checkout of {ref} must be followed by a check "
                         "that an existing release tag is the checked-out commit"
@@ -1846,6 +1921,7 @@ def check_workflows() -> list[str]:
                     f"{path.name}: {action}@{ref} is not pinned to a commit SHA"
                 )
 
+    _check_authorization_action(errors)
     _check_dependabot(errors)
 
     return errors

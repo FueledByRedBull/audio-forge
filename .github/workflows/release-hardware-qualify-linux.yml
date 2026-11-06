@@ -102,25 +102,7 @@ jobs:
         shell: bash
     steps:
       - name: Authorize the dispatch
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DISPATCHER: ${{ github.triggering_actor }}
-        run: |
-          set -euo pipefail
-          if [[ $GITHUB_REF != refs/heads/master ]]; then
-            echo "This workflow runs only from refs/heads/master, not $GITHUB_REF." >&2
-            exit 1
-          fi
-          [[ $DISPATCHER =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || { echo "Unexpected dispatcher name." >&2; exit 1; }
-          permission="$RUNNER_TEMP/dispatcher-permission.json"
-          curl -fsSL -o "$permission" \
-            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/collaborators/$DISPATCHER/permission"
-          role=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1]))['role_name'])" "$permission")
-          case $role in
-            admin|maintain) ;;
-            *) echo "$DISPATCHER needs the admin or maintain role to run this workflow, but has '$role'." >&2; exit 1 ;;
-          esac
+        uses: $/.github/actions/authorize-dispatch
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

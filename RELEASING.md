@@ -52,8 +52,11 @@ same candidate run as the approved Windows archive and checks them on Linux
      and the models, and a skipped DeepFilter or Silero test fails it. It also
      audits the runtime lock on Linux, because the Windows `static` job skips
      the lock's Linux-only entries. `linux-pytest` runs the same shards as
-     `pytest`. Promotion refuses a candidate run in which `package-linux`, `linux-tests` or any
-     `linux-pytest` shard is missing or did not succeed.
+     `pytest`. Promotion refuses a candidate run in which any job of
+     `Release package` is missing, skipped or did not succeed. It checks the
+     Windows jobs (`static`, `package-windows`, each `pytest` shard,
+     `rust-tests`, `rust-stress`, `validate-candidate`) and the Linux jobs
+     (`package-linux`, `linux-tests`, each `linux-pytest` shard) by name.
    - The Linux bundle's paths are gated by
      `evaluation/release-bundle-path-baseline-linux.json`. Until that file
      exists, `package-linux` uploads this build's list as the
@@ -103,7 +106,12 @@ same candidate run as the approved Windows archive and checks them on Linux
    files are present and verified. Release notes come from the workflow
    revision; the binary stays bound to the tag. Reruns compare GitHub's
    SHA-256 digests in preflight, and the final check downloads and hashes
-   every published file.
+   every published file. Just before it creates or edits the release,
+   `publish-release` re-reads the annotated tag from origin and fails unless it
+   still points at the commit the verification jobs approved, so a tag moved
+   while the `release` environment waited publishes nothing. Only a draft can
+   be completed: a published release must already hold all seven files, and
+   promotion uploads nothing into it.
 
    `verify-linux-candidate` checks the Linux files on Linux. It re-hashes the
    tarball and the AppImage against the digests `verify-candidate` staged, then
@@ -125,19 +133,21 @@ same candidate run as the approved Windows archive and checks them on Linux
 
    What restricts who can dispatch these workflows, and where:
 
-   - **In the workflow files, a guard against mistakes.** The first step of
-     every job in `Promote release candidate` and in the hardware workflows
-     fails unless the run is on `refs/heads/master` and
-     `github.triggering_actor` has the admin or maintain role
-     (`GET /repos/{repo}/collaborators/{user}/permission`). They accept
+   - **In the workflow files, a guard against mistakes.** Every job in
+     `Promote release candidate` and in the hardware workflows starts by
+     running the shared `.github/actions/authorize-dispatch` action (`uses:
+     $/...`, which needs runner 2.336.0 or newer and resolves at the running
+     commit with no checkout), which fails unless the run
+     is on `refs/heads/master` and `github.triggering_actor` has the admin or
+     maintain role (`GET /repos/{repo}/collaborators/{user}/permission`). They accept
      only `workflow_dispatch`; `check_workflows.py` rejects any other trigger.
-     A copy of a file on another branch can delete this step, so it does not
-     bind that copy.
+     A copy of a file on another branch can delete this step or edit the
+     action, so it does not bind that copy.
    - **In repository settings, which binds a branch copy.** `publish-release`,
      `qualify-hardware` and `assemble` declare `environment: release`, and
      that environment limits deployment branches to `master`, so GitHub
      refuses to start those jobs from any other ref even when the copy dropped
-     the first step. A copy that also drops the `environment:` line is bound
+     the authorization step. A copy that also drops the `environment:` line is bound
      by neither; only the rules on who can push branches limit that.
      `verify-candidate` declares no environment because its token is
      read-only. If the environment is ever deleted, GitHub recreates it
@@ -200,7 +210,11 @@ their paths, sizes, hashes, origins, and licenses, and
   `release-assets.json`. The fallback can supply raw assets or extract the
   exact models from an existing portable archive.
 
-Every downloaded or extracted asset is verified against `release-assets.json`.
+Every downloaded or extracted asset is verified against `release-assets.json`,
+and so is each file already in place: one that fails is fetched again, not
+kept. A source-built `df.dll` or `libdf.so` is checked against the attestation
+beside it in `target/`, so a local attestation is a local trust root; the
+release workflows build the library and verify it in one job.
 Leave `fallback_release_tag` unchanged while the dependency assets are
 unchanged; advance it only for a verified new asset source.
 
@@ -548,7 +562,10 @@ logic behind items 4-8, 11 and 13 (`test_quick_undo.py`, `test_quick_shell.py`,
   runtime and its libraries first (see `licenses/SOURCE_DISTRIBUTION.md`).
 - `prune_bundle.py` keeps every dependency `.dist-info` directory, removes a
   duplicate native-extension payload only when the canonical
-  `_internal/mic_eq/mic_eq_core*.pyd` exists, and removes app-local
+  `_internal/mic_eq/mic_eq_core*.pyd` exists, matches the Qt FFmpeg libraries
+  by pattern (`avcodec-*.dll` and the rest, whatever their soname version),
+  fails the build when the FFmpeg payload, `_internal/mic_eq` or that
+  extension is absent, and removes app-local
   `ucrtbase.dll` and `api-ms-win-*.dll`: Windows 10 and 11 always use the
   [system UCRT](https://learn.microsoft.com/en-us/cpp/windows/universal-crt-deployment).
   Package smoke fails if they return.

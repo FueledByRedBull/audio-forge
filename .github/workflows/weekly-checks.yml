@@ -110,14 +110,14 @@ jobs:
           toolchain: 1.94.0
           components: rustfmt, clippy
       # Saved right after the install, so a later failure in the job does not
-      # cost the next run another cargo-audit build.
-      - name: Restore pinned cargo-audit and advisory database
+      # cost the next run another cargo-audit build. Only the pinned binary is
+      # cached: a cached advisory database is saved once per key and only ages,
+      # while this check exists to read the current advisories.
+      - name: Restore pinned cargo-audit
         id: cargo-audit
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: |
-            ~/.cargo/bin/cargo-audit.exe
-            ~/.cargo/advisory-db
+          path: ~/.cargo/bin/cargo-audit.exe
           key: ${{ runner.os }}-${{ runner.arch }}-cargo-audit-0.22.2
       - name: Install pinned cargo-audit
         run: |
@@ -130,13 +130,11 @@ jobs:
           }
           $version = & $audit --version | Out-String
           if ($LASTEXITCODE -ne 0 -or $version -notmatch "0\.22\.2") { throw "cargo-audit 0.22.2 is not available." }
-      - name: Save pinned cargo-audit and advisory database
+      - name: Save pinned cargo-audit
         if: steps.cargo-audit.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: |
-            ~/.cargo/bin/cargo-audit.exe
-            ~/.cargo/advisory-db
+          path: ~/.cargo/bin/cargo-audit.exe
           key: ${{ steps.cargo-audit.outputs.cache-primary-key }}
       - name: RustSec audit
         run: |

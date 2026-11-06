@@ -32,6 +32,7 @@ from .desktop_integration import (
     activate_window,
 )
 from .login_startup import APP_ID, LOGIN_STARTUP_ARGUMENT
+from .quick_scene import keep_import_paths
 from .theme import apply_application_theme
 from .virtual_microphone import VirtualMicrophoneWatch
 
@@ -143,7 +144,9 @@ def _hide_bundle_from_child_processes() -> None:
     else:
         os.environ["LD_LIBRARY_PATH"] = original
     os.environ.pop("QT_PLUGIN_PATH", None)
-    os.environ.pop("QML2_IMPORT_PATH", None)
+    # Qt reads this when each QML engine is built, later than this call; the scenes get it directly.
+    qml_paths = os.environ.pop("QML2_IMPORT_PATH", "")
+    keep_import_paths([path for path in qml_paths.split(os.pathsep) if path])
 
 
 @contextlib.contextmanager
@@ -176,8 +179,11 @@ def _quit_on_termination_signal(app: QApplication) -> Iterator[None]:
 
     notifier.activated.connect(end_session)
     previous_wakeup_fd = signal.set_wakeup_fd(write_fd)
+    # A signal already ignored (SIGHUP under nohup) stays ignored.
     handlers = {
-        number: signal.signal(number, lambda *_: None) for number in (signal.SIGTERM, signal.SIGHUP)
+        number: signal.signal(number, lambda *_: None)
+        for number in (signal.SIGTERM, signal.SIGHUP)
+        if signal.getsignal(number) is not signal.SIG_IGN
     }
     try:
         yield

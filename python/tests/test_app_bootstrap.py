@@ -998,3 +998,40 @@ def test_another_signal_does_not_end_the_session(qapp):
         deadline.stop()
         signal.signal(signal.SIGUSR1, previous)
         qapp.setProperty(SESSION_ENDING_PROPERTY, False)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="a Linux logout ends an app with a signal")
+def test_a_hangup_ignored_before_start_stays_ignored(qapp):
+    import signal
+
+    previous = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+        with app_bootstrap._quit_on_termination_signal(qapp):
+            assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+        assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGHUP, previous)
+
+
+def test_qml_import_paths_taken_from_the_environment_reach_each_scene(qapp, monkeypatch, tmp_path):
+    from PySide6.QtQuickWidgets import QQuickWidget
+
+    from mic_eq.ui import quick_scene
+
+    monkeypatch.setattr(app_bootstrap.sys, "platform", "linux")
+    monkeypatch.setattr(app_bootstrap.sys, "frozen", True, raising=False)
+    for name in ("LD_LIBRARY_PATH", "LD_LIBRARY_PATH_ORIG", "QT_PLUGIN_PATH"):
+        monkeypatch.setenv(name, os.environ.get(name, ""))  # restored after the test
+    monkeypatch.setenv("QML2_IMPORT_PATH", str(tmp_path))
+    monkeypatch.setattr(quick_scene, "_import_paths", [])
+    app_bootstrap._hide_bundle_from_child_processes()
+
+    assert "QML2_IMPORT_PATH" not in os.environ
+    scene = tmp_path / "Scene.qml"
+    scene.write_text("import QtQuick\nItem {}\n", encoding="utf-8")
+    view = QQuickWidget()
+    try:
+        assert quick_scene.load_scene(view, scene, {}, {}) is None
+        assert str(tmp_path) in view.engine().importPathList()
+    finally:
+        view.deleteLater()

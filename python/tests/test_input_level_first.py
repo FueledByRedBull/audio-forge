@@ -118,6 +118,13 @@ def _clip_input(engine: _Engine, samples: int = CLIP_FLAT_TOP_SAMPLES) -> None:
     engine.input_count += samples
 
 
+def _switch_limiter_off(window) -> None:
+    # The marker follows the applied limiter state; an edit within the write throttle of the
+    # window's own start-up write would otherwise still be queued.
+    window.limiter_state.set_value("enabled", False)
+    window.limiter_state.flush()
+
+
 def _tick_diagnostics(window) -> None:
     window._update_diagnostics()
 
@@ -157,7 +164,7 @@ def test_the_out_bar_keeps_the_pre_limiter_level_and_the_marker_follows_the_fina
     window._update_meters()
     assert window.output_meter.peak_hold_db == window.output_meter.DB_MAX
     assert not window.output_meter.clip_marker
-    window.limiter_state.set_value("enabled", False)  # a limiter at its ceiling is not a clip
+    _switch_limiter_off(window)  # a limiter at its ceiling is not a clip
     engine.output_count = CLIP_FLAT_TOP_SAMPLES
     window._update_meters()
     assert window.output_meter.clip_marker
@@ -174,7 +181,7 @@ def test_the_marker_clears_by_itself(running_window):
 
 def test_stopping_clears_both_markers(running_window):
     window, engine = running_window, running_window.engine
-    window.limiter_state.set_value("enabled", False)
+    _switch_limiter_off(window)
     _clip_input(engine)
     engine.output_peak, engine.output_count = 1.0, CLIP_FLAT_TOP_SAMPLES
     window._update_meters()
@@ -257,7 +264,7 @@ def test_full_scale_output_with_the_limiter_off_warns_and_with_it_on_does_not(ru
     _tick_diagnostics(window)
     assert window.shell_texts["output_health_label"].state == "ok"
 
-    window.limiter_state.set_value("enabled", False)
+    _switch_limiter_off(window)
     window._update_meters()  # the limiter was on when those samples arrived: not a clip
     _tick_diagnostics(window)
     assert window.shell_texts["output_health_label"].state == "ok"
@@ -305,7 +312,7 @@ def test_a_limiter_holding_the_output_at_a_ceiling_of_zero_is_neither_a_marker_n
 
 def test_the_out_marker_and_health_agree_when_the_limiter_is_switched(running_window):
     window, engine = running_window, running_window.engine
-    window.limiter_state.set_value("enabled", False)
+    _switch_limiter_off(window)
     engine.pre_limiter_peak, engine.output_peak = 1.41, 1.0
     engine.output_count += CLIP_FLAT_TOP_SAMPLES
     window._update_meters()

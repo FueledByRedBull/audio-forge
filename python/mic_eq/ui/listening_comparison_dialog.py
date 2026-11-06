@@ -17,14 +17,10 @@ from PySide6.QtMultimedia import (
     QAudioSink,
     QMediaDevices,
 )
+from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
-    QCheckBox,
     QApplication,
-    QComboBox,
     QDialog,
-    QFormLayout,
-    QGroupBox,
-    QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -42,7 +38,6 @@ from ..analysis.listening_comparison import (
     render_comparison,
 )
 from ..config import save_config
-from .accessibility import bind_label, set_accessible_group
 from .calibration_support import chain_settings
 from .capture_session import (
     CaptureSession,
@@ -55,22 +50,10 @@ from .capture_session import (
     sync_owner_processing_controls,
 )
 from .components import live_output_muted_notice, session_is_ending
-from .layout_constants import (
-    MARGIN_PANEL,
-    SPACING_NORMAL,
-    SUBDUED_TEXT_STYLE,
-    configure_resizable_dialog,
-    configure_responsive_combo,
-    create_scrollable_dialog_body,
-    status_chip_style,
-)
-from .theme import (
-    DESCRIPTION_LABEL_STYLE,
-    PRIMARY_ACTION_BUTTON_STYLE,
-    SECONDARY_ACTION_BUTTON_STYLE,
-    PROGRESS_BAR_STYLE,
-    message_text_style,
-)
+from .layout_constants import configure_resizable_dialog
+from .listening_comparison_view import ListeningComparisonView
+from .quick_scene import QML_DIR, load_scene, quick_theme
+from .theme import PROGRESS_BAR_STYLE, SECONDARY_ACTION_BUTTON_STYLE
 
 logger = logging.getLogger(__name__)
 
@@ -358,14 +341,22 @@ class ListeningComparisonDialog(QDialog):
         self._playback_start_sample = 0
         self._playback_sample_rate = self._sample_rate
         self._media_devices = QMediaDevices(self)
-        self._media_devices.audioOutputsChanged.connect(self._on_audio_outputs_changed)
+        # The device behind each choice of the output list; the prompt and the notice are None.
+        self._choice_devices: list[QAudioDevice | None] = []
 
-        self._setup_ui()
+        self._load_error = self._setup_ui()
+        if self._load_error is not None:
+            # Nothing renders or plays; exec() says why and closes.
+            logger.error("Listening comparison did not open: %s", self._load_error)
+            return
+        self._media_devices.audioOutputsChanged.connect(self._on_audio_outputs_changed)
+        # The scene's own minimum grows with the text size; the dialog opens at least that wide.
+        minimum_width = max(480, int(self.quick_view.rootObject().property("minimumWidth")))
         configure_resizable_dialog(
             self,
-            preferred_width=680,
+            preferred_width=max(680, minimum_width),
             preferred_height=560,
-            minimum_width=480,
+            minimum_width=minimum_width,
             minimum_height=360,
         )
         self._refresh_playback_devices()
@@ -374,124 +365,47 @@ class ListeningComparisonDialog(QDialog):
         if app is not None:
             app.aboutToQuit.connect(self._wait_for_worker)
 
-    def _setup_ui(self) -> None:
-        outer = QVBoxLayout(self)
-        self.content_scroll_area, layout = create_scrollable_dialog_body(self)
-        outer.addWidget(self.content_scroll_area)
-        layout.setSpacing(10)
-
-        self.scope_label = QLabel(
-            "Same captured passage; playback is optional. Keep the rendered "
-            "proposal or close to discard it."
+    def _setup_ui(self) -> str | None:
+        """Build the view model and load the scene; return why it did not load, or None."""
+        self.view_model = ListeningComparisonView(
+            clips=self._CLIPS,
+            pick_output=self._on_output_changed,
+            refresh=self._refresh_playback_devices,
+            stop=self._stop_playback,
+            level_match=self._on_level_match_changed,
+            play=self._play_clip,
+            keep=lambda: self._request_close(True),
+            reject=lambda: self._request_close(False),
+            parent=self,
         )
-        self.scope_label.setWordWrap(True)
-        self.scope_label.setStyleSheet(DESCRIPTION_LABEL_STYLE)
-        layout.addWidget(self.scope_label)
-
-        self.scope_warning = QLabel(
-            "Each processed clip follows its configured mode and enabled stages."
+        self.view_model.set_page(
+            scope="Same captured passage; playback is optional. Keep the rendered "
+            "proposal or close to discard it.",
+            scopeWarning="Each processed clip follows its configured mode and enabled stages.",
         )
-        self.scope_warning.setWordWrap(True)
-        self.scope_warning.setStyleSheet(status_chip_style("info"))
-        layout.addWidget(self.scope_warning)
-
-        playback_group = QGroupBox("Playback")
-        playback_layout = QFormLayout(playback_group)
-        output_label = QLabel("Output device:")
-        self.output_combo = QComboBox()
-        self.output_combo.setAccessibleName("Listening comparison output device")
-        self.output_combo.currentIndexChanged.connect(self._on_output_changed)
-        self.output_combo.setToolTip(
-            "Choose the speakers or headphones that should receive the preview."
+        self.quick_view = QQuickWidget(self)
+        reason = load_scene(
+            self.quick_view,
+            QML_DIR / "ListeningComparison.qml",
+            quick_theme(),
+            {"vm": self.view_model},
         )
-        configure_responsive_combo(self.output_combo)
-        output_controls = QHBoxLayout()
-        output_controls.addWidget(self.output_combo, 1)
-        self.refresh_button = QPushButton("Refresh")
-        self.refresh_button.setAccessibleName("Refresh listening comparison output devices")
-        self.refresh_button.setToolTip("Refresh available playback devices.")
-        self.refresh_button.clicked.connect(self._refresh_playback_devices)
-        output_controls.addWidget(self.refresh_button)
-        playback_layout.addRow(output_label, output_controls)
-        bind_label(output_label, self.output_combo)
+        self.quick_view.setAccessibleName("Listening comparison content")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.quick_view)
+        return reason
 
-        self.stop_button = QPushButton("Stop")
-        self.stop_button.setAccessibleName("Stop listening comparison playback")
-        self.stop_button.setEnabled(False)
-        self.stop_button.setToolTip("Stop the current preview.")
-        self.stop_button.clicked.connect(self._stop_playback)
-        playback_layout.addRow("Playback:", self.stop_button)
-
-        self.level_match_checkbox = QCheckBox(
-            "Match speech level (actual level difference remains visible)"
-        )
-        self.level_match_checkbox.setToolTip(
-            "Apply a bounded preview-only gain so level does not dominate the comparison."
-        )
-        self.level_match_checkbox.toggled.connect(self._on_level_match_changed)
-        playback_layout.addRow("", self.level_match_checkbox)
-        layout.addWidget(playback_group)
-
-        self.progress_label = QLabel("Preparing comparison...")
-        self.progress_label.setStyleSheet(SUBDUED_TEXT_STYLE)
-        layout.addWidget(self.progress_label)
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setStyleSheet(PROGRESS_BAR_STYLE)
-        self.progress_bar.setAccessibleName("Listening comparison progress bar")
-        layout.addWidget(self.progress_bar)
-
-        clips_group = QGroupBox("Listen")
-        clips_layout = QFormLayout(clips_group)
-        self._play_buttons: dict[str, QPushButton] = {}
-        self._clip_labels: dict[str, QLabel] = {}
-        for key, label in self._CLIPS:
-            button = QPushButton(f"Play {label}")
-            button.setEnabled(False)
-            button.clicked.connect(lambda _checked=False, clip=key: self._play_clip(clip))
-            button.setAccessibleName(f"Play {label}")
-            detail = QLabel("Waiting for render...")
-            detail.setWordWrap(True)
-            detail.setStyleSheet(SUBDUED_TEXT_STYLE)
-            self._play_buttons[key] = button
-            self._clip_labels[key] = detail
-            row = QHBoxLayout()
-            row.addWidget(button)
-            row.addWidget(detail, 1)
-            clips_layout.addRow(label + ":", row)
-        layout.addWidget(clips_group)
-
-        self.status_label = QLabel()
-        self.status_label.setWordWrap(True)
-        layout.addWidget(self.status_label)
-        layout.addWidget(live_output_muted_notice())
-
-        # The actions stay in view while the page above them scrolls.
-        actions = QHBoxLayout()
-        actions.setContentsMargins(MARGIN_PANEL, 0, MARGIN_PANEL, MARGIN_PANEL)
-        actions.setSpacing(SPACING_NORMAL)
-        self.keep_button = QPushButton("Keep Proposed")
-        self.keep_button.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
-        self.keep_button.setDefault(True)
-        self.keep_button.setEnabled(False)
-        self.keep_button.clicked.connect(lambda: self._request_close(True))
-        self.reject_button = QPushButton("Reject Proposed")
-        self.reject_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
-        self.reject_button.clicked.connect(lambda: self._request_close(False))
-        actions.addWidget(self.reject_button)
-        actions.addStretch(1)
-        actions.addWidget(self.keep_button)
-        outer.addLayout(actions)
-        set_accessible_group(
-            (
-                (self.refresh_button, "Refresh playback devices", None),
-                (self.stop_button, "Stop playback", None),
-                (self.keep_button, "Keep proposed settings", None),
-                (self.reject_button, "Reject proposed settings", None),
+    def exec(self) -> int:
+        if self._load_error is not None:
+            QMessageBox.critical(
+                self.parentWidget(),
+                self.windowTitle(),
+                f"This window could not open.\n\n{self._load_error}",
             )
-        )
+            self._decision = False
+            return int(QDialog.DialogCode.Rejected)
+        return super().exec()
 
     def _refresh_playback_devices(self) -> None:
         self._stop_playback()
@@ -501,42 +415,40 @@ class ListeningComparisonDialog(QDialog):
         )
         if requested_key_text is None and self._requested_playback_device_key:
             requested_key_text = self._requested_playback_device_key.strip().lower()
-        self.output_combo.blockSignals(True)
-        self.output_combo.clear()
-        self.output_combo.addItem("Choose headphones or speakers…", None)
+        choices = ["Choose headphones or speakers…"]
+        devices: list[QAudioDevice | None] = [None]
         self._outputs = list(QMediaDevices.audioOutputs())
-        selected_index = -1
+        selected_index = 0
         for index, device in enumerate(self._outputs):
-            self.output_combo.addItem(device.description(), device)
+            choices.append(device.description())
+            devices.append(device)
             device_key = _device_key(device)
             if requested_key_text is not None and device_key is not None and (
                 device_key.hex().lower() == requested_key_text
             ):
                 selected_index = index + 1
         if not self._outputs:
-            self.output_combo.addItem("No playback devices detected", None)
-            self.output_combo.setEnabled(False)
-            self.status_label.setText(_NO_PLAYBACK_DEVICE_TEXT)
-            self.status_label.setStyleSheet(message_text_style("warn"))
+            choices.append("No playback devices detected")
+            devices.append(None)
+            self.view_model.set_page(outputEnabled=False)
+            self.view_model.set_status(_NO_PLAYBACK_DEVICE_TEXT, "warn")
         else:
-            self.output_combo.setEnabled(True)
-            if self.status_label.text() == _NO_PLAYBACK_DEVICE_TEXT:
-                self.status_label.setText("")
-            if selected_index >= 0:
-                self.output_combo.setCurrentIndex(selected_index)
-            elif requested_key_text is not None:
-                self.status_label.setText(
-                    "The saved preview device is unavailable. Choose another output."
+            self.view_model.set_page(outputEnabled=True)
+            if self.view_model.status_text == _NO_PLAYBACK_DEVICE_TEXT:
+                self.view_model.set_status("")
+            if not selected_index and requested_key_text is not None:
+                self.view_model.set_status(
+                    "The saved preview device is unavailable. Choose another output.", "warn"
                 )
-                self.status_label.setStyleSheet(message_text_style("warn"))
-        self.output_combo.blockSignals(False)
+        self._choice_devices = devices
+        self.view_model.set_outputs(choices, selected_index)
         self._update_playback_buttons()
 
     def _current_playback_device(self) -> QAudioDevice | None:
-        value = self.output_combo.currentData()
-        return value if isinstance(value, QAudioDevice) else None
+        index = self.view_model.output_index
+        return self._choice_devices[index] if 0 <= index < len(self._choice_devices) else None
 
-    def _on_output_changed(self, _index: int) -> None:
+    def _on_output_changed(self) -> None:
         self._stop_playback()
         device = self._current_playback_device()
         if device is not None:
@@ -547,10 +459,9 @@ class ListeningComparisonDialog(QDialog):
             )
             saved = _persist_preview_device(self, device)
             if saved is False:
-                self.status_label.setText(
-                    "Preview device selected for this session, but saving it failed."
+                self.view_model.set_status(
+                    "Preview device selected for this session, but saving it failed.", "warn"
                 )
-                self.status_label.setStyleSheet(message_text_style("warn"))
         self._update_playback_buttons()
 
     def _on_audio_outputs_changed(self) -> None:
@@ -558,9 +469,7 @@ class ListeningComparisonDialog(QDialog):
 
     def _update_playback_buttons(self) -> None:
         enabled = self._result is not None and self._current_playback_device() is not None
-        for button in self._play_buttons.values():
-            button.setEnabled(enabled)
-        self.stop_button.setEnabled(self._audio_sink is not None)
+        self.view_model.set_page(playEnabled=enabled, stopEnabled=self._audio_sink is not None)
 
     def _start_render(self) -> None:
         if self._close_requested:
@@ -570,11 +479,9 @@ class ListeningComparisonDialog(QDialog):
             self._worker.stop()
             return
         self._result = None
-        self.keep_button.setEnabled(False)
-        for button in self._play_buttons.values():
-            button.setEnabled(False)
-        self.progress_bar.setValue(0)
-        self.progress_label.setText("Rendering comparison...")
+        self.view_model.set_page(
+            keepEnabled=False, playEnabled=False, progress=0, progressText="Rendering comparison..."
+        )
         self._worker = ListeningComparisonWorker(
             self._audio_data,
             self._sample_rate,
@@ -599,72 +506,58 @@ class ListeningComparisonDialog(QDialog):
     def _on_level_match_changed(self, _enabled: bool) -> None:
         self._stop_playback()
         if self._result is not None:
-            level_match = self.level_match_checkbox.isChecked()
-            safety_gain = _preview_safety_gain(self._result, level_match=level_match)
-            for key, detail in self._clip_labels.items():
-                detail.setText(
-                    self._clip_details(
-                        getattr(self._result, key),
-                        level_match=level_match,
-                        common_safety_gain_db=safety_gain,
-                        rendered_level_matched=self._result.level_match,
-                    )
-                )
-            self.status_label.setText(
-                "Speech level matching applied to the next preview playback."
+            self._show_clip_details(self._result)
+            self.view_model.set_status(
+                "Speech level matching applied to the next preview playback.", "info"
             )
-            self.status_label.setStyleSheet(message_text_style("info"))
 
-    def _on_render_progress(self, message: str, percentage: int) -> None:
-        self.progress_label.setText(message)
-        self.progress_bar.setValue(int(percentage))
-
-    def _on_render_ready(self, result: ComparisonRenderResult) -> None:
-        if self._close_requested or self._restart_after_cancel:
-            return
-        self._result = result
-        self.progress_bar.setValue(100)
-        self.progress_label.setText("Comparison ready")
-        level_match = self.level_match_checkbox.isChecked()
+    def _show_clip_details(self, result: ComparisonRenderResult) -> None:
+        level_match = self.view_model.level_match
         safety_gain = _preview_safety_gain(result, level_match=level_match)
-        for key, button in self._play_buttons.items():
-            button.setEnabled(self._current_playback_device() is not None)
-            self._clip_labels[key].setText(
+        for key, _label in self._CLIPS:
+            self.view_model.set_detail(
+                key,
                 self._clip_details(
                     getattr(result, key),
                     level_match=level_match,
                     common_safety_gain_db=safety_gain,
                     rendered_level_matched=result.level_match,
-                )
+                ),
             )
-        self.keep_button.setEnabled(True)
+
+    def _on_render_progress(self, message: str, percentage: int) -> None:
+        self.view_model.set_page(progressText=message, progress=int(percentage))
+
+    def _on_render_ready(self, result: ComparisonRenderResult) -> None:
+        if self._close_requested or self._restart_after_cancel:
+            return
+        self._result = result
+        self.view_model.set_page(progress=100, progressText="Comparison ready", keepEnabled=True)
+        self._show_clip_details(result)
         self._update_playback_buttons()
-        self.scope_warning.setText("\n".join(
+        self.view_model.set_page(scopeWarning="\n".join(
             f"{clip.label.capitalize()}: {clip.render_scope}; "
             + ", ".join(clip.rendered_stages)
             for clip in (result.current, result.proposed)
         ))
-        self.status_label.setText(
+        self.view_model.set_status(
             f"{result.scope_label}. Native delay compensation: "
             f"{result.alignment_ms:.1f} ms. "
             f"Speech level source: {result.speech_detection}. "
             "The original clip is the unchanged capture; processed clips use "
-            "the same captured microphone signal."
-        )
-        self.status_label.setStyleSheet(
-            message_text_style("ok" if result.native_authoritative else "warn")
+            "the same captured microphone signal.",
+            "ok" if result.native_authoritative else "warn",
         )
 
     def _on_render_failed(self, error: str) -> None:
         if self._close_requested:
             return
         self._result = None
-        self.progress_label.setText("Comparison failed")
-        self.status_label.setText(f"Could not render listening comparison: {error}")
-        self.status_label.setStyleSheet(message_text_style("bad"))
+        self.view_model.set_page(progressText="Comparison failed")
+        self.view_model.set_status(f"Could not render listening comparison: {error}", "bad")
 
     def _on_render_canceled(self) -> None:
-        self.progress_label.setText("Comparison canceled")
+        self.view_model.set_page(progressText="Comparison canceled")
 
     def _on_worker_finished(self, worker: ListeningComparisonWorker) -> None:
         if self._worker is worker:
@@ -743,7 +636,7 @@ class ListeningComparisonDialog(QDialog):
         self._stop_playback()
         try:
             audio_format, _, _ = _format_for_device(device, result.sample_rate)
-            level_match = self.level_match_checkbox.isChecked()
+            level_match = self.view_model.level_match
             safety_gain = _preview_safety_gain(result, level_match=level_match)
             samples = _preview_samples(
                 clip,
@@ -768,13 +661,11 @@ class ListeningComparisonDialog(QDialog):
             sink.start(audio_buffer)
             if sink.error() != QtAudio.Error.NoError:
                 raise RuntimeError(f"audio output failed ({sink.error().name})")
-            self.status_label.setText(f"Playing {clip.label} on {device.description()}.")
-            self.status_label.setStyleSheet(message_text_style("info"))
+            self.view_model.set_status(f"Playing {clip.label} on {device.description()}.", "info")
             self._update_playback_buttons()
         except Exception as error:
             self._stop_playback()
-            self.status_label.setText(f"Playback failed: {error}")
-            self.status_label.setStyleSheet(message_text_style("bad"))
+            self.view_model.set_status(f"Playback failed: {error}", "bad")
 
     @Slot()
     def _on_audio_state_changed(self) -> None:
@@ -801,8 +692,7 @@ class ListeningComparisonDialog(QDialog):
         if buffer is not None:
             buffer.close()
             buffer.deleteLater()
-        if hasattr(self, "stop_button"):
-            self.stop_button.setEnabled(False)
+        self.view_model.set_page(stopEnabled=False)
 
     def _fade_playback(self) -> None:
         sink = self._audio_sink
@@ -831,9 +721,9 @@ class ListeningComparisonDialog(QDialog):
         self._stop_playback()
         if self._worker is not None and self._worker.isRunning():
             self._worker.stop()
-            self.keep_button.setEnabled(False)
-            self.reject_button.setEnabled(False)
-            self.progress_label.setText("Canceling comparison...")
+            self.view_model.set_page(
+                keepEnabled=False, rejectEnabled=False, progressText="Canceling comparison..."
+            )
             return
         self._finish_close()
 
@@ -900,17 +790,20 @@ class RawProcessedDialog(ListeningComparisonDialog):
         )
         self.setWindowTitle("Test my sound")
 
-    def _setup_ui(self) -> None:
-        super()._setup_ui()
-        self.scope_label.setText(
-            "This is one recording of your microphone. Raw is what the "
+    def _setup_ui(self) -> str | None:
+        reason = super()._setup_ui()
+        self.view_model.set_page(
+            pageName="Test my sound page",
+            scope="This is one recording of your microphone. Raw is what the "
             "microphone picked up. Processed is the same recording with your "
-            "current settings."
+            "current settings.",
+            scopeWarning="Preparing the processed clip.",
+            keepShown=False,
+            rejectText="Close",
+            rejectName="Close test my sound",
         )
-        self.scope_warning.setText("Preparing the processed clip.")
-        self.keep_button.setVisible(False)
-        self.reject_button.setText("Close")
-        self.reject_button.setAccessibleName("Close test my sound")
+        self.quick_view.setAccessibleName("Test my sound content")
+        return reason
 
     def _play_clip(self, key: str, *, start_sample: int = 0) -> None:
         # The playing clip's button reads Stop, so pressing it again stops.
@@ -925,40 +818,37 @@ class RawProcessedDialog(ListeningComparisonDialog):
 
     def _stop_playback(self) -> None:
         super()._stop_playback()
-        if hasattr(self, "_play_buttons"):
-            self._show_playing_clip()
+        self._show_playing_clip()
 
     def _show_playing_clip(self) -> None:
         playing = self._playing_clip_key
         for key, label in self._CLIPS:
-            text = f"Stop {label}" if key == playing else f"Play {label}"
-            self._play_buttons[key].setText(text)
-            self._play_buttons[key].setAccessibleName(text)
+            self.view_model.set_play_label(key, f"Stop {label}" if key == playing else f"Play {label}")
         names = dict(self._CLIPS)
         if playing in names:
-            self.status_label.setText(f"Playing: {names[playing]}")
-            self.status_label.setStyleSheet(message_text_style("info"))
-        elif self.status_label.text().startswith("Playing: "):
-            self.status_label.setText("Playback stopped.")
+            self.view_model.set_status(f"Playing: {names[playing]}", "info")
+        elif self.view_model.status_text.startswith("Playing: "):
+            self.view_model.set_status("Playback stopped.")
 
     def _on_render_ready(self, result: ComparisonRenderResult) -> None:
         super()._on_render_ready(result)
         if self._result is not result:
             return
-        self.progress_label.setText("Ready to play")
         stages = ", ".join(result.current.rendered_stages) or "none"
-        self.scope_warning.setText(f"Stages applied to the processed clip: {stages}.")
-        self.status_label.setText(
-            "Play each clip to hear the difference. You can switch while one is playing."
+        self.view_model.set_page(
+            progressText="Ready to play",
+            scopeWarning=f"Stages applied to the processed clip: {stages}.",
         )
-        self.status_label.setStyleSheet(message_text_style("ok"))
+        self.view_model.set_status(
+            "Play each clip to hear the difference. You can switch while one is playing.", "ok"
+        )
 
     def _on_render_failed(self, error: str) -> None:
         super()._on_render_failed(error)
         if self._close_requested:
             return
-        self.progress_label.setText("Processing failed")
-        self.status_label.setText(f"Could not process the recording: {error}")
+        self.view_model.set_page(progressText="Processing failed")
+        self.view_model.set_status(f"Could not process the recording: {error}")
 
 
 TEST_CAPTURE_SECONDS = 5.0

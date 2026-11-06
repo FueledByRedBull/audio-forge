@@ -14,12 +14,12 @@ from PySide6.QtWidgets import QWidget
 from mic_eq.analysis import listening_comparison as comparison
 from mic_eq.config import DeviceIdentity
 from mic_eq.ui import listening_comparison_dialog as module
-from mic_eq.ui.accessibility import audit_widget_tree
 from mic_eq.ui.listening_comparison_dialog import (
     ListeningComparisonDialog,
     RawProcessedDialog,
     open_test_my_sound,
 )
+from test_first_run_setup import scene_text
 from test_listening_comparison import _settings
 
 
@@ -38,46 +38,41 @@ def dialog(qapp, monkeypatch):
 
 
 def test_two_clip_dialog_offers_only_raw_and_processed(dialog):
+    # test_listening_comparison_scene.py reads the buttons the scene shows and their names.
     assert dialog.windowTitle() == "Test my sound"
-    assert list(dialog._play_buttons) == ["original", "current"]
-    assert [button.text() for button in dialog._play_buttons.values()] == [
-        "Play Raw",
-        "Play Processed",
-    ]
-    assert dialog.keep_button.isHidden()
-    assert dialog.reject_button.text() == "Close"
-    assert audit_widget_tree(dialog) == ()
+    assert dialog.view_model.play_labels == {"original": "Play Raw", "current": "Play Processed"}
+    assert not dialog.view_model.shown["keepShown"]
+    assert dialog.view_model.shown["rejectText"] == "Close"
 
 
 def test_two_clip_dialog_marks_the_playing_clip_and_toggles_it_off(dialog):
     capture = np.full(1024, 0.05, dtype=np.float32)
     result = comparison.render_comparison(capture, 48_000, _settings(), _settings())
     dialog._on_render_ready(result)
-    assert "Stages applied to the processed clip" in dialog.scope_warning.text()
-    assert "Proposed" not in dialog.scope_warning.text()
+    assert "Stages applied to the processed clip" in dialog.view_model.shown["scopeWarning"]
+    assert "Proposed" not in dialog.view_model.shown["scopeWarning"]
 
     # Stand in for a started sink; the state logic does not touch the device.
     dialog._audio_sink = Mock()
     dialog._playing_clip_key = "current"
     dialog._update_playback_buttons()
-    assert dialog._play_buttons["current"].text() == "Stop Processed"
-    assert dialog._play_buttons["current"].accessibleName() == "Stop Processed"
-    assert dialog._play_buttons["original"].text() == "Play Raw"
-    assert dialog.status_label.text() == "Playing: Processed"
+    assert scene_text(dialog, "currentPlayButton") == "Stop Processed"
+    assert scene_text(dialog, "originalPlayButton") == "Play Raw"
+    assert dialog.view_model.status_text == "Playing: Processed"
 
     dialog._play_clip("current")
     assert dialog._audio_sink is None
     assert dialog._playing_clip_key is None
-    assert dialog._play_buttons["current"].text() == "Play Processed"
-    assert dialog.status_label.text() == "Playback stopped."
+    assert scene_text(dialog, "currentPlayButton") == "Play Processed"
+    assert dialog.view_model.status_text == "Playback stopped."
 
 
 def test_two_clip_dialog_shows_a_render_failure(dialog):
     dialog._on_render_failed("RuntimeError: native renderer is unavailable")
-    assert dialog.status_label.text() == (
+    assert dialog.view_model.status_text == (
         "Could not process the recording: RuntimeError: native renderer is unavailable"
     )
-    assert not any(button.isEnabled() for button in dialog._play_buttons.values())
+    assert not dialog.view_model.shown["playEnabled"]
 
 
 class _Processor:

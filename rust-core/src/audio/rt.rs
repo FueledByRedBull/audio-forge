@@ -41,6 +41,14 @@ impl RtErrorCode {
         }
     }
 
+    /// A stream or resampler failure, which only a stream restart answers.
+    pub fn is_stream_failure(self) -> bool {
+        matches!(
+            self,
+            Self::InputStreamError | Self::OutputStreamError | Self::InputResamplerFailed
+        )
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",

@@ -5,6 +5,24 @@ use crate::audio::rt::RtErrorCode;
 use crate::dsp::Compressor;
 use std::sync::atomic::Ordering;
 
+/// The output device's buffer figures, each read once: a reader that needs more
+/// than one of them (or one twice) takes them from here, so they agree with each
+/// other whatever a restart does meanwhile.
+#[derive(Clone, Copy)]
+pub(super) struct OutputDeviceBufferReading {
+    pub(super) frames: u32,
+    pub(super) period_frames: u32,
+    pub(super) failure_code: u32,
+    sample_rate: u32,
+}
+
+impl OutputDeviceBufferReading {
+    /// Buffer plus half a callback period in microseconds; 0 when unknown.
+    pub(super) fn latency_us(&self) -> u64 {
+        output_device_latency_us(self.frames, self.period_frames, self.sample_rate)
+    }
+}
+
 impl AudioProcessor {
     // === Metering ===
 
@@ -108,34 +126,34 @@ impl AudioProcessor {
     /// route when one is set, or the output device's buffering when not. The
     /// compensation is read once, so the rule holds between engine publishes.
     pub fn get_latency_ms(&self) -> f32 {
+        self.latency_ms_with(&self.read_output_device_buffer())
+    }
+
+    /// `get_latency_ms` with the device buffer given.
+    pub(super) fn latency_ms_with(&self, device: &OutputDeviceBufferReading) -> f32 {
         let engine_us = self.shared.dsp.latency_us.load(Ordering::Relaxed);
         let compensation_us = self
             .shared
             .dsp
             .latency_compensation_us
             .load(Ordering::Relaxed);
-        displayed_latency_us(engine_us, compensation_us, self.output_device_latency_us()) as f32
-            / 1000.0
+        displayed_latency_us(engine_us, compensation_us, device.latency_us()) as f32 / 1000.0
     }
 
     /// The output device's buffer and half a callback period in milliseconds,
     /// read when the stream opened; zero when unknown.
     pub fn get_output_device_latency_ms(&self) -> f32 {
-        self.output_device_latency_us() as f32 / 1000.0
+        self.read_output_device_buffer().latency_us() as f32 / 1000.0
     }
 
-    fn output_device_latency_us(&self) -> u64 {
-        output_device_latency_us(
-            self.shared
-                .output
-                .device_buffer_frames
-                .load(Ordering::Relaxed),
-            self.shared
-                .output
-                .device_period_frames
-                .load(Ordering::Relaxed),
-            self.shared.output.sample_rate.load(Ordering::Relaxed),
-        )
+    pub(super) fn read_output_device_buffer(&self) -> OutputDeviceBufferReading {
+        let output = &self.shared.output;
+        OutputDeviceBufferReading {
+            frames: output.device_buffer_frames.load(Ordering::Relaxed),
+            period_frames: output.device_period_frames.load(Ordering::Relaxed),
+            failure_code: output.device_buffer_failure_code.load(Ordering::Relaxed),
+            sample_rate: output.sample_rate.load(Ordering::Relaxed),
+        }
     }
 
     /// Get engine latency excluding measured external route compensation.

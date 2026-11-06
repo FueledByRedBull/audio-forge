@@ -36,6 +36,7 @@ use super::{
     RT_OUTPUT_SCRATCH_CAPACITY, RT_PROCESS_BUFFER_CAPACITY, RT_RESAMPLE_QUEUE_CAPACITY,
     RT_SUPPRESSOR_OUTPUT_CAPACITY,
 };
+use crate::audio::bounded::{self, Unanswered};
 use crate::audio::buffer::{AudioConsumer, AudioProducer};
 use crate::audio::clock::now_micros;
 use crate::audio::rt::{store_rt_error, FixedAudioBuffer, FixedAudioRing, RtErrorCode};
@@ -55,7 +56,7 @@ use ringbuf::{HeapCons, HeapProd};
 use rubato::{Resampler, SincFixedIn};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 #[cfg(not(any(windows, target_os = "linux")))]
 use thread_priority::{set_current_thread_priority, ThreadPriority};
@@ -211,14 +212,7 @@ fn read_contiguous_input(
 /// were found, so the caller can count the event and reset the stateful stages
 /// (a NaN in a biquad or envelope state would otherwise repeat forever).
 pub(super) fn contain_non_finite(buffer: &mut [f32]) -> bool {
-    let mut found = false;
-    for sample in buffer {
-        if !sample.is_finite() {
-            *sample = 0.0;
-            found = true;
-        }
-    }
-    found
+    sanitize_non_finite_inplace(buffer)
 }
 
 /// Notices a suppressor that is fed but produces nothing: it counts the
@@ -825,26 +819,19 @@ impl DspLoop {
     }
 }
 
-/// Run `request` on a helper thread and wait at most `timeout` for its answer,
-/// so a call that blocks on another process cannot hold the caller up.
+/// `bounded::run_bounded` for an RTKit request, with the answer's failures in words.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn run_bounded(
     timeout: Duration,
     request: impl FnOnce() -> Result<(), String> + Send + 'static,
 ) -> Result<(), String> {
-    let (answer_tx, answer_rx) = mpsc::channel();
-    std::thread::Builder::new()
-        .name("audioforge-rtkit".to_string())
-        .spawn(move || {
-            let _ = answer_tx.send(request());
-        })
-        .map_err(|error| format!("could not start the RTKit request thread: {error}"))?;
-    match answer_rx.recv_timeout(timeout) {
+    match bounded::run_bounded("audioforge-rtkit", timeout, request) {
         Ok(answer) => answer,
-        Err(mpsc::RecvTimeoutError::Timeout) => Err("RTKit did not answer in time".to_string()),
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            Err("the RTKit request ended without an answer".to_string())
+        Err(Unanswered::NotStarted(error)) => {
+            Err(format!("could not start the RTKit request thread: {error}"))
         }
+        Err(Unanswered::TimedOut) => Err("RTKit did not answer in time".to_string()),
+        Err(Unanswered::Ended) => Err("the RTKit request ended without an answer".to_string()),
     }
 }
 
@@ -1417,42 +1404,7 @@ impl Pipeline {
             .gate
             .gain_meter
             .store(1.0_f32.to_bits(), Ordering::Relaxed);
-        shared
-            .gate
-            .auto_relax_active
-            .store(false, Ordering::Relaxed);
-        shared
-            .compressor
-            .gain_reduction
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        shared
-            .deesser
-            .gain_reduction
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        shared
-            .deesser
-            .detector_confidence
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        shared
-            .compressor
-            .current_release_ms
-            .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed);
-        shared
-            .compressor
-            .current_lufs
-            .store((-100.0_f64).to_bits(), Ordering::Relaxed);
-        shared
-            .compressor
-            .current_makeup_gain
-            .store(0.0_f64.to_bits(), Ordering::Relaxed);
-        shared
-            .limiter
-            .gain_reduction_db
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        shared
-            .limiter
-            .peak_gain_reduction_db
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared.clear_stage_meters();
         shared
             .limiter
             .gain_reduction_history_db
@@ -1461,19 +1413,7 @@ impl Pipeline {
             .output
             .true_peak_gain_reduction_history_db
             .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        shared.suppressor.buffer_len.store(0, Ordering::Relaxed);
-        shared
-            .suppressor
-            .latency_samples
-            .store(0, Ordering::Relaxed);
-        shared
-            .suppressor
-            .successful_inference_frames
-            .store(0, Ordering::Relaxed);
-        shared
-            .suppressor
-            .smoothed_buffer_len
-            .store(0, Ordering::Relaxed);
+        shared.clear_suppressor_meters();
         self.output
             .discontinuity_fade_remaining
             .set(self.output.discontinuity_fade_samples);
@@ -1527,64 +1467,17 @@ impl Pipeline {
 
         self.meters.measure_output(shared, buffer);
         shared
-            .compressor
-            .gain_reduction
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        shared
-            .deesser
-            .gain_reduction
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        shared
-            .deesser
-            .detector_confidence
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        shared
             .gate
             .gain_meter
             .store(1.0_f32.to_bits(), Ordering::Relaxed);
-        shared
-            .gate
-            .auto_relax_active
-            .store(false, Ordering::Relaxed);
-        shared
-            .compressor
-            .current_release_ms
-            .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed);
-        shared
-            .compressor
-            .current_lufs
-            .store((-100.0_f64).to_bits(), Ordering::Relaxed);
-        shared
-            .compressor
-            .current_makeup_gain
-            .store(0.0_f64.to_bits(), Ordering::Relaxed);
-        shared
-            .limiter
-            .gain_reduction_db
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        shared
-            .limiter
-            .peak_gain_reduction_db
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared.clear_stage_meters();
         update_decaying_peak_db(0.0, &shared.limiter.gain_reduction_history_db, 0.15);
         update_decaying_peak_db(
             0.0,
             &shared.output.true_peak_gain_reduction_history_db,
             0.15,
         );
-        shared.suppressor.buffer_len.store(0, Ordering::Relaxed);
-        shared
-            .suppressor
-            .latency_samples
-            .store(0, Ordering::Relaxed);
-        shared
-            .suppressor
-            .successful_inference_frames
-            .store(0, Ordering::Relaxed);
-        shared
-            .suppressor
-            .smoothed_buffer_len
-            .store(0, Ordering::Relaxed);
+        shared.clear_suppressor_meters();
 
         self.output.write(
             shared,
@@ -1597,42 +1490,7 @@ impl Pipeline {
     /// Bypass: measure output = input and send it directly.
     fn process_bypass(&mut self, shared: &Shared, buffer: &mut [f32], dsp_start: Instant) {
         self.meters.measure_output(shared, buffer);
-        shared
-            .compressor
-            .gain_reduction
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        shared
-            .deesser
-            .gain_reduction
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        shared
-            .deesser
-            .detector_confidence
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        shared
-            .gate
-            .auto_relax_active
-            .store(false, Ordering::Relaxed);
-        shared
-            .compressor
-            .current_release_ms
-            .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed); // Default 200ms
-        shared
-            .compressor
-            .current_lufs
-            .store((-100.0_f64).to_bits(), Ordering::Relaxed);
-        shared
-            .compressor
-            .current_makeup_gain
-            .store(0.0_f64.to_bits(), Ordering::Relaxed);
-        shared
-            .limiter
-            .gain_reduction_db
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        shared
-            .limiter
-            .peak_gain_reduction_db
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        shared.clear_stage_meters();
         update_decaying_peak_db(0.0, &shared.limiter.gain_reduction_history_db, 0.15);
         update_decaying_peak_db(
             0.0,
@@ -2726,6 +2584,7 @@ mod input_continuity_tests {
 #[cfg(test)]
 mod realtime_tests {
     use super::*;
+    use std::sync::mpsc;
 
     #[test]
     fn busy_limit_follows_the_soft_limit_within_its_floor_and_cap() {

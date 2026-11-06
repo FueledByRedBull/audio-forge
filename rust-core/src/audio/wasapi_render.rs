@@ -6,19 +6,23 @@
 //! driver offers one; on VB-Cable a 128-frame period took about 48 ms off the
 //! time from writing a sample to reading it back from CABLE Output. A device
 //! that offers nothing shorter, or refuses the stream, stays on cpal, and so does
-//! one whose short-period stream fails later, until the app restarts. VB-Cable is
+//! one whose short-period stream never delivered a period, until the app
+//! restarts. A stream that ran and then failed, as when the driver or the audio
+//! service restarts, is retried on the next start. VB-Cable is
 //! the only endpoint measured this way, so only VB-Audio's are tried: the period
 //! belongs to the endpoint, and a hardware device has more to lose from it.
 
-use super::input::AudioError;
+use super::bounded::{self, Unanswered};
 use super::output::{OutputDeviceBuffer, OutputFailure, OutputRenderer};
 use super::scheduling::ProAudioThread;
+use cpal::SampleFormat;
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::ptr::{null, null_mut, NonNull};
 use std::sync::mpsc::{sync_channel, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 type Hresult = i32;
 type Unused = usize;
@@ -74,6 +78,12 @@ const E_FAIL: Hresult = 0x8000_4005_u32 as Hresult;
 const E_POINTER: Hresult = 0x8000_4003_u32 as Hresult;
 const AUDCLNT_E_DEVICE_INVALIDATED: Hresult = 0x8889_0004_u32 as Hresult;
 const AUDCLNT_E_RESOURCES_INVALIDATED: Hresult = 0x8889_0026_u32 as Hresult;
+const AUDCLNT_E_SERVICE_NOT_RUNNING: Hresult = 0x8889_0010_u32 as Hresult;
+const E_INVALIDARG: Hresult = 0x8007_0057_u32 as Hresult;
+/// HRESULT_FROM_WIN32(ERROR_TIMEOUT): the output-buffer probe did not answer in time.
+const PROBE_TIMED_OUT: Hresult = 0x8007_05B4_u32 as Hresult;
+/// How long Start waits for the output-buffer probe, a display-only reading.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
 const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
 const WAVEFORMATEX_LEN: usize = 18;
@@ -82,6 +92,11 @@ const WAVEFORMATEXTENSIBLE_LEN: usize = 40;
 const FLOAT_SUBFORMAT: [u8; 16] = [
     0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
 ];
+/// KSDATAFORMAT_SUBTYPE_PCM as it lies in memory.
+const PCM_SUBFORMAT: [u8; 16] = [
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
+];
+const WAVE_FORMAT_PCM: u16 = 1;
 
 #[link(name = "ole32")]
 unsafe extern "system" {
@@ -201,7 +216,7 @@ impl<V> Com<V> {
     /// On success `object` must be an interface whose vtable is `V`.
     unsafe fn own(hresult: Hresult, object: *mut c_void) -> Result<Self, Hresult> {
         check(hresult)?;
-        let object = NonNull::new(object).ok_or(hresult)?;
+        let object = NonNull::new(object).ok_or(E_POINTER)?;
         Ok(Self {
             object,
             vtable: PhantomData,
@@ -287,13 +302,31 @@ fn is_float32_mix(format: &[u8], sample_rate: u32, channels: u16) -> bool {
         && u16_at(14) == 32
 }
 
-/// Whether a failure is the device going away, which a restart answers, and not
-/// the short period failing on it.
+/// Whether a failure is the device or the audio service going away, which a
+/// restart answers, and not the short period failing on it.
 fn device_is_gone(hresult: Hresult) -> bool {
     matches!(
         hresult,
-        AUDCLNT_E_DEVICE_INVALIDATED | AUDCLNT_E_RESOURCES_INVALIDATED
+        AUDCLNT_E_DEVICE_INVALIDATED
+            | AUDCLNT_E_RESOURCES_INVALIDATED
+            | AUDCLNT_E_SERVICE_NOT_RUNNING
     )
+}
+
+/// How a started stream ended in failure.
+struct RunFailure {
+    hresult: Hresult,
+    /// Whether the engine signalled at least one period before the failure.
+    delivered: bool,
+}
+
+impl RunFailure {
+    /// Whether the endpoint is refusing the short period, as against a stream that
+    /// worked and then lost its device or hit a transient error. A stream that
+    /// never delivered a period is the refusal; the rest are retried at next start.
+    fn is_refusal(&self) -> bool {
+        !self.delivered && !device_is_gone(self.hresult)
+    }
 }
 
 /// Endpoints whose short-period stream failed, with why; cpal serves them until
@@ -365,13 +398,13 @@ unsafe impl Send for Event {}
 unsafe impl Sync for Event {}
 
 impl Event {
-    fn new() -> Result<Self, AudioError> {
+    fn new() -> Result<Self, Hresult> {
         // SAFETY: All pointers may be null: default security, unnamed, auto-reset.
         // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let handle = unsafe { CreateEventW(null(), 0, 0, null()) };
-        NonNull::new(handle).map(Self).ok_or_else(|| {
-            AudioError::BuildStream(format!("CreateEvent: {}", std::io::Error::last_os_error()))
-        })
+        NonNull::new(handle)
+            .map(Self)
+            .ok_or_else(|| win32_hresult(&std::io::Error::last_os_error()))
     }
 
     fn raw(&self) -> *mut c_void {
@@ -413,7 +446,7 @@ impl Drop for Apartment {
 }
 
 /// An initialized render client and what its loop needs.
-struct Client {
+pub(crate) struct Client {
     audio: Com<AudioClient3Vtbl>,
     render: Com<RenderClientVtbl>,
     audio_event: Event,
@@ -458,7 +491,7 @@ impl Client {
                 null(),
             )
         })?;
-        let audio_event = Event::new().map_err(|_| E_FAIL)?;
+        let audio_event = Event::new()?;
         let mut buffer_frames = 0;
         let mut render = null_mut();
         // SAFETY: The client is initialized and the out pointers are valid.
@@ -557,7 +590,7 @@ impl Client {
         renderer: &mut OutputRenderer,
         started: &Event,
         stop: &Event,
-    ) -> Result<(), Hresult> {
+    ) -> Result<(), RunFailure> {
         let waits = [stop.raw(), started.raw()];
         // SAFETY: Both handles stay open for the wait.
         // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
@@ -566,9 +599,15 @@ impl Client {
         }
         // SAFETY: The client is initialized and has its event handle.
         // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-        check(unsafe { (self.audio.vtbl().start)(self.audio.raw()) })?;
+        check(unsafe { (self.audio.vtbl().start)(self.audio.raw()) }).map_err(|hresult| {
+            RunFailure {
+                hresult,
+                delivered: false,
+            }
+        })?;
         let waits = [stop.raw(), self.audio_event.raw()];
         let mut silent_waits = 0;
+        let mut delivered = false;
         let result = loop {
             // SAFETY: Both handles stay open for the wait.
             // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
@@ -576,6 +615,7 @@ impl Client {
                 WAIT_OBJECT_0 => break Ok(()),
                 WAIT_OBJECT_1 => {
                     silent_waits = 0;
+                    delivered = true;
                     if let Err(hresult) = self.fill(renderer) {
                         break Err(hresult);
                     }
@@ -602,7 +642,7 @@ impl Client {
         // SAFETY: The client was started above.
         // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe { (self.audio.vtbl().stop)(self.audio.raw()) };
-        result
+        result.map_err(|hresult| RunFailure { hresult, delivered })
     }
 }
 
@@ -619,11 +659,34 @@ fn buffer_duration_hns(fixed_frames: Option<u32>, sample_rate: u32) -> i64 {
     })
 }
 
-/// The WAVEFORMATEXTENSIBLE cpal builds for a 32-bit float stream.
-fn float32_format(sample_rate: u32, channels: u16) -> [u8; WAVEFORMATEXTENSIBLE_LEN] {
-    let block_align = channels.saturating_mul(4);
+/// The WAVEFORMAT cpal builds for a stream of this sample format, or `None` for
+/// a format cpal does not open. U8 and I16 are plain PCM; the rest extensible.
+fn wave_format(
+    sample_rate: u32,
+    channels: u16,
+    sample_format: SampleFormat,
+) -> Option<[u8; WAVEFORMATEXTENSIBLE_LEN]> {
+    let (tag, subformat) = match sample_format {
+        SampleFormat::U8 | SampleFormat::I16 => (WAVE_FORMAT_PCM, PCM_SUBFORMAT),
+        SampleFormat::I24 | SampleFormat::U24 | SampleFormat::I32 | SampleFormat::I64 => {
+            (WAVE_FORMAT_EXTENSIBLE, PCM_SUBFORMAT)
+        }
+        SampleFormat::F32 => (WAVE_FORMAT_EXTENSIBLE, FLOAT_SUBFORMAT),
+        _ => return None,
+    };
+    let sample_bytes = u16::try_from(sample_format.sample_size()).ok()?;
+    let bits = match sample_format {
+        SampleFormat::I24 | SampleFormat::U24 => 24,
+        _ => sample_bytes * 8,
+    };
+    let block_align = channels.saturating_mul(sample_bytes);
+    let extra = if tag == WAVE_FORMAT_PCM {
+        0
+    } else {
+        (WAVEFORMATEXTENSIBLE_LEN - WAVEFORMATEX_LEN) as u16
+    };
     let mut format = [0; WAVEFORMATEXTENSIBLE_LEN];
-    format[0..2].copy_from_slice(&WAVE_FORMAT_EXTENSIBLE.to_le_bytes());
+    format[0..2].copy_from_slice(&tag.to_le_bytes());
     format[2..4].copy_from_slice(&channels.to_le_bytes());
     format[4..8].copy_from_slice(&sample_rate.to_le_bytes());
     format[8..12].copy_from_slice(
@@ -632,54 +695,68 @@ fn float32_format(sample_rate: u32, channels: u16) -> [u8; WAVEFORMATEXTENSIBLE_
             .to_le_bytes(),
     );
     format[12..14].copy_from_slice(&block_align.to_le_bytes());
-    format[14..16].copy_from_slice(&32_u16.to_le_bytes());
-    format[16..18]
-        .copy_from_slice(&((WAVEFORMATEXTENSIBLE_LEN - WAVEFORMATEX_LEN) as u16).to_le_bytes());
+    format[14..16].copy_from_slice(&bits.to_le_bytes());
+    format[16..18].copy_from_slice(&extra.to_le_bytes());
     // Valid bits per sample; the channel mask stays 0, the direct-out layout.
-    format[18..20].copy_from_slice(&32_u16.to_le_bytes());
-    format[24..40].copy_from_slice(&FLOAT_SUBFORMAT);
-    format
+    format[18..20].copy_from_slice(&bits.to_le_bytes());
+    format[24..40].copy_from_slice(&subformat);
+    Some(format)
 }
 
-/// The buffer and callback period a standard shared-mode stream gets on this
-/// endpoint, read from a client opened the way cpal opens its own and dropped
-/// at once. It runs on a thread of its own, which brings its own COM apartment.
-/// On failure the buffer stays 0 and `failure_code` holds the HRESULT.
+/// The buffer and callback period a standard shared-mode stream of `sample_format`
+/// gets on this endpoint, read from a client opened the way cpal opens its own and
+/// dropped at once. The read runs on a thread of its own, which brings its own COM
+/// apartment, and Start waits for it at most `PROBE_TIMEOUT`: the value is only
+/// displayed. On failure the buffer stays 0 and `failure_code` holds the HRESULT.
 pub(crate) fn probe_standard_buffer(
     endpoint_id: Option<&str>,
     sample_rate: u32,
     channels: u16,
+    sample_format: SampleFormat,
     fixed_frames: Option<u32>,
 ) -> OutputDeviceBuffer {
-    // The join has no timeout: the wait is bounded by the driver's Initialize.
-    let read = match endpoint_id {
-        Some(endpoint_id) => {
-            let endpoint_id = endpoint_id.to_owned();
-            std::thread::Builder::new()
-                .name("audioforge-output-probe".into())
-                .spawn(move || {
-                    read_standard_buffer(&endpoint_id, sample_rate, channels, fixed_frames)
-                })
-                .map_err(|error| win32_hresult(&error))
-                .and_then(|thread| thread.join().unwrap_or(Err(E_FAIL)))
-        }
-        None => Err(E_POINTER),
+    let Some(endpoint_id) = endpoint_id else {
+        return failed_probe(E_POINTER);
     };
-    read.unwrap_or_else(|hresult| OutputDeviceBuffer {
+    let Some(format) = wave_format(sample_rate, channels, sample_format) else {
+        return failed_probe(E_INVALIDARG);
+    };
+    let endpoint_id = endpoint_id.to_owned();
+    probe_within(PROBE_TIMEOUT, move || {
+        read_standard_buffer(&endpoint_id, sample_rate, &format, fixed_frames)
+    })
+}
+
+fn failed_probe(hresult: Hresult) -> OutputDeviceBuffer {
+    OutputDeviceBuffer {
         failure_code: hresult as u32,
         ..OutputDeviceBuffer::default()
-    })
+    }
+}
+
+/// Run `read` on a helper thread. A read still blocked in the driver after
+/// `timeout` leaves the buffer unknown with its own failure code.
+fn probe_within(
+    timeout: Duration,
+    read: impl FnOnce() -> Result<OutputDeviceBuffer, Hresult> + Send + 'static,
+) -> OutputDeviceBuffer {
+    match bounded::run_bounded("audioforge-output-probe", timeout, read) {
+        Ok(Ok(buffer)) => buffer,
+        Ok(Err(hresult)) => failed_probe(hresult),
+        Err(Unanswered::TimedOut) => failed_probe(PROBE_TIMED_OUT),
+        Err(Unanswered::NotStarted(error)) => failed_probe(win32_hresult(&error)),
+        Err(Unanswered::Ended) => failed_probe(E_FAIL),
+    }
 }
 
 fn read_standard_buffer(
     endpoint_id: &str,
     sample_rate: u32,
-    channels: u16,
+    format: &[u8; WAVEFORMATEXTENSIBLE_LEN],
     fixed_frames: Option<u32>,
 ) -> Result<OutputDeviceBuffer, Hresult> {
     let _apartment = Apartment::enter()?;
     let audio = Client::activate(endpoint_id)?;
-    let format = float32_format(sample_rate, channels);
     let (mut frames, mut default_period, mut minimum_period) = (0, 0, 0);
     // SAFETY: The client is live, the format outlives the call, which copies it,
     // and the out pointers are valid.
@@ -728,7 +805,19 @@ pub(crate) struct LowPeriodStream {
     device_buffer: OutputDeviceBuffer,
 }
 
-type Ready = Result<OutputDeviceBuffer, (OutputRenderer, u32)>;
+/// The renderer waits here while the render thread sets up, so that a setup that
+/// fails in any way, a panic included, still has it to give back. The thread
+/// takes it once it has reported ready.
+type RendererSlot = Mutex<Option<OutputRenderer>>;
+type Ready = Result<OutputDeviceBuffer, u32>;
+pub(crate) type OpenClient = Box<dyn FnOnce() -> Result<Option<Client>, Hresult> + Send>;
+
+fn declined(renderer: OutputRenderer, failure_code: u32) -> Opened {
+    Opened::Declined {
+        renderer: Box::new(renderer),
+        failure_code,
+    }
+}
 
 impl LowPeriodStream {
     pub(crate) fn open(
@@ -737,51 +826,67 @@ impl LowPeriodStream {
         channels: u16,
         renderer: OutputRenderer,
         failure: OutputFailure,
-    ) -> Result<Opened, AudioError> {
+    ) -> Opened {
         if let Some(failure_code) = refused_code(&endpoint_id) {
-            return Ok(Opened::Declined {
-                renderer: Box::new(renderer),
-                failure_code,
-            });
+            return declined(renderer, failure_code);
         }
-        let started = Arc::new(Event::new()?);
-        let stop = Arc::new(Event::new()?);
+        let open_client: OpenClient = {
+            let endpoint_id = endpoint_id.clone();
+            Box::new(move || Client::open(&endpoint_id, sample_rate, channels))
+        };
+        Self::open_with(endpoint_id, open_client, renderer, failure)
+    }
+
+    /// `open` with the render thread's client setup given. Anything that goes wrong
+    /// before the thread reports ready declines and returns the renderer.
+    pub(crate) fn open_with(
+        endpoint_id: String,
+        open_client: OpenClient,
+        renderer: OutputRenderer,
+        failure: OutputFailure,
+    ) -> Opened {
+        let (started, stop) = match (Event::new(), Event::new()) {
+            (Ok(started), Ok(stop)) => (Arc::new(started), Arc::new(stop)),
+            (Err(hresult), _) | (_, Err(hresult)) => return declined(renderer, hresult as u32),
+        };
+        let slot = Arc::new(RendererSlot::new(Some(renderer)));
         let (ready_tx, ready_rx) = sync_channel::<Ready>(1);
-        let thread = {
-            let (started, stop) = (Arc::clone(&started), Arc::clone(&stop));
+        let spawned = {
+            let (started, stop, slot) =
+                (Arc::clone(&started), Arc::clone(&stop), Arc::clone(&slot));
             std::thread::Builder::new()
                 .name("audioforge-output".into())
                 .spawn(move || {
                     render_thread(
                         &endpoint_id,
-                        sample_rate,
-                        channels,
-                        renderer,
+                        open_client,
+                        &slot,
                         failure,
                         &started,
                         &stop,
                         ready_tx,
                     );
                 })
-                .map_err(|error| AudioError::BuildStream(error.to_string()))?
+        };
+        let thread = match spawned {
+            Ok(thread) => thread,
+            Err(error) => return declined(take_renderer(&slot), win32_hresult(&error) as u32),
         };
         match ready_rx.recv() {
-            Ok(Ok(device_buffer)) => Ok(Opened::Running(Self {
+            Ok(Ok(device_buffer)) => Opened::Running(Self {
                 started,
                 stop,
                 thread: Some(thread),
                 device_buffer,
-            })),
-            Ok(Err((renderer, failure_code))) => {
+            }),
+            Ok(Err(failure_code)) => {
                 let _ = thread.join();
-                Ok(Opened::Declined {
-                    renderer: Box::new(renderer),
-                    failure_code,
-                })
+                declined(take_renderer(&slot), failure_code)
             }
-            Err(_) => Err(AudioError::BuildStream(
-                "the output thread ended during setup".to_string(),
-            )),
+            Err(_) => {
+                let _ = thread.join();
+                declined(take_renderer(&slot), E_FAIL as u32)
+            }
         }
     }
 
@@ -803,6 +908,14 @@ impl LowPeriodStream {
     }
 }
 
+/// The renderer a thread that never reported ready left in the slot.
+fn take_renderer(slot: &RendererSlot) -> OutputRenderer {
+    slot.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+        .expect("the render thread takes the renderer only after it reports ready")
+}
+
 impl Drop for LowPeriodStream {
     fn drop(&mut self) {
         self.stop.set();
@@ -812,33 +925,31 @@ impl Drop for LowPeriodStream {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_thread(
     endpoint_id: &str,
-    sample_rate: u32,
-    channels: u16,
-    mut renderer: OutputRenderer,
+    open_client: OpenClient,
+    renderer: &RendererSlot,
     failure: OutputFailure,
     started: &Event,
     stop: &Event,
     ready: SyncSender<Ready>,
 ) {
-    let decline = |renderer, code: Hresult| {
-        let _ = ready.send(Err((renderer, code as u32)));
+    let decline = |code: Hresult| {
+        let _ = ready.send(Err(code as u32));
     };
     let _apartment = match Apartment::enter() {
         Ok(apartment) => apartment,
-        Err(hresult) => return decline(renderer, hresult),
+        Err(hresult) => return decline(hresult),
     };
-    let client = match Client::open(endpoint_id, sample_rate, channels) {
+    let client = match open_client() {
         Ok(Some(client)) => client,
-        Ok(None) => return decline(renderer, 0),
-        Err(hresult) => return decline(renderer, hresult),
+        Ok(None) => return decline(0),
+        Err(hresult) => return decline(hresult),
     };
     // A period this short does not hold without the priority.
     let pro_audio = match ProAudioThread::enter() {
         Ok(pro_audio) => pro_audio,
-        Err(error) => return decline(renderer, win32_hresult(&error)),
+        Err(error) => return decline(win32_hresult(&error)),
     };
     let device_buffer = OutputDeviceBuffer {
         frames: client.buffer_frames,
@@ -848,15 +959,21 @@ fn render_thread(
     if ready.send(Ok(device_buffer)).is_err() {
         return;
     }
-    if let Err(hresult) = client.run(&mut renderer, started, stop) {
-        if !device_is_gone(hresult) {
-            remember_refused(endpoint_id, hresult);
+    let Some(mut renderer) = renderer
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+    else {
+        return;
+    };
+    if let Err(run_failure) = client.run(&mut renderer, started, stop) {
+        if run_failure.is_refusal() {
+            remember_refused(endpoint_id, run_failure.hresult);
         }
-        failure.report(hresult as u32);
+        failure.report(run_failure.hresult as u32);
     }
     let _ = pro_audio.finish();
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -887,7 +1004,7 @@ mod tests {
 
     #[test]
     fn the_probe_format_is_cpals_float_format() {
-        let format = float32_format(48_000, 2);
+        let format = wave_format(48_000, 2, SampleFormat::F32).unwrap();
         assert!(is_float32_mix(&format, 48_000, 2));
         assert_eq!(&format[8..12], &(48_000_u32 * 8).to_le_bytes());
         assert_eq!(&format[16..18], &22_u16.to_le_bytes());
@@ -895,12 +1012,76 @@ mod tests {
     }
 
     #[test]
+    fn the_probe_format_follows_the_sample_format_cpal_opens() {
+        let pcm16 = wave_format(44_100, 2, SampleFormat::I16).unwrap();
+        assert_eq!(&pcm16[0..2], &WAVE_FORMAT_PCM.to_le_bytes());
+        assert_eq!(&pcm16[8..12], &(44_100_u32 * 4).to_le_bytes());
+        assert_eq!(&pcm16[12..14], &4_u16.to_le_bytes());
+        assert_eq!(&pcm16[14..16], &16_u16.to_le_bytes());
+        assert_eq!(&pcm16[16..18], &[0; 2]);
+
+        let pcm24 = wave_format(48_000, 1, SampleFormat::I24).unwrap();
+        assert_eq!(&pcm24[0..2], &WAVE_FORMAT_EXTENSIBLE.to_le_bytes());
+        assert_eq!(&pcm24[12..14], &4_u16.to_le_bytes());
+        assert_eq!(&pcm24[14..16], &24_u16.to_le_bytes());
+        assert_eq!(&pcm24[24..40], &PCM_SUBFORMAT);
+
+        assert!(wave_format(48_000, 2, SampleFormat::F64).is_none());
+    }
+
+    #[test]
+    fn a_probe_of_a_format_cpal_cannot_open_says_so() {
+        let probe = probe_standard_buffer(Some("endpoint"), 48_000, 2, SampleFormat::F64, None);
+        assert_eq!(probe.frames, 0);
+        assert_eq!(probe.failure_code, E_INVALIDARG as u32);
+    }
+
+    #[test]
+    fn a_probe_stuck_in_the_driver_times_out_with_its_own_code() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let started = std::time::Instant::now();
+        let probe = probe_within(Duration::from_millis(50), move || {
+            let _ = release_rx.recv();
+            Ok(OutputDeviceBuffer {
+                frames: 480,
+                period_frames: 480,
+                failure_code: 0,
+            })
+        });
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(probe.frames, 0);
+        assert_eq!(probe.period_frames, 0);
+        assert_eq!(probe.failure_code, PROBE_TIMED_OUT as u32);
+        let _ = release_tx.send(());
+    }
+
+    #[test]
+    fn a_probe_that_answers_keeps_its_reading_or_its_error() {
+        let read = probe_within(Duration::from_secs(5), || {
+            Ok(OutputDeviceBuffer {
+                frames: 1056,
+                period_frames: 480,
+                failure_code: 0,
+            })
+        });
+        assert_eq!(
+            (read.frames, read.period_frames, read.failure_code),
+            (1056, 480, 0)
+        );
+        let refused = probe_within(Duration::from_secs(5), || Err(E_FAIL));
+        assert_eq!((refused.frames, refused.failure_code), (0, E_FAIL as u32));
+        let panicked = probe_within(Duration::from_secs(5), || panic!("driver fault"));
+        assert_eq!((panicked.frames, panicked.failure_code), (0, E_FAIL as u32));
+    }
+
+    #[test]
     fn a_probe_that_cannot_read_leaves_the_buffer_unknown_with_its_code() {
-        let no_endpoint = probe_standard_buffer(None, 48_000, 2, None);
+        let no_endpoint = probe_standard_buffer(None, 48_000, 2, SampleFormat::F32, None);
         assert_eq!(no_endpoint.frames, 0);
         assert_eq!(no_endpoint.failure_code, E_POINTER as u32);
 
-        let missing = probe_standard_buffer(Some("no-such-endpoint"), 48_000, 2, None);
+        let missing =
+            probe_standard_buffer(Some("no-such-endpoint"), 48_000, 2, SampleFormat::F32, None);
         assert_eq!(missing.frames, 0);
         assert_eq!(missing.period_frames, 0);
         assert_ne!(missing.failure_code, 0);
@@ -955,6 +1136,31 @@ mod tests {
         assert!(device_is_gone(AUDCLNT_E_DEVICE_INVALIDATED));
         assert!(device_is_gone(AUDCLNT_E_RESOURCES_INVALIDATED));
         assert!(!device_is_gone(E_FAIL));
+    }
+
+    #[test]
+    fn a_stream_that_ran_and_then_failed_does_not_refuse_the_endpoint() {
+        let failure = |hresult, delivered| RunFailure { hresult, delivered };
+        // The silent-wait E_FAIL after periods were delivered, a service restart,
+        // a transient buffer error: all retried at the next start.
+        assert!(!failure(E_FAIL, true).is_refusal());
+        assert!(!failure(AUDCLNT_E_SERVICE_NOT_RUNNING, false).is_refusal());
+        assert!(!failure(AUDCLNT_E_SERVICE_NOT_RUNNING, true).is_refusal());
+        assert!(!failure(AUDCLNT_E_DEVICE_INVALIDATED, false).is_refusal());
+        // A stream that never delivered a period is the endpoint refusing.
+        assert!(failure(E_FAIL, false).is_refusal());
+    }
+
+    #[test]
+    fn a_null_interface_from_a_successful_call_is_e_pointer() {
+        // SAFETY: A null object is rejected before the vtable is read.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        let owned = unsafe { Com::<UnknownVtbl>::own(0, null_mut()) };
+        assert_eq!(owned.err(), Some(E_POINTER));
+        // SAFETY: As above.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        let owned = unsafe { Com::<UnknownVtbl>::own(1, null_mut()) };
+        assert_eq!(owned.err(), Some(E_POINTER));
     }
 
     #[test]

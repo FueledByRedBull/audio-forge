@@ -616,6 +616,7 @@ struct StubSuppressor {
     retired: Arc<std::sync::atomic::AtomicBool>,
     enabled: bool,
     available: bool,
+    failed: bool,
 }
 
 impl StubSuppressor {
@@ -625,6 +626,18 @@ impl StubSuppressor {
             retired: Arc::clone(retired),
             enabled: true,
             available: true,
+            failed: false,
+        })
+    }
+
+    /// An engine whose backend reports a failure.
+    fn failing(model: NoiseModel) -> Box<Self> {
+        Box::new(Self {
+            model,
+            retired: Arc::default(),
+            enabled: true,
+            available: false,
+            failed: true,
         })
     }
 
@@ -636,6 +649,7 @@ impl StubSuppressor {
             retired: Arc::default(),
             enabled: true,
             available: false,
+            failed: false,
         })
     }
 }
@@ -678,7 +692,7 @@ impl NoiseSuppressor for StubSuppressor {
         None
     }
     fn backend_failed(&self) -> bool {
-        false
+        self.failed
     }
     fn retire(&mut self) {
         self.retired.store(true, Ordering::SeqCst);
@@ -703,6 +717,102 @@ fn queue_engine(
         .suppressor
         .dirty
         .store(true, Ordering::Release);
+}
+
+/// The loop retires a queued engine whose model is not the selected one when
+/// `dirty` is set for any reason, so a model has to be selected before its engine
+/// can be seen in the queue.
+#[cfg(feature = "deepfilter")]
+#[test]
+fn an_engine_is_never_queued_ahead_of_its_selected_model() {
+    use crate::audio::rt::RtCommandQueue;
+    use std::sync::atomic::AtomicUsize;
+
+    let processor = AudioProcessor::new();
+    processor
+        .shared
+        .stream
+        .running
+        .store(true, Ordering::SeqCst);
+    let queue =
+        RtCommandQueue::<crate::dsp::noise_suppressor::ControlledNoiseSuppressionEngine, 1>::new();
+    let (tx, mut rx) = queue.split();
+    *processor.shared.suppressor.pending_tx.lock().unwrap() = Some(tx);
+    let popped = AtomicUsize::new(0);
+    let finished = std::sync::atomic::AtomicBool::new(false);
+
+    let early = std::thread::scope(|scope| {
+        let loop_side = scope.spawn(|| {
+            let mut early = 0;
+            while !finished.load(Ordering::Acquire) {
+                if let Some(engine) = rx.try_pop() {
+                    if processor.get_noise_model() != engine.model_type() {
+                        early += 1;
+                    }
+                    popped.fetch_add(1, Ordering::Release);
+                }
+            }
+            early
+        });
+        for round in 0..400 {
+            let model = if round % 2 == 0 {
+                NoiseModel::DeepFilterNetLL
+            } else {
+                NoiseModel::RNNoise
+            };
+            assert!(
+                processor.select_noise_model(model, |model, _| StubSuppressor::boxed(
+                    model,
+                    &Arc::default()
+                ),)
+            );
+            while popped.load(Ordering::Acquire) <= round {
+                std::hint::spin_loop();
+            }
+        }
+        finished.store(true, Ordering::Release);
+        loop_side.join().unwrap()
+    });
+
+    assert_eq!(
+        early, 0,
+        "the loop saw engines before their model was selected"
+    );
+}
+
+#[test]
+fn a_failed_backend_never_hides_a_stream_or_resampler_error_from_recovery() {
+    use super::diagnostics::update_backend_status_rt;
+    use std::sync::atomic::{AtomicBool, AtomicU32};
+
+    let failing: crate::dsp::noise_suppressor::ControlledNoiseSuppressionEngine =
+        StubSuppressor::failing(NoiseModel::RNNoise);
+    let status_after = |code: RtErrorCode| {
+        let stored = AtomicU32::new(code as u32);
+        update_backend_status_rt(
+            &AtomicBool::new(true),
+            &AtomicBool::new(false),
+            &stored,
+            &failing,
+        );
+        RtErrorCode::from_u32(stored.load(Ordering::Relaxed))
+    };
+
+    for kept in [
+        RtErrorCode::InputStreamError,
+        RtErrorCode::OutputStreamError,
+        RtErrorCode::InputResamplerFailed,
+    ] {
+        assert_eq!(status_after(kept), kept);
+    }
+    for replaced in [
+        RtErrorCode::None,
+        RtErrorCode::InputBacklogDropped,
+        RtErrorCode::SuppressorNonFinite,
+        RtErrorCode::FixedBufferOverflow,
+    ] {
+        assert_eq!(status_after(replaced), RtErrorCode::SuppressorBackendFailed);
+    }
 }
 
 #[test]

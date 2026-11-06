@@ -90,6 +90,14 @@ impl HumBin {
         self.sin_phase = next_sin;
     }
 
+    /// Back to the start of a window: no accumulated energy, oscillator at phase 0.
+    fn reset(&mut self) {
+        self.cos_phase = 1.0;
+        self.sin_phase = 0.0;
+        self.i_acc = 0.0;
+        self.q_acc = 0.0;
+    }
+
     fn power_and_reset(&mut self, window_samples: usize) -> f32 {
         self.power_phase_and_reset(window_samples).0
     }
@@ -260,6 +268,8 @@ pub(super) struct AdaptiveInputCleanupState {
     harmonic_strength: f32,
     adaptive_highpass: Biquad,
     adaptive_highpass_hz: f32,
+    /// `process_block` has run the high-pass and notches since they were last reset.
+    filters_dirty: bool,
     hum_notch: SmoothNotch,
     harmonic_notch: SmoothNotch,
     pub(super) hum_detected: bool,
@@ -300,6 +310,7 @@ impl AdaptiveInputCleanupState {
             harmonic_strength: 0.0,
             adaptive_highpass: new_input_pre_filter(sample_rate as f64),
             adaptive_highpass_hz: INPUT_PREFILTER_HZ as f32,
+            filters_dirty: false,
             hum_notch: SmoothNotch::new(55.0, notch_q, sample_rate),
             harmonic_notch: SmoothNotch::new(110.0, notch_q, sample_rate),
             hum_detected: false,
@@ -334,11 +345,23 @@ impl AdaptiveInputCleanupState {
         self.hum_phase_valid = false;
         self.hum_strength = 0.0;
         self.harmonic_strength = 0.0;
-        self.adaptive_highpass.set_frequency(INPUT_PREFILTER_HZ);
-        self.adaptive_highpass.reset();
-        self.adaptive_highpass_hz = INPUT_PREFILTER_HZ as f32;
-        self.hum_notch.reset();
-        self.harmonic_notch.reset();
+        for bin in self
+            .hum_bins
+            .iter_mut()
+            .chain(self.hum_harmonic_bins.iter_mut())
+        {
+            bin.reset();
+        }
+        // Bypass, Raw monitor and recording reset every block; the filters only
+        // need it after `process_block` has run them or moved the high-pass.
+        if self.filters_dirty || self.adaptive_highpass_hz != INPUT_PREFILTER_HZ as f32 {
+            self.adaptive_highpass.set_frequency(INPUT_PREFILTER_HZ);
+            self.adaptive_highpass.reset();
+            self.adaptive_highpass_hz = INPUT_PREFILTER_HZ as f32;
+            self.hum_notch.reset();
+            self.harmonic_notch.reset();
+            self.filters_dirty = false;
+        }
         self.hum_detected = false;
         self.rumble_detected = false;
         self.selected_high_pass_hz = INPUT_PREFILTER_HZ as f32;
@@ -602,6 +625,7 @@ impl AdaptiveInputCleanupState {
             self.harmonic_notch.retune(self.hum_line_hz * 2.0);
         }
 
+        self.filters_dirty = true;
         for sample in buffer.iter_mut() {
             let mut y = *sample;
             let primary_notched = self.hum_notch.process_sample(y);
@@ -630,6 +654,78 @@ fn wrap_phase(phase: f32) -> f32 {
 #[cfg(test)]
 mod adaptive_cleanup_tests {
     use super::*;
+
+    fn hum_tone(frequency_hz: f32, samples: usize) -> Vec<f32> {
+        (0..samples)
+            .map(|index| {
+                0.08 * (2.0 * std::f32::consts::PI * frequency_hz * index as f32 / 48_000.0).sin()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_reset_empties_the_hum_bins_so_the_first_window_starts_clean() {
+        let mut state = AdaptiveInputCleanupState::new(48_000.0);
+        state.set_mode(InputCleanupMode::Gentle);
+        // Half a window of 60 Hz leaves energy in the bins; the reset starts a
+        // new window, which then sees only silence.
+        state.analyze_input(&hum_tone(60.0, state.hum_window_samples / 2));
+        state.reset_dynamic_state();
+        state.analyze_input(&vec![0.0; state.hum_window_samples]);
+
+        assert_eq!(state.hum_windows_observed, 1);
+        assert_eq!(
+            state.hum_candidate_windows, 0,
+            "the old window's energy made a hum candidate"
+        );
+    }
+
+    #[test]
+    fn resetting_a_reset_state_changes_nothing() {
+        // Bypass and recording reset on every block; once is as good as many.
+        let run = |resets_between_blocks: usize| {
+            let mut state = AdaptiveInputCleanupState::new(48_000.0);
+            state.set_mode(InputCleanupMode::Strong);
+            let mut output = Vec::new();
+            for block in 0..6 {
+                let mut samples = hum_tone(55.0, 480);
+                state.analyze_input(&samples);
+                state.process_block(&mut samples);
+                output.extend_from_slice(&samples);
+                if block % 2 == 1 {
+                    for _ in 0..resets_between_blocks {
+                        state.reset_dynamic_state();
+                    }
+                }
+            }
+            output
+        };
+        assert_eq!(run(1), run(5));
+    }
+
+    #[test]
+    fn input_clipping_is_counted_once_per_block_with_the_loudest_peak() {
+        let mut block = vec![0.5_f32, 1.5, -2.0, f32::NAN, 1.0, 1.25, -0.25];
+        let count = AtomicU64::new(3);
+        let peak_db = AtomicU32::new((-120.0_f32).to_bits());
+        sanitize_and_clamp_input_inplace(&mut block, &count, &peak_db);
+
+        assert_eq!(block, [0.5, 1.0, -1.0, 0.0, 1.0, 1.0, -0.25]);
+        assert_eq!(count.load(Ordering::Relaxed), 3 + 3);
+        assert_eq!(
+            f32::from_bits(peak_db.load(Ordering::Relaxed)),
+            20.0 * 2.0_f32.log10()
+        );
+
+        // A quieter block leaves the recorded peak alone.
+        let mut quieter = vec![1.1_f32];
+        sanitize_and_clamp_input_inplace(&mut quieter, &count, &peak_db);
+        assert_eq!(count.load(Ordering::Relaxed), 7);
+        assert_eq!(
+            f32::from_bits(peak_db.load(Ordering::Relaxed)),
+            20.0 * 2.0_f32.log10()
+        );
+    }
 
     #[test]
     fn fractional_hum_tracker_uses_power_and_phase_continuity() {
@@ -958,13 +1054,17 @@ pub(super) fn uses_clean_write_path(path: ProcessingPath) -> bool {
     matches!(path, ProcessingPath::RawMonitor)
 }
 
+/// Zero non-finite samples. Returns whether any were found.
 #[inline]
-pub(super) fn sanitize_non_finite_inplace(buffer: &mut [f32]) {
+pub(super) fn sanitize_non_finite_inplace(buffer: &mut [f32]) -> bool {
+    let mut found = false;
     for sample in buffer.iter_mut() {
         if !sample.is_finite() {
             *sample = 0.0;
+            found = true;
         }
     }
+    found
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1127,6 +1227,8 @@ pub(super) fn sanitize_and_clamp_input_inplace(
     clip_event_count: &AtomicU64,
     clip_peak_db: &AtomicU32,
 ) {
+    let mut clipped_samples = 0_u64;
+    let mut max_clipped_amplitude = 0.0_f32;
     for sample in buffer.iter_mut() {
         if !sample.is_finite() {
             *sample = 0.0;
@@ -1134,14 +1236,19 @@ pub(super) fn sanitize_and_clamp_input_inplace(
         }
         let amplitude = sample.abs();
         if amplitude > 1.0 {
-            clip_event_count.fetch_add(1, Ordering::Relaxed);
-            let peak_db = 20.0 * amplitude.log10();
-            let current_peak = f32::from_bits(clip_peak_db.load(Ordering::Relaxed));
-            if peak_db > current_peak {
-                clip_peak_db.store(peak_db.to_bits(), Ordering::Relaxed);
-            }
+            clipped_samples = clipped_samples.saturating_add(1);
+            max_clipped_amplitude = max_clipped_amplitude.max(amplitude);
         }
         *sample = sample.clamp(-1.0, 1.0);
+    }
+
+    if clipped_samples > 0 {
+        clip_event_count.fetch_add(clipped_samples, Ordering::Relaxed);
+        let peak_db = 20.0 * max_clipped_amplitude.log10();
+        let current_peak = f32::from_bits(clip_peak_db.load(Ordering::Relaxed));
+        if peak_db > current_peak {
+            clip_peak_db.store(peak_db.to_bits(), Ordering::Relaxed);
+        }
     }
 }
 

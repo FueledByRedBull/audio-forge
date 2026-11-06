@@ -1,10 +1,30 @@
 """Health decision tests for compact runtime diagnostics."""
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
 
-from mic_eq.ui.health import advice_for, input_health_state, output_health_state
+from mic_eq.runtime_snapshot import RuntimeSnapshot
+from mic_eq.ui.health import (
+    DEVICE_STARTUP_GRACE_SECONDS,
+    NO_CALLBACK_YET,
+    NOISE_SELECTION_DROPPED_WARNING,
+    Chip,
+    HealthMemory,
+    HealthReadings,
+    HealthReport,
+    advice_for,
+    health_summary,
+    input_health_state,
+    output_health_state,
+    runtime_health,
+)
+from mic_eq.ui.shell_specs import LATENCY_LOWER_BOUND_NOTE_NO_BUFFER, TEXT_SPECS
+
+
+def _observe(window, diagnostics: dict[str, Any], *, now: float) -> frozenset[str]:
+    return window.observe(RuntimeSnapshot.parse(diagnostics), now=now)
 
 
 def test_nonfinite_limiter_history_cannot_look_like_healthy_output():
@@ -26,14 +46,14 @@ def test_recent_health_recovers_without_erasing_cumulative_counts():
 
     health = RecentStreamHealth()
     diagnostics = {"output_callback_error_count": 1, "stream_restart_count": 2}
-    assert health.observe(diagnostics, now=0.0) == frozenset(diagnostics)
-    assert health.observe(diagnostics, now=4.9) == frozenset(diagnostics)
-    assert not health.observe(diagnostics, now=5.0)
+    assert _observe(health, diagnostics, now=0.0) == frozenset(diagnostics)
+    assert _observe(health, diagnostics, now=4.9) == frozenset(diagnostics)
+    assert not _observe(health, diagnostics, now=5.0)
     assert diagnostics == {"output_callback_error_count": 1, "stream_restart_count": 2}
     diagnostics["output_callback_error_count"] = 2
-    assert health.observe(diagnostics, now=6.0) == {"output_callback_error_count"}
+    assert _observe(health, diagnostics, now=6.0) == {"output_callback_error_count"}
     diagnostics["output_callback_error_count"] = 0  # Counter reset on a new stream.
-    assert not health.observe(diagnostics, now=11.0)
+    assert not _observe(health, diagnostics, now=11.0)
 
 
 def test_a_counter_reset_ends_its_recent_event():
@@ -42,24 +62,24 @@ def test_a_counter_reset_ends_its_recent_event():
     from mic_eq.ui.health import RecentStreamHealth
 
     health = RecentStreamHealth()
-    assert health.observe({"gate_chatter_event_count": 12}, now=0.0) == {"gate_chatter_event_count"}
-    assert not health.observe({"gate_chatter_event_count": 0}, now=1.0)
-    assert health.observe({"gate_chatter_event_count": 1}, now=2.0) == {"gate_chatter_event_count"}
+    assert _observe(health, {"gate_chatter_event_count": 12}, now=0.0) == {"gate_chatter_event_count"}
+    assert not _observe(health, {"gate_chatter_event_count": 0}, now=1.0)
+    assert _observe(health, {"gate_chatter_event_count": 1}, now=2.0) == {"gate_chatter_event_count"}
 
     # Events the new stream counted before the next tick are real ones.
     health = RecentStreamHealth()
-    assert health.observe({"gate_chatter_event_count": 12}, now=0.0) == {"gate_chatter_event_count"}
-    assert health.observe({"gate_chatter_event_count": 3}, now=1.0) == {"gate_chatter_event_count"}
-    assert not health.observe({"gate_chatter_event_count": 3}, now=7.0)
+    assert _observe(health, {"gate_chatter_event_count": 12}, now=0.0) == {"gate_chatter_event_count"}
+    assert _observe(health, {"gate_chatter_event_count": 3}, now=1.0) == {"gate_chatter_event_count"}
+    assert not _observe(health, {"gate_chatter_event_count": 3}, now=7.0)
 
 
 def test_output_drift_retiming_is_not_a_recent_stream_event():
     from mic_eq.ui.health import RecentStreamHealth
 
     health = RecentStreamHealth()
-    assert not health.observe({"jitter_dropped_samples": 0}, now=0.0)
-    assert not health.observe({"jitter_dropped_samples": 3845}, now=1.0)
-    assert health.observe({"jitter_dropped_samples": 3845, "input_dropped_samples": 1}, now=2.0) == {
+    assert not _observe(health, {"jitter_dropped_samples": 0}, now=0.0)
+    assert not _observe(health, {"jitter_dropped_samples": 3845}, now=1.0)
+    assert _observe(health, {"jitter_dropped_samples": 3845, "input_dropped_samples": 1}, now=2.0) == {
         "input_dropped_samples"
     }
 
@@ -69,7 +89,7 @@ def test_recent_health_rejects_invalid_counter_evidence():
 
     for value in (float("nan"), -1, "invalid", True, 1.5):
         with pytest.raises(ValueError):
-            RecentStreamHealth().observe({"input_dropped_samples": value}, now=0.0)
+            _observe(RecentStreamHealth(), {"input_dropped_samples": value}, now=0.0)
 
 
 def test_input_health_flags_dense_signal_from_low_crest_factor():
@@ -269,3 +289,143 @@ def test_recovery_advice_counts_only_what_happened(chip, cause, count):
     assert "0 times" not in advice and "check the device connection" in advice
     if not count:
         assert not any(character.isdigit() for character in advice)
+
+
+_READINGS = HealthReadings(
+    latency_ms=24.0, dsp_time_ms=0.5, input_buf=128, rnnoise_buf=0,
+    input_rms_db=-18.0, output_rms_db=-18.0, input_callback_age_ms=10, output_callback_age_ms=12,
+)
+
+
+def _health(
+    diagnostics: dict[str, Any], readings: HealthReadings = _READINGS, *,
+    recent: frozenset[str] = frozenset(), memory: HealthMemory = HealthMemory(), now: float = 0.0,
+) -> HealthReport:
+    return runtime_health(
+        RuntimeSnapshot.parse(diagnostics), readings, recent_events=recent, memory=memory, now=now
+    )
+
+
+def test_an_engine_dict_with_nothing_to_report_gives_healthy_chips():
+    report = _health({})
+    chips = report.chips
+
+    assert chips["latency_label"] == Chip(
+        "Latency: at least 24 ms (processing 0.5 ms)", "info",
+        TEXT_SPECS["latency_label"].tip + LATENCY_LOWER_BOUND_NOTE_NO_BUFFER,
+    )
+    assert chips["buffer_label"] == Chip("Buffer: OK (128 samples)", "ok")
+    assert chips["input_health_label"] == Chip("Input: OK (-18 dB average)", "ok")
+    assert chips["output_health_label"] == Chip("Output: OK (-18 dB average)", "ok")
+    assert chips["gate_health_label"] == Chip("Gate: OK", "ok")
+    assert chips["callback_health_label"] == Chip("Device activity: input 10 ms ago, output 12 ms ago", "ok")
+    assert chips["underrun_health_label"] == Chip("Dropouts: 0", "ok")
+    assert (chips["dropped_label"].text, chips["dropped_label"].state) == (
+        "Drops: 0 samples dropped, 0 dropouts, 0 restarts", "ok"
+    )
+    assert chips["dropped_label"].tip is not None and chips["dropped_label"].tip.endswith(
+        "Drops: 0 | U:0 | L:0 | NF:0 | RS:0"
+    )
+    assert chips["backend_diag_label"] == Chip("Backend: rnnoise, working", "ok")
+    assert chips["recovery_diag_label"] == Chip(
+        "Recovery: 0 restarts, 0 output recoveries", "ok", "No recovery recorded."
+    )
+    assert report.messages == ()
+    assert report.memory == HealthMemory()
+    assert health_summary(list(chips.values())) == Chip("Health: OK", "ok", "Everything looks fine.")
+
+
+def test_counts_that_rose_since_the_last_tick_warn_once_and_the_memory_carries_them():
+    diagnostics = {
+        "output_underrun_total": 2, "output_true_peak_event_count": 1, "output_true_peak_db": 0.4,
+        "input_phase_warning_count": 1,
+    }
+    first = _health(diagnostics)
+    assert first.chips["underrun_health_label"] == Chip("Dropouts: 2", "warn")
+    assert first.chips["output_health_label"] == Chip("Output: PEAK ABOVE CEILING (peak 0.4 dB)", "warn")
+    assert first.chips["dropped_label"].text == (
+        "Drops: 0 samples dropped, 2 dropouts, 0 restarts (needs attention: the output ran out of audio)"
+    )
+    assert first.memory == HealthMemory(
+        output_underrun_total=2, input_phase_warning_count=1, output_true_peak_event_count=1
+    )
+
+    second = _health(diagnostics, memory=first.memory)
+    assert second.chips["underrun_health_label"] == Chip("Dropouts: 2", "ok")
+    assert second.chips["output_health_label"] == Chip("Output: OK (-18 dB average, peaks 0.4 dB)", "ok")
+    assert second.chips["dropped_label"].state == "ok"
+
+
+def test_a_device_that_never_starts_warns_once_the_grace_from_its_first_sighting_is_over():
+    waiting = replace(
+        _READINGS, input_callback_age_ms=NO_CALLBACK_YET, output_callback_age_ms=NO_CALLBACK_YET, processing=True
+    )
+    first = _health({}, waiting, now=100.0)
+    assert first.chips["callback_health_label"] == Chip(
+        "Device activity: input has not started sending sound yet, output has not started playing sound yet",
+        "idle",
+    )
+    assert first.memory.device_wait_since == 100.0
+
+    later = _health({}, waiting, memory=first.memory, now=100.0 + DEVICE_STARTUP_GRACE_SECONDS)
+    assert later.chips["callback_health_label"].state == "warn"
+    assert later.memory.device_wait_since == 100.0
+
+    # Not processing: nothing is waiting for a start.
+    stopped = _health({}, replace(waiting, processing=False), memory=later.memory, now=200.0)
+    assert stopped.chips["callback_health_label"].state == "idle"
+    assert stopped.memory.device_wait_since is None
+
+
+def test_a_dropped_selection_and_a_failed_backend_are_announced_once():
+    diagnostics = {
+        "noise_selection_dropped_count": 1, "noise_model": "deepfilter", "noise_backend_available": False,
+        "noise_backend_failed": True, "noise_backend_error": "model missing",
+    }
+    first = _health(diagnostics)
+    assert first.messages == (
+        (NOISE_SELECTION_DROPPED_WARNING, 8000),
+        (
+            "Noise suppression stopped working, so your voice is passing through unprocessed. "
+            "Choose another model on the Noise Suppression card. Details: model missing",
+            6000,
+        ),
+    )
+    assert first.chips["backend_diag_label"] == Chip("Backend: deepfilter, failed, reported an error", "warn")
+
+    assert _health(diagnostics, memory=first.memory).messages == ()
+    working = {**diagnostics, "noise_backend_available": True, "noise_backend_failed": False}
+    assert _health(working, memory=first.memory).memory.backend_warning is None
+
+
+def test_recent_engine_events_and_a_pending_restart_need_attention_but_gate_chatter_is_the_gate():
+    report = _health(
+        {"stream_restart_count": 1, "last_restart_reason": "device changed"},
+        replace(_READINGS, recovery_pending=True),
+        recent=frozenset({"stream_restart_count"}),
+    )
+    assert report.chips["recovery_diag_label"] == Chip(
+        "Recovery: 1 restart, 0 output recoveries, restart pending", "warn", "Last recovery: device changed"
+    )
+    assert report.chips["dropped_label"].text == (
+        "Drops: 0 samples dropped, 0 dropouts, 1 restart (needs attention: the audio engine reported a fault)"
+    )
+
+    gate = _health({"gate_chatter_event_count": 2}, recent=frozenset({"gate_chatter_event_count"}))
+    assert gate.chips["gate_health_label"] == Chip("Gate: CHATTERING (2 times)", "warn")
+    assert gate.chips["dropped_label"].text == "Drops: nothing dropped, but the gate is chattering"
+
+
+def test_the_summary_names_the_worst_row_and_gives_its_advice():
+    full_scale = "Output: AT FULL SCALE (peak 1.5 dB)"
+    rows = [
+        Chip("Input: PEAKS TOO HIGH (-2.0 dB)", "warn"),
+        Chip(full_scale, "bad"),
+        Chip("Latency: about 10 ms (processing 0.2 ms)", "info"),
+    ]
+    assert health_summary(rows) == Chip(full_scale, "bad", advice_for(full_scale))
+    assert health_summary(rows[2:]) == Chip("Health: IDLE", "idle", TEXT_SPECS["health_advice_label"].text)
+    # A mute the engine has not confirmed is worth a look even when every row is fine.
+    assert health_summary([Chip("Gate: OK", "ok")], mute_error=True) == Chip(
+        "Health: WARN", "warn", "Check the items marked below."
+    )

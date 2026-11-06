@@ -30,7 +30,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from mic_eq.config import AppConfig, DeviceIdentity
 from mic_eq.config_parts.settings import q_from_bandwidth_octaves
-from mic_eq.ui import main_window
+from mic_eq.ui import health
 from mic_eq.ui.main_window import PAGE_NAMES, MainWindow
 from mic_eq.ui.eq_quick_graph import EQGraphItem
 from mic_eq.ui.eq_graph import EQGraphGeometry
@@ -1655,7 +1655,7 @@ def test_the_device_grace_starts_over_after_stop_and_start(engine_window, monkey
 
     window.start_btn_action.trigger()
     tick()
-    clock[0] += main_window.DEVICE_STARTUP_GRACE_SECONDS + 1
+    clock[0] += health.DEVICE_STARTUP_GRACE_SECONDS + 1
     tick()
     assert row.state == "warn"
 

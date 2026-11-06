@@ -10,7 +10,7 @@ from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QWidget
 
 from mic_eq.ui.first_run_setup_dialog import route_health_reason
-from mic_eq.ui.health import RecentStreamHealth, advice_for
+from mic_eq.ui.health import Chip, HealthMemory, HealthReport, RecentStreamHealth, advice_for
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.shell_specs import (
     LATENCY_LOWER_BOUND_NOTE,
@@ -136,8 +136,7 @@ def _diagnostic_window(diagnostics: dict[str, Any]):
     window: Any = SimpleNamespace(
         _stream_health=RecentStreamHealth(),
         _processing=False,
-        _last_backend_warning=None,
-        _noise_drops_seen=0,
+        _health_memory=HealthMemory(),
         processor=processor,
         _update_session_summary=Mock(),
         _shell_state_owner=state_owner,
@@ -162,7 +161,6 @@ def _diagnostic_window(diagnostics: dict[str, Any]):
         window, key, text, state
     )
     window._update_health_summary = lambda: MainWindow._update_health_summary(window)
-    window._extend_diag_tokens = MainWindow._extend_diag_tokens
     args: dict[str, Any] = dict(
         diagnostics=diagnostics,
         latency_ms=10.0,
@@ -205,6 +203,43 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
     diagnostics["input_callback_error_count"] += 1
     MainWindow._update_diagnostic_labels(window, **args)
     assert texts["health_summary_label"].state == "warn"
+
+
+def test_the_window_renders_what_the_health_module_decides(isolated_main_window, monkeypatch):
+    window = isolated_main_window
+    report = HealthReport(
+        chips={
+            "gate_health_label": Chip("Gate: CHATTERING (3 times)", "warn"),
+            "dropped_label": Chip("Drops: nothing dropped, but the gate is chattering", "warn", "counters"),
+        },
+        messages=(("first", 8000), ("second", 6000)),
+        memory=HealthMemory(noise_drops_seen=7),
+    )
+    asked: dict[str, Any] = {}
+
+    def decide(snapshot, readings, **context):
+        asked.update(snapshot=snapshot, readings=readings, **context)
+        return report
+
+    monkeypatch.setattr("mic_eq.ui.main_window.runtime_health", decide)
+    shown: list[tuple[str, int]] = []
+    monkeypatch.setattr(window.status_message, "showMessage", lambda text, timeout: shown.append((text, timeout)))
+
+    window._update_diagnostic_labels(
+        diagnostics={"output_underrun_total": 2}, latency_ms=10.0, dsp_time_ms=0.2, input_buf=0, rnnoise_buf=0,
+    )
+
+    assert asked["snapshot"].output_underrun_total == 2
+    assert (asked["readings"].latency_ms, asked["memory"]) == (10.0, HealthMemory())
+    texts = window.shell_texts
+    assert (texts["gate_health_label"].text, texts["gate_health_label"].state) == ("Gate: CHATTERING (3 times)", "warn")
+    assert texts["gate_health_label"].toolTip == TEXT_SPECS["gate_health_label"].tip  # no tip: it keeps its own
+    assert texts["dropped_label"].toolTip == "counters"
+    assert shown == [("first", 8000), ("second", 6000)]
+    assert window._health_memory == HealthMemory(noise_drops_seen=7)
+    summary = texts["health_summary_label"]
+    assert (summary.text, summary.state) == ("Gate: CHATTERING (3 times)", "warn")
+    assert texts["health_advice_label"].text == advice_for("Gate: CHATTERING (3 times)")
 
 
 def test_latency_chip_is_a_lower_bound_until_the_route_is_measured(qapp):
@@ -467,6 +502,7 @@ def test_main_window_invalidates_all_live_meters_on_stop_and_getter_failure(qapp
         gate_state=gate_state,
         processing_meters=ProcessingMeters(processor, gate_state, meter_host),
         _reset_health_labels=Mock(),
+        _health_memory=HealthMemory(),
         isHidden=lambda: True,
     )
     window._invalidate_live_meters = lambda: MainWindow._invalidate_live_meters(window)
@@ -521,6 +557,47 @@ def test_failed_diagnostics_still_service_recovery_when_presentation_is_hidden(q
     assert "unavailable" in window._set_health_chip.call_args.args[1]
     advice = window.shell_texts["health_advice_label"].update.call_args.kwargs["text"]
     assert "could not read" in advice and "Stop and start processing" in advice
+
+
+def test_a_stopped_tick_redoes_the_stopped_work_only_when_the_stopped_state_changes(qapp):
+    state: dict[str, Any] = {"running": False, "restart_pending": False}
+    window: Any = SimpleNamespace(
+        processor=SimpleNamespace(is_running=lambda: state["running"]),
+        _restart_pending=lambda: state["restart_pending"],
+        _stop_for_own_microphone=Mock(return_value=False),
+        _sync_meter_timer=Mock(),
+        _reset_health_labels=Mock(),
+        _sync_processing_controls=Mock(),
+        _service_stream_recovery=Mock(),
+        _set_health_chip=Mock(),
+        shell_texts={"health_advice_label": Mock()},
+        _processing=False,
+        _health_memory=HealthMemory(device_wait_since=1.0, backend_warning="Noise suppression stopped"),
+    )
+    work =(window._sync_meter_timer, window._reset_health_labels, window._sync_processing_controls)
+
+    def ticks(count: int = 1) -> list[int]:
+        for _ in range(count):
+            MainWindow._update_diagnostics(window)
+        return [method.call_count for method in work]
+
+    assert ticks() == [1, 1, 1]
+    assert window._health_memory == HealthMemory()  # a stop ends any device wait and backend warning
+    assert ticks(3) == [1, 1, 1]  # still stopped, nothing changed
+    # A pending restart is serviced on every tick all the same.
+    assert window._service_stream_recovery.call_count == 4
+
+    state["restart_pending"] = True  # the Stop control now has a retry to cancel
+    assert ticks(2) == [2, 2, 2]
+    window._login_startup_message = "Login waiting for a microphone"  # the summary shows it
+    assert ticks(2) == [3, 3, 3]
+
+    # A running tick (here one whose readings fail) ends the stopped state; the next stop redoes the work.
+    state["running"] = True
+    assert ticks() == [4, 4, 3]
+    state["running"] = False
+    assert ticks(2) == [5, 5, 4]
+    assert window._service_stream_recovery.call_count == 11
 
 
 def test_measurements_begin_unavailable_and_failed_noise_floor_does_not_invent_default(

@@ -24,6 +24,7 @@ from ..analysis.latency_calibration import (
     result_to_profile,
 )
 from ..analysis.signal_processing import resample_poly
+from ..runtime_snapshot import RuntimeSnapshot
 from .components import session_is_ending
 from .latency_calibration_view import NO_READINGS, LatencyCalibrationView
 from .capture_session import (
@@ -63,20 +64,14 @@ def _resample_probe(
 
 
 def engine_config_signature(processor: Any) -> str:
-    diagnostics = dict(processor.get_runtime_diagnostics())
+    snapshot = RuntimeSnapshot.parse(processor.get_runtime_diagnostics())
     fields = {
         "limiter_enabled": bool(processor.is_limiter_enabled()),
-        "input_fixed_buffer_frames": int(
-            diagnostics.get("input_fixed_buffer_frames", 0)
-        ),
+        "input_fixed_buffer_frames": int(snapshot.input_fixed_buffer_frames),
         "noise_enabled": bool(processor.is_rnnoise_enabled()),
         "noise_model": str(processor.get_noise_model()),
-        "output_resampler_active": bool(
-            diagnostics.get("output_resampler_active", False)
-        ),
-        "output_fixed_buffer_frames": int(
-            diagnostics.get("output_fixed_buffer_frames", 0)
-        ),
+        "output_resampler_active": snapshot.output_resampler_active,
+        "output_fixed_buffer_frames": int(snapshot.output_fixed_buffer_frames),
         "output_sample_rate": int(processor.output_sample_rate()),
         "processing_sample_rate": int(processor.sample_rate()),
     }

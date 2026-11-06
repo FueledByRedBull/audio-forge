@@ -1,21 +1,53 @@
-"""Compact health decision helpers for runtime metering."""
+"""Health decisions: which chip says what, from a runtime snapshot and the live readings.
+
+Nothing here touches Qt or the engine. :func:`runtime_health` turns one
+diagnostics tick into chips, status messages and what the next tick needs to
+remember; the window only renders the result.
+"""
 
 from __future__ import annotations
 
 import math
 import re
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..runtime_snapshot import RuntimeSnapshot
 from .platform_text import SOUND_SETTINGS
+from .shell_specs import (
+    DROPPED_DIAGNOSTICS_TOOLTIP,
+    LATENCY_LOWER_BOUND_NOTE,
+    LATENCY_LOWER_BOUND_NOTE_NO_BUFFER,
+    TEXT_SPECS,
+)
 
 # How far back the meter's peaks and clips count towards the Health lines.
 HEALTH_PEAK_WINDOW_SECONDS = 8.0
 # A device whose last callback is older than this is slow (warn) or stalled (bad).
 DEVICE_ACTIVITY_WARN_MS = 250
 DEVICE_ACTIVITY_BAD_MS = 1000
+# The engine reports this age until a device has made its first callback.
+NO_CALLBACK_YET = 2**64 - 1
+# A device that has made no callback this long after it was first seen waiting is a
+# warning. Any engine restart resets the callback ages, so the wait is timed from the
+# moment the not-started state appears, not from when processing began.
+DEVICE_STARTUP_GRACE_SECONDS = 5.0
+INPUT_PHASE_WARNING_CORRELATION = -0.75
+PHASE_FIX_LABELS = {
+    "delay_left": "delaying the left channel",
+    "delay_right": "delaying the right channel",
+    "polarity_flip": "flipping one channel's polarity",
+}
+NOISE_SELECTION_DROPPED_WARNING = (
+    "The noise suppression model you chose could not be applied, and the previous one is still "
+    "running. Choose it again. If it keeps failing, check the model files or use Help > Export Diagnostics."
+)
+_BACKEND_STOPPED_WARNING = (
+    "Noise suppression stopped working, so your voice is passing through unprocessed. "
+    "Choose another model on the Noise Suppression card."
+)
 # Warn above this input peak; the advice aims for peaks around the target.
 INPUT_PEAK_WARN_DB = -3.0
 INPUT_PEAK_TARGET_DB = -6.0
@@ -43,12 +75,13 @@ class RecentStreamHealth:
     _last_events: dict[str, float] = field(default_factory=dict)
     recent_events: frozenset[str] = frozenset()
 
-    def observe(self, diagnostics: Mapping[str, Any], *, now: float | None = None) -> frozenset[str]:
+    def observe(self, snapshot: RuntimeSnapshot, *, now: float | None = None) -> frozenset[str]:
         current = time.monotonic() if now is None else now
         counts: dict[str, int] = {}
         for name in STREAM_EVENT_COUNTERS:
-            value = diagnostics.get(name, self._counts.get(name, 0))
-            if (isinstance(value, bool) or not isinstance(value, (int, float))
+            # A counter the engine did not send keeps its last count.
+            value = snapshot.reported(name) if name in snapshot.present else self._counts.get(name, 0)
+            if (not isinstance(value, (int, float))
                     or value < 0 or (isinstance(value, float)
                                     and (not math.isfinite(value) or not value.is_integer()))):
                 raise ValueError(f"Invalid stream event counter: {name}")
@@ -342,3 +375,401 @@ def advice_for(chip_text: str) -> str:
             except IndexError:  # A chip that lost its number has no sentence to give.
                 return ""
     return ""
+
+
+@dataclass(frozen=True, slots=True)
+class Chip:
+    """One Health row: its text, its state (ok, info, warn, bad or idle) and its tooltip, if it sets one."""
+
+    text: str
+    state: str
+    tip: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HealthReadings:
+    """The live readings a diagnostics tick brings besides the runtime snapshot.
+
+    The peak and clip readings come from the meters' held peaks, so a clip
+    stays visible for several seconds.
+    """
+
+    latency_ms: float
+    dsp_time_ms: float
+    input_buf: int
+    rnnoise_buf: int
+    input_rms_db: float | None = None
+    output_rms_db: float | None = None
+    input_callback_age_ms: int | None = None
+    output_callback_age_ms: int | None = None
+    input_peak_db: float | None = None
+    input_full_scale_samples: int = 0
+    output_peak_db: float | None = None
+    output_at_full_scale: bool = False
+    limiter_enabled: bool = True
+    output_muted: bool = False
+    recovery_pending: bool = False
+    processing: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class HealthMemory:
+    """What one tick hands the next: the counts it saw, when a device began waiting, what it announced."""
+
+    output_underrun_total: int = 0
+    input_phase_warning_count: int = 0
+    output_true_peak_event_count: int = 0
+    device_wait_since: float | None = None
+    noise_drops_seen: int = 0
+    backend_warning: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HealthReport:
+    """The chips one tick sets, keyed by their text-state name, and the status messages to show, in order."""
+
+    chips: dict[str, Chip]
+    messages: tuple[tuple[str, int], ...]
+    memory: HealthMemory
+
+
+# The technical counters the Drops tooltip lists, as (key, label).
+_INPUT_TOKENS = (
+    ("input_cleanup_mode", "CLN"),
+    ("input_cleanup_hum_detected", "HUM"),
+    ("input_cleanup_rumble_detected", "RMB"),
+    ("input_cleanup_high_pass_hz", "HPF"),
+    ("input_phase_rescue_strategy", "PRS"),
+    ("input_phase_estimated_delay_samples", "PDL"),
+    ("input_phase_polarity_flipped", "PFL"),
+)
+_ENGINE_TOKENS = (
+    ("input_backlog_recovery_count", "IBR"),
+    ("input_backlog_dropped_samples", "IBD"),
+    ("output_short_write_dropped_samples", "OSW"),
+    ("rt_buffer_overflow_count", "RTO"),
+    ("input_callback_error_count", "ICE"),
+    ("output_callback_error_count", "OCE"),
+    ("clip_event_count", "CL"),
+    ("clip_peak_db", "PK"),
+    ("input_crest_factor_db", "ICF"),
+    ("output_clip_event_count", "OCL"),
+    ("output_clip_peak_db", "OPK"),
+    ("output_crest_factor_db", "OCF"),
+    ("output_short_term_lufs", "LU"),
+    ("output_true_peak_event_count", "OTP"),
+    ("output_true_peak_db", "TPK"),
+    ("output_true_peak_headroom_db", "TPH"),
+    ("limiter_gain_reduction_history_db", "LGR"),
+    ("output_true_peak_gain_reduction_history_db", "TPGR"),
+    ("limiter_effective_ceiling_db", "LIM"),
+    ("gate_chatter_event_count", "GCH"),
+    ("gate_auto_relax_active", "GAR"),
+    ("deesser_detector_confidence", "DSC"),
+    ("noise_selection_dropped_count", "NSD"),
+)
+_RECOVERY_EVENTS = frozenset({
+    "stream_restart_count", "output_recovery_count", "output_recovery_event_count",
+    "input_backlog_recovery_count",
+})
+
+
+def diagnostic_tokens(snapshot: RuntimeSnapshot, keys: Sequence[tuple[str, str]]) -> list[str]:
+    """``LABEL:value`` for each key the engine sent a value for: Y/N, one decimal, or as sent."""
+    tokens = []
+    for key, label in keys:
+        value = snapshot.reported(key)
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            tokens.append(f"{label}:{'Y' if value else 'N'}")
+        elif isinstance(value, float):
+            tokens.append(f"{label}:{value:.1f}")
+        else:
+            tokens.append(f"{label}:{value}")
+    return tokens
+
+
+def _ago_text(age_ms: int | None, *, output: bool = False) -> str:
+    if age_ms is None:
+        return "--"
+    if age_ms == NO_CALLBACK_YET:
+        return "has not started playing sound yet" if output else "has not started sending sound yet"
+    return f"{age_ms} ms ago"
+
+
+def _buffer_chip(pipeline_buf: int) -> Chip:
+    if pipeline_buf < 960:
+        status, state = "OK", "ok"
+    elif pipeline_buf < 1920:
+        status, state = "FILLING UP", "warn"
+    else:
+        status, state = "BACKED UP", "bad"
+    return Chip(f"Buffer: {status} ({plural(pipeline_buf, 'sample')})", state)
+
+
+def _device_activity(
+    readings: HealthReadings, wait_since: float | None, now: float
+) -> tuple[Chip, float | None]:
+    """The Device activity chip, and since when a device has been waiting for its first callback."""
+    ages = (readings.input_callback_age_ms, readings.output_callback_age_ms)
+    callback_ages = [age for age in ages if age is not None and 0 <= age < NO_CALLBACK_YET]
+    not_started = NO_CALLBACK_YET in ages
+    if not_started and readings.processing:
+        wait_since = now if wait_since is None else wait_since
+        start_overdue = now - wait_since >= DEVICE_STARTUP_GRACE_SECONDS
+    else:
+        wait_since = None
+        start_overdue = False
+    if not (callback_ages or not_started):
+        return Chip("Device activity: --", "idle"), wait_since
+    slowest = max(callback_ages, default=0)
+    state = (
+        "bad" if slowest > DEVICE_ACTIVITY_BAD_MS
+        else "warn" if slowest > DEVICE_ACTIVITY_WARN_MS or start_overdue
+        else "ok" if callback_ages
+        else "idle"
+    )
+    text = (
+        f"Device activity: input {_ago_text(readings.input_callback_age_ms)}, "
+        f"output {_ago_text(readings.output_callback_age_ms, output=True)}"
+    )
+    return Chip(text, state), wait_since
+
+
+def runtime_health(
+    snapshot: RuntimeSnapshot,
+    readings: HealthReadings,
+    *,
+    recent_events: frozenset[str],
+    memory: HealthMemory,
+    now: float,
+) -> HealthReport:
+    """The Health chips for one diagnostics tick.
+
+    ``recent_events`` is what :class:`RecentStreamHealth` saw rise in the last
+    five seconds, ``memory`` what the previous tick returned and ``now`` the
+    monotonic time of this tick. The summary chip is not included: the window
+    computes it from all the chips with :func:`health_summary`.
+    """
+    s, r = snapshot, readings
+    chips: dict[str, Chip] = {}
+
+    # A measured route holds everything after the engine; without one the
+    # figure covers AudioForge, plus the output buffer when it was read.
+    latency_tip = TEXT_SPECS["latency_label"].tip
+    if float(s.latency_compensation_ms) > 0.0:
+        bound = "about"
+    else:
+        bound = "at least"
+        latency_tip += (
+            LATENCY_LOWER_BOUND_NOTE if s.output_device_buffer_known else LATENCY_LOWER_BOUND_NOTE_NO_BUFFER
+        )
+    chips["latency_label"] = Chip(
+        f"Latency: {bound} {r.latency_ms:.0f} ms (processing {r.dsp_time_ms:.1f} ms)", "info", latency_tip
+    )
+    chips["buffer_label"] = _buffer_chip(r.input_buf + r.rnnoise_buf)
+
+    underruns = int(s.output_underrun_total)
+    underrun_streak = int(s.output_underrun_streak)
+    new_underruns_observed = underruns > memory.output_underrun_total
+    phase_warning_count = int(s.input_phase_warning_count)
+    new_phase_warning_observed = phase_warning_count > memory.input_phase_warning_count
+    true_peak_count = int(s.output_true_peak_event_count)
+    new_output_true_peak_observed = true_peak_count > memory.output_true_peak_event_count
+    correlation = None if s.input_stereo_correlation is None else float(s.input_stereo_correlation)
+    current_phase_warning = correlation is not None and correlation < INPUT_PHASE_WARNING_CORRELATION
+    phase_rescue_strategy = s.input_phase_rescue_strategy or "none"
+    phase_rescue_active = phase_rescue_strategy != "none"
+    output_recovery_events = int(
+        s.output_recovery_event_count if "output_recovery_event_count" in s.present else s.output_recovery_count
+    )
+    gate_chatter_count = int(s.gate_chatter_event_count)
+    new_gate_chatter_observed = "gate_chatter_event_count" in recent_events
+    rt_error_active = bool(s.rt_error_name and s.rt_error_name != "none")
+    limiter_history_db = float(s.limiter_gain_reduction_history_db)
+    true_peak_limiter_history_db = float(s.output_true_peak_gain_reduction_history_db)
+    headroom = None if s.output_true_peak_headroom_db is None else float(s.output_true_peak_headroom_db)
+
+    input_text, input_state = input_health_state(
+        rms_db=r.input_rms_db,
+        peak_db=r.input_peak_db,
+        full_scale_samples=r.input_full_scale_samples,
+        phase_rescue_active=phase_rescue_active,
+        cleanup_rumble_detected=s.input_cleanup_rumble_detected,
+        cleanup_hum_detected=s.input_cleanup_hum_detected,
+        cleanup_mode=s.input_cleanup_mode or "off",
+        crest_factor_db=s.input_crest_factor_db,
+    )
+    if phase_rescue_active:
+        fix = PHASE_FIX_LABELS.get(phase_rescue_strategy, phase_rescue_strategy.replace("_", " "))
+        input_text = f"Input: PHASE FIX ACTIVE ({fix})"
+    chips["input_health_label"] = Chip(input_text, input_state)
+    chips["output_health_label"] = Chip(*output_health_state(
+        muted=r.output_muted,
+        rms_db=r.output_rms_db,
+        at_full_scale=r.output_at_full_scale,
+        limiter_enabled=r.limiter_enabled,
+        peak_db=r.output_peak_db,
+        true_peak_delta=new_output_true_peak_observed,
+        true_peak_db=s.output_true_peak_db,
+        true_peak_headroom_db=headroom,
+        short_term_lufs=s.output_short_term_lufs,
+        limiter_history_db=limiter_history_db,
+        true_peak_limiter_history_db=true_peak_limiter_history_db,
+    ))
+
+    if s.gate_auto_relax_active:
+        chips["gate_health_label"] = Chip(f"Gate: EASED ({plural(gate_chatter_count, 'time')})", "warn")
+    elif new_gate_chatter_observed:
+        chips["gate_health_label"] = Chip(f"Gate: CHATTERING ({plural(gate_chatter_count, 'time')})", "warn")
+    else:
+        chips["gate_health_label"] = Chip("Gate: OK", "ok")
+
+    chips["callback_health_label"], device_wait_since = _device_activity(r, memory.device_wait_since, now)
+
+    underrun_text = f"Dropouts: {underruns}"
+    if underrun_streak:
+        underrun_text += f" ({underrun_streak} in a row)"
+    chips["underrun_health_label"] = Chip(
+        underrun_text, "warn" if underrun_streak or new_underruns_observed else "ok"
+    )
+
+    dropped = s.input_dropped_samples
+    restart_count = s.stream_restart_count
+    dropped_bits = [
+        f"Drops: {dropped}",
+        f"U:{underruns}",
+        f"L:{s.lock_contention_count}",
+        f"NF:{s.suppressor_non_finite_count}",
+        f"RS:{restart_count}",
+    ]
+    if underrun_streak:
+        dropped_bits.append(f"US:{underrun_streak}")
+    if phase_warning_count:
+        dropped_bits.append(f"PH:{phase_warning_count}")
+    if correlation is not None:
+        dropped_bits.append(f"COR:{correlation:.2f}")
+    dropped_bits += diagnostic_tokens(s, _INPUT_TOKENS)
+    dropped_bits += diagnostic_tokens(s, _ENGINE_TOKENS)
+    if rt_error_active:
+        dropped_bits.append(f"RT:{s.rt_error_name}")
+    # Most of these also have a row of their own; this row adds them all up.
+    attention = [
+        # Gate chatter has its own entry below; it is a setting, not an engine fault.
+        (bool(recent_events - {"gate_chatter_event_count"}), "the audio engine reported a fault"),
+        (r.recovery_pending, "a restart is pending"),
+        (underrun_streak > 0 or new_underruns_observed, "the output ran out of audio"),
+        (rt_error_active, "the audio engine reported an error"),
+        (new_output_true_peak_observed, "the output went above its ceiling"),
+        (new_gate_chatter_observed or s.gate_auto_relax_active, "the gate is chattering"),
+        (
+            phase_rescue_active or current_phase_warning or new_phase_warning_observed,
+            "the microphone channels cancel each other",
+        ),
+        (s.input_cleanup_rumble_detected, "low rumble was detected"),
+        (
+            limiter_history_db >= 6.0 or true_peak_limiter_history_db >= 3.0,
+            "the limiter is working hard",
+        ),
+        (headroom is not None and headroom < 0.75, "the output has little headroom"),
+    ]
+    causes = [cause for active, cause in attention if active]
+    if causes and not (dropped or underruns or restart_count):
+        dropped_summary = f"Drops: nothing dropped, but {causes[0]}"
+    else:
+        dropped_summary = (
+            f"Drops: {plural(dropped, 'sample')} dropped, {plural(underruns, 'dropout')}, "
+            f"{plural(restart_count, 'restart')}"
+        )
+        if causes:
+            dropped_summary += f" (needs attention: {causes[0]})"
+    chips["dropped_label"] = Chip(
+        dropped_summary,
+        "warn" if causes else "ok",
+        f"{DROPPED_DIAGNOSTICS_TOOLTIP}\n\nTechnical counters (for support reports):\n{' | '.join(dropped_bits)}",
+    )
+
+    # A start that cannot load a model chosen while it ran has no caller to tell. Warn once
+    # per new drop, before the backend warning so that one stays on the line.
+    messages: list[tuple[str, int]] = []
+    noise_drops = int(s.noise_selection_dropped_count)
+    if noise_drops > memory.noise_drops_seen:
+        messages.append((NOISE_SELECTION_DROPPED_WARNING, 8000))
+    backend_warning = memory.backend_warning
+    if s.noise_model != "rnnoise" and (s.noise_backend_failed or not s.noise_backend_available):
+        warning = _BACKEND_STOPPED_WARNING
+        if s.noise_backend_error:
+            warning += f" Details: {s.noise_backend_error}"
+        if warning != backend_warning:
+            messages.append((warning, 6000))
+            backend_warning = warning
+    elif s.noise_backend_available:
+        backend_warning = None
+
+    backend_bits = [
+        s.noise_model,
+        "working" if s.noise_backend_available else "failed" if s.noise_backend_failed else "not available",
+    ]
+    if s.suppressor_non_finite_count:
+        backend_bits.append(f"{plural(s.suppressor_non_finite_count, 'invalid sample')} replaced")
+    if s.noise_backend_error:
+        backend_bits.append("reported an error")
+    if s.input_resampler_active:
+        backend_bits.append("resampling input")
+    if s.output_resampler_active:
+        backend_bits.append("resampling output")
+    chips["backend_diag_label"] = Chip(
+        f"Backend: {', '.join(backend_bits)}", "ok" if s.noise_backend_available else "warn"
+    )
+
+    recovery_bits = [
+        plural(restart_count, "restart"),
+        plural(output_recovery_events, "output recovery", "output recoveries"),
+    ]
+    if s.recovery_suppressed:
+        recovery_bits.append("paused during setup")
+    recent_recovery = bool(recent_events & _RECOVERY_EVENTS)
+    if r.recovery_pending:
+        recovery_bits.append("restart pending")
+    elif recent_recovery:
+        recovery_bits.append("restarted just now")
+    chips["recovery_diag_label"] = Chip(
+        f"Recovery: {', '.join(recovery_bits)}",
+        "warn" if r.recovery_pending or recent_recovery else ("info" if s.recovery_suppressed else "ok"),
+        f"Last recovery: {s.last_restart_reason}" if s.last_restart_reason else "No recovery recorded.",
+    )
+
+    return HealthReport(
+        chips=chips,
+        messages=tuple(messages),
+        memory=HealthMemory(
+            output_underrun_total=underruns,
+            input_phase_warning_count=phase_warning_count,
+            output_true_peak_event_count=true_peak_count,
+            device_wait_since=device_wait_since,
+            noise_drops_seen=noise_drops,
+            backend_warning=backend_warning,
+        ),
+    )
+
+
+def health_summary(rows: Sequence[Chip], *, mute_error: bool = False) -> Chip:
+    """The summary chip for ``rows``, given in reporting order; its tip is the advice line.
+
+    It takes the worst row's state and names that row's problem; info rows do not count.
+    """
+    levels = {row.state for row in rows}
+    state = next((level for level in ("bad", "warn", "ok") if level in levels), "idle")
+    if mute_error and state in {"ok", "idle"}:
+        state = "warn"
+    issues = [row.text for row in rows if row.state == "bad"] or [
+        row.text for row in rows if row.state == "warn"
+    ]
+    advice = advice_for(issues[0]) if issues else ""
+    if not advice:
+        advice = {
+            "ok": "Everything looks fine.",
+            "idle": TEXT_SPECS["health_advice_label"].text,
+        }.get(state, "Check the items marked below.")
+    return Chip(issues[0] if issues else f"Health: {state.upper()}", state, advice)

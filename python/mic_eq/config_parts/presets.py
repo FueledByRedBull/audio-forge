@@ -912,10 +912,12 @@ def import_preset(filepath: Path) -> tuple[Preset, Path]:
 
 def list_presets() -> list[tuple[str, Path]]:
     presets_dir = get_presets_dir()
-    allowed_roots = [presets_dir.resolve(), get_preset_imports_dir().resolve()]
+    allowed_roots: list[Path] | None = None
     presets: list[tuple[str, Path]] = []
     for filepath in presets_dir.glob("*.json"):
         try:
+            if allowed_roots is None:
+                allowed_roots = [presets_dir.resolve(), get_preset_imports_dir().resolve()]
             preset = _load_preset_within(filepath, allowed_roots)
             presets.append((preset.name, filepath))
         except (

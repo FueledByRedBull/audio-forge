@@ -11,6 +11,13 @@ import sys
 def main():
     """Main entry point for the AudioForge application."""
     try:
+        from . import CORE_AVAILABLE
+
+        if not CORE_AVAILABLE:
+            # The package installs stubs that only raise once the app starts.
+            from . import _CORE_IMPORT_ERROR
+
+            raise ImportError(f"mic_eq_core is unavailable. Native import error: {_CORE_IMPORT_ERROR}")
         if "--smoke-test" in sys.argv:
             sys.argv = [arg for arg in sys.argv if arg != "--smoke-test"]
             from .ui.app_bootstrap import run_smoke_test

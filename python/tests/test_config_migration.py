@@ -1163,6 +1163,41 @@ def test_list_presets_resolves_the_preset_folders_once_not_per_file(tmp_path, mo
     assert calls == ["presets", "imports"]
 
 
+def test_list_presets_leaves_the_imports_folder_alone_when_there_are_no_presets(tmp_path, monkeypatch):
+    presets_dir = tmp_path / "presets"
+    imports_dir = tmp_path / "imports"
+    presets_dir.mkdir()
+    monkeypatch.setattr(presets_module, "get_presets_dir", lambda: presets_dir)
+
+    def creates_imports_dir():
+        imports_dir.mkdir()
+        return imports_dir
+
+    monkeypatch.setattr(presets_module, "get_preset_imports_dir", creates_imports_dir)
+
+    assert config.list_presets() == []
+    assert not imports_dir.exists()
+
+
+def test_list_presets_skips_files_while_the_imports_folder_cannot_be_resolved(tmp_path, monkeypatch):
+    presets_dir = tmp_path / "presets"
+    imports_dir = tmp_path / "imports"
+    presets_dir.mkdir()
+    imports_dir.mkdir()
+    monkeypatch.setattr(presets_module, "get_presets_dir", lambda: presets_dir)
+    monkeypatch.setattr(presets_module, "get_preset_imports_dir", lambda: imports_dir)
+    saved = config.save_preset(Preset(name="Voice"))
+
+    def unavailable():
+        raise OSError("imports folder is unavailable")
+
+    monkeypatch.setattr(presets_module, "get_preset_imports_dir", unavailable)
+    assert config.list_presets() == []
+
+    monkeypatch.setattr(presets_module, "get_preset_imports_dir", lambda: imports_dir)
+    assert config.list_presets() == [("Voice", saved)]
+
+
 def test_base_release_range_is_the_one_in_the_validation_table():
     from mic_eq.config_parts.validation import VALIDATION_RANGES
     from mic_eq.ui.control_specs import CONTROL_RANGES

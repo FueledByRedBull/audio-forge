@@ -236,6 +236,31 @@ def test_main_module_reports_a_failed_import_and_returns_one(monkeypatch, capsys
     assert "Build the Rust core" in output
 
 
+@pytest.mark.parametrize("smoke", [False, True])
+def test_main_module_without_the_native_core_prints_the_build_hint_and_returns_one(
+    monkeypatch, capsys, smoke
+):
+    import mic_eq
+    from mic_eq import __main__ as entry_point
+    from mic_eq.ui import main_window
+
+    def must_not_start(*args, **kwargs):
+        raise AssertionError("the app must not start without the native core")
+
+    monkeypatch.setattr(sys, "argv", ["mic_eq", "--smoke-test"] if smoke else ["mic_eq"])
+    monkeypatch.setattr(mic_eq, "CORE_AVAILABLE", False)
+    monkeypatch.setattr(mic_eq, "_CORE_IMPORT_ERROR", ImportError("no native module"), raising=False)
+    monkeypatch.setattr(main_window, "run_app", must_not_start)
+    monkeypatch.setattr(main_window, "MainWindow", must_not_start)
+
+    assert entry_point.main() == 1
+
+    output = capsys.readouterr().out
+    assert output.startswith("Error: mic_eq_core is unavailable")
+    assert "no native module" in output
+    assert "1. Build the Rust core" in output
+
+
 def test_main_module_lets_an_import_error_from_a_running_app_show_its_traceback(monkeypatch, capsys):
     from mic_eq import __main__ as entry_point
     from mic_eq.ui import main_window

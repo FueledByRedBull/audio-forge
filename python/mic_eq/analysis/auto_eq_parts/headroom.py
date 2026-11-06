@@ -29,11 +29,20 @@ def _finite_float(value: Any) -> float:
     if not isinstance(value, bool):
         try:
             parsed = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             parsed = float("nan")
         if np.isfinite(parsed):
             return parsed
     raise ValueError(f"chain setting is not a finite number: {value!r}")
+
+
+def _result_float(value: Any, default: float) -> float:
+    """Lenient read of a field of the Auto-EQ result: ``default`` for anything that is no finite number."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if np.isfinite(parsed) else default
 
 
 def _as_float(value: Any, default: float) -> float:
@@ -47,8 +56,8 @@ def _as_float(value: Any, default: float) -> float:
 def _as_bool(value: Any, default: bool) -> bool:
     if value is None:
         return default
-    if isinstance(value, bool):
-        return value
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
     raise ValueError(f"chain setting is not a boolean: {value!r}")
 
 
@@ -58,7 +67,7 @@ def _as_int(value: Any, default: int) -> int:
     if not isinstance(value, bool):
         try:
             return int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             pass
     raise ValueError(f"chain setting is not an integer: {value!r}")
 
@@ -437,7 +446,7 @@ def _refresh_scaled_eq_metadata(
             validation_confidence = _validation_confidence(
                 before_error,
                 after_error,
-                _as_float(result.get("validation_gain_scale"), 1.0),
+                _result_float(result.get("validation_gain_scale"), 1.0),
             )
             result["validation_confidence"] = validation_confidence
             band_confidences = np.asarray(result.get("band_confidences", []), dtype=float)
@@ -445,7 +454,7 @@ def _refresh_scaled_eq_metadata(
                 overall, eq_confidence, capture_confidence = _overall_confidence(
                     band_confidences,
                     gains,
-                    _as_float(result.get("capture_confidence"), 1.0),
+                    _result_float(result.get("capture_confidence"), 1.0),
                     validation_confidence,
                 )
                 result["analysis_confidence"] = overall
@@ -458,7 +467,7 @@ def _refresh_scaled_eq_metadata(
     # ``validation_gain_scale`` belongs to the optimizer's spectral-fit
     # attenuation.  Only the scale selected by this headroom simulation can
     # make a neutral candidate lose its usable correction.
-    scale = _as_float(result.get("headroom_gain_scale"), 1.0)
+    scale = _result_float(result.get("headroom_gain_scale"), 1.0)
     if scale < 1.0 and not np.any(np.abs(gains) >= 0.25):
         status = "abstain"
         reason = "headroom validation removed the usable correction"
@@ -466,7 +475,7 @@ def _refresh_scaled_eq_metadata(
             abstention_reasons.append(reason)
     elif status == "apply" and (
         scale < 0.70
-        or _as_float(result.get("analysis_confidence"), 1.0)
+        or _result_float(result.get("analysis_confidence"), 1.0)
         < REDUCED_RECOMMENDATION_CONFIDENCE_THRESHOLD
     ):
         status = "reduced"
@@ -671,7 +680,7 @@ def apply_headroom_validation(
             flat_excess = None
 
     result["band_gains"] = selected_gains.tolist()
-    existing_scale = _as_float(result.get("validation_gain_scale"), 1.0)
+    existing_scale = _result_float(result.get("validation_gain_scale"), 1.0)
     result["validation_gain_scale"] = float(existing_scale * selected_scale)
     result["headroom_gain_scale"] = float(selected_scale)
     _refresh_scaled_eq_metadata(
@@ -688,14 +697,14 @@ def apply_headroom_validation(
     safe = bool(meets_thresholds and authoritative)
     if not safe and not accepted_over_rule:
         result["validation_confidence"] = float(
-            min(_as_float(result.get("validation_confidence"), 1.0), 0.42)
+            min(_result_float(result.get("validation_confidence"), 1.0), 0.42)
         )
         result["analysis_confidence"] = float(
-            min(_as_float(result.get("analysis_confidence"), 1.0), 0.58)
+            min(_result_float(result.get("analysis_confidence"), 1.0), 0.58)
         )
     elif selected_scale < 1.0:
         result["validation_confidence"] = float(
-            min(_as_float(result.get("validation_confidence"), 1.0), 0.72)
+            min(_result_float(result.get("validation_confidence"), 1.0), 0.72)
         )
 
     result["headroom_validation"] = {

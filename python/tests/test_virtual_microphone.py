@@ -154,6 +154,18 @@ def test_quitting_stops_the_watch(isolated_main_window) -> None:
     watch.stop.assert_called_once_with()
 
 
+def test_a_window_shown_again_after_quitting_watches_again(isolated_main_window) -> None:
+    window: Any = isolated_main_window
+    watch = Mock()
+    window.virtual_microphone_watch = watch
+
+    window._shutdown()
+    watch.resume.assert_not_called()
+    window.show()
+
+    watch.resume.assert_called_once_with()
+
+
 def test_the_diagnostics_timer_polls_the_watch(isolated_main_window) -> None:
     window: Any = isolated_main_window
     watch = Mock()

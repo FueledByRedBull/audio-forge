@@ -3657,6 +3657,9 @@ class MainWindow(QMainWindow):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._shut_down = False  # a window shown again after a refused quit must shut down again
+        watch = self.__dict__.get("virtual_microphone_watch")
+        if watch is not None:
+            watch.resume()  # _shutdown stopped it; a window shown again still needs it
         self._sync_meter_timer()
 
     def hideEvent(self, event) -> None:

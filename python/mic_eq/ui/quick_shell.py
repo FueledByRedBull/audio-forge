@@ -561,9 +561,6 @@ def _renderer_missing(window) -> None:
             if window.config.mute_hotkey:
                 window._register_mute_hotkey(window.config.mute_hotkey)
             window.show()
-            watch = window.__dict__.get("virtual_microphone_watch")
-            if watch is not None:
-                watch.resume()  # the close above stopped it, and the app stays up
     reason = "The graphics renderer did not start"
     if relaunched:
         reason += ", even with software rendering"

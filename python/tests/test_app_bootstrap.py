@@ -960,12 +960,41 @@ def test_a_termination_signal_ends_the_session_without_asking(qapp, name):
     number = getattr(signal, name)
     before = signal.getsignal(number)
     QTimer.singleShot(0, lambda: os.kill(os.getpid(), number))
-    QTimer.singleShot(5000, lambda: qapp.exit(1))
+    # A deadline left pending would end the event loop of whichever test runs five seconds later.
+    deadline = QTimer()
+    deadline.setSingleShot(True)
+    deadline.timeout.connect(lambda: qapp.exit(1))
+    deadline.start(5000)
     try:
         with app_bootstrap._quit_on_termination_signal(qapp):
             code = qapp.exec()
         assert code == 0
         assert qapp.property(SESSION_ENDING_PROPERTY) is True
     finally:
+        deadline.stop()
         qapp.setProperty(SESSION_ENDING_PROPERTY, False)
     assert signal.getsignal(number) is before
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="a Linux logout ends an app with a signal")
+def test_another_signal_does_not_end_the_session(qapp):
+    import signal
+
+    from PySide6.QtCore import QTimer
+    from mic_eq.ui.main_window import SESSION_ENDING_PROPERTY
+
+    previous = signal.signal(signal.SIGUSR1, lambda *_: None)
+    QTimer.singleShot(0, lambda: os.kill(os.getpid(), signal.SIGUSR1))
+    deadline = QTimer()
+    deadline.setSingleShot(True)
+    deadline.timeout.connect(lambda: qapp.exit(7))
+    deadline.start(300)
+    try:
+        with app_bootstrap._quit_on_termination_signal(qapp):
+            code = qapp.exec()
+        assert code == 7  # still running when the deadline ended it
+        assert not qapp.property(SESSION_ENDING_PROPERTY)
+    finally:
+        deadline.stop()
+        signal.signal(signal.SIGUSR1, previous)
+        qapp.setProperty(SESSION_ENDING_PROPERTY, False)

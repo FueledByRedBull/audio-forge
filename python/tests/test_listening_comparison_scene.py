@@ -338,7 +338,10 @@ def test_the_view_model_reports_changes_once_and_forwards_its_commands(qapp) -> 
     assert calls == ["pick", True, "original", "refresh", "stop", "keep", "reject"] and model.level_match
 
 
-def test_a_scene_that_does_not_load_says_so_and_closes_without_rendering(qapp, monkeypatch) -> None:
+@pytest.mark.parametrize("test_my_sound", [False, True])
+def test_a_scene_that_does_not_load_says_so_and_closes_without_rendering(
+    qapp, monkeypatch, test_my_sound
+) -> None:
     connected: list[object] = []
     rendered: list[object] = []
     shown: list[str] = []
@@ -348,9 +351,16 @@ def test_a_scene_that_does_not_load_says_so_and_closes_without_rendering(qapp, m
     monkeypatch.setattr(f"{module}.load_scene", lambda *_args: "no such file")
     monkeypatch.setattr(f"{module}.QMessageBox.critical", lambda _parent, title, text: shown.append(f"{title}: {text}"))
     monkeypatch.setattr(ListeningComparisonDialog, "_start_render", lambda self: rendered.append(self))
-    dialog = RawProcessedDialog(audio_data=np.zeros(480, dtype=np.float32), sample_rate=48_000, settings=_settings())
+    capture = {"audio_data": np.zeros(480, dtype=np.float32), "sample_rate": 48_000}
+    dialog = (
+        RawProcessedDialog(settings=_settings(), **capture)
+        if test_my_sound
+        else ListeningComparisonDialog(current_settings=_settings(), proposed_settings=_settings(), **capture)
+    )
+    assert dialog.load_error == "no such file"
     assert dialog.exec() == REJECTED and dialog.decision is False
-    assert len(shown) == 1 and shown[0].startswith("Test my sound: ") and "no such file" in shown[0]
+    title = "Test my sound" if test_my_sound else "Before/After Listening Comparison"
+    assert len(shown) == 1 and shown[0].startswith(f"{title}: ") and "no such file" in shown[0]
     assert rendered == [] and connected == []
     dialog.deleteLater()
     qapp.processEvents()
@@ -413,7 +423,7 @@ def test_the_recording_window_cancels_by_keyboard_or_mouse(qapp, how) -> None:
 
     audio, window = _while_recording(qapp, cancel)
     assert audio is None and QApplication.activeModalWidget() is None
-    assert window.processor.calls == ["record 5 before_cleanup=True"]
+    assert window.processor.calls == ["record 5 before_cleanup=True", "stop_raw_recording"]
     assert window.mutes == [(True, "test_my_sound"), (False, "test_my_sound")]
 
 
@@ -446,3 +456,71 @@ def test_a_recording_window_that_does_not_load_releases_the_capture(qapp, monkey
         module._record_test_clip(window)
     assert window.mutes == [(True, "test_my_sound"), (False, "test_my_sound")]
     assert QApplication.activeModalWidget() is None
+
+
+def test_a_recording_window_that_does_not_load_is_reported_and_stops_the_audio_it_started(
+    qapp, monkeypatch
+) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(module, "load_scene", lambda *_args: "no such file")
+    monkeypatch.setattr(module.QMessageBox, "warning", lambda _parent, _title, text: warnings.append(text))
+    processor = _Processor(running=False)
+    window = _Window(processor)
+    module.open_test_my_sound(window)
+    assert len(warnings) == 1
+    assert "Recording did not work" in warnings[0]
+    assert "The recording window could not open: no such file" in warnings[0]
+    assert processor.calls == ["start", "record 5 before_cleanup=True", "stop_raw_recording", "stop"]
+    assert window.mutes == [(True, "test_my_sound"), (False, "test_my_sound")]
+    assert QApplication.activeModalWidget() is None
+
+
+@pytest.mark.parametrize("test_my_sound", [False, True])
+def test_the_playback_and_listen_cards_are_named_groups(open_dialog, test_my_sound) -> None:
+    dialog = open_dialog(test_my_sound=test_my_sound, ready=True)
+    with _AccessibleScene() as scene:
+        for key, title in (("playbackCard", "Playback"), ("listenCard", "Listen")):
+            card = scene_item(dialog, key)
+            assert QAccessible.queryAccessibleInterface(card).role() == QAccessible.Role.Grouping, key
+            assert scene.name(card) == title
+
+
+@pytest.mark.parametrize("test_my_sound", [False, True])
+def test_the_stop_button_hands_the_keyboard_on_when_it_disables_itself(
+    open_dialog, qapp, test_my_sound
+) -> None:
+    dialog = open_dialog(test_my_sound=test_my_sound, ready=True)
+    dialog.view_model.set_page(stopEnabled=True)
+    scene_item(dialog, "stopButton").forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    QTest.keyClick(dialog.quick_view, Qt.Key.Key_Space)
+    qapp.processEvents()
+    assert dialog.view_model.shown["stopEnabled"] is False
+    assert _focus_name(dialog) == "levelMatchSwitch"
+    # Playback that ends by itself does the same; a disabled Stop that is not focused moves nothing.
+    dialog.view_model.set_page(stopEnabled=True)
+    scene_item(dialog, "refreshButton").forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    dialog.view_model.set_page(stopEnabled=False)
+    assert _focus_name(dialog) == "refreshButton"
+    dialog.view_model.set_page(stopEnabled=True)
+    scene_item(dialog, "stopButton").forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    dialog.view_model.set_page(stopEnabled=False)
+    assert _focus_name(dialog) == "levelMatchSwitch"
+
+
+def test_enter_on_the_closed_output_picker_keeps_the_proposal_but_in_its_open_list_it_chooses(
+    open_dialog, qapp
+) -> None:
+    dialog = open_dialog(devices=2, ready=True)
+    picker = scene_item(dialog, "outputPicker")
+    picker.forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    QTest.keyClick(dialog.quick_view, Qt.Key.Key_Space)
+    qapp.processEvents()
+    assert picker.property("down") is True, "the list is open"
+    QTest.keyClick(dialog.quick_view, Qt.Key.Key_Down)
+    QTest.keyClick(dialog.quick_view, Qt.Key.Key_Return)
+    qapp.processEvents()
+    assert picker.property("down") is False
+    assert dialog.isVisible() and dialog.decision is None, "Enter in the open list only chose"
+    QTest.keyClick(dialog.quick_view, Qt.Key.Key_Return)
+    qapp.processEvents()
+    assert dialog.result() == ACCEPTED and dialog.decision is True

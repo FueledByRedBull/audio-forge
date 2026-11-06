@@ -2120,6 +2120,8 @@ class VoiceSetupDialog(QDialog):
         _set_temporary_mute(owner, "listening_comparison", True)
         try:
             keep = dialog.exec() == int(QDialog.DialogCode.Accepted)
+            # A window that could not open says so itself; it is not an answer.
+            unavailable = not keep and dialog.load_error is not None
         finally:
             _set_temporary_mute(owner, "listening_comparison", False)
             dialog.deleteLater()
@@ -2136,13 +2138,19 @@ class VoiceSetupDialog(QDialog):
             self.compare_button.setEnabled(True)
             self.start_button.setEnabled(True)
             self.start_button.setText(_APPLY_VERIFY_AGAIN_LABEL)
+            outcome = "could not open" if unavailable else "declined"
             self.phase_label.setText(
-                "Final comparison declined; previous settings put back"
+                f"Final comparison {outcome}; previous settings put back"
                 if restored
-                else "Final comparison declined; previous settings not fully put back"
+                else f"Final comparison {outcome}; previous settings not fully put back"
             )
             self.warning_label.setText(
-                "You kept your old settings. The new ones are still here if you change your mind. "
+                (
+                    "The final comparison could not open, so your old settings were kept. "
+                    "The new ones are still here if you try again. "
+                    if unavailable
+                    else "You kept your old settings. The new ones are still here if you change your mind. "
+                )
                 + (
                     "Your old settings are active."
                     if restored
@@ -2152,7 +2160,7 @@ class VoiceSetupDialog(QDialog):
             self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
             self._report(
                 "rolled_back",
-                ["final_comparison_declined"],
+                ["final_comparison_unavailable" if unavailable else "final_comparison_declined"],
                 [self.warning_label.text()],
             )
 

@@ -72,6 +72,13 @@ Rectangle {
         if (!event.isAutoRepeat && page.keepShown && page.keepEnabled)
             vm.keep()
     }
+    // The device list takes Enter itself while it is open, to choose; closed, Enter keeps.
+    function activateUnlessChoosing(event) {
+        if (picker.popup.visible)
+            event.accepted = false
+        else
+            activatePrimary(event)
+    }
 
     // The caption of a row; its control is named with it, so the caption alone is not read.
     component Caption: MutedText {
@@ -106,9 +113,12 @@ Rectangle {
             }
 
             Surface {
+                objectName: "playbackCard"
                 Layout.fillWidth: true
                 pad: 16
-                Title { text: "Playback" }
+                Accessible.role: Accessible.Grouping
+                Accessible.name: playbackTitle.text
+                Title { id: playbackTitle; text: "Playback"; Accessible.ignored: true }
                 RowLayout {
                     spacing: 12
                     Layout.fillWidth: true
@@ -122,6 +132,8 @@ Rectangle {
                         enabled: root.page.outputEnabled
                         expandGlyph: root.vm.expandGlyph
                         onActivated: index => root.vm.pickOutput(index)
+                        Keys.onReturnPressed: event => root.activateUnlessChoosing(event)
+                        Keys.onEnterPressed: event => root.activateUnlessChoosing(event)
                         Layout.fillWidth: true
                         Layout.minimumWidth: 120
                         Accessible.description: root.tipOutput
@@ -154,6 +166,8 @@ Rectangle {
                         objectName: "stopButton"
                         text: "Stop"
                         enabled: root.page.stopEnabled
+                        // A button that disables itself loses the keyboard; pass it on, as a dialog does.
+                        onActiveFocusChanged: if (!activeFocus && !enabled) levelMatch.forceActiveFocus(Qt.TabFocusReason)
                         Accessible.name: "Stop playback"
                         Accessible.description: root.tipStop
                         onClicked: root.vm.stop()
@@ -216,9 +230,12 @@ Rectangle {
             }
 
             Surface {
+                objectName: "listenCard"
                 Layout.fillWidth: true
                 pad: 16
-                Title { text: "Listen" }
+                Accessible.role: Accessible.Grouping
+                Accessible.name: listenTitle.text
+                Title { id: listenTitle; text: "Listen"; Accessible.ignored: true }
                 Repeater {
                     model: root.vm.clips
                     delegate: RowLayout {

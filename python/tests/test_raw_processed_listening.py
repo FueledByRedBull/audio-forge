@@ -112,6 +112,7 @@ class _Processor:
         self.calls.append(f"record {duration_s:g} before_cleanup={before_cleanup}")
 
     def stop_raw_recording(self) -> np.ndarray:
+        self.calls.append("stop_raw_recording")
         return self.audio
 
     def recording_progress(self) -> float:
@@ -217,7 +218,7 @@ def test_entry_reports_capture_failure_and_releases_what_it_took(harness):
     assert "Recording did not work" in warnings[0] and "capture unavailable" in warnings[0]
     assert opened == []
     # The stream this call started is stopped again and its mute is released.
-    assert processor.calls == ["start", "stop"]
+    assert processor.calls == ["start", "stop_raw_recording", "stop"]
     assert window.mutes == [(True, "test_my_sound"), (False, "test_my_sound")]
 
 
@@ -266,7 +267,7 @@ def test_entry_opens_the_two_clip_dialog_with_the_raw_capture(harness):
     window = _Window(processor)
     open_test_my_sound(window)
     assert warnings == []
-    assert processor.calls == ["record 5 before_cleanup=True"]
+    assert processor.calls == ["record 5 before_cleanup=True", "stop_raw_recording"]
     assert len(opened) == 1
     np.testing.assert_array_equal(opened[0]["audio_data"], processor.audio)
     assert opened[0]["sample_rate"] == 48_000

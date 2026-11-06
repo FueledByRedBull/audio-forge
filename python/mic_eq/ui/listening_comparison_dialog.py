@@ -748,6 +748,11 @@ class ListeningComparisonDialog(QDialog):
     def decision(self) -> bool | None:
         return self._decision
 
+    @property
+    def load_error(self) -> str | None:
+        """Why the scene did not load, or None; a dialog that did not load decides nothing."""
+        return self._load_error
+
 
 class RawProcessedDialog(ListeningComparisonDialog):
     """Play one capture raw or through the current settings; nothing to decide."""

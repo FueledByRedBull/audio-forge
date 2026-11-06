@@ -20,6 +20,16 @@ const PCM_MODEL_LIMIT_UNIT: f32 = PCM_MODEL_LIMIT / PCM_SCALE;
 const MODEL_SOFT_CLIP_THRESHOLD: f32 = 0.98;
 const MODEL_SOFT_CLIP_KNEE: f32 = 1.0 - MODEL_SOFT_CLIP_THRESHOLD;
 
+/// Where the output is in the hand-over from bypass back to processing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reenable {
+    Settled,
+    /// The next frame is the one-frame latency gap left by re-enabling.
+    Bridge,
+    /// The next frame is the first with valid wet output.
+    FadeIn,
+}
+
 /// RNNoise processor with frame buffering and wet/dry mix control
 ///
 /// RNNoise requires exactly 480 samples per call. This processor
@@ -33,6 +43,7 @@ pub struct RNNoiseProcessor {
     dry_scratch: [f32; RNNOISE_FRAME_SIZE],
     dry_delay_frame: [f32; RNNOISE_FRAME_SIZE],
     invalid_wet_samples: usize,
+    reenable: Reenable,
     frame_scratch: [f32; RNNOISE_FRAME_SIZE],
     output_frame: [f32; RNNOISE_FRAME_SIZE],
     enabled: bool,
@@ -64,6 +75,7 @@ impl RNNoiseProcessor {
             dry_scratch: [0.0; RNNOISE_FRAME_SIZE],
             dry_delay_frame: [0.0; RNNOISE_FRAME_SIZE],
             invalid_wet_samples: 0,
+            reenable: Reenable::Settled,
             frame_scratch: [0.0; RNNOISE_FRAME_SIZE],
             output_frame: [0.0; RNNOISE_FRAME_SIZE],
             enabled: true,
@@ -202,7 +214,36 @@ impl RNNoiseProcessor {
             // 4. Get smoothed strength and apply wet/dry mix
             let strength = self.update_smoothing();
 
-            if strength < 1.0 {
+            if self.reenable == Reenable::Bridge {
+                // No wet output is valid yet. Bridge the one-frame latency gap
+                // with this frame's own dry input, settling on the sample the
+                // next frame's dry-aligned output starts from.
+                let held = self.dry_scratch[0];
+                let last = (RNNOISE_FRAME_SIZE - 1) as f32;
+                for (i, (out, &dry)) in self
+                    .output_frame
+                    .iter_mut()
+                    .zip(&self.dry_scratch)
+                    .enumerate()
+                {
+                    let settle = i as f32 / last;
+                    *out = (1.0 - settle) * dry + settle * held;
+                }
+                self.reenable = Reenable::FadeIn;
+            } else if self.reenable == Reenable::FadeIn {
+                // Fade from the aligned dry frame into the wet output.
+                let size = RNNOISE_FRAME_SIZE as f32;
+                for (i, (out, &dry)) in self
+                    .output_frame
+                    .iter_mut()
+                    .zip(&self.dry_delay_frame)
+                    .enumerate()
+                {
+                    let mix = strength * (i as f32 / size);
+                    *out = mix * *out + (1.0 - mix) * dry;
+                }
+                self.reenable = Reenable::Settled;
+            } else if strength < 1.0 {
                 // RNNoise emits one frame late, so mix against the matching dry frame.
                 for i in 0..RNNOISE_FRAME_SIZE {
                     let wet = self.output_frame[i];
@@ -237,11 +278,10 @@ impl RNNoiseProcessor {
         }
         if enabled && !self.enabled {
             // The delayed dry frame and the model's first output (its overlap
-            // with the last pre-bypass frame) are from before the bypass.
-            // Playing either in the first frame after re-enabling would replay
-            // stale audio, at full strength too, where the dry frame is unused.
-            self.dry_delay_frame.fill(0.0);
+            // with the last pre-bypass frame) are from before the bypass, so
+            // the first frame is bridged from the current dry input instead.
             self.invalid_wet_samples = RNNOISE_FRAME_SIZE;
+            self.reenable = Reenable::Bridge;
         }
         self.enabled = enabled;
     }
@@ -262,6 +302,7 @@ impl RNNoiseProcessor {
         self.output_buffer.clear();
         self.dry_delay_frame.fill(0.0);
         self.invalid_wet_samples = 0;
+        self.reenable = Reenable::Settled;
         self.gate_compensation.reset();
     }
 
@@ -275,6 +316,7 @@ impl RNNoiseProcessor {
         self.output_buffer.clear();
         self.dry_delay_frame.fill(0.0);
         self.invalid_wet_samples = RNNOISE_FRAME_SIZE;
+        self.reenable = Reenable::Settled;
         self.gate_compensation.reset();
     }
 
@@ -681,9 +723,28 @@ mod tests {
             processor.push_samples(&after);
             processor.process_frames();
             assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
-            // The first frame is the reported latency; it must hold neither the
-            // dry frame nor the model's overlap from before the bypass.
-            assert!(output.iter().all(|sample| *sample == 0.0), "{strength}");
+            // The first frame is the reported latency. It is built from this
+            // frame's own dry input only, so it holds neither the dry frame nor
+            // the model's overlap from before the bypass; it stays within the
+            // dry input and starts on it, with no step.
+            let peak = after
+                .iter()
+                .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+            let step = after
+                .windows(2)
+                .map(|pair| (pair[1] - pair[0]).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(
+                output.iter().all(|sample| sample.abs() <= peak),
+                "{strength}"
+            );
+            assert!((output[0] - after[0]).abs() <= step, "{strength}");
+            assert!(
+                output
+                    .windows(2)
+                    .all(|pair| (pair[1] - pair[0]).abs() <= 2.0 * step),
+                "{strength}"
+            );
 
             // Steady state is unchanged: output resumes, and fully dry it is
             // the aligned dry frame.
@@ -695,6 +756,56 @@ mod tests {
             } else {
                 assert!(output.iter().any(|sample| *sample != 0.0), "{strength}");
                 assert!(output.iter().all(|sample| sample.is_finite()), "{strength}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_rnnoise_reenable_has_no_step_at_the_seams() {
+        // One continuous tone, so any jump in the output is the toggle's.
+        let tone = |frame: usize| -> Vec<f32> {
+            (0..RNNOISE_FRAME_SIZE)
+                .map(|index| 0.2 * ((frame * RNNOISE_FRAME_SIZE + index) as f32 * 0.031).sin())
+                .collect()
+        };
+        // The tone's own largest sample-to-sample step, with headroom for the
+        // model's wet signal differing slightly from the dry one.
+        let tone_step = 0.2_f32 * 0.031;
+        for strength in [0.0_f32, 0.37, 1.0] {
+            let mut processor = RNNoiseProcessor::new(Arc::new(AtomicU32::new(strength.to_bits())));
+            let mut stream = Vec::new();
+            let mut output = [0.0; RNNOISE_FRAME_SIZE];
+            for frame in 0..20 {
+                processor.push_samples(&tone(frame));
+                processor.process_frames();
+                processor.read_samples(&mut output);
+            }
+            processor.set_enabled(false);
+            processor.push_samples(&tone(20));
+            processor.process_frames();
+            processor.read_samples(&mut output);
+            stream.extend_from_slice(&output);
+
+            processor.set_enabled(true);
+            for frame in 21..24 {
+                processor.push_samples(&tone(frame));
+                processor.process_frames();
+                assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
+                stream.extend_from_slice(&output);
+            }
+
+            let max_step = stream
+                .windows(2)
+                .map(|pair| (pair[1] - pair[0]).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(
+                max_step <= 1.5 * tone_step,
+                "strength {strength}: step {max_step} against tone step {tone_step}"
+            );
+            // Steady state is untouched: fully dry, the last frame is exactly
+            // the input one frame earlier.
+            if strength == 0.0 {
+                assert_eq!(output.as_slice(), tone(22).as_slice());
             }
         }
     }

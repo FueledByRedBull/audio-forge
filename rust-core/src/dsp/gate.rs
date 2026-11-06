@@ -706,6 +706,15 @@ impl NoiseGate {
         }
     }
 
+    /// Reset the signal state (after an input gap or a processing-path change);
+    /// the lifetime chatter count survives, so earlier chatter stays visible in
+    /// diagnostics. Only `reset` starts the count over.
+    pub fn reset_signal_state(&mut self) {
+        let chatter_event_count = self.chatter_event_count;
+        self.reset();
+        self.chatter_event_count = chatter_event_count;
+    }
+
     /// Reset gate state
     pub fn reset(&mut self) {
         self.current_gain = 0.0;
@@ -1133,6 +1142,31 @@ mod tests {
         );
         gate.reset();
         assert_eq!(gate.chatter_event_count(), 0);
+    }
+
+    #[test]
+    fn test_input_gap_reset_keeps_lifetime_chatter_count() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 10.0, 48_000.0);
+
+        for _ in 0..5 {
+            for _ in 0..2_000 {
+                gate.process_sample(0.1);
+            }
+            for _ in 0..4_500 {
+                gate.process_sample(0.0);
+            }
+        }
+        let events = gate.chatter_event_count();
+        assert!(events > 0, "events={events}");
+
+        gate.reset_signal_state();
+
+        assert_eq!(gate.chatter_event_count(), events);
+        assert_eq!(gate.chatter_transition_count, 0);
+        assert_eq!(gate.chatter_window_remaining_samples, 0);
+        assert_eq!(gate.chatter_cooldown_samples, 0);
+        assert_eq!(gate.current_gain(), 0.0);
+        assert!(!gate.is_open());
     }
 
     #[test]

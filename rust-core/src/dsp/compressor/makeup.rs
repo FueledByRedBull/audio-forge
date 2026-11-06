@@ -12,6 +12,8 @@ const NOISE_RELATIVE_ACTIVITY_START_DB: f64 = 3.0;
 const NOISE_RELATIVE_ACTIVITY_FULL_DB: f64 = 15.0;
 const MAKEUP_SILENCE_RELAX_MS: f64 = 1500.0;
 pub(super) const AUTO_MAKEUP_SAMPLE_WINDOW_MS: f64 = 10.0;
+/// The loudness published with nothing measured: idle, or a silent window.
+pub(super) const NO_LOUDNESS_LUFS: f64 = -100.0;
 // Compressor callers accept generic rates through 192 kHz, but the loudness
 // meter supports only the rates in `loudness::validate_sample_rate`. Reserve
 // the full 10 ms window at 192 kHz even when the meter (and so auto makeup) is
@@ -48,6 +50,10 @@ pub(super) struct MakeupController {
     smoothed_makeup_gain: f64,
     /// Makeup gain smoothing coefficient (200ms time constant)
     makeup_smoothing_coeff: f64,
+    /// Gain the per-sample auto-makeup ramp is moving toward.
+    auto_gain_target: f64,
+    /// Per-sample ramp coefficient toward `auto_gain_target`; 1.0 holds the gain.
+    auto_gain_coeff: f64,
     /// Current measured loudness (for metering)
     pub(super) current_lufs: f64,
     /// Smoothed speech activity score for auto makeup.
@@ -88,7 +94,9 @@ impl MakeupController {
             target_lufs: -18.0,
             smoothed_makeup_gain: makeup_gain_db,
             makeup_smoothing_coeff,
-            current_lufs: -100.0,
+            auto_gain_target: makeup_gain_db,
+            auto_gain_coeff: 1.0,
+            current_lufs: NO_LOUDNESS_LUFS,
             speech_activity_score: 0.0,
             speech_activity_smoothing_coeff: util::time_constant_to_coeff(
                 AUTO_MAKEUP_ACTIVITY_SMOOTH_MS,
@@ -118,9 +126,14 @@ impl MakeupController {
             return;
         }
         self.auto_makeup_enabled = enabled;
+        self.hold_auto_gain();
         if !enabled {
             self.clear_auto_makeup_sample_window();
         }
+    }
+
+    fn hold_auto_gain(&mut self) {
+        self.auto_gain_coeff = 1.0;
     }
 
     pub(super) fn auto_makeup_enabled(&self) -> bool {
@@ -279,17 +292,12 @@ impl MakeupController {
         elapsed_samples: usize,
     ) {
         let elapsed_samples = elapsed_samples.max(1);
-        let makeup_coeff = if elapsed_samples == 1 {
-            self.makeup_smoothing_coeff
-        } else {
-            self.makeup_smoothing_coeff.powf(elapsed_samples as f64)
-        };
-        let silence_relax_coeff = if elapsed_samples == 1 {
-            self.makeup_silence_relax_coeff
-        } else {
-            self.makeup_silence_relax_coeff.powf(elapsed_samples as f64)
-        };
         if !self.auto_makeup_enabled {
+            let makeup_coeff = if elapsed_samples == 1 {
+                self.makeup_smoothing_coeff
+            } else {
+                self.makeup_smoothing_coeff.powf(elapsed_samples as f64)
+            };
             let target = self.makeup_gain_db;
             self.smoothed_makeup_gain =
                 makeup_coeff * self.smoothed_makeup_gain + (1.0 - makeup_coeff) * target;
@@ -297,7 +305,14 @@ impl MakeupController {
         }
 
         if let Some(meter) = &self.loudness_meter {
-            self.current_lufs = meter.loudness_momentary() as f64;
+            // A silent window reads -inf: it is not a measurement.
+            let momentary_lufs = meter.loudness_momentary() as f64;
+            let measured = momentary_lufs.is_finite();
+            self.current_lufs = if measured {
+                momentary_lufs
+            } else {
+                NO_LOUDNESS_LUFS
+            };
             let activity_coeff = if elapsed_samples == 1 {
                 self.speech_activity_smoothing_coeff
             } else {
@@ -308,17 +323,23 @@ impl MakeupController {
                 + (1.0 - activity_coeff) * speech_activity.clamp(0.0, 1.0);
             self.auto_makeup_activity_reliability = reliability.clamp(0.0, 1.0);
             if self.speech_activity_score < AUTO_MAKEUP_ACTIVE_MIN {
-                self.smoothed_makeup_gain = silence_relax_coeff * self.smoothed_makeup_gain
-                    + (1.0 - silence_relax_coeff) * self.makeup_gain_db;
+                self.auto_gain_target = self.makeup_gain_db;
+                self.auto_gain_coeff = self.makeup_silence_relax_coeff;
                 return;
             }
             if self.auto_makeup_activity_reliability < AUTO_MAKEUP_RELIABILITY_MIN {
                 let conservative_cap = self.makeup_gain_db
                     + 3.0 * (self.auto_makeup_activity_reliability / AUTO_MAKEUP_RELIABILITY_MIN);
                 if self.smoothed_makeup_gain > conservative_cap {
-                    self.smoothed_makeup_gain = makeup_coeff * self.smoothed_makeup_gain
-                        + (1.0 - makeup_coeff) * conservative_cap;
+                    self.auto_gain_target = conservative_cap;
+                    self.auto_gain_coeff = self.makeup_smoothing_coeff;
+                } else {
+                    self.hold_auto_gain();
                 }
+                return;
+            }
+            if !measured {
+                self.hold_auto_gain();
                 return;
             }
             // The meter receives the compressor output after the currently
@@ -332,8 +353,8 @@ impl MakeupController {
                 (12.0 - self.limiter_feedback_gain_reduction_db * 2.0).clamp(0.0, reliability_cap);
             let clamped_gain = required_gain.clamp(0.0, headroom_cap);
 
-            self.smoothed_makeup_gain =
-                makeup_coeff * self.smoothed_makeup_gain + (1.0 - makeup_coeff) * clamped_gain;
+            self.auto_gain_target = clamped_gain;
+            self.auto_gain_coeff = self.makeup_smoothing_coeff;
         }
     }
 
@@ -360,9 +381,15 @@ impl MakeupController {
         }
     }
 
+    /// Move the applied makeup gain one sample. Manual gain follows its setting;
+    /// auto gain ramps toward the target the latest loudness update chose, so it
+    /// never steps at block or window boundaries.
     #[inline]
-    pub(super) fn advance_manual_gain(&mut self, detector_db: f64) {
-        if !self.auto_makeup_enabled {
+    pub(super) fn advance_gain(&mut self, detector_db: f64) {
+        if self.auto_makeup_enabled {
+            self.smoothed_makeup_gain = self.auto_gain_coeff * self.smoothed_makeup_gain
+                + (1.0 - self.auto_gain_coeff) * self.auto_gain_target;
+        } else {
             let speech_activity = Self::speech_activity_from_rms_db(detector_db);
             self.update_auto_makeup_gain(speech_activity, 1.0, 1);
         }
@@ -391,10 +418,11 @@ impl MakeupController {
         self.limiter_feedback_gain_reduction_db = 0.0;
         self.speech_activity_score = 0.0;
         self.auto_makeup_activity_reliability = 0.0;
+        self.hold_auto_gain();
         self.clear_auto_makeup_sample_window();
         if let Some(meter) = &mut self.loudness_meter {
             meter.reset();
         }
-        self.current_lufs = -100.0;
+        self.current_lufs = NO_LOUDNESS_LUFS;
     }
 }

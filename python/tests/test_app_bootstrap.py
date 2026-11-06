@@ -236,6 +236,22 @@ def test_main_module_reports_a_failed_import_and_returns_one(monkeypatch, capsys
     assert "Build the Rust core" in output
 
 
+def test_main_module_lets_an_import_error_from_a_running_app_show_its_traceback(monkeypatch, capsys):
+    from mic_eq import __main__ as entry_point
+    from mic_eq.ui import main_window
+
+    def fails_while_running():
+        raise ImportError("unrelated module")
+
+    monkeypatch.setattr(sys, "argv", ["mic_eq"])
+    monkeypatch.setattr(main_window, "run_app", fails_while_running)
+
+    with pytest.raises(ImportError, match="unrelated module"):
+        entry_point.main()
+
+    assert "Build the Rust core" not in capsys.readouterr().out
+
+
 def test_launcher_leaves_model_discovery_to_app_bootstrap(tmp_path, monkeypatch):
     exe_dir = tmp_path / "dist" / "AudioForge"
     meipass = tmp_path / "meipass"

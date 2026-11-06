@@ -19,7 +19,7 @@ import numpy as np
 from .auto_eq import simulate_candidate_chain
 from .cancellation import AnalysisCancelled, check_analysis_cancelled
 from .parallel import ANALYSIS_WORKERS
-from .signal_processing import resample_poly
+from .signal_processing import clamp as _clamp, resample_poly
 from .vad import (
     VAD_SPEECH_EVIDENCE_THRESHOLD,
     analyze_offline_vad,
@@ -46,10 +46,6 @@ _DEFAULT_MAX_SUPPRESSOR_LATENCY_MS = 35.0
 _MAX_CONFIGURED_SUPPRESSOR_LATENCY_MS = 100.0
 _POST_SPEECH_NOISE_SETTLE_SAMPLES = 28_800  # 600 ms at the simulation rate.
 _MAX_POST_SPEECH_NOISE_INCREASE_DB = 1.0
-
-
-def _clamp(value: float, low: float, high: float) -> float:
-    return float(max(low, min(high, value)))
 
 
 def _db(value: float) -> float:

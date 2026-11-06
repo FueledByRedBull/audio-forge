@@ -7,6 +7,8 @@ from scipy.signal import resample_poly as scipy_resample_poly
 from scipy.signal import welch as scipy_welch
 
 from mic_eq.analysis.signal_processing import (
+    band_mean,
+    clamp,
     find_peaks_distance_prominence,
     resample_poly,
     welch_hamming_density,
@@ -144,3 +146,32 @@ def test_peak_detection_matches_scipy_distance_and_prominence(samples, distance)
     expected, _ = scipy_find_peaks(samples, distance=distance, prominence=0.75)
 
     np.testing.assert_array_equal(actual, expected)
+
+
+def test_clamp_and_band_mean_are_the_helpers_every_analysis_module_shares():
+    from mic_eq.analysis import compressor_calibration, joint_tuning, voice_setup
+    from mic_eq.analysis.auto_eq_parts import target
+
+    assert clamp(5.0, 0.0, 3.0) == 3.0 and clamp(-1.0, 0.0, 3.0) == 0.0 and clamp(2.0, 0.0, 3.0) == 2.0
+    freqs = np.array([100.0, 200.0, 400.0, 800.0])
+    values = np.array([1.0, 2.0, 4.0, 8.0])
+    assert band_mean(freqs, values, 150.0, 500.0) == 3.0
+    assert band_mean(freqs, values, 1000.0, 2000.0) == 3.75  # no bin inside: the whole spectrum
+    for module, name, shared in (
+        (compressor_calibration, "_clamp", clamp),
+        (joint_tuning, "_clamp", clamp),
+        (voice_setup, "_clamp", clamp),
+        (voice_setup, "_band_mean", band_mean),
+        (target, "_band_mean", band_mean),
+    ):
+        assert getattr(module, name) is shared
+
+
+def test_failure_detection_logs_through_the_shared_debug_switch(monkeypatch, capsys):
+    from mic_eq.analysis import failure_detection
+    from mic_eq.analysis.auto_eq_parts import constants
+
+    assert failure_detection.debug_log is constants.debug_log
+    monkeypatch.setattr(constants, "DEBUG", True)
+    failure_detection.debug_log("[VALIDATION] shared")
+    assert capsys.readouterr().out == "[VALIDATION] shared\n"

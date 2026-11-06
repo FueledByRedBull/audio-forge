@@ -2553,7 +2553,7 @@ class MainWindow(QMainWindow):
                     fallback_index = self._default_combo_index(self.input_choice)
                     if fallback_index >= 0:
                         self.input_choice.setCurrentIndex(fallback_index)
-            except (RuntimeError, OSError) as e:
+            except Exception as e:
                 listing_errors.append(f"input devices ({e})")
                 logger.warning("Input device enumeration failed", exc_info=True)
 
@@ -2591,7 +2591,7 @@ class MainWindow(QMainWindow):
                     if preferred_index >= 0:
                         self.output_choice.setCurrentIndex(preferred_index)
 
-            except (RuntimeError, OSError) as e:
+            except Exception as e:
                 listing_errors.append(f"output devices ({e})")
                 logger.warning("Output device enumeration failed", exc_info=True)
 

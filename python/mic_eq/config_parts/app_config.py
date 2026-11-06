@@ -5,6 +5,7 @@ from __future__ import annotations
 import filecmp
 import json
 import logging
+import math
 import os
 import shutil
 import tempfile
@@ -174,9 +175,9 @@ def _coerce_float(value: object, default: float, low: float, high: float) -> flo
         parsed = float(value)
     except (TypeError, ValueError, OverflowError):
         return default
-    if not low <= parsed <= high:
+    if not math.isfinite(parsed):
         return default
-    return parsed
+    return min(high, max(low, parsed))
 
 
 def _coerce_dynamics_intensity(value: object) -> str:

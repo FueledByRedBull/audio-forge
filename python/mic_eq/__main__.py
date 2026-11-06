@@ -4,6 +4,7 @@ AudioForge source/development entry point
 Run with: python -m mic_eq
 """
 
+from functools import partial
 import sys
 
 
@@ -15,16 +16,16 @@ def main():
             from .ui.app_bootstrap import run_smoke_test
             from .ui.main_window import MainWindow
 
-            return run_smoke_test(MainWindow)
-
-        from .ui.main_window import run_app
-        return run_app()
+            start = partial(run_smoke_test, MainWindow)
+        else:
+            from .ui.main_window import run_app as start
     except ImportError as e:
         print(f"Error: {e}")
         print("\nMake sure to:")
         print("1. Build the Rust core: maturin develop --release")
         print("2. Install the pinned runtime: python -m pip install --require-hashes -r requirements/runtime.txt")
         return 1
+    return start()
 
 
 if __name__ == "__main__":

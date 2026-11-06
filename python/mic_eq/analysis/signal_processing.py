@@ -8,6 +8,18 @@ import operator
 import numpy as np
 
 
+def clamp(value: float, low: float, high: float) -> float:
+    return float(max(low, min(high, value)))
+
+
+def band_mean(freqs: np.ndarray, values: np.ndarray, low: float, high: float) -> float:
+    """Mean of ``values`` over ``low``..``high`` Hz, or over everything when no bin falls in it."""
+    mask = (freqs >= low) & (freqs <= high)
+    if not np.any(mask):
+        return float(np.mean(values))
+    return float(np.mean(values[mask]))
+
+
 def resample_poly(samples: np.ndarray, up: int, down: int) -> np.ndarray:
     """Zero-phase, constant-padded Kaiser resampling for 1-D audio.
 

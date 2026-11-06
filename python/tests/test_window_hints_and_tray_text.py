@@ -198,3 +198,17 @@ def test_a_new_status_message_is_announced_once(isolated_main_window, monkeypatc
     status.showMessage("Output muted")
     status.showMessage("Output unmuted")
     assert sent == ["QAccessibleAnnouncementEvent"] * 2
+
+
+def test_a_device_listing_that_fails_with_a_value_error_still_reaches_the_warning(isolated_main_window, monkeypatch):
+    window: Any = isolated_main_window
+
+    def broken():
+        raise ValueError("unreadable device record")
+
+    monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", broken)
+    window._refresh_devices()
+
+    assert window.input_choice.count() == 0
+    banner = window.shell_texts["device_warning_banner"]
+    assert banner.shown and "Could not list input devices (unreadable device record)" in banner.text

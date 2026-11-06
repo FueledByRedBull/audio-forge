@@ -74,6 +74,11 @@ from .theme import (
 
 logger = logging.getLogger(__name__)
 
+_NO_PLAYBACK_DEVICE_TEXT = (
+    "No playback device is available. Connect speakers or headphones, "
+    "then reopen this comparison."
+)
+
 
 def _device_key(device: QAudioDevice | None) -> bytes | None:
     if device is None:
@@ -511,13 +516,12 @@ class ListeningComparisonDialog(QDialog):
         if not self._outputs:
             self.output_combo.addItem("No playback devices detected", None)
             self.output_combo.setEnabled(False)
-            self.status_label.setText(
-                "No playback device is available. Connect speakers or headphones, "
-                "then reopen this comparison."
-            )
+            self.status_label.setText(_NO_PLAYBACK_DEVICE_TEXT)
             self.status_label.setStyleSheet(message_text_style("warn"))
         else:
             self.output_combo.setEnabled(True)
+            if self.status_label.text() == _NO_PLAYBACK_DEVICE_TEXT:
+                self.status_label.setText("")
             if selected_index >= 0:
                 self.output_combo.setCurrentIndex(selected_index)
             elif requested_key_text is not None:

@@ -25,28 +25,42 @@ _NATIVE_SAFETY_METRICS = (
 )
 
 
+def _finite_float(value: Any) -> float:
+    if not isinstance(value, bool):
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = float("nan")
+        if np.isfinite(parsed):
+            return parsed
+    raise ValueError(f"chain setting is not a finite number: {value!r}")
+
+
 def _as_float(value: Any, default: float) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed if np.isfinite(parsed) else default
+    """``default`` for a setting that is absent; a value that is no finite number is an error.
+
+    A substituted default would be simulated and certified as if it were the candidate's.
+    """
+    return default if value is None else _finite_float(value)
 
 
 def _as_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
     if isinstance(value, bool):
         return value
-    return default
+    raise ValueError(f"chain setting is not a boolean: {value!r}")
 
 
 def _as_int(value: Any, default: int) -> int:
-    if isinstance(value, bool):
+    if value is None:
         return default
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed
+    if not isinstance(value, bool):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            pass
+    raise ValueError(f"chain setting is not an integer: {value!r}")
 
 
 def _native_failure(kind: str, *, message: str) -> dict[str, str]:
@@ -182,7 +196,7 @@ def _bands_from_settings(eq_settings: dict[str, Any]) -> list[tuple[float, float
     if not (len(freqs) == len(gains) == len(qs) == NUM_EQ_BANDS):
         raise ValueError("Auto-EQ settings must contain 10 frequencies, gains, and Q values")
     return [
-        (_as_float(freq, 1000.0), _as_float(gain, 0.0), _as_float(q, 1.41))
+        (_finite_float(freq), _finite_float(gain), _finite_float(q))
         for freq, gain, q in zip(freqs, gains, qs)
     ]
 

@@ -5,7 +5,6 @@ Combines multiple validation checks to detect invalid recordings that
 would produce poor EQ results. Returns generic user-friendly error
 messages without technical details.
 """
-import os
 import numpy as np
 from dataclasses import dataclass
 
@@ -15,15 +14,9 @@ from mic_eq.config import (
     ANALYSIS_MIN_SNR,
     ANALYSIS_MAX_SPECTRAL_FLATNESS
 )
+from .auto_eq_parts.constants import debug_log
 from .auto_eq_parts.headroom import headroom_excess_split_db, headroom_shortfall_db
 from .spectrum import find_octave_spaced_peaks
-
-DEBUG = os.environ.get("AUDIOFORGE_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _debug_log(message: str) -> None:
-    if DEBUG:
-        print(message)
 
 
 @dataclass
@@ -259,7 +252,7 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
         failures = soft_failures
 
     # DEBUG: Log validation results
-    _debug_log(
+    debug_log(
         f"[VALIDATION] peak_count={peak_count}, dynamic_range={dynamic_range:.1f}dB, "
         f"snr={snr_db if snr_db is not None else 'unavailable'}, "
         f"spectral_contrast={spectral_contrast_db:.1f}dB, "
@@ -267,9 +260,9 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
         f"gain_rms={gain_rms:.1f}, soft_failures={len(soft_failures)}"
     )
     if failures:
-        _debug_log(f"[VALIDATION] FAILED: {', '.join(failures)}")
+        debug_log(f"[VALIDATION] FAILED: {', '.join(failures)}")
     else:
-        _debug_log("[VALIDATION] PASSED")
+        debug_log("[VALIDATION] PASSED")
 
     # Build result
     if failures:

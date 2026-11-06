@@ -472,3 +472,17 @@ def test_the_live_message_is_not_restyled_while_it_stays_the_same(voice, monkeyp
 
     voice._show_live_message("Room is noisy", "warn")
     assert len(styles) == 2 and voice.warning_label.text() == "Room is noisy"
+
+
+def test_auto_eq_logs_the_assumed_rate_when_the_processor_rate_cannot_be_read(
+    auto_eq, monkeypatch, caplog
+) -> None:
+    def unreadable(_owner):
+        raise RuntimeError("Processor sample rate is unavailable")
+
+    monkeypatch.setattr(calibration_dialog, "_processor_sample_rate", unreadable)
+    with caplog.at_level("WARNING", logger=calibration_dialog.logger.name):
+        _check_auto(auto_eq, GOOD)
+
+    assert auto_eq.recording_state == "level_result"
+    assert "assuming 48000 Hz" in caplog.text and "unavailable" in caplog.text

@@ -105,16 +105,34 @@ def test_chain_defaults_sent_to_the_native_simulator():
     assert headroom._flatten_chain_settings({}) == expected
 
 
-def test_a_band_value_that_is_not_a_number_falls_back_per_field():
-    bands = headroom._bands_from_settings(
-        {
-            "band_freqs": ["loud", None, float("nan"), float("inf"), *BAND_FREQS[4:]],
-            "band_gains": ["x", None, float("nan"), float("inf"), *[1.0] * 6],
-            "band_qs": ["x", None, float("nan"), float("inf"), *[2.0] * 6],
-        }
+@pytest.mark.parametrize("bad", ["loud", None, float("nan"), float("inf"), True])
+@pytest.mark.parametrize("field", ["band_freqs", "band_gains", "band_qs"])
+def test_a_band_value_that_is_not_a_number_is_refused_not_replaced(field, bad):
+    settings = {
+        "band_freqs": list(BAND_FREQS),
+        "band_gains": [1.0] * 10,
+        "band_qs": [2.0] * 10,
+    }
+    settings[field][0] = bad
+    with pytest.raises(ValueError, match="not a finite number"):
+        headroom._bands_from_settings(settings)
+
+
+def test_chain_settings_that_are_invalid_are_refused_and_absent_ones_take_the_default():
+    for chain in (
+        {"compressor": {"threshold_db": "x"}},
+        {"compressor": {"ratio": float("nan")}},
+        {"limiter": {"ceiling_db": float("inf")}},
+        {"gate": {"threshold_db": "loud"}},
+        {"gate": {"gate_mode": "x"}},
+        {"suppressor": {"strength": []}},
+        {"compressor": {"enabled": "false"}},
+    ):
+        with pytest.raises(ValueError, match="chain setting is not"):
+            headroom._flatten_chain_settings(chain)
+    assert headroom._flatten_chain_settings({"compressor": {"threshold_db": None}}) == (
+        headroom._flatten_chain_settings({})
     )
-    assert bands[:4] == [(1000.0, 0.0, 1.41)] * 4
-    assert bands[4] == (1280.0, 1.0, 2.0)
 
 
 def test_split_is_none_when_the_full_correction_already_fits():

@@ -30,6 +30,11 @@ class VirtualMicrophoneWatch:
 
         self._stopped = True
 
+    def resume(self) -> None:
+        """Watch again: the window that stopped it is shown after all (a relaunch that failed)."""
+
+        self._stopped = False
+
     def poll(self) -> None:
         """Look at most every CHECK_SECONDS; never waits for PipeWire. Call from a timer."""
 

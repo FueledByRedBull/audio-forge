@@ -479,3 +479,25 @@ def test_the_comparison_says_live_output_is_muted(qapp, monkeypatch):
         assert len(notices) == 1 and notices[0].isVisibleTo(dialog)
     finally:
         dialog.close()
+
+
+def test_no_playback_device_notice_clears_when_a_device_appears(qapp, monkeypatch):
+    from PySide6.QtMultimedia import QAudioDevice
+    from mic_eq.ui.listening_comparison_dialog import ListeningComparisonDialog
+
+    monkeypatch.setattr(QMediaDevices, "audioOutputs", lambda: [])
+    monkeypatch.setattr(ListeningComparisonDialog, "_start_render", lambda self: None)
+    dialog = ListeningComparisonDialog(
+        audio_data=np.zeros(480, dtype=np.float32), sample_rate=48_000,
+        current_settings=_settings(), proposed_settings=_settings(),
+    )
+    try:
+        assert "No playback device is available" in dialog.status_label.text()
+
+        monkeypatch.setattr(QMediaDevices, "audioOutputs", lambda: [QAudioDevice()])
+        dialog._on_audio_outputs_changed()
+
+        assert dialog.status_label.text() == ""
+        assert dialog.output_combo.isEnabled()
+    finally:
+        dialog.close()

@@ -45,6 +45,7 @@ VALIDATION_RANGES = {
         "release_ms": (10.0, 1000.0),
         "makeup_gain_db": (0.0, 24.0),
         "adaptive_release": (bool, None),
+        "base_release_ms": (20.0, 200.0),
         "auto_makeup_enabled": (bool, None),
         "target_lufs": (-24.0, -12.0),
         "sidechain_highpass_enabled": (bool, None),

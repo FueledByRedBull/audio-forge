@@ -4,12 +4,7 @@ import numpy as np
 
 from mic_eq.config import EQ_FREQUENCIES, TARGET_CURVES
 
-
-def _band_mean(freqs: np.ndarray, values: np.ndarray, low: float, high: float) -> float:
-    mask = (freqs >= low) & (freqs <= high)
-    if not np.any(mask):
-        return float(np.mean(values))
-    return float(np.mean(values[mask]))
+from ..signal_processing import band_mean as _band_mean
 
 
 def _adaptive_voice_offsets(

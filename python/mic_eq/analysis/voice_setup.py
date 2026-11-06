@@ -27,7 +27,6 @@ from .cancellation import AnalysisCancelled, check_analysis_cancelled
 from .compressor_calibration import (
     _COMPRESSOR_P95_TARGET_TOLERANCE_DB,
     _calibrate_compressor_threshold,
-    _clamp,
     _compressor_p95_target_status,
     _normalise_limiter_settings,
 )
@@ -39,7 +38,7 @@ from .deesser_fusion import (
     predict_clip_probability,
     predict_frame_probabilities,
 )
-from .signal_processing import resample_poly
+from .signal_processing import band_mean as _band_mean, clamp as _clamp, resample_poly
 from .noise_reference import (
     MIN_NOISE_DURATION_S,
     SILENT_REFERENCE_REASON,
@@ -520,13 +519,6 @@ def _vad_masked_speech_features(
     }
 
 
-def _band_mean(freqs: np.ndarray, spectrum_db: np.ndarray, low_hz: float, high_hz: float) -> float:
-    mask = (freqs >= low_hz) & (freqs <= high_hz)
-    if not np.any(mask):
-        return float(np.mean(spectrum_db))
-    return float(np.mean(spectrum_db[mask]))
-
-
 def _recommend_gate_settings(
     *,
     vad_available: bool,
@@ -982,6 +974,8 @@ def analyze_voice_setup(
         for raw in (raw_noise_arr, raw_speech_arr)
     ):
         raise ValueError("raw setup captures are non-finite or clipped")
+    if not (np.isfinite(noise_arr).all() and np.isfinite(speech_arr).all()):
+        raise ValueError("filtered setup captures are non-finite")
 
     if noise_arr.size < int(sample_rate * NOISE_MIN_DURATION_S):
         raise ValueError("Room-noise capture was too short for setup.")

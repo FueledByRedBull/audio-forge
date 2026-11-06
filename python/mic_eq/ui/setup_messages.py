@@ -187,8 +187,10 @@ _ERROR_RULES: tuple[tuple[str, str], ...] = (
      "The recording was too short to analyse. Record again and read the whole passage."),
     (r"Missing room-noise or speech capture\.",
      "A recording is missing. Start the setup again."),
-    (r"raw setup captures are non-finite or clipped",
+    (r"(?:raw|filtered) setup captures are non-finite(?: or clipped)?",
      "The recording hit full scale or held invalid data. Lower the microphone level and record again."),
+    (r"chain setting is not (?:a finite number|a boolean|an integer): .*",
+     "The settings being checked hold an invalid value. Reset the affected controls and try again."),
     (r"Recording error: (?P<e>.*)",
      "The recording stopped unexpectedly ({e}). Check that the microphone is connected and not used by another app, then try again."),
 )

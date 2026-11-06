@@ -204,3 +204,17 @@ def test_the_full_chain_renders_refuse_sustained_clipping_but_not_a_stray_sample
     refused = verify(sustained)
     assert refused["decision"] == "retry"
     assert refused["reasons"] == ["raw noise capture was non-finite or clipped"]
+
+
+@pytest.mark.parametrize("which", ["noise", "speech"])
+def test_the_setup_analysis_refuses_a_non_finite_filtered_capture_without_raw_captures(which):
+    rate = 48_000
+    noise = np.full(rate * 3, 0.001, dtype=np.float32)
+    speech = _speech(rate, 4.0) * 0.3
+    {"noise": noise, "speech": speech}[which][2_000] = np.nan
+
+    with pytest.raises(ValueError, match="filtered setup captures are non-finite") as refusal:
+        voice_setup.analyze_voice_setup(noise, speech, rate, "broadcast")
+    from mic_eq.ui.setup_messages import plain_error
+
+    assert "held invalid data" in plain_error(str(refusal.value))

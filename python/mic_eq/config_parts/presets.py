@@ -509,8 +509,7 @@ class Preset:
                 ),
                 base_release_ms=validate_range(
                     comp_data.get("base_release_ms", 50.0),
-                    20.0,
-                    200.0,
+                    *comp_ranges["base_release_ms"],
                     "base_release_ms",
                     "compressor",
                 ),
@@ -558,7 +557,7 @@ class Preset:
             rnnoise_data = data.get("rnnoise", {})
             rnnoise_ranges = VALIDATION_RANGES["rnnoise"]
             model = rnnoise_data.get("model", "rnnoise")
-            valid_models = rnnoise_ranges.get("model", ["rnnoise", "deepfilter-ll", "deepfilter"])
+            valid_models = rnnoise_ranges["model"]
             if model not in valid_models and strict_current_schema:
                 raise PresetValidationError(
                     f"Invalid model in rnnoise: {model!r} (must be one of {valid_models})"
@@ -569,7 +568,7 @@ class Preset:
                 enabled=_validate_bool(rnnoise_data.get("enabled", True), "enabled", "rnnoise"),
                 strength=validate_range(
                     rnnoise_data.get("strength", 1.0),
-                    *rnnoise_ranges.get("strength", (0.0, 1.0)),
+                    *rnnoise_ranges["strength"],
                     "strength",
                     "rnnoise",
                 ),
@@ -818,14 +817,19 @@ def _load_resolved_preset(resolved_path: Path) -> Preset:
         ) from exc
 
 
-def load_preset(filepath: Path) -> Preset:
-    requested_path = Path(filepath)
-    resolved_path = _resolve_preset_file(requested_path)
-
-    allowed_roots = [
+def _allowed_preset_roots() -> list[Path]:
+    return [
         get_presets_dir().resolve(),
         get_preset_imports_dir().resolve(),
     ]
+
+
+def load_preset(filepath: Path) -> Preset:
+    return _load_preset_within(Path(filepath), _allowed_preset_roots())
+
+
+def _load_preset_within(requested_path: Path, allowed_roots: list[Path]) -> Preset:
+    resolved_path = _resolve_preset_file(requested_path)
     within_allowed_root = any(
         root == resolved_path or root in resolved_path.parents for root in allowed_roots
     )
@@ -908,10 +912,13 @@ def import_preset(filepath: Path) -> tuple[Preset, Path]:
 
 def list_presets() -> list[tuple[str, Path]]:
     presets_dir = get_presets_dir()
+    allowed_roots: list[Path] | None = None
     presets: list[tuple[str, Path]] = []
     for filepath in presets_dir.glob("*.json"):
         try:
-            preset = load_preset(filepath)
+            if allowed_roots is None:
+                allowed_roots = [presets_dir.resolve(), get_preset_imports_dir().resolve()]
+            preset = _load_preset_within(filepath, allowed_roots)
             presets.append((preset.name, filepath))
         except (
             OSError,

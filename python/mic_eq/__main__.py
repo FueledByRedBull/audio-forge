@@ -4,27 +4,35 @@ AudioForge source/development entry point
 Run with: python -m mic_eq
 """
 
+from functools import partial
 import sys
 
 
 def main():
     """Main entry point for the AudioForge application."""
     try:
+        from . import CORE_AVAILABLE
+
+        if not CORE_AVAILABLE:
+            # The package installs stubs that only raise once the app starts.
+            from . import _CORE_IMPORT_ERROR
+
+            raise ImportError(f"mic_eq_core is unavailable. Native import error: {_CORE_IMPORT_ERROR}")
         if "--smoke-test" in sys.argv:
             sys.argv = [arg for arg in sys.argv if arg != "--smoke-test"]
             from .ui.app_bootstrap import run_smoke_test
             from .ui.main_window import MainWindow
 
-            return run_smoke_test(MainWindow)
-
-        from .ui.main_window import run_app
-        return run_app()
+            start = partial(run_smoke_test, MainWindow)
+        else:
+            from .ui.main_window import run_app as start
     except ImportError as e:
         print(f"Error: {e}")
         print("\nMake sure to:")
         print("1. Build the Rust core: maturin develop --release")
         print("2. Install the pinned runtime: python -m pip install --require-hashes -r requirements/runtime.txt")
         return 1
+    return start()
 
 
 if __name__ == "__main__":

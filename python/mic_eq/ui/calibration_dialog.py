@@ -998,12 +998,17 @@ class CalibrationDialog(QDialog):
                 self.warning_label, verdict.message, message_text_style(verdict.state, strong=True)
             )
 
+    def _sample_rate_or_default(self) -> int:
+        """The processor's rate; 48 kHz, the rate Voice Setup and Auto-EQ require, when it cannot be read."""
+        try:
+            return _processor_sample_rate(_find_processor_owner(self.parent()))
+        except Exception as error:
+            logger.warning("Processor sample rate unreadable (%s); assuming 48000 Hz", error)
+            return 48_000
+
     def _finish_level_check(self, audio_data: np.ndarray) -> None:
         """Judge the check from its samples and offer the next step the verdict allows."""
-        try:
-            sample_rate = _processor_sample_rate(_find_processor_owner(self.parent()))
-        except Exception:
-            sample_rate = 48_000
+        sample_rate = self._sample_rate_or_default()
         verdict = verdict_from_audio(np.asarray(audio_data, dtype=np.float32), sample_rate)
         choices = level_choices(verdict, "Record Passage")
         self._level_verdict = verdict
@@ -1034,10 +1039,7 @@ class CalibrationDialog(QDialog):
         raw_audio = np.ascontiguousarray(
             np.asarray(audio_data, dtype=np.float32).reshape(-1).copy()
         )
-        try:
-            sample_rate = _processor_sample_rate(_find_processor_owner(self.parent()))
-        except Exception:
-            sample_rate = 48_000
+        sample_rate = self._sample_rate_or_default()
         # Say so now, while the fix is obvious, as Voice Setup does for the same takes.
         if not np.isfinite(raw_audio).all():
             self._reject_capture(
@@ -1540,10 +1542,7 @@ class CalibrationDialog(QDialog):
         proposal = self._candidate_proposal
         self.eq_compare.setVisible(proposal is not None and applied)
         if proposal is not None and applied:
-            try:
-                sample_rate = float(_processor_sample_rate(_find_processor_owner(self.parent())))
-            except Exception:
-                sample_rate = 48_000.0
+            sample_rate = float(self._sample_rate_or_default())
             mode = getattr(_find_eq_state_owner(self.parent()), "_processing_mode", lambda: "")()
             self.eq_compare.set_curves(
                 proposal.incumbent_preset.eq,

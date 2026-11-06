@@ -190,11 +190,20 @@ def test_reasons_that_say_the_same_thing_are_said_once():
         ("Room-noise capture was too short for setup.", "The room-noise recording was too short."),
         ("Voice capture was too short for setup.", "The voice recording was too short."),
         ("Audio too short for FFT: need 4096 samples, got 100", "The recording was too short"),
+        ("chain setting is not a finite number: nan", "The settings being checked hold an invalid value."),
+        ("chain setting is not a boolean: 'false'", "The settings being checked hold an invalid value."),
+        ("chain setting is not an integer: 'x'", "The settings being checked hold an invalid value."),
     ],
 )
 def test_known_errors_are_explained(raw, claim):
     plain = plain_error(raw)
     assert plain != raw and plain.startswith(claim)
+
+
+def test_an_invalid_chain_setting_does_not_ask_for_a_new_recording():
+    plain = plain_error("chain setting is not a finite number: nan")
+
+    assert "Reset the affected controls" in plain and "Record again" not in plain
 
 
 def test_an_unknown_error_keeps_its_text():

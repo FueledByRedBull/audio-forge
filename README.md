@@ -200,6 +200,15 @@ for realtime priority, the way PipeWire's own threads get it. If RTKit isn't
 running or says no, AudioForge keeps working at normal priority, and DeepFilterNet
 may then drop audio on a busy system.
 
+**Latency.** AudioForge asks PipeWire for a 512-sample quantum while it runs,
+which makes the whole graph wake twice as often as PipeWire's default of 1024.
+From a PipeWire microphone node to an app recording AudioForge Mic we measured
+about 52 ms in Bypass and 67 ms with RNNoise. `AUDIOFORGE_FIXED_INPUT_BUFFER_FRAMES`
+and `AUDIOFORGE_FIXED_OUTPUT_BUFFER_FRAMES` change the request: with RNNoise, 256
+gave about 53 ms and 1024 about 99 ms, and 0 leaves the choice to PipeWire. A real
+microphone's own capture buffer, about one quantum, and the recording app's
+buffering come on top. The latency in the app counts the same path.
+
 **Tray.** The tray icon needs a panel that shows StatusNotifierItem icons. If
 the panel starts after AudioForge, for example at login, the icon shows up as
 soon as the panel is ready. Close-to-tray is only offered while the icon is

@@ -169,7 +169,8 @@ described under [Download](#download).
 **AudioForge Mic** to PipeWire. AudioForge's **Output** is **AudioForge Mic
 Input**, which setup picks for you. In Discord, OBS, your browser, or any other
 app, choose **AudioForge Mic** as the microphone. The device goes away when
-AudioForge quits, even after a crash. AudioForge doesn't make it your default
+AudioForge quits, even after a crash, and comes back on its own if PipeWire
+restarts. AudioForge doesn't make it your default
 microphone, but with no other microphone connected your desktop may. An
 **Input** set to **Follow system default** would then record AudioForge's own
 output, so AudioForge refuses: Start says no microphone is available, and a
@@ -198,7 +199,6 @@ so move the AppImage first and turn the option on afterwards.
 for realtime priority, the way PipeWire's own threads get it. If RTKit isn't
 running or says no, AudioForge keeps working at normal priority, and DeepFilterNet
 may then drop audio on a busy system.
-
 
 **Tray.** The tray icon needs a panel that shows StatusNotifierItem icons. If
 the panel starts after AudioForge, for example at login, the icon shows up as

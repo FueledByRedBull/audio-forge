@@ -223,6 +223,7 @@ pub mod device;
 pub mod input;
 pub mod output;
 pub mod processor;
+pub(crate) mod realtime;
 pub mod rt;
 #[cfg(windows)]
 pub(crate) mod scheduling;

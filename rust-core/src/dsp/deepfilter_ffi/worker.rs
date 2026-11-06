@@ -21,9 +21,6 @@ use std::time::{Duration, Instant};
 /// to 18). It is also the most latency a slow worker can add. Frames beyond it
 /// wait in the processor's input queue.
 pub(super) const WORKER_QUEUE_FRAMES: usize = 8192_usize.div_ceil(DEEPFILTER_FRAME_SIZE);
-/// Longest stretch without blocking: half of RTKit's default 200 ms budget.
-#[cfg(target_os = "linux")]
-const REALTIME_BUSY_LIMIT: std::time::Duration = std::time::Duration::from_millis(100);
 const QUEUE_SAMPLES: usize = WORKER_QUEUE_FRAMES * DEEPFILTER_FRAME_SIZE;
 /// What the published suppressor latency adds for the time a frame spends at the
 /// worker (5 ms): the worker's poll, the model, and the loop's next look on an
@@ -47,6 +44,10 @@ const WORKER_STALL_TIME: Duration = Duration::from_millis(300);
 /// loop, and it is no evidence against the worker: it counts for no more than
 /// this.
 const WORKER_STALL_STEP: Duration = Duration::from_millis(50);
+/// How long the worker waits for RTKit before running at normal priority. Well
+/// inside `WORKER_STALL_TIME`, so a slow RTKit never reads as a stalled worker.
+#[cfg(target_os = "linux")]
+const REALTIME_PROMOTION_TIMEOUT: Duration = Duration::from_millis(100);
 /// How often an idle worker looks for a frame.
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 /// With no frame for this long (the stage is off, or processing stopped), the
@@ -363,9 +364,9 @@ fn run(df: DeepFilterFFI, shared: &WorkerShared, input: AudioConsumer, output: A
     // works.
     #[cfg(windows)]
     let scheduling = ProAudioThread::enter().ok();
-    // A second of budget, as for the DSP thread: RTKit caps it at its maximum.
+    // RTKit can take seconds to answer; the worker would look stalled meanwhile.
     #[cfg(target_os = "linux")]
-    let _realtime = audio_thread_priority::promote_current_thread_to_real_time(48_000, 48_000).ok();
+    let _ = crate::audio::realtime::promote_current_thread(48_000, REALTIME_PROMOTION_TIMEOUT);
     // The model ran under the DSP loop's floating-point mode and must keep
     // doing so: it is the mode the library's long-silence behaviour was
     // verified in.
@@ -417,7 +418,7 @@ fn serve(
         // RTKit kills a realtime thread that never blocks with SIGXCPU, and a
         // model that cannot keep up always finds another frame waiting.
         #[cfg(target_os = "linux")]
-        if busy_since.elapsed() >= REALTIME_BUSY_LIMIT {
+        if busy_since.elapsed() >= crate::audio::realtime::realtime_busy_limit() {
             std::thread::sleep(POLL_INTERVAL);
             busy_since = Instant::now();
         }

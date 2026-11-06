@@ -519,16 +519,26 @@ fn dsp_block_sources_hold_no_blocking_or_allocating_apis() {
                     "runs once on the DSP thread before it reports ready, so before the streams start; asks RTKit over D-Bus",
                 ),
                 (
-                    "run_bounded",
-                    "start-up helper of DspLoop::promote_to_realtime; waits for RTKit on a helper thread",
-                ),
-                (
                     "ensure_resampler_scratch_capacity",
                     "start-up validation on the control thread; builds its error text on rejection",
                 ),
                 (
                     "record_dsp_thread_panic",
                     "runs once, after the loop has unwound, to record why it died",
+                ),
+            ][..],
+        ),
+        (
+            "audio/realtime.rs",
+            include_str!("audio/realtime.rs"),
+            &[
+                (
+                    "run_bounded",
+                    "start-up helper of the RTKit promotions; waits for RTKit on a helper thread",
+                ),
+                (
+                    "promote_current_thread",
+                    "runs once when the DeepFilter worker starts, before it takes a frame; asks RTKit over D-Bus",
                 ),
             ][..],
         ),

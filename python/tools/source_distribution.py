@@ -650,6 +650,7 @@ MESA_SOURCE = {
 DEEPFILTER_RECIPE_FILES = (
     "build_deepfilter.ps1",
     "python/tools/build_deepfilter.py",
+    "python/tools/bounded_download.py",
     "build-support/deepfilter/Cargo.toml",
     "build-support/deepfilter/Cargo.lock",
     "build-support/deepfilter/capi.rs",

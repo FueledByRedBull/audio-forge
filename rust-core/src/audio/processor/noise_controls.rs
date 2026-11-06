@@ -117,6 +117,7 @@ impl AudioProcessor {
         build: impl Fn(NoiseModel, bool) -> NoiseSuppressionEngine,
     ) -> bool {
         let running = self.shared.stream.running.load(Ordering::Acquire);
+        let previous = self.get_noise_model();
         let new_engine = build(model, running);
         let backend_diagnostics = noise_backend_diagnostics(&new_engine);
 
@@ -134,6 +135,10 @@ impl AudioProcessor {
         }
 
         if running {
+            // The model is selected before its engine can be seen in the queue:
+            // a loop pass that finds `dirty` set for another reason retires a
+            // queued engine whose model is not the selected one.
+            self.record_selected_model(model);
             let queued = if let Ok(mut tx_guard) = self.shared.suppressor.pending_tx.lock() {
                 if let Some(tx) = tx_guard.as_mut() {
                     tx.try_push(new_engine).is_ok()
@@ -145,6 +150,7 @@ impl AudioProcessor {
             };
 
             if !queued {
+                self.replace_selection(Some(model), previous);
                 return false;
             }
             store_backend_diagnostics(
@@ -160,9 +166,9 @@ impl AudioProcessor {
                 &self.shared.suppressor.backend_error,
                 &new_engine,
             );
+            self.record_selected_model(model);
         }
 
-        self.record_selected_model(model);
         self.shared
             .suppressor
             .reset_requested

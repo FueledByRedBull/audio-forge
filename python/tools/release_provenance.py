@@ -51,9 +51,12 @@ DEEPFILTER_RECIPE_FILES = (
 # build_deepfilter.py builds libdf.so from the same provenance for this target.
 DEEPFILTER_LINUX_LIBRARY = "libdf.so"
 DEEPFILTER_LINUX_TARGET = "x86_64-unknown-linux-gnu"
-DEEPFILTER_LINUX_RECIPE_FILES = tuple(
-    "python/tools/build_deepfilter.py" if name == "build_deepfilter.ps1" else name
-    for name in DEEPFILTER_RECIPE_FILES
+DEEPFILTER_LINUX_RECIPE_FILES = (
+    *(
+        "python/tools/build_deepfilter.py" if name == "build_deepfilter.ps1" else name
+        for name in DEEPFILTER_RECIPE_FILES
+    ),
+    "python/tools/bounded_download.py",
 )
 DEEPFILTER_TEXT_RECIPE_SUFFIXES = frozenset({".json", ".lock", ".ps1", ".py", ".toml"})
 BUNDLED_RELEASE_ASSETS = {
@@ -1051,9 +1054,13 @@ def verify_sidecars(
                 errors.append("exact archive does not match the promotion SHA-256")
         except ValueError as exc:
             errors.append(str(exc))
-    checksum_parts = checksum_path.read_text(encoding="ascii").strip().split()
-    if checksum_parts != [actual_archive_hash, archive.name]:
-        errors.append("checksum sidecar does not match the exact archive")
+    try:
+        checksum_parts = checksum_path.read_text(encoding="ascii").strip().split()
+    except (OSError, UnicodeDecodeError) as exc:
+        errors.append(f"checksum sidecar could not be read: {exc}")
+    else:
+        if checksum_parts != [actual_archive_hash, archive.name]:
+            errors.append("checksum sidecar does not match the exact archive")
 
     try:
         metadata = _load_json(metadata_path)

@@ -18,9 +18,10 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import urllib.request
 from pathlib import Path
 from typing import Any
+
+from bounded_download import download
 
 ROOT = Path(__file__).resolve().parents[2]
 SUPPORT = ROOT / "build-support" / "deepfilter"
@@ -31,6 +32,9 @@ TARGET = "x86_64-unknown-linux-gnu"
 LIBRARY = "libdf.so"
 PATCHED_UPSTREAM_FILES = ("libDF/Cargo.toml", "libDF/src/capi.rs", "libDF/src/lib.rs", "libDF/src/tract.rs")
 MODELS = ("models/DeepFilterNet3_onnx.tar.gz", "models/DeepFilterNet3_ll_onnx.tar.gz")
+# crates.io redirects its download API to static.crates.io; the archive hash is pinned.
+TRACT_ARCHIVE_HOSTS = frozenset({"crates.io", "static.crates.io"})
+TRACT_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024
 
 
 class BuildError(RuntimeError):
@@ -165,9 +169,16 @@ def ensure_tract_archive(archive: Path, cargo_home: Path, name: str, expected_sh
             shutil.copyfile(cached, staged)
         else:
             # The URL is pinned in provenance.json and the archive hash is checked below.
-            request = urllib.request.Request(url, headers={"User-Agent": "AudioForge-deepfilter-build"})
-            with urllib.request.urlopen(request, timeout=120) as response, staged.open("wb") as output:  # nosemgrep: dynamic-urllib-use-detected
-                shutil.copyfileobj(response, output)
+            download(
+                url,
+                staged,
+                hosts=TRACT_ARCHIVE_HOSTS,
+                max_bytes=TRACT_ARCHIVE_MAX_BYTES,
+                timeout=120,
+                refusal=f"The {name} source archive must come from HTTPS on crates.io",
+                too_large=f"The {name} source archive exceeded {TRACT_ARCHIVE_MAX_BYTES} bytes",
+                follow_redirects=True,
+            )
         assert_hash(staged, expected_sha, f"Downloaded {name} source archive")
         staged.replace(archive)
     finally:
@@ -391,6 +402,9 @@ def build(output: Path, attestation_path: Path, *, allow_untested_rust: bool) ->
         "recipe": {
             "files": {
                 "python/tools/build_deepfilter.py": canonical_text_sha256(Path(__file__)),
+                "python/tools/bounded_download.py": canonical_text_sha256(
+                    Path(__file__).with_name("bounded_download.py")
+                ),
                 "build-support/deepfilter/Cargo.toml": canonical_text_sha256(TRACKED_MANIFEST),
                 "build-support/deepfilter/Cargo.lock": canonical_text_sha256(TRACKED_LOCK),
                 "build-support/deepfilter/capi.rs": sha256(capi_patch),

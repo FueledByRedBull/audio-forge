@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import sysconfig
 from pathlib import Path
@@ -24,22 +25,40 @@ def is_unused_openssl_payload(path: Path) -> bool:
     ) or name.startswith("libcrypto-")
 
 
-_UNUSED_FFMPEG_PAYLOAD_NAMES = frozenset(
-    {
-        "avcodec-61.dll",
-        "avformat-61.dll",
-        "avutil-59.dll",
-        "swresample-5.dll",
-        "swscale-8.dll",
-        "ffmpegmediaplugin.dll",
-    }
+# The FFmpeg libraries carry their soname version (avcodec-61.dll), which
+# changes with the PySide6 release, so the family is matched by pattern.
+_UNUSED_FFMPEG_PAYLOAD = re.compile(
+    r"(?:(?:avcodec|avdevice|avfilter|avformat|avutil|postproc|swresample|swscale)-\d+"
+    r"|ffmpegmediaplugin)\.dll"
 )
 
 
 def is_unused_ffmpeg_payload(path: Path) -> bool:
     """Return whether *path* belongs to the unused Qt FFmpeg backend."""
 
-    return path.name.casefold() in _UNUSED_FFMPEG_PAYLOAD_NAMES
+    return _UNUSED_FFMPEG_PAYLOAD.fullmatch(path.name.casefold()) is not None
+
+
+def _expected_extension_name() -> str:
+    return "mic_eq_core" + str(sysconfig.get_config_var("EXT_SUFFIX") or ".pyd")
+
+
+def missing_expected_payload(bundle_root: Path, removed: list[Path]) -> list[str]:
+    """Return what a PyInstaller bundle must have held, and no longer does.
+
+    A pruning pass that found nothing to prune or keep means the bundle layout
+    changed, not that the bundle is clean.
+    """
+
+    missing: list[str] = []
+    if not any(is_unused_ffmpeg_payload(path) for path in removed):
+        missing.append("the Qt FFmpeg payload (avcodec-*.dll and the other FFmpeg libraries)")
+    packaged_extension_dir = bundle_root / "_internal" / "mic_eq"
+    if not packaged_extension_dir.is_dir():
+        missing.append("_internal/mic_eq")
+    elif not (packaged_extension_dir / _expected_extension_name()).is_file():
+        missing.append(f"_internal/mic_eq/{_expected_extension_name()}")
+    return missing
 
 
 # Kept on purpose: platforms qwindows/qoffscreen/qminimal, imageformats/qico,
@@ -69,9 +88,7 @@ def prune_bundle(bundle_root: Path) -> list[Path]:
 
     packaged_extension_dir = bundle_root / "_internal" / "mic_eq"
     duplicate_extension_dir = bundle_root / "_internal" / "mic_eq_core"
-    expected_name = "mic_eq_core" + str(
-        sysconfig.get_config_var("EXT_SUFFIX") or ".pyd"
-    )
+    expected_name = _expected_extension_name()
     for candidate in sorted(packaged_extension_dir.glob("mic_eq_core*.pyd")):
         if candidate.is_file() and candidate.name != expected_name:
             candidate.unlink()
@@ -143,7 +160,9 @@ def main() -> int:
     bundle_root = args.bundle_root.resolve()
     if not (bundle_root / "AudioForge.exe").is_file() or not (bundle_root / "_internal").is_dir():
         parser.error(f"{bundle_root} is not an AudioForge bundle (no AudioForge.exe and _internal)")
-    prune_bundle(bundle_root)
+    missing = missing_expected_payload(bundle_root, prune_bundle(bundle_root))
+    if missing:
+        parser.exit(1, f"{parser.prog}: the bundle lacks {'; '.join(missing)}\n")
     return 0
 
 

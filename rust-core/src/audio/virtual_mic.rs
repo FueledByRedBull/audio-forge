@@ -24,6 +24,8 @@ use pw::metadata::{Metadata, MetadataListener};
 use pw::types::ObjectType;
 use pyo3::prelude::*;
 
+use super::bounded;
+
 /// The source Discord, OBS and browsers record from.
 pub const SOURCE_NODE_NAME: &str = "audioforge_mic";
 
@@ -47,6 +49,9 @@ const LOOPBACK_ARGS: &str = r#"{
 }"#;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a failed `create` waits for the thread it gave up on to end.
+const FAILED_THREAD_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 struct VirtualMic {
     thread: JoinHandle<()>,
@@ -117,10 +122,21 @@ pub fn create() -> Result<(), String> {
         }
         Err(error) => {
             let _ = quit_tx.send(());
-            let _ = thread.join();
+            end_failed_thread(thread, FAILED_THREAD_JOIN_TIMEOUT);
             Err(error)
         }
     }
+}
+
+/// Wait for the thread of a microphone that never became ready, but not for
+/// long: a PipeWire daemon that hangs keeps it from seeing the quit message, and
+/// `create` holds the `VIRTUAL_MIC` lock, which `is_running` reads as "not
+/// running" for as long as it is held. A thread still stuck afterwards is joined
+/// by a helper thread when it does end.
+fn end_failed_thread(thread: JoinHandle<()>, timeout: Duration) {
+    let _ = bounded::run_bounded("audioforge-virtual-mic-join", timeout, move || {
+        let _ = thread.join();
+    });
 }
 
 fn run(quit_rx: pw::channel::Receiver<()>, ready_tx: mpsc::Sender<Result<(), String>>) {
@@ -313,6 +329,18 @@ mod tests {
     fn only_a_core_error_with_the_cores_own_id_is_a_lost_connection() {
         assert!(connection_lost(pw::core::PW_ID_CORE));
         assert!(!connection_lost(pw::core::PW_ID_CORE + 1));
+    }
+
+    #[test]
+    fn a_failed_create_does_not_wait_for_a_hung_thread() {
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let thread = std::thread::spawn(move || {
+            let _ = release_rx.recv();
+        });
+        let started = std::time::Instant::now();
+        end_failed_thread(thread, Duration::from_millis(50));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        release_tx.send(()).unwrap();
     }
 
     #[test]

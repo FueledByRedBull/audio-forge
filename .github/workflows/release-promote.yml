@@ -47,19 +47,7 @@ jobs:
         shell: pwsh
     steps:
       - name: Authorize the dispatch
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DISPATCHER: ${{ github.triggering_actor }}
-        run: |
-          if ($env:GITHUB_REF -ne "refs/heads/master") {
-            throw "This workflow runs only from refs/heads/master, not $env:GITHUB_REF."
-          }
-          $permission = Invoke-RestMethod `
-            -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" } `
-            -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/collaborators/$([uri]::EscapeDataString($env:DISPATCHER))/permission"
-          if ($permission.role_name -notin @("admin", "maintain")) {
-            throw "$env:DISPATCHER needs the admin or maintain role to run this workflow, but has '$($permission.role_name)'."
-          }
+        uses: $/.github/actions/authorize-dispatch  # nosemgrep: github-actions-mutable-action-tag  ($/ resolves to the running commit)
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -132,14 +120,28 @@ jobs:
             if ([string]$run.attempt -notmatch '^\d+$' -or [int]$run.attempt -lt 1) {
               throw "Run $RunId has an invalid attempt number."
             }
-            # The run succeeds only if its jobs do, but a run from a workflow that
-            # lacks the Linux tests would also succeed: each must be there.
+            # A run from a workflow that lacks a gate would also succeed, and a
+            # skipped job does not fail its run: every job must be there by name,
+            # and every job in the run must have succeeded.
             $shards = @((Get-Content -Raw .github/pytest-shards.json | ConvertFrom-Json).PSObject.Properties.Name) + "rest"
-            $required = @("Build Linux release package", "Linux Rust tests and lint") + @($shards | ForEach-Object { "linux-pytest ($_)" })
+            $required = @(
+              "Static checks and audits",
+              "Build Windows release package",
+              "Rust tests and lint",
+              "Rust contention stress (release mode)",
+              "Validate the exact archived candidate",
+              "Build Linux release package",
+              "Linux Rust tests and lint"
+            ) + @($shards | ForEach-Object { "pytest ($_)" }) + @($shards | ForEach-Object { "linux-pytest ($_)" })
             foreach ($jobName in $required) {
               $job = @($run.jobs | Where-Object { $_.name -ceq $jobName })
               if ($job.Count -ne 1 -or $job[0].conclusion -ne "success") {
                 throw "Run $RunId has no successful '$jobName' job."
+              }
+            }
+            foreach ($job in @($run.jobs)) {
+              if ($job.conclusion -ne "success") {
+                throw "Run $RunId has job '$($job.name)' with conclusion '$($job.conclusion)', not success."
               }
             }
             return $run
@@ -507,19 +509,7 @@ jobs:
         shell: pwsh
     steps:
       - name: Authorize the dispatch
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DISPATCHER: ${{ github.triggering_actor }}
-        run: |
-          if ($env:GITHUB_REF -ne "refs/heads/master") {
-            throw "This workflow runs only from refs/heads/master, not $env:GITHUB_REF."
-          }
-          $permission = Invoke-RestMethod `
-            -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" } `
-            -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/collaborators/$([uri]::EscapeDataString($env:DISPATCHER))/permission"
-          if ($permission.role_name -notin @("admin", "maintain")) {
-            throw "$env:DISPATCHER needs the admin or maintain role to run this workflow, but has '$($permission.role_name)'."
-          }
+        uses: $/.github/actions/authorize-dispatch  # nosemgrep: github-actions-mutable-action-tag  ($/ resolves to the running commit)
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -644,21 +634,9 @@ jobs:
         shell: pwsh
     steps:
       - name: Authorize the dispatch
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DISPATCHER: ${{ github.triggering_actor }}
-        run: |
-          if ($env:GITHUB_REF -ne "refs/heads/master") {
-            throw "This workflow runs only from refs/heads/master, not $env:GITHUB_REF."
-          }
-          $permission = Invoke-RestMethod `
-            -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" } `
-            -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/collaborators/$([uri]::EscapeDataString($env:DISPATCHER))/permission"
-          if ($permission.role_name -notin @("admin", "maintain")) {
-            throw "$env:DISPATCHER needs the admin or maintain role to run this workflow, but has '$($permission.role_name)'."
-          }
+        uses: $/.github/actions/authorize-dispatch  # nosemgrep: github-actions-mutable-action-tag  ($/ resolves to the running commit)
 
-      # The workflow revision, only for its release notes.
+      # The workflow revision, for the release notes and the tag re-check.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -719,6 +697,30 @@ jobs:
           }
           foreach ($kind in $assets.Keys) {
             "$kind=$($assets[$kind].FullName)" >> $env:GITHUB_OUTPUT
+          }
+
+      # The verification jobs approved one commit; a tag moved while the
+      # environment waited would publish those files under another commit.
+      # --verify-tag below only proves the tag exists.
+      - name: Re-check that the release tag still points at the approved commit
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          TAG_COMMIT: ${{ needs.verify-candidate.outputs.tag_commit }}
+        run: |
+          if ($env:TAG_COMMIT -notmatch '^[0-9a-f]{40}$') {
+            throw "The verification job did not record a release tag commit."
+          }
+          $tagRef = "refs/tags/$($env:RELEASE_TAG)"
+          $peeled = "$tagRef^{}"
+          $remote = @(git ls-remote origin $tagRef $peeled)
+          if ($LASTEXITCODE -ne 0) { throw "Unable to read release tag '$env:RELEASE_TAG' from origin." }
+          $current = @($remote | Where-Object { ($_ -split '\s+')[1] -ceq $peeled })
+          if ($current.Count -ne 1) {
+            throw "Release tag '$env:RELEASE_TAG' must be an annotated tag that exists on origin."
+          }
+          $currentCommit = ($current[0] -split '\s+')[0]
+          if ($currentCommit -ne $env:TAG_COMMIT) {
+            throw "Release tag '$env:RELEASE_TAG' now points at $currentCommit, not the approved commit $env:TAG_COMMIT."
           }
 
       - name: Upload exact validated assets to GitHub Release
@@ -857,7 +859,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path $verifyDir | Out-Null
           $expectedAssetNames = @($assetPaths | ForEach-Object { [IO.Path]::GetFileName($_) })
           $remoteAssets = Get-ReleaseAssets $release
-          Assert-ReleaseAssetNames $release $expectedAssetNames -AllowMissing
+          # Only a draft may still be missing assets. A published release is
+          # complete or refused, so nothing is ever uploaded into it.
+          $mayLackAssets = [bool]$release.isDraft
+          Assert-ReleaseAssetNames $release $expectedAssetNames -AllowMissing:$mayLackAssets
           $toUpload = @()
           foreach ($assetPath in $assetPaths) {
             $assetName = [IO.Path]::GetFileName($assetPath)

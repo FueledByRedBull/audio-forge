@@ -16,6 +16,7 @@ from mic_eq.ui.engine_session import (
     AudioUnavailable,
     BackgroundStopFailed,
     ControlsChanged,
+    EngineBusy,
     EngineSession,
     MuteApplied,
     RestartFailed,
@@ -362,7 +363,7 @@ def test_a_borrow_while_a_call_is_out_is_refused_until_it_answers(rig, call):
     else:
         rig.session.tick()
 
-    with pytest.raises(AudioUnavailable, match="try again"):
+    with pytest.raises(EngineBusy, match="try again"):
         rig.session.borrow("test_my_sound")
     assert rig.engine.lifecycle() == [] and rig.events(AudioBorrowed) == []
 

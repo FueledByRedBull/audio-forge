@@ -65,7 +65,7 @@ from .capture_session import (
     owner_calibration_context_key as _owner_calibration_context_key,
     processor_sample_rate as _processor_sample_rate,
 )
-from .engine_session import AudioLease, AudioUnavailable, RouteMismatch
+from .engine_session import AudioLease, AudioUnavailable, RouteMismatch, unavailable_text
 from .analysis_worker import (
     CancellableWorker,
     CaptureAnalysis,
@@ -1074,8 +1074,11 @@ class VoiceSetupDialog(QDialog):
                 QMessageBox.critical(
                     self,
                     "Audio Error",
-                    "AudioForge could not switch to your selected devices.\n\n"
-                    f"{exc}\n\nCheck that they are connected and not used by another app.",
+                    unavailable_text(
+                        exc,
+                        "AudioForge could not switch to your selected devices.",
+                        "Check that they are connected and not used by another app.",
+                    ),
                 )
                 return False
             return True
@@ -1083,9 +1086,11 @@ class VoiceSetupDialog(QDialog):
             QMessageBox.critical(
                 self,
                 "Audio Error",
-                "AudioForge could not start the microphone and speakers.\n\n"
-                f"{exc}\n\nCheck that they are connected and not used by another app, "
-                "then try again.",
+                unavailable_text(
+                    exc,
+                    "AudioForge could not start the microphone and speakers.",
+                    "Check that they are connected and not used by another app, then try again.",
+                ),
             )
             return False
 

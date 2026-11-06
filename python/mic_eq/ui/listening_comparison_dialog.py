@@ -50,7 +50,7 @@ from .capture_session import (
     selected_device_identities,
 )
 from .components import live_output_muted_notice, session_is_ending
-from .engine_session import AudioLease, AudioUnavailable, RouteMismatch
+from .engine_session import AudioLease, AudioUnavailable, RouteMismatch, unavailable_text
 from .layout_constants import (
     MARGIN_PANEL,
     SPACING_NORMAL,
@@ -1045,8 +1045,11 @@ def open_test_my_sound(window: Any) -> None:
         return
     except AudioUnavailable as exc:
         fail(
-            f"Could not start the microphone.\n\n{exc}\n\n"
-            "Check that your devices are connected and not in use by another app."
+            unavailable_text(
+                exc,
+                "Could not start the microphone.",
+                "Check that your devices are connected and not in use by another app.",
+            )
         )
         return
 

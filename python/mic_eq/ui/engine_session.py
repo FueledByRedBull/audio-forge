@@ -180,6 +180,17 @@ class AudioUnavailable(Exception):
     """The audio could not be started or moved; the message is the engine's."""
 
 
+class EngineBusy(AudioUnavailable):
+    """A Start, Stop, Refresh or recovery is still out; the devices are not the problem."""
+
+
+def unavailable_text(error: AudioUnavailable, lead: str, advice: str) -> str:
+    """What a dialog says when a borrow is refused: a busy engine needs a wait, not a device check."""
+    if isinstance(error, EngineBusy):
+        return str(error)
+    return f"{lead}\n\n{error}\n\n{advice}"
+
+
 class AudioLease:
     """Audio a dialog borrowed: it stops only what it started, and only while that still runs."""
 
@@ -480,12 +491,12 @@ class EngineSession(QObject):
     def borrow(self, purpose: str, *, switch_route: bool = False) -> AudioLease:
         """Audio on the selected route for a dialog: started if stopped, moved there with ``switch_route``.
 
-        Raises ``RouteMismatch`` when the audio runs elsewhere and ``switch_route`` is false, and
-        ``AudioUnavailable`` when a call is out, the route cannot be read, or the start or the move
-        failed (a failed move puts the old route back).
+        Raises ``RouteMismatch`` when the audio runs elsewhere and ``switch_route`` is false,
+        ``EngineBusy`` when a call is out, and ``AudioUnavailable`` when the route cannot be read
+        or the start or the move failed (a failed move puts the old route back).
         """
         if self.view.in_use:
-            raise AudioUnavailable("Audio is starting, stopping or recovering. Wait a moment and try again.")
+            raise EngineBusy("Audio is starting, stopping or recovering. Wait a moment and try again.")
         try:
             selected = self._prepare.selected_route()
             active = active_device_identities(self.processor) if self.processor.is_running() else None

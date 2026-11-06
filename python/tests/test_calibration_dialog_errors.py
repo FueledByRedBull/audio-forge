@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QWidget
 
 from mic_eq.ui import capture_session
 from mic_eq.ui.calibration_dialog import CalibrationDialog
+from mic_eq.ui import calibration_dialog, voice_setup_dialog
 from mic_eq.ui.engine_session import AudioLease
 from mic_eq.ui.theme import message_text_style
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
@@ -101,6 +102,36 @@ def test_stalled_capture_fails_and_releases_only_capture_owned_state(
             call(True),
             call(False),
         ]
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+        owner.close()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize("dialog_type", [CalibrationDialog, VoiceSetupDialog])
+def test_a_take_refused_while_the_engine_is_busy_says_to_wait_not_to_check_devices(
+    qapp, monkeypatch, dialog_type
+):
+    owner = QWidget()
+    session = fake_session()
+    setattr(owner, "processor", session.processor)
+    setattr(owner, "engine_session", session)
+    session.request_start("button")  # the start stays out: the fake tasks never run it
+    messages: list[str] = []
+    module = calibration_dialog if dialog_type is CalibrationDialog else voice_setup_dialog
+    monkeypatch.setattr(
+        module.QMessageBox, "critical", lambda _parent, _title, text: messages.append(text)
+    )
+    dialog = dialog_type(parent=owner)
+    try:
+        if isinstance(dialog, CalibrationDialog):
+            assert dialog._borrow_audio(session) is None
+        else:
+            assert dialog._ensure_processor_ready() is False
+        assert len(messages) == 1
+        assert "Wait a moment and try again" in messages[0]
+        assert "connected" not in messages[0]
     finally:
         dialog.reject()
         dialog.deleteLater()

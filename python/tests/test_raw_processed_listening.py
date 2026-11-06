@@ -203,6 +203,16 @@ def test_entry_reports_processing_on_another_route(harness):
     assert opened == [] and window.processor.calls == []
 
 
+def test_entry_reports_a_busy_engine_without_blaming_the_devices(harness):
+    warnings, opened = harness
+    window = _Window(_Processor(running=False))
+    window.engine_session.request_start("button")  # the start stays out: the fake tasks never run it
+    open_test_my_sound(window)
+    assert len(warnings) == 1
+    assert "Wait a moment and try again" in warnings[0] and "connected" not in warnings[0]
+    assert opened == []
+
+
 def test_entry_reports_a_stream_that_will_not_start(harness):
     warnings, opened = harness
     processor = _Processor(running=False)

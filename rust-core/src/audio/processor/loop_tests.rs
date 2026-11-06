@@ -12,7 +12,7 @@ use super::supervisor::{
     Supervisor, CALLBACK_STALL_MS, CHECK_INTERVAL_MS, CONSECUTIVE_STALL_CHECKS, STARTUP_GRACE_MS,
 };
 use super::{AudioProcessor, OUTPUT_PRIME_MS};
-use crate::audio::rt::RtErrorCode;
+use crate::audio::rt::{store_rt_error, RtErrorCode};
 use crate::dsp::eq::{EqBandConfig, EqFilterType, NUM_BANDS};
 use crate::dsp::noise_suppressor::{
     ControlledNoiseSuppressor, GateControl, NoiseModel, NoiseSuppressor,
@@ -609,14 +609,16 @@ fn getters_do_not_wait_for_a_start_in_progress() {
     });
 }
 
-/// An engine that takes every sample, never produces any and notes when it
-/// was retired.
+/// An engine that takes every sample, never produces any (or, when
+/// `non_finite`, hands back NaN for each) and notes when it was retired.
 struct StubSuppressor {
     model: NoiseModel,
     retired: Arc<std::sync::atomic::AtomicBool>,
     enabled: bool,
     available: bool,
     failed: bool,
+    non_finite: bool,
+    ready: usize,
 }
 
 impl StubSuppressor {
@@ -627,6 +629,16 @@ impl StubSuppressor {
             enabled: true,
             available: true,
             failed: false,
+            non_finite: false,
+            ready: 0,
+        })
+    }
+
+    /// An engine that answers every sample with NaN.
+    fn non_finite(model: NoiseModel) -> Box<Self> {
+        Box::new(Self {
+            non_finite: true,
+            ..*Self::boxed(model, &Arc::default())
         })
     }
 
@@ -638,6 +650,8 @@ impl StubSuppressor {
             enabled: true,
             available: false,
             failed: true,
+            non_finite: false,
+            ready: 0,
         })
     }
 
@@ -650,20 +664,28 @@ impl StubSuppressor {
             enabled: true,
             available: false,
             failed: false,
+            non_finite: false,
+            ready: 0,
         })
     }
 }
 
 impl NoiseSuppressor for StubSuppressor {
     fn push_samples(&mut self, samples: &[f32]) -> usize {
+        if self.non_finite {
+            self.ready += samples.len();
+        }
         samples.len()
     }
     fn process_frames(&mut self) {}
     fn available_samples(&self) -> usize {
-        0
+        self.ready
     }
-    fn pop_samples_into(&mut self, _buffer: &mut [f32]) -> usize {
-        0
+    fn pop_samples_into(&mut self, buffer: &mut [f32]) -> usize {
+        let count = self.ready.min(buffer.len());
+        buffer[..count].fill(f32::NAN);
+        self.ready -= count;
+        count
     }
     fn set_strength(&self, _value: f32) {}
     fn get_strength(&self) -> f32 {
@@ -701,7 +723,7 @@ impl NoiseSuppressor for StubSuppressor {
 
 impl ControlledNoiseSuppressor for StubSuppressor {
     fn push_controlled_samples(&mut self, samples: &[f32], _controls: &[GateControl]) -> usize {
-        samples.len()
+        self.push_samples(samples)
     }
 }
 
@@ -723,6 +745,16 @@ fn queue_engine(
 /// `dirty` is set for any reason, so a model has to be selected before its engine
 /// can be seen in the queue.
 #[cfg(feature = "deepfilter")]
+/// Sets a flag when dropped, so a scoped thread waiting on it ends whether the
+/// test body returns or panics.
+pub(super) struct StopOnDrop<'a>(pub(super) &'a std::sync::atomic::AtomicBool);
+
+impl Drop for StopOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
 #[test]
 fn an_engine_is_never_queued_ahead_of_its_selected_model() {
     use crate::audio::rt::RtCommandQueue;
@@ -742,6 +774,9 @@ fn an_engine_is_never_queued_ahead_of_its_selected_model() {
     let finished = std::sync::atomic::AtomicBool::new(false);
 
     let early = std::thread::scope(|scope| {
+        // Ends the loop side even if this body panics: the scope would wait for
+        // it forever.
+        let stop = StopOnDrop(&finished);
         let loop_side = scope.spawn(|| {
             let mut early = 0;
             while !finished.load(Ordering::Acquire) {
@@ -770,7 +805,7 @@ fn an_engine_is_never_queued_ahead_of_its_selected_model() {
                 std::hint::spin_loop();
             }
         }
-        finished.store(true, Ordering::Release);
+        drop(stop);
         loop_side.join().unwrap()
     });
 
@@ -813,6 +848,54 @@ fn a_failed_backend_never_hides_a_stream_or_resampler_error_from_recovery() {
     ] {
         assert_eq!(status_after(replaced), RtErrorCode::SuppressorBackendFailed);
     }
+}
+
+/// The device is gone: its stream error and a restart request stand while the
+/// suppressor misbehaves too. Recovery takes the stored code for the cause, so
+/// a suppressor code on top of it would rebuild the engine and drop the request
+/// the dead stream needs.
+fn stream_error_stands_under_a_suppressor_fault(engine: Box<StubSuppressor>) {
+    let processor = AudioProcessor::new();
+    let mut offline = OfflineLoop::new(
+        &processor,
+        OfflineLoopConfig {
+            suppressor: Some(engine),
+            ..OfflineLoopConfig::default()
+        },
+    );
+    let shared = &processor.shared;
+    store_rt_error(
+        shared.dsp.rt_error_code.as_ref(),
+        RtErrorCode::OutputStreamError,
+    );
+    shared
+        .stream
+        .restart_requested
+        .store(true, Ordering::Release);
+
+    // A second of audio: more than the starvation limit, and every block of it
+    // comes back from the stub non-finite when it is that kind.
+    let mut tone = Tone::new(440.0, 0.2);
+    feed(&mut offline, &mut tone, 100, BLOCK);
+
+    assert_eq!(
+        RtErrorCode::from_u32(processor.get_rt_error_code()),
+        RtErrorCode::OutputStreamError
+    );
+    assert!(shared.stream.restart_requested.load(Ordering::Acquire));
+}
+
+#[test]
+fn non_finite_suppressor_output_never_replaces_a_stream_error() {
+    stream_error_stands_under_a_suppressor_fault(StubSuppressor::non_finite(NoiseModel::RNNoise));
+}
+
+#[test]
+fn a_starved_suppressor_never_replaces_a_stream_error() {
+    stream_error_stands_under_a_suppressor_fault(StubSuppressor::boxed(
+        NoiseModel::RNNoise,
+        &Arc::default(),
+    ));
 }
 
 #[test]

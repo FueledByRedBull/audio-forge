@@ -1256,6 +1256,9 @@ fn test_runtime_diagnostics_read_the_device_buffer_once() {
 
     let stop = AtomicBool::new(false);
     let torn = std::thread::scope(|scope| {
+        // Ends the writer even if this body panics: the scope would wait for it
+        // forever.
+        let _stop = super::loop_tests::StopOnDrop(&stop);
         scope.spawn(|| {
             let frames = &processor.shared.output.device_buffer_frames;
             while !stop.load(Ordering::Relaxed) {
@@ -1285,7 +1288,6 @@ fn test_runtime_diagnostics_read_the_device_buffer_once() {
                 }
             });
         }
-        stop.store(true, Ordering::Relaxed);
         torn
     });
     assert_eq!(torn, 0, "exports that contradicted themselves");

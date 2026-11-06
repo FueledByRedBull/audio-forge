@@ -1,4 +1,4 @@
-use crate::audio::rt::RtErrorCode;
+use crate::audio::rt::{store_suppressor_error, RtErrorCode};
 use crate::dsp::noise_suppressor::ControlledNoiseSuppressionEngine as NoiseSuppressionEngine;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
@@ -55,13 +55,7 @@ pub(super) fn update_backend_status_rt(
     available.store(suppressor.backend_available(), Ordering::Relaxed);
     failed.store(suppressor.backend_failed(), Ordering::Relaxed);
     if suppressor.backend_failed() || suppressor.backend_error().is_some() {
-        // A stream or resampler error is not replaced: recovery would take the
-        // suppressor code for the cause and rebuild the engine instead of
-        // restarting the streams.
-        let _ = rt_error_code.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |code| {
-            (!RtErrorCode::from_u32(code).is_stream_failure())
-                .then_some(RtErrorCode::SuppressorBackendFailed as u32)
-        });
+        store_suppressor_error(rt_error_code, RtErrorCode::SuppressorBackendFailed);
     }
 }
 

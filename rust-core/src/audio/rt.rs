@@ -68,6 +68,16 @@ pub fn store_rt_error(error: &AtomicU32, code: RtErrorCode) {
     error.store(code as u32, Ordering::Relaxed);
 }
 
+/// Record a suppressor fault, unless a stream or resampler failure is already
+/// recorded. Recovery takes the stored code for the cause: a suppressor code on
+/// top of a dead stream would rebuild the engine and never restart the stream.
+/// Every writer of a suppressor code goes through here.
+pub fn store_suppressor_error(error: &AtomicU32, code: RtErrorCode) {
+    let _ = error.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        (!RtErrorCode::from_u32(current).is_stream_failure()).then_some(code as u32)
+    });
+}
+
 pub struct FixedAudioBuffer<T, const N: usize> {
     data: Vec<T>,
     len: usize,

@@ -6,7 +6,7 @@
 //! driver offers one; on VB-Cable a 128-frame period took about 48 ms off the
 //! time from writing a sample to reading it back from CABLE Output. A device
 //! that offers nothing shorter, or refuses the stream, stays on cpal, and so does
-//! one whose short-period stream never delivered a period, until the app
+//! one whose short-period stream failed before it had run, until the app
 //! restarts. A stream that ran and then failed, as when the driver or the audio
 //! service restarts, is retried on the next start. VB-Cable is
 //! the only endpoint measured this way, so only VB-Audio's are tried: the period
@@ -19,6 +19,7 @@ use cpal::SampleFormat;
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::ptr::{null, null_mut, NonNull};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -313,19 +314,55 @@ fn device_is_gone(hresult: Hresult) -> bool {
     )
 }
 
+/// Counts the frames a stream has handed to the device, to tell a stream that
+/// worked from one that signalled a period or two and failed.
+///
+/// One second of audio is the line. A signal alone proves little: a broken
+/// short-period stream often signals once and then fails or goes silent, and
+/// counting that as "ran" would reopen it at every recovery restart, a loop of
+/// dropouts. The supervisor's 10 s healthy-stream window is too long for this:
+/// a stream that served audio for 5 s is not the endpoint refusing, and should
+/// be tried again at the next start. A second is many periods, so a stream that
+/// failed on its own is not mistaken for one that works, and short of the point
+/// where a device's later transient fault would shut the short period off.
+struct RunProgress {
+    needed_frames: u64,
+    filled_frames: u64,
+}
+
+impl RunProgress {
+    fn new(sample_rate: u32) -> Self {
+        Self {
+            needed_frames: u64::from(sample_rate.max(1)),
+            filled_frames: 0,
+        }
+    }
+
+    /// A fill that handed the device `frames`.
+    fn filled(&mut self, frames: u32) {
+        self.filled_frames = self.filled_frames.saturating_add(u64::from(frames));
+    }
+
+    fn has_run(&self) -> bool {
+        self.filled_frames >= self.needed_frames
+    }
+}
+
 /// How a started stream ended in failure.
 struct RunFailure {
     hresult: Hresult,
-    /// Whether the engine signalled at least one period before the failure.
-    delivered: bool,
+    /// Whether the stream had filled a second of audio (`RunProgress`) before
+    /// the failure.
+    ran: bool,
 }
 
 impl RunFailure {
     /// Whether the endpoint is refusing the short period, as against a stream that
     /// worked and then lost its device or hit a transient error. A stream that
-    /// never delivered a period is the refusal; the rest are retried at next start.
+    /// failed before it had run is the refusal, unless the device is gone; the
+    /// rest are retried at next start.
     fn is_refusal(&self) -> bool {
-        !self.delivered && !device_is_gone(self.hresult)
+        !self.ran && !device_is_gone(self.hresult)
     }
 }
 
@@ -453,6 +490,7 @@ pub(crate) struct Client {
     buffer_frames: u32,
     channels: usize,
     period_frames: u32,
+    sample_rate: u32,
 }
 
 impl Client {
@@ -517,6 +555,7 @@ impl Client {
             buffer_frames,
             channels: usize::from(channels),
             period_frames,
+            sample_rate,
         }))
     }
 
@@ -550,8 +589,8 @@ impl Client {
     }
 
     // RT_REGION_START: wasapi_render_step
-    /// Hand the device everything it has room for.
-    fn fill(&self, renderer: &mut OutputRenderer) -> Result<(), Hresult> {
+    /// Hand the device everything it has room for; returns the frames handed over.
+    fn fill(&self, renderer: &mut OutputRenderer) -> Result<u32, Hresult> {
         let mut padding = 0;
         // SAFETY: The client is live; GetBuffer returns room for `room` frames of
         // the float mix format, and the slice ends before ReleaseBuffer.
@@ -563,7 +602,7 @@ impl Client {
             ))?;
             let room = self.buffer_frames.saturating_sub(padding);
             if room == 0 {
-                return Ok(());
+                return Ok(0);
             }
             let mut data = null_mut();
             check((self.render.vtbl().get_buffer)(
@@ -581,6 +620,7 @@ impl Client {
                 room,
                 0,
             ))
+            .map(|()| room)
         }
     }
     // RT_REGION_END: wasapi_render_step
@@ -602,12 +642,12 @@ impl Client {
         check(unsafe { (self.audio.vtbl().start)(self.audio.raw()) }).map_err(|hresult| {
             RunFailure {
                 hresult,
-                delivered: false,
+                ran: false,
             }
         })?;
         let waits = [stop.raw(), self.audio_event.raw()];
         let mut silent_waits = 0;
-        let mut delivered = false;
+        let mut progress = RunProgress::new(self.sample_rate);
         let result = loop {
             // SAFETY: Both handles stay open for the wait.
             // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
@@ -615,9 +655,9 @@ impl Client {
                 WAIT_OBJECT_0 => break Ok(()),
                 WAIT_OBJECT_1 => {
                     silent_waits = 0;
-                    delivered = true;
-                    if let Err(hresult) = self.fill(renderer) {
-                        break Err(hresult);
+                    match self.fill(renderer) {
+                        Ok(frames) => progress.filled(frames),
+                        Err(hresult) => break Err(hresult),
                     }
                 }
                 WAIT_TIMEOUT => {
@@ -642,7 +682,10 @@ impl Client {
         // SAFETY: The client was started above.
         // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe { (self.audio.vtbl().stop)(self.audio.raw()) };
-        result.map_err(|hresult| RunFailure { hresult, delivered })
+        result.map_err(|hresult| RunFailure {
+            hresult,
+            ran: progress.has_run(),
+        })
     }
 }
 
@@ -722,7 +765,7 @@ pub(crate) fn probe_standard_buffer(
         return failed_probe(E_INVALIDARG);
     };
     let endpoint_id = endpoint_id.to_owned();
-    probe_within(PROBE_TIMEOUT, move || {
+    probe_within(&PROBE_OUTSTANDING, PROBE_TIMEOUT, move || {
         read_standard_buffer(&endpoint_id, sample_rate, &format, fixed_frames)
     })
 }
@@ -734,12 +777,42 @@ fn failed_probe(hresult: Hresult) -> OutputDeviceBuffer {
     }
 }
 
+/// Whether a probe thread is still running. One that timed out stays blocked in
+/// the driver, and every later Start or restart would add another behind it, so
+/// while it lives a new probe is not started.
+static PROBE_OUTSTANDING: AtomicBool = AtomicBool::new(false);
+
+/// Clears the flag when the probe's thread is done with it, however it ends.
+struct ProbeSlot(&'static AtomicBool);
+
+impl Drop for ProbeSlot {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 /// Run `read` on a helper thread. A read still blocked in the driver after
-/// `timeout` leaves the buffer unknown with its own failure code.
+/// `timeout` leaves the buffer unknown with its own failure code, and so does
+/// every probe asked for while that read has not returned (`outstanding`), at
+/// once and without a thread.
 fn probe_within(
+    outstanding: &'static AtomicBool,
     timeout: Duration,
     read: impl FnOnce() -> Result<OutputDeviceBuffer, Hresult> + Send + 'static,
 ) -> OutputDeviceBuffer {
+    if outstanding
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return failed_probe(PROBE_TIMED_OUT);
+    }
+    // The slot goes with the closure: it is cleared when `read` has returned or
+    // unwound, and when the thread could not be started at all.
+    let slot = ProbeSlot(outstanding);
+    let read = move || {
+        let _slot = slot;
+        read()
+    };
     match bounded::run_bounded("audioforge-output-probe", timeout, read) {
         Ok(Ok(buffer)) => buffer,
         Ok(Err(hresult)) => failed_probe(hresult),
@@ -1040,7 +1113,7 @@ mod tests {
     fn a_probe_stuck_in_the_driver_times_out_with_its_own_code() {
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let started = std::time::Instant::now();
-        let probe = probe_within(Duration::from_millis(50), move || {
+        let probe = probe_within(unused_probe_flag(), Duration::from_millis(50), move || {
             let _ = release_rx.recv();
             Ok(OutputDeviceBuffer {
                 frames: 480,
@@ -1057,7 +1130,8 @@ mod tests {
 
     #[test]
     fn a_probe_that_answers_keeps_its_reading_or_its_error() {
-        let read = probe_within(Duration::from_secs(5), || {
+        let outstanding = unused_probe_flag();
+        let read = probe_within(outstanding, Duration::from_secs(5), || {
             Ok(OutputDeviceBuffer {
                 frames: 1056,
                 period_frames: 480,
@@ -1068,10 +1142,78 @@ mod tests {
             (read.frames, read.period_frames, read.failure_code),
             (1056, 480, 0)
         );
-        let refused = probe_within(Duration::from_secs(5), || Err(E_FAIL));
+        assert!(
+            !outstanding.load(Ordering::Acquire),
+            "a probe that answered"
+        );
+        let refused = probe_within(outstanding, Duration::from_secs(5), || Err(E_FAIL));
         assert_eq!((refused.frames, refused.failure_code), (0, E_FAIL as u32));
-        let panicked = probe_within(Duration::from_secs(5), || panic!("driver fault"));
+        assert!(!outstanding.load(Ordering::Acquire), "a probe that failed");
+        let panicked = probe_within(outstanding, Duration::from_secs(5), || {
+            panic!("driver fault")
+        });
         assert_eq!((panicked.frames, panicked.failure_code), (0, E_FAIL as u32));
+        assert!(
+            !outstanding.load(Ordering::Acquire),
+            "a probe that panicked"
+        );
+    }
+
+    /// A probe slot of a test's own, so tests that time probes out do not hold
+    /// each other's up.
+    fn unused_probe_flag() -> &'static AtomicBool {
+        Box::leak(Box::new(AtomicBool::new(false)))
+    }
+
+    #[test]
+    fn a_probe_stuck_in_the_driver_is_not_followed_by_more_threads() {
+        let outstanding = unused_probe_flag();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let reading = || {
+            Ok(OutputDeviceBuffer {
+                frames: 1056,
+                period_frames: 480,
+                failure_code: 0,
+            })
+        };
+        let first = probe_within(outstanding, Duration::from_millis(50), move || {
+            let _ = release_rx.recv();
+            reading()
+        });
+        assert_eq!(first.failure_code, PROBE_TIMED_OUT as u32);
+
+        // Later starts get the same answer at once, and their reads never run.
+        let ran = Arc::new(AtomicBool::new(false));
+        for _ in 0..3 {
+            let ran = Arc::clone(&ran);
+            let started = std::time::Instant::now();
+            let later = probe_within(outstanding, Duration::from_secs(30), move || {
+                ran.store(true, Ordering::SeqCst);
+                reading()
+            });
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert_eq!(
+                (later.frames, later.failure_code),
+                (0, PROBE_TIMED_OUT as u32)
+            );
+        }
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "a second thread read the driver"
+        );
+
+        // Once the stuck read returns, probes are taken again.
+        release_tx.send(()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while outstanding.load(Ordering::Acquire) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the slot never cleared"
+            );
+            std::thread::yield_now();
+        }
+        let after = probe_within(outstanding, Duration::from_secs(5), reading);
+        assert_eq!((after.frames, after.failure_code), (1056, 0));
     }
 
     #[test]
@@ -1140,15 +1282,54 @@ mod tests {
 
     #[test]
     fn a_stream_that_ran_and_then_failed_does_not_refuse_the_endpoint() {
-        let failure = |hresult, delivered| RunFailure { hresult, delivered };
-        // The silent-wait E_FAIL after periods were delivered, a service restart,
-        // a transient buffer error: all retried at the next start.
+        let failure = |hresult, ran| RunFailure { hresult, ran };
+        // The silent-wait E_FAIL after the stream ran, a service restart, a
+        // transient buffer error: all retried at the next start.
         assert!(!failure(E_FAIL, true).is_refusal());
         assert!(!failure(AUDCLNT_E_SERVICE_NOT_RUNNING, false).is_refusal());
         assert!(!failure(AUDCLNT_E_SERVICE_NOT_RUNNING, true).is_refusal());
         assert!(!failure(AUDCLNT_E_DEVICE_INVALIDATED, false).is_refusal());
-        // A stream that never delivered a period is the endpoint refusing.
+        // A stream that failed before it had run is the endpoint refusing.
         assert!(failure(E_FAIL, false).is_refusal());
+    }
+
+    #[test]
+    fn a_stream_has_run_after_a_second_of_filled_frames_not_after_one_signal() {
+        let mut progress = RunProgress::new(48_000);
+        // The engine signalled once and the fill that followed handed over a
+        // buffer, or failed and handed over nothing: not a stream that works.
+        assert!(!progress.has_run());
+        progress.filled(1056);
+        assert!(!progress.has_run());
+        progress.filled(0);
+        assert!(!progress.has_run());
+        // The periods add up; the threshold is one second of audio exactly.
+        for _ in 0..97 {
+            progress.filled(480);
+        }
+        progress.filled(383);
+        assert!(!progress.has_run(), "47 999 frames");
+        progress.filled(1);
+        assert!(progress.has_run(), "48 000 frames");
+        // It stays run.
+        progress.filled(0);
+        assert!(progress.has_run());
+    }
+
+    #[test]
+    fn the_second_of_frames_follows_the_stream_rate() {
+        for (rate, frames) in [(44_100_u32, 44_100_u32), (48_000, 48_000), (96_000, 96_000)] {
+            let mut progress = RunProgress::new(rate);
+            progress.filled(frames - 1);
+            assert!(!progress.has_run(), "{rate} Hz");
+            progress.filled(1);
+            assert!(progress.has_run(), "{rate} Hz");
+        }
+        // A rate of 0 never makes a stream that has run out of nothing.
+        let mut unknown = RunProgress::new(0);
+        assert!(!unknown.has_run());
+        unknown.filled(1);
+        assert!(unknown.has_run());
     }
 
     #[test]

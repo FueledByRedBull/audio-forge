@@ -39,7 +39,9 @@ use super::{
 use crate::audio::bounded::{self, Unanswered};
 use crate::audio::buffer::{AudioConsumer, AudioProducer};
 use crate::audio::clock::now_micros;
-use crate::audio::rt::{store_rt_error, FixedAudioBuffer, FixedAudioRing, RtErrorCode};
+use crate::audio::rt::{
+    store_rt_error, store_suppressor_error, FixedAudioBuffer, FixedAudioRing, RtErrorCode,
+};
 use crate::dsp::biquad::Biquad;
 use crate::dsp::noise_suppressor::{
     ControlledNoiseSuppressionEngine as NoiseSuppressionEngine, GateControl,
@@ -1762,7 +1764,7 @@ impl Pipeline {
                     .suppressor
                     .non_finite_count
                     .fetch_add(1, Ordering::Relaxed);
-                store_rt_error(
+                store_suppressor_error(
                     shared.dsp.rt_error_code.as_ref(),
                     RtErrorCode::SuppressorNonFinite,
                 );
@@ -1815,7 +1817,7 @@ impl Pipeline {
                 && !shared.recording.active.load(Ordering::Relaxed)
                 && self.suppressor.starvation.starved()
             {
-                store_rt_error(
+                store_suppressor_error(
                     shared.dsp.rt_error_code.as_ref(),
                     RtErrorCode::SuppressorBackendFailed,
                 );

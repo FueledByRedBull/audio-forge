@@ -731,17 +731,10 @@ impl AudioProcessor {
         if let Ok(mut state) = self.shared.stream.recovery_state.lock() {
             state.reason_pending = false;
         }
-        self.shared
-            .stream
-            .recovering
-            .store(false, Ordering::Release);
 
         // Clear capture state without changing the caller's output mute.
         self.shared.recording.clear_capture();
-        self.shared
-            .suppressor
-            .latency_samples
-            .store(0, Ordering::Relaxed);
+        self.shared.clear_run_values();
         self.shared
             .input
             .resampler_active

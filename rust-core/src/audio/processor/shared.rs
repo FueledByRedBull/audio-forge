@@ -734,9 +734,87 @@ impl Shared {
 }
 
 impl Shared {
+    /// The meters the processing stages publish, back to their idle values:
+    /// what a path that skips a stage shows for it.
+    pub(super) fn clear_stage_meters(&self) {
+        self.compressor
+            .gain_reduction
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        self.deesser
+            .gain_reduction
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        self.deesser
+            .detector_confidence
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        self.gate.auto_relax_active.store(false, Ordering::Relaxed);
+        self.compressor
+            .current_release_ms
+            .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed);
+        self.compressor
+            .current_lufs
+            .store((-100.0_f64).to_bits(), Ordering::Relaxed);
+        self.compressor
+            .current_makeup_gain
+            .store(0.0_f64.to_bits(), Ordering::Relaxed);
+        self.limiter
+            .gain_reduction_db
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        self.limiter
+            .peak_gain_reduction_db
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The suppressor's published figures, back to idle.
+    pub(super) fn clear_suppressor_meters(&self) {
+        self.suppressor.buffer_len.store(0, Ordering::Relaxed);
+        self.suppressor.latency_samples.store(0, Ordering::Relaxed);
+        self.suppressor
+            .successful_inference_frames
+            .store(0, Ordering::Relaxed);
+        self.suppressor
+            .smoothed_buffer_len
+            .store(0, Ordering::Relaxed);
+    }
+
+    /// Everything a run publishes about itself (levels, timings, buffer fills,
+    /// stage meters) back to what a new processor shows. Called on Stop and on
+    /// Start, with no DSP thread running, so a stopped processor or a restart on
+    /// another device does not show the last run's numbers.
+    pub(super) fn clear_run_values(&self) {
+        self.clear_stage_meters();
+        self.clear_suppressor_meters();
+        let floor = (-120.0_f32).to_bits();
+        self.input.peak.store(floor, Ordering::Relaxed);
+        self.input.rms.store(floor, Ordering::Relaxed);
+        self.input.buffer_len.store(0, Ordering::Relaxed);
+        self.input.smoothed_buffer_len.store(0, Ordering::Relaxed);
+        self.output.peak.store(floor, Ordering::Relaxed);
+        self.output.rms.store(floor, Ordering::Relaxed);
+        self.output.buffer_len.store(0, Ordering::Relaxed);
+        self.dsp.latency_us.store(0, Ordering::Relaxed);
+        self.dsp.time_us.store(0, Ordering::Relaxed);
+        self.dsp.time_smoothed_us.store(0, Ordering::Relaxed);
+        self.gate
+            .gain_meter
+            .store(1.0_f32.to_bits(), Ordering::Relaxed);
+        self.gate
+            .noise_floor_db
+            .store((-60.0_f32).to_bits(), Ordering::Relaxed);
+        self.gate
+            .fused_score
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        self.vad
+            .raw_probability
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        self.vad
+            .meter_probability
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+    }
+
     /// Zero the per-run counters and meters before a (re)start. Explicit
     /// settings (mute, controls) are left alone.
     pub(super) fn reset_for_start(&self) {
+        self.clear_run_values();
         // The new input ring brings a fresh dropped counter.
         self.input.dropped_baseline.store(0, Ordering::Relaxed);
         self.output.underrun_streak.store(0, Ordering::Relaxed);

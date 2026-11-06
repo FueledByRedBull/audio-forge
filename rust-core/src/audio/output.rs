@@ -193,11 +193,7 @@ impl OutputRenderer {
             {
                 AudioOutput::discard_probe(probe, &mut self.mono_scratch);
             } else if probe.active.load(Ordering::Acquire) {
-                let frames_needed = if num_channels == 1 {
-                    data.len()
-                } else {
-                    data.len() / num_channels
-                };
+                let frames_needed = data.len() / num_channels;
                 AudioOutput::drain_muted_consumer(
                     &mut self.consumer,
                     frames_needed,
@@ -385,11 +381,7 @@ impl AudioOutput {
     ) where
         T: SizedSample + FromSample<f32>,
     {
-        let total_frames = if num_channels == 1 {
-            data.len()
-        } else {
-            data.len() / num_channels
-        };
+        let total_frames = data.len() / num_channels;
         let remaining_frames = total_frames.saturating_sub(copied_frames);
         if remaining_frames == 0 {
             return;
@@ -595,11 +587,7 @@ impl AudioOutput {
     ) where
         T: SizedSample + FromSample<f32>,
     {
-        let frames_needed = if num_channels == 1 {
-            data.len()
-        } else {
-            data.len() / num_channels
-        };
+        let frames_needed = data.len() / num_channels;
         let last_played = consumer.last_sample();
         Self::drain_muted_consumer(consumer, frames_needed, scratch);
         Self::fill_underrun_tail(data, 0, num_channels, last_played);
@@ -614,11 +602,7 @@ impl AudioOutput {
     where
         T: SizedSample + FromSample<f32>,
     {
-        let frame_count = if num_channels == 1 {
-            data.len()
-        } else {
-            data.len() / num_channels
-        };
+        let frame_count = data.len() / num_channels;
         let silence = Self::convert_output_sample::<T>(0.0);
         for sample in data.iter_mut() {
             *sample = silence;
@@ -737,7 +721,7 @@ impl AudioOutput {
                     setup.device_info.channels,
                     renderer,
                     failure.clone(),
-                )? {
+                ) {
                     Opened::Running(stream) => {
                         return Ok(Self {
                             device_buffer: stream.device_buffer(),
@@ -781,6 +765,7 @@ impl AudioOutput {
             setup.device_info.endpoint_id.as_deref(),
             setup.device_info.sample_rate,
             setup.device_info.channels,
+            sample_format,
             fixed_buffer_frames,
         );
         #[cfg(not(windows))]
@@ -851,43 +836,9 @@ impl AudioOutput {
     }
 }
 
-/// List available audio output devices
-pub fn list_output_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
-    let host = cpal::default_host();
-    let mut devices = Vec::new();
-
-    let device_iter = host
-        .output_devices()
-        .map_err(|e| AudioError::DeviceName(e.to_string()))?;
-
-    for device in device_iter {
-        if let Ok(name) = device_name(&device) {
-            if let Ok(config) = device.default_output_config() {
-                devices.push(AudioDeviceInfo {
-                    name,
-                    endpoint_id: device
-                        .id()
-                        .ok()
-                        .map(|device_id| persisted_endpoint_id(&device_id)),
-                    sample_rate: config.sample_rate(),
-                    channels: config.channels(),
-                });
-            }
-        }
-    }
-
-    Ok(devices)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    #[ignore = "requires a Windows audio endpoint"]
-    fn test_list_devices() {
-        let _ = list_output_devices();
-    }
 
     fn queued_underruns(streak: u32, total: u64) -> OutputUnderruns {
         OutputUnderruns {
@@ -1567,12 +1518,66 @@ mod tests {
             2,
             renderer_for_test(consumer, underruns),
             failure,
-        )
-        .unwrap();
+        );
 
         match opened {
             Opened::Declined { failure_code, .. } => assert_ne!(failure_code, 0),
             Opened::Running(_) => panic!("an unknown endpoint cannot run"),
+        }
+    }
+
+    #[cfg(windows)]
+    fn failure_for_test() -> OutputFailure {
+        OutputFailure {
+            error_count: Arc::new(AtomicU64::new(0)),
+            rt_error_code: Arc::new(AtomicU32::new(0)),
+            restart_requested: Arc::new(AtomicBool::new(false)),
+            low_period_failure_code: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_a_setup_that_panics_hands_the_renderer_back() {
+        let rb = crate::audio::AudioRingBuffer::new(16);
+        let (_producer, consumer) = rb.split();
+
+        let opened = LowPeriodStream::open_with(
+            "panicking-endpoint".to_string(),
+            Box::new(|| panic!("driver fault during setup")),
+            renderer_for_test(consumer, priming_underruns()),
+            failure_for_test(),
+        );
+
+        match opened {
+            Opened::Declined {
+                mut renderer,
+                failure_code,
+            } => {
+                assert_ne!(failure_code, 0);
+                let mut data = [1.0_f32; 8];
+                renderer.render(&mut data);
+            }
+            Opened::Running(_) => panic!("a setup that panicked cannot run"),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_a_device_with_no_shorter_period_declines_with_code_zero() {
+        let rb = crate::audio::AudioRingBuffer::new(16);
+        let (_producer, consumer) = rb.split();
+
+        let opened = LowPeriodStream::open_with(
+            "plain-endpoint".to_string(),
+            Box::new(|| Ok(None)),
+            renderer_for_test(consumer, priming_underruns()),
+            failure_for_test(),
+        );
+
+        match opened {
+            Opened::Declined { failure_code, .. } => assert_eq!(failure_code, 0),
+            Opened::Running(_) => panic!("no client cannot run"),
         }
     }
 

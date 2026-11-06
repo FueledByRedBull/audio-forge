@@ -3,7 +3,7 @@ use super::supervisor::{output_silent_under_signal, SILENT_OUTPUT_REASON};
 use super::AudioProcessor;
 use crate::audio::clock::now_micros;
 use crate::audio::rt::RtErrorCode;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// The restart cause an audio callback left only as an error code or counter.
 /// Resampler failures always request a restart; a stream error does only when
@@ -17,6 +17,16 @@ fn restart_cause(rt_error: RtErrorCode, output_resampler_failed: bool) -> Option
     }
 }
 
+/// Whether the code is itself a reason to restart. Backlog and overflow codes
+/// stay set after the event and ask for nothing.
+fn code_asks_for_restart(code: RtErrorCode) -> bool {
+    code.is_stream_failure()
+        || matches!(
+            code,
+            RtErrorCode::SuppressorBackendFailed | RtErrorCode::SuppressorNonFinite
+        )
+}
+
 /// Wait before the next restart attempt, by the number of attempts since the
 /// streams last ran healthily. The last entry is the cap.
 pub(super) const RESTART_BACKOFF_MS: [u64; 6] = [0, 2_000, 5_000, 10_000, 20_000, 30_000];
@@ -28,6 +38,24 @@ const HEALTHY_STREAM_MS: u64 = 10_000;
 const FRESH_CALLBACK_MS: u64 = 2_500;
 /// A suppressor rebuild that follows another one sooner than this is skipped.
 const SUPPRESSOR_REBUILD_MIN_INTERVAL_MS: u64 = 10_000;
+
+/// The `recovering` flag, raised for a restart and lowered when it ends, however
+/// it ends. The stop that opens the restart leaves it alone, so the processor
+/// keeps reporting the recovery for as long as the restart takes.
+struct Recovering<'a>(&'a AtomicBool);
+
+impl<'a> Recovering<'a> {
+    fn begin(flag: &'a AtomicBool) -> Self {
+        flag.store(true, Ordering::Release);
+        Self(flag)
+    }
+}
+
+impl Drop for Recovering<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 impl AudioProcessor {
     /// Service pending stream recovery requests.
@@ -98,12 +126,13 @@ impl AudioProcessor {
     /// retry of a restart that failed.
     fn withdraw_stale_silent_output_request(&self, now: u64) -> bool {
         let stream = &self.shared.stream;
+        let rt_error = RtErrorCode::from_u32(self.shared.dsp.rt_error_code.load(Ordering::Acquire));
         let silent_output_pending = stream.recovery_state.lock().is_ok_and(|state| {
             state.reason_pending && state.last_reason.as_deref() == Some(SILENT_OUTPUT_REASON)
         });
         if !silent_output_pending
             || !stream.running.load(Ordering::Acquire)
-            || self.shared.dsp.rt_error_code.load(Ordering::Acquire) != RtErrorCode::None as u32
+            || code_asks_for_restart(rt_error)
             || self
                 .shared
                 .output
@@ -120,7 +149,7 @@ impl AudioProcessor {
             state.last_reason = state.prior_reason.take();
         }
         // A cause that arrived meanwhile puts its request back.
-        self.finish_suppressor_request(RtErrorCode::None, false);
+        self.finish_suppressor_request(rt_error, false);
         true
     }
 
@@ -269,7 +298,7 @@ impl AudioProcessor {
             return None;
         }
 
-        self.shared.stream.recovering.store(true, Ordering::Release);
+        let _recovering = Recovering::begin(&self.shared.stream.recovering);
         // One lock hold for the stop and the start, so no other caller can start or
         // stop in between.
         let mut streams = self.lock_streams();
@@ -282,18 +311,10 @@ impl AudioProcessor {
                 .recovery_suppressed
                 .load(Ordering::Acquire)
         {
-            self.shared
-                .stream
-                .recovering
-                .store(false, Ordering::Release);
             return None;
         }
         // The wait for the lock can outlast the condition that asked.
         if self.withdraw_stale_silent_output_request(now) {
-            self.shared
-                .stream
-                .recovering
-                .store(false, Ordering::Release);
             return None;
         }
         self.shared
@@ -342,10 +363,6 @@ impl AudioProcessor {
                 .store(true, Ordering::Release);
         }
 
-        self.shared
-            .stream
-            .recovering
-            .store(false, Ordering::Release);
         Some(success)
     }
 

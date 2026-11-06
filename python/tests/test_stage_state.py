@@ -98,6 +98,35 @@ def test_interactive_edits_show_at_once_and_coalesce_within_the_rate_limit(qapp,
     assert not state._rate_limiter._timer.isActive()
 
 
+def test_cancel_drops_the_queued_edit_and_shows_the_applied_values(qapp, clock):
+    events = []
+    processor = FakeProcessor(events)
+    state = QueuedStage(processor)
+    state._queue({"value": 1.0}, label="Fake edit")
+    clock[0] += 0.010
+    state._queue({"value": 2.0}, label="Fake edit")
+    _record(state, events)
+    events.clear()
+
+    state.cancel()
+    assert events == [("changed", {"value": 1.0})]
+    assert state._rate_limiter._pending_fn is None
+    assert not state._rate_limiter._timer.isActive()
+    clock[0] += 0.100
+    state.flush()
+    assert events == [("changed", {"value": 1.0})]
+    assert state._settings == state._applied_settings == {"value": 1.0}
+
+
+def test_a_stage_without_a_name_is_refused_when_built(qapp):
+    class Unnamed(StageState[dict]):
+        def _write(self, settings):
+            pass
+
+    with pytest.raises(TypeError, match="_stage_name"):
+        Unnamed(object(), {"value": 0.0})
+
+
 def test_interval_elapsed_writes_the_next_edit_immediately(qapp, clock):
     events = []
     processor = FakeProcessor(events)

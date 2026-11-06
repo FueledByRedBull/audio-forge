@@ -73,6 +73,9 @@ class StageState[T](QObject):
         *,
         stop_audio: Callable[[], object] | None = None,
     ):
+        if not getattr(type(self), "_stage_name", ""):
+            # The failed-restore message needs it on the path that must stop audio.
+            raise TypeError(f"{type(self).__name__} must set _stage_name")
         super().__init__(parent)
         self.processor = processor
         # Where the app routes a failure stop off the GUI thread; alone, the processor is stopped here.

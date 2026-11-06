@@ -719,7 +719,7 @@ impl Compressor {
             .block_peak_gain_reduction_db
             .max(self.current_gain_reduction_db);
 
-        self.makeup.advance_manual_gain(detector_db);
+        self.makeup.advance_gain(detector_db);
 
         let mut output_gain = util::db_to_linear(-self.current_gain_reduction_db)
             * util::db_to_linear(self.makeup.current_makeup_gain());
@@ -1198,6 +1198,122 @@ mod tests {
         }
 
         assert!(comp.current_makeup_gain() > 0.1);
+    }
+
+    #[test]
+    fn test_digital_silence_is_no_loudness_measurement() {
+        let evidence = AutoMakeupActivityInput {
+            vad_probability: 1.0,
+            vad_reliability: 1.0,
+            noise_floor_db: -68.0,
+            live_noise_reliability: 1.0,
+        };
+        let mut comp = Compressor::default_voice(48_000.0);
+        comp.set_auto_makeup_enabled(true);
+        comp.set_target_lufs(-12.0);
+        let initial_gain = comp.current_makeup_gain();
+
+        for _ in 0..300 {
+            let mut silence = vec![0.0_f32; 480];
+            comp.process_block_inplace_with_activity_control(&mut silence, Some(evidence));
+            assert!(comp.current_lufs().is_finite(), "{}", comp.current_lufs());
+        }
+
+        assert!(comp.auto_makeup_activity() > AUTO_MAKEUP_ACTIVE_MIN);
+        assert_eq!(
+            comp.current_makeup_gain(),
+            initial_gain,
+            "silence must hold the makeup gain, not push it to the headroom cap"
+        );
+    }
+
+    #[test]
+    fn test_digital_silence_sample_path_holds_makeup_gain() {
+        let mut comp = Compressor::default_voice(48_000.0);
+        comp.set_auto_makeup_enabled(true);
+        comp.set_target_lufs(-12.0);
+        let initial_gain = comp.current_makeup_gain();
+
+        for _ in 0..48_000 {
+            comp.process_sample(0.0);
+        }
+
+        assert!(comp.current_lufs().is_finite(), "{}", comp.current_lufs());
+        assert_eq!(comp.current_makeup_gain(), initial_gain);
+    }
+
+    /// Largest dB jump between neighbouring samples of the makeup gain applied
+    /// to a steady tone, plus the settled LUFS and gain. A 750 Hz cosine has a
+    /// 64-sample period, so every block and window boundary lands on a sample
+    /// large enough to read the gain from.
+    fn auto_makeup_gain_trajectory(block_size: Option<usize>) -> (f64, f64, f64) {
+        const PERIOD: usize = 64;
+        let mut compressor = Compressor::new(0.0, 1.0, 0.1, 200.0, 0.0, 0.0, 48_000.0);
+        compressor.set_auto_makeup_enabled(true);
+        compressor.set_target_lufs(-12.0);
+        let amplitude = 10.0_f32.powf(-18.0 / 20.0) * 2.0_f32.sqrt();
+        let input: Vec<f32> = (0..384_000)
+            .map(|index| {
+                amplitude
+                    * (2.0 * std::f32::consts::PI * (index % PERIOD) as f32 / PERIOD as f32).cos()
+            })
+            .collect();
+        let mut output = input.clone();
+        match block_size {
+            Some(block_size) => {
+                for block in output.chunks_mut(block_size) {
+                    compressor.process_block_inplace(block);
+                }
+            }
+            None => {
+                for sample in output.iter_mut() {
+                    *sample = compressor.process_sample(*sample);
+                }
+            }
+        }
+        let gain_db = |index: usize| {
+            (input[index].abs() > 0.5 * amplitude)
+                .then(|| 20.0 * (output[index] / input[index]).abs().log10() as f64)
+        };
+        let max_step_db = (1..input.len())
+            .filter_map(|index| Some((gain_db(index)? - gain_db(index - 1)?).abs()))
+            .fold(0.0, f64::max);
+        (
+            max_step_db,
+            compressor.current_lufs(),
+            compressor.current_makeup_gain(),
+        )
+    }
+
+    #[test]
+    fn test_auto_makeup_gain_ramps_per_sample_instead_of_stepping_per_block() {
+        // Before the fix the block path stepped ~4 dB at each 4096-sample
+        // boundary and the sample path ~0.6 dB at each 480-sample window.
+        const MAX_STEP_DB: f64 = 0.005;
+        let (block_step, block_lufs, block_gain) = auto_makeup_gain_trajectory(Some(4_096));
+        let (sample_step, sample_lufs, sample_gain) = auto_makeup_gain_trajectory(None);
+        assert!(
+            block_step < MAX_STEP_DB,
+            "block path step {block_step:.4} dB"
+        );
+        assert!(
+            sample_step < MAX_STEP_DB,
+            "sample path step {sample_step:.4} dB"
+        );
+        // Steady state is unchanged: both paths settle on the target loudness
+        // and on the same gain.
+        assert!(
+            (block_lufs + 12.0).abs() < 0.1,
+            "block LUFS {block_lufs:.3}"
+        );
+        assert!(
+            (sample_lufs + 12.0).abs() < 0.1,
+            "sample LUFS {sample_lufs:.3}"
+        );
+        assert!(
+            (block_gain - sample_gain).abs() < 0.05,
+            "block {block_gain:.3} dB, sample {sample_gain:.3} dB"
+        );
     }
 
     #[test]

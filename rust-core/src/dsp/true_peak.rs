@@ -18,6 +18,7 @@ const TRUE_PEAK_LIMITER_HOLD_SAMPLES: usize = 384;
 const TRUE_PEAK_GAIN_AVERAGE_SAMPLES: usize = 128;
 const TRUE_PEAK_LIMITER_LOOKAHEAD_SAMPLES: usize = 320;
 const TRUE_PEAK_TARGET_MARGIN: f32 = 0.999;
+const DEFAULT_CEILING_DB: f32 = -1.5;
 
 #[derive(Debug)]
 struct TruePeakFirBank {
@@ -282,6 +283,11 @@ pub struct TruePeakLimiter {
 impl TruePeakLimiter {
     pub fn new(sample_rate: f32, ceiling_db: f32, release_ms: f32) -> Self {
         let bank = true_peak_fir_bank();
+        let ceiling_db = if ceiling_db.is_finite() {
+            ceiling_db
+        } else {
+            DEFAULT_CEILING_DB
+        };
         let mut limiter = Self {
             ceiling_linear: util::db_to_linear(ceiling_db as f64) as f32,
             release_coeff: 1.0,
@@ -308,7 +314,7 @@ impl TruePeakLimiter {
     }
 
     pub fn default_settings(sample_rate: f32) -> Self {
-        Self::new(sample_rate, -1.5, 80.0)
+        Self::new(sample_rate, DEFAULT_CEILING_DB, 80.0)
     }
 
     pub fn reset(&mut self) {
@@ -901,5 +907,23 @@ mod tests {
             elapsed.as_nanos() as f64 / (BLOCKS * 480) as f64,
             elapsed.as_secs_f64() / (BLOCKS * 480) as f64 * 48_000.0 * 100.0
         );
+    }
+
+    #[test]
+    fn constructor_sanitizes_non_finite_ceiling() {
+        let default_linear = util::db_to_linear(-1.5) as f32;
+        for ceiling_db in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut limiter = TruePeakLimiter::new(48_000.0, ceiling_db, 20.0);
+            assert!(
+                (limiter.ceiling_linear - default_linear).abs() < 1e-6,
+                "{ceiling_db}: {}",
+                limiter.ceiling_linear
+            );
+            let mut block = vec![0.9_f32; 4_096];
+            limiter.process_block_inplace(&mut block);
+            assert!(block
+                .iter()
+                .all(|sample| sample.abs() <= limiter.ceiling_linear));
+        }
     }
 }

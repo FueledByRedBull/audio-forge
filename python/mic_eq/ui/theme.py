@@ -406,11 +406,6 @@ PRIMARY_ACTION_BUTTON_STYLE = _button_style(
     PALETTE.accent_hover,
 )
 
-CARD_STYLE = (
-    f"QFrame#card {{ background-color: {PALETTE.card_surface}; "
-    f"border: 1px solid {PALETTE.border}; border-radius: {RADIUS_CARD}px; }}"
-)
-
 PROGRESS_BAR_STYLE = (
     f"QProgressBar {{ border: none; border-radius: 4px; "
     f"background-color: {PALETTE.control_surface}; }} "

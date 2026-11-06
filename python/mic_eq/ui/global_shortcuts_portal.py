@@ -92,22 +92,6 @@ def _checked(reply: Message) -> Message:
     return reply
 
 
-def portal_available(connection: DBusConnection | None = None) -> bool:
-    """Whether the session's portal implements GlobalShortcuts."""
-
-    try:
-        bus = open_session_bus() if connection is None else connection
-        try:
-            _checked(bus.send_and_get_reply(Properties(GLOBAL_SHORTCUTS).get("version"), timeout=5))
-        finally:
-            if connection is None:
-                bus.close()
-    except (OSError, DBusErrorResponse, TimeoutError) as error:
-        logger.info("GlobalShortcuts portal is unavailable: %s", error)
-        return False
-    return True
-
-
 class GlobalShortcutsSession:
     """Bind one shortcut and report each activation until closed.
 

@@ -14,11 +14,26 @@ import pytest
 if sys.platform != "linux":
     pytest.skip("the GlobalShortcuts portal is Linux-only", allow_module_level=True)
 
-from jeepney import DBusAddress, HeaderFields, MessageType, new_error, new_method_return, new_signal  # noqa: E402
+from jeepney import (  # noqa: E402
+    DBusAddress, DBusErrorResponse, HeaderFields, MessageType, Properties, new_error, new_method_return, new_signal,
+)
 from jeepney.bus_messages import message_bus  # noqa: E402
 from jeepney.io.blocking import open_dbus_connection  # noqa: E402
 
 from mic_eq.ui import global_shortcuts_portal as portal  # noqa: E402
+
+
+def portal_available() -> bool:
+    """Whether the session's portal implements GlobalShortcuts."""
+    try:
+        bus = portal.open_session_bus()
+        try:
+            portal._checked(bus.send_and_get_reply(Properties(portal.GLOBAL_SHORTCUTS).get("version"), timeout=5))
+        finally:
+            bus.close()
+    except (OSError, DBusErrorResponse, TimeoutError):
+        return False
+    return True
 
 
 @pytest.mark.parametrize(("shortcut", "trigger"), [
@@ -144,7 +159,7 @@ def test_a_bound_shortcut_reports_activations_until_the_session_closes(session_b
     failures = []
     session = _session(activated.release, failures.append)
     try:
-        assert portal.portal_available()
+        assert portal_available()
         session.start()
         assert activated.acquire(timeout=5) and activated.acquire(timeout=5)
         assert fake.bound[0][0] == portal.SHORTCUT_ID
@@ -170,12 +185,8 @@ def test_a_cancelled_bind_is_reported_as_a_failure(session_bus):
     assert errors == ["BindShortcuts was cancelled by the desktop"]
 
 
-def test_a_desktop_without_the_portal_is_reported_as_unavailable(session_bus):
-    assert not portal.portal_available()
-
-
 def test_a_session_without_a_bus_is_unavailable_not_failed(no_session_bus):
-    assert not portal.portal_available()
+    assert not portal_available()
     reasons = queue.Queue()
     failures = []
     session = _session(lambda: None, failures.append, reasons.put)

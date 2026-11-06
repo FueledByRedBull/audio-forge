@@ -316,10 +316,21 @@ def test_repository_workflow_release_gates_are_current():
 DEV_AUDIT = "pip_audit --require-hashes -r requirements/dev.txt --disable-pip"
 RUNTIME_AUDIT = "pip_audit --require-hashes -r requirements/runtime.txt --disable-pip"
 MCP_IGNORE = "--ignore-vuln CVE-2026-59951"
+OTEL_IGNORE = "--ignore-vuln CVE-2026-114603"
+MCP_SDK_IGNORES = " --ignore-vuln CVE-2026-116684 --ignore-vuln CVE-2026-116685 --ignore-vuln CVE-2026-116686"
 
 
 def _workflow_text(name):
     return (check_workflows.WORKFLOW_DIR / name).read_text(encoding="utf-8")
+
+
+def _cases(*rows):
+    """Rows of (*arguments, message) as cases the message names, numbered where it repeats."""
+    names = [row[-1] for row in rows]
+    return [
+        pytest.param(*row, id=f"{name} #{names[:index].count(name) + 1}" if names.count(name) > 1 else name)
+        for index, (row, name) in enumerate(zip(rows, names))
+    ]
 
 
 def _audit_ignore_errors(tmp_path, monkeypatch, audit, replacement, dev_lock=None):
@@ -337,47 +348,66 @@ def _audit_ignore_errors(tmp_path, monkeypatch, audit, replacement, dev_lock=Non
 # Spellings pip-audit accepts: extra whitespace, argparse prefixes of
 # --ignore-vuln (--ig and longer) and a PowerShell backtick continuation.
 @pytest.mark.parametrize(
-    "flag",
+    ("audit", "replacement", "dev_lock", "messages"),
     [
-        "--ignore-vuln CVE-2000-0001",
-        "--ignore-vuln  CVE-2000-0001",
-        "--ignore-vuln\tCVE-2000-0001",
-        "--ignore CVE-2000-0001",
-        "--ignore-v CVE-2000-0001",
-        "--ig=CVE-2000-0001",
-        '--ignore-vuln "CVE-2000-0001"',
-        "`\n          --ignore-vuln CVE-2000-0001",
+        *(
+            pytest.param(
+                DEV_AUDIT, f"{DEV_AUDIT} {flag}", None,
+                ("CVE-2000-0001", "not an allowed audit ignore"), id=f"spelling-{name}",
+            )
+            for name, flag in (
+                ("single-space", "--ignore-vuln CVE-2000-0001"),
+                ("double-space", "--ignore-vuln  CVE-2000-0001"),
+                ("tab", "--ignore-vuln\tCVE-2000-0001"),
+                ("prefix-ignore", "--ignore CVE-2000-0001"),
+                ("prefix-ignore-v", "--ignore-v CVE-2000-0001"),
+                ("prefix-equals", "--ig=CVE-2000-0001"),
+                ("quoted", '--ignore-vuln "CVE-2000-0001"'),
+                ("backtick-continuation", "`\n          --ignore-vuln CVE-2000-0001"),
+            )
+        ),
+        *(
+            pytest.param(
+                RUNTIME_AUDIT,
+                f"{RUNTIME_AUDIT.replace('requirements/runtime.txt', path)} {MCP_IGNORE}",
+                None, ("runtime lock audit must not ignore",), id=f"runtime-audit-{name}",
+            )
+            for name, path in (("slash", "requirements/runtime.txt"), ("backslash", "requirements\\runtime.txt"))
+        ),
+        pytest.param(
+            DEV_AUDIT, f"{DEV_AUDIT} {MCP_IGNORE}", "mcp==1.30.0\n",
+            ("CVE-2026-59951", "mcp==1.29.0"), id="dev-lock-moved-past-its-package",
+        ),
+        pytest.param(
+            f"{DEV_AUDIT} {MCP_IGNORE} {OTEL_IGNORE}",
+            f"{DEV_AUDIT} {MCP_IGNORE} {OTEL_IGNORE} --ignore-vuln CVE-2000-0001", None,
+            ("CVE-2000-0001 is not an allowed audit ignore",), id="third-pip-audit-ignore",
+        ),
+        pytest.param(
+            "cargo audit --deny warnings\n", "cargo audit --deny warnings --ignore RUSTSEC-2024-0436\n", None,
+            ("cargo audit ignores ['RUSTSEC-2024-0436'], expected []",),
+            id="rustsec-ignore-on-the-application-lock",
+        ),
+        pytest.param(
+            DEV_AUDIT, "pip_audit -r requirements/dev.txt --ignore-vuln CVE-2000-0001 --require-hashes", None,
+            ("CVE-2000-0001", "not an allowed audit ignore"), id="flags-in-another-order",
+        ),
+        pytest.param(
+            "--ignore RUSTSEC-2026-0319", "--ignore RUSTSEC-2000-0001", None,
+            ("cargo audit ignores", "RUSTSEC-2026-0319"), id="deepfilter-advisory-replaced",
+        ),
+        pytest.param(
+            "--file build-support/deepfilter/Cargo.lock", "--file Cargo.lock", None,
+            ("ci.yml: missing a cargo audit of build-support/deepfilter/Cargo.lock",),
+            id="deepfilter-audit-dropped",
+        ),
     ],
 )
-def test_audit_ignore_outside_the_table_is_rejected(tmp_path, monkeypatch, flag):
-    errors = _audit_ignore_errors(tmp_path, monkeypatch, DEV_AUDIT, f"{DEV_AUDIT} {flag}")
-    assert "CVE-2000-0001" in errors and "not an allowed audit ignore" in errors
+def test_audit_ignore_edits_are_rejected(tmp_path, monkeypatch, audit, replacement, dev_lock, messages):
+    errors = _audit_ignore_errors(tmp_path, monkeypatch, audit, replacement, dev_lock)
 
-
-@pytest.mark.parametrize("path", ["requirements/runtime.txt", "requirements\\runtime.txt"])
-def test_runtime_audit_rejects_every_ignore(tmp_path, monkeypatch, path):
-    audit = RUNTIME_AUDIT.replace("requirements/runtime.txt", path)
-    errors = _audit_ignore_errors(
-        tmp_path, monkeypatch, RUNTIME_AUDIT, f"{audit} {MCP_IGNORE}"
-    )
-    assert "runtime lock audit must not ignore" in errors
-
-
-def test_audit_ignore_is_rejected_once_the_dev_lock_moves_past_its_package(
-    tmp_path, monkeypatch
-):
-    errors = _audit_ignore_errors(
-        tmp_path,
-        monkeypatch,
-        DEV_AUDIT,
-        f"{DEV_AUDIT} {MCP_IGNORE}",
-        dev_lock="mcp==1.30.0\n",
-    )
-    assert "CVE-2026-59951" in errors and "mcp==1.29.0" in errors
-
-
-OTEL_IGNORE = "--ignore-vuln CVE-2026-114603"
-MCP_SDK_IGNORES = " --ignore-vuln CVE-2026-116684 --ignore-vuln CVE-2026-116685 --ignore-vuln CVE-2026-116686"
+    for message in messages:
+        assert message in errors
 
 
 @pytest.mark.parametrize("workflow", ["ci.yml", "release-package.yml"])
@@ -413,28 +443,6 @@ def test_each_audit_ignore_is_rejected_once_its_own_package_moves(
 
     assert errors.count("needs dev.txt to pin") == count
     assert stale in errors and "remove the ignore" in errors
-
-
-@pytest.mark.parametrize(
-    ("audit", "replacement", "message"),
-    [
-        (
-            f"{DEV_AUDIT} {MCP_IGNORE} {OTEL_IGNORE}",
-            f"{DEV_AUDIT} {MCP_IGNORE} {OTEL_IGNORE} --ignore-vuln CVE-2000-0001",
-            "CVE-2000-0001 is not an allowed audit ignore",
-        ),
-        (
-            "cargo audit --deny warnings\n",
-            "cargo audit --deny warnings --ignore RUSTSEC-2024-0436\n",
-            "cargo audit ignores ['RUSTSEC-2024-0436'], expected []",
-        ),
-    ],
-    ids=["third-pip-audit-ignore", "rustsec-ignore-on-the-application-lock"],
-)
-def test_an_audit_ignore_outside_the_allowed_table_is_rejected(tmp_path, monkeypatch, audit, replacement, message):
-    errors = _audit_ignore_errors(tmp_path, monkeypatch, audit, replacement)
-
-    assert message in errors
 
 
 def test_ci_uploads_semgrep_results_with_scoped_code_scanning_permission():
@@ -575,9 +583,14 @@ def _set_step_run(job, name, run):
     next(step for step in job["steps"] if step.get("name") == name)["run"] = run
 
 
+def _narrow_deepfilter_cache_key(jobs):
+    restore = _step_named(jobs["rust-tests"], "Restore DeepFilter runtime")
+    restore["with"]["key"] = restore["with"]["key"].replace("'build_deepfilter.ps1', ", "")
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
-    [
+    _cases(
         (lambda jobs: jobs.pop("python"), "required gate job python is missing"),
         (lambda jobs: jobs["rust"].update(needs=["rust-tests"]), "rust must need exactly"),
         (lambda jobs: jobs["python"].pop("if"), "python must use if: always()"),
@@ -602,9 +615,70 @@ def _set_step_run(job, name, run):
             ),
             "(with --exact)",
         ),
-    ],
+        (
+            lambda jobs: _drop(jobs["rust-tests"], "Build and verify the pinned DeepFilter runtime"),
+            "missing required DeepFilter gate 'python/tools/fetch_release_assets.py'",
+        ),
+        (
+            lambda jobs: _set_step_run(
+                jobs["rust-tests"],
+                "Build and verify the pinned DeepFilter runtime",
+                "python python/tools/fetch_release_assets.py --only-cpu-runtime --force\n"
+                "python python/tools/verify_release_assets.py",
+            ),
+            "missing required DeepFilter gate 'python/tools/fetch_release_assets.py'",
+        ),
+        (
+            lambda jobs: _set_step_run(
+                jobs["rust-tests"],
+                "Build and verify the pinned DeepFilter runtime",
+                "python python/tools/fetch_release_assets.py",
+            ),
+            "missing required DeepFilter gate 'python/tools/verify_release_assets.py'",
+        ),
+        (
+            lambda jobs: _step_named(jobs["rust-tests"], "Build and verify the pinned DeepFilter runtime")
+            .pop("env"),
+            "missing required DeepFilter gate 'GH_TOKEN: ${{ github.token }}'",
+        ),
+        (
+            lambda jobs: _move_to_end(jobs["rust-tests"], "Build and verify the pinned DeepFilter runtime"),
+            "must run after the gate before it",
+        ),
+        (
+            lambda jobs: _step_named(jobs["rust-tests"], "Rust tests").pop("env"),
+            "missing required DeepFilter gate 'AUDIOFORGE_ENABLE_DEEPFILTER: 1'",
+        ),
+        (
+            lambda jobs: _set_step_run(
+                jobs["rust-tests"],
+                "Rust tests",
+                "cargo test --locked -p mic_eq_core -- --skip "
+                "seeded_control_and_dsp_loops_remain_finite_under_contention --exact",
+            ),
+            "missing required DeepFilter gate '--nocapture'",
+        ),
+        (
+            lambda jobs: _set_step_run(
+                jobs["rust-tests"],
+                "Rust tests",
+                "cargo test --locked -p mic_eq_core -- --skip "
+                "seeded_control_and_dsp_loops_remain_finite_under_contention --exact --nocapture",
+            ),
+            "Select-String",
+        ),
+        (
+            lambda jobs: _drop(jobs["rust-tests"], "Restore DeepFilter runtime"),
+            "missing required DeepFilter gate",
+        ),
+        (
+            lambda jobs: _drop(jobs["static"], "Workflow security lint"),
+            "missing required workflow lint gate",
+        ),
+        (_narrow_deepfilter_cache_key, "missing required DeepFilter gate"),
+    ),
 )
-def test_ci_gate_jobs_and_job_split_are_enforced(mutate, message):
+def test_ci_workflow_mutation_is_rejected(mutate, message):
     assert message in _ci_errors(mutate)
 
 
@@ -763,7 +837,7 @@ def test_release_shell_text_is_not_a_gate():
 
 @pytest.mark.parametrize(
     ("mutate", "message"),
-    [
+    _cases(
         (lambda jobs: jobs.pop("pytest"), "required release job pytest is missing"),
         (lambda jobs: jobs.pop("static"), "required release job static is missing"),
         (lambda jobs: jobs["pytest"].update(needs=["static"]), "pytest must need exactly package-windows"),
@@ -881,9 +955,37 @@ def test_release_shell_text_is_not_a_gate():
             lambda jobs: _step_named(jobs["pytest"], "Pytest").update(run="python -m pytest python/tests -q"),
             "pytest must run the files in pytest-shards.json",
         ),
-    ],
+        (
+            lambda jobs: _step_named(jobs["rust-tests"], "Rust tests")["env"].pop(
+                "AUDIOFORGE_ENABLE_DEEPFILTER"
+            ),
+            "missing required DeepFilter gate 'AUDIOFORGE_ENABLE_DEEPFILTER: 1'",
+        ),
+        (
+            lambda jobs: _set_step_run(
+                jobs["rust-tests"],
+                "Rust tests",
+                "cargo test --locked -p mic_eq_core -- --skip "
+                "seeded_control_and_dsp_loops_remain_finite_under_contention --exact",
+            ),
+            "missing required DeepFilter gate '--nocapture'",
+        ),
+        (
+            lambda jobs: _set_step_run(
+                jobs["rust-tests"],
+                "Rust tests",
+                "cargo test --locked -p mic_eq_core -- --skip "
+                "seeded_control_and_dsp_loops_remain_finite_under_contention --exact --nocapture",
+            ),
+            "Select-String",
+        ),
+        (
+            lambda jobs: _step_named(jobs["rust-tests"], "Rust tests").update({"if": False}),
+            "missing required DeepFilter gate 'cargo test --locked -p mic_eq_core'",
+        ),
+    ),
 )
-def test_release_job_layout_is_enforced(mutate, message):
+def test_release_job_mutation_is_rejected(mutate, message):
     assert message in _release_job_errors(mutate)
 
 
@@ -897,30 +999,6 @@ def test_release_job_layout_is_part_of_the_release_gate_check():
     )
 
     assert "release-package.yml: static must run '-m ruff check'" in errors
-
-
-def test_audit_ignore_is_found_whatever_order_the_flags_take(tmp_path, monkeypatch):
-    reordered = (
-        "pip_audit -r requirements/dev.txt --ignore-vuln CVE-2000-0001 --require-hashes"
-    )
-    errors = _audit_ignore_errors(tmp_path, monkeypatch, DEV_AUDIT, reordered)
-    assert "CVE-2000-0001" in errors and "not an allowed audit ignore" in errors
-
-
-def test_rustsec_ignores_must_match_the_reviewed_deepfilter_advisories(
-    tmp_path, monkeypatch
-):
-    errors = _audit_ignore_errors(
-        tmp_path, monkeypatch, "--ignore RUSTSEC-2026-0319", "--ignore RUSTSEC-2000-0001"
-    )
-    assert "cargo audit ignores" in errors and "RUSTSEC-2026-0319" in errors
-
-
-def test_deepfilter_rustsec_audit_is_required(tmp_path, monkeypatch):
-    errors = _audit_ignore_errors(
-        tmp_path, monkeypatch, "--file build-support/deepfilter/Cargo.lock", "--file Cargo.lock"
-    )
-    assert "ci.yml: missing a cargo audit of build-support/deepfilter/Cargo.lock" in errors
 
 
 @pytest.mark.parametrize(
@@ -1084,14 +1162,88 @@ updates:
     ]
 
 
-def test_release_workflow_checker_rejects_dirty_source_override():
-    path = check_workflows.WORKFLOW_DIR / "release-package.yml"
-    source = path.read_text(encoding="utf-8") + "\n--allow-dirty\n"
+def _replace(old, new="true", count=-1):
+    return lambda source: source.replace(old, new, count)
+
+
+def _append(text):
+    return lambda source: source + text
+
+
+@pytest.mark.parametrize(
+    ("workflow", "edit", "expected"),
+    [
+        pytest.param(
+            "release-package.yml", _append("\n--allow-dirty\n"),
+            "must fail closed on dirty source trees", id="package-dirty-source-override",
+        ),
+        *(
+            pytest.param("release-promote.yml", _replace(needle), needle, id=f"promote-requires-{name}")
+            for name, needle in (
+                ("dispatch-event", '$run.event -ne "workflow_dispatch"'),
+                ("annotated-tag", "git cat-file -t $tagRef"),
+                ("static-job", "Static checks and audits"),
+                ("build-job", "Build Windows release package"),
+                ("rust-tests-job", "Rust tests and lint"),
+                ("rust-stress-job", "Rust contention stress (release mode)"),
+                ("validate-job", "Validate the exact archived candidate"),
+                ("pytest-shards", "pytest ($_)"),
+                ("job-conclusion", '$job.conclusion -ne "success"'),
+                ("tag-recheck", "$currentCommit -ne $env:TAG_COMMIT"),
+            )
+        ),
+        pytest.param(
+            "release-promote.yml", _append("\ngh release upload --clobber\n"),
+            "must not overwrite published release assets", id="promote-asset-clobbering",
+        ),
+        pytest.param(
+            "release-promote.yml",
+            _replace(
+                "python python/tools/package_smoke.py --dist $extract",
+                "# python python/tools/package_smoke.py --dist $extract",
+                1,
+            ),
+            "package_smoke.py --dist", id="promote-package-smoke-commented-out",
+        ),
+        pytest.param(
+            "release-promote.yml",
+            _replace("--require-source-distribution", "--removed-source-distribution-gate"),
+            "--require-source-distribution", id="promote-source-distribution-gate-removed",
+        ),
+        *(
+            pytest.param(
+                workflow,
+                _replace("git rev-list -n 1 $env:RELEASE_TAG --", "git rev-list -n 1 -- $env:RELEASE_TAG"),
+                "git rev-list", id=f"tag-after-path-separator-{workflow}",
+            )
+            for workflow in ("release-hardware-qualify.yml", "release-hardware-matrix.yml", "release-promote.yml")
+        ),
+        *(
+            pytest.param(
+                "release-hardware-qualify.yml",
+                # A replacement that keeps the YAML valid: the gates are read from the parsed steps.
+                _replace(required, "REMOVED: removed" if ": " in required else "removed", 1),
+                required, id=f"hardware-harness-{name}",
+            )
+            for name, required in (
+                ("pythonpath", "PYTHONPATH: ${{ github.workspace }}/python"),
+                ("vad-model", "VAD_MODEL_PATH: ${{ steps.candidate.outputs.vad_model }}"),
+                ("candidate-folder", "${{ runner.temp }}/audioforge-release-candidate"),
+                ("report-path", "${{ runner.temp }}/release-hardware-qualification.json"),
+            )
+        ),
+    ],
+)
+def test_required_gate_text_edits_are_rejected(workflow, edit, expected):
+    path = check_workflows.WORKFLOW_DIR / workflow
+    source = path.read_text(encoding="utf-8")
+    edited = edit(source)
+    assert edited != source
     errors: list[str] = []
 
-    check_workflows._check_required_gates(path.name, source, errors)
+    check_workflows._check_required_gates(path.name, edited, errors)
 
-    assert any("must fail closed on dirty source trees" in error for error in errors)
+    assert any(expected in error for error in errors)
 
 
 def test_promotion_keeps_package_gates_without_hardware_runner():
@@ -1117,55 +1269,6 @@ def test_cargo_commands_must_pass_locked(command):
     assert len(errors_for(f"cargo {command} -p mic_eq_core")) == 1
     assert errors_for(f"cargo {command} --locked -p mic_eq_core") == []
     assert len(errors_for(f"cargo {command} -p mic_eq_core -- --locked")) == 1
-
-
-@pytest.mark.parametrize(
-    "needle", ['$run.event -ne "workflow_dispatch"', "git cat-file -t $tagRef"]
-)
-def test_promotion_requires_dispatch_candidate_and_annotated_tag(needle):
-    path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
-    source = path.read_text(encoding="utf-8")
-    assert needle in source
-    errors: list[str] = []
-
-    check_workflows._check_required_gates(path.name, source.replace(needle, "true"), errors)
-
-    assert any(needle in error for error in errors)
-
-
-@pytest.mark.parametrize(
-    "job_name",
-    [
-        "Static checks and audits",
-        "Build Windows release package",
-        "Rust tests and lint",
-        "Rust contention stress (release mode)",
-        "Validate the exact archived candidate",
-        "pytest ($_)",
-        '$job.conclusion -ne "success"',
-    ],
-)
-def test_promotion_requires_the_windows_jobs_of_the_candidate_run_by_name(job_name):
-    path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
-    source = path.read_text(encoding="utf-8")
-    assert job_name in source
-    errors: list[str] = []
-
-    check_workflows._check_required_gates(path.name, source.replace(job_name, "true"), errors)
-
-    assert any(job_name in error for error in errors)
-
-
-def test_promotion_rechecks_the_release_tag_before_publishing():
-    path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
-    source = path.read_text(encoding="utf-8")
-    needle = "$currentCommit -ne $env:TAG_COMMIT"
-    assert needle in source
-    errors: list[str] = []
-
-    check_workflows._check_required_gates(path.name, source.replace(needle, "true"), errors)
-
-    assert any(needle in error for error in errors)
 
 
 def test_promotion_binds_portable_and_msi_to_the_candidate_run():
@@ -1358,43 +1461,6 @@ function gh { throw 'Preflight must not download assets' }
     assert (result.returncode == 0) == (digest == expected), result.stderr
 
 
-def test_release_workflow_checker_rejects_asset_clobbering():
-    path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
-    source = path.read_text(encoding="utf-8") + "\ngh release upload --clobber\n"
-    errors: list[str] = []
-
-    check_workflows._check_required_gates(path.name, source, errors)
-
-    assert any("must not overwrite published release assets" in error for error in errors)
-
-
-def test_release_workflow_checker_requires_active_package_smoke_gate():
-    path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
-    source = path.read_text(encoding="utf-8").replace(
-        "python python/tools/package_smoke.py --dist $extract",
-        "# python python/tools/package_smoke.py --dist $extract",
-        1,
-    )
-    errors: list[str] = []
-
-    check_workflows._check_required_gates(path.name, source, errors)
-
-    assert any("package_smoke.py --dist" in error for error in errors)
-
-
-def test_release_workflow_checker_requires_source_distribution_publication_gate():
-    path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
-    source = path.read_text(encoding="utf-8").replace(
-        "--require-source-distribution",
-        "--removed-source-distribution-gate",
-    )
-    errors: list[str] = []
-
-    check_workflows._check_required_gates(path.name, source, errors)
-
-    assert any("--require-source-distribution" in error for error in errors)
-
-
 def test_workflow_gate_parser_excludes_disabled_and_non_blocking_steps():
     document = {
         "jobs": {
@@ -1466,50 +1532,6 @@ def test_workflow_gate_parser_excludes_disabled_and_non_blocking_actions():
     active = check_workflows._active_uses(document)
 
     assert active == ["actions/download-artifact@" + "a" * 40]
-
-
-@pytest.mark.parametrize(
-    "workflow_name",
-    (
-        "release-hardware-qualify.yml",
-        "release-hardware-matrix.yml",
-        "release-promote.yml",
-    ),
-)
-def test_release_workflow_checker_rejects_tag_after_path_separator(workflow_name):
-    path = check_workflows.WORKFLOW_DIR / workflow_name
-    source = path.read_text(encoding="utf-8").replace(
-        "git rev-list -n 1 $env:RELEASE_TAG --",
-        "git rev-list -n 1 -- $env:RELEASE_TAG",
-    )
-    errors: list[str] = []
-
-    check_workflows._check_required_gates(path.name, source, errors)
-
-    assert any("git rev-list" in error for error in errors)
-
-
-@pytest.mark.parametrize(
-    "required_environment",
-    (
-        "PYTHONPATH: ${{ github.workspace }}/python",
-        "VAD_MODEL_PATH: ${{ steps.candidate.outputs.vad_model }}",
-        "${{ runner.temp }}/audioforge-release-candidate",
-        "${{ runner.temp }}/release-hardware-qualification.json",
-    ),
-)
-def test_release_workflow_checker_requires_isolated_hardware_harness(
-    required_environment,
-):
-    path = check_workflows.WORKFLOW_DIR / "release-hardware-qualify.yml"
-    # A replacement that keeps the YAML valid: the gates are read from the parsed steps.
-    replacement = "REMOVED: removed" if ": " in required_environment else "removed"
-    source = path.read_text(encoding="utf-8").replace(required_environment, replacement, 1)
-    errors: list[str] = []
-
-    check_workflows._check_required_gates(path.name, source, errors)
-
-    assert any(required_environment in error for error in errors)
 
 
 def test_semgrep_gate_uses_rule_default_severity_when_result_omits_level(
@@ -3094,21 +3116,6 @@ def test_dispatch_authorization_is_the_first_unconditional_step(workflow, job, m
     assert message in _gate_errors(workflow, lambda jobs: mutate(jobs[job]["steps"]))
 
 
-def test_publish_release_checks_out_the_workflow_revision_after_authorizing():
-    def other_ref(jobs):
-        checkout = next(
-            step for step in jobs["publish-release"]["steps"] if "checkout" in str(step.get("uses"))
-        )
-        checkout["with"]["ref"] = "${{ inputs.release_tag }}"
-
-    def before_authorization(jobs):
-        steps = jobs["publish-release"]["steps"]
-        steps.insert(0, steps.pop(1))
-
-    assert "missing required" in _gate_errors("release-promote.yml", other_ref)
-    assert "must authorize the dispatch" in _gate_errors("release-promote.yml", before_authorization)
-
-
 def _authorization_action_errors(tmp_path, action) -> list[str]:
     path = tmp_path / "action.yml"
     path.write_text(check_workflows.yaml.safe_dump(action), encoding="utf-8")
@@ -3177,129 +3184,264 @@ def test_the_shared_authorization_action_must_cover_both_shell_families(tmp_path
     assert any("composite action" in error for error in errors)
 
 
-def test_a_job_that_is_skipped_or_non_blocking_cannot_hold_the_authorization():
-    errors = _gate_errors(
-        "release-promote.yml",
-        lambda jobs: jobs["publish-release"].update({"continue-on-error": True}),
-    )
-    assert "publish-release: the dispatch authorization must be unconditional" in errors
+def _update_gate_step(changes):
+    return lambda jobs, job, needle: _step_with(jobs, job, needle).update(changes)
+
+
+def _move_gate_step_ahead(jobs, job, needle):
+    steps = jobs[job]["steps"]
+    steps.insert(1, steps.pop(steps.index(_step_with(jobs, job, needle))))
+
+
+def _move_gate_step_to_another_job(jobs, job, needle):
+    step = _step_with(jobs, job, needle)
+    jobs[job]["steps"].remove(step)
+    jobs["elsewhere"] = {"runs-on": "windows-latest", "steps": [step]}
+
+
+def _comment_out_gate_step(jobs, job, needle):
+    step = _step_with(jobs, job, needle)
+    step["run"] = "".join(f"# {line}\n" for line in str(step.get("run", "")).splitlines())
+    step.pop("uses", None)
 
 
 @pytest.mark.parametrize(("workflow", "job", "needle"), GATE_STEPS)
-@pytest.mark.parametrize(
-    "disable",
-    [
-        lambda step: step.update({"if": False}),
-        lambda step: step.update({"if": "${{ false }}"}),
-        lambda step: step.update({"continue-on-error": True}),
-    ],
-)
-def test_a_disabled_gate_step_fails_the_check(workflow, job, needle, disable):
-    errors = _gate_errors(workflow, lambda jobs: disable(_step_with(jobs, job, needle)))
-    assert "missing required" in errors
-
-
-@pytest.mark.parametrize(("workflow", "job", "needle"), GATE_STEPS)
-def test_a_conditional_gate_step_fails_the_check(workflow, job, needle):
-    errors = _gate_errors(
-        workflow,
-        lambda jobs: _step_with(jobs, job, needle).update({"if": "github.event_name == 'x'"}),
-    )
-    assert "must be unconditional" in errors
-
-
-@pytest.mark.parametrize(("workflow", "job", "needle"), GATE_STEPS)
-def test_a_gate_step_moved_ahead_of_the_steps_it_follows_fails_the_check(workflow, job, needle):
-    def move(jobs):
-        steps = jobs[job]["steps"]
-        steps.insert(1, steps.pop(steps.index(_step_with(jobs, job, needle))))
-
-    assert "must run after the gate before it" in _gate_errors(workflow, move)
-
-
-@pytest.mark.parametrize(("workflow", "job", "needle"), GATE_STEPS)
-def test_a_gate_step_moved_to_another_job_fails_the_check(workflow, job, needle):
-    def move(jobs):
-        step = _step_with(jobs, job, needle)
-        jobs[job]["steps"].remove(step)
-        jobs["elsewhere"] = {"runs-on": "windows-latest", "steps": [step]}
-
-    assert "missing required" in _gate_errors(workflow, move)
-
-
-@pytest.mark.parametrize(("workflow", "job", "needle"), GATE_STEPS)
-def test_a_gate_that_is_only_commented_out_fails_the_check(workflow, job, needle):
-    def comment_out(jobs):
-        step = _step_with(jobs, job, needle)
-        step["run"] = "".join(f"# {line}\n" for line in str(step.get("run", "")).splitlines())
-        step.pop("uses", None)
-
-    assert "missing required" in _gate_errors(workflow, comment_out)
-
-
-def test_promotion_checkout_must_not_keep_credentials_in_either_job():
-    for job in ("verify-candidate", "publish-release"):
-        errors = _gate_errors(
-            "release-promote.yml",
-            lambda jobs: _step_with(jobs, job, "actions/checkout@")["with"].update(
-                {"persist-credentials": True}
-            ),
-        )
-        assert f"{job}: missing required promotion gate 'persist-credentials: false'" in errors
-
-
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
-        (lambda jobs: jobs["publish-release"].pop("environment"), "publish-release must use environment: release"),
-        (
+        pytest.param(_update_gate_step({"if": False}), "missing required", id="if-false"),
+        pytest.param(_update_gate_step({"if": "${{ false }}"}), "missing required", id="if-false-expression"),
+        pytest.param(_update_gate_step({"continue-on-error": True}), "missing required", id="non-blocking"),
+        pytest.param(
+            _update_gate_step({"if": "github.event_name == 'x'"}), "must be unconditional", id="conditional"
+        ),
+        pytest.param(_move_gate_step_ahead, "must run after the gate before it", id="moved-ahead"),
+        pytest.param(_move_gate_step_to_another_job, "missing required", id="moved-to-another-job"),
+        pytest.param(_comment_out_gate_step, "missing required", id="commented-out"),
+    ],
+)
+def test_a_broken_gate_step_fails_the_check(workflow, job, needle, mutate, message):
+    assert message in _gate_errors(workflow, lambda jobs: mutate(jobs, job, needle))
+
+
+def _insert_candidate_code(code):
+    return lambda jobs: jobs["verify-candidate"]["steps"].insert(5, {"run": code})
+
+
+def _stage_after_the_candidate(jobs):
+    steps = jobs["verify-candidate"]["steps"]
+    stage = next(step for step in steps if step.get("name") == "Stage the release assets")
+    steps.remove(stage)
+    steps.append(stage)
+
+
+def _publish_checks_out_another_ref(jobs):
+    checkout = next(
+        step for step in jobs["publish-release"]["steps"] if "checkout" in str(step.get("uses"))
+    )
+    checkout["with"]["ref"] = "${{ inputs.release_tag }}"
+
+
+def _publish_before_authorization(jobs):
+    steps = jobs["publish-release"]["steps"]
+    steps.insert(0, steps.pop(1))
+
+
+def _keep_credentials(job):
+    return lambda jobs: _step_with(jobs, job, "actions/checkout@")["with"].update(
+        {"persist-credentials": True}
+    )
+
+
+def _append_step(job, step):
+    return lambda jobs: jobs[job]["steps"].append(step)
+
+
+def _disable_package_step(needle):
+    return lambda jobs: _step_with(jobs, "package", needle).update({"if": False})
+
+
+@pytest.mark.parametrize(
+    ("workflow", "mutate", "message"),
+    [
+        pytest.param(
+            "release-promote.yml",
+            lambda jobs: jobs["publish-release"].pop("environment"),
+            "publish-release must use environment: release",
+            id="publish-environment-missing",
+        ),
+        pytest.param(
+            "release-promote.yml",
             lambda jobs: jobs["publish-release"].update(environment="staging"),
             "publish-release must use environment: release",
+            id="publish-environment-staging",
         ),
-        (
+        pytest.param(
+            "release-promote.yml",
             lambda jobs: jobs["verify-candidate"].update(environment="release"),
             "verify-candidate must not use environment: release",
+            id="verify-environment-release",
         ),
-        (
+        pytest.param(
+            "release-promote.yml",
             lambda jobs: jobs["publish-release"].update(needs=["verify-candidate", "other"]),
             "publish-release must need exactly verify-candidate",
+            id="publish-needs-extra-job",
         ),
-        (
+        pytest.param(
+            "release-promote.yml",
             lambda jobs: jobs["publish-release"]["steps"].append({"run": "Start-Process .\\AudioForge.exe"}),
             "publish-release must not run candidate code",
+            id="publish-runs-exe",
         ),
-        (
+        pytest.param(
+            "release-promote.yml",
             lambda jobs: jobs["publish-release"]["steps"].append({"run": "msiexec /i candidate.msi"}),
             "publish-release must not run candidate code",
+            id="publish-runs-msiexec",
         ),
-        (
+        pytest.param(
+            "release-promote.yml",
             lambda jobs: jobs["publish-release"]["steps"].append(
                 {"run": "python -m pip install candidate"}
             ),
             "publish-release must not run candidate code",
+            id="publish-installs-with-pip",
         ),
-        (
+        pytest.param(
+            "release-promote.yml",
             lambda jobs: jobs["publish-release"]["steps"].append(
                 {"uses": "actions/setup-python@" + "a" * 40}
             ),
             "publish-release must not run candidate code",
+            id="publish-sets-up-python",
         ),
-        (
+        pytest.param(
+            "release-promote.yml",
             lambda jobs: jobs["verify-candidate"]["steps"].append(
                 {"run": "gh release create $env:RELEASE_TAG"}
             ),
             "only publish-release may run 'gh release create'",
+            id="verify-creates-release",
         ),
-        (
+        pytest.param(
+            "release-promote.yml",
             lambda jobs: jobs["verify-candidate"]["steps"].append(
                 {"run": "gh release upload $env:RELEASE_TAG asset.7z"}
             ),
             "only publish-release may run 'gh release upload'",
+            id="verify-uploads-asset",
+        ),
+        *(
+            pytest.param(
+                workflow, mutate, f"{job} must use environment: release", id=f"{job}-environment-{case}"
+            )
+            for workflow, job in (
+                ("release-hardware-qualify.yml", "qualify-hardware"),
+                ("release-hardware-matrix.yml", "assemble"),
+            )
+            for case, mutate in (
+                ("missing", lambda jobs, job=job: jobs[job].pop("environment")),
+                ("staging", lambda jobs, job=job: jobs[job].update(environment="staging")),
+            )
+        ),
+        *(
+            pytest.param(
+                "release-promote.yml", _insert_candidate_code(code),
+                "runs candidate code before the release files are staged", id=f"{case}-before-staging",
+            )
+            for case, code in (
+                ("msi-smoke", "python python/tools/msi_smoke.py --msi x --install-uninstall"),
+                ("start-process", 'Start-Process -FilePath "$extract\\AudioForge.exe"'),
+                ("package-smoke", "python python/tools/package_smoke.py --dist x"),
+            )
+        ),
+        pytest.param(
+            "release-promote.yml", _stage_after_the_candidate,
+            "must run after the gate before it", id="staging-behind-the-candidate",
+        ),
+        pytest.param(
+            "release-promote.yml", _publish_checks_out_another_ref,
+            "missing required", id="publish-checks-out-another-ref",
+        ),
+        pytest.param(
+            "release-promote.yml", _publish_before_authorization,
+            "must authorize the dispatch", id="publish-step-before-authorization",
+        ),
+        pytest.param(
+            "release-promote.yml",
+            lambda jobs: jobs["publish-release"].update({"continue-on-error": True}),
+            "publish-release: the dispatch authorization must be unconditional",
+            id="publish-job-non-blocking",
+        ),
+        *(
+            pytest.param(
+                "release-promote.yml", _keep_credentials(job),
+                f"{job}: missing required promotion gate 'persist-credentials: false'",
+                id=f"{job}-keeps-credentials",
+            )
+            for job in ("verify-candidate", "publish-release")
+        ),
+        pytest.param(
+            "cache-cleanup.yml",
+            _append_step("cleanup", {"uses": "actions/checkout@" + "a" * 40}),
+            "must not use actions or check out code", id="cache-cleanup-checks-out-code",
+        ),
+        pytest.param(
+            "weekly-checks.yml",
+            lambda jobs: jobs["source"]["steps"].insert(
+                0, {"uses": "actions/cache@" + "a" * 40, "with": {"path": "x", "key": "y"}}
+            ),
+            "source must hydrate without the Actions cache", id="weekly-source-cached",
+        ),
+        pytest.param(
+            "weekly-checks.yml",
+            _append_step("audit", {"uses": "actions/upload-artifact@" + "a" * 40}),
+            "must not publish or upload anything", id="weekly-audit-uploads",
+        ),
+        pytest.param(
+            "weekly-checks.yml",
+            _append_step(
+                "audit",
+                {"uses": "actions/cache@" + "a" * 40, "with": {"path": "~/.cargo/advisory-db", "key": "k"}},
+            ),
+            "audit must read the current advisory database", id="weekly-audit-caches-advisories",
+        ),
+        *(
+            pytest.param(
+                "package-check.yml", _disable_package_step(needle),
+                "missing required package check gate", id=f"package-check-step-disabled-{needle}",
+            )
+            for needle in (
+                "fetch_release_assets.py --force",
+                "maturin develop --release --locked",
+                "python/tools/verify_release_assets.py",
+                "build_exe.ps1",
+                "python/tools/package_smoke.py",
+                "--smoke-test",
+                "build_msi.ps1",
+                "python/tools/msi_smoke.py",
+            )
+        ),
+        *(
+            pytest.param(
+                "package-check.yml", _append_step("package", step),
+                "must not publish or upload anything", id=f"package-check-{case}",
+            )
+            for case, step in (
+                ("uploads-an-artifact", {"uses": "actions/upload-artifact@" + "a" * 40, "with": {"path": "dist"}}),
+                ("creates-a-release", {"run": "gh release create v1.0.0"}),
+                ("pushes", {"run": "git push origin HEAD"}),
+            )
         ),
     ],
 )
-def test_only_the_publish_job_publishes_and_it_never_runs_the_candidate(mutate, message):
-    assert message in _gate_errors("release-promote.yml", mutate)
+def test_gate_check_rejects_the_workflow_mutation(workflow, mutate, message):
+    assert message in _gate_errors(workflow, mutate)
+
+
+def test_weekly_checks_pass_the_gate_check_as_committed():
+    assert _gate_errors("weekly-checks.yml", lambda jobs: None) == ""
 
 
 @pytest.mark.parametrize(
@@ -3344,67 +3486,6 @@ def test_only_the_publish_job_of_promotion_can_write():
     )
 
 
-@pytest.mark.parametrize(
-    ("mutate", "message"),
-    [
-        (
-            lambda jobs: _drop(jobs["rust-tests"], "Build and verify the pinned DeepFilter runtime"),
-            "missing required DeepFilter gate 'python/tools/fetch_release_assets.py'",
-        ),
-        (
-            lambda jobs: _set_step_run(
-                jobs["rust-tests"],
-                "Build and verify the pinned DeepFilter runtime",
-                "python python/tools/fetch_release_assets.py --only-cpu-runtime --force\n"
-                "python python/tools/verify_release_assets.py",
-            ),
-            "missing required DeepFilter gate 'python/tools/fetch_release_assets.py'",
-        ),
-        (
-            lambda jobs: _set_step_run(
-                jobs["rust-tests"],
-                "Build and verify the pinned DeepFilter runtime",
-                "python python/tools/fetch_release_assets.py",
-            ),
-            "missing required DeepFilter gate 'python/tools/verify_release_assets.py'",
-        ),
-        (
-            lambda jobs: _step_named(jobs["rust-tests"], "Build and verify the pinned DeepFilter runtime")
-            .pop("env"),
-            "missing required DeepFilter gate 'GH_TOKEN: ${{ github.token }}'",
-        ),
-        (
-            lambda jobs: _move_to_end(jobs["rust-tests"], "Build and verify the pinned DeepFilter runtime"),
-            "must run after the gate before it",
-        ),
-        (
-            lambda jobs: _step_named(jobs["rust-tests"], "Rust tests").pop("env"),
-            "missing required DeepFilter gate 'AUDIOFORGE_ENABLE_DEEPFILTER: 1'",
-        ),
-        (
-            lambda jobs: _set_step_run(
-                jobs["rust-tests"],
-                "Rust tests",
-                "cargo test --locked -p mic_eq_core -- --skip "
-                "seeded_control_and_dsp_loops_remain_finite_under_contention --exact",
-            ),
-            "missing required DeepFilter gate '--nocapture'",
-        ),
-        (
-            lambda jobs: _set_step_run(
-                jobs["rust-tests"],
-                "Rust tests",
-                "cargo test --locked -p mic_eq_core -- --skip "
-                "seeded_control_and_dsp_loops_remain_finite_under_contention --exact --nocapture",
-            ),
-            "Select-String",
-        ),
-    ],
-)
-def test_ci_rust_tests_provision_deepfilter_and_fail_on_skips(mutate, message):
-    assert message in _ci_errors(mutate)
-
-
 def test_ci_rust_tests_scan_for_the_skip_lines_the_tests_print():
     """The scan pattern matches every skip notice in rust-core's tests and no test name."""
     import re
@@ -3427,43 +3508,6 @@ def test_ci_rust_tests_scan_for_the_skip_lines_the_tests_print():
         "test result: ok. 581 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out",
     ):
         assert not pattern.search(line), line
-
-
-@pytest.mark.parametrize(
-    ("mutate", "message"),
-    [
-        (
-            lambda jobs: _step_named(jobs["rust-tests"], "Rust tests")["env"].pop(
-                "AUDIOFORGE_ENABLE_DEEPFILTER"
-            ),
-            "missing required DeepFilter gate 'AUDIOFORGE_ENABLE_DEEPFILTER: 1'",
-        ),
-        (
-            lambda jobs: _set_step_run(
-                jobs["rust-tests"],
-                "Rust tests",
-                "cargo test --locked -p mic_eq_core -- --skip "
-                "seeded_control_and_dsp_loops_remain_finite_under_contention --exact",
-            ),
-            "missing required DeepFilter gate '--nocapture'",
-        ),
-        (
-            lambda jobs: _set_step_run(
-                jobs["rust-tests"],
-                "Rust tests",
-                "cargo test --locked -p mic_eq_core -- --skip "
-                "seeded_control_and_dsp_loops_remain_finite_under_contention --exact --nocapture",
-            ),
-            "Select-String",
-        ),
-        (
-            lambda jobs: _step_named(jobs["rust-tests"], "Rust tests").update({"if": False}),
-            "missing required DeepFilter gate 'cargo test --locked -p mic_eq_core'",
-        ),
-    ],
-)
-def test_release_rust_tests_enable_deepfilter_and_fail_on_skips(mutate, message):
-    assert message in _release_job_errors(mutate)
 
 
 def test_ci_and_release_scan_the_rust_test_output_for_the_same_skip_notices():
@@ -3500,39 +3544,6 @@ def test_package_check_runs_on_master_pushes_and_on_pull_requests_touching_packa
 def test_package_check_accepts_the_wix_eula_in_every_msi_build():
     runs = "\n".join(str(step.get("run", "")) for step in _workflow("package-check.yml")["jobs"]["package"]["steps"])
     assert runs.count("build_msi.ps1") == runs.count("-AcceptWixEula") == 2
-
-
-@pytest.mark.parametrize(
-    "needle",
-    [
-        "fetch_release_assets.py --force",
-        "maturin develop --release --locked",
-        "python/tools/verify_release_assets.py",
-        "build_exe.ps1",
-        "python/tools/package_smoke.py",
-        "--smoke-test",
-        "build_msi.ps1",
-        "python/tools/msi_smoke.py",
-    ],
-)
-def test_package_check_requires_every_build_and_smoke_step(needle):
-    def disable(jobs):
-        _step_with(jobs, "package", needle)["if"] = False
-
-    assert "missing required package check gate" in _gate_errors("package-check.yml", disable)
-
-
-@pytest.mark.parametrize(
-    "step",
-    [
-        {"uses": "actions/upload-artifact@" + "a" * 40, "with": {"path": "dist"}},
-        {"run": "gh release create v1.0.0"},
-        {"run": "git push origin HEAD"},
-    ],
-)
-def test_package_check_publishes_and_uploads_nothing(step):
-    errors = _gate_errors("package-check.yml", lambda jobs: jobs["package"]["steps"].append(step))
-    assert "must not publish or upload anything" in errors
 
 
 def test_package_check_builds_with_the_project_interpreter_and_the_pinned_ort():
@@ -3750,20 +3761,6 @@ def test_the_privileged_job_of_each_dispatch_workflow_is_bound_to_the_release_en
     workflow, job
 ):
     assert _workflow(workflow)["jobs"][job]["environment"] == "release"
-    assert f"{job} must use environment: release" in _gate_errors(
-        workflow, lambda jobs: jobs[job].pop("environment")
-    )
-    assert f"{job} must use environment: release" in _gate_errors(
-        workflow, lambda jobs: jobs[job].update(environment="staging")
-    )
-
-
-def test_the_read_only_verification_job_declares_no_environment():
-    errors = _gate_errors(
-        "release-promote.yml",
-        lambda jobs: jobs["verify-candidate"].update(environment="release"),
-    )
-    assert "verify-candidate must not use environment: release" in errors
 
 
 def test_promotion_stages_and_uploads_the_release_files_before_the_candidate_runs():
@@ -3778,33 +3775,6 @@ def test_promotion_stages_and_uploads_the_release_files_before_the_candidate_run
         run = str(step.get("run", ""))
         assert not any(marker in run for marker in check_workflows.PROMOTE_CANDIDATE_RUNNERS)
     assert "msi_smoke.py" in steps[verify]["run"] and "--smoke-test" in steps[verify]["run"]
-
-
-@pytest.mark.parametrize(
-    "candidate_code",
-    [
-        "python python/tools/msi_smoke.py --msi x --install-uninstall",
-        'Start-Process -FilePath "$extract\\AudioForge.exe"',
-        "python python/tools/package_smoke.py --dist x",
-    ],
-)
-def test_candidate_code_before_the_release_files_are_staged_fails_the_check(candidate_code):
-    def early(jobs):
-        jobs["verify-candidate"]["steps"].insert(5, {"run": candidate_code})
-
-    assert "runs candidate code before the release files are staged" in _gate_errors(
-        "release-promote.yml", early
-    )
-
-
-def test_staging_that_moves_behind_the_candidate_step_fails_the_check():
-    def late(jobs):
-        steps = jobs["verify-candidate"]["steps"]
-        stage = next(step for step in steps if step.get("name") == "Stage the release assets")
-        steps.remove(stage)
-        steps.append(stage)
-
-    assert "must run after the gate before it" in _gate_errors("release-promote.yml", late)
 
 
 @pytest.mark.parametrize("workflow", ["ci.yml", "release-package.yml"])
@@ -3930,15 +3900,6 @@ def test_semgrep_run_exits_with_2_and_names_the_problem_when_git_is_missing(
     assert "git is required" in capsys.readouterr().err
 
 
-def test_cache_cleanup_stays_a_bare_gh_script():
-    def add_checkout(jobs):
-        jobs["cleanup"]["steps"].insert(0, {"uses": "actions/checkout@" + "a" * 40})
-
-    assert "must not use actions or check out code" in _gate_errors(
-        "cache-cleanup.yml", add_checkout
-    )
-
-
 def test_actions_write_belongs_to_the_cache_cleanup_job_alone():
     cleanup = _workflow("cache-cleanup.yml")
     errors: list[str] = []
@@ -3954,52 +3915,6 @@ def test_actions_write_belongs_to_the_cache_cleanup_job_alone():
     errors = []
     check_workflows._check_permissions("weekly-checks.yml", weekly, errors)
     assert errors == ["weekly-checks.yml: job audit must not request write permission"]
-
-
-def test_weekly_checks_publish_nothing_and_hydrate_source_uncached():
-    def cache_source(jobs):
-        jobs["source"]["steps"].insert(
-            0, {"uses": "actions/cache@" + "a" * 40, "with": {"path": "x", "key": "y"}}
-        )
-
-    def upload(jobs):
-        jobs["audit"]["steps"].append({"uses": "actions/upload-artifact@" + "a" * 40})
-
-    assert "source must hydrate without the Actions cache" in _gate_errors(
-        "weekly-checks.yml", cache_source
-    )
-    assert "must not publish or upload anything" in _gate_errors("weekly-checks.yml", upload)
-
-
-def test_weekly_audit_reads_current_advisories_instead_of_a_cached_database():
-    def cache_advisories(jobs):
-        jobs["audit"]["steps"].append(
-            {"uses": "actions/cache@" + "a" * 40, "with": {"path": "~/.cargo/advisory-db", "key": "k"}}
-        )
-
-    assert "audit must read the current advisory database" in _gate_errors(
-        "weekly-checks.yml", cache_advisories
-    )
-    assert _gate_errors("weekly-checks.yml", lambda jobs: None) == ""
-
-
-@pytest.mark.parametrize(
-    ("job", "step", "expected"),
-    [
-        ("rust-tests", "Restore DeepFilter runtime", "missing required DeepFilter gate"),
-        ("static", "Workflow security lint", "missing required workflow lint gate"),
-    ],
-)
-def test_ci_keeps_the_deepfilter_restore_and_the_workflow_lint(job, step, expected):
-    assert expected in _ci_errors(lambda jobs: _drop(jobs[job], step))
-
-
-def test_the_cached_deepfilter_runtime_is_keyed_on_the_recipe():
-    def narrow(jobs):
-        restore = _step_named(jobs["rust-tests"], "Restore DeepFilter runtime")
-        restore["with"]["key"] = restore["with"]["key"].replace("'build_deepfilter.ps1', ", "")
-
-    assert "missing required DeepFilter gate" in _ci_errors(narrow)
 
 
 @pytest.mark.parametrize(

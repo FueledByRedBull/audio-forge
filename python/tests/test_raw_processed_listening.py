@@ -15,12 +15,12 @@ from PySide6.QtWidgets import QWidget
 from mic_eq.analysis import listening_comparison as comparison
 from mic_eq.config import DeviceIdentity
 from mic_eq.ui import listening_comparison_dialog as module
-from mic_eq.ui.accessibility import audit_widget_tree
 from mic_eq.ui.listening_comparison_dialog import (
     ListeningComparisonDialog,
     RawProcessedDialog,
     open_test_my_sound,
 )
+from accessibility_audit import audit_widget_tree
 from test_listening_comparison import _settings
 from engine_fakes import fake_session
 

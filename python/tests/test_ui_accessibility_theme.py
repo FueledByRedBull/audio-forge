@@ -17,7 +17,7 @@ from PySide6.QtGui import QColor, QIcon, QPalette, QPixmap
 from PySide6.QtWidgets import QScrollArea, QWidget
 
 from mic_eq.config import AppConfig
-from mic_eq.ui.accessibility import audit_widget_tree, set_accessible
+from mic_eq.ui.accessibility import set_accessible
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.first_run_setup_dialog import FirstRunSetupDialog
 from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog
@@ -30,6 +30,7 @@ from mic_eq.ui.main_window import (
 from mic_eq.ui.level_meter import SCALE_TEXT_GAP, _scale_mark_geometry
 from mic_eq.ui.shell_specs import TEXT_SPECS
 from mic_eq.ui import theme
+from accessibility_audit import audit_widget_tree
 from test_first_run_setup import at_scene_minimum, cut_short_texts, scene_item, scene_items
 from mic_eq.ui.theme import (
     CONTROL_BOUNDARY_PAIRS,

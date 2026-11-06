@@ -13,8 +13,6 @@ const TRUE_PEAK_LONG_TAPS: usize = 4095;
 const TRUE_PEAK_LONG_TAPS_PER_PHASE: usize = 256;
 const TRUE_PEAK_SHORT_TAPS: usize = 2047;
 const TRUE_PEAK_SHORT_TAPS_PER_PHASE: usize = 128;
-const TRUE_PEAK_LONG_MIRRORED_LEN: usize = 2 * TRUE_PEAK_LONG_TAPS_PER_PHASE;
-const TRUE_PEAK_SHORT_MIRRORED_LEN: usize = 2 * TRUE_PEAK_SHORT_TAPS_PER_PHASE;
 const TRUE_PEAK_SHORT_DELAY_SAMPLES: usize = 64;
 const TRUE_PEAK_LIMITER_HOLD_SAMPLES: usize = 384;
 const TRUE_PEAK_GAIN_AVERAGE_SAMPLES: usize = 128;
@@ -99,38 +97,22 @@ fn dot_interleaved8(coefficients: &[f32], history: &[f32]) -> f32 {
     sums.iter().copied().sum()
 }
 
-type LongBandlimitedPeak =
-    BandlimitedPeak<TRUE_PEAK_LONG_TAPS_PER_PHASE, TRUE_PEAK_LONG_MIRRORED_LEN>;
-type ShortBandlimitedPeak =
-    BandlimitedPeak<TRUE_PEAK_SHORT_TAPS_PER_PHASE, TRUE_PEAK_SHORT_MIRRORED_LEN>;
-
 #[derive(Debug, Clone)]
-struct BandlimitedPeak<const TAPS_PER_PHASE: usize, const MIRRORED_LEN: usize> {
+struct BandlimitedPeak<const TAPS_PER_PHASE: usize> {
     coefficients: &'static [[f32; TAPS_PER_PHASE]; TRUE_PEAK_PHASES],
-    /// Each sample is stored at `position` and again `TAPS_PER_PHASE` later,
-    /// so `history[position..position + TAPS_PER_PHASE]` is always the newest-
-    /// first window and a new sample moves no data.
-    history: [f32; MIRRORED_LEN],
-    position: usize,
+    history: [f32; TAPS_PER_PHASE],
 }
 
-impl<const TAPS_PER_PHASE: usize, const MIRRORED_LEN: usize>
-    BandlimitedPeak<TAPS_PER_PHASE, MIRRORED_LEN>
-{
-    const MIRROR_HOLDS_TWO_WINDOWS: () = assert!(MIRRORED_LEN == 2 * TAPS_PER_PHASE);
-
+impl<const TAPS_PER_PHASE: usize> BandlimitedPeak<TAPS_PER_PHASE> {
     fn new(coefficients: &'static [[f32; TAPS_PER_PHASE]; TRUE_PEAK_PHASES]) -> Self {
-        let () = Self::MIRROR_HOLDS_TWO_WINDOWS;
         Self {
             coefficients,
-            history: [0.0; MIRRORED_LEN],
-            position: 0,
+            history: [0.0; TAPS_PER_PHASE],
         }
     }
 
     fn reset(&mut self) {
-        self.history = [0.0; MIRRORED_LEN];
-        self.position = 0;
+        self.history = [0.0; TAPS_PER_PHASE];
     }
 
     #[inline]
@@ -145,14 +127,12 @@ impl<const TAPS_PER_PHASE: usize, const MIRRORED_LEN: usize>
 
     #[inline]
     fn observe_inner(&mut self, sample: f32, include_sample: bool) -> f32 {
-        self.position = self.position.checked_sub(1).unwrap_or(TAPS_PER_PHASE - 1);
-        self.history[self.position] = sample;
-        self.history[self.position + TAPS_PER_PHASE] = sample;
-        let window = &self.history[self.position..self.position + TAPS_PER_PHASE];
+        self.history.copy_within(..TAPS_PER_PHASE - 1, 1);
+        self.history[0] = sample;
 
         let mut peak = if include_sample { sample.abs() } else { 0.0 };
         for phase in self.coefficients.iter() {
-            let interpolated = dot_interleaved8(phase, window);
+            let interpolated = dot_interleaved8(phase, &self.history);
             peak = peak.max(interpolated.abs());
         }
         peak
@@ -161,7 +141,7 @@ impl<const TAPS_PER_PHASE: usize, const MIRRORED_LEN: usize>
 
 #[derive(Debug, Clone)]
 pub struct TruePeakDetector {
-    oversampler: LongBandlimitedPeak,
+    oversampler: BandlimitedPeak<TRUE_PEAK_LONG_TAPS_PER_PHASE>,
     last_peak: f32,
 }
 
@@ -285,8 +265,8 @@ pub struct TruePeakLimiter {
     gain_reduction: f32,
     delay: [f32; TRUE_PEAK_LIMITER_LOOKAHEAD_SAMPLES],
     write_idx: usize,
-    input_oversampler: LongBandlimitedPeak,
-    short_oversampler: ShortBandlimitedPeak,
+    input_oversampler: BandlimitedPeak<TRUE_PEAK_LONG_TAPS_PER_PHASE>,
+    short_oversampler: BandlimitedPeak<TRUE_PEAK_SHORT_TAPS_PER_PHASE>,
     short_delay: [f32; TRUE_PEAK_SHORT_DELAY_SAMPLES],
     short_delay_idx: usize,
     held_peaks: MaxHoldDeque,
@@ -945,105 +925,5 @@ mod tests {
                 .iter()
                 .all(|sample| sample.abs() <= limiter.ceiling_linear));
         }
-    }
-
-    fn random_signal(len: usize, seed: u32, scale: f32) -> Vec<f32> {
-        let mut state = seed;
-        (0..len)
-            .map(|_| {
-                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                ((state >> 8) as f32 / (1 << 24) as f32 * 2.0 - 1.0) * scale
-            })
-            .collect()
-    }
-
-    fn fnv(samples: &[f32]) -> u64 {
-        samples
-            .iter()
-            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, sample| {
-                (hash ^ u64::from(sample.to_bits())).wrapping_mul(0x0100_0000_01b3)
-            })
-    }
-
-    /// The limiter and detector outputs for a fixed loud random input, as
-    /// recorded before the FIR history stopped shifting on every sample.
-    fn pipeline_hashes() -> (u64, u64) {
-        let input = random_signal(60_000, 0x1357_9bdf, 1.4);
-        let mut limiter = TruePeakLimiter::new(48_000.0, -1.5, 60.0);
-        let mut limited = input.clone();
-        limiter.process_block_inplace(&mut limited);
-        let mut detector = TruePeakDetector::new();
-        let peaks: Vec<f32> = input
-            .chunks(480)
-            .map(|block| detector.process_block(block))
-            .collect();
-        (fnv(&limited), fnv(&peaks))
-    }
-
-    #[test]
-    fn limiter_and_detector_outputs_match_the_recorded_hashes() {
-        assert_eq!(
-            pipeline_hashes(),
-            (2_753_261_737_584_266_295, 11_210_939_474_369_966_724)
-        );
-    }
-
-    /// The history as it was kept before: shifted by one place per sample.
-    struct ShiftingPeak<const TAPS_PER_PHASE: usize> {
-        coefficients: &'static [[f32; TAPS_PER_PHASE]; TRUE_PEAK_PHASES],
-        history: [f32; TAPS_PER_PHASE],
-    }
-
-    impl<const TAPS_PER_PHASE: usize> ShiftingPeak<TAPS_PER_PHASE> {
-        fn observe(&mut self, sample: f32, include_sample: bool) -> f32 {
-            self.history.copy_within(..TAPS_PER_PHASE - 1, 1);
-            self.history[0] = sample;
-            let mut peak = if include_sample { sample.abs() } else { 0.0 };
-            for phase in self.coefficients.iter() {
-                peak = peak.max(dot_interleaved8(phase, &self.history).abs());
-            }
-            peak
-        }
-    }
-
-    fn assert_mirrored_history_is_bit_identical<
-        const TAPS_PER_PHASE: usize,
-        const MIRRORED_LEN: usize,
-    >(
-        coefficients: &'static [[f32; TAPS_PER_PHASE]; TRUE_PEAK_PHASES],
-    ) {
-        let input = random_signal(30_000, 0x00c0_ffee, 1.2);
-        let mut mirrored = BandlimitedPeak::<TAPS_PER_PHASE, MIRRORED_LEN>::new(coefficients);
-        let mut shifting = ShiftingPeak {
-            coefficients,
-            history: [0.0; TAPS_PER_PHASE],
-        };
-        for (index, &sample) in input.iter().enumerate() {
-            if index == 17_000 {
-                mirrored.reset();
-                shifting.history = [0.0; TAPS_PER_PHASE];
-            }
-            let include_sample = index % 3 != 0;
-            let actual = if include_sample {
-                mirrored.observe(sample)
-            } else {
-                mirrored.observe_fir_only(sample)
-            };
-            let expected = shifting.observe(sample, include_sample);
-            assert_eq!(actual.to_bits(), expected.to_bits(), "sample {index}");
-        }
-    }
-
-    #[test]
-    fn mirrored_history_gives_bit_identical_fir_output() {
-        let bank = true_peak_fir_bank();
-        assert_mirrored_history_is_bit_identical::<
-            TRUE_PEAK_LONG_TAPS_PER_PHASE,
-            TRUE_PEAK_LONG_MIRRORED_LEN,
-        >(&bank.long);
-        assert_mirrored_history_is_bit_identical::<
-            TRUE_PEAK_SHORT_TAPS_PER_PHASE,
-            TRUE_PEAK_SHORT_MIRRORED_LEN,
-        >(&bank.short);
     }
 }

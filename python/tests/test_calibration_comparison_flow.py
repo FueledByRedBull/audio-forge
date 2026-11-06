@@ -21,11 +21,12 @@ def test_comparison_uses_one_capture_and_existing_apply_path(qapp, monkeypatch, 
 
     owner: Any = QWidget()
     owner.processor = SimpleNamespace(sample_rate=lambda: 48000, get_input_cleanup_mode=lambda: "off")
-    owner._get_current_preset = Preset
-    owner._processing_mode = lambda: "raw"
-    owner.eq_state = SimpleNamespace(get_settings=lambda: {"band_gains": [0.0] * 10})
+    owner.configuration = SimpleNamespace(
+        current=Preset(), processing_mode="raw",
+        states=SimpleNamespace(eq=SimpleNamespace(get_settings=lambda: {"band_gains": [0.0] * 10})),
+    )
     owner.set_temporary_output_mute = Mock()
-    dialog = dialog_type(owner)
+    dialog = dialog_type(owner, configuration=owner.configuration)
     def unexpected_warning(_parent, title, message):
         pytest.fail(f"Unexpected comparison warning: {title}: {message}")
 

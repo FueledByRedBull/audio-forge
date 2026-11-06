@@ -16,6 +16,7 @@ from PySide6.QtTest import QTest
 
 from mic_eq.config import AppConfig
 from mic_eq.ui.main_window import MINIMUM_WINDOW_HEIGHT, MINIMUM_WINDOW_WIDTH, MainWindow
+from mic_eq.ui.processing_configuration import PresetOrigin
 
 INPUT = SimpleNamespace(name="CABLE Output (VB-Audio Virtual Cable)", is_default=True)
 OUTPUT = SimpleNamespace(name="Realtek Digital Output (Realtek USB Audio)", is_default=True)
@@ -42,9 +43,12 @@ def build_minimum_window(
     window = MainWindow()
     window.meter_timer.stop()
     window.diagnostics_timer.stop()
-    window.current_preset_name = preset
-    window.preset_modified = modified
-    window._update_session_summary()
+    named_preset = window.configuration.current
+    named_preset.name = preset
+    window.configuration.load(named_preset, PresetOrigin(), remember=False)
+    if modified:
+        window.gate_state.set_settings({"threshold_db": window.gate_state.get_settings()["threshold_db"] + 1})
+        window.configuration.commit_edit()
     # The platform minimum is clamped to the offscreen screen; ask for the real one.
     window.setMinimumSize(MINIMUM_WINDOW_WIDTH, MINIMUM_WINDOW_HEIGHT)
     window.resize(width, MINIMUM_WINDOW_HEIGHT)
@@ -123,7 +127,7 @@ def test_nothing_in_the_content_column_runs_under_the_meters(minimum_window) -> 
 
 def test_a_long_preset_name_is_elided_and_whole_in_the_tooltip(minimum_window) -> None:
     name = named(minimum_window, "presetName")
-    long_name = minimum_window.current_preset_name == LONG_PRESET
+    long_name = minimum_window.configuration.identity.name == LONG_PRESET
     assert name.property("truncated") is long_name
     hint = next(child for child in name.children() if "Hint" in child.metaObject().className())
     assert hint.property("text") == (LONG_PRESET if long_name else "")
@@ -145,7 +149,7 @@ def status_caption(window: MainWindow, text: str) -> QQuickItem:
 def test_an_elided_status_caption_has_its_full_text_as_its_tip(minimum_window) -> None:
     message = named(minimum_window, "statusMessage")
     calibration = status_caption(minimum_window, STALE_CALIBRATION)
-    if minimum_window.current_preset_name == LONG_PRESET:
+    if minimum_window.configuration.identity.name == LONG_PRESET:
         assert message.property("truncated") is True
     for caption in (message, calibration):
         assert caption_tip(caption) == (caption.property("text") if caption.property("truncated") else "")

@@ -291,7 +291,7 @@ def test_a_button_reports_button_role_its_visible_label_and_whether_it_is_enable
         assert _iface(undo).state().disabled
         window.eq_state.set_band_value(0, "gain_db", 3.0)
         window.eq_state.flush()
-        window._commit_pending_configuration_snapshot()
+        window.configuration.commit_edit()
         qapp.processEvents()
         assert not _iface(undo).state().disabled
 

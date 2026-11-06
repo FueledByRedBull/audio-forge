@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
@@ -26,6 +27,7 @@ from capture_helpers import _render, finish_take
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.calibration_support import AutoEqCandidate, chain_settings
 from mic_eq.ui.platform_text import SOUND_SETTINGS
+from mic_eq.ui.processing_configuration import Checkpoint
 from mic_eq.ui.theme import message_text_style, status_chip_style
 
 
@@ -111,21 +113,50 @@ class _EqStateStub:
         self.diagnostics = diagnostics
 
 
+class _OwnerConfiguration:
+    """The configuration module as the setup dialogs use it, over a test owner's settings."""
+
+    def __init__(self, owner: Any) -> None:
+        self._owner = owner
+
+    @property
+    def current(self) -> Preset:
+        return self._owner.current_preset()
+
+    @property
+    def processing_mode(self) -> str:
+        return self._owner._processing_mode()
+
+    @property
+    def states(self) -> Any:
+        return SimpleNamespace(eq=self._owner.eq_state)
+
+    def apply(self, preset: Preset, **kwargs: Any) -> None:
+        self._owner.apply_preset(preset, **kwargs)
+
+    def checkpoint(self) -> Checkpoint:
+        return Checkpoint(self.current, self.processing_mode, None, None)
+
+    def restore(self, checkpoint: Checkpoint, **_calibration: Any) -> None:
+        self.apply(checkpoint.preset, processing_mode=checkpoint.processing_mode)
+
+
 class _Owner(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.processor = _ProcessorStub()
         self.eq_state = _EqStateStub()
+        self.configuration: Any = _OwnerConfiguration(self)
         self.applied_preset: Preset | None = None
         self.preset = Preset(eq=EQSettings(enabled=self.eq_state.enabled))
 
-    def _get_current_preset(self) -> Preset:
+    def current_preset(self) -> Preset:
         return Preset.from_dict(self.preset.to_dict())
 
     def _processing_mode(self) -> str:
         return "normal"
 
-    def apply_processing_configuration(
+    def apply_preset(
         self,
         preset: Preset,
         *,
@@ -224,9 +255,9 @@ def _capture(dialog: CalibrationDialog, monkeypatch, curve: str) -> None:
 
 
 @contextmanager
-def _dialog_for(owner: QWidget) -> Iterator[CalibrationDialog]:
+def _dialog_for(owner: Any) -> Iterator[CalibrationDialog]:
     """A CalibrationDialog on ``owner``; leaving rejects it and closes the owner."""
-    dialog = CalibrationDialog(owner)
+    dialog = CalibrationDialog(owner, configuration=owner.configuration)
     try:
         yield dialog
     finally:
@@ -274,7 +305,7 @@ def test_retake_and_failed_next_analysis_cannot_apply_old_candidate(qapp, monkey
 
 def test_apply_uses_captured_target_and_enables_eq_after_bands(qapp, monkeypatch):
     owner = _Owner()
-    dialog = CalibrationDialog(owner)
+    dialog = CalibrationDialog(owner, configuration=owner.configuration)
     applied_targets: list[str] = []
     dialog.auto_eq_applied.connect(applied_targets.append)
     try:
@@ -312,7 +343,7 @@ def test_typed_tone_candidate_matches_audition_and_applied_configuration(
     owner = _Owner()
     owner.preset = Preset(eq=_tone_eq())
     owner.eq_state.settings = owner.preset.eq
-    dialog = CalibrationDialog(owner)
+    dialog = CalibrationDialog(owner, configuration=owner.configuration)
     captured_comparison: dict[str, Any] = {}
 
     class _ComparisonStub:
@@ -546,7 +577,7 @@ def _assert_ready(text: str) -> None:
 
 def test_proposal_kept_over_the_rule_is_offered_with_the_cause_and_the_fix(qapp, monkeypatch):
     owner = _owner_with()
-    dialog = CalibrationDialog(owner)
+    dialog = CalibrationDialog(owner, configuration=owner.configuration)
     try:
         _complete(dialog, monkeypatch, _over_the_rule(owner.preset.eq))
 
@@ -730,7 +761,7 @@ def test_only_an_authoritative_not_worsened_result_opens_the_gate(qapp, monkeypa
         {"status": "risk"},
     ):
         owner = _Owner()
-        dialog = CalibrationDialog(owner)
+        dialog = CalibrationDialog(owner, configuration=owner.configuration)
         try:
             _capture(dialog, monkeypatch, "broadcast")
             dialog._on_analysis_complete(
@@ -795,15 +826,15 @@ class _ModeOwner(_Owner):
     def _processing_mode(self) -> str:
         return self.mode
 
-    def apply_processing_configuration(self, preset, *, processing_mode=None, **kwargs) -> None:
+    def apply_preset(self, preset, *, processing_mode=None, **kwargs) -> None:
         self.applied_mode = processing_mode
-        super().apply_processing_configuration(preset, processing_mode=processing_mode, **kwargs)
+        super().apply_preset(preset, processing_mode=processing_mode, **kwargs)
 
 
 @pytest.mark.parametrize("mode", ["raw", "bypass"])
 def test_headroom_checks_the_normal_path_where_the_eq_will_act(qapp, monkeypatch, mode):
     owner = _ModeOwner(mode)
-    dialog = CalibrationDialog(owner)
+    dialog = CalibrationDialog(owner, configuration=owner.configuration)
     try:
         _capture(dialog, monkeypatch, "broadcast")
         assert dialog._analysis_headroom_chain is not None
@@ -867,7 +898,7 @@ def test_the_tone_modes_are_named_for_what_they_do_and_keep_their_stored_values(
     qapp, monkeypatch
 ):
     owner = _Owner()
-    dialog = CalibrationDialog(owner)
+    dialog = CalibrationDialog(owner, configuration=owner.configuration)
     combo = dialog.target_mode_combo
     try:
         assert [(combo.itemText(i), combo.itemData(i)) for i in range(combo.count())] == [
@@ -983,7 +1014,7 @@ def test_a_new_take_starts_with_an_empty_level_window(qapp, monkeypatch):
 def test_failed_typed_apply_does_not_enable_eq(qapp, monkeypatch):
     owner = _Owner()
     owner.eq_state.fail_apply = True
-    dialog = CalibrationDialog(owner)
+    dialog = CalibrationDialog(owner, configuration=owner.configuration)
     try:
         _capture(dialog, monkeypatch, "broadcast")
         generation = dialog._analysis_generation
@@ -1055,14 +1086,15 @@ class _CalibrationOwner(QWidget):
         self.processor.sample_rate.return_value = 48_000
         self.processor.get_input_cleanup_mode.return_value = "off"
         self.eq_state = _EqState()
+        self.configuration: Any = _OwnerConfiguration(self)
 
-    def _get_current_preset(self) -> Preset:
+    def current_preset(self) -> Preset:
         return Preset(eq=self.eq_state.get_eq_settings())
 
     def _processing_mode(self) -> str:
         return "normal"
 
-    def apply_processing_configuration(
+    def apply_preset(
         self,
         preset: Preset,
         *,
@@ -1171,7 +1203,7 @@ def _install_eq_candidate(
         band_gains=band_gains,
         band_qs=band_qs,
     )
-    incumbent = owner._get_current_preset()
+    incumbent = owner.configuration.current
     candidate_eq = build_eq_candidate_settings(
         incumbent.eq,
         candidate["band_freqs"],
@@ -1208,7 +1240,7 @@ def _install_eq_candidate(
 
 def test_eq_apply_failure_restores_partial_native_mutation(qapp, monkeypatch) -> None:
     owner = _CalibrationOwner()
-    dialog = CalibrationDialog(owner)
+    dialog = CalibrationDialog(owner, configuration=owner.configuration)
     before = owner.eq_state.get_settings()
     try:
         _install_eq_candidate(dialog, owner)
@@ -1225,7 +1257,7 @@ def test_eq_apply_failure_restores_partial_native_mutation(qapp, monkeypatch) ->
 
 def test_eq_apply_requires_snapshot_and_reports_restore_failure(qapp, monkeypatch) -> None:
     owner = _CalibrationOwner()
-    dialog = CalibrationDialog(owner)
+    dialog = CalibrationDialog(owner, configuration=owner.configuration)
     messages: list[str] = []
     try:
         _install_eq_candidate(dialog, owner)
@@ -1235,7 +1267,7 @@ def test_eq_apply_requires_snapshot_and_reports_restore_failure(qapp, monkeypatc
             lambda _parent, _title, message: messages.append(str(message)),
         )
 
-        get_current_preset = owner._get_current_preset
+        get_current_preset = owner.current_preset
         snapshot_calls = 0
 
         def fail_apply_snapshot() -> Preset:
@@ -1245,12 +1277,12 @@ def test_eq_apply_requires_snapshot_and_reports_restore_failure(qapp, monkeypatc
                 raise RuntimeError("snapshot unavailable")
             return get_current_preset()
 
-        monkeypatch.setattr(owner, "_get_current_preset", fail_apply_snapshot)
+        monkeypatch.setattr(owner, "current_preset", fail_apply_snapshot)
         dialog._apply_eq_settings()
         assert owner.eq_state.apply_calls == 0
         assert "nothing was changed" in messages[-1]
 
-        monkeypatch.setattr(owner, "_get_current_preset", get_current_preset)
+        monkeypatch.setattr(owner, "current_preset", get_current_preset)
         owner.eq_state.restore_error = True
         dialog._apply_eq_settings()
         assert "could not be fully put back (restore unavailable)" in messages[-1]
@@ -1262,7 +1294,7 @@ def test_eq_apply_requires_snapshot_and_reports_restore_failure(qapp, monkeypatc
 def test_eq_apply_reads_back_accepted_values(qapp, monkeypatch) -> None:
     owner = _CalibrationOwner()
     owner.eq_state = _ReadbackEqState()
-    dialog = CalibrationDialog(owner)
+    dialog = CalibrationDialog(owner, configuration=owner.configuration)
     monkeypatch.setattr(QMessageBox, "critical", lambda *_args, **_kwargs: None)
     try:
         _install_eq_candidate(
@@ -1286,7 +1318,7 @@ def test_eq_apply_reads_back_accepted_values(qapp, monkeypatch) -> None:
 
 def test_eq_candidate_rejects_changed_route_context(qapp, monkeypatch) -> None:
     owner = _ContextCalibrationOwner()
-    dialog = CalibrationDialog(owner)
+    dialog = CalibrationDialog(owner, configuration=owner.configuration)
     messages: list[str] = []
     monkeypatch.setattr(
         QMessageBox,

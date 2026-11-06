@@ -82,7 +82,6 @@ from .capture_session import (
     active_device_identities as _active_device_identities,
     device_label as _device_label,
     device_name as _device_name,
-    find_eq_state_owner as _find_eq_state_owner,
     find_processor_owner as _find_processor_owner,
     owner_calibration_context_key as _owner_calibration_context_key,
     processor_sample_rate as _processor_sample_rate,
@@ -93,6 +92,7 @@ from .capture_session import (
     start_selected_route as _start_selected_route,
     sync_owner_processing_controls as _sync_owner_processing_controls,
 )
+from .processing_configuration import ProcessingConfiguration
 from .calibration_support import (
     AutoEqCandidate,
     RAINBOW_PASSAGE,
@@ -200,10 +200,12 @@ class CalibrationDialog(QDialog):
         for widget in (self.progress_bar, self.time_label, self.level_meter_widget):
             widget.setVisible(step == 1)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, configuration: ProcessingConfiguration | None = None):
         super().__init__(parent)
         self.setWindowTitle("Auto-EQ Voice Tone")
         self.setModal(True)  # Modal dialog - blocks main window
+        # Without one, Auto-EQ can measure and recommend but not apply.
+        self._configuration = configuration
 
         # Recording state
         self.recording_state = "idle"  # idle, recording, analyzing, ready
@@ -520,10 +522,10 @@ class CalibrationDialog(QDialog):
         if DEBUG:
             logger.debug("Applying EQ settings")
 
-        # Find the application state owner through the dialog parent chain.
-        parent = _find_eq_state_owner(self.parent())
+        configuration = self._configuration
+        parent = _find_processor_owner(self.parent())
 
-        if not parent:
+        if configuration is None or not parent:
             QMessageBox.critical(
                 self, "Error", plain_error("Could not find audio processor")
             )
@@ -538,36 +540,8 @@ class CalibrationDialog(QDialog):
             )
             return
 
-        get_typed_eq_settings = getattr(parent.eq_state, "get_eq_settings", None)
-        if not callable(get_typed_eq_settings):
-            QMessageBox.critical(
-                self,
-                "Error",
-                "AudioForge could not check the new EQ, so nothing was changed. "
-                "Close this window and open it again.",
-            )
-            return
-        apply_configuration = getattr(parent, "apply_processing_configuration", None)
-        if not callable(apply_configuration):
-            QMessageBox.critical(
-                self,
-                "Error",
-                "AudioForge cannot apply the EQ in one step, so nothing was changed. "
-                "Close this window and open it again.",
-            )
-            return
-        mode_getter = getattr(parent, "_processing_mode", None)
-        if not callable(mode_getter):
-            QMessageBox.critical(
-                self,
-                "Error",
-                "AudioForge could not read the current processing mode, so nothing was "
-                "changed. Close this window and open it again.",
-            )
-            return
         try:
-            snapshot_preset = parent._get_current_preset()
-            snapshot_mode = str(mode_getter())
+            checkpoint = configuration.checkpoint()
         except Exception as error:
             logger.warning(
                 "Failed to snapshot complete configuration before candidate apply",
@@ -580,22 +554,16 @@ class CalibrationDialog(QDialog):
                 f"changed ({error}).",
             )
             return
-        if not isinstance(snapshot_preset, Preset):
-            QMessageBox.critical(
-                self,
-                "Error",
-                "AudioForge could not save your current settings first, so nothing was changed.",
-            )
-            return
 
+        eq_state = configuration.states.eq
         try:
             proposal = self._candidate_proposal
             if proposal is None:
                 raise ValueError("validated EQ proposal is unavailable")
             candidate_preset = proposal.proposed_preset
-            apply_configuration(candidate_preset, processing_mode=snapshot_mode)
-            parent.eq_state.set_auto_eq_diagnostics(eq_settings)
-            accepted_eq = get_typed_eq_settings()
+            configuration.apply(candidate_preset, processing_mode=checkpoint.processing_mode)
+            eq_state.set_auto_eq_diagnostics(eq_settings)
+            accepted_eq = eq_state.get_eq_settings()
             if not isinstance(accepted_eq, EQSettings):
                 raise TypeError("EQ state returned invalid typed settings")
             expected_eq = candidate_preset.eq
@@ -605,7 +573,7 @@ class CalibrationDialog(QDialog):
         except Exception as error:
             restore_error = None
             try:
-                apply_configuration(snapshot_preset, processing_mode=snapshot_mode)
+                configuration.restore(checkpoint)
             except Exception as restore_exc:
                 restore_error = restore_exc
                 logger.warning(
@@ -659,7 +627,7 @@ class CalibrationDialog(QDialog):
             or self.eq_settings is None
         ):
             return
-        owner = _find_eq_state_owner(self.parent())
+        owner = _find_processor_owner(self.parent())
         if owner is None:
             return
         error = self._candidate_identity_error(self.eq_settings, owner)
@@ -755,10 +723,10 @@ class CalibrationDialog(QDialog):
             return "Auto-EQ capture sample rate is unavailable"
         if capture.get("context_key") != _owner_calibration_context_key(parent):
             return "The audio route or input settings changed after capture"
+        if self._configuration is None:
+            return "Current processing configuration is unavailable"
         try:
-            incumbent = parent._get_current_preset()
-            if not isinstance(incumbent, Preset):
-                return "Current processing configuration is unavailable"
+            incumbent = self._configuration.current
             current_chain = _eq_chain_settings(parent, incumbent)
             if not proposal.matches(incumbent, current_chain):
                 return "Processing configuration changed after analysis"
@@ -1184,10 +1152,9 @@ class CalibrationDialog(QDialog):
             )
             return
         try:
-            incumbent = parent._get_current_preset()
-            if not isinstance(incumbent, Preset):
+            if self._configuration is None:
                 raise TypeError("current processing configuration is unavailable")
-            incumbent = Preset.from_dict(incumbent.to_dict())
+            incumbent = self._configuration.current
             chain_settings = _eq_chain_settings(parent, incumbent)
         except Exception as error:
             self._on_analysis_failed(
@@ -1543,7 +1510,7 @@ class CalibrationDialog(QDialog):
         self.eq_compare.setVisible(proposal is not None and applied)
         if proposal is not None and applied:
             sample_rate = float(self._sample_rate_or_default())
-            mode = getattr(_find_eq_state_owner(self.parent()), "_processing_mode", lambda: "")()
+            mode = self._configuration.processing_mode if self._configuration is not None else ""
             self.eq_compare.set_curves(
                 proposal.incumbent_preset.eq,
                 proposal.proposed_preset.eq,
@@ -1673,7 +1640,7 @@ class CalibrationDialog(QDialog):
             measured["level_override"] = self._level_override
         self._reported = True
         report_setup_result(
-            _find_eq_state_owner(self.parent()),
+            _find_processor_owner(self.parent()),
             "auto_eq",
             outcome,
             reason_codes=reason_codes,

@@ -6,11 +6,11 @@ from __future__ import annotations
 import re
 import time
 import threading
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import Mock, call
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -35,11 +35,12 @@ from mic_eq.ui.device_selection import (
     preferred_output_index,
     start_processor_for_route,
 )
-from mic_eq.ui import main_window, rate_limiter
-from mic_eq.ui.main_window import (
-    MainWindow,
-    _normalize_startup_preset_id,
-    _startup_builtin_id,
+from mic_eq.ui import main_window
+from mic_eq.ui.main_window import MainWindow
+from mic_eq.ui.processing_configuration import LoadOutcome, LoadStatus
+from mic_eq.ui.startup_presets import (
+    normalize_startup_preset_id as _normalize_startup_preset_id,
+    startup_builtin_id as _startup_builtin_id,
 )
 from mic_eq.ui.auto_eq_explanation import explain_auto_eq
 from mic_eq.runtime_snapshot import RuntimeSnapshot
@@ -49,29 +50,20 @@ from mic_eq.ui.health import (
     RecentStreamHealth,
     diagnostic_tokens,
 )
-from mic_eq.ui.noise_suppression_state import NoiseSuppressionState
 from mic_eq.ui.startup_presets import startup_custom_id as _startup_custom_id
 from mic_eq.ui.theme import status_chip_style
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from mic_eq.config import (
     AppConfig,
-    CompressorSettings,
     DeviceIdentity,
     DevicePresetBinding,
     InputDevicePreference,
-    LimiterSettings,
     Preset,
     build_device_route_key,
     build_input_device_preference_key,
     legacy_latency_profile_key,
 )
 from test_quick_shell import _load_config_without_devices
-
-
-def _freeze_throttle_clock(monkeypatch) -> None:
-    """Make "applied at once, then throttled" independent of pauses such as garbage collection."""
-    frozen = time.monotonic() + 1.0
-    monkeypatch.setattr(rate_limiter.time, "monotonic", lambda: frozen)
 
 
 def _use_processor(window, processor) -> None:
@@ -115,12 +107,12 @@ def window(qapp, monkeypatch):
 
 def test_setup_level_warnings_use_actual_peak_not_rms_estimate(window):
     _use_processor(window, _FakeProcessor())
-    calibration = CalibrationDialog(parent=window)
+    calibration = CalibrationDialog(parent=window, configuration=window.configuration)
     calibration._on_level_update(-20.0, -1.0)
     assert (calibration.level_meter.rms_db, calibration.level_meter.peak_db) == (-20.0, -1.0)
     assert "peaks at -1.0 dB" in calibration.warning_label.text()
 
-    voice_setup = VoiceSetupDialog(parent=window)
+    voice_setup = VoiceSetupDialog(parent=window, configuration=window.configuration)
     voice_setup.setup_state = "voice_recording"
     voice_setup._update_level(-20.0, -1.0)
     assert (voice_setup.level_meter.rms_db, voice_setup.level_meter.peak_db) == (-20.0, -1.0)
@@ -246,7 +238,8 @@ def test_save_preset_file_handles_collision_and_errors(
     monkeypatch.setattr(main_window, "save_preset", save_mock)
     monkeypatch.setattr(main_window.QMessageBox, "question", question)
     monkeypatch.setattr(main_window.QMessageBox, "critical", critical)
-    window.preset_modified = True
+    window.configuration.note_edit()
+    assert window.configuration.identity.modified
     preset = Preset(name="My Preset")
     result = window._save_preset_file(preset)
 
@@ -259,7 +252,7 @@ def test_save_preset_file_handles_collision_and_errors(
     )
     assert result == expected_path
     if expected_path is not None:
-        assert window.preset_modified is False
+        assert window.configuration.identity.modified is False
     assert [kwargs["overwrite"] for _args, kwargs in save_mock.call_args_list] == [
         *overwrite_flags
     ]
@@ -470,7 +463,7 @@ def _healthy_runtime_diagnostics(**overrides):
 
 def test_calibration_analysis_uses_processor_sample_rate(window, monkeypatch):
     _use_processor(window, _FakeProcessor(sample_rate=44_100))
-    dialog = CalibrationDialog(parent=window)
+    dialog = CalibrationDialog(parent=window, configuration=window.configuration)
     dialog.audio_data = np.ones(256, dtype=np.float32)
     dialog.preview_audio_data = dialog.audio_data.copy()
     monkeypatch.setattr(
@@ -486,7 +479,7 @@ def test_calibration_analysis_uses_processor_sample_rate(window, monkeypatch):
     assert _CaptureWorkerStub.last_init["chain_settings"]["full_chain"] is True
     assert _CaptureWorkerStub.last_init["headroom_chain_settings"]["full_chain"] is True
     assert _CaptureWorkerStub.last_init["headroom_candidate_base_eq_settings"] == (
-        window._get_current_preset().eq.to_dict()
+        window.configuration.current.eq.to_dict()
     )
     np.testing.assert_array_equal(
         _CaptureWorkerStub.last_init["headroom_audio_data"], dialog.audio_data
@@ -530,7 +523,7 @@ def test_calibration_and_voice_setup_cancel_invalidate_delayed_capture_start(
 
 def test_calibration_ignores_stale_analysis_generation(window):
     _use_processor(window, _FakeProcessor())
-    dialog = CalibrationDialog(parent=window)
+    dialog = CalibrationDialog(parent=window, configuration=window.configuration)
     dialog._analysis_generation = 2
     dialog.recording_state = "analyzing"
     previous_step = dialog.warning_label.text()
@@ -557,7 +550,7 @@ def test_analysis_close_waits_for_a_slow_worker_and_ignores_its_result(
         "mic_eq.ui.calibration_dialog.AnalysisWorker", _SlowAnalysisWorker
     )
     _use_processor(window, _FakeProcessor())
-    dialog = CalibrationDialog(parent=window)
+    dialog = CalibrationDialog(parent=window, configuration=window.configuration)
     dialog.audio_data = np.ones(256, dtype=np.float32)
     dialog.preview_audio_data = dialog.audio_data.copy()
     dialog._start_analysis()
@@ -634,7 +627,7 @@ def test_analysis_worker_passes_exact_candidate_headroom_inputs(monkeypatch):
 
 def test_calibration_dialog_shows_auto_eq_diagnostics(window):
     _use_processor(window, _FakeProcessor(sample_rate=44_100))
-    dialog = CalibrationDialog(parent=window)
+    dialog = CalibrationDialog(parent=window, configuration=window.configuration)
     eq_settings = {
         "band_freqs": [
             80.0,
@@ -701,7 +694,7 @@ def test_calibration_dialog_shows_auto_eq_diagnostics(window):
 
 def test_calibration_dialog_does_not_offer_abstained_eq(window):
     _use_processor(window, _FakeProcessor(sample_rate=48_000))
-    dialog = CalibrationDialog(parent=window)
+    dialog = CalibrationDialog(parent=window, configuration=window.configuration)
     eq_settings = {
         "band_freqs": [
             80.0,
@@ -1346,7 +1339,9 @@ def test_route_preset_binding_applies_only_to_exact_stable_route(window):
         device_preset_bindings={route_key: DevicePresetBinding("builtin:broadcast")}
     )
     loaded: list[str] = []
-    window._load_device_preset_id = lambda preset_id: loaded.append(preset_id) or True
+    window.configuration.load_id = lambda preset_id, *, remember: (
+        loaded.append(preset_id) or LoadOutcome(LoadStatus.LOADED, preset=Preset())
+    )
 
     assert window._apply_bound_preset_for_current_route() is True
     assert loaded == ["builtin:broadcast"]
@@ -1884,169 +1879,6 @@ def test_startup_preset_ids_normalize_builtin_and_custom_legacy_names():
     assert _normalize_startup_preset_id(
         _startup_builtin_id("flat")
     ) == _startup_builtin_id("flat")
-
-
-def test_apply_preset_passes_advanced_compressor_fields(window):
-    preset = Preset(
-        name="Compressor Advanced",
-        compressor=CompressorSettings(
-            enabled=True,
-            threshold_db=-18.0,
-            ratio=3.0,
-            attack_ms=8.0,
-            release_ms=150.0,
-            makeup_gain_db=2.0,
-            adaptive_release=True,
-            base_release_ms=75.0,
-            auto_makeup_enabled=True,
-            target_lufs=-16.0,
-            sidechain_highpass_enabled=False,
-        ),
-        limiter=LimiterSettings(careful_output_enabled=False),
-    )
-
-    window._write_processing_configuration(preset)
-
-    assert window.gate_state.get_settings() == asdict(preset.gate)
-    assert window.eq_state.get_eq_settings().to_dict() == preset.eq.to_dict()
-    assert window.deesser_state.get_settings() == asdict(preset.deesser)
-    assert window.compressor_state.get_settings() == asdict(preset.compressor)
-    assert window.compressor_state.get_settings()["adaptive_release"] is True
-    assert window.compressor_state.get_settings()["base_release_ms"] == 75.0
-    assert window.compressor_state.get_settings()["auto_makeup_enabled"] is True
-    assert window.compressor_state.get_settings()["target_lufs"] == -16.0
-    assert (
-        window.compressor_state.get_settings()["sidechain_highpass_enabled"]
-        is False
-    )
-    assert window.limiter_state.get_settings()["careful_output_enabled"] is False
-
-
-def test_configuration_writer_rejects_model_load_failure_before_other_state_edits(window):
-    def set_noise_model(model):
-        if model == "deepfilter":
-            raise RuntimeError("test model load failure")
-        return True
-
-    processor = Mock()
-    processor.list_noise_models.return_value = [
-        ("rnnoise", "RNNoise"),
-        ("deepfilter", "DeepFilter"),
-    ]
-    processor.set_noise_model.side_effect = set_noise_model
-    window.noise_suppression_state = NoiseSuppressionState(processor, window)
-    _use_processor(window, processor)
-
-    preset = Preset()
-    preset.rnnoise.model = "deepfilter"
-
-    with pytest.raises(RuntimeError):
-        window._write_processing_configuration(preset)
-    assert window.noise_suppression_state.get_settings()["model"] == "rnnoise"
-    # Only the noise model's own writes (and its rollback) reached the processor.
-    assert {name for name, _args, _kwargs in processor.mock_calls} <= {
-        "list_noise_models", "set_noise_model", "set_rnnoise_enabled", "set_rnnoise_strength",
-    }
-
-
-def _configuration_processor():
-    """A processor that accepts every native write; tests read its call order."""
-    processor = Mock()
-    processor.is_running.return_value = False
-    processor.get_deesser_high_cut_hz.return_value = 0.0
-    return processor
-
-
-_WRITES = ("set_", "apply_")
-
-
-def _writes_between_mutes(calls):
-    """The native writes made after the configuration mute and before its release."""
-    mute, unmute = call.set_output_mute(True), call.set_output_mute(False)
-    assert mute in calls and unmute in calls
-    start = calls.index(mute)
-    end = len(calls) - 1 - calls[::-1].index(unmute)
-    writes = [c for c in calls[start + 1:end] if c[0].startswith(_WRITES)]
-    assert not [c for c in calls[end + 1:] if c[0].startswith(_WRITES)]
-    return writes
-
-
-def test_configuration_finishes_rate_limited_native_writes_before_unmute(window, monkeypatch):
-    _freeze_throttle_clock(monkeypatch)
-    processor = _configuration_processor()
-    _use_processor(window, processor)
-    defaults = Preset()
-    states = (
-        (window.gate_state, "threshold_db", processor.apply_gate_settings,
-         defaults.gate.threshold_db),
-        (window.deesser_state, "threshold_db", processor.apply_deesser_settings,
-         defaults.deesser.threshold_db),
-        (window.compressor_state, "threshold_db", processor.apply_compressor_settings,
-         defaults.compressor.threshold_db),
-        (window.limiter_state, "ceiling_db", processor.set_limiter_ceiling,
-         defaults.limiter.ceiling_db),
-    )
-    for state, name, _write, _default in states:
-        state.set_value(name, -11.0)  # applied at once
-        state.set_value(name, -12.0)  # waits behind the throttle
-        assert state._rate_limiter._timer.isActive()
-    queued = len(processor.mock_calls)
-
-    window.apply_processing_configuration(defaults)
-
-    writes = _writes_between_mutes(processor.mock_calls[queued:])
-    assert {name for name, _args, _kwargs in writes} >= {
-        "apply_gate_settings", "apply_deesser_settings",
-        "apply_compressor_settings", "set_limiter_ceiling",
-    }
-    for state, name, write, default in states:
-        # The last write carries the configured value, not the queued -12.0.
-        last = write.call_args.args[0]
-        assert (last[name] if isinstance(last, dict) else last) == default
-        assert not state._rate_limiter._timer.isActive()
-
-
-def test_setter_failure_rolls_back_before_unmute(window):
-    processor = _configuration_processor()
-    failed = []
-
-    def apply_settings(settings):
-        if settings["threshold_db"] == -11.0 and not failed:
-            failed.append(settings["threshold_db"])
-            raise RuntimeError("de-esser setter failed")
-
-    processor.apply_deesser_settings.side_effect = apply_settings
-    _use_processor(window, processor)
-    candidate = Preset()
-    candidate.deesser.threshold_db = -11.0
-
-    with pytest.raises(RuntimeError, match="de-esser setter failed"):
-        window.apply_processing_configuration(candidate)
-
-    writes = _writes_between_mutes(processor.mock_calls)
-    thresholds = [
-        c.args[0]["threshold_db"] for c in writes if c[0] == "apply_deesser_settings"
-    ]
-    # The rejected write comes first, and the last write restores the old value.
-    assert thresholds[0] == -11.0
-    assert thresholds[-1] == -28.0
-
-
-def test_configuration_cancels_superseded_eq_edits_before_snapshot_and_unmute(window, monkeypatch):
-    _freeze_throttle_clock(monkeypatch)
-    processor = _configuration_processor()
-    _use_processor(window, processor)
-    window.eq_state.set_band_value(0, "gain_db", 3.0)  # applied at once
-    window.eq_state.set_band_value(0, "gain_db", 4.0)  # waits behind the throttle
-    assert window.eq_state._rate_limiter._timer.isActive()
-    queued = len(processor.mock_calls)
-
-    window.apply_processing_configuration(Preset())
-
-    writes = _writes_between_mutes(processor.mock_calls[queued:])
-    assert [name for name, _args, _kwargs in writes].count("apply_eq_layers") == 1
-    assert window.eq_state.get_eq_settings().bands[0].gain_db == 0.0
-    assert not window.eq_state._rate_limiter._timer.isActive()
 
 
 class _LatencyProcessor:

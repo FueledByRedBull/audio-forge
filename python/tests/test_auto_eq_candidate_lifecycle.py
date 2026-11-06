@@ -23,6 +23,7 @@ from mic_eq.config import (
     build_eq_candidate_settings,
 )
 from capture_helpers import _render, finish_take
+from engine_fakes import fake_session, lend_audio
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.calibration_support import AutoEqCandidate, chain_settings
 from mic_eq.ui.platform_text import SOUND_SETTINGS
@@ -63,6 +64,15 @@ class _ProcessorStub:
 
     def is_running(self) -> bool:
         return False
+
+    def start(self, *_route, **_endpoints) -> str:
+        return "started"
+
+    def get_active_input_device(self) -> str:
+        return "Microphone"
+
+    def get_active_output_device(self) -> str:
+        return "Destination"
 
     def stop_raw_recording(self) -> None:
         return None
@@ -115,6 +125,7 @@ class _Owner(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.processor = _ProcessorStub()
+        self.engine_session = fake_session(self.processor)
         self.eq_state = _EqStateStub()
         self.applied_preset: Preset | None = None
         self.preset = Preset(eq=EQSettings(enabled=self.eq_state.enabled))
@@ -972,6 +983,7 @@ def test_a_new_take_starts_with_an_empty_level_window(qapp, monkeypatch):
         dialog._recent_rms_db.extend([-20.0] * 15)  # the last take's levels
         dialog._recent_peak_db.extend([-6.0] * 15)
         dialog.recording_state = "recording"
+        lend_audio(dialog)
 
         dialog._begin_recording_capture()
         dialog.recording_timer.stop()

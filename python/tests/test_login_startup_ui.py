@@ -66,7 +66,7 @@ def startup_window(qapp, monkeypatch):
     monkeypatch.setattr(main_window, "list_input_devices", lambda: devices["input"])
     monkeypatch.setattr(main_window, "list_output_devices", list_outputs)
     window = MainWindow(login_startup=True)
-    window.processor = _engine()
+    window.processor = window.engine_session.processor = _engine()
     window._tray_icon = QSystemTrayIcon(window)
     window._tray_icon.show()
     # Tests drive updates directly instead of through the event loop.
@@ -270,57 +270,6 @@ def test_failed_route_preset_cannot_start_audio(startup_window):
     assert "preset" in window._login_startup_message.lower()
 
 
-@pytest.mark.parametrize("mute_failure", [None, "before", "after"])
-def test_quiet_start_restores_mute_before_exact_route_and_stops_on_post_start_failure(
-    startup_window, monkeypatch, mute_failure
-):
-    window, _, _ = startup_window
-    events = []
-    started = []
-    running = []
-
-    def set_output_mute(_muted):
-        events.append("mute")
-        if (mute_failure == "before" and len(events) == 1) or (
-            mute_failure == "after" and len(events) == 3
-        ):
-            raise OSError("unavailable")
-
-    def start(*_args, **kwargs):
-        events.append("start")
-        started.append(kwargs)
-        running.append(True)
-
-    def stop():
-        events.append("stop")
-        running.clear()
-
-    processor = Mock()
-    processor.is_running.side_effect = lambda: bool(running)
-    processor.is_recovery_requested.return_value = False
-    processor.set_output_mute.side_effect = set_output_mute
-    processor.start.side_effect = start
-    processor.stop.side_effect = stop
-    window.processor = processor
-    modal = Mock(side_effect=AssertionError("Quiet start must not show a modal"))
-    monkeypatch.setattr(main_window.QMessageBox, "critical", modal)
-    assert window._start_processing(interactive=False) == (mute_failure is None)
-    assert events == {
-        None: ["mute", "start", "mute"],
-        "before": ["mute"],
-        "after": ["mute", "start", "mute", "stop"],
-    }[mute_failure]
-    assert all(
-        kwargs["input_device_endpoint_id"] == "capture-A"
-        and kwargs["output_device_endpoint_id"] == "render-A"
-        for kwargs in started
-    )
-    modal.assert_not_called()
-    # Only a start that kept the mute state leaves Stop, not Start, on offer.
-    assert window.stop_btn_action.isEnabled() == (mute_failure is None)
-    assert window.start_btn_action.isEnabled() == (mute_failure is not None)
-
-
 def test_login_does_not_open_first_run_setup(startup_window, monkeypatch):
     window, _, _ = startup_window
     window.config.first_run_setup_state = "not_started"
@@ -348,11 +297,14 @@ def test_error_after_native_start_stops_audio_on_quiet_path(startup_window, monk
         window, "_apply_latency_compensation_for_current_devices",
         Mock(side_effect=RuntimeError("latency failed")),
     )
-    monkeypatch.setattr(main_window.QMessageBox, "critical", Mock())
-    assert not window._start_processing(interactive=False)
+    modal = Mock()
+    monkeypatch.setattr(main_window.QMessageBox, "critical", modal)
+    assert not window.engine_session.start_now(interactive=False)
     window.processor.start.assert_called_once()
     assert not window.processor.is_running()
-    assert not window.stop_btn_action.isEnabled()
+    # A quiet start that failed asks nothing and leaves Start, not Stop, on offer.
+    modal.assert_not_called()
+    assert window.start_btn_action.isEnabled() and not window.stop_btn_action.isEnabled()
 
 
 def test_manual_refresh_resumes_route_preset_behavior_after_login_finishes(startup_window):

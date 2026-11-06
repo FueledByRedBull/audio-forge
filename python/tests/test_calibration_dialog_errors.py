@@ -7,8 +7,10 @@ from PySide6.QtWidgets import QWidget
 
 from mic_eq.ui import capture_session
 from mic_eq.ui.calibration_dialog import CalibrationDialog
+from mic_eq.ui.engine_session import AudioLease
 from mic_eq.ui.theme import message_text_style
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+from engine_fakes import fake_session
 
 
 class _WarningLabel:
@@ -60,18 +62,13 @@ def test_stalled_capture_fails_and_releases_only_capture_owned_state(
     processor.is_recording_complete.return_value = False
     owner = QWidget()
     setattr(owner, "processor", processor)
-    setattr(owner, "user_muted", True)
-    muted_reasons: set[str] = set()
     setattr(owner, "_calibration_context_key", lambda: "selected-route")
-
-    def set_temporary_output_mute(muted: bool, reason: str) -> None:
-        if muted:
-            muted_reasons.add(reason)
-        else:
-            muted_reasons.discard(reason)
-
-    setattr(owner, "set_temporary_output_mute", set_temporary_output_mute)
+    session = fake_session(processor)
+    session.set_user_muted(True)
+    setattr(owner, "engine_session", session)
     dialog = dialog_type(parent=owner)
+    # The take borrowed the audio already; a capture mutes through that lease.
+    dialog._audio_lease = AudioLease(session, "capture", started=False)
     report = Mock(wraps=dialog._report)
     monkeypatch.setattr(dialog, "_report", report)
     if dialog_type is CalibrationDialog:
@@ -98,8 +95,8 @@ def test_stalled_capture_fails_and_releases_only_capture_owned_state(
         assert report.call_args.args[:2] == ("failed", ["recording_failed"])
         assert dialog.recording_timer.isActive() is False
         assert dialog._capture_session is None
-        assert not muted_reasons
-        assert getattr(owner, "user_muted") is True
+        assert session.view.mute_reasons == frozenset()
+        assert session.view.user_muted is True
         assert processor.set_recovery_suppressed.call_args_list == [
             call(True),
             call(False),

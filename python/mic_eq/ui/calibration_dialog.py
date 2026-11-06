@@ -79,20 +79,15 @@ from .setup_messages import (
 )
 from .capture_session import (
     CaptureSession,
-    active_device_identities as _active_device_identities,
     device_label as _device_label,
     device_name as _device_name,
     find_eq_state_owner as _find_eq_state_owner,
     find_processor_owner as _find_processor_owner,
     owner_calibration_context_key as _owner_calibration_context_key,
     processor_sample_rate as _processor_sample_rate,
-    restart_processor_for_route as _restart_processor_for_route,
-    route_identities_match as _route_identities_match,
-    selected_device_identities as _selected_device_identities,
     set_temporary_mute as _set_temporary_mute,
-    start_selected_route as _start_selected_route,
-    sync_owner_processing_controls as _sync_owner_processing_controls,
 )
+from .engine_session import AudioLease, AudioUnavailable, EngineSession, RouteMismatch
 from .calibration_support import (
     AutoEqCandidate,
     RAINBOW_PASSAGE,
@@ -235,7 +230,7 @@ class CalibrationDialog(QDialog):
         self._analysis_generation = 0
         self._close_requested = False
         self._close_result = False
-        self._started_processor = False  # Track if we started processor ourselves
+        self._audio_lease: AudioLease | None = None
         self._capture_session: CaptureSession | None = None
         self._capture_start_timer = QTimer(self)
         self._capture_start_timer.setSingleShot(True)
@@ -786,87 +781,10 @@ class CalibrationDialog(QDialog):
             )
             return
 
-        processor_was_running = parent.processor.is_running()
-        selected_identities = _selected_device_identities(parent)
-        selected_input = _device_name(selected_identities[0])
-        selected_output = _device_name(selected_identities[1])
-
-        if DEBUG:
-            logger.debug(
-                "Processor state: running=%s, selected_input=%r, selected_output=%r",
-                processor_was_running,
-                selected_input,
-                selected_output,
-            )
-
-        if processor_was_running:
-            active_identities = _active_device_identities(parent.processor)
-            active_input = _device_name(active_identities[0])
-            active_output = _device_name(active_identities[1])
-            if DEBUG:
-                logger.debug(
-                    "Active stream devices: input=%r, output=%r",
-                    active_input,
-                    active_output,
-                )
-
-            if not _route_identities_match(selected_identities, active_identities):
-                reply = QMessageBox.question(
-                    self,
-                    "Switch Devices for Auto-EQ?",
-                    "Auto-EQ should record from your selected devices.\n\n"
-                    f"Selected input: {_device_label(selected_input, '(Default Input)')}\n"
-                    f"Selected output: {_device_label(selected_output, '(Default Output)')}\n\n"
-                    f"Active input: {_device_label(active_input, '(Default Input)')}\n"
-                    f"Active output: {_device_label(active_output, '(Default Output)')}\n\n"
-                    "Switch now?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                )
-                if reply != QMessageBox.StandardButton.Yes:
-                    self.warning_label.setText(
-                        "Recording canceled. The microphone and speakers that were "
-                        "already running were kept."
-                    )
-                    self.warning_label.setStyleSheet(message_text_style("warn"))
-                    return
-
-                try:
-                    if DEBUG:
-                        logger.debug("Restarting processor on selected devices")
-                    _restart_processor_for_route(
-                        parent.processor, selected_identities, active_identities
-                    )
-                    _set_temporary_mute(parent, _TEMPORARY_MUTE_REASON, False)
-                    if DEBUG:
-                        logger.debug("Processor restarted on selected devices")
-                except Exception as e:
-                    _sync_owner_processing_controls(parent)
-                    QMessageBox.critical(
-                        self,
-                        "Audio Error",
-                        "AudioForge could not switch to your selected devices.\n\n"
-                        f"{e}\n\nCheck that they are connected and not used by another app.",
-                    )
-                    return
-            if DEBUG:
-                logger.debug("Reusing running processor session")
-        else:
-            try:
-                if DEBUG:
-                    logger.debug("Starting audio processor from main thread")
-                _start_selected_route(parent)
-                self._started_processor = True  # Track that we started it
-                if DEBUG:
-                    logger.debug("Audio processor started successfully")
-            except Exception as e:
-                QMessageBox.critical(
-                    self,
-                    "Audio Error",
-                    "AudioForge could not start the microphone and speakers.\n\n"
-                    f"{e}\n\nCheck that they are connected and not used by another app, "
-                    "then try again.",
-                )
-                return
+        lease = self._borrow_audio(parent.engine_session)
+        if lease is None:
+            return
+        self._audio_lease = lease
 
         self._capture_context_key = _owner_calibration_context_key(parent)
         self.recording_state = phase
@@ -893,6 +811,51 @@ class CalibrationDialog(QDialog):
         )
         self.warning_label.setStyleSheet(message_text_style("info", strong=True))
 
+    def _borrow_audio(self, session: EngineSession) -> AudioLease | None:
+        """The selected route's audio for this take, or None after saying why there is none."""
+        try:
+            return session.borrow(_TEMPORARY_MUTE_REASON)
+        except RouteMismatch as mismatch:
+            selected_input, selected_output = (_device_name(item) for item in mismatch.selected)
+            active_input, active_output = (_device_name(item) for item in mismatch.active)
+            reply = QMessageBox.question(
+                self,
+                "Switch Devices for Auto-EQ?",
+                "Auto-EQ should record from your selected devices.\n\n"
+                f"Selected input: {_device_label(selected_input, '(Default Input)')}\n"
+                f"Selected output: {_device_label(selected_output, '(Default Output)')}\n\n"
+                f"Active input: {_device_label(active_input, '(Default Input)')}\n"
+                f"Active output: {_device_label(active_output, '(Default Output)')}\n\n"
+                "Switch now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self.warning_label.setText(
+                    "Recording canceled. The microphone and speakers that were "
+                    "already running were kept."
+                )
+                self.warning_label.setStyleSheet(message_text_style("warn"))
+                return None
+            try:
+                return session.borrow(_TEMPORARY_MUTE_REASON, switch_route=True)
+            except AudioUnavailable as e:
+                QMessageBox.critical(
+                    self,
+                    "Audio Error",
+                    "AudioForge could not switch to your selected devices.\n\n"
+                    f"{e}\n\nCheck that they are connected and not used by another app.",
+                )
+                return None
+        except AudioUnavailable as e:
+            QMessageBox.critical(
+                self,
+                "Audio Error",
+                "AudioForge could not start the microphone and speakers.\n\n"
+                f"{e}\n\nCheck that they are connected and not used by another app, "
+                "then try again.",
+            )
+            return None
+
     def _begin_recording_capture(self):
         """Start Rust-side recording and poll progress from the main Qt thread."""
         self._capture_start_timer.stop()
@@ -907,7 +870,8 @@ class CalibrationDialog(QDialog):
 
         self._recent_rms_db.clear()
         self._recent_peak_db.clear()
-        self._capture_session = CaptureSession(parent, _TEMPORARY_MUTE_REASON)
+        assert self._audio_lease is not None, "a take starts only after _start_recording borrowed the audio"
+        self._capture_session = CaptureSession(parent.processor, self._audio_lease)
         try:
             self._capture_session.start(self._recording_duration, before_cleanup=True)
         except Exception as e:
@@ -1690,19 +1654,8 @@ class CalibrationDialog(QDialog):
 
     def _stop_owned_processor(self):
         """Stop the processor only if this dialog started it."""
-        if not getattr(self, "_started_processor", False):
-            return
-
-        parent = _find_processor_owner(self.parent())
-        if parent:
-            try:
-                if DEBUG:
-                    logger.debug("Stopping audio processor owned by calibration dialog")
-                parent.processor.stop()
-            except Exception:
-                if DEBUG:
-                    logger.debug("Error stopping processor", exc_info=True)
-        self._started_processor = False
+        if self._audio_lease is not None:
+            self._audio_lease.release()
 
     def _cleanup_recording_tap(self):
         """Best-effort cleanup for tap/mute state across cancel/close paths."""

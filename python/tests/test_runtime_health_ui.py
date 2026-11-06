@@ -19,6 +19,7 @@ from mic_eq.ui.shell_specs import (
 )
 from mic_eq.ui.shell_state import TextState
 from mic_eq.ui.theme import PALETTE
+from engine_fakes import fake_session
 
 
 def test_presentation_timer_pauses_without_stopping_diagnostics(qapp):
@@ -30,6 +31,7 @@ def test_presentation_timer_pauses_without_stopping_diagnostics(qapp):
     diagnostics_timer.start(250)
     window: Any = SimpleNamespace(
         processor=SimpleNamespace(is_running=lambda: state["running"]),
+        engine_session=fake_session(),
         isVisible=lambda: state["visible"],
         isMinimized=lambda: state["minimized"],
         meter_timer=meter_timer,
@@ -64,6 +66,7 @@ def test_window_state_change_pauses_and_restarts_fast_meter_timer(qapp):
     QMainWindow.__init__(window)
     state = {"minimized": False}
     cast(Any, window).processor = SimpleNamespace(is_running=lambda: True)
+    window.engine_session = Mock(view=SimpleNamespace(in_use=False))
     window.meter_timer = QTimer(window)
     window.diagnostics_timer = QTimer(window)
     window.diagnostics_timer.start(250)
@@ -138,6 +141,7 @@ def _diagnostic_window(diagnostics: dict[str, Any]):
         _processing=False,
         _health_memory=HealthMemory(),
         processor=processor,
+        engine_session=fake_session(),
         _update_session_summary=Mock(),
         _shell_state_owner=state_owner,
         shell_texts={},
@@ -370,7 +374,12 @@ def test_health_summary_and_advice_come_from_chip_states_alone(
     window = isolated_main_window
     for key, (text, status) in chips.items():
         window._set_health_chip(key, text, status)
-    window._output_mute_error = "unavailable" if mute_error else None
+    if mute_error:  # the engine refuses the mute; the session keeps it pending
+        window.engine_session.processor = SimpleNamespace(
+            set_output_mute=Mock(side_effect=RuntimeError("unavailable"))
+        )
+        window.engine_session.set_user_muted(False)
+        window.engine_session.processor = window.processor
 
     window._update_health_summary()
 
@@ -415,7 +424,7 @@ def test_unreadable_telemetry_does_not_keep_the_tooltip_of_the_last_reading(isol
     window._set_health_chip("gate_health_label", "Gate: OK", "ok")
     window._update_health_summary()
     assert "fine" in window.shell_texts["health_summary_label"].toolTip
-    window.processor = cast(Any, Engine())
+    window.processor = window.engine_session.processor = cast(Any, Engine())
 
     window._update_diagnostics()
 
@@ -495,6 +504,7 @@ def test_main_window_invalidates_all_live_meters_on_stop_and_getter_failure(qapp
     gate_state = GateState(processor, meter_host)
     window: Any = SimpleNamespace(
         processor=processor,
+        engine_session=fake_session(),
         input_meter=LevelMeter(),
         output_meter=LevelMeter(),
         limiter_state=SimpleNamespace(get_applied_settings=lambda: {"enabled": True}),
@@ -547,13 +557,13 @@ def test_failed_diagnostics_still_service_recovery_when_presentation_is_hidden(q
         _hidden_to_tray=True,
         _reset_health_labels=Mock(),
         _set_health_chip=Mock(),
-        _service_stream_recovery=Mock(),
+        engine_session=Mock(view=SimpleNamespace(in_use=False)),
         _stop_for_own_microphone=Mock(return_value=False),
         shell_texts={"health_advice_label": Mock()},
     )
     MainWindow._update_diagnostics(window)
     window._reset_health_labels.assert_called_once()
-    window._service_stream_recovery.assert_called_once()
+    window.engine_session.tick.assert_called_once()
     assert "unavailable" in window._set_health_chip.call_args.args[1]
     advice = window.shell_texts["health_advice_label"].update.call_args.kwargs["text"]
     assert "could not read" in advice and "Stop and start processing" in advice
@@ -569,7 +579,7 @@ def test_a_stopped_tick_redoes_the_stopped_work_only_when_the_stopped_state_chan
         _reset_health_labels=Mock(),
         _sync_processing_controls=Mock(),
         _update_session_summary=Mock(),
-        _service_stream_recovery=Mock(),
+        engine_session=Mock(view=SimpleNamespace(in_use=False)),
         _set_health_chip=Mock(),
         shell_texts={"health_advice_label": Mock()},
         _processing=False,
@@ -587,7 +597,7 @@ def test_a_stopped_tick_redoes_the_stopped_work_only_when_the_stopped_state_chan
     assert ticks(3) == [1, 1, 1]  # still stopped, nothing changed
     # A pending restart is serviced on every tick all the same, and edits made
     # while stopped (route, preset, mode, mute) still reach the summary.
-    assert window._service_stream_recovery.call_count == 4
+    assert window.engine_session.tick.call_count == 4
     assert window._update_session_summary.call_count == 3
 
     state["restart_pending"] = True  # the Stop control now has a retry to cancel
@@ -600,7 +610,7 @@ def test_a_stopped_tick_redoes_the_stopped_work_only_when_the_stopped_state_chan
     assert ticks() == [4, 4, 3]
     state["running"] = False
     assert ticks(2) == [5, 5, 4]
-    assert window._service_stream_recovery.call_count == 11
+    assert window.engine_session.tick.call_count == 11
 
 
 def test_measurements_begin_unavailable_and_failed_noise_floor_does_not_invent_default(

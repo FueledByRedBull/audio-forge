@@ -76,9 +76,26 @@ from .device_selection import (
     own_microphone_diagnostics,
     preferred_output_index,
     records_own_microphone,
-    start_processor_for_route,
 )
-from .capture_session import recovery_paused
+from .capture_session import recovery_paused, selected_device_identities
+from .engine_session import (
+    AudioBorrowed,
+    AudioReleased,
+    BackgroundStopFailed,
+    ControlsChanged,
+    EngineSession,
+    MuteApplied,
+    QuitChoice,
+    RestartFailed,
+    Restarted,
+    Route,
+    SessionView,
+    Started,
+    StartFailed,
+    StopFailed,
+    Stopped,
+    StopSource,
+)
 from .engine_tasks import EngineTasks, attempt
 from .theme import contrast_theme_changed, muted_icon
 from .config_history import (
@@ -206,16 +223,11 @@ PAGE_NAMES = ("Mic", "Health", "Settings")
 NO_DESTINATION_WARNING = "Warning: No output device is selected. Choose one in the Output list, then press Start."
 # Windows allows a program a few seconds to end a session, and the save comes after this wait.
 ENGINE_CALL_WAIT_MS = 3_000
-# Start and Stop share one button that turns back into Start as soon as a stop ends (about
-# 120 ms), so a Start this soon after a Stop click is the second click of a double-click.
-START_AFTER_STOP_LOCKOUT_S = 0.5
 # Set on the app while Qt asks to commit data for a sign-out or shutdown; the dialogs read it too.
 SESSION_ENDING_PROPERTY = "audioforge_session_ending"
 SAVE_PROBLEM = "Settings could not be saved, so recent changes may be lost when AudioForge closes."
 
 
-# How the engine's supervisor words a stall restart's reason (callback ages, in ms).
-STALL_REASON_PREFIX = "input_cb_age_ms="
 # The native getters the meters and Health read; an older extension module lacks them.
 METER_GETTERS = (
     "take_input_peak_since_read",
@@ -224,11 +236,6 @@ METER_GETTERS = (
     "get_input_full_scale_count",
     "get_output_full_scale_count",
 )
-
-
-def _engine_in_use(window) -> bool:
-    """Whether a call is out on the engine worker; the meters and Health wait for it."""
-    return bool(window.__dict__.get("_engine_busy") or window.__dict__.get("_recovery_polling"))
 
 
 def _session_is_ending() -> bool:
@@ -254,16 +261,6 @@ def _device_label(identity: DeviceIdentity, devices: list) -> str:
 def _list_devices() -> tuple[Any, Any]:
     """Both device lists, or for each the exception that stopped it; the worker runs this."""
     return attempt(list_input_devices), attempt(list_output_devices)
-
-
-def _output_muted(window) -> bool:
-    """Whether a mute the engine accepted is silencing the output (not one still pending).
-
-    The Output row, the OUT meter and the status dot all read this, so they agree.
-    """
-    return not window.__dict__.get("_output_mute_error") and bool(
-        window.__dict__.get("user_muted", False) or window.__dict__.get("_temporary_mute_reasons", set())
-    )
 
 
 def _level_reading(processor, name: str) -> float | None:
@@ -359,6 +356,9 @@ class MainWindow(QMainWindow):
 
         # Create audio processor
         self.processor = AudioProcessor()
+        self._engine = EngineTasks(self)
+        # Owns Start, Stop, recovery and the output mute; the window redraws from its views.
+        self.engine_session = EngineSession(self.processor, self._engine, self)
         stop_audio = self._stop_audio_on_worker
         self.limiter_state = LimiterState(self.processor, self, stop_audio=stop_audio)
         self.deesser_state = DeEsserState(self.processor, self, stop_audio=stop_audio)
@@ -386,9 +386,6 @@ class MainWindow(QMainWindow):
         self.preset_modified = False
         self._saved_preset_payload: str | None = None
         self._last_preset_identity_persisted = True
-        self._temporary_mute_reasons: set[str] = set()
-        self._output_mute_error: str | None = None
-        self.user_muted = bool(getattr(self.config, "user_muted", False))
 
         # Bounded settings history with transient calibration evidence;
         # live audio buffers and realtime processor state stay out.
@@ -405,9 +402,6 @@ class MainWindow(QMainWindow):
         self._redo_action = None
         self._calibration_dialog_open = False
         self._processing = False
-        self._engine = EngineTasks(self)
-        self._engine_busy: str | None = None  # the call the Start, Stop and Refresh controls wait on
-        self._recovery_polling = False
         self._stream_health = RecentStreamHealth()
         # What the last diagnostics tick saw, for the next one to compare against.
         self._health_memory = HealthMemory()
@@ -420,7 +414,6 @@ class MainWindow(QMainWindow):
         self.single_instance = None  # set by the app bootstrap; the relaunch releases it
         self._problems: dict[str, str] = {}  # on the warning banner until resolved
         self._quitting = False
-        self._shut_down = False
         self._quit_dont_ask = False
         self._tray_icon: QSystemTrayIcon | None = None
         self._tray_host_watcher: QObject | None = None  # Linux: waits for a late panel
@@ -436,12 +429,13 @@ class MainWindow(QMainWindow):
         self._setup_shell_models()
         self._setup_menubar()
         self._setup_options_menu()
+        self.engine_session.changed.connect(self._on_session_changed)
         for state in (self.limiter_state, self.deesser_state, self.compressor_state, self.gate_state, self.eq_state, self.noise_suppression_state):
             state.writeFailed.connect(
                 lambda message: self.status_message.showMessage(message, 7000)
             )
             state.recoveryFailed.connect(
-                lambda _message: self.set_temporary_output_mute(True, "configuration")
+                lambda _message: self.engine_session.hold_mute("configuration", True)
             )
         for state in (self.limiter_state, self.deesser_state, self.compressor_state, self.eq_state):
             state.set_settings({})
@@ -452,7 +446,7 @@ class MainWindow(QMainWindow):
 
         self._finish_shell()
         self._setup_desktop_integration()
-        self._apply_output_mute()
+        self.engine_session.set_user_muted(bool(self.config.user_muted))
 
         # Populate device lists
         self._refresh_devices()
@@ -604,7 +598,7 @@ class MainWindow(QMainWindow):
             action.setEnabled(action_spec.enabled)
             action.setCheckable(action_spec.checkable)
             if key == "user_mute_checkbox":
-                action.setChecked(self.user_muted)
+                action.setChecked(bool(self.config.user_muted))
             setattr(self, key + "_action", action)
             (action.toggled if action_spec.checkable else action.triggered).connect(commands[key])
         self.shell_page = PageState(self, len(PAGE_NAMES))
@@ -765,49 +759,24 @@ class MainWindow(QMainWindow):
             self.set_temporary_output_mute(False, "processing_mode_error")
             self._queue_configuration_snapshot()
 
-    def _apply_output_mute(self) -> None:
-        """Apply user and temporary mute state without either one clearing the other."""
-        muted = bool(
-            self.__dict__.get("user_muted", False)
-            or self.__dict__.get("_temporary_mute_reasons", set())
-        )
-        try:
-            self.processor.set_output_mute(muted)
-            self._output_mute_error = None
-        except Exception:
-            self._output_mute_error = "unavailable"
-            logger.warning("Failed to apply output mute state", exc_info=True)
-        tray_mute_action = self.__dict__.get("_tray_mute_action")
-        if tray_mute_action is not None:
-            tray_mute_action.blockSignals(True)
-            tray_mute_action.setChecked(bool(self.user_muted))
-            tray_mute_action.blockSignals(False)
-        self._update_session_summary()
-
     def set_temporary_output_mute(
         self, muted: bool, reason: str = "calibration"
     ) -> None:
         """Set one temporary mute owner; releasing it never changes user mute."""
-        reason = str(reason or "temporary")
-        reasons = self.__dict__.setdefault("_temporary_mute_reasons", set())
-        if muted:
-            reasons.add(reason)
-        else:
-            reasons.discard(reason)
-        self._apply_output_mute()
+        self.engine_session.hold_mute(reason, muted)
 
     def _on_user_mute_toggled(self, checked: bool) -> None:
-        self.user_muted = bool(checked)
-        self._apply_output_mute()
+        self.engine_session.set_user_muted(checked)
         saved = False
         if self.__dict__.get("config") is not None:
-            self.config.user_muted = self.user_muted
+            self.config.user_muted = bool(checked)
             saved = self._save_config_safely()
-        if self.__dict__.get("_output_mute_error"):
+        mute = self.engine_session.view
+        if mute.mute_error:
             message = "Output mute change could not be applied"
             if saved:
                 message += "; preference saved for the next start"
-        elif self.user_muted or self.__dict__.get("_temporary_mute_reasons", set()):
+        elif mute.mute_requested:
             message = "Output muted"
         else:
             message = "Output unmuted"
@@ -836,8 +805,9 @@ class MainWindow(QMainWindow):
         mode = self._processing_mode()
         mode_label = next(label for label, value in PROCESSING_MODE_OPTIONS if value == mode)
         transmission = f"{'Running' if running else 'Stopped'} / {mode_label}"
-        muted = _output_muted(self)
-        pending = bool(self.__dict__.get("_output_mute_error"))
+        mute = self.engine_session.view
+        muted = mute.output_muted
+        pending = mute.mute_error
         if pending:
             transmission += " / Mute pending"
         elif muted:
@@ -850,7 +820,7 @@ class MainWindow(QMainWindow):
         self.output_meter.set_muted(muted)
         tray = self.__dict__.get("_tray_icon")
         if tray is not None:
-            tray_muted = bool(self.user_muted or self._temporary_mute_reasons)
+            tray_muted = mute.mute_requested
             tooltip = build_tray_tooltip(
                 processing=running,
                 muted=tray_muted,
@@ -1203,12 +1173,12 @@ class MainWindow(QMainWindow):
 
         start_action = QAction("&Start Processing", self)
         start_action.setShortcut("Ctrl+Return")
-        start_action.triggered.connect(self._on_start_clicked)
+        start_action.triggered.connect(self._on_menu_start)
         file_menu.addAction(start_action)
 
         stop_action = QAction("S&top Processing", self)
         stop_action.setShortcut("Ctrl+.")
-        stop_action.triggered.connect(self._on_stop_clicked)
+        stop_action.triggered.connect(self._on_menu_stop)
         file_menu.addAction(stop_action)
 
         file_menu.addSeparator()
@@ -1607,7 +1577,7 @@ class MainWindow(QMainWindow):
             self._cancel_login_startup("Login stopped: saved route preset could not be restored")
             return
         self._cancel_login_startup()
-        if not self._start_processing(interactive=False):
+        if not self.engine_session.start_now(interactive=False):
             message = (
                 "Login needs attention: audio may still be running; use Stop"
                 if self.processor.is_running()
@@ -1665,7 +1635,7 @@ class MainWindow(QMainWindow):
 
         self._tray_mute_action = QAction("Mute Output", self)
         self._tray_mute_action.setCheckable(True)
-        self._tray_mute_action.setChecked(self.user_muted)
+        self._tray_mute_action.setChecked(self.engine_session.view.user_muted)
         self._tray_mute_action.toggled.connect(self._on_tray_mute_toggled)
         self._tray_menu.addAction(self._tray_mute_action)
         self._tray_menu.addSeparator()
@@ -1697,7 +1667,7 @@ class MainWindow(QMainWindow):
         self._tray_host_watcher = watcher
 
     def _on_tray_host_registered(self, _service: str = "") -> None:
-        if self._tray_icon is not None or self._shut_down:
+        if self._tray_icon is not None or self.engine_session.closed:
             return
         self._setup_desktop_integration(tray_only=True)
         # A panel registers the watcher before its own host, which Qt also waits for.
@@ -1716,7 +1686,7 @@ class MainWindow(QMainWindow):
     def _on_about_to_quit(self) -> None:
         """Shut down a window Qt never closed: hidden in the tray, or the app quit without it."""
         self._quitting = True
-        if not self._shut_down:
+        if not self.engine_session.closed:
             self._shutdown()
 
     def _show_from_tray(self) -> None:
@@ -1851,12 +1821,11 @@ class MainWindow(QMainWindow):
         close_to_tray = (
             self._close_to_tray_action is not None and self._close_to_tray_action.isChecked()
         )
-        if (
-            close_to_tray
-            or not self.processor.is_running()
-            or not self.config.confirm_quit_when_live
-        ):
-            return "quit"
+        return self.engine_session.quit_choice(
+            self._ask_to_quit, confirm=not close_to_tray and self.config.confirm_quit_when_live
+        )
+
+    def _ask_to_quit(self) -> QuitChoice:
         box = QMessageBox(
             QMessageBox.Icon.Question,
             "Stop Audio and Quit?",
@@ -1878,7 +1847,8 @@ class MainWindow(QMainWindow):
             # closeEvent applies it once the quit goes ahead, and saves the config on the way out.
             self._quit_dont_ask = dont_ask.isChecked()
             return "quit"
-        return "tray" if clicked is tray_button else "cancel"
+        # A box closed without a button answers None, which is no tray button that was never added.
+        return "tray" if tray_button is not None and clicked is tray_button else "cancel"
 
     def _hide_to_tray(self) -> None:
         assert self._tray_icon is not None
@@ -2418,12 +2388,12 @@ class MainWindow(QMainWindow):
 
     def _on_refresh_clicked(self) -> None:
         """List the devices on the worker: the enumeration can take seconds."""
-        if self.__dict__.get("_engine_busy"):
+        if self.engine_session.view.busy:
             return
         if self.processor.is_running():
             self._refresh_devices()  # says why it cannot refresh
             return
-        self._run_engine("refresh", _list_devices, self._refresh_devices)
+        self.engine_session.request_refresh(_list_devices, self._refresh_devices)
 
     def _refresh_devices(self, listing: tuple[Any, Any] | None = None):
         """Refresh the device lists; ``listing`` is the worker's, else they are listed here."""
@@ -2912,70 +2882,36 @@ class MainWindow(QMainWindow):
                 "Input settings applied for this session, but could not be saved", 6000
             )
 
-    def _run_engine(
-        self, name: str, call: Callable[[], Any], done: Callable[[Any], object]
-    ) -> None:
-        """Run a blocking engine call on the worker, with the engine controls locked until ``done`` ran."""
-        if self._shut_down:
-            return
-        if self._engine.threaded:  # a call that returns at once would only cost the focus of a button
-            self._engine_busy = name
-            self._sync_processing_controls()
-
-        def finish(outcome: Any) -> None:
-            self._engine_busy = None
-            if self._shut_down:
-                return
-            try:
-                done(outcome)
-            finally:
-                self._sync_processing_controls()
-
-        self._engine.submit(call, finish)
-
-    def _start_processing(self, *, interactive: bool = True) -> bool:
-        """Start audio processing and wait for the engine; login and setup need the answer."""
-        route = self._prepare_start(interactive)
-        if isinstance(route, bool):
-            return route
-        return self._finish_start(
-            attempt(partial(start_processor_for_route, self.processor, *route)), interactive
-        )
-
     def _on_start_clicked(self) -> None:
-        """Start from the button or menu; the engine starts on the worker, so the window stays alive."""
-        if self.__dict__.get("_engine_busy"):
-            return
-        stop_clicked_at = self.__dict__.get("_stop_clicked_at")
-        if stop_clicked_at is not None and time.monotonic() - stop_clicked_at < START_AFTER_STOP_LOCKOUT_S:
-            return
-        if self.__dict__.get("_recovery_polling"):
-            # Queued behind that call, the start would meet the streams a retry reopened.
-            self._start_after_recovery = True
-            return
-        route = self._prepare_start(True)
-        if not isinstance(route, bool):
-            self._run_engine(
-                "start",
-                partial(start_processor_for_route, self.processor, *route),
-                partial(self._finish_start, interactive=True),
-            )
+        """The shared Start/Stop button; the engine starts on the worker, so the window stays alive."""
+        self.engine_session.request_start("button")
 
-    def _prepare_start(
-        self, interactive: bool
-    ) -> bool | tuple[DeviceIdentity | None, DeviceIdentity | None]:
-        """The route to start, or the final answer when there is nothing to start."""
+    def _on_menu_start(self) -> None:
+        """File > Start Processing and its shortcut."""
+        self.engine_session.request_start("menu")
+
+    def _on_stop_clicked(self) -> None:
+        self._request_stop("button")
+
+    def _on_menu_stop(self) -> None:
+        self._request_stop("menu")
+
+    def _request_stop(self, source: StopSource) -> None:
+        if self.engine_session.view.busy is None and self.__dict__.get("_login_startup_deadline") is not None:
+            self._cancel_login_startup()
+        self.engine_session.request_stop(source)
+
+    def start_route(self, interactive: bool) -> Route | bool:
+        """The route a window Start opens, or the final answer when there is nothing to start."""
         if interactive:
             if self.__dict__.get("_login_startup_deadline") is not None:
                 self._cancel_login_startup()
             self._login_startup = False
             self._login_startup_message = ""
         if self.processor.is_running():
-            if DEBUG:
-                logger.debug("Start processing clicked, but processor already running")
             return True
 
-        if "configuration" in self.__dict__.get("_temporary_mute_reasons", set()):
+        if "configuration" in self.engine_session.view.mute_reasons:
             self.status_message.showMessage(
                 "Audio remains stopped and muted because configuration recovery failed; "
                 "reload the preset or restart AudioForge before starting",
@@ -2991,95 +2927,118 @@ class MainWindow(QMainWindow):
                 banner.update(text=NO_DESTINATION_WARNING, shown=True)
             return False
 
-        input_device = self._device_selection_to_name(self.input_choice) or None
-        output_device = self._device_selection_to_name(self.output_choice) or None
         self._apply_input_preferences_for_current_route()
-        # Set the persisted mute before native startup so the first buffer is safe.
-        self._apply_output_mute()
-        if not interactive and self._output_mute_error is not None:
-            return False
-
-        if DEBUG:
-            logger.debug(
-                "Starting processing - Input: %s, Output: %s",
-                input_device or "(default)",
-                output_device or "(default)",
-            )
         return (
             self._combo_device_identity(self.input_choice),
             self._combo_device_identity(self.output_choice),
         )
 
-    def _finish_start(self, outcome: Any, interactive: bool) -> bool:
-        """Show how the engine start went: ``outcome`` is its result or the exception it raised."""
-        try:
-            if isinstance(outcome, Exception):
-                raise outcome
-            result = outcome
-            self._apply_latency_compensation_for_current_devices()
-            # Native start clears temporary mute state; restore both owners.
-            if DEBUG:
-                logger.debug("Restoring output mute state after processing start")
-            self._apply_output_mute()
-            if not interactive and self._output_mute_error is not None:
-                self.processor.stop()
-                raise RuntimeError("Output mute state could not be restored")
-            self.status_message.showMessage(f"Processing: {result}")
-            self._clear_own_microphone_problem()
-            self.start_btn_action.setEnabled(False)
-            self.stop_btn_action.setEnabled(True)
-            self.input_choice.setEnabled(False)
-            self.output_choice.setEnabled(False)
-            self.refresh_btn_action.setEnabled(False)
-            self._processing = True
-            self._update_session_summary()
-            self._sync_meter_timer()
-            if DEBUG:
-                logger.debug("Processing started: %s", result)
-            return True
-        except Exception as e:
-            logger.exception("Start processing failed")
-            own_microphone = isinstance(e, OwnMicrophoneError)
-            if own_microphone:
-                self._set_problem("own_microphone", OWN_MICROPHONE_MESSAGE)
-            if not interactive and self.processor.is_running():
-                try:
-                    self.processor.stop()
-                except Exception:
-                    logger.exception("Could not stop audio after failed login startup")
-            error_msg = str(e)
-            # Provide actionable guidance based on error type
-            if "device" in error_msg.lower() or "audio" in error_msg.lower():
-                guidance = (
-                    "Try these steps:\n"
-                    "1. Press the refresh button (the circular arrow) next to the Output list\n"
-                    "2. Ensure your microphone is connected\n"
-                    "3. Check "
-                    + ("Windows audio settings" if sys.platform == "win32" else "your sound settings")
-                    + "\n"
-                    "4. Try selecting a different device"
+    def selected_route(self) -> Route:
+        return selected_device_identities(self)
+
+    def engine_started(self) -> None:
+        self._apply_latency_compensation_for_current_devices()
+
+    def _on_session_changed(self, view: SessionView) -> None:
+        """Redraw from the engine session; its event names the prompt a transition asks for."""
+        match view.event:
+            case MuteApplied():
+                tray_mute_action = self.__dict__.get("_tray_mute_action")
+                if tray_mute_action is not None:
+                    tray_mute_action.blockSignals(True)
+                    tray_mute_action.setChecked(view.user_muted)
+                    tray_mute_action.blockSignals(False)
+                self._update_session_summary()
+            case ControlsChanged():
+                self._sync_processing_controls()
+            case Started(result=result):
+                self.status_message.showMessage(f"Processing: {result}")
+                self._clear_own_microphone_problem()
+                self.start_btn_action.setEnabled(False)
+                self.stop_btn_action.setEnabled(True)
+                self.input_choice.setEnabled(False)
+                self.output_choice.setEnabled(False)
+                self.refresh_btn_action.setEnabled(False)
+                self._processing = True
+                self._update_session_summary()
+                self._sync_meter_timer()
+            case StartFailed(error=error, interactive=interactive):
+                self._show_start_failure(error, interactive)
+            case Stopped(source=source):
+                self.status_message.showMessage("Processing stopped")
+                self.start_btn_action.setEnabled(True)
+                self.stop_btn_action.setEnabled(False)
+                self.input_choice.setEnabled(True)
+                self.output_choice.setEnabled(True)
+                self.refresh_btn_action.setEnabled(True)
+                self._processing = False
+                self._health_memory = replace(self._health_memory, device_wait_since=None)
+                self._sync_meter_timer()
+                self._update_session_summary()
+                if source == "own_microphone":
+                    self._report_problem("own_microphone", OWN_MICROPHONE_MESSAGE)
+            case StopFailed(error=error, source=source):
+                QMessageBox.critical(self, "Error", f"Failed to stop processing:\n{error}")
+                if source == "own_microphone":
+                    self._report_problem("own_microphone", OWN_MICROPHONE_MESSAGE)
+            case Restarted(reason=reason):
+                suffix = f" after: {reason}" if reason else ""
+                self.status_message.showMessage(
+                    f"Audio restarted automatically{suffix}; you may have heard a short gap",
+                    4000,
                 )
-            else:
-                guidance = (
-                    "Try these steps:\n"
-                    "1. Stop and restart the application\n"
-                    "2. Check that no other app is using the audio device"
-                )
-            if interactive:
-                QMessageBox.critical(
-                    self,
-                    "Error Starting Processing",
-                    # Refreshing the lists cannot help; the message says what does.
-                    error_msg if own_microphone else f"Failed to start audio processing:\n\n{e}\n\n{guidance}",
-                )
-            self.status_message.showMessage(f"Could not start processing: {e}")
-            self._sync_processing_controls()
-            return False
+                self._sync_processing_controls()
+            case RestartFailed(error=error):
+                message = "The selected devices are not available, so AudioForge keeps retrying"
+                self.status_message.showMessage(f"{message}: {error}" if error else message, 6000)
+                self._sync_processing_controls()
+            case BackgroundStopFailed(error=error):
+                self.status_message.showMessage(f"Stopping audio failed: {error}; restart AudioForge")
+            case AudioBorrowed(started=started):
+                if started:
+                    self._clear_own_microphone_problem()
+                self._sync_processing_controls()
+            case AudioReleased(report=report):
+                if report.error is not None:
+                    self.status_message.showMessage(f"Stopping audio failed: {report.error}", 7000)
+                self._sync_processing_controls()
+
+    def _show_start_failure(self, error: Exception, interactive: bool) -> None:
+        own_microphone = isinstance(error, OwnMicrophoneError)
+        if own_microphone:
+            self._set_problem("own_microphone", OWN_MICROPHONE_MESSAGE)
+        error_msg = str(error)
+        # Provide actionable guidance based on error type
+        if "device" in error_msg.lower() or "audio" in error_msg.lower():
+            guidance = (
+                "Try these steps:\n"
+                "1. Press the refresh button (the circular arrow) next to the Output list\n"
+                "2. Ensure your microphone is connected\n"
+                "3. Check "
+                + ("Windows audio settings" if sys.platform == "win32" else "your sound settings")
+                + "\n"
+                "4. Try selecting a different device"
+            )
+        else:
+            guidance = (
+                "Try these steps:\n"
+                "1. Stop and restart the application\n"
+                "2. Check that no other app is using the audio device"
+            )
+        if interactive:
+            QMessageBox.critical(
+                self,
+                "Error Starting Processing",
+                # Refreshing the lists cannot help; the message says what does.
+                error_msg if own_microphone else f"Failed to start audio processing:\n\n{error}\n\n{guidance}",
+            )
+        self.status_message.showMessage(f"Could not start processing: {error}")
+        self._sync_processing_controls()
 
     def _sync_processing_controls(self) -> None:
         """Reflect the native processor state after recovery or a failed start."""
         # The engine is mid-call: nothing may be pressed, and the processor is not asked.
-        busy = self.__dict__.get("_engine_busy") is not None
+        busy = self.engine_session.view.busy is not None
         running = not busy and bool(self.processor.is_running())
         idle = not (busy or running)
         self.start_btn_action.setEnabled(idle)
@@ -3092,72 +3051,17 @@ class MainWindow(QMainWindow):
         self.refresh_btn_action.setEnabled(idle)
         if busy:
             return
-        update_summary = getattr(self, "_update_session_summary", None)
-        if callable(update_summary):
-            update_summary()
-        sync_meters = getattr(self, "_sync_meter_timer", None)
-        if callable(sync_meters):
-            sync_meters()
+        self._update_session_summary()
+        self._sync_meter_timer()
 
     def _restart_pending(self) -> bool:
         """Whether the engine, streams stopped, is waiting to retry a failed restart; Stop cancels it."""
         getter = getattr(self.processor, "is_recovery_requested", None)
         return callable(getter) and bool(getter())
 
-    def _stop_processing(self):
-        """Stop audio processing and wait for the engine."""
-        if self._prepare_stop():
-            self._finish_stop(attempt(self.processor.stop))
-
-    def _on_stop_clicked(self) -> None:
-        """Stop from the button or menu; the engine stops on the worker, so the window stays alive."""
-        if not self.__dict__.get("_engine_busy") and self._prepare_stop():
-            self._stop_clicked_at = time.monotonic()
-            self._run_engine("stop", self.processor.stop, self._finish_stop)
-
-    def _prepare_stop(self) -> bool:
-        """Whether there is a running engine, or a restart retry, to stop."""
-        if self.__dict__.get("_login_startup_deadline") is not None:
-            self._cancel_login_startup()
-        if not (self.processor.is_running() or self._restart_pending()):
-            self._sync_processing_controls()
-            if DEBUG:
-                logger.debug("Stop processing clicked, but processor is not running")
-            return False
-
-        if DEBUG:
-            logger.debug("Stopping processing")
-        return True
-
-    def _finish_stop(self, outcome: Any) -> None:
-        """Show how the engine stop went: ``outcome`` is None or the exception it raised."""
-        try:
-            if isinstance(outcome, Exception):
-                raise outcome
-            self.status_message.showMessage("Processing stopped")
-            self.start_btn_action.setEnabled(True)
-            self.stop_btn_action.setEnabled(False)
-            self.input_choice.setEnabled(True)
-            self.output_choice.setEnabled(True)
-            self.refresh_btn_action.setEnabled(True)
-            self._processing = False
-            self._health_memory = replace(self._health_memory, device_wait_since=None)
-            self._sync_meter_timer()
-            self._update_session_summary()
-            if DEBUG:
-                logger.debug("Processing stopped")
-        except Exception as e:
-            logger.exception("Stop processing failed")
-            QMessageBox.critical(self, "Error", f"Failed to stop processing:\n{e}")
-
     def _stop_audio_on_worker(self) -> None:
         """Stop the engine after a failed configuration; a start or recovery on the worker may hold the lock."""
-        self._engine.submit(self.processor.stop, self._audio_stop_failed)
-
-    def _audio_stop_failed(self, outcome: Any) -> None:
-        if isinstance(outcome, Exception) and not self._shut_down:
-            logger.error("Stopping audio after a failed configuration failed", exc_info=outcome)
-            self.status_message.showMessage(f"Stopping audio failed: {outcome}; restart AudioForge")
+        self.engine_session.stop_in_background()
 
     def _on_auto_eq_clicked(self):
         """Open Auto-EQ calibration dialog."""
@@ -3329,7 +3233,7 @@ class MainWindow(QMainWindow):
             return False
         finally:
             self._history_timer.stop()
-        if "configuration" in self.__dict__.get("_temporary_mute_reasons", set()):
+        if "configuration" in self.engine_session.view.mute_reasons:
             return False
         preset = self._get_current_preset()
         current = self._configuration_history.current
@@ -3496,7 +3400,7 @@ class MainWindow(QMainWindow):
             self._flush_processing_configuration_writes()
         except RuntimeError:
             return None
-        if "configuration" in self.__dict__.get("_temporary_mute_reasons", set()):
+        if "configuration" in self.engine_session.view.mute_reasons:
             self.status_message.showMessage("Restore a complete configuration before saving", 7000)
             return None
         return self._get_current_preset()
@@ -3605,7 +3509,7 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        self._shut_down = False  # a window shown again after a refused quit must shut down again
+        self.engine_session.reopen()
         watch = self.__dict__.get("virtual_microphone_watch")
         if watch is not None:
             watch.resume()  # _shutdown stopped it; a window shown again still needs it
@@ -3630,7 +3534,7 @@ class MainWindow(QMainWindow):
 
     def _sync_meter_timer(self) -> None:
         timer = self.__dict__.get("meter_timer")
-        if timer is None or _engine_in_use(self):
+        if timer is None or self.engine_session.view.in_use:
             return
         try:
             running = self.processor.is_running()
@@ -3661,7 +3565,7 @@ class MainWindow(QMainWindow):
 
     def _update_meters(self):
         """Refresh available live measurements; keep recovery on its own timer."""
-        if _engine_in_use(self):
+        if self.engine_session.view.in_use:
             return
         try:
             running = self.processor.is_running()
@@ -3723,7 +3627,7 @@ class MainWindow(QMainWindow):
             self.output_meter.clear_clip_marker()
 
     def _clear_own_microphone_problem(self) -> None:
-        """Called by every start that worked; also from the dialogs' ``start_selected_route``."""
+        """Called by every start that worked, the window's and a dialog's borrow."""
         if "own_microphone" in self._problems:
             self._set_problem("own_microphone", None)
 
@@ -3740,17 +3644,12 @@ class MainWindow(QMainWindow):
             return False
         logger.warning("Stopping audio: %s", OWN_MICROPHONE_MESSAGE)
         note_own_microphone_refusal()
-
-        def stopped(outcome: Any) -> None:
-            self._finish_stop(outcome)
-            self._report_problem("own_microphone", OWN_MICROPHONE_MESSAGE)
-
-        self._run_engine("stop", self.processor.stop, stopped)
+        self.engine_session.request_stop("own_microphone")
         return True
 
     def _update_diagnostics(self):
         """Update slower diagnostics and service recovery."""
-        if _engine_in_use(self):
+        if self.engine_session.view.in_use:
             return
         watch = self.__dict__.get("virtual_microphone_watch")
         if watch is not None:
@@ -3788,7 +3687,7 @@ class MainWindow(QMainWindow):
                 self._reset_health_labels()
             # A failed native restart intentionally leaves recovery pending
             # while the stream is stopped. Keep servicing that request here.
-            self._service_stream_recovery()
+            self.engine_session.tick()
             if stopped_changed:
                 self._sync_processing_controls()
             else:
@@ -3824,7 +3723,7 @@ class MainWindow(QMainWindow):
                 "Stop and start processing; if this keeps happening, restart AudioForge."
             ))
             # Missing presentation data must not suppress native recovery service.
-            self._service_stream_recovery()
+            self.engine_session.tick()
             return
 
         self._update_diagnostic_labels(
@@ -3843,7 +3742,7 @@ class MainWindow(QMainWindow):
             output_at_full_scale=self.output_meter.clipped_within(HEALTH_PEAK_WINDOW_SECONDS),
             limiter_enabled=bool(self.limiter_state.get_settings()["enabled"]),
         )
-        self._service_stream_recovery()
+        self.engine_session.tick()
 
     def _update_diagnostic_labels(
         self,
@@ -3902,7 +3801,7 @@ class MainWindow(QMainWindow):
                 output_peak_db=output_peak_db,
                 output_at_full_scale=output_at_full_scale,
                 limiter_enabled=limiter_enabled,
-                output_muted=_output_muted(self),
+                output_muted=self.engine_session.view.output_muted,
                 recovery_pending=recovery_pending,
                 processing=self._processing,
             ),
@@ -3925,64 +3824,11 @@ class MainWindow(QMainWindow):
             Chip(self.shell_texts[key].text, self.shell_texts[key].state)
             for key in HEALTH_DECISION_KEYS + HEALTH_LAYOUT_KEYS
         ]
-        summary = health_summary(rows, mute_error=bool(self.__dict__.get("_output_mute_error")))
+        summary = health_summary(rows, mute_error=self.engine_session.view.mute_error)
         self._set_health_chip("health_summary_label", summary.text, summary.state)
         self.shell_texts["health_advice_label"].update(text=summary.tip)
         self.shell_texts["health_summary_label"].update(tip=summary.tip)
         self._update_session_summary()
-
-    _recovery_service_failing = False
-
-    def _service_stream_recovery(self) -> None:
-        """Poll the engine's own stream recovery; it detects stalls, backs off and restarts."""
-        if _engine_in_use(self) or self._shut_down:
-            return
-        # Not locked like a click: it asks the engine every tick and mostly has nothing to do.
-        self._recovery_polling = True
-        self._engine.submit(lambda: self.processor.service_recovery(), self._recovery_serviced)
-
-    def _recovery_serviced(self, outcome: Any) -> None:
-        """Show what the engine's own recovery did: ``outcome`` is its answer or the exception raised."""
-        self._recovery_polling = False
-        start = self.__dict__.pop("_start_after_recovery", False)
-        if self._shut_down:
-            return
-        try:
-            if isinstance(outcome, Exception):
-                raise outcome
-            recovery_result = outcome
-            if recovery_result is not None:
-                if recovery_result:
-                    self._apply_latency_compensation_for_current_devices()
-                    reason = ""
-                    try:
-                        reason = self.processor.get_last_restart_reason() or ""
-                    except Exception:
-                        reason = ""
-                    if reason.startswith(STALL_REASON_PREFIX):
-                        reason = "audio stalled"
-                    suffix = f" after: {reason}" if reason else ""
-                    self.status_message.showMessage(
-                        f"Audio restarted automatically{suffix}; you may have heard a short gap",
-                        4000,
-                    )
-                else:
-                    err_msg = ""
-                    try:
-                        err_msg = self.processor.get_last_stream_error() or ""
-                    except Exception:
-                        err_msg = ""
-                    message = "The selected devices are not available, so AudioForge keeps retrying"
-                    self.status_message.showMessage(f"{message}: {err_msg}" if err_msg else message, 6000)
-                self._sync_processing_controls()
-            self._recovery_service_failing = False
-        except Exception:
-            # Runs every tick: log the first failure of a streak, not each repeat.
-            if not self._recovery_service_failing:
-                logger.warning("Rust recovery service failed", exc_info=True)
-            self._recovery_service_failing = True
-        if start:
-            self._on_start_clicked()
 
     def _export_diagnostics(self) -> None:
         """Export an allowlisted support snapshot off the realtime path."""
@@ -4181,7 +4027,7 @@ class MainWindow(QMainWindow):
         release_mute = True
         try:
             self.set_temporary_output_mute(True, "configuration")
-            if self.__dict__.get("_output_mute_error") and self.processor.is_running():
+            if self.engine_session.view.mute_error and self.processor.is_running():
                 self._stop_audio_on_worker()
                 raise RuntimeError("Audio is muted and stopping because configuration mute failed")
             try:
@@ -4457,13 +4303,12 @@ class MainWindow(QMainWindow):
         """Save the settings and stop audio; closeEvent and an app quit without a close share this."""
         if self._quit_dont_ask:
             self.config.confirm_quit_when_live = False
-        self._shut_down = True  # from here the answers of engine calls still out are dropped
         watch = self.__dict__.get("virtual_microphone_watch")
         if watch is not None:
             watch.stop()
-        engine_idle = self._engine.wait(ENGINE_CALL_WAIT_MS)
-        if not engine_idle:
-            logger.warning("An engine call is still out at shutdown; the exit ends the audio")
+        return self.engine_session.shutdown(ENGINE_CALL_WAIT_MS, save=self._save_on_shutdown)
+
+    def _save_on_shutdown(self) -> bool:
         self._unregister_mute_hotkey()
         if self._tray_icon is not None:
             self._tray_icon.hide()
@@ -4478,13 +4323,7 @@ class MainWindow(QMainWindow):
         if self.isMaximized():
             geometry["maximized"] = True
         self.config.window_geometry = geometry
-        try:
-            saved = self._save_ui_state()
-        finally:
-            # Not beside a call that is still out: this stop would wait behind it on the GUI thread.
-            if engine_idle and self.processor.is_running():
-                self.processor.stop()
-        return saved
+        return self._save_ui_state()
 
 
 def run_app():

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
 from unittest.mock import Mock
 
 import numpy as np
@@ -21,6 +22,7 @@ from mic_eq.ui.listening_comparison_dialog import (
     open_test_my_sound,
 )
 from test_listening_comparison import _settings
+from engine_fakes import fake_session
 
 
 @pytest.fixture
@@ -144,6 +146,8 @@ class _Window(QWidget):
         self.eq_state = Mock()
         self.eq_state.get_settings.return_value = _settings()
         self.mutes: list[tuple[bool, str]] = []
+        self.engine_session = fake_session(processor, owner=self)
+        cast(Any, self.engine_session).hold_mute = lambda reason, on: self.mutes.append((on, reason))
 
     def set_temporary_output_mute(self, muted: bool, reason: str) -> None:
         self.mutes.append((muted, reason))

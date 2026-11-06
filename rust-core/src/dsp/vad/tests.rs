@@ -158,6 +158,25 @@ mod tests {
     }
 
     #[test]
+    fn test_noise_floor_stays_in_its_clamp_range_and_survives_a_threshold_toggle() {
+        let mut gate = VadAutoGate::without_backend(48_000, 0.5);
+        gate.set_gate_mode(GateMode::VadAssisted);
+        gate.set_auto_threshold(true);
+
+        // Just above the update's RMS cut-off, far below the floor's -80 dB limit.
+        let frame = vec![3.0e-5_f32; 480];
+        for _ in 0..3_000 {
+            let _ = gate.process_with_probability(&frame, 0.0);
+            assert!((-80.0..=-20.0).contains(&gate.noise_floor()));
+        }
+
+        let floor = gate.noise_floor();
+        gate.set_auto_threshold(false);
+        gate.set_auto_threshold(true);
+        assert_eq!(gate.noise_floor().to_bits(), floor.to_bits());
+    }
+
+    #[test]
     fn test_auto_threshold_ignores_high_confidence_speech_frames() {
         let mut gate = VadAutoGate::without_backend(48_000, 0.5);
         gate.set_gate_mode(GateMode::VadAssisted);
@@ -308,6 +327,83 @@ mod tests {
             anti_aliased_resample_into_with_kernel(&input, ratio, Some(&kernel), &mut actual);
 
             assert_eq!(actual, expected, "sample_rate={sample_rate}");
+        }
+    }
+
+    /// The resampler as it was before its weight math was shared with
+    /// `ResampleKernel`, kept here as the reference both paths must match bit
+    /// for bit. Comparing on the running platform (not against recorded
+    /// hashes) keeps the test independent of the platform's `sin`/`cos`.
+    fn reference_resample(input: &[f32], ratio: f32) -> Vec<f32> {
+        let output_len = (input.len() as f32 * ratio).ceil() as usize;
+        let mut output = vec![0.0; output_len];
+        let cutoff = (0.5 * ratio.min(1.0)).clamp(0.01, 0.49);
+        let half_taps = VAD_RESAMPLER_TAPS / 2;
+        for (out_idx, sample) in output.iter_mut().enumerate() {
+            let center = out_idx as f32 / ratio;
+            let center_idx = center.floor() as i32;
+            let mut acc = 0.0_f32;
+            let mut weight_sum = 0.0_f32;
+            for tap in -half_taps..=half_taps {
+                let input_idx = center_idx + tap;
+                if !(0..input.len() as i32).contains(&input_idx) {
+                    continue;
+                }
+                let distance = center - input_idx as f32;
+                let sinc_arg = 2.0 * cutoff * distance;
+                let sinc = if sinc_arg.abs() < 1e-6 {
+                    1.0
+                } else {
+                    let x = std::f32::consts::PI * sinc_arg;
+                    x.sin() / x
+                };
+                let window_pos = (tap + half_taps) as f32 / (VAD_RESAMPLER_TAPS - 1) as f32;
+                let window = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * window_pos).cos();
+                let weight = 2.0 * cutoff * sinc * window;
+                acc += input[input_idx as usize] * weight;
+                weight_sum += weight;
+            }
+            *sample = if weight_sum.abs() > 1e-6 {
+                acc / weight_sum
+            } else {
+                0.0
+            };
+        }
+        output
+    }
+
+    #[test]
+    fn both_resampler_paths_match_the_reference_bit_for_bit() {
+        for sample_rate in [48_000_u32, 96_000, 192_000] {
+            let input_len = ((SILERO_WINDOW_SIZE as f32 * sample_rate as f32)
+                / SILERO_SAMPLE_RATE as f32)
+                .ceil() as usize;
+            let mut seed = 0x2545_f491_u32;
+            let input: Vec<f32> = (0..input_len)
+                .map(|index| {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    let noise = (seed >> 8) as f32 / (1 << 24) as f32 - 0.5;
+                    let time = index as f32 / sample_rate as f32;
+                    0.3 * (2.0 * std::f32::consts::PI * 233.0 * time).sin() + 0.2 * noise
+                })
+                .collect();
+            let ratio = SILERO_SAMPLE_RATE as f32 / sample_rate as f32;
+            let expected: Vec<u32> = reference_resample(&input, ratio)
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect();
+            let kernel = ResampleKernel::new(input.len(), ratio);
+            let mut plain = Vec::new();
+            let mut with_kernel = Vec::new();
+            anti_aliased_resample_into(&input, ratio, &mut plain);
+            anti_aliased_resample_into_with_kernel(&input, ratio, Some(&kernel), &mut with_kernel);
+            let bits = |samples: &[f32]| samples.iter().map(|s| s.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&plain), expected, "plain path at {sample_rate} Hz");
+            assert_eq!(
+                bits(&with_kernel),
+                expected,
+                "kernel path at {sample_rate} Hz"
+            );
         }
     }
 

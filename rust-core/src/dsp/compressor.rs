@@ -239,18 +239,7 @@ impl Compressor {
 
     /// Set release time in ms
     pub fn set_release_time(&mut self, release_ms: f64) {
-        if release_ms.is_nan() || self.base_release_ms == release_ms {
-            return;
-        }
-        self.base_release_ms = release_ms;
-        if self.adaptive_release {
-            self.update_adaptive_release_time_meter();
-            self.adaptive_release_coeff_samples_until_update = 1;
-        } else {
-            self.current_release_ms = release_ms;
-            self.target_release_ms = release_ms;
-            self.release_coeff = util::time_constant_to_coeff(release_ms, self.sample_rate);
-        }
+        self.set_base_release_time(release_ms);
     }
 
     /// Enable or disable adaptive release
@@ -625,12 +614,15 @@ impl Compressor {
         }
     }
 
+    /// Detector level in dB: the peak/RMS blend, scaled by the sidechain
+    /// weight, with one logarithm for all of it.
     #[inline]
-    fn blended_detector_db(peak_db: f64, rms_db: f64) -> f64 {
-        let peak_lin = util::db_to_linear(peak_db);
-        let rms_lin = util::db_to_linear(rms_db);
-        let blended = DETECTOR_PEAK_WEIGHT * peak_lin + DETECTOR_RMS_WEIGHT * rms_lin;
-        util::linear_to_db(blended, 1e-10)
+    fn blended_detector_db(peak_envelope: f64, rms_envelope_sq: f64, detector_weight: f64) -> f64 {
+        const FLOOR: f64 = 1e-10;
+        let peak = peak_envelope.abs().max(FLOOR);
+        let rms = rms_envelope_sq.sqrt().abs().max(FLOOR);
+        let blended = (DETECTOR_PEAK_WEIGHT * peak + DETECTOR_RMS_WEIGHT * rms).max(FLOOR);
+        20.0 * (blended * detector_weight.abs().max(FLOOR)).log10()
     }
 
     /// Process a single sample
@@ -688,21 +680,20 @@ impl Compressor {
         let input_squared = detector_input * detector_input;
         self.rms_envelope_sq =
             self.rms_coeff * self.rms_envelope_sq + (1.0 - self.rms_coeff) * input_squared;
-        let rms_db = util::linear_to_db(self.rms_envelope_sq.sqrt(), 1e-10);
-
-        let peak_db = util::linear_to_db(self.peak_envelope, 1e-10);
         let detector_db =
-            Self::blended_detector_db(peak_db, rms_db) + util::linear_to_db(detector_weight, 1e-10);
+            Self::blended_detector_db(self.peak_envelope, self.rms_envelope_sq, detector_weight);
 
-        self.update_adaptive_release_time_meter();
-        let release_diff = self.target_release_ms - self.current_release_ms;
-        if release_diff.abs() > 1.0 {
-            self.current_release_ms = self.release_smoothing_coeff * self.current_release_ms
-                + (1.0 - self.release_smoothing_coeff) * self.target_release_ms;
-        } else {
-            self.current_release_ms = self.target_release_ms;
-        }
+        // With adaptive release off the setters keep the target and current
+        // release equal to the base one, so there is nothing to update.
         if self.adaptive_release {
+            self.update_adaptive_release_time_meter();
+            let release_diff = self.target_release_ms - self.current_release_ms;
+            if release_diff.abs() > 1.0 {
+                self.current_release_ms = self.release_smoothing_coeff * self.current_release_ms
+                    + (1.0 - self.release_smoothing_coeff) * self.target_release_ms;
+            } else {
+                self.current_release_ms = self.target_release_ms;
+            }
             if self.adaptive_release_coeff_samples_until_update <= 1 {
                 self.release_coeff =
                     util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
@@ -949,14 +940,20 @@ mod tests {
         assert!((at_knee_end - ((w / 2.0) * comp_factor)).abs() < 1e-12);
     }
 
+    /// The blend for envelopes given as dB levels, with no sidechain weighting.
+    fn blend_of_db_levels(peak_db: f64, rms_db: f64) -> f64 {
+        let rms = util::db_to_linear(rms_db);
+        Compressor::blended_detector_db(util::db_to_linear(peak_db), rms * rms, 1.0)
+    }
+
     #[test]
     fn test_detector_blend_uses_linear_domain() {
-        let detector = Compressor::blended_detector_db(-6.0, -18.0);
+        let detector = blend_of_db_levels(-6.0, -18.0);
 
         assert!(detector < -6.0);
         assert!(detector > -18.0);
-        assert!((Compressor::blended_detector_db(-12.0, -12.0) + 12.0).abs() < 1e-9);
-        assert!(Compressor::blended_detector_db(-160.0, -160.0).is_finite());
+        assert!((blend_of_db_levels(-12.0, -12.0) + 12.0).abs() < 1e-9);
+        assert!(blend_of_db_levels(-160.0, -160.0).is_finite());
     }
 
     fn process_sine(
@@ -1797,9 +1794,8 @@ mod tests {
                 comp.process_sample(0.0);
             }
 
-            let peak_db = util::linear_to_db(comp.peak_envelope, 1e-10);
-            let rms_db = util::linear_to_db(comp.rms_envelope_sq.sqrt(), 1e-10);
-            let detector_db = Compressor::blended_detector_db(peak_db, rms_db);
+            let detector_db =
+                Compressor::blended_detector_db(comp.peak_envelope, comp.rms_envelope_sq, 1.0);
             assert!(
                 comp.compute_gain_reduction(detector_db) == 0.0,
                 "detector is not below threshold after 100 ms: {detector_db:.2} dB"
@@ -2035,5 +2031,219 @@ mod tests {
         // Never asked for: nothing to report.
         let unrequested = Compressor::new(-20.0, 4.0, 10.0, 200.0, 0.0, 0.0, 22_050.0);
         assert_eq!(unrequested.auto_makeup_error_code(), 0);
+    }
+
+    /// A fixed level-stepped tone with noise, driven through control changes,
+    /// sampled every 1500 samples (gain reduction in dB and the release time).
+    fn control_rate_trace(adaptive: bool) -> Vec<(f64, f64)> {
+        let mut comp = Compressor::new(-30.0, 4.0, 5.0, 80.0, 0.0, 6.0, 48_000.0);
+        comp.set_sidechain_highpass_enabled(true);
+        comp.set_adaptive_release(adaptive);
+        let levels = [0.5_f64, 0.1, 0.35, 0.03, 0.6, 0.2];
+        let mut seed = 0x1234_5678_u32;
+        let mut trace = Vec::new();
+        for index in 0..48_000_usize {
+            if index == 20_000 {
+                comp.set_release_time(160.0);
+            }
+            if index == 30_000 {
+                comp.set_base_release_time(40.0);
+            }
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let noise = (seed >> 8) as f64 / (1_u32 << 24) as f64 - 0.5;
+            let phase = 2.0 * std::f64::consts::PI * 197.0 * index as f64 / 48_000.0;
+            let level = levels[index / 8_000];
+            let sample = (level * (phase.sin() + 0.2 * (phase * 7.3).sin()) + 0.02 * noise) as f32;
+            comp.process_sample(sample);
+            if index % 1_500 == 0 {
+                trace.push((comp.current_gain_reduction(), comp.current_release_time()));
+            }
+        }
+        trace
+    }
+
+    /// Gain reduction (dB) and release time (ms) recorded from the compressor
+    /// before the detector blend ran in the linear domain and the release
+    /// controller was skipped with adaptive release off.
+    const FIXED_RELEASE_TRACE: [(f64, f64); 32] = [
+        (0.0, 80.0),
+        (16.254949286065433, 80.0),
+        (16.783761786511604, 80.0),
+        (16.902848007708066, 80.0),
+        (16.924307374369576, 80.0),
+        (16.95697580465317, 80.0),
+        (15.696953144029777, 80.0),
+        (13.314754570391674, 80.0),
+        (11.269718383489561, 80.0),
+        (9.732147907090313, 80.0),
+        (8.637154502207643, 80.0),
+        (12.767358756611353, 80.0),
+        (14.337959535636607, 80.0),
+        (14.536478923110266, 80.0),
+        (14.612011819717354, 160.0),
+        (14.681549178986117, 160.0),
+        (14.685589387923399, 160.0),
+        (13.318061914440987, 160.0),
+        (11.451363968955821, 160.0),
+        (9.597319248814559, 160.0),
+        (7.968488954608713, 40.0),
+        (3.8187814132182876, 40.0),
+        (16.961651611293973, 40.0),
+        (17.889131590546015, 40.0),
+        (18.037137412138314, 40.0),
+        (18.058330715397126, 40.0),
+        (18.02024458127285, 40.0),
+        (17.34399693095954, 40.0),
+        (14.475654994354866, 40.0),
+        (12.64937545891085, 40.0),
+        (11.645398345509712, 40.0),
+        (11.170778757883646, 40.0),
+    ];
+    const ADAPTIVE_RELEASE_TRACE: [(f64, f64); 32] = [
+        (0.0, 80.0),
+        (16.256829990119105, 114.24444756484891),
+        (16.80478518533586, 208.41690812626604),
+        (16.947145653009485, 342.29318770398186),
+        (17.00090315833051, 444.0),
+        (17.038175325044932, 444.0),
+        (16.783948520902598, 449.6652595407817),
+        (16.270521529442927, 538.442853537679),
+        (15.77663180649086, 598.7212191008923),
+        (15.319900902128596, 633.9307602331519),
+        (14.891674329539969, 640.0),
+        (14.59735944446219, 631.7520019198176),
+        (14.592576284878485, 581.8324995347372),
+        (14.643917091844399, 555.0474934008744),
+        (14.690965499624433, 594.3772955871467),
+        (14.741084550498302, 651.6337720894071),
+        (14.751162961390657, 698.8703647889307),
+        (14.429054848855085, 753.7306156891322),
+        (13.97801971967647, 819.3163365115712),
+        (13.506852625884827, 867.8090078964793),
+        (13.053802689573562, 903.1453522603052),
+        (12.577912599011201, 746.6382536612895),
+        (17.125494990552543, 614.4250652661896),
+        (17.94816820346639, 509.1043109391581),
+        (18.12546101338888, 432.0500010210459),
+        (18.17819121831807, 375.6758636072543),
+        (18.186519426165475, 335.8850313855375),
+        (18.101646578656055, 309.68005293204703),
+        (17.517131852054746, 298.5107173545444),
+        (16.885400188920727, 307.189115114338),
+        (16.309978913447665, 320.0),
+        (15.790742846159054, 320.0),
+    ];
+
+    #[test]
+    fn detector_and_release_changes_keep_the_trace_within_a_micro_db() {
+        for (adaptive, expected) in [
+            (false, &FIXED_RELEASE_TRACE),
+            (true, &ADAPTIVE_RELEASE_TRACE),
+        ] {
+            let trace = control_rate_trace(adaptive);
+            assert_eq!(trace.len(), expected.len());
+            for (index, ((gr, release), (want_gr, want_release))) in
+                trace.iter().zip(expected.iter()).enumerate()
+            {
+                assert!(
+                    (gr - want_gr).abs() < 1e-6,
+                    "adaptive={adaptive} point {index}: gain reduction {gr} vs {want_gr} dB"
+                );
+                assert!(
+                    (release - want_release).abs() < 1e-6,
+                    "adaptive={adaptive} point {index}: release {release} vs {want_release} ms"
+                );
+            }
+        }
+    }
+
+    /// The detector level as it was computed before the blend stayed in the
+    /// linear domain: every stage converted to dB and back.
+    fn round_trip_detector_db(peak_envelope: f64, rms_envelope_sq: f64, weight: f64) -> f64 {
+        let rms_db = util::linear_to_db(rms_envelope_sq.sqrt(), 1e-10);
+        let peak_db = util::linear_to_db(peak_envelope, 1e-10);
+        let blended = DETECTOR_PEAK_WEIGHT * util::db_to_linear(peak_db)
+            + DETECTOR_RMS_WEIGHT * util::db_to_linear(rms_db);
+        util::linear_to_db(blended, 1e-10) + util::linear_to_db(weight, 1e-10)
+    }
+
+    #[test]
+    fn linear_detector_blend_matches_the_db_round_trip_within_a_micro_db() {
+        let levels = [
+            0.0,
+            1e-14,
+            1e-10,
+            3e-9,
+            1e-6,
+            1e-3,
+            0.02,
+            0.3,
+            0.999,
+            1.0,
+            4.0,
+            f64::NAN,
+        ];
+        let weights = [PLOSIVE_MIN_DETECTOR_GAIN, 0.7, 1.0, 1.15, f64::NAN];
+        for peak in levels {
+            for rms_sq in levels {
+                for weight in weights {
+                    let want = round_trip_detector_db(peak, rms_sq, weight);
+                    let got = Compressor::blended_detector_db(peak, rms_sq, weight);
+                    assert!(
+                        (got - want).abs() < 1e-6,
+                        "peak {peak} rms_sq {rms_sq} weight {weight}: {got} vs {want} dB"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            Compressor::blended_detector_db(f64::INFINITY, 0.0, 1.0),
+            f64::INFINITY
+        );
+    }
+
+    #[test]
+    fn release_time_stays_at_the_base_while_adaptive_release_is_off() {
+        let mut comp = Compressor::new(-30.0, 4.0, 5.0, 80.0, 0.0, 6.0, 48_000.0);
+        for index in 0..30_000_usize {
+            match index {
+                2_000 => comp.set_adaptive_release(true),
+                8_000 => comp.set_release_time(150.0),
+                12_000 => comp.set_adaptive_release(false),
+                16_000 => comp.set_base_release_time(60.0),
+                20_000 => comp.reset(),
+                _ => {}
+            }
+            let phase = 2.0 * std::f64::consts::PI * 197.0 * index as f64 / 48_000.0;
+            comp.process_sample((0.5 * phase.sin()) as f32);
+            if !comp.adaptive_release() {
+                assert_eq!(comp.current_release_time(), comp.base_release_ms());
+                assert_eq!(comp.target_release_ms, comp.base_release_ms());
+            }
+        }
+    }
+
+    #[test]
+    fn set_release_time_is_the_base_release_setter() {
+        for adaptive in [false, true] {
+            let mut by_base = Compressor::new(-30.0, 4.0, 5.0, 80.0, 0.0, 6.0, 48_000.0);
+            let mut by_release = Compressor::new(-30.0, 4.0, 5.0, 80.0, 0.0, 6.0, 48_000.0);
+            by_base.set_adaptive_release(adaptive);
+            by_release.set_adaptive_release(adaptive);
+            by_base.set_base_release_time(120.0);
+            by_release.set_release_time(120.0);
+            for index in 0..4_800_usize {
+                let sample = 0.4 * (index as f32 * 0.03).sin();
+                assert_eq!(
+                    by_base.process_sample(sample).to_bits(),
+                    by_release.process_sample(sample).to_bits()
+                );
+            }
+            assert_eq!(by_base.base_release_ms(), by_release.base_release_ms());
+            assert_eq!(
+                by_base.current_release_time(),
+                by_release.current_release_time()
+            );
+        }
     }
 }

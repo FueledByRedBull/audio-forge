@@ -980,6 +980,8 @@ def test_a_termination_signal_ends_the_session_without_asking(qapp, name):
 def test_another_signal_does_not_end_the_session(qapp):
     import signal
 
+    assert sys.platform == "linux"  # narrows the POSIX-only signal names for the type checker
+
     from PySide6.QtCore import QTimer
     from mic_eq.ui.main_window import SESSION_ENDING_PROPERTY
 
@@ -1003,6 +1005,8 @@ def test_another_signal_does_not_end_the_session(qapp):
 @pytest.mark.skipif(sys.platform != "linux", reason="a Linux logout ends an app with a signal")
 def test_a_hangup_ignored_before_start_stays_ignored(qapp):
     import signal
+
+    assert sys.platform == "linux"  # narrows the POSIX-only signal names for the type checker
 
     previous = signal.signal(signal.SIGHUP, signal.SIG_IGN)
     try:

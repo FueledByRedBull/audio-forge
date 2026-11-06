@@ -47,7 +47,7 @@ jobs:
         shell: pwsh
     steps:
       - name: Authorize the dispatch
-        uses: $/.github/actions/authorize-dispatch
+        uses: $/.github/actions/authorize-dispatch  # nosemgrep: github-actions-mutable-action-tag  ($/ resolves to the running commit)
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -509,7 +509,7 @@ jobs:
         shell: pwsh
     steps:
       - name: Authorize the dispatch
-        uses: $/.github/actions/authorize-dispatch
+        uses: $/.github/actions/authorize-dispatch  # nosemgrep: github-actions-mutable-action-tag  ($/ resolves to the running commit)
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -634,7 +634,7 @@ jobs:
         shell: pwsh
     steps:
       - name: Authorize the dispatch
-        uses: $/.github/actions/authorize-dispatch
+        uses: $/.github/actions/authorize-dispatch  # nosemgrep: github-actions-mutable-action-tag  ($/ resolves to the running commit)
 
       # The workflow revision, for the release notes and the tag re-check.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

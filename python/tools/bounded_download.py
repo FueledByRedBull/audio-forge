@@ -55,13 +55,14 @@ def download(
     refusal: str,
     too_large: str,
     follow_redirects: bool = False,
+    exclusive: bool = False,
 ) -> tuple[int, str]:
     """Write *url* to *destination* and return its byte count and SHA-256.
 
     The URL, and with *follow_redirects* every redirect and the final URL, must
     be HTTPS on one of *hosts*; without it a redirect is an error. More than
-    *max_bytes* raises RuntimeError(*too_large*). Nothing is left at
-    *destination* on failure. Callers still verify the bytes against a pinned hash.
+    *max_bytes* raises RuntimeError(*too_large*). With *exclusive* the
+    destination must not exist yet. Nothing is left at *destination* on failure. Callers still verify the bytes against a pinned hash.
     """
 
     if not is_allowed_https_url(url, hosts):
@@ -72,7 +73,7 @@ def download(
     digest = hashlib.sha256()
     byte_count = 0
     try:
-        with opener.open(request, timeout=timeout) as response, destination.open("wb") as output:
+        with opener.open(request, timeout=timeout) as response, destination.open("xb" if exclusive else "wb") as output:
             if follow_redirects and not is_allowed_https_url(response.geturl(), hosts):
                 raise ValueError(refusal)
             for chunk in iter(lambda: response.read(CHUNK_BYTES), b""):

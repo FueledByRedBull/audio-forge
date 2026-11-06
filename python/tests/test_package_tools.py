@@ -224,7 +224,6 @@ def test_runtime_imports_work_without_scipy_and_optional_development_packages():
         [sys.executable, "-c", """
 import importlib.abc
 import sys
-import urllib.request
 
 class ExcludeOptional(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
@@ -1776,7 +1775,6 @@ import importlib.abc
 import logging
 import os
 import sys
-import urllib.request
 import tempfile
 
 

@@ -88,7 +88,8 @@ same candidate run as the approved Windows archive and checks them on Linux
    hosted job can run them. `release-hardware-qualify-linux.yml` qualifies the
    Linux tarball the same way on a self-hosted Ubuntu 24.04 runner labelled
    `[self-hosted, linux, x64, audioforge-hardware]`, in a logged-in PipeWire
-   session. Its `sleep_resume` case reads systemd-sleep's journal entries, so
+   session. Both hardware runners need Actions runner 2.336.0 or newer, which
+   the dispatch check's `$/` reference requires. Its `sleep_resume` case reads systemd-sleep's journal entries, so
    the runner's user must be able to read the system journal (on Ubuntu, the
    `systemd-journal` group). Pass the tarball's SHA-256 as
    `expected_archive_sha256`. A matrix covers one artifact, so assemble the

@@ -99,6 +99,16 @@ def test_download_stops_at_the_cap_and_leaves_nothing_behind(tmp_path, monkeypat
     assert not destination.exists()
 
 
+def test_an_exclusive_download_refuses_a_file_already_at_the_destination(tmp_path, monkeypatch):
+    _serve(monkeypatch, b"payload")
+    destination = tmp_path / "file.bin"
+    destination.write_bytes(b"planted")
+
+    with pytest.raises(FileExistsError):
+        _download(destination, exclusive=True)
+    assert _download(destination) == (7, hashlib.sha256(b"payload").hexdigest())
+
+
 def test_download_accepts_exactly_the_cap(tmp_path, monkeypatch):
     _serve(monkeypatch, b"x" * 100)
 

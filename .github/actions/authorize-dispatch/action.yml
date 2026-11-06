@@ -39,7 +39,8 @@ runs:
         fi
         [[ $DISPATCHER =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || { echo "Unexpected dispatcher name." >&2; exit 1; }
         permission="$RUNNER_TEMP/dispatcher-permission.json"
-        curl -fsSL -o "$permission" \
+        # -g: a [bot] suffix is part of the name, not a curl glob.
+        curl -fsSLg -o "$permission" \
           -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
           "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/collaborators/$DISPATCHER/permission"
         role=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1]))['role_name'])" "$permission")

@@ -413,6 +413,8 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                     "git ls-remote origin $tagRef $peeled",
                     "TAG_COMMIT: ${{ needs.verify-candidate.outputs.tag_commit }}",
                     "$currentCommit -ne $env:TAG_COMMIT",
+                    r"($_ -split '\s+')[1] -ceq $peeled",
+                    "$current.Count -ne 1",
                 ),
                 (
                     "Set-Content -LiteralPath $notesPath",
@@ -421,7 +423,7 @@ GATE_SEQUENCES: dict[str, tuple[str, dict[str, tuple[tuple[str, ...], ...]]]] = 
                     "Assert-AssetMatches $assetPath (Join-Path $verifyDir $assetName) $assetName",
                     "gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY "
                     '--title "AudioForge $version" --notes-file $notesPath',
-                    "Assert-ReleaseAssetNames $release $expectedAssetNames -AllowMissing",
+                    "Assert-ReleaseAssetNames $release $expectedAssetNames -AllowMissing:$mayLackAssets",
                     "Assert-ReleaseAssetNames $release $expectedAssetNames",
                     "Compare-Object -ReferenceObject $ExpectedNames -DifferenceObject $actualNames -CaseSensitive",
                 ),

@@ -237,6 +237,7 @@ def _download_pinned_archive(
             refusal=_PINNED_ARCHIVE_REFUSAL,
             too_large=f"Pinned archive exceeded its declared size of {expected_size} bytes",
             follow_redirects=True,
+            exclusive=True,
         )
         if byte_count != expected_size or actual_sha.lower() != expected_sha.lower():
             raise RuntimeError(

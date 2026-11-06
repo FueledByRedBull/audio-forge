@@ -3085,43 +3085,21 @@ impl PyAudioProcessor {
                 self.processor.input_fixed_buffer_frames(),
             )?;
             diagnostics.set_item("engine_latency_ms", self.processor.get_engine_latency_ms())?;
-            diagnostics.set_item("total_latency_ms", self.processor.get_latency_ms())?;
+            let device_buffer = self.processor.read_output_device_buffer();
+            diagnostics.set_item(
+                "total_latency_ms",
+                self.processor.latency_ms_with(&device_buffer),
+            )?;
             diagnostics.set_item(
                 "output_device_latency_ms",
-                self.processor.get_output_device_latency_ms(),
+                device_buffer.latency_us() as f32 / 1000.0,
             )?;
-            diagnostics.set_item(
-                "output_device_buffer_frames",
-                self.processor
-                    .shared
-                    .output
-                    .device_buffer_frames
-                    .load(Ordering::Relaxed),
-            )?;
-            diagnostics.set_item(
-                "output_device_period_frames",
-                self.processor
-                    .shared
-                    .output
-                    .device_period_frames
-                    .load(Ordering::Relaxed),
-            )?;
-            diagnostics.set_item(
-                "output_device_buffer_known",
-                self.processor
-                    .shared
-                    .output
-                    .device_buffer_frames
-                    .load(Ordering::Relaxed)
-                    != 0,
-            )?;
+            diagnostics.set_item("output_device_buffer_frames", device_buffer.frames)?;
+            diagnostics.set_item("output_device_period_frames", device_buffer.period_frames)?;
+            diagnostics.set_item("output_device_buffer_known", device_buffer.frames != 0)?;
             diagnostics.set_item(
                 "output_device_buffer_failure_code",
-                self.processor
-                    .shared
-                    .output
-                    .device_buffer_failure_code
-                    .load(Ordering::Relaxed),
+                device_buffer.failure_code,
             )?;
             diagnostics.set_item(
                 "latency_compensation_ms",

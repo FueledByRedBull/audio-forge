@@ -5,6 +5,7 @@
 use crate::dsp::util;
 
 const MAX_LIMITER_LOOKAHEAD_SAMPLES: usize = 1024;
+const DEFAULT_CEILING_DB: f64 = -0.5;
 
 struct FixedMonoQueue {
     data: [(u64, f64); MAX_LIMITER_LOOKAHEAD_SAMPLES],
@@ -113,6 +114,11 @@ impl Limiter {
         sample_rate: f64,
         lookahead_ms: f64,
     ) -> Self {
+        let ceiling_db = if ceiling_db.is_finite() {
+            ceiling_db
+        } else {
+            DEFAULT_CEILING_DB
+        };
         let release_coeff = util::time_constant_to_coeff(release_ms, sample_rate);
         let lookahead_samples = ((lookahead_ms.clamp(0.1, 10.0) / 1000.0 * sample_rate).round()
             as usize)
@@ -139,11 +145,14 @@ impl Limiter {
 
     /// Create with default parameters (-0.5 dB ceiling, 50ms release)
     pub fn default_settings(sample_rate: f64) -> Self {
-        Self::new(-0.5, 50.0, sample_rate)
+        Self::new(DEFAULT_CEILING_DB, 50.0, sample_rate)
     }
 
     /// Set ceiling in dB
     pub fn set_ceiling(&mut self, ceiling_db: f64) {
+        if !ceiling_db.is_finite() {
+            return;
+        }
         let previous_ceiling = self.ceiling_linear;
         self.ceiling_db = ceiling_db.min(0.0);
         self.ceiling_linear = util::db_to_linear(self.ceiling_db);
@@ -620,5 +629,30 @@ mod tests {
         }
 
         assert_eq!(lim.lookahead_peak_abs(), 0.0);
+    }
+
+    #[test]
+    fn test_non_finite_ceiling_is_ignored() {
+        let mut lim = Limiter::new(-6.0, 50.0, 48_000.0);
+        for ceiling in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            lim.set_ceiling(ceiling);
+            assert_eq!(lim.ceiling_db(), -6.0, "{ceiling}");
+        }
+    }
+
+    #[test]
+    fn test_constructors_sanitize_non_finite_ceiling() {
+        let default_linear = util::db_to_linear(-0.5);
+        for ceiling in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut lim = Limiter::new(ceiling, 50.0, 48_000.0);
+            assert_eq!(lim.ceiling_db(), -0.5, "{ceiling}");
+            let mut lookahead = Limiter::new_with_lookahead_ms(ceiling, 50.0, 48_000.0, 1.0);
+            assert_eq!(lookahead.ceiling_db(), -0.5, "{ceiling}");
+            for sample in [&mut lim, &mut lookahead] {
+                for _ in 0..2_000 {
+                    assert!(f64::from(sample.process_sample(1.5)).abs() <= default_linear);
+                }
+            }
+        }
     }
 }

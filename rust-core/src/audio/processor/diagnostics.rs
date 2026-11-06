@@ -1,3 +1,4 @@
+use crate::audio::rt::{store_suppressor_error, RtErrorCode};
 use crate::dsp::noise_suppressor::ControlledNoiseSuppressionEngine as NoiseSuppressionEngine;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
@@ -54,10 +55,7 @@ pub(super) fn update_backend_status_rt(
     available.store(suppressor.backend_available(), Ordering::Relaxed);
     failed.store(suppressor.backend_failed(), Ordering::Relaxed);
     if suppressor.backend_failed() || suppressor.backend_error().is_some() {
-        crate::audio::rt::store_rt_error(
-            rt_error_code,
-            crate::audio::rt::RtErrorCode::SuppressorBackendFailed,
-        );
+        store_suppressor_error(rt_error_code, RtErrorCode::SuppressorBackendFailed);
     }
 }
 

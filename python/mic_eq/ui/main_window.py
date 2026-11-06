@@ -2346,6 +2346,9 @@ class MainWindow(QMainWindow):
         except Exception:
             logger.exception("Failed to refresh engine latency profile")
             return False
+        if engine_latency_ms <= 0.0:
+            # Right after Start the loop has not published its latency yet.
+            return False
 
         route_latency_ms = max(
             0.0,

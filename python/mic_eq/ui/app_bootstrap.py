@@ -157,13 +157,20 @@ def _quit_on_termination_signal(app: QApplication) -> Iterator[None]:
         yield
         return
     read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)
     os.set_blocking(write_fd, False)
     notifier = QSocketNotifier(read_fd, QSocketNotifier.Type.Read)
 
     def end_session() -> None:
         from .main_window import SESSION_ENDING_PROPERTY
 
-        os.read(read_fd, 64)
+        try:
+            numbers = os.read(read_fd, 64)
+        except BlockingIOError:
+            return
+        # Python writes the number of every signal it handles here, Ctrl+C's SIGINT too.
+        if not any(number in (signal.SIGTERM, signal.SIGHUP) for number in numbers):
+            return
         app.setProperty(SESSION_ENDING_PROPERTY, True)
         app.quit()
 
@@ -176,7 +183,8 @@ def _quit_on_termination_signal(app: QApplication) -> Iterator[None]:
         yield
     finally:
         for number, handler in handlers.items():
-            signal.signal(number, handler)
+            # None: a handler installed outside Python, which cannot be put back.
+            signal.signal(number, signal.SIG_DFL if handler is None else handler)
         signal.set_wakeup_fd(previous_wakeup_fd)
         notifier.setEnabled(False)
         os.close(read_fd)

@@ -85,15 +85,25 @@ pub(crate) fn realtime_busy_limit() -> Duration {
 /// Ask RTKit, from a helper thread and for at most `timeout`, to make the
 /// calling thread realtime, after ignoring SIGXCPU. Ask for a second of budget
 /// at `sample_rate`, which RTKit caps at its maximum, as the DSP thread does.
+/// `answered` runs on the request thread with RTKit's verdict, so a grant that
+/// comes after the timeout is still seen; it never runs if the request could
+/// not be made.
 #[cfg(target_os = "linux")]
-pub(crate) fn promote_current_thread(sample_rate: u32, timeout: Duration) -> Result<(), String> {
+pub(crate) fn promote_current_thread(
+    sample_rate: u32,
+    timeout: Duration,
+    answered: impl FnOnce(bool) + Send + 'static,
+) -> Result<(), String> {
     ignore_sigxcpu().map_err(|error| format!("could not ignore SIGXCPU: {error}"))?;
     let thread =
         audio_thread_priority::get_current_thread_info().map_err(|error| error.to_string())?;
     run_bounded(timeout, move || {
-        audio_thread_priority::promote_thread_to_real_time(thread, sample_rate, sample_rate)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        let answer =
+            audio_thread_priority::promote_thread_to_real_time(thread, sample_rate, sample_rate)
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+        answered(answer.is_ok());
+        answer
     })
 }
 

@@ -2,7 +2,7 @@
 #![allow(clippy::useless_conversion)] // PyO3 proc-macro wrappers trigger false positives.
 
 #[cfg(target_os = "linux")]
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
@@ -245,8 +245,12 @@ fn pipewire_listing(
     }
 }
 
+/// How long a device listing waits for PipeWire to list its streams.
+#[cfg(target_os = "linux")]
+const STREAM_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The node names of apps' PipeWire streams, which cpal lists among the devices
-/// without saying which they are. Empty if PipeWire cannot answer.
+/// without saying which they are. Empty if PipeWire cannot answer in time.
 #[cfg(target_os = "linux")]
 fn pipewire_stream_nodes() -> HashSet<String> {
     use pipewire as pw;
@@ -297,7 +301,23 @@ fn pipewire_stream_nodes() -> HashSet<String> {
                 move |_id, _seq, _res, _message| mainloop.quit()
             })
             .register();
+        // A daemon that accepts the connection but never answers must not hang the listing.
+        let answered = Rc::new(Cell::new(true));
+        let deadline = mainloop.loop_().add_timer({
+            let mainloop = mainloop.clone();
+            let answered = Rc::clone(&answered);
+            move |_| {
+                answered.set(false);
+                mainloop.quit();
+            }
+        });
+        deadline
+            .update_timer(Some(STREAM_QUERY_TIMEOUT), None)
+            .into_result()?;
         mainloop.run();
+        if !answered.get() {
+            return Ok(HashSet::new());
+        }
         Ok(streams.take())
     }
 

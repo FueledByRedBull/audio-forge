@@ -456,6 +456,10 @@ fn dsp_block_sources_hold_no_blocking_or_allocating_apis() {
             include_str!("dsp/deepfilter_ffi/worker.rs"),
             &[
                 ("InferenceWorker::spawn", SETUP),
+                (
+                    "WorkerScheduling::pending",
+                    "runs once as the worker thread starts, before it takes a frame",
+                ),
             ][..],
         ),
         (

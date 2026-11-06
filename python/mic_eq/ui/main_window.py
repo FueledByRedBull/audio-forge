@@ -3670,10 +3670,13 @@ class MainWindow(QMainWindow):
         running = self.processor.is_running()
         # What the stopped-state work below reads besides the engine; while it is
         # unchanged, a stopped tick redoes only the recovery service and the summary.
+        start_action = self.__dict__.get("start_btn_action")
         stopped_state = None if running else (
             self._restart_pending(),
             self.__dict__.get("_login_startup_deadline") is not None,
             self.__dict__.get("_login_startup_message", ""),
+            # Controls left showing a start the engine never reached get resynced.
+            start_action is not None and start_action.isEnabled(),
         )
         stopped_changed = stopped_state is None or stopped_state != self.__dict__.get("_stopped_tick_state")
         self._stopped_tick_state = stopped_state

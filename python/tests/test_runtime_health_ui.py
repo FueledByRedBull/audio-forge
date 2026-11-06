@@ -570,9 +570,10 @@ def test_failed_diagnostics_still_service_recovery_when_presentation_is_hidden(q
 
 
 def test_a_stopped_tick_redoes_the_stopped_work_only_when_the_stopped_state_changes(qapp):
-    state: dict[str, Any] = {"running": False, "restart_pending": False}
+    state: dict[str, Any] = {"running": False, "restart_pending": False, "start_enabled": True}
     window: Any = SimpleNamespace(
         processor=SimpleNamespace(is_running=lambda: state["running"]),
+        start_btn_action=SimpleNamespace(isEnabled=lambda: state["start_enabled"]),
         _restart_pending=lambda: state["restart_pending"],
         _stop_for_own_microphone=Mock(return_value=False),
         _sync_meter_timer=Mock(),
@@ -604,13 +605,19 @@ def test_a_stopped_tick_redoes_the_stopped_work_only_when_the_stopped_state_chan
     assert ticks(2) == [2, 2, 2]
     window._login_startup_message = "Login waiting for a microphone"  # the summary shows it
     assert ticks(2) == [3, 3, 3]
+    # A start whose engine stopped again before any running tick leaves Start
+    # disabled; the next stopped tick resyncs the controls.
+    state["start_enabled"] = False
+    assert ticks() == [4, 4, 4]
+    state["start_enabled"] = True
+    assert ticks(2) == [5, 5, 5]
 
     # A running tick (here one whose readings fail) ends the stopped state; the next stop redoes the work.
     state["running"] = True
-    assert ticks() == [4, 4, 3]
+    assert ticks() == [6, 6, 5]
     state["running"] = False
-    assert ticks(2) == [5, 5, 4]
-    assert window.engine_session.tick.call_count == 11
+    assert ticks(2) == [7, 7, 6]
+    assert window.engine_session.tick.call_count == 14  # every tick, the running one included
 
 
 def test_measurements_begin_unavailable_and_failed_noise_floor_does_not_invent_default(

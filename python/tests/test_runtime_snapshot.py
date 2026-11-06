@@ -86,3 +86,12 @@ def test_a_bool_field_that_may_be_missing_still_takes_bools():
     assert runtime_snapshot._kind(bool | None) == "bool"
     assert runtime_snapshot._kind(str | None) == "text"
     assert runtime_snapshot._kind(float | None) == "number"
+
+
+def test_error_texts_default_to_no_error():
+    snapshot = RuntimeSnapshot.parse({})
+    for name in (
+        "noise_backend_error", "rt_error_name", "last_restart_reason",
+        "last_stream_error", "auto_makeup_error", "vad_worker_error",
+    ):
+        assert getattr(snapshot, name) is None, name

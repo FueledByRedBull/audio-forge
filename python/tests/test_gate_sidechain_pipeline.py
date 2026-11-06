@@ -12,7 +12,7 @@ from mic_eq.mic_eq_core import simulate_gate_suppressor_order
 MODELS = [
     "rnnoise",
     *[pytest.param(model, marks=pytest.mark.skipif(
-        os.environ.get("AUDIOFORGE_ENABLE_DEEPFILTER", "").lower() not in {"1", "true", "yes"},
+        os.environ.get("AUDIOFORGE_ENABLE_DEEPFILTER", "").strip().lower() not in {"1", "true", "yes", "on"},
         reason="DeepFilter runtime must be explicitly enabled",
     )) for model in ("deepfilter-ll", "deepfilter")],
 ]

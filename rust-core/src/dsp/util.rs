@@ -29,6 +29,28 @@ pub(crate) fn unit_or(value: f32, fallback: f32) -> f32 {
     }
 }
 
+/// Whether an environment switch's value turns it on: `1`, `true`, `yes` or
+/// `on`, in any case, with surrounding whitespace ignored.
+#[cfg(feature = "deepfilter")]
+pub(crate) fn parse_env_flag(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// Whether the environment variable `name` is set to an on value.
+#[cfg(feature = "deepfilter")]
+pub(crate) fn env_flag(name: &str) -> bool {
+    env_flag_from(name, |name| std::env::var(name).ok())
+}
+
+/// [`env_flag`] over any variable lookup.
+#[cfg(feature = "deepfilter")]
+pub(crate) fn env_flag_from(name: &str, lookup: impl Fn(&str) -> Option<String>) -> bool {
+    lookup(name).is_some_and(|value| parse_env_flag(&value))
+}
+
 /// Length of the dry/processed ramp a stage runs when it is toggled.
 const ENABLE_RAMP_MS: f64 = 10.0;
 

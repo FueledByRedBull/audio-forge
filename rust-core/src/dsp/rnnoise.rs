@@ -147,10 +147,11 @@ impl RNNoiseProcessor {
         samples: &[f32],
         controls: Option<&[GateControl]>,
     ) -> usize {
-        if let Some(controls) = controls {
-            assert_eq!(samples.len(), controls.len());
-        }
-        let accepted = samples.len().min(self.input_buffer.remaining());
+        // Callers pass one control per sample. A shorter `controls` limits what
+        // is taken, as a full queue does, and the caller sees the shortfall.
+        let available =
+            controls.map_or(samples.len(), |controls| samples.len().min(controls.len()));
+        let accepted = available.min(self.input_buffer.remaining());
         for (index, &sample) in samples[..accepted].iter().enumerate() {
             let gate = controls.map_or(GateControl::BYPASS, |controls| controls[index]);
             self.input_buffer.push(ControlledSample { sample, gate });
@@ -291,21 +292,6 @@ impl RNNoiseProcessor {
         self.enabled
     }
 
-    /// Reset the processor state
-    ///
-    /// Warning: This causes ~200ms of convergence time when
-    /// processing resumes. Prefer using set_enabled(false) for
-    /// temporary bypass.
-    pub fn reset(&mut self) {
-        self.denoiser = DenoiseState::new();
-        self.input_buffer.clear();
-        self.output_buffer.clear();
-        self.dry_delay_frame.fill(0.0);
-        self.invalid_wet_samples = 0;
-        self.reenable = Reenable::Settled;
-        self.gate_compensation.reset();
-    }
-
     /// Flush internal buffers without resetting DenoiseState
     ///
     /// This clears input and output buffers to prevent stale audio data
@@ -322,9 +308,9 @@ impl RNNoiseProcessor {
 
     /// Soft reset: clear buffers without resetting model state
     ///
-    /// This is the same as flush_buffers() and is preferred over reset()
-    /// when stopping/restarting processing, as it preserves the RNNoise
-    /// model's learned background noise profile (avoids 200ms convergence).
+    /// This is the same as flush_buffers(). It preserves the RNNoise model's
+    /// learned background noise profile (avoids 200ms convergence) when
+    /// stopping/restarting processing.
     pub fn soft_reset(&mut self) {
         self.flush_buffers();
     }
@@ -413,6 +399,21 @@ impl super::noise_suppressor::NoiseSuppressor for RNNoiseProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_controls_slice_of_another_length_limits_what_is_taken() {
+        use super::super::noise_suppressor::ControlledNoiseSuppressor;
+        let samples = [0.1_f32; 400];
+        for (controls_len, taken) in [(100, 100), (400, 400), (700, 400)] {
+            let mut processor = RNNoiseProcessor::default();
+            let controls = vec![GateControl::BYPASS; controls_len];
+            assert_eq!(
+                processor.push_controlled_samples(&samples, &controls),
+                taken
+            );
+            assert_eq!(processor.pending_input(), taken);
+        }
+    }
 
     #[test]
     fn controlled_short_writes_keep_audio_and_gate_records_together() {

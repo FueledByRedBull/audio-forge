@@ -194,7 +194,11 @@ def check_source_packaging() -> list[str]:
         ),
         (
             "rust-core/src/dsp/deepfilter_ffi.rs",
-            'env::var("AUDIOFORGE_ALLOW_EXTERNAL_DF")',
+            'const ALLOW_EXTERNAL_DF_ENV: &str = "AUDIOFORGE_ALLOW_EXTERNAL_DF";',
+        ),
+        (
+            "rust-core/src/dsp/deepfilter_ffi.rs",
+            "crate::dsp::util::env_flag(ALLOW_EXTERNAL_DF_ENV)",
         ),
         ("launcher.py", "os.add_dll_directory(str(dll_dir))"),
     ]

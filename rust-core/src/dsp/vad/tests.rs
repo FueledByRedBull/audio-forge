@@ -330,46 +330,79 @@ mod tests {
         }
     }
 
-    /// FNV-1a over the bit patterns of both resampler paths' output for a fixed
-    /// input, so the window-edge behaviour and every weight stay as recorded.
-    fn resampler_output_hash(sample_rate: u32) -> (u64, u64) {
-        fn fnv(samples: &[f32]) -> u64 {
-            samples.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, sample| {
-                (hash ^ u64::from(sample.to_bits())).wrapping_mul(0x0100_0000_01b3)
-            })
+    /// The resampler as it was before its weight math was shared with
+    /// `ResampleKernel`, kept here as the reference both paths must match bit
+    /// for bit. Comparing on the running platform (not against recorded
+    /// hashes) keeps the test independent of the platform's `sin`/`cos`.
+    fn reference_resample(input: &[f32], ratio: f32) -> Vec<f32> {
+        let output_len = (input.len() as f32 * ratio).ceil() as usize;
+        let mut output = vec![0.0; output_len];
+        let cutoff = (0.5 * ratio.min(1.0)).clamp(0.01, 0.49);
+        let half_taps = VAD_RESAMPLER_TAPS / 2;
+        for (out_idx, sample) in output.iter_mut().enumerate() {
+            let center = out_idx as f32 / ratio;
+            let center_idx = center.floor() as i32;
+            let mut acc = 0.0_f32;
+            let mut weight_sum = 0.0_f32;
+            for tap in -half_taps..=half_taps {
+                let input_idx = center_idx + tap;
+                if !(0..input.len() as i32).contains(&input_idx) {
+                    continue;
+                }
+                let distance = center - input_idx as f32;
+                let sinc_arg = 2.0 * cutoff * distance;
+                let sinc = if sinc_arg.abs() < 1e-6 {
+                    1.0
+                } else {
+                    let x = std::f32::consts::PI * sinc_arg;
+                    x.sin() / x
+                };
+                let window_pos = (tap + half_taps) as f32 / (VAD_RESAMPLER_TAPS - 1) as f32;
+                let window = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * window_pos).cos();
+                let weight = 2.0 * cutoff * sinc * window;
+                acc += input[input_idx as usize] * weight;
+                weight_sum += weight;
+            }
+            *sample = if weight_sum.abs() > 1e-6 {
+                acc / weight_sum
+            } else {
+                0.0
+            };
         }
-        let input_len = ((SILERO_WINDOW_SIZE as f32 * sample_rate as f32)
-            / SILERO_SAMPLE_RATE as f32)
-            .ceil() as usize;
-        let mut seed = 0x2545_f491_u32;
-        let input: Vec<f32> = (0..input_len)
-            .map(|index| {
-                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                let noise = (seed >> 8) as f32 / (1 << 24) as f32 - 0.5;
-                let time = index as f32 / sample_rate as f32;
-                0.3 * (2.0 * std::f32::consts::PI * 233.0 * time).sin() + 0.2 * noise
-            })
-            .collect();
-        let ratio = SILERO_SAMPLE_RATE as f32 / sample_rate as f32;
-        let kernel = ResampleKernel::new(input.len(), ratio);
-        let mut reference = Vec::new();
-        let mut with_kernel = Vec::new();
-        anti_aliased_resample_into(&input, ratio, &mut reference);
-        anti_aliased_resample_into_with_kernel(&input, ratio, Some(&kernel), &mut with_kernel);
-        (fnv(&reference), fnv(&with_kernel))
+        output
     }
 
     #[test]
-    fn resampler_output_matches_the_recorded_hashes() {
-        for (sample_rate, hash) in [
-            (48_000_u32, 17_120_871_818_718_863_542_u64),
-            (96_000, 14_130_780_465_039_689_214),
-            (192_000, 18_218_384_782_846_086_445),
-        ] {
+    fn both_resampler_paths_match_the_reference_bit_for_bit() {
+        for sample_rate in [48_000_u32, 96_000, 192_000] {
+            let input_len = ((SILERO_WINDOW_SIZE as f32 * sample_rate as f32)
+                / SILERO_SAMPLE_RATE as f32)
+                .ceil() as usize;
+            let mut seed = 0x2545_f491_u32;
+            let input: Vec<f32> = (0..input_len)
+                .map(|index| {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    let noise = (seed >> 8) as f32 / (1 << 24) as f32 - 0.5;
+                    let time = index as f32 / sample_rate as f32;
+                    0.3 * (2.0 * std::f32::consts::PI * 233.0 * time).sin() + 0.2 * noise
+                })
+                .collect();
+            let ratio = SILERO_SAMPLE_RATE as f32 / sample_rate as f32;
+            let expected: Vec<u32> = reference_resample(&input, ratio)
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect();
+            let kernel = ResampleKernel::new(input.len(), ratio);
+            let mut plain = Vec::new();
+            let mut with_kernel = Vec::new();
+            anti_aliased_resample_into(&input, ratio, &mut plain);
+            anti_aliased_resample_into_with_kernel(&input, ratio, Some(&kernel), &mut with_kernel);
+            let bits = |samples: &[f32]| samples.iter().map(|s| s.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&plain), expected, "plain path at {sample_rate} Hz");
             assert_eq!(
-                resampler_output_hash(sample_rate),
-                (hash, hash),
-                "sample_rate={sample_rate}"
+                bits(&with_kernel),
+                expected,
+                "kernel path at {sample_rate} Hz"
             );
         }
     }

@@ -480,7 +480,10 @@ mod tests {
         for (controls_len, taken) in [(100, 100), (400, 400), (700, 400)] {
             let mut processor = DeepFilterProcessor::default();
             let controls = vec![GateControl::BYPASS; controls_len];
-            assert_eq!(processor.push_controlled_samples(&samples, &controls), taken);
+            assert_eq!(
+                processor.push_controlled_samples(&samples, &controls),
+                taken
+            );
             assert_eq!(processor.pending_input(), taken);
         }
     }

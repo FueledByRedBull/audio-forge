@@ -4,10 +4,12 @@ import importlib.util
 import sys
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
-from scipy.signal import correlate
+
+import latency_calibration_reference as reference
 
 
 LATENCY_PATH = (
@@ -20,63 +22,6 @@ assert spec is not None and spec.loader is not None
 lat = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = lat
 spec.loader.exec_module(lat)
-
-
-@pytest.mark.parametrize("sizes", [(1, 1), (7, 4), (13, 16), (4097, 312)])
-def test_real_correlation_matches_independent_reference(sizes):
-    rng = np.random.default_rng(810)
-    recording, reference = (rng.standard_normal(size) for size in sizes)
-    expected = correlate(recording, reference, mode="full", method="direct")
-    actual = lat._full_correlation(recording, reference)
-    tolerance = 1e-11 * np.linalg.norm(recording) * np.linalg.norm(reference)
-    np.testing.assert_allclose(actual, expected, rtol=0, atol=tolerance)
-
-
-@pytest.mark.parametrize("lag_limits", [(-20, 50), (3, 9), (60, 70), (7, 2)])
-def test_normalized_correlation_lags_and_scores_match_direct_windows(lag_limits):
-    rng = np.random.default_rng(811)
-    recording = rng.standard_normal(49)
-    reference = rng.standard_normal(12)
-    low, high = lag_limits
-    expected_lags = np.arange(max(0, low), min(49 - 12, high) + 1, dtype=np.int64)
-    expected_scores = [
-        abs(np.dot(recording[lag : lag + 12], reference))
-        / np.sqrt(
-            max(np.dot(recording[lag : lag + 12], recording[lag : lag + 12]), 1e-12)
-            * (np.dot(reference, reference) + 1e-12)
-        )
-        for lag in expected_lags
-    ]
-    lags, scores = lat._normalized_correlation_scores(
-        recording, reference, min_lag=low, max_lag=high
-    )
-    np.testing.assert_array_equal(lags, expected_lags)
-    np.testing.assert_allclose(scores, expected_scores, rtol=0, atol=1e-10)
-
-
-@pytest.mark.parametrize("case", ["direct", "echo", "noise", "wrong-window"])
-def test_latency_result_matches_scipy_reference(monkeypatch, case):
-    sample_rate = 48_000
-    probe = lat.generate_probe_signal(sample_rate=sample_rate)
-    rng = np.random.default_rng(812)
-    recording = rng.normal(0, 0.002, 36_000)
-    if case != "noise":
-        recording[5904 : 5904 + probe.size] += probe * 0.4
-    if case == "echo":
-        recording[7920 : 7920 + probe.size] += probe * 0.7
-    kwargs = {"min_search_ms": 200 if case == "wrong-window" else 5}
-    actual = asdict(lat.analyze_latency(probe, recording, sample_rate, **kwargs))
-    monkeypatch.setattr(
-        lat, "_full_correlation",
-        lambda left, right: correlate(left, right, mode="full", method="fft"),
-    )
-    expected = asdict(lat.analyze_latency(probe, recording, sample_rate, **kwargs))
-    assert actual.keys() == expected.keys()
-    for name, value in expected.items():
-        if isinstance(value, float):
-            assert actual[name] == pytest.approx(value, abs=1e-8, rel=0), name
-        else:
-            assert actual[name] == value, name
 
 
 def test_generate_probe_signal_shape_and_peak():
@@ -447,3 +392,168 @@ def test_latency_calibration_applies_measured_route_without_halving():
     assert abs(profile["route_latency_ms"] - expected_ms) < 2.0
     assert profile["compensation_basis"] == "measured_output_to_input_route"
     assert profile["directional_latency_ms"] is None
+
+
+# Parity with the NumPy analysis the native core replaced (latency_calibration_reference).
+# Correlations go through realfft natively and pocketfft in NumPy, so floats
+# derived from them agree to rounding only (at most 2.3e-15 on these cases on
+# Windows/AVX2; 1e-12 leaves room for other CPUs' FFT kernels). The measured
+# lag, the decision, the message and the counts must match exactly.
+_FLOAT_TOLERANCE = 1e-12
+
+
+def _probe_cases() -> list[tuple[int, float, float]]:
+    return [
+        (48_000, 80.0, 0.8), (44_100, 80.0, 0.8), (16_000, 80.0, 0.8), (96_000, 80.0, 0.8),
+        (48_000, 5.0, 0.8), (48_000, 0.01, 0.8), (48_000, -10.0, 0.8), (48_000, 80.0, 0.0),
+        (48_000, 80.0, -1.0), (48_000, 250.0, 1.0), (8_000, 30.0, 0.5),
+    ]
+
+
+@pytest.mark.parametrize("case", _probe_cases(), ids=lambda case: "-".join(map(str, case)))
+def test_native_probe_matches_the_numpy_implementation(case):
+    expected = reference.generate_probe_signal(*case)
+    actual = lat.generate_probe_signal(*case)
+
+    assert actual.dtype == expected.dtype and actual.shape == expected.shape
+    assert actual.tobytes() == expected.tobytes()
+
+
+def _place(recording: np.ndarray, probe: np.ndarray, start: int, gain: float) -> None:
+    recording[start : start + probe.size] += probe * gain
+
+
+def _noisy(seed: int, sigma: float, length: int) -> np.ndarray:
+    return np.random.default_rng(seed).normal(0.0, sigma, length).astype(np.float32)
+
+
+def _latency_cases() -> dict[str, tuple[Any, Any, int, dict[str, Any]]]:
+    rate = 48_000
+    probe = reference.generate_probe_signal(rate)
+    cases: dict[str, tuple[Any, Any, int, dict[str, Any]]] = {}
+
+    offset = int(0.123 * rate)
+    recording = _noisy(1337, 0.01, offset + probe.size + 2048)
+    _place(recording, probe, offset, 1.0)
+    cases["known-offset"] = (probe, recording, rate, {})
+    cases["noise-only"] = (probe, _noisy(2026, 0.01, rate), rate, {})
+
+    offset = int(0.55 * rate) + int(0.18 * rate)
+    recording = _noisy(7331, 0.02, offset + probe.size + 4096)
+    _place(recording, probe, offset, 0.5)
+    cases["wrong-window"] = (probe, recording, rate, {
+        "expected_playback_start_ms": 100.0, "expected_playback_jitter_ms": 25.0,
+        "expected_latency_min_ms": 20.0, "expected_latency_max_ms": 150.0,
+    })
+    for name, noise, gain, route_ms, max_ms, latency_max in (
+        ("noisy-probe", 0.025, 0.35, 190.0, 500.0, 450.0),
+        ("quiet-probe", 0.02, 0.18, 140.0, 1000.0, 250.0),
+    ):
+        offset = int(((550.0 + route_ms) / 1000.0) * rate)
+        recording = _noisy(4242, noise, offset + probe.size + 4096)
+        _place(recording, probe, offset, gain)
+        cases[name] = (probe, recording, rate, {
+            "max_search_ms": max_ms, "expected_playback_start_ms": 550.0,
+            "expected_playback_jitter_ms": 120.0, "expected_latency_min_ms": 20.0,
+            "expected_latency_max_ms": latency_max,
+        })
+    for name, seed, echo_gain in (("echo-and-noise", 9090, 0.18), ("strong-echo", 9091, 0.27)):
+        direct = int(0.145 * rate)
+        echo = direct + int(0.055 * rate)
+        recording = _noisy(seed, 0.012, echo + probe.size + 4096)
+        _place(recording, probe, direct, 0.35)
+        _place(recording, probe, echo, echo_gain)
+        cases[name] = (probe, recording, rate, {})
+
+    window = {"expected_playback_start_ms": 550.0, "expected_playback_jitter_ms": 50.0}
+    direct = int(0.550 * rate) + int(0.145 * rate)
+    echo = direct + int(0.055 * rate)
+    recording = _noisy(12012, 0.005, echo + probe.size + 4096)
+    _place(recording, probe, direct, 1.0)
+    _place(recording, probe, echo, 2.0)
+    cases["louder-echo"] = (probe, recording, rate, window)
+    for seed in range(12):
+        recording = _noisy(seed, 0.01, echo + probe.size + 4096)
+        _place(recording, probe, direct, 0.005)
+        _place(recording, probe, echo, 2.0)
+        cases[f"weak-direct-{seed}"] = (probe, recording, rate, window)
+    later = echo + int(0.055 * rate)
+    recording = _noisy(0, 0.01, later + probe.size + 4096)
+    _place(recording, probe, direct, 0.005)
+    _place(recording, probe, echo, 2.0)
+    _place(recording, probe, later, 0.05)
+    cases["earlier-and-later-echo"] = (probe, recording, rate, window)
+
+    fir_probe = np.convolve(probe, [0.65, 0.35], mode="full")[:-1].astype(np.float32)
+    recording = np.zeros(direct + fir_probe.size + 1024, dtype=np.float32)
+    recording[direct : direct + fir_probe.size] = fir_probe
+    cases["custom-fir-probe"] = (fir_probe, recording, rate, window)
+
+    fractional = 0.1234 * rate
+    base = int(np.floor(fractional))
+    fraction = fractional - base
+    recording = _noisy(5150, 0.004, base + probe.size + 4096)
+    _place(recording, probe, base, 1.0 - fraction)
+    _place(recording, probe, base + 1, fraction)
+    cases["sub-sample"] = (probe, recording, rate, {})
+
+    route = int(0.143 * rate)
+    clean = np.zeros(route + probe.size + 2048, dtype=np.float32)
+    clean[route : route + probe.size] = probe
+    cases["clean-route"] = (probe, clean, rate, {})
+    cases["clean-route-float64"] = (probe.astype(np.float64), clean.astype(np.float64), rate, {})
+    cases["full-scale-clipped"] = (probe, np.clip(clean * 4.0, -1.0, 1.0), rate, {})
+    cases["silence"] = (probe, np.zeros(rate, dtype=np.float32), rate, {})
+    with_nan = clean.copy()
+    with_nan[100] = np.nan
+    cases["nan"] = (probe, with_nan, rate, {})
+    with_inf = clean.copy()
+    with_inf[100] = np.inf
+    cases["inf"] = (probe, with_inf, rate, {})
+
+    rate_441 = 44_100
+    probe_441 = reference.generate_probe_signal(rate_441)
+    route = int(0.087 * rate_441)
+    recording = _noisy(441, 0.004, route + probe_441.size + 3000)
+    _place(recording, probe_441, route, 0.6)
+    cases["44k1"] = (probe_441, recording, rate_441, {})
+    cases["44k1-window"] = (probe_441, recording, rate_441, {
+        "expected_playback_start_ms": 20.0, "expected_playback_jitter_ms": 15.0,
+    })
+    cases["negative-min-search"] = (probe, clean, rate, {"min_search_ms": -400.0})
+    cases["window-outside-range"] = (
+        probe, clean, rate, {"min_search_ms": 300.0, "max_search_ms": 300.0}
+    )
+    cases["window-past-recording"] = (
+        probe, clean, rate, {"min_search_ms": 2000.0, "max_search_ms": 3000.0}
+    )
+    cases["short-recording"] = (probe, clean[: probe.size - 1], rate, {})
+    cases["short-probe"] = (probe[:15], clean, rate, {})
+    cases["missing-probe"] = (None, clean, rate, {})
+    cases["missing-recording"] = (probe, None, rate, {})
+    cases["zero-rate"] = (probe, clean, 0, {})
+    cases["unsupported-route"] = (probe, clean, rate, {"route_kind": "input_to_output"})
+    cases["route-spelling"] = (probe, clean, rate, {"route_kind": "  Output_To_Input "})
+    cases["empty-route"] = (probe, clean, rate, {"route_kind": ""})
+    return cases
+
+
+_LATENCY_CASES = _latency_cases()
+
+
+@pytest.mark.parametrize("name", list(_LATENCY_CASES))
+def test_native_latency_matches_the_numpy_implementation(name):
+    probe, recording, sample_rate, kwargs = _LATENCY_CASES[name]
+
+    with np.errstate(invalid="ignore", over="ignore"):
+        expected = asdict(reference.analyze_latency(probe, recording, sample_rate, **kwargs))
+    actual = asdict(lat.analyze_latency(probe, recording, sample_rate, **kwargs))
+
+    assert actual.keys() == expected.keys()
+    for field, value in expected.items():
+        if isinstance(value, float):
+            assert actual[field] == pytest.approx(
+                value, rel=_FLOAT_TOLERANCE, abs=_FLOAT_TOLERANCE, nan_ok=True
+            ), field
+        else:
+            assert actual[field] == value, field

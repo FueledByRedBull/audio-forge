@@ -307,6 +307,25 @@ def resample_poly(samples: npt.ArrayLike, up: int, down: int) -> npt.NDArray[Any
     float32 input stays float32; any other real dtype returns float64.
     """
     ...
+def generate_probe_signal(
+    sample_rate: int = 48_000, duration_ms: float = 80.0, amplitude: float = 0.8
+) -> npt.NDArray[np.float32]:
+    """A deterministic repeated Barker-coded probe, peak-normalized to amplitude."""
+    ...
+def analyze_latency(
+    reference_probe: npt.ArrayLike | None,
+    recorded_signal: npt.ArrayLike | None,
+    sample_rate: int = 48_000,
+    min_search_ms: float = 5.0,
+    max_search_ms: float = 500.0,
+    expected_playback_start_ms: float | None = None,
+    expected_playback_jitter_ms: float | None = None,
+    expected_latency_min_ms: float | None = None,
+    expected_latency_max_ms: float | None = None,
+    route_kind: str | None = None,
+) -> dict[str, Any]:
+    """The fields of analysis.latency_calibration.LatencyCalibrationResult."""
+    ...
 def find_peaks_distance_prominence(
     samples: npt.ArrayLike, *, distance: int, prominence: float
 ) -> npt.NDArray[np.intp]:

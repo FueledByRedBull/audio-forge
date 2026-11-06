@@ -482,6 +482,11 @@ fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(analysis::python_api::band_mean, m)?)?;
     m.add_function(wrap_pyfunction!(analysis::python_api::resample_poly, m)?)?;
     m.add_function(wrap_pyfunction!(
+        analysis::python_api::generate_probe_signal,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(analysis::python_api::analyze_latency, m)?)?;
+    m.add_function(wrap_pyfunction!(
         analysis::python_api::find_peaks_distance_prominence,
         m
     )?)?;

@@ -677,8 +677,9 @@ class ProcessingConfiguration:
         origin = PresetOrigin(path=path)
         try:
             preset = self._library.read(path)
-        except (OSError, ValueError, PresetValidationError) as error:
+        except Exception as error:
             # load_preset wraps OS errors in PresetValidationError; such a file may read next time.
+            # Anything else a malformed file raises makes it invalid, never a failed startup.
             unreadable = isinstance(error, OSError) or isinstance(error.__cause__, OSError)
             status = LoadStatus.NOT_APPLIED if unreadable else LoadStatus.INVALID
             return LoadOutcome(status, origin, error=error, read_failed=True)

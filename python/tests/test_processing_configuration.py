@@ -472,8 +472,9 @@ def test_load_id_resolves_only_unambiguous_identities(harness, custom, preset_id
         (ValueError("bad json"), LoadStatus.INVALID),
         (OSError("locked"), LoadStatus.NOT_APPLIED),
         (PresetValidationError("cannot read"), LoadStatus.NOT_APPLIED),
+        (KeyError("bands"), LoadStatus.INVALID),
     ],
-    ids=["invalid", "malformed", "unreadable", "unreadable-wrapped"],
+    ids=["invalid", "malformed", "unreadable", "unreadable-wrapped", "unexpected"],
 )
 def test_a_file_that_cannot_be_read_is_invalid_or_not_applied_now(harness, error, status) -> None:
     if str(error) == "cannot read":

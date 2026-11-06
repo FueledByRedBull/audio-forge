@@ -13,12 +13,14 @@ import json
 import stat
 import subprocess
 import sys
+import urllib.request
 import zipfile
 from pathlib import Path
 
 import pytest
 
 
+import bounded_download
 import prune_bundle
 import package_smoke
 import verify_release_assets
@@ -788,11 +790,11 @@ def test_release_shell_text_is_not_a_gate():
         ),
         (
             lambda jobs: _set_checkout_ref(jobs["static"], "${{ github.ref }}"),
-            "static must check out ref ${{ inputs.release_tag || github.sha }}",
+            f"static must check out ref {check_workflows.RELEASE_SOURCE_REF}",
         ),
         (
             lambda jobs: _set_checkout_ref(jobs["package-windows"], "${{ github.ref }}"),
-            "package-windows must check out ref ${{ inputs.release_tag || github.sha }}",
+            f"package-windows must check out ref {check_workflows.RELEASE_SOURCE_REF}",
         ),
         (
             lambda jobs: _drop_steps(jobs["rust-tests"], _uses("actions/download-artifact@")),
@@ -1123,6 +1125,41 @@ def test_cargo_commands_must_pass_locked(command):
 def test_promotion_requires_dispatch_candidate_and_annotated_tag(needle):
     path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
     source = path.read_text(encoding="utf-8")
+    assert needle in source
+    errors: list[str] = []
+
+    check_workflows._check_required_gates(path.name, source.replace(needle, "true"), errors)
+
+    assert any(needle in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "job_name",
+    [
+        "Static checks and audits",
+        "Build Windows release package",
+        "Rust tests and lint",
+        "Rust contention stress (release mode)",
+        "Validate the exact archived candidate",
+        "pytest ($_)",
+        '$job.conclusion -ne "success"',
+    ],
+)
+def test_promotion_requires_the_windows_jobs_of_the_candidate_run_by_name(job_name):
+    path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
+    source = path.read_text(encoding="utf-8")
+    assert job_name in source
+    errors: list[str] = []
+
+    check_workflows._check_required_gates(path.name, source.replace(job_name, "true"), errors)
+
+    assert any(job_name in error for error in errors)
+
+
+def test_promotion_rechecks_the_release_tag_before_publishing():
+    path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
+    source = path.read_text(encoding="utf-8")
+    needle = "$currentCommit -ne $env:TAG_COMMIT"
     assert needle in source
     errors: list[str] = []
 
@@ -1974,6 +2011,78 @@ def test_prune_bundle_removes_unused_qt_ffmpeg_payload_and_keeps_windows_backend
     assert windows_backend.is_file()
 
 
+def test_prune_bundle_matches_the_ffmpeg_payload_whatever_its_soname_version(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    relative_paths = (
+        "_internal/PySide6/avcodec-62.dll",
+        "_internal/PySide6/avformat-62.dll",
+        "_internal/PySide6/avutil-60.dll",
+        "_internal/PySide6/swresample-6.dll",
+        "_internal/PySide6/swscale-9.dll",
+    )
+    for relative_path in relative_paths:
+        _write_bundle_file(bundle, relative_path)
+
+    removed = prune_bundle.prune_bundle(bundle)
+
+    _assert_pruned(bundle, removed, relative_paths)
+    assert not prune_bundle.is_unused_ffmpeg_payload(Path("avcodec.dll.bak"))
+
+
+def _prunable_bundle(bundle: Path) -> None:
+    _write_bundle_file(bundle, "AudioForge.exe")
+    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
+    _write_bundle_file(bundle, "_internal/PySide6/avcodec-61.dll")
+
+
+def test_prune_bundle_cli_accepts_a_bundle_with_every_expected_payload(
+    tmp_path, monkeypatch
+):
+    bundle = tmp_path / "AudioForge"
+    _prunable_bundle(bundle)
+    monkeypatch.setattr(sys, "argv", ["prune_bundle.py", str(bundle)])
+
+    assert prune_bundle.main() == 0
+    assert not (bundle / "_internal/PySide6/avcodec-61.dll").exists()
+
+
+@pytest.mark.parametrize(
+    ("missing", "message"),
+    [
+        ("_internal/PySide6/avcodec-61.dll", "FFmpeg"),
+        (f"_internal/mic_eq/{_native_extension_name()}", "mic_eq_core"),
+    ],
+)
+def test_prune_bundle_cli_fails_when_an_expected_payload_is_absent(
+    tmp_path, monkeypatch, capsys, missing, message
+):
+    bundle = tmp_path / "AudioForge"
+    _prunable_bundle(bundle)
+    (bundle / missing).unlink()
+    monkeypatch.setattr(sys, "argv", ["prune_bundle.py", str(bundle)])
+
+    with pytest.raises(SystemExit) as raised:
+        prune_bundle.main()
+
+    assert raised.value.code == 1
+    assert message in capsys.readouterr().err
+
+
+def test_prune_bundle_cli_fails_when_the_packaged_extension_folder_is_absent(
+    tmp_path, monkeypatch, capsys
+):
+    bundle = tmp_path / "AudioForge"
+    _prunable_bundle(bundle)
+    shutil.rmtree(bundle / "_internal" / "mic_eq")
+    monkeypatch.setattr(sys, "argv", ["prune_bundle.py", str(bundle)])
+
+    with pytest.raises(SystemExit) as raised:
+        prune_bundle.main()
+
+    assert raised.value.code == 1
+    assert "_internal/mic_eq" in capsys.readouterr().err
+
+
 def test_prune_bundle_keeps_dependency_dist_info_metadata(tmp_path):
     bundle = tmp_path / "AudioForge"
     metadata = bundle / "_internal/example.dist-info/METADATA"
@@ -2442,7 +2551,7 @@ class _FakeOpener:
 
 def test_fetch_release_assets_direct_download_writes_response(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        fetch_release_assets.urllib.request,
+        urllib.request,
         "build_opener",
         lambda *handlers: _FakeOpener(b"pinned-model"),
     )
@@ -2459,7 +2568,7 @@ def test_fetch_release_assets_direct_download_writes_response(tmp_path, monkeypa
 def test_fetch_release_assets_direct_download_rejects_oversized_response(tmp_path, monkeypatch):
     monkeypatch.setattr(fetch_release_assets, "DIRECT_DOWNLOAD_MAX_BYTES", 4)
     monkeypatch.setattr(
-        fetch_release_assets.urllib.request,
+        urllib.request,
         "build_opener",
         lambda *handlers: _FakeOpener(b"too-large"),
     )
@@ -2475,8 +2584,8 @@ def test_fetch_release_assets_direct_download_rejects_oversized_response(tmp_pat
 
 
 def test_fetch_release_assets_direct_download_does_not_follow_redirects():
-    handler = fetch_release_assets._NoRedirectHandler()
-    request = fetch_release_assets.urllib.request.Request(
+    handler = bounded_download.NoRedirectHandler()
+    request = urllib.request.Request(
         "https://raw.githubusercontent.com/example/project/revision/silero_vad.onnx"
     )
 
@@ -2512,7 +2621,7 @@ def test_fetch_pinned_archive_rejects_oversized_response(tmp_path, monkeypatch):
         def open(self, request, timeout):
             return Response(payload)
 
-    monkeypatch.setattr(fetch_release_assets.urllib.request, "build_opener", lambda *_: Opener())
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *_: Opener())
     entry = {
         "source": "https://github.com/example/project/releases/download/v1/runtime.zip",
         "origin": {
@@ -2719,6 +2828,51 @@ def test_fetch_source_asset_invokes_pinned_builder_without_release_fallback(
     assert (tmp_path / "tmp/target/deepfilter/df.dll.provenance.json").is_file()
 
 
+def _direct_asset_workspace(tmp_path, monkeypatch, installed_bytes):
+    installed = tmp_path / "model.bin"
+    installed.write_bytes(installed_bytes)
+    manifest = tmp_path / "release-assets.json"
+    manifest.write_text(json.dumps({
+        "fallback_release_tag": "v1.0.0",
+        "assets": [{
+            "path": "model.bin", "size": 4, "sha256": hashlib.sha256(b"good").hexdigest(),
+            "source": "https://raw.githubusercontent.com/example/project/rev/model.bin",
+            "origin": {"status": "pinned-upstream-model"},
+        }],
+    }))
+    downloads: list[str] = []
+
+    def download(_url, destination):
+        downloads.append(destination.name)
+        destination.write_bytes(b"good")
+
+    monkeypatch.setattr(fetch_release_assets, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(verify_release_assets, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(fetch_release_assets, "MANIFEST_PATH", manifest)
+    monkeypatch.setattr(fetch_release_assets.sys, "argv", ["fetch"])
+    monkeypatch.setattr(fetch_release_assets.shutil, "which", lambda _: "gh")
+    monkeypatch.setattr(fetch_release_assets, "_download_direct_url", download)
+    return installed, downloads
+
+
+def test_an_existing_asset_that_fails_verification_is_replaced_not_skipped(tmp_path, monkeypatch):
+    installed, downloads = _direct_asset_workspace(tmp_path, monkeypatch, b"swap")
+
+    assert fetch_release_assets.main() == 0
+
+    assert downloads == ["model.bin"]
+    assert installed.read_bytes() == b"good"
+
+
+def test_an_existing_asset_that_verifies_is_kept_without_downloading(tmp_path, monkeypatch):
+    installed, downloads = _direct_asset_workspace(tmp_path, monkeypatch, b"good")
+
+    assert fetch_release_assets.main() == 0
+
+    assert downloads == []
+    assert installed.read_bytes() == b"good"
+
+
 @pytest.mark.parametrize("payload", [b"", b"evil", b"too-long-payload"])
 @pytest.mark.parametrize("source_kind", ["direct", "release", "archive", "pinned"])
 def test_forced_hydration_rejects_bad_bytes_before_replacing_asset(
@@ -2916,32 +3070,111 @@ def test_dispatch_workflows_pass_the_gate_check_as_committed():
     [
         (lambda steps: steps.append(steps.pop(0)), "must authorize the dispatch"),
         (lambda steps: steps.pop(0), "must authorize the dispatch"),
+        (
+            lambda steps: steps.insert(0, {"uses": "actions/checkout@" + "a" * 40}),
+            "must authorize the dispatch",
+        ),
+        (
+            lambda steps: steps[0].update(uses="./.github/actions/authorize-dispatch"),
+            "must authorize the dispatch",
+        ),
+        (
+            lambda steps: steps[0].update(uses="$/.github/actions/other"),
+            "must authorize the dispatch",
+        ),
         (lambda steps: steps[0].update({"if": False}), "unconditional and blocking"),
         (
             lambda steps: steps[0].update({"if": "github.event_name == 'workflow_dispatch'"}),
             "unconditional and blocking",
         ),
         (lambda steps: steps[0].update({"continue-on-error": True}), "unconditional and blocking"),
+    ],
+)
+def test_dispatch_authorization_is_the_first_unconditional_step(workflow, job, mutate, message):
+    assert message in _gate_errors(workflow, lambda jobs: mutate(jobs[job]["steps"]))
+
+
+def test_publish_release_checks_out_the_workflow_revision_after_authorizing():
+    def other_ref(jobs):
+        checkout = next(
+            step for step in jobs["publish-release"]["steps"] if "checkout" in str(step.get("uses"))
+        )
+        checkout["with"]["ref"] = "${{ inputs.release_tag }}"
+
+    def before_authorization(jobs):
+        steps = jobs["publish-release"]["steps"]
+        steps.insert(0, steps.pop(1))
+
+    assert "missing required" in _gate_errors("release-promote.yml", other_ref)
+    assert "must authorize the dispatch" in _gate_errors("release-promote.yml", before_authorization)
+
+
+def _authorization_action_errors(tmp_path, action) -> list[str]:
+    path = tmp_path / "action.yml"
+    path.write_text(check_workflows.yaml.safe_dump(action), encoding="utf-8")
+    errors: list[str] = []
+    check_workflows._check_authorization_action(errors, path)
+    return errors
+
+
+def _mutated_action_errors(tmp_path, mutate) -> list[str]:
+    action = check_workflows.yaml.safe_load(
+        check_workflows.AUTHORIZE_ACTION_PATH.read_text(encoding="utf-8")
+    )
+    mutate(action["runs"]["steps"])
+    return _authorization_action_errors(tmp_path, action)
+
+
+def test_the_shared_authorization_action_passes_the_check_as_committed():
+    errors: list[str] = []
+    check_workflows._check_authorization_action(errors)
+    assert errors == []
+
+
+@pytest.mark.parametrize("step", [0, 1])
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
         (
-            lambda steps: steps[0].update(
-                run=steps[0]["run"]
+            lambda step: step.update(
+                run=step["run"]
                 .replace('"admin", "maintain"', '"admin", "maintain", "write"')
                 .replace("admin|maintain)", "admin|maintain|write)")
             ),
             "must authorize the dispatch",
         ),
         (
-            lambda steps: steps[0].update(run=steps[0]["run"].replace("refs/heads/master", "refs/heads/dev")),
+            lambda step: step.update(run=step["run"].replace("refs/heads/master", "refs/heads/dev")),
             "must authorize the dispatch",
         ),
         (
-            lambda steps: steps[0]["env"].update(DISPATCHER="${{ github.actor }}"),
+            lambda step: step["env"].update(DISPATCHER="${{ github.actor }}"),
             "must authorize the dispatch",
+        ),
+        (lambda step: step.update({"if": "true"}), "exactly that condition"),
+        (lambda step: step.update({"continue-on-error": True}), "exactly that condition"),
+        (
+            lambda step: step.update(run="\n".join(f"# {line}" for line in step["run"].splitlines())),
+            "must authorize the dispatch",
+        ),
+        (
+            lambda step: step.update(run=step["run"] + "\necho ${{ github.actor }}"),
+            "must not interpolate",
         ),
     ],
 )
-def test_dispatch_authorization_is_the_first_unconditional_step(workflow, job, mutate, message):
-    assert message in _gate_errors(workflow, lambda jobs: mutate(jobs[job]["steps"]))
+def test_the_shared_authorization_action_keeps_the_refusal_in_both_shells(
+    tmp_path, step, mutate, message
+):
+    errors = _mutated_action_errors(tmp_path, lambda steps: mutate(steps[step]))
+    assert any(message in error for error in errors)
+
+
+def test_the_shared_authorization_action_must_cover_both_shell_families(tmp_path):
+    errors = _mutated_action_errors(tmp_path, lambda steps: steps.pop())
+    assert any("exactly the 2 authorization steps" in error for error in errors)
+    errors = _authorization_action_errors(tmp_path, {"runs": {"using": "node20"}})
+    assert any("composite action" in error for error in errors)
 
 
 def test_a_job_that_is_skipped_or_non_blocking_cannot_hold_the_authorization():
@@ -3736,6 +3969,18 @@ def test_weekly_checks_publish_nothing_and_hydrate_source_uncached():
         "weekly-checks.yml", cache_source
     )
     assert "must not publish or upload anything" in _gate_errors("weekly-checks.yml", upload)
+
+
+def test_weekly_audit_reads_current_advisories_instead_of_a_cached_database():
+    def cache_advisories(jobs):
+        jobs["audit"]["steps"].append(
+            {"uses": "actions/cache@" + "a" * 40, "with": {"path": "~/.cargo/advisory-db", "key": "k"}}
+        )
+
+    assert "audit must read the current advisory database" in _gate_errors(
+        "weekly-checks.yml", cache_advisories
+    )
+    assert _gate_errors("weekly-checks.yml", lambda jobs: None) == ""
 
 
 @pytest.mark.parametrize(

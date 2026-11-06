@@ -1238,6 +1238,61 @@ fn test_unknown_device_buffer_adds_nothing_and_is_reported() {
     assert_eq!(read(&wrapper), (true, 0, 27.0));
 }
 
+/// One export reads the device buffer once: whatever a restart does to the
+/// figures while it is built, the export agrees with itself.
+#[test]
+fn test_runtime_diagnostics_read_the_device_buffer_once() {
+    let wrapper = PyAudioProcessor {
+        processor: AudioProcessor::new(),
+    };
+    let processor = &wrapper.processor;
+    processor
+        .shared
+        .dsp
+        .latency_us
+        .store(30_000, Ordering::Relaxed);
+    set_device_buffer(processor, DEVICE_BUFFER_FRAMES, DEVICE_PERIOD_FRAMES);
+    Python::initialize();
+
+    let stop = AtomicBool::new(false);
+    let torn = std::thread::scope(|scope| {
+        // Ends the writer even if this body panics: the scope would wait for it
+        // forever.
+        let _stop = super::loop_tests::StopOnDrop(&stop);
+        scope.spawn(|| {
+            let frames = &processor.shared.output.device_buffer_frames;
+            while !stop.load(Ordering::Relaxed) {
+                frames.store(0, Ordering::Relaxed);
+                frames.store(DEVICE_BUFFER_FRAMES, Ordering::Relaxed);
+            }
+        });
+        let mut torn = 0;
+        for _ in 0..2_000 {
+            Python::attach(|py| {
+                let diagnostics = wrapper.get_runtime_diagnostics(py).unwrap();
+                let diagnostics = diagnostics.bind(py).cast::<PyDict>().unwrap().clone();
+                let read = |key: &str| diagnostics.get_item(key).unwrap().unwrap();
+                let frames = read("output_device_buffer_frames")
+                    .extract::<u32>()
+                    .unwrap();
+                let known = read("output_device_buffer_known")
+                    .extract::<bool>()
+                    .unwrap();
+                let device_ms = read("output_device_latency_ms").extract::<f32>().unwrap();
+                let total_ms = read("total_latency_ms").extract::<f32>().unwrap();
+                let consistent = known == (frames != 0)
+                    && device_ms == if frames == 0 { 0.0 } else { 27.0 }
+                    && total_ms == 30.0 + device_ms;
+                if !consistent {
+                    torn += 1;
+                }
+            });
+        }
+        torn
+    });
+    assert_eq!(torn, 0, "exports that contradicted themselves");
+}
+
 #[test]
 fn test_queue_fill_smoothing_follows_a_fixed_sequence() {
     use super::dsp_loop::advance_queue_fill_ema;
@@ -1811,8 +1866,8 @@ fn a_stop_or_suppression_that_wins_the_lock_cancels_a_waiting_recovery() {
 }
 
 /// A restart that panics must not leave the processor marked as recovering:
-/// `start_locked` would skip its back-off reset from then on. The stop that
-/// opens every restart clears the flag, so the start never runs with it raised.
+/// `start_locked` would skip its back-off reset from then on. The restart's
+/// guard lowers the flag when the attempt unwinds.
 #[test]
 fn a_panicking_restart_does_not_leave_the_processor_recovering() {
     let processor = AudioProcessor::new();
@@ -1828,6 +1883,30 @@ fn a_panicking_restart_does_not_leave_the_processor_recovering() {
     }));
     assert!(outcome.is_err());
     assert!(!processor.is_recovering());
+}
+
+/// The stop that opens a restart must not end the recovery: for the seconds the
+/// restart takes, the processor keeps reporting it.
+#[test]
+fn a_restart_reports_itself_as_recovering_until_it_ends() {
+    for start_works in [true, false] {
+        let processor = AudioProcessor::new();
+        let stream = &processor.shared.stream;
+        stream.restart_requested.store(true, Ordering::Release);
+        let mut during_start = None;
+        let outcome =
+            processor.service_recovery_at(at(10), |p: &AudioProcessor, _: &mut Streams| {
+                during_start = Some(p.is_recovering());
+                if start_works {
+                    Ok("Started".to_string())
+                } else {
+                    Err("no device".to_string())
+                }
+            });
+        assert_eq!(outcome, Some(start_works));
+        assert_eq!(during_start, Some(true), "start_works={start_works}");
+        assert!(!processor.is_recovering(), "start_works={start_works}");
+    }
 }
 
 /// An error code left set by an earlier suppressor fault must not turn a
@@ -1984,12 +2063,14 @@ fn the_restart_backoff_resets_only_after_both_streams_keep_delivering() {
 }
 
 /// A running processor on a fake clock under a microphone that has signal. Its
-/// callbacks and writer beat at every watchdog pass; the writer queues only
+/// callbacks and writer beat at every watchdog pass, and the loop publishes the
+/// microphone level again, as it does with every block; the writer queues only
 /// exact zeros unless `signal` is set.
 struct SilentOutputRig {
     processor: AudioProcessor,
     supervisor: Supervisor,
     signal: bool,
+    input_db: Cell<f32>,
 }
 
 impl SilentOutputRig {
@@ -2006,12 +2087,14 @@ impl SilentOutputRig {
             processor,
             supervisor,
             signal: false,
+            input_db: Cell::new(-20.0),
         };
         rig.set_input_db(-20.0);
         rig
     }
 
     fn set_input_db(&self, db: f32) {
+        self.input_db.set(db);
         self.processor
             .shared
             .input
@@ -2022,6 +2105,10 @@ impl SilentOutputRig {
     /// Healthy callbacks and one written block at `now`.
     fn beat(&self, now: u64) {
         let shared = &self.processor.shared;
+        shared
+            .input
+            .rms
+            .store(self.input_db.get().to_bits(), Ordering::Relaxed);
         shared.input.callback_time_us.store(now, Ordering::Relaxed);
         shared.output.callback_time_us.store(now, Ordering::Relaxed);
         shared
@@ -2354,6 +2441,159 @@ fn another_cause_or_a_stopped_stream_keeps_a_silent_output_request() {
             "{name}"
         );
     }
+}
+
+/// Backlog and overflow codes stay set until restart and ask for nothing, so
+/// they must not keep a restart for silence that has already ended.
+#[test]
+fn an_earlier_run_code_does_not_keep_a_silent_output_request() {
+    for code in [
+        RtErrorCode::InputBacklogDropped,
+        RtErrorCode::FixedBufferOverflow,
+    ] {
+        let mut rig = SilentOutputRig::new();
+        let requested = rig.first_request(at(10), 10_000).unwrap();
+        store_rt_error(rig.processor.shared.dsp.rt_error_code.as_ref(), code);
+        rig.signal = true; // the output is back
+        let started = AtomicBool::new(false);
+        assert_eq!(
+            rig.service(requested + 1_000_000, &started),
+            None,
+            "{code:?}"
+        );
+        assert!(!started.load(Ordering::SeqCst), "{code:?}");
+        assert!(!rig.processor.is_recovery_requested(), "{code:?}");
+        assert_eq!(rig.processor.get_stream_restart_count(), 0, "{code:?}");
+    }
+}
+
+/// Every figure a run publishes about itself (levels, timings, buffer fills,
+/// stage meters), as raw bits.
+fn published_run_values(shared: &Shared) -> Vec<(&'static str, u64)> {
+    let f32_bits = |value: &AtomicU32| u64::from(value.load(Ordering::Relaxed));
+    let u64_bits = |value: &AtomicU64| value.load(Ordering::Relaxed);
+    vec![
+        ("input.peak", f32_bits(&shared.input.peak)),
+        ("input.rms", f32_bits(&shared.input.rms)),
+        ("input.buffer_len", f32_bits(&shared.input.buffer_len)),
+        (
+            "input.smoothed_buffer_len",
+            f32_bits(&shared.input.smoothed_buffer_len),
+        ),
+        ("output.peak", f32_bits(&shared.output.peak)),
+        ("output.rms", f32_bits(&shared.output.rms)),
+        ("output.buffer_len", f32_bits(&shared.output.buffer_len)),
+        ("dsp.latency_us", u64_bits(&shared.dsp.latency_us)),
+        ("dsp.time_us", u64_bits(&shared.dsp.time_us)),
+        (
+            "dsp.time_smoothed_us",
+            u64_bits(&shared.dsp.time_smoothed_us),
+        ),
+        ("gate.gain_meter", f32_bits(&shared.gate.gain_meter)),
+        ("gate.noise_floor_db", f32_bits(&shared.gate.noise_floor_db)),
+        ("gate.fused_score", f32_bits(&shared.gate.fused_score)),
+        (
+            "compressor.gain_reduction",
+            f32_bits(&shared.compressor.gain_reduction),
+        ),
+        (
+            "compressor.current_release_ms",
+            u64_bits(&shared.compressor.current_release_ms),
+        ),
+        (
+            "compressor.current_lufs",
+            u64_bits(&shared.compressor.current_lufs),
+        ),
+        (
+            "compressor.current_makeup_gain",
+            u64_bits(&shared.compressor.current_makeup_gain),
+        ),
+        (
+            "deesser.gain_reduction",
+            f32_bits(&shared.deesser.gain_reduction),
+        ),
+        (
+            "deesser.detector_confidence",
+            f32_bits(&shared.deesser.detector_confidence),
+        ),
+        (
+            "limiter.gain_reduction_db",
+            f32_bits(&shared.limiter.gain_reduction_db),
+        ),
+        (
+            "suppressor.buffer_len",
+            f32_bits(&shared.suppressor.buffer_len),
+        ),
+        (
+            "suppressor.smoothed_buffer_len",
+            f32_bits(&shared.suppressor.smoothed_buffer_len),
+        ),
+        (
+            "suppressor.successful_inference_frames",
+            u64_bits(&shared.suppressor.successful_inference_frames),
+        ),
+        ("vad.raw_probability", f32_bits(&shared.vad.raw_probability)),
+        (
+            "vad.meter_probability",
+            f32_bits(&shared.vad.meter_probability),
+        ),
+    ]
+}
+
+/// Put a figure into every published run value, as a run that has been going
+/// for a while leaves them.
+fn publish_a_run(shared: &Shared) {
+    let level = 0.25_f32.to_bits();
+    for value in [
+        &shared.input.peak,
+        &shared.input.rms,
+        &shared.input.buffer_len,
+        &shared.input.smoothed_buffer_len,
+        &shared.output.peak,
+        &shared.output.rms,
+        &shared.output.buffer_len,
+        &shared.gate.gain_meter,
+        &shared.gate.noise_floor_db,
+        &shared.gate.fused_score,
+        &shared.compressor.gain_reduction,
+        &shared.deesser.gain_reduction,
+        &shared.deesser.detector_confidence,
+        &shared.limiter.gain_reduction_db,
+        &shared.suppressor.buffer_len,
+        &shared.suppressor.smoothed_buffer_len,
+        &shared.vad.raw_probability,
+        &shared.vad.meter_probability,
+    ] {
+        value.store(level, Ordering::Relaxed);
+    }
+    for value in [
+        &shared.dsp.latency_us,
+        &shared.dsp.time_us,
+        &shared.dsp.time_smoothed_us,
+        &shared.compressor.current_release_ms,
+        &shared.compressor.current_lufs,
+        &shared.compressor.current_makeup_gain,
+        &shared.suppressor.successful_inference_frames,
+    ] {
+        value.store(12_345, Ordering::Relaxed);
+    }
+}
+
+/// What a stopped processor shows, and what a start begins from, is what a new
+/// processor shows: not the last run's levels, timings and buffer fills.
+#[test]
+fn a_stop_and_a_start_clear_the_values_a_run_published() {
+    let fresh = published_run_values(&AudioProcessor::new().shared);
+
+    let processor = AudioProcessor::new();
+    publish_a_run(&processor.shared);
+    assert_ne!(published_run_values(&processor.shared), fresh);
+    processor.stop();
+    assert_eq!(published_run_values(&processor.shared), fresh);
+
+    publish_a_run(&processor.shared);
+    processor.shared.reset_for_start();
+    assert_eq!(published_run_values(&processor.shared), fresh);
 }
 
 /// The streams of a silence that stays keep delivering, so only what the

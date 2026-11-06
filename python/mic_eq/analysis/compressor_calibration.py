@@ -14,6 +14,7 @@ from .auto_eq import simulate_candidate_chain
 from .auto_eq_parts.headroom import _is_headroom_safe
 from .cancellation import check_analysis_cancelled
 from .parallel import ANALYSIS_WORKERS
+from .signal_processing import clamp as _clamp
 from .vad import map_causal_vad_probabilities
 from ..config import LimiterSettings
 
@@ -38,10 +39,6 @@ def _normalise_limiter_settings(
             "limiter settings are missing: " + ", ".join(sorted(missing))
         )
     return dict(settings)
-
-
-def _clamp(value: float, low: float, high: float) -> float:
-    return float(max(low, min(high, value)))
 
 
 _COMPRESSOR_SEARCH_BUDGET = 68

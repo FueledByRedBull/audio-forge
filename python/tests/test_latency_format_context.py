@@ -254,6 +254,39 @@ def test_running_processor_context_uses_negotiated_sample_rates(qapp):
         _close_owner(owner, qapp)
 
 
+def test_an_engine_latency_not_published_yet_leaves_the_profile_alone(qapp):
+    input_identity, output_identity = _wasapi_route()
+    profile = _profile((48_000, 1, 48_000, 2))
+    profile.engine_latency_ms = 12.5
+    profile.total_latency_ms = 54.5
+    profile.engine_config_signature = "measured"
+    owner = _owner(input_identity, output_identity, profile)
+    processor = owner.processor
+    processor.is_running.return_value = True
+    processor.get_runtime_diagnostics.return_value = {
+        "input_sample_rate": 48_000,
+        "output_sample_rate": 48_000,
+    }
+    processor.is_limiter_enabled.return_value = True
+    processor.is_rnnoise_enabled.return_value = False
+    processor.get_noise_model.return_value = "RNNoise"
+    processor.output_sample_rate.return_value = 48_000
+    processor.sample_rate.return_value = 48_000
+    try:
+        # Right after Start the loop has not published its latency yet.
+        processor.get_engine_latency_ms.return_value = 0.0
+        MainWindow._apply_latency_compensation_for_current_devices(owner)
+        assert (profile.engine_latency_ms, profile.total_latency_ms) == (12.5, 54.5)
+        assert profile.engine_config_signature == "measured"
+
+        processor.get_engine_latency_ms.return_value = 30.0
+        MainWindow._apply_latency_compensation_for_current_devices(owner)
+        assert (profile.engine_latency_ms, profile.total_latency_ms) == (30.0, 72.0)
+        assert profile.engine_config_signature != "measured"
+    finally:
+        _close_owner(owner, qapp)
+
+
 def test_restart_preserves_context_but_legacy_profile_is_not_applied(qapp):
     input_identity, output_identity = _wasapi_route()
     route_key = build_device_route_key(input_identity, output_identity)

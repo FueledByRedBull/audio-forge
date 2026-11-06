@@ -2346,6 +2346,9 @@ class MainWindow(QMainWindow):
         except Exception:
             logger.exception("Failed to refresh engine latency profile")
             return False
+        if engine_latency_ms <= 0.0:
+            # Right after Start the loop has not published its latency yet.
+            return False
 
         route_latency_ms = max(
             0.0,
@@ -2553,7 +2556,7 @@ class MainWindow(QMainWindow):
                     fallback_index = self._default_combo_index(self.input_choice)
                     if fallback_index >= 0:
                         self.input_choice.setCurrentIndex(fallback_index)
-            except (RuntimeError, OSError) as e:
+            except Exception as e:
                 listing_errors.append(f"input devices ({e})")
                 logger.warning("Input device enumeration failed", exc_info=True)
 
@@ -2591,7 +2594,7 @@ class MainWindow(QMainWindow):
                     if preferred_index >= 0:
                         self.output_choice.setCurrentIndex(preferred_index)
 
-            except (RuntimeError, OSError) as e:
+            except Exception as e:
                 listing_errors.append(f"output devices ({e})")
                 logger.warning("Output device enumeration failed", exc_info=True)
 
@@ -3657,6 +3660,9 @@ class MainWindow(QMainWindow):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._shut_down = False  # a window shown again after a refused quit must shut down again
+        watch = self.__dict__.get("virtual_microphone_watch")
+        if watch is not None:
+            watch.resume()  # _shutdown stopped it; a window shown again still needs it
         self._sync_meter_timer()
 
     def hideEvent(self, event) -> None:

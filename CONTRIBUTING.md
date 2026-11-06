@@ -208,8 +208,10 @@ count; setting the variable to anything, 0 included, keeps the standard WASAPI
 path. In a diagnostics export, `output_low_period_frames` is the period in use (0
 on the standard path) and `output_low_period_failure_code` is the Windows error
 that kept or took the stream off it. An endpoint whose short-period stream fails
-while running stays on the standard path until the app restarts, unless the device
-was removed.
+before it has filled a second of audio stays on the standard path until the app
+restarts, unless the device was removed or the Windows audio service stopped
+(`AUDCLNT_E_SERVICE_NOT_RUNNING`). A stream that ran longer and then failed is tried
+again at the next start.
 
 ## Runtime checks and screenshots
 

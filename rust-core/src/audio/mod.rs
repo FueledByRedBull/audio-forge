@@ -200,6 +200,7 @@ fn find_48khz_config(
     None
 }
 
+pub(crate) mod bounded;
 pub mod buffer;
 pub mod clock;
 pub mod device;

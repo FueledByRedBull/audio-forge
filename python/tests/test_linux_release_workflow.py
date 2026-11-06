@@ -108,13 +108,30 @@ def test_package_linux_binds_an_existing_tag_to_its_checkout_like_package_window
     assert "package-windows must bind" in _release_errors(lambda jobs: _drop(jobs["package-windows"], "Bind existing release tag to checked-out commit"))
 
 
+def test_static_binds_an_existing_release_tag_like_the_build_jobs():
+    assert "static: checkout of" in _release_errors(lambda jobs: _drop(jobs["static"], BIND))
+
+
+@pytest.mark.parametrize("job", ["static", "package-windows", "package-linux"])
+def test_release_checkouts_name_the_tag_ref_not_a_bare_tag_name(job):
+    bare = "${{ inputs.release_tag || github.sha }}"
+
+    def bare_ref(jobs):
+        for step in jobs[job]["steps"]:
+            if str(step.get("uses", "")).startswith("actions/checkout@"):
+                step["with"]["ref"] = bare
+
+    assert f"{job} must check out ref {check_workflows.RELEASE_SOURCE_REF}" in _release_errors(bare_ref)
+    assert "refs/tags/" in check_workflows.RELEASE_SOURCE_REF
+
+
 def test_package_linux_builds_the_ref_every_other_release_job_builds():
     def other_ref(jobs):
         for step in jobs["package-linux"]["steps"]:
             if str(step.get("uses", "")).startswith("actions/checkout@"):
                 step["with"]["ref"] = "${{ github.sha }}"
 
-    assert "package-linux must check out ref ${{ inputs.release_tag || github.sha }}" in _release_errors(other_ref)
+    assert f"package-linux must check out ref {check_workflows.RELEASE_SOURCE_REF}" in _release_errors(other_ref)
 
 
 @pytest.mark.parametrize(
@@ -296,11 +313,15 @@ def test_ci_linux_tests_fail_on_a_skipped_test_and_key_the_library_on_the_recipe
     assert "missing required DeepFilter gate" in tweak("  exit 1\n", "")
     assert "missing required DeepFilter gate" in tweak("set -o pipefail", "")
 
-    def narrow(jobs):
-        restore = _step(jobs["linux-tests"], "Restore DeepFilter runtime")
-        restore["with"]["key"] = restore["with"]["key"].replace("'python/tools/build_deepfilter.py', ", "")
+    def narrow(recipe_file):
+        def mutate(jobs):
+            restore = _step(jobs["linux-tests"], "Restore DeepFilter runtime")
+            restore["with"]["key"] = restore["with"]["key"].replace(f"'{recipe_file}', ", "")
 
-    assert "missing required DeepFilter gate" in _ci_errors(narrow)
+        return mutate
+
+    for recipe_file in ("python/tools/build_deepfilter.py", "python/tools/bounded_download.py"):
+        assert "missing required DeepFilter gate" in _ci_errors(narrow(recipe_file)), recipe_file
 
 
 def test_promotion_requires_the_appimage_to_be_verified_against_its_own_sidecars_and_the_tarball():

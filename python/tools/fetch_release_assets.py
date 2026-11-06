@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
 import re
 import shutil
@@ -13,12 +12,12 @@ import sys
 import tarfile
 import tempfile
 import urllib.parse
-import urllib.request
 import zipfile
 from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Mapping, TypedDict
 
+from bounded_download import download
 from verify_release_assets import (
     PINNED_ARCHIVE_HOSTS,
     PINNED_ARCHIVE_STATUS,
@@ -100,6 +99,22 @@ def _source_build_entry(
     return None
 
 
+def _kept_existing(asset: Mapping[str, object], *, force: bool) -> bool:
+    """Whether the asset is already installed and passes its manifest check.
+
+    An existing file that fails the check is fetched again like a missing one.
+    """
+    destination = REPO_ROOT / str(asset["destination"])
+    if force or not destination.exists():
+        return False
+    errors = verify_assets(
+        MANIFEST_PATH, selected_paths={str(asset["destination"]).replace("\\", "/")}
+    )
+    if errors:
+        print(f"Replacing existing {destination.relative_to(REPO_ROOT)}: {errors[0]}")
+    return not errors
+
+
 def _run(command: list[str], *, capture: bool = False) -> str:
     kwargs = {
         "cwd": REPO_ROOT,
@@ -149,66 +164,23 @@ def _download_asset(tag: str, repo: str, pattern: str, destination_dir: Path) ->
     )
 
 
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
-        return None
+RAW_GITHUB_HOSTS = frozenset({"raw.githubusercontent.com"})
 
 
 def _download_direct_url(url: str, destination: Path) -> None:
-    parsed = urllib.parse.urlsplit(url)
-    if (
-        parsed.scheme != "https"
-        or parsed.hostname != "raw.githubusercontent.com"
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.port not in {None, 443}
-        or parsed.fragment
-    ):
-        raise ValueError(
-            "direct release assets must use trusted raw.githubusercontent.com HTTPS"
-        )
-    request = urllib.request.Request(
+    # Redirects are refused and callers hash-verify the download.
+    download(
         url,
-        headers={"User-Agent": "AudioForge-release-assets"},
+        destination,
+        hosts=RAW_GITHUB_HOSTS,
+        max_bytes=DIRECT_DOWNLOAD_MAX_BYTES,
+        timeout=60,
+        refusal="direct release assets must use trusted raw.githubusercontent.com HTTPS",
+        too_large=f"direct release asset exceeded {DIRECT_DOWNLOAD_MAX_BYTES} bytes",
     )
-    # The host is checked above, so a redirect to another host is refused, and
-    # callers hash-verify the download.
-    opener = urllib.request.build_opener(_NoRedirectHandler)
-    byte_count = 0
-    try:
-        with opener.open(request, timeout=60) as response, destination.open("wb") as output:
-            for chunk in iter(lambda: response.read(1024 * 1024), b""):
-                byte_count += len(chunk)
-                if byte_count > DIRECT_DOWNLOAD_MAX_BYTES:
-                    raise RuntimeError(
-                        f"direct release asset exceeded {DIRECT_DOWNLOAD_MAX_BYTES} bytes"
-                    )
-                output.write(chunk)
-    except BaseException:
-        destination.unlink(missing_ok=True)
-        raise
 
 
-def _validate_pinned_archive_url(url: str) -> None:
-    parsed = urllib.parse.urlsplit(url)
-    if (
-        parsed.scheme != "https"
-        or parsed.hostname not in PINNED_ARCHIVE_HOSTS
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.port not in {None, 443}
-        or parsed.fragment
-    ):
-        raise ValueError(
-            "pinned runtime archives must use trusted GitHub HTTPS hosts"
-        )
-
-
-class _TrustedArchiveRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
-        target = urllib.parse.urljoin(req.full_url, newurl)
-        _validate_pinned_archive_url(target)
-        return super().redirect_request(req, fp, code, msg, headers, target)
+_PINNED_ARCHIVE_REFUSAL = "pinned runtime archives must use trusted GitHub HTTPS hosts"
 
 
 def _manifest_pinned_archive_entry(
@@ -246,7 +218,6 @@ def _download_pinned_archive(
         or expected_size <= 0
     ):
         raise RuntimeError("Pinned archive entry has invalid URL, SHA-256, or byte count")
-    _validate_pinned_archive_url(raw_url)
     cache_key = f"{raw_url}|{expected_sha.lower()}|{expected_size}"
     if cache_key in cache:
         return cache[cache_key]
@@ -256,28 +227,18 @@ def _download_pinned_archive(
         raise RuntimeError("Pinned archive URL has no filename")
     archive_path = temporary / filename
     staged_path = temporary / f".{filename}.{os.getpid()}.part"
-    opener = urllib.request.build_opener(_TrustedArchiveRedirectHandler)
-    request = urllib.request.Request(
-        raw_url,
-        headers={"User-Agent": "AudioForge-release-assets"},
-    )
-    digest = hashlib.sha256()
-    byte_count = 0
     try:
-        with opener.open(request, timeout=120) as response, staged_path.open("xb") as output:
-            final_url = response.geturl()
-            _validate_pinned_archive_url(final_url)
-            for chunk in iter(lambda: response.read(1024 * 1024), b""):
-                if byte_count + len(chunk) > expected_size:
-                    raise RuntimeError(
-                        f"Pinned archive exceeded its declared size of {expected_size} bytes"
-                    )
-                output.write(chunk)
-                digest.update(chunk)
-                byte_count += len(chunk)
-            output.flush()
-            os.fsync(output.fileno())
-        actual_sha = digest.hexdigest()
+        byte_count, actual_sha = download(
+            raw_url,
+            staged_path,
+            hosts=PINNED_ARCHIVE_HOSTS,
+            max_bytes=expected_size,
+            timeout=120,
+            refusal=_PINNED_ARCHIVE_REFUSAL,
+            too_large=f"Pinned archive exceeded its declared size of {expected_size} bytes",
+            follow_redirects=True,
+            exclusive=True,
+        )
         if byte_count != expected_size or actual_sha.lower() != expected_sha.lower():
             raise RuntimeError(
                 f"Pinned archive verification failed: expected {expected_size} bytes/{expected_sha}, "
@@ -513,28 +474,21 @@ def main() -> int:
         raise RuntimeError(str(exc)) from exc
     assets = _manifest_assets(manifest, only_cpu_runtime=args.only_cpu_runtime)
     manifest_entries = manifest.entries
-    if shutil.which("gh") is None:
-        pending_release_assets = [
-            asset
-            for asset in assets
-            if not (
-                (REPO_ROOT / asset["destination"]).exists() and not args.force
-            )
-            and not asset.get("direct_url")
-            and _source_build_entry(asset, manifest_entries) is None
-            and _manifest_pinned_archive_entry(asset, manifest_entries) is None
-        ]
-        if pending_release_assets:
-            raise RuntimeError("GitHub CLI 'gh' is required for release asset hydration.")
-
+    kept = {
+        str(asset["destination"])
+        for asset in assets
+        if _kept_existing(asset, force=args.force)
+    }
     pending_release_assets = [
         asset
         for asset in assets
-        if not ((REPO_ROOT / asset["destination"]).exists() and not args.force)
+        if str(asset["destination"]) not in kept
         and not asset.get("direct_url")
         and _source_build_entry(asset, manifest_entries) is None
         and _manifest_pinned_archive_entry(asset, manifest_entries) is None
     ]
+    if pending_release_assets and shutil.which("gh") is None:
+        raise RuntimeError("GitHub CLI 'gh' is required for release asset hydration.")
     asset_names = (
         _release_asset_names(args.release_tag, args.repo) if pending_release_assets else set()
     )
@@ -555,8 +509,8 @@ def main() -> int:
         ] + [asset for asset in assets if _source_build_entry(asset, manifest_entries) is not None]
         for asset in ordered_assets:
             destination = REPO_ROOT / asset["destination"]
-            if destination.exists() and not args.force:
-                print(f"Skipping existing {destination.relative_to(REPO_ROOT)}")
+            if str(asset["destination"]) in kept:
+                print(f"Keeping verified {destination.relative_to(REPO_ROOT)}")
                 continue
 
             source_build_entry = _source_build_entry(asset, manifest_entries)

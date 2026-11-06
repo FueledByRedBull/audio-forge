@@ -432,3 +432,23 @@ def test_smoothing_matches_the_per_spectrum_recipe_on_edge_values(kind, strength
 def test_smoothing_rejects_wrongly_shaped_input_with_index_error(freqs, spectrum_db, strength_args):
     with pytest.raises(IndexError, match="one-dimensional and the same length"):
         smooth_spectrum_perceptual(freqs, spectrum_db, *strength_args)
+
+
+def test_vad_posteriors_keep_their_32_ms_cadence_at_44100_hz():
+    from mic_eq.analysis import spectrum
+
+    # Posteriors rise linearly, one step per 512-sample window at 16 kHz, so the value
+    # at an analysis centre is its position in windows. 44100 Hz makes a window 1411.2
+    # samples; rounding it up to 1412 puts a late centre about a tenth of a window early.
+    count = 100
+    probabilities = np.linspace(0.0, 1.0, count)
+    window = 44_100 * 512 / 16_000
+    frame_size = 2
+    centre = 71_146  # about fifty windows in
+    starts = np.array([centre - frame_size // 2])
+
+    mapped = spectrum._interpolate_vad_probabilities(probabilities, starts, frame_size, 44_100)
+
+    assert mapped is not None
+    expected = (centre / window - 0.5) / (count - 1)
+    assert mapped[0] == pytest.approx(expected, abs=1e-9)

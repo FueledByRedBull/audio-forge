@@ -248,3 +248,16 @@ def test_short_reference_returns_actionable_guidance():
     assert result.status == "invalid"
     assert result.guidance
     assert "at least" in result.guidance[0]
+
+
+def test_a_dc_offset_does_not_inflate_the_noise_level():
+    sample_rate = 48_000
+    noise = _stationary_noise(sample_rate)
+    speech = _speech_with_quiet_gaps(sample_rate)
+    clean = analyze_noise_reference(noise, speech, sample_rate)
+    offset = analyze_noise_reference(noise + np.float32(0.05), speech, sample_rate)
+
+    for key in ("noise_rms_db", "noise_peak_db", "crest_factor_db", "in_capture_level_delta_db"):
+        assert offset.metrics[key] == pytest.approx(clean.metrics[key], abs=0.01), key
+    assert offset.conservative_noise_rms_db == pytest.approx(clean.conservative_noise_rms_db, abs=0.01)
+    assert offset.status == clean.status

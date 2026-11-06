@@ -324,8 +324,10 @@ def analyze_noise_reference(
     finite_fraction = float(np.mean(finite_mask)) if raw_noise.size else 0.0
     noise = np.where(finite_mask, raw_noise, 0.0)
     duration_s = float(noise.size / sample_rate)
-    noise_rms_db = _db_rms(noise)
-    noise_peak_db = _db_peak(noise)
+    # Mean-removed, as the frame levels (and so in_capture_rms_db) are: a DC offset is no noise.
+    centered_noise = noise - float(np.mean(noise)) if noise.size else noise
+    noise_rms_db = _db_rms(centered_noise)
+    noise_peak_db = _db_peak(centered_noise)
     crest_factor_db = max(0.0, noise_peak_db - noise_rms_db)
     clipped_fraction = (
         float(np.mean(np.abs(noise) >= 0.999)) if noise.size else 0.0

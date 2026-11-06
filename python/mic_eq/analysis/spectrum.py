@@ -161,10 +161,8 @@ def _interpolate_vad_probabilities(
     if probabilities.size == 0 or frame_starts.size == 0 or sample_rate <= 0:
         return None
 
-    vad_window_samples = max(
-        1,
-        int(np.ceil(sample_rate * SILERO_WINDOW_SAMPLES / SILERO_SAMPLE_RATE)),
-    )
+    # Not rounded to whole samples: at 44.1 kHz a window is 1411.2 samples.
+    vad_window_samples = sample_rate * SILERO_WINDOW_SAMPLES / SILERO_SAMPLE_RATE
     analysis_centres = frame_starts.astype(float) + frame_size * 0.5
     vad_centres = (np.arange(probabilities.size, dtype=float) + 0.5) * vad_window_samples
     return np.interp(

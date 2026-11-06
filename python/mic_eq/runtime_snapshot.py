@@ -155,9 +155,10 @@ _ACCEPTS = {
 
 
 def _kind(hint: object) -> str:
-    if hint is bool:
+    args = get_args(hint) or (hint,)
+    if bool in args:
         return "bool"
-    return "text" if str in (get_args(hint) or (hint,)) else "number"
+    return "text" if str in args else "number"
 
 
 _HINTS = get_type_hints(RuntimeSnapshot)

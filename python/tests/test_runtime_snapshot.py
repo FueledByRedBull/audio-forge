@@ -2,6 +2,7 @@
 
 import math
 
+from mic_eq import runtime_snapshot
 from mic_eq.runtime_snapshot import RuntimeSnapshot
 
 
@@ -79,3 +80,9 @@ def test_the_engine_dict_parses_into_every_field_it_has(qapp):
     assert snapshot.present - snapshot.valid == {name for name in snapshot.present if diagnostics[name] is None}
     assert snapshot.noise_model == diagnostics["noise_model"]
     assert snapshot.output_sample_rate == diagnostics["output_sample_rate"]
+
+
+def test_a_bool_field_that_may_be_missing_still_takes_bools():
+    assert runtime_snapshot._kind(bool | None) == "bool"
+    assert runtime_snapshot._kind(str | None) == "text"
+    assert runtime_snapshot._kind(float | None) == "number"

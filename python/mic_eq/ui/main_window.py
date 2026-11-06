@@ -3770,7 +3770,7 @@ class MainWindow(QMainWindow):
                         app.exit(1)
         running = self.processor.is_running()
         # What the stopped-state work below reads besides the engine; while it is
-        # unchanged, a stopped tick has nothing to redo but the recovery service.
+        # unchanged, a stopped tick redoes only the recovery service and the summary.
         stopped_state = None if running else (
             self._restart_pending(),
             self.__dict__.get("_login_startup_deadline") is not None,
@@ -3791,6 +3791,11 @@ class MainWindow(QMainWindow):
             self._service_stream_recovery()
             if stopped_changed:
                 self._sync_processing_controls()
+            else:
+                # Route, preset, mode and mute edits made while stopped show here.
+                update_summary = getattr(self, "_update_session_summary", None)
+                if callable(update_summary):
+                    update_summary()
             return
 
         try:

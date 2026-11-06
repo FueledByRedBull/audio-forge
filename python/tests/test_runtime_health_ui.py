@@ -568,6 +568,7 @@ def test_a_stopped_tick_redoes_the_stopped_work_only_when_the_stopped_state_chan
         _sync_meter_timer=Mock(),
         _reset_health_labels=Mock(),
         _sync_processing_controls=Mock(),
+        _update_session_summary=Mock(),
         _service_stream_recovery=Mock(),
         _set_health_chip=Mock(),
         shell_texts={"health_advice_label": Mock()},
@@ -584,8 +585,10 @@ def test_a_stopped_tick_redoes_the_stopped_work_only_when_the_stopped_state_chan
     assert ticks() == [1, 1, 1]
     assert window._health_memory == HealthMemory()  # a stop ends any device wait and backend warning
     assert ticks(3) == [1, 1, 1]  # still stopped, nothing changed
-    # A pending restart is serviced on every tick all the same.
+    # A pending restart is serviced on every tick all the same, and edits made
+    # while stopped (route, preset, mode, mute) still reach the summary.
     assert window._service_stream_recovery.call_count == 4
+    assert window._update_session_summary.call_count == 3
 
     state["restart_pending"] = True  # the Stop control now has a retry to cancel
     assert ticks(2) == [2, 2, 2]

@@ -725,10 +725,34 @@ struct ResampleKernel {
     rows: Vec<ResampleKernelRow>,
 }
 
+/// Low-pass cutoff (fraction of the input rate) matching the polyphase
+/// reference at the lower Nyquist frequency. The finite Hann window supplies
+/// the transition band and stop-band rolloff.
+fn resample_cutoff(ratio: f32) -> f32 {
+    (0.5 * ratio.min(1.0)).clamp(0.01, 0.49)
+}
+
+/// Windowed-sinc weight of the input sample `input_idx` for an output sample
+/// centred at `center` (in input samples); `tap` is `input_idx - floor(center)`.
+fn resample_tap_weight(center: f32, input_idx: i32, tap: i32, cutoff: f32) -> f32 {
+    let half_taps = VAD_RESAMPLER_TAPS / 2;
+    let distance = center - input_idx as f32;
+    let sinc_arg = 2.0 * cutoff * distance;
+    let sinc = if sinc_arg.abs() < 1e-6 {
+        1.0
+    } else {
+        let x = std::f32::consts::PI * sinc_arg;
+        x.sin() / x
+    };
+    let window_pos = (tap + half_taps) as f32 / (VAD_RESAMPLER_TAPS - 1) as f32;
+    let window = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * window_pos).cos();
+    2.0 * cutoff * sinc * window
+}
+
 impl ResampleKernel {
     fn new(input_len: usize, ratio: f32) -> Self {
         let output_len = (input_len as f32 * ratio).ceil() as usize;
-        let cutoff = (0.5 * ratio.min(1.0)).clamp(0.01, 0.49);
+        let cutoff = resample_cutoff(ratio);
         let half_taps = VAD_RESAMPLER_TAPS / 2;
         let mut rows = Vec::with_capacity(output_len);
         for out_idx in 0..output_len {
@@ -740,17 +764,8 @@ impl ResampleKernel {
                 if !(0..input_len as i32).contains(&input_idx) {
                     continue;
                 }
-                let distance = center - input_idx as f32;
-                let sinc_arg = 2.0 * cutoff * distance;
-                let sinc = if sinc_arg.abs() < 1e-6 {
-                    1.0
-                } else {
-                    let x = std::f32::consts::PI * sinc_arg;
-                    x.sin() / x
-                };
-                let window_pos = (tap + half_taps) as f32 / (VAD_RESAMPLER_TAPS - 1) as f32;
-                let window = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * window_pos).cos();
-                weights[(tap + half_taps) as usize] = 2.0 * cutoff * sinc * window;
+                weights[(tap + half_taps) as usize] =
+                    resample_tap_weight(center, input_idx, tap, cutoff);
             }
             rows.push(ResampleKernelRow {
                 center_idx,
@@ -818,9 +833,7 @@ fn anti_aliased_resample_into(input: &[f32], ratio: f32, output: &mut Vec<f32>) 
         return;
     }
 
-    // Match the polyphase reference cutoff at the lower Nyquist frequency.
-    // The finite Hann window supplies the transition band and stop-band rolloff.
-    let cutoff = (0.5 * ratio.min(1.0)).clamp(0.01, 0.49);
+    let cutoff = resample_cutoff(ratio);
     let half_taps = VAD_RESAMPLER_TAPS / 2;
     for (out_idx, sample) in output.iter_mut().enumerate() {
         let center = out_idx as f32 / ratio;
@@ -833,17 +846,7 @@ fn anti_aliased_resample_into(input: &[f32], ratio: f32, output: &mut Vec<f32>) 
             if !(0..input.len() as i32).contains(&input_idx) {
                 continue;
             }
-            let distance = center - input_idx as f32;
-            let sinc_arg = 2.0 * cutoff * distance;
-            let sinc = if sinc_arg.abs() < 1e-6 {
-                1.0
-            } else {
-                let x = std::f32::consts::PI * sinc_arg;
-                x.sin() / x
-            };
-            let window_pos = (tap + half_taps) as f32 / (VAD_RESAMPLER_TAPS - 1) as f32;
-            let window = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * window_pos).cos();
-            let weight = 2.0 * cutoff * sinc * window;
+            let weight = resample_tap_weight(center, input_idx, tap, cutoff);
             acc += input[input_idx as usize] * weight;
             weight_sum += weight;
         }
@@ -1185,12 +1188,6 @@ impl VadAutoGate {
         if !enabled {
             self.noise_floor_pending_samples = 0;
             self.noise_floor_pending_sum_sq = 0.0;
-        }
-        if enabled {
-            // Initialize noise floor from current RMS if needed
-            if self.noise_floor <= -100.0 {
-                self.noise_floor = -60.0; // Reset to sensible default
-            }
         }
     }
 

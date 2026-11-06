@@ -158,6 +158,25 @@ mod tests {
     }
 
     #[test]
+    fn test_noise_floor_stays_in_its_clamp_range_and_survives_a_threshold_toggle() {
+        let mut gate = VadAutoGate::without_backend(48_000, 0.5);
+        gate.set_gate_mode(GateMode::VadAssisted);
+        gate.set_auto_threshold(true);
+
+        // Just above the update's RMS cut-off, far below the floor's -80 dB limit.
+        let frame = vec![3.0e-5_f32; 480];
+        for _ in 0..3_000 {
+            let _ = gate.process_with_probability(&frame, 0.0);
+            assert!((-80.0..=-20.0).contains(&gate.noise_floor()));
+        }
+
+        let floor = gate.noise_floor();
+        gate.set_auto_threshold(false);
+        gate.set_auto_threshold(true);
+        assert_eq!(gate.noise_floor().to_bits(), floor.to_bits());
+    }
+
+    #[test]
     fn test_auto_threshold_ignores_high_confidence_speech_frames() {
         let mut gate = VadAutoGate::without_backend(48_000, 0.5);
         gate.set_gate_mode(GateMode::VadAssisted);
@@ -308,6 +327,50 @@ mod tests {
             anti_aliased_resample_into_with_kernel(&input, ratio, Some(&kernel), &mut actual);
 
             assert_eq!(actual, expected, "sample_rate={sample_rate}");
+        }
+    }
+
+    /// FNV-1a over the bit patterns of both resampler paths' output for a fixed
+    /// input, so the window-edge behaviour and every weight stay as recorded.
+    fn resampler_output_hash(sample_rate: u32) -> (u64, u64) {
+        fn fnv(samples: &[f32]) -> u64 {
+            samples.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, sample| {
+                (hash ^ u64::from(sample.to_bits())).wrapping_mul(0x0100_0000_01b3)
+            })
+        }
+        let input_len = ((SILERO_WINDOW_SIZE as f32 * sample_rate as f32)
+            / SILERO_SAMPLE_RATE as f32)
+            .ceil() as usize;
+        let mut seed = 0x2545_f491_u32;
+        let input: Vec<f32> = (0..input_len)
+            .map(|index| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let noise = (seed >> 8) as f32 / (1 << 24) as f32 - 0.5;
+                let time = index as f32 / sample_rate as f32;
+                0.3 * (2.0 * std::f32::consts::PI * 233.0 * time).sin() + 0.2 * noise
+            })
+            .collect();
+        let ratio = SILERO_SAMPLE_RATE as f32 / sample_rate as f32;
+        let kernel = ResampleKernel::new(input.len(), ratio);
+        let mut reference = Vec::new();
+        let mut with_kernel = Vec::new();
+        anti_aliased_resample_into(&input, ratio, &mut reference);
+        anti_aliased_resample_into_with_kernel(&input, ratio, Some(&kernel), &mut with_kernel);
+        (fnv(&reference), fnv(&with_kernel))
+    }
+
+    #[test]
+    fn resampler_output_matches_the_recorded_hashes() {
+        for (sample_rate, hash) in [
+            (48_000_u32, 17_120_871_818_718_863_542_u64),
+            (96_000, 14_130_780_465_039_689_214),
+            (192_000, 18_218_384_782_846_086_445),
+        ] {
+            assert_eq!(
+                resampler_output_hash(sample_rate),
+                (hash, hash),
+                "sample_rate={sample_rate}"
+            );
         }
     }
 

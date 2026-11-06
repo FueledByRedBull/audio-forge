@@ -2,6 +2,7 @@
 mod tests {
     use super::fake::{processor_on, Fake};
     use super::*;
+    use crate::dsp::util::{env_flag_from, parse_env_flag};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -474,6 +475,37 @@ mod tests {
     }
 
     #[test]
+    fn a_controls_slice_of_another_length_limits_what_is_taken() {
+        let samples = [0.1_f32; 400];
+        for (controls_len, taken) in [(100, 100), (400, 400), (700, 400)] {
+            let mut processor = DeepFilterProcessor::default();
+            let controls = vec![GateControl::BYPASS; controls_len];
+            assert_eq!(processor.push_controlled_samples(&samples, &controls), taken);
+            assert_eq!(processor.pending_input(), taken);
+        }
+    }
+
+    #[test]
+    fn strength_smoother_follows_the_per_frame_exponential() {
+        let strength = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
+        let mut processor = DeepFilterProcessor::new(strength.clone(), DeepFilterModel::LowLatency);
+        strength.store(0.9_f32.to_bits(), Ordering::Relaxed);
+        // The smoothing step as it was written inline in `process_frames_internal`.
+        let alpha = 1.0_f32 - (-1.0_f32 / (15.0_f32 / 1000.0 * 48_000.0 / 480.0)).exp();
+        let mut expected = 0.0_f32;
+        for frame in 0..40 {
+            processor.push_samples(&[0.1; DEEPFILTER_FRAME_SIZE]);
+            processor.process_frames();
+            expected += alpha * (0.9 - expected);
+            assert_eq!(
+                processor.smoothed_strength.to_bits(),
+                expected.to_bits(),
+                "frame {frame}"
+            );
+        }
+    }
+
+    #[test]
     fn test_enable_disable() {
         let mut processor = DeepFilterProcessor::default();
         assert!(processor.is_enabled());
@@ -520,13 +552,13 @@ mod tests {
         let blocked = find_model_path(
             DeepFilterModel::LowLatency,
             &AppOwnedDeepFilterPaths::default(),
-            parse_external_opt_in(""),
+            parse_env_flag(""),
             Some(&model_path),
         );
         let allowed = find_model_path(
             DeepFilterModel::LowLatency,
             &AppOwnedDeepFilterPaths::default(),
-            parse_external_opt_in(" 1 "),
+            parse_env_flag(" 1 "),
             Some(&model_path),
         );
 
@@ -538,11 +570,38 @@ mod tests {
     #[test]
     fn test_external_opt_in_accepts_only_explicit_truthy_values() {
         for value in ["1", "true", "YES", " on "] {
-            assert!(parse_external_opt_in(value), "{value:?}");
+            assert!(parse_env_flag(value), "{value:?}");
         }
         for value in ["", "0", "false", "enable", "2"] {
-            assert!(!parse_external_opt_in(value), "{value:?}");
+            assert!(!parse_env_flag(value), "{value:?}");
         }
+    }
+
+    /// Both DeepFilter switches go through one parser, so each takes every
+    /// spelling (including `on`) and reads only its own variable.
+    #[test]
+    fn both_deepfilter_switches_share_one_parser() {
+        use crate::dsp::noise_suppressor::ENABLE_DEEPFILTER_ENV;
+
+        let names = [ENABLE_DEEPFILTER_ENV, ALLOW_EXTERNAL_DF_ENV];
+        for name in names {
+            for value in ["1", "true", "TRUE", "yes", "Yes", "on", "ON", " on "] {
+                assert!(
+                    env_flag_from(name, |var| (var == name).then(|| value.to_string())),
+                    "{name}={value:?}"
+                );
+            }
+            for value in ["", "0", "false", "off", "no", "enable", "2"] {
+                assert!(
+                    !env_flag_from(name, |var| (var == name).then(|| value.to_string())),
+                    "{name}={value:?}"
+                );
+            }
+            assert!(!env_flag_from(name, |_| None), "{name} unset");
+        }
+        assert!(!env_flag_from(ALLOW_EXTERNAL_DF_ENV, |var| {
+            (var == ENABLE_DEEPFILTER_ENV).then(|| "on".to_string())
+        }));
     }
 
     #[test]

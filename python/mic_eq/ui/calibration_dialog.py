@@ -85,7 +85,6 @@ from .capture_session import (
     find_processor_owner as _find_processor_owner,
     owner_calibration_context_key as _owner_calibration_context_key,
     processor_sample_rate as _processor_sample_rate,
-    set_temporary_mute as _set_temporary_mute,
 )
 from .engine_session import AudioLease, AudioUnavailable, EngineSession, RouteMismatch
 from .calibration_support import (
@@ -684,11 +683,11 @@ class CalibrationDialog(QDialog):
             proposed_chain_settings=chain,
             parent=self,
         )
-        _set_temporary_mute(owner, "listening_comparison", True)
+        owner.engine_session.hold_mute("listening_comparison", True)
         try:
             keep = dialog.exec() == int(QDialog.DialogCode.Accepted)
         finally:
-            _set_temporary_mute(owner, "listening_comparison", False)
+            owner.engine_session.hold_mute("listening_comparison", False)
             dialog.deleteLater()
         if keep:
             self._apply_eq_settings()
@@ -870,7 +869,9 @@ class CalibrationDialog(QDialog):
 
         self._recent_rms_db.clear()
         self._recent_peak_db.clear()
-        assert self._audio_lease is not None, "a take starts only after _start_recording borrowed the audio"
+        assert (
+            self._audio_lease is not None and self._audio_lease.held
+        ), "a take starts only after _start_recording borrowed the audio"
         self._capture_session = CaptureSession(parent.processor, self._audio_lease)
         try:
             self._capture_session.start(self._recording_duration, before_cleanup=True)

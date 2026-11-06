@@ -64,7 +64,6 @@ from .capture_session import (
     find_processor_owner as _find_processor_owner,
     owner_calibration_context_key as _owner_calibration_context_key,
     processor_sample_rate as _processor_sample_rate,
-    set_temporary_mute as _set_temporary_mute,
 )
 from .engine_session import AudioLease, AudioUnavailable, RouteMismatch
 from .analysis_worker import (
@@ -1125,7 +1124,9 @@ class VoiceSetupDialog(QDialog):
 
         self._recent_rms_db.clear()
         self._recent_peak_db.clear()
-        assert self._audio_lease is not None, "a take starts only after _ensure_processor_ready"
+        assert (
+            self._audio_lease is not None and self._audio_lease.held
+        ), "a take starts only after _ensure_processor_ready"
         try:
             get_input = getattr(parent.processor, "get_active_input_device", None)
             get_mode = getattr(parent.processor, "get_input_channel_mode", None)
@@ -2099,11 +2100,11 @@ class VoiceSetupDialog(QDialog):
             proposed_chain_settings=proposed_chain,
             parent=self,
         )
-        _set_temporary_mute(owner, "listening_comparison", True)
+        owner.engine_session.hold_mute("listening_comparison", True)
         try:
             keep = dialog.exec() == int(QDialog.DialogCode.Accepted)
         finally:
-            _set_temporary_mute(owner, "listening_comparison", False)
+            owner.engine_session.hold_mute("listening_comparison", False)
             dialog.deleteLater()
         if keep:
             if self._final_comparison_pending:

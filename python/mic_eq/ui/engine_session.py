@@ -53,7 +53,7 @@ class Preparation(Protocol):
         ...
 
     def engine_started(self) -> None:
-        """After a window Start or an automatic restart worked, before the mute is put back."""
+        """After a window Start or an automatic restart worked: the streams are new, so redo what depends on them."""
         ...
 
 
@@ -192,11 +192,17 @@ class AudioLease:
 
     def mute(self, on: bool = True) -> None:
         """Hold or let go of the output mute under this lease's purpose."""
-        self._muted = bool(on)
-        self._session.hold_mute(self.purpose, self._muted)
+        self._session.hold_mute(self.purpose, bool(on))
+        # A release the engine refused stays pending: the next release or cleanup tries again.
+        self._muted = bool(on) or self._session.view.mute_error
 
     def muted(self) -> bool:
         return self._muted
+
+    @property
+    def held(self) -> bool:
+        """The lease has not been released yet, or its stop failed and it still owns the audio."""
+        return not self._released
 
     def release(self) -> StopReport:
         """Let the mute go and stop the audio this lease started; a failed stop keeps it owned."""
@@ -475,12 +481,19 @@ class EngineSession(QObject):
         """Audio on the selected route for a dialog: started if stopped, moved there with ``switch_route``.
 
         Raises ``RouteMismatch`` when the audio runs elsewhere and ``switch_route`` is false, and
-        ``AudioUnavailable`` when the start or the move failed (a failed move puts the old route back).
+        ``AudioUnavailable`` when a call is out, the route cannot be read, or the start or the move
+        failed (a failed move puts the old route back).
         """
-        selected = self._prepare.selected_route()
-        if self.processor.is_running():
+        if self.view.in_use:
+            raise AudioUnavailable("Audio is starting, stopping or recovering. Wait a moment and try again.")
+        try:
+            selected = self._prepare.selected_route()
+            active = active_device_identities(self.processor) if self.processor.is_running() else None
+        except Exception as error:
+            logger.exception("Could not read the audio route")
+            raise AudioUnavailable(str(error)) from error
+        if active is not None:
             owner = self._owner
-            active = active_device_identities(self.processor)
             if not route_identities_match(selected, active):
                 if not switch_route:
                     raise RouteMismatch(selected, active)
@@ -506,10 +519,12 @@ class EngineSession(QObject):
     def _release(self, lease: AudioLease) -> StopReport:
         if not lease.started or self._owner is not lease:
             return StopReport(stopped=False)
-        if not (self.processor.is_running() or self._restart_pending()):
+        outcome = attempt(lambda: bool(self.processor.is_running() or self._restart_pending()))
+        if outcome is False:
             self._owner = None
             return StopReport(stopped=False)
-        outcome = attempt(self.processor.stop)
+        if outcome is True:
+            outcome = attempt(self.processor.stop)
         if isinstance(outcome, Exception):
             logger.warning("Stopping the audio started for %s failed: %s", lease.purpose, outcome)
             report = StopReport(stopped=False, error=outcome)

@@ -48,7 +48,6 @@ from .capture_session import (
     CaptureSession,
     processor_sample_rate,
     selected_device_identities,
-    set_temporary_mute,
 )
 from .components import live_output_muted_notice, session_is_ending
 from .engine_session import AudioLease, AudioUnavailable, RouteMismatch
@@ -1082,11 +1081,11 @@ def open_test_my_sound(window: Any) -> None:
         fail(f"Could not prepare the processed clip.\n\n{exc}")
         return
     # Keep the preview out of the live output while it plays near the microphone.
-    set_temporary_mute(window, _TEST_MY_SOUND_REASON, True)
+    window.engine_session.hold_mute(_TEST_MY_SOUND_REASON, True)
     try:
         dialog.exec()
     finally:
-        set_temporary_mute(window, _TEST_MY_SOUND_REASON, False)
+        window.engine_session.hold_mute(_TEST_MY_SOUND_REASON, False)
         dialog.deleteLater()
 
 

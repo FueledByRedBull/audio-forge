@@ -355,14 +355,44 @@ def test_a_mute_the_engine_refused_is_pending_not_silencing(rig):
 # --- leases ----------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("call", ["start", "recovery"])
+def test_a_borrow_while_a_call_is_out_is_refused_until_it_answers(rig, call):
+    if call == "start":
+        rig.session.request_start("button")
+    else:
+        rig.session.tick()
+
+    with pytest.raises(AudioUnavailable, match="try again"):
+        rig.session.borrow("test_my_sound")
+    assert rig.engine.lifecycle() == [] and rig.events(AudioBorrowed) == []
+
+    rig.tasks.run()
+    lease = rig.session.borrow("test_my_sound")
+    assert lease.started == (call == "recovery")
+
+
+def test_a_borrow_that_cannot_read_the_route_says_so_and_owns_nothing(rig, caplog):
+    rig.running()
+
+    def unreadable() -> str:
+        raise RuntimeError("route unreadable")
+
+    rig.engine.get_active_input_device = unreadable
+    with caplog.at_level(logging.ERROR, logger="mic_eq.ui.engine_session"):
+        with pytest.raises(AudioUnavailable, match="route unreadable"):
+            rig.session.borrow("test_my_sound")
+    assert "route unreadable" in caplog.text and rig.events(AudioBorrowed) == []
+
+
 def test_a_lease_stops_only_audio_it_started_and_only_once(rig):
     lease = rig.session.borrow("auto_eq_calibration")
     assert lease.started and rig.engine.lifecycle() == ["start"]
     assert rig.events(AudioBorrowed) == [AudioBorrowed("auto_eq_calibration", started=True)]
     assert rig.session.borrow("auto_eq_calibration") is lease  # the same take again: still its audio
 
+    assert lease.held
     assert lease.release().stopped
-    assert not lease.release().stopped
+    assert not lease.held and not lease.release().stopped
     assert rig.engine.lifecycle() == ["start", "stop"]
 
     rig.running()
@@ -403,6 +433,38 @@ def test_a_failed_lease_stop_is_logged_reported_and_keeps_ownership(rig, caplog)
     assert rig.events(AudioReleased)[-1].report is report
     rig.engine.stop_error = None
     assert lease.release().stopped and not rig.engine.running
+
+
+@pytest.mark.parametrize("probe", ["is_running", "is_recovery_requested"])
+def test_a_lease_release_whose_engine_probe_fails_is_reported_and_keeps_ownership(rig, caplog, probe):
+    lease = rig.session.borrow("latency_calibration")
+    rig.engine.running = False  # is_recovery_requested is asked only of audio that has stopped
+    original = getattr(rig.engine, probe)
+
+    def fail() -> bool:
+        raise RuntimeError("probe failed")
+
+    setattr(rig.engine, probe, fail)
+    with caplog.at_level(logging.WARNING, logger="mic_eq.ui.engine_session"):
+        report = lease.release()
+
+    assert not report.stopped and str(report.error) == "probe failed"
+    assert "probe failed" in caplog.text and rig.events(AudioReleased)[-1].report is report
+    setattr(rig.engine, probe, original)
+    rig.engine.running = True
+    assert lease.release().stopped and not rig.engine.running
+
+
+def test_a_lease_mute_the_engine_refused_is_let_go_again_by_the_next_release(rig):
+    lease = rig.session.borrow("test_my_sound")
+    lease.mute(True)
+    rig.engine.mute_error = RuntimeError("mute unavailable")
+    lease.mute(False)
+
+    assert lease.muted() and rig.session.view.mute_error
+    rig.engine.mute_error = None
+    lease.release()
+    assert not lease.muted() and rig.engine.muted is False and not rig.session.view.mute_error
 
 
 def test_a_lease_mute_is_its_own_and_goes_with_it(rig):
@@ -497,6 +559,17 @@ def test_shutdown_drops_late_answers_and_stops_only_beside_no_call(rig):
     rig.tasks.run()
     rig.session.shutdown(100, save=lambda: False)
     assert rig.engine.lifecycle() == ["stop", "start", "compensation", "stop"]
+
+
+def test_shutdown_still_stops_the_audio_when_saving_raises(rig):
+    rig.running()
+
+    def save() -> bool:
+        raise OSError("disk full")
+
+    with pytest.raises(OSError, match="disk full"):
+        rig.session.shutdown(100, save=save)
+    assert rig.engine.lifecycle() == ["stop"] and not rig.engine.running
 
 
 def test_the_late_answer_of_a_start_after_shutdown_is_dropped(rig):

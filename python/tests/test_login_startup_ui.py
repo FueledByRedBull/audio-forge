@@ -307,6 +307,32 @@ def test_error_after_native_start_stops_audio_on_quiet_path(startup_window, monk
     assert window.start_btn_action.isEnabled() and not window.stop_btn_action.isEnabled()
 
 
+@pytest.mark.parametrize("mute_failure", ["before", "after"])
+def test_a_quiet_start_whose_mute_cannot_be_set_asks_nothing_and_leaves_start_on_offer(
+    startup_window, monkeypatch, mute_failure
+):
+    window, _, _ = startup_window
+    mutes = []
+
+    def set_output_mute(_muted):
+        mutes.append(_muted)
+        if len(mutes) == (1 if mute_failure == "before" else 2):
+            raise OSError("unavailable")
+
+    window.processor.set_output_mute.side_effect = set_output_mute
+    modal = Mock(side_effect=AssertionError("Quiet start must not show a modal"))
+    monkeypatch.setattr(main_window.QMessageBox, "critical", modal)
+
+    assert not window.engine_session.start_now(interactive=False)
+
+    # Before the start nothing runs; after it the audio that did start is stopped again.
+    assert window.processor.start.call_count == (0 if mute_failure == "before" else 1)
+    assert window.processor.stop.call_count == (0 if mute_failure == "before" else 1)
+    assert not window.processor.is_running()
+    modal.assert_not_called()
+    assert window.start_btn_action.isEnabled() and not window.stop_btn_action.isEnabled()
+
+
 def test_manual_refresh_resumes_route_preset_behavior_after_login_finishes(startup_window):
     window, _, devices = startup_window
     window.begin_login_startup()

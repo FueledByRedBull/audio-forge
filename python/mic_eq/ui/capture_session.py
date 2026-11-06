@@ -289,18 +289,6 @@ def restart_processor_for_route(
         raise RuntimeError(f"{switch_error}; previous route restored") from switch_error
 
 
-def set_temporary_mute(owner: Any, reason: str, enabled: bool) -> None:
-    """Set one dialog-owned mute without changing the user's mute preference."""
-    setter = getattr(owner, "set_temporary_output_mute", None)
-    if callable(setter):
-        setter(bool(enabled), reason)
-        return
-    processor = getattr(owner, "processor", None)
-    setter = getattr(processor, "set_output_mute", None)
-    if callable(setter):
-        setter(bool(enabled or getattr(owner, "user_muted", False)))
-
-
 @contextmanager
 def recovery_paused(processor: Any) -> Iterator[None]:
     """Keep the engine's stall recovery off while a dialog is open, then put back what was set.

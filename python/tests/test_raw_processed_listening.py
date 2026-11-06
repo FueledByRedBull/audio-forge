@@ -149,9 +149,6 @@ class _Window(QWidget):
         self.engine_session = fake_session(processor, owner=self)
         cast(Any, self.engine_session).hold_mute = lambda reason, on: self.mutes.append((on, reason))
 
-    def set_temporary_output_mute(self, muted: bool, reason: str) -> None:
-        self.mutes.append((muted, reason))
-
 
 @pytest.fixture
 def harness(qapp, monkeypatch):
@@ -213,6 +210,16 @@ def test_entry_reports_a_stream_that_will_not_start(harness):
     open_test_my_sound(_Window(processor))
     assert len(warnings) == 1
     assert "Could not start the microphone" in warnings[0] and "device busy" in warnings[0]
+    assert opened == []
+
+
+def test_entry_reports_a_route_that_cannot_be_read_as_a_stream_that_will_not_start(harness):
+    warnings, opened = harness
+    processor = _Processor()
+    cast(Any, processor).is_running = Mock(side_effect=RuntimeError("engine unreachable"))
+    open_test_my_sound(_Window(processor))
+    assert len(warnings) == 1
+    assert "Could not start the microphone" in warnings[0] and "engine unreachable" in warnings[0]
     assert opened == []
 
 

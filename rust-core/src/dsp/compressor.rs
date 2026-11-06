@@ -750,7 +750,7 @@ impl Compressor {
 
 #[cfg(test)]
 mod tests {
-    use super::makeup::{AUTO_MAKEUP_ACTIVE_MIN, AUTO_MAKEUP_SAMPLE_WINDOW_MS};
+    use super::makeup::{AUTO_MAKEUP_ACTIVE_MIN, AUTO_MAKEUP_SAMPLE_WINDOW_MS, NO_LOUDNESS_LUFS};
     use super::*;
 
     #[test]
@@ -1216,7 +1216,7 @@ mod tests {
         for _ in 0..300 {
             let mut silence = vec![0.0_f32; 480];
             comp.process_block_inplace_with_activity_control(&mut silence, Some(evidence));
-            assert!(comp.current_lufs().is_finite(), "{}", comp.current_lufs());
+            assert_eq!(comp.current_lufs(), NO_LOUDNESS_LUFS);
         }
 
         assert!(comp.auto_makeup_activity() > AUTO_MAKEUP_ACTIVE_MIN);
@@ -1228,18 +1228,16 @@ mod tests {
     }
 
     #[test]
-    fn test_digital_silence_sample_path_holds_makeup_gain() {
+    fn test_digital_silence_sample_path_publishes_no_loudness() {
         let mut comp = Compressor::default_voice(48_000.0);
         comp.set_auto_makeup_enabled(true);
         comp.set_target_lufs(-12.0);
-        let initial_gain = comp.current_makeup_gain();
 
         for _ in 0..48_000 {
             comp.process_sample(0.0);
         }
 
-        assert!(comp.current_lufs().is_finite(), "{}", comp.current_lufs());
-        assert_eq!(comp.current_makeup_gain(), initial_gain);
+        assert_eq!(comp.current_lufs(), NO_LOUDNESS_LUFS);
     }
 
     /// Largest dB jump between neighbouring samples of the makeup gain applied

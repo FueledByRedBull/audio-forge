@@ -12,6 +12,8 @@ const NOISE_RELATIVE_ACTIVITY_START_DB: f64 = 3.0;
 const NOISE_RELATIVE_ACTIVITY_FULL_DB: f64 = 15.0;
 const MAKEUP_SILENCE_RELAX_MS: f64 = 1500.0;
 pub(super) const AUTO_MAKEUP_SAMPLE_WINDOW_MS: f64 = 10.0;
+/// The loudness published with nothing measured: idle, or a silent window.
+pub(super) const NO_LOUDNESS_LUFS: f64 = -100.0;
 // Compressor callers accept generic rates through 192 kHz, but the loudness
 // meter supports only the rates in `loudness::validate_sample_rate`. Reserve
 // the full 10 ms window at 192 kHz even when the meter (and so auto makeup) is
@@ -94,7 +96,7 @@ impl MakeupController {
             makeup_smoothing_coeff,
             auto_gain_target: makeup_gain_db,
             auto_gain_coeff: 1.0,
-            current_lufs: -100.0,
+            current_lufs: NO_LOUDNESS_LUFS,
             speech_activity_score: 0.0,
             speech_activity_smoothing_coeff: util::time_constant_to_coeff(
                 AUTO_MAKEUP_ACTIVITY_SMOOTH_MS,
@@ -303,11 +305,14 @@ impl MakeupController {
         }
 
         if let Some(meter) = &self.loudness_meter {
-            // A silent window has no loudness (-inf): it is not a measurement.
+            // A silent window reads -inf: it is not a measurement.
             let momentary_lufs = meter.loudness_momentary() as f64;
-            if momentary_lufs.is_finite() {
-                self.current_lufs = momentary_lufs;
-            }
+            let measured = momentary_lufs.is_finite();
+            self.current_lufs = if measured {
+                momentary_lufs
+            } else {
+                NO_LOUDNESS_LUFS
+            };
             let activity_coeff = if elapsed_samples == 1 {
                 self.speech_activity_smoothing_coeff
             } else {
@@ -333,7 +338,7 @@ impl MakeupController {
                 }
                 return;
             }
-            if !momentary_lufs.is_finite() {
+            if !measured {
                 self.hold_auto_gain();
                 return;
             }
@@ -418,6 +423,6 @@ impl MakeupController {
         if let Some(meter) = &mut self.loudness_meter {
             meter.reset();
         }
-        self.current_lufs = -100.0;
+        self.current_lufs = NO_LOUDNESS_LUFS;
     }
 }

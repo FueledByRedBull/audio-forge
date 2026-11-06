@@ -35,7 +35,7 @@ from .capture_session import (
     processor_output_sample_rate as _output_sample_rate,
     processor_sample_rate as _capture_sample_rate,
 )
-from .engine_session import AudioLease, AudioUnavailable, RouteMismatch
+from .engine_session import AudioLease, AudioUnavailable, EngineBusy, RouteMismatch
 from .layout_constants import configure_resizable_dialog
 from .quick_scene import QML_DIR, load_scene, quick_theme
 from .quick_shell import register_qml_types
@@ -259,6 +259,9 @@ class LatencyCalibrationDialog(QDialog):
             self._on_worker_failed(
                 "Latency calibration requires the selected route to match the active stream."
             )
+            return
+        except EngineBusy as e:
+            QMessageBox.critical(self, "Audio error", str(e))
             return
         except AudioUnavailable as e:
             QMessageBox.critical(

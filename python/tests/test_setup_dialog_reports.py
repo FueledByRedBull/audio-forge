@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-from PySide6.QtWidgets import QComboBox, QGroupBox, QLabel, QMessageBox, QPushButton
+from PySide6.QtWidgets import QLabel, QMessageBox
 
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
@@ -22,6 +22,7 @@ from test_auto_eq_candidate_lifecycle import (
     _over_the_rule,
     _Owner,
     _owner_with,
+    _scene_texts,
 )
 from test_voice_setup_integration import (
     _bind_capture_context,
@@ -422,16 +423,10 @@ _CLAIMS = ("calibrat", "confidence", "measurement", "measured", "your microphone
 
 
 def _shown_text(dialog: CalibrationDialog) -> str:
-    texts: list[str] = [dialog.warning_label.text(), dialog.warning_label.toolTip()]
-    for label in dialog.findChildren(QLabel):
-        texts += [label.text(), label.toolTip(), label.accessibleName()]
-    for button in dialog.findChildren(QPushButton):
-        texts += [button.text(), button.toolTip(), button.accessibleName()]
-    for group in dialog.findChildren(QGroupBox):
-        texts.append(group.title())
-    for combo in dialog.findChildren(QComboBox):
-        texts += [combo.toolTip()] + [combo.itemText(i) for i in range(combo.count())]
-    return " ".join(texts).lower()
+    view = dialog.view_model
+    texts = [view.warning_text, view.warning_tip, str(view.shown["startText"]), str(view.shown["curveDescription"])]
+    texts += [chip["text"] + " " + chip["tip"] for chip in view.chip_list]
+    return " ".join([*texts, _scene_texts(dialog)]).lower()
 
 
 def test_auto_eq_text_never_claims_to_measure_or_calibrate(qapp, monkeypatch) -> None:
@@ -489,11 +484,11 @@ def test_the_auto_eq_result_draws_the_proposed_eq_only_when_it_offers_one(qapp, 
     owner, dialog, _records = _auto_eq(owner=_owner_with())
     try:
         _complete(dialog, monkeypatch, _over_the_rule(owner.preset.eq))
-        assert dialog.eq_compare.isHidden() is False
-        assert "Largest change" in dialog.eq_compare.accessibleDescription()
+        assert dialog.view_model.shown["eqCompareShown"] is True
+        assert "Largest change" in dialog.eq_compare.description()
 
         _complete(dialog, monkeypatch, _no_correction(_over_the_rule(owner.preset.eq)))
-        assert dialog.eq_compare.isHidden()
+        assert not dialog.view_model.shown["eqCompareShown"]
     finally:
         dialog.reject()
         owner.close()
@@ -556,13 +551,13 @@ def test_compare_belongs_to_the_review_alone(real_main_window) -> None:
 def test_the_auto_eq_review_is_titled_review_and_shows_compare_only_there(qapp, monkeypatch) -> None:
     owner, dialog, _records = _auto_eq(owner=_owner_with())
     try:
-        assert dialog.compare_button.isHidden()
-        assert dialog.recording_group.title() == "Recording"
+        assert not dialog.view_model.shown["compareShown"]
+        assert dialog.view_model.shown["recordingTitle"] == "Recording"
 
         _complete(dialog, monkeypatch, _over_the_rule(owner.preset.eq))
 
-        assert dialog.recording_group.title() == "Review"
-        assert dialog.compare_button.isHidden() is False
+        assert dialog.view_model.shown["recordingTitle"] == "Review"
+        assert dialog.view_model.shown["compareShown"] is True
     finally:
         dialog.reject()
         owner.close()
@@ -574,25 +569,22 @@ def test_the_passage_is_never_cut_or_scrolled_inside_the_page(real_main_window, 
 
     from mic_eq.ui.calibration_support import RAINBOW_PASSAGE
 
-    owner = _Owner()
-    dialogs = (VoiceSetupDialog(parent=real_main_window, configuration=real_main_window.configuration), CalibrationDialog(owner, configuration=owner.configuration))
+    # test_calibration_scene.py checks the Auto-EQ scene's passage.
+    dialog = VoiceSetupDialog(parent=real_main_window, configuration=real_main_window.configuration)
     try:
-        for dialog in dialogs:
-            dialog.resize(520, 700)
-            dialog.show()
-            qapp.processEvents()
-            passage = [
-                label for label in dialog.findChildren(QLabel) if label.text() == RAINBOW_PASSAGE
-            ]
-            assert len(passage) == 1 and not dialog.findChildren(QTextEdit)
-            label = passage[0]
-            assert label.wordWrap()
-            # Tall enough for every wrapped line.
-            assert label.height() >= label.heightForWidth(label.width()) - 1
+        dialog.resize(520, 700)
+        dialog.show()
+        qapp.processEvents()
+        passage = [
+            label for label in dialog.findChildren(QLabel) if label.text() == RAINBOW_PASSAGE
+        ]
+        assert len(passage) == 1 and not dialog.findChildren(QTextEdit)
+        label = passage[0]
+        assert label.wordWrap()
+        # Tall enough for every wrapped line.
+        assert label.height() >= label.heightForWidth(label.width()) - 1
     finally:
-        for dialog in dialogs:
-            dialog.reject()
-        owner.close()
+        dialog.reject()
 
 
 # --- A result that was reported is not overwritten by closing the window ------------------
@@ -748,7 +740,7 @@ def test_the_auto_eq_tooltip_says_what_the_validation_score_rises_with(qapp, mon
     try:
         _complete(dialog, monkeypatch, _over_the_rule(owner.preset.eq))
 
-        tooltip = dialog.confidence_label.toolTip()
+        tooltip = dialog.view_model.chip("confidence")["tip"]
         assert "rises as the correction gets closer to the tone preset" in tooltip
         assert "size of the correction" not in tooltip
     finally:

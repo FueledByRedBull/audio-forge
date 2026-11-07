@@ -13,9 +13,12 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
+from PySide6.QtCore import QObject
+from PySide6.QtGui import QAccessible
 from PySide6.QtWidgets import QMessageBox, QWidget
 
 from mic_eq.config import (
+    TARGET_CURVES,
     CompressorSettings,
     EQ_FREQUENCIES,
     EQSettings,
@@ -29,7 +32,8 @@ from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.calibration_support import AutoEqCandidate, chain_settings
 from mic_eq.ui.platform_text import SOUND_SETTINGS
 from mic_eq.ui.processing_configuration import Checkpoint
-from mic_eq.ui.theme import message_text_style, status_chip_style
+from test_first_run_setup import scene_items
+from test_quick_shell import _AccessibleScene
 
 
 class _SignalStub:
@@ -260,7 +264,7 @@ def _capture(dialog: CalibrationDialog, monkeypatch, curve: str) -> None:
     monkeypatch.setattr(
         "mic_eq.ui.calibration_dialog.AnalysisWorker", _AnalysisWorkerStub
     )
-    dialog.curve_combo.setCurrentIndex(dialog.curve_combo.findData(curve))
+    dialog.view_model.pickCurve(list(TARGET_CURVES).index(curve))
     dialog.recording_state = "recording"
     finish_take(dialog, np.full(128, 0.1, dtype=np.float32))
 
@@ -282,13 +286,13 @@ def test_retake_and_failed_next_analysis_cannot_apply_old_candidate(qapp, monkey
         _capture(dialog, monkeypatch, "broadcast")
         generation_a = dialog._analysis_generation
         assert dialog.recording_state == "analyzing"
-        assert dialog.start_button.isEnabled() is False
-        assert dialog.curve_combo.isEnabled() is False
+        assert dialog.view_model.shown["startEnabled"] is False
+        assert dialog.view_model.shown["choicesEnabled"] is False
 
         dialog._on_analysis_complete(_candidate(1.0), generation=generation_a)
         assert dialog.recording_state == "ready"
         assert dialog.eq_settings is not None
-        assert dialog.curve_combo.isEnabled() is False
+        assert dialog.view_model.shown["choicesEnabled"] is False
 
         monkeypatch.setattr(
             QMessageBox,
@@ -304,12 +308,12 @@ def test_retake_and_failed_next_analysis_cannot_apply_old_candidate(qapp, monkey
         generation_b = dialog._analysis_generation
         assert dialog.recording_state == "analyzing"
         assert dialog.eq_settings is None
-        assert dialog.curve_combo.isEnabled() is False
+        assert dialog.view_model.shown["choicesEnabled"] is False
 
         dialog._on_analysis_failed("B failed", generation=generation_b)
         assert dialog.recording_state == "ready"
         assert dialog.eq_settings is None
-        assert dialog.start_button.text() == "Record Again"
+        assert dialog.view_model.shown["startText"] == "Record Again"
         dialog._apply_eq_settings()
         assert owner.eq_state.applied_bands is None
 
@@ -326,7 +330,7 @@ def test_apply_uses_captured_target_and_enables_eq_after_bands(qapp, monkeypatch
             _candidate(2.0, owner.preset.eq), generation=generation
         )
 
-        dialog.curve_combo.setCurrentIndex(dialog.curve_combo.findData("podcast"))
+        dialog.view_model.pickCurve(list(TARGET_CURVES).index("podcast"))
         assert owner.eq_state.enabled is False
         dialog._on_start_clicked()
 
@@ -478,10 +482,10 @@ def test_unavailable_headroom_never_enables_apply_or_audition(qapp, monkeypatch)
 
         assert dialog._candidate_proposal is None
         assert dialog.eq_settings is None
-        assert dialog.compare_button.isEnabled() is False
-        assert dialog.start_button.text() == "Record Again"
-        assert "could not confirm the correction is safe" in dialog.warning_label.text()
-        assert "native simulator unavailable" in dialog.warning_label.toolTip()
+        assert dialog.view_model.shown["compareEnabled"] is False
+        assert dialog.view_model.shown["startText"] == "Record Again"
+        assert "could not confirm the correction is safe" in dialog.view_model.warning_text
+        assert "native simulator unavailable" in dialog.view_model.warning_tip
 
 
 def _owner_with(**stages: Any) -> _Owner:
@@ -574,9 +578,9 @@ def _advice(text: str) -> tuple[str | None, int | None, str | None]:
 
 
 def _warning_state(dialog: CalibrationDialog) -> str | None:
-    style = dialog.warning_label.styleSheet()
+    view = dialog.view_model
     return next(
-        (state for state in ("ok", "warn", "bad") if style == message_text_style(state, strong=True)),
+        (state for state in ("ok", "warn", "bad") if (view.warning_state, view.warning_strong) == (state, True)),
         None,
     )
 
@@ -594,14 +598,14 @@ def test_proposal_kept_over_the_rule_is_offered_with_the_cause_and_the_fix(qapp,
 
         assert dialog._candidate_proposal is not None
         assert dialog.eq_settings is not None
-        assert dialog.compare_button.isEnabled() is True
-        assert dialog.start_button.text() == "Apply EQ Settings"
-        text = dialog.warning_label.text()
+        assert dialog.view_model.shown["compareEnabled"] is True
+        assert dialog.view_model.shown["startText"] == "Apply EQ Settings"
+        text = dialog.view_model.warning_text
         _assert_ready(text)
         assert "no worse than your current one" in text
         assert _advice(text) == ("microphone gain", 2, "leave enough room")
         assert "limiter" not in text  # the limiter is on, so there is nothing to say about it
-        assert dialog.gain_scale_label.text() == "Headroom check: not met even without the EQ."
+        assert dialog.view_model.chip("gain")["text"] == "Headroom check: not met even without the EQ."
         assert dialog._candidate_identity_error(dialog.eq_settings, owner) is None
 
         dialog._on_start_clicked()
@@ -624,7 +628,7 @@ def test_output_that_already_clips_with_the_limiter_off_gets_the_plain_warning(q
         )
 
         assert dialog._candidate_proposal is not None
-        text = dialog.warning_label.text()
+        text = dialog.view_model.warning_text
         assert "already clips" in text
         assert "no worse than your current one" in text
         assert _advice(text) == ("microphone gain", 2, "leave enough room")
@@ -638,9 +642,9 @@ def test_no_correction_over_the_rule_still_names_the_cause_and_the_fix(qapp, mon
         _complete(dialog, monkeypatch, _no_correction(_over_the_rule(owner.preset.eq)))
 
         assert dialog._candidate_proposal is None
-        assert dialog.compare_button.isEnabled() is False
-        assert dialog.start_button.text() == "Record Again"
-        text = dialog.warning_label.text()
+        assert dialog.view_model.shown["compareEnabled"] is False
+        assert dialog.view_model.shown["startText"] == "Record Again"
+        text = dialog.view_model.warning_text
         assert text.startswith("No correction applied")
         assert "too little room" in text
         assert _advice(text) == ("microphone gain", 2, "record again")
@@ -679,7 +683,7 @@ def test_the_remedy_follows_the_compressor_and_makeup_state(
         result = _over_the_rule(owner.preset.eq)
         _complete(dialog, monkeypatch, _no_correction(result) if left_out else result)
 
-        text = dialog.warning_label.text()
+        text = dialog.view_model.warning_text
         assert _advice(text) == advice
         assert all(note in text for note in notes)
 
@@ -701,11 +705,11 @@ def test_a_correction_that_headroom_made_gentler_says_what_would_allow_the_full_
         }
         _complete(dialog, monkeypatch, result)
 
-        text = dialog.warning_label.text()
+        text = dialog.view_model.warning_text
         _assert_ready(text)
         assert _advice(text) == ("microphone gain", 1, "allow the full correction")
         assert "too little room" not in text  # the current EQ is fine; only the gain limits
-        assert dialog.gain_scale_label.text() == "Headroom check: passed."
+        assert dialog.view_model.chip("gain")["text"] == "Headroom check: passed."
 
 
 def test_a_correction_over_the_rule_that_was_made_gentler_does_not_say_there_was_room(
@@ -720,7 +724,7 @@ def test_a_correction_over_the_rule_that_was_made_gentler_does_not_say_there_was
         )
         _complete(dialog, monkeypatch, result)
 
-        text = dialog.warning_label.text()
+        text = dialog.view_model.warning_text
         assert text.startswith("Conservative correction ready")
         assert "gentler so it leaves no less room than your current EQ" in text
         assert "leave enough headroom" not in text
@@ -735,18 +739,18 @@ def test_a_correction_left_out_for_leaving_less_room_says_so_and_offers_nothing(
 
         assert dialog._candidate_proposal is None
         assert dialog.eq_settings is None
-        assert dialog.compare_button.isEnabled() is False
-        assert dialog.start_button.text() == "Record Again"
-        text = dialog.warning_label.text()
+        assert dialog.view_model.shown["compareEnabled"] is False
+        assert dialog.view_model.shown["startText"] == "Record Again"
+        text = dialog.view_model.warning_text
         assert text.startswith("No correction applied")
         assert "less room than your current EQ" in text
         assert _advice(text) == ("microphone gain", 2, "record again")
         assert text.endswith("record again.")
-        assert "Full-chain headroom validation failed" not in dialog.warning_label.toolTip()
-        assert dialog.gain_scale_label.styleSheet() == status_chip_style("warn")
-        assert "less room than your current EQ" in dialog.gain_scale_label.text()
+        assert "Full-chain headroom validation failed" not in dialog.view_model.warning_tip
+        assert dialog.view_model.chip("gain")["state"] == "warn"
+        assert "less room than your current EQ" in dialog.view_model.chip("gain")["text"]
         # The figures shown are the ones that ruled the full correction out.
-        assert "-0.3 dB" in dialog.gain_scale_label.toolTip()
+        assert "-0.3 dB" in dialog.view_model.chip("gain")["tip"]
 
 
 def test_a_correction_left_out_is_never_offered_whatever_else_the_result_says(qapp, monkeypatch):
@@ -762,7 +766,7 @@ def test_a_correction_left_out_is_never_offered_whatever_else_the_result_says(qa
 
         assert dialog._candidate_proposal is None
         assert dialog.eq_settings is None
-        assert dialog.start_button.text() == "Record Again"
+        assert dialog.view_model.shown["startText"] == "Record Again"
 
 
 def test_only_an_authoritative_not_worsened_result_opens_the_gate(qapp, monkeypatch):
@@ -782,8 +786,8 @@ def test_only_an_authoritative_not_worsened_result_opens_the_gate(qapp, monkeypa
 
             assert dialog._candidate_proposal is None
             assert dialog.eq_settings is None
-            assert dialog.start_button.text() == "Record Again"
-            assert "Full-chain headroom validation failed" in dialog.warning_label.toolTip()
+            assert dialog.view_model.shown["startText"] == "Record Again"
+            assert "Full-chain headroom validation failed" in dialog.view_model.warning_tip
         finally:
             dialog.reject()
             owner.close()
@@ -816,7 +820,7 @@ def test_a_clipped_unreadable_or_silent_take_is_refused_before_any_analysis(
     with _dialog_for(owner) as dialog:
         _record(dialog, monkeypatch, take)
 
-        text = dialog.warning_label.text()
+        text = dialog.view_model.warning_text
         assert control in text
         figure = re.search(r"by about (\d+) dB", text)
         assert (int(figure[1]) if figure else None) == figure_db
@@ -825,7 +829,7 @@ def test_a_clipped_unreadable_or_silent_take_is_refused_before_any_analysis(
         assert dialog.recording_state == "idle"
         assert dialog.analysis_worker is None
         assert dialog.audio_data is None and dialog.preview_audio_data is None
-        assert dialog.start_button.isEnabled() is True
+        assert dialog.view_model.shown["startEnabled"] is True
 
 
 class _ModeOwner(_Owner):
@@ -871,19 +875,19 @@ def test_the_abstention_tooltip_does_not_outlive_its_result(qapp, monkeypatch):
     owner = _Owner()
     with _dialog_for(owner) as dialog:
         _complete(dialog, monkeypatch, _no_correction(_over_the_rule(owner.preset.eq)))
-        assert dialog.warning_label.toolTip() == "headroom validation removed the usable correction"
+        assert dialog.view_model.warning_tip == "headroom validation removed the usable correction"
 
         _capture(dialog, monkeypatch, "broadcast")
         dialog._on_analysis_failed("B failed", generation=dialog._analysis_generation)
-        assert dialog.warning_label.toolTip() == ""
+        assert dialog.view_model.warning_tip == ""
 
         _complete(dialog, monkeypatch, _no_correction(_over_the_rule(owner.preset.eq)))
-        assert dialog.warning_label.toolTip() != ""
+        assert dialog.view_model.warning_tip != ""
         monkeypatch.setattr(
             QMessageBox, "question", lambda *_a, **_k: QMessageBox.StandardButton.Yes
         )
         dialog._on_retake_clicked()
-        assert dialog.warning_label.toolTip() == ""
+        assert dialog.view_model.warning_tip == ""
 
 
 def test_progress_is_a_busy_bar_while_the_analysis_runs(qapp, monkeypatch):
@@ -891,18 +895,18 @@ def test_progress_is_a_busy_bar_while_the_analysis_runs(qapp, monkeypatch):
     with _dialog_for(owner) as dialog:
         _capture(dialog, monkeypatch, "broadcast")
         generation = dialog._analysis_generation
-        assert (dialog.progress_bar.minimum(), dialog.progress_bar.maximum()) == (0, 0)
+        assert dialog.view_model.shown["progressBusy"] is True
 
         dialog._on_analysis_step("fitting the correction and checking headroom...", 10, generation)
-        assert dialog.progress_bar.maximum() == 0
+        assert dialog.view_model.shown["progressBusy"] is True
 
         dialog._on_analysis_complete(_candidate(1.0, owner.preset.eq), generation=generation)
-        assert (dialog.progress_bar.maximum(), dialog.progress_bar.value()) == (100, 100)
+        assert (dialog.view_model.shown["progressBusy"], dialog.view_model.shown["progress"]) == (False, 100)
 
         _capture(dialog, monkeypatch, "broadcast")
-        assert dialog.progress_bar.maximum() == 0
+        assert dialog.view_model.shown["progressBusy"] is True
         dialog._on_analysis_failed("B failed", generation=dialog._analysis_generation)
-        assert dialog.progress_bar.maximum() == 100
+        assert dialog.view_model.shown["progressBusy"] is False
 
 
 def test_the_tone_modes_are_named_for_what_they_do_and_keep_their_stored_values(
@@ -910,13 +914,15 @@ def test_the_tone_modes_are_named_for_what_they_do_and_keep_their_stored_values(
 ):
     owner = _Owner()
     dialog = CalibrationDialog(owner, configuration=owner.configuration)
-    combo = dialog.target_mode_combo
+    view = dialog.view_model
     try:
-        assert [(combo.itemText(i), combo.itemData(i)) for i in range(combo.count())] == [
-            ("Subtle", "adaptive"),
-            ("Full strength", "static"),
-        ]
-        tip = combo.toolTip()
+        stored_by_label = {}
+        for index, label in enumerate(view.mode_labels):
+            view.pickMode(index)
+            stored_by_label[label] = dialog.get_selected_target_mode()
+        assert stored_by_label == {"Subtle": "adaptive", "Full strength": "static"}
+        view.pickMode(0)
+        tip = dialog.quick_view.rootObject().property("tipMode")
         assert re.search(r"Subtle[^.]*never more than 2 dB", tip)  # a ceiling, for this mode
         assert re.search(r"Full strength[^.]*up to 5 dB", tip)
         assert re.findall(r"(\d+) dB", tip) == ["2", "5"]
@@ -924,7 +930,7 @@ def test_the_tone_modes_are_named_for_what_they_do_and_keep_their_stored_values(
         assert dialog.get_selected_target_mode() == "adaptive"
 
         for label, stored in (("Subtle", "adaptive"), ("Full strength", "static")):
-            combo.setCurrentIndex(combo.findText(label))
+            view.pickMode(view.mode_labels.index(label))
             _capture(dialog, monkeypatch, "broadcast")
 
             # Exactly what was stored before the names changed.
@@ -944,17 +950,29 @@ def test_the_tone_modes_are_named_for_what_they_do_and_keep_their_stored_values(
         owner.close()
 
 
-def test_no_text_in_the_dialog_claims_to_adapt_to_the_voice(qapp):
-    from PySide6.QtWidgets import QComboBox, QLabel
+def _scene_texts(dialog: CalibrationDialog) -> str:
+    """Every text the scene holds, shown or not: labels, hints, choices and the help on hover."""
+    root = dialog.quick_view.rootObject()
+    texts: list[str] = []
+    for item in (root, *root.findChildren(QObject), *scene_items(root)):
+        for name in ("text", "tip", "caption", "tipMode", "tipSmoothing", "tipCompare"):
+            value = item.property(name)
+            if isinstance(value, str):
+                texts.append(value)
+    with _AccessibleScene():
+        for item in scene_items(root):
+            interface = QAccessible.queryAccessibleInterface(item)
+            if interface is not None:
+                texts += [interface.text(QAccessible.Text.Name), interface.text(QAccessible.Text.Description)]
+    view = dialog.view_model
+    return " ".join([*texts, *view.curve_labels, *view.mode_labels, *view.smoothing_labels, view.passage_text])
 
+
+def test_no_text_in_the_dialog_claims_to_adapt_to_the_voice(qapp):
     owner = _Owner()
     with _dialog_for(owner) as dialog:
-        texts = []
-        for label in dialog.findChildren(QLabel):
-            texts += [label.text(), label.toolTip()]
-        for combo in dialog.findChildren(QComboBox):
-            texts += [combo.toolTip()] + [combo.itemText(i) for i in range(combo.count())]
-        shown = " ".join(texts)
+        shown = _scene_texts(dialog)
+        assert "Subtle aims for small tone changes" in shown and "Tone preset" in shown  # the scan reaches the scene
 
         for phrase in ("Adapt to my voice", "Exact tone preset", "suit your voice", "Adapting"):
             assert phrase not in shown
@@ -968,7 +986,7 @@ def test_the_quiet_verdict_waits_out_the_pauses_between_words(qapp):
         assert _warning_state(dialog) == "ok"  # the level is good
 
         dialog._on_level_update(-70.0, -12.0)  # the last loud block has left the window
-        text = dialog.warning_label.text()
+        text = dialog.view_model.warning_text
         assert _warning_state(dialog) == "warn"
         assert "Little or no speech was heard" in text and "-70 dB" in text
         assert "Speak for the whole check" in text  # not the "voice is quiet, raise it" advice
@@ -981,17 +999,17 @@ def test_the_quiet_verdict_waits_out_the_pauses_between_words(qapp):
 def test_the_level_verdict_waits_for_a_full_window_but_loudness_does_not(qapp):
     owner = _Owner()
     with _dialog_for(owner) as dialog:
-        dialog.warning_label.setText("Recording...")
+        dialog.view_model.set_warning("Recording...")
         for _ in range(14):  # a speaker who has not started yet
             dialog._on_level_update(-70.0, -60.0)
-        assert dialog.warning_label.text() == "Recording..."
+        assert dialog.view_model.warning_text == "Recording..."
 
         dialog._on_level_update(-70.0, -60.0)  # the 15th block makes a window
-        assert dialog.warning_label.text().startswith("Your voice is quiet: -70 dB")
+        assert dialog.view_model.warning_text.startswith("Your voice is quiet: -70 dB")
 
         dialog._recent_rms_db.clear()
         dialog._on_level_update(-20.0, -1.0)  # too loud is said at once
-        assert dialog.warning_label.text().startswith(
+        assert dialog.view_model.warning_text.startswith(
             "Your voice peaks at -1.0 dB, close to the limit: lower the microphone level by about 5 dB "
             f"(in {SOUND_SETTINGS} or on the microphone)"
         )

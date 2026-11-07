@@ -692,7 +692,10 @@ def startup_fakes(qapp, monkeypatch):
     factory = Mock(return_value=instance, ACQUIRED="acquired", FORWARDED="forwarded")
     monkeypatch.setattr(app_bootstrap, "SingleInstanceCoordinator", factory)
     monkeypatch.setattr(app_bootstrap, "QApplication", lambda _args: qapp)
-    for name in ("configure_windows_app_id", "configure_deepfilter_env", "configure_vad_env"):
+    for name in (
+        "configure_windows_app_id", "configure_deepfilter_env", "configure_vad_env",
+        "_hide_bundle_from_child_processes",
+    ):
         monkeypatch.setattr(app_bootstrap, name, lambda *_: None)
     monkeypatch.setattr(sys, "argv", ["AudioForge.exe"])
 
@@ -924,3 +927,115 @@ def test_the_app_claims_its_bus_name_before_building_the_window(startup_fakes, s
         app_bootstrap._run_qt_app(window, smoke_test=False, enable_qt_log=lambda: None)  # type: ignore[arg-type]
 
     assert owned == [True]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the frozen Linux bundle's environment")
+@pytest.mark.parametrize(("original", "expected"), [("/opt/host", "/opt/host"), (None, None)])
+def test_child_processes_do_not_inherit_the_frozen_bundle(monkeypatch, original, expected):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/bundle/_internal")
+    monkeypatch.setenv("QT_PLUGIN_PATH", "/bundle/_internal/PySide6/Qt/plugins")
+    monkeypatch.setenv("QML2_IMPORT_PATH", "/bundle/_internal/PySide6/Qt/qml")
+    if original is None:
+        monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
+    else:
+        monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", original)
+
+    app_bootstrap._hide_bundle_from_child_processes()
+
+    assert os.environ.get("LD_LIBRARY_PATH") == expected
+    assert "LD_LIBRARY_PATH_ORIG" not in os.environ
+    assert "QT_PLUGIN_PATH" not in os.environ
+    assert "QML2_IMPORT_PATH" not in os.environ
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="a Linux logout ends an app with a signal")
+@pytest.mark.parametrize("name", ["SIGTERM", "SIGHUP"])
+def test_a_termination_signal_ends_the_session_without_asking(qapp, name):
+    import signal
+
+    from PySide6.QtCore import QTimer
+    from mic_eq.ui.main_window import SESSION_ENDING_PROPERTY
+
+    number = getattr(signal, name)
+    before = signal.getsignal(number)
+    QTimer.singleShot(0, lambda: os.kill(os.getpid(), number))
+    # A deadline left pending would end the event loop of whichever test runs five seconds later.
+    deadline = QTimer()
+    deadline.setSingleShot(True)
+    deadline.timeout.connect(lambda: qapp.exit(1))
+    deadline.start(5000)
+    try:
+        with app_bootstrap._quit_on_termination_signal(qapp):
+            code = qapp.exec()
+        assert code == 0
+        assert qapp.property(SESSION_ENDING_PROPERTY) is True
+    finally:
+        deadline.stop()
+        qapp.setProperty(SESSION_ENDING_PROPERTY, False)
+    assert signal.getsignal(number) is before
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="a Linux logout ends an app with a signal")
+def test_another_signal_does_not_end_the_session(qapp):
+    import signal
+
+    assert sys.platform == "linux"  # narrows the POSIX-only signal names for the type checker
+
+    from PySide6.QtCore import QTimer
+    from mic_eq.ui.main_window import SESSION_ENDING_PROPERTY
+
+    previous = signal.signal(signal.SIGUSR1, lambda *_: None)
+    QTimer.singleShot(0, lambda: os.kill(os.getpid(), signal.SIGUSR1))
+    deadline = QTimer()
+    deadline.setSingleShot(True)
+    deadline.timeout.connect(lambda: qapp.exit(7))
+    deadline.start(300)
+    try:
+        with app_bootstrap._quit_on_termination_signal(qapp):
+            code = qapp.exec()
+        assert code == 7  # still running when the deadline ended it
+        assert not qapp.property(SESSION_ENDING_PROPERTY)
+    finally:
+        deadline.stop()
+        signal.signal(signal.SIGUSR1, previous)
+        qapp.setProperty(SESSION_ENDING_PROPERTY, False)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="a Linux logout ends an app with a signal")
+def test_a_hangup_ignored_before_start_stays_ignored(qapp):
+    import signal
+
+    assert sys.platform == "linux"  # narrows the POSIX-only signal names for the type checker
+
+    previous = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+        with app_bootstrap._quit_on_termination_signal(qapp):
+            assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+        assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGHUP, previous)
+
+
+def test_qml_import_paths_taken_from_the_environment_reach_each_scene(qapp, monkeypatch, tmp_path):
+    from PySide6.QtQuickWidgets import QQuickWidget
+
+    from mic_eq.ui import quick_scene
+
+    monkeypatch.setattr(app_bootstrap.sys, "platform", "linux")
+    monkeypatch.setattr(app_bootstrap.sys, "frozen", True, raising=False)
+    for name in ("LD_LIBRARY_PATH", "LD_LIBRARY_PATH_ORIG", "QT_PLUGIN_PATH"):
+        monkeypatch.setenv(name, os.environ.get(name, ""))  # restored after the test
+    monkeypatch.setenv("QML2_IMPORT_PATH", str(tmp_path))
+    monkeypatch.setattr(quick_scene, "_import_paths", [])
+    app_bootstrap._hide_bundle_from_child_processes()
+
+    assert "QML2_IMPORT_PATH" not in os.environ
+    scene = tmp_path / "Scene.qml"
+    scene.write_text("import QtQuick\nItem {}\n", encoding="utf-8")
+    view = QQuickWidget()
+    try:
+        assert quick_scene.load_scene(view, scene, {}, {}) is None
+        assert tmp_path.as_posix() in view.engine().importPathList()  # Qt reports paths with forward slashes
+    finally:
+        view.deleteLater()

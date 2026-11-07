@@ -153,7 +153,7 @@ def test_dont_ask_again_waits_for_the_quit_to_go_ahead(
     monkeypatch.setattr(QGuiApplication, "quit", staticmethod(lambda: None))
     answers.reply.update(button="Quit", dont_ask=True)
     discard = {"allowed": False}
-    monkeypatch.setattr(live_window, "_confirm_discard_changes", lambda: discard["allowed"])
+    monkeypatch.setattr(live_window.configuration, "confirm_discard", lambda: discard["allowed"])
 
     attempt(live_window)
     assert live_window.config.confirm_quit_when_live and live_window.processor.running
@@ -217,10 +217,9 @@ def test_tray_quit_with_close_to_tray_on_quits_without_asking(live_window, answe
 def test_tray_quit_asks_once_then_asks_about_unsaved_changes(live_window, answers, monkeypatch):
     monkeypatch.setattr(QGuiApplication, "quit", staticmethod(lambda: None))
     answers.reply["button"] = "Quit"
-    live_window._set_preset_modified(False)
     gain = eq_control(live_window, "gain", 4)
     gain.setValue(gain.value + 6.0)
-    assert live_window.preset_modified
+    assert live_window.configuration.identity.modified
 
     live_window._quit_from_tray()
 
@@ -238,10 +237,9 @@ def test_tray_quit_keep_running_hides_the_window(live_window, answers):
 
 
 def _unsaved_change(window: Any) -> None:
-    window._set_preset_modified(False)
     gain = eq_control(window, "gain", 4)
     gain.setValue(gain.value + 6.0)
-    assert window.preset_modified
+    assert window.configuration.identity.modified
 
 
 def test_a_sign_out_with_unsaved_changes_never_asks_and_never_vetoes(
@@ -320,4 +318,4 @@ def test_a_sign_out_that_did_not_happen_leaves_closing_as_it_was(
     # Hidden to the tray, or asked about the live audio; never quit with the edit lost.
     assert live_window.processor.running and not live_window._quitting
     assert answers.asked == ([] if close_to_tray else [["Quit", "Keep Running in Tray", "Cancel"]])
-    assert live_window.preset_modified
+    assert live_window.configuration.identity.modified

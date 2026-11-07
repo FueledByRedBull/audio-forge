@@ -13,6 +13,15 @@ from .theme import PALETTE, RADIUS_CARD, RADIUS_CONTROL, prefers_reduced_motion,
 
 QML_DIR = Path(__file__).parent / "qml"
 
+# QML import paths taken out of the environment so child processes do not inherit them; each
+# scene's engine gets them directly instead (see app_bootstrap).
+_import_paths: list[str] = []
+
+
+def keep_import_paths(paths: list[str]) -> None:
+    """Have every scene loaded from now on search ``paths`` for QML modules."""
+    _import_paths[:] = paths
+
 
 def quick_theme() -> dict:
     """The theme tokens a scene reads as ``Look.t``."""
@@ -31,6 +40,9 @@ def quick_theme() -> dict:
 def load_scene(view: QQuickWidget, source: Path, theme: dict, properties: dict) -> str | None:
     """Load ``source`` into ``view``; return why it did not load, or ``None`` once it is ready."""
 
+    engine = view.engine()
+    for path in _import_paths:
+        engine.addImportPath(path)
     view.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
     view.setClearColor(qcolor(PALETTE.app_surface))
     view.rootContext().setContextProperty("theme", theme)

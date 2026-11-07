@@ -425,7 +425,7 @@ def test_login_lifecycle_keeps_hidden_session_alive_and_releases_lock_on_quit(
                 hide=lambda: setattr(self, "tray_visible", False),
             )
             self._close_to_tray_action = SimpleNamespace(isChecked=lambda: close_to_tray)
-            self._confirm_discard_changes = lambda: True
+            self.configuration = SimpleNamespace(confirm_discard=lambda: True)
             self._quit_choice = lambda: "quit"
             self._hide_to_tray = lambda: MainWindow._hide_to_tray(cast(MainWindow, self))
             self._shutdown = lambda: MainWindow._shutdown(cast(MainWindow, self))

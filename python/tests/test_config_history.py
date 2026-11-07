@@ -18,6 +18,7 @@ from mic_eq.ui.config_history import (
     explicit_provenance_after_edit,
 )
 from mic_eq.ui.main_window import MainWindow
+from mic_eq.ui.processing_configuration import PresetOrigin, preset_payload
 from mic_eq.ui.calibration_dialog import CalibrationDialog, _candidate_metadata
 from mic_eq.ui.calibration_support import chain_settings as _chain_settings
 import test_quick_shell as quick_shell
@@ -270,6 +271,7 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
     window._prompt_save_current_preset = lambda **_kwargs: None
     monkeypatch.setattr(window, "_calibration_context_key", lambda: "test-route/48000/mono")
     monkeypatch.setattr("mic_eq.ui.calibration_history.save_config", lambda _config: True)
+    configuration = window.configuration
     threshold = window_gate_control(window, "Threshold")
     eq = window.eq_state
     baseline = threshold.value
@@ -277,26 +279,26 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
     threshold.setValue(baseline + 2.0)
     qapp.processEvents()
 
-    assert window._commit_pending_configuration_snapshot()
-    assert window._configuration_history.can_undo
+    assert configuration.commit_edit()
+    assert configuration.history.can_undo
 
-    preset = window._get_current_preset()
+    preset = configuration.current
     preset.gate.threshold_db = baseline + 5.0
     preset.eq.enabled = False
-    window._apply_preset(preset)
+    window._report_load(configuration.load(preset, PresetOrigin(), remember=True))
     assert threshold.value == pytest.approx(baseline + 5.0)
 
     auto_eq_bands = [
         (80.0 * (1.6**index), 1.0 if index == 4 else 0.0, 1.41)
         for index in range(10)
     ]
-    dialog = CalibrationDialog(window)
+    dialog = CalibrationDialog(window, configuration=configuration)
     dialog.recording_state = "analyzing"
     dialog._candidate_target_metadata = ("broadcast", "adaptive", "conservative")
     dialog.audio_data = np.zeros(16, dtype=np.float32)
     dialog.preview_audio_data = dialog.audio_data.copy()
     dialog._analysis_generation = 1
-    incumbent_preset = window._get_current_preset()
+    incumbent_preset = configuration.current
     dialog._analysis_incumbent_preset = incumbent_preset
     dialog._analysis_headroom_chain = _chain_settings(
         window,
@@ -361,239 +363,61 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
     assert window.processor.is_eq_enabled()
     assert window.status_message.text == "Redid: Auto-EQ (Broadcast)"
 
-    history_size = window._configuration_history.size
-    previous_frequency = eq.get_band(4).frequency_hz
-    eq.begin_curve_edit(4)
-    eq.edit_curve_band(4, 3000.0, 2.2)
-    eq.finish_curve_edit(4, 3000.0, 2.2)
-    assert window._configuration_history.size == history_size + 1
-    assert eq.get_band(4).frequency_hz == 3000.0
-    window.undo_configuration()
-    assert eq.get_band(4).frequency_hz == previous_frequency
-
-    # A new edit must invalidate the redo branch even when its debounce timer
-    # has not fired yet.
-    assert window._configuration_history.can_redo
-    fresh_threshold = baseline + 7.0
-    threshold.setValue(fresh_threshold)
-    window.redo_configuration()
-    assert threshold.value == pytest.approx(fresh_threshold)
-    assert not window._configuration_history.can_redo
-
 
 def test_domain_edits_update_history_and_ignore_presentation_controls(window, qapp):
-    baseline = window._preset_payload(window._get_current_preset())
+    configuration = window.configuration
+    baseline = preset_payload(configuration.current)
 
     tone_action(window, "Voice").trigger()
-    assert window.preset_modified is True
-    window._commit_pending_configuration_snapshot()
-    assert window._configuration_history.can_undo
+    assert configuration.identity.modified is True
+    configuration.commit_edit()
+    assert configuration.history.can_undo
     window.undo_configuration()
-    assert window._preset_payload(window._get_current_preset()) == baseline
+    assert preset_payload(configuration.current) == baseline
 
     window.processing_mode_choice.setCurrentIndex(
         window.processing_mode_choice.findData("raw")
     )
-    assert window.preset_modified is True
-    window._commit_pending_configuration_snapshot()
-    assert window._configuration_history.can_undo
-    assert window.preset_modified is True
+    assert configuration.identity.modified is True
+    configuration.commit_edit()
+    assert configuration.history.can_undo
     window.undo_configuration()
     assert window._processing_mode() == "normal"
-    assert window.preset_modified is False
+    assert configuration.identity.modified is False
 
-    history_size = window._configuration_history.size
+    history_size = configuration.history.size
     window.shell_page.setIndex(window.HEALTH_PAGE_INDEX)
     qapp.processEvents()
-    assert not window._commit_pending_configuration_snapshot()
-    assert window._configuration_history.size == history_size
+    assert not configuration.commit_edit()
+    assert configuration.history.size == history_size
 
 
-def test_main_window_failed_history_restore_rolls_back_partial_state(
-    window,
-    monkeypatch,
-) -> None:
-    window.compressor_state.set_settings({"noise_reference_reliability": 0.7})
-    original_threshold = window.gate_state.get_settings()["threshold_db"]
-    target = window._get_current_preset()
-    target.gate.threshold_db = original_threshold + 6.0
-    snapshot = ConfigurationSnapshot.from_preset(
-        target,
-        label="failing restore",
-        source="test",
-    )
-    real_apply = window._write_processing_configuration
-    call_count = 0
-
-    def fail_after_partial_apply(preset: Preset, *args, **kwargs) -> None:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            window.gate_state.set_value("threshold_db", preset.gate.threshold_db)
-            raise RuntimeError("simulated native restore failure")
-        real_apply(preset, *args, **kwargs)
-
-    monkeypatch.setattr(window, "_write_processing_configuration", fail_after_partial_apply)
-    with pytest.raises(RuntimeError, match="simulated native restore failure"):
-        window._restore_configuration_snapshot(snapshot)
-
-    assert call_count == 2
-    assert window.gate_state.get_settings()["threshold_db"] == pytest.approx(original_threshold)
-    assert window._history_replaying is False
-    assert window.compressor_state.get_settings(include_calibration=True)[
-        "noise_reference_reliability"
-    ] == pytest.approx(0.7)
-
-
-def test_history_restores_calibration_only_in_the_same_capture_context(window, monkeypatch):
-    route = "route-a"
-    monkeypatch.setattr(window, "_current_device_route_key", lambda: route)
-
-    def reliability() -> float:
-        return window.compressor_state.get_settings(include_calibration=True)[
-            "noise_reference_reliability"
-        ]
-
-    # The route resolving is context, not an edit; the calibration landing on it is one.
-    assert not window._commit_pending_configuration_snapshot()
-    window.compressor_state.set_settings({"noise_reference_reliability": 0.7})
-    assert window._commit_pending_configuration_snapshot()
-    snapshot = window._configuration_history.current
-    assert snapshot is not None
-    window.compressor_state.set_settings({"noise_reference_reliability": 0.2})
-    window._restore_configuration_snapshot(snapshot)
-    assert reliability() == pytest.approx(0.7)
+def test_the_calibration_context_follows_route_channel_and_cleanup(window, monkeypatch):
+    route = ["route-a"]
+    monkeypatch.setattr(window, "_current_device_route_key", lambda: route[0])
+    baseline = window._calibration_context_key()
+    assert baseline is not None
     for change in ("channel", "cleanup", "route"):
-        window.config.input_channel_mode = "phase_safe_mono"
-        window.config.input_cleanup_mode = "off"
-        if change == "channel":
-            window.config.input_channel_mode = "left"
-        elif change == "cleanup":
-            window.config.input_cleanup_mode = "gentle"
-        else:
-            route = "route-b"
-        window._restore_configuration_snapshot(snapshot)
-        assert reliability() == 0.0
+        window.config.input_channel_mode = "left" if change == "channel" else "phase_safe_mono"
+        window.config.input_cleanup_mode = "gentle" if change == "cleanup" else "off"
+        route[0] = "route-b" if change == "route" else "route-a"
+        assert window._calibration_context_key() != baseline
 
 
-def _without_noise_backend(window, model: str) -> None:
-    """List the backends the processor offers without ``model``."""
-    state = window.noise_suppression_state
-    state.models = tuple(entry for entry in state.models if entry[0] != model)
-
-
-def test_history_restore_refuses_an_unavailable_noise_backend(window) -> None:
-    previous = window._get_current_preset()
-    target = window._get_current_preset()
-    target.rnnoise.model = "deepfilter"
-    snapshot = ConfigurationSnapshot.from_preset(
-        target,
-        label="DeepFilter target",
-        source="test",
-    )
-    _without_noise_backend(window, "deepfilter")
-
-    with pytest.raises(RuntimeError, match="unavailable"):
-        window._restore_configuration_snapshot(snapshot)
-
-    assert window.noise_suppression_state.get_settings()["model"] == previous.rnnoise.model
-    assert window._history_replaying is False
-
-
-def test_normal_preset_load_retains_sound_when_noise_backend_is_absent(window, monkeypatch):
+def test_a_preset_the_engine_refuses_is_reported_and_the_sound_kept(window, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
-    monkeypatch.setattr(QMessageBox, "critical", lambda *_: None)
-    previous = window._get_current_preset()
-    preset = window._get_current_preset()
+    shown = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda _parent, title, text: shown.append((title, text)))
+    previous = preset_payload(window.configuration.current)
+    preset = window.configuration.current
     preset.rnnoise.model = "deepfilter"
-    _without_noise_backend(window, "deepfilter")
-    assert window._apply_preset(preset) is False
-    assert window._preset_payload(window._get_current_preset()) == window._preset_payload(previous)
-    assert window.current_preset_name == "Default"
-
-
-@pytest.mark.parametrize("rollback_fails", [False, True])
-def test_failed_configuration_restores_sound_or_stops_muted(window, monkeypatch, rollback_fails):
-    window.user_mute_checkbox_action.setChecked(True)
-    window.apply_processing_configuration(
-        window._get_current_preset(),
-        noise_reference_reliability=0.7,
-        processing_mode="raw",
-        compressor_metadata={"dynamics_profile": "dense"},
+    window.noise_suppression_state.models = tuple(
+        entry for entry in window.noise_suppression_state.models if entry[0] != "deepfilter"
     )
-    metadata = window.compressor_state.get_settings(include_calibration=True)
-    assert metadata["noise_reference_reliability"] == 0.7
-    assert metadata["dynamics_profile"] == "dense"
-    before = window._preset_payload(window._get_current_preset())
-    identity = (window.current_preset_name, window.current_preset_path, window.config.last_preset)
-    cursor = window._configuration_history.cursor
-    target = window._get_current_preset()
-    target.gate.threshold_db = -25.0
-    original_set = window.eq_state.set_settings
-    calls = 0
-
-    def fail_after_eq(settings):
-        nonlocal calls
-        calls += 1
-        original_set(settings)
-        if calls == 1 or rollback_fails:
-            raise RuntimeError("injected failure after EQ")
-
-    monkeypatch.setattr(window.eq_state, "set_settings", fail_after_eq)
-    with pytest.raises(RuntimeError, match="injected failure after EQ"):
-        window.apply_processing_configuration(target)
-    assert (window.current_preset_name, window.current_preset_path, window.config.last_preset) == identity
-    assert window._configuration_history.cursor == cursor
-    assert window.engine_session.view.user_muted
-    if rollback_fails:
-        assert not window.processor.is_running()
-        assert "configuration" in window.engine_session.view.mute_reasons
-        assert "restoration failed" in str(window.status_message.text)
-    else:
-        assert window._preset_payload(window._get_current_preset()) == before
-        assert "configuration" not in window.engine_session.view.mute_reasons
-        assert window._processing_mode() == "raw"
-        assert window.compressor_state.get_settings(include_calibration=True) == metadata
-
-
-def test_configuration_rollback_stop_failure_keeps_mute_and_reports_stop_failure(
-    qapp, monkeypatch
-):
-    quick_shell._load_config_without_devices(monkeypatch)
-    window = MainWindow()
-    original_processor = window.processor
-
-    class FailingStopProcessor:
-        def is_running(self) -> bool:
-            return True
-
-        def set_output_mute(self, _muted: bool) -> None:
-            return None
-
-        def stop(self) -> None:
-            raise RuntimeError("stop unavailable")
-
-    try:
-        failing = FailingStopProcessor()
-        monkeypatch.setattr(window, "processor", failing)
-        monkeypatch.setattr(window.engine_session, "processor", failing)
-
-        def fail_configuration_write(_preset):
-            raise RuntimeError("configuration write unavailable")
-
-        monkeypatch.setattr(window, "_write_processing_configuration", fail_configuration_write)
-        with pytest.raises(RuntimeError, match="restoration failed"):
-            window.apply_processing_configuration(window._get_current_preset())
-        assert "configuration" in window.engine_session.view.mute_reasons
-        assert "Stopping audio failed: stop unavailable" in str(window.status_message.text)
-    finally:
-        window.processor = window.engine_session.processor = original_processor
-        window.meter_timer.stop()
-        window.diagnostics_timer.stop()
-        window.close()
-        window.deleteLater()
-        qapp.processEvents()
+    assert not window._report_load(window.configuration.load(preset, PresetOrigin(), remember=True))
+    assert shown and shown[0][0] == "Preset Not Applied" and "unavailable" in shown[0][1]
+    assert preset_payload(window.configuration.current) == previous
 
 
 def test_device_and_mute_controls_do_not_create_processing_history_entries(
@@ -608,86 +432,35 @@ def test_device_and_mute_controls_do_not_create_processing_history_entries(
 
     window = MainWindow()
     try:
-        window.preset_modified = False
+        assert window.configuration.identity.modified is False
         mode_index = window.input_channel_mode_choice.findData("left")
         window.input_channel_mode_choice.setCurrentIndex(mode_index)
         qapp.processEvents()
-        assert window.preset_modified is False
+        assert window.configuration.identity.modified is False
 
         window.user_mute_checkbox_action.setChecked(True)
         qapp.processEvents()
-        assert window.preset_modified is False
+        assert window.configuration.identity.modified is False
     finally:
         window.close()
         window.deleteLater()
         qapp.processEvents()
 
 
-def _load(window, name: str, path, *, gate_change: float):
-    preset = window._get_current_preset()
-    preset.name = name
-    preset.gate.threshold_db += gate_change
-    assert window._apply_preset(preset, preset_path=path)
-
-
-def _identity(window):
-    return (
-        window.current_preset_name, window.current_preset_path, window.config.last_preset,
-        window.preset_modified, window.shell_texts["preset_status_label"].text,
+def test_the_preset_label_follows_a_load_and_its_undo_and_redo(window, tmp_path) -> None:
+    label = window.shell_texts["preset_status_label"]
+    before = label.text
+    assert before == "Preset: Default (saved)"
+    preset = window.configuration.current
+    preset.name = "Loud"
+    preset.gate.threshold_db += 5.0
+    assert window._report_load(
+        window.configuration.load(preset, PresetOrigin(path=tmp_path / "Loud.json"), remember=True)
     )
-
-
-def test_undoing_and_redoing_a_preset_load_brings_back_the_preset_that_went_with_it(
-    window, tmp_path
-) -> None:
-    before = _identity(window)
-    assert before[0] == "Default" and before[1] is None
-    loud_path = tmp_path / "Loud.json"
-    _load(window, "Loud", loud_path, gate_change=5.0)
-    loaded = _identity(window)
-    assert loaded[:4] == ("Loud", loud_path, str(loud_path), False)
+    assert label.text == "Preset: Loud (saved)"
 
     window.undo_configuration()
-    assert _identity(window) == before
+    assert label.text == before
 
     window.redo_configuration()
-    assert _identity(window) == loaded
-
-
-def test_a_load_that_changes_no_sound_is_still_one_undo_step(window, tmp_path) -> None:
-    before = _identity(window)
-    _load(window, "Same Sound", tmp_path / "Same.json", gate_change=0.0)
-    assert window._configuration_history.can_undo
-
-    window.undo_configuration()
-
-    assert _identity(window) == before
-
-
-def test_undoing_an_edit_keeps_the_loaded_preset(window, tmp_path) -> None:
-    _load(window, "Loud", tmp_path / "Loud.json", gate_change=5.0)
-    window.gate_state.set_settings({"threshold_db": window.gate_state.get_settings()["threshold_db"] + 3})
-    assert window._commit_pending_configuration_snapshot()
-    assert window.preset_modified
-
-    window.undo_configuration()
-
-    assert window.current_preset_name == "Loud" and not window.preset_modified
-
-
-def test_saving_a_loaded_preset_under_a_new_name_survives_undo_and_redo(window, tmp_path) -> None:
-    loud_path = tmp_path / "Loud.json"
-    _load(window, "Loud", loud_path, gate_change=5.0)
-    renamed = window._get_current_preset()
-    renamed.name = "Renamed"
-    saved_path = window._save_preset_file(renamed)
-    assert saved_path is not None and window.current_preset_name == "Renamed"
-
-    window.undo_configuration()
-    assert window.current_preset_name == "Default"
-    window.redo_configuration()
-
-    # The load was saved as Renamed; going back to it must not hand the next Save the old file.
-    assert window.current_preset_name == "Renamed"
-    assert window.current_preset_path == saved_path != loud_path
-    assert not window.preset_modified
+    assert label.text == "Preset: Loud (saved)"

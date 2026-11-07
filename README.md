@@ -169,7 +169,8 @@ described under [Download](#download).
 **AudioForge Mic** to PipeWire. AudioForge's **Output** is **AudioForge Mic
 Input**, which setup picks for you. In Discord, OBS, your browser, or any other
 app, choose **AudioForge Mic** as the microphone. The device goes away when
-AudioForge quits, even after a crash. AudioForge doesn't make it your default
+AudioForge quits, even after a crash, and comes back on its own if PipeWire
+restarts. AudioForge doesn't make it your default
 microphone, but with no other microphone connected your desktop may. An
 **Input** set to **Follow system default** would then record AudioForge's own
 output, so AudioForge refuses: Start says no microphone is available, and a
@@ -194,9 +195,19 @@ same rules as the Windows shortcut: it's off until you turn it on, and an entry
 another copy wrote is left alone. The AppImage registers the image file itself,
 so move the AppImage first and turn the option on afterwards.
 
-**Realtime audio.** The processing thread asks RTKit for realtime priority, the
-way PipeWire's own threads get it. If RTKit isn't running or says no, AudioForge
-keeps working at normal priority.
+**Realtime audio.** The processing thread and the DeepFilterNet worker ask RTKit
+for realtime priority, the way PipeWire's own threads get it. If RTKit isn't
+running or says no, AudioForge keeps working at normal priority, and DeepFilterNet
+may then drop audio on a busy system.
+
+**Latency.** AudioForge asks PipeWire for a 512-sample quantum while it runs,
+which makes the whole graph wake twice as often as PipeWire's default of 1024.
+From a PipeWire microphone node to an app recording AudioForge Mic we measured
+about 52 ms in Bypass and 67 ms with RNNoise. `AUDIOFORGE_FIXED_INPUT_BUFFER_FRAMES`
+and `AUDIOFORGE_FIXED_OUTPUT_BUFFER_FRAMES` change the request: with RNNoise, 256
+gave about 53 ms and 1024 about 99 ms, and 0 leaves the choice to PipeWire. A real
+microphone's own capture buffer, about one quantum, and the recording app's
+buffering come on top. The latency in the app counts the same path.
 
 **Tray.** The tray icon needs a panel that shows StatusNotifierItem icons. If
 the panel starts after AudioForge, for example at login, the icon shows up as

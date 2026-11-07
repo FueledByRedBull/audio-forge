@@ -832,3 +832,28 @@ fn a_frame_after_an_idle_stretch_puts_the_worker_back_on_the_busy_poll() {
     std::thread::sleep(IDLE_AFTER / 5);
     assert_eq!(link(&processor).worker().idle_polls(), idle_polls);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_worker_counts_as_degraded_until_granted_and_never_after_it_ends() {
+    static DEGRADED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let granted = super::worker::WorkerScheduling::pending(&DEGRADED);
+    let refused = super::worker::WorkerScheduling::pending(&DEGRADED);
+    let late = super::worker::WorkerScheduling::pending(&DEGRADED);
+    assert_eq!(DEGRADED.load(Ordering::Relaxed), 3);
+
+    super::worker::WorkerScheduling::answer(&granted.state, &DEGRADED, true);
+    super::worker::WorkerScheduling::answer(&granted.state, &DEGRADED, true); // a repeat changes nothing
+    super::worker::WorkerScheduling::answer(&refused.state, &DEGRADED, false);
+    assert_eq!(DEGRADED.load(Ordering::Relaxed), 2);
+
+    drop(granted);
+    drop(refused);
+    assert_eq!(DEGRADED.load(Ordering::Relaxed), 1);
+    let late_state = std::sync::Arc::clone(&late.state);
+    drop(late);
+    assert_eq!(DEGRADED.load(Ordering::Relaxed), 0);
+    // RTKit answers after the worker ended: nothing to give back.
+    super::worker::WorkerScheduling::answer(&late_state, &DEGRADED, true);
+    assert_eq!(DEGRADED.load(Ordering::Relaxed), 0);
+}

@@ -109,13 +109,24 @@ class _Owner(QWidget):
         self.device_change_calls = 0
         self.device_change_routes = []
 
-    def _start_processing(self):
+    @property
+    def engine_session(self) -> SimpleNamespace:
+        """What the dialog asks of the window's engine session."""
+        return SimpleNamespace(
+            start_now=self._start_now,
+            stop_now=self._stop_now,
+            view=SimpleNamespace(user_muted=self.user_muted),
+        )
+
+    def _start_now(self) -> bool:
         self.start_calls += 1
         self.processor.running = True
+        return True
 
-    def _stop_processing(self):
+    def _stop_now(self) -> bool:
         self.stop_calls += 1
         self.processor.running = False
+        return True
 
     def _on_device_changed(self):
         self.device_change_calls += 1
@@ -989,9 +1000,13 @@ def test_onboarding_route_check_stops_for_user_mute(qapp, save_config_ok) -> Non
                 DeviceIdentity(name="Cable", endpoint_id="out", direction="output"),
             )
             self.processor = SimpleNamespace(is_running=lambda: False)
+            self.engine_session = SimpleNamespace(
+                start_now=self._start_now, view=SimpleNamespace(user_muted=True)
+            )
 
-        def _start_processing(self) -> None:
+        def _start_now(self) -> bool:
             self.start_calls += 1
+            return True
 
     owner = Owner()
     dialog = FirstRunSetupDialog(owner)

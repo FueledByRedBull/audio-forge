@@ -17,6 +17,7 @@ from mic_eq.ui.config_history import BoundedConfigurationHistory, ConfigurationS
 from mic_eq.ui.main_window import MainWindow
 from test_eq_editing_state import eq_control
 from test_gate_controls_state import window_gate_control
+from engine_fakes import fake_session
 
 
 def test_saved_processing_settings_restore_on_next_launch(qapp, config_in_tmp_without_devices):
@@ -140,6 +141,7 @@ def config_in_tmp_without_devices(monkeypatch, tmp_path):
 
 def _save_window(tmp_path: Path) -> MainWindow:
     window = MainWindow.__new__(MainWindow)
+    window.engine_session = fake_session()
     window._flush_processing_configuration_writes = Mock()
     previous_path = tmp_path / "previous.json"
     window.config = AppConfig(last_preset=str(previous_path))
@@ -290,7 +292,7 @@ def test_close_stops_processing_before_reporting_settings_failure(
                 return_value=write_result,
             ))
             patch.setattr(main_window.QMessageBox, "warning", lambda *_: events.append("warning"))
-            cast(Any, window).processor = SimpleNamespace(
+            cast(Any, window).processor = window.engine_session.processor = SimpleNamespace(
                 is_running=lambda: True, stop=lambda: events.append("stop"),
             )
             assert window._save_ui_state() is False
@@ -299,7 +301,7 @@ def test_close_stops_processing_before_reporting_settings_failure(
             assert events == ["stop", "warning"]
             assert event.isAccepted()
     finally:
-        window.processor = original_processor
+        window.processor = window.engine_session.processor = original_processor
         window.close()
         window.deleteLater()
         qapp.processEvents()
@@ -670,6 +672,7 @@ def test_missing_route_file_id_does_not_match_display_name(monkeypatch, tmp_path
 
 def test_manual_history_edit_clears_auto_eq_diagnostics_only_when_recorded():
     window = cast(Any, MainWindow.__new__(MainWindow))
+    window.engine_session = fake_session()
     window.config = AppConfig()
     history = BoundedConfigurationHistory(limit=4)
     baseline = ConfigurationSnapshot.from_preset(

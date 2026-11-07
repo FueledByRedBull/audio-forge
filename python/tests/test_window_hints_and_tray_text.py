@@ -67,7 +67,7 @@ def test_start_without_a_destination_says_so_where_warnings_are_shown(isolated_m
     banner = window.shell_texts["device_warning_banner"]
     banner.update(shown=False)  # devices exist, but none is chosen as the destination
 
-    assert window._start_processing(interactive=False) is False
+    assert window.engine_session.start_now(interactive=False) is False
     assert banner.shown and banner.text == NO_DESTINATION_WARNING
 
     window._on_device_changed()
@@ -79,7 +79,7 @@ def test_a_device_warning_that_is_already_up_is_not_replaced(isolated_main_windo
     banner = window.shell_texts["device_warning_banner"]
     banner.update(text="Warning: No output devices detected.", shown=True)
 
-    window._start_processing(interactive=False)
+    window.engine_session.start_now(interactive=False)
     window._on_device_changed()
 
     assert banner.text == "Warning: No output devices detected." and banner.shown

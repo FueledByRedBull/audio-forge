@@ -128,7 +128,7 @@ def test_transport_follows_the_stop_action(quick_window) -> None:
     window = quick_window
     root = window.centralWidget().rootObject()
     assert root.property("running") is False
-    # The action states _start_processing and _stop_processing set.
+    # The action states a Start and a Stop leave behind.
     window.start_btn_action.setEnabled(False)
     window.stop_btn_action.setEnabled(True)
     assert root.property("running") is True
@@ -200,8 +200,8 @@ def test_a_quick_session_keeps_the_scene_from_start_to_close(quick_window, monke
         processor.running = True
         return "started"
 
-    monkeypatch.setattr("mic_eq.ui.main_window.start_processor_for_route", start)
-    window.processor = engine
+    monkeypatch.setattr("mic_eq.ui.engine_session.start_processor_for_route", start)
+    window.processor = window.engine_session.processor = engine
     noise = window.noise_suppression_state
     monkeypatch.setattr(noise, "processor", engine)
     monkeypatch.setattr(noise, "models", (*noise.models, ("deepfilter-ll", "DeepFilterNet LL")))
@@ -257,7 +257,7 @@ def test_failed_gate_initialization_retains_configuration_recovery_barrier(qapp,
 
     monkeypatch.setattr("mic_eq.ui.gate_state.GateState._write", fail_gate)
     window = MainWindow()
-    assert "configuration" in window._temporary_mute_reasons
+    assert "configuration" in window.engine_session.view.mute_reasons
     assert not window.processor.is_running()
 
 
@@ -384,13 +384,13 @@ def test_failed_limiter_recovery_blocks_restart_until_configuration_reapplied(qu
     state.processor = RejectWrites()
     control = _rows(quick_window.quick_bridge.model["stages"][-1])["Ceiling"]["proxy"]
     control.setText("-2 dB")
-    assert "configuration" in quick_window._temporary_mute_reasons
-    assert not quick_window._start_processing(interactive=False)
+    assert "configuration" in quick_window.engine_session.view.mute_reasons
+    assert not quick_window.engine_session.start_now(interactive=False)
     assert "recovery failed" in quick_window.status_message.text
     assert not quick_window._commit_pending_configuration_snapshot()
     state.processor = native
     quick_window.apply_processing_configuration(preset)
-    assert "configuration" not in quick_window._temporary_mute_reasons
+    assert "configuration" not in quick_window.engine_session.view.mute_reasons
 
 
 def test_scene_loads_cleanly(quick_window) -> None:
@@ -561,7 +561,7 @@ def test_scene_controls_drive_the_shared_state(quick_window, qapp) -> None:
         pos=mute.mapToScene(QPointF(12, mute.height() / 2)).toPoint(),
     )
     assert quick_window.user_mute_checkbox_action.isChecked()
-    assert quick_window.user_muted
+    assert quick_window.engine_session.view.user_muted
 
     def band_gain() -> float:
         return quick_window.eq_state.get_eq_settings().bands[0].gain_db
@@ -1131,7 +1131,7 @@ def test_scene_control_reads_back_a_mode_the_processor_refused(quick_window) -> 
                 raise RuntimeError("bypass unavailable")
             native.set_bypass(enabled)
 
-    quick_window.processor = RejectBypass()
+    quick_window.processor = quick_window.engine_session.processor = RejectBypass()
     notified: list[bool] = []
     mode.changed.connect(lambda: notified.append(True))
     mode.setIndex(1)
@@ -1581,7 +1581,7 @@ def engine_window(quick_window, monkeypatch):
     window.meter_timer.stop()
     window.diagnostics_timer.stop()
     engine: Any = _Engine(window.processor)
-    window.processor = engine
+    window.processor = window.engine_session.processor = engine
     window.input_choice.addItem("Microphone", DeviceIdentity(name="Microphone", direction="input"))
     window.output_choice.addItem("Destination", DeviceIdentity(name="Destination", direction="output"))
     monkeypatch.setattr(window, "_apply_input_preferences_for_current_route", lambda: None)
@@ -1590,7 +1590,7 @@ def engine_window(quick_window, monkeypatch):
         processor.running = True
         return "started"
 
-    monkeypatch.setattr("mic_eq.ui.main_window.start_processor_for_route", start)
+    monkeypatch.setattr("mic_eq.ui.engine_session.start_processor_for_route", start)
     return window, engine
 
 

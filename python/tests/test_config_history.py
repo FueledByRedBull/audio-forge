@@ -545,14 +545,14 @@ def test_failed_configuration_restores_sound_or_stops_muted(window, monkeypatch,
         window.apply_processing_configuration(target)
     assert (window.current_preset_name, window.current_preset_path, window.config.last_preset) == identity
     assert window._configuration_history.cursor == cursor
-    assert window.user_muted
+    assert window.engine_session.view.user_muted
     if rollback_fails:
         assert not window.processor.is_running()
-        assert "configuration" in window._temporary_mute_reasons
+        assert "configuration" in window.engine_session.view.mute_reasons
         assert "restoration failed" in str(window.status_message.text)
     else:
         assert window._preset_payload(window._get_current_preset()) == before
-        assert "configuration" not in window._temporary_mute_reasons
+        assert "configuration" not in window.engine_session.view.mute_reasons
         assert window._processing_mode() == "raw"
         assert window.compressor_state.get_settings(include_calibration=True) == metadata
 
@@ -575,7 +575,9 @@ def test_configuration_rollback_stop_failure_keeps_mute_and_reports_stop_failure
             raise RuntimeError("stop unavailable")
 
     try:
-        monkeypatch.setattr(window, "processor", FailingStopProcessor())
+        failing = FailingStopProcessor()
+        monkeypatch.setattr(window, "processor", failing)
+        monkeypatch.setattr(window.engine_session, "processor", failing)
 
         def fail_configuration_write(_preset):
             raise RuntimeError("configuration write unavailable")
@@ -583,10 +585,10 @@ def test_configuration_rollback_stop_failure_keeps_mute_and_reports_stop_failure
         monkeypatch.setattr(window, "_write_processing_configuration", fail_configuration_write)
         with pytest.raises(RuntimeError, match="restoration failed"):
             window.apply_processing_configuration(window._get_current_preset())
-        assert "configuration" in window._temporary_mute_reasons
+        assert "configuration" in window.engine_session.view.mute_reasons
         assert "Stopping audio failed: stop unavailable" in str(window.status_message.text)
     finally:
-        window.processor = original_processor
+        window.processor = window.engine_session.processor = original_processor
         window.meter_timer.stop()
         window.diagnostics_timer.stop()
         window.close()

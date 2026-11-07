@@ -103,7 +103,7 @@ class _OldEngine(_Engine):
 def running_window(isolated_main_window):
     window = isolated_main_window
     engine = _Engine(window.processor)
-    window.processor = engine
+    window.processor = window.engine_session.processor = engine
     clock = _Clock()
     window.input_meter.clock = clock
     window.output_meter.clock = clock
@@ -365,7 +365,7 @@ def test_a_gap_while_the_meter_timer_was_paused_is_not_reported_as_clipping(runn
 
 def test_missing_level_getters_make_health_unavailable_instead_of_ok(running_window):
     window = running_window
-    window.processor = _OldEngine(window.engine.native)
+    window.processor = window.engine_session.processor = _OldEngine(window.engine.native)
     window.input_meter.set_levels(-20.0, -12.0)
     window._update_meters()
     _tick_diagnostics(window)

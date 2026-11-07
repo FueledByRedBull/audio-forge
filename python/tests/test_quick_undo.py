@@ -356,7 +356,7 @@ def _change_the_route(window) -> tuple:
         window.output_choice.currentIndex(),
         window.input_channel_mode_choice.currentIndex(),
         window.input_cleanup_mode_choice.currentIndex(),
-        window.user_muted,
+        window.engine_session.view.user_muted,
     )
 
 
@@ -377,7 +377,7 @@ def test_undo_and_redo_leave_the_chosen_route_alone(routed) -> None:
         scene.window.output_choice.currentIndex(),
         scene.window.input_channel_mode_choice.currentIndex(),
         scene.window.input_cleanup_mode_choice.currentIndex(),
-        scene.window.user_muted,
+        scene.window.engine_session.view.user_muted,
     ) == route
 
 

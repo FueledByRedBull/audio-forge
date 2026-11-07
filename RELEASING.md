@@ -404,7 +404,9 @@ It passes only if all of these hold:
   `rt_buffer_overflow_count`, `lock_contention_count` and
   `suppressor_non_finite_count` are 0, `noise_backend_failed` is false, and at
   both readings the Health indicator names no fault other than gate chatter
-  (`gate_chatter_event_count` may be above 0).
+  (`gate_chatter_event_count` may be above 0) or an input-level warning that
+  comes from the room and the microphone gain (**Input: PEAKS TOO HIGH** or
+  **Input: LOW**). Those two are allowed only while every counter above is 0.
 - Median CPU is under 15 seconds a minute (a quarter of one core), from the
   differences between consecutive `cpu_seconds` values.
 

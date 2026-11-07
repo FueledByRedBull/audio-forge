@@ -16,8 +16,8 @@ current format, and open and re-save each preset you want to keep. The
 conversions cover the `MicEq` config folder used by 1.8.2 and older,
 `config.json` files older than schema 2, presets saved before 1.23.0 (down to
 unversioned ones), presets that store the EQ as plain band arrays or as a
-single combined stage, calibration records older than version 2, and latency
-profiles saved before route-aware calibration.
+single combined stage, and latency profiles saved before route-aware
+calibration.
 
 **Settings format.** The settings file (`config.json`) stays at schema version 2
 and the preset format is unchanged. Presets saved by 1.23.0 are stamped 1.23.0,

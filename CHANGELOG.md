@@ -4,7 +4,7 @@
 
 ### Upgrading
 
-- 1.23.0 is the last release that converts old settings and preset formats; 1.24.0 removes those conversions and opens only presets saved by 1.23.0 or newer. If you are on an older version, install 1.23.0 first, start it once and quit it so it saves your settings in the current format, and open and re-save each preset you want to keep. The conversions cover the `MicEq` config folder used by 1.8.2 and older, `config.json` files older than schema 2, presets saved before 1.23.0 (down to unversioned ones), presets that store the EQ as plain band arrays or as a single combined stage, calibration records older than version 2, and latency profiles saved before route-aware calibration.
+- 1.23.0 is the last release that converts old settings and preset formats; 1.24.0 removes those conversions and opens only presets saved by 1.23.0 or newer. If you are on an older version, install 1.23.0 first, start it once and quit it so it saves your settings in the current format, and open and re-save each preset you want to keep. The conversions cover the `MicEq` config folder used by 1.8.2 and older, `config.json` files older than schema 2, presets saved before 1.23.0 (down to unversioned ones), presets that store the EQ as plain band arrays or as a single combined stage, and latency profiles saved before route-aware calibration.
 
 ### Linux
 

@@ -8,12 +8,12 @@ from dataclasses import asdict
 from PySide6.QtCore import QObject
 
 from ..config import RNNoiseSettings
-from ..config_parts.validation import VALIDATION_RANGES
+from ..config_parts.validation import noise_model_ids, validation_ranges
 from .stage_state import StageState, validated_settings
 
 
 def _noise_model(value: object) -> str:
-    if not isinstance(value, str) or value not in VALIDATION_RANGES["rnnoise"]["model"]:
+    if not isinstance(value, str) or value not in noise_model_ids():
         raise ValueError(f"Unknown noise model: {value!r}")
     return value
 
@@ -49,7 +49,7 @@ class NoiseSuppressionState(StageState[dict]):
         return validated_settings(
             self._settings, settings, section="rnnoise", noun="noise suppression",
             booleans={"enabled"},
-            ranges={"strength": VALIDATION_RANGES["rnnoise"]["strength"]},
+            ranges={"strength": validation_ranges()["rnnoise"]["strength"]},
             special={"model": _noise_model},
         )
 

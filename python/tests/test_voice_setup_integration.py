@@ -1021,12 +1021,18 @@ def _review_dialog(window: MainWindow) -> tuple[VoiceSetupDialog, np.ndarray]:
     return dialog, speech
 
 
-def _comparison_dialog(monkeypatch, shown: dict[str, Any], *, keep: bool = False) -> None:
+def _comparison_dialog(
+    monkeypatch, shown: dict[str, Any], *, keep: bool = False, load_error: str | None = None
+) -> None:
     """Stand in for the listening comparison: keep what it was given, then answer."""
 
     class _Comparison:
         def __init__(self, **kwargs):
             shown.update(kwargs)
+
+        @property
+        def load_error(self):
+            return load_error
 
         def exec(self):
             return int(QDialog.DialogCode.Accepted if keep else QDialog.DialogCode.Rejected)

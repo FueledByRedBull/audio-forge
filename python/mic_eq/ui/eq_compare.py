@@ -10,7 +10,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from mic_eq import eq_magnitude_response_v2
-from ..config import EQSettings
+from mic_eq.config import EQSettings
 
 from .eq_graph import format_frequency_hz
 from .theme import PALETTE, qcolor

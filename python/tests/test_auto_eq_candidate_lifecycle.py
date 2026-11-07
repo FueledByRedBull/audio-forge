@@ -922,7 +922,9 @@ def test_the_tone_modes_are_named_for_what_they_do_and_keep_their_stored_values(
             stored_by_label[label] = dialog.get_selected_target_mode()
         assert stored_by_label == {"Subtle": "adaptive", "Full strength": "static"}
         view.pickMode(0)
-        tip = dialog.quick_view.rootObject().property("tipMode")
+        picker = dialog.quick_view.rootObject().findChild(QObject, "modePicker")
+        with _AccessibleScene() as scene:
+            tip = scene.description(picker)  # what the Matching picker itself tells the user
         assert re.search(r"Subtle[^.]*never more than 2 dB", tip)  # a ceiling, for this mode
         assert re.search(r"Full strength[^.]*up to 5 dB", tip)
         assert re.findall(r"(\d+) dB", tip) == ["2", "5"]

@@ -96,6 +96,24 @@ def _within_page(dialog: Any, item: Any) -> bool:
     return top >= 0 and top + item.height() <= scroll.height()
 
 
+def test_an_opened_dialog_gives_the_keyboard_to_the_scene(qapp) -> None:
+    owner = _Owner()
+    dialog = CalibrationDialog(owner, configuration=owner.configuration)
+    try:
+        dialog.show()
+        qapp.processEvents()
+        dialog.activateWindow()
+        qapp.processEvents()
+        assert dialog.focusWidget() is dialog.quick_view  # no click needed first
+        QTest.keyClick(dialog.quick_view, Qt.Key.Key_Tab)
+        assert _focus_name(dialog) == "contentScroll"
+    finally:
+        dialog.hide()
+        dialog.deleteLater()
+        owner.close()
+        qapp.processEvents()
+
+
 def test_the_scene_loads_and_every_control_has_its_accessible_name(open_dialog) -> None:
     dialog = open_dialog(everything=True)
     assert dialog.quick_view.status() == QQuickWidget.Status.Ready and dialog.quick_view.errors() == []

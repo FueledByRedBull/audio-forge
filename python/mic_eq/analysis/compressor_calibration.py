@@ -14,7 +14,7 @@ from .auto_eq import simulate_candidate_chain
 from .auto_eq_parts.headroom import _is_headroom_safe
 from .cancellation import check_analysis_cancelled
 from .parallel import ANALYSIS_WORKERS
-from .vad import map_causal_vad_probabilities
+from .signal_processing import clamp as _clamp
 from ..config import LimiterSettings
 
 _DEFAULT_LIMITER_SETTINGS: dict[str, Any] = asdict(LimiterSettings())
@@ -38,10 +38,6 @@ def _normalise_limiter_settings(
             "limiter settings are missing: " + ", ".join(sorted(missing))
         )
     return dict(settings)
-
-
-def _clamp(value: float, low: float, high: float) -> float:
-    return float(max(low, min(high, value)))
 
 
 _COMPRESSOR_SEARCH_BUDGET = 68
@@ -77,10 +73,7 @@ def _compressor_p95_target_status(
     calibration: Mapping[str, Any],
     target_p95_db: float,
 ) -> tuple[bool, str | None]:
-    measured = calibration.get(
-        "measured_p95_gain_reduction_db",
-        calibration.get("measured_gain_reduction_db"),
-    )
+    measured = calibration.get("measured_p95_gain_reduction_db")
     if (
         calibration.get("backend") != "rust"
         or not isinstance(measured, (int, float))
@@ -121,7 +114,6 @@ class _CompressorCalibration:
         target_median_db: float,
         peak_cap_db: float,
         limiter_settings: Mapping[str, Any] | None = None,
-        vad_probabilities: np.ndarray | None = None,
         auto_makeup_activity: list[tuple[float, float, float, float]] | None = None,
         cancel_check: Callable[[], bool] | None = None,
         progress_callback: Callable[[str, int], None] | None = None,
@@ -160,47 +152,29 @@ class _CompressorCalibration:
             "objective_weights": dict(_COMPRESSOR_OBJECTIVE_WEIGHTS),
         }
         self.started = time.perf_counter()
-        self.mapped_vad_probabilities: np.ndarray | None = None
-        if vad_probabilities is not None and auto_makeup_activity is None:
-            control_block_size = max(1, int(round(sample_rate * 0.010)))
-            block_count = (
-                speech_audio.size + control_block_size - 1
-            ) // control_block_size
-            self.mapped_vad_probabilities = map_causal_vad_probabilities(
-                vad_probabilities,
-                np.arange(block_count, dtype=np.int64) * control_block_size,
-                sample_rate,
-            )
         self.incumbent = {
-            key: _clamp(
-                float(self.calibrated[key]),
-                *_COMPRESSOR_SEARCH_BOUNDS[key],
-            )
-            for key in _COMPRESSOR_SEARCH_BOUNDS
+            key: _clamp(float(self.calibrated[key]), *bounds)
+            for key, bounds in _COMPRESSOR_SEARCH_BOUNDS.items()
         }
         self.evaluated: dict[
-            tuple[float, ...], tuple[float, dict[str, Any], dict[str, float]]
+            float, tuple[float, dict[str, Any], dict[str, float]]
         ] = {}
-
-    @staticmethod
-    def key_for(candidate: Mapping[str, float]) -> tuple[float, ...]:
-        return tuple(round(float(candidate[key]), 6) for key in _COMPRESSOR_SEARCH_BOUNDS)
 
     def evaluate(
         self,
-        candidate_values: Mapping[str, float],
+        threshold_db: float,
     ) -> tuple[float, dict[str, Any], dict[str, float]]:
         check_analysis_cancelled(self.cancel_check)
-        candidate = dict(self.calibrated)
-        candidate.update(
-            {
-                key: _clamp(
-                    float(candidate_values[key]),
-                    *_COMPRESSOR_SEARCH_BOUNDS[key],
-                )
-                for key in _COMPRESSOR_SEARCH_BOUNDS
-            }
-        )
+        # Only the threshold moves; the other controls stay at the incumbent,
+        # limited to the supported range.
+        candidate = {
+            **self.calibrated,
+            **self.incumbent,
+            "threshold_db": _clamp(
+                float(threshold_db), *_COMPRESSOR_SEARCH_BOUNDS["threshold_db"]
+            ),
+        }
+        values = {key: float(candidate[key]) for key in _COMPRESSOR_SEARCH_BOUNDS}
         # Evaluate the same compressor controls that will be applied.  In
         # particular, auto makeup changes both loudness and downstream
         # headroom, so disabling it here would calibrate a different chain.
@@ -212,8 +186,6 @@ class _CompressorCalibration:
         }
         if self.auto_makeup_activity is not None:
             simulation_chain["auto_makeup_activity"] = self.auto_makeup_activity
-        elif self.mapped_vad_probabilities is not None:
-            simulation_chain["vad_probabilities"] = self.mapped_vad_probabilities
         simulation = simulate_candidate_chain(
             self.speech_audio.astype(np.float32, copy=False),
             self.sample_rate,
@@ -221,11 +193,7 @@ class _CompressorCalibration:
             simulation_chain,
         )
         if simulation.get("simulation_backend") != "rust":
-            return (
-                float("inf"),
-                simulation,
-                dict(candidate_values),
-            )
+            return float("inf"), simulation, values
         peak = float(simulation.get("compressor_gain_reduction_db", 0.0))
         median = float(
             simulation.get("compressor_gain_reduction_median_db", peak)
@@ -280,12 +248,13 @@ class _CompressorCalibration:
             or output_true_peak > ceiling + 0.10
             or peak > self.peak_cap_db + 1.0e-6
         )
-        prior_terms = []
-        for key, (lower, upper) in _COMPRESSOR_SEARCH_BOUNDS.items():
-            span = upper - lower
-            prior_terms.append(
-                ((float(candidate[key]) - self.incumbent[key]) / span) ** 2
-            )
+        lower, upper = _COMPRESSOR_SEARCH_BOUNDS["threshold_db"]
+        # The prior is the mean over all four controls; the three that stay
+        # at the incumbent contribute zero.
+        prior = (
+            ((values["threshold_db"] - self.incumbent["threshold_db"]) / (upper - lower)) ** 2
+            / len(_COMPRESSOR_SEARCH_BOUNDS)
+        )
         terms = {
             "loudness": _huber(
                 (output_lufs - target_lufs)
@@ -314,7 +283,7 @@ class _CompressorCalibration:
                 max(0.0, 0.20 - active_ratio)
                 / _COMPRESSOR_OBJECTIVE_NORMALIZERS["activity_ratio_deficit"]
             ),
-            "prior": float(np.mean(prior_terms)),
+            "prior": prior,
         }
         score = sum(
             _COMPRESSOR_OBJECTIVE_WEIGHTS[name] * value
@@ -322,18 +291,14 @@ class _CompressorCalibration:
         )
         if hard_rejected:
             score = float("inf")
-        return (
-            float(score),
-            simulation,
-            {key: float(candidate[key]) for key in _COMPRESSOR_SEARCH_BOUNDS},
-        )
+        return float(score), simulation, values
 
-    def evaluate_batch(self, candidates: list[dict[str, float]]) -> None:
+    def evaluate_batch(self, thresholds: list[float]) -> None:
         pending = {}
-        for candidate in candidates:
-            key = self.key_for(candidate)
+        for threshold in thresholds:
+            key = round(threshold, 6)
             if key not in self.evaluated and key not in pending:
-                pending[key] = candidate
+                pending[key] = threshold
         items = list(pending.items())[: _COMPRESSOR_SEARCH_BUDGET - 1 - len(self.evaluated)]
         # Native simulations release the GIL and own independent DSP state.
         # Small batches bound cancellation latency and concurrent CPU use.
@@ -351,35 +316,17 @@ class _CompressorCalibration:
                             60 + int(30 * len(self.evaluated) / _COMPRESSOR_SEARCH_BUDGET),
                         )
 
-    def threshold_candidates(self) -> list[dict[str, float]]:
-        initial_candidates = [self.incumbent]
-        for threshold in np.linspace(-55.0, -6.0, 33):
+    def thresholds(self) -> list[float]:
+        thresholds = [self.incumbent["threshold_db"]]
+        for threshold in np.linspace(*_COMPRESSOR_SEARCH_BOUNDS["threshold_db"], 33):
             check_analysis_cancelled(self.cancel_check)
-            threshold_candidate = dict(self.incumbent)
-            threshold_candidate["threshold_db"] = float(threshold)
-            initial_candidates.append(threshold_candidate)
-        return initial_candidates
+            thresholds.append(float(threshold))
+        return thresholds
 
-    def ranked_results(self) -> list[tuple[float, dict[str, Any], dict[str, float]]]:
-        return sorted(
-            (item for item in self.evaluated.values() if np.isfinite(item[0])),
-            key=lambda item: (item[0], self.key_for(item[2])),
-        )
-
-    def threshold_only(
-        self,
-        feasible: list[tuple[float, dict[str, Any], dict[str, float]]],
-    ) -> tuple[float, dict[str, Any], dict[str, float]] | None:
+    def best_result(self) -> tuple[float, dict[str, Any], dict[str, float]] | None:
         return min(
-            (
-                item
-                for item in feasible
-                if all(
-                    abs(item[2][key] - self.incumbent[key]) <= 1.0e-6
-                    for key in ("ratio", "attack_ms", "release_ms")
-                )
-            ),
-            key=lambda item: (item[0], self.key_for(item[2])),
+            (item for item in self.evaluated.values() if np.isfinite(item[0])),
+            key=lambda item: (item[0], round(item[2]["threshold_db"], 6)),
             default=None,
         )
 
@@ -405,8 +352,6 @@ class _CompressorCalibration:
         }
         if self.auto_makeup_activity is not None:
             winner_chain["auto_makeup_activity"] = self.auto_makeup_activity
-        elif self.mapped_vad_probabilities is not None:
-            winner_chain["vad_probabilities"] = self.mapped_vad_probabilities
         winner_verification = simulate_candidate_chain(
             self.speech_audio.astype(np.float32, copy=False),
             self.sample_rate,
@@ -426,15 +371,7 @@ class _CompressorCalibration:
             },
             self.target_p95_db,
         )
-        threshold_only_scores = [
-            score
-            for score, _, values in self.evaluated.values()
-            if all(
-                abs(values[key] - self.incumbent[key]) <= 1.0e-6
-                for key in ("ratio", "attack_ms", "release_ms")
-            )
-        ]
-        incumbent_entry = self.evaluated.get(self.key_for(self.incumbent))
+        incumbent_entry = self.evaluated.get(round(self.incumbent["threshold_db"], 6))
         self.diagnostics.update(
             {
                 "backend": "rust",
@@ -450,7 +387,8 @@ class _CompressorCalibration:
                     incumbent_entry[0] if incumbent_entry is not None else float("inf")
                 ),
                 "threshold_only_objective": min(
-                    threshold_only_scores, default=float("inf")
+                    (score for score, _, _ in self.evaluated.values()),
+                    default=float("inf"),
                 ),
                 "active_output_gain_db": float(
                     best_simulation.get("active_output_gain_db", 0.0)
@@ -481,7 +419,7 @@ class _CompressorCalibration:
                 "search_runtime_ms": (time.perf_counter() - self.started) * 1000.0,
                 "candidate_count": len(self.evaluated) + 1,
                 "iterations": len(self.evaluated) + 1,
-                # Compatibility aliases for older diagnostic consumers.
+                # Read by the voice-setup dialog and the analysis tests.
                 "target_gain_reduction_db": self.target_p95_db,
                 "measured_gain_reduction_db": p95,
                 "threshold_db": self.calibrated["threshold_db"],
@@ -504,7 +442,6 @@ def _calibrate_compressor_threshold(
     target_median_db: float,
     peak_cap_db: float,
     limiter_settings: Mapping[str, Any] | None = None,
-    vad_probabilities: np.ndarray | None = None,
     auto_makeup_activity: list[tuple[float, float, float, float]] | None = None,
     cancel_check: Callable[[], bool] | None = None,
     progress_callback: Callable[[str, int], None] | None = None,
@@ -520,10 +457,9 @@ def _calibrate_compressor_threshold(
         target_median_db=target_median_db,
         peak_cap_db=peak_cap_db,
         limiter_settings=limiter_settings,
-        vad_probabilities=vad_probabilities,
         auto_makeup_activity=auto_makeup_activity,
         cancel_check=cancel_check,
         progress_callback=progress_callback,
     )
-    run.evaluate_batch(run.threshold_candidates())
-    return run.finish(run.threshold_only(run.ranked_results()))
+    run.evaluate_batch(run.thresholds())
+    return run.finish(run.best_result())

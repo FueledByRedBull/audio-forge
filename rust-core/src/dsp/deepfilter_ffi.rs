@@ -143,15 +143,10 @@ impl Default for DeepFilterRuntimeConfig {
     }
 }
 
-fn parse_external_opt_in(value: &str) -> bool {
-    let normalized = value.trim().to_ascii_lowercase();
-    normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on"
-}
+const ALLOW_EXTERNAL_DF_ENV: &str = "AUDIOFORGE_ALLOW_EXTERNAL_DF";
 
 fn external_deepfilter_paths_allowed() -> bool {
-    env::var("AUDIOFORGE_ALLOW_EXTERNAL_DF")
-        .map(|value| parse_external_opt_in(&value))
-        .unwrap_or(false)
+    crate::dsp::util::env_flag(ALLOW_EXTERNAL_DF_ENV)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -789,6 +784,13 @@ fn mix_wet_with_aligned_dry(
     }
 }
 
+/// The 15 ms strength smoothing step, applied once per 10 ms frame.
+fn strength_smoothing_alpha() -> f32 {
+    const TAU_MS: f32 = 15.0;
+    const SAMPLE_RATE: f32 = 48000.0;
+    1.0 - (-1.0 / (TAU_MS / 1000.0 * SAMPLE_RATE / DEEPFILTER_FRAME_SIZE as f32)).exp()
+}
+
 pub struct DeepFilterProcessor {
     df: Option<DeepFilterFFI>, // Option for graceful fallback if FFI fails
     /// Set instead of `df` once the library has moved to a worker thread.
@@ -800,6 +802,8 @@ pub struct DeepFilterProcessor {
     enabled: bool,
     strength: Arc<AtomicU32>,
     smoothed_strength: f32,
+    /// Per-frame step of the strength smoother.
+    strength_alpha: f32,
     dry_frame: [f32; DEEPFILTER_FRAME_SIZE],
     frame_scratch: [f32; DEEPFILTER_FRAME_SIZE],
     output_frame: [f32; DEEPFILTER_FRAME_SIZE],
@@ -903,6 +907,7 @@ impl DeepFilterProcessor {
             enabled: true,
             strength,
             smoothed_strength: initial_strength,
+            strength_alpha: strength_smoothing_alpha(),
             dry_frame: [0.0; DEEPFILTER_FRAME_SIZE],
             frame_scratch: [0.0; DEEPFILTER_FRAME_SIZE],
             output_frame: [0.0; DEEPFILTER_FRAME_SIZE],
@@ -928,10 +933,11 @@ impl DeepFilterProcessor {
         samples: &[f32],
         controls: Option<&[GateControl]>,
     ) -> usize {
-        if let Some(controls) = controls {
-            assert_eq!(samples.len(), controls.len());
-        }
-        let accepted = samples.len().min(self.input_buffer.remaining());
+        // Callers pass one control per sample. A shorter `controls` limits what
+        // is taken, as a full queue does, and the caller sees the shortfall.
+        let available =
+            controls.map_or(samples.len(), |controls| samples.len().min(controls.len()));
+        let accepted = available.min(self.input_buffer.remaining());
         for (index, &sample) in samples[..accepted].iter().enumerate() {
             let gate = controls.map_or(GateControl::BYPASS, |controls| controls[index]);
             self.input_buffer.push(ControlledSample { sample, gate });
@@ -995,10 +1001,7 @@ impl DeepFilterProcessor {
             f32::from_bits(self.strength.load(Ordering::Relaxed)),
             self.smoothed_strength,
         );
-        const TAU_MS: f32 = 15.0;
-        const SAMPLE_RATE: f32 = 48000.0;
-        let alpha =
-            1.0 - (-1.0 / (TAU_MS / 1000.0 * SAMPLE_RATE / DEEPFILTER_FRAME_SIZE as f32)).exp();
+        let alpha = self.strength_alpha;
 
         if self.link.is_some() {
             self.process_frames_with_worker(alpha, target_strength);

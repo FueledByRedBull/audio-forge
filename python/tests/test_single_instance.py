@@ -16,10 +16,19 @@ import pytest
 from PySide6.QtWidgets import QMainWindow
 
 from mic_eq.ui import app_bootstrap, desktop_integration
+from engine_fakes import fake_session
 
 
 def _server_name() -> str:
     return f"AudioForge.test.{uuid4().hex}"
+
+
+def _pump_until(qapp, condition, timeout: float = 5.0) -> None:
+    """Process events until the forwarded message has been handled."""
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.005)
 
 
 def test_tray_tooltip_reflects_processing_mute_health_and_route():
@@ -73,8 +82,7 @@ def test_second_instance_forwards_activation_without_removing_primary_server(
     try:
         assert primary.acquire() == primary.ACQUIRED
         assert secondary.acquire() == secondary.FORWARDED
-        for _ in range(10):
-            qapp.processEvents()
+        _pump_until(qapp, lambda: bool(seen))
 
         assert seen == [True]
         assert secondary.acquire() == secondary.FORWARDED
@@ -291,8 +299,7 @@ def test_login_duplicate_does_not_connect_or_activate_existing_window(qapp, tmp_
             qapp.processEvents()
         activate.assert_not_called()
         assert duplicate.acquire() == duplicate.FORWARDED
-        for _ in range(10):
-            qapp.processEvents()
+        _pump_until(qapp, lambda: activate.called)
         activate.assert_called_once()
     finally:
         duplicate.close()
@@ -418,15 +425,16 @@ def test_login_lifecycle_keeps_hidden_session_alive_and_releases_lock_on_quit(
                 hide=lambda: setattr(self, "tray_visible", False),
             )
             self._close_to_tray_action = SimpleNamespace(isChecked=lambda: close_to_tray)
-            self._confirm_discard_changes = lambda: True
+            self.configuration = SimpleNamespace(confirm_discard=lambda: True)
             self._quit_choice = lambda: "quit"
             self._hide_to_tray = lambda: MainWindow._hide_to_tray(cast(MainWindow, self))
             self._shutdown = lambda: MainWindow._shutdown(cast(MainWindow, self))
-            self._engine = SimpleNamespace(wait=lambda _timeout: True)
+            self._save_on_shutdown = lambda: MainWindow._save_on_shutdown(cast(MainWindow, self))
             self._unregister_mute_hotkey = lambda: None
             self._toggle_mute_from_hotkey = lambda: None
             self._save_ui_state = lambda: True
             self.processor = SimpleNamespace(is_running=lambda: False)
+            self.engine_session = fake_session(self.processor)
             self.config = SimpleNamespace(window_geometry={})
             self.status_message = SimpleNamespace(showMessage=lambda *_: None)
 

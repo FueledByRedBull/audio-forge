@@ -16,6 +16,8 @@ from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
+from .runtime_snapshot import RuntimeSnapshot
+
 
 SCHEMA_NAME = "audioforge-support-snapshot"
 SCHEMA_VERSION = 3
@@ -471,36 +473,23 @@ def _sanitized_processing(
     return result
 
 
-def _sanitized_runtime(
-    diagnostics: Mapping[str, object],
-) -> dict[str, object]:
+def _sanitized_runtime(runtime: RuntimeSnapshot) -> dict[str, object]:
+    # A number the engine sent with a bad value is exported as null; one it did not send is left out.
     result: dict[str, object] = {}
     for key in sorted(_RUNTIME_NUMBERS):
-        if key not in diagnostics:
-            continue
-        result[key] = _finite_number(diagnostics[key])
+        if key in runtime.present:
+            result[key] = _finite_number(runtime.reported(key))
     for key in sorted(_RUNTIME_BOOLS):
-        value = diagnostics.get(key)
-        if isinstance(value, bool):
-            result[key] = value
+        if key in runtime.valid:
+            result[key] = runtime.reported(key)
     for key, allowed in sorted(_RUNTIME_ENUMS.items()):
-        if key in diagnostics:
-            result[key] = _safe_enum(diagnostics[key], allowed)
-    result["backend_error_present"] = bool(
-        diagnostics.get("noise_backend_error")
-    )
-    result["auto_makeup_error_present"] = bool(
-        diagnostics.get("auto_makeup_error")
-    )
-    result["vad_worker_error_present"] = bool(
-        diagnostics.get("vad_worker_error")
-    )
-    result["stream_error_present"] = bool(
-        diagnostics.get("last_stream_error")
-    )
-    result["restart_reason_present"] = bool(
-        diagnostics.get("last_restart_reason")
-    )
+        if key in runtime.present:
+            result[key] = _safe_enum(runtime.reported(key), allowed)
+    result["backend_error_present"] = bool(runtime.noise_backend_error)
+    result["auto_makeup_error_present"] = bool(runtime.auto_makeup_error)
+    result["vad_worker_error_present"] = bool(runtime.vad_worker_error)
+    result["stream_error_present"] = bool(runtime.last_stream_error)
+    result["restart_reason_present"] = bool(runtime.last_restart_reason)
     return result
 
 
@@ -626,7 +615,7 @@ def _timestamp_utc(value: datetime | None) -> str:
 def build_diagnostics_snapshot(
     *,
     app_version: str,
-    runtime_diagnostics: Mapping[str, object],
+    runtime_diagnostics: RuntimeSnapshot,
     config: object,
     processing_settings: object,
     input_device: object,

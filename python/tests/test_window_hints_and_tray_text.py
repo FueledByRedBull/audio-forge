@@ -67,7 +67,7 @@ def test_start_without_a_destination_says_so_where_warnings_are_shown(isolated_m
     banner = window.shell_texts["device_warning_banner"]
     banner.update(shown=False)  # devices exist, but none is chosen as the destination
 
-    assert window._start_processing(interactive=False) is False
+    assert window.engine_session.start_now(interactive=False) is False
     assert banner.shown and banner.text == NO_DESTINATION_WARNING
 
     window._on_device_changed()
@@ -79,7 +79,7 @@ def test_a_device_warning_that_is_already_up_is_not_replaced(isolated_main_windo
     banner = window.shell_texts["device_warning_banner"]
     banner.update(text="Warning: No output devices detected.", shown=True)
 
-    window._start_processing(interactive=False)
+    window.engine_session.start_now(interactive=False)
     window._on_device_changed()
 
     assert banner.text == "Warning: No output devices detected." and banner.shown
@@ -198,3 +198,17 @@ def test_a_new_status_message_is_announced_once(isolated_main_window, monkeypatc
     status.showMessage("Output muted")
     status.showMessage("Output unmuted")
     assert sent == ["QAccessibleAnnouncementEvent"] * 2
+
+
+def test_a_device_listing_that_fails_with_a_value_error_still_reaches_the_warning(isolated_main_window, monkeypatch):
+    window: Any = isolated_main_window
+
+    def broken():
+        raise ValueError("unreadable device record")
+
+    monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", broken)
+    window._refresh_devices()
+
+    assert window.input_choice.count() == 0
+    banner = window.shell_texts["device_warning_banner"]
+    assert banner.shown and "Could not list input devices (unreadable device record)" in banner.text

@@ -23,6 +23,7 @@ from mic_eq.diagnostics_export import (
     serialize_diagnostics_snapshot,
     write_diagnostics_snapshot,
 )
+from mic_eq.runtime_snapshot import RuntimeSnapshot
 from mic_eq.ui import main_window
 
 
@@ -89,6 +90,129 @@ def _runtime() -> dict[str, object]:
     }
 
 
+GOLDEN_EXPORT = Path(__file__).resolve().parent / "fixtures" / "golden" / "diagnostics_export.json"
+
+
+def _full_runtime() -> dict[str, object]:
+    """Every key the engine reports, with the levels and Linux guard keys the window adds."""
+    return {
+        "noise_model": "deepfilter-ll",
+        "noise_attenuation_limit_db": 100.0,
+        "noise_post_filter_beta": None,
+        "noise_backend_available": False,
+        "noise_backend_failed": True,
+        "noise_backend_error": "C:\\Users\\private\\model.onnx failed",
+        "noise_selection_dropped_count": 2,
+        "suppressor_latency_samples": 480,
+        "suppressor_successful_inference_frames": 1234,
+        "input_dropped_samples": 12,
+        "input_backlog_recovery_count": 1,
+        "input_backlog_dropped_samples": 96,
+        "lock_contention_count": 3,
+        "output_underrun_total": 5,
+        "output_priming_underrun_total": 2,
+        "output_underrun_streak": 1,
+        "jitter_dropped_samples": 3845,
+        "output_retime_adjustment_count": 606,
+        "downstream_non_finite_count": 4,
+        "output_resampler_error_count": 0,
+        "dsp_scheduling_degraded": True,
+        "auto_makeup_error": None,
+        "vad_worker_error": "C:\\Users\\private\\silero.onnx missing",
+        "rejected_control_value_count": 7,
+        "output_recovery_event_count": 2,
+        "output_recovery_count": 2,
+        "dsp_idle_wakeup_count": 99,
+        "dsp_idle_sleep_us": 100,
+        "output_short_write_dropped_samples": 11,
+        "input_channel_mode": "phase_safe_mono",
+        "input_cleanup_mode": "strong",
+        "input_cleanup_hum_detected": True,
+        "input_cleanup_rumble_detected": False,
+        "input_cleanup_high_pass_hz": 80.0,
+        "input_crest_factor_db": 11.25,
+        "output_crest_factor_db": 9.5,
+        "output_short_term_lufs": float("nan"),
+        "input_stereo_correlation": -0.875,
+        "input_phase_warning_count": 3,
+        "input_phase_rescue_strategy": "delay_left",
+        "input_phase_estimated_delay_samples": 2.5,
+        "input_phase_polarity_flipped": False,
+        "stream_restart_count": 1,
+        "last_restart_reason": "/home/private/device changed",
+        "last_stream_error": "token=secret-value",
+        "suppressor_non_finite_count": 6,
+        "rt_error_code": 7,
+        "rt_error_name": "fixed real-time buffer overflow",
+        "input_callback_error_count": 9,
+        "output_callback_error_count": 10,
+        "rt_buffer_overflow_count": 8,
+        "clip_event_count": 7,
+        "clip_peak_db": -1.25,
+        "output_clip_event_count": 2,
+        "output_clip_peak_db": -0.75,
+        "output_true_peak_event_count": 1,
+        "output_true_peak_db": 0.4,
+        "output_true_peak_input_db": 2.0,
+        "output_true_peak_gain_reduction_db": 1.5,
+        "output_true_peak_gain_reduction_history_db": 3.5,
+        "output_true_peak_headroom_db": -0.5,
+        "limiter_gain_reduction_db": 2.25,
+        "limiter_peak_gain_reduction_db": 6.5,
+        "limiter_gain_reduction_history_db": 7.0,
+        "limiter_careful_output_enabled": True,
+        "limiter_effective_ceiling_db": -1.5,
+        "gate_chatter_event_count": 4,
+        "gate_auto_relax_active": True,
+        "deesser_detector_confidence": 0.64,
+        "input_resampler_active": True,
+        "output_resampler_active": False,
+        "input_sample_rate": 44_100,
+        "output_sample_rate": 48_000,
+        "output_fixed_buffer_frames": 480,
+        "output_low_period_frames": 128,
+        "output_low_period_failure_code": 0,
+        "output_largest_callback_frames": 960,
+        "output_sustained_callback_frames": 480,
+        "input_fixed_buffer_frames": 0,
+        "engine_latency_ms": 21.5,
+        "total_latency_ms": 48.75,
+        "output_device_latency_ms": 27.0,
+        "output_device_buffer_frames": 1056,
+        "output_device_period_frames": 480,
+        "output_device_buffer_known": True,
+        "output_device_buffer_failure_code": 0,
+        "latency_compensation_ms": 12.5,
+        "recovery_suppressed": False,
+        "raw_monitor_enabled": True,
+        "output_muted": False,
+        "gate_fused_score": 0.375,
+        "input_rms_db": -42.5,
+        "input_peak_db": None,
+        "own_microphone_refusal_count": 1,
+        "default_source_watch_failed": False,
+    }
+
+
+def test_a_full_runtime_dict_exports_the_bytes_recorded_before_the_snapshot_existed() -> None:
+    """The file was written by the dict-reading exporter; the typed snapshot must not change a byte."""
+    snapshot = build_diagnostics_snapshot(
+        app_version="1.22.0",
+        runtime_diagnostics=RuntimeSnapshot.parse(_full_runtime()),
+        config=_config(),
+        processing_settings=Preset().to_dict(),
+        input_device=DeviceIdentity(name="Private USB Microphone", is_default=True),
+        output_device=DeviceIdentity(name="Private Virtual Cable"),
+        processing_sample_rate_hz=48_000,
+        output_sample_rate_hz=48_000,
+        running=True,
+        generated_at=FIXED_TIME,
+        pseudonym_key=b"K" * 32,
+        system_info=FIXED_SYSTEM,
+    )
+    assert serialize_diagnostics_snapshot(snapshot) == GOLDEN_EXPORT.read_bytes()
+
+
 def _build(
     *, key: bytes = b"K" * 32, processing: dict[str, Any] | None = None,
     setup_result: dict[str, Any] | None = None,
@@ -98,7 +222,7 @@ def _build(
     processing["eq"]["bands"][0]["gain_db"] = float("inf")
     return build_diagnostics_snapshot(
         app_version="1.10.1",
-        runtime_diagnostics=_runtime(),
+        runtime_diagnostics=RuntimeSnapshot.parse(_runtime()),
         config=_config(),
         processing_settings=processing,
         input_device=DeviceIdentity(
@@ -132,7 +256,7 @@ def test_every_rust_rt_error_code_has_an_exported_name() -> None:
         runtime = {**_runtime(), "rt_error_name": name}
         snapshot = build_diagnostics_snapshot(
             app_version="1.10.1",
-            runtime_diagnostics=runtime,
+            runtime_diagnostics=RuntimeSnapshot.parse(runtime),
             config=_config(),
             processing_settings=Preset().to_dict(),
             input_device=None,
@@ -282,7 +406,7 @@ def test_snapshot_omits_oversized_or_malformed_eq_layers() -> None:
 def test_same_named_endpoint_devices_have_distinct_private_pseudonyms() -> None:
     first = build_diagnostics_snapshot(
         app_version="1.11.0",
-        runtime_diagnostics=_runtime(),
+        runtime_diagnostics=RuntimeSnapshot.parse(_runtime()),
         config=_config(),
         processing_settings=Preset().to_dict(),
         input_device=DeviceIdentity(
@@ -300,7 +424,7 @@ def test_same_named_endpoint_devices_have_distinct_private_pseudonyms() -> None:
     )
     second = build_diagnostics_snapshot(
         app_version="1.11.0",
-        runtime_diagnostics=_runtime(),
+        runtime_diagnostics=RuntimeSnapshot.parse(_runtime()),
         config=_config(),
         processing_settings=Preset().to_dict(),
         input_device=DeviceIdentity(
@@ -385,14 +509,12 @@ class _FakeWindow:
         self.input_choice = object()
         self.output_choice = object()
         self.status_message = _FakeStatusBar()
+        self.configuration = SimpleNamespace(current=Preset())
 
     def _combo_device_identity(self, combo: object) -> DeviceIdentity:
         if combo is self.input_choice:
             return DeviceIdentity(name="Private USB Microphone", is_default=True)
         return DeviceIdentity(name="Private Virtual Cable")
-
-    def _get_current_preset(self) -> Preset:
-        return Preset()
 
     def _interface_snapshot(self) -> dict[str, str]:
         return {"view": "quick", "classic_reason": "none", "graphics_api": "software"}

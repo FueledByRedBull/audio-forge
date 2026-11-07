@@ -26,7 +26,7 @@ import logging
 import math
 import time
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -49,15 +49,14 @@ from .compressor_state import CompressorState
 from .gate_state import GateState
 from .level_meter import LevelMeter
 from .health import (
-    DEVICE_ACTIVITY_BAD_MS,
-    DEVICE_ACTIVITY_WARN_MS,
     HEALTH_PEAK_WINDOW_SECONDS,
+    Chip,
+    HealthMemory,
+    HealthReadings,
     RecentStreamHealth,
-    advice_for,
-    plural,
+    health_summary,
+    runtime_health,
 )
-from .health import input_health_state as build_input_health_state
-from .health import output_health_state as build_output_health_state
 from .calibration_dialog import CalibrationDialog
 from .latency_calibration_dialog import (
     LatencyCalibrationDialog,
@@ -77,41 +76,59 @@ from .device_selection import (
     own_microphone_diagnostics,
     preferred_output_index,
     records_own_microphone,
-    start_processor_for_route,
 )
-from .capture_session import recovery_paused
+from .capture_session import recovery_paused, selected_device_identities
+from .engine_session import (
+    AudioBorrowed,
+    AudioReleased,
+    BackgroundStopFailed,
+    ControlsChanged,
+    EngineSession,
+    MuteApplied,
+    QuitChoice,
+    RestartFailed,
+    Restarted,
+    Route,
+    SessionView,
+    Started,
+    StartFailed,
+    StopFailed,
+    Stopped,
+    StopSource,
+)
 from .engine_tasks import EngineTasks, attempt
 from .theme import contrast_theme_changed, muted_icon
-from .config_history import (
-    BoundedConfigurationHistory,
-    ConfigurationSnapshot,
-    explicit_provenance_after_edit,
+from .processing_configuration import (
+    CONFIGURATION_MUTE,
+    LoadOutcome,
+    LoadStatus,
+    PresetOrigin,
+    ProcessingConfiguration,
+    StageStates,
 )
 from .shell_specs import (
     ACTION_SPECS,
     CHOICE_SPECS,
-    DROPPED_DIAGNOSTICS_TOOLTIP,
     HEALTH_DECISION_KEYS,
     HEALTH_LAYOUT_KEYS,
     INPUT_CHANNEL_MODE_OPTIONS,
     INPUT_CLEANUP_MODE_OPTIONS,
-    LATENCY_LOWER_BOUND_NOTE,
-    LATENCY_LOWER_BOUND_NOTE_NO_BUFFER,
     PROCESSING_MODE_OPTIONS,
     TEXT_SPECS,
 )
 from .startup_presets import (
-    STARTUP_BUILTIN_PREFIX,
     STARTUP_CUSTOM_PREFIX,
     STARTUP_CUSTOM_FILE_PREFIX,
-    normalize_startup_preset_id as _normalize_startup_preset_id,
+    route_preset_selection as _route_custom_preset_selection,
     startup_builtin_id as _startup_builtin_id,
     startup_custom_file_id as _startup_custom_file_id,
     startup_preset_display_name as _startup_preset_display_name,
+    startup_preset_selection as _startup_preset_selection,
 )
 from .desktop_integration import GlobalMuteHotkey, activate_window, build_tray_tooltip
 from . import login_startup
 from .. import AudioProcessor, __version__, list_input_devices, list_output_devices
+from ..runtime_snapshot import RuntimeSnapshot
 from ..diagnostics_export import (
     build_diagnostics_snapshot,
     diagnostics_filename,
@@ -121,11 +138,6 @@ from ..diagnostics_export import (
 from ..config import (
     Preset,
     DeviceIdentity,
-    GateSettings,
-    RNNoiseSettings,
-    DeEsserSettings,
-    CompressorSettings,
-    LimiterSettings,
     PresetValidationError,
     save_preset,
     load_preset,
@@ -145,63 +157,10 @@ from ..config import (
 )
 
 
-def _startup_preset_selection(
-    preset_id: str,
-    custom_presets: list[tuple[str, Path]],
-) -> tuple[str, tuple[str, Path] | None]:
-    """Resolve custom startup IDs by filename and migrate older name IDs."""
-    normalized = _normalize_startup_preset_id(
-        preset_id, tuple(name for name, _filepath in custom_presets)
-    )
-    if normalized.startswith(STARTUP_CUSTOM_FILE_PREFIX):
-        identity = normalized[len(STARTUP_CUSTOM_FILE_PREFIX) :]
-        matches = [item for item in custom_presets if item[1].name == identity]
-        return normalized, matches[0] if len(matches) == 1 else None
-    if not normalized.startswith(STARTUP_CUSTOM_PREFIX):
-        return normalized, None
-
-    identity = normalized[len(STARTUP_CUSTOM_PREFIX) :]
-    matches = [item for item in custom_presets if item[0] == identity]
-    if len(matches) != 1:
-        return normalized, None
-    name, filepath = matches[0]
-    return _startup_custom_file_id(filepath.name), (name, filepath)
-
-
-def _route_custom_preset_selection(
-    preset_id: str,
-    custom_presets: list[tuple[str, Path]],
-) -> tuple[str, tuple[str, Path]] | None:
-    """Resolve route preset IDs, rejecting ambiguous legacy filename/name IDs."""
-    if preset_id.startswith(STARTUP_CUSTOM_FILE_PREFIX):
-        identity = preset_id[len(STARTUP_CUSTOM_FILE_PREFIX) :]
-        matches = [item for item in custom_presets if item[1].name == identity]
-    elif preset_id.startswith(STARTUP_CUSTOM_PREFIX):
-        identity = preset_id[len(STARTUP_CUSTOM_PREFIX) :]
-        matches = [
-            item
-            for item in custom_presets
-            if item[0] == identity or item[1].name == identity
-        ]
-    else:
-        return None
-
-    if len(matches) != 1:
-        return None
-    name, filepath = matches[0]
-    return _startup_custom_file_id(filepath.name), (name, filepath)
-
-
 # Enable debug logging
 DEBUG = False
 logger = logging.getLogger(__name__)
 
-INPUT_PHASE_WARNING_CORRELATION = -0.75
-PHASE_FIX_LABELS = {
-    "delay_left": "delaying the left channel",
-    "delay_right": "delaying the right channel",
-    "polarity_flip": "flipping one channel's polarity",
-}
 DEFAULT_MUTE_HOTKEY = "Ctrl+Alt+M"
 # The StatusNotifierItem tray host on Linux panels; Qt's tray icon needs one.
 TRAY_HOST_SERVICE = "org.kde.StatusNotifierWatcher"
@@ -215,26 +174,11 @@ PAGE_NAMES = ("Mic", "Health", "Settings")
 NO_DESTINATION_WARNING = "Warning: No output device is selected. Choose one in the Output list, then press Start."
 # Windows allows a program a few seconds to end a session, and the save comes after this wait.
 ENGINE_CALL_WAIT_MS = 3_000
-# Start and Stop share one button that turns back into Start as soon as a stop ends (about
-# 120 ms), so a Start this soon after a Stop click is the second click of a double-click.
-START_AFTER_STOP_LOCKOUT_S = 0.5
 # Set on the app while Qt asks to commit data for a sign-out or shutdown; the dialogs read it too.
 SESSION_ENDING_PROPERTY = "audioforge_session_ending"
 SAVE_PROBLEM = "Settings could not be saved, so recent changes may be lost when AudioForge closes."
-NOISE_SELECTION_DROPPED_WARNING = (
-    "The noise suppression model you chose could not be applied, and the previous one is still "
-    "running. Choose it again. If it keeps failing, check the model files or use Help > Export Diagnostics."
-)
 
 
-# The engine reports this age until a device has made its first callback.
-NO_CALLBACK_YET = 2**64 - 1
-# A device that has made no callback this long after it was first seen waiting is a
-# warning. Any engine restart resets the callback ages, so the wait is timed from the
-# moment the not-started state appears, not from when processing began.
-DEVICE_STARTUP_GRACE_SECONDS = 5.0
-# How the engine's supervisor words a stall restart's reason (callback ages, in ms).
-STALL_REASON_PREFIX = "input_cb_age_ms="
 # The native getters the meters and Health read; an older extension module lacks them.
 METER_GETTERS = (
     "take_input_peak_since_read",
@@ -243,19 +187,6 @@ METER_GETTERS = (
     "get_input_full_scale_count",
     "get_output_full_scale_count",
 )
-
-
-def _ago_text(age_ms: int | None, *, output: bool = False) -> str:
-    if age_ms is None:
-        return "--"
-    if age_ms == NO_CALLBACK_YET:
-        return "has not started playing sound yet" if output else "has not started sending sound yet"
-    return f"{age_ms} ms ago"
-
-
-def _engine_in_use(window) -> bool:
-    """Whether a call is out on the engine worker; the meters and Health wait for it."""
-    return bool(window.__dict__.get("_engine_busy") or window.__dict__.get("_recovery_polling"))
 
 
 def _session_is_ending() -> bool:
@@ -281,16 +212,6 @@ def _device_label(identity: DeviceIdentity, devices: list) -> str:
 def _list_devices() -> tuple[Any, Any]:
     """Both device lists, or for each the exception that stopped it; the worker runs this."""
     return attempt(list_input_devices), attempt(list_output_devices)
-
-
-def _output_muted(window) -> bool:
-    """Whether a mute the engine accepted is silencing the output (not one still pending).
-
-    The Output row, the OUT meter and the status dot all read this, so they agree.
-    """
-    return not window.__dict__.get("_output_mute_error") and bool(
-        window.__dict__.get("user_muted", False) or window.__dict__.get("_temporary_mute_reasons", set())
-    )
 
 
 def _level_reading(processor, name: str) -> float | None:
@@ -358,6 +279,63 @@ def _fit_window_geometry_to_screens(
     return QRect(x, y, width, height)
 
 
+class _WindowPresetLibrary:
+    """The presets on disk and the built-in ones, as the processing configuration reads them."""
+
+    def builtin(self, key: str) -> Preset | None:
+        return BUILTIN_PRESETS.get(key)
+
+    def custom(self) -> list[tuple[str, Path]]:
+        return list_presets()
+
+    def read(self, path: Path) -> Preset:
+        return load_preset(path)
+
+    def exists(self, path: Path) -> bool:
+        return path.exists()
+
+
+class _WindowConfigurationHost:
+    """What the processing configuration borrows from the window: mute, mode, calibration evidence."""
+
+    def __init__(self, window: "MainWindow") -> None:
+        self._window = window
+
+    def hold_mute(self, reason: str, on: bool) -> bool:
+        """The one way the configuration's output mute reaches the window's mute state."""
+        window = self._window
+        window.set_temporary_output_mute(on, reason)
+        return not window.engine_session.view.mute_error
+
+    def mute_held(self, reason: str) -> bool:
+        return reason in self._window.engine_session.view.mute_reasons
+
+    def audio_running(self) -> bool:
+        return self._window.processor.is_running()
+
+    def stop_audio(self) -> None:
+        self._window._stop_audio_on_worker()
+
+    def processing_mode(self) -> str:
+        return self._window._processing_mode()
+
+    def set_processing_mode(self, mode: str) -> None:
+        self._window._set_processing_mode(mode)
+
+    def calibration_context_key(self) -> str | None:
+        return self._window._calibration_context_key()
+
+    def sync_calibration_evidence(self, *, force_reset: bool = False) -> None:
+        self._window._sync_calibration_evidence(force_reset=force_reset)
+
+    def show_status(self, text: str, timeout_ms: int) -> None:
+        self._window.status_message.showMessage(text, timeout_ms)
+
+    def configuration_changed(self) -> None:
+        self._window._update_session_summary()
+        self._window._update_history_actions()
+
+
 class MainWindow(QMainWindow):
     """Main application window for AudioForge."""
 
@@ -386,6 +364,9 @@ class MainWindow(QMainWindow):
 
         # Create audio processor
         self.processor = AudioProcessor()
+        self._engine = EngineTasks(self)
+        # Owns Start, Stop, recovery and the output mute; the window redraws from its views.
+        self.engine_session = EngineSession(self.processor, self._engine, self)
         stop_audio = self._stop_audio_on_worker
         self.limiter_state = LimiterState(self.processor, self, stop_audio=stop_audio)
         self.deesser_state = DeEsserState(self.processor, self, stop_audio=stop_audio)
@@ -408,43 +389,35 @@ class MainWindow(QMainWindow):
             self.config.last_input_device_identity, self.config.last_output_device_identity
         )
         self._startup_restore_ready = False
-        self.current_preset_path = None
-        self.current_preset_name = "Default"
-        self.preset_modified = False
-        self._saved_preset_payload: str | None = None
-        self._last_preset_identity_persisted = True
-        self._temporary_mute_reasons: set[str] = set()
-        self._output_mute_error: str | None = None
-        self.user_muted = bool(getattr(self.config, "user_muted", False))
 
         # Bounded settings history with transient calibration evidence;
         # live audio buffers and realtime processor state stay out.
-        self._configuration_history = BoundedConfigurationHistory(limit=50)
-        self._history_ready = False
-        self._history_replaying = False
-        self._history_transaction_depth = 0
-        self._current_value_provenance: dict[str, str] = {}
         self._history_timer = QTimer(self)
         self._history_timer.setSingleShot(True)
         self._history_timer.setInterval(250)
-        self._history_timer.timeout.connect(self._commit_pending_configuration_snapshot)
+        self._configuration_host = _WindowConfigurationHost(self)
+        self.configuration = ProcessingConfiguration(
+            StageStates(
+                gate=self.gate_state, eq=self.eq_state, noise_suppression=self.noise_suppression_state,
+                deesser=self.deesser_state, compressor=self.compressor_state, limiter=self.limiter_state,
+            ),
+            self.config,
+            host=self._configuration_host,
+            library=_WindowPresetLibrary(),
+            confirm_unsaved=self._ask_to_save_sound_changes,
+            debouncer=self._history_timer,
+            save_config=self._save_config_safely,
+        )
+        self._history_timer.timeout.connect(self.configuration.commit_edit)
         self._undo_action = None
         self._redo_action = None
         self._calibration_dialog_open = False
         self._processing = False
-        self._engine = EngineTasks(self)
-        self._engine_busy: str | None = None  # the call the Start, Stop and Refresh controls wait on
-        self._recovery_polling = False
-        self._device_wait_since: float | None = None
         self._stream_health = RecentStreamHealth()
-        self._last_backend_warning = None
-        # The engine's dropped-selection count when last read; a new engine counts from zero.
-        self._noise_drops_seen = 0
+        # What the last diagnostics tick saw, for the next one to compare against.
+        self._health_memory = HealthMemory()
         # The latest Voice Setup or Auto-EQ outcome, kept for the diagnostics export.
         self.last_setup_result: dict | None = None
-        self._last_output_underrun_total = 0
-        self._last_output_true_peak_event_count = 0
-        self._last_input_phase_warning_count = 0
         # Why the Qt Quick view could not run, while the error screen shows; the
         # packaged smoke test and the diagnostics export read it.
         self.quick_view_failure: str | None = None
@@ -452,7 +425,6 @@ class MainWindow(QMainWindow):
         self.single_instance = None  # set by the app bootstrap; the relaunch releases it
         self._problems: dict[str, str] = {}  # on the warning banner until resolved
         self._quitting = False
-        self._shut_down = False
         self._quit_dont_ask = False
         self._tray_icon: QSystemTrayIcon | None = None
         self._tray_host_watcher: QObject | None = None  # Linux: waits for a late panel
@@ -468,12 +440,13 @@ class MainWindow(QMainWindow):
         self._setup_shell_models()
         self._setup_menubar()
         self._setup_options_menu()
+        self.engine_session.changed.connect(self._on_session_changed)
         for state in (self.limiter_state, self.deesser_state, self.compressor_state, self.gate_state, self.eq_state, self.noise_suppression_state):
             state.writeFailed.connect(
                 lambda message: self.status_message.showMessage(message, 7000)
             )
             state.recoveryFailed.connect(
-                lambda _message: self.set_temporary_output_mute(True, "configuration")
+                lambda _message: self.engine_session.hold_mute("configuration", True)
             )
         for state in (self.limiter_state, self.deesser_state, self.compressor_state, self.eq_state):
             state.set_settings({})
@@ -484,7 +457,7 @@ class MainWindow(QMainWindow):
 
         self._finish_shell()
         self._setup_desktop_integration()
-        self._apply_output_mute()
+        self.engine_session.set_user_muted(bool(self.config.user_muted))
 
         # Populate device lists
         self._refresh_devices()
@@ -507,8 +480,7 @@ class MainWindow(QMainWindow):
 
         # Restore settings from config
         self._restore_from_config()
-        self._initialize_configuration_history()
-        self._connect_configuration_history_inputs()
+        self.configuration.start_history()
         self._show_config_banner()
         if self.config.load_warning:
             warning = self.config.load_warning
@@ -606,8 +578,9 @@ class MainWindow(QMainWindow):
             key: TextState(self, text=spec.text, name=spec.name, tip=spec.tip, shown=spec.shown)
             for key, spec in TEXT_SPECS.items()
         }
+        identity = self.configuration.identity
         self.shell_texts["preset_status_label"].update(
-            data={"name": self.current_preset_name, "modified": bool(self.preset_modified)},
+            data={"name": identity.name, "modified": identity.modified},
         )
         self.status_message = StatusState(
             self, f"Sample Rate: {self.processor.sample_rate()} Hz | Status: Ready"
@@ -636,7 +609,7 @@ class MainWindow(QMainWindow):
             action.setEnabled(action_spec.enabled)
             action.setCheckable(action_spec.checkable)
             if key == "user_mute_checkbox":
-                action.setChecked(self.user_muted)
+                action.setChecked(bool(self.config.user_muted))
             setattr(self, key + "_action", action)
             (action.toggled if action_spec.checkable else action.triggered).connect(commands[key])
         self.shell_page = PageState(self, len(PAGE_NAMES))
@@ -694,25 +667,6 @@ class MainWindow(QMainWindow):
         self.shell_texts["health_advice_label"].update(text=TEXT_SPECS["health_advice_label"].text)
         for key in ("health_summary_label", "recovery_diag_label", "dropped_label", "latency_label"):
             self.shell_texts[key].update(tip=TEXT_SPECS[key].tip)
-
-    @staticmethod
-    def _diag_token(label: str, value) -> str | None:
-        if value is None:
-            return None
-        if isinstance(value, bool):
-            return f"{label}:{'Y' if value else 'N'}"
-        if isinstance(value, float):
-            return f"{label}:{value:.1f}"
-        return f"{label}:{value}"
-
-    @classmethod
-    def _extend_diag_tokens(
-        cls, tokens: list[str], diagnostics: dict, keys: list[tuple[str, str]]
-    ) -> None:
-        for key, label in keys:
-            token = cls._diag_token(label, diagnostics.get(key))
-            if token is not None:
-                tokens.append(token)
 
     @staticmethod
     def _is_valid_input_channel_mode(mode: object) -> bool:
@@ -814,51 +768,26 @@ class MainWindow(QMainWindow):
             self.status_message.showMessage(f"{error}; previous mode restored", 6000)
         else:
             self.set_temporary_output_mute(False, "processing_mode_error")
-            self._queue_configuration_snapshot()
-
-    def _apply_output_mute(self) -> None:
-        """Apply user and temporary mute state without either one clearing the other."""
-        muted = bool(
-            self.__dict__.get("user_muted", False)
-            or self.__dict__.get("_temporary_mute_reasons", set())
-        )
-        try:
-            self.processor.set_output_mute(muted)
-            self._output_mute_error = None
-        except Exception:
-            self._output_mute_error = "unavailable"
-            logger.warning("Failed to apply output mute state", exc_info=True)
-        tray_mute_action = self.__dict__.get("_tray_mute_action")
-        if tray_mute_action is not None:
-            tray_mute_action.blockSignals(True)
-            tray_mute_action.setChecked(bool(self.user_muted))
-            tray_mute_action.blockSignals(False)
-        self._update_session_summary()
+            self.configuration.note_edit()
 
     def set_temporary_output_mute(
         self, muted: bool, reason: str = "calibration"
     ) -> None:
         """Set one temporary mute owner; releasing it never changes user mute."""
-        reason = str(reason or "temporary")
-        reasons = self.__dict__.setdefault("_temporary_mute_reasons", set())
-        if muted:
-            reasons.add(reason)
-        else:
-            reasons.discard(reason)
-        self._apply_output_mute()
+        self.engine_session.hold_mute(reason, muted)
 
     def _on_user_mute_toggled(self, checked: bool) -> None:
-        self.user_muted = bool(checked)
-        self._apply_output_mute()
+        self.engine_session.set_user_muted(checked)
         saved = False
         if self.__dict__.get("config") is not None:
-            self.config.user_muted = self.user_muted
+            self.config.user_muted = bool(checked)
             saved = self._save_config_safely()
-        if self.__dict__.get("_output_mute_error"):
+        mute = self.engine_session.view
+        if mute.mute_error:
             message = "Output mute change could not be applied"
             if saved:
                 message += "; preference saved for the next start"
-        elif self.user_muted or self.__dict__.get("_temporary_mute_reasons", set()):
+        elif mute.mute_requested:
             message = "Output muted"
         else:
             message = "Output unmuted"
@@ -878,17 +807,19 @@ class MainWindow(QMainWindow):
             self._combo_device_identity(self.output_choice)
         ) or "Select a destination"
         self.shell_texts["route_status_label"].update(text=f"Route: {input_name} -> {output_name}")
-        state = "unsaved changes" if self.preset_modified else "saved"
+        identity = self.configuration.identity
+        state = "unsaved changes" if identity.modified else "saved"
         self.shell_texts["preset_status_label"].update(
-            text=f"Preset: {self.current_preset_name or 'Default'} ({state})",
-            data={"name": self.current_preset_name, "modified": bool(self.preset_modified)},
+            text=f"Preset: {identity.name or 'Default'} ({state})",
+            data={"name": identity.name, "modified": identity.modified},
         )
         running = bool(getattr(self, "processor", None) and self.processor.is_running())
         mode = self._processing_mode()
         mode_label = next(label for label, value in PROCESSING_MODE_OPTIONS if value == mode)
         transmission = f"{'Running' if running else 'Stopped'} / {mode_label}"
-        muted = _output_muted(self)
-        pending = bool(self.__dict__.get("_output_mute_error"))
+        mute = self.engine_session.view
+        muted = mute.output_muted
+        pending = mute.mute_error
         if pending:
             transmission += " / Mute pending"
         elif muted:
@@ -901,7 +832,7 @@ class MainWindow(QMainWindow):
         self.output_meter.set_muted(muted)
         tray = self.__dict__.get("_tray_icon")
         if tray is not None:
-            tray_muted = bool(self.user_muted or self._temporary_mute_reasons)
+            tray_muted = mute.mute_requested
             tooltip = build_tray_tooltip(
                 processing=running,
                 muted=tray_muted,
@@ -915,7 +846,7 @@ class MainWindow(QMainWindow):
             if tray_muted != self.__dict__.get("_tray_icon_muted", False):
                 self._tray_icon_muted = tray_muted
                 tray.setIcon(self._tray_icons[tray_muted])
-        if self.__dict__.get("_history_ready") and not self.__dict__.get("_calibration_dialog_open"):
+        if self.configuration.history_started and not self.__dict__.get("_calibration_dialog_open"):
             self._refresh_calibration_status()
 
     def _refresh_calibration_status(self) -> None:
@@ -931,9 +862,7 @@ class MainWindow(QMainWindow):
         its noise reference after a tone edit, while a changed route or
         correction clears it explicitly.
         """
-        if self.__dict__.get("_calibration_dialog_open") or self.__dict__.get(
-            "_history_replaying"
-        ):
+        if self.__dict__.get("_calibration_dialog_open") or self.configuration.replaying:
             return
         if not hasattr(self, "config") or not hasattr(self, "compressor_state"):
             return
@@ -958,83 +887,6 @@ class MainWindow(QMainWindow):
                 {"noise_reference_reliability": reliability}
             )
         self._persisted_calibration_active = result is not None
-
-    def _set_preset_identity(
-        self,
-        preset: Preset,
-        *,
-        path: Path | None = None,
-        preset_id: str | None = None,
-        persist_last_used: bool = True,
-    ) -> None:
-        self.current_preset_name = str(preset.name or "Default")
-        self.current_preset_description = preset.description
-        self.current_preset_path = path
-        self._saved_preset_payload = self._preset_payload(preset)
-        self._saved_processing_mode = "bypass" if preset.bypass else "normal"
-        if persist_last_used:
-            if preset_id is not None:
-                self.config.last_preset = preset_id
-            elif path is not None:
-                self.config.last_preset = str(path)
-        self._mirror_preset_record()
-        self._set_preset_modified()
-
-    def _mirror_preset_record(self) -> dict[str, Any]:
-        """Copy the preset the window shows into the record that history snapshots share."""
-        record = self.__dict__.setdefault("_preset_record", {})
-        record.update(
-            name=self.current_preset_name,
-            description=self.__dict__.get("current_preset_description", ""),
-            path=self.current_preset_path,
-            saved_payload=self._saved_preset_payload,
-            saved_mode=self.__dict__.get("_saved_processing_mode", "normal"),
-            last_preset=self.config.last_preset,
-        )
-        return record
-
-    def _restore_preset_record(self, record: dict[str, Any]) -> None:
-        """Show the preset that went with a history snapshot, and remember it for the next launch."""
-        self._preset_record = record
-        self.current_preset_name = record["name"]
-        self.current_preset_description = record["description"]
-        self.current_preset_path = record["path"]
-        self._saved_preset_payload = record["saved_payload"]
-        self._saved_processing_mode = record["saved_mode"]
-        if self.config.last_preset != record["last_preset"]:
-            self.config.last_preset = record["last_preset"]
-            self._save_config_safely()
-
-    @staticmethod
-    def _preset_payload(preset: Preset) -> str:
-        payload = preset.to_dict()
-        for key in ("name", "description", "version", "value_provenance"):
-            payload.pop(key, None)
-        return json.dumps(
-            payload,
-            ensure_ascii=True,
-            allow_nan=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-
-    def _set_preset_modified(self, modified: bool | None = None) -> None:
-        if modified is None:
-            saved_payload = self.__dict__.get("_saved_preset_payload")
-            if saved_payload is None:
-                modified = False
-            else:
-                try:
-                    modified = (
-                        self._preset_payload(self._get_current_preset())
-                        != saved_payload
-                        or self._processing_mode()
-                        != self.__dict__.get("_saved_processing_mode", "normal")
-                    )
-                except (PresetValidationError, TypeError, ValueError):
-                    modified = True
-        self.preset_modified = bool(modified)
-        self._update_session_summary()
 
     def _save_config_safely(self) -> bool:
         """Persist config without letting a write failure disrupt the UI."""
@@ -1254,12 +1106,12 @@ class MainWindow(QMainWindow):
 
         start_action = QAction("&Start Processing", self)
         start_action.setShortcut("Ctrl+Return")
-        start_action.triggered.connect(self._on_start_clicked)
+        start_action.triggered.connect(self._on_menu_start)
         file_menu.addAction(start_action)
 
         stop_action = QAction("S&top Processing", self)
         stop_action.setShortcut("Ctrl+.")
-        stop_action.triggered.connect(self._on_stop_clicked)
+        stop_action.triggered.connect(self._on_menu_stop)
         file_menu.addAction(stop_action)
 
         file_menu.addSeparator()
@@ -1313,7 +1165,9 @@ class MainWindow(QMainWindow):
             action = QAction(preset.name, self)
             action.setToolTip(preset.description)
             action.triggered.connect(
-                lambda checked, p=preset, k=key: self._apply_preset(p, preset_key=k)
+                lambda checked, p=preset, k=key: self._report_load(
+                    self.configuration.load(p, PresetOrigin(key=k), remember=True)
+                )
             )
             builtin_menu.addAction(action)
 
@@ -1658,7 +1512,7 @@ class MainWindow(QMainWindow):
             self._cancel_login_startup("Login stopped: saved route preset could not be restored")
             return
         self._cancel_login_startup()
-        if not self._start_processing(interactive=False):
+        if not self.engine_session.start_now(interactive=False):
             message = (
                 "Login needs attention: audio may still be running; use Stop"
                 if self.processor.is_running()
@@ -1716,7 +1570,7 @@ class MainWindow(QMainWindow):
 
         self._tray_mute_action = QAction("Mute Output", self)
         self._tray_mute_action.setCheckable(True)
-        self._tray_mute_action.setChecked(self.user_muted)
+        self._tray_mute_action.setChecked(self.engine_session.view.user_muted)
         self._tray_mute_action.toggled.connect(self._on_tray_mute_toggled)
         self._tray_menu.addAction(self._tray_mute_action)
         self._tray_menu.addSeparator()
@@ -1748,7 +1602,7 @@ class MainWindow(QMainWindow):
         self._tray_host_watcher = watcher
 
     def _on_tray_host_registered(self, _service: str = "") -> None:
-        if self._tray_icon is not None or self._shut_down:
+        if self._tray_icon is not None or self.engine_session.closed:
             return
         self._setup_desktop_integration(tray_only=True)
         # A panel registers the watcher before its own host, which Qt also waits for.
@@ -1767,7 +1621,7 @@ class MainWindow(QMainWindow):
     def _on_about_to_quit(self) -> None:
         """Shut down a window Qt never closed: hidden in the tray, or the app quit without it."""
         self._quitting = True
-        if not self._shut_down:
+        if not self.engine_session.closed:
             self._shutdown()
 
     def _show_from_tray(self) -> None:
@@ -1902,12 +1756,11 @@ class MainWindow(QMainWindow):
         close_to_tray = (
             self._close_to_tray_action is not None and self._close_to_tray_action.isChecked()
         )
-        if (
-            close_to_tray
-            or not self.processor.is_running()
-            or not self.config.confirm_quit_when_live
-        ):
-            return "quit"
+        return self.engine_session.quit_choice(
+            self._ask_to_quit, confirm=not close_to_tray and self.config.confirm_quit_when_live
+        )
+
+    def _ask_to_quit(self) -> QuitChoice:
         box = QMessageBox(
             QMessageBox.Icon.Question,
             "Stop Audio and Quit?",
@@ -1929,7 +1782,8 @@ class MainWindow(QMainWindow):
             # closeEvent applies it once the quit goes ahead, and saves the config on the way out.
             self._quit_dont_ask = dont_ask.isChecked()
             return "quit"
-        return "tray" if clicked is tray_button else "cancel"
+        # A box closed without a button answers None, which is no tray button that was never added.
+        return "tray" if tray_button is not None and clicked is tray_button else "cancel"
 
     def _hide_to_tray(self) -> None:
         assert self._tray_icon is not None
@@ -2065,12 +1919,9 @@ class MainWindow(QMainWindow):
         processor = self.__dict__.get("processor")
         try:
             if processor is not None and processor.is_running():
-                diagnostics = dict(processor.get_runtime_diagnostics())
-                for index, value in (
-                    (0, diagnostics.get("input_sample_rate")),
-                    (2, diagnostics.get("output_sample_rate")),
-                ):
-                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                snapshot = RuntimeSnapshot.parse(processor.get_runtime_diagnostics())
+                for index, value in ((0, snapshot.input_sample_rate), (2, snapshot.output_sample_rate)):
+                    if value is not None:
                         rate = int(value)
                         if rate > 0:
                             context[index] = rate
@@ -2213,26 +2064,6 @@ class MainWindow(QMainWindow):
             action.setChecked(preset_id == selected_id)
             action.setEnabled(route_key is not None)
 
-    def _load_device_preset_id(self, preset_id: str) -> bool:
-        if preset_id.startswith(STARTUP_BUILTIN_PREFIX):
-            key = preset_id[len(STARTUP_BUILTIN_PREFIX) :]
-            preset = BUILTIN_PRESETS.get(key)
-            if preset is None:
-                return False
-            return self._apply_preset(preset, preset_key=key, persist_last_used=False)
-        if not preset_id.startswith(
-            (STARTUP_CUSTOM_PREFIX, STARTUP_CUSTOM_FILE_PREFIX)
-        ):
-            return False
-        selection = _route_custom_preset_selection(preset_id, list_presets())
-        if selection is None:
-            return False
-        _normalized_id, (_name, filepath) = selection
-        preset = load_preset(filepath)
-        return self._apply_preset(
-            preset, preset_path=filepath, persist_last_used=False
-        )
-
     def _apply_bound_preset_for_current_route(self) -> bool:
         if not self.config.auto_apply_device_presets:
             return False
@@ -2242,11 +2073,12 @@ class MainWindow(QMainWindow):
         binding = self.config.device_preset_bindings.get(route_key)
         if binding is None:
             return False
-        try:
-            loaded = self._load_device_preset_id(binding.preset_id)
-        except (OSError, PresetValidationError, ValueError, json.JSONDecodeError):
-            logger.warning("Failed to apply route preset", exc_info=True)
-            loaded = False
+        outcome = self.configuration.load_id(binding.preset_id, remember=False)
+        if outcome.read_failed:
+            logger.warning("Failed to apply route preset", exc_info=outcome.error)
+        loaded = self._report_load(outcome)
+        if outcome.status is LoadStatus.CANCELLED:
+            return False
         if loaded:
             selection = _route_custom_preset_selection(
                 binding.preset_id, list_presets()
@@ -2472,12 +2304,12 @@ class MainWindow(QMainWindow):
 
     def _on_refresh_clicked(self) -> None:
         """List the devices on the worker: the enumeration can take seconds."""
-        if self.__dict__.get("_engine_busy"):
+        if self.engine_session.view.busy:
             return
         if self.processor.is_running():
             self._refresh_devices()  # says why it cannot refresh
             return
-        self._run_engine("refresh", _list_devices, self._refresh_devices)
+        self.engine_session.request_refresh(_list_devices, self._refresh_devices)
 
     def _refresh_devices(self, listing: tuple[Any, Any] | None = None):
         """Refresh the device lists; ``listing`` is the worker's, else they are listed here."""
@@ -2556,7 +2388,7 @@ class MainWindow(QMainWindow):
                     fallback_index = self._default_combo_index(self.input_choice)
                     if fallback_index >= 0:
                         self.input_choice.setCurrentIndex(fallback_index)
-            except (RuntimeError, OSError) as e:
+            except Exception as e:
                 listing_errors.append(f"input devices ({e})")
                 logger.warning("Input device enumeration failed", exc_info=True)
 
@@ -2594,7 +2426,7 @@ class MainWindow(QMainWindow):
                     if preferred_index >= 0:
                         self.output_choice.setCurrentIndex(preferred_index)
 
-            except (RuntimeError, OSError) as e:
+            except Exception as e:
                 listing_errors.append(f"output devices ({e})")
                 logger.warning("Output device enumeration failed", exc_info=True)
 
@@ -2707,158 +2539,63 @@ class MainWindow(QMainWindow):
                 )
 
         # Restore preset (startup preset takes priority over last used)
-        preset_loaded = False
-
-        # Check startup preset first
-        if self.config.startup_preset:
-            custom_presets = list_presets()
-            preset_id, custom_startup_preset = _startup_preset_selection(
-                self.config.startup_preset, custom_presets
-            )
-            if preset_id != self.config.startup_preset:
-                self.config.startup_preset = preset_id
-                config_dirty = True
-            preset_name = (
-                custom_startup_preset[0]
-                if custom_startup_preset is not None
-                else _startup_preset_display_name(preset_id)
-            )
-            # Try built-in presets
-            if preset_id.startswith(STARTUP_BUILTIN_PREFIX):
-                preset_key = preset_id[len(STARTUP_BUILTIN_PREFIX) :]
-                if preset_key in BUILTIN_PRESETS:
-                    preset = BUILTIN_PRESETS[preset_key]
-                    preset_loaded = self._apply_preset(
-                        preset,
-                        preset_key=preset_key,
-                        persist_last_used=False,
-                    )
-                    if preset_loaded:
-                        self.status_message.showMessage(f"Startup preset: {preset_name}", 5000)
-            # Try custom presets
-            elif preset_id.startswith(
-                (STARTUP_CUSTOM_PREFIX, STARTUP_CUSTOM_FILE_PREFIX)
-            ):
-                if custom_startup_preset is not None:
-                    _custom_name, filepath = custom_startup_preset
-                    try:
-                        preset = load_preset(filepath)
-                        preset_loaded = self._apply_preset(
-                            preset,
-                            preset_path=filepath,
-                            persist_last_used=False,
-                        )
-                        if preset_loaded:
-                            self.status_message.showMessage(
-                                f"Startup preset: {preset_name}", 5000
-                            )
-                    except Exception:
-                        logger.warning(
-                            "Failed to load startup preset %s",
-                            preset_name,
-                            exc_info=True,
-                        )
-                        self.status_message.showMessage(
-                            f"Failed to load startup preset: {preset_name}", 5000
-                        )
-            # Try legacy unresolved custom display name.
+        restore = self.configuration.restore_saved_preset()
+        config_dirty = config_dirty or restore.config_changed
+        startup = restore.startup
+        if startup is not None:
+            self._report_load(startup)
+            if startup.loaded:
+                self.status_message.showMessage(f"Startup preset: {restore.startup_name}", 5000)
+                restored_count += 1
             else:
-                for name, filepath in custom_presets:
-                    if name == preset_id:
-                        try:
-                            preset = load_preset(filepath)
-                            preset_loaded = self._apply_preset(
-                                preset,
-                                preset_path=filepath,
-                                persist_last_used=False,
-                            )
-                            if preset_loaded:
-                                self.status_message.showMessage(
-                                    f"Startup preset: {preset_name}", 5000
-                                )
-                        except Exception:
-                            logger.warning(
-                                "Failed to load startup preset %s",
-                                preset_name,
-                                exc_info=True,
-                            )
-                            self.status_message.showMessage(
-                                f"Failed to load startup preset: {preset_name}", 5000
-                            )
-                        break
-            if not preset_loaded:
+                if startup.read_failed:
+                    logger.warning(
+                        "Failed to load startup preset %s", restore.startup_name, exc_info=startup.error
+                    )
+                    self.status_message.showMessage(
+                        f"Failed to load startup preset: {restore.startup_name}", 5000
+                    )
                 logger.warning(
                     "Startup preset %r not found; falling back to last used",
-                    preset_name,
+                    restore.startup_name,
                 )
                 self._report_preset_problem(
                     "startup_preset",
                     self.config.startup_preset,
-                    f"Startup preset '{preset_name}' could not be loaded",
+                    f"Startup preset '{restore.startup_name}' could not be loaded",
                     5000,
                 )
 
-        startup_preset_failed = bool(self.config.startup_preset) and not preset_loaded
-        # Fall back to last_preset if startup_preset not set or not found
-        if not preset_loaded and self.config.last_preset:
-            try:
-                # Check if it's a built-in preset
-                if self.config.last_preset.startswith("builtin:"):
-                    preset_key = self.config.last_preset[8:]  # Remove "builtin:" prefix
-                    if preset_key in BUILTIN_PRESETS:
-                        preset = BUILTIN_PRESETS[preset_key]
-                        preset_loaded = self._apply_preset(preset, preset_key=preset_key)
-                        if not preset_loaded:
-                            self.config.last_preset = ""
-                            config_dirty = True
-                        restored_count += int(preset_loaded)
-                    else:
-                        self._report_preset_problem(
-                            "last_preset",
-                            self.config.last_preset,
-                            f"Previous preset '{preset_key}' not found, starting with defaults",
-                        )
-                        self.config.last_preset = ""
-                        config_dirty = True
-                else:
-                    # It's a file path
-                    preset_path = Path(self.config.last_preset)
-                    if preset_path.exists():
-                        preset = load_preset(preset_path)
-                        preset_loaded = self._apply_preset(preset, preset_path=preset_path)
-                        if not preset_loaded:
-                            self.config.last_preset = ""
-                            config_dirty = True
-                        restored_count += int(preset_loaded)
-                    else:
-                        self._report_preset_problem(
-                            "last_preset",
-                            self.config.last_preset,
-                            "Previous preset file not found, starting with defaults",
-                        )
-                        self.config.last_preset = ""
-                        config_dirty = True
-            except (OSError, ValueError, PresetValidationError) as e:
-                logger.warning("Preset restore failed", exc_info=True)
-                warning = f"Could not restore the previous preset; starting with defaults. {e}"
+        last_used = restore.last_used
+        if last_used is not None:
+            self._report_load(last_used)
+            restored_count += int(last_used.loaded)
+            if last_used.status is LoadStatus.MISSING:
+                builtin_key = restore.last_used_id.removeprefix("builtin:")
+                self._report_preset_problem(
+                    "last_preset",
+                    restore.last_used_id,
+                    "Previous preset file not found, starting with defaults"
+                    if builtin_key == restore.last_used_id
+                    else f"Previous preset '{builtin_key}' not found, starting with defaults",
+                )
+            elif last_used.read_failed:
+                logger.warning("Preset restore failed", exc_info=last_used.error)
+                warning = f"Could not restore the previous preset; starting with defaults. {last_used.error}"
                 self.config.load_warning = "\n".join(
                     text for text in (self.config.load_warning, warning) if text
                 )
-                # A file that cannot be read right now may load next time (load_preset wraps OS errors in
-                # PresetValidationError); only a bad one loses its reference.
-                if not (isinstance(e, OSError) or isinstance(e.__cause__, OSError)):
-                    self.config.last_preset = ""
-                    cleared = self._save_config_safely()
-                    if not cleared:
-                        self.config.load_warning += "\nThe cleared preset reference could not be saved."
+                # An invalid file loses its reference; one unreadable right now may load next time.
+                if last_used.status is LoadStatus.INVALID and not self._save_config_safely():
+                    self.config.load_warning += "\nThe cleared preset reference could not be saved."
 
-        self._startup_restore_ready = (
-            not startup_preset_failed and (preset_loaded or not requested_preset)
+        self._startup_restore_ready = (startup is None or startup.loaded) and (
+            restore.loaded or not requested_preset
         )
         # Show appropriate status message
         if self.config.load_warning:
             self.status_message.showMessage(self.config.load_warning)
-        elif self.__dict__.get("_last_preset_identity_persisted") is False:
+        elif not self.configuration.identity.remembered:
             self.status_message.showMessage(
                 "Preset applied for this session, but could not be remembered for the next launch",
                 6000,
@@ -2966,70 +2703,36 @@ class MainWindow(QMainWindow):
                 "Input settings applied for this session, but could not be saved", 6000
             )
 
-    def _run_engine(
-        self, name: str, call: Callable[[], Any], done: Callable[[Any], object]
-    ) -> None:
-        """Run a blocking engine call on the worker, with the engine controls locked until ``done`` ran."""
-        if self._shut_down:
-            return
-        if self._engine.threaded:  # a call that returns at once would only cost the focus of a button
-            self._engine_busy = name
-            self._sync_processing_controls()
-
-        def finish(outcome: Any) -> None:
-            self._engine_busy = None
-            if self._shut_down:
-                return
-            try:
-                done(outcome)
-            finally:
-                self._sync_processing_controls()
-
-        self._engine.submit(call, finish)
-
-    def _start_processing(self, *, interactive: bool = True) -> bool:
-        """Start audio processing and wait for the engine; login and setup need the answer."""
-        route = self._prepare_start(interactive)
-        if isinstance(route, bool):
-            return route
-        return self._finish_start(
-            attempt(partial(start_processor_for_route, self.processor, *route)), interactive
-        )
-
     def _on_start_clicked(self) -> None:
-        """Start from the button or menu; the engine starts on the worker, so the window stays alive."""
-        if self.__dict__.get("_engine_busy"):
-            return
-        stop_clicked_at = self.__dict__.get("_stop_clicked_at")
-        if stop_clicked_at is not None and time.monotonic() - stop_clicked_at < START_AFTER_STOP_LOCKOUT_S:
-            return
-        if self.__dict__.get("_recovery_polling"):
-            # Queued behind that call, the start would meet the streams a retry reopened.
-            self._start_after_recovery = True
-            return
-        route = self._prepare_start(True)
-        if not isinstance(route, bool):
-            self._run_engine(
-                "start",
-                partial(start_processor_for_route, self.processor, *route),
-                partial(self._finish_start, interactive=True),
-            )
+        """The shared Start/Stop button; the engine starts on the worker, so the window stays alive."""
+        self.engine_session.request_start("button")
 
-    def _prepare_start(
-        self, interactive: bool
-    ) -> bool | tuple[DeviceIdentity | None, DeviceIdentity | None]:
-        """The route to start, or the final answer when there is nothing to start."""
+    def _on_menu_start(self) -> None:
+        """File > Start Processing and its shortcut."""
+        self.engine_session.request_start("menu")
+
+    def _on_stop_clicked(self) -> None:
+        self._request_stop("button")
+
+    def _on_menu_stop(self) -> None:
+        self._request_stop("menu")
+
+    def _request_stop(self, source: StopSource) -> None:
+        if self.engine_session.view.busy is None and self.__dict__.get("_login_startup_deadline") is not None:
+            self._cancel_login_startup()
+        self.engine_session.request_stop(source)
+
+    def start_route(self, interactive: bool) -> Route | bool:
+        """The route a window Start opens, or the final answer when there is nothing to start."""
         if interactive:
             if self.__dict__.get("_login_startup_deadline") is not None:
                 self._cancel_login_startup()
             self._login_startup = False
             self._login_startup_message = ""
         if self.processor.is_running():
-            if DEBUG:
-                logger.debug("Start processing clicked, but processor already running")
             return True
 
-        if "configuration" in self.__dict__.get("_temporary_mute_reasons", set()):
+        if "configuration" in self.engine_session.view.mute_reasons:
             self.status_message.showMessage(
                 "Audio remains stopped and muted because configuration recovery failed; "
                 "reload the preset or restart AudioForge before starting",
@@ -3045,95 +2748,118 @@ class MainWindow(QMainWindow):
                 banner.update(text=NO_DESTINATION_WARNING, shown=True)
             return False
 
-        input_device = self._device_selection_to_name(self.input_choice) or None
-        output_device = self._device_selection_to_name(self.output_choice) or None
         self._apply_input_preferences_for_current_route()
-        # Set the persisted mute before native startup so the first buffer is safe.
-        self._apply_output_mute()
-        if not interactive and self._output_mute_error is not None:
-            return False
-
-        if DEBUG:
-            logger.debug(
-                "Starting processing - Input: %s, Output: %s",
-                input_device or "(default)",
-                output_device or "(default)",
-            )
         return (
             self._combo_device_identity(self.input_choice),
             self._combo_device_identity(self.output_choice),
         )
 
-    def _finish_start(self, outcome: Any, interactive: bool) -> bool:
-        """Show how the engine start went: ``outcome`` is its result or the exception it raised."""
-        try:
-            if isinstance(outcome, Exception):
-                raise outcome
-            result = outcome
-            self._apply_latency_compensation_for_current_devices()
-            # Native start clears temporary mute state; restore both owners.
-            if DEBUG:
-                logger.debug("Restoring output mute state after processing start")
-            self._apply_output_mute()
-            if not interactive and self._output_mute_error is not None:
-                self.processor.stop()
-                raise RuntimeError("Output mute state could not be restored")
-            self.status_message.showMessage(f"Processing: {result}")
-            self._clear_own_microphone_problem()
-            self.start_btn_action.setEnabled(False)
-            self.stop_btn_action.setEnabled(True)
-            self.input_choice.setEnabled(False)
-            self.output_choice.setEnabled(False)
-            self.refresh_btn_action.setEnabled(False)
-            self._processing = True
-            self._update_session_summary()
-            self._sync_meter_timer()
-            if DEBUG:
-                logger.debug("Processing started: %s", result)
-            return True
-        except Exception as e:
-            logger.exception("Start processing failed")
-            own_microphone = isinstance(e, OwnMicrophoneError)
-            if own_microphone:
-                self._set_problem("own_microphone", OWN_MICROPHONE_MESSAGE)
-            if not interactive and self.processor.is_running():
-                try:
-                    self.processor.stop()
-                except Exception:
-                    logger.exception("Could not stop audio after failed login startup")
-            error_msg = str(e)
-            # Provide actionable guidance based on error type
-            if "device" in error_msg.lower() or "audio" in error_msg.lower():
-                guidance = (
-                    "Try these steps:\n"
-                    "1. Press the refresh button (the circular arrow) next to the Output list\n"
-                    "2. Ensure your microphone is connected\n"
-                    "3. Check "
-                    + ("Windows audio settings" if sys.platform == "win32" else "your sound settings")
-                    + "\n"
-                    "4. Try selecting a different device"
+    def selected_route(self) -> Route:
+        return selected_device_identities(self)
+
+    def engine_started(self) -> None:
+        self._apply_latency_compensation_for_current_devices()
+
+    def _on_session_changed(self, view: SessionView) -> None:
+        """Redraw from the engine session; its event names the prompt a transition asks for."""
+        match view.event:
+            case MuteApplied():
+                tray_mute_action = self.__dict__.get("_tray_mute_action")
+                if tray_mute_action is not None:
+                    tray_mute_action.blockSignals(True)
+                    tray_mute_action.setChecked(view.user_muted)
+                    tray_mute_action.blockSignals(False)
+                self._update_session_summary()
+            case ControlsChanged():
+                self._sync_processing_controls()
+            case Started(result=result):
+                self.status_message.showMessage(f"Processing: {result}")
+                self._clear_own_microphone_problem()
+                self.start_btn_action.setEnabled(False)
+                self.stop_btn_action.setEnabled(True)
+                self.input_choice.setEnabled(False)
+                self.output_choice.setEnabled(False)
+                self.refresh_btn_action.setEnabled(False)
+                self._processing = True
+                self._update_session_summary()
+                self._sync_meter_timer()
+            case StartFailed(error=error, interactive=interactive):
+                self._show_start_failure(error, interactive)
+            case Stopped(source=source):
+                self.status_message.showMessage("Processing stopped")
+                self.start_btn_action.setEnabled(True)
+                self.stop_btn_action.setEnabled(False)
+                self.input_choice.setEnabled(True)
+                self.output_choice.setEnabled(True)
+                self.refresh_btn_action.setEnabled(True)
+                self._processing = False
+                self._health_memory = replace(self._health_memory, device_wait_since=None)
+                self._sync_meter_timer()
+                self._update_session_summary()
+                if source == "own_microphone":
+                    self._report_problem("own_microphone", OWN_MICROPHONE_MESSAGE)
+            case StopFailed(error=error, source=source):
+                QMessageBox.critical(self, "Error", f"Failed to stop processing:\n{error}")
+                if source == "own_microphone":
+                    self._report_problem("own_microphone", OWN_MICROPHONE_MESSAGE)
+            case Restarted(reason=reason):
+                suffix = f" after: {reason}" if reason else ""
+                self.status_message.showMessage(
+                    f"Audio restarted automatically{suffix}; you may have heard a short gap",
+                    4000,
                 )
-            else:
-                guidance = (
-                    "Try these steps:\n"
-                    "1. Stop and restart the application\n"
-                    "2. Check that no other app is using the audio device"
-                )
-            if interactive:
-                QMessageBox.critical(
-                    self,
-                    "Error Starting Processing",
-                    # Refreshing the lists cannot help; the message says what does.
-                    error_msg if own_microphone else f"Failed to start audio processing:\n\n{e}\n\n{guidance}",
-                )
-            self.status_message.showMessage(f"Could not start processing: {e}")
-            self._sync_processing_controls()
-            return False
+                self._sync_processing_controls()
+            case RestartFailed(error=error):
+                message = "The selected devices are not available, so AudioForge keeps retrying"
+                self.status_message.showMessage(f"{message}: {error}" if error else message, 6000)
+                self._sync_processing_controls()
+            case BackgroundStopFailed(error=error):
+                self.status_message.showMessage(f"Stopping audio failed: {error}; restart AudioForge")
+            case AudioBorrowed(started=started):
+                if started:
+                    self._clear_own_microphone_problem()
+                self._sync_processing_controls()
+            case AudioReleased(report=report):
+                if report.error is not None:
+                    self.status_message.showMessage(f"Stopping audio failed: {report.error}", 7000)
+                self._sync_processing_controls()
+
+    def _show_start_failure(self, error: Exception, interactive: bool) -> None:
+        own_microphone = isinstance(error, OwnMicrophoneError)
+        if own_microphone:
+            self._set_problem("own_microphone", OWN_MICROPHONE_MESSAGE)
+        error_msg = str(error)
+        # Provide actionable guidance based on error type
+        if "device" in error_msg.lower() or "audio" in error_msg.lower():
+            guidance = (
+                "Try these steps:\n"
+                "1. Press the refresh button (the circular arrow) next to the Output list\n"
+                "2. Ensure your microphone is connected\n"
+                "3. Check "
+                + ("Windows audio settings" if sys.platform == "win32" else "your sound settings")
+                + "\n"
+                "4. Try selecting a different device"
+            )
+        else:
+            guidance = (
+                "Try these steps:\n"
+                "1. Stop and restart the application\n"
+                "2. Check that no other app is using the audio device"
+            )
+        if interactive:
+            QMessageBox.critical(
+                self,
+                "Error Starting Processing",
+                # Refreshing the lists cannot help; the message says what does.
+                error_msg if own_microphone else f"Failed to start audio processing:\n\n{error}\n\n{guidance}",
+            )
+        self.status_message.showMessage(f"Could not start processing: {error}")
+        self._sync_processing_controls()
 
     def _sync_processing_controls(self) -> None:
         """Reflect the native processor state after recovery or a failed start."""
         # The engine is mid-call: nothing may be pressed, and the processor is not asked.
-        busy = self.__dict__.get("_engine_busy") is not None
+        busy = self.engine_session.view.busy is not None
         running = not busy and bool(self.processor.is_running())
         idle = not (busy or running)
         self.start_btn_action.setEnabled(idle)
@@ -3146,92 +2872,34 @@ class MainWindow(QMainWindow):
         self.refresh_btn_action.setEnabled(idle)
         if busy:
             return
-        update_summary = getattr(self, "_update_session_summary", None)
-        if callable(update_summary):
-            update_summary()
-        sync_meters = getattr(self, "_sync_meter_timer", None)
-        if callable(sync_meters):
-            sync_meters()
+        self._update_session_summary()
+        self._sync_meter_timer()
 
     def _restart_pending(self) -> bool:
         """Whether the engine, streams stopped, is waiting to retry a failed restart; Stop cancels it."""
         getter = getattr(self.processor, "is_recovery_requested", None)
         return callable(getter) and bool(getter())
 
-    def _stop_processing(self):
-        """Stop audio processing and wait for the engine."""
-        if self._prepare_stop():
-            self._finish_stop(attempt(self.processor.stop))
-
-    def _on_stop_clicked(self) -> None:
-        """Stop from the button or menu; the engine stops on the worker, so the window stays alive."""
-        if not self.__dict__.get("_engine_busy") and self._prepare_stop():
-            self._stop_clicked_at = time.monotonic()
-            self._run_engine("stop", self.processor.stop, self._finish_stop)
-
-    def _prepare_stop(self) -> bool:
-        """Whether there is a running engine, or a restart retry, to stop."""
-        if self.__dict__.get("_login_startup_deadline") is not None:
-            self._cancel_login_startup()
-        if not (self.processor.is_running() or self._restart_pending()):
-            self._sync_processing_controls()
-            if DEBUG:
-                logger.debug("Stop processing clicked, but processor is not running")
-            return False
-
-        if DEBUG:
-            logger.debug("Stopping processing")
-        return True
-
-    def _finish_stop(self, outcome: Any) -> None:
-        """Show how the engine stop went: ``outcome`` is None or the exception it raised."""
-        try:
-            if isinstance(outcome, Exception):
-                raise outcome
-            self.status_message.showMessage("Processing stopped")
-            self.start_btn_action.setEnabled(True)
-            self.stop_btn_action.setEnabled(False)
-            self.input_choice.setEnabled(True)
-            self.output_choice.setEnabled(True)
-            self.refresh_btn_action.setEnabled(True)
-            self._processing = False
-            self._device_wait_since = None
-            self._sync_meter_timer()
-            self._update_session_summary()
-            if DEBUG:
-                logger.debug("Processing stopped")
-        except Exception as e:
-            logger.exception("Stop processing failed")
-            QMessageBox.critical(self, "Error", f"Failed to stop processing:\n{e}")
-
     def _stop_audio_on_worker(self) -> None:
         """Stop the engine after a failed configuration; a start or recovery on the worker may hold the lock."""
-        self._engine.submit(self.processor.stop, self._audio_stop_failed)
-
-    def _audio_stop_failed(self, outcome: Any) -> None:
-        if isinstance(outcome, Exception) and not self._shut_down:
-            logger.error("Stopping audio after a failed configuration failed", exc_info=outcome)
-            self.status_message.showMessage(f"Stopping audio failed: {outcome}; restart AudioForge")
+        self.engine_session.stop_in_background()
 
     def _on_auto_eq_clicked(self):
         """Open Auto-EQ calibration dialog."""
         if DEBUG:
             logger.debug("Auto-EQ button clicked; opening calibration dialog")
 
-        # Commit any pending manual edit before the modal operation.
-        self.capture_pre_auto_eq_state()
-
-        dialog = CalibrationDialog(self)
+        dialog = CalibrationDialog(self, configuration=self.configuration)
         # Connect signal to handle auto-EQ completion (preset save, undo button enable)
         dialog.auto_eq_applied.connect(self.on_auto_eq_applied)
-        self._calibration_dialog_open = True
-        self._history_transaction_depth += 1
-        try:
-            with recovery_paused(self.processor):
-                _exec_and_release(dialog)  # Modal dialog - blocks until user closes
-        finally:
-            self._history_transaction_depth -= 1
-            self._calibration_dialog_open = False
+        # The session commits a pending edit first, while calibration evidence still syncs.
+        with self.configuration.dialog_session():
+            self._calibration_dialog_open = True
+            try:
+                with recovery_paused(self.processor):
+                    _exec_and_release(dialog)  # Modal dialog - blocks until user closes
+            finally:
+                self._calibration_dialog_open = False
         self._sync_calibration_evidence()
         if DEBUG:
             logger.debug("Calibration dialog closed, result=%s", dialog.result())
@@ -3245,8 +2913,7 @@ class MainWindow(QMainWindow):
 
     def _on_auto_voice_setup_clicked(self) -> bool:
         """Open the multi-stage voice setup wizard."""
-        self._commit_pending_configuration_snapshot()
-        dialog = VoiceSetupDialog(self)
+        dialog = VoiceSetupDialog(self, configuration=self.configuration)
         applied = False
 
         def on_applied(target_curve: str) -> None:
@@ -3255,14 +2922,14 @@ class MainWindow(QMainWindow):
             self.on_voice_setup_applied(target_curve)
 
         dialog.setup_applied.connect(on_applied)
-        self._calibration_dialog_open = True
-        self._history_transaction_depth += 1
-        try:
-            with recovery_paused(self.processor):
-                _exec_and_release(dialog)
-        finally:
-            self._history_transaction_depth -= 1
-            self._calibration_dialog_open = False
+        # The session commits a pending edit first, while calibration evidence still syncs.
+        with self.configuration.dialog_session():
+            self._calibration_dialog_open = True
+            try:
+                with recovery_paused(self.processor):
+                    _exec_and_release(dialog)
+            finally:
+                self._calibration_dialog_open = False
         self._sync_calibration_evidence()
         return applied
 
@@ -3276,37 +2943,6 @@ class MainWindow(QMainWindow):
         if clean is not None:
             self.last_setup_result = clean
 
-    def capture_pre_auto_eq_state(self):
-        """Commit pending edits before Auto-EQ starts its transaction."""
-        self._commit_pending_configuration_snapshot()
-
-    def _initialize_configuration_history(self) -> None:
-        """Create the immutable baseline after startup restoration."""
-        preset = self._get_current_preset()
-        if self._saved_preset_payload is None:
-            self.current_preset_name = "Default"
-            self.current_preset_path = None
-            self._saved_preset_payload = self._preset_payload(preset)
-            self._saved_processing_mode = self._processing_mode()
-            self.preset_modified = False
-        snapshot = ConfigurationSnapshot.from_preset(
-            preset,
-            label="Startup configuration",
-            source="startup",
-            noise_reference_reliability=self.compressor_state.get_settings(
-                include_calibration=True
-            )["noise_reference_reliability"],
-            calibration_context_key=self._calibration_context_key(),
-            processing_mode=self._processing_mode(),
-            preset_record=self._mirror_preset_record(),
-        )
-        self._configuration_history.initialize(snapshot)
-        self._current_value_provenance = dict(snapshot.to_preset().value_provenance)
-        self._history_ready = True
-        self._sync_calibration_evidence()
-        self._update_history_actions()
-        self._update_session_summary()
-
     def _calibration_context_key(self) -> str | None:
         route = self._current_device_route_key()
         if route is None:
@@ -3319,139 +2955,8 @@ class MainWindow(QMainWindow):
             self._processing_mode(),
         ))
 
-    def _connect_configuration_history_inputs(self) -> None:
-        """Observe processing controls and coalesce one user gesture."""
-        self.eq_state.configurationEditStarted.connect(
-            self._begin_configuration_transaction
-        )
-        self.eq_state.configurationEditFinished.connect(
-            self._end_configuration_transaction
-        )
-        for state in (
-            self.eq_state, self.gate_state, self.deesser_state,
-            self.compressor_state, self.limiter_state, self.noise_suppression_state,
-        ):
-            state.configurationEdited.connect(self._queue_configuration_snapshot)
-
-    def _begin_configuration_transaction(self) -> None:
-        """Suppress intermediate history entries for a compound gesture."""
-        if self._history_transaction_depth == 0:
-            self._commit_pending_configuration_snapshot()
-        self._history_transaction_depth += 1
-
-    def _end_configuration_transaction(self, label: str) -> None:
-        """Commit one final entry after a compound gesture."""
-        if self._history_transaction_depth <= 0:
-            logger.warning("Unbalanced configuration-history transaction")
-            return
-        self._history_transaction_depth -= 1
-        if self._history_transaction_depth == 0:
-            self._commit_pending_configuration_snapshot(
-                label=label,
-                source="eq_graph",
-            )
-
-    def _queue_configuration_snapshot(self, *_args) -> None:
-        """Debounce UI signals into one immutable history entry."""
-        if (
-            not self._history_ready
-            or self._history_replaying
-            or self._history_transaction_depth > 0
-        ):
-            return
-        self.preset_modified = True
-        self._sync_calibration_evidence()
-        self._update_session_summary()
-        self._history_timer.start()
-
-    def _commit_pending_configuration_snapshot(
-        self,
-        *,
-        label: str = "Manual processing edit",
-        source: str = "ui",
-        provenance: dict[str, str] | None = None,
-    ) -> bool:
-        """Validate and record the current processing configuration."""
-        if not self._history_ready or self._history_replaying:
-            return False
-        try:
-            for name in ("limiter_state", "deesser_state", "compressor_state", "gate_state", "eq_state"):
-                state = getattr(self, name, None)
-                if state is not None:
-                    state.flush()
-        except RuntimeError:
-            return False
-        finally:
-            self._history_timer.stop()
-        if "configuration" in self.__dict__.get("_temporary_mute_reasons", set()):
-            return False
-        preset = self._get_current_preset()
-        current = self._configuration_history.current
-        if provenance is not None:
-            preset.value_provenance = dict(provenance)
-        elif current is not None:
-            preset.value_provenance = explicit_provenance_after_edit(
-                current,
-                preset,
-            )
-        try:
-            snapshot = ConfigurationSnapshot.from_preset(
-                preset,
-                label=label,
-                source=source,
-                noise_reference_reliability=self.compressor_state.get_settings(
-                    include_calibration=True
-                )["noise_reference_reliability"],
-                calibration_context_key=self._calibration_context_key(),
-                processing_mode=self._processing_mode(),
-                preset_record=self.__dict__.get("_preset_record"),
-            )
-            recorded = self._configuration_history.record(snapshot)
-        except (PresetValidationError, TypeError, ValueError) as error:
-            logger.warning(
-                "Configuration history snapshot rejected: %s",
-                error,
-            )
-            self.status_message.showMessage(
-                "Could not record this configuration edit",
-                5000,
-            )
-            return False
-        self._sync_calibration_evidence()
-        if recorded:
-            self._current_value_provenance = dict(snapshot.to_preset().value_provenance)
-            if source == "ui":
-                self.eq_state.set_auto_eq_diagnostics(None)
-        self._set_preset_modified()
-        self._update_history_actions()
-        return recorded
-
-    def _restore_configuration_snapshot(
-        self,
-        snapshot: ConfigurationSnapshot,
-    ) -> None:
-        """Restore one validated snapshot without creating a new entry."""
-        preset = snapshot.to_preset()
-        self._history_replaying = True
-        try:
-            self.apply_processing_configuration(
-                preset,
-                noise_reference_reliability=(
-                    snapshot.noise_reference_reliability
-                    if snapshot.calibration_context_key is not None
-                    and snapshot.calibration_context_key == self._calibration_context_key()
-                    else 0.0
-                ),
-                processing_mode=snapshot.processing_mode,
-            )
-            if snapshot.preset_record is not None:
-                self._restore_preset_record(snapshot.preset_record)
-            self._set_preset_modified()
-        finally:
-            self._history_replaying = False
-
     def _update_history_actions(self) -> None:
-        history = self._configuration_history
+        history = self.configuration.history
         undo_label = history.undo_label
         redo_label = history.redo_label
         if self._undo_action is not None:
@@ -3471,12 +2976,8 @@ class MainWindow(QMainWindow):
 
     def undo_configuration(self) -> None:
         """Undo one validated processing-configuration snapshot."""
-        self._commit_pending_configuration_snapshot()
-        undone_label = self._configuration_history.undo_label
         try:
-            restored = self._configuration_history.undo(
-                self._restore_configuration_snapshot
-            )
+            undone_label = self.configuration.undo()
         except Exception as error:
             logger.warning("Configuration undo failed", exc_info=True)
             QMessageBox.warning(
@@ -3485,25 +2986,16 @@ class MainWindow(QMainWindow):
                 f"The previous configuration could not be restored:\n{error}",
             )
             return
-        if restored is None:
+        if undone_label is None:
             self.status_message.showMessage("No configuration change to undo", 3000)
         else:
-            self.status_message.showMessage(
-                f"Undid: {undone_label or restored.label}",
-                3000,
-            )
+            self.status_message.showMessage(f"Undid: {undone_label}", 3000)
         self._update_history_actions()
 
     def redo_configuration(self) -> None:
         """Redo one validated processing-configuration snapshot."""
-        # A fresh edit invalidates the redo branch even if its debounce timer
-        # has not fired yet. Commit it before querying history so redo cannot
-        # overwrite an unrecorded user change.
-        self._commit_pending_configuration_snapshot()
         try:
-            restored = self._configuration_history.redo(
-                self._restore_configuration_snapshot
-            )
+            redone_label = self.configuration.redo()
         except Exception as error:
             logger.warning("Configuration redo failed", exc_info=True)
             QMessageBox.warning(
@@ -3512,10 +3004,10 @@ class MainWindow(QMainWindow):
                 f"The next configuration could not be restored:\n{error}",
             )
             return
-        if restored is None:
+        if redone_label is None:
             self.status_message.showMessage("No configuration change to redo", 3000)
         else:
-            self.status_message.showMessage(f"Redid: {restored.label}", 3000)
+            self.status_message.showMessage(f"Redid: {redone_label}", 3000)
         self._update_history_actions()
 
     def _prompt_save_current_preset(
@@ -3547,16 +3039,15 @@ class MainWindow(QMainWindow):
     def _get_saveable_preset(self) -> Preset | None:
         """Save accepted sound, never an interactive write still awaiting the DSP."""
         try:
-            self._flush_processing_configuration_writes()
+            self.configuration.flush_writes()
         except RuntimeError:
             return None
-        if "configuration" in self.__dict__.get("_temporary_mute_reasons", set()):
+        if self._configuration_host.mute_held(CONFIGURATION_MUTE):
             self.status_message.showMessage("Restore a complete configuration before saving", 7000)
             return None
-        return self._get_current_preset()
+        return self.configuration.current
 
     def _save_preset_file(self, preset: Preset, *, filepath: Path | None = None) -> Path | None:
-        self._last_preset_identity_persisted = True
         try:
             try:
                 filepath = save_preset(preset, filepath=filepath, overwrite=filepath is not None)
@@ -3572,13 +3063,7 @@ class MainWindow(QMainWindow):
                     return None
                 filepath = save_preset(preset, overwrite=True)
 
-            previous_last_preset = self.config.last_preset
-            self.config.last_preset = str(filepath)
-            persisted = self._save_config_safely()
-            if not persisted:
-                self.config.last_preset = previous_last_preset
-                self._last_preset_identity_persisted = False
-            self._set_preset_identity(preset, path=filepath, persist_last_used=persisted)
+            persisted = self.configuration.mark_saved(preset, filepath)
             self._set_problem("last_preset", None)
             message = f"Preset saved: {filepath.name}"
             if self._processing_mode() == "raw":
@@ -3608,7 +3093,7 @@ class MainWindow(QMainWindow):
         """
         from ..config import generate_auto_eq_preset_name
 
-        self._commit_pending_configuration_snapshot(
+        self.configuration.commit_edit(
             label=f"Auto-EQ ({target_curve.title()})",
             source="auto_eq",
         )
@@ -3629,7 +3114,7 @@ class MainWindow(QMainWindow):
 
     def on_voice_setup_applied(self, target_curve: str):
         """Offer to save the applied voice-setup chain as a preset."""
-        self._commit_pending_configuration_snapshot(
+        self.configuration.commit_edit(
             label=f"Auto Voice Setup ({target_curve.title()})",
             source="voice_setup",
         )
@@ -3659,7 +3144,10 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        self._shut_down = False  # a window shown again after a refused quit must shut down again
+        self.engine_session.reopen()
+        watch = self.__dict__.get("virtual_microphone_watch")
+        if watch is not None:
+            watch.resume()  # _shutdown stopped it; a window shown again still needs it
         self._sync_meter_timer()
 
     def hideEvent(self, event) -> None:
@@ -3681,7 +3169,7 @@ class MainWindow(QMainWindow):
 
     def _sync_meter_timer(self) -> None:
         timer = self.__dict__.get("meter_timer")
-        if timer is None or _engine_in_use(self):
+        if timer is None or self.engine_session.view.in_use:
             return
         try:
             running = self.processor.is_running()
@@ -3712,7 +3200,7 @@ class MainWindow(QMainWindow):
 
     def _update_meters(self):
         """Refresh available live measurements; keep recovery on its own timer."""
-        if _engine_in_use(self):
+        if self.engine_session.view.in_use:
             return
         try:
             running = self.processor.is_running()
@@ -3720,7 +3208,7 @@ class MainWindow(QMainWindow):
             running = False
         if not running:
             self._invalidate_live_meters()
-            self._last_backend_warning = None
+            self._health_memory = replace(self._health_memory, backend_warning=None)
             self._reset_health_labels()
             return
         if self.__dict__.get("_hidden_to_tray") and self.isHidden():
@@ -3774,7 +3262,7 @@ class MainWindow(QMainWindow):
             self.output_meter.clear_clip_marker()
 
     def _clear_own_microphone_problem(self) -> None:
-        """Called by every start that worked; also from the dialogs' ``start_selected_route``."""
+        """Called by every start that worked, the window's and a dialog's borrow."""
         if "own_microphone" in self._problems:
             self._set_problem("own_microphone", None)
 
@@ -3791,17 +3279,12 @@ class MainWindow(QMainWindow):
             return False
         logger.warning("Stopping audio: %s", OWN_MICROPHONE_MESSAGE)
         note_own_microphone_refusal()
-
-        def stopped(outcome: Any) -> None:
-            self._finish_stop(outcome)
-            self._report_problem("own_microphone", OWN_MICROPHONE_MESSAGE)
-
-        self._run_engine("stop", self.processor.stop, stopped)
+        self.engine_session.request_stop("own_microphone")
         return True
 
     def _update_diagnostics(self):
         """Update slower diagnostics and service recovery."""
-        if _engine_in_use(self):
+        if self.engine_session.view.in_use:
             return
         watch = self.__dict__.get("virtual_microphone_watch")
         if watch is not None:
@@ -3819,18 +3302,37 @@ class MainWindow(QMainWindow):
                     app = QGuiApplication.instance()
                     if app is not None:
                         app.exit(1)
+        running = self.processor.is_running()
+        # What the stopped-state work below reads besides the engine; while it is
+        # unchanged, a stopped tick redoes only the recovery service and the summary.
+        start_action = self.__dict__.get("start_btn_action")
+        stopped_state = None if running else (
+            self._restart_pending(),
+            self.__dict__.get("_login_startup_deadline") is not None,
+            self.__dict__.get("_login_startup_message", ""),
+            # Controls left showing a start the engine never reached get resynced.
+            start_action is not None and start_action.isEnabled(),
+        )
+        stopped_changed = stopped_state is None or stopped_state != self.__dict__.get("_stopped_tick_state")
+        self._stopped_tick_state = stopped_state
         sync_meters = getattr(self, "_sync_meter_timer", None)
-        if callable(sync_meters):
+        if callable(sync_meters) and stopped_changed:
             sync_meters()
-        if not self.processor.is_running():
+        if not running:
             self._processing = False
-            self._device_wait_since = None
-            self._last_backend_warning = None
-            self._reset_health_labels()
+            self._health_memory = replace(self._health_memory, device_wait_since=None, backend_warning=None)
+            if stopped_changed:
+                self._reset_health_labels()
             # A failed native restart intentionally leaves recovery pending
             # while the stream is stopped. Keep servicing that request here.
-            self._service_stream_recovery()
-            self._sync_processing_controls()
+            self.engine_session.tick()
+            if stopped_changed:
+                self._sync_processing_controls()
+            else:
+                # Route, preset, mode and mute edits made while stopped show here.
+                update_summary = getattr(self, "_update_session_summary", None)
+                if callable(update_summary):
+                    update_summary()
             return
 
         try:
@@ -3859,7 +3361,7 @@ class MainWindow(QMainWindow):
                 "Stop and start processing; if this keeps happening, restart AudioForge."
             ))
             # Missing presentation data must not suppress native recovery service.
-            self._service_stream_recovery()
+            self.engine_session.tick()
             return
 
         self._update_diagnostic_labels(
@@ -3878,7 +3380,7 @@ class MainWindow(QMainWindow):
             output_at_full_scale=self.output_meter.clipped_within(HEALTH_PEAK_WINDOW_SECONDS),
             limiter_enabled=bool(self.limiter_state.get_settings()["enabled"]),
         )
-        self._service_stream_recovery()
+        self.engine_session.tick()
 
     def _update_diagnostic_labels(
         self,
@@ -3898,16 +3400,17 @@ class MainWindow(QMainWindow):
         output_at_full_scale: bool = False,
         limiter_enabled: bool = True,
     ) -> None:
-        """Update diagnostic status labels from a runtime diagnostic snapshot.
+        """Render the Health chips for one runtime diagnostic snapshot; ``health.runtime_health`` decides them.
 
         The peak and clip arguments come from the meters' held peaks, so a clip
         stays visible for several seconds and the old per-tick clip counters
         no longer decide the Input and Output lines.
         """
+        snapshot = RuntimeSnapshot.parse(diagnostics)
         if not hasattr(self, "_stream_health"):
             self._stream_health = RecentStreamHealth()
         try:
-            recent_events = self._stream_health.observe(diagnostics)
+            recent_events = self._stream_health.observe(snapshot)
         except ValueError:
             self._reset_health_labels()
             self._set_health_chip("recovery_diag_label", "Recovery: counters could not be read", "warn")
@@ -3920,481 +3423,50 @@ class MainWindow(QMainWindow):
                     recovery_pending = recovery_pending or bool(getter())
                 except (OSError, RuntimeError, TypeError, ValueError):
                     recovery_pending = True
-        # A measured route holds everything after the engine; without one the
-        # figure covers AudioForge, plus the output buffer when it was read.
-        measured_route = float(diagnostics.get("latency_compensation_ms", 0.0) or 0.0) > 0.0
-        latency_tip = TEXT_SPECS["latency_label"].tip
-        if measured_route:
-            bound = "about"
-        else:
-            bound = "at least"
-            latency_tip += (
-                LATENCY_LOWER_BOUND_NOTE
-                if diagnostics.get("output_device_buffer_known")
-                else LATENCY_LOWER_BOUND_NOTE_NO_BUFFER
-            )
-        self._set_health_chip(
-            "latency_label",
-            f"Latency: {bound} {latency_ms:.0f} ms (processing {dsp_time_ms:.1f} ms)",
-            "info",
-        )
-        self.shell_texts["latency_label"].update(tip=latency_tip)
-
-        pipeline_buf = input_buf + rnnoise_buf
-        if pipeline_buf < 960:
-            buf_status = "OK"
-            buf_state = "ok"
-        elif pipeline_buf < 1920:
-            buf_status = "FILLING UP"
-            buf_state = "warn"
-        else:
-            buf_status = "BACKED UP"
-            buf_state = "bad"
-        self._set_health_chip(
-            "buffer_label",
-            f"Buffer: {buf_status} ({plural(pipeline_buf, 'sample')})",
-            buf_state,
-        )
-
-        dropped = diagnostics.get("input_dropped_samples", 0)
-        lock_contention = diagnostics.get("lock_contention_count", 0)
-        non_finite = diagnostics.get("suppressor_non_finite_count", 0)
-        restart_count = diagnostics.get("stream_restart_count", 0)
-        underruns = int(diagnostics.get("output_underrun_total", 0) or 0)
-        underrun_streak = int(diagnostics.get("output_underrun_streak", 0) or 0)
-        previous_underruns = int(
-            getattr(self, "_last_output_underrun_total", underruns) or 0
-        )
-        new_underruns_observed = underruns > previous_underruns
-        self._last_output_underrun_total = underruns
-        phase_warning_count = int(diagnostics.get("input_phase_warning_count", 0) or 0)
-        previous_phase_warnings = int(
-            getattr(self, "_last_input_phase_warning_count", phase_warning_count) or 0
-        )
-        new_phase_warning_observed = phase_warning_count > previous_phase_warnings
-        self._last_input_phase_warning_count = phase_warning_count
-        raw_input_stereo_correlation = diagnostics.get("input_stereo_correlation")
-        if raw_input_stereo_correlation is None:
-            input_stereo_correlation = None
-        else:
-            try:
-                input_stereo_correlation = float(raw_input_stereo_correlation)
-            except (TypeError, ValueError):
-                input_stereo_correlation = None
-        current_phase_warning = (
-            input_stereo_correlation is not None
-            and input_stereo_correlation < INPUT_PHASE_WARNING_CORRELATION
-        )
-        phase_rescue_strategy = str(
-            diagnostics.get("input_phase_rescue_strategy", "none") or "none"
-        )
-        phase_rescue_active = phase_rescue_strategy not in {"", "none"}
-        cleanup_mode = str(diagnostics.get("input_cleanup_mode", "off") or "off")
-        cleanup_hum_detected = bool(
-            diagnostics.get("input_cleanup_hum_detected", False)
-        )
-        cleanup_rumble_detected = bool(
-            diagnostics.get("input_cleanup_rumble_detected", False)
-        )
-        output_recovery_events = int(
-            diagnostics.get(
-                "output_recovery_event_count",
-                diagnostics.get("output_recovery_count", 0),
-            )
-            or 0
-        )
-        output_true_peak_count = int(
-            diagnostics.get("output_true_peak_event_count", 0) or 0
-        )
-        previous_output_true_peak_count = int(
-            getattr(self, "_last_output_true_peak_event_count", output_true_peak_count)
-            or 0
-        )
-        new_output_true_peak_observed = (
-            output_true_peak_count > previous_output_true_peak_count
-        )
-        self._last_output_true_peak_event_count = output_true_peak_count
-        gate_chatter_count = int(diagnostics.get("gate_chatter_event_count", 0) or 0)
-        new_gate_chatter_observed = "gate_chatter_event_count" in recent_events
-        gate_auto_relax_active = bool(diagnostics.get("gate_auto_relax_active", False))
-        rt_error_name = diagnostics.get("rt_error_name")
-        rt_error_active = bool(rt_error_name and rt_error_name != "none")
-        input_crest_db = diagnostics.get("input_crest_factor_db")
-        output_lufs = diagnostics.get("output_short_term_lufs")
-        output_true_peak_db = diagnostics.get("output_true_peak_db")
-        output_true_peak_headroom_db = diagnostics.get("output_true_peak_headroom_db")
-        limiter_history_db = float(
-            diagnostics.get("limiter_gain_reduction_history_db", 0.0) or 0.0
-        )
-        true_peak_limiter_history_db = float(
-            diagnostics.get("output_true_peak_gain_reduction_history_db", 0.0) or 0.0
-        )
-        try:
-            output_true_peak_headroom = (
-                None
-                if output_true_peak_headroom_db is None
-                else float(output_true_peak_headroom_db)
-            )
-        except (TypeError, ValueError):
-            output_true_peak_headroom = None
-
-        input_health_text, input_health_state = build_input_health_state(
-            rms_db=input_rms_db,
-            peak_db=input_peak_db,
-            full_scale_samples=input_full_scale_samples,
-            phase_rescue_active=phase_rescue_active,
-            cleanup_rumble_detected=cleanup_rumble_detected,
-            cleanup_hum_detected=cleanup_hum_detected,
-            cleanup_mode=cleanup_mode,
-            crest_factor_db=input_crest_db
-            if isinstance(input_crest_db, (int, float))
-            else None,
-        )
-        if phase_rescue_active:
-            fix = PHASE_FIX_LABELS.get(phase_rescue_strategy, phase_rescue_strategy.replace("_", " "))
-            input_health_text = f"Input: PHASE FIX ACTIVE ({fix})"
-        self._set_health_chip(
-            "input_health_label",
-            input_health_text,
-            input_health_state,
-        )
-
-        output_health_text, output_health_state = build_output_health_state(
-            muted=_output_muted(self),
-            rms_db=output_rms_db,
-            at_full_scale=output_at_full_scale,
-            limiter_enabled=limiter_enabled,
-            peak_db=output_peak_db,
-            true_peak_delta=new_output_true_peak_observed,
-            true_peak_db=output_true_peak_db,
-            true_peak_headroom_db=output_true_peak_headroom,
-            short_term_lufs=output_lufs,
-            limiter_history_db=limiter_history_db,
-            true_peak_limiter_history_db=true_peak_limiter_history_db,
-        )
-        self._set_health_chip(
-            "output_health_label",
-            output_health_text,
-            output_health_state,
-        )
-
-        if gate_auto_relax_active:
-            gate_health_text = f"Gate: EASED ({plural(gate_chatter_count, 'time')})"
-            gate_health_state = "warn"
-        elif new_gate_chatter_observed:
-            gate_health_text = f"Gate: CHATTERING ({plural(gate_chatter_count, 'time')})"
-            gate_health_state = "warn"
-        else:
-            gate_health_text = "Gate: OK"
-            gate_health_state = "ok"
-        self._set_health_chip(
-            "gate_health_label",
-            gate_health_text,
-            gate_health_state,
-        )
-
-        callback_ages = [
-            age
-            for age in (input_callback_age_ms, output_callback_age_ms)
-            if age is not None and 0 <= age < NO_CALLBACK_YET
-        ]
-        not_started = NO_CALLBACK_YET in (input_callback_age_ms, output_callback_age_ms)
-        if not_started and self._processing:
-            now = time.monotonic()
-            if self._device_wait_since is None:
-                self._device_wait_since = now
-            start_overdue = now - self._device_wait_since >= DEVICE_STARTUP_GRACE_SECONDS
-        else:
-            self._device_wait_since = None
-            start_overdue = False
-        if callback_ages or not_started:
-            max_callback_age = max(callback_ages, default=0)
-            callback_state = (
-                "bad"
-                if max_callback_age > DEVICE_ACTIVITY_BAD_MS
-                else "warn"
-                if max_callback_age > DEVICE_ACTIVITY_WARN_MS or start_overdue
-                else "ok"
-                if callback_ages
-                else "idle"
-            )
-            callback_health_text = (
-                f"Device activity: input {_ago_text(input_callback_age_ms)}, "
-                f"output {_ago_text(output_callback_age_ms, output=True)}"
-            )
-        else:
-            callback_health_text = "Device activity: --"
-            callback_state = "idle"
-        self._set_health_chip(
-            "callback_health_label",
-            callback_health_text,
-            callback_state,
-        )
-
-        underrun_state = "warn" if underrun_streak or new_underruns_observed else "ok"
-        underrun_text = f"Dropouts: {underruns}"
-        if underrun_streak:
-            underrun_text += f" ({underrun_streak} in a row)"
-        self._set_health_chip(
-            "underrun_health_label",
-            underrun_text,
-            underrun_state,
-        )
-
-        dropped_bits = [
-            f"Drops: {dropped}",
-            f"U:{underruns}",
-            f"L:{lock_contention}",
-            f"NF:{non_finite}",
-            f"RS:{restart_count}",
-        ]
-        if underrun_streak:
-            dropped_bits.append(f"US:{underrun_streak}")
-        if phase_warning_count:
-            dropped_bits.append(f"PH:{phase_warning_count}")
-        if input_stereo_correlation is not None:
-            dropped_bits.append(f"COR:{input_stereo_correlation:.2f}")
-        self._extend_diag_tokens(
-            dropped_bits,
-            diagnostics,
-            [
-                ("input_cleanup_mode", "CLN"),
-                ("input_cleanup_hum_detected", "HUM"),
-                ("input_cleanup_rumble_detected", "RMB"),
-                ("input_cleanup_high_pass_hz", "HPF"),
-                ("input_phase_rescue_strategy", "PRS"),
-                ("input_phase_estimated_delay_samples", "PDL"),
-                ("input_phase_polarity_flipped", "PFL"),
-            ],
-        )
-        self._extend_diag_tokens(
-            dropped_bits,
-            diagnostics,
-            [
-                ("input_backlog_recovery_count", "IBR"),
-                ("input_backlog_dropped_samples", "IBD"),
-                ("output_short_write_dropped_samples", "OSW"),
-                ("rt_buffer_overflow_count", "RTO"),
-                ("input_callback_error_count", "ICE"),
-                ("output_callback_error_count", "OCE"),
-                ("clip_event_count", "CL"),
-                ("clip_peak_db", "PK"),
-                ("input_crest_factor_db", "ICF"),
-                ("output_clip_event_count", "OCL"),
-                ("output_clip_peak_db", "OPK"),
-                ("output_crest_factor_db", "OCF"),
-                ("output_short_term_lufs", "LU"),
-                ("output_true_peak_event_count", "OTP"),
-                ("output_true_peak_db", "TPK"),
-                ("output_true_peak_headroom_db", "TPH"),
-                ("limiter_gain_reduction_history_db", "LGR"),
-                ("output_true_peak_gain_reduction_history_db", "TPGR"),
-                ("limiter_effective_ceiling_db", "LIM"),
-                ("gate_chatter_event_count", "GCH"),
-                ("gate_auto_relax_active", "GAR"),
-                ("deesser_detector_confidence", "DSC"),
-                ("noise_selection_dropped_count", "NSD"),
-            ],
-        )
-        if rt_error_active:
-            dropped_bits.append(f"RT:{rt_error_name}")
-        # Most of these also have a row of their own; this row adds them all up.
-        attention = [
-            # Gate chatter has its own entry below; it is a setting, not an engine fault.
-            (bool(recent_events - {"gate_chatter_event_count"}), "the audio engine reported a fault"),
-            (recovery_pending, "a restart is pending"),
-            (underrun_streak > 0 or new_underruns_observed, "the output ran out of audio"),
-            (rt_error_active, "the audio engine reported an error"),
-            (new_output_true_peak_observed, "the output went above its ceiling"),
-            (new_gate_chatter_observed or gate_auto_relax_active, "the gate is chattering"),
-            (
-                phase_rescue_active or current_phase_warning or new_phase_warning_observed,
-                "the microphone channels cancel each other",
+        report = runtime_health(
+            snapshot,
+            HealthReadings(
+                latency_ms=latency_ms,
+                dsp_time_ms=dsp_time_ms,
+                input_buf=input_buf,
+                rnnoise_buf=rnnoise_buf,
+                input_rms_db=input_rms_db,
+                output_rms_db=output_rms_db,
+                input_callback_age_ms=input_callback_age_ms,
+                output_callback_age_ms=output_callback_age_ms,
+                input_peak_db=input_peak_db,
+                input_full_scale_samples=input_full_scale_samples,
+                output_peak_db=output_peak_db,
+                output_at_full_scale=output_at_full_scale,
+                limiter_enabled=limiter_enabled,
+                output_muted=self.engine_session.view.output_muted,
+                recovery_pending=recovery_pending,
+                processing=self._processing,
             ),
-            (cleanup_rumble_detected, "low rumble was detected"),
-            (
-                limiter_history_db >= 6.0 or true_peak_limiter_history_db >= 3.0,
-                "the limiter is working hard",
-            ),
-            (
-                output_true_peak_headroom is not None and output_true_peak_headroom < 0.75,
-                "the output has little headroom",
-            ),
-        ]
-        causes = [cause for active, cause in attention if active]
-        dropped_state = "warn" if causes else "ok"
-        dropped_detail = " | ".join(dropped_bits)
-        if causes and not (dropped or underruns or restart_count):
-            dropped_summary = f"Drops: nothing dropped, but {causes[0]}"
-        else:
-            dropped_summary = (
-                f"Drops: {plural(dropped, 'sample')} dropped, {plural(underruns, 'dropout')}, "
-                f"{plural(restart_count, 'restart')}"
-            )
-            if causes:
-                dropped_summary += f" (needs attention: {causes[0]})"
-        self._set_health_chip("dropped_label", dropped_summary, dropped_state)
-        self.shell_texts["dropped_label"].update(tip=
-            f"{DROPPED_DIAGNOSTICS_TOOLTIP}\n\nTechnical counters (for support reports):\n{dropped_detail}"
+            recent_events=recent_events,
+            memory=self._health_memory,
+            now=time.monotonic(),
         )
-
-        # A start that cannot load a model chosen while it ran has no caller to tell. Warn once
-        # per new drop, before the backend warning so that one stays on the line.
-        noise_drops = int(diagnostics.get("noise_selection_dropped_count", 0) or 0)
-        if noise_drops > self._noise_drops_seen:
-            self.status_message.showMessage(NOISE_SELECTION_DROPPED_WARNING, 8000)
-        self._noise_drops_seen = noise_drops
-
-        backend_available = diagnostics.get("noise_backend_available", True)
-        backend_failed = diagnostics.get("noise_backend_failed", False)
-        backend_error = diagnostics.get("noise_backend_error")
-        noise_model = diagnostics.get("noise_model", "rnnoise")
-        if noise_model != "rnnoise" and (backend_failed or not backend_available):
-            warning = (
-                "Noise suppression stopped working, so your voice is passing through unprocessed. "
-                "Choose another model on the Noise Suppression card."
-            )
-            if backend_error:
-                warning += f" Details: {backend_error}"
-            if warning != self._last_backend_warning:
-                self.status_message.showMessage(warning, 6000)
-                self._last_backend_warning = warning
-        elif backend_available:
-            self._last_backend_warning = None
-
-        try:
-            noise_model = diagnostics.get("noise_model", "rnnoise")
-            backend_ok = diagnostics.get("noise_backend_available", True)
-            backend_failed = diagnostics.get("noise_backend_failed", False)
-            backend_error = diagnostics.get("noise_backend_error")
-            restart_count = diagnostics.get("stream_restart_count", 0)
-            output_recovery_count = output_recovery_events
-            non_finite = diagnostics.get("suppressor_non_finite_count", 0)
-            suppressed = diagnostics.get("recovery_suppressed", False)
-
-            backend_bits = [
-                str(noise_model),
-                "working" if backend_ok else "failed" if backend_failed else "not available",
-            ]
-            if non_finite:
-                backend_bits.append(f"{plural(non_finite, 'invalid sample')} replaced")
-            if backend_error:
-                backend_bits.append("reported an error")
-            for key, direction in (
-                ("input_resampler_active", "input"), ("output_resampler_active", "output"),
-            ):
-                if diagnostics.get(key):
-                    backend_bits.append(f"resampling {direction}")
-            self._set_health_chip(
-                "backend_diag_label",
-                f"Backend: {', '.join(backend_bits)}",
-                "ok" if backend_ok else "warn",
-            )
-
-            recovery_bits = [
-                plural(restart_count, "restart"),
-                plural(output_recovery_count, "output recovery", "output recoveries"),
-            ]
-            if suppressed:
-                recovery_bits.append("paused during setup")
-            reason = diagnostics.get("last_restart_reason")
-            recent_recovery = bool(recent_events & {
-                "stream_restart_count", "output_recovery_count", "output_recovery_event_count",
-                "input_backlog_recovery_count",
-            })
-            if recovery_pending:
-                recovery_bits.append("restart pending")
-            elif recent_recovery:
-                recovery_bits.append("restarted just now")
-            self._set_health_chip(
-                "recovery_diag_label",
-                f"Recovery: {', '.join(recovery_bits)}",
-                "warn"
-                if recovery_pending or recent_recovery
-                else ("info" if suppressed else "ok"),
-            )
-            self.shell_texts["recovery_diag_label"].update(tip=
-                f"Last recovery: {reason}" if reason else "No recovery recorded."
-            )
-        except Exception:
-            logger.debug("Diagnostic label update failed", exc_info=True)
+        self._health_memory = report.memory
+        for key, chip in report.chips.items():
+            self._set_health_chip(key, chip.text, chip.state)
+            if chip.tip is not None:
+                self.shell_texts[key].update(tip=chip.tip)
+        for message, timeout in report.messages:
+            self.status_message.showMessage(message, timeout)
         self._update_health_summary()
 
     def _update_health_summary(self) -> None:
         """Summarize the worst health chip and say what to do about it."""
-        chips = [self.shell_texts[key] for key in HEALTH_DECISION_KEYS + HEALTH_LAYOUT_KEYS]
-        levels = {chip.state for chip in chips}
-        state = next((level for level in ("bad", "warn", "ok") if level in levels), "idle")
-        if self.__dict__.get("_output_mute_error") and state in {"ok", "idle"}:
-            state = "warn"
-        # The chip's colour is its worst row, so its text names that row's problem.
-        issues = [chip.text for chip in chips if chip.state == "bad"] or [
-            chip.text for chip in chips if chip.state == "warn"
+        rows = [
+            Chip(self.shell_texts[key].text, self.shell_texts[key].state)
+            for key in HEALTH_DECISION_KEYS + HEALTH_LAYOUT_KEYS
         ]
-        text = issues[0] if issues else f"Health: {state.upper()}"
-        self._set_health_chip("health_summary_label", text, state)
-        advice = advice_for(issues[0]) if issues else ""
-        if not advice:
-            advice = {
-                "ok": "Everything looks fine.",
-                "idle": TEXT_SPECS["health_advice_label"].text,
-            }.get(state, "Check the items marked below.")
-        self.shell_texts["health_advice_label"].update(text=advice)
-        self.shell_texts["health_summary_label"].update(tip=advice)
+        summary = health_summary(rows, mute_error=self.engine_session.view.mute_error)
+        self._set_health_chip("health_summary_label", summary.text, summary.state)
+        self.shell_texts["health_advice_label"].update(text=summary.tip)
+        self.shell_texts["health_summary_label"].update(tip=summary.tip)
         self._update_session_summary()
-
-    _recovery_service_failing = False
-
-    def _service_stream_recovery(self) -> None:
-        """Poll the engine's own stream recovery; it detects stalls, backs off and restarts."""
-        if _engine_in_use(self) or self._shut_down:
-            return
-        # Not locked like a click: it asks the engine every tick and mostly has nothing to do.
-        self._recovery_polling = True
-        self._engine.submit(lambda: self.processor.service_recovery(), self._recovery_serviced)
-
-    def _recovery_serviced(self, outcome: Any) -> None:
-        """Show what the engine's own recovery did: ``outcome`` is its answer or the exception raised."""
-        self._recovery_polling = False
-        start = self.__dict__.pop("_start_after_recovery", False)
-        if self._shut_down:
-            return
-        try:
-            if isinstance(outcome, Exception):
-                raise outcome
-            recovery_result = outcome
-            if recovery_result is not None:
-                if recovery_result:
-                    self._apply_latency_compensation_for_current_devices()
-                    reason = ""
-                    try:
-                        reason = self.processor.get_last_restart_reason() or ""
-                    except Exception:
-                        reason = ""
-                    if reason.startswith(STALL_REASON_PREFIX):
-                        reason = "audio stalled"
-                    suffix = f" after: {reason}" if reason else ""
-                    self.status_message.showMessage(
-                        f"Audio restarted automatically{suffix}; you may have heard a short gap",
-                        4000,
-                    )
-                else:
-                    err_msg = ""
-                    try:
-                        err_msg = self.processor.get_last_stream_error() or ""
-                    except Exception:
-                        err_msg = ""
-                    message = "The selected devices are not available, so AudioForge keeps retrying"
-                    self.status_message.showMessage(f"{message}: {err_msg}" if err_msg else message, 6000)
-                self._sync_processing_controls()
-            self._recovery_service_failing = False
-        except Exception:
-            # Runs every tick: log the first failure of a streak, not each repeat.
-            if not self._recovery_service_failing:
-                logger.warning("Rust recovery service failed", exc_info=True)
-            self._recovery_service_failing = True
-        if start:
-            self._on_start_clicked()
 
     def _export_diagnostics(self) -> None:
         """Export an allowlisted support snapshot off the realtime path."""
@@ -4416,10 +3488,10 @@ class MainWindow(QMainWindow):
                 except (AttributeError, OSError, RuntimeError, TypeError, ValueError, OverflowError):
                     runtime[key] = None  # one failed read must not lose the report
             runtime.update(own_microphone_diagnostics())
-            preset = self._get_current_preset().to_dict()
+            preset = self.configuration.current.to_dict()
             snapshot = build_diagnostics_snapshot(
                 app_version=__version__,
-                runtime_diagnostics=runtime,
+                runtime_diagnostics=RuntimeSnapshot.parse(runtime),
                 config=self.config,
                 processing_settings=preset,
                 input_device=self._combo_device_identity(self.input_choice),
@@ -4512,219 +3584,38 @@ class MainWindow(QMainWindow):
             self.processor.reset_dropped_samples()
             self.status_message.showMessage("Dropped-sample count reset to zero", 3000)
 
-    def _get_current_preset(self) -> Preset:
-        """Get current settings as a Preset object."""
-        gate_settings = self.gate_state.get_settings()
-        eq_settings = self.eq_state.get_eq_settings()
-        deesser_settings = self.deesser_state.get_settings()
-        compressor_settings = self.compressor_state.get_settings()
-        limiter_settings = self.limiter_state.get_settings()
-
-        return Preset(
-            name="Custom",
-            description="User-defined preset",
-            gate=GateSettings(**gate_settings),
-            eq=eq_settings,
-            rnnoise=RNNoiseSettings(**self.noise_suppression_state.get_settings()),
-            deesser=DeEsserSettings(**deesser_settings),
-            compressor=CompressorSettings(**compressor_settings),
-            limiter=LimiterSettings(**limiter_settings),
-            bypass=self._processing_mode() == "bypass",
-            value_provenance=dict(self._current_value_provenance),
-        )
-
-    def _write_processing_configuration(self, preset: Preset) -> None:
-        """Write a validated chain while the caller owns history and output mute."""
-        self.noise_suppression_state.set_settings(asdict(preset.rnnoise))
-        self.gate_state.set_settings(asdict(preset.gate))
-        self.eq_state.set_settings(preset.eq.to_dict())
-        self.deesser_state.set_settings(asdict(preset.deesser))
-        self.compressor_state.set_settings(asdict(preset.compressor))
-        self.limiter_state.set_settings(asdict(preset.limiter))
-        self._set_processing_mode("bypass" if preset.bypass else "normal")
-        self._current_value_provenance = dict(preset.value_provenance)
-
-    def _cancel_processing_configuration_writes(self) -> None:
-        """Discard interactive writes superseded by the bulk configuration."""
-        for state in (self.eq_state, self.gate_state, self.deesser_state,
-                      self.compressor_state, self.limiter_state):
-            state.cancel()
-
-    def _flush_processing_configuration_writes(self) -> None:
-        """Finish queued state writes before releasing configuration mute."""
-        for state in (self.eq_state, self.gate_state, self.deesser_state,
-                      self.compressor_state, self.limiter_state):
-            state.flush()
-
-    def apply_processing_configuration(
-        self,
-        preset: Preset,
-        *,
-        noise_reference_reliability: float | None = None,
-        processing_mode: str | None = None,
-        compressor_metadata: dict[str, object] | None = None,
-    ) -> None:
-        """Apply all settings or restore them, without changing preset identity/history."""
-        if processing_mode is not None and not self._is_valid_processing_mode(
-            processing_mode
-        ):
-            raise ValueError(f"Unknown processing mode: {processing_mode!r}")
-        if compressor_metadata is not None and compressor_metadata.keys() - {
-            "dynamics_intensity", "dynamics_profile", "dynamics_customized",
-        }:
-            raise ValueError("Unknown compressor calibration metadata")
-        candidate = ConfigurationSnapshot.from_preset(
-            preset, label="Apply", source="configuration",
-            noise_reference_reliability=noise_reference_reliability or 0.0,
-        ).to_preset()
-        # A bulk replacement supersedes queued gestures. Capture the accepted
-        # state after cancellation so a failed replacement cannot apply them.
-        self._cancel_processing_configuration_writes()
-        previous = self._get_current_preset()
-        previous_mode = self._processing_mode()
-        previous_compressor = self.compressor_state.get_settings(
-            include_calibration=True
-        )
-        replaying = self.__dict__.get("_history_replaying", False)
-        self._history_replaying = True
-        timer = self.__dict__.get("_history_timer")
-        if timer is not None:
-            timer.stop()
-        release_mute = True
-        try:
-            self.set_temporary_output_mute(True, "configuration")
-            if self.__dict__.get("_output_mute_error") and self.processor.is_running():
-                self._stop_audio_on_worker()
-                raise RuntimeError("Audio is muted and stopping because configuration mute failed")
-            try:
-                self._write_processing_configuration(candidate)
-                if processing_mode is not None:
-                    self._set_processing_mode(processing_mode)
-                if noise_reference_reliability is not None or compressor_metadata:
-                    self.compressor_state.set_settings({
-                        **(compressor_metadata or {}),
-                        "noise_reference_reliability": noise_reference_reliability or 0.0,
-                    })
-                if noise_reference_reliability is None and not self.__dict__.get("_calibration_dialog_open"):
-                    self._history_replaying = False
-                    try:
-                        self._sync_calibration_evidence(force_reset=True)
-                    finally:
-                        self._history_replaying = True
-                self._flush_processing_configuration_writes()
-            except Exception as error:
-                try:
-                    self._cancel_processing_configuration_writes()
-                    self._write_processing_configuration(previous)
-                    self._set_processing_mode(previous_mode)
-                    self.compressor_state.set_settings(previous_compressor)
-                    self._flush_processing_configuration_writes()
-                except Exception as restore_error:
-                    release_mute = False
-                    # Before the stop is asked for: its failure message must be the one left showing.
-                    self.status_message.showMessage(
-                        "Audio muted and stopping: configuration restoration failed",
-                        7000,
-                    )
-                    self._stop_audio_on_worker()
-                    raise RuntimeError(
-                        f"Configuration failed ({error}); restoration failed ({restore_error}). "
-                        "Audio is muted and stopping."
-                    ) from restore_error
-                raise RuntimeError(f"Configuration was not applied; previous sound restored: {error}") from error
-        finally:
-            self._history_replaying = replaying
-            if release_mute:
-                self.set_temporary_output_mute(False, "configuration")
-
-    def _apply_preset(
-        self,
-        preset: Preset,
-        preset_key: str | None = None,
-        *,
-        preset_path: Path | None = None,
-        persist_last_used: bool = True,
-    ) -> bool:
-        """Apply a preset to the UI and processor.
-
-        Args:
-            preset: Preset object to apply
-            preset_key: Optional key for built-in presets (e.g., "voice", "bass_cut")
-        """
-        if (
-            self.__dict__.get("_history_ready", False)
-            and not self.__dict__.get("_history_replaying", False)
-            and not self._confirm_discard_changes()
-        ):
-            return False
-        try:
-            self.apply_processing_configuration(preset)
-        except Exception as error:
-            if self.__dict__.get("_history_ready", False) and self.__dict__.get("_login_startup_deadline") is None:
-                QMessageBox.critical(self, "Preset Not Applied", str(error))
+    def _report_load(self, outcome: LoadOutcome) -> bool:
+        """Tell the user how a preset load went; True when it loaded."""
+        configuration = self.configuration
+        if outcome.status is LoadStatus.NOT_APPLIED and not outcome.read_failed:
+            if configuration.history_started and self.__dict__.get("_login_startup_deadline") is None:
+                QMessageBox.critical(self, "Preset Not Applied", str(outcome.error))
             else:
                 self.config.load_warning = "\n".join(filter(None, (
-                    self.config.load_warning, f"Could not restore preset: {error}"
+                    self.config.load_warning, f"Could not restore preset: {outcome.error}"
                 )))
+        if not outcome.loaded or outcome.preset is None:
             return False
-        history_ready = bool(self.__dict__.get("_history_ready", False))
-        history_replaying = bool(self.__dict__.get("_history_replaying", False))
-        preset_id = f"builtin:{preset_key}" if preset_key else None
-        persist_identity = (
-            persist_last_used
-            and not history_replaying
-            and (preset_id is not None or preset_path is not None)
-        )
-        previous_last_preset = ""
-        if persist_identity:
-            previous_last_preset = self.config.last_preset
-        if not history_replaying:
-            self._preset_record = {}  # a load starts a record of its own; a save keeps the loaded one
-            self._set_preset_identity(
-                preset,
-                path=preset_path,
-                preset_id=preset_id,
-                persist_last_used=persist_last_used,
-            )
-        if history_ready and not history_replaying:
-            loaded = {preset_id} if preset_id is not None else set()
-            if preset_path is not None:
+        preset, origin = outcome.preset, outcome.origin
+        if configuration.history_started and not configuration.replaying:
+            loaded = {origin.builtin_id} if origin.builtin_id is not None else set()
+            if origin.path is not None:
                 loaded |= {
-                    str(preset_path),
-                    _startup_custom_file_id(preset_path.name),
+                    str(origin.path),
+                    _startup_custom_file_id(origin.path.name),
                     f"{STARTUP_CUSTOM_PREFIX}{preset.name}",
                 }
             for key, failed_id in self.__dict__.get("_failed_presets", {}).items():
                 if failed_id in loaded:
                     self._set_problem(key, None)
-            self._commit_pending_configuration_snapshot(
-                label=f"Loaded preset ({preset.name})",
-                source="preset",
-                provenance=self._current_value_provenance,
-            )
-
-        persisted = True
-        if persist_identity:
-            persisted = self._save_config_safely()
-            if not persisted:
-                logger.warning("Could not remember loaded preset %s", preset.name)
-            if not persisted:
-                self.config.last_preset = previous_last_preset
-                self._mirror_preset_record()
-            self._last_preset_identity_persisted = bool(persisted)
-
         message = f"Loaded preset: {preset.name}"
-        if persist_identity and not persisted:
+        if not outcome.remembered:
             message += "; applied for this session, but could not be remembered for the next launch"
-        self.status_message.showMessage(message, 6000 if persist_identity and not persisted else 3000)
+        self.status_message.showMessage(message, 3000 if outcome.remembered else 6000)
         return True
 
-    def _confirm_discard_changes(self) -> bool:
-        if not self.__dict__.get("_history_ready", False):
-            return True
-        self._set_preset_modified()
-        if not self.preset_modified:
-            return True
+    def _ask_to_save_sound_changes(self) -> bool:
+        """Ask before unsaved sound changes are replaced; True to go on."""
         question = "Save your sound changes before continuing?"
         if self._processing_mode() == "raw":
             question += "\nRaw Monitor is session-only and will not be restored from a preset."
@@ -4741,20 +3632,21 @@ class MainWindow(QMainWindow):
 
     def _save_preset(self) -> bool:
         """Update an owned preset; imported and built-in sounds require Save As."""
-        path = self.__dict__.get("current_preset_path")
+        identity = self.configuration.identity
+        path = identity.path
         if path is None or Path(path).resolve().parent != get_presets_dir().resolve():
             return self._save_preset_as()
         preset = self._get_saveable_preset()
         if preset is None:
             return False
-        preset.name = self.current_preset_name
-        preset.description = self.__dict__.get("current_preset_description", "")
+        preset.name = identity.name
+        preset.description = identity.description
         return self._save_preset_file(preset, filepath=Path(path)) is not None
 
     def _save_preset_as(self) -> bool:
+        identity = self.configuration.identity
         name, ok = QInputDialog.getText(
-            self, "Save Preset As", "Preset name:",
-            text=self.__dict__.get("current_preset_name", "My Preset"),
+            self, "Save Preset As", "Preset name:", text=identity.name,
         )
         if not ok or not name.strip():
             return False
@@ -4762,7 +3654,7 @@ class MainWindow(QMainWindow):
         if preset is None:
             return False
         preset.name = name.strip()
-        preset.description = self.__dict__.get("current_preset_description", "")
+        preset.description = identity.description
         return self._save_preset_file(preset) is not None
 
     def _load_preset(self):
@@ -4786,8 +3678,7 @@ class MainWindow(QMainWindow):
                 preset_path = requested_path
             except PresetValidationError:
                 preset, preset_path = import_preset(requested_path)
-            if not self._apply_preset(preset, preset_path=preset_path):
-                return
+            self._report_load(self.configuration.load(preset, PresetOrigin(path=preset_path), remember=True))
         except PresetValidationError as e:
             # Actionable error for validation failures
             logger.warning("Preset validation failed", exc_info=True)
@@ -4850,7 +3741,7 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
 
-        if not session_ending and not self._confirm_discard_changes():
+        if not session_ending and not self.configuration.confirm_discard():
             self._quitting = False
             self._quit_dont_ask = False
             event.ignore()
@@ -4869,13 +3760,12 @@ class MainWindow(QMainWindow):
         """Save the settings and stop audio; closeEvent and an app quit without a close share this."""
         if self._quit_dont_ask:
             self.config.confirm_quit_when_live = False
-        self._shut_down = True  # from here the answers of engine calls still out are dropped
         watch = self.__dict__.get("virtual_microphone_watch")
         if watch is not None:
             watch.stop()
-        engine_idle = self._engine.wait(ENGINE_CALL_WAIT_MS)
-        if not engine_idle:
-            logger.warning("An engine call is still out at shutdown; the exit ends the audio")
+        return self.engine_session.shutdown(ENGINE_CALL_WAIT_MS, save=self._save_on_shutdown)
+
+    def _save_on_shutdown(self) -> bool:
         self._unregister_mute_hotkey()
         if self._tray_icon is not None:
             self._tray_icon.hide()
@@ -4890,13 +3780,7 @@ class MainWindow(QMainWindow):
         if self.isMaximized():
             geometry["maximized"] = True
         self.config.window_geometry = geometry
-        try:
-            saved = self._save_ui_state()
-        finally:
-            # Not beside a call that is still out: this stop would wait behind it on the GUI thread.
-            if engine_idle and self.processor.is_running():
-                self.processor.stop()
-        return saved
+        return self._save_ui_state()
 
 
 def run_app():

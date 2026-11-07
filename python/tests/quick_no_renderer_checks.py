@@ -22,6 +22,7 @@ from PySide6.QtQuickWidgets import QQuickWidget
 from mic_eq.ui import desktop_integration, quick_shell
 from mic_eq.ui.desktop_integration import RENDERER_RELAUNCH_ENV, SingleInstanceCoordinator
 from mic_eq.ui.main_window import MainWindow
+from mic_eq.ui.virtual_microphone import VirtualMicrophoneWatch
 from quick_child import BusName
 from test_quick_shell import _load_config_without_devices
 
@@ -55,7 +56,7 @@ def _window() -> MainWindow:
 def test_a_cancelled_quit_starts_no_copy_and_shows_the_error_screen(spawned, monkeypatch) -> None:
     window = _window()
     # The unsaved-changes prompt answered Cancel.
-    monkeypatch.setattr(window, "_confirm_discard_changes", lambda: False)
+    monkeypatch.setattr(window.configuration, "confirm_discard", lambda: False)
     window.show()
     QTest.qWait(SETTLE_MS)
 
@@ -159,6 +160,7 @@ def _run_until_settled(qapp, window: MainWindow) -> tuple[int, dict]:
             visible=window.isVisible(), quitting=window._quitting,
             tray_visible=tray is not None and tray.isVisible(),
             snapshot=window._interface_snapshot(),
+            watch_stopped=getattr(window.__dict__.get("virtual_microphone_watch"), "_stopped", None),
         )
         qapp.exit(SURVIVED)
 
@@ -236,6 +238,7 @@ def test_a_spawn_that_fails_keeps_the_app_and_its_guard_and_shows_the_error_scre
     guard, names = _guard(window, tmp_path)
     setattr(window, "application_bus", BusName(events))
     _visible_tray(window, close_to_tray=close_to_tray)
+    setattr(window, "virtual_microphone_watch", VirtualMicrophoneWatch())
     window.config.mute_hotkey = "Ctrl+Alt+M"
     registered: list[str] = []
     monkeypatch.setattr(window, "_unregister_mute_hotkey", lambda: None)
@@ -250,6 +253,7 @@ def test_a_spawn_that_fails_keeps_the_app_and_its_guard_and_shows_the_error_scre
     assert state["visible"] and not state["quitting"]
     assert state["snapshot"]["view"] == "error" and state["snapshot"]["classic_reason"] == "no_renderer"
     assert state["tray_visible"] and registered == ["Ctrl+Alt+M"]
+    assert state["watch_stopped"] is False  # the close stopped the microphone watch; the kept app needs it
     shown = window.centralWidget().findChild(QPlainTextEdit)
     assert shown is not None and "could not restart itself with software rendering" in shown.toPlainText()
     rival = SingleInstanceCoordinator(**names)

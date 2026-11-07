@@ -18,9 +18,6 @@ CONTROL_RANGES = {
     for section, ranges in VALIDATION_RANGES.items()
     if section in {"limiter", "deesser", "compressor", "gate"}
 }
-CONTROL_RANGES["compressor"] = CONTROL_RANGES["compressor"] | {
-    "base_release_ms": (20.0, 200.0),
-}
 
 
 @dataclass(frozen=True, slots=True)

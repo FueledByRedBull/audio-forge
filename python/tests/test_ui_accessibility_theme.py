@@ -9,6 +9,7 @@ import sys
 from dataclasses import asdict, fields
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from PySide6.QtCore import QEvent, QPointF, QRect, QSize
@@ -16,7 +17,7 @@ from PySide6.QtGui import QColor, QIcon, QPalette, QPixmap
 from PySide6.QtWidgets import QScrollArea, QWidget
 
 from mic_eq.config import AppConfig
-from mic_eq.ui.accessibility import audit_widget_tree, set_accessible
+from mic_eq.ui.accessibility import set_accessible
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.first_run_setup_dialog import FirstRunSetupDialog
 from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog
@@ -29,6 +30,7 @@ from mic_eq.ui.main_window import (
 from mic_eq.ui.level_meter import SCALE_TEXT_GAP, _scale_mark_geometry
 from mic_eq.ui.shell_specs import TEXT_SPECS
 from mic_eq.ui import theme
+from accessibility_audit import audit_widget_tree
 from test_first_run_setup import at_scene_minimum, cut_short_texts, scene_item, scene_items
 from mic_eq.ui.theme import (
     CONTROL_BOUNDARY_PAIRS,
@@ -69,10 +71,15 @@ def test_compact_health_aggregation_and_stop(isolated_main_window, states, mute_
         window._set_health_chip(key, key, "idle")
     for key, state in zip(keys, states):
         window._set_health_chip(key, key, state)
-    window._output_mute_error = mute_error
+    if mute_error:  # the engine refuses the mute; the session keeps it pending
+        window.engine_session.processor = SimpleNamespace(
+            set_output_mute=Mock(side_effect=RuntimeError("unavailable"))
+        )
+        window.engine_session.set_user_muted(False)
+        window.engine_session.processor = window.processor
     window._update_health_summary()
     assert window.shell_texts["health_summary_label"].state == expected
-    window._stop_processing()
+    window.engine_session.stop_now()
     window._update_meters()
     assert window.shell_texts["health_summary_label"].text == "Health: --"
     assert window.shell_texts["health_summary_label"].state == "idle"

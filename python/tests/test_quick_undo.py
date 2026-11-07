@@ -33,7 +33,7 @@ class Scene:
     def __init__(self, window, page, graph, qapp):
         self.window, self.page, self.graph, self.qapp = window, page, graph, qapp
         self.view = window.centralWidget()
-        self.history = window._configuration_history
+        self.history = window.configuration.history
         self.graph_model = window.eq_presentation.graph_model
 
     def undo(self) -> None:
@@ -47,7 +47,7 @@ class Scene:
         self.qapp.processEvents()
 
     def commit(self) -> None:
-        self.window._commit_pending_configuration_snapshot()
+        self.window.configuration.commit_edit()
 
     def band(self, index: int = BAND):
         return self.window.eq_state.get_band(index)
@@ -356,7 +356,7 @@ def _change_the_route(window) -> tuple:
         window.output_choice.currentIndex(),
         window.input_channel_mode_choice.currentIndex(),
         window.input_cleanup_mode_choice.currentIndex(),
-        window.user_muted,
+        window.engine_session.view.user_muted,
     )
 
 
@@ -377,7 +377,7 @@ def test_undo_and_redo_leave_the_chosen_route_alone(routed) -> None:
         scene.window.output_choice.currentIndex(),
         scene.window.input_channel_mode_choice.currentIndex(),
         scene.window.input_cleanup_mode_choice.currentIndex(),
-        scene.window.user_muted,
+        scene.window.engine_session.view.user_muted,
     ) == route
 
 

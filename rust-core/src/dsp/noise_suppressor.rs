@@ -7,13 +7,11 @@ use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 
 #[cfg(feature = "deepfilter")]
+pub(crate) const ENABLE_DEEPFILTER_ENV: &str = "AUDIOFORGE_ENABLE_DEEPFILTER";
+
+#[cfg(feature = "deepfilter")]
 pub(crate) fn deepfilter_experimental_enabled() -> bool {
-    std::env::var("AUDIOFORGE_ENABLE_DEEPFILTER")
-        .map(|v| {
-            let normalized = v.trim().to_ascii_lowercase();
-            normalized == "1" || normalized == "true" || normalized == "yes"
-        })
-        .unwrap_or(false)
+    crate::dsp::util::env_flag(ENABLE_DEEPFILTER_ENV)
 }
 
 /// Noise suppression model types

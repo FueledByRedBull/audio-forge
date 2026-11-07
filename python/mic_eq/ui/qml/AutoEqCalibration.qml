@@ -106,6 +106,9 @@ Rectangle {
             onActivated: index => field.picked(index)
             Keys.onReturnPressed: event => root.activateUnlessChoosing(event, picker)
             Keys.onEnterPressed: event => root.activateUnlessChoosing(event, picker)
+            // Enter here can start the run, which locks the pickers and hides their card.
+            onActiveFocusChanged: if (!activeFocus && !enabled) scrollPage.focusPage()
+            onVisibleChanged: if (!visible && activeFocus) scrollPage.focusPage()
             Layout.fillWidth: true
             Layout.minimumWidth: 120
             Accessible.description: field.tip

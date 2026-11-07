@@ -390,11 +390,16 @@ def test_the_keyboard_alone_scrolls_a_small_dialog_down_to_its_message(open_dial
     assert scene_item(dialog, "scrollFocusRing").isVisible()
 
 
-@pytest.mark.parametrize("button", ["startButton", "retakeButton", "compareButton"])
+@pytest.mark.parametrize(
+    "button", ["startButton", "retakeButton", "compareButton", "curvePicker-locked", "modePicker-hidden"]
+)
 def test_a_button_that_disables_or_hides_itself_hands_the_keyboard_to_the_page(open_dialog, qapp, button) -> None:
     dialog = open_dialog(everything=True)
     hides = {"startButton": {"startEnabled": False}, "retakeButton": {"retakeShown": False},
-             "compareButton": {"compareEnabled": False}}[button]
+             "compareButton": {"compareEnabled": False},
+             # Enter on a picker starts the run, which locks the pickers and hides their card.
+             "curvePicker-locked": {"choicesEnabled": False}, "modePicker-hidden": {"curveShown": False}}[button]
+    button = button.split("-")[0]
     scene_item(dialog, button).forceActiveFocus(Qt.FocusReason.TabFocusReason)
     dialog.view_model.set_page(**hides)
     qapp.processEvents()
@@ -525,3 +530,27 @@ def test_a_scene_that_does_not_load_says_so_and_closes_without_starting_anything
     dialog.deleteLater()
     owner.close()
     qapp.processEvents()
+
+
+def test_the_width_budget_holds_every_label_the_main_and_override_buttons_can_show() -> None:
+    import ast
+    import inspect
+
+    from mic_eq.ui.calibration_view import OVERRIDE_LABELS, START_LABELS
+    from mic_eq.ui.level_check import LevelVerdict, level_choices
+
+    for code in ("good", "too_hot", "too_quiet", "silent", "unreadable"):
+        choices = level_choices(LevelVerdict(code, "", "ok"), "Record Passage")
+        assert choices.primary in START_LABELS, code
+        assert choices.override is None or choices.override in OVERRIDE_LABELS, code
+    # Every literal the dialog passes as the main button's text.
+    def values(node: ast.expr) -> set[str]:
+        if isinstance(node, ast.IfExp):
+            return values(node.body) | values(node.orelse)
+        return {node.value} if isinstance(node, ast.Constant) and isinstance(node.value, str) else set()
+
+    literals = set()
+    for node in ast.walk(ast.parse(inspect.getsource(calibration_dialog))):
+        if isinstance(node, ast.keyword) and node.arg == "startText":
+            literals |= values(node.value)
+    assert literals and literals <= set(START_LABELS), literals - set(START_LABELS)

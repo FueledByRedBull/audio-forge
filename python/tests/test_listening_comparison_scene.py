@@ -379,7 +379,16 @@ def _while_recording(qapp: Any, action: Any) -> tuple[Any, _Window]:
         action(SimpleNamespace(quick_view=quick, dialog=dialog))
 
     QTimer.singleShot(100, act)
-    return module._record_test_clip(window), window
+    return _record_with_lease(window), window
+
+
+def _record_with_lease(window: _Window) -> Any:
+    """Record the way Test my sound does: borrow the audio, record, release it."""
+    lease = window.engine_session.borrow(module._TEST_MY_SOUND_REASON)
+    try:
+        return module._record_test_clip(window, lease)
+    finally:
+        lease.release()
 
 
 def test_the_recording_window_loads_names_its_parts_and_shows_the_progress(qapp) -> None:
@@ -453,7 +462,7 @@ def test_a_recording_window_that_does_not_load_releases_the_capture(qapp, monkey
     monkeypatch.setattr(module, "load_scene", lambda *_args: "no such file")
     window = _Window(_Processor())
     with pytest.raises(RuntimeError, match="The recording window could not open: no such file"):
-        module._record_test_clip(window)
+        _record_with_lease(window)
     assert window.mutes == [(True, "test_my_sound"), (False, "test_my_sound")]
     assert QApplication.activeModalWidget() is None
 

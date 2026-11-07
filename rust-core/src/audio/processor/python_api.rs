@@ -1966,23 +1966,8 @@ pub fn analyze_vad_probabilities(
             ));
         }
 
-        let probabilities = py.detach(move || -> Result<Vec<f32>, String> {
-            let mut vad =
-                SileroVAD::new(sample_rate, threshold).map_err(|error| error.to_string())?;
-            let window_size = vad.window_size().max(1);
-            let frame_count = samples.len().div_ceil(window_size);
-            let mut frame = vec![0.0_f32; window_size];
-            let mut probabilities = Vec::with_capacity(frame_count);
-
-            for chunk in samples.chunks(window_size) {
-                frame.fill(0.0);
-                frame[..chunk.len()].copy_from_slice(chunk);
-                let probability = vad.process(&frame).map_err(|error| error.to_string())?;
-                probabilities.push(probability.clamp(0.0, 1.0));
-            }
-
-            Ok(probabilities)
-        });
+        let probabilities =
+            py.detach(move || silero_offline_probabilities(&samples, sample_rate, threshold));
 
         probabilities.map_err(|error| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
@@ -1990,6 +1975,29 @@ pub fn analyze_vad_probabilities(
             ))
         })
     })
+}
+
+/// One clamped posterior per model window of `samples`, zero-padding the last.
+#[cfg(feature = "vad")]
+pub(crate) fn silero_offline_probabilities(
+    samples: &[f32],
+    sample_rate: u32,
+    threshold: f32,
+) -> Result<Vec<f32>, String> {
+    let mut vad = SileroVAD::new(sample_rate, threshold).map_err(|error| error.to_string())?;
+    let window_size = vad.window_size().max(1);
+    let frame_count = samples.len().div_ceil(window_size);
+    let mut frame = vec![0.0_f32; window_size];
+    let mut probabilities = Vec::with_capacity(frame_count);
+
+    for chunk in samples.chunks(window_size) {
+        frame.fill(0.0);
+        frame[..chunk.len()].copy_from_slice(chunk);
+        let probability = vad.process(&frame).map_err(|error| error.to_string())?;
+        probabilities.push(probability.clamp(0.0, 1.0));
+    }
+
+    Ok(probabilities)
 }
 
 #[cfg(test)]

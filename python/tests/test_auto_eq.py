@@ -1546,7 +1546,7 @@ def test_native_headroom_failure_classification_is_explicit(
 
 
 def test_headroom_safety_fails_closed_for_missing_metrics():
-    assert headroom_module._is_headroom_safe({}) is False
+    assert mic_eq_core.is_headroom_safe({}) is False
 
 
 def test_voice_safe_flat_target_preserves_broad_speech_shape():

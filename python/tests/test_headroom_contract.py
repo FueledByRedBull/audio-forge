@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from types import SimpleNamespace
 
+from mic_eq import mic_eq_core
 from mic_eq.analysis.auto_eq_parts import headroom
 from mic_eq.config import EQBandSettings, EQSettings, Preset
 from mic_eq.analysis.auto_eq_parts.optimizer import calculate_eq_bands
@@ -20,7 +21,7 @@ def test_flat_controls_survive_headroom_adapter():
         "noise_model": "deepfilter",
         "vad_available": False,
     }
-    flattened = headroom._flatten_chain_settings(controls)
+    flattened = mic_eq_core.flatten_chain_settings(controls)
     assert all(flattened[key] == value for key, value in controls.items())
 
 
@@ -40,7 +41,7 @@ def test_live_calibration_reliability_reaches_native_preview():
     )
     for snapshot in (None, preset):
         chain = _chain_settings(owner, full_chain=True, preset=snapshot)
-        flattened = headroom._flatten_chain_settings(chain)
+        flattened = mic_eq_core.flatten_chain_settings(chain)
         assert flattened["compressor_noise_reference_reliability"] == 0.73
     assert "noise_reference_reliability" not in preset.to_dict()["compressor"]
 

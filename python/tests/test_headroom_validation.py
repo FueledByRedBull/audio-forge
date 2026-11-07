@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from mic_eq import mic_eq_core
 from mic_eq.analysis.auto_eq_parts import headroom
 from mic_eq.analysis.auto_eq_parts.optimizer import calculate_eq_bands
 from mic_eq.config import EQSettings
@@ -15,7 +16,7 @@ BAND_FREQS = [80.0, 160.0, 320.0, 640.0, 1280.0, 2500.0, 5000.0, 8000.0, 12000.0
 def _render(excess_db: float, **extra):
     """Native metrics whose headroom excess is exactly ``excess_db`` (> -0.5)."""
     return {
-        "pre_limiter_true_peak_headroom_db": headroom.HEADROOM_TARGET_DB - excess_db,
+        "pre_limiter_true_peak_headroom_db": mic_eq_core.HEADROOM_TARGET_DB - excess_db,
         "limiter_gain_reduction_db": 0.0,
         "true_peak_limiter_gain_reduction_db": 0.0,
         **extra,
@@ -101,8 +102,8 @@ def test_chain_defaults_sent_to_the_native_simulator():
         "suppressor_strength": 1.0,
         "noise_model": "rnnoise",
     }
-    assert headroom._flatten_chain_settings(None) == expected
-    assert headroom._flatten_chain_settings({}) == expected
+    assert mic_eq_core.flatten_chain_settings(None) == expected
+    assert mic_eq_core.flatten_chain_settings({}) == expected
 
 
 @pytest.mark.parametrize("bad", ["loud", None, float("nan"), float("inf"), True])
@@ -115,7 +116,7 @@ def test_a_band_value_that_is_not_a_number_is_refused_not_replaced(field, bad):
     }
     settings[field][0] = bad
     with pytest.raises(ValueError, match="not a finite number"):
-        headroom._bands_from_settings(settings)
+        mic_eq_core.legacy_eq_inputs(settings)
 
 
 def test_chain_settings_that_are_invalid_are_refused_and_absent_ones_take_the_default():
@@ -129,9 +130,9 @@ def test_chain_settings_that_are_invalid_are_refused_and_absent_ones_take_the_de
         {"compressor": {"enabled": "false"}},
     ):
         with pytest.raises(ValueError, match="chain setting is not"):
-            headroom._flatten_chain_settings(chain)
-    assert headroom._flatten_chain_settings({"compressor": {"threshold_db": None}}) == (
-        headroom._flatten_chain_settings({})
+            mic_eq_core.flatten_chain_settings(chain)
+    assert mic_eq_core.flatten_chain_settings({"compressor": {"threshold_db": None}}) == (
+        mic_eq_core.flatten_chain_settings({})
     )
 
 
@@ -153,19 +154,18 @@ def test_a_result_confidence_that_is_not_a_number_takes_the_old_default(monkeypa
 @pytest.mark.parametrize("bad", [10**400, float("inf"), float("-inf")])
 def test_an_overflowing_chain_number_is_refused_with_the_same_error(bad):
     with pytest.raises(ValueError, match="not a finite number"):
-        headroom._finite_float(bad)
+        mic_eq_core.flatten_chain_settings({"limiter": {"ceiling_db": bad}})
     if isinstance(bad, float):  # a huge Python int is a valid integer
         with pytest.raises(ValueError, match="not an integer"):
-            headroom._as_int(bad, 0)
+            mic_eq_core.flatten_chain_settings({"gate": {"gate_mode": bad}})
 
 
 def test_numpy_booleans_are_accepted_as_chain_booleans():
-    assert headroom._as_bool(np.bool_(True), False) is True
-    assert headroom._as_bool(np.bool_(False), True) is False
-    flat = headroom._flatten_chain_settings({"compressor": {"enabled": np.bool_(False)}})
-    assert flat["compressor_enabled"] is False
+    for value in (True, False):
+        flat = mic_eq_core.flatten_chain_settings({"compressor": {"enabled": np.bool_(value)}})
+        assert flat["compressor_enabled"] is value
     with pytest.raises(ValueError, match="not a boolean"):
-        headroom._as_bool(np.int64(1), False)
+        mic_eq_core.flatten_chain_settings({"compressor": {"enabled": np.int64(1)}})
 
 
 def test_split_is_none_when_the_full_correction_already_fits():
@@ -174,7 +174,7 @@ def test_split_is_none_when_the_full_correction_already_fits():
 
     # Exactly at the rule is a fit too; the split is only for a correction that breaks it.
     for excess in (-0.5, 0.0):
-        assert headroom._headroom_excess_db(_render(excess)) <= 0.0
+        assert mic_eq_core.headroom_excess_db(_render(excess)) <= 0.0
         assert headroom.headroom_excess_split_db(validation(excess, -3.0)) is None
     assert headroom.headroom_excess_split_db(validation(0.5, -3.0)) == (0.0, 0.5)
 

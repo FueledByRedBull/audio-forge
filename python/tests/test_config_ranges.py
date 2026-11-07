@@ -39,11 +39,6 @@ PINNED_NUMERIC_RANGES = {
         "vad_pre_gain": (1.0, 10.0),
         "gate_margin_db": (0.0, 20.0),
     },
-    "eq": {
-        "band_freq": (20.0, 20000.0),
-        "band_gain": (-12.0, 12.0),
-        "band_q": (0.1, 10.0),
-    },
     "rnnoise": {
         "strength": (0.0, 1.0),
     },
@@ -111,6 +106,18 @@ def test_the_validation_table_is_the_native_table():
     assert noise_model_ids() == mic_eq_core.noise_model_ids()
 
 
+def test_the_shared_table_cannot_be_mutated():
+    ranges = validation_ranges()
+
+    with pytest.raises(TypeError):
+        ranges["gate"] = {}  # type: ignore[index]
+    with pytest.raises(TypeError):
+        ranges["gate"]["threshold_db"] = (-200.0, 0.0)  # type: ignore[index]
+    with pytest.raises(TypeError):
+        del ranges["limiter"]  # type: ignore[attr-defined]
+    assert validation_ranges()["gate"]["threshold_db"] == (-80.0, -10.0)
+
+
 @pytest.mark.parametrize("section", SETTINGS_CLASSES)
 def test_every_default_lies_inside_its_native_range(section):
     native = mic_eq_core.processing_ranges()[section]
@@ -129,7 +136,6 @@ COMPANIONS = {
 PRESET_RANGES = [
     (section, name, bounds)
     for section, ranges in PINNED_NUMERIC_RANGES.items()
-    if section != "eq"
     for name, bounds in ranges.items()
 ]
 

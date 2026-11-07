@@ -265,7 +265,7 @@ def processing_ranges() -> dict[str, dict[str, tuple[float, float]]]:
     """Minimum and maximum of every numeric setting, by section and preset key.
 
     The live setters clamp to these values, and presets are validated against
-    them. Sections: gate, eq, rnnoise, deesser, compressor and limiter.
+    them. Sections: gate, rnnoise, deesser, compressor and limiter.
     """
     ...
 def noise_model_ids() -> list[str]:

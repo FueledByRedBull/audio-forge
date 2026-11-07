@@ -7,9 +7,6 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::dsp::eq::{
-    EQ_FREQ_MAX_HZ, EQ_FREQ_MIN_HZ, EQ_GAIN_MAX_DB, EQ_GAIN_MIN_DB, EQ_Q_MAX, EQ_Q_MIN,
-};
 use crate::dsp::noise_suppressor::NOISE_MODEL_IDS;
 
 pub(crate) const GATE_THRESHOLD_MIN_DB: f64 = -80.0;
@@ -81,14 +78,6 @@ const PROCESSING_RANGES: &[(&str, SectionRanges)] = &[
             ("vad_hold_time_ms", VAD_HOLD_MIN_MS, VAD_HOLD_MAX_MS),
             ("vad_pre_gain", VAD_PRE_GAIN_MIN, VAD_PRE_GAIN_MAX),
             ("gate_margin_db", GATE_MARGIN_MIN_DB, GATE_MARGIN_MAX_DB),
-        ],
-    ),
-    (
-        "eq",
-        &[
-            ("band_freq", EQ_FREQ_MIN_HZ, EQ_FREQ_MAX_HZ),
-            ("band_gain", EQ_GAIN_MIN_DB, EQ_GAIN_MAX_DB),
-            ("band_q", EQ_Q_MIN, EQ_Q_MAX),
         ],
     ),
     (
@@ -193,6 +182,7 @@ pub(crate) fn noise_model_ids() -> Vec<&'static str> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "vad")]
     fn range(section: &str, name: &str) -> (f64, f64) {
         PROCESSING_RANGES
             .iter()
@@ -232,13 +222,6 @@ mod tests {
         assert_eq!(VAD_PRE_GAIN_MAX as f32, 10.0_f32);
         assert_eq!(GATE_MARGIN_MAX_DB as f32, 20.0_f32);
         assert_eq!(RNNOISE_STRENGTH_MAX as f32, 1.0_f32);
-    }
-
-    #[test]
-    fn the_equalizer_rows_are_the_dsp_limits() {
-        assert_eq!(range("eq", "band_gain"), (EQ_GAIN_MIN_DB, EQ_GAIN_MAX_DB));
-        assert_eq!(range("eq", "band_q"), (EQ_Q_MIN, EQ_Q_MAX));
-        assert_eq!(range("eq", "band_freq"), (EQ_FREQ_MIN_HZ, EQ_FREQ_MAX_HZ));
     }
 
     #[cfg(feature = "vad")]

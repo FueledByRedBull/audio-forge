@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from functools import cache
+from types import MappingProxyType
 
 from .. import noise_model_ids as _noise_model_ids
 from .. import processing_ranges as _processing_ranges
@@ -11,13 +13,19 @@ from .shared import PresetValidationError
 
 
 @cache
-def validation_ranges() -> dict[str, dict[str, tuple[float, float]]]:
+def validation_ranges() -> Mapping[str, Mapping[str, tuple[float, float]]]:
     """The native core's numeric ranges by section and key (booleans have none).
 
     Read on first use, so this module imports without the core and the
-    missing-core ImportError names the call that needed it.
+    missing-core ImportError names the call that needed it. The table is
+    shared and read-only: a caller cannot change what presets validate against.
     """
-    return _processing_ranges()
+    return MappingProxyType(
+        {
+            section: MappingProxyType(ranges)
+            for section, ranges in _processing_ranges().items()
+        }
+    )
 
 
 @cache

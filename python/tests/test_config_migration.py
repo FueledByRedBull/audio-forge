@@ -202,8 +202,8 @@ def test_invalid_config_backup_collision_uses_exclusive_next_slot(tmp_path, monk
     )
 
 
-def test_a_config_from_before_the_quit_prompt_asks_and_then_saves_version_2():
-    loaded = AppConfig.from_dict({"close_to_tray": True})
+def test_a_schema_2_config_without_the_quit_prompt_key_asks_and_then_saves_it():
+    loaded = AppConfig.from_dict({"schema_version": 2, "close_to_tray": True})
     assert loaded.confirm_quit_when_live is True and loaded.close_to_tray is True
     loaded.confirm_quit_when_live = False
     saved = loaded.to_dict()

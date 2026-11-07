@@ -307,3 +307,60 @@ def test_a_1_23_0_config_written_by_the_current_writer_loads_unchanged(
     assert app_config_module.save_config(loaded) is True
     assert filepath.read_bytes() == written
     assert json.loads(written)["schema_version"] == 2
+
+
+def test_only_an_age_refusal_is_a_too_old_error():
+    old = _preset_payload(version="1.22.0")
+    unstamped = _preset_payload()
+    del unstamped["version"]
+    for payload in (old, unstamped):
+        with pytest.raises(presets_module.PresetTooOldError) as refusal:
+            Preset.from_dict(payload)
+        assert isinstance(refusal.value, PresetValidationError)
+
+    broken = _preset_payload()
+    broken["gate"]["threshold_db"] = "bad"
+    for payload in (broken, _preset_payload(version="99.0.0")):
+        with pytest.raises(PresetValidationError) as other:
+            Preset.from_dict(payload)
+        assert not isinstance(other.value, presets_module.PresetTooOldError)
+
+
+def test_presets_refused_for_age_are_found_in_the_presets_and_imports_folders():
+    presets_dir = presets_module.get_presets_dir()
+    imports_dir = presets_module.get_preset_imports_dir()
+    _write_json(presets_dir / "old.json", _preset_payload(name="Old Warm", version="1.22.0"))
+    unstamped = _preset_payload(name="Never Stamped")
+    del unstamped["version"]
+    _write_json(imports_dir / "unstamped.json", unstamped)
+    broken = _preset_payload(name="Broken")
+    broken["gate"]["threshold_db"] = "bad"
+    _write_json(presets_dir / "broken.json", broken)
+    (presets_dir / "garbage.json").write_text("{not json", encoding="utf-8")
+    _write_json(presets_dir / "fine.json", _preset_payload(name="Fine"))
+
+    refused = presets_module.find_presets_refused_for_age()
+
+    assert sorted((item.path.name, item.name) for item in refused) == [
+        ("old.json", "Old Warm"),
+        ("unstamped.json", "Never Stamped"),
+    ]
+    assert all("1.23.0" in item.reason for item in refused)
+    assert [name for name, _path in presets_module.list_presets()] == ["Fine"]
+
+
+def test_a_refused_preset_is_matched_to_a_startup_or_route_id_by_file_or_name():
+    from mic_eq.ui.startup_presets import refusal_reason_for_preset_id
+
+    refused = [
+        presets_module.RefusedPreset(Path("old.json"), "Old Warm", "reason one"),
+        presets_module.RefusedPreset(Path("other.json"), "Other", "reason two"),
+    ]
+
+    assert refusal_reason_for_preset_id("custom-file:old.json", refused) == "reason one"
+    assert refusal_reason_for_preset_id("custom:Other", refused) == "reason two"
+    assert refusal_reason_for_preset_id("custom:other.json", refused) == "reason two"
+    assert refusal_reason_for_preset_id("custom-file:missing.json", refused) is None
+    assert refusal_reason_for_preset_id("builtin:voice", refused) is None
+    twins = refused + [presets_module.RefusedPreset(Path("old2.json"), "Old Warm", "x")]
+    assert refusal_reason_for_preset_id("custom:Old Warm", twins) is None

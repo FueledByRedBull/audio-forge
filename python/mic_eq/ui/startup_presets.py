@@ -1,6 +1,7 @@
 """Startup preset ID helpers for the main window."""
 
 from ..config import BUILTIN_PRESETS
+from ..config_parts.presets import RefusedPreset
 
 STARTUP_BUILTIN_PREFIX = "builtin:"
 STARTUP_CUSTOM_PREFIX = "custom:"
@@ -48,3 +49,20 @@ def startup_preset_display_name(preset_id: str) -> str:
     if preset_id.startswith(STARTUP_CUSTOM_FILE_PREFIX):
         return preset_id[len(STARTUP_CUSTOM_FILE_PREFIX):]
     return preset_id
+
+
+def refusal_reason_for_preset_id(
+    preset_id: str, refused: list[RefusedPreset]
+) -> str | None:
+    """Why the one preset file behind a custom preset ID is refused for age, if it is."""
+    if preset_id.startswith(STARTUP_CUSTOM_FILE_PREFIX):
+        identity = preset_id[len(STARTUP_CUSTOM_FILE_PREFIX):]
+        matches = [item for item in refused if item.path.name == identity]
+    elif preset_id.startswith(STARTUP_CUSTOM_PREFIX):
+        identity = preset_id[len(STARTUP_CUSTOM_PREFIX):]
+        matches = [
+            item for item in refused if item.name == identity or item.path.name == identity
+        ]
+    else:
+        matches = [item for item in refused if item.name == preset_id]
+    return matches[0].reason if len(matches) == 1 else None

@@ -24,6 +24,10 @@ class PresetValidationError(Exception):
     """Raised when preset or config validation fails with actionable detail."""
 
 
+class PresetTooOldError(PresetValidationError):
+    """Raised for a preset saved before the oldest release this build opens."""
+
+
 def _reject_json_constant(value: str) -> None:
     raise PresetValidationError(f"Invalid JSON constant in preset/config: {value}")
 
@@ -320,6 +324,7 @@ __all__ = [
     "CURRENT_VERSION",
     "DeviceIdentity",
     "OLDEST_OPENED_VERSION",
+    "PresetTooOldError",
     "PresetValidationError",
     "_reject_json_constant",
     "_version_tuple",

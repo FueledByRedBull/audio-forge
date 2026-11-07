@@ -228,9 +228,10 @@ there.
 
 - **Two EQ stages.** Calibration writes a correction stage. Your own edits go
   in a separate tone stage, so changing gains, templates, filter types, or
-  slopes keeps the calibration. Older presets keep their combined EQ as the
-  tone stage. The graph draws each band as a thin curve, the correction stage
-  as a dashed line and the fixed input filter (the DC blocker and an 80 Hz
+  slopes keeps the calibration. A preset saved before 1.23.0 with its EQ as
+  one combined stage is refused; open and re-save it in AudioForge 1.23.0
+  first. The graph draws each band as a thin curve, the correction stage as a
+  dashed line and the fixed input filter (the DC blocker and an 80 Hz
   high-pass, which Gentle and Strong cleanup keep) as a dotted line. The thick
   curve is what the signal really gets: the input filter plus the EQ, or the
   input filter alone while the EQ is off. Adaptive cleanup also follows the

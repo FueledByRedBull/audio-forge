@@ -9,7 +9,7 @@ import tempfile
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from .settings import (
     CompressorSettings,
@@ -22,6 +22,7 @@ from .settings import (
 from .shared import (
     CURRENT_VERSION,
     OLDEST_OPENED_VERSION,
+    PresetTooOldError,
     PresetValidationError,
     _reject_json_constant,
     _version_tuple,
@@ -177,7 +178,7 @@ class Preset:
                     if any(version_tuple)
                     else "an AudioForge version that did not stamp presets"
                 )
-                raise PresetValidationError(
+                raise PresetTooOldError(
                     f"This preset was saved by {saved_by}, which this version no "
                     f"longer converts. Open it in AudioForge "
                     f"{OLDEST_OPENED_VERSION}, save it again, then open it here."
@@ -767,6 +768,49 @@ def import_preset(filepath: Path) -> tuple[Preset, Path]:
         raise
 
 
+class RefusedPreset(NamedTuple):
+    """A preset file this build refuses because an older AudioForge saved it."""
+
+    path: Path
+    name: str
+    reason: str
+
+
+def find_presets_refused_for_age() -> list[RefusedPreset]:
+    """The preset files in the presets and imports folders that are too old to open."""
+    roots = [get_presets_dir().resolve(), get_preset_imports_dir().resolve()]
+    refused: list[RefusedPreset] = []
+    for folder in roots:
+        for filepath in sorted(folder.glob("*.json")):
+            try:
+                _load_preset_within(filepath, roots)
+            except PresetTooOldError as error:
+                refused.append(
+                    RefusedPreset(filepath, _stored_preset_name(filepath), str(error))
+                )
+            except (
+                OSError,
+                UnicodeError,
+                RecursionError,
+                json.JSONDecodeError,
+                KeyError,
+                PresetValidationError,
+                TypeError,
+                ValueError,
+            ):
+                continue
+    return refused
+
+
+def _stored_preset_name(filepath: Path) -> str:
+    try:
+        with open(filepath, "r", encoding="utf-8") as handle:
+            name = json.load(handle).get("name")
+    except (OSError, UnicodeError, ValueError, AttributeError, RecursionError):
+        name = None
+    return name if isinstance(name, str) and name else filepath.stem
+
+
 def list_presets() -> list[tuple[str, Path]]:
     presets_dir = get_presets_dir()
     allowed_roots: list[Path] | None = None
@@ -804,6 +848,9 @@ def generate_auto_eq_preset_name(target_curve: str) -> str:
 
 __all__ = [
     "Preset",
+    "PresetTooOldError",
+    "RefusedPreset",
+    "find_presets_refused_for_age",
     "generate_auto_eq_preset_name",
     "import_preset",
     "list_presets",

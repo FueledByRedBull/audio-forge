@@ -5,9 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, Mapping, TypeGuard
 
 from .shared import CURRENT_VERSION
 
@@ -20,7 +20,7 @@ def calibration_fingerprint(value: object) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _is_digest(value: object) -> bool:
+def _is_digest(value: object) -> TypeGuard[str]:
     return (
         isinstance(value, str)
         and len(value) == 64
@@ -81,9 +81,9 @@ class CalibrationResult:
     noise_reference_reliability: float = 0.0
     version: int = CALIBRATION_SCHEMA_VERSION
     app_version: str = CURRENT_VERSION
-    correction_hash: str | None = None
-    verification_hash: str | None = None
-    compatibility: str | None = CALIBRATION_COMPATIBILITY
+    correction_hash: str = field(kw_only=True)
+    verification_hash: str = field(kw_only=True)
+    compatibility: str = CALIBRATION_COMPATIBILITY
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -196,13 +196,6 @@ class CalibrationResult:
         if cls.from_value(result.to_dict()) is None:
             raise ValueError("Invalid calibration evidence")
         return result
-
-    def matches(self, context: str | None, settings: dict) -> bool:
-        """Compatibility match for callers that only have one settings hash."""
-        return (
-            self.matches_capture(context)
-            and self.matches_correction(settings)
-        )
 
     def matches_capture(self, context: str | None) -> bool:
         return (

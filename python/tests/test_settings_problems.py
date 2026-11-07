@@ -178,3 +178,132 @@ def test_choosing_a_replacement_destination_clears_its_banner_line(start_window)
     window.output_choice.setCurrentIndex(0)
 
     assert not _banner(window).shown
+
+
+def _write_old_preset(folder, filename, *, name="Old Warm", stamp="1.22.0"):
+    import json
+
+    from mic_eq.config import Preset
+
+    payload = Preset(name=name).to_dict()
+    payload["version"] = stamp
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / filename
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_a_startup_preset_refused_for_age_shows_the_resave_advice(start_window):
+    from mic_eq.config import get_presets_dir
+
+    _write_old_preset(get_presets_dir(), "old.json")
+    window = start_window(AppConfig(startup_preset="custom-file:old.json"))
+
+    assert "AudioForge 1.23.0" in _banner(window).text
+    assert "save it again" in _banner(window).text
+    assert "could not be loaded" not in _banner(window).text
+    assert window.config.startup_preset == "custom-file:old.json"
+
+
+def test_a_startup_preset_that_is_invalid_for_another_reason_keeps_the_generic_message(
+    start_window,
+):
+    from mic_eq.config import get_presets_dir
+
+    (get_presets_dir() / "bad.json").write_text("{not json", encoding="utf-8")
+    window = start_window(AppConfig(startup_preset="custom-file:bad.json"))
+
+    assert "could not be loaded" in _banner(window).text
+    assert "1.23.0" not in _banner(window).text
+
+
+def test_a_last_used_preset_refused_for_age_keeps_its_reference_and_shows_why(
+    start_window, monkeypatch
+):
+    from mic_eq.config import get_presets_dir
+
+    path = _write_old_preset(get_presets_dir(), "old.json")
+    saved_references: list[str] = []
+    monkeypatch.setattr(
+        main_window,
+        "save_config",
+        lambda config: saved_references.append(config.last_preset) or True,
+    )
+    window = start_window(AppConfig(last_preset=str(path)))
+    monkeypatch.setattr(
+        main_window,
+        "save_config",
+        lambda config: saved_references.append(config.last_preset) or True,
+    )
+
+    assert window.config.last_preset == str(path)
+    assert "" not in saved_references
+    assert "AudioForge 1.23.0" in _banner(window).text
+    assert "save it again" in _banner(window).text
+
+
+def test_a_route_bound_preset_refused_for_age_shows_why_instead_of_unavailable(
+    start_window, monkeypatch
+):
+    from mic_eq.config import DevicePresetBinding, get_presets_dir
+
+    _write_old_preset(get_presets_dir(), "old.json")
+    window = start_window(AppConfig())
+    monkeypatch.setattr(window, "_current_device_route_key", lambda: "route")
+    window.config.device_preset_bindings["route"] = DevicePresetBinding("custom-file:old.json")
+
+    assert window._apply_bound_preset_for_current_route() is False
+
+    message = str(window.status_message.text)
+    assert "AudioForge 1.23.0" in message and "unavailable" not in message
+
+
+def test_a_route_bound_preset_missing_for_another_reason_stays_unavailable(
+    start_window, monkeypatch
+):
+    from mic_eq.config import DevicePresetBinding
+
+    window = start_window(AppConfig())
+    monkeypatch.setattr(window, "_current_device_route_key", lambda: "route")
+    window.config.device_preset_bindings["route"] = DevicePresetBinding("custom-file:gone.json")
+
+    assert window._apply_bound_preset_for_current_route() is False
+
+    assert "unavailable" in str(window.status_message.text)
+
+
+def test_presets_refused_for_age_get_one_notice_at_startup(start_window):
+    from mic_eq.config import get_preset_imports_dir, get_presets_dir
+
+    _write_old_preset(get_presets_dir(), "old.json")
+    _write_old_preset(get_preset_imports_dir(), "older.json", name="Older", stamp="1.10.0")
+    (get_presets_dir() / "garbage.json").write_text("{not json", encoding="utf-8")
+    window = start_window(AppConfig())
+
+    assert _banner(window).shown
+    assert (
+        "2 presets were saved by an older AudioForge and can't be opened here. "
+        "Open and re-save them in AudioForge 1.23.0."
+    ) in _banner(window).text
+    assert _banner(window).text.count("older AudioForge") == 1
+
+
+def test_a_single_preset_refused_for_age_gets_the_singular_notice(start_window):
+    from mic_eq.config import get_presets_dir
+
+    _write_old_preset(get_presets_dir(), "old.json")
+    window = start_window(AppConfig())
+
+    assert (
+        "1 preset was saved by an older AudioForge and can't be opened here. "
+        "Open and re-save it in AudioForge 1.23.0."
+    ) in _banner(window).text
+
+
+def test_no_notice_without_presets_refused_for_age(start_window):
+    from mic_eq.config import get_presets_dir
+
+    (get_presets_dir() / "garbage.json").write_text("{not json", encoding="utf-8")
+    window = start_window(AppConfig())
+
+    assert "older AudioForge" not in _banner(window).text

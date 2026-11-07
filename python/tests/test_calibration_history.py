@@ -56,12 +56,12 @@ def test_saved_evidence_roundtrip_invalidation_and_privacy():
     config = AppConfig(calibration_results=[result])
     loaded = AppConfig.from_dict(config.to_dict())
     assert loaded.calibration_results == [result]
-    assert result.matches("private endpoint + format", settings)
-    assert not result.matches("replacement microphone", settings)
+    assert result.matches_capture_and_correction("private endpoint + format", settings)
+    assert not result.matches_capture_and_correction("replacement microphone", settings)
     changed = deepcopy(settings)
     changed["compressor"]["threshold_db"] = -20.0
-    assert not result.matches("private endpoint + format", changed)
-    assert not result.matches(None, settings)
+    assert not result.matches_capture_and_correction("private endpoint + format", changed)
+    assert not result.matches_capture_and_correction(None, settings)
     assert "private endpoint" not in str(config.to_dict()["calibration_results"])
     assert "audio" not in result.to_dict()
     assert len(parse_calibration_results([result.to_dict()] * 30)) == 16
@@ -159,7 +159,7 @@ def test_new_calibration_does_not_invalidate_on_marketing_version_change():
     parsed = CalibrationResult.from_value(payload)
 
     assert parsed is not None
-    assert parsed.matches("route", settings)
+    assert parsed.matches_capture_and_correction("route", settings)
 
 
 def test_status_refresh_is_read_only_for_calibration_dsp():

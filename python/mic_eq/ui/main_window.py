@@ -118,6 +118,7 @@ from .startup_presets import (
     STARTUP_CUSTOM_PREFIX,
     STARTUP_CUSTOM_FILE_PREFIX,
     normalize_startup_preset_id as _normalize_startup_preset_id,
+    refusal_reason_for_preset_id,
     startup_builtin_id as _startup_builtin_id,
     startup_custom_file_id as _startup_custom_file_id,
     startup_preset_display_name as _startup_preset_display_name,
@@ -140,7 +141,9 @@ from ..config import (
     DeEsserSettings,
     CompressorSettings,
     LimiterSettings,
+    PresetTooOldError,
     PresetValidationError,
+    find_presets_refused_for_age,
     save_preset,
     load_preset,
     import_preset,
@@ -2183,8 +2186,13 @@ class MainWindow(QMainWindow):
                 5000,
             )
         else:
+            refusal = refusal_reason_for_preset_id(
+                binding.preset_id, find_presets_refused_for_age()
+            )
             self.status_message.showMessage(
-                "The preset bound to this route is unavailable; existing settings were kept",
+                f"The preset bound to this route was not opened; existing settings were kept. {refusal}"
+                if refusal
+                else "The preset bound to this route is unavailable; existing settings were kept",
                 6000,
             )
         return loaded
@@ -2707,10 +2715,19 @@ class MainWindow(QMainWindow):
                     "Startup preset %r not found; falling back to last used",
                     preset_name,
                 )
+                refusal = (
+                    refusal_reason_for_preset_id(
+                        self.config.startup_preset, find_presets_refused_for_age()
+                    )
+                    if custom_startup_preset is None
+                    else None
+                )
                 self._report_preset_problem(
                     "startup_preset",
                     self.config.startup_preset,
-                    f"Startup preset '{preset_name}' could not be loaded",
+                    f"Startup preset '{preset_name}' was not opened. {refusal}"
+                    if refusal
+                    else f"Startup preset '{preset_name}' could not be loaded",
                     5000,
                 )
 
@@ -2761,8 +2778,12 @@ class MainWindow(QMainWindow):
                     text for text in (self.config.load_warning, warning) if text
                 )
                 # A file that cannot be read right now may load next time (load_preset wraps OS errors in
-                # PresetValidationError); only a bad one loses its reference.
-                if not (isinstance(e, OSError) or isinstance(e.__cause__, OSError)):
+                # PresetValidationError), and a preset saved by an older AudioForge opens once it is
+                # re-saved; only a bad one loses its reference.
+                if not (
+                    isinstance(e, (OSError, PresetTooOldError))
+                    or isinstance(e.__cause__, OSError)
+                ):
                     self.config.last_preset = ""
                     cleared = self._save_config_safely()
                     if not cleared:
@@ -2813,6 +2834,21 @@ class MainWindow(QMainWindow):
                     "Restored settings applied for this session, but could not be saved",
                     6000,
                 )
+        self._report_presets_refused_for_age()
+
+    def _report_presets_refused_for_age(self) -> None:
+        """Once per launch: say how many saved presets an older AudioForge wrote."""
+        count = len(find_presets_refused_for_age())
+        if not count:
+            return
+        self._report_problem(
+            "presets_refused_for_age",
+            f"{count} presets were saved by an older AudioForge and can't be opened here. "
+            "Open and re-save them in AudioForge 1.23.0."
+            if count > 1
+            else "1 preset was saved by an older AudioForge and can't be opened here. "
+            "Open and re-save it in AudioForge 1.23.0.",
+        )
 
     def _on_device_changed(self, changed: ChoiceState | None = None):
         """Save the route; only the picker the user changed, as the other may show a stand-in.

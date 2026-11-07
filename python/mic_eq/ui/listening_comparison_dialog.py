@@ -33,15 +33,11 @@ from ..config import save_config
 from .calibration_support import chain_settings
 from .capture_session import (
     CaptureSession,
-    active_device_identities,
     processor_sample_rate,
-    route_identities_match,
     selected_device_identities,
-    set_temporary_mute,
-    start_selected_route,
-    sync_owner_processing_controls,
 )
 from .components import session_is_ending
+from .engine_session import AudioLease, AudioUnavailable, RouteMismatch, unavailable_text
 from .layout_constants import configure_resizable_dialog
 from .listening_comparison_view import ListeningComparisonView, RecordingProgressView
 from .quick_scene import QML_DIR, load_scene, quick_theme
@@ -872,9 +868,9 @@ def _show_recording_progress(dialog: QDialog) -> RecordingProgressView:
     return view
 
 
-def _record_test_clip(window: Any) -> np.ndarray | None:
+def _record_test_clip(window: Any, lease: AudioLease) -> np.ndarray | None:
     """Record one raw clip behind a modal progress dialog; None when canceled."""
-    session = CaptureSession(window, _TEST_MY_SOUND_REASON)
+    session = CaptureSession(window.processor, lease)
     session.start(TEST_CAPTURE_SECONDS, before_cleanup=True)
 
     dialog = QDialog(window)
@@ -929,33 +925,32 @@ def open_test_my_sound(window: Any) -> None:
         fail("No microphone is selected. Choose an input device, then try again.")
         return
 
-    started_here = False
     try:
-        if not processor.is_running():
-            start_selected_route(window)
-            started_here = True
-            sync_owner_processing_controls(window)
-        elif not route_identities_match(selected, active_device_identities(processor)):
-            fail(
-                "Processing is running on different devices than the ones "
-                "selected. Stop and start processing, then try again."
-            )
-            return
-    except Exception as exc:
+        lease = window.engine_session.borrow(_TEST_MY_SOUND_REASON)
+    except RouteMismatch:
         fail(
-            f"Could not start the microphone.\n\n{exc}\n\n"
-            "Check that your devices are connected and not in use by another app."
+            "Processing is running on different devices than the ones "
+            "selected. Stop and start processing, then try again."
+        )
+        return
+    except AudioUnavailable as exc:
+        fail(
+            unavailable_text(
+                exc,
+                "Could not start the microphone.",
+                "Check that your devices are connected and not in use by another app.",
+            )
         )
         return
 
     try:
         try:
-            audio = _record_test_clip(window)
+            audio = _record_test_clip(window, lease)
             sample_rate = processor_sample_rate(window)
         finally:
-            if started_here:
-                processor.stop()
-                sync_owner_processing_controls(window)
+            report = lease.release()
+        if report.error is not None:
+            raise report.error
     except Exception as exc:
         fail(f"Recording did not work.\n\n{exc}")
         return
@@ -979,11 +974,11 @@ def open_test_my_sound(window: Any) -> None:
         fail(f"Could not prepare the processed clip.\n\n{exc}")
         return
     # Keep the preview out of the live output while it plays near the microphone.
-    set_temporary_mute(window, _TEST_MY_SOUND_REASON, True)
+    window.engine_session.hold_mute(_TEST_MY_SOUND_REASON, True)
     try:
         dialog.exec()
     finally:
-        set_temporary_mute(window, _TEST_MY_SOUND_REASON, False)
+        window.engine_session.hold_mute(_TEST_MY_SOUND_REASON, False)
         dialog.deleteLater()
 
 

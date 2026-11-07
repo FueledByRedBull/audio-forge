@@ -12,10 +12,11 @@ from ..config_parts.calibration import (
     CalibrationResult,
     calibration_settings_parts,
 )
+from .processing_configuration import preset_payload
 
 
 def calibration_settings(owner: Any) -> dict:
-    return json.loads(owner._preset_payload(owner._get_current_preset()))
+    return json.loads(preset_payload(owner.configuration.current))
 
 
 def current_calibration(owner: Any, scope: str) -> CalibrationResult | None:
@@ -111,7 +112,7 @@ def persist_calibration(
     dialog: Any, owner: Any, scope: str, curve: str, stages: tuple[str, ...]
 ) -> None:
     # Standalone dialogs without application persistence still support calibration.
-    if not hasattr(owner, "config") or not hasattr(owner, "_get_current_preset"):
+    if not hasattr(owner, "config") or not hasattr(owner, "configuration"):
         return
     while True:
         try:

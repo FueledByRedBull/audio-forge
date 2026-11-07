@@ -177,7 +177,7 @@ def test_a_toggle_reports_checkbox_role_name_and_whether_it_is_on(quick_window, 
         _activate(window, mute, Qt.Key.Key_Space, qapp)
         assert not _iface(eq_switch).state().checked
         assert _iface(mute).state().checked
-        assert window.user_muted
+        assert window.engine_session.view.user_muted
 
 
 def test_a_switch_that_cannot_be_used_is_reported_disabled(quick_window, qapp) -> None:
@@ -291,7 +291,7 @@ def test_a_button_reports_button_role_its_visible_label_and_whether_it_is_enable
         assert _iface(undo).state().disabled
         window.eq_state.set_band_value(0, "gain_db", 3.0)
         window.eq_state.flush()
-        window._commit_pending_configuration_snapshot()
+        window.configuration.commit_edit()
         qapp.processEvents()
         assert not _iface(undo).state().disabled
 
@@ -895,7 +895,7 @@ def test_focus_rings_follow_keyboard_focus_not_the_mouse(quick_window, qapp) -> 
     toggle = _with_proxy(window, "Toggle", window.quick_bridge.model["top"]["mute"])
     view = window.centralWidget()
     _click(window, toggle, qapp)
-    assert window.user_muted
+    assert window.engine_session.view.user_muted
     assert _rings(window, toggle) == [], "a click must not draw the keyboard focus ring"
     _focus(window, _graph_item(view.rootObject()), qapp)  # focus leaves the toggle...
     _focus(window, toggle, qapp)  # ...and Tab brings it back
@@ -1190,7 +1190,7 @@ def test_a_switch_acts_once_and_shows_the_model_whichever_way_it_is_used(
             else:
                 _perform(mute, how)
             qapp.processEvents()
-            assert window.user_muted is expected, f"{how} changes the state once"
+            assert window.engine_session.view.user_muted is expected, f"{how} changes the state once"
             assert bool(_iface(mute).state().checked) is expected
             assert mute.property("checked") is expected
 
@@ -1294,12 +1294,12 @@ def test_mute_is_said_in_words_and_the_window_has_its_own_shortcut(quick_window,
     assert badge.property("visible") is False
 
     _press(window, Qt.Key.Key_M, qapp, Qt.KeyboardModifier.ControlModifier)
-    assert window.user_muted
+    assert window.engine_session.view.user_muted
     assert badge.property("visible") is True
     assert [child.property("text") for child in badge.childItems()] == ["Muted"]
 
     _press(window, Qt.Key.Key_M, qapp, Qt.KeyboardModifier.ControlModifier)
-    assert not window.user_muted
+    assert not window.engine_session.view.user_muted
     assert badge.property("visible") is False
 
 

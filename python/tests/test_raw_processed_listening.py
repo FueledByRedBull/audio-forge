@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
 from unittest.mock import Mock
 
 import numpy as np
@@ -21,6 +22,7 @@ from mic_eq.ui.listening_comparison_dialog import (
 )
 from test_first_run_setup import scene_text
 from test_listening_comparison import _settings
+from engine_fakes import fake_session
 
 
 @pytest.fixture
@@ -140,9 +142,8 @@ class _Window(QWidget):
         self.eq_state = Mock()
         self.eq_state.get_settings.return_value = _settings()
         self.mutes: list[tuple[bool, str]] = []
-
-    def set_temporary_output_mute(self, muted: bool, reason: str) -> None:
-        self.mutes.append((muted, reason))
+        self.engine_session = fake_session(processor, owner=self)
+        cast(Any, self.engine_session).hold_mute = lambda reason, on: self.mutes.append((on, reason))
 
 
 @pytest.fixture
@@ -198,6 +199,16 @@ def test_entry_reports_processing_on_another_route(harness):
     assert opened == [] and window.processor.calls == []
 
 
+def test_entry_reports_a_busy_engine_without_blaming_the_devices(harness):
+    warnings, opened = harness
+    window = _Window(_Processor(running=False))
+    window.engine_session.request_start("button")  # the start stays out: the fake tasks never run it
+    open_test_my_sound(window)
+    assert len(warnings) == 1
+    assert "Wait a moment and try again" in warnings[0] and "connected" not in warnings[0]
+    assert opened == []
+
+
 def test_entry_reports_a_stream_that_will_not_start(harness):
     warnings, opened = harness
     processor = _Processor(running=False)
@@ -205,6 +216,16 @@ def test_entry_reports_a_stream_that_will_not_start(harness):
     open_test_my_sound(_Window(processor))
     assert len(warnings) == 1
     assert "Could not start the microphone" in warnings[0] and "device busy" in warnings[0]
+    assert opened == []
+
+
+def test_entry_reports_a_route_that_cannot_be_read_as_a_stream_that_will_not_start(harness):
+    warnings, opened = harness
+    processor = _Processor()
+    cast(Any, processor).is_running = Mock(side_effect=RuntimeError("engine unreachable"))
+    open_test_my_sound(_Window(processor))
+    assert len(warnings) == 1
+    assert "Could not start the microphone" in warnings[0] and "engine unreachable" in warnings[0]
     assert opened == []
 
 

@@ -960,11 +960,12 @@ def test_a_termination_signal_ends_the_session_without_asking(qapp, name):
     number = getattr(signal, name)
     before = signal.getsignal(number)
     QTimer.singleShot(0, lambda: os.kill(os.getpid(), number))
-    # A deadline left pending would end the event loop of whichever test runs five seconds later.
+    # Only a hang guard: generous, so a loaded machine that is slow to deliver the signal still passes.
+    # A deadline left pending would end the event loop of whichever test runs later, hence the stop below.
     deadline = QTimer()
     deadline.setSingleShot(True)
     deadline.timeout.connect(lambda: qapp.exit(1))
-    deadline.start(5000)
+    deadline.start(30_000)
     try:
         with app_bootstrap._quit_on_termination_signal(qapp):
             code = qapp.exec()

@@ -9,7 +9,7 @@ import tempfile
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from .settings import (
     CompressorSettings,
@@ -21,12 +21,13 @@ from .settings import (
 )
 from .shared import (
     CURRENT_VERSION,
+    OLDEST_OPENED_VERSION,
+    PresetTooOldError,
     PresetValidationError,
     _reject_json_constant,
     _version_tuple,
     get_preset_imports_dir,
     get_presets_dir,
-    migration_pending,
     publish_exclusive,
     replace_file,
 )
@@ -165,12 +166,24 @@ class Preset:
             original_value_paths = _preset_value_paths(data)
             for path in original_value_paths:
                 provenance.setdefault(path, _PROVENANCE_EXPLICIT)
-            version_tuple = _version_tuple(data.get("version", "1.0.0"))
-            if version_tuple > _version_tuple(CURRENT_VERSION):
+            version_tuple = _version_tuple(data.get("version", ""))
+            current_version = _version_tuple(CURRENT_VERSION)
+            if version_tuple > current_version:
                 raise ValueError(
                     "preset version is newer than this AudioForge build"
                 )
-            strict_current_schema = version_tuple == _version_tuple(CURRENT_VERSION)
+            if version_tuple < _version_tuple(OLDEST_OPENED_VERSION):
+                saved_by = (
+                    f"AudioForge {data['version']}"
+                    if any(version_tuple)
+                    else "an AudioForge version that did not stamp presets"
+                )
+                raise PresetTooOldError(
+                    f"This preset was saved by {saved_by}, which this version no "
+                    f"longer converts. Open it in AudioForge "
+                    f"{OLDEST_OPENED_VERSION}, save it again, then open it here."
+                )
+            strict_current_schema = version_tuple == current_version
 
             if strict_current_schema:
                 root_fields = {
@@ -256,147 +269,10 @@ class Preset:
             def validate_range(value: object, *args: object) -> float:
                 return _validate_range(value, *args, strict=strict_current_schema)
 
-            if version_tuple < _version_tuple("1.1.0"):
-                if "rnnoise" in data:
-                    data["rnnoise"].setdefault("strength", 1.0)
-                else:
-                    data["rnnoise"] = {"enabled": True, "strength": 1.0}
-                data["version"] = "1.1.0"
-                version_tuple = _version_tuple("1.1.0")
-
-            if version_tuple < _version_tuple("1.2.0"):
-                if "rnnoise" in data:
-                    data["rnnoise"].setdefault("model", "rnnoise")
-                else:
-                    data["rnnoise"] = {"enabled": True, "strength": 1.0, "model": "rnnoise"}
-                data["version"] = "1.2.0"
-                version_tuple = _version_tuple("1.2.0")
-
-            if version_tuple < _version_tuple("1.3.0"):
-                if "compressor" in data:
-                    data["compressor"].setdefault("auto_makeup_enabled", False)
-                    data["compressor"].setdefault("target_lufs", -18.0)
-                    data["compressor"].setdefault("sidechain_highpass_enabled", True)
-                else:
-                    data["compressor"] = {
-                        "enabled": True,
-                        "threshold_db": -20.0,
-                        "ratio": 4.0,
-                        "attack_ms": 10.0,
-                        "release_ms": 200.0,
-                        "makeup_gain_db": 0.0,
-                        "adaptive_release": False,
-                        "base_release_ms": 50.0,
-                        "auto_makeup_enabled": False,
-                        "target_lufs": -18.0,
-                        "sidechain_highpass_enabled": True,
-                    }
-                data["version"] = "1.3.0"
-                version_tuple = _version_tuple("1.3.0")
-
-            if version_tuple < _version_tuple("1.4.0"):
-                data["version"] = "1.4.0"
-                version_tuple = _version_tuple("1.4.0")
-
-            if version_tuple < _version_tuple("1.5.0"):
-                data["version"] = "1.5.0"
-                version_tuple = _version_tuple("1.5.0")
-
-            if version_tuple < _version_tuple("1.6.0"):
-                if "gate" in data:
-                    data["gate"].setdefault("auto_threshold_enabled", True)
-                    data["gate"].setdefault("gate_margin_db", 10.0)
-                    if (
-                        data["gate"].get("vad_threshold", 0.5) == 0.5
-                        and provenance.get("gate.vad_threshold")
-                        != _PROVENANCE_EXPLICIT
-                    ):
-                        data["gate"]["vad_threshold"] = 0.48
-                else:
-                    data["gate"] = {
-                        "auto_threshold_enabled": True,
-                        "gate_margin_db": 10.0,
-                        "vad_threshold": 0.48,
-                    }
-                data["version"] = "1.6.0"
-                version_tuple = _version_tuple("1.6.0")
-
-            if version_tuple < _version_tuple("1.7.0"):
-                if "deesser" in data:
-                    data["deesser"].setdefault("enabled", False)
-                    data["deesser"].setdefault("auto_enabled", True)
-                    data["deesser"].setdefault("auto_amount", 0.5)
-                    data["deesser"].setdefault("low_cut_hz", 4000.0)
-                    data["deesser"].setdefault("high_cut_hz", 11000.0)
-                    data["deesser"].setdefault("threshold_db", -28.0)
-                    data["deesser"].setdefault("ratio", 4.0)
-                    data["deesser"].setdefault("attack_ms", 2.0)
-                    data["deesser"].setdefault("release_ms", 80.0)
-                    data["deesser"].setdefault("max_reduction_db", 6.0)
-                else:
-                    data["deesser"] = asdict(DeEsserSettings())
-                data["version"] = "1.7.0"
-                version_tuple = _version_tuple("1.7.0")
-
-            if version_tuple < _version_tuple("1.10.0"):
-                gate_data = data.get("gate")
-                if (
-                    isinstance(gate_data, dict)
-                    and gate_data.get("vad_threshold") == 0.4
-                    and provenance.get("gate.vad_threshold")
-                    != _PROVENANCE_EXPLICIT
-                ):
-                    gate_data["vad_threshold"] = 0.48
-
-            for version in (
-                "1.7.1",
-                "1.7.2",
-                "1.7.3",
-                "1.7.4",
-                "1.8.0",
-                "1.8.1",
-                "1.8.2",
-                "1.8.3",
-                "1.8.4",
-                "1.8.5",
-                "1.8.6",
-                "1.8.7",
-                "1.8.8",
-                "1.8.9",
-                "1.9.0",
-                "1.10.0",
-                "1.10.1",
-                "1.11.0",
-                "1.11.1",
-                "1.11.2",
-                "1.11.3",
-                "1.11.4",
-                "1.12.0",
-                "1.12.1",
-                "1.13.0",
-                "1.14.0",
-                "1.15.0",
-                "1.15.1",
-                "1.15.2",
-                "1.15.3",
-                "1.16.0",
-                "1.17.0",
-                "1.18.0",
-                "1.18.1",
-                "1.18.2",
-                "1.19.0",
-                "1.20.0",
-                "1.21.0",
-                "1.22.0",
-                "1.23.0",
-            ):
-                if version_tuple < _version_tuple(version):
-                    data["version"] = version
-                    version_tuple = _version_tuple(version)
+            if version_tuple < current_version:
+                data["version"] = CURRENT_VERSION
 
             gate_data = data.get("gate", {})
-            for path in _preset_value_paths(data):
-                provenance.setdefault(path, _PROVENANCE_MIGRATION_DEFAULT)
             gate_ranges = VALIDATION_RANGES["gate"]
             gate_mode_value = gate_data.get("gate_mode", 0)
             if strict_current_schema and (
@@ -466,8 +342,9 @@ class Preset:
                 ),
             )
 
-            eq_data = data.get("eq", {})
-            validated_eq = EQSettings.from_dict(eq_data)
+            validated_eq = (
+                EQSettings.from_dict(data["eq"]) if "eq" in data else EQSettings()
+            )
 
             comp_data = data.get("compressor", {})
             comp_ranges = VALIDATION_RANGES["compressor"]
@@ -653,22 +530,6 @@ class Preset:
                 "limiter": asdict(validated_lim),
                 "bypass": data.get("bypass", False),
             }
-            if isinstance(eq_data, dict) and "bands" not in eq_data:
-                legacy_fields = {
-                    "band_freqs": "frequency_hz",
-                    "band_gains": "gain_db",
-                    "band_qs": "q",
-                }
-                for legacy_name, band_name in legacy_fields.items():
-                    legacy_path = f"eq.{legacy_name}"
-                    source = provenance.pop(legacy_path, None)
-                    if source is None or legacy_name not in eq_data:
-                        continue
-                    for index in range(len(validated_eq.bands)):
-                        provenance.setdefault(
-                            f"eq.bands.{index}.{band_name}",
-                            source,
-                        )
             for path in _preset_value_paths(validated_values):
                 provenance.setdefault(path, _PROVENANCE_MIGRATION_DEFAULT)
             valid_paths = _preset_value_paths(validated_values)
@@ -740,8 +601,6 @@ def save_preset(
     *,
     overwrite: bool = False,
 ) -> Path:
-    if migration_pending():
-        raise OSError("AudioForge config migration is still pending")
     preset = Preset.from_dict(preset.to_dict())
     if filepath is None:
         filepath = _auto_preset_path(preset.name)
@@ -869,8 +728,6 @@ def import_preset(filepath: Path) -> tuple[Preset, Path]:
     """Validate and publish an external preset without overwriting imports."""
     source_path = _resolve_preset_file(filepath)
     validate_preset_file_size(source_path)
-    if migration_pending():
-        raise OSError("AudioForge config migration is still pending")
 
     imports_dir = get_preset_imports_dir()
     imports_dir.mkdir(parents=True, exist_ok=True)
@@ -911,6 +768,54 @@ def import_preset(filepath: Path) -> tuple[Preset, Path]:
         raise
 
 
+class RefusedPreset(NamedTuple):
+    """A preset file this build refuses because an older AudioForge saved it."""
+
+    path: Path
+    name: str
+    reason: str
+    # In the imports folder: a copy of an outside file, not a preset the library lists.
+    imported: bool = False
+
+
+def find_presets_refused_for_age() -> list[RefusedPreset]:
+    """The preset files in the presets and imports folders that are too old to open."""
+    roots = [get_presets_dir().resolve(), get_preset_imports_dir().resolve()]
+    refused: list[RefusedPreset] = []
+    for folder in roots:
+        imported = folder == roots[1]
+        for filepath in sorted(folder.glob("*.json")):
+            try:
+                _load_preset_within(filepath, roots)
+            except PresetTooOldError as error:
+                refused.append(
+                    RefusedPreset(
+                        filepath, _stored_preset_name(filepath), str(error), imported
+                    )
+                )
+            except (
+                OSError,
+                UnicodeError,
+                RecursionError,
+                json.JSONDecodeError,
+                KeyError,
+                PresetValidationError,
+                TypeError,
+                ValueError,
+            ):
+                continue
+    return refused
+
+
+def _stored_preset_name(filepath: Path) -> str:
+    try:
+        with open(filepath, "r", encoding="utf-8") as handle:
+            name = json.load(handle).get("name")
+    except (OSError, UnicodeError, ValueError, AttributeError, RecursionError):
+        name = None
+    return name if isinstance(name, str) and name else filepath.stem
+
+
 def list_presets() -> list[tuple[str, Path]]:
     presets_dir = get_presets_dir()
     allowed_roots: list[Path] | None = None
@@ -948,6 +853,9 @@ def generate_auto_eq_preset_name(target_curve: str) -> str:
 
 __all__ = [
     "Preset",
+    "PresetTooOldError",
+    "RefusedPreset",
+    "find_presets_refused_for_age",
     "generate_auto_eq_preset_name",
     "import_preset",
     "list_presets",

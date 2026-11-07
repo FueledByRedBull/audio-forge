@@ -447,105 +447,70 @@ class EQSettings:
             raise ValueError("eq must be an object")
         new_fields = {"schema_version", "enabled", "bands", "layers"}
         required_fields = {"schema_version", "enabled", "bands"}
-        legacy_fields = {"enabled", "band_freqs", "band_gains", "band_qs"}
         fields = set(data)
-        if "bands" in data or "schema_version" in data:
-            unknown = fields - new_fields
-            if unknown:
-                raise ValueError(
-                    "eq contains unknown fields: "
-                    + ", ".join(sorted(str(key) for key in unknown))
-                )
-            if not required_fields.issubset(fields):
-                missing = required_fields - fields
-                raise ValueError(
-                    "eq is missing fields: "
-                    + ", ".join(sorted(str(key) for key in missing))
-                )
-            schema_version = data["schema_version"]
-            if isinstance(schema_version, bool) or not isinstance(
-                schema_version,
-                int,
-            ):
-                raise ValueError("eq.schema_version must be an integer")
-            raw_bands = data["bands"]
-            if not isinstance(raw_bands, list):
-                raise ValueError("eq.bands must be an array")
-            layers = data.get("layers")
-            correction_bands: list[EQBandSettings] | None = None
-            tone_bands: list[EQBandSettings] | None = None
-            if layers is not None:
-                if not isinstance(layers, Mapping):
-                    raise ValueError("eq.layers must be an object")
-                if set(layers) != {"correction", "tone"}:
-                    raise ValueError(
-                        "eq.layers must contain correction and tone arrays"
-                    )
-
-                def parse_layer(name: str) -> list[EQBandSettings]:
-                    raw_layer = layers[name]
-                    if not isinstance(raw_layer, list):
-                        raise ValueError(f"eq.layers.{name} must be an array")
-                    if len(raw_layer) != EQ_BAND_COUNT:
-                        raise ValueError(
-                            f"eq.layers.{name} must contain {EQ_BAND_COUNT} bands"
-                        )
-                    return [
-                        EQBandSettings.from_dict(
-                            band,
-                            index=index,
-                        )
-                        for index, band in enumerate(raw_layer)
-                    ]
-
-                correction_bands = parse_layer("correction")
-                tone_bands = parse_layer("tone")
-
-            if schema_version == 2:
-                # Preserve the audible combined stage from older presets;
-                # calibration can subsequently establish a separate correction.
-                correction_bands = tone_bands = None
-                schema_version = EQ_SCHEMA_VERSION
-            return cls(
-                enabled=_strict_bool(data["enabled"], name="eq.enabled"),
-                schema_version=schema_version,
-                bands=[
-                    EQBandSettings.from_dict(band, index=index)
-                    for index, band in enumerate(raw_bands)
-                ],
-                correction_bands=correction_bands,
-                tone_bands=tone_bands,
+        if "bands" not in data and "schema_version" not in data:
+            raise ValueError(
+                "eq must use the typed bands schema; plain band arrays are no longer read"
             )
-
-        unknown = fields - legacy_fields
+        unknown = fields - new_fields
         if unknown:
             raise ValueError(
-                "legacy eq contains unknown fields: "
+                "eq contains unknown fields: "
                 + ", ".join(sorted(str(key) for key in unknown))
             )
+        if not required_fields.issubset(fields):
+            missing = required_fields - fields
+            raise ValueError(
+                "eq is missing fields: "
+                + ", ".join(sorted(str(key) for key in missing))
+            )
+        schema_version = data["schema_version"]
+        if isinstance(schema_version, bool) or not isinstance(
+            schema_version,
+            int,
+        ):
+            raise ValueError("eq.schema_version must be an integer")
+        raw_bands = data["bands"]
+        if not isinstance(raw_bands, list):
+            raise ValueError("eq.bands must be an array")
+        layers = data.get("layers")
+        correction_bands: list[EQBandSettings] | None = None
+        tone_bands: list[EQBandSettings] | None = None
+        if layers is not None:
+            if not isinstance(layers, Mapping):
+                raise ValueError("eq.layers must be an object")
+            if set(layers) != {"correction", "tone"}:
+                raise ValueError(
+                    "eq.layers must contain correction and tone arrays"
+                )
+
+            def parse_layer(name: str) -> list[EQBandSettings]:
+                raw_layer = layers[name]
+                if not isinstance(raw_layer, list):
+                    raise ValueError(f"eq.layers.{name} must be an array")
+                if len(raw_layer) != EQ_BAND_COUNT:
+                    raise ValueError(
+                        f"eq.layers.{name} must contain {EQ_BAND_COUNT} bands"
+                    )
+                return [
+                    EQBandSettings.from_dict(
+                        band,
+                        index=index,
+                    )
+                    for index, band in enumerate(raw_layer)
+                ]
+
+            correction_bands = parse_layer("correction")
+            tone_bands = parse_layer("tone")
         return cls(
-            enabled=_strict_bool(
-                data.get("enabled", True),
-                name="eq.enabled",
-            ),
-            band_freqs=_validated_legacy_array(
-                data.get("band_freqs", EQ_FREQUENCIES),
-                name="eq.band_freqs",
-                low=20.0,
-                high=20_000.0,
-            ),
-            band_gains=_validated_legacy_array(
-                data.get("band_gains", [0.0] * EQ_BAND_COUNT),
-                name="eq.band_gains",
-                low=-12.0,
-                high=12.0,
-            ),
-            band_qs=_validated_legacy_array(
-                data.get("band_qs", [1.41] * EQ_BAND_COUNT),
-                name="eq.band_qs",
-                low=0.1,
-                high=10.0,
-            ),
+            enabled=_strict_bool(data["enabled"], name="eq.enabled"),
+            schema_version=schema_version,
+            bands=[
+                EQBandSettings.from_dict(band, index=index)
+                for index, band in enumerate(raw_bands)
+            ],
+            correction_bands=correction_bands,
+            tone_bands=tone_bands,
         )
 
     def _replace_values(self, field_name: str, values: Sequence[object]) -> None:
@@ -635,26 +600,6 @@ def build_eq_candidate_settings(
             tone_bands=candidate,
         )
     raise ValueError(f"Unsupported EQ candidate layer: {layer}")
-
-
-def _validated_legacy_array(
-    value: object,
-    *,
-    name: str,
-    low: float,
-    high: float,
-) -> list[float]:
-    if not isinstance(value, (list, tuple)) or len(value) != EQ_BAND_COUNT:
-        raise ValueError(f"{name} must contain {EQ_BAND_COUNT} values")
-    return [
-        _finite_float(
-            item,
-            name=f"{name}.{index}",
-            low=low,
-            high=high,
-        )
-        for index, item in enumerate(value)
-    ]
 
 
 @dataclass
@@ -789,24 +734,15 @@ class LatencyCalibrationProfile:
 
         measured_route = finite_latency("measured_round_trip_ms")
         applied_compensation = finite_latency("applied_compensation_ms")
-        # Profiles saved before route-aware calibration only had the legacy
-        # round-trip field. Migrate them to the measured route delay instead
-        # of preserving the unjustified half-latency compensation.
-        route_latency = data.get("route_latency_ms")
-        if route_latency is None:
+        if data.get("route_latency_ms") is None:
+            raise ValueError("latency profile route_latency_ms is required")
+        route_latency = finite_latency("route_latency_ms")
+        if route_latency <= 0.0:
             route_latency = (
                 measured_route
                 if measured_route > 0.0
                 else applied_compensation
             )
-        else:
-            route_latency = finite_latency("route_latency_ms")
-            if route_latency <= 0.0:
-                route_latency = (
-                    measured_route
-                    if measured_route > 0.0
-                    else applied_compensation
-                )
         directional = data.get("directional_latency_ms")
         directional_latency = (
             finite_latency("directional_latency_ms")

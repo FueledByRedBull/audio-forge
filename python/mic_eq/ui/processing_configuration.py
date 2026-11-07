@@ -26,6 +26,7 @@ from ..config import (
     GateSettings,
     LimiterSettings,
     Preset,
+    PresetTooOldError,
     PresetValidationError,
     RNNoiseSettings,
 )
@@ -71,7 +72,8 @@ class LoadStatus(Enum):
     MISSING = "missing"
     # The preset file is not a valid preset.
     INVALID = "invalid"
-    # The engine refused it, or its file cannot be read right now; it may load next time.
+    # The engine refused it, its file cannot be read right now, or an older AudioForge saved it;
+    # it may load next time.
     NOT_APPLIED = "not_applied"
 
 
@@ -95,7 +97,8 @@ class LoadOutcome:
     preset: Preset | None = None
     # Why it is not loaded: the read failure, or the apply failure.
     error: Exception | None = None
-    # The failure was reading the file (INVALID, or NOT_APPLIED for a file unreadable right now).
+    # The failure was reading the file (INVALID, or NOT_APPLIED for a file unreadable right now
+    # or saved by an older AudioForge).
     read_failed: bool = False
     # False when the load was to be remembered for the next launch and saving that failed.
     remembered: bool = True
@@ -471,8 +474,9 @@ class ProcessingConfiguration:
         """Load the startup preset, or failing that the last-used one.
 
         Migrates a legacy startup ID, and clears a last-used reference only
-        when that preset is missing or invalid; one the engine refused, or a
-        file unreadable right now, stays for the next launch.
+        when that preset is missing or invalid; one the engine refused, a
+        file unreadable right now, or one saved by an older AudioForge (it
+        opens once re-saved) stays for the next launch.
         """
         config = self._config
         config_changed = False
@@ -678,10 +682,13 @@ class ProcessingConfiguration:
         try:
             preset = self._library.read(path)
         except Exception as error:
-            # load_preset wraps OS errors in PresetValidationError; such a file may read next time.
+            # load_preset wraps OS errors in PresetValidationError; such a file may read next time,
+            # and so may one saved by an older AudioForge once it is re-saved.
             # Any other exception is a bug, not a bad file: never a failed startup, and the
             # reference is kept, since INVALID would forget the user's last-used preset.
-            unreadable = isinstance(error, OSError) or isinstance(error.__cause__, OSError)
+            unreadable = isinstance(error, (OSError, PresetTooOldError)) or isinstance(
+                error.__cause__, OSError
+            )
             malformed = isinstance(error, (ValueError, PresetValidationError))
             status = LoadStatus.INVALID if malformed and not unreadable else LoadStatus.NOT_APPLIED
             return LoadOutcome(status, origin, error=error, read_failed=True)

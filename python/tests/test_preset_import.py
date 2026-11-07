@@ -20,7 +20,6 @@ def _preset_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path,
         "get_preset_imports_dir",
         lambda: imports_dir,
     )
-    monkeypatch.setattr(presets_module, "migration_pending", lambda: False)
     return presets_dir, imports_dir
 
 

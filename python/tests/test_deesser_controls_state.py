@@ -4,7 +4,9 @@ from unittest.mock import Mock
 
 import pytest
 
+from mic_eq.config_parts import presets as presets_module
 from mic_eq.config_parts.presets import Preset
+from mic_eq.config_parts.shared import OLDEST_OPENED_VERSION
 from mic_eq.ui.deesser_state import DeEsserState
 from mic_eq.ui.processing_controls import SettingControl
 
@@ -54,10 +56,12 @@ def test_deesser_controls_preserve_exact_values_and_follow_normalized_state(qapp
 
 
 @pytest.mark.parametrize("width_hz", [200.0, 399.0, 400.0, 599.0, 600.0])
-def test_deesser_preset_round_trip_preserves_permitted_cutoff_width(width_hz):
+def test_deesser_preset_round_trip_preserves_permitted_cutoff_width(width_hz, monkeypatch):
+    monkeypatch.setattr(presets_module, "CURRENT_VERSION", "1.99.0")
     low_cut_hz = 4000.0
     high_cut_hz = low_cut_hz + width_hz
     raw = {
+        "version": OLDEST_OPENED_VERSION,
         "deesser": {
             "low_cut_hz": low_cut_hz,
             "high_cut_hz": high_cut_hz,

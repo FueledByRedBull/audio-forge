@@ -10,7 +10,8 @@ import numpy as np
 import pytest
 
 from mic_eq.config import Preset, build_eq_candidate_settings
-from mic_eq.config_parts.shared import PresetValidationError
+from mic_eq.config_parts import presets as presets_module
+from mic_eq.config_parts.shared import OLDEST_OPENED_VERSION, PresetValidationError
 from mic_eq.ui.config_history import (
     BoundedConfigurationHistory,
     ConfigurationSnapshot,
@@ -190,11 +191,9 @@ def test_malformed_snapshot_is_rejected_without_corrupting_history() -> None:
     history = BoundedConfigurationHistory()
     baseline = _snapshot(-40.0, label="baseline")
     history.initialize(baseline)
-    malformed = ConfigurationSnapshot(
-        '{"gate":{"threshold_db":"bad"}}',
-        "malformed",
-        "test",
-    )
+    payload = Preset().to_dict()
+    payload["gate"]["threshold_db"] = "bad"
+    malformed = ConfigurationSnapshot(json.dumps(payload), "malformed", "test")
 
     with pytest.raises(PresetValidationError, match="threshold_db"):
         history.record(malformed)
@@ -203,9 +202,10 @@ def test_malformed_snapshot_is_rejected_without_corrupting_history() -> None:
     assert history.current == baseline
 
 
-def test_snapshot_stores_validated_canonical_legacy_values():
+def test_snapshot_stores_validated_canonical_older_release_values(monkeypatch):
+    monkeypatch.setattr(presets_module, "CURRENT_VERSION", "1.99.0")
     preset = Preset()
-    preset.version = "1.12.1"
+    preset.version = OLDEST_OPENED_VERSION
     preset.gate.vad_threshold = 0.73
 
     snapshot = ConfigurationSnapshot.from_preset(

@@ -119,6 +119,7 @@ from .shell_specs import (
 from .startup_presets import (
     STARTUP_CUSTOM_PREFIX,
     STARTUP_CUSTOM_FILE_PREFIX,
+    refusal_reason_for_preset_id,
     route_preset_selection as _route_custom_preset_selection,
     startup_builtin_id as _startup_builtin_id,
     startup_custom_file_id as _startup_custom_file_id,
@@ -139,6 +140,7 @@ from ..config import (
     Preset,
     DeviceIdentity,
     PresetValidationError,
+    find_presets_refused_for_age,
     save_preset,
     load_preset,
     import_preset,
@@ -2099,8 +2101,17 @@ class MainWindow(QMainWindow):
                 5000,
             )
         else:
+            refusal = (
+                refusal_reason_for_preset_id(
+                    binding.preset_id, find_presets_refused_for_age()
+                )
+                if outcome.status is LoadStatus.MISSING
+                else None
+            )
             self.status_message.showMessage(
-                "The preset bound to this route is unavailable; existing settings were kept",
+                f"The preset bound to this route was not opened; existing settings were kept. {refusal}"
+                if refusal
+                else "The preset bound to this route is unavailable; existing settings were kept",
                 6000,
             )
         return loaded
@@ -2559,10 +2570,19 @@ class MainWindow(QMainWindow):
                     "Startup preset %r not found; falling back to last used",
                     restore.startup_name,
                 )
+                refusal = (
+                    refusal_reason_for_preset_id(
+                        self.config.startup_preset, find_presets_refused_for_age()
+                    )
+                    if startup.status is LoadStatus.MISSING
+                    else None
+                )
                 self._report_preset_problem(
                     "startup_preset",
                     self.config.startup_preset,
-                    f"Startup preset '{restore.startup_name}' could not be loaded",
+                    f"Startup preset '{restore.startup_name}' was not opened. {refusal}"
+                    if refusal
+                    else f"Startup preset '{restore.startup_name}' could not be loaded",
                     5000,
                 )
 
@@ -2634,6 +2654,21 @@ class MainWindow(QMainWindow):
                     "Restored settings applied for this session, but could not be saved",
                     6000,
                 )
+        self._report_presets_refused_for_age()
+
+    def _report_presets_refused_for_age(self) -> None:
+        """Once per launch: say how many saved presets an older AudioForge wrote."""
+        count = len(find_presets_refused_for_age())
+        if not count:
+            return
+        self._report_problem(
+            "presets_refused_for_age",
+            f"{count} presets were saved by an older AudioForge and can't be opened here. "
+            "Open and re-save them in AudioForge 1.23.0."
+            if count > 1
+            else "1 preset was saved by an older AudioForge and can't be opened here. "
+            "Open and re-save it in AudioForge 1.23.0.",
+        )
 
     def _on_device_changed(self, changed: ChoiceState | None = None):
         """Save the route; only the picker the user changed, as the other may show a stand-in.

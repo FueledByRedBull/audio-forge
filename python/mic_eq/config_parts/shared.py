@@ -4,12 +4,9 @@ from __future__ import annotations
 
 import errno
 import json
-import logging
 import math
 import os
-import shutil
 import sys
-import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,17 +14,18 @@ from pathlib import Path
 from .. import __version__ as CURRENT_VERSION
 
 
-logger = logging.getLogger(__name__)
-
-
 APPDATA_DIR_NAME = "AudioForge"
-LEGACY_APPDATA_DIR_NAME = "MicEq"
-_MIGRATION_MARKER_NAME = f".{APPDATA_DIR_NAME}.migration-pending"
-_migration_failure = ""
+# The last release that converts older settings and presets; this build opens
+# settings and presets saved by it or newer.
+OLDEST_OPENED_VERSION = "1.23.0"
 
 
 class PresetValidationError(Exception):
     """Raised when preset or config validation fails with actionable detail."""
+
+
+class PresetTooOldError(PresetValidationError):
+    """Raised for a preset saved before the oldest release this build opens."""
 
 
 def _reject_json_constant(value: str) -> None:
@@ -106,171 +104,15 @@ def _config_base_dir() -> Path:
     return Path.home() / ".config"
 
 
-def _migration_marker(base_dir: Path) -> Path:
-    return base_dir / _MIGRATION_MARKER_NAME
-
-
-def _marker_state(marker: Path) -> str:
-    """Return "" with no marker, "staged" for a published copy, "unknown" when it
-    cannot be read, else "pending".
-
-    Empty or unrecognised text (a crash mid-write, another build) counts as
-    pending so it is retried rather than left to block saves. A read error says
-    nothing about the migration, so it is never grounds to swap folders.
-    """
-    try:
-        text = marker.read_text(encoding="ascii").strip()
-    except FileNotFoundError:
-        return ""
-    except UnicodeError:
-        return "pending"
-    except OSError:
-        return "unknown"
-    return "staged" if text == "staged" else "pending"
-
-
-def migration_pending() -> bool:
-    """Return whether a legacy config migration needs a safe retry."""
-    base_dir = _config_base_dir()
-    state = _marker_state(_migration_marker(base_dir))
-    # A staged or unreadable marker beside an existing destination cannot prove
-    # a migration is outstanding, and no swap runs for it, so saves go on.
-    return state == "pending" or (
-        state in {"staged", "unknown"} and not (base_dir / APPDATA_DIR_NAME).exists()
-    )
-
-
-def migration_failure() -> str:
-    """Why the last config-folder resolution could not finish a migration, or ""."""
-    return _migration_failure
-
-
-def _write_migration_marker(marker: Path, state: str) -> None:
-    marker.write_text(state, encoding="ascii")
-
-
-def _clear_migration_marker(marker: Path) -> None:
-    try:
-        marker.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError:
-        logger.warning("Could not clear config migration marker", exc_info=True)
-
-
-def _restore_stranded_config(base_dir: Path, config_dir: Path) -> bool:
-    """Put back a destination a failed migration moved aside, if nothing replaced it.
-
-    Returns False when a folder should have been restored but could not be.
-    """
-    global _migration_failure
-    try:
-        kept = sorted(
-            base_dir.glob(f".{APPDATA_DIR_NAME}.partial-*"),
-            key=lambda path: path.stat().st_mtime,
-        )
-        if config_dir.exists() or not kept:
-            return True
-        kept[-1].replace(config_dir)
-    except OSError as exc:
-        _migration_failure = f"could not restore the previous config folder: {exc}"
-        logger.warning("Could not restore stranded config folder", exc_info=True)
-        return False
-    logger.warning("Restored the AudioForge config folder from %s", kept[-1])
-    if len(kept) > 1:
-        logger.warning("Older config folders were left in place: %s", ", ".join(map(str, kept[:-1])))
-    return True
-
-
 def _config_dir() -> Path:
-    global _migration_failure
-    _migration_failure = ""
-    base_dir = _config_base_dir()
-    config_dir = base_dir / APPDATA_DIR_NAME
-    legacy_dir = base_dir / LEGACY_APPDATA_DIR_NAME
-    marker = _migration_marker(base_dir)
-    migration_failed = False
-    marker_state = _marker_state(marker)
-
-    if marker_state == "staged" and config_dir.exists():
-        # A process may have been interrupted after the atomic directory swap
-        # and before removing the marker. The destination is complete.
-        _clear_migration_marker(marker)
-        marker_state = ""
-    elif marker_state and not legacy_dir.exists():
-        # Nothing is left to migrate from, so the marker can only block saves.
-        if _restore_stranded_config(base_dir, config_dir):
-            _clear_migration_marker(marker)
-            marker_state = ""
-        else:
-            # Keep the marker: saves stay blocked and the restore is retried, rather
-            # than letting a save on defaults orphan the stranded settings.
-            migration_failed = True
-
-    needs_migration = legacy_dir.exists() and (
-        not config_dir.exists() or marker_state == "pending"
-    )
-    if needs_migration:
-        staged_dir: Path | None = None
-        partial_dir: Path | None = None
-        try:
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            _write_migration_marker(marker, "pending")
-            # Copy into a sibling staging directory first so a failed copy
-            # cannot make a partial destination look migrated on the next run.
-            staged_dir = Path(
-                tempfile.mkdtemp(prefix=f".{APPDATA_DIR_NAME}.migrate-", dir=base_dir)
-            )
-            staged_dir.rmdir()
-            shutil.copytree(legacy_dir, staged_dir)
-            if config_dir.exists():
-                partial_dir = Path(
-                    tempfile.mkdtemp(
-                        prefix=f".{APPDATA_DIR_NAME}.partial-", dir=base_dir
-                    )
-                )
-                partial_dir.rmdir()
-                config_dir.replace(partial_dir)
-            staged_dir.replace(config_dir)
-            if partial_dir is not None:
-                logger.warning(
-                    "Kept the previous AudioForge config folder at %s", partial_dir
-                )
-            # Mark the directory as staged only after the atomic publication.
-            # A crash before this write leaves the pending marker, so the next
-            # process retries instead of accepting a partial destination.
-            try:
-                _write_migration_marker(marker, "staged")
-            except OSError:
-                logger.warning("Could not mark config migration as staged", exc_info=True)
-            _clear_migration_marker(marker)
-        except OSError as exc:
-            migration_failed = True
-            _migration_failure = str(exc)
-            logger.warning("Legacy AudioForge config migration failed", exc_info=True)
-            if staged_dir is not None and staged_dir.exists():
-                try:
-                    shutil.rmtree(staged_dir)
-                except OSError:
-                    logger.warning("Could not clean failed config migration staging", exc_info=True)
-            if partial_dir is not None and partial_dir.exists() and not config_dir.exists():
-                try:
-                    partial_dir.replace(config_dir)
-                except OSError:
-                    logger.warning("Could not restore partial config destination", exc_info=True)
-    # Leave the destination absent after a failed migration.  This keeps the
-    # next process (or the next call) eligible to retry instead of treating an
-    # empty/partial destination as an already completed migration.
-    if not migration_failed:
-        config_dir.mkdir(parents=True, exist_ok=True)
+    config_dir = _config_base_dir() / APPDATA_DIR_NAME
+    config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir
 
 
 def get_presets_dir() -> Path:
     """Get the presets directory, creating it if necessary."""
     presets_dir = _config_dir() / "presets"
-    if migration_pending():
-        return presets_dir
     presets_dir.mkdir(parents=True, exist_ok=True)
     return presets_dir
 
@@ -278,8 +120,6 @@ def get_presets_dir() -> Path:
 def get_preset_imports_dir() -> Path:
     """Get the preset imports directory, creating it if necessary."""
     imports_dir = get_presets_dir().parent / "imports"
-    if migration_pending():
-        return imports_dir
     imports_dir.mkdir(parents=True, exist_ok=True)
     return imports_dir
 
@@ -483,7 +323,8 @@ __all__ = [
     "APPDATA_DIR_NAME",
     "CURRENT_VERSION",
     "DeviceIdentity",
-    "LEGACY_APPDATA_DIR_NAME",
+    "OLDEST_OPENED_VERSION",
+    "PresetTooOldError",
     "PresetValidationError",
     "_reject_json_constant",
     "_version_tuple",
@@ -495,8 +336,6 @@ __all__ = [
     "get_presets_dir",
     "legacy_latency_profile_key",
     "parse_latency_profile_key",
-    "migration_failure",
-    "migration_pending",
     "publish_exclusive",
     "replace_file",
 ]

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock
 
 from PySide6.QtWidgets import QMessageBox
@@ -8,7 +10,6 @@ from PySide6.QtWidgets import QMessageBox
 from mic_eq import __version__, config
 from mic_eq.ui import main_window
 from mic_eq.ui.main_window import MainWindow
-from engine_fakes import fake_session
 
 
 def test_runtime_preset_catalog_versions_follow_package_version() -> None:
@@ -20,13 +21,11 @@ def test_runtime_preset_catalog_versions_follow_package_version() -> None:
 
 
 def test_saved_custom_preset_uses_package_version(monkeypatch, tmp_path: Path) -> None:
-    window = MainWindow.__new__(MainWindow)
+    window: Any = MainWindow.__new__(MainWindow)
     preset = config.Preset(version="0.0.0")
-    window._get_current_preset = lambda: preset
-    window._flush_processing_configuration_writes = Mock()
-    window.engine_session = fake_session()
+    window.configuration = SimpleNamespace(current=preset, flush_writes=Mock())
+    window._configuration_host = SimpleNamespace(mute_held=lambda _reason: False)
     window._save_preset_file = Mock(return_value=tmp_path / "saved.json")
-    window._last_preset_identity_persisted = True
     monkeypatch.setattr(
         main_window.QMessageBox,
         "question",

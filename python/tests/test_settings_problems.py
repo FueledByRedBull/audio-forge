@@ -10,6 +10,11 @@ import pytest
 from mic_eq.config import AppConfig, BUILTIN_PRESETS, DeviceIdentity
 from mic_eq.ui import main_window
 from mic_eq.ui.main_window import MainWindow
+from mic_eq.ui.processing_configuration import PresetOrigin
+
+
+def _load_builtin(window: MainWindow, key: str) -> bool:
+    return window._report_load(window.configuration.load(BUILTIN_PRESETS[key], PresetOrigin(key=key), remember=True))
 
 
 def _banner(window: Any):
@@ -101,10 +106,10 @@ def test_a_missing_last_preset_stays_on_the_banner_until_a_preset_is_saved(start
     assert _banner(window).shown and "no_such_preset" in _banner(window).text
 
     key = next(iter(BUILTIN_PRESETS))
-    assert window._apply_preset(BUILTIN_PRESETS[key], preset_key=key)  # another preset is no fix
+    assert _load_builtin(window, key)  # another preset is no fix
     assert _banner(window).shown and "no_such_preset" in _banner(window).text
 
-    assert window._save_preset_file(window._get_current_preset()) is not None
+    assert window._save_preset_file(window.configuration.current) is not None
     assert not _banner(window).shown
 
 
@@ -113,7 +118,7 @@ def test_a_missing_last_preset_is_resolved_when_that_preset_loads(start_window, 
     assert _banner(window).shown
 
     monkeypatch.setitem(BUILTIN_PRESETS, "ghost", next(iter(BUILTIN_PRESETS.values())))
-    assert window._apply_preset(BUILTIN_PRESETS["ghost"], preset_key="ghost")
+    assert _load_builtin(window, "ghost")
 
     assert not _banner(window).shown
 
@@ -123,12 +128,13 @@ def test_the_startup_preset_problem_outlasts_other_and_automatic_loads(start_win
     assert _banner(window).shown and "ghost" in _banner(window).text
     key = next(iter(BUILTIN_PRESETS))
 
-    assert window._apply_preset(BUILTIN_PRESETS[key], preset_key=key)
-    assert window._load_device_preset_id(f"builtin:{key}")  # a route-bound preset, loaded by itself
+    assert _load_builtin(window, key)
+    # A route-bound preset, loaded by itself.
+    assert window._report_load(window.configuration.load_id(f"builtin:{key}", remember=False))
     assert _banner(window).shown and "ghost" in _banner(window).text
 
     monkeypatch.setitem(BUILTIN_PRESETS, "ghost", BUILTIN_PRESETS[key])
-    assert window._apply_preset(BUILTIN_PRESETS["ghost"], preset_key="ghost")
+    assert _load_builtin(window, "ghost")
     assert not _banner(window).shown
 
 

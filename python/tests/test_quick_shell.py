@@ -32,6 +32,7 @@ from mic_eq.config import AppConfig, DeviceIdentity
 from mic_eq.config_parts.settings import q_from_bandwidth_octaves
 from mic_eq.ui import health
 from mic_eq.ui.main_window import PAGE_NAMES, MainWindow
+from mic_eq.ui.processing_configuration import PresetOrigin
 from mic_eq.ui.eq_quick_graph import EQGraphItem
 from mic_eq.ui.eq_graph import EQGraphGeometry
 from mic_eq.ui.level_meter import CLIP_FLAT_TOP_SAMPLES
@@ -154,9 +155,9 @@ def test_a_quick_session_keeps_the_scene_from_start_to_close(quick_window, monke
         return window.shell_texts[key].text
 
     assert_scene_shown()
-    before = window._get_current_preset()
-    window.apply_processing_configuration(before)
-    window._commit_pending_configuration_snapshot()
+    before = window.configuration.current
+    window.configuration.apply(before)
+    window.configuration.commit_edit()
     window.input_meter.set_levels(-30.0, -20.0)
     window.output_meter.set_levels(-24.0, -12.0)
     window._update_meters()
@@ -222,9 +223,9 @@ def test_a_quick_session_keeps_the_scene_from_start_to_close(quick_window, monke
     assert text("transmission_status_label") == "Transmission: Stopped / Normal"
 
     # Applying a preset makes it the saved one; a noise-model edit then modifies it.
-    preset = window._get_current_preset()
+    preset = window.configuration.current
     preset.name = "Probe"
-    assert window._apply_preset(preset)
+    assert window._report_load(window.configuration.load(preset, PresetOrigin(), remember=True))
     assert text("preset_status_label") == "Preset: Probe (saved)"
     noise.set_value("model", "deepfilter-ll")
     assert text("preset_status_label") == "Preset: Probe (unsaved changes)"
@@ -242,7 +243,7 @@ def test_a_quick_session_keeps_the_scene_from_start_to_close(quick_window, monke
     window._update_meters()
 
     assert refreshes == [window.SETTINGS_PAGE_INDEX]
-    assert window._get_current_preset().eq.to_dict() == before.eq.to_dict()
+    assert window.configuration.current.eq.to_dict() == before.eq.to_dict()
     assert_scene_shown()
     window._quitting = True
     window.close()
@@ -276,7 +277,7 @@ def test_deesser_controls_share_exact_settings_and_derived_availability(quick_wi
     rows["Low cut"]["proxy"].released()
     assert rows["High cut"]["proxy"].value == 12200
     assert state.get_settings()["attack_ms"] == 2.125
-    assert quick_window._get_current_preset().deesser.high_cut_hz == 12200
+    assert quick_window.configuration.current.deesser.high_cut_hz == 12200
 
 
 def test_limiter_reads_shared_state_without_polling(quick_window) -> None:
@@ -290,23 +291,23 @@ def test_limiter_reads_shared_state_without_polling(quick_window) -> None:
     quick_window.limiter_state.set_settings({"ceiling_db": -3.257})
     assert seen[-1] == -3.26
     # The control shows a rounded value; the exact one stays the product state.
-    assert quick_window._get_current_preset().limiter.ceiling_db == -3.257
+    assert quick_window.configuration.current.limiter.ceiling_db == -3.257
 
 
 def test_limiter_quick_edits_preserve_exact_preset_and_undo(quick_window) -> None:
-    preset = quick_window._get_current_preset()
+    preset = quick_window.configuration.current
     preset.limiter.ceiling_db = -3.257
-    quick_window.apply_processing_configuration(preset)
-    quick_window._commit_pending_configuration_snapshot(label="Exact limiter preset")
+    quick_window.configuration.apply(preset)
+    quick_window.configuration.commit_edit(label="Exact limiter preset")
     control = _rows(quick_window.quick_bridge.model["stages"][-1])["Ceiling"]["proxy"]
     control.setText("-2.25 dB")
-    assert quick_window._get_current_preset().limiter.ceiling_db == -2.25
+    assert quick_window.configuration.current.limiter.ceiling_db == -2.25
     quick_window.undo_configuration()
-    assert quick_window._get_current_preset().limiter.ceiling_db == -3.257
+    assert quick_window.configuration.current.limiter.ceiling_db == -3.257
     assert control.value == -3.26
     quick_window.redo_configuration()
     assert control.value == -2.25
-    assert quick_window._get_current_preset().limiter.ceiling_db == -2.25
+    assert quick_window.configuration.current.limiter.ceiling_db == -2.25
 
 
 @pytest.mark.parametrize(("value", "rounded"), [(-1.125, -1.13), (-2.125, -2.13), (-2.005, -2.0)])
@@ -361,18 +362,18 @@ def test_pending_limiter_failure_cannot_enter_history(quick_window) -> None:
     state.set_settings({})
     state._rate_limiter.interval_ms = 5000
     state.processor = RejectCeiling()
-    before = quick_window._configuration_history.current
+    before = quick_window.configuration.history.current
     state.set_value("ceiling_db", -2.0)
     assert state.get_settings()["ceiling_db"] == -2.0
-    assert not quick_window._commit_pending_configuration_snapshot()
-    assert quick_window._configuration_history.current == before
+    assert not quick_window.configuration.commit_edit()
+    assert quick_window.configuration.history.current == before
     assert state.get_settings()["ceiling_db"] != -2.0
 
 
 def test_failed_limiter_recovery_blocks_restart_until_configuration_reapplied(quick_window) -> None:
     state = quick_window.limiter_state
     native = state.processor
-    preset = quick_window._get_current_preset()
+    preset = quick_window.configuration.current
 
     class RejectWrites:
         def __getattr__(self, name):
@@ -387,9 +388,9 @@ def test_failed_limiter_recovery_blocks_restart_until_configuration_reapplied(qu
     assert "configuration" in quick_window.engine_session.view.mute_reasons
     assert not quick_window.engine_session.start_now(interactive=False)
     assert "recovery failed" in quick_window.status_message.text
-    assert not quick_window._commit_pending_configuration_snapshot()
+    assert not quick_window.configuration.commit_edit()
     state.processor = native
-    quick_window.apply_processing_configuration(preset)
+    quick_window.configuration.apply(preset)
     assert "configuration" not in quick_window.engine_session.view.mute_reasons
 
 
@@ -783,8 +784,8 @@ def test_a_click_does_not_scroll_its_control_away(quick_window, mic_page, qapp) 
 
 def _rebaseline(window) -> None:
     """Make the current state the saved preset and the start of the history."""
-    window._set_preset_identity(window._get_current_preset())
-    window._initialize_configuration_history()
+    window.configuration.mark_saved(window.configuration.current, Path("rebaselined.json"))
+    window.configuration.start_history()
 
 
 @pytest.mark.parametrize("offset", [(0, 0), (5, 5)])
@@ -1081,8 +1082,8 @@ def test_scene_gets_structured_values_instead_of_parsing_labels(quick_window) ->
     model = quick_window.quick_bridge.model
     status = model["presets"]["status"]
     assert status.data == {
-        "name": quick_window.current_preset_name,
-        "modified": quick_window.preset_modified,
+        "name": quick_window.configuration.identity.name,
+        "modified": quick_window.configuration.identity.modified,
     }
     assert model["eq"]["diagnostics"].data == {"calibrated": False}
     noise, gate = model["stages"][:2]
@@ -1194,7 +1195,7 @@ def _queue_limiter_ceiling(window, *, reject: bool = False) -> list[float]:
 
 def test_failed_bulk_configuration_restores_applied_not_queued_settings(quick_window) -> None:
     window = quick_window
-    candidate = window._get_current_preset()
+    candidate = window.configuration.current
     candidate.deesser.threshold_db = -22.0
     written = _queue_limiter_ceiling(window)
     native = window.deesser_state.processor
@@ -1210,7 +1211,7 @@ def test_failed_bulk_configuration_restores_applied_not_queued_settings(quick_wi
 
     window.deesser_state.processor = RejectCandidate()
     with pytest.raises(RuntimeError, match="previous sound restored"):
-        window.apply_processing_configuration(candidate)
+        window.configuration.apply(candidate)
     assert window.limiter_state.get_settings()["ceiling_db"] == -1.0
     assert window.limiter_state._rate_limiter._pending_fn is None
     assert written == [-1.0]
@@ -1223,7 +1224,7 @@ def test_save_entrypoints_capture_only_accepted_pending_settings(
 ) -> None:
     window = quick_window
     written = _queue_limiter_ceiling(window, reject=reject)
-    window.current_preset_path = tmp_path / "owned.json"
+    window.configuration.mark_saved(window.configuration.current, tmp_path / "owned.json")
     monkeypatch.setattr("mic_eq.ui.main_window.get_presets_dir", lambda: tmp_path)
     monkeypatch.setattr(
         "mic_eq.ui.main_window.QInputDialog.getText", lambda *_args, **_kwargs: ("Saved sound", True),

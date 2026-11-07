@@ -1808,7 +1808,7 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(
     old_compressor = owner.compressor_state.get_settings(include_calibration=True)
     old_limiter = owner.limiter_state.get_settings()
     old_eq = owner.eq_state.get_settings()
-    dialog = VoiceSetupDialog(parent=owner)
+    dialog = VoiceSetupDialog(parent=owner, configuration=owner.configuration)
     limiter = {"enabled": False, "ceiling_db": -2.5, "release_ms": 175.0,
                "careful_output_enabled": False}
     dialog.setup_result = {
@@ -1951,7 +1951,7 @@ def test_incomplete_candidate_offers_retake_instead_of_apply(
     from unittest.mock import Mock
     from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
-    dialog = VoiceSetupDialog(parent=owner)
+    dialog = VoiceSetupDialog(parent=owner, configuration=owner.configuration)
     result = _advisory_result(owner)
     result[field] = value
     dialog._candidate_metadata = deepcopy(result["_candidate"])
@@ -1986,7 +1986,7 @@ def test_incomplete_candidate_offers_retake_instead_of_apply(
 def test_complete_advisory_candidate_still_offers_apply(owner):
     from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
-    dialog = VoiceSetupDialog(parent=owner)
+    dialog = VoiceSetupDialog(parent=owner, configuration=owner.configuration)
     try:
         result = _advisory_result(owner)
         dialog._candidate_metadata = deepcopy(result["_candidate"])
@@ -2013,7 +2013,7 @@ def test_complete_advisory_candidate_still_offers_apply(owner):
 def test_review_shows_settings_before_and_after(owner):
     from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
-    dialog = VoiceSetupDialog(parent=owner)
+    dialog = VoiceSetupDialog(parent=owner, configuration=owner.configuration)
     orphan = VoiceSetupDialog()
     try:
         gate = owner.gate_state.get_settings()
@@ -2113,7 +2113,7 @@ def test_silent_room_noise_moves_on_and_a_leaky_gate_is_a_weak_reference(owner):
     from mic_eq.ui.theme import message_text_style
     from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
-    dialog = VoiceSetupDialog(parent=owner)
+    dialog = VoiceSetupDialog(parent=owner, configuration=owner.configuration)
     try:
         dialog.setup_state = "noise_recording"
         finish_take(dialog, np.zeros(96_000, dtype=np.float32))
@@ -2148,7 +2148,7 @@ def test_silent_room_noise_moves_on_and_a_leaky_gate_is_a_weak_reference(owner):
 def voice_dialog(monkeypatch, owner):
     from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
-    dialog = VoiceSetupDialog(parent=owner)
+    dialog = VoiceSetupDialog(parent=owner, configuration=owner.configuration)
     monkeypatch.setattr(dialog, "_start_analysis", lambda: None)
     yield dialog
     dialog.reject()

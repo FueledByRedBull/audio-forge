@@ -200,19 +200,16 @@ def test_capture_session_cleanup_retries_a_mute_release_the_engine_refused(qapp)
     assert not lease.muted() and engine.muted is False
 
 
-def test_calibration_owner_discovery_and_chain_snapshot_require_no_processing_panels(qapp):
+def test_the_chain_snapshot_requires_no_processing_panels(qapp):
     from types import SimpleNamespace
 
     from mic_eq.ui.calibration_support import chain_settings
-    from mic_eq.ui.capture_session import find_eq_state_owner
 
     owner = QWidget()
     vars(owner)["eq_state"] = SimpleNamespace(get_settings=lambda: {})
     vars(owner)["deesser_state"] = SimpleNamespace(get_settings=lambda: {"enabled": True})
     vars(owner)["compressor_state"] = SimpleNamespace(get_settings=lambda: {"ratio": 3.5})
     vars(owner)["limiter_state"] = SimpleNamespace(get_settings=lambda: {"ceiling_db": -2.0})
-    nested = QWidget(owner)
-    assert find_eq_state_owner(nested) is owner
     assert chain_settings(owner) == {
         "deesser": {"enabled": True},
         "compressor": {"ratio": 3.5},

@@ -97,7 +97,8 @@ class LoadOutcome:
     preset: Preset | None = None
     # Why it is not loaded: the read failure, or the apply failure.
     error: Exception | None = None
-    # The failure was reading the file (INVALID, or NOT_APPLIED for a file unreadable right now).
+    # The failure was reading the file (INVALID, or NOT_APPLIED for a file unreadable right now
+    # or saved by an older AudioForge).
     read_failed: bool = False
     # False when the load was to be remembered for the next launch and saving that failed.
     remembered: bool = True
@@ -473,8 +474,9 @@ class ProcessingConfiguration:
         """Load the startup preset, or failing that the last-used one.
 
         Migrates a legacy startup ID, and clears a last-used reference only
-        when that preset is missing or invalid; one the engine refused, or a
-        file unreadable right now, stays for the next launch.
+        when that preset is missing or invalid; one the engine refused, a
+        file unreadable right now, or one saved by an older AudioForge (it
+        opens once re-saved) stays for the next launch.
         """
         config = self._config
         config_changed = False

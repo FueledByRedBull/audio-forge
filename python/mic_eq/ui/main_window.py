@@ -2101,8 +2101,12 @@ class MainWindow(QMainWindow):
                 5000,
             )
         else:
-            refusal = refusal_reason_for_preset_id(
-                binding.preset_id, find_presets_refused_for_age()
+            refusal = (
+                refusal_reason_for_preset_id(
+                    binding.preset_id, find_presets_refused_for_age()
+                )
+                if outcome.status is LoadStatus.MISSING
+                else None
             )
             self.status_message.showMessage(
                 f"The preset bound to this route was not opened; existing settings were kept. {refusal}"

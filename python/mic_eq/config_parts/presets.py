@@ -774,6 +774,8 @@ class RefusedPreset(NamedTuple):
     path: Path
     name: str
     reason: str
+    # In the imports folder: a copy of an outside file, not a preset the library lists.
+    imported: bool = False
 
 
 def find_presets_refused_for_age() -> list[RefusedPreset]:
@@ -781,12 +783,15 @@ def find_presets_refused_for_age() -> list[RefusedPreset]:
     roots = [get_presets_dir().resolve(), get_preset_imports_dir().resolve()]
     refused: list[RefusedPreset] = []
     for folder in roots:
+        imported = folder == roots[1]
         for filepath in sorted(folder.glob("*.json")):
             try:
                 _load_preset_within(filepath, roots)
             except PresetTooOldError as error:
                 refused.append(
-                    RefusedPreset(filepath, _stored_preset_name(filepath), str(error))
+                    RefusedPreset(
+                        filepath, _stored_preset_name(filepath), str(error), imported
+                    )
                 )
             except (
                 OSError,

@@ -364,3 +364,21 @@ def test_a_refused_preset_is_matched_to_a_startup_or_route_id_by_file_or_name():
     assert refusal_reason_for_preset_id("builtin:voice", refused) is None
     twins = refused + [presets_module.RefusedPreset(Path("old2.json"), "Old Warm", "x")]
     assert refusal_reason_for_preset_id("custom:Old Warm", twins) is None
+
+
+def test_an_imported_refused_file_is_not_the_preset_a_startup_or_route_id_names():
+    from mic_eq.ui.startup_presets import refusal_reason_for_preset_id
+
+    presets_dir = presets_module.get_presets_dir()
+    imports_dir = presets_module.get_preset_imports_dir()
+    _write_json(imports_dir / "old.json", _preset_payload(name="Old Warm", version="1.22.0"))
+
+    refused = presets_module.find_presets_refused_for_age()
+
+    assert [item.path for item in refused] == [imports_dir.resolve() / "old.json"]
+    assert refusal_reason_for_preset_id("custom-file:old.json", refused) is None
+    assert refusal_reason_for_preset_id("custom:Old Warm", refused) is None
+    _write_json(presets_dir / "old.json", _preset_payload(name="Old Warm", version="1.22.0"))
+    refused = presets_module.find_presets_refused_for_age()
+    assert len(refused) == 2
+    assert "1.23.0" in (refusal_reason_for_preset_id("custom-file:old.json", refused) or "")

@@ -33,9 +33,14 @@ def start_window(qapp, monkeypatch):
     """Builds a window from a config; the windows are closed at the end of the test."""
     windows: list[MainWindow] = []
 
-    def build(config: AppConfig, *, inputs=(), outputs=()) -> MainWindow:
+    def build(config: AppConfig, *, inputs=(), outputs=(), saves=None) -> MainWindow:
+        """``saves`` collects ``last_preset`` as it is at each save of the config."""
         monkeypatch.setattr(main_window, "load_config", lambda: config)
-        monkeypatch.setattr(main_window, "save_config", lambda _config: True)
+        monkeypatch.setattr(
+            main_window,
+            "save_config",
+            lambda saved: (saves.append(saved.last_preset) if saves is not None else None) or True,
+        )
         monkeypatch.setattr(main_window, "list_presets", lambda: [])
         monkeypatch.setattr(main_window, "list_input_devices", lambda: list(inputs))
         monkeypatch.setattr(main_window, "list_output_devices", lambda: list(outputs))
@@ -223,27 +228,15 @@ def test_a_startup_preset_that_is_invalid_for_another_reason_keeps_the_generic_m
     assert "1.23.0" not in _banner(window).text
 
 
-def test_a_last_used_preset_refused_for_age_keeps_its_reference_and_shows_why(
-    start_window, monkeypatch
-):
+def test_a_last_used_preset_refused_for_age_keeps_its_reference_and_shows_why(start_window):
     from mic_eq.config import get_presets_dir
 
     path = _write_old_preset(get_presets_dir(), "old.json")
-    saved_references: list[str] = []
-    monkeypatch.setattr(
-        main_window,
-        "save_config",
-        lambda config: saved_references.append(config.last_preset) or True,
-    )
-    window = start_window(AppConfig(last_preset=str(path)))
-    monkeypatch.setattr(
-        main_window,
-        "save_config",
-        lambda config: saved_references.append(config.last_preset) or True,
-    )
+    saves: list[str] = []
+    window = start_window(AppConfig(last_preset=str(path)), saves=saves)
 
+    assert "" not in saves
     assert window.config.last_preset == str(path)
-    assert "" not in saved_references
     assert "AudioForge 1.23.0" in _banner(window).text
     assert "save it again" in _banner(window).text
 
@@ -313,3 +306,28 @@ def test_no_notice_without_presets_refused_for_age(start_window):
     window = start_window(AppConfig())
 
     assert "older AudioForge" not in _banner(window).text
+
+
+def test_a_route_preset_the_engine_refused_does_not_borrow_an_old_files_advice(
+    start_window, monkeypatch
+):
+    from mic_eq.config import DevicePresetBinding, Preset, get_presets_dir
+
+    good = get_presets_dir() / "warm.json"
+    good.write_text(__import__("json").dumps(Preset(name="Warm").to_dict()), encoding="utf-8")
+    _write_old_preset(get_presets_dir(), "old-warm.json", name="Warm")
+    window = start_window(AppConfig())
+    monkeypatch.setattr(main_window, "list_presets", lambda: [("Warm", good)])
+    monkeypatch.setattr(main_window.QMessageBox, "critical", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(window, "_current_device_route_key", lambda: "route")
+    window.config.device_preset_bindings["route"] = DevicePresetBinding("custom:Warm")
+
+    def refuse(_preset):
+        raise RuntimeError("the engine refused the preset")
+
+    monkeypatch.setattr(window.configuration, "apply", refuse)
+
+    assert window._apply_bound_preset_for_current_route() is False
+
+    message = str(window.status_message.text)
+    assert "unavailable" in message and "1.23.0" not in message

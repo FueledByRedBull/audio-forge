@@ -103,7 +103,11 @@ def route_preset_selection(
 def refusal_reason_for_preset_id(
     preset_id: str, refused: list[RefusedPreset]
 ) -> str | None:
-    """Why the one preset file behind a custom preset ID is refused for age, if it is."""
+    """Why the one preset file behind a custom preset ID is refused for age, if it is.
+
+    Only the presets folder counts: the library lists no imported file, so no ID names one.
+    """
+    refused = [item for item in refused if not item.imported]
     if preset_id.startswith(STARTUP_CUSTOM_FILE_PREFIX):
         identity = preset_id[len(STARTUP_CUSTOM_FILE_PREFIX):]
         matches = [item for item in refused if item.path.name == identity]

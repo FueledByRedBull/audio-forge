@@ -23,6 +23,7 @@ from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.noise_suppression_state import NoiseSuppressionState
 from mic_eq.ui import desktop_integration
 from mic_eq.ui.theme import PALETTE, muted_icon
+from engine_fakes import fake_session
 
 _WIN32_HOTKEY = pytest.mark.skipif(sys.platform != "win32", reason="Win32 RegisterHotKey backend")
 
@@ -112,8 +113,10 @@ def test_tray_close_keeps_audio_running_until_explicit_quit() -> None:
         _save_ui_state=lambda: True, processor=Mock(),
         configuration=SimpleNamespace(confirm_discard=lambda: True), _engine=Mock(),
     )
+    owner.engine_session = fake_session(owner.processor)
     owner._hide_to_tray = lambda: MainWindow._hide_to_tray(owner)
     owner._shutdown = lambda: MainWindow._shutdown(owner)
+    owner._save_on_shutdown = lambda: MainWindow._save_on_shutdown(owner)
     event = Mock()
     MainWindow.closeEvent(owner, event)
     owner.hide.assert_called_once()
@@ -300,9 +303,9 @@ def test_the_tray_icon_carries_the_muted_badge_only_while_output_is_muted(
     assert shown() == badged
     window.user_mute_checkbox_action.setChecked(False)
     assert shown() == heard
-    window.set_temporary_output_mute(True, "configuration")  # any mute owner counts
+    window.engine_session.hold_mute("configuration", True)  # any mute owner counts
     assert shown() == badged
-    window.set_temporary_output_mute(False, "configuration")
+    window.engine_session.hold_mute("configuration", False)
     assert shown() == heard
     tray.hide()
 

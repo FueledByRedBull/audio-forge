@@ -67,8 +67,8 @@ from test_quick_shell import _load_config_without_devices
 
 
 def _use_processor(window, processor) -> None:
-    """Swap the audio engine under a real window and the states that write to it."""
-    window.processor = processor
+    """Swap the audio engine under a real window, its engine session and the states that write to it."""
+    window.processor = window.engine_session.processor = processor
     for state in (
         window.gate_state, window.eq_state, window.deesser_state,
         window.compressor_state, window.limiter_state, window.noise_suppression_state,
@@ -981,7 +981,7 @@ def test_a_restart_long_after_processing_began_gets_the_startup_grace_again(wind
     _labels(window)
     assert chip.state == "ok"
 
-    # An engine restart that bypasses _start_processing: both ages are back to the sentinel.
+    # An engine restart that bypasses the window's Start: both ages are back to the sentinel.
     _labels(window, input_callback_age_ms=NEVER, output_callback_age_ms=NEVER)
     assert chip.state != "warn"
     clock[0] += DEVICE_STARTUP_GRACE_SECONDS - 1
@@ -1093,7 +1093,7 @@ def test_input_channel_mode_change_persists_and_applies(window, monkeypatch):
             self.modes.append(mode)
 
     saved = []
-    window.processor = _Processor()
+    window.processor = window.engine_session.processor = _Processor()
     window.config.input_channel_mode = "average"
     window.compressor_state.set_settings({"noise_reference_reliability": 0.8})
     window.input_channel_mode_choice.setCurrentIndex(
@@ -1114,7 +1114,7 @@ def test_input_channel_mode_change_persists_and_applies(window, monkeypatch):
 
 @pytest.mark.parametrize("save_failure", [False, OSError("config locked")])
 def test_route_input_preference_reports_unsaved_failure(window, monkeypatch, save_failure):
-    window.processor = Mock()
+    window.processor = window.engine_session.processor = Mock()
     window.input_choice.addItem(
         "Mic", DeviceIdentity(name="Mic", endpoint_id="input", direction="input")
     )
@@ -1158,7 +1158,7 @@ def test_route_input_preference_reports_unsaved_failure(window, monkeypatch, sav
 
 
 def test_refresh_devices_defers_while_processing(window, monkeypatch):
-    window.processor = Mock()
+    window.processor = window.engine_session.processor = Mock()
     window.processor.is_running.return_value = True
     window.input_choice.addItem(
         "Mic", DeviceIdentity(name="Mic", endpoint_id="input", direction="input")
@@ -1947,11 +1947,42 @@ def test_latency_calibration_failure_stops_only_a_processor_it_started(window, r
     assert processor.running is running
 
 
+class _StopRefusedOnce(_LatencyProcessor):
+    def stop(self):
+        if self.stopped == 0:
+            self.stopped = -1
+            raise RuntimeError("stop refused")
+        super().stop()
+
+
+@pytest.mark.parametrize("dialog_type", [LatencyCalibrationDialog, CalibrationDialog])
+def test_a_dialog_whose_stop_fails_says_so_and_still_owns_the_audio(window, caplog, dialog_type):
+    processor = _StopRefusedOnce(running=False)
+    owner = _latency_window(window, processor)
+    shown = _status_log(window)
+    dialog = dialog_type(owner)
+    with caplog.at_level("WARNING"):
+        if dialog_type is LatencyCalibrationDialog:
+            dialog._on_run_clicked()  # its capture fails, so it stops what it started
+        else:
+            dialog._start_recording("level_check")
+            dialog._capture_start_timer.stop()
+            dialog._reset_recording_ui()
+    assert processor.started == 1 and processor.running
+    assert any("stop refused" in record.getMessage() for record in caplog.records)
+    assert any("Stopping audio failed: stop refused" in text for text in shown)
+
+    dialog.reject()  # the close stops it, as the dialog still owns it
+
+    assert not processor.running and processor.stopped == 0
+
+
 def test_latency_calibration_respects_user_mute(window, monkeypatch):
     processor = _LatencyProcessor(running=False)
     processor.set_output_mute = Mock()
     owner = _latency_window(window, processor)
-    owner.user_muted = True
+    owner.engine_session.set_user_muted(True)
+    processor.set_output_mute.reset_mock()
     notice = Mock()
     monkeypatch.setattr(QMessageBox, "information", notice)
     dialog = LatencyCalibrationDialog(owner)
@@ -1978,93 +2009,32 @@ def test_voice_setup_dynamics_intensity_controls_custom_targets(qapp):
     dialog.close()
 
 
-def test_start_applies_persisted_mute_before_and_after_native_start(
-    qapp, monkeypatch, tmp_path
-) -> None:
-    from mic_eq.config_parts import shared
-    from mic_eq.ui import main_window
+def test_start_refuses_retained_configuration_mute(window, monkeypatch) -> None:
+    processor = _LatencyProcessor(running=False)
+    _latency_window(window, processor)
+    window.engine_session.hold_mute("configuration", True)
+    shown = _status_log(window)
+    synced: list[bool] = []
+    monkeypatch.setattr(window, "_sync_processing_controls", lambda: synced.append(True))
 
-    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
-    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
-    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
+    assert window.engine_session.start_now() is False
 
-    window = MainWindow()
-    events: list[tuple[str, bool | None]] = []
-
-    class Processor:
-        running = False
-
-        def is_running(self) -> bool:
-            return self.running
-
-        def set_output_mute(self, muted: bool) -> None:
-            events.append(("mute", muted))
-
-        def stop(self) -> None:
-            self.running = False
-
-    processor = Processor()
-    cast(Any, window).processor = processor
-    window.output_choice.addItem("Destination", DeviceIdentity(name="Destination", direction="output"))
-    window.user_muted = True
-    window._temporary_mute_reasons = set()
-    window._apply_input_preferences_for_current_route = lambda: None
-
-    def start(_processor: Processor, *_devices: object) -> str:
-        events.append(("start", None))
-        processor.running = True
-        return "started"
-
-    monkeypatch.setattr(main_window, "start_processor_for_route", start)
-    try:
-        window._start_processing()
-        assert events == [("mute", True), ("start", None), ("mute", True)]
-    finally:
-        window.close()
-        window.deleteLater()
-        qapp.processEvents()
-
-
-def test_start_refuses_retained_configuration_mute() -> None:
-    owner = cast(Any, MainWindow.__new__(MainWindow))
-    owner.processor = SimpleNamespace(is_running=lambda: False, start=Mock())
-    owner._temporary_mute_reasons = {"configuration"}
-    owner.status_message = Mock()
-    owner._sync_processing_controls = Mock()
-
-    MainWindow._start_processing(owner)
-
-    owner.processor.start.assert_not_called()
-    owner._sync_processing_controls.assert_called_once_with()
-    assert "reload the preset" in owner.status_message.showMessage.call_args.args[0]
-
-
-def test_user_mute_survives_temporary_owner_release() -> None:
-    calls: list[bool] = []
-    owner = cast(Any, MainWindow.__new__(MainWindow))
-    owner.processor = SimpleNamespace(set_output_mute=calls.append)
-    owner.user_muted = True
-    owner._temporary_mute_reasons = set()
-    owner._update_session_summary = lambda: None
-
-    MainWindow.set_temporary_output_mute(owner, True, "calibration")
-    MainWindow.set_temporary_output_mute(owner, False, "calibration")
-
-    assert calls == [True, True]
+    assert processor.started == 0 and synced == [True]
+    assert "reload the preset" in shown[-1]
 
 
 @pytest.mark.parametrize("checked,temporary", [(True, False), (False, False), (False, True)])
 @pytest.mark.parametrize("write_error", [False, True])
 def test_user_mute_applies_before_failed_persistence(
-    monkeypatch, checked: bool, temporary: bool, write_error: bool
+    window, monkeypatch, checked: bool, temporary: bool, write_error: bool
 ) -> None:
     calls: list[bool] = []
-    owner = cast(Any, MainWindow.__new__(MainWindow))
-    owner.processor = SimpleNamespace(set_output_mute=calls.append)
-    owner.config = SimpleNamespace(user_muted=not checked)
-    owner._temporary_mute_reasons = {"calibration"} if temporary else set()
-    owner._update_session_summary = lambda: None
-    owner.status_message = Mock()
+    processor = SimpleNamespace(set_output_mute=calls.append, is_running=lambda: False)
+    if temporary:
+        window.engine_session.hold_mute("calibration", True)
+    window.engine_session.processor = processor
+    window.config.user_muted = not checked
+    shown = _status_log(window)
 
     def save(_config) -> bool:
         assert calls == [checked or temporary]
@@ -2073,46 +2043,30 @@ def test_user_mute_applies_before_failed_persistence(
         return False
 
     monkeypatch.setattr("mic_eq.ui.main_window.save_config", save)
-    MainWindow._on_user_mute_toggled(owner, checked)
+    window._on_user_mute_toggled(checked)
 
-    assert owner.user_muted is checked
-    assert owner.config.user_muted is checked
+    assert window.engine_session.view.user_muted is checked
+    assert window.config.user_muted is checked
     assert calls == [checked or temporary]
-    message = owner.status_message.showMessage.call_args.args[0]
-    assert "preference could not be saved" in message
-    assert ("Output muted" if checked or temporary else "Output unmuted") in message
-
-
-def test_user_mute_does_not_claim_native_failure_is_muted(monkeypatch) -> None:
-    owner = cast(Any, MainWindow.__new__(MainWindow))
-    owner.processor = SimpleNamespace(set_output_mute=Mock(side_effect=RuntimeError("unavailable")))
-    owner.config = SimpleNamespace(user_muted=False)
-    owner._temporary_mute_reasons = set()
-    owner._update_session_summary = lambda: None
-    owner.status_message = Mock()
+    assert "preference could not be saved" in shown[-1]
+    assert ("Output muted" if checked or temporary else "Output unmuted") in shown[-1]
+    window.engine_session.processor = window.processor
     monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
 
-    MainWindow._on_user_mute_toggled(owner, True)
 
-    message = owner.status_message.showMessage.call_args.args[0]
-    assert "could not be applied" in message
-    assert "preference saved" in message
+def test_user_mute_does_not_claim_native_failure_is_muted(window, monkeypatch) -> None:
+    window.engine_session.processor = SimpleNamespace(
+        set_output_mute=Mock(side_effect=RuntimeError("unavailable")), is_running=lambda: False
+    )
+    shown = _status_log(window)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
 
+    window._on_user_mute_toggled(True)
 
-def test_failed_mute_application_stays_pending() -> None:
-    owner = cast(Any, MainWindow.__new__(MainWindow))
-
-    def fail(_muted: bool) -> None:
-        raise RuntimeError("processor unavailable")
-
-    owner.processor = SimpleNamespace(set_output_mute=fail)
-    owner.user_muted = True
-    owner._temporary_mute_reasons = set()
-    owner._update_session_summary = lambda: None
-
-    MainWindow._apply_output_mute(owner)
-
-    assert owner._output_mute_error == "unavailable"
+    window.engine_session.processor = window.processor
+    assert "could not be applied" in shown[-1]
+    assert "preference saved" in shown[-1]
+    assert window.shell_texts["transmission_status_label"].text.endswith("/ Mute pending")
 
 
 def test_legacy_global_modes_without_stable_identity_use_safe_defaults() -> None:

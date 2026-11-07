@@ -1,3 +1,6 @@
+# pyright: reportMissingImports=false
+# (the sibling test modules are found by pytest at run time)
+
 from __future__ import annotations
 
 from unittest.mock import Mock, call
@@ -13,8 +16,8 @@ from mic_eq.ui.capture_session import (
     restart_processor_for_route as _restart_processor_for_route,
     recovery_paused,
     route_identities_match as _route_identities_match,
-    set_temporary_mute as _set_temporary_mute,
 )
+from engine_fakes import FakeEngine, fake_session
 
 
 def test_capture_deadline_fails_when_recording_progress_stops() -> None:
@@ -48,20 +51,32 @@ def test_capture_deadline_bounds_total_elapsed_time_while_progress_advances() ->
     )
 
 
+class _Lease:
+    """The audio lease a capture mutes the output through."""
+
+    def __init__(self) -> None:
+        self.mutes: list[bool] = []
+
+    def mute(self, on: bool = True) -> None:
+        self.mutes.append(on)
+
+    def muted(self) -> bool:
+        return bool(self.mutes) and self.mutes[-1]
+
+
 def test_capture_session_restores_prior_recovery_and_owned_mute() -> None:
     processor = Mock()
     processor.is_recovery_suppressed.return_value = True
     audio = object()
     processor.stop_raw_recording.return_value = audio
-    set_mute = Mock()
-    owner = Mock(processor=processor, set_temporary_output_mute=set_mute)
-    session = CaptureSession(owner, "test_capture")
+    lease = _Lease()
+    session = CaptureSession(processor, lease)
 
     session.start(4.0, before_cleanup=True)
     captured = session.stop_recording()
 
     assert captured is audio
-    set_mute.assert_has_calls([call(True, "test_capture"), call(False, "test_capture")])
+    assert lease.mutes == [True, False]
     processor.set_recovery_suppressed.assert_has_calls([call(True), call(True)])
     processor.stop_raw_recording.assert_called_once_with()
 
@@ -70,14 +85,13 @@ def test_capture_session_cleans_up_when_native_start_raises() -> None:
     processor = Mock()
     processor.is_recovery_suppressed.return_value = False
     processor.start_raw_recording.side_effect = RuntimeError("capture unavailable")
-    set_mute = Mock()
-    owner = Mock(processor=processor, set_temporary_output_mute=set_mute)
-    session = CaptureSession(owner, "test_capture")
+    lease = _Lease()
+    session = CaptureSession(processor, lease)
 
     with pytest.raises(RuntimeError, match="capture unavailable"):
         session.start(4.0, before_cleanup=True)
 
-    set_mute.assert_has_calls([call(True, "test_capture"), call(False, "test_capture")])
+    assert lease.mutes == [True, False]
     processor.set_recovery_suppressed.assert_has_calls([call(True), call(False)])
 
 
@@ -114,10 +128,9 @@ def test_recovery_paused_puts_back_what_was_set_even_when_the_dialog_fails(befor
 
 def test_a_capture_inside_a_paused_dialog_does_not_end_the_pause() -> None:
     engine = _Engine()
-    owner = Mock(processor=engine)
 
     with recovery_paused(engine):
-        session = CaptureSession(owner, "test_capture")
+        session = CaptureSession(engine, _Lease())
         session.start(4.0)
         session.stop_recording()
         assert engine.suppressed is True  # the capture put back the dialog's pause, not a clear
@@ -137,9 +150,8 @@ def test_capture_session_aborts_when_prior_recovery_state_cannot_be_read() -> No
     processor = Mock()
     processor.is_recovery_suppressed.side_effect = get_recovery_suppressed
     processor.set_recovery_suppressed.side_effect = set_recovery_suppressed
-    set_mute = Mock()
-    owner = Mock(processor=processor, set_temporary_output_mute=set_mute)
-    session = CaptureSession(owner, "test_capture")
+    lease = _Lease()
+    session = CaptureSession(processor, lease)
 
     with pytest.raises(RuntimeError, match="recovery state unavailable"):
         session.start(4.0, before_cleanup=True)
@@ -148,7 +160,7 @@ def test_capture_session_aborts_when_prior_recovery_state_cannot_be_read() -> No
     assert session.active is False
     processor.start_raw_recording.assert_not_called()
     processor.set_recovery_suppressed.assert_not_called()
-    set_mute.assert_has_calls([call(True, "test_capture"), call(False, "test_capture")])
+    assert lease.mutes == [True, False]
 
 
 def test_capture_session_retries_failed_state_restoration_on_cleanup() -> None:
@@ -160,29 +172,32 @@ def test_capture_session_retries_failed_state_restoration_on_cleanup() -> None:
         None,
     ]
     processor.stop_raw_recording.return_value = object()
-    mute_active = False
-    mute_releases = 0
-
-    def set_mute(muted: bool, _reason: str) -> None:
-        nonlocal mute_active, mute_releases
-        if muted:
-            mute_active = True
-        else:
-            mute_releases += 1
-            if mute_releases == 1:
-                raise RuntimeError("mute restore failed")
-            mute_active = False
-
-    owner = Mock(processor=processor, set_temporary_output_mute=set_mute)
-    session = CaptureSession(owner, "test_capture")
+    lease = _Lease()
+    session = CaptureSession(processor, lease)
 
     session.start(4.0, before_cleanup=True)
     session.stop_recording()
     session.cleanup()
 
     processor.set_recovery_suppressed.assert_has_calls([call(True), call(True), call(True)])
-    assert mute_active is False
-    assert mute_releases == 2
+    assert lease.mutes == [True, False]  # the mute is let go once, while the recovery restore is retried
+
+
+def test_capture_session_cleanup_retries_a_mute_release_the_engine_refused(qapp) -> None:
+    engine = FakeEngine()
+    lease = fake_session(engine).borrow("auto_eq_calibration")
+    processor = Mock()
+    processor.stop_raw_recording.return_value = object()
+    session = CaptureSession(processor, lease)
+
+    session.start(4.0, before_cleanup=True)
+    engine.mute_error = RuntimeError("mute unavailable")
+    session.stop_recording()
+    assert lease.muted() and engine.muted is True
+
+    engine.mute_error = None
+    session.cleanup()
+    assert not lease.muted() and engine.muted is False
 
 
 def test_the_chain_snapshot_requires_no_processing_panels(qapp):
@@ -200,37 +215,6 @@ def test_the_chain_snapshot_requires_no_processing_panels(qapp):
         "compressor": {"ratio": 3.5},
         "limiter": {"ceiling_db": -2.0},
     }
-
-
-class _MuteOwner:
-    user_muted = True
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[bool, str]] = []
-
-    def set_temporary_output_mute(self, muted: bool, reason: str) -> None:
-        self.calls.append((muted, reason))
-
-
-class _ProcessorOnlyOwner:
-    user_muted = True
-
-    def __init__(self) -> None:
-        self.processor = Mock()
-
-
-def test_temporary_mute_keeps_owner_reason_and_fallback_user_mute() -> None:
-    owner = _MuteOwner()
-    _set_temporary_mute(owner, "auto_eq_calibration", True)
-    _set_temporary_mute(owner, "auto_eq_calibration", False)
-    assert owner.calls == [
-        (True, "auto_eq_calibration"),
-        (False, "auto_eq_calibration"),
-    ]
-
-    fallback_owner = _ProcessorOnlyOwner()
-    _set_temporary_mute(fallback_owner, "auto_voice_setup", False)
-    fallback_owner.processor.set_output_mute.assert_called_once_with(True)
 
 
 def test_route_identity_uses_endpoint_ids_and_default_semantics() -> None:

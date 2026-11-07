@@ -262,7 +262,7 @@ def test_close_stops_processing_before_reporting_settings_failure(
                 return_value=write_result,
             ))
             patch.setattr(main_window.QMessageBox, "warning", lambda *_: events.append("warning"))
-            cast(Any, window).processor = SimpleNamespace(
+            cast(Any, window).processor = window.engine_session.processor = SimpleNamespace(
                 is_running=lambda: True, stop=lambda: events.append("stop"),
             )
             assert window._save_ui_state() is False
@@ -271,7 +271,7 @@ def test_close_stops_processing_before_reporting_settings_failure(
             assert events == ["stop", "warning"]
             assert event.isAccepted()
     finally:
-        window.processor = original_processor
+        window.processor = window.engine_session.processor = original_processor
         window.close()
         window.deleteLater()
         qapp.processEvents()

@@ -60,19 +60,13 @@ from .accessibility import bind_label, set_accessible_group
 from .processing_configuration import Checkpoint, ProcessingConfiguration
 from .capture_session import (
     CaptureSession,
-    active_device_identities as _active_device_identities,
     device_label as _device_label,
     device_name as _device_name,
     find_processor_owner as _find_processor_owner,
     owner_calibration_context_key as _owner_calibration_context_key,
     processor_sample_rate as _processor_sample_rate,
-    restart_processor_for_route as _restart_processor_for_route,
-    route_identities_match as _route_identities_match,
-    selected_device_identities as _selected_device_identities,
-    set_temporary_mute as _set_temporary_mute,
-    start_selected_route as _start_selected_route,
-    sync_owner_processing_controls as _sync_owner_processing_controls,
 )
+from .engine_session import AudioLease, AudioUnavailable, RouteMismatch, unavailable_text
 from .analysis_worker import (
     CancellableWorker,
     CaptureAnalysis,
@@ -613,7 +607,7 @@ class VoiceSetupDialog(QDialog):
         self._capture_phase = "voice_recording"
         self._close_requested = False
         self._close_result = False
-        self._started_processor = False
+        self._audio_lease: AudioLease | None = None
         self._recording_duration = NOISE_RECORDING_DURATION
         self._capture_session: CaptureSession | None = None
         self._verification_audio: np.ndarray | None = None
@@ -1052,66 +1046,57 @@ class VoiceSetupDialog(QDialog):
             QMessageBox.critical(self, "Error", plain_error("Could not find audio processor"))
             return False
 
-        processor_was_running = parent.processor.is_running()
-        selected_identities = _selected_device_identities(parent)
-        selected_input = _device_name(selected_identities[0])
-        selected_output = _device_name(selected_identities[1])
-
-        if processor_was_running:
-            active_identities = _active_device_identities(parent.processor)
-            active_pair = (
-                _device_name(active_identities[0]),
-                _device_name(active_identities[1]),
-            )
-            if not _route_identities_match(selected_identities, active_identities):
-                reply = QMessageBox.question(
-                    self,
-                    "Switch Devices for Voice Setup?",
-                    "Voice setup should record from your selected devices.\n\n"
-                    f"Selected input: {_device_label(selected_input, '(Default Input)')}\n"
-                    f"Selected output: {_device_label(selected_output, '(Default Output)')}\n\n"
-                    f"Active input: {_device_label(active_pair[0], '(Default Input)')}\n"
-                    f"Active output: {_device_label(active_pair[1], '(Default Output)')}\n\n"
-                    "Switch now?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                )
-                if reply != QMessageBox.StandardButton.Yes:
-                    self.warning_label.setText(
-                        "Setup canceled. The microphone and speakers that were "
-                        "already running were kept."
-                    )
-                    self.warning_label.setStyleSheet(message_text_style("warn"))
-                    # The state, button text and selector stay as the dialog had them.
-                    self.start_button.setEnabled(True)
-                    return False
-
-                try:
-                    _restart_processor_for_route(
-                        parent.processor, selected_identities, active_identities
-                    )
-                    _set_temporary_mute(parent, _VOICE_SETUP_MUTE_REASON, False)
-                except Exception as exc:
-                    _sync_owner_processing_controls(parent)
-                    QMessageBox.critical(
-                        self,
-                        "Audio Error",
-                        "AudioForge could not switch to your selected devices.\n\n"
-                        f"{exc}\n\nCheck that they are connected and not used by another app.",
-                    )
-                    return False
-            return True
-
+        session = parent.engine_session
         try:
-            _start_selected_route(parent)
-            self._started_processor = True
+            self._audio_lease = session.borrow(_VOICE_SETUP_MUTE_REASON)
             return True
-        except Exception as exc:
+        except RouteMismatch as mismatch:
+            selected_input, selected_output = (_device_name(item) for item in mismatch.selected)
+            active_pair = tuple(_device_name(item) for item in mismatch.active)
+            reply = QMessageBox.question(
+                self,
+                "Switch Devices for Voice Setup?",
+                "Voice setup should record from your selected devices.\n\n"
+                f"Selected input: {_device_label(selected_input, '(Default Input)')}\n"
+                f"Selected output: {_device_label(selected_output, '(Default Output)')}\n\n"
+                f"Active input: {_device_label(active_pair[0], '(Default Input)')}\n"
+                f"Active output: {_device_label(active_pair[1], '(Default Output)')}\n\n"
+                "Switch now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self.warning_label.setText(
+                    "Setup canceled. The microphone and speakers that were "
+                    "already running were kept."
+                )
+                self.warning_label.setStyleSheet(message_text_style("warn"))
+                # The state, button text and selector stay as the dialog had them.
+                self.start_button.setEnabled(True)
+                return False
+
+            try:
+                self._audio_lease = session.borrow(_VOICE_SETUP_MUTE_REASON, switch_route=True)
+            except AudioUnavailable as exc:
+                QMessageBox.critical(
+                    self,
+                    "Audio Error",
+                    unavailable_text(
+                        exc,
+                        "AudioForge could not switch to your selected devices.",
+                        "Check that they are connected and not used by another app.",
+                    ),
+                )
+                return False
+            return True
+        except AudioUnavailable as exc:
             QMessageBox.critical(
                 self,
                 "Audio Error",
-                "AudioForge could not start the microphone and speakers.\n\n"
-                f"{exc}\n\nCheck that they are connected and not used by another app, "
-                "then try again.",
+                unavailable_text(
+                    exc,
+                    "AudioForge could not start the microphone and speakers.",
+                    "Check that they are connected and not used by another app, then try again.",
+                ),
             )
             return False
 
@@ -1149,6 +1134,9 @@ class VoiceSetupDialog(QDialog):
 
         self._recent_rms_db.clear()
         self._recent_peak_db.clear()
+        assert (
+            self._audio_lease is not None and self._audio_lease.held
+        ), "a take starts only after _ensure_processor_ready"
         try:
             get_input = getattr(parent.processor, "get_active_input_device", None)
             get_mode = getattr(parent.processor, "get_input_channel_mode", None)
@@ -1159,7 +1147,7 @@ class VoiceSetupDialog(QDialog):
                 channel_mode=str(get_mode() or "") if callable(get_mode) else "",
                 channel_count=1,
             )
-            self._capture_session = CaptureSession(parent, _VOICE_SETUP_MUTE_REASON)
+            self._capture_session = CaptureSession(parent.processor, self._audio_lease)
             self._capture_session.start(
                 self._recording_duration,
                 before_cleanup=True,
@@ -2110,11 +2098,11 @@ class VoiceSetupDialog(QDialog):
             proposed_chain_settings=proposed_chain,
             parent=self,
         )
-        _set_temporary_mute(owner, "listening_comparison", True)
+        owner.engine_session.hold_mute("listening_comparison", True)
         try:
             keep = dialog.exec() == int(QDialog.DialogCode.Accepted)
         finally:
-            _set_temporary_mute(owner, "listening_comparison", False)
+            owner.engine_session.hold_mute("listening_comparison", False)
             dialog.deleteLater()
         if keep:
             if self._final_comparison_pending:
@@ -3048,16 +3036,8 @@ class VoiceSetupDialog(QDialog):
         self.summary_group.setVisible(False)
 
     def _stop_owned_processor(self) -> None:
-        if not self._started_processor:
-            return
-
-        parent = _find_processor_owner(self.parent())
-        if parent:
-            try:
-                parent.processor.stop()
-            except Exception as exc:
-                logger.warning("Failed to stop owned processor: %s", exc)
-        self._started_processor = False
+        if self._audio_lease is not None:
+            self._audio_lease.release()
 
     def _cleanup_recording_tap(self) -> None:
         session, self._capture_session = self._capture_session, None

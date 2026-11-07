@@ -37,7 +37,7 @@ class _LiveProcessor:
 def live_window(isolated_main_window, monkeypatch, qapp):
     monkeypatch.setattr(MainWindow, "_quit_choice", _QUIT_CHOICE)
     window: Any = isolated_main_window
-    window.processor = _LiveProcessor(window.processor)
+    window.processor = window.engine_session.processor = _LiveProcessor(window.processor)
     yield window
     qapp.processEvents()  # ends a sign-out query a test left open
 
@@ -92,6 +92,14 @@ def _quit_from_tray(window: Any) -> None:
 def test_live_audio_asks_and_cancel_keeps_everything_running(live_window, answers, attempt):
     attempt(live_window)
     assert answers.asked == [["Quit", "Cancel"]]
+    assert live_window.processor.running and not live_window._quitting
+
+
+def test_a_box_closed_without_a_button_and_no_tray_cancels_the_quit(live_window, monkeypatch):
+    monkeypatch.setattr(QMessageBox, "exec", lambda _box: 0)  # closed by the window manager
+
+    live_window._quit_from_tray()
+
     assert live_window.processor.running and not live_window._quitting
 
 

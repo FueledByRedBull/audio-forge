@@ -13,6 +13,7 @@ from mic_eq.ui.platform_text import SOUND_SETTINGS
 from mic_eq.ui.theme import message_text_style
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from capture_helpers import RATE, _voice, finish_take
+from engine_fakes import lend_audio
 from test_auto_eq_candidate_lifecycle import _Owner
 from test_voice_setup_integration import real_main_window  # noqa: F401  (a fixture)
 
@@ -53,7 +54,7 @@ def voice(real_main_window, monkeypatch):  # noqa: F811
     _Session.instances = []
     monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.CaptureSession", _Session)
     dialog = VoiceSetupDialog(parent=real_main_window)
-    monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: True)
+    monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: lend_audio(dialog))
     yield dialog
     dialog.reject()
     dialog.deleteLater()
@@ -205,7 +206,6 @@ def test_the_check_meter_speaks_the_same_words_as_the_verdict(voice) -> None:
 def auto_eq(qapp, monkeypatch):
     _Session.instances = []
     monkeypatch.setattr(calibration_dialog, "CaptureSession", _Session)
-    monkeypatch.setattr(calibration_dialog, "_start_selected_route", lambda _owner: None)
     owner = _Owner()
     dialog = CalibrationDialog(owner)
     yield dialog
@@ -291,16 +291,20 @@ def test_auto_eq_nothing_heard_cannot_be_continued_past(auto_eq) -> None:
 
 def test_auto_eq_keeps_ownership_of_a_processor_it_started_for_the_check(auto_eq) -> None:
     owner = auto_eq.parent()
-    owner.processor.is_running = lambda: auto_eq._started_processor  # running once started
+    starts: list[bool] = []
+    owner.processor.is_running = lambda: bool(starts)  # running once started
+    owner.processor.start = lambda *_route, **_endpoints: starts.append(True)
+    owner.processor.stop = starts.clear
     auto_eq._on_start_clicked()
     auto_eq._capture_start_timer.stop()
-    assert auto_eq._started_processor is True
+    lease = auto_eq._audio_lease
+    assert lease is not None and lease.started
     auto_eq._on_recording_complete(GOOD)
 
     auto_eq._on_start_clicked()
     auto_eq._capture_start_timer.stop()
 
-    assert auto_eq._started_processor is True
+    assert auto_eq._audio_lease is lease and starts == [True]
 
 
 @pytest.mark.parametrize(

@@ -25,7 +25,7 @@ def test_comparison_uses_one_capture_and_existing_apply_path(qapp, monkeypatch, 
         current=Preset(), processing_mode="raw",
         states=SimpleNamespace(eq=SimpleNamespace(get_settings=lambda: {"band_gains": [0.0] * 10})),
     )
-    owner.set_temporary_output_mute = Mock()
+    owner.engine_session = Mock()
     dialog = dialog_type(owner, configuration=owner.configuration)
     def unexpected_warning(_parent, title, message):
         pytest.fail(f"Unexpected comparison warning: {title}: {message}")
@@ -69,8 +69,8 @@ def test_comparison_uses_one_capture_and_existing_apply_path(qapp, monkeypatch, 
             "raw" if dialog_type is CalibrationDialog else "normal"
         )
         assert apply.call_count == int(keep)
-        assert owner.set_temporary_output_mute.call_args_list == [
-            ((True, "listening_comparison"),), ((False, "listening_comparison"),)]
+        assert owner.engine_session.hold_mute.call_args_list == [
+            (("listening_comparison", True),), (("listening_comparison", False),)]
         comparison.deleteLater.assert_called_once()
     finally:
         dialog.reject()

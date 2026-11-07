@@ -27,6 +27,7 @@ from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.processing_configuration import Checkpoint
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog, _PreSetup
 from capture_helpers import finish_take
+from engine_fakes import lend_audio
 from test_auto_eq_candidate_lifecycle import _CalibrationOwner
 from test_voice_setup import _full_voice_candidate_metadata
 
@@ -353,6 +354,7 @@ def test_unprocessed_mode_verification_capture_allows_intended_mode_transition(
         lambda *_args, **_kwargs: None,
     )
     dialog.setup_state = "verification_recording"
+    lend_audio(dialog)
     try:
         dialog._begin_recording_capture()
         assert dialog.setup_state == "verification_recording"
@@ -804,7 +806,7 @@ def test_the_review_page_keeps_the_proposal_after_the_verification_take(
     real_main_window, monkeypatch, outcome
 ) -> None:
     dialog, _speech = _verifying_dialog(real_main_window)
-    monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: True)
+    monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: lend_audio(dialog))
     with _dismissed(dialog):
         assert dialog.summary_group.isVisibleTo(dialog)
         dialog._on_start_clicked()
@@ -848,6 +850,7 @@ def test_a_new_take_starts_with_an_empty_level_window(real_main_window, monkeypa
         dialog._recent_rms_db.extend([-20.0] * 15)  # the last take's levels
         dialog._recent_peak_db.extend([-6.0] * 15)
         dialog.setup_state = "noise_recording"
+        lend_audio(dialog)
 
         dialog._begin_recording_capture()
         dialog.recording_timer.stop()
@@ -860,7 +863,7 @@ def test_a_new_take_starts_with_an_empty_level_window(real_main_window, monkeypa
 def test_a_rejected_capture_gives_the_target_controls_back(real_main_window, monkeypatch, capture) -> None:
     window = real_main_window
     dialog = VoiceSetupDialog(parent=window, configuration=window.configuration)
-    monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: True)
+    monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: lend_audio(dialog))
     with _dismissed(dialog):
         if capture == "voice":
             dialog.noise_audio = np.zeros(4800, dtype=np.float32)
@@ -883,7 +886,7 @@ def test_a_rejected_capture_gives_the_target_controls_back(real_main_window, mon
 
 def test_a_clipped_room_noise_take_leaves_the_target_page_usable(real_main_window, monkeypatch) -> None:
     dialog = VoiceSetupDialog(parent=real_main_window, configuration=real_main_window.configuration)
-    monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: True)
+    monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: lend_audio(dialog))
     with _dismissed(dialog):
         _start_noise_take(dialog)
         finish_take(dialog, np.ones(48_000, dtype=np.float32))
@@ -938,13 +941,17 @@ def test_a_context_change_during_setup_names_everything_the_context_holds(
 
 
 def test_declining_the_device_switch_keeps_the_state_the_dialog_had(real_main_window, monkeypatch) -> None:
-    from mic_eq.ui import voice_setup_dialog
+    from mic_eq.ui import engine_session
 
     window = real_main_window
     dialog, _speech = _verifying_dialog(window)
-    monkeypatch.setattr(window, "processor", SimpleNamespace(is_running=lambda: True))
-    monkeypatch.setattr(voice_setup_dialog, "_active_device_identities", lambda _processor: (None, None))
-    monkeypatch.setattr(voice_setup_dialog, "_route_identities_match", lambda *_args: False)
+    monkeypatch.setattr(
+        window.engine_session,
+        "processor",
+        SimpleNamespace(is_running=lambda: True, stop=lambda: None, set_output_mute=lambda _muted: None),
+    )
+    monkeypatch.setattr(engine_session, "active_device_identities", lambda _processor: (None, None))
+    monkeypatch.setattr(engine_session, "route_identities_match", lambda *_args: False)
     monkeypatch.setattr(
         QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.StandardButton.No
     )
@@ -1374,7 +1381,7 @@ def test_a_failed_verification_take_clears_the_recording_status(
     real_main_window, monkeypatch
 ) -> None:
     dialog, _speech = _verifying_dialog(real_main_window)
-    monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: True)
+    monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: lend_audio(dialog))
     with _dismissed(dialog):
         dialog._on_start_clicked()
         dialog._capture_start_timer.stop()

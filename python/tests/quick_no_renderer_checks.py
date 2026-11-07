@@ -56,7 +56,7 @@ def _window() -> MainWindow:
 def test_a_cancelled_quit_starts_no_copy_and_shows_the_error_screen(spawned, monkeypatch) -> None:
     window = _window()
     # The unsaved-changes prompt answered Cancel.
-    monkeypatch.setattr(window, "_confirm_discard_changes", lambda: False)
+    monkeypatch.setattr(window.configuration, "confirm_discard", lambda: False)
     window.show()
     QTest.qWait(SETTLE_MS)
 

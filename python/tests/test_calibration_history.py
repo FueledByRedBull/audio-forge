@@ -15,6 +15,7 @@ from mic_eq.config_parts.calibration import (
 )
 from mic_eq.ui import calibration_history
 from mic_eq.ui.main_window import MainWindow
+from mic_eq.ui.processing_configuration import preset_payload
 
 
 class _CalibrationState:
@@ -35,8 +36,7 @@ def _calibration_owner(result: CalibrationResult, *, context: str = "route"):
     owner = SimpleNamespace(
         config=AppConfig(calibration_results=[result]),
         _calibration_context_key=lambda: context,
-        _get_current_preset=Preset,
-        _preset_payload=MainWindow._preset_payload,
+        configuration=SimpleNamespace(current=Preset(), replaying=False),
         shell_texts={"calibration_status_label": SimpleNamespace(update=lambda **_kwargs: None)},
         compressor_state=_CalibrationState(result.noise_reference_reliability),
     )
@@ -93,8 +93,7 @@ def test_failed_save_restores_previous_record_and_retry_replaces_same_context(
     owner = SimpleNamespace(
         config=AppConfig(),
         _calibration_context_key=lambda: "route/48000",
-        _get_current_preset=Preset,
-        _preset_payload=MainWindow._preset_payload,
+        configuration=SimpleNamespace(current=Preset(), replaying=False),
     )
     monkeypatch.setattr(calibration_history, "save_config", lambda config: False)
     assert not calibration_history.save_calibration_result(
@@ -163,7 +162,7 @@ def test_new_calibration_does_not_invalidate_on_marketing_version_change():
 
 
 def test_status_refresh_is_read_only_for_calibration_dsp():
-    settings = json.loads(MainWindow._preset_payload(Preset()))
+    settings = json.loads(preset_payload(Preset()))
     correction, verification = calibration_settings_parts(settings)
     result = CalibrationResult.capture(
         "full_voice_setup",
@@ -184,7 +183,7 @@ def test_status_refresh_is_read_only_for_calibration_dsp():
 
 
 def test_explicit_calibration_sync_clears_noise_reference_after_route_change():
-    settings = json.loads(MainWindow._preset_payload(Preset()))
+    settings = json.loads(preset_payload(Preset()))
     correction, verification = calibration_settings_parts(settings)
     result = CalibrationResult.capture(
         "full_voice_setup",

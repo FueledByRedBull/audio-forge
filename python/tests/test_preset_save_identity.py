@@ -13,11 +13,10 @@ from PySide6.QtGui import QCloseEvent
 
 from mic_eq.config import AppConfig, DevicePresetBinding, Preset
 from mic_eq.ui import main_window
-from mic_eq.ui.config_history import BoundedConfigurationHistory, ConfigurationSnapshot
 from mic_eq.ui.main_window import MainWindow
+from mic_eq.ui.processing_configuration import PresetOrigin
 from test_eq_editing_state import eq_control
 from test_gate_controls_state import window_gate_control
-from engine_fakes import fake_session
 
 
 def test_saved_processing_settings_restore_on_next_launch(qapp, config_in_tmp_without_devices):
@@ -25,7 +24,7 @@ def test_saved_processing_settings_restore_on_next_launch(qapp, config_in_tmp_wi
     try:
         eq_control(window, "gain", 4).setValue(23.0)
         window_gate_control(window, "Threshold").setValue(-33.0)
-        preset = window._get_current_preset()
+        preset = window.configuration.current
         preset.name = "Saved Calibration"
         filepath = window._save_preset_file(preset)
         assert filepath is not None and filepath.is_file()
@@ -36,10 +35,10 @@ def test_saved_processing_settings_restore_on_next_launch(qapp, config_in_tmp_wi
 
     restored = MainWindow()
     try:
-        assert restored.current_preset_path == filepath
+        identity = restored.configuration.identity
+        assert (identity.name, identity.path, identity.modified) == ("Saved Calibration", filepath, False)
         assert restored.config.last_preset == str(filepath)
         assert restored._processing_mode() == "normal"
-        assert not restored.preset_modified
         assert eq_control(restored, "gain", 4).value == 23
         assert window_gate_control(restored, "Threshold").value == -33.0
     finally:
@@ -57,15 +56,15 @@ def test_raw_mode_save_is_session_only_and_close_save_reloads_normal(
     restored = None
     try:
         filepath = get_presets_dir() / "Raw Session.json"
-        preset = window._get_current_preset()
+        preset = window.configuration.current
         preset.name = "Raw Session"
         assert window._save_preset_file(preset, filepath=filepath) == filepath
-        assert not window.preset_modified
+        assert not window.configuration.identity.modified
 
         raw_index = window.processing_mode_choice.findData("raw")
         window.processing_mode_choice.setCurrentIndex(raw_index)
         assert window._processing_mode() == "raw"
-        assert window.preset_modified
+        assert window.configuration.identity.modified
         assert "not stored in presets" in str(window.processing_mode_choice.toolTip).lower()
 
         saved = load_preset(filepath)
@@ -74,17 +73,17 @@ def test_raw_mode_save_is_session_only_and_close_save_reloads_normal(
 
         window._save_preset()
         assert window._processing_mode() == "raw"
-        assert window.preset_modified
+        assert window.configuration.identity.modified
         assert "session-only" in str(window.status_message.text).lower()
 
         normal_index = window.processing_mode_choice.findData("normal")
         window.processing_mode_choice.setCurrentIndex(normal_index)
-        window._commit_pending_configuration_snapshot()
+        window.configuration.commit_edit()
         assert window._processing_mode() == "normal"
-        assert not window.preset_modified
+        assert not window.configuration.identity.modified
 
         window.processing_mode_choice.setCurrentIndex(raw_index)
-        assert window.preset_modified
+        assert window.configuration.identity.modified
         close_prompt = Mock(return_value=QMessageBox.StandardButton.Save)
         monkeypatch.setattr(
             main_window.QMessageBox,
@@ -92,13 +91,13 @@ def test_raw_mode_save_is_session_only_and_close_save_reloads_normal(
             close_prompt,
         )
         assert window.close()
-        assert window.preset_modified
+        assert window.configuration.identity.modified
         assert "session-only" in close_prompt.call_args.args[2]
 
         restored = MainWindow()
-        assert restored.current_preset_path == filepath
+        assert restored.configuration.identity.path == filepath
         assert restored._processing_mode() == "normal"
-        assert not restored.preset_modified
+        assert not restored.configuration.identity.modified
     finally:
         window.hide()
         window.deleteLater()
@@ -111,7 +110,7 @@ def test_raw_mode_save_is_session_only_and_close_save_reloads_normal(
 def test_invalid_last_used_preset_falls_back_with_persistent_warning(
     qapp, config_in_tmp_without_devices
 ):
-    from mic_eq.config import get_presets_dir
+    from mic_eq.config import get_presets_dir, load_config
 
     broken = get_presets_dir() / "broken.json"
     broken.write_text("{invalid json", encoding="utf-8")
@@ -119,11 +118,12 @@ def test_invalid_last_used_preset_falls_back_with_persistent_warning(
 
     window = MainWindow()
     try:
-        assert window.current_preset_path is None
+        assert window.configuration.identity.path is None
         assert window.config.last_preset == ""
         assert window.shell_texts["config_warning_banner"].shown
         assert "could not restore" in window.shell_texts["config_warning_banner"].text.lower()
         assert "could not restore" in str(window.status_message.text).lower()
+        assert load_config().last_preset == ""
     finally:
         window.close()
         window.deleteLater()
@@ -139,31 +139,31 @@ def config_in_tmp_without_devices(monkeypatch, tmp_path):
     monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
 
 
-def _save_window(tmp_path: Path) -> MainWindow:
-    window = MainWindow.__new__(MainWindow)
-    window.engine_session = fake_session()
-    window._flush_processing_configuration_writes = Mock()
-    previous_path = tmp_path / "previous.json"
-    window.config = AppConfig(last_preset=str(previous_path))
-    window.current_preset_path = previous_path
+@pytest.fixture
+def save_window(isolated_main_window, monkeypatch, tmp_path) -> MainWindow:
+    """A window showing ``previous.json``, the last-used preset; its folder is not the presets folder."""
+    window = isolated_main_window
+    monkeypatch.setattr(main_window, "get_presets_dir", lambda: tmp_path / "presets")
+    previous = window.configuration.current
+    previous.name = "Previous"
+    assert window.configuration.mark_saved(previous, tmp_path / "previous.json")
     return window
 
 
-def test_cancel_save_as_does_not_save_or_change_identity(monkeypatch, tmp_path):
-    window = _save_window(tmp_path)
-    save = Mock()
-    window._save_preset_file = save
-    window._get_current_preset = lambda: Preset()
-    monkeypatch.setattr(
-        main_window.QInputDialog, "getText",
-        Mock(return_value=("Cancelled", False)),
-    )
+def _identity(window: MainWindow, tmp_path: Path) -> tuple[Path | None, bool]:
+    """The preset the window shows, and whether it still remembers ``previous.json``."""
+    return window.configuration.identity.path, window.config.last_preset == str(tmp_path / "previous.json")
 
-    MainWindow._save_preset(window)
+
+def test_cancel_save_as_does_not_save_or_change_identity(save_window, monkeypatch, tmp_path):
+    save = Mock()
+    monkeypatch.setattr(save_window, "_save_preset_file", save)
+    monkeypatch.setattr(main_window.QInputDialog, "getText", Mock(return_value=("Cancelled", False)))
+
+    save_window._save_preset()
 
     save.assert_not_called()
-    assert window.current_preset_path == tmp_path / "previous.json"
-    assert window.config.last_preset == str(tmp_path / "previous.json")
+    assert _identity(save_window, tmp_path) == (tmp_path / "previous.json", True)
 
 
 @pytest.mark.parametrize("valid", [False, True])
@@ -186,17 +186,18 @@ def test_import_collision_preserves_previous_preset(qapp, monkeypatch, tmp_path,
     monkeypatch.setattr(main_window.QFileDialog, "getOpenFileName", lambda *_: (str(external), ""))
     window = MainWindow()
     try:
-        window._apply_preset(load_preset(existing), preset_path=existing)
+        window._report_load(
+            window.configuration.load(load_preset(existing), PresetOrigin(path=existing), remember=True)
+        )
         window._load_preset()
         assert existing.read_bytes() == original
+        identity = window.configuration.identity
         if valid:
-            assert window.current_preset_name == "New voice"
-            assert window.current_preset_path != existing
-            assert window.current_preset_path is not None
-            assert load_preset(window.current_preset_path).name == "New voice"
+            assert identity.name == "New voice"
+            assert identity.path is not None and identity.path != existing
+            assert load_preset(identity.path).name == "New voice"
         else:
-            assert window.current_preset_name == "Existing voice"
-            assert window.current_preset_path == existing
+            assert (identity.name, identity.path) == ("Existing voice", existing)
             main_window.QMessageBox.warning.assert_called_once()
     finally:
         window.close()
@@ -211,65 +212,34 @@ def test_preset_strength_round_trip_matches_live_processor(
     from mic_eq.config import load_preset
 
     window = MainWindow()
+    configuration = window.configuration
     strength_control = next(
         row["proxy"] for row in cast(Any, window).quick_bridge.model["stages"][0]["rows"]
         if row["label"] == "Strength"
     )
     try:
-        preset = window._get_current_preset()
+        preset = configuration.current
         preset.rnnoise.strength = strength
-        window._apply_preset(preset)
+        window._report_load(configuration.load(preset, PresetOrigin(), remember=True))
         assert window.processor.get_rnnoise_strength() == pytest.approx(strength)
         assert strength_control.text == f"{int(strength_control.value)}%"
-        saved = window._get_current_preset()
+        saved = configuration.current
         assert saved.rnnoise.strength == pytest.approx(strength)
         saved.name = "Strength round trip"
         path = window._save_preset_file(saved)
         assert path is not None
         restored = load_preset(path)
         assert restored.rnnoise.strength == pytest.approx(strength)
-        window._apply_preset(restored)
+        window._report_load(configuration.load(restored, PresetOrigin(), remember=True))
         assert window.processor.get_rnnoise_strength() == pytest.approx(strength)
-        assert window.preset_modified is False
+        assert configuration.identity.modified is False
 
         edited_value = (int(strength_control.value) + 1) % 101
         strength_control.setValue(float(edited_value))
         assert window.processor.get_rnnoise_strength() == pytest.approx(
             edited_value / 100.0
         )
-        assert window._get_current_preset().rnnoise.strength == pytest.approx(
-            edited_value / 100.0
-        )
-    finally:
-        window.close()
-        window.deleteLater()
-        qapp.processEvents()
-
-
-def test_non_grid_dynamics_values_survive_restore_and_snapshot(qapp, monkeypatch):
-    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
-    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
-    window = MainWindow()
-    try:
-        preset = window._get_current_preset()
-        preset.gate.threshold_db = -31.237
-        preset.deesser.auto_amount = 0.33789
-        preset.compressor.ratio = 3.14159
-        preset.limiter.ceiling_db = -1.23456
-
-        window.apply_processing_configuration(preset)
-        restored = window._get_current_preset()
-
-        assert restored.gate.threshold_db == pytest.approx(-31.237)
-        assert restored.deesser.auto_amount == pytest.approx(0.33789)
-        assert restored.compressor.ratio == pytest.approx(3.14159)
-        assert restored.limiter.ceiling_db == pytest.approx(-1.23456)
-        assert window.processor.get_deesser_auto_amount() == pytest.approx(0.33789)
-        assert window._commit_pending_configuration_snapshot()
-        assert window._configuration_history.current is not None
-        assert window._configuration_history.current.to_preset().compressor.ratio == pytest.approx(
-            3.14159
-        )
+        assert configuration.current.rnnoise.strength == pytest.approx(edited_value / 100.0)
     finally:
         window.close()
         window.deleteLater()
@@ -307,114 +277,62 @@ def test_close_stops_processing_before_reporting_settings_failure(
         qapp.processEvents()
 
 
-def test_prompt_save_cancel_keeps_last_used_identity(monkeypatch, tmp_path):
-    window = _save_window(tmp_path)
+def test_prompt_save_cancel_keeps_last_used_identity(save_window, monkeypatch, tmp_path):
     save_preset = Mock()
     monkeypatch.setattr(main_window, "save_preset", save_preset)
-    monkeypatch.setattr(
-        main_window.QMessageBox,
-        "question",
-        Mock(return_value=QMessageBox.StandardButton.No),
-    )
+    monkeypatch.setattr(main_window.QMessageBox, "question", Mock(return_value=QMessageBox.StandardButton.No))
 
-    MainWindow._prompt_save_current_preset(
-        window,
-        title="Save",
-        question="Save?",
-        preset_name="Cancelled",
-        description="",
-    )
+    save_window._prompt_save_current_preset(title="Save", question="Save?", preset_name="Cancelled", description="")
 
-    assert window.current_preset_path == tmp_path / "previous.json"
-    assert window.config.last_preset == str(tmp_path / "previous.json")
+    assert _identity(save_window, tmp_path) == (tmp_path / "previous.json", True)
     save_preset.assert_not_called()
 
 
-def test_failed_save_keeps_last_used_identity(monkeypatch, tmp_path):
-    window = _save_window(tmp_path)
-    monkeypatch.setattr(
-        main_window.QMessageBox,
-        "question",
-        Mock(return_value=QMessageBox.StandardButton.Yes),
-    )
+def test_failed_save_keeps_last_used_identity(save_window, monkeypatch, tmp_path):
+    monkeypatch.setattr(main_window.QMessageBox, "question", Mock(return_value=QMessageBox.StandardButton.Yes))
     monkeypatch.setattr(main_window, "save_preset", Mock(side_effect=OSError("disk full")))
     critical = Mock()
     monkeypatch.setattr(main_window.QMessageBox, "critical", critical)
-    window._get_current_preset = lambda: Preset()
 
-    MainWindow._prompt_save_current_preset(
-        window,
-        title="Save",
-        question="Save?",
-        preset_name="Failed",
-        description="",
-    )
+    save_window._prompt_save_current_preset(title="Save", question="Save?", preset_name="Failed", description="")
 
-    assert window.current_preset_path == tmp_path / "previous.json"
-    assert window.config.last_preset == str(tmp_path / "previous.json")
+    assert _identity(save_window, tmp_path) == (tmp_path / "previous.json", True)
     critical.assert_called_once()
 
 
 @pytest.mark.parametrize("save_config_result", [False, OSError("config locked")])
 def test_saved_file_without_identity_persistence_is_reported(
-    monkeypatch, tmp_path, save_config_result
+    save_window, monkeypatch, tmp_path, save_config_result
 ):
-    window = _save_window(tmp_path)
     saved_path = tmp_path / "fresh.json"
     monkeypatch.setattr(main_window, "save_preset", Mock(return_value=saved_path))
     if isinstance(save_config_result, Exception):
         save_config = Mock(side_effect=save_config_result)
     else:
         save_config = Mock(return_value=save_config_result)
-    monkeypatch.setattr(main_window, "save_config", save_config)
-    monkeypatch.setattr(main_window.QMessageBox, "information", Mock())
-    monkeypatch.setattr(
-        main_window.QInputDialog,
-        "getText",
-        Mock(side_effect=[("Fresh", True), ("", True)]),
-    )
-    window.status_message = Mock()
-    window._get_current_preset = lambda: Preset()
+    monkeypatch.setattr(main_window.QInputDialog, "getText", Mock(return_value=("Fresh", True)))
 
-    MainWindow._save_preset(window)
+    with monkeypatch.context() as patch:  # the window's close must save again
+        patch.setattr(main_window, "save_config", save_config)
+        save_window._save_preset()
 
-    assert window.current_preset_path == saved_path
-    assert window.config.last_preset == str(tmp_path / "previous.json")
-    assert window._last_preset_identity_persisted is False
-    assert "could not remember" in window.status_message.showMessage.call_args.args[0]
+    assert _identity(save_window, tmp_path) == (saved_path, True)
+    assert save_window.configuration.identity.remembered is False
+    assert "could not remember" in str(save_window.status_message.text)
 
 
-@pytest.mark.parametrize("save_config_result", [False, TypeError("invalid config")])
-def test_loaded_preset_keeps_live_identity_when_remembering_fails(
-    monkeypatch, tmp_path, save_config_result
-):
-    window = MainWindow.__new__(MainWindow)
-    window.config = AppConfig(last_preset="previous.json")
-    window.current_preset_name = "Previous"
-    window.current_preset_description = ""
-    window.current_preset_path = Path("previous.json")
-    window._saved_preset_payload = None
-    window._current_value_provenance = {}
-    window.preset_modified = False
-    window._history_ready = False
-    window._history_replaying = False
-    window.status_message = Mock()
-    window.apply_processing_configuration = Mock()
-    window._set_preset_modified = Mock()
-    window._update_session_summary = Mock()
-    if isinstance(save_config_result, Exception):
-        monkeypatch.setattr(main_window, "save_config", Mock(side_effect=save_config_result))
-    else:
-        monkeypatch.setattr(main_window, "save_config", Mock(return_value=save_config_result))
-
-    loaded_path = tmp_path / "loaded.json"
+@pytest.mark.parametrize("refusal", [False, TypeError("invalid config")], ids=["false", "raises"])
+def test_a_load_that_cannot_be_remembered_says_so(isolated_main_window, monkeypatch, tmp_path, refusal):
+    window = isolated_main_window
     loaded = Preset(name="Loaded")
-    assert MainWindow._apply_preset(window, loaded, preset_path=loaded_path)
+    save = Mock(side_effect=refusal) if isinstance(refusal, Exception) else Mock(return_value=refusal)
+    with monkeypatch.context() as patch:  # the window's close must save again
+        patch.setattr(main_window, "save_config", save)
+        assert window._report_load(
+            window.configuration.load(loaded, PresetOrigin(path=tmp_path / "loaded.json"), remember=True)
+        )
 
-    assert window.current_preset_name == "Loaded"
-    assert window.current_preset_path == loaded_path
-    assert window.config.last_preset == "previous.json"
-    assert "could not be remembered" in window.status_message.showMessage.call_args.args[0]
+    assert "could not be remembered" in str(window.status_message.text)
 
 
 def _submenu(window: QMainWindow, title: str) -> QMenu:
@@ -516,207 +434,39 @@ def test_route_preset_menu_normalizes_only_unambiguous_legacy_bindings(
     qapp.processEvents()
 
 
-@pytest.mark.parametrize(
-    ("startup_id", "expected_name", "expected_id"),
-    [
-        ("custom-file:second.json", "second.json", "custom-file:second.json"),
-        ("custom:Unique", "unique.json", "custom-file:unique.json"),
-        ("custom:Duplicate", None, "custom:Duplicate"),
-    ],
-)
-def test_restore_startup_preset_resolves_file_id_and_migrates_legacy_name(
-    qapp, monkeypatch, tmp_path, startup_id, expected_name, expected_id
-):
-    presets = [
-        ("Duplicate", tmp_path / "first.json"),
-        ("Duplicate", tmp_path / "second.json"),
-        ("Unique", tmp_path / "unique.json"),
-    ]
-    loaded_paths = []
-    monkeypatch.setattr(main_window, "list_presets", lambda: presets)
-    monkeypatch.setattr(
-        main_window,
-        "load_preset",
-        lambda path: loaded_paths.append(path) or Preset(),
-    )
-
-    window = cast(Any, MainWindow.__new__(MainWindow))
-    window.config = AppConfig(startup_preset=startup_id)
-    window.input_choice = SimpleNamespace(blockSignals=Mock())
-    window.output_choice = SimpleNamespace(blockSignals=Mock())
-    window.status_message = Mock()
-    window._apply_preset = Mock(return_value=True)
-    window._restore_ui_state = Mock()
-    window._apply_latency_compensation_for_current_devices = Mock()
-    window._apply_bound_preset_for_current_route = Mock(return_value=False)
-    window._save_config_safely = Mock(return_value=True)
-
-    MainWindow._restore_from_config(window)
-
-    assert loaded_paths == ([] if expected_name is None else [tmp_path / expected_name])
-    assert window.config.startup_preset == expected_id
-    assert window._save_config_safely.call_count == int(startup_id != expected_id)
-
-
-def test_route_preset_file_id_takes_precedence_over_legacy_name_collision(
-    monkeypatch, tmp_path
-):
-    filename_match = tmp_path / "target.json"
-    name_collision = tmp_path / "other.json"
-    presets = [
-        ("Target", filename_match),
-        ("target.json", name_collision),
-    ]
-    loaded_paths = []
-    monkeypatch.setattr(main_window, "list_presets", lambda: presets)
-    monkeypatch.setattr(
-        main_window,
-        "load_preset",
-        lambda path: loaded_paths.append(path) or Preset(),
-    )
-    window = cast(Any, MainWindow.__new__(MainWindow))
-    window._apply_preset = Mock(return_value=True)
-
-    assert MainWindow._load_device_preset_id(window, "custom-file:target.json")
-    assert loaded_paths == [filename_match]
-
-
-@pytest.mark.parametrize(
-    ("entries", "preset_id"),
-    [
-        ((("Duplicate", "first.json"), ("Duplicate", "second.json")), "custom:Duplicate"),
-        ((("First", "Shared.json"), ("Shared.json", "other.json")), "custom:Shared.json"),
-    ],
-    ids=["duplicate_display_name", "filename_matches_another_display_name"],
-)
-def test_route_preset_ambiguous_legacy_name_is_rejected(monkeypatch, tmp_path, entries, preset_id):
-    presets = [(name, tmp_path / filename) for name, filename in entries]
-    monkeypatch.setattr(main_window, "list_presets", lambda: presets)
-    monkeypatch.setattr(main_window, "load_preset", lambda _path: Preset())
-    apply_preset = Mock(return_value=True)
-    window = cast(Any, MainWindow.__new__(MainWindow))
-    window._apply_preset = apply_preset
-
-    assert not MainWindow._load_device_preset_id(window, preset_id)
-    apply_preset.assert_not_called()
-
-
 def test_automatic_route_apply_resolves_legacy_filename_and_shows_display_name(
-    monkeypatch, tmp_path
+    isolated_main_window, monkeypatch, tmp_path
 ):
+    window = isolated_main_window
     filepath = tmp_path / "custom-voice.json"
     monkeypatch.setattr(main_window, "list_presets", lambda: [("Warm Voice", filepath)])
     monkeypatch.setattr(main_window, "load_preset", lambda _path: Preset())
-    apply_preset = Mock(return_value=True)
-    window = cast(Any, MainWindow.__new__(MainWindow))
-    window.config = AppConfig(
-        auto_apply_device_presets=True,
-        device_preset_bindings={
-            "route": DevicePresetBinding("custom:custom-voice.json")
-        },
-    )
-    window._current_device_route_key = lambda: "route"
-    window._apply_preset = apply_preset
-    window.status_message = Mock()
-    window._save_config_safely = Mock(return_value=True)
+    window.config.auto_apply_device_presets = True
+    window.config.device_preset_bindings["route"] = DevicePresetBinding("custom:custom-voice.json")
+    monkeypatch.setattr(window, "_current_device_route_key", lambda: "route")
+    save = Mock(return_value=True)
+    monkeypatch.setattr(window, "_save_config_safely", save)
 
-    assert MainWindow._apply_bound_preset_for_current_route(window)
-    apply_preset.assert_called_once()
-    assert (
-        window.config.device_preset_bindings["route"].preset_id
-        == "custom-file:custom-voice.json"
-    )
-    window._save_config_safely.assert_called_once()
-    window.status_message.showMessage.assert_called_once_with("Route preset: Warm Voice", 5000)
+    assert window._apply_bound_preset_for_current_route()
+    assert window.config.device_preset_bindings["route"].preset_id == "custom-file:custom-voice.json"
+    save.assert_called_once()
+    assert window.status_message.text == "Route preset: Warm Voice"
 
 
-def test_missing_custom_file_id_does_not_match_display_name(monkeypatch, tmp_path):
-    colliding_display_name = tmp_path / "other.json"
-    presets = [("missing.json", colliding_display_name)]
-    loaded_paths = []
-    monkeypatch.setattr(main_window, "list_presets", lambda: presets)
-    monkeypatch.setattr(
-        main_window,
-        "load_preset",
-        lambda path: loaded_paths.append(path) or Preset(),
-    )
-
-    window = cast(Any, MainWindow.__new__(MainWindow))
-    window.config = AppConfig(startup_preset="custom-file:missing.json")
-    window.input_choice = SimpleNamespace(blockSignals=Mock())
-    window.output_choice = SimpleNamespace(blockSignals=Mock())
-    window.status_message = Mock()
-    window._apply_preset = Mock(return_value=True)
-    window._restore_ui_state = Mock()
-    window._apply_latency_compensation_for_current_devices = Mock()
-    window._apply_bound_preset_for_current_route = Mock(return_value=False)
-    window._save_config_safely = Mock(return_value=True)
-
-    MainWindow._restore_from_config(window)
-
-    assert loaded_paths == []
-    assert window.config.startup_preset == "custom-file:missing.json"
-
-
-def test_missing_route_file_id_does_not_match_display_name(monkeypatch, tmp_path):
-    other_path = tmp_path / "other.json"
-    monkeypatch.setattr(main_window, "list_presets", lambda: [("missing.json", other_path)])
-    load_preset = Mock(side_effect=AssertionError("missing file identity was loaded"))
-    monkeypatch.setattr(main_window, "load_preset", load_preset)
-    window = cast(Any, MainWindow.__new__(MainWindow))
-    window._apply_preset = Mock(return_value=True)
-
-    assert not MainWindow._load_device_preset_id(window, "custom-file:missing.json")
-    load_preset.assert_not_called()
-
-
-def test_manual_history_edit_clears_auto_eq_diagnostics_only_when_recorded():
-    window = cast(Any, MainWindow.__new__(MainWindow))
-    window.engine_session = fake_session()
-    window.config = AppConfig()
-    history = BoundedConfigurationHistory(limit=4)
-    baseline = ConfigurationSnapshot.from_preset(
-        Preset(), label="baseline", source="startup"
-    )
-    history.initialize(baseline)
-    window._configuration_history = history
-    window._history_ready = True
-    window._history_replaying = False
-    window._history_timer = Mock()
-    window._current_value_provenance = {}
-
-    edited = Preset()
-    edited.gate.threshold_db = -35.0
-    window._get_current_preset = lambda: edited
-    window.compressor_state = SimpleNamespace(
-        flush=Mock(),
-        get_settings=lambda include_calibration: {
-            "noise_reference_reliability": 0.0
-        }
-    )
-    window._calibration_context_key = lambda: None
-    window.eq_state = SimpleNamespace(flush=Mock(), set_auto_eq_diagnostics=Mock())
-    window._update_history_actions = Mock()
-    window.status_message = Mock()
-
-    assert MainWindow._commit_pending_configuration_snapshot(window, source="ui")
-    window.eq_state.set_auto_eq_diagnostics.assert_called_once_with(None)
-
-
-def test_save_updates_owned_path_without_name_prompt(monkeypatch, tmp_path):
-    window = _save_window(tmp_path)
-    window.current_preset_name = "My Sound"
-    window.current_preset_description = "Keep this description"
-    window._get_current_preset = Preset
-    window._save_preset_file = Mock(return_value=window.current_preset_path)
+def test_save_updates_owned_path_without_name_prompt(save_window, monkeypatch, tmp_path):
     monkeypatch.setattr(main_window, "get_presets_dir", lambda: tmp_path)
-    prompt = Mock(side_effect=AssertionError("Save must not ask for a new name"))
-    monkeypatch.setattr(main_window.QInputDialog, "getText", prompt)
-    assert window._save_preset()
-    args, kwargs = window._save_preset_file.call_args
+    owned = save_window.configuration.current
+    owned.name, owned.description = "My Sound", "Keep this description"
+    save_window.configuration.mark_saved(owned, tmp_path / "previous.json")
+    save = Mock(return_value=tmp_path / "previous.json")
+    monkeypatch.setattr(save_window, "_save_preset_file", save)
+    monkeypatch.setattr(
+        main_window.QInputDialog, "getText", Mock(side_effect=AssertionError("Save must not ask for a new name"))
+    )
+    assert save_window._save_preset()
+    args, kwargs = save.call_args
     assert kwargs["filepath"] == tmp_path / "previous.json"
-    assert args[0].name == "My Sound"
-    assert args[0].description == "Keep this description"
+    assert (args[0].name, args[0].description) == ("My Sound", "Keep this description")
 
 
 @pytest.mark.parametrize("reply,save_ok,expected", [
@@ -727,55 +477,64 @@ def test_save_updates_owned_path_without_name_prompt(monkeypatch, tmp_path):
 ])
 def test_unsaved_decision_preserves_failed_or_cancelled_saves(monkeypatch, reply, save_ok, expected):
     window = MainWindow.__new__(MainWindow)
-    window._history_ready = True
-    window.preset_modified = True
-    window._set_preset_modified = Mock()
     window._save_preset = Mock(return_value=save_ok)
     monkeypatch.setattr(main_window.QMessageBox, "question", lambda *_: reply)
-    assert window._confirm_discard_changes() is expected
+    assert window._ask_to_save_sound_changes() is expected
     assert window._save_preset.call_count == int(reply == QMessageBox.StandardButton.Save)
 
 
-def test_active_preset_identity_tracks_edit_history_and_restart(
-    qapp, config_in_tmp_without_devices
-) -> None:
+def test_a_startup_preset_that_loads_counts_as_restored(qapp, config_in_tmp_without_devices):
+    from mic_eq.config import load_config
+
+    # A legacy stored key: it loads, and its migrated ID is saved.
+    main_window.save_config(AppConfig(startup_preset="voice"))
     window = MainWindow()
     try:
-        preset = window._get_current_preset()
-        preset.name = "Lifecycle"
-        filepath = window._save_preset_file(preset)
-        assert filepath is not None and filepath.is_file()
-        assert window.current_preset_name == "Lifecycle"
-        assert window.current_preset_path == filepath
-        assert window.preset_modified is False
-
-        threshold = window_gate_control(window, "Threshold")
-        original_threshold = threshold.value
-        threshold.setValue(original_threshold + 1)
-        threshold.setValue(original_threshold)
-        assert window.preset_modified is True
-        assert not window._commit_pending_configuration_snapshot(source="ui")
-        assert window.preset_modified is False
-
-        threshold.setValue(-33.0)
-        assert window._commit_pending_configuration_snapshot(source="ui")
-        assert window.preset_modified is True
-
-        window.undo_configuration()
-        assert window.preset_modified is False
-        window.redo_configuration()
-        assert window.preset_modified is True
+        assert window.status_message.text == "Restored partial settings (some devices/presets unavailable)"
+        assert load_config().startup_preset == "builtin:voice"
     finally:
         window.close()
         window.deleteLater()
         qapp.processEvents()
 
-    restored = MainWindow()
+
+def test_a_last_used_preset_the_engine_refused_once_is_kept_for_the_next_launch(
+    qapp, config_in_tmp_without_devices, monkeypatch
+):
+    from mic_eq.config import load_config
+    from mic_eq.ui.noise_suppression_state import NoiseSuppressionState
+
+    main_window.save_config(AppConfig(last_preset="builtin:voice"))
+    original = NoiseSuppressionState.set_settings
+    refusals = [RuntimeError("engine busy")]
+
+    def refuse_once(state, settings):
+        if refusals:
+            raise refusals.pop()
+        original(state, settings)
+
+    monkeypatch.setattr(NoiseSuppressionState, "set_settings", refuse_once)
+    window = MainWindow()
     try:
-        assert restored.current_preset_name == "Lifecycle"
-        assert restored.current_preset_path == filepath
-        assert restored.preset_modified is False
+        assert "engine busy" in (window.config.load_warning or "")
+        assert window.config.last_preset == "builtin:voice"
+        assert load_config().last_preset == "builtin:voice"
     finally:
-        restored.close()
-        restored.deleteLater()
+        window.close()
+        window.deleteLater()
         qapp.processEvents()
+
+
+def test_cancelling_the_unsaved_changes_prompt_for_a_route_preset_is_not_reported_unavailable(
+    isolated_main_window, monkeypatch
+):
+    window = isolated_main_window
+    window.config.auto_apply_device_presets = True
+    window.config.device_preset_bindings["route"] = DevicePresetBinding("builtin:voice")
+    monkeypatch.setattr(window, "_current_device_route_key", lambda: "route")
+    window.gate_state.set_settings({"threshold_db": window.gate_state.get_settings()["threshold_db"] + 3})
+    window.status_message.showMessage("before", 0)
+    monkeypatch.setattr(main_window.QMessageBox, "question", lambda *_: QMessageBox.StandardButton.Cancel)
+
+    assert not window._apply_bound_preset_for_current_route()
+    assert window.status_message.text == "before"

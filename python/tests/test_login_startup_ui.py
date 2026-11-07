@@ -287,7 +287,7 @@ def test_missing_requested_startup_preset_is_not_authorized_by_last_used_fallbac
     window.config.startup_preset = "builtin:missing"
     window.config.last_preset = f"builtin:{previous_key}"
     window._restore_from_config()
-    assert window.current_preset_name == BUILTIN_PRESETS[previous_key].name
+    assert window.configuration.identity.name == BUILTIN_PRESETS[previous_key].name
     assert not window._startup_restore_ready
 
 
@@ -347,7 +347,7 @@ def test_manual_refresh_resumes_route_preset_behavior_after_login_finishes(start
     ] = DevicePresetBinding(preset_id="builtin:voice")
     devices["output"] = [other]
     window.refresh_btn_action.trigger()
-    assert window.current_preset_name == BUILTIN_PRESETS["voice"].name
+    assert window.configuration.identity.name == BUILTIN_PRESETS["voice"].name
 
 
 def test_opt_out_does_not_report_running_audio_as_stopped(startup_window, monkeypatch):

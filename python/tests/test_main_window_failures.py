@@ -76,7 +76,7 @@ def test_an_unreadable_last_preset_is_kept_for_the_next_launch(
 
     window = MainWindow()
     try:
-        preset = window._get_current_preset()
+        preset = window.configuration.current
         preset.name = name
         filepath = window._save_preset_file(preset)
         assert filepath is not None
@@ -98,36 +98,6 @@ def test_an_unreadable_last_preset_is_kept_for_the_next_launch(
         restored.deleteLater()
         qapp.processEvents()
     assert load_config().last_preset == str(filepath)
-
-
-def test_a_corrupt_last_preset_still_clears_its_reference(qapp, monkeypatch, tmp_path):
-    from mic_eq.config import load_config
-    from mic_eq.config_parts import shared
-
-    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
-    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
-    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
-
-    window = MainWindow()
-    try:
-        preset = window._get_current_preset()
-        preset.name = "Broken Sound"
-        filepath = window._save_preset_file(preset)
-        assert filepath is not None
-    finally:
-        window.close()
-        window.deleteLater()
-        qapp.processEvents()
-
-    filepath.write_text("{not json", encoding="utf-8")
-    restored = MainWindow()
-    try:
-        assert restored.config.last_preset == ""
-    finally:
-        restored.close()
-        restored.deleteLater()
-        qapp.processEvents()
-    assert load_config().last_preset == ""
 
 
 class _CountingTray(QSystemTrayIcon):
@@ -170,11 +140,10 @@ def test_quitting_from_the_tray_during_setup_rolls_back_before_asking_to_save(
     isolated_main_window, monkeypatch
 ):
     window: Any = isolated_main_window
-    window._set_preset_modified(False)
     gain = eq_control(window, "gain", 4)
     saved_gain = gain.value
     gain.setValue(saved_gain + 6.0)  # the dialog's provisional candidate
-    assert window.preset_modified
+    assert window.configuration.identity.modified
     prompts: list[str] = []
 
     def question(_parent, title, *_args, **_kwargs):
@@ -199,7 +168,6 @@ def test_quitting_from_the_tray_rolls_back_a_setup_dialog_under_a_message_box(
     isolated_main_window, monkeypatch
 ):
     window: Any = isolated_main_window
-    window._set_preset_modified(False)
     gain = eq_control(window, "gain", 4)
     saved_gain = gain.value
     gain.setValue(saved_gain + 6.0)

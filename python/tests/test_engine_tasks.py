@@ -493,12 +493,12 @@ def test_a_failed_configuration_restore_stops_the_audio_on_the_worker_and_says_s
     engine.calls.clear()
     engine.stop_error = RuntimeError("stop unavailable")
 
-    def refuse(_preset):
+    def refuse(_settings):
         raise RuntimeError("configuration write unavailable")
 
-    monkeypatch.setattr(window, "_write_processing_configuration", refuse)
+    monkeypatch.setattr(window.noise_suppression_state, "set_settings", refuse)
     with pytest.raises(RuntimeError, match="restoration failed"):
-        window.apply_processing_configuration(window._get_current_preset())
+        window.configuration.apply(window.configuration.current)
     wait_until(qapp, lambda: "Stopping audio failed" in window.status_message.text)
 
     engine.stop_error = None  # the fixture's teardown stops it for real

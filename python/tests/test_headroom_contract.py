@@ -29,8 +29,7 @@ def test_live_calibration_reliability_reaches_native_preview():
 
     preset = Preset()
     owner = SimpleNamespace(
-        _get_current_preset=lambda: preset,
-        _processing_mode=lambda: "normal",
+        configuration=SimpleNamespace(current=preset, processing_mode="normal"),
         processor=SimpleNamespace(get_input_cleanup_mode=lambda: "gentle"),
         compressor_state=SimpleNamespace(
             get_settings=lambda *, include_calibration: {

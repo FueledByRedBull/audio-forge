@@ -66,6 +66,13 @@ macro_rules! dispatch_sample_format {
 
 const MIN_FIXED_BUFFER_FRAMES: u32 = 16;
 const MAX_FIXED_BUFFER_FRAMES: u32 = 8192;
+/// What the streams ask for when no variable says otherwise. PipeWire's default
+/// quantum of 1024 costs about 32 ms more latency end to end on Linux.
+const DEFAULT_FIXED_BUFFER_FRAMES: Option<u32> = if cfg!(target_os = "linux") {
+    Some(512)
+} else {
+    None
+};
 
 fn parse_fixed_buffer_frames(value: Option<&str>) -> Option<u32> {
     let frames = value?.trim().parse::<u32>().ok()?;
@@ -96,6 +103,15 @@ fn default_source_is_node(
             compact.contains(&format!("\"name\":\"{node_name}\""))
         }),
         Some(_) => current,
+    }
+}
+
+/// The frames to request given a buffer-size variable's value, if it is set.
+/// A value that is not a valid size, such as 0, keeps the driver's default.
+fn requested_fixed_buffer_frames(value: Option<&str>) -> Option<u32> {
+    match value {
+        Some(value) => parse_fixed_buffer_frames(Some(value)),
+        None => DEFAULT_FIXED_BUFFER_FRAMES,
     }
 }
 
@@ -207,6 +223,7 @@ pub mod device;
 pub mod input;
 pub mod output;
 pub mod processor;
+pub(crate) mod realtime;
 pub mod rt;
 #[cfg(windows)]
 pub(crate) mod scheduling;

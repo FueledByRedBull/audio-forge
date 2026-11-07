@@ -41,6 +41,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering}
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[cfg(not(target_os = "linux"))]
 #[test]
 fn test_duration_samples_for_44k1_output() {
     assert_eq!(duration_samples(44_100, OUTPUT_PRIME_MS), 1323);
@@ -391,6 +392,20 @@ fn test_offline_simulators_reject_runtime_backend_failure() {
     });
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn the_linux_output_queue_centers_on_the_measured_target() {
+    for sample_rate in [44_100, 48_000, 96_000] {
+        let prime = duration_samples(sample_rate, OUTPUT_PRIME_MS);
+        let high = duration_samples(sample_rate, OUTPUT_TARGET_HIGH_MS);
+        let center = (prime + high).div_ceil(2);
+        assert!(center.abs_diff(duration_samples(sample_rate, 15)) <= 1);
+        assert_ne!(prime, center);
+        assert!(duration_samples(sample_rate, OUTPUT_HARD_BACKLOG_MS) > high);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
 #[test]
 fn test_output_queue_target_preserves_qualified_callback_headroom() {
     const QUALIFIED_MAX_CALLBACK_MS: u32 = 20;
@@ -414,6 +429,7 @@ fn test_short_queue_applies_only_while_callbacks_are_short() {
     let qualified = OutputWriteLimits {
         output_target_center_samples: duration_samples(48_000, 35),
         output_hard_backlog_samples: duration_samples(48_000, 60),
+        output_cycle_reserve_samples: None,
         discontinuity_fade_samples: 288,
         max_catchup_ratio: 1.01,
         max_emergency_catchup_ratio: 1.02,
@@ -493,6 +509,7 @@ fn test_short_queue_degraded_scheduling_keeps_qualified_limits() {
     let qualified = OutputWriteLimits {
         output_target_center_samples: duration_samples(48_000, 35),
         output_hard_backlog_samples: duration_samples(48_000, 60),
+        output_cycle_reserve_samples: None,
         discontinuity_fade_samples: 288,
         max_catchup_ratio: 1.01,
         max_emergency_catchup_ratio: 1.02,
@@ -597,6 +614,7 @@ fn test_total_reported_latency_includes_limiter_lookahead_across_sample_rates() 
         let total = total_reported_latency_us(LatencyComponents {
             input_resampler_delay_samples: 0,
             output_buffer_samples: 0,
+            stream_delay_samples: 0,
             output_sample_rate: sample_rate,
             output_resampler_delay_samples: 0,
             suppressor_latency_samples: 0,
@@ -621,6 +639,7 @@ fn test_published_latency_counts_lookahead_limiter_only_on_full_path() {
                 LatencyComponents {
                     input_resampler_delay_samples: 0,
                     output_buffer_samples: 480,
+                    stream_delay_samples: 0,
                     output_sample_rate: sample_rate,
                     output_resampler_delay_samples: 0,
                     suppressor_latency_samples: 0,
@@ -1060,6 +1079,7 @@ fn test_total_reported_latency_respects_output_vs_processing_rates() {
     let total = total_reported_latency_us(LatencyComponents {
         input_resampler_delay_samples: 96,
         output_buffer_samples: 882,
+        stream_delay_samples: 0,
         output_sample_rate: 44_100,
         output_resampler_delay_samples: 64,
         suppressor_latency_samples: 480,
@@ -4694,6 +4714,7 @@ fn test_output_writer_limits(
     OutputWriteLimits {
         output_target_center_samples,
         output_hard_backlog_samples,
+        output_cycle_reserve_samples: None,
         discontinuity_fade_samples,
         max_catchup_ratio: 1.03,
         max_emergency_catchup_ratio: 1.06,
@@ -7634,4 +7655,45 @@ fn test_python_deesser_settings_reject_missing_keys_without_applying() {
             DeesserControlState::new().low_cut_hz
         );
     });
+}
+
+#[test]
+fn a_cycle_reserve_keeps_room_for_a_whole_callback_above_the_target() {
+    let qualified = OutputWriteLimits {
+        output_target_center_samples: 720,
+        output_hard_backlog_samples: 1680,
+        output_cycle_reserve_samples: Some(240),
+        discontinuity_fade_samples: 288,
+        max_catchup_ratio: 1.0,
+        max_emergency_catchup_ratio: 1.0,
+    };
+    let hard = |limits, frames| {
+        active_queue_limits(limits, None, frames, false).output_hard_backlog_samples
+    };
+    assert_eq!(hard(qualified, 256), 1680);
+    assert_eq!(hard(qualified, 1024), 1984);
+    assert_eq!(hard(qualified, 8192), 9152);
+    let without = OutputWriteLimits {
+        output_cycle_reserve_samples: None,
+        ..qualified
+    };
+    assert_eq!(hard(without, 8192), 1680);
+}
+
+#[test]
+fn the_reported_latency_counts_the_two_pipewire_stream_cycles() {
+    let expected = if cfg!(target_os = "linux") { 2048 } else { 0 };
+    assert_eq!(stream_delay_samples(1024), expected);
+    let total = total_reported_latency_us(LatencyComponents {
+        input_resampler_delay_samples: 0,
+        output_buffer_samples: 0,
+        stream_delay_samples: stream_delay_samples(1024),
+        output_sample_rate: 48_000,
+        output_resampler_delay_samples: 0,
+        suppressor_latency_samples: 0,
+        limiter_lookahead_samples: 0,
+        true_peak_lookahead_samples: 0,
+        processing_sample_rate: 48_000,
+    });
+    assert_eq!(total, expected * 1_000_000 / 48_000);
 }

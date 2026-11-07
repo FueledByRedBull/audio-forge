@@ -679,9 +679,11 @@ class ProcessingConfiguration:
             preset = self._library.read(path)
         except Exception as error:
             # load_preset wraps OS errors in PresetValidationError; such a file may read next time.
-            # Anything else a malformed file raises makes it invalid, never a failed startup.
+            # Any other exception is a bug, not a bad file: never a failed startup, and the
+            # reference is kept, since INVALID would forget the user's last-used preset.
             unreadable = isinstance(error, OSError) or isinstance(error.__cause__, OSError)
-            status = LoadStatus.NOT_APPLIED if unreadable else LoadStatus.INVALID
+            malformed = isinstance(error, (ValueError, PresetValidationError))
+            status = LoadStatus.INVALID if malformed and not unreadable else LoadStatus.NOT_APPLIED
             return LoadOutcome(status, origin, error=error, read_failed=True)
         return self.load(preset, origin, remember=remember)
 

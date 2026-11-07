@@ -472,7 +472,7 @@ def test_load_id_resolves_only_unambiguous_identities(harness, custom, preset_id
         (ValueError("bad json"), LoadStatus.INVALID),
         (OSError("locked"), LoadStatus.NOT_APPLIED),
         (PresetValidationError("cannot read"), LoadStatus.NOT_APPLIED),
-        (KeyError("bands"), LoadStatus.INVALID),
+        (KeyError("bands"), LoadStatus.NOT_APPLIED),  # a bug, not a bad file: keep the reference
     ],
     ids=["invalid", "malformed", "unreadable", "unreadable-wrapped", "unexpected"],
 )

@@ -15,14 +15,7 @@ from typing import Any, NamedTuple
 import numpy as np
 
 from .auto_eq import analyze_auto_eq, simulate_candidate_chain
-from .auto_eq_parts.headroom import (
-    _NATIVE_SAFETY_METRICS,
-    HEADROOM_TARGET_DB,
-    LIMITER_GAIN_REDUCTION_WARN_DB,
-    TRUE_PEAK_GAIN_REDUCTION_WARN_DB,
-    _is_headroom_safe,
-    _typed_eq_payload,
-)
+from .auto_eq_parts.headroom import _typed_eq_payload
 from .cancellation import AnalysisCancelled, check_analysis_cancelled
 from .compressor_calibration import (
     _COMPRESSOR_P95_TARGET_TOLERANCE_DB,
@@ -37,6 +30,13 @@ from .deesser_fusion import (
     persistent_shape_evidence,
     predict_clip_probability,
     predict_frame_probabilities,
+)
+from ..mic_eq_core import (
+    HEADROOM_TARGET_DB,
+    LIMITER_GAIN_REDUCTION_WARN_DB,
+    NATIVE_SAFETY_METRICS,
+    TRUE_PEAK_GAIN_REDUCTION_WARN_DB,
+    is_headroom_safe,
 )
 from .signal_processing import band_mean as _band_mean, clamp as _clamp, resample_poly
 from .noise_reference import (
@@ -795,7 +795,7 @@ def _limiter_excess_db(simulation: Mapping[str, Any], allowance_db: float) -> fl
     """
     try:
         headroom, limiter_gr, true_peak_gr = (
-            float(simulation[name]) for name in _NATIVE_SAFETY_METRICS
+            float(simulation[name]) for name in NATIVE_SAFETY_METRICS
         )
     except (KeyError, TypeError, ValueError):
         return float("inf")
@@ -814,7 +814,7 @@ def _released_excess_db(simulation: Mapping[str, Any]) -> float:
     It fits at <= 0; a reading that is not finite is infinite.
     """
     headroom, limiter_gr, true_peak_gr = (
-        float(simulation[name]) for name in _NATIVE_SAFETY_METRICS
+        float(simulation[name]) for name in NATIVE_SAFETY_METRICS
     )
     if not np.isfinite([headroom, limiter_gr, true_peak_gr]).all():
         return float("inf")
@@ -828,7 +828,7 @@ def _released_excess_db(simulation: Mapping[str, Any]) -> float:
 def _headroom_safe(simulation: dict[str, Any], allowance_db: float) -> bool:
     """Apply the released headroom check, or the limiter allowance when one applies."""
     if allowance_db <= 0.0:
-        return _is_headroom_safe(simulation)
+        return is_headroom_safe(simulation)
     return _limiter_excess_db(simulation, allowance_db) <= 0.0
 
 
@@ -884,8 +884,8 @@ def _fit_loudness_to_headroom(
     else:
         try:
             shortfall = max(
-                HEADROOM_TARGET_DB - float(simulation[_NATIVE_SAFETY_METRICS[0]]),
-                *(float(simulation[name]) for name in _NATIVE_SAFETY_METRICS[1:]),
+                HEADROOM_TARGET_DB - float(simulation[NATIVE_SAFETY_METRICS[0]]),
+                *(float(simulation[name]) for name in NATIVE_SAFETY_METRICS[1:]),
             )
         except (KeyError, TypeError, ValueError):
             return dict(compressor), simulation

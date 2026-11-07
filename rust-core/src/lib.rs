@@ -495,6 +495,8 @@ fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
 
+    analysis::headroom::register(m)?;
+
     #[cfg(feature = "vad")]
     m.add_function(wrap_pyfunction!(
         audio::processor::analyze_vad_probabilities,

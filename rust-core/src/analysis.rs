@@ -9,6 +9,7 @@
 use std::f64::consts::PI;
 use std::ops::{AddAssign, Mul};
 
+pub mod headroom;
 pub mod latency;
 pub(crate) mod python_api;
 #[cfg(test)]

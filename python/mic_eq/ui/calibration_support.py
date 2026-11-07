@@ -122,7 +122,7 @@ def chain_settings(
     preset: Preset | None = None,
 ) -> dict[str, Any]:
     if full_chain:
-        current = preset if preset is not None else owner._get_current_preset()
+        current = preset if preset is not None else owner.configuration.current
         if not isinstance(current, Preset):
             raise TypeError("current processing configuration is unavailable")
         preset_payload = current.to_dict()
@@ -141,7 +141,7 @@ def chain_settings(
             "full_chain": True,
             "input_pre_filtered": bool(input_pre_filtered),
             "input_cleanup_mode": owner.processor.get_input_cleanup_mode(),
-            "processing_mode": owner._processing_mode(),
+            "processing_mode": owner.configuration.processing_mode,
         }
     settings: dict[str, Any] = {}
     if owner is None:

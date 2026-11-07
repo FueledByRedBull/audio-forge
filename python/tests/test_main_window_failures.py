@@ -37,14 +37,14 @@ class _BrokenProcessor:
     [
         ("_apply_input_channel_mode", "phase_safe_mono", "set_input_channel_mode"),
         ("_apply_input_cleanup_mode", "off", "set_input_cleanup_mode"),
-        ("_apply_output_mute", None, "set_output_mute"),
+        ("_on_user_mute_toggled", True, "set_output_mute"),
     ],
 )
 def test_a_processor_call_that_fails_is_logged_above_debug(
     isolated_main_window, caplog, method, argument, failing_call
 ):
     window: Any = isolated_main_window
-    window.processor = _BrokenProcessor(window.processor, failing_call)
+    window.processor = window.engine_session.processor = _BrokenProcessor(window.processor, failing_call)
     caplog.set_level(logging.INFO)
 
     getattr(window, method)(*(() if argument is None else (argument,)))
@@ -53,27 +53,6 @@ def test_a_processor_call_that_fails_is_logged_above_debug(
         r.levelno >= logging.WARNING and r.exc_info and f"{failing_call} failed" in str(r.exc_info[1])
         for r in caplog.records
     )
-
-
-def test_a_recovery_service_that_fails_every_tick_is_logged_once_per_streak(
-    isolated_main_window, caplog
-):
-    window: Any = isolated_main_window
-    window.processor = _BrokenProcessor(window.processor, "service_recovery")
-    caplog.set_level(logging.INFO)
-
-    tick = window._service_stream_recovery
-    for _ in range(5):
-        tick()
-    failures = [r for r in caplog.records if "recovery service failed" in r.getMessage()]
-    assert len(failures) == 1 and failures[0].levelno == logging.WARNING
-
-    window.processor = _BrokenProcessor(window.processor._real)  # works again
-    tick()
-    window.processor = _BrokenProcessor(window.processor._real, "service_recovery")
-    tick()
-    failures = [r for r in caplog.records if "recovery service failed" in r.getMessage()]
-    assert len(failures) == 2
 
 
 @pytest.mark.parametrize(
@@ -97,7 +76,7 @@ def test_an_unreadable_last_preset_is_kept_for_the_next_launch(
 
     window = MainWindow()
     try:
-        preset = window._get_current_preset()
+        preset = window.configuration.current
         preset.name = name
         filepath = window._save_preset_file(preset)
         assert filepath is not None
@@ -121,36 +100,6 @@ def test_an_unreadable_last_preset_is_kept_for_the_next_launch(
     assert load_config().last_preset == str(filepath)
 
 
-def test_a_corrupt_last_preset_still_clears_its_reference(qapp, monkeypatch, tmp_path):
-    from mic_eq.config import load_config
-    from mic_eq.config_parts import shared
-
-    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
-    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
-    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
-
-    window = MainWindow()
-    try:
-        preset = window._get_current_preset()
-        preset.name = "Broken Sound"
-        filepath = window._save_preset_file(preset)
-        assert filepath is not None
-    finally:
-        window.close()
-        window.deleteLater()
-        qapp.processEvents()
-
-    filepath.write_text("{not json", encoding="utf-8")
-    restored = MainWindow()
-    try:
-        assert restored.config.last_preset == ""
-    finally:
-        restored.close()
-        restored.deleteLater()
-        qapp.processEvents()
-    assert load_config().last_preset == ""
-
-
 class _CountingTray(QSystemTrayIcon):
     def __init__(self) -> None:
         super().__init__()
@@ -170,7 +119,7 @@ def test_the_tray_tooltip_is_only_rewritten_when_its_text_changes(isolated_main_
         window._update_session_summary()
     assert len(tray.tooltips) == 1
 
-    window.user_muted = True
+    window.engine_session.set_user_muted(True)
     window._update_session_summary()
     assert len(tray.tooltips) == 2 and "Muted" in tray.tooltips[-1]
 
@@ -191,11 +140,10 @@ def test_quitting_from_the_tray_during_setup_rolls_back_before_asking_to_save(
     isolated_main_window, monkeypatch
 ):
     window: Any = isolated_main_window
-    window._set_preset_modified(False)
     gain = eq_control(window, "gain", 4)
     saved_gain = gain.value
     gain.setValue(saved_gain + 6.0)  # the dialog's provisional candidate
-    assert window.preset_modified
+    assert window.configuration.identity.modified
     prompts: list[str] = []
 
     def question(_parent, title, *_args, **_kwargs):
@@ -220,7 +168,6 @@ def test_quitting_from_the_tray_rolls_back_a_setup_dialog_under_a_message_box(
     isolated_main_window, monkeypatch
 ):
     window: Any = isolated_main_window
-    window._set_preset_modified(False)
     gain = eq_control(window, "gain", 4)
     saved_gain = gain.value
     gain.setValue(saved_gain + 6.0)

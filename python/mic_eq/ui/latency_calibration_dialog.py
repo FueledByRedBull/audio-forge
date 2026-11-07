@@ -29,15 +29,13 @@ from .components import session_is_ending
 from .latency_calibration_view import NO_READINGS, LatencyCalibrationView
 from .capture_session import (
     CaptureSession,
-    active_device_identities as _active_device_identities,
     capture_route_context,
+    find_processor_owner,
     known_capture_format_context as _known_capture_format_context,
     processor_output_sample_rate as _output_sample_rate,
     processor_sample_rate as _capture_sample_rate,
-    route_identities_match as _route_identities_match,
-    selected_device_identities as _selected_device_identities,
-    start_selected_route,
 )
+from .engine_session import AudioLease, AudioUnavailable, EngineBusy, RouteMismatch
 from .layout_constants import configure_resizable_dialog
 from .quick_scene import QML_DIR, load_scene, quick_theme
 from .quick_shell import register_qml_types
@@ -160,7 +158,7 @@ class LatencyCalibrationDialog(QDialog):
         self._capture_session: CaptureSession | None = None
         self._close_requested = False
         self._close_result = False
-        self._started_processor = False
+        self._audio_lease: AudioLease | None = None
         self._latest_profile: dict | None = existing_profile
         self._capture_timer = QTimer(self)
         self._capture_timer.setInterval(50)
@@ -179,7 +177,7 @@ class LatencyCalibrationDialog(QDialog):
         self._measurement_route_key: str | None = None
         self._measurement_format_context: tuple[int, int, int, int] | None = None
         self._measurement_context_key: str | None = None
-        owner = self._get_processor_owner()
+        owner = find_processor_owner(self.parent())
         if owner is not None:
             context = capture_route_context(owner)
             self._measurement_route_key = context.route_key
@@ -233,22 +231,16 @@ class LatencyCalibrationDialog(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.quick_view)
 
-    def _get_processor_owner(self) -> Any | None:
-        parent: Any = self.parent()
-        while parent and not hasattr(parent, "processor"):
-            parent = parent.parent()
-        return parent
-
     def _on_run_clicked(self):
         if self._close_requested or (self.worker is not None and self.worker.isRunning()):
             self.view_model.set_status("Wait for the previous latency analysis to stop.")
             return
-        owner = self._get_processor_owner()
+        owner = find_processor_owner(self.parent())
         if owner is None:
             QMessageBox.critical(self, "Error", "Could not find audio processor.")
             return
 
-        if getattr(owner, "user_muted", False):
+        if owner.engine_session.view.user_muted:
             QMessageBox.information(
                 self, "Output muted", "Unmute output before measuring latency."
             )
@@ -261,26 +253,22 @@ class LatencyCalibrationDialog(QDialog):
         self._apply_profile_to_labels(None)
         self.view_model.set_accept_enabled(False)
 
-        if owner.processor.is_running():
-            selected_identities = _selected_device_identities(owner)
-            active_identities = _active_device_identities(owner.processor)
-            if not _route_identities_match(selected_identities, active_identities):
-                self._on_worker_failed(
-                    "Latency calibration requires the selected route to match the active stream."
-                )
-                return
-
         try:
-            if not owner.processor.is_running():
-                start_selected_route(owner)
-                self._started_processor = True
-            else:
-                self._started_processor = False
-        except Exception as e:
+            lease = owner.engine_session.borrow("latency_calibration")
+        except RouteMismatch:
+            self._on_worker_failed(
+                "Latency calibration requires the selected route to match the active stream."
+            )
+            return
+        except EngineBusy as e:
+            QMessageBox.critical(self, "Audio error", str(e))
+            return
+        except AudioUnavailable as e:
             QMessageBox.critical(
                 self, "Audio error", f"Failed to start processing: {e}"
             )
             return
+        self._audio_lease = lease
 
         context = capture_route_context(owner)
         self._measurement_route_key = context.route_key
@@ -313,7 +301,7 @@ class LatencyCalibrationDialog(QDialog):
             )
             self._engine_signature = engine_config_signature(owner.processor)
             self._engine_latency_samples = []
-            self._capture_session = CaptureSession(owner, "latency_calibration")
+            self._capture_session = CaptureSession(owner.processor, lease)
             self._capture_session.start(self._recording_duration_s)
         except Exception as e:
             self._on_worker_failed(
@@ -328,7 +316,7 @@ class LatencyCalibrationDialog(QDialog):
         self._capture_timer.start()
 
     def _poll_capture(self):
-        owner = self._get_processor_owner()
+        owner = find_processor_owner(self.parent())
         if owner is None:
             self._on_worker_failed("Could not find audio processor.")
             return
@@ -502,7 +490,7 @@ class LatencyCalibrationDialog(QDialog):
             QMessageBox.information(self, "No result", "Run calibration first.")
             return
 
-        owner = self._get_processor_owner()
+        owner = find_processor_owner(self.parent())
         context = capture_route_context(owner)
         profile_context = _known_capture_format_context(
             self._latest_profile.get("capture_format_context")
@@ -526,7 +514,7 @@ class LatencyCalibrationDialog(QDialog):
         self.accept()
 
     def _on_reset_clicked(self):
-        owner = self._get_processor_owner()
+        owner = find_processor_owner(self.parent())
         if owner is None or not owner._on_latency_calibration_reset():
             self.view_model.set_status("Calibration reset could not be saved. Retry when settings can be saved.")
             return
@@ -539,21 +527,8 @@ class LatencyCalibrationDialog(QDialog):
         self.reject()
 
     def _stop_owned_processor(self):
-        if not self._started_processor:
-            return
-
-        owner = self._get_processor_owner()
-        if owner is None:
-            return
-
-        try:
-            if owner.processor.is_running():
-                owner.processor.stop()
-        except Exception:
-            if DEBUG:
-                logger.debug("Stop processor failed", exc_info=True)
-
-        self._started_processor = False
+        if self._audio_lease is not None:
+            self._audio_lease.release()
 
     def _on_thread_finished(self, worker: LatencyCalibrationWorker) -> None:
         if self.worker is worker:
@@ -563,7 +538,7 @@ class LatencyCalibrationDialog(QDialog):
 
     def _teardown_worker(self):
         self._capture_timer.stop()
-        owner = self._get_processor_owner()
+        owner = find_processor_owner(self.parent())
 
         if self.worker is not None and self.worker.isRunning():
             self.worker.stop()

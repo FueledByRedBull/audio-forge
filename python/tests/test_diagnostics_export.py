@@ -509,14 +509,12 @@ class _FakeWindow:
         self.input_choice = object()
         self.output_choice = object()
         self.status_message = _FakeStatusBar()
+        self.configuration = SimpleNamespace(current=Preset())
 
     def _combo_device_identity(self, combo: object) -> DeviceIdentity:
         if combo is self.input_choice:
             return DeviceIdentity(name="Private USB Microphone", is_default=True)
         return DeviceIdentity(name="Private Virtual Cable")
-
-    def _get_current_preset(self) -> Preset:
-        return Preset()
 
     def _interface_snapshot(self) -> dict[str, str]:
         return {"view": "quick", "classic_reason": "none", "graphics_api": "software"}

@@ -262,10 +262,10 @@ def test_a_double_click_in_the_real_scene_is_one_undo_step_after_a_jittered_pres
     state = window.eq_state
     state.set_band_value(4, "gain_db", 3.0, edited=False)
     state.flush()
-    window._commit_pending_configuration_snapshot()
+    window.configuration.commit_edit()
     # The committed change moves the page layout; point at the handle where it settles.
     QTest.qWait(100)
-    history = window._configuration_history
+    history = window.configuration.history
     before, original = history.size, state.get_band(4)
     model = window.eq_presentation.graph_model
     x, y = model.band_handle_position(4, item.width(), item.height())

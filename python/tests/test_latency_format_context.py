@@ -18,6 +18,7 @@ from mic_eq.config import (
 )
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog, LatencyCalibrationLoadError
+from engine_fakes import fake_session
 
 
 def _profile(context: tuple[int | None, ...] | None) -> LatencyCalibrationProfile:
@@ -372,6 +373,8 @@ def test_failed_retake_clears_old_profile_before_accept(qapp, monkeypatch):
             super().__init__()
             self.processor = Mock()
             self.processor.is_running.return_value = False
+            self.processor.start.side_effect = RuntimeError("start failed")
+            self.engine_session = fake_session(self.processor)
             self.route = "route-a"
 
         def _current_device_route_key(self):
@@ -395,11 +398,6 @@ def test_failed_retake_clears_old_profile_before_accept(qapp, monkeypatch):
     information = Mock()
     monkeypatch.setattr(latency_module.QMessageBox, "critical", critical)
     monkeypatch.setattr(latency_module.QMessageBox, "information", information)
-    monkeypatch.setattr(
-        latency_module,
-        "start_selected_route",
-        Mock(side_effect=RuntimeError("start failed")),
-    )
     owner.route = "route-b"
 
     dialog._on_run_clicked()
@@ -412,9 +410,7 @@ def test_failed_retake_clears_old_profile_before_accept(qapp, monkeypatch):
     qapp.processEvents()
 
 
-def test_running_stream_on_different_route_is_rejected(qapp, monkeypatch):
-    from mic_eq.ui import latency_calibration_dialog as latency_module
-
+def test_running_stream_on_different_route_is_rejected(qapp):
     class Owner(QWidget):
         def __init__(self):
             super().__init__()
@@ -448,6 +444,7 @@ def test_running_stream_on_different_route_is_rejected(qapp, monkeypatch):
                     channels=2,
                 ),
             )
+            self.engine_session = fake_session(self.processor, owner=self)
 
         def _current_device_route_key(self):
             return "selected-route"
@@ -460,12 +457,10 @@ def test_running_stream_on_different_route_is_rejected(qapp, monkeypatch):
 
     owner = Owner()
     dialog = LatencyCalibrationDialog(owner)
-    start = Mock()
-    monkeypatch.setattr(latency_module, "start_selected_route", start)
 
     dialog._on_run_clicked()
 
-    start.assert_not_called()
+    owner.processor.start.assert_not_called()
     assert "selected route" in dialog.view_model.status_text.lower()
     dialog.close()
     owner.deleteLater()

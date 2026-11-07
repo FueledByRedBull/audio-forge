@@ -1927,16 +1927,12 @@ def test_headroom_takes_the_typed_fields_of_a_payload_shaped_like_the_eq_state()
     assert config.EQSettings.from_dict(typed).to_dict() == config.EQSettings().to_dict()
 
 
-@pytest.mark.parametrize(
-    "incumbent",
-    [
-        config.EQSettings().to_dict()
-        | {"band_freqs": list(EQ_FREQUENCIES), "band_gains": [0.0] * 10, "band_qs": [1.41] * 10},
-        {"band_freqs": list(EQ_FREQUENCIES), "band_gains": [0.0] * 10, "band_qs": [1.41] * 10},
-    ],
-    ids=["eq_state_payload", "legacy_only"],
-)
-def test_headroom_accepts_the_eq_state_payload_or_legacy_bands_as_the_incumbent(monkeypatch, incumbent):
+def test_headroom_accepts_the_eq_state_payload_as_the_incumbent(monkeypatch):
+    incumbent = config.EQSettings().to_dict() | {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [0.0] * 10,
+        "band_qs": [1.41] * 10,
+    }
     _fake_chain(monkeypatch, headroom=4.0)
 
     result = apply_headroom_validation(
@@ -1946,6 +1942,23 @@ def test_headroom_accepts_the_eq_state_payload_or_legacy_bands_as_the_incumbent(
 
     assert result["headroom_validation"]["status"] == "safe"
     assert result["validated_candidate_eq"] is not None
+
+
+def test_headroom_refuses_an_incumbent_given_only_as_band_arrays(monkeypatch):
+    _fake_chain(monkeypatch, headroom=4.0)
+    arrays_only = {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [0.0] * 10,
+        "band_qs": [1.41] * 10,
+    }
+
+    result = apply_headroom_validation(
+        np.zeros(480, dtype=np.float32), 48_000, _candidate_fit(CUT_HEAVY), _FULL_CHAIN,
+        candidate_base_eq_settings=arrays_only,
+    )
+
+    assert result["headroom_validation"]["status"] == "unavailable"
+    assert result["validated_candidate_eq"] is None
 
 
 def test_headroom_advisory_render_is_not_accepted_over_the_rule(monkeypatch):

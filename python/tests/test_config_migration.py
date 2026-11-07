@@ -40,11 +40,6 @@ def test_minimal_preset_disables_voice_dynamics_but_keeps_output_protection():
 def test_new_preset_noise_strength_is_the_factory_default():
     assert Preset().rnnoise.strength == 1.0
     assert config.BUILTIN_PRESETS["minimal"].rnnoise.strength == 1.0
-    saved = {"name": "Old", "version": "1.6.0", "rnnoise": {"enabled": True, "strength": 0.4, "model": "rnnoise"}}
-    saved_without_rnnoise = {"name": "Old", "version": "1.6.0"}
-
-    assert Preset.from_dict(saved).rnnoise.strength == 0.4
-    assert Preset.from_dict(saved_without_rnnoise).rnnoise.strength == 1.0
 
 
 def test_preset_save_is_atomic_and_preserves_existing_file_on_replace_failure(
@@ -126,9 +121,10 @@ def test_oversized_integer_in_preset_is_rejected_and_skipped(
     assert config.list_presets() == [("Good", good_path)]
 
 
-def test_oversized_integer_is_rejected_by_legacy_range_validation():
-    data = Preset(name="Legacy").to_dict()
-    data["version"] = "1.0.0"
+def test_oversized_integer_is_rejected_by_lenient_range_validation(monkeypatch):
+    monkeypatch.setattr(presets_module, "CURRENT_VERSION", "1.99.0")
+    data = Preset(name="Older").to_dict()
+    data["version"] = shared_module.OLDEST_OPENED_VERSION
     data["gate"]["threshold_db"] = int("9" * 400)
 
     with pytest.raises(config.PresetValidationError, match="threshold_db"):
@@ -206,9 +202,8 @@ def test_invalid_config_backup_collision_uses_exclusive_next_slot(tmp_path, monk
     )
 
 
-@pytest.mark.parametrize("old_version", [{}, {"schema_version": 1}])
-def test_a_config_from_before_the_quit_prompt_asks_and_then_saves_version_2(old_version):
-    loaded = AppConfig.from_dict({"close_to_tray": True, **old_version})
+def test_a_config_from_before_the_quit_prompt_asks_and_then_saves_version_2():
+    loaded = AppConfig.from_dict({"close_to_tray": True})
     assert loaded.confirm_quit_when_live is True and loaded.close_to_tray is True
     loaded.confirm_quit_when_live = False
     saved = loaded.to_dict()
@@ -240,98 +235,6 @@ def test_config_write_is_blocked_when_recovery_copy_cannot_be_created(
     assert app_config_module.save_config(loaded) is False
     assert filepath.read_text(encoding="utf-8") == '{"broken":'
     assert not filepath.with_name("config.json.corrupt").exists()
-
-
-def test_legacy_config_migration_retries_after_a_staged_copy_failure(
-    tmp_path, monkeypatch
-):
-    base_dir = tmp_path / "appdata"
-    legacy_dir = base_dir / shared_module.LEGACY_APPDATA_DIR_NAME
-    legacy_dir.mkdir(parents=True)
-    (legacy_dir / "config.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(shared_module, "_config_base_dir", lambda: base_dir)
-
-    real_copytree = shared_module.shutil.copytree
-    attempts = 0
-
-    def fail_once(source, destination, *args, **kwargs):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            Path(destination).mkdir()
-            (Path(destination) / "partial").write_text("x", encoding="utf-8")
-            raise OSError("simulated migration failure")
-        return real_copytree(source, destination, *args, **kwargs)
-
-    monkeypatch.setattr(shared_module.shutil, "copytree", fail_once)
-
-    config_dir = base_dir / shared_module.APPDATA_DIR_NAME
-    assert shared_module._config_dir() == config_dir
-    assert not config_dir.exists()
-    assert app_config_module.save_config(AppConfig()) is False
-    assert not config_dir.exists()
-    assert shared_module._config_dir() == config_dir
-    assert attempts == 2
-    assert (config_dir / "config.json").read_text(encoding="utf-8") == "{}"
-
-
-def test_preset_migration_to_v17_adds_deesser_defaults():
-    old_data = {
-        "name": "Legacy",
-        "version": "1.6.0",
-        "gate": {
-            "enabled": True,
-            "threshold_db": -40.0,
-            "attack_ms": 10.0,
-            "release_ms": 100.0,
-        },
-        "eq": {
-            "enabled": True,
-            "band_gains": [0.0] * 10,
-            "band_qs": [1.41] * 10,
-        },
-        "rnnoise": {
-            "enabled": True,
-            "strength": 1.0,
-            "model": "rnnoise",
-        },
-        "compressor": {
-            "enabled": True,
-            "threshold_db": -20.0,
-            "ratio": 4.0,
-            "attack_ms": 10.0,
-            "release_ms": 200.0,
-            "makeup_gain_db": 0.0,
-            "adaptive_release": False,
-            "base_release_ms": 50.0,
-            "auto_makeup_enabled": False,
-            "target_lufs": -18.0,
-        },
-        "limiter": {
-            "enabled": True,
-            "ceiling_db": -0.5,
-            "release_ms": 50.0,
-        },
-        "bypass": False,
-    }
-
-    preset = Preset.from_dict(old_data)
-
-    assert preset.version == config.CURRENT_VERSION
-    assert preset.deesser.enabled is False
-    assert preset.deesser.auto_enabled is True
-    assert preset.deesser.auto_amount == 0.5
-    assert preset.deesser.low_cut_hz == 4000.0
-    assert preset.deesser.high_cut_hz == 11000.0
-    assert preset.deesser.threshold_db == -28.0
-    assert preset.deesser.max_reduction_db == 6.0
-    assert preset.compressor.sidechain_highpass_enabled is True
-    assert preset.limiter.careful_output_enabled is True
-    assert preset.value_provenance["gate.enabled"] == "explicit"
-    assert preset.value_provenance["deesser.enabled"] == "migration_default"
-    assert preset.value_provenance["compressor.sidechain_highpass_enabled"] == (
-        "migration_default"
-    )
 
 
 @pytest.mark.parametrize(
@@ -605,7 +508,7 @@ def test_malformed_legacy_device_names_are_not_stringified():
     assert restored.last_output_device_identity is None
 
 
-def test_device_preset_bindings_round_trip_with_provenance_and_legacy_migration():
+def test_device_preset_bindings_round_trip_with_provenance():
     route_key = build_device_route_key(
         DeviceIdentity(name="Mic", is_default=True),
         DeviceIdentity(name="Cable", is_default=False),
@@ -633,14 +536,13 @@ def test_device_preset_bindings_round_trip_with_provenance_and_legacy_migration(
         "custom-file:Voice.json", "explicit_user"
     )
 
-    migrated = AppConfig.from_dict(
-        {"device_preset_bindings": {"Mic||Cable": "custom:Voice.json"}}
+    marked = AppConfig(
+        device_preset_bindings={
+            route_key: DevicePresetBinding("custom:Voice.json", "legacy_migration")
+        }
     )
-    migrated_key = build_device_route_key(
-        DeviceIdentity(name="Mic"), DeviceIdentity(name="Cable")
-    )
-    assert migrated.device_preset_bindings[migrated_key] == DevicePresetBinding(
-        "custom:Voice.json", "legacy_migration"
+    assert AppConfig.from_dict(marked.to_dict()).device_preset_bindings == (
+        marked.device_preset_bindings
     )
 
 
@@ -677,18 +579,16 @@ def test_first_run_setup_progress_round_trips_and_invalid_values_fail_closed():
     }
 
 
-def test_existing_pre_wizard_config_does_not_trigger_first_run_setup():
-    migrated = AppConfig.from_dict(
+def test_a_config_without_first_run_progress_starts_the_first_run_setup():
+    loaded = AppConfig.from_dict(
         {
             "last_input_device": "Existing Microphone",
             "use_measured_latency": False,
         }
     )
 
-    assert migrated.first_run_setup_state == "completed_with_skips"
-    assert set(migrated.first_run_setup_steps.values()) == {"skipped"}
-
-    assert AppConfig.from_dict({}).first_run_setup_state == "not_started"
+    assert loaded.first_run_setup_state == "not_started"
+    assert set(loaded.first_run_setup_steps.values()) == {"pending"}
 
 
 def test_voice_setup_dynamics_preferences_round_trip_and_migrate():
@@ -798,7 +698,7 @@ def test_oversized_integer_in_config_json_keeps_the_other_settings(
     tmp_path, monkeypatch, field
 ):
     huge = 10**400
-    payload: dict = {"last_preset": "Keep"}
+    payload: dict = {"schema_version": config.CONFIG_SCHEMA_VERSION, "last_preset": "Keep"}
     if field == "calibration_reliability":
         entry = CalibrationResult.capture(
             "eq_only", "route", {"eq": {}}, "flat", ("eq",), 0.5

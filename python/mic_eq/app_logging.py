@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import tempfile
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -22,15 +21,7 @@ def get_log_file() -> Path:
 def configure_app_logging() -> Path:
     """Configure rotating file logging for the desktop app; returns the log file in use."""
     log_file = get_log_file()
-    pending = False
     try:
-        # Resolving the config folder runs the legacy migration, so it must come
-        # before anything creates or opens files inside the folder being swapped.
-        shared.get_config_file()
-        pending = shared.migration_pending()
-        if pending:
-            # Nothing may be opened inside the config folder until the swap succeeds.
-            log_file = Path(tempfile.gettempdir()) / shared.APPDATA_DIR_NAME / "logs" / "app.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         # A read-only or locked profile must not stop the app from starting.
@@ -57,13 +48,6 @@ def configure_app_logging() -> Path:
     root_logger.addHandler(handler)
     if root_logger.level == logging.NOTSET or root_logger.level > logging.INFO:
         root_logger.setLevel(logging.INFO)
-    if pending:
-        logging.getLogger(__name__).warning(
-            "The config migration is pending (%s); logging to %s",
-            shared.migration_failure() or "no reason recorded",
-            log_file,
-        )
-
     return log_file
 
 

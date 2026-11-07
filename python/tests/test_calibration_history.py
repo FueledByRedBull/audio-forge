@@ -162,45 +162,6 @@ def test_new_calibration_does_not_invalidate_on_marketing_version_change():
     assert parsed.matches("route", settings)
 
 
-def test_legacy_calibration_record_remains_conservative():
-    settings = {"eq": {"enabled": True}}
-    payload = CalibrationResult.capture(
-        "eq_only", "route", settings, "flat", ("eq",)
-    ).to_dict()
-    payload["version"] = 1
-    for field in ("correction_hash", "verification_hash", "compatibility"):
-        payload.pop(field, None)
-
-    parsed = CalibrationResult.from_value(payload)
-
-    assert parsed is not None and parsed.version == 1
-    assert parsed.matches("route", settings)
-    payload["app_version"] = "future-marketing-version"
-    future = CalibrationResult.from_value(payload)
-    assert future is not None
-    assert not future.matches("route", settings)
-
-    full_settings = json.loads(MainWindow._preset_payload(Preset()))
-    full_payload = CalibrationResult.capture(
-        "full_voice_setup", "route", full_settings, "broadcast", ("eq",)
-    ).to_dict()
-    full_payload["version"] = 1
-    for field in ("correction_hash", "verification_hash", "compatibility"):
-        full_payload.pop(field, None)
-    legacy_full = CalibrationResult.from_value(full_payload)
-    assert legacy_full is not None
-    owner = SimpleNamespace(
-        config=AppConfig(calibration_results=[legacy_full]),
-        _calibration_context_key=lambda: "route",
-        _get_current_preset=Preset,
-        _preset_payload=MainWindow._preset_payload,
-    )
-    assert (
-        calibration_history.current_calibration(cast(Any, owner), "full_voice_setup")
-        is legacy_full
-    )
-
-
 def test_status_refresh_is_read_only_for_calibration_dsp():
     settings = json.loads(MainWindow._preset_payload(Preset()))
     correction, verification = calibration_settings_parts(settings)

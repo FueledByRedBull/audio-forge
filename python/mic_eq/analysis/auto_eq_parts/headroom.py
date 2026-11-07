@@ -269,7 +269,7 @@ def _native_simulate(
 
 def _typed_eq_payload(eq_settings: Mapping[str, Any]) -> dict[str, Any]:
     """Keep the typed EQ fields; a payload from ``EQState.get_settings()`` also carries legacy arrays."""
-    if "bands" not in eq_settings:  # a legacy-only payload is read as such
+    if "bands" not in eq_settings:  # a legacy-only payload is passed on and refused
         return dict(eq_settings)
     return {
         key: eq_settings[key]

@@ -33,9 +33,9 @@ def calibration_settings_parts(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Split correction identity from settings that affect output verification.
 
-    Schema-3 EQ records have independent correction and tone layers. Older
-    combined EQ records stay conservative: the whole EQ remains part of both
-    identities because the two stages cannot be separated truthfully.
+    Schema-3 EQ records have independent correction and tone layers. A combined
+    EQ stays conservative: the whole EQ remains part of both identities because
+    the two stages cannot be separated truthfully.
     """
     if not isinstance(settings, Mapping):
         raise TypeError("calibration settings must be an object")
@@ -66,7 +66,7 @@ def calibration_settings_parts(
         verification["eq"] = downstream_eq
         return correction, verification
 
-    # A combined/legacy EQ has no honest correction-vs-tone boundary.
+    # A combined EQ has no honest correction-vs-tone boundary.
     return {"eq": eq}, payload
 
 
@@ -86,19 +86,14 @@ class CalibrationResult:
     compatibility: str | None = CALIBRATION_COMPATIBILITY
 
     def to_dict(self) -> dict[str, Any]:
-        payload = asdict(self)
-        if self.version == 1:
-            payload.pop("correction_hash", None)
-            payload.pop("verification_hash", None)
-            payload.pop("compatibility", None)
-        return payload
+        return asdict(self)
 
     @classmethod
     def from_value(cls, value: object) -> CalibrationResult | None:
         if (
             not isinstance(value, dict)
             or type(value.get("version")) is not int
-            or value.get("version") not in (1, CALIBRATION_SCHEMA_VERSION)
+            or value.get("version") != CALIBRATION_SCHEMA_VERSION
         ):
             return None
         if value.get("scope") not in ("eq_only", "full_voice_setup"):
@@ -106,22 +101,13 @@ class CalibrationResult:
         for name in ("context_hash", "settings_hash"):
             if not _is_digest(value.get(name)):
                 return None
-        version = value["version"]
         correction_hash = value.get("correction_hash")
         verification_hash = value.get("verification_hash")
         compatibility = value.get("compatibility")
-        if version == CALIBRATION_SCHEMA_VERSION:
-            if not _is_digest(correction_hash) or not _is_digest(verification_hash):
-                return None
-            if (
-                not isinstance(compatibility, str)
-                or not 1 <= len(compatibility) <= 80
-            ):
-                return None
-        else:
-            correction_hash = None
-            verification_hash = None
-            compatibility = None
+        if not _is_digest(correction_hash) or not _is_digest(verification_hash):
+            return None
+        if not isinstance(compatibility, str) or not 1 <= len(compatibility) <= 80:
+            return None
         stages = value.get("verified_stages")
         if not isinstance(stages, (list, tuple)) or not stages or len(stages) > 7:
             return None
@@ -169,7 +155,7 @@ class CalibrationResult:
             target_curve=curve,
             verified_stages=tuple(stages),
             noise_reference_reliability=float(reliability),
-            version=version,
+            version=CALIBRATION_SCHEMA_VERSION,
             app_version=app_version,
             correction_hash=correction_hash,
             verification_hash=verification_hash,
@@ -222,37 +208,16 @@ class CalibrationResult:
         return (
             bool(context)
             and self.context_hash == calibration_fingerprint(context)
-            and (
-                self.version == CALIBRATION_SCHEMA_VERSION
-                or self.app_version == CURRENT_VERSION
-            )
-            and (
-                self.version != CALIBRATION_SCHEMA_VERSION
-                or self.compatibility == CALIBRATION_COMPATIBILITY
-            )
+            and self.compatibility == CALIBRATION_COMPATIBILITY
         )
 
     def matches_correction(self, settings: Mapping[str, Any]) -> bool:
-        digest = (
-            self.settings_hash
-            if self.version == 1
-            else self.correction_hash
-        )
-        return digest == calibration_fingerprint(settings)
+        return self.correction_hash == calibration_fingerprint(settings)
 
     def matches_verification(self, settings: Mapping[str, Any]) -> bool:
-        digest = (
-            self.settings_hash
-            if self.version == 1
-            else self.verification_hash
-        )
         return (
-            (
-                self.app_version == CURRENT_VERSION
-                if self.version == 1
-                else self.compatibility == CALIBRATION_COMPATIBILITY
-            )
-            and digest == calibration_fingerprint(settings)
+            self.compatibility == CALIBRATION_COMPATIBILITY
+            and self.verification_hash == calibration_fingerprint(settings)
         )
 
     def matches_capture_and_correction(

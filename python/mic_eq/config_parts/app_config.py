@@ -16,13 +16,12 @@ from .settings import LatencyCalibrationProfile
 from .calibration import CalibrationResult, parse_calibration_results
 from .shared import (
     DeviceIdentity,
+    OLDEST_OPENED_VERSION,
     PresetValidationError,
     _reject_json_constant,
     build_device_route_key,
     coerce_device_identity,
     get_config_file,
-    migration_failure,
-    migration_pending,
     parse_latency_profile_key,
     replace_file,
 )
@@ -46,30 +45,6 @@ FIRST_RUN_SETUP_STATES = frozenset(
 )
 FIRST_RUN_SETUP_STEPS = ("devices", "route", "latency", "voice")
 FIRST_RUN_STEP_STATES = frozenset({"pending", "completed", "skipped"})
-_PRE_SETUP_CONFIG_FIELDS = frozenset(
-    {
-        "last_input_device",
-        "last_output_device",
-        "last_input_device_identity",
-        "last_output_device_identity",
-        "preview_playback_device_id",
-        "input_channel_mode",
-        "input_cleanup_mode",
-        "last_preset",
-        "startup_preset",
-        "window_geometry",
-        "use_measured_latency",
-        "voice_setup_dynamics_intensity",
-        "voice_setup_custom_p95_db",
-        "voice_setup_custom_peak_cap_db",
-        "latency_calibration_profiles",
-        "auto_apply_device_presets",
-        "device_preset_bindings",
-        "input_device_preferences",
-        "route_input_preferences",
-        "user_muted",
-    }
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,14 +59,10 @@ class DevicePresetBinding:
 
     @classmethod
     def from_value(cls, value: object) -> "DevicePresetBinding | None":
-        if isinstance(value, str):
-            preset_id = value.strip()
-            provenance = "legacy_migration"
-        elif isinstance(value, dict):
-            preset_id = str(value.get("preset_id", "")).strip()
-            provenance = str(value.get("provenance", "explicit_user")).strip()
-        else:
+        if not isinstance(value, dict):
             return None
+        preset_id = str(value.get("preset_id", "")).strip()
+        provenance = str(value.get("provenance", "explicit_user")).strip()
         if not preset_id.startswith(("builtin:", "custom:", "custom-file:")):
             return None
         if provenance not in DEVICE_PRESET_PROVENANCE:
@@ -151,7 +122,7 @@ def build_input_device_preference_key(identity: DeviceIdentity) -> str:
 
 
 def _canonical_input_preference_key(value: object) -> str | None:
-    """Canonicalize endpoint keys while accepting legacy friendly names."""
+    """Canonicalize a JSON endpoint key; a plain friendly name is not a key."""
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
@@ -159,12 +130,11 @@ def _canonical_input_preference_key(value: object) -> str | None:
         payload = json.loads(text)
     except (json.JSONDecodeError, TypeError, RecursionError):
         payload = None
-    if isinstance(payload, dict):
-        if payload.get("endpoint_id") and not payload.get("name"):
-            payload = {**payload, "name": f"endpoint:{payload['endpoint_id']}"}
-        identity = coerce_device_identity(payload)
-    else:
-        identity = coerce_device_identity(text)
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("endpoint_id") and not payload.get("name"):
+        payload = {**payload, "name": f"endpoint:{payload['endpoint_id']}"}
+    identity = coerce_device_identity(payload)
     return build_input_device_preference_key(identity) if identity is not None else None
 
 
@@ -310,12 +280,7 @@ class AppConfig:
         if not isinstance(data, dict):
             return cls()
 
-        data = _migrate_config_data(data)
-
-        migrated_existing_install = (
-            "first_run_setup_state" not in data
-            and bool(_PRE_SETUP_CONFIG_FIELDS.intersection(data))
-        )
+        _check_config_version(data)
 
         input_identity = coerce_device_identity(data.get("last_input_device_identity"))
         if input_identity is None:
@@ -405,10 +370,6 @@ class AppConfig:
         first_run_steps = _coerce_first_run_steps(
             data.get("first_run_setup_steps")
         )
-        if migrated_existing_install and "first_run_setup_steps" not in data:
-            first_run_steps = {
-                step: "skipped" for step in FIRST_RUN_SETUP_STEPS
-            }
         preview_device_id = data.get("preview_playback_device_id", "")
         if not (
             isinstance(preview_device_id, str)
@@ -468,14 +429,9 @@ class AppConfig:
                          and len(data["mute_hotkey"]) <= 80 else ""),
             calibration_results=parse_calibration_results(data.get("calibration_results")),
             first_run_setup_state=(
-                "completed_with_skips"
-                if migrated_existing_install
-                else (
-                    str(data.get("first_run_setup_state"))
-                    if str(data.get("first_run_setup_state"))
-                    in FIRST_RUN_SETUP_STATES
-                    else "not_started"
-                )
+                str(data.get("first_run_setup_state"))
+                if str(data.get("first_run_setup_state")) in FIRST_RUN_SETUP_STATES
+                else "not_started"
             ),
             first_run_setup_step=(
                 str(data.get("first_run_setup_step"))
@@ -486,9 +442,28 @@ class AppConfig:
         )
 
 
-def _migrate_config_data(data: dict) -> dict:
-    """Normalize persisted config versions before field migration."""
-    raw_version = data.get("schema_version", 0)
+def _config_schema_is_older(data: object) -> bool:
+    if not isinstance(data, dict):
+        return False
+    version = data.get("schema_version", 0)
+    return (
+        isinstance(version, int)
+        and not isinstance(version, bool)
+        and version < CONFIG_SCHEMA_VERSION
+    )
+
+
+def _older_schema_error() -> PresetValidationError:
+    return PresetValidationError(
+        f"Configuration was saved before settings schema {CONFIG_SCHEMA_VERSION}, "
+        f"which this version no longer converts. Run AudioForge "
+        f"{OLDEST_OPENED_VERSION} once to convert it."
+    )
+
+
+def _check_config_version(data: dict) -> None:
+    """Refuse a config stamped with a schema this build cannot read as written."""
+    raw_version = data.get("schema_version", CONFIG_SCHEMA_VERSION)
     if isinstance(raw_version, bool) or not isinstance(raw_version, int):
         raise PresetValidationError("Configuration schema_version must be an integer")
     if raw_version < 0:
@@ -497,19 +472,13 @@ def _migrate_config_data(data: dict) -> dict:
         raise PresetValidationError(
             "Configuration was written by a newer AudioForge build"
         )
-
-    migrated = dict(data)
     if raw_version < CONFIG_SCHEMA_VERSION:
-        # Older versions share every field name; keys added since default in when absent.
-        migrated["schema_version"] = CONFIG_SCHEMA_VERSION
-    return migrated
+        raise _older_schema_error()
 
 
 def save_config(config: AppConfig) -> bool:
     global _last_blocked_save_reason
     blocked_reason = getattr(config, "save_blocked_reason", None)
-    if blocked_reason is None and migration_pending():
-        blocked_reason = "legacy config migration is still pending"
     if blocked_reason:
         if blocked_reason != _last_blocked_save_reason:
             logger.warning(
@@ -542,23 +511,9 @@ def save_config(config: AppConfig) -> bool:
     return True
 
 
-def _migration_warning() -> str:
-    reason = migration_failure()
-    return (
-        "AudioForge could not complete its config migration"
-        + (f" ({reason})" if reason else "")
-        + ". Settings changes cannot be saved until the migration succeeds."
-    )
-
-
 def load_config() -> AppConfig:
     filepath = get_config_file()
     if not filepath.exists():
-        if migration_pending():
-            config = AppConfig()
-            config.load_warning = _migration_warning()
-            config.save_blocked_reason = "legacy config migration is still pending"
-            return config
         return AppConfig()
 
     data: object = None
@@ -567,10 +522,9 @@ def load_config() -> AppConfig:
             data = json.load(handle, parse_constant=_reject_json_constant)
         if not isinstance(data, dict):
             raise PresetValidationError("Configuration root must be an object")
-        config = AppConfig.from_dict(data)
-        if migration_pending():
-            config.load_warning = _migration_warning()
-        return config
+        if "schema_version" not in data:
+            raise _older_schema_error()
+        return AppConfig.from_dict(data)
     except (
         OSError,
         OverflowError,
@@ -602,6 +556,12 @@ def load_config() -> AppConfig:
                 "Settings changes cannot be saved while the original file is protected."
             )
             config.save_blocked_reason = "invalid config could not be preserved"
+        elif _config_schema_is_older(data):
+            config.load_warning = (
+                "AudioForge found a config.json from an older version and preserved "
+                "a recovery copy. Defaults are in use until settings are saved. To keep "
+                f"the old settings, run AudioForge {OLDEST_OPENED_VERSION} once first."
+            )
         else:
             config.load_warning = (
                 "AudioForge found an invalid config.json and preserved a recovery copy. "

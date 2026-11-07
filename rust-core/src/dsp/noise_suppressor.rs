@@ -14,6 +14,9 @@ pub(crate) fn deepfilter_experimental_enabled() -> bool {
     crate::dsp::util::env_flag(ENABLE_DEEPFILTER_ENV)
 }
 
+/// Every id a saved preset may name, whether or not this build can run the model.
+pub const NOISE_MODEL_IDS: [&str; 3] = ["rnnoise", "deepfilter-ll", "deepfilter"];
+
 /// Noise suppression model types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -680,5 +683,18 @@ mod tests {
         assert_eq!(NoiseModel::from_id("rnnoise"), Some(NoiseModel::RNNoise));
         assert_eq!(NoiseModel::from_id("RNNOISE"), Some(NoiseModel::RNNoise));
         assert_eq!(NoiseModel::from_id("invalid"), None);
+    }
+
+    #[test]
+    fn the_preset_ids_are_the_models_this_build_can_name() {
+        assert_eq!(NoiseModel::RNNoise.id(), NOISE_MODEL_IDS[0]);
+        #[cfg(feature = "deepfilter")]
+        {
+            assert_eq!(NoiseModel::DeepFilterNetLL.id(), NOISE_MODEL_IDS[1]);
+            assert_eq!(NoiseModel::DeepFilterNet.id(), NOISE_MODEL_IDS[2]);
+            for id in NOISE_MODEL_IDS {
+                assert_eq!(NoiseModel::from_id(id).map(|model| model.id()), Some(id));
+            }
+        }
     }
 }

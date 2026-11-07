@@ -39,6 +39,8 @@ pub const EQ_GAIN_MAX_DB: f64 = 12.0;
 pub const EQ_Q_MIN: f64 = 0.1;
 pub const EQ_Q_MAX: f64 = 10.0;
 pub const EQ_FREQ_MIN_HZ: f64 = 20.0;
+/// The highest frequency a saved band may name; the DSP's own bound is Nyquist.
+pub const EQ_FREQ_MAX_HZ: f64 = 20_000.0;
 pub const EQ_NYQUIST_MARGIN_HZ: f64 = 1.0;
 
 /// Stable public filter identifiers shared with Python and persisted presets.

@@ -261,6 +261,16 @@ def simulate_eq_v2(
     """When requested, output_audio is an owned contiguous NDArray[float32]."""
     ...
 def _k_weighted_48k(audio: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
+def processing_ranges() -> dict[str, dict[str, tuple[float, float]]]:
+    """Minimum and maximum of every numeric setting, by section and preset key.
+
+    The live setters clamp to these values, and presets are validated against
+    them. Sections: gate, eq, rnnoise, deesser, compressor and limiter.
+    """
+    ...
+def noise_model_ids() -> list[str]:
+    """The noise model ids a saved preset may name, in listing order."""
+    ...
 
 def analyze_vad_probabilities(
     audio: npt.NDArray[np.float32], sample_rate: int, threshold: float = 0.48

@@ -3,58 +3,27 @@
 from __future__ import annotations
 
 import math
+from functools import cache
 
+from .. import noise_model_ids as _noise_model_ids
+from .. import processing_ranges as _processing_ranges
 from .shared import PresetValidationError
 
 
-VALIDATION_RANGES = {
-    "gate": {
-        "threshold_db": (-80.0, -10.0),
-        "attack_ms": (0.1, 100.0),
-        "release_ms": (10.0, 1000.0),
-        "gate_mode": (0, 2),
-        "vad_threshold": (0.3, 0.7),
-        "vad_hold_time_ms": (0.0, 500.0),
-        "vad_pre_gain": (1.0, 10.0),
-        "auto_threshold_enabled": (bool, None),
-        "gate_margin_db": (0.0, 20.0),
-    },
-    "eq": {
-        "band_freq": (20.0, 20000.0),
-        "band_gain": (-12.0, 12.0),
-        "band_q": (0.1, 10.0),
-    },
-    "rnnoise": {
-        "strength": (0.0, 1.0),
-        "model": ["rnnoise", "deepfilter-ll", "deepfilter"],
-    },
-    "deesser": {
-        "auto_amount": (0.0, 1.0),
-        "low_cut_hz": (2000.0, 12000.0),
-        "high_cut_hz": (2200.0, 16000.0),
-        "threshold_db": (-60.0, -6.0),
-        "ratio": (1.0, 20.0),
-        "attack_ms": (0.1, 50.0),
-        "release_ms": (5.0, 500.0),
-        "max_reduction_db": (0.0, 24.0),
-    },
-    "compressor": {
-        "threshold_db": (-60.0, 0.0),
-        "ratio": (1.0, 20.0),
-        "attack_ms": (0.1, 100.0),
-        "release_ms": (10.0, 1000.0),
-        "makeup_gain_db": (0.0, 24.0),
-        "adaptive_release": (bool, None),
-        "base_release_ms": (20.0, 200.0),
-        "auto_makeup_enabled": (bool, None),
-        "target_lufs": (-24.0, -12.0),
-        "sidechain_highpass_enabled": (bool, None),
-    },
-    "limiter": {
-        "ceiling_db": (-12.0, 0.0),
-        "release_ms": (10.0, 500.0),
-    },
-}
+@cache
+def validation_ranges() -> dict[str, dict[str, tuple[float, float]]]:
+    """The native core's numeric ranges by section and key (booleans have none).
+
+    Read on first use, so this module imports without the core and the
+    missing-core ImportError names the call that needed it.
+    """
+    return _processing_ranges()
+
+
+@cache
+def noise_model_ids() -> list[str]:
+    """The noise model ids a saved preset may name."""
+    return _noise_model_ids()
 
 
 def _validate_bool(value: object, param_name: str, section: str) -> bool:
@@ -155,9 +124,10 @@ def _validate_range(value: object, *args: object, strict: bool = False) -> float
 
 
 __all__ = [
-    "VALIDATION_RANGES",
     "_coerce_config_bool",
     "_coerce_window_geometry",
     "_validate_bool",
     "_validate_range",
+    "noise_model_ids",
+    "validation_ranges",
 ]

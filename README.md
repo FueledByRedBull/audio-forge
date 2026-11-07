@@ -51,7 +51,7 @@ Screenshots use example devices and settings.
 
 ## Download
 
-Current version: `v1.22.0` ([release notes](release-notes/release-notes-v1.22.0.md)).
+Current version: `v1.23.0` ([release notes](release-notes/release-notes-v1.23.0.md)).
 This is the source-checkout version; the latest published package may be older.
 Open the [latest release](https://github.com/FueledByRedBull/audio-forge/releases/latest)
 and download **one** of these files. **Not sure? Choose the installer.**
@@ -462,10 +462,11 @@ turns it into the tarball (add `--appimagetool` for the AppImage).
 
 ## Roadmap
 
-Planned work and explicit holds live in versioned
-[GitHub milestones](https://github.com/FueledByRedBull/audio-forge/milestones)
-and issues labeled
-[`roadmap`](https://github.com/FueledByRedBull/audio-forge/issues?q=is%3Aissue+label%3Aroadmap).
+Planned work is tracked in issues labeled
+[`roadmap`](https://github.com/FueledByRedBull/audio-forge/issues?q=is%3Aissue+label%3Aroadmap),
+and each release's changes are in the [changelog](CHANGELOG.md). Bug reports
+and requests go to
+[issues](https://github.com/FueledByRedBull/audio-forge/issues).
 
 ## License
 

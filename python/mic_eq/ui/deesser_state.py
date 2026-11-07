@@ -59,8 +59,8 @@ class DeEsserState(RateLimitedStageState[dict]):
         self._queue(candidate, label="De-esser edit")
 
     def set_settings(self, settings: dict) -> None:
-        """Apply a preset inline, retaining the existing defaults for omissions."""
-        candidate = self._validated(asdict(DeEsserSettings()) | settings)
+        """Apply a preset inline, retaining current values for omitted keys."""
+        candidate = self._validated(settings)
         self._apply_inline(candidate)
 
     def _write(self, settings: dict) -> None:

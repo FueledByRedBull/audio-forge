@@ -5,23 +5,15 @@ from __future__ import annotations
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import (
     QApplication,
-    QFrame,
     QHBoxLayout,
     QLabel,
-    QVBoxLayout,
     QWidget,
 )
 
 from .capture_session import LIVE_OUTPUT_MUTED_NOTICE
 from .layout_constants import MARGIN_PANEL, SPACING_SECTION
-from .theme import (
-    CARD_STYLE,
-    STEP_CURRENT_STYLE,
-    STEP_STYLE,
-    status_chip_style,
-)
+from .theme import STEP_CURRENT_STYLE, STEP_STYLE, status_chip_style
 
-SPACING_CARD = 16
 ICON_FONT_FAMILIES = ("Segoe Fluent Icons", "Segoe MDL2 Assets")
 
 
@@ -102,36 +94,3 @@ class StepHeader(QWidget):
             self.setAccessibleName(f"Step {step + 1} of {len(self._labels)}: {self._labels[step].text()}")
         for index, label in enumerate(self._labels):
             label.setStyleSheet(STEP_CURRENT_STYLE if index == step else STEP_STYLE)
-
-
-class Card(QFrame):
-    """A titled surface: a title in the header, then content."""
-
-    def __init__(
-        self,
-        title: str,
-        *,
-        parent: QWidget | None = None,
-    ):
-        super().__init__(parent)
-        self.setObjectName("card")
-        self.setStyleSheet(CARD_STYLE)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(SPACING_CARD, 12, SPACING_CARD, SPACING_CARD)
-        outer.setSpacing(12)
-
-        self.header = QHBoxLayout()
-        self.header.setSpacing(10)
-        self.title_label = QLabel(title.upper())
-        title_font = self.title_label.font()
-        title_font.setPointSize(10)
-        title_font.setWeight(QFont.Weight.DemiBold)
-        title_font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 106)
-        self.title_label.setFont(title_font)
-        self.header.addWidget(self.title_label)
-        self.header.addStretch(1)
-        outer.addLayout(self.header)
-
-        self.body = QVBoxLayout()
-        self.body.setSpacing(12)
-        outer.addLayout(self.body)

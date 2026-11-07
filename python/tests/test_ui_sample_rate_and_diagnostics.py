@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 import time
 import threading
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -37,13 +37,18 @@ from mic_eq.ui.device_selection import (
 )
 from mic_eq.ui import main_window, rate_limiter
 from mic_eq.ui.main_window import (
-    NOISE_SELECTION_DROPPED_WARNING,
     MainWindow,
     _normalize_startup_preset_id,
     _startup_builtin_id,
 )
 from mic_eq.ui.auto_eq_explanation import explain_auto_eq
-from mic_eq.ui.health import RecentStreamHealth
+from mic_eq.runtime_snapshot import RuntimeSnapshot
+from mic_eq.ui.health import (
+    DEVICE_STARTUP_GRACE_SECONDS,
+    NOISE_SELECTION_DROPPED_WARNING,
+    RecentStreamHealth,
+    diagnostic_tokens,
+)
 from mic_eq.ui.noise_suppression_state import NoiseSuppressionState
 from mic_eq.ui.startup_presets import startup_custom_id as _startup_custom_id
 from mic_eq.ui.theme import status_chip_style
@@ -790,10 +795,9 @@ def test_main_window_diagnostics_include_new_metrics():
         "output_resampler_active": False,
     }
 
-    dropped_bits: list[str] = []
-    MainWindow._extend_diag_tokens(
-        dropped_bits,
-        diagnostics,
+    snapshot = RuntimeSnapshot.parse(diagnostics)
+    dropped_bits = diagnostic_tokens(
+        snapshot,
         [
             ("input_backlog_recovery_count", "IBR"),
             ("input_backlog_dropped_samples", "IBD"),
@@ -812,10 +816,8 @@ def test_main_window_diagnostics_include_new_metrics():
             ("deesser_detector_confidence", "DSC"),
         ],
     )
-    backend_bits = ["rnnoise"]
-    MainWindow._extend_diag_tokens(
-        backend_bits,
-        diagnostics,
+    backend_bits = diagnostic_tokens(
+        snapshot,
         [
             ("input_resampler_active", "IR"),
             ("output_resampler_active", "OR"),
@@ -956,7 +958,7 @@ def test_a_device_that_never_starts_is_a_warning_once_the_startup_grace_is_over(
     chip = window.shell_texts["callback_health_label"]
 
     _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age)
-    clock[0] += main_window.DEVICE_STARTUP_GRACE_SECONDS - 2
+    clock[0] += DEVICE_STARTUP_GRACE_SECONDS - 2
     _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age)
     text = chip.text
     assert chip.state != "warn"
@@ -989,7 +991,7 @@ def test_a_restart_long_after_processing_began_gets_the_startup_grace_again(wind
     # An engine restart that bypasses _start_processing: both ages are back to the sentinel.
     _labels(window, input_callback_age_ms=NEVER, output_callback_age_ms=NEVER)
     assert chip.state != "warn"
-    clock[0] += main_window.DEVICE_STARTUP_GRACE_SECONDS - 1
+    clock[0] += DEVICE_STARTUP_GRACE_SECONDS - 1
     _labels(window, input_callback_age_ms=NEVER, output_callback_age_ms=NEVER)
     assert chip.state != "warn"
 
@@ -1684,7 +1686,7 @@ def test_a_counter_that_starts_over_does_not_warn_until_it_grows_again(window):
 def test_the_window_starts_from_the_zero_the_engine_exports(window):
     # A fresh engine counts from zero, and the window has seen nothing yet.
     assert window.processor.get_runtime_diagnostics()["noise_selection_dropped_count"] == 0
-    assert window._noise_drops_seen == 0
+    assert window._health_memory.noise_drops_seen == 0
 
 
 class _RefusingProcessor(_MeterProcessor):
@@ -1739,8 +1741,8 @@ def test_stale_output_underrun_and_recovery_totals_do_not_warn(window, monkeypat
         input_resampler_active=False, output_resampler_active=False, noise_model="deepfilter",
     )
     window._stream_health = RecentStreamHealth()
-    window._stream_health.observe(diagnostics, now=0.0)
-    window._last_output_underrun_total = 4
+    window._stream_health.observe(RuntimeSnapshot.parse(diagnostics), now=0.0)
+    window._health_memory = replace(window._health_memory, output_underrun_total=4)
 
     window._update_diagnostic_labels(
         diagnostics=diagnostics,
@@ -1761,7 +1763,7 @@ def test_new_output_underrun_total_warns_for_stability_window(window, monkeypatc
     monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
     _recovery_setup(window)
     diagnostics = _diag_counters(output_underrun_total=5, output_retime_adjustment_count=0)
-    window._last_output_underrun_total = 4
+    window._health_memory = replace(window._health_memory, output_underrun_total=4)
 
     window._update_diagnostic_labels(
         diagnostics=diagnostics,

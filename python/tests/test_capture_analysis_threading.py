@@ -17,7 +17,7 @@ from mic_eq.ui.calibration_support import filtered_capture_for_analysis
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from capture_helpers import finish_take, settle
 from test_auto_eq_candidate_lifecycle import _Owner
-from test_voice_setup import _NO_SOUND, _make_noise, _make_voice
+from test_voice_setup import _NO_SOUND, _TOO_SHORT, _make_noise, _make_voice
 from test_voice_setup_integration import real_main_window  # noqa: F401  (a fixture)
 
 RATE = 48_000
@@ -107,6 +107,16 @@ def test_a_silent_room_noise_take_moves_on_with_the_silent_reference_advice(voic
     assert voice.noise_audio is not None
     assert voice.view_model.warning_text.startswith(SILENT_REFERENCE_GUIDANCE)
     assert voice.view_model.warning_text.endswith("Now read the passage aloud for the full 10 seconds.")
+
+
+def test_a_room_noise_take_the_analysis_cannot_use_is_rejected(voice) -> None:
+    _take(voice, "noise_recording", _make_noise(RATE, seconds=0.5))
+
+    assert voice.setup_state == "idle"
+    assert voice.noise_audio is None and voice.preview_noise_audio is None
+    assert voice.view_model.shown["phaseText"] == "Room-noise capture rejected"
+    assert voice.view_model.shown["startText"] == "Retake Room Noise"
+    assert all(token in voice.view_model.warning_text for token in _TOO_SHORT)
 
 
 def test_a_silent_voice_take_is_a_microphone_fault(voice) -> None:

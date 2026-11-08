@@ -2742,7 +2742,7 @@ impl PyAudioProcessor {
             )?;
             diagnostics.set_item(
                 "dsp_scheduling_degraded",
-                self.processor.is_dsp_scheduling_degraded(),
+                self.processor.is_dsp_scheduling_degraded() || deepfilter_worker_degraded(),
             )?;
             diagnostics.set_item("auto_makeup_error", self.processor.get_auto_makeup_error())?;
             #[cfg(feature = "vad")]
@@ -3228,5 +3228,17 @@ impl PyAudioProcessor {
 
     fn cancel_output_probe(&self) {
         self.processor.cancel_output_probe();
+    }
+}
+
+/// Whether a DeepFilter worker runs without the realtime priority it asked for.
+fn deepfilter_worker_degraded() -> bool {
+    #[cfg(feature = "deepfilter")]
+    {
+        crate::dsp::deepfilter_ffi::worker_scheduling_degraded()
+    }
+    #[cfg(not(feature = "deepfilter"))]
+    {
+        false
     }
 }

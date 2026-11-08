@@ -323,12 +323,13 @@ def test_the_view_model_reports_changes_once_and_forwards_its_commands(qapp) -> 
     model.set_status("Playing: Raw", "info")
     model.set_status("Playback stopped.")
     assert (model.status_text, model.status_state) == ("Playback stopped.", "info"), "the colour is kept"
-    model.set_status("Odd", "success")
-    assert model.status_state == "idle"
+    with pytest.raises(ValueError, match="unknown state 'success'"):
+        model.set_status("Odd", "success")
+    assert model.status_state == "info", "a refused state changes nothing"
     model.set_outputs(["Choose", "Speakers"], 0)
     model.pickOutput(0)
     model.pickOutput(1)
-    assert changes == ["status", "status", "status", "outputs", "outputs"] and model.output_index == 1
+    assert changes == ["status", "status", "outputs", "outputs"] and model.output_index == 1
     model.requestLevelMatch(True)
     model.play("original")
     model.refresh()
@@ -533,3 +534,25 @@ def test_enter_on_the_closed_output_picker_keeps_the_proposal_but_in_its_open_li
     QTest.keyClick(dialog.quick_view, Qt.Key.Key_Return)
     qapp.processEvents()
     assert dialog.result() == ACCEPTED and dialog.decision is True
+
+
+def test_the_output_picker_is_read_with_the_device_it_shows(open_dialog) -> None:
+    dialog = open_dialog(ready=True)
+    dialog.view_model.set_outputs(["Headphones", "Speakers"], 1)
+    with _AccessibleScene() as scene:
+        assert scene.name(scene_item(dialog, "outputPicker")) == "Output device: Speakers"
+
+
+def test_the_view_model_refuses_a_field_the_page_does_not_have() -> None:
+    def ignore(*_args: object) -> None:
+        return None
+
+    view = ListeningComparisonView(
+        clips=(("raw", "Raw"),), pick_output=ignore, refresh=ignore, stop=ignore,
+        level_match=ignore, play=ignore, keep=ignore, reject=ignore,
+    )
+    with pytest.raises(KeyError, match="keepEnabld"):
+        view.set_page(keepEnabld=True)
+    assert "keepEnabld" not in view.shown
+    view.set_page(keepEnabled=True)
+    assert view.shown["keepEnabled"] is True

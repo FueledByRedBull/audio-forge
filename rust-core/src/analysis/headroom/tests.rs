@@ -9,12 +9,16 @@ fn excess_is_the_term_that_fails_most() {
 }
 
 #[test]
-fn a_tie_keeps_the_first_term_like_python_max() {
-    // 1.0 - 1.0 is +0.0; a later term that ties it at -0.0 does not replace it.
+fn tied_terms_give_their_shared_value() {
+    // Which tied term wins cannot be observed: each term is a difference
+    // with a nonzero constant, which is never -0.0 (an exact zero difference
+    // is +0.0), so equal terms have equal bits and `>` acts as `>=` would.
+    assert_eq!(headroom_excess_db(0.5, 1.5, 1.0), 0.5);
     assert_eq!(
-        headroom_excess_db(1.0, 0.0, 0.5).to_bits(),
+        headroom_excess_db(1.0, 1.0, 0.5).to_bits(),
         0.0_f64.to_bits()
     );
+    assert_eq!(headroom_excess_db(2.0, 0.0, -0.5), -1.0);
 }
 
 #[test]

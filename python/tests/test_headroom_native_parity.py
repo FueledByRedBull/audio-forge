@@ -276,13 +276,16 @@ def test_voice_setup_reads_the_released_excess_like_the_python_code(batch):
         )
 
 
-def test_the_excess_is_the_signed_zero_the_python_max_returns():
+def test_tied_terms_give_the_value_python_max_returns():
     names = reference._NATIVE_SAFETY_METRICS
-    # 1.0 - 1.0 is +0.0 and the others are -1.0 and -0.5; a tie of -0.0 and 0.0 keeps the first.
+    # No term can be -0.0: each is a difference with a nonzero constant, and an
+    # exact zero difference is +0.0. Tied terms therefore have equal bits and
+    # which one max keeps cannot be observed; these check the tied value.
     for reading in (
-        {names[0]: 1.0, names[1]: 0.0, names[2]: 0.0},
-        {names[0]: 2.0, names[1]: 1.0, names[2]: 0.5},
-        {names[0]: 2.0, names[1]: 1.0, names[2]: -0.0},
+        {names[0]: 0.5, names[1]: 1.5, names[2]: 1.0},
+        {names[0]: 1.0, names[1]: 1.0, names[2]: 0.5},
+        {names[0]: 2.0, names[1]: 0.0, names[2]: -0.5},
+        {names[0]: 1.0, names[1]: 0.0, names[2]: -0.0},
     ):
         _same(native.headroom_excess_db(reading), reference._headroom_excess_db(reading))
 

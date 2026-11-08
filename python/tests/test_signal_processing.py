@@ -500,6 +500,24 @@ def test_native_band_mean_and_clamp_match_the_numpy_implementation():
             expected = _reference_band_mean(freqs, spectrum, low, high)
             assert repr(band_mean(freqs, spectrum, low, high)) == repr(expected)
 
+    # NumPy masks N-D arrays elementwise, so equal shapes pair in C order.
+    matrix_freqs = freqs[:2048].reshape(32, 64)
+    matrix_values = spectra["noise"][:2048].reshape(32, 64)
+    for low, high in bands:
+        for layout in (np.ascontiguousarray, np.asfortranarray):
+            expected = _reference_band_mean(layout(matrix_freqs), layout(matrix_values), low, high)
+            actual = band_mean(layout(matrix_freqs), layout(matrix_values), low, high)
+            assert repr(actual) == repr(expected)
+        expected = _reference_band_mean(matrix_freqs, np.asfortranarray(matrix_values), low, high)
+        assert repr(band_mean(matrix_freqs, np.asfortranarray(matrix_values), low, high)) == repr(
+            expected
+        )
+    for mismatched in (matrix_values.reshape(-1), matrix_values.T, matrix_values[:, :32]):
+        with pytest.raises(IndexError):
+            _reference_band_mean(matrix_freqs, mismatched, 1200.0, 3500.0)
+        with pytest.raises(IndexError):
+            band_mean(matrix_freqs, mismatched, 1200.0, 3500.0)
+
     edge_values = [-math.inf, -5.0, -0.0, 0.0, 0.5, 3.0, 5.0, math.inf, math.nan, 2, -7]
     ranges = [(0.0, 3.0), (3.0, 0.0), (-math.inf, math.inf), (0.0, 0.0), (-0.0, 0.0), (1, 2)]
     for value in edge_values:

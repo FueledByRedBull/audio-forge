@@ -4,26 +4,26 @@ use numpy::{
     Element, PyArray1, PyArrayDescrMethods, PyArrayDyn, PyArrayMethods, PyUntypedArray,
     PyUntypedArrayMethods,
 };
-use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
 use crate::catch_panic;
 
-/// `np.asarray(value, dtype=T)` flattened in C order, with its original rank.
-fn flattened<T: Element + Copy>(value: &Bound<'_, PyAny>) -> PyResult<(usize, Vec<T>)> {
+/// `np.asarray(value, dtype=T)` flattened in C order, with its original shape.
+fn flattened<T: Element + Copy>(value: &Bound<'_, PyAny>) -> PyResult<(Vec<usize>, Vec<T>)> {
     let py = value.py();
     let array = py
         .import("numpy")?
         .call_method1("asarray", (value, numpy::dtype::<T>(py)))?
         .cast_into::<PyArrayDyn<T>>()?;
-    let rank = array.ndim();
+    let shape = array.shape().to_vec();
     let values = array.readonly().as_array().iter().copied().collect();
-    Ok((rank, values))
+    Ok((shape, values))
 }
 
 fn vector<T: Element + Copy>(value: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<T>> {
-    let (rank, values) = flattened(value)?;
-    if rank != 1 {
+    let (shape, values) = flattened(value)?;
+    if shape.len() != 1 {
         return Err(PyValueError::new_err(format!(
             "{what} must be one-dimensional"
         )));
@@ -44,8 +44,15 @@ pub(crate) fn band_mean(
     high: f64,
 ) -> PyResult<f64> {
     catch_panic(|| {
-        let (_, freqs) = flattened::<f64>(freqs)?;
-        let (_, values) = flattened::<f64>(values)?;
+        // The removed Python's mask paired equal shapes elementwise; other
+        // shapes raised IndexError there whenever a bin fell in the band.
+        let (freqs_shape, freqs) = flattened::<f64>(freqs)?;
+        let (values_shape, values) = flattened::<f64>(values)?;
+        if freqs_shape != values_shape {
+            return Err(PyIndexError::new_err(
+                "freqs and values must have the same shape",
+            ));
+        }
         super::band_mean(&freqs, &values, low, high).map_err(PyValueError::new_err)
     })
 }

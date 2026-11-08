@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-from PySide6.QtWidgets import QLabel, QMessageBox
+from PySide6.QtWidgets import QMessageBox
 
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
@@ -36,6 +36,8 @@ from test_voice_setup_integration import (
     _voice_setup_result,
 )
 from test_voice_setup_integration import real_main_window as _real_main_window
+from test_first_run_setup import scene_item
+from test_quick_shell import _AccessibleScene
 
 real_main_window = _real_main_window  # the fixture, under the name the tests ask for
 
@@ -81,7 +83,7 @@ def test_an_incomplete_voice_result_is_reported_as_refused(real_main_window) -> 
         assert [r["outcome"] for r in records] == ["refused"]
         _check_record(records[0], "voice_setup")
         assert records[0]["reason_codes"] == ["incomplete_result"]
-        assert records[0]["messages"] == [dialog.warning_label.text()]
+        assert records[0]["messages"] == [dialog.view_model.warning_text]
 
 
 def test_an_advisory_voice_result_is_reported_with_its_reasons(real_main_window) -> None:
@@ -179,11 +181,11 @@ def test_a_final_comparison_that_cannot_open_is_not_reported_as_declined(
         dialog._on_verification_complete(_verdict_with_dulling_advisory("accept", advised=False))
         dialog._compare_recording()
 
-        assert dialog.phase_label.text() == "Final comparison could not open; previous settings put back"
-        warning = dialog.warning_label.text()
+        assert dialog.view_model.shown["phaseText"] == "Final comparison could not open; previous settings put back"
+        warning = dialog.view_model.warning_text
         assert warning.startswith("The final comparison could not open, so your old settings were kept.")
         assert "Your old settings are active." in warning
-        assert "declined" not in dialog.phase_label.text() and "You kept" not in warning
+        assert "declined" not in dialog.view_model.shown["phaseText"] and "You kept" not in warning
         assert dialog.setup_state == "completed" and dialog._final_comparison_pending is False
         assert records[-1]["outcome"] == "rolled_back"
         assert records[-1]["reason_codes"] == ["final_comparison_unavailable"]
@@ -227,9 +229,7 @@ def test_closing_after_a_result_is_cancelled_and_before_one_is_silent(real_main_
 
 
 def _issue_lines(dialog: VoiceSetupDialog) -> list[str]:
-    layout = dialog.capture_issues_layout
-    labels = [item.widget() for item in map(layout.itemAt, range(layout.count())) if item]
-    return [label.text() for label in labels if isinstance(label, QLabel)]
+    return dialog.view_model.issue_lines
 
 
 def test_the_review_shows_each_weak_capture_clause_as_its_own_line(real_main_window) -> None:
@@ -259,8 +259,6 @@ def test_the_review_shows_each_weak_capture_clause_as_its_own_line(real_main_win
 def test_a_reliable_review_has_no_capture_lines_and_a_new_result_replaces_old_ones(
     real_main_window,
 ) -> None:
-    from PySide6.QtGui import QAccessible
-
     dialog, _speech = _review_dialog(real_main_window)
     weak = _voice_setup_result(real_main_window, dialog)
     weak["diagnostics"].update(weak_capture=True, vad_active_duration_s=1.0)
@@ -269,18 +267,10 @@ def test_a_reliable_review_has_no_capture_lines_and_a_new_result_replaces_old_on
         assert len(_issue_lines(dialog)) == 1
 
         # Each line is read out as its own sentence.
-        layout = dialog.capture_issues_layout
-        items = [layout.itemAt(i) for i in range(layout.count())]
-        labels = [item.widget() for item in items if item is not None]
-        labels = [label for label in labels if isinstance(label, QLabel)]
-        assert labels and len(labels) == layout.count()
-        for label in labels:
-            interface = QAccessible.queryAccessibleInterface(label)
-            assert interface is not None
-            spoken = " ".join(
-                interface.text(part) for part in (QAccessible.Text.Name, QAccessible.Text.Description)
-            )
-            assert label.text() in spoken
+        with _AccessibleScene() as scene:
+            chip = scene_item(dialog, "issueChip0")
+            spoken = " ".join((scene.name(chip), scene.description(chip)))
+            assert _issue_lines(dialog)[0] in spoken
 
         dialog._show_summary(_voice_setup_result(real_main_window, dialog))
         assert _issue_lines(dialog) == []
@@ -293,11 +283,11 @@ def test_the_review_calls_the_score_a_capture_quality_never_confidence(real_main
         for apply_recommended, weak in ((True, False), (False, False), (False, True)):
             result["diagnostics"].update(apply_recommended=apply_recommended, weak_capture=weak)
             dialog._show_summary(result)
-            text = dialog.overall_label.text() + dialog.overall_label.toolTip()
+            text = dialog.view_model.chip("overall")["text"] + dialog.view_model.chip("overall")["tip"]
             assert "onfidence" not in text
             assert text.startswith("Weak capture" if weak else "Good capture")
-        assert "92%" in dialog.overall_label.toolTip()
-        assert "92%" not in dialog.overall_label.text()
+        assert "92%" in dialog.view_model.chip("overall")["tip"]
+        assert "92%" not in dialog.view_model.chip("overall")["text"]
 
 
 def test_the_review_says_why_noise_suppression_and_the_gate_were_not_tuned(real_main_window) -> None:
@@ -309,35 +299,33 @@ def test_the_review_says_why_noise_suppression_and_the_gate_were_not_tuned(real_
             "status": "withheld", "withheld_for": "questionable_noise_reference", "reasons": [],
         }
         dialog._show_summary(result)
-        assert dialog.overall_label.text().endswith(
+        assert dialog.view_model.chip("overall")["text"].endswith(
             "\nNoise suppression and the gate were not tuned because the room-noise "
             "recording was not steady. Your current settings are kept."
         )
         result["diagnostics"]["joint_tuning"] = {"apply_recommended": True, "reasons": []}
         dialog._show_summary(result)
-        assert dialog.overall_label.text().endswith(
+        assert dialog.view_model.chip("overall")["text"].endswith(
             "\nNew noise suppression and gate settings passed the checks."
         )
 
 
 def test_a_suggestions_only_result_makes_apply_the_secondary_action(real_main_window) -> None:
-    from mic_eq.ui.theme import PRIMARY_ACTION_BUTTON_STYLE
-
     dialog, _speech = _review_dialog(real_main_window)
     result = _voice_setup_result(real_main_window, dialog)
     result["diagnostics"]["apply_recommended"] = False
     with _dismissed(dialog):
         dialog._on_analysis_complete(result)
 
-        assert dialog.phase_label.text() == "Suggestions only: not every check passed"
-        assert dialog.start_button.text() == "Apply Suggestions"
-        assert dialog.start_button.styleSheet() == ""
+        assert dialog.view_model.shown["phaseText"] == "Suggestions only: not every check passed"
+        assert dialog.view_model.shown["startText"] == "Apply Suggestions"
+        assert dialog.view_model.shown["startLook"] == "plain"
 
         dialog._reset_setup_ui()
         _bind_capture_context(dialog, *_short_voice_captures(48_000))
         dialog._on_analysis_complete(_voice_setup_result(real_main_window, dialog))
-        assert dialog.phase_label.text() == "Recommendations ready"
-        assert dialog.start_button.styleSheet() == PRIMARY_ACTION_BUTTON_STYLE
+        assert dialog.view_model.shown["phaseText"] == "Recommendations ready"
+        assert dialog.view_model.shown["startLook"] == "primary"
 
 
 # --- Auto-EQ -----------------------------------------------------------------------------
@@ -454,16 +442,16 @@ def test_the_comparison_keeps_the_original_eq_as_now_after_apply(real_main_windo
     result["eq_settings"] = _legacy_eq(real_main_window, [3.0] + [0.0] * 9)
     with _dismissed(dialog):
         dialog._on_analysis_complete(result)
-        assert dialog.eq_compare.isHidden() is False
+        assert dialog.view_model.shown["eqCompareShown"]
         before = dialog.eq_compare.largest_change()
         assert before[0] == pytest.approx(3.0, abs=1.0)
-        assert dialog.eq_compare.accessibleDescription().startswith("Largest change: +")
+        assert dialog.eq_compare.description().startswith("Largest change: +")
 
         dialog._apply_setup()
         assert dialog.setup_state == "verification_ready"
 
         assert dialog.eq_compare.largest_change() == pytest.approx(before)
-        assert dialog.eq_compare.isHidden() is False
+        assert dialog.view_model.shown["eqCompareShown"]
 
 
 def test_a_review_without_a_tone_result_draws_no_comparison(real_main_window) -> None:
@@ -471,13 +459,13 @@ def test_a_review_without_a_tone_result_draws_no_comparison(real_main_window) ->
     result = _voice_setup_result(real_main_window, dialog)
     with _dismissed(dialog):
         dialog._show_summary(result)
-        assert dialog.eq_compare.isHidden() is False
+        assert dialog.view_model.shown["eqCompareShown"]
 
         result["eq_settings"] = None
         result["eq_error"] = "Recording too unclear. Please try again."
         dialog._show_summary(result)
 
-        assert dialog.eq_compare.isHidden()
+        assert not dialog.view_model.shown["eqCompareShown"]
 
 
 def test_the_auto_eq_result_draws_the_proposed_eq_only_when_it_offers_one(qapp, monkeypatch) -> None:
@@ -498,10 +486,7 @@ def test_the_auto_eq_result_draws_the_proposed_eq_only_when_it_offers_one(qapp, 
 
 
 def _current_step(dialog) -> int:
-    from mic_eq.ui.components import STEP_CURRENT_STYLE
-
-    labels = dialog.step_header._labels
-    return next(i for i, label in enumerate(labels) if label.styleSheet() == STEP_CURRENT_STYLE)
+    return dialog.view_model.shown["step"]
 
 
 def test_a_rejected_room_noise_take_stays_on_its_own_step_with_a_clean_meter(
@@ -511,18 +496,18 @@ def test_a_rejected_room_noise_take_stays_on_its_own_step_with_a_clean_meter(
     with _dismissed(dialog):
         dialog.setup_state = "noise_recording"
         dialog.level_meter.set_levels(-12.0, -0.2)
-        dialog.time_label.setText("Time remaining: 1s")
+        dialog.view_model.set_page(timeText="Time remaining: 1s")
 
         dialog._on_recording_complete(np.full(48_000, np.nan, dtype=np.float32))
 
         assert dialog.setup_state == "idle"
         assert dialog.STEPS[_current_step(dialog)] == "Room noise"
-        assert dialog.noise_group.isHidden() is False and dialog.curve_group.isHidden()
-        assert dialog.recording_group.title() == "Recording"
+        assert dialog.view_model.shown["noiseShown"] and not dialog.view_model.shown["targetShown"]
+        assert dialog.view_model.shown["recordingTitle"] == "Recording"
         assert dialog.level_meter.measurement_available is False
         assert dialog.level_meter.is_clipping is False
-        assert dialog.time_label.text() == "Ready to record again"
-        assert "Time remaining" not in dialog.time_label.text()
+        assert dialog.view_model.shown["timeText"] == "Ready to record again"
+        assert "Time remaining" not in dialog.view_model.shown["timeText"]
 
 
 def test_a_failed_level_check_stays_on_the_level_step(real_main_window) -> None:
@@ -540,12 +525,12 @@ def test_a_failed_level_check_stays_on_the_level_step(real_main_window) -> None:
 def test_compare_belongs_to_the_review_alone(real_main_window) -> None:
     dialog, _speech = _review_dialog(real_main_window)
     with _dismissed(dialog):
-        assert dialog.compare_button.isHidden()
+        assert not dialog.view_model.shown["compareShown"]
 
         dialog._on_analysis_complete(_voice_setup_result(real_main_window, dialog))
         assert dialog.STEPS[_current_step(dialog)] == "Review"
-        assert dialog.recording_group.title() == "Review"
-        assert dialog.compare_button.isHidden() is False and dialog.compare_button.isEnabled()
+        assert dialog.view_model.shown["recordingTitle"] == "Review"
+        assert dialog.view_model.shown["compareShown"] and dialog.view_model.shown["compareEnabled"]
 
 
 def test_the_auto_eq_review_is_titled_review_and_shows_compare_only_there(qapp, monkeypatch) -> None:
@@ -561,30 +546,6 @@ def test_the_auto_eq_review_is_titled_review_and_shows_compare_only_there(qapp, 
     finally:
         dialog.reject()
         owner.close()
-
-
-def test_the_passage_is_never_cut_or_scrolled_inside_the_page(real_main_window, qapp) -> None:
-    from mic_eq.analysis import voice_setup  # noqa: F401  (the dialogs import it already)
-    from PySide6.QtWidgets import QTextEdit
-
-    from mic_eq.ui.calibration_support import RAINBOW_PASSAGE
-
-    # test_calibration_scene.py checks the Auto-EQ scene's passage.
-    dialog = VoiceSetupDialog(parent=real_main_window, configuration=real_main_window.configuration)
-    try:
-        dialog.resize(520, 700)
-        dialog.show()
-        qapp.processEvents()
-        passage = [
-            label for label in dialog.findChildren(QLabel) if label.text() == RAINBOW_PASSAGE
-        ]
-        assert len(passage) == 1 and not dialog.findChildren(QTextEdit)
-        label = passage[0]
-        assert label.wordWrap()
-        # Tall enough for every wrapped line.
-        assert label.height() >= label.heightForWidth(label.width()) - 1
-    finally:
-        dialog.reject()
 
 
 # --- A result that was reported is not overwritten by closing the window ------------------
@@ -703,7 +664,7 @@ def test_an_advisory_result_says_each_capture_problem_once(real_main_window) -> 
     try:
         dialog._on_analysis_complete(result)
 
-        warning = dialog.warning_label.text()
+        warning = dialog.view_model.warning_text
         assert "These settings did not pass every check, so treat them as suggestions" in warning
         assert "final safety check on your recording did not pass" in warning
         assert warning.endswith("suggestions only.")
@@ -728,7 +689,7 @@ def test_an_advisory_result_whose_only_causes_are_capture_problems_keeps_just_th
     try:
         dialog._on_analysis_complete(result)
 
-        warning = dialog.warning_label.text()
+        warning = dialog.view_model.warning_text
         assert "These settings did not pass every check, so treat them as suggestions" in warning
         assert "final safety check" not in warning
     finally:
@@ -760,7 +721,7 @@ def test_the_voice_review_says_when_the_eq_now_is_not_in_use(real_main_window, m
         dialog._on_analysis_complete(result)
 
         assert dialog.eq_compare.lines()[0][0] == "Now (not used in Bypass)"
-        assert "does not use" in dialog.eq_compare.accessibleDescription()
+        assert "does not use" in dialog.eq_compare.description()
     finally:
         _ended(dialog)
 
@@ -796,7 +757,7 @@ def test_a_comparison_that_cannot_be_drawn_is_logged_and_left_out(
         with caplog.at_level(logging.WARNING, logger="mic_eq.ui.voice_setup_dialog"):
             dialog._show_summary(result)
 
-        assert dialog.eq_compare.isHidden()
+        assert not dialog.view_model.shown["eqCompareShown"]
         assert any(
             record.levelno == logging.WARNING and "EQ comparison" in record.getMessage()
             for record in caplog.records

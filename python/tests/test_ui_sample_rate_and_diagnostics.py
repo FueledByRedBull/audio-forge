@@ -52,6 +52,7 @@ from mic_eq.ui.health import (
 )
 from mic_eq.ui.startup_presets import startup_custom_id as _startup_custom_id
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+from mic_eq.ui.voice_setup_view import DYNAMICS_KEYS
 from mic_eq.config import (
     AppConfig,
     DeviceIdentity,
@@ -62,6 +63,7 @@ from mic_eq.config import (
     build_input_device_preference_key,
     legacy_latency_profile_key,
 )
+from test_first_run_setup import scene_item
 from test_quick_shell import _load_config_without_devices
 
 
@@ -115,7 +117,7 @@ def test_setup_level_warnings_use_actual_peak_not_rms_estimate(window):
     voice_setup.setup_state = "voice_recording"
     voice_setup._update_level(-20.0, -1.0)
     assert (voice_setup.level_meter.rms_db, voice_setup.level_meter.peak_db) == (-20.0, -1.0)
-    assert "peaks at -1.0 dB" in voice_setup.warning_label.text()
+    assert "peaks at -1.0 dB" in voice_setup.view_model.warning_text
 
 
 class _SignalStub:
@@ -1996,15 +1998,15 @@ def test_latency_calibration_respects_user_mute(window, monkeypatch):
 def test_voice_setup_dynamics_intensity_controls_custom_targets(qapp):
     dialog = VoiceSetupDialog()
 
-    assert dialog.dynamics_combo.currentData() == "balanced"
-    assert dialog.custom_p95_spin.isEnabled() is False
-    assert dialog.custom_peak_spin.isEnabled() is False
+    assert dialog.view_model.selected("dynamics") == "balanced"
+    assert scene_item(dialog, "p95Number").isEnabled() is False
+    assert scene_item(dialog, "peakNumber").isEnabled() is False
 
-    dialog.dynamics_combo.setCurrentIndex(dialog.dynamics_combo.findData("custom"))
+    dialog.view_model.pickDynamics(DYNAMICS_KEYS.index("custom"))
     qapp.processEvents()
 
-    assert dialog.custom_p95_spin.isEnabled() is True
-    assert dialog.custom_peak_spin.isEnabled() is True
+    assert scene_item(dialog, "p95Number").isEnabled() is True
+    assert scene_item(dialog, "peakNumber").isEnabled() is True
     dialog.close()
 
 

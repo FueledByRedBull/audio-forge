@@ -7,7 +7,6 @@ import math
 import numpy as np
 from PySide6.QtCore import Property, QObject, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from mic_eq import eq_magnitude_response_v2
 from mic_eq.config import EQSettings
@@ -184,39 +183,3 @@ class EQComparison(QObject):
             painter.setPen(qcolor(PALETTE.text_primary))
             painter.drawText(QPointF(x + 28, plot.top() + 14), label)
             x += width
-
-
-class EQComparisonWidget(QWidget):
-    """The EQ now (dashed) over the proposed EQ (solid). It takes no input."""
-
-    def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setFixedHeight(180)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setAccessibleName("EQ now compared with the proposed EQ")
-        self.model = EQComparison(self)
-        self.setVisible(False)
-
-    def set_curves(
-        self, now: EQSettings, proposed: EQSettings, sample_rate: float, unused_mode: str = ""
-    ) -> None:
-        """Draw both; ``unused_mode`` names a processing mode that skips the EQ now."""
-        self.model.set_curves(now, proposed, sample_rate, unused_mode)
-        self.setAccessibleDescription(self.description())
-        self.update()
-
-    def largest_change(self) -> tuple[float, float]:
-        return self.model.largest_change()
-
-    def description(self) -> str:
-        return self.model.description()
-
-    def lines(self) -> list[tuple[str, np.ndarray, bool]]:
-        return self.model.lines()
-
-    def paintEvent(self, _event) -> None:
-        painter = QPainter(self)
-        self.model.paint(painter, float(self.width()), float(self.height()))
-        painter.end()

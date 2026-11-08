@@ -376,44 +376,6 @@ def prefers_reduced_motion() -> bool:
         return False
 
 
-SUBDUED_TEXT_STYLE = f"font-size: 9pt; color: {PALETTE.text_muted};"
-DESCRIPTION_LABEL_STYLE = f"color: {PALETTE.text_muted}; font-size: 9pt; padding: 5px;"
-PROGRESS_LABEL_STYLE = f"font-size: 12pt; color: {PALETTE.text_primary}; font-weight: bold;"
-
-def _button_style(surface: str, text: str, border: str, hover: str) -> str:
-    return (
-        f"QPushButton {{ background-color: {surface}; color: {text}; "
-        f"font-weight: 600; border: 1px solid {border}; "
-        f"border-radius: {RADIUS_CONTROL}px; padding: 6px 10px; }} "
-        f"QPushButton:hover {{ background-color: {hover}; color: {text}; }} "
-        f"QPushButton:focus {{ border-color: {PALETTE.text_primary}; }} "
-        f"QPushButton:disabled {{ background-color: {PALETTE.action_disabled_surface}; "
-        f"color: {PALETTE.action_disabled_text}; "
-        f"border-color: {PALETTE.action_disabled_border}; }}"
-    )
-
-
-STEP_STYLE = f"color: {PALETTE.text_muted}; padding: 0 0 6px 0;"
-STEP_CURRENT_STYLE = (
-    f"color: {PALETTE.text_primary}; font-weight: 600; padding: 0 0 4px 0; "
-    f"border-bottom: 2px solid {PALETTE.accent};"
-)
-
-PRIMARY_ACTION_BUTTON_STYLE = _button_style(
-    PALETTE.action_primary,
-    PALETTE.text_on_accent,
-    PALETTE.action_primary,
-    PALETTE.accent_hover,
-)
-
-PROGRESS_BAR_STYLE = (
-    f"QProgressBar {{ border: none; border-radius: 4px; "
-    f"background-color: {PALETTE.control_surface}; }} "
-    f"QProgressBar::chunk {{ background-color: {PALETTE.accent}; "
-    "border-radius: 4px; }"
-)
-
-
 _STATUS_COLORS = {
     "ok": (
         PALETTE.status_ok_surface,
@@ -441,23 +403,6 @@ _STATUS_COLORS = {
         PALETTE.status_idle_border,
     ),
 }
-
-
-def status_chip_style(state: str) -> str:
-    background, foreground, border = _STATUS_COLORS.get(
-        state,
-        _STATUS_COLORS["idle"],
-    )
-    return (
-        "QLabel { "
-        f"background-color: {background}; "
-        f"color: {foreground}; "
-        f"border: 1px solid {border}; "
-        f"border-radius: {RADIUS_CONTROL}px; "
-        "padding: 6px 10px; "
-        "font-size: 9pt; "
-        "font-weight: 600; }"
-    )
 
 
 def message_text_style(state: str, *, strong: bool = False) -> str:

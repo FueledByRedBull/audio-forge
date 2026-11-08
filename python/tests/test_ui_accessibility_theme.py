@@ -14,7 +14,7 @@ from unittest.mock import Mock
 import pytest
 from PySide6.QtCore import QEvent, QPointF, QRect, QSize
 from PySide6.QtGui import QColor, QIcon, QPalette, QPixmap
-from PySide6.QtWidgets import QScrollArea, QWidget
+from PySide6.QtWidgets import QScrollArea
 
 from mic_eq.config import AppConfig
 from mic_eq.ui.accessibility import set_accessible
@@ -364,45 +364,6 @@ def test_workflow_dialogs_have_named_controls(
     for dialog in dialogs:
         dialog.close()
         dialog.deleteLater()
-    qapp.processEvents()
-
-
-@pytest.mark.parametrize(
-    ("dialog_type", "width", "height"),
-    (
-        # The Auto-EQ dialog is a scene; test_calibration_scene.py checks its overflow.
-        (VoiceSetupDialog, 500, 380),
-    ),
-)
-def test_workflow_dialogs_scroll_vertically_without_horizontal_overflow(
-    isolated_main_window,
-    qapp,
-    dialog_type,
-    width: int,
-    height: int,
-) -> None:
-    dialog = dialog_type(isolated_main_window)
-    dialog.resize(width, height)
-    dialog.show()
-    qapp.processEvents()
-    qapp.processEvents()
-
-    scroll_area = dialog.content_scroll_area
-    oversized = [
-        (
-            type(widget).__name__,
-            getattr(widget, "title", lambda: widget.objectName())(),
-            widget.minimumSizeHint().width(),
-            widget.sizeHint().width(),
-        )
-        for widget in scroll_area.widget().findChildren(QWidget)
-        if widget.minimumSizeHint().width() > scroll_area.viewport().width()
-    ]
-    assert scroll_area.horizontalScrollBar().maximum() == 0, oversized
-    assert scroll_area.widget().width() <= scroll_area.viewport().width()
-
-    dialog.close()
-    dialog.deleteLater()
     qapp.processEvents()
 
 

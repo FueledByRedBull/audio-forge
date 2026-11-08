@@ -19,6 +19,7 @@ from ...mic_eq_core import (
     is_headroom_safe,
     legacy_eq_inputs,
     safety_metric_problems,
+    simulate_auto_eq_chain,
 )
 
 HEADROOM_SCALES = (1.0, 0.85, 0.70, 0.55, 0.40, 0.25, 0.0)
@@ -47,19 +48,6 @@ def _native_simulate(
     bands: list[tuple[float, float, float]],
     flat_settings: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
-    try:
-        from mic_eq import CORE_AVAILABLE
-        from mic_eq.mic_eq_core import simulate_auto_eq_chain
-    except ImportError as exc:
-        return None, _native_failure(
-            "unavailable",
-            message=f"native simulator import failed: {type(exc).__name__}: {exc}",
-        )
-    if not CORE_AVAILABLE:
-        return None, _native_failure(
-            "unavailable",
-            message="native simulator is unavailable in this build",
-        )
     try:
         audio = np.ascontiguousarray(audio_data, dtype=np.float32)
         result: Any = simulate_auto_eq_chain(

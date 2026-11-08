@@ -24,8 +24,9 @@ const NUM_EQ_BANDS: usize = 10;
 type Band = (f64, f64, f64);
 
 /// How far a render passes the headroom rule, whichever term fails most; it
-/// fits at <= 0. Python's `max`: on a tie the earlier term, so a signed zero
-/// comes out as it did.
+/// fits at <= 0. The readings must be finite: the binding returns infinity
+/// for any other reading before calling this. On a tie the earlier term wins,
+/// as with Python's `max`, so a signed zero comes out as it did.
 pub fn headroom_excess_db(
     pre_limiter_true_peak_headroom_db: f64,
     limiter_gain_reduction_db: f64,

@@ -357,6 +357,15 @@ pub fn map_causal_vad_probabilities<E>(
     ))
 }
 
+/// Why `offline_vad_probabilities` could not resample a capture.
+#[derive(Debug, PartialEq)]
+pub enum VadResampleError<F> {
+    /// `design_taps` failed with its own error.
+    Design(F),
+    /// `design_taps` returned a filter that does not fit the rates.
+    Filter(&'static str),
+}
+
 /// Silero posteriors for an offline capture, or `None` when the analysis
 /// must fall back to energy.
 ///
@@ -371,7 +380,7 @@ pub fn offline_vad_probabilities<E, F>(
     pre_gain: f64,
     design_taps: impl FnOnce(usize, usize) -> Result<Vec<f64>, F>,
     infer: impl FnOnce(&[f32], u32) -> Result<Vec<f32>, E>,
-) -> Result<Option<Vec<f64>>, F> {
+) -> Result<Option<Vec<f64>>, VadResampleError<F>> {
     if !pre_gain.is_finite() || pre_gain <= 0.0 || audio.is_empty() || sample_rate <= 0 {
         return Ok(None);
     }
@@ -381,10 +390,10 @@ pub fn offline_vad_probabilities<E, F>(
         let rate = sample_rate as usize;
         let divisor = gcd(rate, VAD_ANALYSIS_SAMPLE_RATE as usize);
         let (up, down) = (VAD_ANALYSIS_SAMPLE_RATE as usize / divisor, rate / divisor);
-        let taps = design_taps(up, down)?;
+        let taps = design_taps(up, down).map_err(VadResampleError::Design)?;
         let widened: Vec<f64> = audio.iter().copied().map(f64::from).collect();
-        let resampled = resample_poly(&widened, up, down, &taps)
-            .expect("design_taps returns the filter for the reduced rates");
+        let resampled =
+            resample_poly(&widened, up, down, &taps).map_err(VadResampleError::Filter)?;
         (
             resampled.into_iter().map(|sample| sample as f32).collect(),
             VAD_ANALYSIS_SAMPLE_RATE,

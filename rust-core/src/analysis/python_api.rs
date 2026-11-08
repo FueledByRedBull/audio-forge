@@ -106,11 +106,14 @@ fn resample_rate(rate: &Bound<'_, PyAny>) -> PyResult<usize> {
     index.extract()
 }
 
+/// Resamples `array` in `T` and returns it as `output_dtype`, the dtype
+/// NumPy's matmul gave the removed Python's output.
 fn resample_as<'py, T>(
     py: Python<'py>,
     array: &Bound<'py, PyUntypedArray>,
     up: usize,
     down: usize,
+    output_dtype: &Bound<'py, PyAny>,
 ) -> PyResult<Bound<'py, PyAny>>
 where
     T: super::ResampleSample + Element + Send + Sync,
@@ -120,13 +123,17 @@ where
     let output = py
         .detach(|| super::resample_poly(&values, up, down, &taps))
         .map_err(PyValueError::new_err)?;
-    Ok(PyArray1::from_vec(py, output).into_any())
+    PyArray1::from_vec(py, output).call_method1("view", (output_dtype,))
 }
 
-/// Resamples float32, float64, complex64 and complex128 audio in its own
-/// precision and other real numbers in float64, as the removed Python did.
-/// An identity ratio copies the array, and empty audio keeps a float or
-/// complex dtype, both as before.
+/// Resamples in the precision the removed Python's NumPy arithmetic used.
+///
+/// Audio whose dtype equals float32, float64, complex64 or complex128 kept
+/// it (taps and output); real audio of any other dtype met float64 taps
+/// and took NumPy's promotion with float64. Extended precision, objects
+/// and byte-swapped complex audio, which NumPy computed its own way, raise
+/// TypeError. An identity ratio
+/// copies the array, and empty audio keeps a float or complex dtype.
 #[pyfunction]
 pub(crate) fn resample_poly<'py>(
     py: Python<'py>,
@@ -161,32 +168,37 @@ pub(crate) fn resample_poly<'py>(
             return np.call_method1("empty", (0, empty_dtype));
         }
 
-        if dtype.is_equiv_to(&numpy::dtype::<f32>(py)) {
-            return resample_as::<f32>(py, &array, up, down);
-        }
-        if dtype.is_equiv_to(&numpy::dtype::<f64>(py)) {
-            return resample_as::<f64>(py, &array, up, down);
-        }
-        if dtype.is_equiv_to(&numpy::dtype::<Complex32>(py)) {
-            return resample_as::<Complex32>(py, &array, up, down);
-        }
-        if dtype.is_equiv_to(&numpy::dtype::<Complex64>(py)) {
-            return resample_as::<Complex64>(py, &array, up, down);
-        }
-        // NumPy promoted booleans, integers and float16 to float64 exactly.
-        let promotes_to_float64 = match dtype.kind() {
-            b'b' | b'i' | b'u' => true,
-            b'f' => dtype.itemsize() < 8,
-            _ => false,
+        let kept = [
+            numpy::dtype::<f32>(py),
+            numpy::dtype::<f64>(py),
+            numpy::dtype::<Complex32>(py),
+            numpy::dtype::<Complex64>(py),
+        ]
+        .into_iter()
+        .map(|candidate| dtype.eq(candidate))
+        .collect::<PyResult<Vec<bool>>>()?;
+        // `dtype in (...)`, as the removed Python chose the taps' dtype.
+        let kept = kept.contains(&true);
+        let output_dtype = if kept {
+            dtype.clone().into_any()
+        } else {
+            np.call_method1("result_type", (&dtype, np.getattr("float64")?))?
         };
-        if promotes_to_float64 {
-            return resample_as::<f64>(py, &array, up, down);
+        let output = output_dtype.cast::<numpy::PyArrayDescr>()?;
+        // Byte-swapped complex audio met NumPy's own cast-and-multiply path,
+        // whose sums the native loop does not reproduce.
+        match (output.kind(), output.itemsize(), kept) {
+            (b'f', 4, _) => resample_as::<f32>(py, &array, up, down, &output_dtype),
+            (b'f', 8, _) => resample_as::<f64>(py, &array, up, down, &output_dtype),
+            (b'c', 8, true) => resample_as::<Complex32>(py, &array, up, down, &output_dtype),
+            (b'c', 16, true) => resample_as::<Complex64>(py, &array, up, down, &output_dtype),
+            _ => Err(PyTypeError::new_err(format!(
+                "audio to resample must be float32, float64, complex64 or complex128 \
+                 in native byte order, or real numbers that convert to float64 exactly, \
+                 not {}",
+                dtype.str()?
+            ))),
         }
-        Err(PyTypeError::new_err(format!(
-            "audio to resample must be float32, float64, complex64 or complex128, \
-             or real numbers that convert to float64 exactly, not {}",
-            dtype.str()?
-        )))
     })
 }
 
@@ -359,23 +371,28 @@ pub(crate) fn analyze_offline_vad<'py>(
             return Ok((None, FALLBACK));
         };
         let threshold = threshold as f32;
-        let probabilities = py.detach(move || {
-            super::offline_vad_probabilities(
-                &samples,
-                sample_rate,
-                pre_gain,
-                |up, down| Python::attach(|py| numpy_resample_taps(py, up, down)),
-                |prepared, rate| {
-                    std::panic::catch_unwind(|| {
-                        crate::audio::processor::silero_offline_probabilities(
-                            prepared, rate, threshold,
-                        )
-                    })
-                    .map_err(drop)?
-                    .map_err(drop)
-                },
-            )
-        })?;
+        let probabilities = py
+            .detach(move || {
+                super::offline_vad_probabilities(
+                    &samples,
+                    sample_rate,
+                    pre_gain,
+                    |up, down| Python::attach(|py| numpy_resample_taps(py, up, down)),
+                    |prepared, rate| {
+                        std::panic::catch_unwind(|| {
+                            crate::audio::processor::silero_offline_probabilities(
+                                prepared, rate, threshold,
+                            )
+                        })
+                        .map_err(drop)?
+                        .map_err(drop)
+                    },
+                )
+            })
+            .map_err(|error| match error {
+                super::VadResampleError::Design(error) => error,
+                super::VadResampleError::Filter(message) => PyValueError::new_err(message),
+            })?;
         Ok(match probabilities {
             Some(probabilities) => (Some(PyArray1::from_vec(py, probabilities)), "silero"),
             None => (None, FALLBACK),

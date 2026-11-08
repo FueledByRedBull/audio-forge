@@ -365,7 +365,9 @@ def _reference_analyze_offline_vad(
 
 
 def _assert_same_bits(actual: np.ndarray, expected: np.ndarray) -> None:
+    # dtype equality alone accepts longdouble for float64 where they share a size.
     assert actual.dtype == expected.dtype
+    assert (actual.dtype.char, actual.dtype.str) == (expected.dtype.char, expected.dtype.str)
     assert actual.shape == expected.shape
     assert actual.tobytes() == expected.tobytes()
 
@@ -404,6 +406,11 @@ def _resample_parity_inputs() -> dict[str, Any]:
     inputs["complex128"] = complex_noise
     inputs["complex64"] = complex_noise.astype(np.complex64)
     inputs["complex-empty"] = np.zeros(0, dtype=np.complex64)
+    # NumPy kept only the native-order dtypes; byte-swapped audio promoted
+    # with the float64 taps.
+    inputs["big-endian-float64"] = inputs["noise-1024"].astype(">f8")
+    inputs["big-endian-float32"] = inputs["float32"].astype(">f4")
+    inputs["big-endian-empty"] = np.zeros(0, dtype=">f4")
     # A non-finite imaginary part reaches the real output through the complex product.
     inputs["complex-nonfinite"] = complex_noise.copy()
     inputs["complex-nonfinite"][[100, 700]] = [complex(0.5, np.inf), complex(np.nan, 0.25)]
@@ -456,17 +463,40 @@ def test_native_resample_poly_refuses_non_numeric_audio_like_the_numpy_implement
     _assert_same_bits(resample_poly(samples, 2, 2), _reference_resample_poly(samples, 2, 2))
 
 
-# The one accepted difference: NumPy resampled these in their own precision;
-# no caller passes them.
+def _wider_than_float64(dtype: Any) -> bool:
+    return np.finfo(dtype).nmant > np.finfo(np.float64).nmant
+
+
+# Accepted differences: NumPy resampled extended-precision audio in its own
+# precision, which the native core cannot; no caller passes it. Where
+# longdouble is float64 (Windows) it resamples like float64, and clongdouble
+# like complex128, so there the output must be NumPy's. Object audio is
+# always refused.
 @pytest.mark.parametrize(
     "dtype", [np.longdouble, np.clongdouble, object], ids=lambda dtype: np.dtype(dtype).name
 )
 def test_native_resample_poly_refuses_extended_and_object_audio(dtype):
-    samples = np.arange(6).astype(dtype)
+    samples = (np.random.default_rng(6).standard_normal(600) * 3.0).astype(dtype)
 
-    with pytest.raises(TypeError, match="float32, float64, complex64 or complex128"):
-        resample_poly(samples, 1, 3)
+    if dtype is object or _wider_than_float64(dtype):
+        with pytest.raises(TypeError, match="float32, float64, complex64 or complex128"):
+            resample_poly(samples, 1, 3)
+    else:
+        for rates in _PARITY_RATES:
+            _assert_same_bits(resample_poly(samples, *rates), _reference_resample_poly(samples, *rates))
     _assert_same_bits(resample_poly(samples, 3, 3), _reference_resample_poly(samples, 3, 3))
+    _assert_same_bits(resample_poly(samples[:0], 1, 3), _reference_resample_poly(samples[:0], 1, 3))
+
+
+# NumPy multiplied byte-swapped complex audio through its own casting path,
+# whose sums differ from native-order complex; the native core refuses it.
+@pytest.mark.parametrize("dtype", [">c8", ">c16"])
+def test_native_resample_poly_refuses_byte_swapped_complex_audio(dtype):
+    samples = (np.arange(64) * (1 + 0.5j)).astype(dtype)
+
+    with pytest.raises(TypeError, match="native byte order"):
+        resample_poly(samples, 1, 3)
+    _assert_same_bits(resample_poly(samples, 2, 2), _reference_resample_poly(samples, 2, 2))
     _assert_same_bits(resample_poly(samples[:0], 1, 3), _reference_resample_poly(samples[:0], 1, 3))
 
 

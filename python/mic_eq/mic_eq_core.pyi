@@ -318,8 +318,9 @@ def band_mean(
 def resample_poly(samples: npt.ArrayLike, up: int, down: int) -> npt.NDArray[Any]:
     """SciPy-default Kaiser polyphase resampling of 1-D audio.
 
-    float32, float64, complex64 and complex128 keep their dtype; booleans,
-    integers and float16 return float64; other dtypes raise TypeError. An
+    float32, float64, complex64 and complex128 keep their dtype; other real
+    audio (booleans, integers, float16, byte-swapped floats) returns float64;
+    extended precision, objects and byte-swapped complex raise TypeError. An
     identity ratio returns a copy, and empty audio keeps a float or complex
     dtype (float64 otherwise).
     """

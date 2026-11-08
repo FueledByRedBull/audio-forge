@@ -277,8 +277,9 @@ def analyze_offline_vad(
     """Silero posteriors and "silero", or (None, "energy_fallback").
 
     Rates without whole 32 ms windows are resampled to 48 kHz; pre_gain (at
-    least 0.1) is applied before inference. A non-positive or non-finite gain,
-    an empty capture, an invalid threshold, non-finite samples or a model
+    least 0.1) is applied before inference. A gain or threshold that float()
+    rejects, a non-positive or non-finite gain, an empty capture, a
+    non-positive rate, an invalid threshold, non-finite samples or a model
     failure falls back.
     """
     ...

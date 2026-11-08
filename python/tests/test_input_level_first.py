@@ -289,6 +289,7 @@ def test_the_out_marker_and_health_follow_the_limiter_in_every_processing_mode(
     # and the ceiling still apply while the limiter is on.
     window, engine = running_window, running_window.engine
     window.limiter_state.set_value("enabled", limiter)
+    window.limiter_state.flush()  # applied, not still queued behind the start-up write
     window._set_processing_mode(mode)
     engine.pre_limiter_peak, engine.output_peak = 1.41, 1.0
     engine.output_count += CLIP_FLAT_TOP_SAMPLES
@@ -301,6 +302,7 @@ def test_the_out_marker_and_health_follow_the_limiter_in_every_processing_mode(
 def test_a_limiter_holding_the_output_at_a_ceiling_of_zero_is_neither_a_marker_nor_a_warning(running_window):
     window, engine = running_window, running_window.engine
     window.limiter_state.set_value("ceiling_db", 0.0)
+    window.limiter_state.flush()
     engine.pre_limiter_peak, engine.output_peak = 1.41, 1.0
     engine.output_count += 400  # the limiter keeps landing on the ceiling
     window._update_meters()

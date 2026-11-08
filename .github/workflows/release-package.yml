@@ -691,7 +691,8 @@ jobs:
 
       # The libxcb libraries are the ones Qt's xcb plugin links (linux_package.py
       # XCB_LIBRARIES) and most desktops lack; the bundle copies them from this
-      # host, and check_bundle refuses a bundle without them.
+      # host, and check_bundle refuses a bundle without them. build_linux.sh
+      # runs patchelf to remove the setup-python interpreter's RUNPATH.
       - name: Install system build dependencies
         run: |
           sudo apt-get update
@@ -701,7 +702,7 @@ jobs:
             libxcb-cursor0 libxcb-glx0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
             libxcb-randr0 libxcb-render-util0 libxcb-render0 libxcb-shape0 \
             libxcb-shm0 libxcb-sync1 libxcb-util1 libxcb-xfixes0 libxcb-xkb1 \
-            libxkbcommon-x11-0 libxkbcommon0 pkg-config
+            libxkbcommon-x11-0 libxkbcommon0 patchelf pkg-config
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:

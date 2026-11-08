@@ -221,6 +221,34 @@ def _outside_bundle(entry: str, origin: Path, bundle: Path) -> bool:
     return True
 
 
+def _bundle_files(bundle: Path) -> list[Path]:
+    return [path for path in sorted(bundle.rglob("*")) if path.is_file() and not path.is_symlink()]
+
+
+def clear_outside_search_paths(bundle: Path) -> list[str]:
+    """Remove the RPATH and RUNPATH of each file in ``bundle`` whose search paths all leave it.
+
+    The interpreter actions/setup-python installs names its own lib directory in
+    libpython and every lib-dynload module. A file that mixes such entries with
+    ones inside the bundle stops the build rather than losing the inside ones.
+    """
+    patchelf = shutil.which("patchelf")
+    cleared = []
+    for path in _bundle_files(bundle):
+        entries = [entry for _tag, value in elf_search_paths(path) for entry in value.split(":")]
+        outside = [entry for entry in entries if _outside_bundle(entry, path.parent, bundle)]
+        if not outside:
+            continue
+        relative = path.relative_to(bundle).as_posix()
+        if len(outside) != len(entries):
+            raise SystemExit(f"{relative} searches both inside and outside the bundle: {':'.join(entries)}")
+        if patchelf is None:
+            raise SystemExit(f"patchelf is required to remove the search paths outside the bundle from {relative}")
+        subprocess.run([patchelf, "--remove-rpath", str(path)], check=True)
+        cleared.append(relative)
+    return cleared
+
+
 def check_bundle(bundle: Path, version: str) -> list[str]:
     """Problems that make ``bundle`` unfit to ship; empty when it is ready."""
     internal = bundle / "_internal"
@@ -256,9 +284,7 @@ def check_bundle(bundle: Path, version: str) -> list[str]:
             errors.append(f"bundles an unused Qt plugin: {relative}")
     # A search path outside the bundle makes the loader look on the user's
     # machine (a build host's home or toolcache) before the system libraries.
-    for path in sorted(bundle.rglob("*")):
-        if path.is_symlink() or not path.is_file():
-            continue
+    for path in _bundle_files(bundle):
         relative = path.relative_to(bundle).as_posix()
         try:
             search_paths = elf_search_paths(path)
@@ -368,10 +394,16 @@ def main() -> int:
     parser.add_argument("--appimagetool", type=Path, help="appimagetool executable; omit to skip the AppImage")
     parser.add_argument("--appimage-runtime", type=Path, help="pinned AppImage runtime for appimagetool to embed")
     parser.add_argument("--check-only", action="store_true", help="check the bundle without packaging it")
+    parser.add_argument("--clear-search-paths", action="store_true",
+                        help="remove library search paths outside the bundle (needs patchelf when there are any)")
     args = parser.parse_args()
     bundle = args.bundle.resolve()
     if sys.platform != "linux":
         parser.error("Linux packages are built on Linux")
+    if args.clear_search_paths:
+        cleared = clear_outside_search_paths(bundle)
+        print(f"Removed the library search paths outside the bundle from {len(cleared)} files", *cleared, sep="\n  ")
+        return 0
     version = project_version()
     errors = check_bundle(bundle, version)
     if errors:

@@ -142,6 +142,67 @@ def test_library_search_paths_outside_the_bundle_are_refused(tmp_path):
     assert errors[2].startswith("cannot read the library search paths of _internal/libtruncated.so: ")
 
 
+def _patchelf_host(monkeypatch, available=True):
+    calls = []
+    monkeypatch.setattr(linux_package.shutil, "which", lambda name: "/usr/bin/patchelf" if available else None)
+    monkeypatch.setattr(linux_package.subprocess, "run", lambda command, **kwargs: calls.append(command))
+    return calls
+
+
+def test_search_paths_that_only_leave_the_bundle_are_removed_with_patchelf(tmp_path, monkeypatch):
+    bundle = _bundle(tmp_path)
+    toolcache = "/opt/hostedtoolcache/Python/3.13.17/x64/lib"
+    _elf(bundle / "_internal/libpython3.13.so.1.0", ("RUNPATH", toolcache))
+    _elf(bundle / "_internal/python3.13/lib-dynload/_ssl.cpython-313-x86_64-linux-gnu.so", ("RUNPATH", toolcache))
+    _elf(bundle / "_internal/PySide6/Qt/lib/libQt6Core.so.6", ("RUNPATH", "$ORIGIN"))
+    calls = _patchelf_host(monkeypatch)
+
+    cleared = linux_package.clear_outside_search_paths(bundle)
+
+    expected = ["_internal/libpython3.13.so.1.0", "_internal/python3.13/lib-dynload/_ssl.cpython-313-x86_64-linux-gnu.so"]
+    assert cleared == expected
+    assert calls == [["/usr/bin/patchelf", "--remove-rpath", str(bundle / relative)] for relative in expected]
+
+
+def test_clearing_search_paths_needs_patchelf_only_when_one_leaves_the_bundle(tmp_path, monkeypatch):
+    bundle = _bundle(tmp_path)
+    _elf(bundle / "_internal/PySide6/Qt/lib/libQt6Core.so.6", ("RUNPATH", "$ORIGIN"))
+    calls = _patchelf_host(monkeypatch, available=False)
+    assert linux_package.clear_outside_search_paths(bundle) == []
+
+    _elf(bundle / "_internal/libpython3.13.so.1.0", ("RUNPATH", "/opt/hostedtoolcache/Python/3.13.17/x64/lib"))
+    with pytest.raises(SystemExit, match="patchelf is required .* _internal/libpython3.13.so.1.0"):
+        linux_package.clear_outside_search_paths(bundle)
+    assert calls == []
+
+
+def test_a_search_path_mixing_inside_and_outside_entries_stops_the_build(tmp_path, monkeypatch):
+    bundle = _bundle(tmp_path)
+    _elf(bundle / "_internal/libmixed.so", ("RPATH", "$ORIGIN:/usr/local/lib"))
+    calls = _patchelf_host(monkeypatch)
+    with pytest.raises(SystemExit, match=r"_internal/libmixed.so searches both inside and outside the bundle: \$ORIGIN:/usr/local/lib"):
+        linux_package.clear_outside_search_paths(bundle)
+    assert calls == []
+
+
+@pytest.mark.skipif(not (shutil.which("patchelf") and shutil.which("cc")), reason="needs patchelf and a C compiler")
+def test_patchelf_leaves_a_bundle_the_check_accepts(tmp_path):
+    bundle = _bundle(tmp_path)
+    source = tmp_path / "leak.c"
+    source.write_text("int leak(void) { return 1; }\n")
+    library = bundle / "_internal/python3.13/lib-dynload/leak.so"
+    library.parent.mkdir(parents=True)
+    subprocess.run(["cc", "-shared", "-fPIC", "-Wl,-rpath,/opt/hostedtoolcache/x64/lib", "-o", str(library), str(source)],
+                   check=True)
+    assert linux_package.elf_search_paths(library)
+    assert linux_package.check_bundle(bundle, "1.2.3")
+
+    assert linux_package.clear_outside_search_paths(bundle) == ["_internal/python3.13/lib-dynload/leak.so"]
+
+    assert linux_package.elf_search_paths(library) == []
+    assert linux_package.check_bundle(bundle, "1.2.3") == []
+
+
 def test_the_xcb_libraries_are_the_ones_qt_links_and_no_system_policy_covers():
     assert all(not name.startswith(linux_package.SYSTEM_LIBRARIES) for name in linux_package.XCB_LIBRARIES)
 

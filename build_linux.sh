@@ -54,6 +54,11 @@ done
     || fail "dependency license collection failed"
 
 "$python" -m PyInstaller "${pyinstaller_args[@]}" AudioForge.spec
+# PyInstaller copies the interpreter's libraries as they are. The one
+# actions/setup-python installs names its own lib directory in their RUNPATH;
+# this removes it with patchelf, and needs none when nothing leaves the bundle.
+"$python" python/tools/linux_package.py --bundle dist/AudioForge --clear-search-paths \
+    || fail "library search paths outside the bundle could not be removed"
 
 version=$("$python" -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
 printf '{\n  "schema_version": 1,\n  "version": "%s"\n}\n' "$version" \

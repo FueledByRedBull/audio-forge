@@ -168,6 +168,27 @@ def test_a_declined_final_comparison_is_reported_as_rolled_back(
         assert records[-1]["reason_codes"] == ["final_comparison_declined"]
 
 
+def test_a_final_comparison_that_cannot_open_is_not_reported_as_declined(
+    real_main_window, monkeypatch
+) -> None:
+    records = _voice(real_main_window)
+    dialog, _speech = _verifying_dialog(real_main_window)
+    _comparison_dialog(monkeypatch, {}, load_error="no such file")
+    with _dismissed(dialog):
+        dialog._on_verification_complete(_verdict_with_dulling_advisory("accept", advised=False))
+        dialog._compare_recording()
+
+        assert dialog.phase_label.text() == "Final comparison could not open; previous settings put back"
+        warning = dialog.warning_label.text()
+        assert warning.startswith("The final comparison could not open, so your old settings were kept.")
+        assert "Your old settings are active." in warning
+        assert "declined" not in dialog.phase_label.text() and "You kept" not in warning
+        assert dialog.setup_state == "completed" and dialog._final_comparison_pending is False
+        assert records[-1]["outcome"] == "rolled_back"
+        assert records[-1]["reason_codes"] == ["final_comparison_unavailable"]
+        assert records[-1]["messages"] == [warning]
+
+
 def test_failures_are_reported_as_failed(real_main_window) -> None:
     records = _voice(real_main_window)
     dialog, _speech = _verifying_dialog(real_main_window)

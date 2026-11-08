@@ -39,7 +39,9 @@ trap 'rm -rf "$wheel_dir"' EXIT
     --out "$wheel_dir" >/dev/null \
     || fail "Rust extension rebuild failed"
 suffix=$("$python" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
-"$python" -m zipfile -e "$wheel_dir"/mic_eq-*.whl "$wheel_dir/wheel"
+wheels=("$wheel_dir"/mic_eq-*.whl)
+[[ ${#wheels[@]} -eq 1 && -f ${wheels[0]} ]] || fail "maturin did not build exactly one mic_eq wheel"
+"$python" -m zipfile -e "${wheels[0]}" "$wheel_dir/wheel" || fail "could not unpack ${wheels[0]}"
 cp "$wheel_dir/wheel/mic_eq/mic_eq_core$suffix" python/mic_eq/ \
     || fail "mic_eq/mic_eq_core$suffix not found in the built wheel"
 

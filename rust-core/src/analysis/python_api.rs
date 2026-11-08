@@ -4,26 +4,26 @@ use numpy::{
     Element, PyArray1, PyArrayDescrMethods, PyArrayDyn, PyArrayMethods, PyUntypedArray,
     PyUntypedArrayMethods,
 };
-use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
 use crate::catch_panic;
 
-/// `np.asarray(value, dtype=T)` flattened in C order, with its original rank.
-fn flattened<T: Element + Copy>(value: &Bound<'_, PyAny>) -> PyResult<(usize, Vec<T>)> {
+/// `np.asarray(value, dtype=T)` flattened in C order, with its original shape.
+fn flattened<T: Element + Copy>(value: &Bound<'_, PyAny>) -> PyResult<(Vec<usize>, Vec<T>)> {
     let py = value.py();
     let array = py
         .import("numpy")?
         .call_method1("asarray", (value, numpy::dtype::<T>(py)))?
         .cast_into::<PyArrayDyn<T>>()?;
-    let rank = array.ndim();
+    let shape = array.shape().to_vec();
     let values = array.readonly().as_array().iter().copied().collect();
-    Ok((rank, values))
+    Ok((shape, values))
 }
 
 fn vector<T: Element + Copy>(value: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<T>> {
-    let (rank, values) = flattened(value)?;
-    if rank != 1 {
+    let (shape, values) = flattened(value)?;
+    if shape.len() != 1 {
         return Err(PyValueError::new_err(format!(
             "{what} must be one-dimensional"
         )));
@@ -44,8 +44,15 @@ pub(crate) fn band_mean(
     high: f64,
 ) -> PyResult<f64> {
     catch_panic(|| {
-        let (_, freqs) = flattened::<f64>(freqs)?;
-        let (_, values) = flattened::<f64>(values)?;
+        // The removed Python's mask paired equal shapes elementwise; other
+        // shapes raised IndexError there whenever a bin fell in the band.
+        let (freqs_shape, freqs) = flattened::<f64>(freqs)?;
+        let (values_shape, values) = flattened::<f64>(values)?;
+        if freqs_shape != values_shape {
+            return Err(PyIndexError::new_err(
+                "freqs and values must have the same shape",
+            ));
+        }
         super::band_mean(&freqs, &values, low, high).map_err(PyValueError::new_err)
     })
 }
@@ -138,21 +145,81 @@ pub(crate) fn map_causal_vad_probabilities<'py>(
     })
 }
 
+/// A keyword argument the removed Python passed through `float()`.
+#[cfg(feature = "vad")]
+pub(crate) enum FloatArgument<'py> {
+    Default(f64),
+    Given(Bound<'py, PyAny>),
+}
+
+#[cfg(feature = "vad")]
+fn float_argument<'py>(value: &Bound<'py, PyAny>) -> PyResult<FloatArgument<'py>> {
+    Ok(FloatArgument::Given(value.clone()))
+}
+
+#[cfg(feature = "vad")]
+impl FloatArgument<'_> {
+    /// `float(value)`, or `None` where that raises `TypeError` or `ValueError`.
+    fn to_float(&self) -> PyResult<Option<f64>> {
+        let value = match self {
+            Self::Default(value) => return Ok(Some(*value)),
+            Self::Given(value) => value,
+        };
+        let py = value.py();
+        match py.get_type::<pyo3::types::PyFloat>().call1((value,)) {
+            Ok(number) => number.extract().map(Some),
+            Err(error)
+                if error.is_instance_of::<PyTypeError>(py)
+                    || error.is_instance_of::<PyValueError>(py) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
 /// Native Silero posteriors as float64 and `"silero"`, or `(None,
 /// "energy_fallback")` when the capture, gain, threshold or model rules
 /// inference out; callers then keep their energy analysis.
+///
+/// Arguments are checked in the removed Python's order, so a gain `float()`
+/// rejects falls back before the audio is converted.
 #[cfg(feature = "vad")]
 #[pyfunction]
-#[pyo3(signature = (audio, sample_rate, *, threshold = 0.48, pre_gain = 1.0))]
+#[pyo3(signature = (
+    audio,
+    sample_rate,
+    *,
+    threshold = FloatArgument::Default(0.48),
+    pre_gain = FloatArgument::Default(1.0),
+))]
 pub(crate) fn analyze_offline_vad<'py>(
     py: Python<'py>,
     audio: &Bound<'py, PyAny>,
-    sample_rate: i64,
-    threshold: f64,
-    pre_gain: f64,
+    sample_rate: &Bound<'py, PyAny>,
+    #[pyo3(from_py_with = float_argument)] threshold: FloatArgument<'py>,
+    #[pyo3(from_py_with = float_argument)] pre_gain: FloatArgument<'py>,
 ) -> PyResult<(Option<Bound<'py, PyArray1<f64>>>, &'static str)> {
+    const FALLBACK: &str = "energy_fallback";
     catch_panic(|| {
+        let Some(pre_gain) = pre_gain
+            .to_float()?
+            .filter(|gain| gain.is_finite() && *gain > 0.0)
+        else {
+            return Ok((None, FALLBACK));
+        };
         let (_, samples) = flattened::<f32>(audio)?;
+        if samples.is_empty() || sample_rate.le(0)? {
+            return Ok((None, FALLBACK));
+        }
+        let sample_rate: i64 = py
+            .get_type::<pyo3::types::PyInt>()
+            .call1((sample_rate,))?
+            .extract()?;
+        let Some(threshold) = threshold.to_float()? else {
+            return Ok((None, FALLBACK));
+        };
         let threshold = threshold as f32;
         let probabilities = py.detach(move || {
             super::offline_vad_probabilities(&samples, sample_rate, pre_gain, |prepared, rate| {
@@ -171,7 +238,7 @@ pub(crate) fn analyze_offline_vad<'py>(
         });
         Ok(match probabilities {
             Some(probabilities) => (Some(PyArray1::from_vec(py, probabilities)), "silero"),
-            None => (None, "energy_fallback"),
+            None => (None, FALLBACK),
         })
     })
 }

@@ -2,6 +2,7 @@
 
 import math
 import operator
+from typing import Any
 
 import numpy as np
 import pytest
@@ -499,6 +500,24 @@ def test_native_band_mean_and_clamp_match_the_numpy_implementation():
             expected = _reference_band_mean(freqs, spectrum, low, high)
             assert repr(band_mean(freqs, spectrum, low, high)) == repr(expected)
 
+    # NumPy masks N-D arrays elementwise, so equal shapes pair in C order.
+    matrix_freqs = freqs[:2048].reshape(32, 64)
+    matrix_values = spectra["noise"][:2048].reshape(32, 64)
+    for low, high in bands:
+        for layout in (np.ascontiguousarray, np.asfortranarray):
+            expected = _reference_band_mean(layout(matrix_freqs), layout(matrix_values), low, high)
+            actual = band_mean(layout(matrix_freqs), layout(matrix_values), low, high)
+            assert repr(actual) == repr(expected)
+        expected = _reference_band_mean(matrix_freqs, np.asfortranarray(matrix_values), low, high)
+        assert repr(band_mean(matrix_freqs, np.asfortranarray(matrix_values), low, high)) == repr(
+            expected
+        )
+    for mismatched in (matrix_values.reshape(-1), matrix_values.T, matrix_values[:, :32]):
+        with pytest.raises(IndexError):
+            _reference_band_mean(matrix_freqs, mismatched, 1200.0, 3500.0)
+        with pytest.raises(IndexError):
+            band_mean(matrix_freqs, mismatched, 1200.0, 3500.0)
+
     edge_values = [-math.inf, -5.0, -0.0, 0.0, 0.5, 3.0, 5.0, math.inf, math.nan, 2, -7]
     ranges = [(0.0, 3.0), (3.0, 0.0), (-math.inf, math.inf), (0.0, 0.0), (-0.0, 0.0), (1, 2)]
     for value in edge_values:
@@ -561,6 +580,8 @@ def _offline_vad_parity_inputs() -> list[tuple[str, np.ndarray, int]]:
         ("inf-48k", with_inf, 48_000),
         ("unsupported-rate", rng.standard_normal(4000).astype(np.float32), 1_000),
         ("zero-rate", np.ones(100, dtype=np.float32), 0),
+        ("matrix-48k", voice_like.astype(np.float32).reshape(96, 500), 48_000),
+        ("fortran-matrix-44k1", np.asfortranarray(voice_like[:44_100].reshape(441, 100)), 44_100),
     ]
 
 
@@ -589,3 +610,59 @@ def test_native_offline_vad_matches_the_numpy_implementation(case, threshold, pr
         np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-6)
     else:
         _assert_same_bits(actual, expected)
+
+
+def _offline_vad_argument_cases() -> list[tuple[str, Any, Any, dict[str, Any]]]:
+    voice = (np.sin(2 * np.pi * 180.0 * np.arange(9_600) / 48_000) * 0.3).astype(np.float32)
+    return [
+        ("gain-none", voice, 48_000, {"pre_gain": None}),
+        ("gain-text", voice, 48_000, {"pre_gain": "x"}),
+        ("gain-numeric-text", voice, 48_000, {"pre_gain": "2.0"}),
+        ("gain-list", voice, 48_000, {"pre_gain": [1.0, 2.0]}),
+        ("gain-object", voice, 48_000, {"pre_gain": object()}),
+        ("gain-bool", voice, 48_000, {"pre_gain": True}),
+        ("gain-none-text-audio", "abc", 48_000, {"pre_gain": None}),
+        ("gain-zero-text-audio", "abc", 48_000, {"pre_gain": 0.0}),
+        ("threshold-none", voice, 48_000, {"threshold": None}),
+        ("threshold-text", voice, 48_000, {"threshold": "x"}),
+        ("threshold-numeric-text", voice, 48_000, {"threshold": "0.3"}),
+        ("threshold-none-empty", np.zeros(0, dtype=np.float32), 48_000, {"threshold": None}),
+        ("threshold-none-zero-rate", voice, 0, {"threshold": None}),
+        ("text-audio", "abc", 48_000, {}),
+        ("object-audio", [object()], 48_000, {}),
+        ("none-audio", None, 48_000, {}),
+        ("float-rate", voice, 48_000.0, {}),
+        ("float-rate-44k1", voice[:8_820], 44_100.0, {}),
+        ("fractional-rate", voice, 16_000.7, {}),
+        ("numpy-rate", voice, np.int64(16_000), {}),
+        ("none-rate-empty", np.zeros(0, dtype=np.float32), None, {}),
+        ("none-rate", voice, None, {}),
+        ("text-rate", voice, "48000", {}),
+    ]
+
+
+def _offline_vad_outcome(function: Any, audio: Any, sample_rate: Any, kwargs: dict[str, Any]):
+    try:
+        return function(audio, sample_rate, **kwargs)
+    except Exception as error:  # noqa: BLE001 - the exception type is the outcome
+        return type(error)
+
+
+# The removed Python fell back for gains and thresholds float() rejects and
+# checked the gain before converting the audio.
+@pytest.mark.parametrize("case", _offline_vad_argument_cases(), ids=lambda case: case[0])
+def test_native_offline_vad_handles_arguments_like_the_numpy_implementation(case):
+    _name, audio, sample_rate, kwargs = case
+
+    expected = _offline_vad_outcome(_reference_analyze_offline_vad, audio, sample_rate, kwargs)
+    actual = _offline_vad_outcome(analyze_offline_vad, audio, sample_rate, kwargs)
+
+    if isinstance(expected, type):
+        assert actual is expected
+        return
+    assert isinstance(actual, tuple)
+    assert actual[1] == expected[1]
+    if expected[0] is None:
+        assert actual[0] is None
+    else:
+        _assert_same_bits(actual[0], expected[0])

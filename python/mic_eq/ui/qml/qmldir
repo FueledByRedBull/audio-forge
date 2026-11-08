@@ -6,6 +6,7 @@ FocusRing 1.0 FocusRing.qml
 KeyButton 1.0 KeyButton.qml
 ModelButton 1.0 ModelButton.qml
 MutedText 1.0 MutedText.qml
+NumberBox 1.0 NumberBox.qml
 ProgressTrack 1.0 ProgressTrack.qml
 PushButton 1.0 PushButton.qml
 ScrollPage 1.0 ScrollPage.qml

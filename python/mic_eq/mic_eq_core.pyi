@@ -261,6 +261,16 @@ def simulate_eq_v2(
     """When requested, output_audio is an owned contiguous NDArray[float32]."""
     ...
 def _k_weighted_48k(audio: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
+def processing_ranges() -> dict[str, dict[str, tuple[float, float]]]:
+    """Minimum and maximum of every numeric setting, by section and preset key.
+
+    The live setters clamp to these values, and presets are validated against
+    them. Sections: gate, rnnoise, deesser, compressor and limiter.
+    """
+    ...
+def noise_model_ids() -> list[str]:
+    """The noise model ids a saved preset may name, in listing order."""
+    ...
 
 def analyze_vad_probabilities(
     audio: npt.NDArray[np.float32], sample_rate: int, threshold: float = 0.48
@@ -291,7 +301,7 @@ def map_causal_vad_probabilities(
     """Per position, the newest posterior whose window ended by it, clipped to [0, 1].
 
     None for missing, empty or non-finite posteriors, no positions, or a
-    non-positive rate.
+    non-positive rate. A fractional rate is truncated with int().
     """
     ...
 def clamp(value: float, low: float, high: float) -> float:
@@ -306,9 +316,12 @@ def band_mean(
     """
     ...
 def resample_poly(samples: npt.ArrayLike, up: int, down: int) -> npt.NDArray[Any]:
-    """SciPy-default Kaiser polyphase resampling of 1-D real audio.
+    """SciPy-default Kaiser polyphase resampling of 1-D audio.
 
-    float32 input stays float32; any other real dtype returns float64.
+    float32, float64, complex64 and complex128 keep their dtype; booleans,
+    integers and float16 return float64; other dtypes raise TypeError. An
+    identity ratio returns a copy, and empty audio keeps a float or complex
+    dtype (float64 otherwise).
     """
     ...
 def generate_probe_signal(

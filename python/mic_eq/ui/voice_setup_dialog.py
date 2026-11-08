@@ -13,22 +13,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (
-    QApplication,
-    QComboBox,
-    QDialog,
-    QDoubleSpinBox,
-    QFormLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
-    QMessageBox,
-    QProgressBar,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtCore import QTimer, Signal
+from PySide6.QtQuickWidgets import QQuickWidget
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QVBoxLayout
 
 from ..analysis.noise_reference import (
     SILENT_REFERENCE_GUIDANCE,
@@ -56,7 +43,6 @@ from ..config import (
     TARGET_CURVES,
     build_eq_candidate_settings,
 )
-from .accessibility import bind_label, set_accessible_group
 from .processing_configuration import Checkpoint, ProcessingConfiguration
 from .capture_session import (
     CaptureSession,
@@ -83,17 +69,8 @@ from .calibration_support import (
     on_analysis_thread_finished,
     wait_for_analysis_workers,
 )
-from .components import StepHeader, live_output_muted_notice, session_is_ending, update_label
-from .layout_constants import (
-    MARGIN_PANEL,
-    SUBDUED_TEXT_STYLE,
-    configure_resizable_dialog,
-    configure_responsive_combo,
-    create_scrollable_dialog_body,
-    fit_spinbox_to_contents,
-    status_chip_style,
-)
-from .eq_compare import EQComparisonWidget
+from .components import session_is_ending
+from .layout_constants import configure_resizable_dialog
 from .level_check import (
     LEVEL_CHECK_SECONDS,
     LEVEL_HOLD_UPDATES,
@@ -104,7 +81,6 @@ from .level_check import (
     room_noise_message,
     verdict_from_audio,
 )
-from .level_meter import LevelMeter, MeterWidget
 from .setup_messages import (
     capture_issue_codes,
     capture_issue_lines,
@@ -121,13 +97,9 @@ from .setup_messages import (
     report_setup_result,
     verification_summary,
 )
-from .theme import (
-    DESCRIPTION_LABEL_STYLE,
-    PRIMARY_ACTION_BUTTON_STYLE,
-    PROGRESS_BAR_STYLE,
-    PROGRESS_LABEL_STYLE,
-    message_text_style,
-)
+from .quick_scene import QML_DIR, load_scene, quick_theme
+from .quick_shell import register_qml_types
+from .voice_setup_view import VoiceSetupView
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +107,7 @@ NOISE_RECORDING_DURATION = 2.0
 VOICE_RECORDING_DURATION = 10.0
 _VOICE_SETUP_MUTE_REASON = "auto_voice_setup"
 # "&&" is a literal ampersand; a single "&" makes Qt underline the next character.
-_APPLY_VERIFY_AGAIN_LABEL = "Apply && Verify Again"
+_APPLY_VERIFY_AGAIN_LABEL = "Apply & Verify Again"
 _UNSTEADY_ROOM_ADVICE = "Setup will play safe; retake it if that was a one-off sound."
 # A click does not stop the take, but it makes the whole room-noise reference weak.
 _CLICK_REASONS = frozenset(
@@ -516,7 +488,6 @@ class VoiceSetupDialog(QDialog):
 
     setup_applied = Signal(str)
 
-    STEPS = ("Target", "Level", "Room noise", "Voice", "Review")
     # Which step each state of the state machine belongs to.
     STEP_FOR_STATE = {
         "idle": 0,
@@ -540,7 +511,7 @@ class VoiceSetupDialog(QDialog):
     @setup_state.setter
     def setup_state(self, state: str) -> None:
         self._setup_state = state
-        if "step_header" in self.__dict__:
+        if "view_model" in self.__dict__:
             self._show_step_for_state()
 
     def _show_step_for_state(self) -> None:
@@ -550,27 +521,24 @@ class VoiceSetupDialog(QDialog):
         if self._setup_state == "idle" and self._failed_step is not None:
             # A take that failed stays on its own step, with its message.
             step = self._failed_step
-        self.step_header.set_current(step)
-        self.recording_group.setTitle("Review" if step == 4 else "Recording")
-        # Compare needs a recording and a proposal, so it belongs to the review alone.
-        self.compare_button.setVisible(step == 4)
-        self.curve_group.setVisible(step == 0)
-        self.dynamics_group.setVisible(step == 0)
-        self.noise_group.setVisible(step == 2)
-        # The level check is spoken from the passage, so it is shown from the first step on.
-        self.voice_group.setVisible(step in (1, 3))
-        self.review_page.setVisible(step == 4)
-        # Only a recording mutes the live output.
-        self.mute_notice.setVisible(
-            self._setup_state
-            in ("level_check", "noise_recording", "voice_recording", "verification_recording")
+        suggestions = self._advisory_only and self._setup_state == "completed"
+        self.view_model.set_page(
+            step=step,
+            recordingTitle="Review" if step == 4 else "Recording",
+            # Compare needs a recording and a proposal, so it belongs to the review alone.
+            compareShown=step == 4,
+            targetShown=step == 0,
+            noiseShown=step == 2,
+            # The level check is spoken from the passage, so it is shown from the first step on.
+            voiceShown=step in (1, 3),
+            reviewShown=step == 4,
+            # Only a recording mutes the live output.
+            mutedShown=self._setup_state
+            in ("level_check", "noise_recording", "voice_recording", "verification_recording"),
+            startLook="plain" if suggestions else "primary",
+            # The meter only matters while something is being recorded.
+            meterShown=step in (1, 2, 3),
         )
-        if "start_button" in self.__dict__:
-            suggestions = self._advisory_only and self._setup_state == "completed"
-            self.start_button.setStyleSheet("" if suggestions else PRIMARY_ACTION_BUTTON_STYLE)
-        # The meter only matters while something is being recorded.
-        for widget in (self.progress_bar, self.time_label, self.level_meter_widget):
-            widget.setVisible(step in (1, 2, 3))
 
     def __init__(self, parent=None, *, configuration: ProcessingConfiguration | None = None):
         super().__init__(parent)
@@ -634,18 +602,38 @@ class VoiceSetupDialog(QDialog):
         self.recording_timer = QTimer(self)
         self.recording_timer.setInterval(100)
         self.recording_timer.timeout.connect(self._poll_recording_progress)
+        self._load_error = self._setup_ui()
+        if self._load_error is not None:
+            # Nothing is recorded; exec() says why and closes.
+            logger.error("Voice Setup did not open: %s", self._load_error)
+            return
         app = QApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self._wait_for_analysis_workers)
-
-        self._setup_ui()
+        # The scene's own minimum grows with the text size; the dialog opens at least that wide.
+        minimum_width = max(500, int(self.quick_view.rootObject().property("minimumWidth")))
         configure_resizable_dialog(
             self,
-            preferred_width=760,
+            preferred_width=max(760, minimum_width),
             preferred_height=820,
-            minimum_width=500,
+            minimum_width=minimum_width,
             minimum_height=380,
         )
+
+    @property
+    def load_error(self) -> str | None:
+        """Why the scene did not load, or None; a dialog that did not load records nothing."""
+        return self._load_error
+
+    def exec(self) -> int:
+        if self._load_error is not None:
+            QMessageBox.critical(
+                self.parentWidget(),
+                self.windowTitle(),
+                f"This window could not open.\n\n{self._load_error}",
+            )
+            return int(QDialog.DialogCode.Rejected)
+        return super().exec()
 
     def _current_target_lufs(self) -> float:
         state = getattr(self.parent(), "compressor_state", None)
@@ -663,290 +651,65 @@ class VoiceSetupDialog(QDialog):
                 pass
         return -18.0
 
-    def _setup_ui(self) -> None:
-        outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(0, 0, 0, 0)
-        self.step_header = StepHeader(self.STEPS)
-        outer_layout.addWidget(self.step_header)
-
-        self.content_scroll_area, layout = create_scrollable_dialog_body(self)
-        self.content_scroll_area.setAccessibleName("Auto Voice Setup content")
-        outer_layout.addWidget(self.content_scroll_area, stretch=1)
-
-        self.curve_group = QGroupBox("Tone preset")
-        curve_layout = QVBoxLayout(self.curve_group)
-
-        curve_input = QHBoxLayout()
-        curve_label = QLabel("Tone preset:")
-        curve_input.addWidget(curve_label)
-        self.curve_combo = QComboBox()
-        for key, curve in TARGET_CURVES.items():
-            self.curve_combo.addItem(curve.name, key)
-        self.curve_combo.currentIndexChanged.connect(self._on_curve_changed)
-        configure_responsive_combo(self.curve_combo)
-        curve_input.addWidget(self.curve_combo)
-        bind_label(curve_label, self.curve_combo)
-        curve_layout.addLayout(curve_input)
-
-        self.curve_description = QLabel()
-        self.curve_description.setWordWrap(True)
-        self.curve_description.setStyleSheet(DESCRIPTION_LABEL_STYLE)
-        curve_layout.addWidget(self.curve_description)
-        layout.addWidget(self.curve_group)
-
-        self.dynamics_group = QGroupBox("Dynamics")
-        dynamics_layout = QVBoxLayout(self.dynamics_group)
-        dynamics_row = QFormLayout()
-        dynamics_row.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
-        dynamics_row.setFieldGrowthPolicy(
-            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
-        )
-        dynamics_label = QLabel("Compression:")
-        self.dynamics_combo = QComboBox()
-        for label, key in (
-            ("Gentle", "gentle"),
-            ("Balanced", "balanced"),
-            ("Dense", "dense"),
-            ("Custom", "custom"),
-        ):
-            self.dynamics_combo.addItem(label, key)
+    def _setup_ui(self) -> str | None:
+        """Build the view model and load the scene; return why it did not load, or None."""
         config = getattr(self.parent(), "config", None)
-        configured = getattr(config, "voice_setup_dynamics_intensity", "balanced")
-        configured_index = self.dynamics_combo.findData(configured)
-        self.dynamics_combo.setCurrentIndex(max(0, configured_index))
-        configure_responsive_combo(self.dynamics_combo)
-        dynamics_row.addRow(dynamics_label, self.dynamics_combo)
-        bind_label(dynamics_label, self.dynamics_combo)
-        self.custom_p95_spin = QDoubleSpinBox()
-        self.custom_p95_spin.setRange(1.0, 8.0)
-        self.custom_p95_spin.setSuffix(" dB")
-        self.custom_p95_spin.setValue(
-            float(getattr(config, "voice_setup_custom_p95_db", 3.5))
+        configured = str(getattr(config, "voice_setup_dynamics_intensity", "balanced"))
+        self.view_model = VoiceSetupView(
+            curves=tuple((key, curve.name) for key, curve in TARGET_CURVES.items()),
+            dynamics_key=configured,
+            numbers={
+                "p95": float(getattr(config, "voice_setup_custom_p95_db", 3.5)),
+                "peak": float(getattr(config, "voice_setup_custom_peak_cap_db", 8.0)),
+                "lufs": self._current_target_lufs(),
+            },
+            passage=RAINBOW_PASSAGE,
+            curve_changed=self._on_curve_changed,
+            dynamics_changed=self._on_dynamics_intensity_changed,
+            start=self._on_start_clicked,
+            override=self._continue_past_level,
+            cancel=self._on_cancel_clicked,
+            retake=self._on_retake_clicked,
+            compare=self._compare_recording,
+            parent=self,
         )
-        fit_spinbox_to_contents(self.custom_p95_spin)
-        custom_p95_label = QLabel("Typical evening-out:")
-        dynamics_row.addRow(custom_p95_label, self.custom_p95_spin)
-        self.custom_peak_spin = QDoubleSpinBox()
-        self.custom_peak_spin.setRange(1.5, 12.0)
-        self.custom_peak_spin.setSuffix(" dB")
-        self.custom_peak_spin.setValue(
-            float(getattr(config, "voice_setup_custom_peak_cap_db", 8.0))
-        )
-        fit_spinbox_to_contents(self.custom_peak_spin)
-        custom_peak_label = QLabel("Strongest squeeze allowed:")
-        dynamics_row.addRow(custom_peak_label, self.custom_peak_spin)
-        bind_label(
-            custom_p95_label,
-            self.custom_p95_spin,
-            name="Typical compressor evening-out in decibels",
-        )
-        bind_label(
-            custom_peak_label,
-            self.custom_peak_spin,
-            name="Strongest compressor squeeze allowed in decibels",
-        )
-        dynamics_layout.addLayout(dynamics_row)
-        target_lufs_label = QLabel("Target loudness:")
-        self.target_lufs_spin = QDoubleSpinBox()
-        self.target_lufs_spin.setRange(-24.0, -12.0)
-        self.target_lufs_spin.setSingleStep(1.0)
-        self.target_lufs_spin.setSuffix(" LUFS")
-        self.target_lufs_spin.setToolTip(
-            "Loudness target is independent of the selected tone curve."
-        )
-        self.target_lufs_spin.setValue(self._current_target_lufs())
-        fit_spinbox_to_contents(self.target_lufs_spin)
-        dynamics_row.addRow(target_lufs_label, self.target_lufs_spin)
-        bind_label(target_lufs_label, self.target_lufs_spin, name="Voice setup target loudness")
-        dynamics_hint = QLabel(
-            "Compression decides how much louder and quieter words are evened out. "
-            "Tone and target loudness are set separately."
-        )
-        dynamics_hint.setWordWrap(True)
-        dynamics_hint.setStyleSheet(SUBDUED_TEXT_STYLE)
-        dynamics_layout.addWidget(dynamics_hint)
-        layout.addWidget(self.dynamics_group)
-        self.dynamics_combo.currentIndexChanged.connect(
-            self._on_dynamics_intensity_changed
-        )
-        self.custom_p95_spin.valueChanged.connect(self._on_dynamics_intensity_changed)
-        self.custom_peak_spin.valueChanged.connect(self._on_dynamics_intensity_changed)
-        self._on_dynamics_intensity_changed(self.dynamics_combo.currentIndex())
-
-        self.noise_group = noise_group = QGroupBox("Capture room noise")
-        noise_layout = QVBoxLayout(noise_group)
-        noise_hint = QLabel(
-            "Stay quiet for 2 seconds so the wizard can measure room noise "
-            "and set the gate safely."
-        )
-        noise_hint.setWordWrap(True)
-        noise_layout.addWidget(noise_hint)
-        layout.addWidget(noise_group)
-
-        self.voice_group = voice_group = QGroupBox("Read this passage aloud")
-        voice_layout = QVBoxLayout(voice_group)
-        # A label grows with the passage, so no line is cut and nothing scrolls inside the page.
-        passage_text = QLabel(RAINBOW_PASSAGE)
-        passage_text.setWordWrap(True)
-        passage_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        passage_text.setAccessibleDescription(
-            "Read-only passage to speak during Auto Voice Setup."
-        )
-        voice_layout.addWidget(passage_text)
-        layout.addWidget(voice_group)
-
-        self.mute_notice = live_output_muted_notice()
-        layout.addWidget(self.mute_notice)
-
-        self.recording_group = QGroupBox("Recording")
-        recording_layout = QVBoxLayout(self.recording_group)
-        self.recording_group.setVisible(False)
-
-        self.phase_label = QLabel("Ready to start setup")
-        self.phase_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.phase_label.setStyleSheet(PROGRESS_LABEL_STYLE)
-        recording_layout.addWidget(self.phase_label)
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setMinimumHeight(25)
-        self.progress_bar.setStyleSheet(PROGRESS_BAR_STYLE)
-        self.progress_bar.setAccessibleName("Voice Setup progress")
-        recording_layout.addWidget(self.progress_bar)
-
-        self.time_label = QLabel("Time remaining: 2s")
-        self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.time_label.setStyleSheet(PROGRESS_LABEL_STYLE)
-        recording_layout.addWidget(self.time_label)
-
-        meter_layout = QHBoxLayout()
-        self.level_meter = LevelMeter(label="Level", show_scale=True)
-        self.level_meter_widget = MeterWidget(self.level_meter)
-        meter_layout.addWidget(self.level_meter_widget)
-        recording_layout.addLayout(meter_layout)
-
-        self.warning_label = QLabel("Ready to record")
-        self.warning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.warning_label.setStyleSheet(message_text_style("idle"))
-        self.warning_label.setWordWrap(True)
-        recording_layout.addWidget(self.warning_label)
-
-        self.summary_group = QGroupBox("Recommended Settings")
-        summary_layout = QVBoxLayout(self.summary_group)
-        self.summary_group.setVisible(False)
-        self.overall_label = QLabel("Overall: --")
-        self.eq_label = QLabel("EQ: --")
-        self.gate_label = QLabel("Noise gate: --")
-        self.deesser_label = QLabel("De-esser: --")
-        self.compressor_label = QLabel("Compressor: --")
-        for label in (
-            self.overall_label,
-            self.eq_label,
-            self.gate_label,
-            self.deesser_label,
-            self.compressor_label,
-        ):
-            label.setStyleSheet(status_chip_style("idle"))
-            label.setWordWrap(True)
-            summary_layout.addWidget(label)
-        hint = QLabel(
-            "Voice Setup tunes tone, noise suppression, the noise gate, the "
-            "de-esser and the compressor. The limiter is left as it is. Hover a "
-            "line for the numbers behind it."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(SUBDUED_TEXT_STYLE)
-        self.eq_compare = EQComparisonWidget()
-        summary_layout.addWidget(self.eq_compare)
-        summary_layout.addWidget(hint)
-        self.capture_issues_layout = QVBoxLayout()
-        summary_layout.insertLayout(1, self.capture_issues_layout)
-        # The summary's own visibility still follows the results; the page
-        # around it follows the step.
-        self.review_page = QWidget()
-        review_layout = QVBoxLayout(self.review_page)
-        review_layout.setContentsMargins(0, 0, 0, 0)
-        review_layout.addWidget(self.summary_group)
-
-        controls = QHBoxLayout()
-        self.retake_btn = QPushButton("Retake")
-        self.retake_btn.setVisible(False)
-        self.retake_btn.clicked.connect(self._on_retake_clicked)
-        controls.addWidget(self.retake_btn)
-
-        self.compare_button = QPushButton("Compare Recording")
-        self.compare_button.setEnabled(False)
-        self.compare_button.clicked.connect(self._compare_recording)
-        controls.addWidget(self.compare_button)
-
-        self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.clicked.connect(self._on_cancel_clicked)
-        layout.addWidget(self.recording_group)
-        layout.addWidget(self.review_page)
-        layout.addStretch(1)
-
-        self.start_button = QPushButton("Start Voice Setup")
-        self.start_button.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
-        self.start_button.clicked.connect(self._on_start_clicked)
-
-        # Going on past a level that is not good is a separate, plainly named action.
-        self.level_override_btn = QPushButton("Continue Anyway")
-        self.level_override_btn.setVisible(False)
-        self.level_override_btn.clicked.connect(self._continue_past_level)
-
-        # The actions stay in view while the page above them scrolls.
-        controls.setContentsMargins(MARGIN_PANEL, 0, MARGIN_PANEL, MARGIN_PANEL)
-        controls.insertWidget(0, self.cancel_btn)
-        controls.insertStretch(2, 1)
-        controls.addWidget(self.level_override_btn)
-        controls.addWidget(self.start_button)
-        outer_layout.addLayout(controls)
+        self.level_meter = self.view_model.level_meter
+        self.eq_compare = self.view_model.eq_compare
+        self.view_model.set_page(timeText=f"Time remaining: {NOISE_RECORDING_DURATION:.0f}s")
         self._show_step_for_state()
-
-        set_accessible_group(
-            (
-                (self.retake_btn, "Retake Voice Setup recording", None),
-                (self.cancel_btn, "Cancel Auto Voice Setup", None),
-                (self.level_meter_widget, "Voice Setup input level", None),
-            )
-        )
-        self.setTabOrder(self.curve_combo, self.dynamics_combo)
-        self.setTabOrder(self.dynamics_combo, self.custom_p95_spin)
-        self.setTabOrder(self.custom_p95_spin, self.custom_peak_spin)
-        self.setTabOrder(self.custom_peak_spin, self.target_lufs_spin)
-        # The order of the button row, left to right.
-        self.setTabOrder(self.target_lufs_spin, self.cancel_btn)
-        self.setTabOrder(self.cancel_btn, self.retake_btn)
-        self.setTabOrder(self.retake_btn, self.compare_button)
-        self.setTabOrder(self.compare_button, self.level_override_btn)
-        self.setTabOrder(self.level_override_btn, self.start_button)
-
+        self._on_dynamics_intensity_changed()
         self._on_curve_changed(0)
+
+        register_qml_types()
+        self.quick_view = QQuickWidget(self)
+        reason = load_scene(
+            self.quick_view,
+            QML_DIR / "VoiceSetup.qml",
+            quick_theme(),
+            {"vm": self.view_model},
+        )
+        self.quick_view.setAccessibleName("Auto Voice Setup content")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.quick_view)
+        return reason
 
     def _on_curve_changed(self, index: int) -> None:
         if index < 0:
             return
-        curve_key = self.curve_combo.currentData()
-        curve = TARGET_CURVES[curve_key]
-        self.curve_description.setText(curve.description)
+        curve = TARGET_CURVES[self.view_model.selected("curve")]
+        self.view_model.set_page(curveDescription=curve.description)
 
-    def _on_dynamics_intensity_changed(self, _index: int) -> None:
-        custom = self.dynamics_combo.currentData() == "custom"
-        self.custom_p95_spin.setEnabled(custom)
-        self.custom_peak_spin.setEnabled(custom)
+    def _on_dynamics_intensity_changed(self) -> None:
         config = getattr(self.parent(), "config", None)
         if config is not None:
-            config.voice_setup_dynamics_intensity = str(
-                self.dynamics_combo.currentData()
-            )
-            config.voice_setup_custom_p95_db = self.custom_p95_spin.value()
-            config.voice_setup_custom_peak_cap_db = self.custom_peak_spin.value()
+            config.voice_setup_dynamics_intensity = self.view_model.selected("dynamics")
+            config.voice_setup_custom_p95_db = self.view_model.number("p95")
+            config.voice_setup_custom_peak_cap_db = self.view_model.number("peak")
 
     def _on_start_clicked(self) -> None:
         if self.setup_state == "idle":
-            self.recording_group.setVisible(True)
+            self.view_model.set_page(recordingShown=True)
             # A take that failed is recorded again; the level choice made before it stays.
             retake_noise = self._failed_step == 2
             self._failed_step = None
@@ -984,60 +747,72 @@ class VoiceSetupDialog(QDialog):
         self._start_recording_phase("noise_recording")
 
     def _start_recording_phase(self, phase: str) -> None:
-        self.compare_button.setEnabled(False)
+        self.view_model.set_page(compareEnabled=False)
         self._cancel_analysis_workers()
         if not self._ensure_processor_ready():
             return
 
         self.setup_state = phase
-        self.level_override_btn.setVisible(False)
-        self.curve_combo.setEnabled(False)
-        self.dynamics_group.setEnabled(False)
-        self.target_lufs_spin.setEnabled(False)
-        self.start_button.setEnabled(False)
-        self.retake_btn.setVisible(False)
+        self.view_model.set_page(
+            overrideShown=False,
+            curveEnabled=False,
+            dynamicsEnabled=False,
+            targetEnabled=False,
+            startEnabled=False,
+            retakeShown=False,
+        )
         if phase != "verification_recording":
             # The proposal stays on the review page while its verification take is recorded.
-            self.summary_group.setVisible(False)
+            self.view_model.set_page(summaryShown=False)
 
         if phase == "level_check":
             self._recording_duration = LEVEL_CHECK_SECONDS
-            self.start_button.setText("Checking Level...")
-            self.phase_label.setText("Checking your level")
-            self.warning_label.setText(
-                "Read the first lines of the passage at your normal volume for 3 seconds."
+            self.view_model.set_page(startText="Checking Level...", phaseText="Checking your level")
+            self.view_model.set_warning(
+                "Read the first lines of the passage at your normal volume for 3 seconds.",
+                state="info",
+                strong=True,
             )
-            self.warning_label.setStyleSheet(message_text_style("info", strong=True))
         elif phase == "noise_recording":
             self.preview_noise_audio = None
             self._recording_duration = NOISE_RECORDING_DURATION
-            self.start_button.setText("Recording Noise...")
-            self.phase_label.setText("Capturing room noise")
-            self.warning_label.setText(
-                "Stay quiet and keep the room as it normally is."
+            self.view_model.set_page(
+                startText="Recording Noise...",
+                phaseText="Capturing room noise",
             )
-            self.warning_label.setStyleSheet(message_text_style("info", strong=True))
+            self.view_model.set_warning(
+                "Stay quiet and keep the room as it normally is.",
+                state="info",
+                strong=True,
+            )
         elif phase == "voice_recording":
             self.preview_voice_audio = None
             self._recording_duration = VOICE_RECORDING_DURATION
-            self.start_button.setText("Recording Voice...")
-            self.phase_label.setText("Capturing speech")
-            self.warning_label.setText("Speak naturally into the microphone.")
-            self.warning_label.setStyleSheet(message_text_style("info", strong=True))
+            self.view_model.set_page(startText="Recording Voice...", phaseText="Capturing speech")
+            self.view_model.set_warning(
+                "Speak naturally into the microphone.",
+                state="info",
+                strong=True,
+            )
         else:
             self.preview_verification_audio = None
             self._recording_duration = VOICE_RECORDING_DURATION
-            self.start_button.setText("Recording Verification...")
-            self.phase_label.setText("Capturing a second passage")
-            self.warning_label.setText(
+            self.view_model.set_page(
+                startText="Recording Verification...",
+                phaseText="Capturing a second passage",
+            )
+            self.view_model.set_warning(
                 "Read the passage again at the same distance and volume. AudioForge "
                 "will run this recording through the new settings and compare it "
-                "with the first one."
+                "with the first one.",
+                state="info",
+                strong=True,
             )
-            self.warning_label.setStyleSheet(message_text_style("info", strong=True))
 
-        self.progress_bar.setValue(0)
-        self.time_label.setText(f"Time remaining: {self._recording_duration:.0f}s")
+        self.view_model.set_page(
+            progress=0,
+            timeText=f"Time remaining: {self._recording_duration:.0f}s",
+        )
         self._capture_start_timer.start(100)
 
     def _ensure_processor_ready(self) -> bool:
@@ -1065,13 +840,14 @@ class VoiceSetupDialog(QDialog):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
-                self.warning_label.setText(
+                self.view_model.set_warning(
                     "Setup canceled. The microphone and speakers that were "
-                    "already running were kept."
+                    "already running were kept.",
+                    state="warn",
+                    strong=False,
                 )
-                self.warning_label.setStyleSheet(message_text_style("warn"))
                 # The state, button text and selector stay as the dialog had them.
-                self.start_button.setEnabled(True)
+                self.view_model.set_page(startEnabled=True)
                 return False
 
             try:
@@ -1185,7 +961,7 @@ class VoiceSetupDialog(QDialog):
                 self._on_recording_failed(plain_error(failure))
                 return
             progress_pct = int(progress * 100)
-            self.progress_bar.setValue(progress_pct)
+            self.view_model.set_page(progress=progress_pct)
             self._update_time_remaining(
                 max(0.0, self._recording_duration * (1.0 - progress))
             )
@@ -1212,10 +988,9 @@ class VoiceSetupDialog(QDialog):
 
     def _update_time_remaining(self, seconds: float) -> None:
         if seconds > 0:
-            self.time_label.setText(f"Time remaining: {seconds:.0f}s")
+            self.view_model.set_page(timeText=f"Time remaining: {seconds:.0f}s")
         else:
-            self.time_label.setText("Complete!")
-            self.time_label.setStyleSheet(message_text_style("ok", strong=True))
+            self.view_model.set_page(timeText="Complete!", timeDone=True)
 
     def _update_level(self, rms_db: float, peak_db: float) -> None:
         self.level_meter.set_levels(rms_db, peak_db)
@@ -1237,7 +1012,7 @@ class VoiceSetupDialog(QDialog):
 
     def _show_live_message(self, message: str, state: str) -> None:
         """Update the live label only when it changed; this runs on every 100 ms poll."""
-        update_label(self.warning_label, message, message_text_style(state, strong=True))
+        self.view_model.set_warning(message, state=state, strong=True)
 
     def _finish_level_check(self, audio_data: np.ndarray) -> None:
         """Judge the check from its samples and offer the next step the verdict allows."""
@@ -1247,24 +1022,29 @@ class VoiceSetupDialog(QDialog):
         choices = level_choices(verdict, "Record Room Noise")
         self._level_verdict = verdict
         self.setup_state = "level_result"
-        self.time_label.setStyleSheet(PROGRESS_LABEL_STYLE)
-        self.time_label.setText("Level checked")
-        self.phase_label.setText("Level checked")
-        self.warning_label.setText(f"{verdict.message} {choices.note}".strip())
-        self.warning_label.setStyleSheet(message_text_style(verdict.state, strong=True))
-        self.start_button.setText(choices.primary)
-        self.start_button.setEnabled(True)
-        self.level_override_btn.setVisible(choices.override is not None)
+        self.view_model.set_page(
+            timeDone=False,
+            timeText="Level checked",
+            phaseText="Level checked",
+        )
+        self.view_model.set_warning(
+            f"{verdict.message} {choices.note}".strip(),
+            state=verdict.state,
+            strong=True,
+        )
+        self.view_model.set_page(
+            startText=choices.primary,
+            startEnabled=True,
+            overrideShown=choices.override is not None,
+        )
         if choices.override is not None:
-            self.level_override_btn.setText(choices.override)
+            self.view_model.set_page(overrideText=choices.override)
 
     def _on_recording_complete(self, audio_data: np.ndarray) -> None:
         if self.setup_state == "level_check":
             self._finish_level_check(audio_data)
             return
-        self.start_button.setEnabled(True)
-        self.retake_btn.setVisible(True)
-        self.time_label.setStyleSheet(PROGRESS_LABEL_STYLE)
+        self.view_model.set_page(startEnabled=True, retakeShown=True, timeDone=False)
 
         raw_audio = np.ascontiguousarray(
             np.asarray(audio_data, dtype=np.float32).reshape(-1).copy()
@@ -1302,9 +1082,8 @@ class VoiceSetupDialog(QDialog):
         self._analysis_generation = generation
         self._capture_phase = phase
         self.setup_state = "capture_analyzing"
-        self.start_button.setEnabled(False)
-        self.warning_label.setText("Checking the recording...")
-        self.warning_label.setStyleSheet(message_text_style("info", strong=True))
+        self.view_model.set_page(startEnabled=False)
+        self.view_model.set_warning("Checking the recording...", state="info", strong=True)
         start_capture_analysis(
             self,
             partial(
@@ -1339,7 +1118,7 @@ class VoiceSetupDialog(QDialog):
         if generation != self._analysis_generation or self._close_requested:
             return
         self.setup_state = phase
-        self.start_button.setEnabled(True)
+        self.view_model.set_page(startEnabled=True)
         analysis_audio = analysis.audio
 
         if self.setup_state == "noise_recording":
@@ -1356,8 +1135,7 @@ class VoiceSetupDialog(QDialog):
                 self._reject_capture(" ".join(guidance))
                 return
             self.setup_state = "noise_ready"
-            self.start_button.setText("Record Voice")
-            self.phase_label.setText("Room noise captured")
+            self.view_model.set_page(startText="Record Voice", phaseText="Room noise captured")
             if quick_quality.status == "invalid":
                 found = plain_reasons(quick_quality.reasons)
                 note = (
@@ -1369,15 +1147,16 @@ class VoiceSetupDialog(QDialog):
                 note = _CLICK_ADVICE
             else:
                 note = ""
-            self.warning_label.setText(
+            self.view_model.set_warning(
                 (f"{note} " if note else "")
-                + "Now read the passage aloud for the full 10 seconds."
+                + "Now read the passage aloud for the full 10 seconds.",
+                state="warn" if note else "ok",
+                strong=True,
             )
-            self.warning_label.setStyleSheet(
-                message_text_style("warn" if note else "ok", strong=True)
+            self.view_model.set_page(
+                progress=0,
+                timeText=f"Time remaining: {VOICE_RECORDING_DURATION:.0f}s",
             )
-            self.progress_bar.setValue(0)
-            self.time_label.setText(f"Time remaining: {VOICE_RECORDING_DURATION:.0f}s")
             return
 
         if self.setup_state == "verification_recording":
@@ -1397,13 +1176,18 @@ class VoiceSetupDialog(QDialog):
         self.voice_audio = analysis_audio
         self.voice_metadata = self._current_capture_metadata
         self.setup_state = "analyzing"
-        self.start_button.setEnabled(False)
-        self.start_button.setText("Analyzing...")
-        self.phase_label.setText("Analyzing recordings")
+        self.view_model.set_page(
+            startEnabled=False,
+            startText="Analyzing...",
+            phaseText="Analyzing recordings",
+        )
         # The recording's "Complete!" would read as the analysis being done.
-        self.time_label.setText("Analysis in progress")
-        self.warning_label.setText("Building recommendations for your voice chain.")
-        self.warning_label.setStyleSheet(message_text_style("info", strong=True))
+        self.view_model.set_page(timeText="Analysis in progress")
+        self.view_model.set_warning(
+            "Building recommendations for your voice chain.",
+            state="info",
+            strong=True,
+        )
         self._start_analysis()
 
     def _start_analysis(self) -> None:
@@ -1423,7 +1207,7 @@ class VoiceSetupDialog(QDialog):
             vad_available = False
 
         limiter_settings: Mapping[str, Any] | None = None
-        target_lufs = self.target_lufs_spin.value()
+        target_lufs = self.view_model.number("lufs")
         limiter_state = getattr(parent, "limiter_state", None)
         get_limiter_settings = getattr(limiter_state, "get_settings", None)
         if callable(get_limiter_settings):
@@ -1435,9 +1219,9 @@ class VoiceSetupDialog(QDialog):
         generation = self._analysis_generation + 1
         self._analysis_generation = generation
         target_preset = self.get_selected_curve()
-        dynamics_intensity = str(self.dynamics_combo.currentData())
-        custom_target_p95_db = self.custom_p95_spin.value()
-        custom_peak_cap_db = self.custom_peak_spin.value()
+        dynamics_intensity = self.view_model.selected("dynamics")
+        custom_target_p95_db = self.view_model.number("p95")
+        custom_peak_cap_db = self.view_model.number("peak")
         suppression = _suppressor_settings(parent)
         incumbent = _chain_settings(parent)
         if hasattr(parent, "eq_state"):
@@ -1489,9 +1273,7 @@ class VoiceSetupDialog(QDialog):
             allowed_scope=("eq", "gate", "deesser", "compressor", "limiter", "suppression")
             if suppression is not None else ("eq", "gate", "deesser", "compressor", "limiter"),
         )
-        self.curve_group.setEnabled(False)
-        self.dynamics_group.setEnabled(False)
-        self.progress_bar.setValue(0)
+        self.view_model.set_page(curveGroupEnabled=False, dynamicsEnabled=False, progress=0)
         worker = VoiceSetupWorker(
             self.noise_audio,
             self.voice_audio,
@@ -1545,8 +1327,8 @@ class VoiceSetupDialog(QDialog):
             return
         if self._close_requested:
             return
-        self.warning_label.setText(step_name)
-        self.progress_bar.setValue(percentage)
+        self.view_model.set_warning(step_name)
+        self.view_model.set_page(progress=percentage)
 
     def _on_analysis_complete(
         self, setup_result: dict[str, Any], generation: int | None = None
@@ -1567,43 +1349,44 @@ class VoiceSetupDialog(QDialog):
         self._final_comparison_pending = False
         candidate_error = _candidate_settings_error(setup_result)
         candidate_complete = candidate_error is None
-        self.compare_button.setEnabled(candidate_complete)
-        self.curve_group.setEnabled(not candidate_complete)
-        self.dynamics_group.setEnabled(not candidate_complete)
-        self.target_lufs_spin.setEnabled(not candidate_complete)
+        self.view_model.set_page(
+            compareEnabled=candidate_complete,
+            curveGroupEnabled=not candidate_complete,
+            dynamicsEnabled=not candidate_complete,
+            targetEnabled=not candidate_complete,
+        )
         self.setup_state = (
             "completed"
             if candidate_complete
             else ("noise_ready" if self.noise_audio is not None else "idle")
         )
-        self.start_button.setText(
-            "Apply Voice Setup"
+        self.view_model.set_page(
+            startText="Apply Voice Setup"
             if candidate_complete
-            else ("Record Voice Again" if self.noise_audio is not None else "Start Voice Setup")
+            else ("Record Voice Again" if self.noise_audio is not None else "Start Voice Setup"),
+            startEnabled=True,
+            curveEnabled=True,
         )
-        self.start_button.setEnabled(True)
-        self.curve_combo.setEnabled(True)
         if not candidate_complete:
-            self.retake_btn.setVisible(True)
+            self.view_model.set_page(retakeShown=True)
         diagnostics = setup_result["diagnostics"]
         advisory = candidate_complete and not diagnostics.get("apply_recommended", False)
         self._advisory_only = advisory
-        self.phase_label.setText(
-            "Recommendations incomplete"
+        self.view_model.set_page(
+            phaseText="Recommendations incomplete"
             if not candidate_complete
-            else ("Suggestions only: not every check passed" if advisory else "Recommendations ready")
+            else ("Suggestions only: not every check passed" if advisory else "Recommendations ready"),
         )
         if advisory:
-            self.start_button.setText("Apply Suggestions")
-            self.start_button.setStyleSheet("")
+            self.view_model.set_page(startText="Apply Suggestions", startLook="plain")
         if not candidate_complete:
-            self.warning_label.setText(
+            self.view_model.set_warning(
                 "The recommendations are incomplete. "
-                f"{plain_incomplete(candidate_error)} Record the voice passage again to retry."
+                f"{plain_incomplete(candidate_error)} Record the voice passage again to retry.",
             )
             state = "warn"
         elif not advisory:
-            self.warning_label.setText("All checks passed. Review the settings below, then apply them.")
+            self.view_model.set_warning("All checks passed. Review the settings below, then apply them.")
             state = "ok"
         else:
             # The capture problems are said once, in the lines of the review.
@@ -1612,20 +1395,18 @@ class VoiceSetupDialog(QDialog):
                 if capture_issue_lines(diagnostics, setup_result.get("compressor_settings"))
                 else ["The recording was too weak to check the settings fully."]
             )
-            self.warning_label.setText(
-                " ".join(
+            self.view_model.set_warning(" ".join(
                     ["These settings did not pass every check, so treat them as suggestions.", *reasons]
-                )
-            )
+                ))
             state = "warn"
-        self.warning_label.setStyleSheet(message_text_style(state, strong=True))
-        self.progress_bar.setValue(100)
+        self.view_model.set_warning(state=state, strong=True)
+        self.view_model.set_page(progress=100)
         self._show_summary(setup_result)
         if not candidate_complete:
             self._report(
                 "refused",
                 ["incomplete_result"],
-                [self.warning_label.text()],
+                [self.view_model.warning_text],
             )
         elif advisory:
             self._report(
@@ -1635,7 +1416,7 @@ class VoiceSetupDialog(QDialog):
                     *capture_issue_codes(diagnostics),
                 ]
                 or ["weak_capture"],
-                [self.warning_label.text()],
+                [self.view_model.warning_text],
             )
 
     def _review_text(
@@ -1673,19 +1454,11 @@ class VoiceSetupDialog(QDialog):
 
     def _show_capture_issues(self, setup_result: Mapping[str, Any]) -> None:
         """One line under the headline for each reason the capture was weak."""
-        while self.capture_issues_layout.count():
-            item = self.capture_issues_layout.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
-        for line in capture_issue_lines(
-            setup_result["diagnostics"], setup_result.get("compressor_settings")
-        ):
-            label = QLabel(line)
-            label.setWordWrap(True)
-            label.setStyleSheet(status_chip_style("warn"))
-            self.capture_issues_layout.addWidget(label)
+        self.view_model.set_issues(
+            capture_issue_lines(
+                setup_result["diagnostics"], setup_result.get("compressor_settings")
+            )
+        )
 
     def _report(
         self,
@@ -1737,7 +1510,7 @@ class VoiceSetupDialog(QDialog):
 
     def _show_eq_comparison(self, eq_settings: Mapping[str, Any] | None) -> None:
         """Draw the proposed EQ over the one from before this setup, or nothing if there is none."""
-        self.eq_compare.setVisible(False)
+        self.view_model.set_page(eqCompareShown=False)
         configuration = self._configuration
         owner = _find_processor_owner(self.parent())
         if eq_settings is None or configuration is None or owner is None:
@@ -1757,7 +1530,7 @@ class VoiceSetupDialog(QDialog):
         except Exception:
             logger.warning("The EQ comparison could not be drawn", exc_info=True)
             return
-        self.eq_compare.setVisible(True)
+        self.view_model.set_page(eqCompareShown=True)
 
     def _refresh_review(self) -> None:
         """Redraw the review lines after the applied settings or their status changed."""
@@ -1773,20 +1546,14 @@ class VoiceSetupDialog(QDialog):
         )
         if self._final_comparison_pending:
             state = "ok"
-            self.overall_label.setText(
-                "These settings passed the check on your second recording."
-            )
+            overall = "These settings passed the check on your second recording."
         elif diagnostics.get("apply_recommended", False):
-            self.overall_label.setText(f"{word}. All checks passed.")
+            overall = f"{word}. All checks passed."
         else:
             # Settings that did not pass the checks are never "Good", however good the capture.
             state = "bad" if state == "bad" else "warn"
-            self.overall_label.setText(
-                f"{word}. These settings did not pass every check, so they are suggestions only."
-            )
+            overall = f"{word}. These settings did not pass every check, so they are suggestions only."
         details = [quality_tooltip(overall_conf)]
-        self.overall_label.setToolTip(" ".join(details))
-        self.overall_label.setStyleSheet(status_chip_style(state))
         joint = diagnostics.get("joint_tuning")
         if isinstance(joint, Mapping):
             found = plain_reasons(joint.get("reasons", []))
@@ -1801,9 +1568,9 @@ class VoiceSetupDialog(QDialog):
                 outcome = "New noise suppression and gate settings passed the checks."
             else:
                 outcome = "Your current noise suppression and gate settings are kept."
-            self.overall_label.setText(self.overall_label.text() + f"\n{outcome}")
+            overall += f"\n{outcome}"
             details.extend(found[1:])
-            self.overall_label.setToolTip(" ".join(details))
+        self.view_model.set_chip("overall", overall, state=state, tip=" ".join(details))
         self._show_capture_issues(setup_result)
 
         eq_settings = setup_result.get("eq_settings")
@@ -1849,32 +1616,31 @@ class VoiceSetupDialog(QDialog):
                         else "."
                     )
                 )
-            self.eq_label.setText(tone_text)
-            self.eq_label.setToolTip(
-                "Quality score of the tone step "
+            self.view_model.set_chip(
+                "eq",
+                tone_text,
+                state="ok"
+                if diagnostics.get("apply_recommended", False) or self._final_comparison_pending
+                else "info",
+                tip="Quality score of the tone step "
                 f"{_format_percent(eq_settings.get('analysis_confidence', 0.0))}: "
-                "how consistent your recording was across the voice range."
-            )
-            self.eq_label.setStyleSheet(
-                status_chip_style(
-                    "ok"
-                    if diagnostics.get("apply_recommended", False) or self._final_comparison_pending
-                    else "info"
-                )
+                "how consistent your recording was across the voice range.",
             )
             self._show_eq_comparison(eq_settings)
         else:
             self._show_eq_comparison(None)
-            self.eq_label.setText(
+            self.view_model.set_chip(
+                "eq",
                 "Tone left unchanged. "
-                f"{plain_incomplete(str(setup_result.get('eq_error') or eq_error))}"
+                f"{plain_incomplete(str(setup_result.get('eq_error') or eq_error))}",
+                state="warn",
+                tip="",
             )
-            self.eq_label.setToolTip("")
-            self.eq_label.setStyleSheet(status_chip_style("warn"))
 
         gate = setup_result["gate_settings"]
         gate_mode = str(diagnostics["gate_mode_label"])
-        self.gate_label.setText(
+        self.view_model.set_chip(
+            "gate",
             "Noise gate: "
             + self._review_text(
                 f"{_GATE_WORDS.get(gate_mode, gate_mode)}, "
@@ -1885,10 +1651,10 @@ class VoiceSetupDialog(QDialog):
                     f"{_GATE_WORDS.get(GATE_MODE_LABELS[settings['gate_mode']], '')}, "
                     f"opens above {_format_db(settings['threshold_db'])}"
                 ),
-            )
+            ),
+            state="info",
+            tip=f"Speech detection sensitivity {gate['vad_threshold']:.2f}",
         )
-        self.gate_label.setToolTip(f"Speech detection sensitivity {gate['vad_threshold']:.2f}")
-        self.gate_label.setStyleSheet(status_chip_style("info"))
 
         deesser = setup_result["deesser_settings"]
         deesser_state = "ok" if deesser["enabled"] else "info"
@@ -1899,16 +1665,15 @@ class VoiceSetupDialog(QDialog):
                 f"amount {settings['auto_amount'] * 100.0:.0f}%"
             )
 
-        self.deesser_label.setText(
+        self.view_model.set_chip(
+            "deesser",
             "De-esser: "
             + self._review_text(
                 describe_deesser(deesser), deesser, "deesser_state", describe_deesser
-            )
+            ),
+            state=deesser_state,
+            tip=f"Band {deesser['low_cut_hz']:.0f} to {deesser['high_cut_hz']:.0f} Hz",
         )
-        self.deesser_label.setToolTip(
-            f"Band {deesser['low_cut_hz']:.0f} to {deesser['high_cut_hz']:.0f} Hz"
-        )
-        self.deesser_label.setStyleSheet(status_chip_style(deesser_state))
 
         compressor = setup_result["compressor_settings"]
         compressor_diag = diagnostics.get("compressor_calibration") or {}
@@ -1950,7 +1715,8 @@ class VoiceSetupDialog(QDialog):
             loudness_note = (
                 f"\nMakeup was held {round(lowered, 1):g} dB lower so peaks do not overload the limiter."
             )
-        self.compressor_label.setText(
+        self.view_model.set_chip(
+            "compressor",
             "Compressor: "
             + self._review_text(
                 describe_compressor(compressor),
@@ -1958,15 +1724,13 @@ class VoiceSetupDialog(QDialog):
                 "compressor_state",
                 describe_compressor,
             )
-            + loudness_note
-        )
-        self.compressor_label.setToolTip(
-            f"Compression style: {intensity.capitalize()}; "
+            + loudness_note,
+            state="info",
+            tip=f"Compression style: {intensity.capitalize()}; "
             f"{'automatic loudness' if compressor['auto_makeup_enabled'] else makeup_text}; "
-            f"on your recording it evens out your voice by {_format_db(measured_gr)}."
+            f"on your recording it evens out your voice by {_format_db(measured_gr)}.",
         )
-        self.compressor_label.setStyleSheet(status_chip_style("info"))
-        self.summary_group.setVisible(True)
+        self.view_model.set_page(summaryShown=True)
         self._summary_result = setup_result
 
     def _candidate_identity_error(self, parent: Any) -> str | None:
@@ -2116,16 +1880,18 @@ class VoiceSetupDialog(QDialog):
             self._final_comparison_pending = False
             self._refresh_review()
             self.setup_state = "completed"
-            self.compare_button.setEnabled(True)
-            self.start_button.setEnabled(True)
-            self.start_button.setText(_APPLY_VERIFY_AGAIN_LABEL)
-            outcome = "could not open" if unavailable else "declined"
-            self.phase_label.setText(
-                f"Final comparison {outcome}; previous settings put back"
-                if restored
-                else f"Final comparison {outcome}; previous settings not fully put back"
+            self.view_model.set_page(
+                compareEnabled=True,
+                startEnabled=True,
+                startText=_APPLY_VERIFY_AGAIN_LABEL,
             )
-            self.warning_label.setText(
+            outcome = "could not open" if unavailable else "declined"
+            self.view_model.set_page(
+                phaseText=f"Final comparison {outcome}; previous settings put back"
+                if restored
+                else f"Final comparison {outcome}; previous settings not fully put back",
+            )
+            self.view_model.set_warning(
                 (
                     "The final comparison could not open, so your old settings were kept. "
                     "The new ones are still here if you try again. "
@@ -2136,13 +1902,14 @@ class VoiceSetupDialog(QDialog):
                     "Your old settings are active."
                     if restored
                     else "Your old settings could not be fully put back; press Retake to try again."
-                )
+                ),
+                state="warn",
+                strong=True,
             )
-            self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
             self._report(
                 "rolled_back",
                 ["final_comparison_unavailable" if unavailable else "final_comparison_declined"],
-                [self.warning_label.text()],
+                [self.view_model.warning_text],
             )
 
     def _apply_setup(self) -> None:
@@ -2237,15 +2004,18 @@ class VoiceSetupDialog(QDialog):
             return
         mode_note = self._mode_switch_note()
         self.setup_state = "verification_ready"
-        self.compare_button.setEnabled(False)
-        self.start_button.setText("Record Verification Passage")
-        self.phase_label.setText("New settings are on for now")
-        self.warning_label.setText(
+        self.view_model.set_page(
+            compareEnabled=False,
+            startText="Record Verification Passage",
+            phaseText="New settings are on for now",
+        )
+        self.view_model.set_warning(
             "The new settings are on for now. Read the passage once more so "
             "AudioForge can check them on a second recording."
-            + (f" {mode_note}" if mode_note else "")
+            + (f" {mode_note}" if mode_note else ""),
+            state="info",
+            strong=True,
         )
-        self.warning_label.setStyleSheet(message_text_style("info", strong=True))
         self._refresh_review()
 
     def _pre_setup_mode(self) -> str | None:
@@ -2469,12 +2239,14 @@ class VoiceSetupDialog(QDialog):
         generation = self._analysis_generation + 1
         self._analysis_generation = generation
         self.setup_state = "verification_analyzing"
-        self.start_button.setEnabled(False)
-        self.start_button.setText("Validating...")
-        self.curve_combo.setEnabled(False)
-        self.phase_label.setText("Checking the new settings")
-        self.time_label.setText("Analysis in progress")
-        self.warning_label.setText("Comparing your second recording with the first...")
+        self.view_model.set_page(
+            startEnabled=False,
+            startText="Validating...",
+            curveEnabled=False,
+            phaseText="Checking the new settings",
+            timeText="Analysis in progress",
+        )
+        self.view_model.set_warning("Comparing your second recording with the first...")
         worker = VoiceSetupVerificationWorker(
             noise_audio,
             voice_audio,
@@ -2580,19 +2352,22 @@ class VoiceSetupDialog(QDialog):
             self._final_comparison_pending = False
             self._refresh_review()
             self.setup_state = "completed"
-            self.compare_button.setEnabled(True)
-            self.start_button.setEnabled(True)
-            self.start_button.setText(_APPLY_VERIFY_AGAIN_LABEL)
-            self.warning_label.setText(
+            self.view_model.set_page(
+                compareEnabled=True,
+                startEnabled=True,
+                startText=_APPLY_VERIFY_AGAIN_LABEL,
+            )
+            self.view_model.set_warning(
                 f"{plain_stale(identity_error)} "
                 + (
                     "Your previous settings were put back."
                     if restored
                     else "Your previous settings could not be fully put back; press Retake to try again."
-                )
+                ),
+                state="warn",
+                strong=True,
             )
-            self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
-            self._report("rolled_back", ["stale_result"], [self.warning_label.text()])
+            self._report("rolled_back", ["stale_result"], [self.view_model.warning_text])
             return
         result = self.setup_result.get("verification") or {}
         advice = result.get("suppressor_dulling_advice")
@@ -2677,32 +2452,35 @@ class VoiceSetupDialog(QDialog):
                     candidate["verified_stages"] = []
                 self._final_comparison_pending = False
                 self.setup_state = "completed"
-                self.compare_button.setEnabled(True)
-                self.start_button.setEnabled(True)
-                self.start_button.setText(_APPLY_VERIFY_AGAIN_LABEL)
-                self.phase_label.setText(
-                    "Check passed, but the settings are out of date"
+                self.view_model.set_page(
+                    compareEnabled=True,
+                    startEnabled=True,
+                    startText=_APPLY_VERIFY_AGAIN_LABEL,
+                    phaseText="Check passed, but the settings are out of date"
                     if restored
-                    else "Check passed; previous settings not fully put back"
+                    else "Check passed; previous settings not fully put back",
                 )
-                self.warning_label.setText(
+                self.view_model.set_warning(
                     f"{plain_stale(identity_error)} "
                     + (
                         "Your previous settings were put back."
                         if restored
                         else "Your previous settings could not be fully put back; press Retake to try again."
-                    )
+                    ),
+                    state="warn",
+                    strong=True,
                 )
-                self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
-                self._report("rolled_back", ["stale_result"], [self.warning_label.text()])
+                self._report("rolled_back", ["stale_result"], [self.view_model.warning_text])
                 return
             self._final_comparison_pending = True
             self._refresh_review()
             self.setup_state = "final_comparison_ready"
-            self.compare_button.setEnabled(True)
-            self.start_button.setEnabled(True)
-            self.start_button.setText("Compare Final Candidate")
-            self.phase_label.setText("Check passed; final comparison ready")
+            self.view_model.set_page(
+                compareEnabled=True,
+                startEnabled=True,
+                startText="Compare Final Candidate",
+                phaseText="Check passed; final comparison ready",
+            )
             adjustment_note = self.setup_result.get("verification_adjustment_note")
             adjusted_target_lufs = self.setup_result.get(
                 "verification_adjusted_target_lufs"
@@ -2716,14 +2494,15 @@ class VoiceSetupDialog(QDialog):
                 adjustment_suffix += (
                     f" Effective auto target loudness: {float(adjusted_target_lufs):.0f} LUFS."
                 )
-            self.warning_label.setText(
+            self.view_model.set_warning(
                 "The new settings passed the check on your second recording. The "
                 "comparison is ready: keeping the new settings applies them, while "
                 "closing the comparison puts your old settings back."
                 + adjustment_suffix
-                + advice_suffix
+                + advice_suffix,
+                state="info",
+                strong=True,
             )
-            self.warning_label.setStyleSheet(message_text_style("info", strong=True))
             return
         if decision == "reduce" and parent is not None:
             reduction_targets = reducible_targets(result.get("reduction_targets"))
@@ -2787,7 +2566,7 @@ class VoiceSetupDialog(QDialog):
             self._refresh_review()
             self.setup_state = "verification_ready"
             self._final_comparison_pending = False
-            self.start_button.setText("Verify Reduced Processing")
+            self.view_model.set_page(startText="Verify Reduced Processing")
             if adjustment_note:
                 previous_note = str(
                     self.setup_result.get("verification_adjustment_note") or ""
@@ -2801,8 +2580,7 @@ class VoiceSetupDialog(QDialog):
             restored = self._restore_pre_setup_snapshot()
             self._final_comparison_pending = False
             self.setup_state = "completed"
-            self.compare_button.setEnabled(True)
-            self.start_button.setText(_APPLY_VERIFY_AGAIN_LABEL)
+            self.view_model.set_page(compareEnabled=True, startText=_APPLY_VERIFY_AGAIN_LABEL)
             reason = (
                 f"{reason} "
                 + (
@@ -2821,29 +2599,29 @@ class VoiceSetupDialog(QDialog):
                 )
                 return
             self.setup_state = "verification_ready"
-            self.start_button.setText(
-                "Retry Verification "
-                f"({self._verification_bad_capture_count}/{MAX_VERIFICATION_BAD_CAPTURES})"
+            self.view_model.set_page(
+                startText="Retry Verification "
+                f"({self._verification_bad_capture_count}/{MAX_VERIFICATION_BAD_CAPTURES})",
             )
-        self.start_button.setEnabled(True)
-        self.curve_combo.setEnabled(decision == "rollback")
+        self.view_model.set_page(startEnabled=True, curveEnabled=decision == "rollback")
         if decision == "rollback":
-            self.phase_label.setText(
-                "The new settings did not pass the check; previous settings "
-                + ("put back" if restored else "not fully put back")
+            self.view_model.set_page(
+                phaseText="The new settings did not pass the check; previous settings "
+                + ("put back" if restored else "not fully put back"),
             )
         else:
-            self.phase_label.setText("The second recording did not match the first; try again")
+            self.view_model.set_page(phaseText="The second recording did not match the first; try again")
         # A retry discards the take, so there is nothing to advise on.
-        self.warning_label.setText(
-            f"{reason} {metrics_text}" + (advice_suffix if decision == "rollback" else "")
+        self.view_model.set_warning(
+            f"{reason} {metrics_text}" + (advice_suffix if decision == "rollback" else ""),
+            state="warn",
+            strong=True,
         )
-        self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
         if decision == "rollback":
             self._report(
                 "rolled_back",
                 list(result.get("reason_codes") or ["verification_rollback"]),
-                [self.warning_label.text()],
+                [self.view_model.warning_text],
             )
 
     def _on_verification_failed(
@@ -2856,28 +2634,27 @@ class VoiceSetupDialog(QDialog):
         restored = self._restore_pre_setup_snapshot()
         self._final_comparison_pending = False
         self.setup_state = "completed" if self.setup_result is not None else "noise_ready"
-        self.compare_button.setEnabled(self.setup_result is not None)
-        self.start_button.setEnabled(True)
-        self.start_button.setText(
-            _APPLY_VERIFY_AGAIN_LABEL
+        self.view_model.set_page(
+            compareEnabled=self.setup_result is not None,
+            startEnabled=True,
+            startText=_APPLY_VERIFY_AGAIN_LABEL
             if self.setup_result is not None
-            else "Record Voice"
+            else "Record Voice",
+            curveEnabled=True,
         )
-        self.curve_combo.setEnabled(True)
-        self.warning_label.setText(error)
-        self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
-        self.phase_label.setText(
-            "Check failed; previous settings put back"
+        self.view_model.set_warning(error, state="warn", strong=True)
+        self.view_model.set_page(
+            phaseText="Check failed; previous settings put back"
             if restored
-            else "Check failed; previous settings not fully put back"
+            else "Check failed; previous settings not fully put back",
         )
         if not restored:
-            self.warning_label.setText(
+            self.view_model.set_warning(
                 f"{error} Your previous settings could not be fully put back; "
-                "press Retake to try again."
+                "press Retake to try again.",
             )
-        self.summary_group.setVisible(self.setup_result is not None)
-        self._report("failed", ["verification_failed"], [self.warning_label.text()])
+        self.view_model.set_page(summaryShown=self.setup_result is not None)
+        self._report("failed", ["verification_failed"], [self.view_model.warning_text])
 
     def _on_analysis_failed(self, error: str, generation: int | None = None) -> None:
         if generation is not None and generation != self._analysis_generation:
@@ -2890,19 +2667,18 @@ class VoiceSetupDialog(QDialog):
         self._reset_verification_state()
         self._candidate_metadata = None
         self._final_comparison_pending = False
-        self.curve_group.setEnabled(True)
-        self.dynamics_group.setEnabled(True)
-        self.target_lufs_spin.setEnabled(True)
+        self.view_model.set_page(curveGroupEnabled=True, dynamicsEnabled=True, targetEnabled=True)
         self.setup_state = "noise_ready" if self.noise_audio is not None else "idle"
-        self.start_button.setEnabled(True)
-        self.start_button.setText(
-            "Record Voice" if self.noise_audio is not None else "Start Voice Setup"
+        self.view_model.set_page(
+            startEnabled=True,
+            startText="Record Voice" if self.noise_audio is not None else "Start Voice Setup",
+            curveEnabled=True,
         )
-        self.curve_combo.setEnabled(True)
-        self.warning_label.setText(error)
-        self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
-        self.phase_label.setText("Setup could not analyse the recordings")
-        self.summary_group.setVisible(False)
+        self.view_model.set_warning(error, state="warn", strong=True)
+        self.view_model.set_page(
+            phaseText="Setup could not analyse the recordings",
+            summaryShown=False,
+        )
         self._report("failed", ["analysis_failed"], [error])
 
     def _reject_capture(self, message: str) -> None:
@@ -2911,12 +2687,11 @@ class VoiceSetupDialog(QDialog):
         # A verification take keeps the status its failure already set.
         verification_step = self.setup_state == "verification_recording"
         self._on_recording_failed(message, refused=True)
-        self.progress_bar.setValue(0)
-        self.time_label.setText("Ready to record again")
+        self.view_model.set_page(progress=0, timeText="Ready to record again")
         if noise_step:
-            self.phase_label.setText("Room-noise capture rejected")
+            self.view_model.set_page(phaseText="Room-noise capture rejected")
         elif not verification_step:
-            self.phase_label.setText("Voice capture rejected")
+            self.view_model.set_page(phaseText="Voice capture rejected")
 
     def _on_recording_failed(self, error: str, *, refused: bool = False) -> None:
         verification_failed = self.setup_state == "verification_recording"
@@ -2924,11 +2699,8 @@ class VoiceSetupDialog(QDialog):
         self.recording_timer.stop()
         # The take is over: the meter and the clock stop showing it.
         self.level_meter.set_unavailable()
-        self.level_override_btn.setVisible(False)
-        self.start_button.setEnabled(True)
-        self.curve_combo.setEnabled(True)
-        self.warning_label.setText(error)
-        self.warning_label.setStyleSheet(message_text_style("bad", strong=True))
+        self.view_model.set_page(overrideShown=False, startEnabled=True, curveEnabled=True)
+        self.view_model.set_warning(error, state="bad", strong=True)
         self._report(
             "refused" if refused else "failed",
             ["recording_rejected" if refused else "recording_failed"],
@@ -2938,19 +2710,19 @@ class VoiceSetupDialog(QDialog):
             restored = self._restore_pre_setup_snapshot()
             self._reset_verification_state()
             self._final_comparison_pending = False
-            self.start_button.setText(_APPLY_VERIFY_AGAIN_LABEL)
+            self.view_model.set_page(startText=_APPLY_VERIFY_AGAIN_LABEL)
             self.setup_state = "completed"
-            self.compare_button.setEnabled(True)
-            self.retake_btn.setVisible(True)
-            self.phase_label.setText(
-                "Second recording failed; previous settings put back"
+            self.view_model.set_page(
+                compareEnabled=True,
+                retakeShown=True,
+                phaseText="Second recording failed; previous settings put back"
                 if restored
-                else "Second recording failed; previous settings not fully put back"
+                else "Second recording failed; previous settings not fully put back",
             )
             if not restored:
-                self.warning_label.setText(
+                self.view_model.set_warning(
                     f"{error} Your previous settings could not be fully put back; "
-                    "press Retake to try again."
+                    "press Retake to try again.",
                 )
         else:
             if noise_recording_failed:
@@ -2960,15 +2732,14 @@ class VoiceSetupDialog(QDialog):
             elif self.setup_state == "voice_recording":
                 self.voice_audio = None
                 self.preview_voice_audio = None
-            self.start_button.setText(
-                "Retake Room Noise"
+            self.view_model.set_page(
+                startText="Retake Room Noise"
                 if noise_recording_failed
-                else "Start Voice Setup" if self.noise_audio is None else "Record Voice"
+                else "Start Voice Setup" if self.noise_audio is None else "Record Voice",
             )
             self._failed_step = (1 if self.setup_state == "level_check" else 2) if self.noise_audio is None else None
             self.setup_state = "idle" if self.noise_audio is None else "noise_ready"
-            self.dynamics_group.setEnabled(True)
-            self.target_lufs_spin.setEnabled(True)
+            self.view_model.set_page(dynamicsEnabled=True, targetEnabled=True)
         self._cleanup_recording_tap()
 
     def _on_retake_clicked(self) -> None:
@@ -2994,13 +2765,14 @@ class VoiceSetupDialog(QDialog):
         self.reject()
 
     def _reset_setup_ui(self) -> None:
-        self.compare_button.setEnabled(False)
+        self.view_model.set_page(compareEnabled=False)
         if not self._restore_pre_setup_snapshot():
-            self.phase_label.setText("Reset blocked; previous settings not fully put back")
-            self.warning_label.setText(
-                "Your previous settings could not be fully put back. Press Retake to try again."
+            self.view_model.set_page(phaseText="Reset blocked; previous settings not fully put back")
+            self.view_model.set_warning(
+                "Your previous settings could not be fully put back. Press Retake to try again.",
+                state="bad",
+                strong=True,
             )
-            self.warning_label.setStyleSheet(message_text_style("bad", strong=True))
             return
         self._final_comparison_pending = False
         self._capture_start_timer.stop()
@@ -3024,24 +2796,29 @@ class VoiceSetupDialog(QDialog):
         self._reset_verification_state()
         self._candidate_metadata = None
         self._capture_context_key = None
-        self.curve_group.setEnabled(True)
-        self.dynamics_group.setEnabled(True)
-        self.target_lufs_spin.setEnabled(True)
-        self.progress_bar.setValue(0)
+        self.view_model.set_page(
+            curveGroupEnabled=True,
+            dynamicsEnabled=True,
+            targetEnabled=True,
+            progress=0,
+        )
         self.level_meter.set_unavailable()
         self._advisory_only = False
         self._level_verdict = self._level_override = None
-        self.level_override_btn.setVisible(False)
-        self.phase_label.setText("Ready to start setup")
-        self.time_label.setText(f"Time remaining: {NOISE_RECORDING_DURATION:.0f}s")
-        self.time_label.setStyleSheet(PROGRESS_LABEL_STYLE)
-        self.warning_label.setText("Ready to record")
-        self.warning_label.setStyleSheet(message_text_style("idle"))
-        self.start_button.setText("Start Voice Setup")
-        self.start_button.setEnabled(True)
-        self.curve_combo.setEnabled(True)
-        self.retake_btn.setVisible(False)
-        self.summary_group.setVisible(False)
+        self.view_model.set_page(
+            overrideShown=False,
+            phaseText="Ready to start setup",
+            timeText=f"Time remaining: {NOISE_RECORDING_DURATION:.0f}s",
+            timeDone=False,
+        )
+        self.view_model.set_warning("Ready to record", state="idle", strong=False)
+        self.view_model.set_page(
+            startText="Start Voice Setup",
+            startEnabled=True,
+            curveEnabled=True,
+            retakeShown=False,
+            summaryShown=False,
+        )
 
     def _stop_owned_processor(self) -> None:
         if self._audio_lease is not None:
@@ -3064,18 +2841,16 @@ class VoiceSetupDialog(QDialog):
             restored = self._restore_pre_setup_snapshot()
             self._final_comparison_pending = False
             self.setup_state = "completed" if self.setup_result is not None else "noise_ready"
-            self.compare_button.setEnabled(self.setup_result is not None)
-            self.start_button.setEnabled(True)
-            self.start_button.setText(
-                _APPLY_VERIFY_AGAIN_LABEL
+            self.view_model.set_page(
+                compareEnabled=self.setup_result is not None,
+                startEnabled=True,
+                startText=_APPLY_VERIFY_AGAIN_LABEL
                 if self.setup_result is not None
-                else "Record Voice"
-            )
-            self.curve_combo.setEnabled(True)
-            self.phase_label.setText(
-                "Check canceled; previous settings put back"
+                else "Record Voice",
+                curveEnabled=True,
+                phaseText="Check canceled; previous settings put back"
                 if restored
-                else "Check canceled; previous settings not fully put back"
+                else "Check canceled; previous settings not fully put back",
             )
 
     def _on_analysis_thread_finished(self, worker) -> None:
@@ -3111,11 +2886,12 @@ class VoiceSetupDialog(QDialog):
         self._cleanup_recording_tap()
         self._stop_owned_processor()
         if not self._restore_pre_setup_snapshot():
-            self.phase_label.setText("Close blocked; previous settings not fully put back")
-            self.warning_label.setText(
-                "Your previous settings could not be fully put back. Press Retake to try again."
+            self.view_model.set_page(phaseText="Close blocked; previous settings not fully put back")
+            self.view_model.set_warning(
+                "Your previous settings could not be fully put back. Press Retake to try again.",
+                state="bad",
+                strong=True,
             )
-            self.warning_label.setStyleSheet(message_text_style("bad", strong=True))
             return
         self._final_comparison_pending = False
         if not accepted and self.setup_result is not None and not self._reported:
@@ -3127,15 +2903,13 @@ class VoiceSetupDialog(QDialog):
         self._close_requested = True
         self._close_result = accepted
         if any(worker.isRunning() for worker in self._analysis_workers):
-            self.start_button.setEnabled(False)
-            self.retake_btn.setEnabled(False)
-            self.warning_label.setText("Canceling analysis...")
-            self.warning_label.setStyleSheet(message_text_style("info", strong=True))
+            self.view_model.set_page(startEnabled=False, retakeEnabled=False)
+            self.view_model.set_warning("Canceling analysis...", state="info", strong=True)
             return
         self._finish_close()
 
     def get_selected_curve(self) -> str:
-        return str(self.curve_combo.currentData() or "broadcast")
+        return self.view_model.selected("curve")
 
     def closeEvent(self, event) -> None:
         if session_is_ending():

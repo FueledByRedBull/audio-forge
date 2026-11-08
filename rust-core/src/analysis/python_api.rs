@@ -1,12 +1,16 @@
 //! PyO3 bindings for the offline analysis primitives.
 
 use numpy::{
-    Element, PyArray1, PyArrayDescrMethods, PyArrayDyn, PyArrayMethods, PyUntypedArray,
-    PyUntypedArrayMethods,
+    Complex32, Complex64, Element, PyArray1, PyArrayDescrMethods, PyArrayDyn, PyArrayMethods,
+    PyUntypedArray, PyUntypedArrayMethods,
 };
-use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
+use pyo3::exceptions::{
+    PyIndexError, PyOverflowError, PyRuntimeWarning, PyTypeError, PyValueError,
+};
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyInt};
 
+use super::latency::LatencyError;
 use crate::catch_panic;
 
 /// `np.asarray(value, dtype=T)` flattened in C order, with its original shape.
@@ -57,17 +61,82 @@ pub(crate) fn band_mean(
     })
 }
 
-/// float32 audio resamples in float32; every other real dtype in float64.
+/// SciPy `resample_poly`'s default filter for reduced rates, as the removed
+/// Python designed it in NumPy: `np.kaiser`'s `exp` is NumPy's own SIMD code
+/// on some CPUs, so only NumPy reproduces its bits.
+fn numpy_resample_taps(py: Python<'_>, up: usize, down: usize) -> PyResult<Vec<f64>> {
+    let np = py.import("numpy")?;
+    let max_rate = up.max(down);
+    let half_length = 10 * max_rate;
+    let kwargs = PyDict::new(py);
+    kwargs.set_item("dtype", np.getattr("float64")?)?;
+    let positions = np
+        .call_method("arange", (2 * half_length + 1,), Some(&kwargs))?
+        .sub(half_length)?;
+    let cutoff = 1.0 / max_rate as f64;
+    let window = np.call_method1("kaiser", (positions.len()?, 5.0))?;
+    let taps = np
+        .call_method1("sinc", (positions.mul(cutoff)?,))?
+        .mul(cutoff)?
+        .mul(window)?;
+    let taps = taps.div(taps.call_method0("sum")?)?.mul(up)?;
+    let taps = taps.cast_into::<PyArray1<f64>>()?;
+    let taps = taps.readonly().as_slice()?.to_vec();
+    Ok(taps)
+}
+
+/// `operator.index(rate)` as a positive integer; the removed Python raised
+/// ValueError for anything else.
+fn resample_rate(rate: &Bound<'_, PyAny>) -> PyResult<usize> {
+    let invalid = || PyValueError::new_err("up and down must be positive integers");
+    let index = rate
+        .py()
+        .import("operator")?
+        .call_method1("index", (rate,))
+        .map_err(|error| {
+            if error.is_instance_of::<PyTypeError>(rate.py()) {
+                invalid()
+            } else {
+                error
+            }
+        })?;
+    if index.lt(1)? {
+        return Err(invalid());
+    }
+    index.extract()
+}
+
+fn resample_as<'py, T>(
+    py: Python<'py>,
+    array: &Bound<'py, PyUntypedArray>,
+    up: usize,
+    down: usize,
+) -> PyResult<Bound<'py, PyAny>>
+where
+    T: super::ResampleSample + Element + Send + Sync,
+{
+    let taps = numpy_resample_taps(py, up, down)?;
+    let values = vector::<T>(array.as_any(), "audio to resample")?;
+    let output = py
+        .detach(|| super::resample_poly(&values, up, down, &taps))
+        .map_err(PyValueError::new_err)?;
+    Ok(PyArray1::from_vec(py, output).into_any())
+}
+
+/// Resamples float32, float64, complex64 and complex128 audio in its own
+/// precision and other real numbers in float64, as the removed Python did.
+/// An identity ratio copies the array, and empty audio keeps a float or
+/// complex dtype, both as before.
 #[pyfunction]
 pub(crate) fn resample_poly<'py>(
     py: Python<'py>,
     samples: &Bound<'py, PyAny>,
-    up: i64,
-    down: i64,
+    up: &Bound<'py, PyAny>,
+    down: &Bound<'py, PyAny>,
 ) -> PyResult<Bound<'py, PyAny>> {
     catch_panic(|| {
-        let array = py
-            .import("numpy")?
+        let np = py.import("numpy")?;
+        let array = np
             .call_method1("asarray", (samples,))?
             .cast_into::<PyUntypedArray>()?;
         if array.ndim() != 1 {
@@ -75,27 +144,49 @@ pub(crate) fn resample_poly<'py>(
                 "audio to resample must be one-dimensional",
             ));
         }
-        let (Ok(up), Ok(down)) = (usize::try_from(up), usize::try_from(down)) else {
-            return Err(PyValueError::new_err(
-                "up and down must be positive integers",
-            ));
-        };
+        let up = resample_rate(up)?;
+        let down = resample_rate(down)?;
+        let (up, down) = super::reduced_rates(up, down).map_err(PyValueError::new_err)?;
         let dtype = array.dtype();
-        if dtype.kind() == b'c' {
-            return Err(PyTypeError::new_err("complex audio is not supported"));
+        if up == 1 && down == 1 {
+            return array.call_method0("copy");
         }
+        if array.len() == 0 {
+            let kind = dtype.kind();
+            let empty_dtype = if kind == b'f' || kind == b'c' {
+                dtype.into_any()
+            } else {
+                np.getattr("float64")?
+            };
+            return np.call_method1("empty", (0, empty_dtype));
+        }
+
         if dtype.is_equiv_to(&numpy::dtype::<f32>(py)) {
-            let values = vector::<f32>(array.as_any(), "audio to resample")?;
-            let output = py
-                .detach(|| super::resample_poly(&values, up, down))
-                .map_err(PyValueError::new_err)?;
-            return Ok(PyArray1::from_vec(py, output).into_any());
+            return resample_as::<f32>(py, &array, up, down);
         }
-        let values = vector::<f64>(array.as_any(), "audio to resample")?;
-        let output = py
-            .detach(|| super::resample_poly(&values, up, down))
-            .map_err(PyValueError::new_err)?;
-        Ok(PyArray1::from_vec(py, output).into_any())
+        if dtype.is_equiv_to(&numpy::dtype::<f64>(py)) {
+            return resample_as::<f64>(py, &array, up, down);
+        }
+        if dtype.is_equiv_to(&numpy::dtype::<Complex32>(py)) {
+            return resample_as::<Complex32>(py, &array, up, down);
+        }
+        if dtype.is_equiv_to(&numpy::dtype::<Complex64>(py)) {
+            return resample_as::<Complex64>(py, &array, up, down);
+        }
+        // NumPy promoted booleans, integers and float16 to float64 exactly.
+        let promotes_to_float64 = match dtype.kind() {
+            b'b' | b'i' | b'u' => true,
+            b'f' => dtype.itemsize() < 8,
+            _ => false,
+        };
+        if promotes_to_float64 {
+            return resample_as::<f64>(py, &array, up, down);
+        }
+        Err(PyTypeError::new_err(format!(
+            "audio to resample must be float32, float64, complex64 or complex128, \
+             or real numbers that convert to float64 exactly, not {}",
+            dtype.str()?
+        )))
     })
 }
 
@@ -104,17 +195,35 @@ pub(crate) fn resample_poly<'py>(
 pub(crate) fn find_peaks_distance_prominence<'py>(
     py: Python<'py>,
     samples: &Bound<'py, PyAny>,
-    distance: i64,
+    distance: f64,
     prominence: f64,
 ) -> PyResult<Bound<'py, PyArray1<isize>>> {
     catch_panic(|| {
-        let values = vector::<f64>(samples, "peak detection input")?;
-        let peaks = super::find_peaks_distance_prominence(
-            &values,
-            usize::try_from(distance).unwrap_or(0),
-            prominence,
-        )
-        .map_err(PyValueError::new_err)?;
+        let np = py.import("numpy")?;
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dtype", np.getattr("float64")?)?;
+        let array = np.call_method("asarray", (samples,), Some(&kwargs))?;
+        let values = vector::<f64>(&array, "peak detection input")?;
+        let candidates = super::peak_candidates(&values);
+        // np.argsort(values[peaks]) as the removed Python ranked peaks: its
+        // order among equal heights is NumPy's sort's, SIMD on some CPUs.
+        let order = if candidates.is_empty() {
+            Vec::new()
+        } else {
+            let peaks =
+                PyArray1::from_vec(py, candidates.iter().map(|&peak| peak as isize).collect());
+            let order = np
+                .call_method1("argsort", (array.get_item(peaks)?,))?
+                .cast_into::<PyArray1<isize>>()?;
+            let order = order.readonly();
+            order
+                .as_slice()?
+                .iter()
+                .map(|&index| index as usize)
+                .collect()
+        };
+        let peaks = super::select_peaks(&values, &candidates, &order, distance, prominence)
+            .map_err(PyValueError::new_err)?;
         Ok(PyArray1::from_vec(
             py,
             peaks.into_iter().map(|peak| peak as isize).collect(),
@@ -122,26 +231,55 @@ pub(crate) fn find_peaks_distance_prominence<'py>(
     })
 }
 
+/// The removed Python's `int(sample_rate)` for a positive rate, refused
+/// where NumPy's int64 arithmetic with it overflowed.
+fn whole_vad_rate(sample_rate: &Bound<'_, PyAny>) -> PyResult<i64> {
+    let rate: i64 = sample_rate
+        .py()
+        .get_type::<PyInt>()
+        .call1((sample_rate,))?
+        .extract()?;
+    if rate.checked_mul(super::SILERO_WINDOW_SAMPLES).is_none() {
+        return Err(PyOverflowError::new_err(format!(
+            "Python integer {} out of bounds for int64",
+            i128::from(rate) * i128::from(super::SILERO_WINDOW_SAMPLES)
+        )));
+    }
+    Ok(rate)
+}
+
 #[pyfunction]
 pub(crate) fn map_causal_vad_probabilities<'py>(
     py: Python<'py>,
     probabilities: Option<&Bound<'py, PyAny>>,
     positions: &Bound<'py, PyAny>,
-    sample_rate: i64,
+    sample_rate: &Bound<'py, PyAny>,
 ) -> PyResult<Option<Bound<'py, PyArray1<f32>>>> {
     catch_panic(|| {
         let Some(probabilities) = probabilities else {
             return Ok(None);
         };
-        if sample_rate <= 0 {
+        if sample_rate.le(0)? {
             return Ok(None);
         }
         let (_, probabilities) = flattened::<f64>(probabilities)?;
         let (_, positions) = flattened::<i64>(positions)?;
-        Ok(
-            super::map_causal_vad_probabilities(&probabilities, &positions, sample_rate)
-                .map(|mapped| PyArray1::from_vec(py, mapped)),
-        )
+        let mut whole_rate = None;
+        let mapped = super::map_causal_vad_probabilities(&probabilities, &positions, || {
+            let rate = whole_vad_rate(sample_rate)?;
+            whole_rate = Some(rate);
+            Ok::<_, PyErr>(rate)
+        })?;
+        if whole_rate == Some(0) {
+            // NumPy warned for its integer division by zero.
+            PyErr::warn(
+                py,
+                &py.get_type::<PyRuntimeWarning>(),
+                c"divide by zero encountered in floor_divide",
+                1,
+            )?;
+        }
+        Ok(mapped.map(|mapped| PyArray1::from_vec(py, mapped)))
     })
 }
 
@@ -222,20 +360,22 @@ pub(crate) fn analyze_offline_vad<'py>(
         };
         let threshold = threshold as f32;
         let probabilities = py.detach(move || {
-            super::offline_vad_probabilities(&samples, sample_rate, pre_gain, |prepared, rate| {
-                if !threshold.is_finite()
-                    || !(0.0..=1.0).contains(&threshold)
-                    || prepared.iter().any(|sample| !sample.is_finite())
-                {
-                    return Err(());
-                }
-                std::panic::catch_unwind(|| {
-                    crate::audio::processor::silero_offline_probabilities(prepared, rate, threshold)
-                })
-                .map_err(drop)?
-                .map_err(drop)
-            })
-        });
+            super::offline_vad_probabilities(
+                &samples,
+                sample_rate,
+                pre_gain,
+                |up, down| Python::attach(|py| numpy_resample_taps(py, up, down)),
+                |prepared, rate| {
+                    std::panic::catch_unwind(|| {
+                        crate::audio::processor::silero_offline_probabilities(
+                            prepared, rate, threshold,
+                        )
+                    })
+                    .map_err(drop)?
+                    .map_err(drop)
+                },
+            )
+        })?;
         Ok(match probabilities {
             Some(probabilities) => (Some(PyArray1::from_vec(py, probabilities)), "silero"),
             None => (None, FALLBACK),
@@ -243,27 +383,82 @@ pub(crate) fn analyze_offline_vad<'py>(
     })
 }
 
+fn latency_error(error: LatencyError) -> PyErr {
+    match error {
+        LatencyError::Value(message) => PyValueError::new_err(message),
+        LatencyError::Overflow(message) => PyOverflowError::new_err(message),
+        LatencyError::Index(message) => PyIndexError::new_err(message),
+        LatencyError::Caller(error) => match error.downcast::<PyErr>() {
+            Ok(error) => *error,
+            Err(error) => PyValueError::new_err(error.to_string()),
+        },
+    }
+}
+
+/// `np.hanning(size)`, computed by NumPy so the probe does not rest on Rust
+/// and NumPy reaching the same `cos`.
+fn numpy_hanning(size: usize) -> Result<Vec<f64>, LatencyError> {
+    Python::attach(|py| {
+        let window = py
+            .import("numpy")?
+            .call_method1("hanning", (size,))?
+            .cast_into::<PyArray1<f64>>()?;
+        let window = window.readonly().as_slice()?.to_vec();
+        Ok(window)
+    })
+    .map_err(|error: PyErr| LatencyError::Caller(Box::new(error)))
+}
+
+/// A latency sample rate: the 48 kHz default or what the caller passed.
+pub(crate) enum LatencyRate<'py> {
+    Default,
+    Given(Bound<'py, PyAny>),
+}
+
+fn latency_rate_argument<'py>(value: &Bound<'py, PyAny>) -> PyResult<LatencyRate<'py>> {
+    Ok(LatencyRate::Given(value.clone()))
+}
+
+impl LatencyRate<'_> {
+    /// The rate as the removed Python's float arithmetic used it.
+    fn to_float(&self) -> PyResult<f64> {
+        match self {
+            Self::Default => Ok(48_000.0),
+            Self::Given(rate) => rate.extract(),
+        }
+    }
+}
+
 #[pyfunction]
-#[pyo3(signature = (sample_rate = 48_000, duration_ms = 80.0, amplitude = 0.8))]
+#[pyo3(signature = (sample_rate = LatencyRate::Default, duration_ms = 80.0, amplitude = 0.8))]
 pub(crate) fn generate_probe_signal<'py>(
     py: Python<'py>,
-    sample_rate: i64,
+    #[pyo3(from_py_with = latency_rate_argument)] sample_rate: LatencyRate<'py>,
     duration_ms: f64,
     amplitude: f64,
 ) -> PyResult<Bound<'py, PyArray1<f32>>> {
     catch_panic(|| {
-        let probe = super::latency::generate_probe_signal(sample_rate, duration_ms, amplitude)
-            .map_err(PyValueError::new_err)?;
+        let probe = super::latency::generate_probe_signal(
+            sample_rate.to_float()?,
+            duration_ms,
+            amplitude,
+            &mut numpy_hanning,
+        )
+        .map_err(latency_error)?;
         Ok(PyArray1::from_vec(py, probe))
     })
 }
 
 /// The fields of `LatencyCalibrationResult` as a dict.
+///
+/// The route and missing-input refusals come before the audio is converted,
+/// and the rate is converted where it is first used, both as in the removed
+/// Python.
 #[pyfunction]
 #[pyo3(signature = (
     reference_probe,
     recorded_signal,
-    sample_rate = 48_000,
+    sample_rate = LatencyRate::Default,
     min_search_ms = 5.0,
     max_search_ms = 500.0,
     expected_playback_start_ms = None,
@@ -277,7 +472,7 @@ pub(crate) fn analyze_latency<'py>(
     py: Python<'py>,
     reference_probe: Option<&Bound<'py, PyAny>>,
     recorded_signal: Option<&Bound<'py, PyAny>>,
-    sample_rate: i64,
+    #[pyo3(from_py_with = latency_rate_argument)] sample_rate: LatencyRate<'py>,
     min_search_ms: f64,
     max_search_ms: f64,
     expected_playback_start_ms: Option<f64>,
@@ -285,7 +480,7 @@ pub(crate) fn analyze_latency<'py>(
     expected_latency_min_ms: Option<f64>,
     expected_latency_max_ms: Option<f64>,
     route_kind: Option<&Bound<'py, PyAny>>,
-) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+) -> PyResult<Bound<'py, PyDict>> {
     catch_panic(|| {
         // str(route_kind or "output_to_input").strip().lower()
         let route_kind = match route_kind {
@@ -296,12 +491,18 @@ pub(crate) fn analyze_latency<'py>(
                 .extract::<String>()?,
             _ => super::latency::DEFAULT_ROUTE_KIND.to_string(),
         };
-        let reference = reference_probe
-            .map(|probe| flattened::<f64>(probe).map(|(_, values)| values))
-            .transpose()?;
-        let recording = recorded_signal
-            .map(|signal| flattened::<f64>(signal).map(|(_, values)| values))
-            .transpose()?;
+        let analyzed = route_kind == super::latency::DEFAULT_ROUTE_KIND
+            && reference_probe.is_some()
+            && recorded_signal.is_some();
+        let audio = |signal: Option<&Bound<'py, PyAny>>| {
+            signal
+                .filter(|_| analyzed)
+                .map(|signal| flattened::<f64>(signal).map(|(_, values)| values))
+                .transpose()
+        };
+        let reference = audio(reference_probe)?;
+        let recording = audio(recorded_signal)?;
+        let sample_rate = sample_rate.to_float();
         let window = super::latency::SearchWindow {
             min_search_ms,
             max_search_ms,
@@ -315,14 +516,15 @@ pub(crate) fn analyze_latency<'py>(
                 super::latency::analyze_latency(
                     reference.as_deref(),
                     recording.as_deref(),
-                    sample_rate,
+                    || sample_rate.map_err(|error| LatencyError::Caller(Box::new(error))),
                     window,
                     &route_kind,
+                    &mut numpy_hanning,
                 )
             })
-            .map_err(PyValueError::new_err)?;
+            .map_err(latency_error)?;
 
-        let result = pyo3::types::PyDict::new(py);
+        let result = PyDict::new(py);
         result.set_item("success", analysis.success)?;
         result.set_item("measured_round_trip_ms", analysis.measured_round_trip_ms)?;
         result.set_item("estimated_one_way_ms", 0.0)?;

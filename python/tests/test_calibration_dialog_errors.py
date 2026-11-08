@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-from typing import Any, cast
 from unittest.mock import Mock, call
 
 import pytest
@@ -9,42 +7,25 @@ from mic_eq.ui import capture_session
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui import calibration_dialog, voice_setup_dialog
 from mic_eq.ui.engine_session import AudioLease
-from mic_eq.ui.theme import message_text_style
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from engine_fakes import fake_session
 
 
-class _WarningLabel:
-    def __init__(self):
-        self.text = ""
-        self.stylesheet = ""
+def test_recording_failure_remains_visible_after_reset(qapp):
+    dialog = CalibrationDialog()
+    dialog._report = Mock()  # type: ignore[method-assign]
+    try:
+        dialog.view_model.set_warning("Checking the recording...", state="info", strong=True)
 
-    def setText(self, text):
-        self.text = text
+        dialog._on_recording_failed("device disconnected")
 
-    def setStyleSheet(self, stylesheet):
-        self.stylesheet = stylesheet
-
-
-def test_recording_failure_remains_visible_after_reset():
-    warning_label = _WarningLabel()
-
-    def reset_recording_ui():
-        warning_label.setText("Ready to record")
-        warning_label.setStyleSheet("idle")
-
-    dialog = SimpleNamespace(
-        recording_timer=Mock(),
-        warning_label=warning_label,
-        _reset_recording_ui=reset_recording_ui,
-        _report=Mock(),
-    )
-
-    CalibrationDialog._on_recording_failed(cast(Any, dialog), "device disconnected")
-
-    assert warning_label.text == "device disconnected"
-    dialog._report.assert_called_once_with("failed", ["recording_failed"], ["device disconnected"])
-    assert warning_label.stylesheet
+        assert dialog.view_model.warning_text == "device disconnected"
+        dialog._report.assert_called_once_with("failed", ["recording_failed"], ["device disconnected"])
+        assert (dialog.view_model.warning_state, dialog.view_model.warning_strong) == ("bad", True)
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+        qapp.processEvents()
 
 
 @pytest.mark.parametrize(
@@ -90,9 +71,13 @@ def test_stalled_capture_fails_and_releases_only_capture_owned_state(
 
         dialog._poll_recording_progress()
 
-        text = dialog.warning_label.text()
+        if dialog_type is CalibrationDialog:
+            text = dialog.view_model.warning_text
+            assert (dialog.view_model.warning_state, dialog.view_model.warning_strong) == ("bad", True)
+        else:
+            text = dialog.view_model.warning_text
+            assert (dialog.view_model.warning_state, dialog.view_model.warning_strong) == ("bad", True)
         assert "The microphone stopped sending sound" in text and "record again" in text
-        assert dialog.warning_label.styleSheet() == message_text_style("bad", strong=True)
         assert report.call_args.args[:2] == ("failed", ["recording_failed"])
         assert dialog.recording_timer.isActive() is False
         assert dialog._capture_session is None

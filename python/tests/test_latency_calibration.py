@@ -1,6 +1,7 @@
 """Tests for latency calibration analysis utilities."""
 
 import importlib.util
+import math
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -402,11 +403,12 @@ def test_latency_calibration_applies_measured_route_without_halving():
 _FLOAT_TOLERANCE = 1e-12
 
 
-def _probe_cases() -> list[tuple[int, float, float]]:
+def _probe_cases() -> list[tuple[float, float, float]]:
     return [
         (48_000, 80.0, 0.8), (44_100, 80.0, 0.8), (16_000, 80.0, 0.8), (96_000, 80.0, 0.8),
         (48_000, 5.0, 0.8), (48_000, 0.01, 0.8), (48_000, -10.0, 0.8), (48_000, 80.0, 0.0),
         (48_000, 80.0, -1.0), (48_000, 250.0, 1.0), (8_000, 30.0, 0.5),
+        (48_000.0, 80.0, 0.8), (44_100.5, 80.0, 0.8), (np.float64(22_050.25), 80.0, 0.8),
     ]
 
 
@@ -419,6 +421,27 @@ def test_native_probe_matches_the_numpy_implementation(case):
     assert actual.tobytes() == expected.tobytes()
 
 
+def _outcome(function: Any, *args: Any, **kwargs: Any) -> Any:
+    try:
+        return function(*args, **kwargs)
+    except Exception as error:  # noqa: BLE001 - the exception type is the outcome
+        return type(error)
+
+
+# int() refuses NaN with ValueError and infinity with OverflowError.
+@pytest.mark.parametrize(
+    "case",
+    [(math.nan, 80.0, 0.8), (math.inf, 80.0, 0.8), (48_000, math.inf, 0.8),
+     (48_000, math.nan, 0.8), (None, 80.0, 0.8), ("48000", 80.0, 0.8)],
+    ids=repr,
+)
+def test_native_probe_refuses_rates_like_the_numpy_implementation(case):
+    expected = _outcome(reference.generate_probe_signal, *case)
+
+    assert isinstance(expected, type)
+    assert _outcome(lat.generate_probe_signal, *case) is expected
+
+
 def _place(recording: np.ndarray, probe: np.ndarray, start: int, gain: float) -> None:
     recording[start : start + probe.size] += probe * gain
 
@@ -427,10 +450,10 @@ def _noisy(seed: int, sigma: float, length: int) -> np.ndarray:
     return np.random.default_rng(seed).normal(0.0, sigma, length).astype(np.float32)
 
 
-def _latency_cases() -> dict[str, tuple[Any, Any, int, dict[str, Any]]]:
+def _latency_cases() -> dict[str, tuple[Any, Any, Any, dict[str, Any]]]:
     rate = 48_000
     probe = reference.generate_probe_signal(rate)
-    cases: dict[str, tuple[Any, Any, int, dict[str, Any]]] = {}
+    cases: dict[str, tuple[Any, Any, Any, dict[str, Any]]] = {}
 
     offset = int(0.123 * rate)
     recording = _noisy(1337, 0.01, offset + probe.size + 2048)
@@ -523,6 +546,12 @@ def _latency_cases() -> dict[str, tuple[Any, Any, int, dict[str, Any]]]:
     cases["44k1-window"] = (probe_441, recording, rate_441, {
         "expected_playback_start_ms": 20.0, "expected_playback_jitter_ms": 15.0,
     })
+    # The removed Python used a float rate as given, without truncating it.
+    cases["float-rate"] = (probe, clean, 48_000.0, {})
+    cases["fractional-rate"] = (probe_441, recording, 44_100.5, {})
+    cases["numpy-float-rate"] = (probe_441, recording, np.float64(44_099.75), {
+        "expected_playback_start_ms": 20.0, "expected_playback_jitter_ms": 15.0,
+    })
     cases["negative-min-search"] = (probe, clean, rate, {"min_search_ms": -400.0})
     cases["window-outside-range"] = (
         probe, clean, rate, {"min_search_ms": 300.0, "max_search_ms": 300.0}
@@ -560,3 +589,38 @@ def test_native_latency_matches_the_numpy_implementation(name):
             ), field
         else:
             assert actual[field] == value, field
+
+
+# Routes, missing input and length refuse before the rate is used, and the
+# audio is converted only after the route and missing-input checks.
+@pytest.mark.parametrize(
+    "case",
+    [
+        ("nan-rate", None, None, math.nan, {}),
+        ("inf-rate", None, None, math.inf, {}),
+        ("none-rate", None, None, None, {}),
+        ("text-rate", None, None, "48000", {}),
+        ("none-rate-unsupported-route", None, None, None, {"route_kind": "input_to_output"}),
+        ("none-rate-missing-probe", "missing", None, None, {}),
+        ("none-rate-short-recording", None, "short", None, {}),
+        ("text-audio-unsupported-route", "abc", "abc", 48_000, {"route_kind": "x"}),
+        ("text-probe-missing-recording", "abc", "missing", 48_000, {}),
+        ("text-audio", "abc", None, 48_000, {}),
+    ],
+    ids=lambda case: case[0],
+)
+def test_native_latency_checks_arguments_in_the_numpy_order(case):
+    _name, probe, recording, sample_rate, kwargs = case
+    clean_probe, clean_recording, _rate, _kwargs = _LATENCY_CASES["clean-route"]
+    choices = {None: None, "missing": None, "short": clean_probe[:-1]}
+    probe = clean_probe if probe is None else choices.get(probe, probe)
+    recording = clean_recording if recording is None else choices.get(recording, recording)
+
+    with np.errstate(invalid="ignore", over="ignore"):
+        expected = _outcome(reference.analyze_latency, probe, recording, sample_rate, **kwargs)
+    actual = _outcome(lat.analyze_latency, probe, recording, sample_rate, **kwargs)
+
+    if isinstance(expected, type):
+        assert actual is expected
+    else:
+        assert asdict(actual) == asdict(expected)

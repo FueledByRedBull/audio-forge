@@ -1,13 +1,15 @@
 //! Offline analysis primitives shared by Auto-EQ and Voice Setup.
 //!
 //! These replaced NumPy implementations and repeat their arithmetic
-//! operation for operation: NumPy's pairwise summation, the sequential dot
-//! product its matmul uses for the strided polyphase operands, and the
-//! Cephes `i0` series behind `np.kaiser`. Results are bit-identical to the
-//! NumPy versions wherever the platform `sin` and `exp` match NumPy's.
+//! operation for operation: NumPy's pairwise summation and the sequential
+//! dot product its matmul uses for the strided polyphase operands. Values
+//! NumPy computed with its own transcendental functions (the resampling
+//! filter, the probe window) or its own sort (the peak priority order) come
+//! from NumPy through the callers, so results are bit-identical on any CPU.
 
-use std::f64::consts::PI;
 use std::ops::{AddAssign, Mul};
+
+use realfft::num_complex::Complex;
 
 pub mod headroom;
 pub mod latency;
@@ -18,7 +20,6 @@ mod tests;
 const SILERO_WINDOW_SAMPLES: i64 = 512;
 const SILERO_SAMPLE_RATE: i64 = 16_000;
 const VAD_ANALYSIS_SAMPLE_RATE: i64 = 48_000;
-const KAISER_BETA: f64 = 5.0;
 
 /// Python's `max(low, min(high, value))`: a NaN value yields `high`.
 pub fn clamp(value: f64, low: f64, high: f64) -> f64 {
@@ -90,6 +91,10 @@ pub fn band_mean(freqs: &[f64], values: &[f64], low: f64, high: f64) -> Result<f
 }
 
 /// A sample type the polyphase resampler runs in; it accumulates in its own precision.
+///
+/// Complex samples multiply the real taps as complex numbers with a zero
+/// imaginary part, as NumPy did, so a non-finite imaginary part reaches the
+/// real output.
 pub trait ResampleSample: Copy + Default + AddAssign + Mul<Output = Self> {
     fn from_f64(value: f64) -> Self;
 }
@@ -106,6 +111,18 @@ impl ResampleSample for f64 {
     }
 }
 
+impl ResampleSample for Complex<f32> {
+    fn from_f64(value: f64) -> Self {
+        Complex::new(value as f32, 0.0)
+    }
+}
+
+impl ResampleSample for Complex<f64> {
+    fn from_f64(value: f64) -> Self {
+        Complex::new(value, 0.0)
+    }
+}
+
 fn gcd(mut a: usize, mut b: usize) -> usize {
     while b != 0 {
         (a, b) = (b, a % b);
@@ -113,89 +130,37 @@ fn gcd(mut a: usize, mut b: usize) -> usize {
     a
 }
 
-/// Cephes Chebyshev coefficients for `exp(-x) I0(x)` on `[0, 8]` (NumPy's `_i0A`).
-const I0_A: [f64; 30] = [
-    -4.4153416464793395e-18,
-    3.3307945188222384e-17,
-    -2.431279846547955e-16,
-    1.715391285555133e-15,
-    -1.1685332877993451e-14,
-    7.676185498604936e-14,
-    -4.856446783111929e-13,
-    2.95505266312964e-12,
-    -1.726826291441556e-11,
-    9.675809035373237e-11,
-    -5.189795601635263e-10,
-    2.6598237246823866e-09,
-    -1.300025009986248e-08,
-    6.046995022541919e-08,
-    -2.670793853940612e-07,
-    1.1173875391201037e-06,
-    -4.4167383584587505e-06,
-    1.6448448070728896e-05,
-    -5.754195010082104e-05,
-    0.00018850288509584165,
-    -0.0005763755745385824,
-    0.0016394756169413357,
-    -0.004324309995050576,
-    0.010546460394594998,
-    -0.02373741480589947,
-    0.04930528423967071,
-    -0.09490109704804764,
-    0.17162090152220877,
-    -0.3046826723431984,
-    0.6767952744094761,
-];
-
-/// `np.i0` for `0 <= x <= 8`, the only range a beta-5 Kaiser window reaches.
-fn bessel_i0_up_to_8(x: f64) -> f64 {
-    let t = x / 2.0 - 2.0;
-    let mut b0 = I0_A[0];
-    let mut b1 = 0.0;
-    let mut b2 = 0.0;
-    for coefficient in &I0_A[1..] {
-        b2 = b1;
-        b1 = b0;
-        b0 = t * b1 - b2 + coefficient;
-    }
-    x.exp() * (0.5 * (b0 - b2))
-}
-
-/// The 10-lobe Kaiser-windowed sinc SciPy's `resample_poly` designs, scaled by `up`.
-fn kaiser_sinc_taps(half_length: usize, max_rate: usize, up: usize) -> Vec<f64> {
-    let count = 2 * half_length + 1;
-    let cutoff = 1.0 / max_rate as f64;
-    let alpha = (count as f64 - 1.0) / 2.0;
-    let window_norm = bessel_i0_up_to_8(KAISER_BETA);
-    let mut taps: Vec<f64> = (0..count)
-        .map(|index| {
-            let x = PI * (cutoff * (index as f64 - half_length as f64));
-            let y = if x != 0.0 { x } else { f64::EPSILON };
-            let ratio = (index as f64 - alpha) / alpha;
-            let window =
-                bessel_i0_up_to_8(KAISER_BETA * (1.0 - ratio * ratio).sqrt()) / window_norm;
-            cutoff * (y.sin() / y) * window
-        })
-        .collect();
-    let sum = numpy_sum(&taps);
-    for tap in &mut taps {
-        *tap = *tap / sum * up as f64;
-    }
-    taps
-}
-
-/// Zero-phase, zero-padded Kaiser resampling with SciPy `resample_poly`'s
-/// default filter and centered output.
-pub fn resample_poly<T: ResampleSample>(
-    samples: &[T],
-    up: usize,
-    down: usize,
-) -> Result<Vec<T>, &'static str> {
+/// `up` and `down` reduced by their greatest common divisor.
+pub fn reduced_rates(up: usize, down: usize) -> Result<(usize, usize), &'static str> {
     if up < 1 || down < 1 {
         return Err("up and down must be positive integers");
     }
     let divisor = gcd(up, down);
-    let (up, down) = (up / divisor, down / divisor);
+    Ok((up / divisor, down / divisor))
+}
+
+/// How many taps the default filter for reduced rates `up`/`down` has.
+pub fn resample_tap_count(up: usize, down: usize) -> usize {
+    2 * 10 * up.max(down) + 1
+}
+
+/// Zero-phase, zero-padded resampling by reduced rates `up`/`down` with
+/// SciPy `resample_poly`'s centered output.
+///
+/// `taps` is the 10-lobe Kaiser-windowed sinc SciPy designs, normalized and
+/// scaled by `up`, as float64; it is rounded to the sample type here.
+pub fn resample_poly<T: ResampleSample>(
+    samples: &[T],
+    up: usize,
+    down: usize,
+    taps: &[f64],
+) -> Result<Vec<T>, &'static str> {
+    if up < 1 || down < 1 || gcd(up, down) != 1 {
+        return Err("up and down must be positive, reduced rates");
+    }
+    if taps.len() != resample_tap_count(up, down) {
+        return Err("the filter must have 20 * max(up, down) + 1 taps");
+    }
     if up == 1 && down == 1 {
         return Ok(samples.to_vec());
     }
@@ -203,16 +168,12 @@ pub fn resample_poly<T: ResampleSample>(
         return Ok(Vec::new());
     }
 
-    let max_rate = up.max(down);
-    let half_length = 10 * max_rate;
+    let half_length = 10 * up.max(down);
     let pad_before = down - half_length % down;
     let trim_before = (half_length + pad_before) / down;
-    let mut taps = vec![T::default(); pad_before];
-    taps.extend(
-        kaiser_sinc_taps(half_length, max_rate, up)
-            .into_iter()
-            .map(T::from_f64),
-    );
+    let mut padded_taps = vec![T::default(); pad_before];
+    padded_taps.extend(taps.iter().copied().map(T::from_f64));
+    let taps = padded_taps;
 
     let output_size = (samples.len() * up).div_ceil(down);
     let terms = taps.len().div_ceil(up);
@@ -241,28 +202,9 @@ pub fn resample_poly<T: ResampleSample>(
     Ok(output)
 }
 
-/// NumPy's ascending sort order for floats: NaN last.
-fn ascending_nan_last(a: f64, b: f64) -> std::cmp::Ordering {
-    match (a.is_nan(), b.is_nan()) {
-        (false, false) => a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal),
-        (a_nan, b_nan) => a_nan.cmp(&b_nan),
-    }
-}
-
-/// 1-D local maxima with SciPy `find_peaks`' distance and prominence semantics.
-///
-/// Peaks of equal height are ranked later-index first, the order NumPy's
-/// argsort gives them for small inputs; NumPy's own order for larger tied
-/// inputs depends on its SIMD sort.
-pub fn find_peaks_distance_prominence(
-    values: &[f64],
-    distance: usize,
-    prominence: f64,
-) -> Result<Vec<usize>, &'static str> {
-    if distance < 1 || prominence < 0.0 {
-        return Err("distance must be positive and prominence nonnegative");
-    }
-
+/// Local maxima of `values`, a plateau counting once at its middle (left of
+/// center for an even plateau), as SciPy's `find_peaks` finds them.
+pub fn peak_candidates(values: &[f64]) -> Vec<usize> {
     let mut candidates = Vec::new();
     let mut index = 1;
     while index + 1 < values.len() {
@@ -279,19 +221,43 @@ pub fn find_peaks_distance_prominence(
             index += 1;
         }
     }
+    candidates
+}
 
-    let mut priority: Vec<usize> = (0..candidates.len()).collect();
-    priority.sort_by(|&a, &b| {
-        ascending_nan_last(values[candidates[a]], values[candidates[b]]).then(a.cmp(&b))
-    });
-    priority.reverse();
+/// The `candidates` that SciPy `find_peaks`' distance and prominence rules keep.
+///
+/// `ascending_order` is `np.argsort` of the candidates' heights: higher
+/// peaks claim their neighbourhood first, and among equal heights NumPy's
+/// sort decides, so the caller passes NumPy's order rather than one sorted
+/// here.
+pub fn select_peaks(
+    values: &[f64],
+    candidates: &[usize],
+    ascending_order: &[usize],
+    distance: f64,
+    prominence: f64,
+) -> Result<Vec<usize>, &'static str> {
+    if distance < 1.0 || prominence < 0.0 {
+        return Err("distance must be positive and prominence nonnegative");
+    }
+    let mut seen = vec![false; candidates.len()];
+    if ascending_order.len() != candidates.len()
+        || ascending_order
+            .iter()
+            .any(|&index| index >= candidates.len() || std::mem::replace(&mut seen[index], true))
+        || candidates.iter().any(|&peak| peak >= values.len())
+    {
+        return Err("the priority order must be a permutation of the candidates");
+    }
+
+    let priority: Vec<usize> = ascending_order.iter().rev().copied().collect();
     let mut keep = vec![true; candidates.len()];
     for (order_index, &candidate) in priority.iter().enumerate() {
         if !keep[candidate] {
             continue;
         }
         if priority[..order_index].iter().any(|&higher| {
-            keep[higher] && candidates[candidate].abs_diff(candidates[higher]) < distance
+            keep[higher] && (candidates[candidate].abs_diff(candidates[higher]) as f64) < distance
         }) {
             keep[candidate] = false;
         }
@@ -304,10 +270,10 @@ pub fn find_peaks_distance_prominence(
         )
     };
     Ok(candidates
-        .into_iter()
+        .iter()
         .zip(keep)
         .filter(|(_, kept)| *kept)
-        .map(|(peak, _)| peak)
+        .map(|(&peak, _)| peak)
         .filter(|&peak| {
             let height = values[peak];
             let mut left = peak;
@@ -330,38 +296,54 @@ pub fn find_peaks_distance_prominence(
         .collect())
 }
 
-/// Per position, the newest posterior whose 32 ms window ended by it.
+/// Whether `map_causal_vad_probabilities` has posteriors to map.
+fn usable_posteriors(probabilities: &[f64], positions: &[i64]) -> bool {
+    !probabilities.is_empty()
+        && !positions.is_empty()
+        && probabilities
+            .iter()
+            .all(|probability| probability.is_finite())
+}
+
+/// Per position, the newest posterior whose 32 ms window ended by it, or
+/// `None` without finite posteriors or positions.
 ///
 /// To control processing, pass each block's first sample: the live loop
 /// reads the VAD before the worker can see that block, so a window ending
 /// inside a block cannot control it. Offline analysis that only labels
 /// frames may pass frame ends.
-pub fn map_causal_vad_probabilities(
+///
+/// `sample_rate` gives the whole rate (the removed Python's `int()` of a
+/// positive rate) and is called only when there is something to map, where
+/// the removed Python converted it. A zero rate maps every position to 0,
+/// as NumPy's integer division by zero did.
+pub fn map_causal_vad_probabilities<E>(
     probabilities: &[f64],
     positions: &[i64],
-    sample_rate: i64,
-) -> Option<Vec<f32>> {
-    if sample_rate <= 0
-        || probabilities.is_empty()
-        || positions.is_empty()
-        || probabilities
-            .iter()
-            .any(|probability| !probability.is_finite())
-    {
-        return None;
+    sample_rate: impl FnOnce() -> Result<i64, E>,
+) -> Result<Option<Vec<f32>>, E> {
+    if !usable_posteriors(probabilities, positions) {
+        return Ok(None);
+    }
+    let sample_rate = sample_rate()?;
+    if sample_rate < 0 {
+        return Ok(None);
     }
     // Integer time keeps the model's cadence: rounding a 44.1 kHz window to
     // 1412 samples accumulates a sample of drift every window.
-    let window_span = sample_rate * SILERO_WINDOW_SAMPLES;
+    let window_span = i128::from(sample_rate) * i128::from(SILERO_WINDOW_SAMPLES);
     let last = probabilities.len() - 1;
-    Some(
+    Ok(Some(
         positions
             .iter()
             .map(|&position| {
-                let completed = position
-                    .wrapping_mul(SILERO_SAMPLE_RATE)
-                    .div_euclid(window_span)
-                    - 1;
+                // NumPy multiplied in int64, wrapping.
+                let scaled = i128::from(position.wrapping_mul(SILERO_SAMPLE_RATE));
+                let completed = if window_span == 0 {
+                    -1
+                } else {
+                    scaled.div_euclid(window_span) - 1
+                };
                 match usize::try_from(completed) {
                     Ok(completed) => {
                         let probability = probabilities[completed.min(last)];
@@ -372,42 +354,44 @@ pub fn map_causal_vad_probabilities(
                 }
             })
             .collect(),
-    )
+    ))
 }
 
 /// Silero posteriors for an offline capture, or `None` when the analysis
 /// must fall back to energy.
 ///
-/// Rates without whole 32 ms windows are resampled to 48 kHz first, and
-/// `pre_gain` (at least 0.1) is applied before inference, matching the live
-/// model's input. `infer` runs the model on the prepared samples and rate.
-pub fn offline_vad_probabilities<E>(
+/// Rates without whole 32 ms windows are resampled to 48 kHz first, with
+/// the filter `design_taps` returns for the reduced rates, and `pre_gain`
+/// (at least 0.1) is applied before inference, matching the live model's
+/// input. `infer` runs the model on the prepared samples and rate. A
+/// failure to design the filter is returned, not a fallback.
+pub fn offline_vad_probabilities<E, F>(
     audio: &[f32],
     sample_rate: i64,
     pre_gain: f64,
+    design_taps: impl FnOnce(usize, usize) -> Result<Vec<f64>, F>,
     infer: impl FnOnce(&[f32], u32) -> Result<Vec<f32>, E>,
-) -> Option<Vec<f64>> {
+) -> Result<Option<Vec<f64>>, F> {
     if !pre_gain.is_finite() || pre_gain <= 0.0 || audio.is_empty() || sample_rate <= 0 {
-        return None;
+        return Ok(None);
     }
     let gain = pre_gain.max(0.1);
-    let (mut samples, inference_rate) =
-        if (sample_rate * SILERO_WINDOW_SAMPLES) % SILERO_SAMPLE_RATE != 0 {
-            let divisor = gcd(sample_rate as usize, VAD_ANALYSIS_SAMPLE_RATE as usize);
-            let widened: Vec<f64> = audio.iter().copied().map(f64::from).collect();
-            let resampled = resample_poly(
-                &widened,
-                VAD_ANALYSIS_SAMPLE_RATE as usize / divisor,
-                sample_rate as usize / divisor,
-            )
-            .ok()?;
-            (
-                resampled.into_iter().map(|sample| sample as f32).collect(),
-                VAD_ANALYSIS_SAMPLE_RATE,
-            )
-        } else {
-            (audio.to_vec(), sample_rate)
-        };
+    let window_span = i128::from(sample_rate) * i128::from(SILERO_WINDOW_SAMPLES);
+    let (mut samples, inference_rate) = if window_span % i128::from(SILERO_SAMPLE_RATE) != 0 {
+        let rate = sample_rate as usize;
+        let divisor = gcd(rate, VAD_ANALYSIS_SAMPLE_RATE as usize);
+        let (up, down) = (VAD_ANALYSIS_SAMPLE_RATE as usize / divisor, rate / divisor);
+        let taps = design_taps(up, down)?;
+        let widened: Vec<f64> = audio.iter().copied().map(f64::from).collect();
+        let resampled = resample_poly(&widened, up, down, &taps)
+            .expect("design_taps returns the filter for the reduced rates");
+        (
+            resampled.into_iter().map(|sample| sample as f32).collect(),
+            VAD_ANALYSIS_SAMPLE_RATE,
+        )
+    } else {
+        (audio.to_vec(), sample_rate)
+    };
     if gain != 1.0 {
         let gain = gain as f32;
         for sample in &mut samples {
@@ -415,14 +399,19 @@ pub fn offline_vad_probabilities<E>(
         }
     }
 
-    let probabilities = infer(&samples, u32::try_from(inference_rate).ok()?).ok()?;
+    let Ok(inference_rate) = u32::try_from(inference_rate) else {
+        return Ok(None);
+    };
+    let Ok(probabilities) = infer(&samples, inference_rate) else {
+        return Ok(None);
+    };
     if probabilities.is_empty() || probabilities.iter().any(|value| !value.is_finite()) {
-        return None;
+        return Ok(None);
     }
-    Some(
+    Ok(Some(
         probabilities
             .into_iter()
             .map(|probability| f64::from(probability).clamp(0.0, 1.0))
             .collect(),
-    )
+    ))
 }

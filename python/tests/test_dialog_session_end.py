@@ -141,7 +141,7 @@ def test_voice_setup_still_refuses_a_normal_close_when_its_old_settings_cannot_b
     voice.show()
     monkeypatch.setattr(voice, "_restore_pre_setup_snapshot", lambda: False)
     assert not voice.close() and voice.isVisible()
-    assert "Close blocked" in voice.phase_label.text()
+    assert "Close blocked" in voice.view_model.shown["phaseText"]
 
 
 @pytest.mark.parametrize("ending", [True, False], ids=["session-ending", "normal"])

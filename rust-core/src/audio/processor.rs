@@ -17,6 +17,21 @@
 #![allow(clippy::useless_conversion)] // PyO3 proc-macro wrappers trigger false positives.
 
 use crate::audio::input::TARGET_SAMPLE_RATE;
+use crate::config_ranges as ranges;
+use crate::config_ranges::{
+    COMPRESSOR_ATTACK_MAX_MS, COMPRESSOR_ATTACK_MIN_MS, COMPRESSOR_BASE_RELEASE_MAX_MS,
+    COMPRESSOR_BASE_RELEASE_MIN_MS, COMPRESSOR_MAKEUP_MAX_DB, COMPRESSOR_MAKEUP_MIN_DB,
+    COMPRESSOR_RATIO_MAX, COMPRESSOR_RATIO_MIN, COMPRESSOR_RELEASE_MAX_MS,
+    COMPRESSOR_RELEASE_MIN_MS, COMPRESSOR_TARGET_LUFS_MAX, COMPRESSOR_TARGET_LUFS_MIN,
+    COMPRESSOR_THRESHOLD_MAX_DB, COMPRESSOR_THRESHOLD_MIN_DB, DEESSER_ATTACK_MAX_MS,
+    DEESSER_ATTACK_MIN_MS, DEESSER_AUTO_AMOUNT_MAX, DEESSER_AUTO_AMOUNT_MIN,
+    DEESSER_HIGH_CUT_MAX_HZ, DEESSER_HIGH_CUT_MIN_HZ, DEESSER_LOW_CUT_MAX_HZ,
+    DEESSER_LOW_CUT_MIN_HZ, DEESSER_MAX_REDUCTION_MAX_DB, DEESSER_MAX_REDUCTION_MIN_DB,
+    DEESSER_RATIO_MAX, DEESSER_RATIO_MIN, DEESSER_RELEASE_MAX_MS, DEESSER_RELEASE_MIN_MS,
+    DEESSER_THRESHOLD_MAX_DB, DEESSER_THRESHOLD_MIN_DB, GATE_ATTACK_MAX_MS, GATE_ATTACK_MIN_MS,
+    GATE_RELEASE_MAX_MS, GATE_RELEASE_MIN_MS, GATE_THRESHOLD_MAX_DB, GATE_THRESHOLD_MIN_DB,
+    LIMITER_CEILING_MAX_DB, LIMITER_CEILING_MIN_DB, LIMITER_RELEASE_MAX_MS, LIMITER_RELEASE_MIN_MS,
+};
 use crate::dsp::eq::{EqBandConfig, NUM_BANDS};
 use crate::dsp::rnnoise::RNNOISE_FRAME_SIZE;
 use lifecycle::{ActiveDevices, Streams};
@@ -105,69 +120,32 @@ const MAX_OUTPUT_PROBE_SECONDS: usize = 2;
 const INPUT_DC_BLOCK_COEFF: f32 = 0.995;
 const INPUT_PREFILTER_HZ: f64 = 80.0;
 const INPUT_PREFILTER_Q: f64 = 0.707;
-const GATE_THRESHOLD_MIN_DB: f64 = -80.0;
-const GATE_THRESHOLD_MAX_DB: f64 = -10.0;
-const GATE_ATTACK_MIN_MS: f64 = 0.1;
-const GATE_ATTACK_MAX_MS: f64 = 100.0;
-const GATE_RELEASE_MIN_MS: f64 = 10.0;
-const GATE_RELEASE_MAX_MS: f64 = 1000.0;
-#[cfg(feature = "vad")]
-const VAD_THRESHOLD_MIN: f32 = 0.3;
-#[cfg(feature = "vad")]
-const VAD_THRESHOLD_MAX: f32 = 0.7;
-#[cfg(feature = "vad")]
-const VAD_HOLD_MIN_MS: f32 = 0.0;
-#[cfg(feature = "vad")]
-const VAD_HOLD_MAX_MS: f32 = 500.0;
-#[cfg(feature = "vad")]
-const VAD_PRE_GAIN_MIN: f32 = 1.0;
-#[cfg(feature = "vad")]
-const VAD_PRE_GAIN_MAX: f32 = 10.0;
 #[cfg(feature = "vad")]
 const VAD_WORKER_MAX_BUFFER_SAMPLES: usize = 48_000;
 #[cfg(feature = "vad")]
 const VAD_PROBABILITY_STALE_US: u64 = 500_000;
-#[cfg(feature = "vad")]
-const GATE_MARGIN_MIN_DB: f32 = 0.0;
-#[cfg(feature = "vad")]
-const GATE_MARGIN_MAX_DB: f32 = 20.0;
-const RNNOISE_STRENGTH_MIN: f32 = 0.0;
-const RNNOISE_STRENGTH_MAX: f32 = 1.0;
-const DEESSER_AUTO_AMOUNT_MIN: f64 = 0.0;
-const DEESSER_AUTO_AMOUNT_MAX: f64 = 1.0;
-const DEESSER_LOW_CUT_MIN_HZ: f64 = 2000.0;
-const DEESSER_LOW_CUT_MAX_HZ: f64 = 12000.0;
-const DEESSER_HIGH_CUT_MIN_HZ: f64 = 2200.0;
-const DEESSER_HIGH_CUT_MAX_HZ: f64 = 16000.0;
 const DEESSER_MIN_BANDWIDTH_HZ: f64 = 200.0;
-const DEESSER_THRESHOLD_MIN_DB: f64 = -60.0;
-const DEESSER_THRESHOLD_MAX_DB: f64 = -6.0;
-const DEESSER_RATIO_MIN: f64 = 1.0;
-const DEESSER_RATIO_MAX: f64 = 20.0;
-const DEESSER_ATTACK_MIN_MS: f64 = 0.1;
-const DEESSER_ATTACK_MAX_MS: f64 = 50.0;
-const DEESSER_RELEASE_MIN_MS: f64 = 5.0;
-const DEESSER_RELEASE_MAX_MS: f64 = 500.0;
-const DEESSER_MAX_REDUCTION_MIN_DB: f64 = 0.0;
-const DEESSER_MAX_REDUCTION_MAX_DB: f64 = 24.0;
-const COMPRESSOR_THRESHOLD_MIN_DB: f64 = -60.0;
-const COMPRESSOR_THRESHOLD_MAX_DB: f64 = 0.0;
-const COMPRESSOR_RATIO_MIN: f64 = 1.0;
-const COMPRESSOR_RATIO_MAX: f64 = 20.0;
-const COMPRESSOR_ATTACK_MIN_MS: f64 = 0.1;
-const COMPRESSOR_ATTACK_MAX_MS: f64 = 100.0;
-const COMPRESSOR_RELEASE_MIN_MS: f64 = 10.0;
-const COMPRESSOR_RELEASE_MAX_MS: f64 = 1000.0;
-const COMPRESSOR_BASE_RELEASE_MIN_MS: f64 = 20.0;
-const COMPRESSOR_BASE_RELEASE_MAX_MS: f64 = 200.0;
-const COMPRESSOR_MAKEUP_MIN_DB: f64 = 0.0;
-const COMPRESSOR_MAKEUP_MAX_DB: f64 = 24.0;
-const COMPRESSOR_TARGET_LUFS_MIN: f64 = -24.0;
-const COMPRESSOR_TARGET_LUFS_MAX: f64 = -12.0;
-const LIMITER_CEILING_MIN_DB: f64 = -12.0;
-const LIMITER_CEILING_MAX_DB: f64 = 0.0;
-const LIMITER_RELEASE_MIN_MS: f64 = 10.0;
-const LIMITER_RELEASE_MAX_MS: f64 = 500.0;
+
+// The live setters clamp to the table Python validates presets against
+// (`config_ranges`); the values stored in single precision are cast from it.
+#[cfg(feature = "vad")]
+const VAD_THRESHOLD_MIN: f32 = ranges::VAD_THRESHOLD_MIN as f32;
+#[cfg(feature = "vad")]
+const VAD_THRESHOLD_MAX: f32 = ranges::VAD_THRESHOLD_MAX as f32;
+#[cfg(feature = "vad")]
+const VAD_HOLD_MIN_MS: f32 = ranges::VAD_HOLD_MIN_MS as f32;
+#[cfg(feature = "vad")]
+const VAD_HOLD_MAX_MS: f32 = ranges::VAD_HOLD_MAX_MS as f32;
+#[cfg(feature = "vad")]
+const VAD_PRE_GAIN_MIN: f32 = ranges::VAD_PRE_GAIN_MIN as f32;
+#[cfg(feature = "vad")]
+const VAD_PRE_GAIN_MAX: f32 = ranges::VAD_PRE_GAIN_MAX as f32;
+#[cfg(feature = "vad")]
+const GATE_MARGIN_MIN_DB: f32 = ranges::GATE_MARGIN_MIN_DB as f32;
+#[cfg(feature = "vad")]
+const GATE_MARGIN_MAX_DB: f32 = ranges::GATE_MARGIN_MAX_DB as f32;
+const RNNOISE_STRENGTH_MIN: f32 = ranges::RNNOISE_STRENGTH_MIN as f32;
+const RNNOISE_STRENGTH_MAX: f32 = ranges::RNNOISE_STRENGTH_MAX as f32;
 
 mod block_processor;
 mod control;

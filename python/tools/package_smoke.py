@@ -25,12 +25,14 @@ REQUIRED_BUNDLE_FILES = (
     "_internal/PySide6/Qt6Multimedia.dll",
     # Listening comparison sends raw PCM through QAudioSink on Windows.
     "_internal/PySide6/plugins/multimedia/windowsmediaplugin.dll",
-    # The main window, the setup dialogs and the listening comparison are Qt Quick scenes
+    # The main window, the setup dialogs, Auto-EQ, Voice Setup and the listening comparison are Qt Quick scenes
     # using the Basic controls style; the shared types beside them need their qmldir.
     "_internal/mic_eq/ui/qml/Main.qml",
     "_internal/mic_eq/ui/qml/LatencyCalibration.qml",
     "_internal/mic_eq/ui/qml/FirstRunSetup.qml",
     "_internal/mic_eq/ui/qml/ListeningComparison.qml",
+    "_internal/mic_eq/ui/qml/AutoEqCalibration.qml",
+    "_internal/mic_eq/ui/qml/VoiceSetup.qml",
     "_internal/mic_eq/ui/qml/RecordingProgress.qml",
     "_internal/mic_eq/ui/qml/qmldir",
     "_internal/mic_eq/ui/qml/Look.qml",
@@ -41,6 +43,7 @@ REQUIRED_BUNDLE_FILES = (
     "_internal/mic_eq/ui/qml/KeyButton.qml",
     "_internal/mic_eq/ui/qml/ModelButton.qml",
     "_internal/mic_eq/ui/qml/MutedText.qml",
+    "_internal/mic_eq/ui/qml/NumberBox.qml",
     "_internal/mic_eq/ui/qml/ProgressTrack.qml",
     "_internal/mic_eq/ui/qml/PushButton.qml",
     "_internal/mic_eq/ui/qml/ScrollPage.qml",

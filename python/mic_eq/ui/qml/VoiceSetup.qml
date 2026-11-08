@@ -73,10 +73,23 @@ Rectangle {
         Accessible.ignored: true
     }
 
-    // A button that hides or disables itself loses the keyboard; pass it on to the page, as a dialog does.
+    // A control that hides or disables itself loses the keyboard; pass it on to the page, as a dialog does.
+    component HandOff: Connections {
+        required property Item item
+        target: item
+        function onActiveFocusChanged() {
+            if (!item.activeFocus && !item.enabled)
+                scrollPage.focusPage()
+        }
+        function onVisibleChanged() {
+            if (!item.visible && item.activeFocus)
+                scrollPage.focusPage()
+        }
+    }
+
     component ActionButton: PushButton {
-        onActiveFocusChanged: if (!activeFocus && !enabled) scrollPage.focusPage()
-        onVisibleChanged: if (!visible && activeFocus) scrollPage.focusPage()
+        id: button
+        HandOff { item: button }
     }
 
     // One list: its caption above it, as the form wrapped every row.
@@ -99,8 +112,7 @@ Rectangle {
             Keys.onReturnPressed: event => root.activateUnlessChoosing(event, picker)
             Keys.onEnterPressed: event => root.activateUnlessChoosing(event, picker)
             // Enter here can start the run, which locks the pickers and hides their card.
-            onActiveFocusChanged: if (!activeFocus && !enabled) scrollPage.focusPage()
-            onVisibleChanged: if (!visible && activeFocus) scrollPage.focusPage()
+            HandOff { item: picker }
             Layout.fillWidth: true
             Layout.minimumWidth: 120
         }
@@ -124,8 +136,7 @@ Rectangle {
             number: root.vm.numbers[numberField.spec.key]
             onModified: value => root.vm.setNumber(numberField.spec.key, value)
             // Enter here can start the run, which locks the field and hides its card.
-            onActiveFocusChanged: if (!activeFocus && !enabled) scrollPage.focusPage()
-            onVisibleChanged: if (!visible && activeFocus) scrollPage.focusPage()
+            HandOff { item: box }
             Layout.fillWidth: true
             Layout.minimumWidth: 120
             Accessible.description: numberField.spec.tip

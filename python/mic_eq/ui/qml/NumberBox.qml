@@ -12,16 +12,14 @@ SpinBox {
     property string label
     property real low: 0
     property real high: 100
-    property real step: 1
     property int decimals: 2
     property string suffix
     property real number: 0
     signal modified(real number)
     readonly property real factor: Math.pow(10, decimals)
-    readonly property alias input: field
     from: Math.round(low * factor)
     to: Math.round(high * factor)
-    stepSize: Math.round(step * factor)
+    stepSize: factor
     editable: true
     opacity: enabled ? 1 : 0.45
     implicitHeight: 32

@@ -171,7 +171,8 @@ def elf_search_paths(path: Path) -> list[tuple[str, str]]:
     """The DT_RPATH and DT_RUNPATH strings of the ELF file ``path`` as (tag, value); none for other files."""
     with path.open("rb") as handle:
         ident = handle.read(16)
-        if len(ident) < 16 or ident[:4] != b"\x7fELF":
+        # The ELF magic number, not an encoded payload.
+        if len(ident) < 16 or ident[:4] != b"\x7fELF":  # nosemgrep: generic-obfuscation-stringified-binaries
             return []
         order = "<" if ident[5] == 1 else ">"
         if ident[4] == 2:

@@ -10,10 +10,10 @@ use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 
 use crate::catch_panic;
 
-pub const HEADROOM_TARGET_DB: f64 = 1.0;
-pub const LIMITER_GAIN_REDUCTION_WARN_DB: f64 = 1.0;
-pub const TRUE_PEAK_GAIN_REDUCTION_WARN_DB: f64 = 0.5;
-pub const NATIVE_SAFETY_METRICS: [&str; 3] = [
+pub(crate) const HEADROOM_TARGET_DB: f64 = 1.0;
+pub(crate) const LIMITER_GAIN_REDUCTION_WARN_DB: f64 = 1.0;
+pub(crate) const TRUE_PEAK_GAIN_REDUCTION_WARN_DB: f64 = 0.5;
+pub(crate) const NATIVE_SAFETY_METRICS: [&str; 3] = [
     "pre_limiter_true_peak_headroom_db",
     "limiter_gain_reduction_db",
     "true_peak_limiter_gain_reduction_db",
@@ -27,7 +27,7 @@ type Band = (f64, f64, f64);
 /// fits at <= 0. The readings must be finite: the binding returns infinity
 /// for any other reading before calling this. On a tie the earlier term wins,
 /// as with Python's `max`, so a signed zero comes out as it did.
-pub fn headroom_excess_db(
+pub(crate) fn headroom_excess_db(
     pre_limiter_true_peak_headroom_db: f64,
     limiter_gain_reduction_db: f64,
     true_peak_limiter_gain_reduction_db: f64,
@@ -137,7 +137,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(is_headroom_safe, m)?)?;
     m.add_function(wrap_pyfunction!(safety_metric_problems, m)?)?;
     m.add_function(wrap_pyfunction!(flatten_chain_settings, m)?)?;
-    m.add_function(wrap_pyfunction!(legacy_eq_inputs, m)?)?;
+    m.add_function(wrap_pyfunction!(band_array_eq_inputs, m)?)?;
     Ok(())
 }
 
@@ -404,7 +404,10 @@ pub(crate) fn flatten_chain_settings<'py>(
     })
 }
 
-fn legacy_list<'py>(eq_settings: &Bound<'py, PyAny>, key: &str) -> PyResult<Bound<'py, PyList>> {
+fn band_array_list<'py>(
+    eq_settings: &Bound<'py, PyAny>,
+    key: &str,
+) -> PyResult<Bound<'py, PyList>> {
     let values = get(eq_settings, key)?;
     let values = if values.is_truthy()? {
         values
@@ -419,13 +422,13 @@ fn legacy_list<'py>(eq_settings: &Bound<'py, PyAny>, key: &str) -> PyResult<Boun
 }
 
 /// The bands and the enabled flag of an Auto-EQ result that carries the
-/// legacy `band_freqs`, `band_gains` and `band_qs` arrays.
+/// `band_freqs`, `band_gains` and `band_qs` arrays.
 #[pyfunction]
-pub(crate) fn legacy_eq_inputs(eq_settings: &Bound<'_, PyAny>) -> PyResult<(Vec<Band>, bool)> {
+pub(crate) fn band_array_eq_inputs(eq_settings: &Bound<'_, PyAny>) -> PyResult<(Vec<Band>, bool)> {
     catch_panic(|| {
-        let freqs = legacy_list(eq_settings, "band_freqs")?;
-        let gains = legacy_list(eq_settings, "band_gains")?;
-        let qs = legacy_list(eq_settings, "band_qs")?;
+        let freqs = band_array_list(eq_settings, "band_freqs")?;
+        let gains = band_array_list(eq_settings, "band_gains")?;
+        let qs = band_array_list(eq_settings, "band_qs")?;
         if !(freqs.len() == gains.len() && gains.len() == qs.len() && qs.len() == NUM_EQ_BANDS) {
             return Err(PyValueError::new_err(
                 "Auto-EQ settings must contain 10 frequencies, gains, and Q values",

@@ -359,7 +359,7 @@ def flatten_chain_settings(chain_settings: Mapping[str, Any] | None = None) -> d
     integer raises ValueError. Flat native-boundary settings override the nested ones.
     """
     ...
-def legacy_eq_inputs(
+def band_array_eq_inputs(
     eq_settings: Mapping[str, Any],
 ) -> tuple[list[tuple[float, float, float]], bool]:
     """(bands, enabled) from band_freqs, band_gains and band_qs; ValueError unless 10 finite each."""

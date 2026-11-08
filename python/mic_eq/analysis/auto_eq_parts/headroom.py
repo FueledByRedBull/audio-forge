@@ -17,7 +17,7 @@ from ...mic_eq_core import (
     flatten_chain_settings,
     headroom_excess_db,
     is_headroom_safe,
-    legacy_eq_inputs,
+    band_array_eq_inputs,
     safety_metric_problems,
     simulate_auto_eq_chain,
 )
@@ -111,7 +111,7 @@ def simulate_candidate_chain(
                 band.to_native() for band in typed.correction_bands
             ]
     else:
-        bands, flat_settings["eq_enabled"] = legacy_eq_inputs(eq_settings)
+        bands, flat_settings["eq_enabled"] = band_array_eq_inputs(eq_settings)
     native, native_failure = _native_simulate(
         audio_data, sample_rate, bands, flat_settings
     )

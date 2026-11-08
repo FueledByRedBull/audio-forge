@@ -189,8 +189,8 @@ def _bands_from_settings(eq_settings: dict[str, Any]) -> list[tuple[float, float
         for freq, gain, q in zip(freqs, gains, qs)
     ]
 
-def _legacy_eq_inputs(eq_settings: dict[str, Any]) -> tuple[list[tuple[float, float, float]], bool]:
-    """The legacy branch of simulate_candidate_chain: the bands and the enabled flag."""
+def _band_array_eq_inputs(eq_settings: dict[str, Any]) -> tuple[list[tuple[float, float, float]], bool]:
+    """The band-array branch of simulate_candidate_chain: the bands and the enabled flag."""
     bands = _bands_from_settings(eq_settings)
     return bands, _as_bool(eq_settings.get("enabled", eq_settings.get("eq_enabled")), True)
 

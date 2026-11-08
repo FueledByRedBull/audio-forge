@@ -200,8 +200,8 @@ def test_the_flat_dict_has_the_documented_defaults_in_order():
     assert next(iter(native.flatten_chain_settings(None))) == "return_output_audio"
 
 
-# The EQ half of simulate_candidate_chain's legacy branch.
-def _legacy_eq_cases() -> list[dict[str, Any]]:
+# The EQ half of simulate_candidate_chain's band-array branch.
+def _band_array_eq_cases() -> list[dict[str, Any]]:
     freqs = [80.0, 160.0, 320.0, 640.0, 1280.0, 2500.0, 5000.0, 8000.0, 12000.0, 16000.0]
     base = {"band_freqs": freqs, "band_gains": [1.0] * 10, "band_qs": [1.41] * 10}
     cases: list[dict[str, Any]] = [
@@ -218,11 +218,11 @@ def _legacy_eq_cases() -> list[dict[str, Any]]:
     return cases
 
 
-@pytest.mark.parametrize("eq_settings", _legacy_eq_cases(), ids=lambda case: _id(case)[:60])
-def test_legacy_eq_settings_are_read_like_the_python_code(eq_settings):
+@pytest.mark.parametrize("eq_settings", _band_array_eq_cases(), ids=lambda case: _id(case)[:60])
+def test_band_array_eq_settings_are_read_like_the_python_code(eq_settings):
     _agree(
-        lambda: reference._legacy_eq_inputs(copy.deepcopy(eq_settings)),
-        lambda: native.legacy_eq_inputs(copy.deepcopy(eq_settings)),
+        lambda: reference._band_array_eq_inputs(copy.deepcopy(eq_settings)),
+        lambda: native.band_array_eq_inputs(copy.deepcopy(eq_settings)),
     )
 
 

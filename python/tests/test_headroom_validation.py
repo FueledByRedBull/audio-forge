@@ -116,7 +116,7 @@ def test_a_band_value_that_is_not_a_number_is_refused_not_replaced(field, bad):
     }
     settings[field][0] = bad
     with pytest.raises(ValueError, match="not a finite number"):
-        mic_eq_core.legacy_eq_inputs(settings)
+        mic_eq_core.band_array_eq_inputs(settings)
 
 
 def test_chain_settings_that_are_invalid_are_refused_and_absent_ones_take_the_default():

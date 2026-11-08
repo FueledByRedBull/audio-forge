@@ -22,9 +22,6 @@ fail() {
 "$python" -c 'import sys; sys.exit(sys.prefix == sys.base_prefix)' \
     || fail "build Python must be inside a virtual environment: $python"
 echo "Using build Python: $python"
-# maturin develop installs into the environment VIRTUAL_ENV names.
-VIRTUAL_ENV=$("$python" -c 'import sys; print(sys.prefix)')
-export VIRTUAL_ENV
 
 ort=target/onnxruntime-cpu/lib/libonnxruntime.so.1.23.2
 [[ -f $ort ]] || fail "$ort is missing; run python/tools/fetch_release_assets.py"
@@ -32,10 +29,19 @@ ort=target/onnxruntime-cpu/lib/libonnxruntime.so.1.23.2
 "$python" python/tools/verify_release_assets.py \
     || fail "release asset verification failed"
 
-"$python" -m maturin develop --release --locked >/dev/null \
+# Not maturin develop: an editable build runs patchelf, when it is on PATH (as
+# on GitHub's Ubuntu runners), to add every Cargo link search directory to the
+# module's RPATH, including the build host's target directory. A plain build
+# links the module as it is; the spec takes it from python/mic_eq.
+wheel_dir=$(mktemp -d)
+trap 'rm -rf "$wheel_dir"' EXIT
+"$python" -m maturin build --release --locked --auditwheel skip --interpreter "$python" \
+    --out "$wheel_dir" >/dev/null \
     || fail "Rust extension rebuild failed"
 suffix=$("$python" -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
-[[ -f python/mic_eq/mic_eq_core$suffix ]] || fail "python/mic_eq/mic_eq_core$suffix not found"
+"$python" -m zipfile -e "$wheel_dir"/mic_eq-*.whl "$wheel_dir/wheel"
+cp "$wheel_dir/wheel/mic_eq/mic_eq_core$suffix" python/mic_eq/ \
+    || fail "mic_eq/mic_eq_core$suffix not found in the built wheel"
 
 [[ -f libdf.so ]] || fail "libdf.so not found; run python/tools/build_deepfilter.py and copy it here"
 for model in models/DeepFilterNet3_ll_onnx.tar.gz models/DeepFilterNet3_onnx.tar.gz models/silero_vad.onnx; do

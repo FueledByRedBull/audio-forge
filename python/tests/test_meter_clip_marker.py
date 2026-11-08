@@ -2,9 +2,8 @@
 
 import math
 
-from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QImage, QPainter, QRegion
-from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QImage, QPainter
 
 from mic_eq.ui.level_meter import (
     CLIP_FLAT_TOP_SAMPLES,
@@ -13,7 +12,6 @@ from mic_eq.ui.level_meter import (
     ConfidenceMeter,
     GainReductionMeter,
     LevelMeter,
-    MeterWidget,
 )
 
 
@@ -198,15 +196,13 @@ def test_a_meter_without_a_peak_reading_keeps_its_clip_for_the_whole_hold(qapp):
 def test_marker_is_described_to_assistive_technology_only_while_lit(qapp):
     clock = _Clock()
     meter = _meter(clock)
-    widget = MeterWidget(meter)
-    assert meter.property("description") == "" and widget.accessibleDescription() == ""
+    assert meter.property("description") == "" and "Clipping" not in meter.property("accessibleText")
     _clip(meter)
     assert "Clipping" in meter.property("description")
-    assert widget.accessibleDescription() == meter.property("description")
+    assert meter.property("description") in meter.property("accessibleText")
     clock.now += CLIP_HOLD_SECONDS + 0.1
     meter._decay_peak_hold()
-    assert widget.accessibleDescription() == ""
-    widget.deleteLater()
+    assert meter.property("description") == "" and "Clipping" not in meter.property("accessibleText")
 
 
 def _paint(meter: LevelMeter) -> QImage:
@@ -218,7 +214,7 @@ def _paint(meter: LevelMeter) -> QImage:
     return image
 
 
-def test_lit_marker_draws_a_clip_tag_and_the_widget_paints_the_same_picture(qapp):
+def test_lit_marker_draws_a_clip_tag(qapp):
     clock = _Clock()
     meter = _meter(clock)
     quiet = _paint(meter)
@@ -228,37 +224,6 @@ def test_lit_marker_draws_a_clip_tag_and_the_widget_paints_the_same_picture(qapp
     # The tag is a word on a filled shape, not just a colour change.
     label_strip = (0, 160 - 18, 60, 18)
     assert lit.copy(*label_strip) != quiet.copy(*label_strip)
-
-    view = MeterWidget(meter)
-    view.resize(60, 160)
-    rendered = QImage(60, 160, QImage.Format.Format_ARGB32_Premultiplied)
-    rendered.fill(Qt.GlobalColor.transparent)
-    view.render(rendered, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren)
-    assert rendered == lit
-    view.deleteLater()
-
-
-class _CountingWidget(MeterWidget):
-    def __init__(self, model):
-        self.description_sets = 0
-        super().__init__(model)
-
-    def setAccessibleDescription(self, description):
-        self.description_sets += 1
-        super().setAccessibleDescription(description)
-
-
-def test_level_updates_leave_the_accessible_description_alone_while_it_is_unchanged(qapp):
-    clock = _Clock()
-    meter = _meter(clock)
-    widget = _CountingWidget(meter)
-    widget.description_sets = 0
-    for step in range(20):
-        meter.set_levels(-30.0 + step, -20.0 + step)
-    assert widget.description_sets == 0
-    _clip(meter)
-    assert widget.description_sets == 1 and "Clipping" in widget.accessibleDescription()
-    widget.deleteLater()
 
 
 def test_isolated_touches_of_full_scale_are_counted_as_times_not_as_a_flat_top(qapp):

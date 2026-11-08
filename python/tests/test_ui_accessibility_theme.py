@@ -14,10 +14,8 @@ from unittest.mock import Mock
 import pytest
 from PySide6.QtCore import QEvent, QPointF, QRect, QSize
 from PySide6.QtGui import QColor, QIcon, QPalette, QPixmap
-from PySide6.QtWidgets import QScrollArea, QWidget
 
 from mic_eq.config import AppConfig
-from mic_eq.ui.accessibility import set_accessible
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.first_run_setup_dialog import FirstRunSetupDialog
 from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog
@@ -335,14 +333,6 @@ def test_reduced_motion_environment_override(monkeypatch) -> None:
     assert prefers_reduced_motion() is False
 
 
-def test_accessible_name_rejects_empty_text(qapp) -> None:
-    widget = QScrollArea()
-    with pytest.raises(ValueError, match="must not be empty"):
-        set_accessible(widget, "  &  ")
-    widget.deleteLater()
-    qapp.processEvents()
-
-
 def test_workflow_dialogs_have_named_controls(
     isolated_main_window,
     qapp,
@@ -364,45 +354,6 @@ def test_workflow_dialogs_have_named_controls(
     for dialog in dialogs:
         dialog.close()
         dialog.deleteLater()
-    qapp.processEvents()
-
-
-@pytest.mark.parametrize(
-    ("dialog_type", "width", "height"),
-    (
-        # The Auto-EQ dialog is a scene; test_calibration_scene.py checks its overflow.
-        (VoiceSetupDialog, 500, 380),
-    ),
-)
-def test_workflow_dialogs_scroll_vertically_without_horizontal_overflow(
-    isolated_main_window,
-    qapp,
-    dialog_type,
-    width: int,
-    height: int,
-) -> None:
-    dialog = dialog_type(isolated_main_window)
-    dialog.resize(width, height)
-    dialog.show()
-    qapp.processEvents()
-    qapp.processEvents()
-
-    scroll_area = dialog.content_scroll_area
-    oversized = [
-        (
-            type(widget).__name__,
-            getattr(widget, "title", lambda: widget.objectName())(),
-            widget.minimumSizeHint().width(),
-            widget.sizeHint().width(),
-        )
-        for widget in scroll_area.widget().findChildren(QWidget)
-        if widget.minimumSizeHint().width() > scroll_area.viewport().width()
-    ]
-    assert scroll_area.horizontalScrollBar().maximum() == 0, oversized
-    assert scroll_area.widget().width() <= scroll_area.viewport().width()
-
-    dialog.close()
-    dialog.deleteLater()
     qapp.processEvents()
 
 

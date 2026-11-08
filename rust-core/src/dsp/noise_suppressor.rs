@@ -15,7 +15,7 @@ pub(crate) fn deepfilter_experimental_enabled() -> bool {
 }
 
 /// Every id a saved preset may name, whether or not this build can run the model.
-pub const NOISE_MODEL_IDS: [&str; 3] = ["rnnoise", "deepfilter-ll", "deepfilter"];
+pub(crate) const NOISE_MODEL_IDS: [&str; 3] = ["rnnoise", "deepfilter-ll", "deepfilter"];
 
 /// Noise suppression model types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

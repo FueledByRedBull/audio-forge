@@ -1,6 +1,6 @@
 //! The numeric ranges of the processing settings.
 //!
-//! The live setters and the offline simulators clamp to these constants, and
+//! The live setters clamp to these constants, and
 //! Python reads the same table through [`processing_ranges`] to validate saved
 //! presets and to bound the controls, so a range exists in one place.
 

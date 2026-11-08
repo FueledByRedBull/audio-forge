@@ -490,8 +490,13 @@ def test_the_view_model_reports_changes_once_and_forwards_its_commands(qapp) -> 
     model.set_page(startText="Go")
     model.set_warning("Hello", state="ok", strong=True)
     model.set_warning("Hello")
-    model.set_warning("Hello", state="success")
-    assert (model.warning_text, model.warning_state, model.warning_strong) == ("Hello", "idle", True)
+    with pytest.raises(ValueError, match="unknown state 'success'"):
+        model.set_warning("Hello", state="success")
+    with pytest.raises(ValueError, match="unknown state 'success'"):
+        model.set_chip("gain", "G", state="success")
+    with pytest.raises(KeyError, match="startTxt"):
+        model.set_page(startTxt="Go")
+    assert (model.warning_text, model.warning_state, model.warning_strong) == ("Hello", "ok", True)
     model.set_warning(tip="why")
     model.set_chip("gain", "G", state="warn")
     model.set_chip("gain", "G")
@@ -502,7 +507,7 @@ def test_the_view_model_reports_changes_once_and_forwards_its_commands(qapp) -> 
     model.pickMode(0)
     model.pickSmoothing(1)
     assert (model.selected("curve"), model.selected("mode"), model.selected("smoothing")) == ("b", "m", "t")
-    assert changes == ["page", "status", "status", "status", "chips", "choices", "choices"]
+    assert changes == ["page", "status", "status", "chips", "choices", "choices"]
     for command in (model.start, model.override, model.cancel, model.retake, model.compare):
         command()
     assert calls == [1, "start", "override", "cancel", "retake", "compare"]

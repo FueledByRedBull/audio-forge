@@ -12,6 +12,13 @@ from .eq_compare import EQComparison
 from .level_meter import LevelMeter
 
 STATES = frozenset({"ok", "warn", "bad", "info", "idle"})
+
+
+def _known_state(state: str) -> str:
+    if state not in STATES:
+        raise ValueError(f"unknown state {state!r}")
+    return state
+
 # The label of the main button in each state of the dialog; the scene is wide enough for the longest.
 START_LABELS = (
     "Check Level",
@@ -164,6 +171,9 @@ class CalibrationView(QObject):
 
     def set_page(self, **fields: object) -> None:
         """Change parts of the page; unchanged fields are left alone."""
+        unknown = set(fields) - set(self._page)
+        if unknown:
+            raise KeyError(f"the page has no field {', '.join(sorted(unknown))}")
         page = {**self._page, **fields}
         if page != self._page:
             self._page = page
@@ -179,7 +189,7 @@ class CalibrationView(QObject):
     ) -> None:
         """Change the message under the progress; what is not given keeps its value."""
         text = self.warning_text if text is None else text
-        state = self.warning_state if state is None else state if state in STATES else "idle"
+        state = self.warning_state if state is None else _known_state(state)
         strong = self.warning_strong if strong is None else strong
         tip = self.warning_tip if tip is None else tip
         if (text, state, strong, tip) != (
@@ -200,7 +210,7 @@ class CalibrationView(QObject):
         chip = self._chips[key]
         changed = {
             "text": chip["text"] if text is None else text,
-            "state": chip["state"] if state is None else state if state in STATES else "idle",
+            "state": chip["state"] if state is None else _known_state(state),
             "tip": chip["tip"] if tip is None else tip,
         }
         if any(chip[field] != value for field, value in changed.items()):

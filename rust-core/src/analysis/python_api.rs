@@ -359,23 +359,28 @@ pub(crate) fn analyze_offline_vad<'py>(
             return Ok((None, FALLBACK));
         };
         let threshold = threshold as f32;
-        let probabilities = py.detach(move || {
-            super::offline_vad_probabilities(
-                &samples,
-                sample_rate,
-                pre_gain,
-                |up, down| Python::attach(|py| numpy_resample_taps(py, up, down)),
-                |prepared, rate| {
-                    std::panic::catch_unwind(|| {
-                        crate::audio::processor::silero_offline_probabilities(
-                            prepared, rate, threshold,
-                        )
-                    })
-                    .map_err(drop)?
-                    .map_err(drop)
-                },
-            )
-        })?;
+        let probabilities = py
+            .detach(move || {
+                super::offline_vad_probabilities(
+                    &samples,
+                    sample_rate,
+                    pre_gain,
+                    |up, down| Python::attach(|py| numpy_resample_taps(py, up, down)),
+                    |prepared, rate| {
+                        std::panic::catch_unwind(|| {
+                            crate::audio::processor::silero_offline_probabilities(
+                                prepared, rate, threshold,
+                            )
+                        })
+                        .map_err(drop)?
+                        .map_err(drop)
+                    },
+                )
+            })
+            .map_err(|error| match error {
+                super::VadResampleError::Design(error) => error,
+                super::VadResampleError::Filter(message) => PyValueError::new_err(message),
+            })?;
         Ok(match probabilities {
             Some(probabilities) => (Some(PyArray1::from_vec(py, probabilities)), "silero"),
             None => (None, FALLBACK),

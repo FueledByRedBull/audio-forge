@@ -341,7 +341,17 @@ fn offline_vad_resamples_rates_without_whole_model_windows() {
         |_, _| Err("no filter"),
         |_: &[f32], _: u32| Ok::<_, ()>(vec![0.5]),
     );
-    assert_eq!(failing, Err("no filter"));
+    assert_eq!(failing, Err(VadResampleError::Design("no filter")));
+
+    // A filter for other rates is refused rather than run.
+    let mismatched = offline_vad_probabilities(
+        &audio,
+        44_100,
+        1.0,
+        |_, _| Ok::<_, ()>(kaiser_taps(1, 2)),
+        |_: &[f32], _: u32| -> Result<Vec<f32>, ()> { panic!("inference must not run") },
+    );
+    assert!(matches!(mismatched, Err(VadResampleError::Filter(_))));
 }
 
 #[test]

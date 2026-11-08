@@ -51,7 +51,6 @@ from mic_eq.ui.health import (
     diagnostic_tokens,
 )
 from mic_eq.ui.startup_presets import startup_custom_id as _startup_custom_id
-from mic_eq.ui.theme import status_chip_style
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from mic_eq.config import (
     AppConfig,
@@ -110,7 +109,7 @@ def test_setup_level_warnings_use_actual_peak_not_rms_estimate(window):
     calibration = CalibrationDialog(parent=window, configuration=window.configuration)
     calibration._on_level_update(-20.0, -1.0)
     assert (calibration.level_meter.rms_db, calibration.level_meter.peak_db) == (-20.0, -1.0)
-    assert "peaks at -1.0 dB" in calibration.warning_label.text()
+    assert "peaks at -1.0 dB" in calibration.view_model.warning_text
 
     voice_setup = VoiceSetupDialog(parent=window, configuration=window.configuration)
     voice_setup.setup_state = "voice_recording"
@@ -526,11 +525,11 @@ def test_calibration_ignores_stale_analysis_generation(window):
     dialog = CalibrationDialog(parent=window, configuration=window.configuration)
     dialog._analysis_generation = 2
     dialog.recording_state = "analyzing"
-    previous_step = dialog.warning_label.text()
+    previous_step = dialog.view_model.warning_text
 
     dialog._on_analysis_step("stale step", 55, generation=1)
 
-    assert dialog.warning_label.text() == previous_step
+    assert dialog.view_model.warning_text == previous_step
 
     dialog._on_analysis_complete(
         {"band_gains": [0.0] * 10, "apply_recommended": True},
@@ -663,30 +662,30 @@ def test_calibration_dialog_shows_auto_eq_diagnostics(window):
     dialog._candidate_target_metadata = ("broadcast", "adaptive", "conservative")
     dialog._on_analysis_complete(eq_settings)
 
-    assert not dialog.diagnostics_group.isHidden()
-    assert dialog.confidence_label.text().startswith("Good capture: ")
-    assert "clear and steady enough to base a correction on" in dialog.confidence_label.text()
-    assert dialog.confidence_label.styleSheet() == status_chip_style("ok")
+    assert dialog.view_model.shown["diagnosticsShown"]
+    assert dialog.view_model.chip("confidence")["text"].startswith("Good capture: ")
+    assert "clear and steady enough to base a correction on" in dialog.view_model.chip("confidence")["text"]
+    assert dialog.view_model.chip("confidence")["state"] == "ok"
     assert (
-        "Capture quality score 81%." in dialog.confidence_label.toolTip()
+        "Capture quality score 81%." in dialog.view_model.chip("confidence")["tip"]
     )
-    assert "Overall score: 76%." in dialog.confidence_label.toolTip()
+    assert "Overall score: 76%." in dialog.view_model.chip("confidence")["tip"]
     assert (
-        dialog.error_label.text()
+        dialog.view_model.chip("error")["text"]
         == "Distance from the tone preset: 5.0 dB; no correction was applied."
     )
     assert (
-        dialog.error_label.toolTip()
+        dialog.view_model.chip("error")["tip"]
         == "The correction is used at 90% of its fitted strength. "
         "Smoothing took the largest change from 6.0 dB to 4.0 dB."
     )
-    assert dialog.gain_scale_label.text() == "Headroom check: not available."
+    assert dialog.view_model.chip("gain")["text"] == "Headroom check: not available."
     assert (
-        dialog.target_profile_label.text()
-        == f"Tone preset: {dialog.curve_combo.currentText()}"
+        dialog.view_model.chip("target")["text"]
+        == f"Tone preset: {dialog.view_model.curve_name()}"
     )
     assert (
-        dialog.target_profile_label.toolTip() == "Tone preset and matching: broadcast, Subtle."
+        dialog.view_model.chip("target")["tip"] == "Tone preset and matching: broadcast, Subtle."
     )
 
     dialog.close()
@@ -721,19 +720,19 @@ def test_calibration_dialog_does_not_offer_abstained_eq(window):
     dialog._on_analysis_complete(eq_settings)
 
     assert dialog.eq_settings is None
-    assert dialog.start_button.text() == "Record Again"
+    assert dialog.view_model.shown["startText"] == "Record Again"
     # Plain language up front; the raw reason stays available on hover.
-    text = dialog.warning_label.text()
+    text = dialog.view_model.warning_text
     explanation = explain_auto_eq(eq_settings)
     assert explanation.outcome_code == "unusable_capture" and explanation.state == "bad"
     assert text.startswith("No correction applied. ")
     assert "Your voice was too close to the background noise in the recording." in text
     assert "noise-referenced SNR is too low" not in text
-    assert "noise-referenced SNR is too low" in dialog.warning_label.toolTip()
+    assert "noise-referenced SNR is too low" in dialog.view_model.warning_tip
     # Review step: the setup and recording widgets are out of the way.
-    assert dialog.curve_group.isHidden()
-    assert dialog.instructions_group.isHidden()
-    assert dialog.level_meter_widget.isHidden()
+    assert not dialog.view_model.shown["curveShown"]
+    assert not dialog.view_model.shown["instructionsShown"]
+    assert not dialog.view_model.shown["meterShown"]
 
     dialog.close()
 

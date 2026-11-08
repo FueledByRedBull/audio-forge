@@ -370,7 +370,7 @@ def test_workflow_dialogs_have_named_controls(
 @pytest.mark.parametrize(
     ("dialog_type", "width", "height"),
     (
-        (CalibrationDialog, 480, 360),
+        # The Auto-EQ dialog is a scene; test_calibration_scene.py checks its overflow.
         (VoiceSetupDialog, 500, 380),
     ),
 )

@@ -607,6 +607,7 @@
     "_internal/licenses/system/zlib1g/copyright",
     "_internal/licenses/THIRD_PARTY_NOTICES.md",
     "_internal/mic_eq/mic_eq_core.cpython-313-x86_64-linux-gnu.so",
+    "_internal/mic_eq/ui/qml/AutoEqCalibration.qml",
     "_internal/mic_eq/ui/qml/BodyText.qml",
     "_internal/mic_eq/ui/qml/Chip.qml",
     "_internal/mic_eq/ui/qml/ChoiceBox.qml",

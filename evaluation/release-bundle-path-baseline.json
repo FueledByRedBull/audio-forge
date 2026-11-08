@@ -460,6 +460,7 @@
     "_internal/licenses/SOURCE_DISTRIBUTION.md",
     "_internal/licenses/THIRD_PARTY_NOTICES.md",
     "_internal/mic_eq/mic_eq_core.cp313-win_amd64.pyd",
+    "_internal/mic_eq/ui/qml/AutoEqCalibration.qml",
     "_internal/mic_eq/ui/qml/BodyText.qml",
     "_internal/mic_eq/ui/qml/Chip.qml",
     "_internal/mic_eq/ui/qml/ChoiceBox.qml",

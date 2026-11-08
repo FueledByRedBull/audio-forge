@@ -234,3 +234,20 @@ def _headroom_excess_db(simulation: Mapping[str, Any]) -> float:
 
 def _is_headroom_safe(simulation: Mapping[str, Any]) -> bool:
     return _headroom_excess_db(simulation) <= 0.0
+
+
+def _released_excess_db(simulation: Mapping[str, Any]) -> float:
+    """voice_setup's: how far a render passes the released headroom check, whichever term fails most.
+
+    It fits at <= 0; a reading that is not finite is infinite.
+    """
+    headroom, limiter_gr, true_peak_gr = (
+        float(simulation[name]) for name in _NATIVE_SAFETY_METRICS
+    )
+    if not np.isfinite([headroom, limiter_gr, true_peak_gr]).all():
+        return float("inf")
+    return max(
+        HEADROOM_TARGET_DB - headroom,
+        limiter_gr - LIMITER_GAIN_REDUCTION_WARN_DB,
+        true_peak_gr - TRUE_PEAK_GAIN_REDUCTION_WARN_DB,
+    )

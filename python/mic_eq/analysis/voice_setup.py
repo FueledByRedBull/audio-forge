@@ -33,9 +33,9 @@ from .deesser_fusion import (
 )
 from ..mic_eq_core import (
     HEADROOM_TARGET_DB,
-    LIMITER_GAIN_REDUCTION_WARN_DB,
     NATIVE_SAFETY_METRICS,
     TRUE_PEAK_GAIN_REDUCTION_WARN_DB,
+    headroom_excess_db,
     is_headroom_safe,
 )
 from .signal_processing import band_mean as _band_mean, clamp as _clamp, resample_poly
@@ -811,17 +811,11 @@ def _limiter_excess_db(simulation: Mapping[str, Any], allowance_db: float) -> fl
 def _released_excess_db(simulation: Mapping[str, Any]) -> float:
     """Return how far a render passes the released headroom check, whichever term fails most.
 
-    It fits at <= 0; a reading that is not finite is infinite.
+    It fits at <= 0; a reading that is not finite is infinite. A missing
+    reading, or one float() rejects, raises.
     """
-    headroom, limiter_gr, true_peak_gr = (
-        float(simulation[name]) for name in NATIVE_SAFETY_METRICS
-    )
-    if not np.isfinite([headroom, limiter_gr, true_peak_gr]).all():
-        return float("inf")
-    return max(
-        HEADROOM_TARGET_DB - headroom,
-        limiter_gr - LIMITER_GAIN_REDUCTION_WARN_DB,
-        true_peak_gr - TRUE_PEAK_GAIN_REDUCTION_WARN_DB,
+    return headroom_excess_db(
+        {name: float(simulation[name]) for name in NATIVE_SAFETY_METRICS}
     )
 
 

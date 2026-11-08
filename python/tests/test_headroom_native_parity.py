@@ -18,6 +18,7 @@ import pytest
 
 import headroom_reference as reference
 from mic_eq import mic_eq_core as native
+from mic_eq.analysis import voice_setup
 from mic_eq.config import Preset
 
 NAN = float("nan")
@@ -260,6 +261,18 @@ def test_the_headroom_verdict_is_the_python_codes(batch):
         _agree(
             lambda: reference._safety_metric_problems(reading),
             lambda: native.safety_metric_problems(reading),
+        )
+
+
+@pytest.mark.parametrize("batch", range(4))
+def test_voice_setup_reads_the_released_excess_like_the_python_code(batch):
+    names = reference._NATIVE_SAFETY_METRICS
+    cases = _readings()[batch::4]
+    cases += [{**dict(zip(names, (2.0, 0.0, 0.0))), name: value} for name in names for value in VALUES]
+    for reading in cases:
+        _agree(
+            lambda: reference._released_excess_db(reading),
+            lambda: voice_setup._released_excess_db(reading),
         )
 
 

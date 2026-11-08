@@ -5,7 +5,9 @@ to AudioForge Mic went from about 119 ms to about 67 ms with RNNoise, and from
 about 104 ms to about 52 ms in bypass; a real microphone adds its own capture
 buffer. This release also removes a click when RNNoise is turned back on and a
 staircase in Auto makeup gain, tightens Windows output probing and recovery,
-and fixes Start and Stop, preset loading and several smaller faults. Windows
+and fixes Start and Stop, preset loading and several smaller faults. The
+Auto-EQ, Voice Setup, listening comparison and Test my sound windows are now
+Qt Quick, like the rest of the app, with the same steps and results. Windows
 audio is otherwise unchanged.
 
 **Upgrading from an older version.** 1.23.0 is the last release that converts
@@ -108,6 +110,55 @@ is in the [Linux section](https://github.com/FueledByRedBull/audio-forge#linux).
   chain setting that is not a finite number, and Voice Setup refuses captures
   that contain NaN or infinity. The noise reference ignores DC offset. The
   spectrum's VAD window is exact at 44.1 kHz.
+- **Setup windows in Qt Quick.** The Auto-EQ calibration, Voice Setup, the
+  listening comparison and Test my sound windows are rebuilt the way the
+  latency calibration and Guided Setup were in 1.22.0. Voice Setup was the last
+  setup dialog still built with Widgets. Recording, analysis, applying settings,
+  reports and the settings they recommend are unchanged.
+- **Setup windows: what looks different.** The steps in Auto-EQ and Voice Setup
+  are a row with the current one underlined, and the groups are cards with
+  uppercase titles. Voice Setup's three number fields have the caption above,
+  minus and plus buttons at the sides and the unit after the number; their
+  ranges and two decimals are as before. The level meter is as wide as its card,
+  the progress bar is a bordered track (in Auto-EQ it shows a sliding block
+  while the analysis runs), and Cancel, Retake, Compare Recording and Continue
+  Anyway use the plain button look. The passage can no longer be selected with
+  the mouse, and the level-match option in the listening comparison is a switch.
+  Each window's minimum width follows the text size.
+- **Setup windows: keyboard and screen readers.** Tab goes to the scrollable
+  page first, which shows a focus ring and scrolls with the arrow keys, Page Up,
+  Page Down, Home and End, and then to the controls; a focused control scrolls
+  into view. Enter outside a button does what the main button says when it is
+  available, where it used to press whichever button was the default; Enter in
+  an open list only chooses, and Enter on the listening comparison's switch
+  flips it instead of pressing Keep. A control that hides or disables itself
+  while it has the keyboard passes it to the page, so Tab keeps working.
+  Tooltips also show on keyboard focus and are read as descriptions. Pickers are
+  read with their choice ("Tone preset: <choice>"), the step row as "Step N of
+  5: <name>", the progress bar as "N percent", the number fields as "<name>:
+  <value> <unit>", and each card as a named group.
+- **Setup windows that fail to load.** A window whose scene can't load says
+  "This window could not open." with the reason and closes as cancelled; nothing
+  is recorded and no audio is borrowed or muted. In Voice Setup's final
+  comparison, a comparison window that can't open now says "Final comparison
+  could not open; previous settings put back" instead of reporting a declined
+  comparison. The settings are put back either way.
+- **Processing-settings ranges in the native core.** The ranges of the gate,
+  noise suppression, de-esser, compressor and limiter settings now live in one
+  table in the Rust core. The live controls and preset checks read it, where the
+  numbers used to be kept twice. No range changed.
+- **Analysis in the native core (open: #232).** The shared analysis helpers,
+  the offline voice-activity detection and the latency calibration analysis now
+  run in the Rust core instead of NumPy. Voice Setup, Auto-EQ and calibration
+  give the same results as before.
+- **Headroom check in the native core (open: #233).** Flattening a chain's
+  settings and the headroom verdict that Auto-EQ, Voice Setup and compressor
+  calibration use now run in the Rust core, with the same thresholds and
+  messages.
+- **Linux: no build-machine library paths in the bundle (open: #235).** The
+  native module and the bundled CPython libraries no longer carry the RPATH or
+  RUNPATH of the machine that built them, and the bundle build now fails on any
+  such entry that points outside the bundle.
 - **Environment switches.** `AUDIOFORGE_ENABLE_DEEPFILTER` and
   `AUDIOFORGE_ALLOW_EXTERNAL_DF` accept 1, true, yes and on, in any case.
 
@@ -149,6 +200,12 @@ The Windows output probe, the stricter short-period refusal rule, and the new
 owner for Start, Stop and dialogs are covered by automated tests only; they
 haven't been run on real devices or in the packaged app. Loading presets on
 real devices is likewise untried.
+
+The Auto-EQ calibration, Voice Setup, listening comparison and Test my sound
+windows are covered by offscreen scene tests: keyboard, focus, accessible names
+and layout, including a 14 pt font. They haven't been tried with a screen
+reader on Windows or Linux, on real GPUs, in the packaged app, or with a real
+playback device.
 
 VB-CABLE's shorter output period (added in 1.21.0) hasn't been tried on routes
 that resample, on a driver that fails it while running, or on Windows 10. The

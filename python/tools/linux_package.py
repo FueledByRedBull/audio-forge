@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tarfile
 import tomllib
+from typing import NamedTuple
 
 from release_version import parse_version
 
@@ -167,6 +168,13 @@ PT_LOAD, PT_DYNAMIC = 1, 2
 DT_NULL, DT_STRTAB, DT_STRSZ, DT_RPATH, DT_RUNPATH = 0, 5, 10, 15, 29
 
 
+class _Segment(NamedTuple):
+    kind: int
+    offset: int
+    address: int
+    size: int
+
+
 def elf_search_paths(path: Path) -> list[tuple[str, str]]:
     """The DT_RPATH and DT_RUNPATH strings of the ELF file ``path`` as (tag, value); none for other files."""
     with path.open("rb") as handle:
@@ -181,16 +189,16 @@ def elf_search_paths(path: Path) -> list[tuple[str, str]]:
             header, program, dynamic, picks = "HHIIIIIHHHHHH", "IIIIIIII", "iI", (0, 1, 2, 4)
         fields = struct.unpack(order + header, handle.read(struct.calcsize(order + header)))
         phoff, phentsize, phnum = fields[4], fields[8], fields[9]
-        segments = []  # (type, file offset, virtual address, file size)
+        segments = []
         for index in range(phnum):
             handle.seek(phoff + index * phentsize)
             entry = struct.unpack(order + program, handle.read(struct.calcsize(order + program)))
-            segments.append(tuple(entry[pick] for pick in picks))
-        dynamic_segment = next((segment for segment in segments if segment[0] == PT_DYNAMIC), None)
+            segments.append(_Segment(*(entry[pick] for pick in picks)))
+        dynamic_segment = next((segment for segment in segments if segment.kind == PT_DYNAMIC), None)
         if dynamic_segment is None:
             return []
-        handle.seek(dynamic_segment[1])
-        raw = handle.read(dynamic_segment[3])
+        handle.seek(dynamic_segment.offset)
+        raw = handle.read(dynamic_segment.size)
         size = struct.calcsize(order + dynamic)
         entries = []
         for tag, value in struct.iter_unpack(order + dynamic, raw[: len(raw) - len(raw) % size]):
@@ -202,11 +210,11 @@ def elf_search_paths(path: Path) -> list[tuple[str, str]]:
             return []
         values = dict(entries)
         strtab = values.get(DT_STRTAB)
-        load = next((segment for segment in segments if segment[0] == PT_LOAD
-                     and strtab is not None and segment[2] <= strtab < segment[2] + segment[3]), None)
-        if load is None or DT_STRSZ not in values:
+        load = next((segment for segment in segments if segment.kind == PT_LOAD and strtab is not None
+                     and segment.address <= strtab < segment.address + segment.size), None)
+        if strtab is None or load is None or DT_STRSZ not in values:
             raise ValueError(f"{path} has a search path but no readable string table")
-        handle.seek(load[1] + strtab - load[2])
+        handle.seek(load.offset + strtab - load.address)
         table = handle.read(values[DT_STRSZ])
     names = {DT_RPATH: "RPATH", DT_RUNPATH: "RUNPATH"}
     return [(names[tag], os.fsdecode(table[value:].split(b"\0", 1)[0])) for tag, value in wanted]
@@ -221,8 +229,31 @@ def _outside_bundle(entry: str, origin: Path, bundle: Path) -> bool:
     return True
 
 
-def _bundle_files(bundle: Path) -> list[Path]:
-    return [path for path in sorted(bundle.rglob("*")) if path.is_file() and not path.is_symlink()]
+class _SearchPaths(NamedTuple):
+    path: Path
+    relative: str
+    entries: list[tuple[str, str]]  # (RPATH or RUNPATH, one entry of it)
+    outside: list[tuple[str, str]]
+    error: str | None
+
+
+def _bundle_search_paths(bundle: Path) -> list[_SearchPaths]:
+    """The library search paths of each file in ``bundle`` that has any or cannot be read."""
+    found = []
+    for path in sorted(bundle.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        relative = path.relative_to(bundle).as_posix()
+        try:
+            search_paths = elf_search_paths(path)
+        except (OSError, OverflowError, ValueError, struct.error) as exc:
+            found.append(_SearchPaths(path, relative, [], [], f"cannot read the library search paths of {relative}: {exc}"))
+            continue
+        entries = [(tag, entry) for tag, value in search_paths for entry in value.split(":")]
+        if entries:
+            outside = [(tag, entry) for tag, entry in entries if _outside_bundle(entry, path.parent, bundle)]
+            found.append(_SearchPaths(path, relative, entries, outside, None))
+    return found
 
 
 def clear_outside_search_paths(bundle: Path) -> list[str]:
@@ -234,18 +265,18 @@ def clear_outside_search_paths(bundle: Path) -> list[str]:
     """
     patchelf = shutil.which("patchelf")
     cleared = []
-    for path in _bundle_files(bundle):
-        entries = [entry for _tag, value in elf_search_paths(path) for entry in value.split(":")]
-        outside = [entry for entry in entries if _outside_bundle(entry, path.parent, bundle)]
-        if not outside:
+    for found in _bundle_search_paths(bundle):
+        if found.error:
+            raise SystemExit(found.error)
+        if not found.outside:
             continue
-        relative = path.relative_to(bundle).as_posix()
-        if len(outside) != len(entries):
-            raise SystemExit(f"{relative} searches both inside and outside the bundle: {':'.join(entries)}")
+        if len(found.outside) != len(found.entries):
+            shown = ":".join(entry for _tag, entry in found.entries)
+            raise SystemExit(f"{found.relative} searches both inside and outside the bundle: {shown}")
         if patchelf is None:
-            raise SystemExit(f"patchelf is required to remove the search paths outside the bundle from {relative}")
-        subprocess.run([patchelf, "--remove-rpath", str(path)], check=True)
-        cleared.append(relative)
+            raise SystemExit(f"patchelf is required to remove the search paths outside the bundle from {found.relative}")
+        subprocess.run([patchelf, "--remove-rpath", str(found.path)], check=True)
+        cleared.append(found.relative)
     return cleared
 
 
@@ -284,18 +315,13 @@ def check_bundle(bundle: Path, version: str) -> list[str]:
             errors.append(f"bundles an unused Qt plugin: {relative}")
     # A search path outside the bundle makes the loader look on the user's
     # machine (a build host's home or toolcache) before the system libraries.
-    for path in _bundle_files(bundle):
-        relative = path.relative_to(bundle).as_posix()
-        try:
-            search_paths = elf_search_paths(path)
-        except (OSError, OverflowError, ValueError, struct.error) as exc:
-            errors.append(f"cannot read the library search paths of {relative}: {exc}")
-            continue
-        for tag, value in search_paths:
-            outside = [entry for entry in value.split(":") if _outside_bundle(entry, path.parent, bundle)]
-            if outside:
-                shown = ":".join(entry or "''" for entry in outside)
-                errors.append(f"{relative} has {tag} entries outside the bundle: {shown}")
+    for found in _bundle_search_paths(bundle):
+        if found.error:
+            errors.append(found.error)
+        for tag in ("RPATH", "RUNPATH"):
+            shown = [entry or "''" for kind, entry in found.outside if kind == tag]
+            if shown:
+                errors.append(f"{found.relative} has {tag} entries outside the bundle: {':'.join(shown)}")
     # Releases are built on Ubuntu; the table names Debian packages, so a pacman
     # host (a local Arch build) cannot be checked against it.
     notices = internal / "licenses" / "system"
@@ -391,11 +417,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--bundle", type=Path, default=ROOT / "dist" / "AudioForge")
     parser.add_argument("--output", type=Path, default=ROOT / "dist")
-    parser.add_argument("--appimagetool", type=Path, help="appimagetool executable; omit to skip the AppImage")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--appimagetool", type=Path, help="appimagetool executable; omit to skip the AppImage")
     parser.add_argument("--appimage-runtime", type=Path, help="pinned AppImage runtime for appimagetool to embed")
-    parser.add_argument("--check-only", action="store_true", help="check the bundle without packaging it")
-    parser.add_argument("--clear-search-paths", action="store_true",
-                        help="remove library search paths outside the bundle (needs patchelf when there are any)")
+    mode.add_argument("--check-only", action="store_true", help="check the bundle without packaging it")
+    mode.add_argument("--clear-search-paths", action="store_true",
+                      help="remove library search paths outside the bundle (needs patchelf when there are any)")
     args = parser.parse_args()
     bundle = args.bundle.resolve()
     if sys.platform != "linux":

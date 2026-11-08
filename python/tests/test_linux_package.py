@@ -185,6 +185,24 @@ def test_a_search_path_mixing_inside_and_outside_entries_stops_the_build(tmp_pat
     assert calls == []
 
 
+def test_clearing_names_a_file_whose_search_paths_cannot_be_read(tmp_path, monkeypatch):
+    bundle = _bundle(tmp_path)
+    (bundle / "_internal/libtruncated.so").write_bytes(b"\x7fELF\x02\x01\x01" + bytes(11))
+    calls = _patchelf_host(monkeypatch)
+    with pytest.raises(SystemExit, match="cannot read the library search paths of _internal/libtruncated.so: "):
+        linux_package.clear_outside_search_paths(bundle)
+    assert calls == []
+
+
+@pytest.mark.parametrize("mode", [["--check-only"], ["--appimagetool", "appimagetool"]])
+def test_clearing_search_paths_is_its_own_mode(tmp_path, monkeypatch, capsys, mode):
+    monkeypatch.setattr(sys, "argv", ["linux_package.py", "--bundle", str(tmp_path), "--clear-search-paths", *mode])
+    with pytest.raises(SystemExit) as exit_info:
+        linux_package.main()
+    assert exit_info.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
 @pytest.mark.skipif(not (shutil.which("patchelf") and shutil.which("cc")), reason="needs patchelf and a C compiler")
 def test_patchelf_leaves_a_bundle_the_check_accepts(tmp_path):
     bundle = _bundle(tmp_path)

@@ -147,15 +147,15 @@ is in the [Linux section](https://github.com/FueledByRedBull/audio-forge#linux).
   noise suppression, de-esser, compressor and limiter settings now live in one
   table in the Rust core. The live controls and preset checks read it, where the
   numbers used to be kept twice. No range changed.
-- **Analysis in the native core (open: #232).** The shared analysis helpers,
+- **Analysis in the native core.** The shared analysis helpers,
   the offline voice-activity detection and the latency calibration analysis now
   run in the Rust core instead of NumPy. Voice Setup, Auto-EQ and calibration
   give the same results as before.
-- **Headroom check in the native core (open: #233).** Flattening a chain's
+- **Headroom check in the native core.** Flattening a chain's
   settings and the headroom verdict that Auto-EQ, Voice Setup and compressor
   calibration use now run in the Rust core, with the same thresholds and
   messages.
-- **Linux: no build-machine library paths in the bundle (open: #235).** The
+- **Linux: no build-machine library paths in the bundle.** The
   native module and the bundled CPython libraries no longer carry the RPATH or
   RUNPATH of the machine that built them, and the bundle build now fails on any
   such entry that points outside the bundle.

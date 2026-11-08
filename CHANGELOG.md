@@ -16,7 +16,7 @@
 - Device lists leave out other apps' PipeWire streams. The query gives up after 2 s, so a PipeWire daemon that never answers can't hang the list.
 - SIGTERM and SIGHUP in the frozen build end the session cleanly, without the "Stop Audio and Quit?" question. Other signals, Ctrl+C included, do not. A SIGHUP that was already ignored, as under `nohup`, stays ignored.
 - The frozen build no longer passes `LD_LIBRARY_PATH`, `QT_PLUGIN_PATH` and `QML2_IMPORT_PATH` to the programs it opens; a file manager launched from AudioForge used to load the bundle's Qt and fail. The QML import path the bundle sets now reaches each Qt Quick scene before the variable is removed.
-- The native module and the bundled CPython libraries no longer carry the RPATH or RUNPATH of the machine that built them. The module is built with `maturin build` instead of `maturin develop`, whose editable build added the build directories to its RPATH, and the bundle check now reads the RPATH and RUNPATH of every ELF file and fails on any entry that isn't relative to the bundle or points outside it. (Open: #235.)
+- The native module and the bundled CPython libraries no longer carry the RPATH or RUNPATH of the machine that built them. The module is built with `maturin build` instead of `maturin develop`, whose editable build added the build directories to its RPATH; the release build clears the CPython libraries' RUNPATH with patchelf; and the bundle check now reads the RPATH and RUNPATH of every ELF file and fails on any entry that isn't relative to the bundle or points outside it.
 
 ### Sound
 
@@ -111,8 +111,8 @@
 - A Silero test fixture was updated for the per-sample makeup ramp.
 - The Widgets stylesheet and layout helpers the setup dialogs used are gone (the step header, the progress, description, subdued, primary-button, step and status-chip styles, the accessibility helpers, the Widgets level meter and EQ comparison widget), along with the secondary button style. The dialogs share `Chip.qml`, `ProgressTrack.qml`, `NumberBox.qml` and one focus hand-off component. Nothing else in the app changes.
 - The numeric ranges of the gate, noise suppression, de-esser, compressor and limiter settings live in one table in the Rust core (`rust-core/src/config_ranges.rs`). The live setters clamp to it, and Python reads it to validate saved presets and bound the controls, where the numbers were kept in `processor.rs` and in a Python dictionary. No range changed, and a preset can't be validated without the native core, as nothing else in the app runs without it.
-- The shared analysis helpers (`clamp`, `band_mean`, `resample_poly`, peak finding), the offline VAD and the latency calibration analysis run in the Rust core instead of NumPy, step for step; results are the same, bit for bit where the platform's `sin` and `exp` match NumPy's and within a stated tolerance where they don't. Importing those analysis modules without the extension now raises ImportError. (Open: #232.)
-- Chain-settings flattening and the headroom verdict that Auto-EQ, Voice Setup and compressor calibration use run in the Rust core, with the same thresholds, messages and return shapes. (Open: #233.)
+- The shared analysis helpers (`clamp`, `band_mean`, `resample_poly`, peak finding), the offline VAD and the latency calibration analysis run in the Rust core instead of NumPy, step for step; results are bit for bit the same on every CPU (NumPy still designs the resampling filter and orders tied peaks), except the latency correlation, which goes through `realfft` and matches to rounding. Importing those analysis modules without the extension now raises ImportError.
+- Chain-settings flattening and the headroom verdict that Auto-EQ, Voice Setup and compressor calibration use run in the Rust core, with the same thresholds, messages and return shapes.
 
 ## v1.22.0
 

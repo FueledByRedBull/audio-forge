@@ -11,6 +11,8 @@ use super::{DeepFilterFFI, DeepFilterProcessError, DEEPFILTER_FRAME_SIZE};
 use crate::audio::buffer::{AudioConsumer, AudioProducer, AudioRingBuffer};
 #[cfg(windows)]
 use crate::audio::scheduling::ProAudioThread;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -44,6 +46,10 @@ const WORKER_STALL_TIME: Duration = Duration::from_millis(300);
 /// loop, and it is no evidence against the worker: it counts for no more than
 /// this.
 const WORKER_STALL_STEP: Duration = Duration::from_millis(50);
+/// How long the worker waits for RTKit before running at normal priority. Well
+/// inside `WORKER_STALL_TIME`, so a slow RTKit never reads as a stalled worker.
+#[cfg(target_os = "linux")]
+const REALTIME_PROMOTION_TIMEOUT: Duration = Duration::from_millis(100);
 /// How often an idle worker looks for a frame.
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 /// With no frame for this long (the stage is off, or processing stopped), the
@@ -336,6 +342,85 @@ pub(super) enum TestFault {
     Exit = 2,
 }
 
+/// Workers that run without the realtime priority they asked for, or still wait
+/// for RTKit's answer. The diagnostics report scheduling as degraded meanwhile.
+#[cfg(target_os = "linux")]
+static DEGRADED_WORKERS: AtomicU32 = AtomicU32::new(0);
+
+/// Whether a DeepFilter worker runs at normal priority on Linux; false elsewhere.
+pub(crate) fn worker_scheduling_degraded() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        DEGRADED_WORKERS.load(Ordering::Relaxed) > 0
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+#[cfg(target_os = "linux")]
+const SCHEDULING_PENDING: u8 = 0;
+#[cfg(target_os = "linux")]
+const SCHEDULING_GRANTED: u8 = 1;
+#[cfg(target_os = "linux")]
+const SCHEDULING_ENDED: u8 = 2;
+
+/// One worker's share of `DEGRADED_WORKERS`: counted from its request until
+/// RTKit grants it, and never after the worker ends, however late the answer.
+#[cfg(target_os = "linux")]
+pub(super) struct WorkerScheduling {
+    pub(super) state: Arc<AtomicU8>,
+    degraded: &'static AtomicU32,
+}
+
+#[cfg(target_os = "linux")]
+impl WorkerScheduling {
+    fn promote() -> Self {
+        let scheduling = Self::pending(&DEGRADED_WORKERS);
+        let state = Arc::clone(&scheduling.state);
+        let _ = crate::audio::realtime::promote_current_thread(
+            48_000,
+            REALTIME_PROMOTION_TIMEOUT,
+            move |granted| Self::answer(&state, &DEGRADED_WORKERS, granted),
+        );
+        scheduling
+    }
+
+    pub(super) fn pending(degraded: &'static AtomicU32) -> Self {
+        degraded.fetch_add(1, Ordering::Relaxed);
+        Self {
+            state: Arc::new(AtomicU8::new(SCHEDULING_PENDING)),
+            degraded,
+        }
+    }
+
+    /// RTKit's verdict, from its request thread; ignored once the worker ended.
+    pub(super) fn answer(state: &AtomicU8, degraded: &AtomicU32, granted: bool) {
+        if granted
+            && state
+                .compare_exchange(
+                    SCHEDULING_PENDING,
+                    SCHEDULING_GRANTED,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+        {
+            degraded.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for WorkerScheduling {
+    fn drop(&mut self) {
+        if self.state.swap(SCHEDULING_ENDED, Ordering::AcqRel) == SCHEDULING_PENDING {
+            self.degraded.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Records why the worker ended, unless it was asked to stop, so the loop never
 /// waits on a worker that no longer answers.
 struct Exit<'a>(&'a WorkerShared);
@@ -360,6 +445,9 @@ fn run(df: DeepFilterFFI, shared: &WorkerShared, input: AudioConsumer, output: A
     // works.
     #[cfg(windows)]
     let scheduling = ProAudioThread::enter().ok();
+    // RTKit can take seconds to answer; the worker would look stalled meanwhile.
+    #[cfg(target_os = "linux")]
+    let _scheduling = WorkerScheduling::promote();
     // The model ran under the DSP loop's floating-point mode and must keep
     // doing so: it is the mode the library's long-silence behaviour was
     // verified in.
@@ -387,6 +475,8 @@ fn serve(
     let mut frame = [0.0_f32; DEEPFILTER_FRAME_SIZE];
     let mut wet = [0.0_f32; DEEPFILTER_FRAME_SIZE];
     let mut last_frame = Instant::now();
+    #[cfg(target_os = "linux")]
+    let mut busy_since = Instant::now();
     while !shared.stop.load(Ordering::Acquire) {
         #[cfg(test)]
         if shared.fault.load(Ordering::Acquire) == TestFault::Exit as u8 {
@@ -399,9 +489,20 @@ fn serve(
                 shared.idle_polls.fetch_add(1, Ordering::Relaxed);
             }
             std::thread::sleep(interval);
+            #[cfg(target_os = "linux")]
+            {
+                busy_since = Instant::now();
+            }
             continue;
         }
         last_frame = Instant::now();
+        // RTKit kills a realtime thread that never blocks with SIGXCPU, and a
+        // model that cannot keep up always finds another frame waiting.
+        #[cfg(target_os = "linux")]
+        if busy_since.elapsed() >= crate::audio::realtime::realtime_busy_limit() {
+            std::thread::sleep(POLL_INTERVAL);
+            busy_since = Instant::now();
+        }
         input.read(&mut frame);
         let inference = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             #[cfg(test)]

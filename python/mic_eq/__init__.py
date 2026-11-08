@@ -66,7 +66,7 @@ def _configure_linux_ort_library() -> None:
     os.environ["ORT_DYLIB_PATH"] = str(root / _LINUX_ORT_LIBRARY)
 
 
-__version__ = "1.22.0"
+__version__ = "1.23.0"
 
 try:
     _configure_ort_dll_directory()

@@ -6,6 +6,7 @@ import faulthandler
 import importlib
 import logging
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -15,7 +16,8 @@ from pathlib import Path
 from typing import Callable, Iterator, Type, cast
 
 from PySide6.QtCore import (
-    QCoreApplication, QEvent, QMessageLogContext, QtMsgType, QTimer, qInstallMessageHandler,
+    QCoreApplication, QEvent, QMessageLogContext, QSocketNotifier, QtMsgType, QTimer,
+    qInstallMessageHandler,
 )
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
@@ -30,6 +32,7 @@ from .desktop_integration import (
     activate_window,
 )
 from .login_startup import APP_ID, LOGIN_STARTUP_ARGUMENT
+from .quick_scene import keep_import_paths
 from .theme import apply_application_theme
 from .virtual_microphone import VirtualMicrophoneWatch
 
@@ -124,6 +127,74 @@ def configure_virtual_microphone() -> None:
         logging.getLogger(__name__).warning(
             "Could not create the AudioForge Mic virtual microphone", exc_info=True
         )
+
+
+def _hide_bundle_from_child_processes() -> None:
+    """Keep the apps AudioForge opens off the frozen bundle's libraries, plugins and QML.
+
+    PyInstaller sets these for this process only, but children inherit them: a file manager then
+    loads the bundle's Qt and refuses to start. Call this once QApplication exists; the dynamic
+    linker read its path when the process started, and Qt has read its plugin path by then.
+    """
+    if sys.platform != "linux" or not getattr(sys, "frozen", False):
+        return
+    original = os.environ.pop("LD_LIBRARY_PATH_ORIG", None)
+    if original is None:
+        os.environ.pop("LD_LIBRARY_PATH", None)
+    else:
+        os.environ["LD_LIBRARY_PATH"] = original
+    os.environ.pop("QT_PLUGIN_PATH", None)
+    # Qt reads this when each QML engine is built, later than this call; the scenes get it directly.
+    qml_paths = os.environ.pop("QML2_IMPORT_PATH", "")
+    keep_import_paths([path for path in qml_paths.split(os.pathsep) if path])
+
+
+@contextlib.contextmanager
+def _quit_on_termination_signal(app: QApplication) -> Iterator[None]:
+    """On Linux, end the session cleanly on SIGTERM and SIGHUP, which is how a logout ends an app.
+
+    Python only runs a signal handler between bytecodes, which Qt's event loop never reaches, so
+    the signal wakes the loop through a pipe. Nothing asks a question: the session is ending.
+    """
+    if sys.platform != "linux":
+        yield
+        return
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)
+    os.set_blocking(write_fd, False)
+    notifier = QSocketNotifier(read_fd, QSocketNotifier.Type.Read)
+
+    def end_session() -> None:
+        from .main_window import SESSION_ENDING_PROPERTY
+
+        try:
+            numbers = os.read(read_fd, 64)
+        except BlockingIOError:
+            return
+        # Python writes the number of every signal it handles here, Ctrl+C's SIGINT too.
+        if not any(number in (signal.SIGTERM, signal.SIGHUP) for number in numbers):
+            return
+        app.setProperty(SESSION_ENDING_PROPERTY, True)
+        app.quit()
+
+    notifier.activated.connect(end_session)
+    previous_wakeup_fd = signal.set_wakeup_fd(write_fd)
+    # A signal already ignored (SIGHUP under nohup) stays ignored.
+    handlers = {
+        number: signal.signal(number, lambda *_: None)
+        for number in (signal.SIGTERM, signal.SIGHUP)
+        if signal.getsignal(number) is not signal.SIG_IGN
+    }
+    try:
+        yield
+    finally:
+        for number, handler in handlers.items():
+            # None: a handler installed outside Python, which cannot be put back.
+            signal.signal(number, signal.SIG_DFL if handler is None else handler)
+        signal.set_wakeup_fd(previous_wakeup_fd)
+        notifier.setEnabled(False)
+        os.close(read_fd)
+        os.close(write_fd)
 
 
 def configure_windows_app_id() -> None:
@@ -479,6 +550,7 @@ def _run_qt_app(
 
     login_startup = not smoke_test and LOGIN_STARTUP_ARGUMENT in sys.argv
     app = QApplication([arg for arg in sys.argv if arg != LOGIN_STARTUP_ARGUMENT])
+    _hide_bundle_from_child_processes()
     # Wayland matches windows to the installed .desktop file by this id.
     app.setDesktopFileName(APP_ID)
     apply_application_theme(app)
@@ -608,7 +680,8 @@ def _run_qt_app(
         # first event, proving that construction and the event loop both work.
         QTimer.singleShot(0, finish_smoke_test)
 
-    code = app.exec()
+    with _quit_on_termination_signal(app):
+        code = app.exec()
     # Destroy the window and everything parented to it while QApplication still exists: left to
     # interpreter shutdown, they are freed in an order that crashes on the native Windows platform.
     window.deleteLater()

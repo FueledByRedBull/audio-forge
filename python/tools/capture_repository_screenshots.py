@@ -22,11 +22,12 @@ from PySide6.QtCore import QByteArray, QObject
 from PySide6.QtGui import QFont, QFontDatabase, QImageWriter
 from PySide6.QtWidgets import QApplication, QWidget
 
-from mic_eq.config import BUILTIN_PRESETS, AppConfig
+from mic_eq.config import BUILTIN_PRESETS, TARGET_CURVES, AppConfig
 from mic_eq.ui import main_window as main_window_module
 from mic_eq.ui.main_window import MainWindow
-from mic_eq.ui.theme import apply_application_theme, message_text_style
+from mic_eq.ui.theme import apply_application_theme
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+from mic_eq.ui.voice_setup_view import DYNAMICS_KEYS
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -106,7 +107,16 @@ def _source_hashes() -> dict[str, str]:
         "python/mic_eq/ui/qml/Title.qml",
         "python/mic_eq/ui/eq_presentation.py",
         "python/mic_eq/ui/eq_graph.py",
+        "python/mic_eq/ui/eq_compare.py",
+        "python/mic_eq/ui/eq_quick_compare.py",
+        "python/mic_eq/ui/qml/BodyText.qml",
+        "python/mic_eq/ui/qml/Chip.qml",
+        "python/mic_eq/ui/qml/NumberBox.qml",
+        "python/mic_eq/ui/qml/ProgressTrack.qml",
+        "python/mic_eq/ui/qml/ScrollPage.qml",
+        "python/mic_eq/ui/qml/VoiceSetup.qml",
         "python/mic_eq/ui/voice_setup_dialog.py",
+        "python/mic_eq/ui/voice_setup_view.py",
     )
     return {path: _sha256(REPO_ROOT / path) for path in paths}
 
@@ -246,17 +256,18 @@ def _prepare_voice_setup(parent: MainWindow) -> VoiceSetupDialog:
     dialog = VoiceSetupDialog(parent, configuration=parent.configuration)
     dialog.recording_timer.stop()
     dialog.resize(780, 760)
-    _select_data(dialog.curve_combo, "broadcast")
-    _select_data(dialog.dynamics_combo, "balanced")
-    dialog.recording_group.setVisible(True)
+    dialog.view_model.pickCurve(list(TARGET_CURVES).index("broadcast"))
+    dialog.view_model.pickDynamics(DYNAMICS_KEYS.index("balanced"))
     dialog.setup_state = "completed"
-    dialog.phase_label.setText("Recommendations ready")
-    dialog.progress_bar.setValue(100)
-    dialog.time_label.setText("Capture and analysis complete")
+    dialog.view_model.set_page(
+        recordingShown=True,
+        phaseText="Recommendations ready",
+        progress=100,
+        timeText="Capture and analysis complete",
+        startText="Apply Voice Setup",
+    )
     dialog.level_meter.set_levels(-24.0, -10.0)
-    dialog.warning_label.setText("Validated settings are ready to review.")
-    dialog.warning_label.setStyleSheet(message_text_style("ok", strong=True))
-    dialog.start_button.setText("Apply Voice Setup")
+    dialog.view_model.set_warning("Validated settings are ready to review.", state="ok", strong=True)
     dialog._show_summary(
         {
             "diagnostics": {
@@ -347,7 +358,7 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
         dialog = _prepare_voice_setup(window)
         dialog.show()
         app.processEvents()
-        eq_recommendation_shown = "max correction" in dialog.eq_label.text()
+        eq_recommendation_shown = "max correction" in dialog.view_model.chip("eq")["text"]
         specification = SCREENSHOTS[2]
         path = output_dir / specification["filename"]
         width, height = _write_optimized_png(dialog, path)

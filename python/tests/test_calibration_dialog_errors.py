@@ -7,7 +7,6 @@ from mic_eq.ui import capture_session
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui import calibration_dialog, voice_setup_dialog
 from mic_eq.ui.engine_session import AudioLease
-from mic_eq.ui.theme import message_text_style
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from engine_fakes import fake_session
 
@@ -76,8 +75,8 @@ def test_stalled_capture_fails_and_releases_only_capture_owned_state(
             text = dialog.view_model.warning_text
             assert (dialog.view_model.warning_state, dialog.view_model.warning_strong) == ("bad", True)
         else:
-            text = dialog.warning_label.text()
-            assert dialog.warning_label.styleSheet() == message_text_style("bad", strong=True)
+            text = dialog.view_model.warning_text
+            assert (dialog.view_model.warning_state, dialog.view_model.warning_strong) == ("bad", True)
         assert "The microphone stopped sending sound" in text and "record again" in text
         assert report.call_args.args[:2] == ("failed", ["recording_failed"])
         assert dialog.recording_timer.isActive() is False

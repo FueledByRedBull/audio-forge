@@ -7,6 +7,7 @@ from typing import Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from ..analysis.voice_setup import MAX_VERIFICATION_BAD_CAPTURES
 from .capture_session import LIVE_OUTPUT_MUTED_NOTICE
 from .components import Glyph
 from .eq_compare import EQComparison
@@ -21,6 +22,8 @@ def _known_state(state: str) -> str:
     return state
 
 
+# The steps of the progress strip, in order.
+STEPS = ("Target", "Level", "Room noise", "Voice", "Review")
 # The label of the main button in each state of the dialog; the scene is wide enough for the longest.
 START_LABELS = (
     "Start Voice Setup",
@@ -39,13 +42,21 @@ START_LABELS = (
     "Recording Verification...",
     "Validating...",
     "Verify Reduced Processing",
-    "Retry Verification (3/3)",
+    f"Retry Verification ({MAX_VERIFICATION_BAD_CAPTURES}/{MAX_VERIFICATION_BAD_CAPTURES})",
     "Compare Final Candidate",
     "Apply & Verify Again",
 )
 # The compression choices of the Dynamics card, and the keys they are stored under.
 DYNAMICS = (("gentle", "Gentle"), ("balanced", "Balanced"), ("dense", "Dense"), ("custom", "Custom"))
 DYNAMICS_KEYS = tuple(key for key, _name in DYNAMICS)
+
+
+def _known_dynamics(key: str) -> str:
+    if key not in DYNAMICS_KEYS:
+        raise ValueError(f"unknown dynamics intensity {key!r}")
+    return key
+
+
 OVERRIDE_LABELS = ("Continue Anyway", "Continue Despite Clipping Risk")
 CHIP_KEYS = ("overall", "eq", "gate", "deesser", "compressor")
 EMPTY_CHIPS = {
@@ -121,9 +132,7 @@ class VoiceSetupView(QObject):
     def __init__(
         self,
         *,
-        steps: tuple[str, ...],
         curves: tuple[tuple[str, str], ...],
-        dynamics: tuple[tuple[str, str], ...],
         dynamics_key: str,
         numbers: Mapping[str, float],
         passage: str,
@@ -137,10 +146,8 @@ class VoiceSetupView(QObject):
         parent: QObject | None = None,
     ):
         super().__init__(parent)
-        self._steps = list(steps)
-        self._choices = {"curve": list(curves), "dynamics": list(dynamics)}
-        keys = [key for key, _name in dynamics]
-        self._index = {"curve": 0, "dynamics": keys.index(dynamics_key) if dynamics_key in keys else 0}
+        self._choices = {"curve": list(curves), "dynamics": list(DYNAMICS)}
+        self._index = {"curve": 0, "dynamics": DYNAMICS_KEYS.index(_known_dynamics(dynamics_key))}
         self._passage = passage
         self._curve_changed = curve_changed
         self._dynamics_changed = dynamics_changed
@@ -165,7 +172,7 @@ class VoiceSetupView(QObject):
     )
     chipMap = Property(dict, lambda self: {chip["key"]: chip for chip in self._chip_list()}, notify=chipsChanged)
     issues = Property(list, lambda self: self.issue_lines, notify=chipsChanged)
-    steps = Property(list, lambda self: self._steps, constant=True)
+    steps = Property(list, lambda self: list(STEPS), constant=True)
     curves = Property(list, lambda self: [name for _key, name in self._choices["curve"]], constant=True)
     dynamics = Property(list, lambda self: [name for _key, name in self._choices["dynamics"]], constant=True)
     curveIndex = Property(int, lambda self: self._index["curve"], notify=choicesChanged)

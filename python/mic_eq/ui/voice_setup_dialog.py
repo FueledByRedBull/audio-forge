@@ -99,7 +99,7 @@ from .setup_messages import (
 )
 from .quick_scene import QML_DIR, load_scene, quick_theme
 from .quick_shell import register_qml_types
-from .voice_setup_view import DYNAMICS, VoiceSetupView
+from .voice_setup_view import VoiceSetupView
 
 logger = logging.getLogger(__name__)
 
@@ -488,7 +488,6 @@ class VoiceSetupDialog(QDialog):
 
     setup_applied = Signal(str)
 
-    STEPS = ("Target", "Level", "Room noise", "Voice", "Review")
     # Which step each state of the state machine belongs to.
     STEP_FOR_STATE = {
         "idle": 0,
@@ -657,9 +656,7 @@ class VoiceSetupDialog(QDialog):
         config = getattr(self.parent(), "config", None)
         configured = str(getattr(config, "voice_setup_dynamics_intensity", "balanced"))
         self.view_model = VoiceSetupView(
-            steps=self.STEPS,
             curves=tuple((key, curve.name) for key, curve in TARGET_CURVES.items()),
-            dynamics=DYNAMICS,
             dynamics_key=configured,
             numbers={
                 "p95": float(getattr(config, "voice_setup_custom_p95_db", 3.5)),

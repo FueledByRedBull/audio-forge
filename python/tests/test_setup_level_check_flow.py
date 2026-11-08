@@ -11,6 +11,7 @@ from mic_eq.ui import calibration_dialog
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.platform_text import SOUND_SETTINGS
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+from mic_eq.ui.voice_setup_view import STEPS
 from capture_helpers import RATE, _voice, finish_take
 from engine_fakes import lend_audio
 from test_auto_eq_candidate_lifecycle import _Owner
@@ -73,7 +74,7 @@ def test_voice_setup_opens_with_a_three_second_level_check(voice) -> None:
     assert voice._recording_duration == 3.0
     assert voice.view_model.shown["phaseText"] == "Checking your level"
     assert "3 seconds" in voice.view_model.warning_text
-    assert voice.view_model.shown["step"] == 1 and voice.STEPS[1] == "Level"
+    assert voice.view_model.shown["step"] == 1 and STEPS[1] == "Level"
     assert voice.view_model.shown["voiceShown"]  # the passage to speak from
     assert not voice.view_model.shown["noiseShown"]
 
@@ -321,7 +322,7 @@ def test_the_meter_names_the_window_peak_in_a_pause(request, fixture, update_met
     for _ in range(14):
         update(-70.0, -34.8)  # the pause after it
 
-    shown = dialog.view_model.warning_text if fixture == "auto_eq" else dialog.view_model.warning_text
+    shown = dialog.view_model.warning_text
     assert shown == "The level is good: your voice peaks at -7.0 dB."
 
 

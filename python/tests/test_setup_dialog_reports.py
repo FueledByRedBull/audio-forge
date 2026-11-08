@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+from mic_eq.ui.voice_setup_view import STEPS
 from test_auto_eq_candidate_lifecycle import (
     _candidate,
     _capture,
@@ -501,7 +502,7 @@ def test_a_rejected_room_noise_take_stays_on_its_own_step_with_a_clean_meter(
         dialog._on_recording_complete(np.full(48_000, np.nan, dtype=np.float32))
 
         assert dialog.setup_state == "idle"
-        assert dialog.STEPS[_current_step(dialog)] == "Room noise"
+        assert STEPS[_current_step(dialog)] == "Room noise"
         assert dialog.view_model.shown["noiseShown"] and not dialog.view_model.shown["targetShown"]
         assert dialog.view_model.shown["recordingTitle"] == "Recording"
         assert dialog.level_meter.measurement_available is False
@@ -516,10 +517,10 @@ def test_a_failed_level_check_stays_on_the_level_step(real_main_window) -> None:
         dialog.setup_state = "level_check"
         dialog._on_recording_failed("The microphone stopped sending sound.")
 
-        assert dialog.STEPS[_current_step(dialog)] == "Level"
+        assert STEPS[_current_step(dialog)] == "Level"
 
         dialog._reset_setup_ui()
-        assert dialog.STEPS[_current_step(dialog)] == "Target"
+        assert STEPS[_current_step(dialog)] == "Target"
 
 
 def test_compare_belongs_to_the_review_alone(real_main_window) -> None:
@@ -528,7 +529,7 @@ def test_compare_belongs_to_the_review_alone(real_main_window) -> None:
         assert not dialog.view_model.shown["compareShown"]
 
         dialog._on_analysis_complete(_voice_setup_result(real_main_window, dialog))
-        assert dialog.STEPS[_current_step(dialog)] == "Review"
+        assert STEPS[_current_step(dialog)] == "Review"
         assert dialog.view_model.shown["recordingTitle"] == "Review"
         assert dialog.view_model.shown["compareShown"] and dialog.view_model.shown["compareEnabled"]
 

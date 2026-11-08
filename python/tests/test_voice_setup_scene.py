@@ -658,9 +658,8 @@ def test_the_picture_takes_no_input(open_dialog) -> None:
 def test_the_view_model_reports_changes_once_and_forwards_its_commands(qapp) -> None:
     calls: list[object] = []
     model = VoiceSetupView(
-        steps=("One", "Two"),
         curves=(("a", "A"), ("b", "B")),
-        dynamics=(("gentle", "G"), ("custom", "C")), dynamics_key="custom",
+        dynamics_key="custom",
         numbers={"p95": 3.5, "peak": 8.0, "lufs": -18.0},
         passage="Read.",
         curve_changed=calls.append,
@@ -712,6 +711,20 @@ def test_the_view_model_reports_changes_once_and_forwards_its_commands(qapp) -> 
     assert calls == [1, "dynamics", "dynamics", "dynamics", "start", "override", "cancel", "retake", "compare"]
 
 
+def test_the_view_model_refuses_an_unknown_dynamics_intensity(qapp) -> None:
+    with pytest.raises(ValueError, match="unknown dynamics intensity 'loud'"):
+        VoiceSetupView(
+            curves=(("a", "A"),),
+            dynamics_key="loud",
+            numbers={"p95": 3.5, "peak": 8.0, "lufs": -18.0},
+            passage="Read.",
+            curve_changed=lambda _index: None,
+            dynamics_changed=lambda: None,
+            start=lambda: None, override=lambda: None, cancel=lambda: None,
+            retake=lambda: None, compare=lambda: None,
+        )
+
+
 def test_a_scene_that_does_not_load_says_so_and_closes_without_starting_anything(qapp, monkeypatch) -> None:
     connected: list[object] = []
     shown: list[str] = []
@@ -748,7 +761,10 @@ def test_the_width_budget_holds_every_label_the_main_and_override_buttons_can_sh
         choices = level_choices(LevelVerdict(code, "", "ok"), "Record Room Noise")
         assert choices.primary in START_LABELS, code
         assert choices.override is None or choices.override in OVERRIDE_LABELS, code
-    assert f"Retry Verification ({MAX_VERIFICATION_BAD_CAPTURES}/{MAX_VERIFICATION_BAD_CAPTURES})" in START_LABELS
+    # The dialog counts the failed attempts up to the limit; the widest count must fit the budget.
+    retry = max((label for label in START_LABELS if label.startswith("Retry Verification")), key=len)
+    for attempt in range(1, MAX_VERIFICATION_BAD_CAPTURES + 1):
+        assert len(f"Retry Verification ({attempt}/{MAX_VERIFICATION_BAD_CAPTURES})") <= len(retry)
 
     # Every literal the dialog passes as the main button's text.
     def values(node: ast.expr) -> set[str]:

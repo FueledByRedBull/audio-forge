@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
 
 from .theme import (
     PRIMARY_ACTION_BUTTON_STYLE,
-    SECONDARY_ACTION_BUTTON_STYLE,
     SUBDUED_TEXT_STYLE,
     status_chip_style,
 )
@@ -28,7 +27,6 @@ from .theme import (
 __all__ = [
     "MARGIN_PANEL",
     "PRIMARY_ACTION_BUTTON_STYLE",
-    "SECONDARY_ACTION_BUTTON_STYLE",
     "SPACING_NORMAL",
     "SPACING_SECTION",
     "SUBDUED_TEXT_STYLE",

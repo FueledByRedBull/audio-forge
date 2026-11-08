@@ -380,14 +380,12 @@ SUBDUED_TEXT_STYLE = f"font-size: 9pt; color: {PALETTE.text_muted};"
 DESCRIPTION_LABEL_STYLE = f"color: {PALETTE.text_muted}; font-size: 9pt; padding: 5px;"
 PROGRESS_LABEL_STYLE = f"font-size: 12pt; color: {PALETTE.text_primary}; font-weight: bold;"
 
-def _button_style(
-    surface: str, text: str, border: str, hover: str, hover_text: str | None = None
-) -> str:
+def _button_style(surface: str, text: str, border: str, hover: str) -> str:
     return (
         f"QPushButton {{ background-color: {surface}; color: {text}; "
         f"font-weight: 600; border: 1px solid {border}; "
         f"border-radius: {RADIUS_CONTROL}px; padding: 6px 10px; }} "
-        f"QPushButton:hover {{ background-color: {hover}; color: {hover_text or text}; }} "
+        f"QPushButton:hover {{ background-color: {hover}; color: {text}; }} "
         f"QPushButton:focus {{ border-color: {PALETTE.text_primary}; }} "
         f"QPushButton:disabled {{ background-color: {PALETTE.action_disabled_surface}; "
         f"color: {PALETTE.action_disabled_text}; "
@@ -406,14 +404,6 @@ PRIMARY_ACTION_BUTTON_STYLE = _button_style(
     PALETTE.text_on_accent,
     PALETTE.action_primary,
     PALETTE.accent_hover,
-)
-
-SECONDARY_ACTION_BUTTON_STYLE = _button_style(
-    PALETTE.action_secondary,
-    PALETTE.text_primary,
-    PALETTE.control_edge,
-    PALETTE.control_hover,
-    PALETTE.hover_text,
 )
 
 PROGRESS_BAR_STYLE = (

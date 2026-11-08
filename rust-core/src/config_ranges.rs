@@ -222,6 +222,10 @@ mod tests {
         assert_eq!(VAD_PRE_GAIN_MAX as f32, 10.0_f32);
         assert_eq!(GATE_MARGIN_MAX_DB as f32, 20.0_f32);
         assert_eq!(RNNOISE_STRENGTH_MAX as f32, 1.0_f32);
+        assert_eq!(VAD_HOLD_MIN_MS as f32, 0.0_f32);
+        assert_eq!(VAD_PRE_GAIN_MIN as f32, 1.0_f32);
+        assert_eq!(GATE_MARGIN_MIN_DB as f32, 0.0_f32);
+        assert_eq!(RNNOISE_STRENGTH_MIN as f32, 0.0_f32);
     }
 
     #[cfg(feature = "vad")]

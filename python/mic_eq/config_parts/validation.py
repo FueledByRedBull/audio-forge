@@ -29,9 +29,9 @@ def validation_ranges() -> Mapping[str, Mapping[str, tuple[float, float]]]:
 
 
 @cache
-def noise_model_ids() -> list[str]:
-    """The noise model ids a saved preset may name."""
-    return _noise_model_ids()
+def noise_model_ids() -> tuple[str, ...]:
+    """The noise model ids a saved preset may name, shared and unchangeable."""
+    return tuple(_noise_model_ids())
 
 
 def _validate_bool(value: object, param_name: str, section: str) -> bool:

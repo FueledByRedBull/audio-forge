@@ -561,7 +561,7 @@ class Preset:
             valid_models = noise_model_ids()
             if model not in valid_models and strict_current_schema:
                 raise PresetValidationError(
-                    f"Invalid model in rnnoise: {model!r} (must be one of {valid_models})"
+                    f"Invalid model in rnnoise: {model!r} (must be one of {list(valid_models)})"
                 )
             if model not in valid_models:
                 model = "rnnoise"

@@ -103,7 +103,13 @@ def test_the_validation_table_is_the_native_table():
     native = mic_eq_core.processing_ranges()
 
     assert validation_ranges() == native
-    assert noise_model_ids() == mic_eq_core.noise_model_ids()
+    assert list(noise_model_ids()) == mic_eq_core.noise_model_ids()
+
+
+def test_the_shared_noise_model_ids_cannot_be_changed_by_a_caller():
+    ids = noise_model_ids()
+    assert isinstance(ids, tuple)
+    assert noise_model_ids() is ids
 
 
 def test_the_shared_table_cannot_be_mutated():
@@ -168,8 +174,9 @@ def test_a_saved_preset_rejects_a_noise_model_outside_the_native_ids():
     data = Preset(name="Ranges").to_dict()
     data["rnnoise"]["model"] = "dpdfnet"
 
-    with pytest.raises(PresetValidationError, match="Invalid model in rnnoise"):
+    with pytest.raises(PresetValidationError, match="Invalid model in rnnoise") as refused:
         Preset.from_dict(data)
+    assert str(refused.value).endswith(f"(must be one of {list(PINNED_NOISE_MODELS)})")
     for model in PINNED_NOISE_MODELS:
         data["rnnoise"]["model"] = model
         assert Preset.from_dict(data).rnnoise.model == model

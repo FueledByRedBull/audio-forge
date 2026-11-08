@@ -31,9 +31,10 @@ from .shared import (
     replace_file,
 )
 from .validation import (
-    VALIDATION_RANGES,
     _validate_bool,
     _validate_range,
+    noise_model_ids,
+    validation_ranges,
 )
 
 _PRESET_SETTING_SECTIONS = (
@@ -397,7 +398,7 @@ class Preset:
             gate_data = data.get("gate", {})
             for path in _preset_value_paths(data):
                 provenance.setdefault(path, _PROVENANCE_MIGRATION_DEFAULT)
-            gate_ranges = VALIDATION_RANGES["gate"]
+            gate_ranges = validation_ranges()["gate"]
             gate_mode_value = gate_data.get("gate_mode", 0)
             if strict_current_schema and (
                 isinstance(gate_mode_value, bool)
@@ -470,7 +471,7 @@ class Preset:
             validated_eq = EQSettings.from_dict(eq_data)
 
             comp_data = data.get("compressor", {})
-            comp_ranges = VALIDATION_RANGES["compressor"]
+            comp_ranges = validation_ranges()["compressor"]
             validated_comp = CompressorSettings(
                 enabled=_validate_bool(comp_data.get("enabled", True), "enabled", "compressor"),
                 threshold_db=validate_range(
@@ -533,7 +534,7 @@ class Preset:
             )
 
             lim_data = data.get("limiter", {})
-            lim_ranges = VALIDATION_RANGES["limiter"]
+            lim_ranges = validation_ranges()["limiter"]
             validated_lim = LimiterSettings(
                 enabled=_validate_bool(lim_data.get("enabled", True), "enabled", "limiter"),
                 ceiling_db=validate_range(
@@ -556,12 +557,12 @@ class Preset:
             )
 
             rnnoise_data = data.get("rnnoise", {})
-            rnnoise_ranges = VALIDATION_RANGES["rnnoise"]
+            rnnoise_ranges = validation_ranges()["rnnoise"]
             model = rnnoise_data.get("model", "rnnoise")
-            valid_models = rnnoise_ranges["model"]
+            valid_models = noise_model_ids()
             if model not in valid_models and strict_current_schema:
                 raise PresetValidationError(
-                    f"Invalid model in rnnoise: {model!r} (must be one of {valid_models})"
+                    f"Invalid model in rnnoise: {model!r} (must be one of {list(valid_models)})"
                 )
             if model not in valid_models:
                 model = "rnnoise"
@@ -577,7 +578,7 @@ class Preset:
             )
 
             deesser_data = data.get("deesser", {})
-            deesser_ranges = VALIDATION_RANGES["deesser"]
+            deesser_ranges = validation_ranges()["deesser"]
             low_cut_hz = validate_range(
                 deesser_data.get("low_cut_hz", 4000.0),
                 *deesser_ranges["low_cut_hz"],

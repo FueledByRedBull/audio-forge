@@ -5,9 +5,8 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import Property, QObject, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from mic_eq import eq_magnitude_response_v2
 from mic_eq.config import EQSettings
@@ -41,26 +40,24 @@ def eq_response_db(eq: EQSettings, frequencies: np.ndarray, sample_rate: float) 
     return total
 
 
-class EQComparisonWidget(QWidget):
-    """The EQ now (dashed) over the proposed EQ (solid). It takes no input."""
+class EQComparison(QObject):
+    """The EQ now (dashed) and the proposed EQ (solid): their curves, their description and their picture."""
 
-    def __init__(self, parent: QWidget | None = None):
+    changed = Signal()
+
+    def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
-        self.setFixedHeight(180)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setAccessibleName("EQ now compared with the proposed EQ")
         self._frequencies = np.geomspace(_F_MIN, _F_MAX, 120)
         self._now = np.zeros(self._frequencies.size)
         self._proposed = np.zeros(self._frequencies.size)
         self._unused_mode_name = ""
-        self.setVisible(False)
+
+    descriptionText = Property(str, lambda self: self.description(), notify=changed)
 
     def set_curves(
         self, now: EQSettings, proposed: EQSettings, sample_rate: float, unused_mode: str = ""
     ) -> None:
-        """Draw both; ``unused_mode`` names a processing mode that skips the EQ now."""
+        """Take both; ``unused_mode`` names a processing mode that skips the EQ now."""
         self._unused_mode_name = _UNUSED_MODE_NAMES.get(unused_mode, "")
         # Each band's own frequency is on the grid, so a narrow peak is drawn at its height.
         marks = [
@@ -73,8 +70,7 @@ class EQComparisonWidget(QWidget):
         self._frequencies = np.unique(np.concatenate([np.geomspace(_F_MIN, _F_MAX, 120), marks]))
         self._now = eq_response_db(now, self._frequencies, sample_rate)
         self._proposed = eq_response_db(proposed, self._frequencies, sample_rate)
-        self.setAccessibleDescription(self.description())
-        self.update()
+        self.changed.emit()
 
     def largest_change(self) -> tuple[float, float]:
         """The biggest difference the proposal makes, in dB (signed), and the Hz it is at."""
@@ -105,15 +101,14 @@ class EQComparisonWidget(QWidget):
         peak = max(float(np.max(np.abs(self._now))), float(np.max(np.abs(self._proposed))), 1.0)
         return max(6.0, 3.0 * math.ceil((peak + 1.0) / 3.0))
 
-    def paintEvent(self, _event) -> None:
-        painter = QPainter(self)
+    def paint(self, painter: QPainter, width: float, height: float) -> None:
+        """Draw both curves with their grid and legend on a ``width`` by ``height`` surface."""
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        width, height = float(self.width()), float(self.height())
         plot = QRectF(
             _MARGIN_LEFT, _MARGIN_TOP,
             width - _MARGIN_LEFT - _MARGIN_RIGHT, height - _MARGIN_TOP - _MARGIN_BOTTOM,
         )
-        painter.fillRect(self.rect(), qcolor(PALETTE.data_surface))
+        painter.fillRect(QRectF(0.0, 0.0, width, height), qcolor(PALETTE.data_surface))
         span = self._range_db()
         log_min, log_max = math.log10(_F_MIN), math.log10(_F_MAX)
 
@@ -124,7 +119,7 @@ class EQComparisonWidget(QWidget):
             return plot.center().y() - plot.height() / 2.0 * max(-1.0, min(1.0, db / span))
 
         grid = qcolor(PALETTE.data_grid)
-        label_font = QFont(self.font())
+        label_font = QFont(painter.font())
         label_font.setPointSizeF(max(7.0, label_font.pointSizeF() - 1.0))
         painter.setFont(label_font)
         muted = qcolor(PALETTE.data_text_muted)
@@ -164,7 +159,6 @@ class EQComparisonWidget(QWidget):
             painter.drawPath(path)
         painter.setClipping(False)
         self._paint_legend(painter, plot, lines, now_color, proposed_color)
-        painter.end()
 
     def _paint_legend(
         self,

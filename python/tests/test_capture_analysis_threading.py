@@ -70,7 +70,7 @@ def voice(real_main_window, monkeypatch):  # noqa: F811
 
 def _take(dialog: VoiceSetupDialog, state: str, audio: np.ndarray, *, finish=finish_take) -> None:
     dialog.setup_state = state
-    dialog.phase_label.setText("Capturing")
+    dialog.view_model.set_page(phaseText="Capturing")
     dialog._current_capture_metadata = None
     finish(dialog, audio)
 
@@ -92,10 +92,10 @@ def test_a_good_room_noise_take_is_kept_filtered_and_voice_comes_next(voice) -> 
     _take(voice, "noise_recording", raw)
 
     assert voice.setup_state == "noise_ready"
-    assert voice.phase_label.text() == "Room noise captured"
-    assert voice.start_button.text() == "Record Voice"
-    assert voice.start_button.isEnabled()
-    assert voice.warning_label.text() == "Now read the passage aloud for the full 10 seconds."
+    assert voice.view_model.shown["phaseText"] == "Room noise captured"
+    assert voice.view_model.shown["startText"] == "Record Voice"
+    assert voice.view_model.shown["startEnabled"]
+    assert voice.view_model.warning_text == "Now read the passage aloud for the full 10 seconds."
     assert np.array_equal(voice.preview_noise_audio, raw)
     assert np.array_equal(voice.noise_audio, filtered_capture_for_analysis(raw, RATE))
 
@@ -105,8 +105,8 @@ def test_a_silent_room_noise_take_moves_on_with_the_silent_reference_advice(voic
 
     assert voice.setup_state == "noise_ready"
     assert voice.noise_audio is not None
-    assert voice.warning_label.text().startswith(SILENT_REFERENCE_GUIDANCE)
-    assert voice.warning_label.text().endswith("Now read the passage aloud for the full 10 seconds.")
+    assert voice.view_model.warning_text.startswith(SILENT_REFERENCE_GUIDANCE)
+    assert voice.view_model.warning_text.endswith("Now read the passage aloud for the full 10 seconds.")
 
 
 def test_a_room_noise_take_the_analysis_cannot_use_is_rejected(voice) -> None:
@@ -114,9 +114,9 @@ def test_a_room_noise_take_the_analysis_cannot_use_is_rejected(voice) -> None:
 
     assert voice.setup_state == "idle"
     assert voice.noise_audio is None and voice.preview_noise_audio is None
-    assert voice.phase_label.text() == "Room-noise capture rejected"
-    assert voice.start_button.text() == "Retake Room Noise"
-    assert all(token in voice.warning_label.text() for token in _TOO_SHORT)
+    assert voice.view_model.shown["phaseText"] == "Room-noise capture rejected"
+    assert voice.view_model.shown["startText"] == "Retake Room Noise"
+    assert all(token in voice.view_model.warning_text for token in _TOO_SHORT)
 
 
 def test_a_silent_voice_take_is_a_microphone_fault(voice) -> None:
@@ -125,9 +125,9 @@ def test_a_silent_voice_take_is_a_microphone_fault(voice) -> None:
 
     assert voice.setup_state == "noise_ready"
     assert voice.voice_audio is None and voice.preview_voice_audio is None
-    assert voice.phase_label.text() == "Voice capture rejected"
-    assert voice.start_button.text() == "Record Voice"
-    assert all(token in voice.warning_label.text() for token in _NO_SOUND)
+    assert voice.view_model.shown["phaseText"] == "Voice capture rejected"
+    assert voice.view_model.shown["startText"] == "Record Voice"
+    assert all(token in voice.view_model.warning_text for token in _NO_SOUND)
     assert voice.analyses == []
 
 
@@ -138,10 +138,10 @@ def test_a_good_voice_take_starts_the_setup_analysis(voice) -> None:
 
     assert voice.setup_state == "analyzing"
     assert voice.analyses == [1]
-    assert voice.start_button.text() == "Analyzing..."
-    assert not voice.start_button.isEnabled()
-    assert voice.phase_label.text() == "Analyzing recordings"
-    assert voice.warning_label.text() == "Building recommendations for your voice chain."
+    assert voice.view_model.shown["startText"] == "Analyzing..."
+    assert not voice.view_model.shown["startEnabled"]
+    assert voice.view_model.shown["phaseText"] == "Analyzing recordings"
+    assert voice.view_model.warning_text == "Building recommendations for your voice chain."
     assert np.array_equal(voice.preview_voice_audio, raw)
     assert np.array_equal(voice.voice_audio, filtered_capture_for_analysis(raw, RATE))
 
@@ -175,7 +175,7 @@ def test_voice_setup_waits_in_its_own_state_and_then_continues(voice, monkeypatc
     prefilter = _gated_voice_take(voice, monkeypatch, "voice_recording")
 
     assert voice.setup_state == "capture_analyzing"
-    assert not voice.start_button.isEnabled()
+    assert not voice.view_model.shown["startEnabled"]
     voice._on_start_clicked()  # nothing to do while the take is checked
     assert voice.setup_state == "capture_analyzing"
     prefilter.release.set()
@@ -189,7 +189,7 @@ def test_closing_voice_setup_while_a_take_is_checked_drops_the_result(voice, mon
 
     voice.reject()
     assert voice._close_requested
-    assert voice.warning_label.text() == "Canceling analysis..."
+    assert voice.view_model.warning_text == "Canceling analysis..."
     prefilter.release.set()
     settle(voice)
 
@@ -210,7 +210,7 @@ def test_starting_over_while_a_take_is_checked_drops_the_result(voice, monkeypat
 
     assert voice.setup_state == "idle"
     assert voice.noise_audio is None and voice.preview_noise_audio is None
-    assert voice.phase_label.text() == "Ready to start setup"
+    assert voice.view_model.shown["phaseText"] == "Ready to start setup"
 
 
 def test_application_quit_joins_a_take_still_being_checked(voice, monkeypatch) -> None:
@@ -237,8 +237,8 @@ def test_a_take_that_cannot_be_post_processed_fails_like_a_recording_error(
 
     assert voice.setup_state == "idle"
     assert voice.noise_audio is None
-    assert voice.start_button.isEnabled()
-    assert "Native input conditioning is unavailable" in voice.warning_label.text()
+    assert voice.view_model.shown["startEnabled"]
+    assert "Native input conditioning is unavailable" in voice.view_model.warning_text
 
 
 # --- Auto-EQ -----------------------------------------------------------------------------
@@ -286,11 +286,11 @@ def test_auto_eq_keeps_a_good_take_filtered_and_starts_the_analysis(auto_eq) -> 
 
     assert auto_eq.recording_state == "analyzing"
     assert auto_eq.analyses == [1]
-    assert auto_eq.start_button.text() == "Analyzing..."
-    assert not auto_eq.start_button.isEnabled()
-    assert auto_eq.retake_btn.isHidden() is False
-    assert auto_eq.warning_label.text() == "Recording complete. Checking it against the tone preset."
-    assert (auto_eq.progress_bar.minimum(), auto_eq.progress_bar.maximum()) == (0, 0)
+    assert auto_eq.view_model.shown["startText"] == "Analyzing..."
+    assert not auto_eq.view_model.shown["startEnabled"]
+    assert auto_eq.view_model.shown["retakeShown"] is True
+    assert auto_eq.view_model.warning_text == "Recording complete. Checking it against the tone preset."
+    assert auto_eq.view_model.shown["progressBusy"] is True
     assert np.array_equal(auto_eq.preview_audio_data, raw)
     assert np.array_equal(auto_eq.audio_data, filtered_capture_for_analysis(raw, RATE))
 
@@ -301,15 +301,15 @@ def test_auto_eq_refuses_a_silent_take_as_a_microphone_fault(auto_eq) -> None:
     assert auto_eq.recording_state == "idle"
     assert auto_eq.audio_data is None and auto_eq.preview_audio_data is None
     assert auto_eq.analyses == []
-    assert all(token in auto_eq.warning_label.text() for token in _NO_SOUND)
-    assert auto_eq.start_button.text() == "Check Level"
+    assert all(token in auto_eq.view_model.warning_text for token in _NO_SOUND)
+    assert auto_eq.view_model.shown["startText"] == "Check Level"
 
 
 def test_auto_eq_waits_in_its_own_state_and_then_continues(auto_eq, monkeypatch) -> None:
     prefilter = _gated_auto_eq_take(auto_eq, monkeypatch)
 
     assert auto_eq.recording_state == "capture_analyzing"
-    assert not auto_eq.start_button.isEnabled()
+    assert not auto_eq.view_model.shown["startEnabled"]
     auto_eq._on_start_clicked()
     assert auto_eq.recording_state == "capture_analyzing"
     prefilter.release.set()
@@ -323,7 +323,7 @@ def test_closing_auto_eq_while_a_take_is_checked_drops_the_result(auto_eq, monke
 
     auto_eq.reject()
     assert auto_eq._close_requested
-    assert auto_eq.warning_label.text() == "Canceling analysis..."
+    assert auto_eq.view_model.warning_text == "Canceling analysis..."
     prefilter.release.set()
     settle(auto_eq)
 
@@ -371,4 +371,4 @@ def test_auto_eq_take_that_cannot_be_post_processed_fails_like_a_recording_error
 
     assert auto_eq.recording_state == "idle"
     assert auto_eq.audio_data is None
-    assert "Native input conditioning is unavailable" in auto_eq.warning_label.text()
+    assert "Native input conditioning is unavailable" in auto_eq.view_model.warning_text

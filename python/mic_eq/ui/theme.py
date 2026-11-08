@@ -376,111 +376,6 @@ def prefers_reduced_motion() -> bool:
         return False
 
 
-SUBDUED_TEXT_STYLE = f"font-size: 9pt; color: {PALETTE.text_muted};"
-DESCRIPTION_LABEL_STYLE = f"color: {PALETTE.text_muted}; font-size: 9pt; padding: 5px;"
-PROGRESS_LABEL_STYLE = f"font-size: 12pt; color: {PALETTE.text_primary}; font-weight: bold;"
-
-def _button_style(
-    surface: str, text: str, border: str, hover: str, hover_text: str | None = None
-) -> str:
-    return (
-        f"QPushButton {{ background-color: {surface}; color: {text}; "
-        f"font-weight: 600; border: 1px solid {border}; "
-        f"border-radius: {RADIUS_CONTROL}px; padding: 6px 10px; }} "
-        f"QPushButton:hover {{ background-color: {hover}; color: {hover_text or text}; }} "
-        f"QPushButton:focus {{ border-color: {PALETTE.text_primary}; }} "
-        f"QPushButton:disabled {{ background-color: {PALETTE.action_disabled_surface}; "
-        f"color: {PALETTE.action_disabled_text}; "
-        f"border-color: {PALETTE.action_disabled_border}; }}"
-    )
-
-
-STEP_STYLE = f"color: {PALETTE.text_muted}; padding: 0 0 6px 0;"
-STEP_CURRENT_STYLE = (
-    f"color: {PALETTE.text_primary}; font-weight: 600; padding: 0 0 4px 0; "
-    f"border-bottom: 2px solid {PALETTE.accent};"
-)
-
-PRIMARY_ACTION_BUTTON_STYLE = _button_style(
-    PALETTE.action_primary,
-    PALETTE.text_on_accent,
-    PALETTE.action_primary,
-    PALETTE.accent_hover,
-)
-
-SECONDARY_ACTION_BUTTON_STYLE = _button_style(
-    PALETTE.action_secondary,
-    PALETTE.text_primary,
-    PALETTE.control_edge,
-    PALETTE.control_hover,
-    PALETTE.hover_text,
-)
-
-PROGRESS_BAR_STYLE = (
-    f"QProgressBar {{ border: none; border-radius: 4px; "
-    f"background-color: {PALETTE.control_surface}; }} "
-    f"QProgressBar::chunk {{ background-color: {PALETTE.accent}; "
-    "border-radius: 4px; }"
-)
-
-
-_STATUS_COLORS = {
-    "ok": (
-        PALETTE.status_ok_surface,
-        PALETTE.status_ok_text,
-        PALETTE.status_ok_border,
-    ),
-    "warn": (
-        PALETTE.status_warn_surface,
-        PALETTE.status_warn_text,
-        PALETTE.status_warn_border,
-    ),
-    "bad": (
-        PALETTE.status_bad_surface,
-        PALETTE.status_bad_text,
-        PALETTE.status_bad_border,
-    ),
-    "info": (
-        PALETTE.status_info_surface,
-        PALETTE.status_info_text,
-        PALETTE.status_info_border,
-    ),
-    "idle": (
-        PALETTE.status_idle_surface,
-        PALETTE.status_idle_text,
-        PALETTE.status_idle_border,
-    ),
-}
-
-
-def status_chip_style(state: str) -> str:
-    background, foreground, border = _STATUS_COLORS.get(
-        state,
-        _STATUS_COLORS["idle"],
-    )
-    return (
-        "QLabel { "
-        f"background-color: {background}; "
-        f"color: {foreground}; "
-        f"border: 1px solid {border}; "
-        f"border-radius: {RADIUS_CONTROL}px; "
-        "padding: 6px 10px; "
-        "font-size: 9pt; "
-        "font-weight: 600; }"
-    )
-
-
-def message_text_style(state: str, *, strong: bool = False) -> str:
-    """Style transient dialog text using the semantic status foreground."""
-
-    _background, foreground, _border = _STATUS_COLORS.get(
-        state,
-        _STATUS_COLORS["idle"],
-    )
-    weight = " font-weight: bold;" if strong else ""
-    return f"color: {foreground}; font-size: 11pt;{weight}"
-
-
 def application_stylesheet() -> str:
     """Return the one stylesheet that gives stock Qt widgets the app's look."""
 
@@ -490,59 +385,31 @@ def application_stylesheet() -> str:
 QToolTip {{ background-color: {p.control_surface}; color: {p.text_primary};
     border: 1px solid {p.border_strong}; padding: 6px 8px; }}
 
-QGroupBox {{ background-color: {p.card_surface}; border: 1px solid {p.border};
-    border-radius: {RADIUS_CARD}px; margin-top: 0; padding: 34px 0 4px 0;
-    font-weight: 600; }}
-QGroupBox::title {{ subcontrol-origin: border; subcontrol-position: top left;
-    padding: 12px 12px 0 12px; color: {p.text_primary}; }}
-QGroupBox QGroupBox {{ background-color: transparent; border: none;
-    border-top: 1px solid {p.border}; border-radius: 0; padding: 36px 0 0 0; }}
-QGroupBox QGroupBox::title {{ padding: 10px 0 0 0; color: {p.text_muted}; }}
-
 QPushButton {{ background-color: {p.action_secondary}; color: {p.text_primary};
     border: 1px solid {p.control_edge}; {control}
     padding: 6px 10px; }}
 QPushButton:hover {{ background-color: {p.control_hover}; color: {p.hover_text}; }}
 QPushButton:pressed {{ background-color: {p.control_surface_alt}; }}
-QPushButton:checked {{ border-color: {p.accent}; color: {p.accent}; }}
 QPushButton:focus {{ border-color: {p.text_primary}; }}
 QPushButton:disabled {{ background-color: {p.action_disabled_surface};
     color: {p.action_disabled_text}; border-color: {p.action_disabled_border}; }}
 
-QComboBox, QAbstractSpinBox, QLineEdit {{ background-color: {p.control_surface};
+QComboBox, QLineEdit {{ background-color: {p.control_surface};
     color: {p.text_primary}; border: 1px solid {p.control_edge}; {control}
     padding: 5px 8px; selection-background-color: {p.accent};
     selection-color: {p.text_on_accent}; }}
-QComboBox:hover, QAbstractSpinBox:hover, QLineEdit:hover {{
+QComboBox:hover, QLineEdit:hover {{
     border-color: {p.text_muted}; }}
-QComboBox:focus, QAbstractSpinBox:focus, QLineEdit:focus {{
+QComboBox:focus, QLineEdit:focus {{
     border-color: {p.accent}; }}
-QComboBox:disabled, QAbstractSpinBox:disabled, QLineEdit:disabled {{
+QComboBox:disabled, QLineEdit:disabled {{
     background-color: {p.action_disabled_surface};
     color: {p.action_disabled_text}; }}
-QAbstractSpinBox {{ qproperty-buttonSymbols: NoButtons; }}
 QComboBox QAbstractItemView {{ background-color: {p.control_surface};
     color: {p.text_primary}; border: 1px solid {p.border_strong};
     selection-background-color: {p.control_hover};
     selection-color: {p.hover_text}; outline: 0; }}
 
-QTextEdit {{ background-color: {p.data_surface};
-    color: {p.text_primary}; border: 1px solid {p.control_edge}; {control}
-    padding: 8px; }}
-
-QSlider::groove:horizontal {{ height: 4px; border-radius: 2px;
-    background-color: {p.control_edge}; }}
-QSlider::sub-page:horizontal {{ border-radius: 2px;
-    background-color: {p.accent}; }}
-QSlider::handle:horizontal {{ width: 14px; height: 14px; margin: -5px 0;
-    border-radius: 7px; background-color: {p.text_primary}; }}
-QSlider::handle:hover, QSlider::handle:focus {{
-    background-color: {p.accent_hover}; }}
-QSlider::sub-page:disabled, QSlider::add-page:disabled {{
-    background-color: {p.border_strong}; }}
-QSlider::handle:disabled {{ background-color: {p.action_disabled_text}; }}
-
-QScrollArea {{ border: none; }}
 QScrollBar:vertical {{ width: 10px; margin: 0; background: transparent; }}
 QScrollBar:horizontal {{ height: 10px; margin: 0; background: transparent; }}
 QScrollBar::handle {{ background-color: {p.control_edge};
@@ -560,10 +427,6 @@ QMenu::item:selected {{ background-color: {p.control_hover}; color: {p.hover_tex
 QMenu::item:disabled {{ color: {p.action_disabled_text}; }}
 QMenu::separator {{ height: 1px; background-color: {p.border};
     margin: 4px 8px; }}
-
-QProgressBar {{ border: none; border-radius: 4px; text-align: center;
-    background-color: {p.control_surface}; color: {p.text_primary}; }}
-QProgressBar::chunk {{ background-color: {p.accent}; border-radius: 4px; }}
 
 QSplitter::handle {{ background: transparent; }}
 """

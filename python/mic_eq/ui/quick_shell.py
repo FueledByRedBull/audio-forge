@@ -31,6 +31,7 @@ from .components import Glyph
 from .desktop_integration import RENDERER_RELAUNCH_ENV, relaunch_with_software_rendering
 from .control_specs import control_label
 from .eq_controls import EQControl
+from .eq_quick_compare import EQComparisonItem
 from .eq_quick_graph import EQGraphItem
 from .quick_meter import QuickMeterItem
 from .quick_scene import QML_DIR, load_scene, quick_theme
@@ -448,6 +449,7 @@ def register_qml_types() -> None:
     """Register the scene's Python types with QML; Qt keeps every registration for the process."""
 
     qmlRegisterType(EQGraphItem, "AudioForge", 1, 0, "EQGraphItem")  # type: ignore[call-overload]
+    qmlRegisterType(EQComparisonItem, "AudioForge", 1, 0, "EQComparisonItem")  # type: ignore[call-overload]
     qmlRegisterType(QuickMeterItem, "AudioForge", 1, 0, "QuickMeterItem")  # type: ignore[call-overload]
     qmlRegisterType(LevelTrace, "AudioForge", 1, 0, "LevelTrace")  # type: ignore[call-overload]
     qmlRegisterUncreatableType(QuickBridge, "AudioForge", 1, 0, "QuickBridge", "The window creates it")  # type: ignore[call-overload]

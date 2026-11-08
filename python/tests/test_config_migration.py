@@ -1199,10 +1199,10 @@ def test_list_presets_skips_files_while_the_imports_folder_cannot_be_resolved(tm
 
 
 def test_base_release_range_is_the_one_in_the_validation_table():
-    from mic_eq.config_parts.validation import VALIDATION_RANGES
+    from mic_eq.config_parts.validation import validation_ranges
     from mic_eq.ui.control_specs import CONTROL_RANGES
 
-    assert VALIDATION_RANGES["compressor"]["base_release_ms"] == (20.0, 200.0)
+    assert validation_ranges()["compressor"]["base_release_ms"] == (20.0, 200.0)
     assert CONTROL_RANGES["compressor"]["base_release_ms"] == (20.0, 200.0)
     for inside in (20.0, 200.0):
         data = Preset(name="Release").to_dict()

@@ -1946,12 +1946,6 @@ pub fn analyze_vad_probabilities(
                 "sample_rate must be positive",
             ));
         }
-        if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "threshold must be finite and between 0 and 1",
-            ));
-        }
-
         let samples = audio
             .as_slice()
             .map_err(|error| {
@@ -1960,31 +1954,51 @@ pub fn analyze_vad_probabilities(
                 ))
             })?
             .to_vec();
-        if samples.iter().any(|sample| !sample.is_finite()) {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "audio must contain only finite samples",
-            ));
-        }
 
         let probabilities =
             py.detach(move || silero_offline_probabilities(&samples, sample_rate, threshold));
 
-        probabilities.map_err(|error| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                "Silero VAD offline analysis failed: {error}"
-            ))
+        probabilities.map_err(|error| match error {
+            OfflineVadError::Input(message) => {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(message)
+            }
+            OfflineVadError::Model(error) => PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                format!("Silero VAD offline analysis failed: {error}"),
+            ),
         })
     })
 }
 
-/// One clamped posterior per model window of `samples`, zero-padding the last.
+/// Why `silero_offline_probabilities` produced no posteriors.
+#[cfg(feature = "vad")]
+#[derive(Debug)]
+pub(crate) enum OfflineVadError {
+    /// The threshold or the audio is unusable; the model never ran.
+    Input(&'static str),
+    /// The model failed to load or to process a window.
+    Model(String),
+}
+
+/// One clamped posterior per model window of `samples`, zero-padding the
+/// last, for a threshold in `0..=1` and finite samples.
 #[cfg(feature = "vad")]
 pub(crate) fn silero_offline_probabilities(
     samples: &[f32],
     sample_rate: u32,
     threshold: f32,
-) -> Result<Vec<f32>, String> {
-    let mut vad = SileroVAD::new(sample_rate, threshold).map_err(|error| error.to_string())?;
+) -> Result<Vec<f32>, OfflineVadError> {
+    if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
+        return Err(OfflineVadError::Input(
+            "threshold must be finite and between 0 and 1",
+        ));
+    }
+    if samples.iter().any(|sample| !sample.is_finite()) {
+        return Err(OfflineVadError::Input(
+            "audio must contain only finite samples",
+        ));
+    }
+    let mut vad = SileroVAD::new(sample_rate, threshold)
+        .map_err(|error| OfflineVadError::Model(error.to_string()))?;
     let window_size = vad.window_size().max(1);
     let frame_count = samples.len().div_ceil(window_size);
     let mut frame = vec![0.0_f32; window_size];
@@ -1993,7 +2007,9 @@ pub(crate) fn silero_offline_probabilities(
     for chunk in samples.chunks(window_size) {
         frame.fill(0.0);
         frame[..chunk.len()].copy_from_slice(chunk);
-        let probability = vad.process(&frame).map_err(|error| error.to_string())?;
+        let probability = vad
+            .process(&frame)
+            .map_err(|error| OfflineVadError::Model(error.to_string()))?;
         probabilities.push(probability.clamp(0.0, 1.0));
     }
 

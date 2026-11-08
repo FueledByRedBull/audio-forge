@@ -1,5 +1,18 @@
 use super::*;
 
+impl Default for SearchWindow {
+    fn default() -> Self {
+        Self {
+            min_search_ms: 5.0,
+            max_search_ms: 500.0,
+            expected_playback_start_ms: None,
+            expected_playback_jitter_ms: None,
+            expected_latency_min_ms: None,
+            expected_latency_max_ms: None,
+        }
+    }
+}
+
 /// Deterministic standard-normal-ish noise (sum of uniforms) without a crate.
 fn noise(seed: u64, length: usize) -> Vec<f64> {
     let mut state = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);

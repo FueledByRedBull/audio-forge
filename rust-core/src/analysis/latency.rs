@@ -71,19 +71,6 @@ pub struct SearchWindow {
     pub expected_latency_max_ms: Option<f64>,
 }
 
-impl Default for SearchWindow {
-    fn default() -> Self {
-        Self {
-            min_search_ms: 5.0,
-            max_search_ms: 500.0,
-            expected_playback_start_ms: None,
-            expected_playback_jitter_ms: None,
-            expected_latency_min_ms: None,
-            expected_latency_max_ms: None,
-        }
-    }
-}
-
 /// Python's `max(a, b)`: `a` unless `b` is greater, so a NaN `b` yields `a`.
 fn py_max(a: f64, b: f64) -> f64 {
     if b > a {

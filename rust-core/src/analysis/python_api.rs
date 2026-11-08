@@ -223,12 +223,6 @@ pub(crate) fn analyze_offline_vad<'py>(
         let threshold = threshold as f32;
         let probabilities = py.detach(move || {
             super::offline_vad_probabilities(&samples, sample_rate, pre_gain, |prepared, rate| {
-                if !threshold.is_finite()
-                    || !(0.0..=1.0).contains(&threshold)
-                    || prepared.iter().any(|sample| !sample.is_finite())
-                {
-                    return Err(());
-                }
                 std::panic::catch_unwind(|| {
                     crate::audio::processor::silero_offline_probabilities(prepared, rate, threshold)
                 })

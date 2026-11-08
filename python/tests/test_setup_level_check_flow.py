@@ -224,9 +224,9 @@ def test_auto_eq_opens_with_a_three_second_level_check(auto_eq) -> None:
     auto_eq._capture_start_timer.stop()
 
     assert auto_eq.recording_state == "level_check"
-    assert auto_eq.start_button.text() == "Checking Level..."
-    assert auto_eq.step_header._labels[1].text() == "Record"
-    assert "3 seconds" in auto_eq.warning_label.text()
+    assert auto_eq.view_model.shown["startText"] == "Checking Level..."
+    assert auto_eq.view_model.shown["step"] == 1 and auto_eq.STEPS[1] == "Record"
+    assert "3 seconds" in auto_eq.view_model.warning_text
 
     auto_eq._begin_recording_capture()
     auto_eq.recording_timer.stop()
@@ -237,8 +237,8 @@ def test_auto_eq_good_level_starts_the_ten_second_take_with_one_click(auto_eq) -
     _check_auto(auto_eq, GOOD)
 
     assert auto_eq.recording_state == "level_result"
-    assert auto_eq.start_button.text() == "Record Passage"
-    assert auto_eq.level_override_btn.isHidden()
+    assert auto_eq.view_model.shown["startText"] == "Record Passage"
+    assert not auto_eq.view_model.shown["overrideShown"]
 
     auto_eq._on_start_clicked()
     auto_eq._capture_start_timer.stop()
@@ -252,16 +252,16 @@ def test_auto_eq_good_level_starts_the_ten_second_take_with_one_click(auto_eq) -
 def test_auto_eq_hot_level_blocks_the_take_until_named_override(auto_eq) -> None:
     _check_auto(auto_eq, HOT)
 
-    assert auto_eq.warning_label.text().startswith(HOT_MESSAGE)
-    assert auto_eq.start_button.text() == "Check Level Again"
-    assert auto_eq.level_override_btn.text() == "Continue Despite Clipping Risk"
+    assert auto_eq.view_model.warning_text.startswith(HOT_MESSAGE)
+    assert auto_eq.view_model.shown["startText"] == "Check Level Again"
+    assert auto_eq.view_model.shown["overrideText"] == "Continue Despite Clipping Risk"
 
     auto_eq._on_start_clicked()
     auto_eq._capture_start_timer.stop()
     assert auto_eq.recording_state == "level_check"
 
     auto_eq._on_recording_complete(HOT)
-    auto_eq.level_override_btn.click()
+    auto_eq._continue_past_level()
     auto_eq._capture_start_timer.stop()
 
     assert auto_eq.recording_state == "recording"
@@ -272,21 +272,21 @@ def test_auto_eq_quiet_level_continues_with_a_warning(auto_eq) -> None:
     _check_auto(auto_eq, QUIET)
 
     verdict = auto_eq._level_verdict
-    text = auto_eq.warning_label.text()
+    text = auto_eq.view_model.warning_text
     assert verdict.code == "too_quiet" and verdict.change_db > 0
     assert "quiet" in text and "-40 dB or louder" in text
     assert f"Raise the microphone level by about {verdict.change_db} dB" in text
     assert "less reliable" in text
-    assert auto_eq.level_override_btn.text() == "Continue Anyway"
+    assert auto_eq.view_model.shown["overrideText"] == "Continue Anyway"
 
 
 def test_auto_eq_nothing_heard_cannot_be_continued_past(auto_eq) -> None:
     _check_auto(auto_eq, SILENT)
 
-    text = auto_eq.warning_label.text()
+    text = auto_eq.view_model.warning_text
     assert auto_eq._level_verdict.code == "silent"
     assert "No sound" in text and "not muted" in text and "right input is selected" in text
-    assert auto_eq.level_override_btn.isHidden()
+    assert not auto_eq.view_model.shown["overrideShown"]
 
 
 def test_auto_eq_keeps_ownership_of_a_processor_it_started_for_the_check(auto_eq) -> None:
@@ -322,7 +322,8 @@ def test_the_meter_names_the_window_peak_in_a_pause(request, fixture, update_met
     for _ in range(14):
         update(-70.0, -34.8)  # the pause after it
 
-    assert dialog.warning_label.text() == "The level is good: your voice peaks at -7.0 dB."
+    shown = dialog.view_model.warning_text if fixture == "auto_eq" else dialog.warning_label.text()
+    assert shown == "The level is good: your voice peaks at -7.0 dB."
 
 
 def test_auto_eq_closing_during_the_check_releases_the_capture(auto_eq) -> None:
@@ -418,7 +419,8 @@ def test_a_clean_room_noise_take_says_nothing_about_clicks(voice) -> None:
     assert voice.warning_label.styleSheet() == message_text_style("ok", strong=True)
 
 
-def test_the_start_button_is_named_by_what_it_says(voice, auto_eq) -> None:
+def test_the_start_button_is_named_by_what_it_says(voice) -> None:
+    # test_calibration_scene.py reads the name of the Auto-EQ scene's main button at each step.
     from PySide6.QtGui import QAccessible
 
     def accessible_name(button) -> str:
@@ -426,12 +428,11 @@ def test_the_start_button_is_named_by_what_it_says(voice, auto_eq) -> None:
         assert interface is not None
         return interface.text(QAccessible.Text.Name)
 
-    for dialog, take in ((voice, GOOD), (auto_eq, HOT)):
-        assert accessible_name(dialog.start_button) == dialog.start_button.text()
-        dialog._on_start_clicked()
-        dialog._capture_start_timer.stop()
-        finish_take(dialog, take)
-        assert accessible_name(dialog.start_button) == dialog.start_button.text()
+    assert accessible_name(voice.start_button) == voice.start_button.text()
+    voice._on_start_clicked()
+    voice._capture_start_timer.stop()
+    finish_take(voice, GOOD)
+    assert accessible_name(voice.start_button) == voice.start_button.text()
 
 
 def _says_live_output_is_muted(label) -> bool:
@@ -441,27 +442,21 @@ def _says_live_output_is_muted(label) -> bool:
     return label.isVisibleTo(label.window()) and read_aloud and "muted" in text and "call" in text
 
 
-def test_the_mute_notice_is_a_warning_chip_shown_only_while_a_recording_mutes_the_output(
-    voice, auto_eq
-) -> None:
+def test_the_mute_notice_is_a_warning_chip_shown_only_while_a_recording_mutes_the_output(voice) -> None:
+    # test_calibration_scene.py checks the Auto-EQ scene's notice in each state of its run.
     from mic_eq.ui.theme import status_chip_style
 
     voice.show()
-    auto_eq.show()
-    for dialog, recording_states, other_states in (
-        (voice, ("level_check", "noise_recording", "voice_recording", "verification_recording"),
-         ("idle", "level_result", "capture_analyzing", "noise_ready", "completed")),
-        (auto_eq, ("level_check", "recording"), ("idle", "level_result", "capture_analyzing", "ready")),
-    ):
-        attribute = "setup_state" if dialog is voice else "recording_state"
-        assert dialog.mute_notice.styleSheet() == status_chip_style("warn")
-        assert not _says_live_output_is_muted(dialog.mute_notice)  # hidden before anything records
-        for state in recording_states:
-            setattr(dialog, attribute, state)
-            assert _says_live_output_is_muted(dialog.mute_notice), state
-        for state in other_states:
-            setattr(dialog, attribute, state)
-            assert not dialog.mute_notice.isVisibleTo(dialog), state
+    recording_states = ("level_check", "noise_recording", "voice_recording", "verification_recording")
+    other_states = ("idle", "level_result", "capture_analyzing", "noise_ready", "completed")
+    assert voice.mute_notice.styleSheet() == status_chip_style("warn")
+    assert not _says_live_output_is_muted(voice.mute_notice)  # hidden before anything records
+    for state in recording_states:
+        voice.setup_state = state
+        assert _says_live_output_is_muted(voice.mute_notice), state
+    for state in other_states:
+        voice.setup_state = state
+        assert not voice.mute_notice.isVisibleTo(voice), state
 
 
 def test_the_live_message_is_not_restyled_while_it_stays_the_same(voice, monkeypatch) -> None:

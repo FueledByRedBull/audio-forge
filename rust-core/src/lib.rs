@@ -11,6 +11,7 @@ use std::time::Instant;
 
 pub mod analysis;
 pub mod audio;
+pub(crate) mod config_ranges;
 pub mod dsp;
 
 #[cfg(test)]
@@ -494,6 +495,8 @@ fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         analysis::python_api::map_causal_vad_probabilities,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(config_ranges::processing_ranges, m)?)?;
+    m.add_function(wrap_pyfunction!(config_ranges::noise_model_ids, m)?)?;
 
     #[cfg(feature = "vad")]
     m.add_function(wrap_pyfunction!(

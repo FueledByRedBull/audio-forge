@@ -286,11 +286,11 @@ def test_auto_eq_keeps_a_good_take_filtered_and_starts_the_analysis(auto_eq) -> 
 
     assert auto_eq.recording_state == "analyzing"
     assert auto_eq.analyses == [1]
-    assert auto_eq.start_button.text() == "Analyzing..."
-    assert not auto_eq.start_button.isEnabled()
-    assert auto_eq.retake_btn.isHidden() is False
-    assert auto_eq.warning_label.text() == "Recording complete. Checking it against the tone preset."
-    assert (auto_eq.progress_bar.minimum(), auto_eq.progress_bar.maximum()) == (0, 0)
+    assert auto_eq.view_model.shown["startText"] == "Analyzing..."
+    assert not auto_eq.view_model.shown["startEnabled"]
+    assert auto_eq.view_model.shown["retakeShown"] is True
+    assert auto_eq.view_model.warning_text == "Recording complete. Checking it against the tone preset."
+    assert auto_eq.view_model.shown["progressBusy"] is True
     assert np.array_equal(auto_eq.preview_audio_data, raw)
     assert np.array_equal(auto_eq.audio_data, filtered_capture_for_analysis(raw, RATE))
 
@@ -301,15 +301,15 @@ def test_auto_eq_refuses_a_silent_take_as_a_microphone_fault(auto_eq) -> None:
     assert auto_eq.recording_state == "idle"
     assert auto_eq.audio_data is None and auto_eq.preview_audio_data is None
     assert auto_eq.analyses == []
-    assert all(token in auto_eq.warning_label.text() for token in _NO_SOUND)
-    assert auto_eq.start_button.text() == "Check Level"
+    assert all(token in auto_eq.view_model.warning_text for token in _NO_SOUND)
+    assert auto_eq.view_model.shown["startText"] == "Check Level"
 
 
 def test_auto_eq_waits_in_its_own_state_and_then_continues(auto_eq, monkeypatch) -> None:
     prefilter = _gated_auto_eq_take(auto_eq, monkeypatch)
 
     assert auto_eq.recording_state == "capture_analyzing"
-    assert not auto_eq.start_button.isEnabled()
+    assert not auto_eq.view_model.shown["startEnabled"]
     auto_eq._on_start_clicked()
     assert auto_eq.recording_state == "capture_analyzing"
     prefilter.release.set()
@@ -323,7 +323,7 @@ def test_closing_auto_eq_while_a_take_is_checked_drops_the_result(auto_eq, monke
 
     auto_eq.reject()
     assert auto_eq._close_requested
-    assert auto_eq.warning_label.text() == "Canceling analysis..."
+    assert auto_eq.view_model.warning_text == "Canceling analysis..."
     prefilter.release.set()
     settle(auto_eq)
 
@@ -371,4 +371,4 @@ def test_auto_eq_take_that_cannot_be_post_processed_fails_like_a_recording_error
 
     assert auto_eq.recording_state == "idle"
     assert auto_eq.audio_data is None
-    assert "Native input conditioning is unavailable" in auto_eq.warning_label.text()
+    assert "Native input conditioning is unavailable" in auto_eq.view_model.warning_text

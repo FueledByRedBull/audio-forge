@@ -95,11 +95,9 @@ def test_a_label_is_read_by_its_text_not_by_a_fixed_name(dialogs) -> None:
 
 
 def test_a_status_label_that_changes_is_read_with_its_new_text(dialogs, qapp) -> None:
-    voice_dialog, auto_eq = dialogs["voice"], dialogs["auto_eq"]
-    for label in (
-        voice_dialog.phase_label, voice_dialog.time_label, voice_dialog.warning_label,
-        auto_eq.time_label, auto_eq.warning_label,
-    ):
+    # test_calibration_scene.py reads the Auto-EQ scene's changing texts.
+    voice_dialog = dialogs["voice"]
+    for label in (voice_dialog.phase_label, voice_dialog.time_label, voice_dialog.warning_label):
         label.setText("Moving closer helps")
         assert _name(label) == "Moving closer helps"
 
@@ -109,12 +107,12 @@ def _visible_text(button: QAbstractButton) -> str:
 
 
 def test_a_button_name_contains_what_the_button_says(dialogs) -> None:
-    voice_dialog, auto_eq = dialogs["voice"], dialogs["auto_eq"]
+    # test_calibration_scene.py reads the names of the Auto-EQ scene's buttons.
+    voice_dialog = dialogs["voice"]
     # The buttons that appear later in a run are named too.
-    for dialog in (voice_dialog, auto_eq):
-        dialog.level_override_btn.setText("Continue Anyway")
-        dialog.level_override_btn.setVisible(True)
-        dialog.retake_btn.setVisible(True)
+    voice_dialog.level_override_btn.setText("Continue Anyway")
+    voice_dialog.level_override_btn.setVisible(True)
+    voice_dialog.retake_btn.setVisible(True)
     # The first-run dialog is a Qt Quick scene; test_first_run_setup_scene.py reads its names.
     mismatched = [
         f"{key}: {button.text()!r} is named {button.accessibleName()!r}"
@@ -192,16 +190,12 @@ def _show(dialog, qapp) -> None:
     qapp.processEvents()
 
 
-@pytest.mark.parametrize("name", ["voice", "auto_eq"])
-def test_a_recording_dialog_visits_its_fields_then_its_buttons_left_to_right(dialogs, qapp, name) -> None:
-    dialog = dialogs[name]
-    dialog.dynamics_combo.setCurrentIndex(dialog.dynamics_combo.findData("custom")) if name == "voice" else None
-    fields = (
-        [dialog.curve_combo, dialog.dynamics_combo, dialog.custom_p95_spin, dialog.custom_peak_spin,
-         dialog.target_lufs_spin]
-        if name == "voice"
-        else [dialog.curve_combo, dialog.target_mode_combo, dialog.smoothing_combo]
-    )
+def test_a_recording_dialog_visits_its_fields_then_its_buttons_left_to_right(dialogs, qapp) -> None:
+    # test_calibration_scene.py walks the Auto-EQ scene's fields and buttons.
+    dialog = dialogs["voice"]
+    dialog.dynamics_combo.setCurrentIndex(dialog.dynamics_combo.findData("custom"))
+    fields = [dialog.curve_combo, dialog.dynamics_combo, dialog.custom_p95_spin, dialog.custom_peak_spin,
+              dialog.target_lufs_spin]
     buttons = [
         dialog.cancel_btn, dialog.retake_btn, dialog.compare_button, dialog.level_override_btn,
         dialog.start_button,

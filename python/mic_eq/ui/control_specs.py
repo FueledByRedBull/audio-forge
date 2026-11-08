@@ -4,18 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..config_parts.validation import VALIDATION_RANGES
+from ..config_parts.validation import validation_ranges
 
 
 GATE_MODES = ("Threshold Only", "VAD Assisted", "VAD Only")
 
 CONTROL_RANGES = {
-    section: {
-        name: bounds
-        for name, bounds in ranges.items()
-        if isinstance(bounds[0], (int, float))
-    }
-    for section, ranges in VALIDATION_RANGES.items()
+    section: ranges
+    for section, ranges in validation_ranges().items()
     if section in {"limiter", "deesser", "compressor", "gate"}
 }
 

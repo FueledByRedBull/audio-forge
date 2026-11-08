@@ -106,7 +106,11 @@ def test_the_library_search_paths_are_read_from_the_dynamic_section(tmp_path, wi
     library = tmp_path / "libexample.so"
     _elf(library, ("RPATH", "/usr/lib"), ("RUNPATH", "$ORIGIN/../lib"), wide=wide, order=order)
     assert linux_package.elf_search_paths(library) == [("RPATH", "/usr/lib"), ("RUNPATH", "$ORIGIN/../lib")]
-    _elf(library)
+    _elf(library, wide=wide, order=order)
+    assert linux_package.elf_search_paths(library) == []
+    # A file with no program headers has no dynamic section at all.
+    library.write_bytes(library.read_bytes()[:16] + struct.pack(
+        order + ("HHIQQQIHHHHHH" if wide else "HHIIIIIHHHHHH"), 1, 62, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
     assert linux_package.elf_search_paths(library) == []
 
 
@@ -121,18 +125,21 @@ def test_library_search_paths_outside_the_bundle_are_refused(tmp_path):
     _elf(bundle / "_internal/PySide6/Qt/plugins/platforms/libqxcb.so", ("RUNPATH", "${ORIGIN}/../../lib"))
     _elf(bundle / "_internal/numpy/core/_umath.so", ("RPATH", "$ORIGIN/../../../../lib"))
     (bundle / "_internal/libtruncated.so").write_bytes(b"\x7fELF\x02\x01\x01" + bytes(11))
+    # An empty entry is the working directory.
+    _elf(bundle / "_internal/libempty.so", ("RUNPATH", "$ORIGIN::"))
 
     errors = linux_package.check_bundle(bundle, "1.2.3")
 
     assert errors == [
+        "_internal/libempty.so has RUNPATH entries outside the bundle: '':''",
         "_internal/libpython3.13.so.1.0 has RUNPATH entries outside the bundle: "
         "/opt/hostedtoolcache/Python/3.13.17/x64/lib",
-        errors[1],
+        errors[2],
         f"_internal/mic_eq/mic_eq_core.cpython-313-x86_64-linux-gnu.so has RPATH entries outside the bundle: "
         f"/usr/lib/x86_64-linux-gnu:{leaked}",
         "_internal/numpy/core/_umath.so has RPATH entries outside the bundle: $ORIGIN/../../../../lib",
     ]
-    assert errors[1].startswith("cannot read the library search paths of _internal/libtruncated.so: ")
+    assert errors[2].startswith("cannot read the library search paths of _internal/libtruncated.so: ")
 
 
 def test_the_xcb_libraries_are_the_ones_qt_links_and_no_system_policy_covers():

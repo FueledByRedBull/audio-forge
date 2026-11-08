@@ -261,13 +261,14 @@ def check_bundle(bundle: Path, version: str) -> list[str]:
         relative = path.relative_to(bundle).as_posix()
         try:
             search_paths = elf_search_paths(path)
-        except (OSError, ValueError, struct.error) as exc:
+        except (OSError, OverflowError, ValueError, struct.error) as exc:
             errors.append(f"cannot read the library search paths of {relative}: {exc}")
             continue
         for tag, value in search_paths:
             outside = [entry for entry in value.split(":") if _outside_bundle(entry, path.parent, bundle)]
             if outside:
-                errors.append(f"{relative} has {tag} entries outside the bundle: {':'.join(outside)}")
+                shown = ":".join(entry or "''" for entry in outside)
+                errors.append(f"{relative} has {tag} entries outside the bundle: {shown}")
     # Releases are built on Ubuntu; the table names Debian packages, so a pacman
     # host (a local Arch build) cannot be checked against it.
     notices = internal / "licenses" / "system"

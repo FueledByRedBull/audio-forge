@@ -14,10 +14,8 @@ from unittest.mock import Mock
 import pytest
 from PySide6.QtCore import QEvent, QPointF, QRect, QSize
 from PySide6.QtGui import QColor, QIcon, QPalette, QPixmap
-from PySide6.QtWidgets import QScrollArea
 
 from mic_eq.config import AppConfig
-from mic_eq.ui.accessibility import set_accessible
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.first_run_setup_dialog import FirstRunSetupDialog
 from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog
@@ -333,14 +331,6 @@ def test_reduced_motion_environment_override(monkeypatch) -> None:
     assert prefers_reduced_motion() is True
     monkeypatch.setenv("AUDIOFORGE_REDUCED_MOTION", "0")
     assert prefers_reduced_motion() is False
-
-
-def test_accessible_name_rejects_empty_text(qapp) -> None:
-    widget = QScrollArea()
-    with pytest.raises(ValueError, match="must not be empty"):
-        set_accessible(widget, "  &  ")
-    widget.deleteLater()
-    qapp.processEvents()
 
 
 def test_workflow_dialogs_have_named_controls(

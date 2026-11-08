@@ -580,6 +580,8 @@ def _offline_vad_parity_inputs() -> list[tuple[str, np.ndarray, int]]:
         ("inf-48k", with_inf, 48_000),
         ("unsupported-rate", rng.standard_normal(4000).astype(np.float32), 1_000),
         ("zero-rate", np.ones(100, dtype=np.float32), 0),
+        ("matrix-48k", voice_like.astype(np.float32).reshape(96, 500), 48_000),
+        ("fortran-matrix-44k1", np.asfortranarray(voice_like[:44_100].reshape(441, 100)), 44_100),
     ]
 
 

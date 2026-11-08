@@ -502,7 +502,10 @@ def _latency_cases() -> dict[str, tuple[Any, Any, int, dict[str, Any]]]:
     clean[route : route + probe.size] = probe
     cases["clean-route"] = (probe, clean, rate, {})
     cases["clean-route-float64"] = (probe.astype(np.float64), clean.astype(np.float64), rate, {})
-    cases["full-scale-clipped"] = (probe, np.clip(clean * 4.0, -1.0, 1.0), rate, {})
+    # The removed Python flattened N-D audio in C order.
+    matrix = np.asfortranarray(clean[: clean.size // 4 * 4].reshape(-1, 4))
+    cases["matrix-inputs"] = (probe.reshape(-1, 2), matrix, rate, {})
+    cases["full-scale-clipped"] =(probe, np.clip(clean * 4.0, -1.0, 1.0), rate, {})
     cases["silence"] = (probe, np.zeros(rate, dtype=np.float32), rate, {})
     with_nan = clean.copy()
     with_nan[100] = np.nan

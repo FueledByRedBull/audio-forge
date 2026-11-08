@@ -90,12 +90,11 @@ class ListeningComparisonView(QObject):
     def play_labels(self) -> dict[str, str]:
         return dict(self._play_labels)
 
-    @property
-    def details_text(self) -> dict[str, str]:
-        return dict(self._details)
-
     def set_page(self, **fields: object) -> None:
         """Change parts of the page; unchanged fields are left alone."""
+        unknown = set(fields) - set(self._page)
+        if unknown:
+            raise KeyError(f"the page has no field {', '.join(sorted(unknown))}")
         page = {**self._page, **fields}
         if page != self._page:
             self._page = page
@@ -103,7 +102,10 @@ class ListeningComparisonView(QObject):
 
     def set_status(self, text: str, state: str | None = None) -> None:
         """Show `text`; without a `state` it keeps the colour it has."""
-        state = self.status_state if state is None else state if state in STATES else "idle"
+        if state is None:
+            state = self.status_state
+        elif state not in STATES:
+            raise ValueError(f"unknown state {state!r}")
         if (text, state) != (self.status_text, self.status_state):
             self.status_text, self.status_state = text, state
             self.statusChanged.emit()
@@ -169,10 +171,6 @@ class RecordingProgressView(QObject):
     prompt = Property(str, lambda self: self._prompt, constant=True)
     progress = Property(int, lambda self: self._progress, notify=progressChanged)
     mutedNotice = Property(str, lambda self: LIVE_OUTPUT_MUTED_NOTICE, constant=True)
-
-    @property
-    def progress_percent(self) -> int:
-        return self._progress
 
     def set_progress(self, progress: int) -> None:
         if progress != self._progress:

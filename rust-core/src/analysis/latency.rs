@@ -2,10 +2,11 @@
 //! analysis that finds it in a recording of the selected output-to-input route.
 //!
 //! This replaced a NumPy implementation and keeps its arithmetic order. The
-//! correlations use `realfft`, which rounds differently from NumPy's
-//! pocketfft, so correlation-derived floats agree to rounding, not bit for bit.
+//! probe's Hann window comes from the caller (NumPy's `np.hanning` in the
+//! bindings). The correlations use `realfft`, which rounds differently from
+//! NumPy's pocketfft, so correlation-derived floats agree to rounding, not
+//! bit for bit.
 
-use std::f64::consts::PI;
 use std::sync::Arc;
 
 use realfft::num_complex::Complex;
@@ -23,6 +24,33 @@ const BARKER_13: [f64; 13] = [
 const REPETITIONS: i64 = 4;
 pub const DEFAULT_ROUTE_KIND: &str = "output_to_input";
 pub const COMPENSATION_BASIS: &str = "measured_output_to_input_route";
+
+/// Why the probe or the analysis failed where the removed Python raised.
+#[derive(Debug)]
+pub enum LatencyError {
+    /// Python's `ValueError`, as `int()` of NaN raised.
+    Value(String),
+    /// Python's `OverflowError`, as `int()` of infinity raised.
+    Overflow(String),
+    /// NumPy's `IndexError` for an index outside an array.
+    Index(String),
+    /// The caller's sample rate conversion or window failed with its own error.
+    Caller(Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl std::fmt::Display for LatencyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Value(message) | Self::Overflow(message) | Self::Index(message) => {
+                formatter.write_str(message)
+            }
+            Self::Caller(error) => error.fmt(formatter),
+        }
+    }
+}
+
+/// `np.hanning(size)` for the probe's coded burst, or the caller's error.
+pub type HannWindow<'a> = dyn FnMut(usize) -> Result<Vec<f64>, LatencyError> + Send + 'a;
 
 /// What `analyze_latency` measured, or why it refused.
 #[derive(Debug, Clone, PartialEq)]
@@ -81,16 +109,22 @@ fn py_max(a: f64, b: f64) -> f64 {
 }
 
 /// Python's `int(x)` for a float: truncation, refusing NaN and infinity.
-fn py_int(value: f64) -> Result<i64, String> {
-    if value.is_finite() {
-        Ok(value.trunc() as i64)
+fn py_int(value: f64) -> Result<i64, LatencyError> {
+    if value.is_nan() {
+        Err(LatencyError::Value(
+            "cannot convert float NaN to integer".to_string(),
+        ))
+    } else if value.is_infinite() {
+        Err(LatencyError::Overflow(
+            "cannot convert float infinity to integer".to_string(),
+        ))
     } else {
-        Err(format!("cannot convert float {value} to integer"))
+        Ok(value.trunc() as i64)
     }
 }
 
 /// Python's `round(x)` for a float: half to even, as an integer.
-fn py_round(value: f64) -> Result<i64, String> {
+fn py_round(value: f64) -> Result<i64, LatencyError> {
     py_int(value.round_ties_even())
 }
 
@@ -177,36 +211,24 @@ fn percentile_75(values: &[f64]) -> f64 {
 }
 
 /// NumPy's negative-index wraparound for a single index.
-fn at(values: &[f64], index: i64) -> Result<f64, String> {
+fn at(values: &[f64], index: i64) -> Result<f64, LatencyError> {
     let length = values.len() as i64;
     let wrapped = if index < 0 { index + length } else { index };
     if (0..length).contains(&wrapped) {
         Ok(values[wrapped as usize])
     } else {
-        Err(format!("index {index} is out of bounds for size {length}"))
+        Err(LatencyError::Index(format!(
+            "index {index} is out of bounds for axis 0 with size {length}"
+        )))
     }
-}
-
-/// `np.hanning(size)`.
-fn hanning(size: usize) -> Vec<f64> {
-    if size == 1 {
-        return vec![1.0];
-    }
-    let span = size as f64 - 1.0;
-    (0..size)
-        .map(|index| {
-            let position = (1.0 - size as f64) + 2.0 * index as f64;
-            0.5 + 0.5 * (PI * position / span).cos()
-        })
-        .collect()
 }
 
 /// A single coded burst and its start offsets inside a probe of `total_samples`.
 fn coded_probe_components(
-    sample_rate: i64,
+    sample_rate: f64,
     total_samples: i64,
-) -> Result<(Vec<f64>, Vec<i64>), String> {
-    let sample_rate = sample_rate as f64;
+    hanning: &mut HannWindow<'_>,
+) -> Result<(Vec<f64>, Vec<i64>), LatencyError> {
     let mut chip_samples = py_round(sample_rate * 0.0005)?.max(4);
     let min_spacing = chip_samples.max(py_round(sample_rate * 0.006)?);
     while chip_samples > 4 {
@@ -221,9 +243,17 @@ fn coded_probe_components(
         .iter()
         .flat_map(|chip| std::iter::repeat_n(*chip, chip_samples as usize))
         .collect();
+    let window = hanning(code.len())?;
+    if window.len() != code.len() {
+        return Err(LatencyError::Value(format!(
+            "the Hann window has {} samples, not {}",
+            window.len(),
+            code.len()
+        )));
+    }
     let mut burst: Vec<f64> = code
         .iter()
-        .zip(hanning(code.len()))
+        .zip(window)
         .map(|(chip, window)| chip * window)
         .collect();
     let mean = numpy_mean(&burst);
@@ -261,12 +291,13 @@ fn coded_probe_components(
 
 /// A deterministic repeated Barker-coded probe, peak-normalized to `amplitude`.
 pub fn generate_probe_signal(
-    sample_rate: i64,
+    sample_rate: f64,
     duration_ms: f64,
     amplitude: f64,
-) -> Result<Vec<f32>, String> {
-    let total_samples = py_int(sample_rate as f64 * (duration_ms / 1000.0))?.max(1);
-    let (burst, offsets) = coded_probe_components(sample_rate, total_samples)?;
+    hanning: &mut HannWindow<'_>,
+) -> Result<Vec<f32>, LatencyError> {
+    let total_samples = py_int(sample_rate * (duration_ms / 1000.0))?.max(1);
+    let (burst, offsets) = coded_probe_components(sample_rate, total_samples, hanning)?;
     let total = total_samples as usize;
     let mut probe = vec![0.0_f64; total];
     for offset in offsets {
@@ -495,7 +526,7 @@ fn earlier_probe_match_z(
     max_lag: i64,
     late_center: i64,
     exclude_radius: i64,
-) -> Result<f64, String> {
+) -> Result<f64, LatencyError> {
     let reference_energy: f64 = reference.iter().map(|x| x * x).sum();
     if reference_energy <= 1e-12 {
         return Ok(0.0);
@@ -540,7 +571,7 @@ fn earlier_probe_match_z(
         reference_energy
             + 2.0 * fraction * (1.0 - fraction) * (autocorrelation_at(1) - reference_energy)
     };
-    let recording_correlation_at = |position: f64| -> Result<f64, String> {
+    let recording_correlation_at = |position: f64| -> Result<f64, LatencyError> {
         let base = position.floor();
         let fraction = position - base;
         let base = base as i64;
@@ -603,7 +634,7 @@ fn earlier_probe_match_z(
     let candidate_correlations = candidate_lags
         .iter()
         .map(|lag| at(&recording_correlations, lag + lag_offset))
-        .collect::<Result<Vec<f64>, String>>()?;
+        .collect::<Result<Vec<f64>, LatencyError>>()?;
     let mut residual_correlations: Vec<f64> = candidate_correlations
         .iter()
         .zip(&first_projection)
@@ -727,13 +758,17 @@ fn mean_removed(signal: &[f64]) -> Vec<f64> {
 /// The probe is played on the selected output and measured on the selected
 /// input: one concrete route, not a symmetric round trip, so the measured
 /// delay is applied directly and never halved.
+///
+/// `sample_rate` is called once the route, the input and its length pass,
+/// where the removed Python first used the rate.
 pub fn analyze_latency(
     reference_probe: Option<&[f64]>,
     recorded_signal: Option<&[f64]>,
-    sample_rate: i64,
+    sample_rate: impl FnOnce() -> Result<f64, LatencyError>,
     window: SearchWindow,
     route_kind: &str,
-) -> Result<LatencyAnalysis, String> {
+    hanning: &mut HannWindow<'_>,
+) -> Result<LatencyAnalysis, LatencyError> {
     if route_kind != DEFAULT_ROUTE_KIND {
         return Ok(LatencyAnalysis {
             route_kind: route_kind.to_string(),
@@ -751,7 +786,7 @@ pub fn analyze_latency(
         ));
     }
 
-    let rate = sample_rate as f64;
+    let rate = sample_rate()?;
     let mut min_lag = py_int((window.min_search_ms / 1000.0) * rate)?;
     let mut max_lag = py_int((window.max_search_ms / 1000.0) * rate)?;
     let expected_min = window
@@ -775,7 +810,7 @@ pub fn analyze_latency(
         ));
     }
 
-    let (mut burst, mut offsets) = coded_probe_components(sample_rate, reference.len() as i64)?;
+    let (mut burst, mut offsets) = coded_probe_components(rate, reference.len() as i64, hanning)?;
     if burst.len() < 16 || offsets.is_empty() {
         burst = reference.clone();
         offsets = vec![0];

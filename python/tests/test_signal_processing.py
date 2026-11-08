@@ -2,6 +2,7 @@
 
 import math
 import operator
+import warnings
 from typing import Any
 
 import numpy as np
@@ -363,40 +364,25 @@ def _reference_analyze_offline_vad(
     return np.clip(probabilities, 0.0, 1.0), "silero"
 
 
-def _taps_use_platform_libm(up: int, down: int) -> bool:
-    """Whether NumPy's sin and exp equal the C library's on this rate pair's taps.
-
-    The native taps call the platform libm, as ``math`` does. NumPy dispatches
-    its own AVX-512 sin/exp on some CPUs, which can differ by an ulp; only then
-    is a tolerance allowed.
-    """
-    divisor = math.gcd(up, down)
-    max_rate = max(up, down) // divisor
-    half_length = 10 * max_rate
-    count = 2 * half_length + 1
-    x = np.pi * ((1.0 / max_rate) * (np.arange(count, dtype=np.float64) - half_length))
-    x = np.where(x, x, np.finfo(np.float64).eps)
-    alpha = (count - 1) / 2.0
-    window_arguments = np.append(
-        5.0 * np.sqrt(1 - ((np.arange(count) - alpha) / alpha) ** 2.0), 5.0
-    )
-    return np.array_equal(np.sin(x), [math.sin(value) for value in x]) and np.array_equal(
-        np.exp(window_arguments), [math.exp(value) for value in window_arguments]
-    )
-
-
 def _assert_same_bits(actual: np.ndarray, expected: np.ndarray) -> None:
     assert actual.dtype == expected.dtype
     assert actual.shape == expected.shape
     assert actual.tobytes() == expected.tobytes()
 
 
+def _outcome(function: Any, *args: Any, **kwargs: Any) -> Any:
+    try:
+        return function(*args, **kwargs)
+    except Exception as error:  # noqa: BLE001 - the exception type is the outcome
+        return type(error)
+
+
 _PARITY_RATES = [(1, 3), (3, 2), (160, 147), (147, 160), (2, 2), (48_000, 44_100), (1, 2), (5, 1)]
 
 
-def _resample_parity_inputs() -> dict[str, np.ndarray]:
+def _resample_parity_inputs() -> dict[str, Any]:
     rng = np.random.default_rng(20261106)
-    inputs: dict[str, np.ndarray] = {"empty": np.zeros(0)}
+    inputs: dict[str, Any] = {"empty": np.zeros(0)}
     for length in (1, 2, 5, 31, 1024, 4410):
         inputs[f"noise-{length}"] = rng.standard_normal(length)
     inputs["silence"] = np.zeros(4800)
@@ -408,7 +394,19 @@ def _resample_parity_inputs() -> dict[str, np.ndarray]:
     inputs["float32"] = rng.standard_normal(2048).astype(np.float32)
     inputs["float32-full-scale"] = inputs["full-scale"].astype(np.float32)
     inputs["int16"] = (rng.standard_normal(1000) * 8000).astype(np.int16)
+    inputs["int16-empty"] = np.zeros(0, dtype=np.int16)
+    inputs["float16"] = rng.standard_normal(700).astype(np.float16)
+    inputs["float16-empty"] = np.zeros(0, dtype=np.float16)
+    inputs["bool"] = rng.random(300) < 0.5
+    inputs["list"] = [0.25, -1.0, 3.0, 0.5, 2.0]
     inputs["strided"] = rng.standard_normal(3000)[::3]
+    complex_noise = rng.standard_normal(1500) + 1j * rng.standard_normal(1500)
+    inputs["complex128"] = complex_noise
+    inputs["complex64"] = complex_noise.astype(np.complex64)
+    inputs["complex-empty"] = np.zeros(0, dtype=np.complex64)
+    # A non-finite imaginary part reaches the real output through the complex product.
+    inputs["complex-nonfinite"] = complex_noise.copy()
+    inputs["complex-nonfinite"][[100, 700]] = [complex(0.5, np.inf), complex(np.nan, 0.25)]
     return inputs
 
 
@@ -424,21 +422,52 @@ def test_native_resample_poly_matches_the_numpy_implementation(name, rates):
         expected = _reference_resample_poly(samples, *rates)
     actual = resample_poly(samples, *rates)
 
-    if rates[0] == rates[1] and samples.dtype == np.int16:
-        # NumPy copied integer audio unchanged; the native identity copy is float64.
-        np.testing.assert_array_equal(actual, expected)
-        assert actual.dtype == np.float64
-        return
-    if _taps_use_platform_libm(*rates):
+    _assert_same_bits(actual, expected)
+
+
+@pytest.mark.parametrize(
+    "rates",
+    [(2.0, 1), (True, 3), (np.int64(3), 2), ("2", 1), (None, 1), (1, -3), (0, 1), (2, 2.5)],
+    ids=repr,
+)
+def test_native_resample_poly_takes_rates_like_the_numpy_implementation(rates):
+    samples = np.random.default_rng(5).standard_normal(64)
+
+    expected = _outcome(_reference_resample_poly, samples, *rates)
+    actual = _outcome(resample_poly, samples, *rates)
+
+    if isinstance(expected, type):
+        assert actual is expected
+    else:
         _assert_same_bits(actual, expected)
-        return
-    # An ulp in a tap moves a float64 output by about 1e-16 of full scale and
-    # can flip a float32 rounding.
-    assert actual.dtype == expected.dtype
-    finite = expected[np.isfinite(expected)]
-    scale = max(1.0, float(np.max(np.abs(finite)))) if finite.size else 1.0
-    tolerance = (1e-6 if expected.dtype == np.float32 else 1e-12) * scale
-    np.testing.assert_allclose(actual, expected, rtol=0, atol=tolerance)
+
+
+# NumPy failed for these dtypes too, and the native core raises TypeError like it.
+@pytest.mark.parametrize(
+    "samples",
+    [np.array(["1", "2", "3"]), np.arange(3).astype("m8[s]")],
+    ids=lambda samples: str(samples.dtype),
+)
+def test_native_resample_poly_refuses_non_numeric_audio_like_the_numpy_implementation(samples):
+    with pytest.raises(TypeError):
+        _reference_resample_poly(samples, 1, 3)
+    with pytest.raises(TypeError):
+        resample_poly(samples, 1, 3)
+    _assert_same_bits(resample_poly(samples, 2, 2), _reference_resample_poly(samples, 2, 2))
+
+
+# The one accepted difference: NumPy resampled these in their own precision;
+# no caller passes them.
+@pytest.mark.parametrize(
+    "dtype", [np.longdouble, np.clongdouble, object], ids=lambda dtype: np.dtype(dtype).name
+)
+def test_native_resample_poly_refuses_extended_and_object_audio(dtype):
+    samples = np.arange(6).astype(dtype)
+
+    with pytest.raises(TypeError, match="float32, float64, complex64 or complex128"):
+        resample_poly(samples, 1, 3)
+    _assert_same_bits(resample_poly(samples, 3, 3), _reference_resample_poly(samples, 3, 3))
+    _assert_same_bits(resample_poly(samples[:0], 1, 3), _reference_resample_poly(samples[:0], 1, 3))
 
 
 def _peak_parity_inputs() -> dict[str, np.ndarray]:
@@ -463,16 +492,20 @@ def _peak_parity_inputs() -> dict[str, np.ndarray]:
     with_inf = rng.standard_normal(600) * 4.0
     with_inf[[10, 200]] = [np.inf, -np.inf]
     inputs["inf"] = with_inf
+    # Thousands of equal-height peaks: NumPy's argsort orders the ties.
+    inputs["tied-square"] = np.where(np.arange(4800) % 96 < 48, 1.0, -1.0)
+    levels = np.random.default_rng(1106).standard_normal(2000)
+    inputs["tied-levels"] = np.round(np.convolve(levels, np.ones(5), "same"))
+    inputs["tied-spikes"] = np.where(np.arange(3000) % 7 == 3, 2.0, 0.0)
     return inputs
 
 
 _PEAK_PARITY_INPUTS = _peak_parity_inputs()
 
 
-# Distances stay below the full-scale input's 96-sample period: its peaks tie,
-# and NumPy's argsort orders large tied inputs by its SIMD sort.
+# Distances beyond the tied inputs' periods make the tie order decide which peaks stay.
 @pytest.mark.parametrize("prominence", [0.0, 0.75, 3.0])
-@pytest.mark.parametrize("distance", [1, 2, 3, 8, 50])
+@pytest.mark.parametrize("distance", [1, 2, 3, 8, 50, 100, 250])
 @pytest.mark.parametrize("name", list(_PEAK_PARITY_INPUTS))
 def test_native_peak_detection_matches_the_numpy_implementation(name, distance, prominence):
     samples = _PEAK_PARITY_INPUTS[name]
@@ -558,6 +591,40 @@ def test_native_causal_vad_mapping_matches_the_numpy_implementation():
     assert map_causal_vad_probabilities(None, positions["frame-ends"], 48_000) is None
 
 
+# The removed Python compared the rate with 0 and truncated it with int().
+@pytest.mark.parametrize(
+    "sample_rate",
+    [44_100.0, 44_100.7, 16_000.5, np.float32(48_000.0), True, 0.5, -0.5, math.nan, math.inf,
+     None, "48000", 2**62],
+    ids=repr,
+)
+def test_native_causal_vad_mapping_takes_rates_like_the_numpy_implementation(sample_rate):
+    probabilities = np.random.default_rng(9).random(300)
+    positions = np.arange(0, 3_000, dtype=np.int64) * 441
+
+    with warnings.catch_warnings(record=True) as expected_warnings:
+        warnings.simplefilter("always")
+        expected = _outcome(
+            _reference_map_causal_vad_probabilities, probabilities, positions, sample_rate
+        )
+    with warnings.catch_warnings(record=True) as actual_warnings:
+        warnings.simplefilter("always")
+        actual = _outcome(map_causal_vad_probabilities, probabilities, positions, sample_rate)
+
+    assert [warning.category for warning in actual_warnings] == [
+        warning.category for warning in expected_warnings
+    ]
+    if expected is None or isinstance(expected, type):
+        assert actual is expected
+    else:
+        _assert_same_bits(actual, expected)
+    # Without usable posteriors the rate is compared but never converted.
+    for unusable in (None, np.zeros(0), np.array([np.nan])):
+        expected = _outcome(_reference_map_causal_vad_probabilities, unusable, positions, sample_rate)
+        actual = _outcome(map_causal_vad_probabilities, unusable, positions, sample_rate)
+        assert actual is expected
+
+
 def _offline_vad_parity_inputs() -> list[tuple[str, np.ndarray, int]]:
     rng = np.random.default_rng(48)
     time = np.arange(48_000) / 48_000
@@ -606,10 +673,7 @@ def test_native_offline_vad_matches_the_numpy_implementation(case, threshold, pr
         assert actual is None
         return
     assert actual is not None
-    if sample_rate == 44_100 and not _taps_use_platform_libm(48_000, 44_100):
-        np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-6)
-    else:
-        _assert_same_bits(actual, expected)
+    _assert_same_bits(actual, expected)
 
 
 def _offline_vad_argument_cases() -> list[tuple[str, Any, Any, dict[str, Any]]]:

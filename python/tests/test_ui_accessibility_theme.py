@@ -9,6 +9,7 @@ import sys
 from dataclasses import asdict, fields
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from PySide6.QtCore import QEvent, QPointF, QRect, QSize
@@ -70,10 +71,15 @@ def test_compact_health_aggregation_and_stop(isolated_main_window, states, mute_
         window._set_health_chip(key, key, "idle")
     for key, state in zip(keys, states):
         window._set_health_chip(key, key, state)
-    window._output_mute_error = mute_error
+    if mute_error:  # the engine refuses the mute; the session keeps it pending
+        window.engine_session.processor = SimpleNamespace(
+            set_output_mute=Mock(side_effect=RuntimeError("unavailable"))
+        )
+        window.engine_session.set_user_muted(False)
+        window.engine_session.processor = window.processor
     window._update_health_summary()
     assert window.shell_texts["health_summary_label"].state == expected
-    window._stop_processing()
+    window.engine_session.stop_now()
     window._update_meters()
     assert window.shell_texts["health_summary_label"].text == "Health: --"
     assert window.shell_texts["health_summary_label"].state == "idle"

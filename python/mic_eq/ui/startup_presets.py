@@ -1,5 +1,7 @@
 """Startup preset ID helpers for the main window."""
 
+from pathlib import Path
+
 from ..config import BUILTIN_PRESETS
 
 STARTUP_BUILTIN_PREFIX = "builtin:"
@@ -48,3 +50,50 @@ def startup_preset_display_name(preset_id: str) -> str:
     if preset_id.startswith(STARTUP_CUSTOM_FILE_PREFIX):
         return preset_id[len(STARTUP_CUSTOM_FILE_PREFIX):]
     return preset_id
+
+
+def startup_preset_selection(
+    preset_id: str,
+    custom_presets: list[tuple[str, Path]],
+) -> tuple[str, tuple[str, Path] | None]:
+    """Resolve custom startup IDs by filename and migrate older name IDs."""
+    normalized = normalize_startup_preset_id(
+        preset_id, tuple(name for name, _filepath in custom_presets)
+    )
+    if normalized.startswith(STARTUP_CUSTOM_FILE_PREFIX):
+        identity = normalized[len(STARTUP_CUSTOM_FILE_PREFIX) :]
+        matches = [item for item in custom_presets if item[1].name == identity]
+        return normalized, matches[0] if len(matches) == 1 else None
+    if not normalized.startswith(STARTUP_CUSTOM_PREFIX):
+        return normalized, None
+
+    identity = normalized[len(STARTUP_CUSTOM_PREFIX) :]
+    matches = [item for item in custom_presets if item[0] == identity]
+    if len(matches) != 1:
+        return normalized, None
+    name, filepath = matches[0]
+    return startup_custom_file_id(filepath.name), (name, filepath)
+
+
+def route_preset_selection(
+    preset_id: str,
+    custom_presets: list[tuple[str, Path]],
+) -> tuple[str, tuple[str, Path]] | None:
+    """Resolve route preset IDs, rejecting ambiguous legacy filename/name IDs."""
+    if preset_id.startswith(STARTUP_CUSTOM_FILE_PREFIX):
+        identity = preset_id[len(STARTUP_CUSTOM_FILE_PREFIX) :]
+        matches = [item for item in custom_presets if item[1].name == identity]
+    elif preset_id.startswith(STARTUP_CUSTOM_PREFIX):
+        identity = preset_id[len(STARTUP_CUSTOM_PREFIX) :]
+        matches = [
+            item
+            for item in custom_presets
+            if item[0] == identity or item[1].name == identity
+        ]
+    else:
+        return None
+
+    if len(matches) != 1:
+        return None
+    name, filepath = matches[0]
+    return startup_custom_file_id(filepath.name), (name, filepath)

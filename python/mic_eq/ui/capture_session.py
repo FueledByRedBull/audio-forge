@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import logging
 import math
 import time
-from typing import Any
+from typing import Any, Protocol
 
 from ..config import DeviceIdentity, coerce_device_identity
 from .device_selection import start_processor_for_route
@@ -79,15 +79,22 @@ class CaptureProgressDeadline:
         return None
 
 
-class CaptureSession:
-    """Own one raw capture's mute and recovery-suppression state."""
+class MutingLease(Protocol):
+    """The part of an ``engine_session.AudioLease`` a capture uses: its output mute."""
 
-    def __init__(self, owner: Any, mute_reason: str) -> None:
-        self.owner = owner
-        self.mute_reason = mute_reason
+    def mute(self, on: bool = True) -> None: ...
+
+    def muted(self) -> bool: ...
+
+
+class CaptureSession:
+    """Own one raw capture's mute and recovery-suppression state; the mute is the lease's."""
+
+    def __init__(self, processor: Any, lease: MutingLease) -> None:
+        self.processor = processor
+        self.lease = lease
         self.deadline: CaptureProgressDeadline | None = None
         self._recording_started = False
-        self._mute_owned = False
         self._recovery_owned = False
         self._previous_recovery_suppressed = False
 
@@ -98,11 +105,10 @@ class CaptureSession:
     def start(self, duration_s: float, **recording_options: Any) -> None:
         if self._recording_started:
             raise RuntimeError("A capture is already active in this session")
-        processor = self.owner.processor
+        processor = self.processor
         self.deadline = CaptureProgressDeadline(duration_s)
         try:
-            self._mute_owned = True
-            set_temporary_mute(self.owner, self.mute_reason, True)
+            self.lease.mute(True)
             get_suppressed = getattr(processor, "is_recovery_suppressed", None)
             if callable(get_suppressed):
                 self._previous_recovery_suppressed = bool(get_suppressed())
@@ -123,7 +129,7 @@ class CaptureSession:
         if not self._recording_started:
             return None
         try:
-            audio = self.owner.processor.stop_raw_recording()
+            audio = self.processor.stop_raw_recording()
         except Exception:
             self.cleanup()
             raise
@@ -134,7 +140,7 @@ class CaptureSession:
     def cleanup(self) -> None:
         if self._recording_started:
             try:
-                self.owner.processor.stop_raw_recording()
+                self.processor.stop_raw_recording()
             except RuntimeError as exc:
                 if "No recording in progress" not in str(exc):
                     logger.warning("Failed to stop raw capture during cleanup: %s", exc)
@@ -146,32 +152,20 @@ class CaptureSession:
     def _release_ownership(self) -> None:
         if self._recovery_owned:
             try:
-                self.owner.processor.set_recovery_suppressed(
+                self.processor.set_recovery_suppressed(
                     self._previous_recovery_suppressed
                 )
             except Exception as exc:
                 logger.warning("Failed to restore audio recovery state: %s", exc)
             else:
                 self._recovery_owned = False
-        if self._mute_owned:
-            try:
-                set_temporary_mute(self.owner, self.mute_reason, False)
-            except Exception as exc:
-                logger.warning("Failed to release temporary capture mute: %s", exc)
-            else:
-                self._mute_owned = False
+        if self.lease.muted():
+            self.lease.mute(False)
 
 
 def find_processor_owner(widget: object) -> Any | None:
     parent: Any = widget
     while parent and not hasattr(parent, "processor"):
-        parent = parent.parent()
-    return parent
-
-
-def find_eq_state_owner(widget: object) -> Any | None:
-    parent: Any = widget
-    while parent and not hasattr(parent, "eq_state"):
         parent = parent.parent()
     return parent
 
@@ -266,17 +260,6 @@ def device_label(device: str | None, default_label: str) -> str:
     return device if device else default_label
 
 
-def start_selected_route(owner: Any) -> object:
-    input_device = owner.input_choice.currentData() if hasattr(owner, "input_choice") else None
-    output_device = owner.output_choice.currentData() if hasattr(owner, "output_choice") else None
-    started = start_processor_for_route(owner.processor, input_device, output_device)
-    # A start the window did not make itself: its "no microphone" notice no longer holds.
-    clear = getattr(owner, "_clear_own_microphone_problem", None)
-    if callable(clear):
-        clear()
-    return started
-
-
 def restart_processor_for_route(
     processor: Any,
     selected: tuple[DeviceIdentity | None, DeviceIdentity | None],
@@ -297,24 +280,6 @@ def restart_processor_for_route(
                 f"{switch_error}; failed to restore previous route: {restore_error}"
             ) from switch_error
         raise RuntimeError(f"{switch_error}; previous route restored") from switch_error
-
-
-def sync_owner_processing_controls(owner: Any) -> None:
-    sync = getattr(owner, "_sync_processing_controls", None)
-    if callable(sync):
-        sync()
-
-
-def set_temporary_mute(owner: Any, reason: str, enabled: bool) -> None:
-    """Set one dialog-owned mute without changing the user's mute preference."""
-    setter = getattr(owner, "set_temporary_output_mute", None)
-    if callable(setter):
-        setter(bool(enabled), reason)
-        return
-    processor = getattr(owner, "processor", None)
-    setter = getattr(processor, "set_output_mute", None)
-    if callable(setter):
-        setter(bool(enabled or getattr(owner, "user_muted", False)))
 
 
 @contextmanager

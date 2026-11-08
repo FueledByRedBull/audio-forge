@@ -25,6 +25,7 @@ from mic_eq.ui.device_selection import (
     OwnMicrophoneError,
     records_own_microphone,
 )
+from mic_eq.ui.engine_session import AudioUnavailable
 
 FOLLOW_DEFAULT = DeviceIdentity(
     name="Follow system default",
@@ -119,7 +120,7 @@ def window(isolated_main_window, monkeypatch):
     window.meter_timer.stop()
     window.diagnostics_timer.stop()
     engine = _Engine(window.processor)
-    window.processor = engine
+    window.processor = window.engine_session.processor = engine
     window.input_choice.addItem(FOLLOW_DEFAULT.name, FOLLOW_DEFAULT)
     window.input_choice.addItem(USB_MIC.name, USB_MIC)
     window.output_choice.addItem(DESTINATION.name, DESTINATION)
@@ -139,7 +140,7 @@ def _start(window: Any, how: str) -> None:
     if how == "button":
         window._on_start_clicked()
     else:
-        window._start_processing(interactive=how == "setup")
+        window.engine_session.start_now(interactive=how == "setup")
 
 
 def _tick(window: Any, times: int = 1) -> None:
@@ -211,7 +212,7 @@ def test_another_failed_start_still_gets_the_generic_advice(window, desktop) -> 
         RuntimeError("audio device is busy")
     )
 
-    window._start_processing()
+    window.engine_session.start_now()
 
     (title, text), = window.dialogs
     assert text.startswith("Failed to start audio processing:\n\naudio device is busy")
@@ -222,11 +223,11 @@ def test_another_failed_start_still_gets_the_generic_advice(window, desktop) -> 
 def test_start_works_again_once_a_real_microphone_returns(window, desktop) -> None:
     window, engine = window
     desktop.default_is_own = True
-    window._start_processing()
+    window.engine_session.start_now()
     assert not engine.running
 
     desktop.default_is_own = False
-    assert window._start_processing() is True
+    assert window.engine_session.start_now() is True
 
     assert engine.running and engine.lifecycle() == ["start"]
     assert window.stop_btn_action.isEnabled()
@@ -250,7 +251,7 @@ def test_start_is_unaffected_off_linux(window, monkeypatch) -> None:
     window, engine = window
     desktop = _platform(monkeypatch, "win32", default_is_own=True)
 
-    assert window._start_processing() is True
+    assert window.engine_session.start_now() is True
 
     assert engine.running and window.dialogs == [] and desktop.queries == 0
 
@@ -260,8 +261,9 @@ def test_voice_setup_and_calibration_starts_refuse_the_same_input(window, deskto
     window, engine = window
     desktop.default_is_own = True
 
-    with pytest.raises(OwnMicrophoneError):
-        capture_session.start_selected_route(window)
+    with pytest.raises(AudioUnavailable) as refused:
+        window.engine_session.borrow("auto_eq_calibration")
+    assert isinstance(refused.value.__cause__, OwnMicrophoneError)
     assert engine.calls == []
     assert _refusals() == 1  # the dialogs' refusals are counted too
 
@@ -279,11 +281,11 @@ def test_a_start_by_a_dialog_clears_the_notice_of_an_earlier_refusal(window, des
     """Auto-EQ, Voice Setup and latency calibration start the engine without the window."""
     window, engine = window
     desktop.default_is_own = True
-    window._start_processing()
+    window.engine_session.start_now()
     assert _banner(window).shown
 
     desktop.default_is_own = False
-    capture_session.start_selected_route(window)
+    window.engine_session.borrow("auto_voice_setup")
 
     assert engine.running and not _banner(window).shown
 
@@ -292,7 +294,7 @@ def test_a_start_by_a_dialog_clears_the_notice_of_an_earlier_refusal(window, des
 
 
 def _running_on_the_default(window: Any, engine: _Engine, desktop: SimpleNamespace) -> None:
-    window._start_processing()
+    window.engine_session.start_now()
     assert engine.running
     engine.calls.clear()
     assert desktop.default_is_own is False
@@ -405,7 +407,7 @@ def test_a_real_microphone_returning_does_not_restart_the_audio(window, desktop)
     assert not engine.running and engine.lifecycle() == ["stop"]
     assert _banner(window).shown  # still says why, until the person presses Start
 
-    window._start_processing()
+    window.engine_session.start_now()
     assert engine.running and not _banner(window).shown
 
 
@@ -426,7 +428,7 @@ def test_a_saved_specific_microphone_keeps_running_when_audioforge_mic_is_the_de
 def test_a_running_input_is_left_alone_off_linux(window, monkeypatch) -> None:
     window, engine = window
     desktop = _platform(monkeypatch, "win32", default_is_own=True)
-    window._start_processing()
+    window.engine_session.start_now()
     engine.calls.clear()
 
     _tick(window, 8)
@@ -456,11 +458,11 @@ def test_the_export_counts_every_refusal_and_stop(window, desktop, tmp_path, mon
     assert _exported(window, tmp_path, monkeypatch)["own_microphone_refusal_count"] == 0
 
     desktop.default_is_own = True
-    window._start_processing(interactive=False)  # refused at Start
-    with pytest.raises(OwnMicrophoneError):
-        capture_session.start_selected_route(window)  # refused for a dialog
+    window.engine_session.start_now(interactive=False)  # refused at Start
+    with pytest.raises(AudioUnavailable):
+        window.engine_session.borrow("latency_calibration")  # refused for a dialog
     desktop.default_is_own = False
-    window._start_processing(interactive=False)
+    window.engine_session.start_now(interactive=False)
     desktop.default_is_own = True
     _tick(window)  # stopped while running
 

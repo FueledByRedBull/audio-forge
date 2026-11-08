@@ -1,5 +1,6 @@
 singleton Look 1.0 Look.qml
 BodyText 1.0 BodyText.qml
+Chip 1.0 Chip.qml
 ChoiceBox 1.0 ChoiceBox.qml
 FocusRing 1.0 FocusRing.qml
 KeyButton 1.0 KeyButton.qml

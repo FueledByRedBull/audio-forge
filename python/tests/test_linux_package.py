@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -68,6 +69,70 @@ def test_ffmpeg_and_a_bundle_without_the_xcb_libraries_are_refused(tmp_path):
     assert "bundles FFmpeg, which the app never uses: _internal/PySide6/Qt/lib/libavcodec.so.61" in errors
     assert "bundles FFmpeg, which the app never uses: _internal/libswresample.so.5" in errors
     assert len(errors) == 3
+
+
+def _elf(path, *search_paths, wide=True, order="<"):
+    """Write a minimal shared object whose dynamic section holds ``search_paths`` (tag, value)."""
+    strtab = b"\0"
+    entries = []
+    for tag, value in search_paths:
+        entries.append(({"RPATH": 15, "RUNPATH": 29}[tag], len(strtab)))
+        strtab += value.encode() + b"\0"
+    header, program, dynamic = ("HHIQQQIHHHHHH", "IIQQQQQQ", "qQ") if wide else ("HHIIIIIHHHHHH", "IIIIIIII", "iI")
+    base = 0x10000
+    program_offset = 16 + struct.calcsize(order + header)
+    dynamic_offset = program_offset + 2 * struct.calcsize(order + program)
+    entries += [(5, base + dynamic_offset + (len(entries) + 3) * struct.calcsize(order + dynamic)), (10, len(strtab)), (0, 0)]
+    table = b"".join(struct.pack(order + dynamic, tag, value) for tag, value in entries)
+    total = dynamic_offset + len(table) + len(strtab)
+
+    def segment(kind, offset, size):
+        if wide:
+            return struct.pack(order + program, kind, 4, offset, base + offset, base + offset, size, size, 8)
+        return struct.pack(order + program, kind, offset, base + offset, base + offset, size, size, 4, 8)
+
+    ident = b"\x7fELF" + bytes((2 if wide else 1, 1 if order == "<" else 2, 1)) + bytes(9)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        ident
+        + struct.pack(order + header, 3, 62, 1, 0, program_offset, 0, 0, program_offset,
+                      struct.calcsize(order + program), 2, 0, 0, 0)
+        + segment(1, 0, total) + segment(2, dynamic_offset, len(table)) + table + strtab
+    )
+
+
+@pytest.mark.parametrize(("wide", "order"), [(True, "<"), (False, ">")])
+def test_the_library_search_paths_are_read_from_the_dynamic_section(tmp_path, wide, order):
+    library = tmp_path / "libexample.so"
+    _elf(library, ("RPATH", "/usr/lib"), ("RUNPATH", "$ORIGIN/../lib"), wide=wide, order=order)
+    assert linux_package.elf_search_paths(library) == [("RPATH", "/usr/lib"), ("RUNPATH", "$ORIGIN/../lib")]
+    _elf(library)
+    assert linux_package.elf_search_paths(library) == []
+
+
+def test_library_search_paths_outside_the_bundle_are_refused(tmp_path):
+    bundle = _bundle(tmp_path)
+    module = bundle / "_internal/mic_eq/mic_eq_core.cpython-313-x86_64-linux-gnu.so"
+    # What `maturin develop` left in the 1.22.0 module on a runner with patchelf.
+    leaked = "/home/runner/work/audio-forge/audio-forge/target/release/build/libspa-sys-78b153ad82a8aae9/out"
+    _elf(module, ("RPATH", f"/usr/lib/x86_64-linux-gnu:$ORIGIN:{leaked}"))
+    _elf(bundle / "_internal/libpython3.13.so.1.0", ("RUNPATH", "/opt/hostedtoolcache/Python/3.13.17/x64/lib"))
+    _elf(bundle / "_internal/PySide6/Qt/lib/libQt6Core.so.6", ("RUNPATH", "$ORIGIN"))
+    _elf(bundle / "_internal/PySide6/Qt/plugins/platforms/libqxcb.so", ("RUNPATH", "${ORIGIN}/../../lib"))
+    _elf(bundle / "_internal/numpy/core/_umath.so", ("RPATH", "$ORIGIN/../../../../lib"))
+    (bundle / "_internal/libtruncated.so").write_bytes(b"\x7fELF\x02\x01\x01" + bytes(11))
+
+    errors = linux_package.check_bundle(bundle, "1.2.3")
+
+    assert errors == [
+        "_internal/libpython3.13.so.1.0 has RUNPATH entries outside the bundle: "
+        "/opt/hostedtoolcache/Python/3.13.17/x64/lib",
+        errors[1],
+        f"_internal/mic_eq/mic_eq_core.cpython-313-x86_64-linux-gnu.so has RPATH entries outside the bundle: "
+        f"/usr/lib/x86_64-linux-gnu:{leaked}",
+        "_internal/numpy/core/_umath.so has RPATH entries outside the bundle: $ORIGIN/../../../../lib",
+    ]
+    assert errors[1].startswith("cannot read the library search paths of _internal/libtruncated.so: ")
 
 
 def test_the_xcb_libraries_are_the_ones_qt_links_and_no_system_policy_covers():

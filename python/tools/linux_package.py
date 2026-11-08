@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
@@ -162,6 +163,63 @@ def project_version() -> str:
         return tomllib.load(handle)["project"]["version"]
 
 
+PT_LOAD, PT_DYNAMIC = 1, 2
+DT_NULL, DT_STRTAB, DT_STRSZ, DT_RPATH, DT_RUNPATH = 0, 5, 10, 15, 29
+
+
+def elf_search_paths(path: Path) -> list[tuple[str, str]]:
+    """The DT_RPATH and DT_RUNPATH strings of the ELF file ``path`` as (tag, value); none for other files."""
+    with path.open("rb") as handle:
+        ident = handle.read(16)
+        if len(ident) < 16 or ident[:4] != b"\x7fELF":
+            return []
+        order = "<" if ident[5] == 1 else ">"
+        if ident[4] == 2:
+            header, program, dynamic, picks = "HHIQQQIHHHHHH", "IIQQQQQQ", "qQ", (0, 2, 3, 5)
+        else:
+            header, program, dynamic, picks = "HHIIIIIHHHHHH", "IIIIIIII", "iI", (0, 1, 2, 4)
+        fields = struct.unpack(order + header, handle.read(struct.calcsize(order + header)))
+        phoff, phentsize, phnum = fields[4], fields[8], fields[9]
+        segments = []  # (type, file offset, virtual address, file size)
+        for index in range(phnum):
+            handle.seek(phoff + index * phentsize)
+            entry = struct.unpack(order + program, handle.read(struct.calcsize(order + program)))
+            segments.append(tuple(entry[pick] for pick in picks))
+        dynamic_segment = next((segment for segment in segments if segment[0] == PT_DYNAMIC), None)
+        if dynamic_segment is None:
+            return []
+        handle.seek(dynamic_segment[1])
+        raw = handle.read(dynamic_segment[3])
+        size = struct.calcsize(order + dynamic)
+        entries = []
+        for tag, value in struct.iter_unpack(order + dynamic, raw[: len(raw) - len(raw) % size]):
+            if tag == DT_NULL:
+                break
+            entries.append((tag, value))
+        wanted = [(tag, value) for tag, value in entries if tag in (DT_RPATH, DT_RUNPATH)]
+        if not wanted:
+            return []
+        values = dict(entries)
+        strtab = values.get(DT_STRTAB)
+        load = next((segment for segment in segments if segment[0] == PT_LOAD
+                     and strtab is not None and segment[2] <= strtab < segment[2] + segment[3]), None)
+        if load is None or DT_STRSZ not in values:
+            raise ValueError(f"{path} has a search path but no readable string table")
+        handle.seek(load[1] + strtab - load[2])
+        table = handle.read(values[DT_STRSZ])
+    names = {DT_RPATH: "RPATH", DT_RUNPATH: "RUNPATH"}
+    return [(names[tag], os.fsdecode(table[value:].split(b"\0", 1)[0])) for tag, value in wanted]
+
+
+def _outside_bundle(entry: str, origin: Path, bundle: Path) -> bool:
+    """Whether the library search path ``entry`` of a file in ``origin`` leaves ``bundle``."""
+    for token in ("$ORIGIN", "${ORIGIN}"):
+        if entry == token or entry.startswith(token + "/"):
+            target = os.path.normpath(os.path.join(origin, entry[len(token):].lstrip("/")))
+            return not Path(target).is_relative_to(os.path.normpath(bundle))
+    return True
+
+
 def check_bundle(bundle: Path, version: str) -> list[str]:
     """Problems that make ``bundle`` unfit to ship; empty when it is ready."""
     internal = bundle / "_internal"
@@ -195,6 +253,21 @@ def check_bundle(bundle: Path, version: str) -> list[str]:
             errors.append(f"bundles FFmpeg, which the app never uses: {relative}")
         if any(f"PySide6/Qt/plugins/{plugin}" in relative for plugin in UNUSED_QT_PLUGINS):
             errors.append(f"bundles an unused Qt plugin: {relative}")
+    # A search path outside the bundle makes the loader look on the user's
+    # machine (a build host's home or toolcache) before the system libraries.
+    for path in sorted(bundle.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        relative = path.relative_to(bundle).as_posix()
+        try:
+            search_paths = elf_search_paths(path)
+        except (OSError, ValueError, struct.error) as exc:
+            errors.append(f"cannot read the library search paths of {relative}: {exc}")
+            continue
+        for tag, value in search_paths:
+            outside = [entry for entry in value.split(":") if _outside_bundle(entry, path.parent, bundle)]
+            if outside:
+                errors.append(f"{relative} has {tag} entries outside the bundle: {':'.join(outside)}")
     # Releases are built on Ubuntu; the table names Debian packages, so a pacman
     # host (a local Arch build) cannot be checked against it.
     notices = internal / "licenses" / "system"

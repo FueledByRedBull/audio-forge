@@ -84,7 +84,7 @@ def test_refused_backend_warns_and_the_picker_keeps_the_previous_one(window, war
     window.processor.refused.add("deepfilter-ll")
     edits: list[str] = []
     window.noise_suppression_state.configurationEdited.connect(edits.append)
-    history = (window._configuration_history.cursor, window._configuration_history.size)
+    history = (window.configuration.history.cursor, window.configuration.history.size)
     _pick(window, 1)
     assert len(warnings) == 1
     title, body = warnings[0]
@@ -95,7 +95,7 @@ def test_refused_backend_warns_and_the_picker_keeps_the_previous_one(window, war
     assert window.processor.switches == ["deepfilter-ll", "rnnoise"]
     assert edits == []
     assert not window._history_timer.isActive()
-    assert (window._configuration_history.cursor, window._configuration_history.size) == history
+    assert (window.configuration.history.cursor, window.configuration.history.size) == history
 
 
 def test_switched_backend_is_confirmed_in_the_status_line(window, warnings) -> None:

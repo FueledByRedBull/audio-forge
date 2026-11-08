@@ -255,7 +255,6 @@ class _Session:
 @pytest.fixture
 def auto_eq(qapp, monkeypatch):
     monkeypatch.setattr(calibration_dialog, "CaptureSession", _Session)
-    monkeypatch.setattr(calibration_dialog, "_start_selected_route", lambda _owner: None)
     owner = _Owner()
     dialog = CalibrationDialog(owner)
     analyses: list[int] = []

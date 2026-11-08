@@ -64,8 +64,11 @@ const COMPRESSOR_DEFAULT_RELEASE_TENTH_MS: u64 = 2000; // 200ms * 10
 // 15 ms reserve at the steady-state center so ordinary scheduler jitter cannot
 // drain the queue between DSP writes. This intentionally trades 10 ms of
 // engine latency for deterministic callback headroom.
+#[cfg(not(target_os = "linux"))]
 const OUTPUT_PRIME_MS: u32 = 30;
+#[cfg(not(target_os = "linux"))]
 const OUTPUT_TARGET_HIGH_MS: u32 = 40;
+#[cfg(not(target_os = "linux"))]
 const OUTPUT_HARD_BACKLOG_MS: u32 = 60;
 // While the device really calls back every 10 ms and no resampler writes in
 // 1024-sample chunks, the queue needs only one callback plus a reserve.
@@ -79,6 +82,21 @@ const OUTPUT_LOW_PERIOD_CALLBACK_MAX_MS: u32 = 6;
 const OUTPUT_LOW_PERIOD_TARGET_LOW_MS: u32 = 6;
 const OUTPUT_LOW_PERIOD_TARGET_HIGH_MS: u32 = 10;
 const OUTPUT_LOW_PERIOD_HARD_BACKLOG_MS: u32 = 30;
+// PipeWire runs the input and output callbacks in one graph cycle, so the queue
+// needs no callback-sized reserve. A 15 ms center was the smallest with no
+// underruns at quanta of both 256 and 1024; 10 ms already dropped audio at 256.
+#[cfg(target_os = "linux")]
+const OUTPUT_PRIME_MS: u32 = 14;
+#[cfg(target_os = "linux")]
+const OUTPUT_TARGET_HIGH_MS: u32 = 16;
+#[cfg(target_os = "linux")]
+const OUTPUT_HARD_BACKLOG_MS: u32 = 35;
+// A write can land before that cycle's read, so the fill it sees may hold a whole
+// cycle more than the target. Room for that keeps long quanta out of the catch-up.
+const OUTPUT_HARD_BACKLOG_RESERVE_MS: u32 = 5;
+// pw_stream delivers a capture buffer and takes a playback buffer one cycle later
+// each. The queues do not hold these two cycles; delay measured on the graph does.
+const PIPEWIRE_STREAM_DELAY_CYCLES: u64 = 2;
 const OUTPUT_DRIFT_MAX_RATIO_ADJUST: f32 = 0.008;
 const OUTPUT_DRIFT_MAX_EXPANSION_RATIO: f32 = 0.96;
 const DSP_THREAD_READY_TIMEOUT_MS: u64 = 5_000;

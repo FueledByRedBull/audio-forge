@@ -581,9 +581,9 @@ def test_resetting_a_band_is_one_undo_step_and_a_default_band_records_nothing(
     window = isolated_main_window
     state = window.eq_state
     state.set_band_value(4, "gain_db", 3.0)
-    window._commit_pending_configuration_snapshot()
-    assert window.preset_modified is True
-    history = window._configuration_history
+    window.configuration.commit_edit()
+    assert window.configuration.identity.modified is True
+    history = window.configuration.history
     before = history.size
     model = window.eq_presentation.graph_model
     x, y = model.band_handle_position(4, 640, 260)
@@ -596,7 +596,7 @@ def test_resetting_a_band_is_one_undo_step_and_a_default_band_records_nothing(
     assert history.size == before + 1
     assert history.current is not None and history.current.label == "Reset EQ band"
     # The only difference from the loaded sound is gone.
-    assert window.preset_modified is False
+    assert window.configuration.identity.modified is False
     window.undo_configuration()
     assert state.get_band(4).gain_db == 3.0
-    assert window.preset_modified is True
+    assert window.configuration.identity.modified is True

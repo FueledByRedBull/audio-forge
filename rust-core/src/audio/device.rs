@@ -1,7 +1,13 @@
 //! Audio device enumeration and selection.
 #![allow(clippy::useless_conversion)] // PyO3 proc-macro wrappers trigger false positives.
 
+#[cfg(target_os = "linux")]
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::collections::HashSet;
+#[cfg(target_os = "linux")]
+use std::rc::Rc;
 use std::str::FromStr;
 
 use cpal::traits::{DeviceTrait, HostTrait};
@@ -160,6 +166,13 @@ fn collect_devices(input: bool) -> PyResult<Vec<DeviceInfo>> {
             .collect()
     };
 
+    #[cfg(target_os = "linux")]
+    let app_streams = if host.id() == cpal::HostId::PipeWire {
+        pipewire_stream_nodes()
+    } else {
+        HashSet::new()
+    };
+
     let mut ordinals: HashMap<String, u32> = HashMap::new();
     let mut result = Vec::with_capacity(devices.len());
     for device in devices {
@@ -167,12 +180,13 @@ fn collect_devices(input: bool) -> PyResult<Vec<DeviceInfo>> {
             continue;
         };
         #[cfg(target_os = "linux")]
-        let name =
-            match (host.id() == cpal::HostId::PipeWire).then(|| pipewire_listing(&device, input)) {
-                Some(PipeWireListing::Hide) => continue,
-                Some(PipeWireListing::Rename(label)) => label.to_string(),
-                _ => name,
-            };
+        let name = match (host.id() == cpal::HostId::PipeWire)
+            .then(|| pipewire_listing(&device, input, &app_streams))
+        {
+            Some(PipeWireListing::Hide) => continue,
+            Some(PipeWireListing::Rename(label)) => label.to_string(),
+            _ => name,
+        };
         let ordinal = ordinals.entry(name.clone()).or_default();
         let name_ordinal = *ordinal;
         *ordinal = ordinal.saturating_add(1);
@@ -210,8 +224,13 @@ enum PipeWireListing {
 /// What the pickers show for one PipeWire node, matching what WASAPI lists:
 /// inputs are capture devices, not the monitors of every sink, and never
 /// AudioForge's own virtual microphone (that would feed the output back in).
+/// Apps' own streams, this one's included, are not devices at all.
 #[cfg(target_os = "linux")]
-fn pipewire_listing(device: &Device, input: bool) -> PipeWireListing {
+fn pipewire_listing(
+    device: &Device,
+    input: bool,
+    app_streams: &HashSet<String>,
+) -> PipeWireListing {
     let Ok(id) = device.id() else {
         return PipeWireListing::Keep;
     };
@@ -219,10 +238,95 @@ fn pipewire_listing(device: &Device, input: bool) -> PipeWireListing {
         // cpal's alias for capturing the default sink's monitor.
         "sink_default" => PipeWireListing::Hide,
         "input_default" | "output_default" => PipeWireListing::Rename("Follow system default"),
+        name if app_streams.contains(name) => PipeWireListing::Hide,
         name if input && name == super::virtual_mic::SOURCE_NODE_NAME => PipeWireListing::Hide,
         _ if input && device.supports_output() => PipeWireListing::Hide,
         _ => PipeWireListing::Keep,
     }
+}
+
+/// How long a device listing waits for PipeWire to list its streams.
+#[cfg(target_os = "linux")]
+const STREAM_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The node names of apps' PipeWire streams, which cpal lists among the devices
+/// without saying which they are. Empty if PipeWire cannot answer in time.
+#[cfg(target_os = "linux")]
+fn pipewire_stream_nodes() -> HashSet<String> {
+    use pipewire as pw;
+    use pw::context::ContextRc;
+    use pw::core::PW_ID_CORE;
+    use pw::main_loop::MainLoopRc;
+    use pw::types::ObjectType;
+
+    fn query() -> Result<HashSet<String>, pw::Error> {
+        let mainloop = MainLoopRc::new(None)?;
+        let context = ContextRc::new(&mainloop, None)?;
+        let core = context.connect_rc(None)?;
+        let registry = core.get_registry_rc()?;
+        let streams = Rc::new(RefCell::new(HashSet::new()));
+        let _registry_listener = registry
+            .add_listener_local()
+            .global({
+                let streams = Rc::clone(&streams);
+                move |global| {
+                    let Some(props) = global.props.filter(|_| global.type_ == ObjectType::Node)
+                    else {
+                        return;
+                    };
+                    if props
+                        .get("media.class")
+                        .is_some_and(|class| class.starts_with("Stream/"))
+                    {
+                        if let Some(name) = props.get("node.name") {
+                            streams.borrow_mut().insert(name.to_string());
+                        }
+                    }
+                }
+            })
+            .register();
+        let pending = core.sync(0)?;
+        let _core_listener = core
+            .add_listener_local()
+            .done({
+                let mainloop = mainloop.clone();
+                move |id, seq| {
+                    if id == PW_ID_CORE && seq == pending {
+                        mainloop.quit();
+                    }
+                }
+            })
+            .error({
+                let mainloop = mainloop.clone();
+                move |_id, _seq, _res, _message| mainloop.quit()
+            })
+            .register();
+        // A daemon that accepts the connection but never answers must not hang the listing.
+        let answered = Rc::new(Cell::new(true));
+        let deadline = mainloop.loop_().add_timer({
+            let mainloop = mainloop.clone();
+            let answered = Rc::clone(&answered);
+            move |_| {
+                answered.set(false);
+                mainloop.quit();
+            }
+        });
+        deadline
+            .update_timer(Some(STREAM_QUERY_TIMEOUT), None)
+            .into_result()?;
+        mainloop.run();
+        if !answered.get() {
+            return Ok(HashSet::new());
+        }
+        Ok(streams.take())
+    }
+
+    // SAFETY: pw_init accepts null argc/argv; libpipewire counts it against the pw_deinit below.
+    unsafe { pipewire::sys::pw_init(std::ptr::null_mut(), std::ptr::null_mut()) };
+    let streams = query().unwrap_or_default();
+    // SAFETY: balances the pw_init above, after everything built on it was dropped.
+    unsafe { pipewire::sys::pw_deinit() };
+    streams
 }
 
 /// List all available input (microphone) devices.

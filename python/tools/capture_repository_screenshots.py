@@ -243,7 +243,7 @@ def _show_running_state(window: MainWindow) -> None:
 
 
 def _prepare_voice_setup(parent: MainWindow) -> VoiceSetupDialog:
-    dialog = VoiceSetupDialog(parent)
+    dialog = VoiceSetupDialog(parent, configuration=parent.configuration)
     dialog.recording_timer.stop()
     dialog.resize(780, 760)
     _select_data(dialog.curve_combo, "broadcast")
@@ -371,7 +371,7 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
         except Exception:
             pass
         # This window contains only the generated demonstration settings.
-        with patch.object(window, "_confirm_discard_changes", return_value=True):
+        with patch.object(window.configuration, "confirm_discard", return_value=True):
             window.close()
         window.deleteLater()
         app.processEvents()

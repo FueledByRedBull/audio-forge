@@ -77,6 +77,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 use std::vec::Vec;
+pub(crate) use worker::worker_scheduling_degraded;
 #[cfg(test)]
 pub(crate) use worker::WORKER_TRANSIT_SAMPLES as TEST_WORKER_TRANSIT_SAMPLES;
 use worker::{InferenceWorker, WorkerLink, WORKER_QUEUE_FRAMES, WORKER_TRANSIT_SAMPLES};

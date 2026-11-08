@@ -256,7 +256,7 @@ class FirstRunSetupDialog(QDialog):
             mute_tip=MUTE_TIP,
             parent=self,
         )
-        self.view_model.set_muted(bool(getattr(self.owner, "user_muted", False)))
+        self.view_model.set_muted(self.owner.engine_session.view.user_muted)
         self.view_model.set_page(
             latencyEnabled=callable(getattr(self.owner, "_on_latency_calibration_clicked", None))
         )
@@ -407,7 +407,7 @@ class FirstRunSetupDialog(QDialog):
 
     def _sync_mute_control(self, _checked: bool | None = None) -> None:
         """Mirror the live mute owner when a hotkey or tray action changes it."""
-        self.view_model.set_muted(bool(getattr(self.owner, "user_muted", False)))
+        self.view_model.set_muted(self.owner.engine_session.view.user_muted)
 
     def _picked_identity(self, identities: list, index: int) -> Any:
         return identities[index] if 0 <= index < len(identities) else None
@@ -449,7 +449,7 @@ class FirstRunSetupDialog(QDialog):
             or output_combo.currentIndex() != output_index
         )
         if route_changed and self.owner.processor.is_running():
-            self.owner._stop_processing()
+            self.owner.engine_session.stop_now()
             if self.owner.processor.is_running():
                 return False
         input_signals_blocked = input_combo.blockSignals(True)
@@ -496,7 +496,7 @@ class FirstRunSetupDialog(QDialog):
                     "The selected route is unavailable. Return to step 1.", "bad"
                 )
                 return
-            if getattr(self.owner, "user_muted", False):
+            if self.owner.engine_session.view.user_muted:
                 action = (
                     "confirm the destination signal"
                     if self._route_check_phase == "destination"
@@ -519,7 +519,7 @@ class FirstRunSetupDialog(QDialog):
                 self._complete_step("You confirmed the destination signal.")
                 return
             if not self.owner.processor.is_running():
-                self.owner._start_processing()
+                self.owner.engine_session.start_now()
                 self._started_processing = self.owner.processor.is_running()
             self.view_model.set_page(actionEnabled=False)
             self._route_check_pending = True
@@ -697,7 +697,7 @@ class FirstRunSetupDialog(QDialog):
         self._route_check_pending = False
         self._set_route_feedback_active(False)
         if self._started_processing and self.owner.processor.is_running():
-            self.owner._stop_processing()
+            self.owner.engine_session.stop_now()
         self._started_processing = False
         if not self._finalized:
             self.config.first_run_setup_state = self._exit_state

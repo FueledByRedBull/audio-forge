@@ -1,5 +1,94 @@
 # Changelog
 
+## v1.23.0
+
+### Upgrading
+
+- 1.23.0 is the last release that converts old settings and preset formats; 1.24.0 removes those conversions and opens only presets saved by 1.23.0 or newer. If you are on an older version, install 1.23.0 first, start it once and quit it so it saves your settings in the current format, and open and re-save each preset you want to keep. The conversions cover the `MicEq` config folder used by 1.8.2 and older, `config.json` files older than schema 2, presets saved before 1.23.0 (down to unversioned ones), presets that store the EQ as plain band arrays or as a single combined stage, and latency profiles saved before route-aware calibration.
+
+### Linux
+
+- Linux streams ask PipeWire for a 512-frame quantum when neither `AUDIOFORGE_FIXED_INPUT_BUFFER_FRAMES` nor `AUDIOFORGE_FIXED_OUTPUT_BUFFER_FRAMES` is set, instead of leaving PipeWire at its 1024 default. The variables still override it, and an out-of-range value such as 0 leaves the choice to PipeWire. On one laptop with a loopback stand-in for the microphone, the delay from input to AudioForge Mic dropped from about 119 ms to about 67 ms with RNNoise, and from about 104 ms to about 52 ms in bypass. A real microphone adds its own capture buffer.
+- The output queue is shorter. PipeWire runs the input and output callbacks in one cycle, so Linux now centers the queue on 15 ms instead of 35 ms. Windows is unchanged.
+- The latency Health reports now includes PipeWire's own stream delay, two cycles of the callback size, which the queues never held. It read 7 to 41 ms low before; in the same runs it is now 2 to 8 ms above the measurement.
+- A saved Linux latency calibration records the buffer size in its engine signature. On the first Start after the upgrade AudioForge refreshes the engine part and the signature and keeps the measured route latency, as it does for any engine change.
+- The DeepFilterNet worker runs at realtime priority, requested the same way as the DSP thread: RTKit is asked from a helper thread for at most 100 ms, so a slow answer never looks like a stalled worker. `dsp_scheduling_degraded` also reads true while a worker waits for RTKit or was refused, and a grant that arrives late clears it.
+- Device lists leave out other apps' PipeWire streams. The query gives up after 2 s, so a PipeWire daemon that never answers can't hang the list.
+- SIGTERM and SIGHUP in the frozen build end the session cleanly, without the "Stop Audio and Quit?" question. Other signals, Ctrl+C included, do not. A SIGHUP that was already ignored, as under `nohup`, stays ignored.
+- The frozen build no longer passes `LD_LIBRARY_PATH`, `QT_PLUGIN_PATH` and `QML2_IMPORT_PATH` to the programs it opens; a file manager launched from AudioForge used to load the bundle's Qt and fail. The QML import path the bundle sets now reaches each Qt Quick scene before the variable is removed.
+
+### Sound
+
+- Turning RNNoise back on while audio flows no longer clicks. The first frame after re-enabling used to be exact silence; it is now built from the current input, and the frame after it fades from dry to wet. Disabling RNNoise mid-stream still skips one frame.
+- Auto makeup gain no longer steps. It changed once per block (about 4 dB at a block edge, 0.6 dB per loudness window) and held that value across the block; it now ramps toward each new target per sample, as the manual gain does.
+- Auto makeup gain holds in digital silence. An all-zero window used to count as a loudness reading and could push makeup to its headroom cap; it now counts as no measurement, the gain holds, and the meter shows -100 LUFS.
+- An input gap or a switch of processing path no longer resets the gate's chatter count, so Health and diagnostics keep earlier chatter. Only Start zeroes it.
+- The limiter and true-peak limiter ignore a non-finite ceiling instead of treating NaN as 0 dB. The app never passed one.
+- Steady-state output is otherwise unchanged. The compressor's gain reduction moves by at most 9e-15 dB.
+
+### Audio recovery and diagnostics
+
+- The Windows output-buffer probe has a 2 s limit. A probe stuck in the driver leaves the buffer unknown with code 0x800705B4 instead of blocking Start, and later Starts report the timeout at once. The probe opens the stream's real sample format instead of assuming 32-bit float.
+- An output is refused for the rest of the session only if its short-period stream fails before it has filled 1 s of audio. A stream that ran longer and then failed is retried on the next Start. A stopped audio service counts as the device being gone.
+- The low-period renderer waits for its render thread to report ready. If the thread fails to start or set up, the standard path takes over.
+- A noise suppressor error no longer overwrites an input or output stream error. Before, a non-finite block during a restart back-off could replace the stream error, and recovery then rebuilt the suppressor and dropped the stream restart.
+- A silent-output restart request is kept only while the current error code still asks for one.
+- Stop and Start zero the per-run readings (latency, DSP time, levels, buffer lengths, noise floor, meters, VAD probabilities) instead of showing the last run's numbers.
+- Start no longer writes a 0 ms engine latency into a route's saved latency profile.
+- Diagnostics read the output-device buffer once per export, so `total_latency_ms` and `output_device_latency_ms` come from the same reading.
+- Input clipping is counted once per block with the block's loudest peak, as the output side already was.
+- On Linux, creating AudioForge Mic no longer waits more than 2 s on a failed create.
+- `AUDIOFORGE_ENABLE_DEEPFILTER` and `AUDIOFORGE_ALLOW_EXTERNAL_DF` both accept 1, true, yes and on, in any case. The first rejected "on".
+
+### Start and Stop
+
+- Start from the File menu or Ctrl+Return right after a Stop is no longer ignored. The 0.5 s lockout now applies only to the Start/Stop button, from the last click on Stop.
+- Latency calibration, Auto-EQ, Voice Setup and Test my sound borrow audio through one owner. If one of them can't stop the engine when it finishes, the window shows "Stopping audio failed: ..." and the next release tries again, where the dialogs used to drop the error and forget they owned the audio.
+- Auto-EQ and Voice Setup stop audio at the end only if it still runs or a restart is pending.
+- A dialog opened while a Start, Stop, refresh or recovery is in progress says "Audio is starting, stopping or recovering. Wait a moment and try again." Before, a dialog opened during a Start could start the engine a second time, and the window's Start then failed with "Already running".
+- An error reading the route when a dialog borrows audio now shows the same message in all four dialogs; only Test my sound handled it before.
+- Closing the "Stop Audio and Quit?" box without choosing a button cancels the quit. With no tray button it used to fail on the missing tray icon.
+- An exception while the window redraws after Start or Stop goes to the app's exception hook instead of showing "Error Starting Processing".
+- Guided Setup's stops no longer cancel a pending login start.
+- While stopped, the window no longer re-syncs its controls every 250 ms tick. It does so when the stopped state changes, and after a failed start left Start disabled.
+
+### Presets and settings
+
+- Cancel on "Save your sound changes?" while loading a route-bound preset is now a cancel. The window used to say "The preset bound to this route is unavailable".
+- A last-used preset that the engine refused once, or that hit an unexpected error while loading, is kept for the next launch. Before, one bad launch cleared `last_preset` and saved that. Only a missing or invalid preset clears it.
+- A preset loaded at startup counts as restored, so its status is no longer replaced by "Ready".
+- Edits and changes to the modified flag also redraw the undo and redo actions.
+- Undo and redo that fail while committing a pending edit show the "could not be restored" warning instead of an uncaught error.
+- A float in `config.json` that is outside its range is clamped into the range instead of being reset to the default and saved that way. A hand-edited `voice_setup_custom_p95_db` of 9.0 used to become 3.5. Non-numeric, boolean and non-finite values still take the default.
+- The de-esser keeps its current values for any setting a call leaves out, as the other stages do. Preset loading passes everything, so presets are unaffected.
+- The settings format and preset format are unchanged; presets saved by 1.23.0 are stamped 1.23.0, so 1.22.0 and older refuse them as newer.
+
+### Voice Setup and Auto-EQ
+
+- The headroom check refuses a band or chain setting that is present but not a finite number, instead of replacing it with a default and certifying settings other than the ones being checked. The message reads "The settings being checked hold an invalid value. Reset the affected controls and try again."
+- Voice Setup refuses filtered noise or speech captures that contain NaN or infinity ("invalid data"). Before they slipped through and the clamp turned NaN into the upper bound, recommending a gate of -10 dB and similar.
+- The noise reference measures RMS, peak and crest factor with the DC offset removed, so an offset no longer inflates the noise level.
+- The spectrum's VAD window is exactly the samples that 512 at 16 kHz span. 48 kHz is unchanged; at 44.1 kHz the probabilities no longer drift.
+
+### Health
+
+- Health reads Rust's diagnostics through one parser, so the window, the export and the setup dialogs agree on a badly typed value. A boolean in a numeric field is no longer read as a number: `input_crest_factor_db: True` used to show as 1.0 dB and "Input: ALREADY COMPRESSED". The engine always sends the right types, so nothing changes in normal use.
+
+### Window and dialogs
+
+- A device refresh that fails with any exception reaches the warning instead of escaping.
+- The listening comparison's "No playback device" notice clears when a device appears.
+- A window shown again after its shutdown ran, for example when a software-rendering relaunch fails, resumes the virtual-microphone watch.
+- Calibration logs a warning when it can't read the processor's sample rate and assumes 48 kHz.
+- `python -m mic_eq` shows the traceback of an ImportError raised while the app runs. A missing native core still prints the "Build the Rust core" steps and exits 1.
+
+### Internal
+
+- Start, Stop, recovery and mute, configuration apply and preset identity, the six stage states' write protocol, and the runtime diagnostics parser each moved out of the main window into their own module. Behaviour is as described above and saved formats are unchanged.
+- Unused code is gone (the compressor calibration's leftover search machinery, an unused card widget, unused native methods), and some DSP per-sample work is cheaper.
+- The release workflows re-check the tag before publishing, authorize dispatch in one shared action, and download assets through one bounded downloader; an asset already on disk is re-verified and fetched again if it fails. Nothing in the app changes.
+- A Silero test fixture was updated for the per-sample makeup ramp.
+
 ## v1.22.0
 
 ### Latency display

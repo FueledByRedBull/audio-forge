@@ -80,10 +80,10 @@ def test_comparison_describes_each_native_render_scope(current_scope, proposed_s
         current_settings=_settings(), proposed_settings=_settings(),
     )
     dialog._on_render_ready(result)
-    assert result.scope_label in dialog.status_label.text()
+    assert result.scope_label in dialog.view_model.status_text
     for clip in (result.current, result.proposed):
-        assert clip.render_scope in dialog.scope_warning.text()
-        assert ", ".join(clip.rendered_stages) in dialog.scope_warning.text()
+        assert clip.render_scope in dialog.view_model.shown["scopeWarning"]
+        assert ", ".join(clip.rendered_stages) in dialog.view_model.shown["scopeWarning"]
     dialog.close()
 
 
@@ -106,8 +106,8 @@ def test_rendered_proposal_can_be_kept_without_playback_device(qapp, monkeypatch
         dialog._on_render_ready(result)
 
         assert dialog._current_playback_device() is None
-        assert dialog.keep_button.isEnabled()
-        assert "optional" in dialog.scope_label.text().casefold()
+        assert dialog.view_model.shown["keepEnabled"]
+        assert "optional" in dialog.view_model.shown["scope"].casefold()
     finally:
         dialog.close()
 
@@ -133,7 +133,7 @@ def test_native_stopped_audio_state_releases_preview_resources(qapp, monkeypatch
         dialog._on_audio_state_changed()
         assert dialog._audio_sink is None
         assert dialog._playing_clip_key is None
-        assert not dialog.stop_button.isEnabled()
+        assert not dialog.view_model.shown["stopEnabled"]
     finally:
         dialog.close()
 
@@ -438,49 +438,6 @@ def test_capture_validation_rejects_unsafe_or_unbounded_input(
         comparison.render_comparison(capture, sample_rate, _settings(), _settings())
 
 
-def test_keep_and_reject_stay_outside_the_scrolling_page_with_keep_on_the_right(qapp, monkeypatch):
-    from mic_eq.ui.listening_comparison_dialog import ListeningComparisonDialog
-
-    monkeypatch.setattr(ListeningComparisonDialog, "_start_render", lambda self: None)
-    dialog = ListeningComparisonDialog(
-        audio_data=np.zeros(480, dtype=np.float32), sample_rate=48_000,
-        current_settings=_settings(), proposed_settings=_settings(),
-    )
-    try:
-        page = dialog.content_scroll_area.widget()
-        assert page is not None
-        assert not page.isAncestorOf(dialog.keep_button)
-        assert not page.isAncestorOf(dialog.reject_button)
-        assert dialog.keep_button.isDefault()
-        dialog.show()
-        qapp.processEvents()
-        assert dialog.reject_button.geometry().x() < dialog.keep_button.geometry().x()
-    finally:
-        dialog.close()
-
-
-def test_the_comparison_says_live_output_is_muted(qapp, monkeypatch):
-    """Every caller mutes the live output while the comparison is open."""
-    from PySide6.QtWidgets import QLabel
-
-    from mic_eq.ui.capture_session import LIVE_OUTPUT_MUTED_NOTICE
-    from mic_eq.ui.listening_comparison_dialog import ListeningComparisonDialog
-
-    monkeypatch.setattr(ListeningComparisonDialog, "_start_render", lambda self: None)
-    dialog = ListeningComparisonDialog(
-        audio_data=np.zeros(480, dtype=np.float32), sample_rate=48_000,
-        current_settings=_settings(), proposed_settings=_settings(),
-    )
-    try:
-        notices = [
-            label for label in dialog.findChildren(QLabel)
-            if label.text() == LIVE_OUTPUT_MUTED_NOTICE
-        ]
-        assert len(notices) == 1 and notices[0].isVisibleTo(dialog)
-    finally:
-        dialog.close()
-
-
 def test_no_playback_device_notice_clears_when_a_device_appears(qapp, monkeypatch):
     from PySide6.QtMultimedia import QAudioDevice
     from mic_eq.ui.listening_comparison_dialog import ListeningComparisonDialog
@@ -492,12 +449,13 @@ def test_no_playback_device_notice_clears_when_a_device_appears(qapp, monkeypatc
         current_settings=_settings(), proposed_settings=_settings(),
     )
     try:
-        assert "No playback device is available" in dialog.status_label.text()
+        assert "No playback device is available" in dialog.view_model.status_text
+        assert not dialog.view_model.shown["outputEnabled"]
 
         monkeypatch.setattr(QMediaDevices, "audioOutputs", lambda: [QAudioDevice()])
         dialog._on_audio_outputs_changed()
 
-        assert dialog.status_label.text() == ""
-        assert dialog.output_combo.isEnabled()
+        assert dialog.view_model.status_text == ""
+        assert dialog.view_model.shown["outputEnabled"]
     finally:
         dialog.close()

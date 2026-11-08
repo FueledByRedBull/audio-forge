@@ -168,6 +168,27 @@ def test_a_declined_final_comparison_is_reported_as_rolled_back(
         assert records[-1]["reason_codes"] == ["final_comparison_declined"]
 
 
+def test_a_final_comparison_that_cannot_open_is_not_reported_as_declined(
+    real_main_window, monkeypatch
+) -> None:
+    records = _voice(real_main_window)
+    dialog, _speech = _verifying_dialog(real_main_window)
+    _comparison_dialog(monkeypatch, {}, load_error="no such file")
+    with _dismissed(dialog):
+        dialog._on_verification_complete(_verdict_with_dulling_advisory("accept", advised=False))
+        dialog._compare_recording()
+
+        assert dialog.phase_label.text() == "Final comparison could not open; previous settings put back"
+        warning = dialog.warning_label.text()
+        assert warning.startswith("The final comparison could not open, so your old settings were kept.")
+        assert "Your old settings are active." in warning
+        assert "declined" not in dialog.phase_label.text() and "You kept" not in warning
+        assert dialog.setup_state == "completed" and dialog._final_comparison_pending is False
+        assert records[-1]["outcome"] == "rolled_back"
+        assert records[-1]["reason_codes"] == ["final_comparison_unavailable"]
+        assert records[-1]["messages"] == [warning]
+
+
 def test_failures_are_reported_as_failed(real_main_window) -> None:
     records = _voice(real_main_window)
     dialog, _speech = _verifying_dialog(real_main_window)
@@ -187,7 +208,7 @@ def test_failures_are_reported_as_failed(real_main_window) -> None:
 
 def test_closing_after_a_result_is_cancelled_and_before_one_is_silent(real_main_window) -> None:
     records = _voice(real_main_window)
-    empty = VoiceSetupDialog(parent=real_main_window)
+    empty = VoiceSetupDialog(parent=real_main_window, configuration=real_main_window.configuration)
     empty.reject()
     empty.deleteLater()
     assert records == []
@@ -325,7 +346,7 @@ def _auto_eq(monkeypatch=None, owner=None):
     owner = owner or _Owner()
     records: list[dict[str, Any]] = []
     owner.record_setup_result = records.append  # type: ignore[attr-defined]
-    return owner, CalibrationDialog(owner), records
+    return owner, CalibrationDialog(owner, configuration=owner.configuration), records
 
 
 def test_an_applied_auto_eq_is_reported_as_applied(qapp, monkeypatch) -> None:
@@ -491,7 +512,7 @@ def _current_step(dialog) -> int:
 def test_a_rejected_room_noise_take_stays_on_its_own_step_with_a_clean_meter(
     real_main_window,
 ) -> None:
-    dialog = VoiceSetupDialog(parent=real_main_window)
+    dialog = VoiceSetupDialog(parent=real_main_window, configuration=real_main_window.configuration)
     with _dismissed(dialog):
         dialog.setup_state = "noise_recording"
         dialog.level_meter.set_levels(-12.0, -0.2)
@@ -510,7 +531,7 @@ def test_a_rejected_room_noise_take_stays_on_its_own_step_with_a_clean_meter(
 
 
 def test_a_failed_level_check_stays_on_the_level_step(real_main_window) -> None:
-    dialog = VoiceSetupDialog(parent=real_main_window)
+    dialog = VoiceSetupDialog(parent=real_main_window, configuration=real_main_window.configuration)
     with _dismissed(dialog):
         dialog.setup_state = "level_check"
         dialog._on_recording_failed("The microphone stopped sending sound.")
@@ -554,7 +575,7 @@ def test_the_passage_is_never_cut_or_scrolled_inside_the_page(real_main_window, 
     from mic_eq.ui.calibration_support import RAINBOW_PASSAGE
 
     owner = _Owner()
-    dialogs = (VoiceSetupDialog(parent=real_main_window), CalibrationDialog(owner))
+    dialogs = (VoiceSetupDialog(parent=real_main_window, configuration=real_main_window.configuration), CalibrationDialog(owner, configuration=owner.configuration))
     try:
         for dialog in dialogs:
             dialog.resize(520, 700)
@@ -756,7 +777,7 @@ def test_auto_eq_says_when_the_eq_now_is_not_in_use(qapp, monkeypatch) -> None:
     from test_auto_eq_candidate_lifecycle import _ModeOwner
 
     owner = _ModeOwner("raw")
-    dialog = CalibrationDialog(owner)
+    dialog = CalibrationDialog(owner, configuration=owner.configuration)
     try:
         _complete(dialog, monkeypatch, _over_the_rule(owner.preset.eq))
 

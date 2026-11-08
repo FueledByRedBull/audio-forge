@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
 from unittest.mock import Mock
 
 import numpy as np
@@ -19,8 +20,9 @@ from mic_eq.ui.listening_comparison_dialog import (
     RawProcessedDialog,
     open_test_my_sound,
 )
-from accessibility_audit import audit_widget_tree
+from test_first_run_setup import scene_text
 from test_listening_comparison import _settings
+from engine_fakes import fake_session
 
 
 @pytest.fixture
@@ -38,46 +40,41 @@ def dialog(qapp, monkeypatch):
 
 
 def test_two_clip_dialog_offers_only_raw_and_processed(dialog):
+    # test_listening_comparison_scene.py reads the buttons the scene shows and their names.
     assert dialog.windowTitle() == "Test my sound"
-    assert list(dialog._play_buttons) == ["original", "current"]
-    assert [button.text() for button in dialog._play_buttons.values()] == [
-        "Play Raw",
-        "Play Processed",
-    ]
-    assert dialog.keep_button.isHidden()
-    assert dialog.reject_button.text() == "Close"
-    assert audit_widget_tree(dialog) == ()
+    assert dialog.view_model.play_labels == {"original": "Play Raw", "current": "Play Processed"}
+    assert not dialog.view_model.shown["keepShown"]
+    assert dialog.view_model.shown["rejectText"] == "Close"
 
 
 def test_two_clip_dialog_marks_the_playing_clip_and_toggles_it_off(dialog):
     capture = np.full(1024, 0.05, dtype=np.float32)
     result = comparison.render_comparison(capture, 48_000, _settings(), _settings())
     dialog._on_render_ready(result)
-    assert "Stages applied to the processed clip" in dialog.scope_warning.text()
-    assert "Proposed" not in dialog.scope_warning.text()
+    assert "Stages applied to the processed clip" in dialog.view_model.shown["scopeWarning"]
+    assert "Proposed" not in dialog.view_model.shown["scopeWarning"]
 
     # Stand in for a started sink; the state logic does not touch the device.
     dialog._audio_sink = Mock()
     dialog._playing_clip_key = "current"
     dialog._update_playback_buttons()
-    assert dialog._play_buttons["current"].text() == "Stop Processed"
-    assert dialog._play_buttons["current"].accessibleName() == "Stop Processed"
-    assert dialog._play_buttons["original"].text() == "Play Raw"
-    assert dialog.status_label.text() == "Playing: Processed"
+    assert scene_text(dialog, "currentPlayButton") == "Stop Processed"
+    assert scene_text(dialog, "originalPlayButton") == "Play Raw"
+    assert dialog.view_model.status_text == "Playing: Processed"
 
     dialog._play_clip("current")
     assert dialog._audio_sink is None
     assert dialog._playing_clip_key is None
-    assert dialog._play_buttons["current"].text() == "Play Processed"
-    assert dialog.status_label.text() == "Playback stopped."
+    assert scene_text(dialog, "currentPlayButton") == "Play Processed"
+    assert dialog.view_model.status_text == "Playback stopped."
 
 
 def test_two_clip_dialog_shows_a_render_failure(dialog):
     dialog._on_render_failed("RuntimeError: native renderer is unavailable")
-    assert dialog.status_label.text() == (
+    assert dialog.view_model.status_text == (
         "Could not process the recording: RuntimeError: native renderer is unavailable"
     )
-    assert not any(button.isEnabled() for button in dialog._play_buttons.values())
+    assert not dialog.view_model.shown["playEnabled"]
 
 
 class _Processor:
@@ -117,6 +114,7 @@ class _Processor:
         self.calls.append(f"record {duration_s:g} before_cleanup={before_cleanup}")
 
     def stop_raw_recording(self) -> np.ndarray:
+        self.calls.append("stop_raw_recording")
         return self.audio
 
     def recording_progress(self) -> float:
@@ -144,9 +142,8 @@ class _Window(QWidget):
         self.eq_state = Mock()
         self.eq_state.get_settings.return_value = _settings()
         self.mutes: list[tuple[bool, str]] = []
-
-    def set_temporary_output_mute(self, muted: bool, reason: str) -> None:
-        self.mutes.append((muted, reason))
+        self.engine_session = fake_session(processor, owner=self)
+        cast(Any, self.engine_session).hold_mute = lambda reason, on: self.mutes.append((on, reason))
 
 
 @pytest.fixture
@@ -202,6 +199,16 @@ def test_entry_reports_processing_on_another_route(harness):
     assert opened == [] and window.processor.calls == []
 
 
+def test_entry_reports_a_busy_engine_without_blaming_the_devices(harness):
+    warnings, opened = harness
+    window = _Window(_Processor(running=False))
+    window.engine_session.request_start("button")  # the start stays out: the fake tasks never run it
+    open_test_my_sound(window)
+    assert len(warnings) == 1
+    assert "Wait a moment and try again" in warnings[0] and "connected" not in warnings[0]
+    assert opened == []
+
+
 def test_entry_reports_a_stream_that_will_not_start(harness):
     warnings, opened = harness
     processor = _Processor(running=False)
@@ -209,6 +216,16 @@ def test_entry_reports_a_stream_that_will_not_start(harness):
     open_test_my_sound(_Window(processor))
     assert len(warnings) == 1
     assert "Could not start the microphone" in warnings[0] and "device busy" in warnings[0]
+    assert opened == []
+
+
+def test_entry_reports_a_route_that_cannot_be_read_as_a_stream_that_will_not_start(harness):
+    warnings, opened = harness
+    processor = _Processor()
+    cast(Any, processor).is_running = Mock(side_effect=RuntimeError("engine unreachable"))
+    open_test_my_sound(_Window(processor))
+    assert len(warnings) == 1
+    assert "Could not start the microphone" in warnings[0] and "engine unreachable" in warnings[0]
     assert opened == []
 
 
@@ -222,7 +239,7 @@ def test_entry_reports_capture_failure_and_releases_what_it_took(harness):
     assert "Recording did not work" in warnings[0] and "capture unavailable" in warnings[0]
     assert opened == []
     # The stream this call started is stopped again and its mute is released.
-    assert processor.calls == ["start", "stop"]
+    assert processor.calls == ["start", "stop_raw_recording", "stop"]
     assert window.mutes == [(True, "test_my_sound"), (False, "test_my_sound")]
 
 
@@ -271,7 +288,7 @@ def test_entry_opens_the_two_clip_dialog_with_the_raw_capture(harness):
     window = _Window(processor)
     open_test_my_sound(window)
     assert warnings == []
-    assert processor.calls == ["record 5 before_cleanup=True"]
+    assert processor.calls == ["record 5 before_cleanup=True", "stop_raw_recording"]
     assert len(opened) == 1
     np.testing.assert_array_equal(opened[0]["audio_data"], processor.audio)
     assert opened[0]["sample_rate"] == 48_000
@@ -281,16 +298,3 @@ def test_entry_opens_the_two_clip_dialog_with_the_raw_capture(harness):
     }
     # One mute for the capture, one while the preview dialog is open.
     assert window.mutes == [(True, "test_my_sound"), (False, "test_my_sound")] * 2
-
-
-def test_the_recording_window_says_the_live_output_is_muted(harness, monkeypatch):
-    shown: list[str] = []
-
-    def exec_and_note(dialog) -> int:
-        shown.extend(label.text() for label in dialog.findChildren(module.QLabel))
-        return int(module.QDialog.DialogCode.Accepted)
-
-    monkeypatch.setattr(module.QDialog, "exec", exec_and_note)
-    open_test_my_sound(_Window(_Processor()))
-
-    assert any("muted" in text.lower() and "call" in text.lower() for text in shown)

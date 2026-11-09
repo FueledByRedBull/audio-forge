@@ -9,6 +9,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyModule;
 use std::time::Instant;
 
+pub mod analysis;
 pub mod audio;
 pub(crate) mod config_ranges;
 pub mod dsp;
@@ -478,12 +479,33 @@ fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(simulate_eq_v2, m)?)?;
     m.add_function(wrap_pyfunction!(_k_weighted_48k, m)?)?;
+    m.add_function(wrap_pyfunction!(analysis::python_api::clamp, m)?)?;
+    m.add_function(wrap_pyfunction!(analysis::python_api::band_mean, m)?)?;
+    m.add_function(wrap_pyfunction!(analysis::python_api::resample_poly, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        analysis::python_api::generate_probe_signal,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(analysis::python_api::analyze_latency, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        analysis::python_api::find_peaks_distance_prominence,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        analysis::python_api::map_causal_vad_probabilities,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(config_ranges::processing_ranges, m)?)?;
     m.add_function(wrap_pyfunction!(config_ranges::noise_model_ids, m)?)?;
 
     #[cfg(feature = "vad")]
     m.add_function(wrap_pyfunction!(
         audio::processor::analyze_vad_probabilities,
+        m
+    )?)?;
+    #[cfg(feature = "vad")]
+    m.add_function(wrap_pyfunction!(
+        analysis::python_api::analyze_offline_vad,
         m
     )?)?;
 

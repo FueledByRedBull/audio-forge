@@ -1,118 +1,16 @@
-"""Offline VAD helpers shared by Auto-EQ and Auto Voice Setup."""
+"""Offline VAD helpers shared by Auto-EQ and Auto Voice Setup.
+
+``analyze_offline_vad`` and ``map_causal_vad_probabilities`` run in the native
+core; these thresholds are what callers compare its posteriors against.
+"""
 
 from __future__ import annotations
 
-from typing import Any
+from ..mic_eq_core import analyze_offline_vad, map_causal_vad_probabilities
 
-import numpy as np
-
-from .signal_processing import resample_poly
-
-CALIBRATED_VAD_DEFAULT_THRESHOLD = 0.48
 VAD_SPEECH_EVIDENCE_THRESHOLD = 0.40
 VAD_STRONG_SPEECH_THRESHOLD = 0.65
 VAD_NOISE_CONTAMINATION_THRESHOLD = 0.35
-SILERO_WINDOW_SAMPLES = 512
-SILERO_SAMPLE_RATE = 16_000
-VAD_ANALYSIS_SAMPLE_RATE = 48_000
-
-
-def map_causal_vad_probabilities(
-    probabilities: np.ndarray | None,
-    positions: np.ndarray,
-    sample_rate: int,
-) -> np.ndarray | None:
-    """Return, per position, the newest posterior whose window ended by it.
-
-    To control processing, pass each block's first sample: the live loop
-    reads the VAD before the worker can see that block, so a window ending
-    inside a block cannot control it. Offline analysis that only labels
-    frames may pass frame ends.
-    """
-    if probabilities is None or sample_rate <= 0:
-        return None
-    values = np.asarray(probabilities, dtype=float).reshape(-1)
-    ends = np.asarray(positions, dtype=np.int64).reshape(-1)
-    if values.size == 0 or ends.size == 0 or not np.isfinite(values).all():
-        return None
-
-    # Keep the model's 32 ms cadence in integer time. Rounding a 44.1 kHz
-    # window to 1412 samples accumulates a sample of drift every window.
-    completed = (
-        ends * SILERO_SAMPLE_RATE // (int(sample_rate) * SILERO_WINDOW_SAMPLES)
-    ) - 1
-    mapped = np.zeros(ends.size, dtype=np.float32)
-    available = completed >= 0
-    if np.any(available):
-        indices = np.minimum(completed[available], values.size - 1)
-        mapped[available] = np.clip(values[indices], 0.0, 1.0)
-    return mapped
-
-
-def analyze_offline_vad(
-    audio: np.ndarray,
-    sample_rate: int,
-    *,
-    threshold: float = CALIBRATED_VAD_DEFAULT_THRESHOLD,
-    pre_gain: float = 1.0,
-) -> tuple[np.ndarray | None, str]:
-    """Return native Silero posteriors, or an explicit analysis backend label.
-
-    The native helper constructs the same stateful model used by the live
-    worker. ``pre_gain`` is applied before inference to match the live model's
-    input contract. Pure-Python tests and reduced installations may not have
-    the extension/model; in that case callers retain their energy analysis and
-    expose ``energy_fallback`` in diagnostics instead of pretending Silero ran.
-    """
-    try:
-        from mic_eq import CORE_AVAILABLE, analyze_vad_probabilities
-    except ImportError:
-        return None, "energy_fallback"
-
-    if not CORE_AVAILABLE or not callable(analyze_vad_probabilities):
-        return None, "energy_fallback"
-
-    try:
-        gain = float(pre_gain)
-    except (TypeError, ValueError):
-        return None, "energy_fallback"
-    if not np.isfinite(gain) or gain <= 0.0:
-        return None, "energy_fallback"
-    gain = max(0.1, gain)
-
-    samples = np.ascontiguousarray(np.asarray(audio, dtype=np.float32).reshape(-1))
-    if samples.size == 0 or sample_rate <= 0:
-        return None, "energy_fallback"
-    inference_sample_rate = int(sample_rate)
-    if (
-        inference_sample_rate * SILERO_WINDOW_SAMPLES
-    ) % SILERO_SAMPLE_RATE:
-        divisor = int(np.gcd(inference_sample_rate, VAD_ANALYSIS_SAMPLE_RATE))
-        samples = np.ascontiguousarray(
-            resample_poly(
-                samples.astype(np.float64, copy=False),
-                VAD_ANALYSIS_SAMPLE_RATE // divisor,
-                inference_sample_rate // divisor,
-            ),
-            dtype=np.float32,
-        )
-        inference_sample_rate = VAD_ANALYSIS_SAMPLE_RATE
-    if gain != 1.0:
-        samples = np.ascontiguousarray(samples * gain, dtype=np.float32)
-
-    try:
-        raw_probabilities: Any = analyze_vad_probabilities(
-            samples,
-            inference_sample_rate,
-            float(threshold),
-        )
-    except (ImportError, OSError, RuntimeError, ValueError, TypeError):
-        return None, "energy_fallback"
-
-    probabilities = np.asarray(raw_probabilities, dtype=float).reshape(-1)
-    if probabilities.size == 0 or not np.isfinite(probabilities).all():
-        return None, "energy_fallback"
-    return np.clip(probabilities, 0.0, 1.0), "silero"
 
 
 __all__ = [

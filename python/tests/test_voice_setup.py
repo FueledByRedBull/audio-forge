@@ -11,10 +11,9 @@ from typing import Any
 import numpy as np
 import pytest
 
-import mic_eq
 from mic_eq.analysis import voice_setup as voice_setup_module
 from mic_eq.analysis import vad as vad_analysis
-from mic_eq.analysis.auto_eq_parts.headroom import _is_headroom_safe
+from mic_eq.mic_eq_core import is_headroom_safe
 from mic_eq.analysis.voice_setup import (
     _calibrate_compressor_threshold,
     _fit_loudness_to_headroom,
@@ -42,33 +41,6 @@ from mic_eq.ui.voice_setup_dialog import (
 )
 from mic_eq.ui.voice_setup_view import DYNAMICS_KEYS
 from test_first_run_setup import scene_item
-
-
-def test_offline_vad_applies_live_pre_gain_before_inference(monkeypatch):
-    observed: dict[str, Any] = {}
-
-    def fake_analyze(samples, sample_rate, threshold):
-        observed["samples"] = np.asarray(samples).copy()
-        observed["sample_rate"] = sample_rate
-        observed["threshold"] = threshold
-        return [0.7]
-
-    monkeypatch.setattr(mic_eq, "CORE_AVAILABLE", True)
-    monkeypatch.setattr(mic_eq, "analyze_vad_probabilities", fake_analyze)
-
-    probabilities, backend = vad_analysis.analyze_offline_vad(
-        np.asarray([0.5, -0.25], dtype=np.float32),
-        48_000,
-        threshold=0.43,
-        pre_gain=2.0,
-    )
-
-    np.testing.assert_allclose(observed["samples"], [1.0, -0.5])
-    assert observed["sample_rate"] == 48_000
-    assert observed["threshold"] == 0.43
-    assert probabilities is not None
-    np.testing.assert_allclose(probabilities, [0.7])
-    assert backend == "silero"
 
 
 def test_offline_vad_posteriors_do_not_depend_on_the_threshold():
@@ -260,7 +232,7 @@ def test_the_limiter_allowance_accepts_the_peaks_the_limiter_may_take_off():
     for headroom in (3.0, 1.0, 0.99, 0.0, -2.5):
         for true_peak in (0.0, 0.5, 0.51):
             reading = {**_headroom_reading(headroom), "true_peak_limiter_gain_reduction_db": true_peak}
-            assert headroom_safe(reading, 0.0) == _is_headroom_safe(reading)
+            assert headroom_safe(reading, 0.0) == is_headroom_safe(reading)
     leaning = _headroom_reading(-2.5)
     assert not headroom_safe(leaning, 0.0) and headroom_safe(leaning, allowance)
     assert not headroom_safe(busy_true_peak, allowance)

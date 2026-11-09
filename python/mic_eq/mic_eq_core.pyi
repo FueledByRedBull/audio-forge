@@ -277,6 +277,106 @@ def analyze_vad_probabilities(
 ) -> list[float]:
     """Require 8–192 kHz with integral 32 ms windows; use analyze_offline_vad for 44.1 kHz."""
     ...
+def analyze_offline_vad(
+    audio: npt.ArrayLike,
+    sample_rate: int,
+    *,
+    threshold: float = 0.48,
+    pre_gain: float = 1.0,
+) -> tuple[npt.NDArray[np.float64] | None, str]:
+    """Silero posteriors and "silero", or (None, "energy_fallback").
+
+    Rates without whole 32 ms windows are resampled to 48 kHz; pre_gain (at
+    least 0.1) is applied before inference. A gain or threshold that float()
+    rejects, a non-positive or non-finite gain, an empty capture, a
+    non-positive rate, an invalid threshold, non-finite samples or a model
+    failure falls back.
+    """
+    ...
+def map_causal_vad_probabilities(
+    probabilities: npt.ArrayLike | None,
+    positions: npt.ArrayLike,
+    sample_rate: int,
+) -> npt.NDArray[np.float32] | None:
+    """Per position, the newest posterior whose window ended by it, clipped to [0, 1].
+
+    None for missing, empty or non-finite posteriors, no positions, or a
+    non-positive rate. A fractional rate is truncated with int().
+    """
+    ...
+def clamp(value: float, low: float, high: float) -> float:
+    """Python's max(low, min(high, value)): a NaN value yields high."""
+    ...
+def band_mean(
+    freqs: npt.ArrayLike, values: npt.ArrayLike, low: float, high: float
+) -> float:
+    """float64 mean of values over low..high Hz, or of all values when no bin falls in it.
+
+    freqs and values must have the same shape (IndexError otherwise).
+    """
+    ...
+def resample_poly(samples: npt.ArrayLike, up: int, down: int) -> npt.NDArray[Any]:
+    """SciPy-default Kaiser polyphase resampling of 1-D audio.
+
+    float32, float64, complex64 and complex128 keep their dtype; other real
+    audio (booleans, integers, float16, byte-swapped floats) returns float64;
+    extended precision, objects and byte-swapped complex raise TypeError. An
+    identity ratio returns a copy, and empty audio keeps a float or complex
+    dtype (float64 otherwise).
+    """
+    ...
+def generate_probe_signal(
+    sample_rate: int = 48_000, duration_ms: float = 80.0, amplitude: float = 0.8
+) -> npt.NDArray[np.float32]:
+    """A deterministic repeated Barker-coded probe, peak-normalized to amplitude."""
+    ...
+def analyze_latency(
+    reference_probe: npt.ArrayLike | None,
+    recorded_signal: npt.ArrayLike | None,
+    sample_rate: int = 48_000,
+    min_search_ms: float = 5.0,
+    max_search_ms: float = 500.0,
+    expected_playback_start_ms: float | None = None,
+    expected_playback_jitter_ms: float | None = None,
+    expected_latency_min_ms: float | None = None,
+    expected_latency_max_ms: float | None = None,
+    route_kind: str | None = None,
+) -> dict[str, Any]:
+    """The fields of analysis.latency_calibration.LatencyCalibrationResult."""
+    ...
+def find_peaks_distance_prominence(
+    samples: npt.ArrayLike, *, distance: int, prominence: float
+) -> npt.NDArray[np.intp]:
+    """1-D local maxima with SciPy find_peaks' distance and prominence semantics."""
+    ...
+HEADROOM_TARGET_DB: float
+LIMITER_GAIN_REDUCTION_WARN_DB: float
+TRUE_PEAK_GAIN_REDUCTION_WARN_DB: float
+NATIVE_SAFETY_METRICS: tuple[str, str, str]
+def flatten_chain_settings(chain_settings: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The flat settings simulate_auto_eq_chain takes, from nested stage settings.
+
+    Absent settings take their defaults; one that is no finite number, boolean or
+    integer raises ValueError. Flat native-boundary settings override the nested ones.
+    """
+    ...
+def band_array_eq_inputs(
+    eq_settings: Mapping[str, Any],
+) -> tuple[list[tuple[float, float, float]], bool]:
+    """(bands, enabled) from band_freqs, band_gains and band_qs; ValueError unless 10 finite each."""
+    ...
+def headroom_excess_db(simulation: Mapping[str, Any]) -> float:
+    """How far a simulation passes the headroom rule; it fits at <= 0.
+
+    Infinite when a safety metric is missing or not a finite number.
+    """
+    ...
+def is_headroom_safe(simulation: Mapping[str, Any]) -> bool:
+    """headroom_excess_db(simulation) <= 0."""
+    ...
+def safety_metric_problems(simulation: Mapping[str, Any]) -> list[str]:
+    """One message per safety metric that is missing, non-numeric or not finite."""
+    ...
 def simulate_auto_eq_chain(
     audio: npt.NDArray[np.float32],
     sample_rate: float,

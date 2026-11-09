@@ -755,6 +755,7 @@ dependencies = [
  "ort",
  "pipewire",
  "pyo3",
+ "realfft",
  "ringbuf",
  "rubato",
  "rustix",

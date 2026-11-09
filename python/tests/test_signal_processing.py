@@ -1,4 +1,9 @@
-"""Numerical parity checks for the NumPy analysis primitives."""
+"""Numerical parity checks for the analysis primitives."""
+
+import math
+import operator
+import warnings
+from typing import Any
 
 import numpy as np
 import pytest
@@ -14,6 +19,8 @@ from mic_eq.analysis.signal_processing import (
     welch_hamming_density,
 )
 from mic_eq.analysis.spectrum import compute_voice_spectrum
+from mic_eq.analysis.vad import analyze_offline_vad, map_causal_vad_probabilities
+from mic_eq.mic_eq_core import analyze_vad_probabilities
 
 
 # Empty input returns before the rates are used, so one rate pair covers it.
@@ -175,3 +182,581 @@ def test_failure_detection_logs_through_the_shared_debug_switch(monkeypatch, cap
     monkeypatch.setattr(constants, "DEBUG", True)
     failure_detection.debug_log("[VALIDATION] shared")
     assert capsys.readouterr().out == "[VALIDATION] shared\n"
+
+
+# Parity with the NumPy implementations the native core replaced. The
+# _reference_* functions are that code, kept verbatim so the native versions
+# are compared on the running platform rather than against recorded output.
+
+
+def _reference_clamp(value: float, low: float, high: float) -> float:
+    return float(max(low, min(high, value)))
+
+
+def _reference_band_mean(freqs: np.ndarray, values: np.ndarray, low: float, high: float) -> float:
+    mask = (freqs >= low) & (freqs <= high)
+    if not np.any(mask):
+        return float(np.mean(values))
+    return float(np.mean(values[mask]))
+
+
+def _reference_resample_poly(samples: np.ndarray, up: int, down: int) -> np.ndarray:
+    values = np.asarray(samples)
+    if values.ndim != 1:
+        raise ValueError("audio to resample must be one-dimensional")
+    try:
+        up, down = operator.index(up), operator.index(down)
+    except TypeError as exc:
+        raise ValueError("up and down must be positive integers") from exc
+    if up < 1 or down < 1:
+        raise ValueError("up and down must be positive integers")
+    divisor = math.gcd(up, down)
+    up //= divisor
+    down //= divisor
+    if up == down == 1:
+        return values.copy()
+    if values.size == 0:
+        dtype = values.dtype if values.dtype.kind in "fc" else np.dtype(np.float64)
+        return np.empty(0, dtype=dtype)
+
+    dtype = values.dtype if values.dtype in (
+        np.dtype(np.float32),
+        np.dtype(np.float64),
+        np.dtype(np.complex64),
+        np.dtype(np.complex128),
+    ) else np.dtype(np.float64)
+    max_rate = max(up, down)
+    half_length = 10 * max_rate
+    positions = np.arange(2 * half_length + 1, dtype=np.float64) - half_length
+    cutoff = 1.0 / max_rate
+    taps = cutoff * np.sinc(cutoff * positions) * np.kaiser(positions.size, 5.0)
+    taps /= taps.sum()
+    taps = (taps * up).astype(dtype, copy=False)
+    pad_before = down - half_length % down
+    trim_before = (half_length + pad_before) // down
+    taps = np.pad(taps, (pad_before, 0))
+
+    output_size = (values.size * up + down - 1) // down
+    terms = (taps.size + up - 1) // up
+    output = np.empty(output_size, dtype=np.result_type(values.dtype, taps.dtype))
+    padded = np.pad(values, (terms - 1, terms - 1))
+    windows = np.lib.stride_tricks.sliding_window_view(padded, terms)
+    for residue in range(min(up, output_size)):
+        group_size = (output_size - 1 - residue) // up + 1
+        first_high_rate_position = (residue + trim_before) * down
+        phase = first_high_rate_position % up
+        first_center = first_high_rate_position // up
+        phase_taps = taps[phase::up]
+        rows = windows[first_center::down][:group_size, -phase_taps.size :]
+        output[residue::up] = rows @ phase_taps[::-1]
+    return output
+
+
+def _reference_find_peaks(samples: np.ndarray, *, distance: int, prominence: float) -> np.ndarray:
+    values = np.asarray(samples, dtype=np.float64)
+    if values.ndim != 1:
+        raise ValueError("peak detection input must be one-dimensional")
+    if distance < 1 or prominence < 0:
+        raise ValueError("distance must be positive and prominence nonnegative")
+
+    candidates: list[int] = []
+    index = 1
+    while index < values.size - 1:
+        if values[index - 1] < values[index]:
+            plateau_end = index
+            while plateau_end + 1 < values.size and values[plateau_end + 1] == values[index]:
+                plateau_end += 1
+            if plateau_end < values.size - 1 and values[plateau_end] > values[plateau_end + 1]:
+                candidates.append((index + plateau_end) // 2)
+            index = plateau_end + 1
+        else:
+            index += 1
+
+    peaks = np.asarray(candidates, dtype=np.intp)
+    if peaks.size == 0:
+        return peaks
+
+    keep = np.ones(peaks.size, dtype=bool)
+    priority_order = np.argsort(values[peaks])[::-1]
+    for order_index, candidate_index in enumerate(priority_order):
+        if not keep[candidate_index]:
+            continue
+        for higher_index in priority_order[:order_index]:
+            if keep[higher_index] and abs(
+                int(peaks[candidate_index]) - int(peaks[higher_index])
+            ) < distance:
+                keep[candidate_index] = False
+                break
+    peaks = peaks[keep]
+
+    prominent: list[int] = []
+    for peak in peaks:
+        height = values[peak]
+        left = int(peak)
+        right = int(peak)
+        while left > 0 and values[left - 1] <= height:
+            left -= 1
+        while right + 1 < values.size and values[right + 1] <= height:
+            right += 1
+        base = max(np.min(values[left : peak + 1]), np.min(values[peak : right + 1]))
+        if height - base >= prominence:
+            prominent.append(int(peak))
+    return np.asarray(prominent, dtype=np.intp)
+
+
+def _reference_map_causal_vad_probabilities(
+    probabilities: np.ndarray | None, positions: np.ndarray, sample_rate: int
+) -> np.ndarray | None:
+    if probabilities is None or sample_rate <= 0:
+        return None
+    values = np.asarray(probabilities, dtype=float).reshape(-1)
+    ends = np.asarray(positions, dtype=np.int64).reshape(-1)
+    if values.size == 0 or ends.size == 0 or not np.isfinite(values).all():
+        return None
+    completed = (ends * 16_000 // (int(sample_rate) * 512)) - 1
+    mapped = np.zeros(ends.size, dtype=np.float32)
+    available = completed >= 0
+    if np.any(available):
+        indices = np.minimum(completed[available], values.size - 1)
+        mapped[available] = np.clip(values[indices], 0.0, 1.0)
+    return mapped
+
+
+def _reference_analyze_offline_vad(
+    audio: np.ndarray, sample_rate: int, *, threshold: float = 0.48, pre_gain: float = 1.0
+) -> tuple[np.ndarray | None, str]:
+    try:
+        gain = float(pre_gain)
+    except (TypeError, ValueError):
+        return None, "energy_fallback"
+    if not np.isfinite(gain) or gain <= 0.0:
+        return None, "energy_fallback"
+    gain = max(0.1, gain)
+
+    samples = np.ascontiguousarray(np.asarray(audio, dtype=np.float32).reshape(-1))
+    if samples.size == 0 or sample_rate <= 0:
+        return None, "energy_fallback"
+    inference_sample_rate = int(sample_rate)
+    if (inference_sample_rate * 512) % 16_000:
+        divisor = int(np.gcd(inference_sample_rate, 48_000))
+        samples = np.ascontiguousarray(
+            _reference_resample_poly(
+                samples.astype(np.float64, copy=False),
+                48_000 // divisor,
+                inference_sample_rate // divisor,
+            ),
+            dtype=np.float32,
+        )
+        inference_sample_rate = 48_000
+    if gain != 1.0:
+        samples = np.ascontiguousarray(samples * gain, dtype=np.float32)
+
+    try:
+        raw_probabilities = analyze_vad_probabilities(
+            samples, inference_sample_rate, float(threshold)
+        )
+    except (ImportError, OSError, RuntimeError, ValueError, TypeError):
+        return None, "energy_fallback"
+
+    probabilities = np.asarray(raw_probabilities, dtype=float).reshape(-1)
+    if probabilities.size == 0 or not np.isfinite(probabilities).all():
+        return None, "energy_fallback"
+    return np.clip(probabilities, 0.0, 1.0), "silero"
+
+
+def _assert_same_bits(actual: np.ndarray, expected: np.ndarray) -> None:
+    # dtype equality alone accepts longdouble for float64 where they share a size.
+    assert actual.dtype == expected.dtype
+    assert (actual.dtype.char, actual.dtype.str) == (expected.dtype.char, expected.dtype.str)
+    assert actual.shape == expected.shape
+    assert actual.tobytes() == expected.tobytes()
+
+
+def _outcome(function: Any, *args: Any, **kwargs: Any) -> Any:
+    try:
+        return function(*args, **kwargs)
+    except Exception as error:  # noqa: BLE001 - the exception type is the outcome
+        return type(error)
+
+
+_PARITY_RATES = [(1, 3), (3, 2), (160, 147), (147, 160), (2, 2), (48_000, 44_100), (1, 2), (5, 1)]
+
+
+def _resample_parity_inputs() -> dict[str, Any]:
+    rng = np.random.default_rng(20261106)
+    inputs: dict[str, Any] = {"empty": np.zeros(0)}
+    for length in (1, 2, 5, 31, 1024, 4410):
+        inputs[f"noise-{length}"] = rng.standard_normal(length)
+    inputs["silence"] = np.zeros(4800)
+    inputs["full-scale"] = np.where(np.arange(4800) % 96 < 48, 1.0, -1.0)
+    inputs["nan"] = rng.standard_normal(1200)
+    inputs["nan"][100] = np.nan
+    inputs["inf"] = rng.standard_normal(1200)
+    inputs["inf"][[100, 700]] = [np.inf, -np.inf]
+    inputs["float32"] = rng.standard_normal(2048).astype(np.float32)
+    inputs["float32-full-scale"] = inputs["full-scale"].astype(np.float32)
+    inputs["int16"] = (rng.standard_normal(1000) * 8000).astype(np.int16)
+    inputs["int16-empty"] = np.zeros(0, dtype=np.int16)
+    inputs["float16"] = rng.standard_normal(700).astype(np.float16)
+    inputs["float16-empty"] = np.zeros(0, dtype=np.float16)
+    inputs["bool"] = rng.random(300) < 0.5
+    inputs["list"] = [0.25, -1.0, 3.0, 0.5, 2.0]
+    inputs["strided"] = rng.standard_normal(3000)[::3]
+    complex_noise = rng.standard_normal(1500) + 1j * rng.standard_normal(1500)
+    inputs["complex128"] = complex_noise
+    inputs["complex64"] = complex_noise.astype(np.complex64)
+    inputs["complex-empty"] = np.zeros(0, dtype=np.complex64)
+    # NumPy kept only the native-order dtypes; byte-swapped audio promoted
+    # with the float64 taps.
+    inputs["big-endian-float64"] = inputs["noise-1024"].astype(">f8")
+    inputs["big-endian-float32"] = inputs["float32"].astype(">f4")
+    inputs["big-endian-empty"] = np.zeros(0, dtype=">f4")
+    # A non-finite imaginary part reaches the real output through the complex product.
+    inputs["complex-nonfinite"] = complex_noise.copy()
+    inputs["complex-nonfinite"][[100, 700]] = [complex(0.5, np.inf), complex(np.nan, 0.25)]
+    return inputs
+
+
+_RESAMPLE_PARITY_INPUTS = _resample_parity_inputs()
+
+
+@pytest.mark.parametrize("rates", _PARITY_RATES, ids=lambda rates: f"{rates[0]}-{rates[1]}")
+@pytest.mark.parametrize("name", list(_RESAMPLE_PARITY_INPUTS))
+def test_native_resample_poly_matches_the_numpy_implementation(name, rates):
+    samples = _RESAMPLE_PARITY_INPUTS[name]
+
+    with np.errstate(invalid="ignore"):
+        expected = _reference_resample_poly(samples, *rates)
+    actual = resample_poly(samples, *rates)
+
+    _assert_same_bits(actual, expected)
+
+
+@pytest.mark.parametrize(
+    "rates",
+    [(2.0, 1), (True, 3), (np.int64(3), 2), ("2", 1), (None, 1), (1, -3), (0, 1), (2, 2.5)],
+    ids=repr,
+)
+def test_native_resample_poly_takes_rates_like_the_numpy_implementation(rates):
+    samples = np.random.default_rng(5).standard_normal(64)
+
+    expected = _outcome(_reference_resample_poly, samples, *rates)
+    actual = _outcome(resample_poly, samples, *rates)
+
+    if isinstance(expected, type):
+        assert actual is expected
+    else:
+        _assert_same_bits(actual, expected)
+
+
+# NumPy failed for these dtypes too, and the native core raises TypeError like it.
+@pytest.mark.parametrize(
+    "samples",
+    [np.array(["1", "2", "3"]), np.arange(3).astype("m8[s]")],
+    ids=lambda samples: str(samples.dtype),
+)
+def test_native_resample_poly_refuses_non_numeric_audio_like_the_numpy_implementation(samples):
+    with pytest.raises(TypeError):
+        _reference_resample_poly(samples, 1, 3)
+    with pytest.raises(TypeError):
+        resample_poly(samples, 1, 3)
+    _assert_same_bits(resample_poly(samples, 2, 2), _reference_resample_poly(samples, 2, 2))
+
+
+def _wider_than_float64(dtype: Any) -> bool:
+    return np.finfo(dtype).nmant > np.finfo(np.float64).nmant
+
+
+# Accepted differences: NumPy resampled extended-precision audio in its own
+# precision, which the native core cannot; no caller passes it. Where
+# longdouble is float64 (Windows) it resamples like float64, and clongdouble
+# like complex128, so there the output must be NumPy's. Object audio is
+# always refused.
+@pytest.mark.parametrize(
+    "dtype", [np.longdouble, np.clongdouble, object], ids=lambda dtype: np.dtype(dtype).name
+)
+def test_native_resample_poly_refuses_extended_and_object_audio(dtype):
+    samples = (np.random.default_rng(6).standard_normal(600) * 3.0).astype(dtype)
+
+    if dtype is object or _wider_than_float64(dtype):
+        with pytest.raises(TypeError, match="float32, float64, complex64 or complex128"):
+            resample_poly(samples, 1, 3)
+    else:
+        for rates in _PARITY_RATES:
+            _assert_same_bits(resample_poly(samples, *rates), _reference_resample_poly(samples, *rates))
+    _assert_same_bits(resample_poly(samples, 3, 3), _reference_resample_poly(samples, 3, 3))
+    _assert_same_bits(resample_poly(samples[:0], 1, 3), _reference_resample_poly(samples[:0], 1, 3))
+
+
+# NumPy multiplied byte-swapped complex audio through its own casting path,
+# whose sums differ from native-order complex; the native core refuses it.
+@pytest.mark.parametrize("dtype", [">c8", ">c16"])
+def test_native_resample_poly_refuses_byte_swapped_complex_audio(dtype):
+    samples = (np.arange(64) * (1 + 0.5j)).astype(dtype)
+
+    with pytest.raises(TypeError, match="native byte order"):
+        resample_poly(samples, 1, 3)
+    _assert_same_bits(resample_poly(samples, 2, 2), _reference_resample_poly(samples, 2, 2))
+    _assert_same_bits(resample_poly(samples[:0], 1, 3), _reference_resample_poly(samples[:0], 1, 3))
+
+
+def _peak_parity_inputs() -> dict[str, np.ndarray]:
+    rng = np.random.default_rng(1106)
+    inputs = {
+        "empty": np.zeros(0),
+        "single": np.array([1.0]),
+        "triangle": np.array([0.0, 1.0, 0.0]),
+        "plateau": np.array([0.0, 2.0, 2.0, 2.0, 0.0]),
+        "edge-plateau": np.array([0.0, 1.0, 1.0]),
+        "scipy-0": _PEAK_SAMPLES[0],
+        "scipy-1": _PEAK_SAMPLES[1],
+        "noise-257": _PEAK_SAMPLES[2],
+        "noise-4096": rng.standard_normal(4096) * 6.0,
+        "spectrum": np.convolve(rng.standard_normal(4096) * 20.0, np.ones(9) / 9, mode="same"),
+        "full-scale": np.where(np.arange(4800) % 96 < 48, 1.0, -1.0),
+        "silence": np.zeros(512),
+    }
+    with_nan = rng.standard_normal(600) * 4.0
+    with_nan[[3, 50, 51, 300]] = np.nan
+    inputs["nan"] = with_nan
+    with_inf = rng.standard_normal(600) * 4.0
+    with_inf[[10, 200]] = [np.inf, -np.inf]
+    inputs["inf"] = with_inf
+    # Thousands of equal-height peaks: NumPy's argsort orders the ties.
+    inputs["tied-square"] = np.where(np.arange(4800) % 96 < 48, 1.0, -1.0)
+    levels = np.random.default_rng(1106).standard_normal(2000)
+    inputs["tied-levels"] = np.round(np.convolve(levels, np.ones(5), "same"))
+    inputs["tied-spikes"] = np.where(np.arange(3000) % 7 == 3, 2.0, 0.0)
+    return inputs
+
+
+_PEAK_PARITY_INPUTS = _peak_parity_inputs()
+
+
+# Distances beyond the tied inputs' periods make the tie order decide which peaks stay.
+@pytest.mark.parametrize("prominence", [0.0, 0.75, 3.0])
+@pytest.mark.parametrize("distance", [1, 2, 3, 8, 50, 100, 250])
+@pytest.mark.parametrize("name", list(_PEAK_PARITY_INPUTS))
+def test_native_peak_detection_matches_the_numpy_implementation(name, distance, prominence):
+    samples = _PEAK_PARITY_INPUTS[name]
+
+    expected = _reference_find_peaks(samples, distance=distance, prominence=prominence)
+    actual = find_peaks_distance_prominence(samples, distance=distance, prominence=prominence)
+
+    _assert_same_bits(actual, expected)
+
+
+def test_native_band_mean_and_clamp_match_the_numpy_implementation():
+    rng = np.random.default_rng(611)
+    freqs = np.fft.rfftfreq(4096, 1.0 / 48_000)
+    spectra = {
+        "noise": rng.standard_normal(freqs.size) * 12.0 - 40.0,
+        "nan": np.where(rng.random(freqs.size) < 0.01, np.nan, rng.standard_normal(freqs.size)),
+        "silence": np.full(freqs.size, -120.0),
+    }
+    bands = [
+        (180.0, 800.0), (1200.0, 3500.0), (5500.0, 8500.0), (2500.0, 4500.0),
+        (5000.0, 9000.0), (30_000.0, 40_000.0), (0.0, 24_000.0), (100.0, 100.0),
+    ]
+    for spectrum in spectra.values():
+        for low, high in bands:
+            expected = _reference_band_mean(freqs, spectrum, low, high)
+            assert repr(band_mean(freqs, spectrum, low, high)) == repr(expected)
+
+    # NumPy masks N-D arrays elementwise, so equal shapes pair in C order.
+    matrix_freqs = freqs[:2048].reshape(32, 64)
+    matrix_values = spectra["noise"][:2048].reshape(32, 64)
+    for low, high in bands:
+        for layout in (np.ascontiguousarray, np.asfortranarray):
+            expected = _reference_band_mean(layout(matrix_freqs), layout(matrix_values), low, high)
+            actual = band_mean(layout(matrix_freqs), layout(matrix_values), low, high)
+            assert repr(actual) == repr(expected)
+        expected = _reference_band_mean(matrix_freqs, np.asfortranarray(matrix_values), low, high)
+        assert repr(band_mean(matrix_freqs, np.asfortranarray(matrix_values), low, high)) == repr(
+            expected
+        )
+    for mismatched in (matrix_values.reshape(-1), matrix_values.T, matrix_values[:, :32]):
+        with pytest.raises(IndexError):
+            _reference_band_mean(matrix_freqs, mismatched, 1200.0, 3500.0)
+        with pytest.raises(IndexError):
+            band_mean(matrix_freqs, mismatched, 1200.0, 3500.0)
+
+    edge_values = [-math.inf, -5.0, -0.0, 0.0, 0.5, 3.0, 5.0, math.inf, math.nan, 2, -7]
+    ranges = [(0.0, 3.0), (3.0, 0.0), (-math.inf, math.inf), (0.0, 0.0), (-0.0, 0.0), (1, 2)]
+    for value in edge_values:
+        for low, high in ranges:
+            assert repr(clamp(value, low, high)) == repr(_reference_clamp(value, low, high))
+
+
+def test_native_causal_vad_mapping_matches_the_numpy_implementation():
+    rng = np.random.default_rng(3)
+    probabilities = {
+        "float32": rng.random(700).astype(np.float32),
+        "float64": rng.random(700),
+        "out-of-range": rng.standard_normal(50) * 2.0,
+        "single": np.array([0.4]),
+        "nan": np.array([0.2, np.nan]),
+        "inf": np.array([0.2, np.inf]),
+        "empty": np.zeros(0),
+        "matrix": rng.random((10, 7)),
+    }
+    positions = {
+        "frame-ends": np.arange(1, 2_001, dtype=np.int64) * 441,
+        "block-starts": np.arange(0, 2_000, dtype=np.int64) * 480,
+        "negative-and-huge": np.array([-10_000, -1, 0, 1, 10**12], dtype=np.int64),
+        "float": np.array([511.9, 512.0, 1536.7]),
+        "matrix": np.arange(24, dtype=np.int64).reshape(4, 6) * 1000,
+        "empty": np.zeros(0, dtype=np.int64),
+    }
+    for sample_rate in (8_000, 16_000, 22_050, 44_100, 48_000, 0, -1):
+        for values in probabilities.values():
+            for ends in positions.values():
+                expected = _reference_map_causal_vad_probabilities(values, ends, sample_rate)
+                actual = map_causal_vad_probabilities(values, ends, sample_rate)
+                if expected is None:
+                    assert actual is None
+                else:
+                    assert actual is not None
+                    _assert_same_bits(actual, expected)
+    assert map_causal_vad_probabilities(None, positions["frame-ends"], 48_000) is None
+
+
+# The removed Python compared the rate with 0 and truncated it with int().
+@pytest.mark.parametrize(
+    "sample_rate",
+    [44_100.0, 44_100.7, 16_000.5, np.float32(48_000.0), True, 0.5, -0.5, math.nan, math.inf,
+     None, "48000", 2**62],
+    ids=repr,
+)
+def test_native_causal_vad_mapping_takes_rates_like_the_numpy_implementation(sample_rate):
+    probabilities = np.random.default_rng(9).random(300)
+    positions = np.arange(0, 3_000, dtype=np.int64) * 441
+
+    with warnings.catch_warnings(record=True) as expected_warnings:
+        warnings.simplefilter("always")
+        expected = _outcome(
+            _reference_map_causal_vad_probabilities, probabilities, positions, sample_rate
+        )
+    with warnings.catch_warnings(record=True) as actual_warnings:
+        warnings.simplefilter("always")
+        actual = _outcome(map_causal_vad_probabilities, probabilities, positions, sample_rate)
+
+    assert [warning.category for warning in actual_warnings] == [
+        warning.category for warning in expected_warnings
+    ]
+    if expected is None or isinstance(expected, type):
+        assert actual is expected
+    else:
+        _assert_same_bits(actual, expected)
+    # Without usable posteriors the rate is compared but never converted.
+    for unusable in (None, np.zeros(0), np.array([np.nan])):
+        expected = _outcome(_reference_map_causal_vad_probabilities, unusable, positions, sample_rate)
+        actual = _outcome(map_causal_vad_probabilities, unusable, positions, sample_rate)
+        assert actual is expected
+
+
+def _offline_vad_parity_inputs() -> list[tuple[str, np.ndarray, int]]:
+    rng = np.random.default_rng(48)
+    time = np.arange(48_000) / 48_000
+    voice_like = np.sin(2 * np.pi * 180.0 * time) * (0.5 + 0.5 * np.sin(2 * np.pi * 3.0 * time)) * 0.3
+    with_nan = rng.standard_normal(4410).astype(np.float32) * 0.1
+    with_nan[20] = np.nan
+    with_inf = rng.standard_normal(4800).astype(np.float32) * 0.1
+    with_inf[20] = np.inf
+    full_scale = np.where(np.arange(48_000) % 96 < 48, 1.0, -1.0).astype(np.float32)
+    return [
+        ("empty", np.zeros(0, dtype=np.float32), 48_000),
+        ("short", rng.standard_normal(100).astype(np.float32) * 0.1, 48_000),
+        ("silence-48k", np.zeros(48_000, dtype=np.float32), 48_000),
+        ("silence-44k1", np.zeros(44_100, dtype=np.float32), 44_100),
+        ("full-scale-48k", full_scale, 48_000),
+        ("voice-48k", voice_like.astype(np.float32), 48_000),
+        ("voice-44k1", voice_like[:44_100], 44_100),
+        ("noise-16k", rng.standard_normal(16_000).astype(np.float32) * 0.05, 16_000),
+        ("nan-44k1", with_nan, 44_100),
+        ("inf-48k", with_inf, 48_000),
+        ("unsupported-rate", rng.standard_normal(4000).astype(np.float32), 1_000),
+        ("zero-rate", np.ones(100, dtype=np.float32), 0),
+        ("matrix-48k", voice_like.astype(np.float32).reshape(96, 500), 48_000),
+        ("fortran-matrix-44k1", np.asfortranarray(voice_like[:44_100].reshape(441, 100)), 44_100),
+    ]
+
+
+# Without a provisioned model both sides fall back, which the backend check covers.
+@pytest.mark.parametrize(
+    ("threshold", "pre_gain"),
+    [(0.48, 1.0), (0.48, 2.0), (0.3, 0.05), (0.48, 0.0), (0.48, math.nan), (1.5, 1.0)],
+)
+@pytest.mark.parametrize("case", _offline_vad_parity_inputs(), ids=lambda case: case[0])
+def test_native_offline_vad_matches_the_numpy_implementation(case, threshold, pre_gain):
+    _name, audio, sample_rate = case
+
+    expected, expected_backend = _reference_analyze_offline_vad(
+        audio, sample_rate, threshold=threshold, pre_gain=pre_gain
+    )
+    actual, backend = analyze_offline_vad(
+        audio, sample_rate, threshold=threshold, pre_gain=pre_gain
+    )
+
+    assert backend == expected_backend
+    if expected is None:
+        assert actual is None
+        return
+    assert actual is not None
+    _assert_same_bits(actual, expected)
+
+
+def _offline_vad_argument_cases() -> list[tuple[str, Any, Any, dict[str, Any]]]:
+    voice = (np.sin(2 * np.pi * 180.0 * np.arange(9_600) / 48_000) * 0.3).astype(np.float32)
+    return [
+        ("gain-none", voice, 48_000, {"pre_gain": None}),
+        ("gain-text", voice, 48_000, {"pre_gain": "x"}),
+        ("gain-numeric-text", voice, 48_000, {"pre_gain": "2.0"}),
+        ("gain-list", voice, 48_000, {"pre_gain": [1.0, 2.0]}),
+        ("gain-object", voice, 48_000, {"pre_gain": object()}),
+        ("gain-bool", voice, 48_000, {"pre_gain": True}),
+        ("gain-none-text-audio", "abc", 48_000, {"pre_gain": None}),
+        ("gain-zero-text-audio", "abc", 48_000, {"pre_gain": 0.0}),
+        ("threshold-none", voice, 48_000, {"threshold": None}),
+        ("threshold-text", voice, 48_000, {"threshold": "x"}),
+        ("threshold-numeric-text", voice, 48_000, {"threshold": "0.3"}),
+        ("threshold-none-empty", np.zeros(0, dtype=np.float32), 48_000, {"threshold": None}),
+        ("threshold-none-zero-rate", voice, 0, {"threshold": None}),
+        ("text-audio", "abc", 48_000, {}),
+        ("object-audio", [object()], 48_000, {}),
+        ("none-audio", None, 48_000, {}),
+        ("float-rate", voice, 48_000.0, {}),
+        ("float-rate-44k1", voice[:8_820], 44_100.0, {}),
+        ("fractional-rate", voice, 16_000.7, {}),
+        ("numpy-rate", voice, np.int64(16_000), {}),
+        ("none-rate-empty", np.zeros(0, dtype=np.float32), None, {}),
+        ("none-rate", voice, None, {}),
+        ("text-rate", voice, "48000", {}),
+    ]
+
+
+def _offline_vad_outcome(function: Any, audio: Any, sample_rate: Any, kwargs: dict[str, Any]):
+    try:
+        return function(audio, sample_rate, **kwargs)
+    except Exception as error:  # noqa: BLE001 - the exception type is the outcome
+        return type(error)
+
+
+# The removed Python fell back for gains and thresholds float() rejects and
+# checked the gain before converting the audio.
+@pytest.mark.parametrize("case", _offline_vad_argument_cases(), ids=lambda case: case[0])
+def test_native_offline_vad_handles_arguments_like_the_numpy_implementation(case):
+    _name, audio, sample_rate, kwargs = case
+
+    expected = _offline_vad_outcome(_reference_analyze_offline_vad, audio, sample_rate, kwargs)
+    actual = _offline_vad_outcome(analyze_offline_vad, audio, sample_rate, kwargs)
+
+    if isinstance(expected, type):
+        assert actual is expected
+        return
+    assert isinstance(actual, tuple)
+    assert actual[1] == expected[1]
+    if expected[0] is None:
+        assert actual[0] is None
+    else:
+        _assert_same_bits(actual[0], expected[0])

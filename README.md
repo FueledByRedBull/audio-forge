@@ -469,7 +469,11 @@ AUDIOFORGE_ENABLE_DEEPFILTER=1 python -m mic_eq
 `fetch_release_assets.py` downloads the pinned ONNX Runtime and models and
 builds `libdf.so` from the pinned DeepFilterNet source. `./build_linux.sh` builds
 the bundle in `dist/AudioForge`, and `python python/tools/linux_package.py`
-turns it into the tarball (add `--appimagetool` for the AppImage).
+turns it into the tarball (add `--appimagetool` for the AppImage). The build
+needs `patchelf` only when the venv's Python names its own lib directory in its
+libraries' RUNPATH, as the actions/setup-python one does. A distribution's
+Python doesn't; if patchelf is needed and missing, the script stops and names
+the file.
 
 ## Roadmap
 

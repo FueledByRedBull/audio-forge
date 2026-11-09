@@ -18,7 +18,7 @@ import bench_metrics as bm
 from test_bench_metrics import built_mix
 from mic_eq import CORE_AVAILABLE
 from mic_eq.analysis import joint_tuning, voice_setup
-from mic_eq.analysis.auto_eq_parts import headroom
+from mic_eq import mic_eq_core
 
 pytestmark = pytest.mark.skipif(not CORE_AVAILABLE, reason="native extension is not built")
 
@@ -90,8 +90,8 @@ def test_voice_setup_refuses_silence_the_clipped_take_and_under_two_seconds_of_s
 
 def test_an_applied_voice_setup_proposal_meets_the_final_headroom_check(bench):
     # The released thresholds, pinned: loosening one is a tuning change that this test should make visible.
-    assert (headroom.HEADROOM_TARGET_DB, headroom.LIMITER_GAIN_REDUCTION_WARN_DB,
-            headroom.TRUE_PEAK_GAIN_REDUCTION_WARN_DB) == (1.0, 1.0, 0.5)
+    assert (mic_eq_core.HEADROOM_TARGET_DB, mic_eq_core.LIMITER_GAIN_REDUCTION_WARN_DB,
+            mic_eq_core.TRUE_PEAK_GAIN_REDUCTION_WARN_DB) == (1.0, 1.0, 0.5)
     assert voice_setup.LIMITER_ALLOWANCE_DB == 3.0
 
     outcome = bm.voice_setup(bm.make_context(_crop(built_mix("room-t02"), 6.0)), False)
@@ -100,8 +100,8 @@ def test_an_applied_voice_setup_proposal_meets_the_final_headroom_check(bench):
     allowance = float(outcome["limiter_allowance_db"])
     assert allowance in (0.0, voice_setup.LIMITER_ALLOWANCE_DB)
     final = outcome["final"]
-    readings = {name: final[name] for name in headroom._NATIVE_SAFETY_METRICS}
+    readings = {name: final[name] for name in mic_eq_core.NATIVE_SAFETY_METRICS}
     assert outcome["offline_headroom_safe"] and voice_setup._headroom_safe(readings, allowance)
     if allowance == 0.0:
-        assert headroom._is_headroom_safe(readings)
+        assert mic_eq_core.is_headroom_safe(readings)
     assert not final["clipped"] and not final["limiter_overload"]

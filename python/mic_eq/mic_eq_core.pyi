@@ -349,6 +349,34 @@ def find_peaks_distance_prominence(
 ) -> npt.NDArray[np.intp]:
     """1-D local maxima with SciPy find_peaks' distance and prominence semantics."""
     ...
+HEADROOM_TARGET_DB: float
+LIMITER_GAIN_REDUCTION_WARN_DB: float
+TRUE_PEAK_GAIN_REDUCTION_WARN_DB: float
+NATIVE_SAFETY_METRICS: tuple[str, str, str]
+def flatten_chain_settings(chain_settings: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The flat settings simulate_auto_eq_chain takes, from nested stage settings.
+
+    Absent settings take their defaults; one that is no finite number, boolean or
+    integer raises ValueError. Flat native-boundary settings override the nested ones.
+    """
+    ...
+def band_array_eq_inputs(
+    eq_settings: Mapping[str, Any],
+) -> tuple[list[tuple[float, float, float]], bool]:
+    """(bands, enabled) from band_freqs, band_gains and band_qs; ValueError unless 10 finite each."""
+    ...
+def headroom_excess_db(simulation: Mapping[str, Any]) -> float:
+    """How far a simulation passes the headroom rule; it fits at <= 0.
+
+    Infinite when a safety metric is missing or not a finite number.
+    """
+    ...
+def is_headroom_safe(simulation: Mapping[str, Any]) -> bool:
+    """headroom_excess_db(simulation) <= 0."""
+    ...
+def safety_metric_problems(simulation: Mapping[str, Any]) -> list[str]:
+    """One message per safety metric that is missing, non-numeric or not finite."""
+    ...
 def simulate_auto_eq_chain(
     audio: npt.NDArray[np.float32],
     sample_rate: float,

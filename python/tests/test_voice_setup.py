@@ -13,7 +13,7 @@ import pytest
 
 from mic_eq.analysis import voice_setup as voice_setup_module
 from mic_eq.analysis import vad as vad_analysis
-from mic_eq.analysis.auto_eq_parts.headroom import _is_headroom_safe
+from mic_eq.mic_eq_core import is_headroom_safe
 from mic_eq.analysis.voice_setup import (
     _calibrate_compressor_threshold,
     _fit_loudness_to_headroom,
@@ -232,7 +232,7 @@ def test_the_limiter_allowance_accepts_the_peaks_the_limiter_may_take_off():
     for headroom in (3.0, 1.0, 0.99, 0.0, -2.5):
         for true_peak in (0.0, 0.5, 0.51):
             reading = {**_headroom_reading(headroom), "true_peak_limiter_gain_reduction_db": true_peak}
-            assert headroom_safe(reading, 0.0) == _is_headroom_safe(reading)
+            assert headroom_safe(reading, 0.0) == is_headroom_safe(reading)
     leaning = _headroom_reading(-2.5)
     assert not headroom_safe(leaning, 0.0) and headroom_safe(leaning, allowance)
     assert not headroom_safe(busy_true_peak, allowance)

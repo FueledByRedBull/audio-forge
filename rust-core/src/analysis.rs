@@ -11,6 +11,7 @@ use std::ops::{AddAssign, Mul};
 
 use realfft::num_complex::Complex;
 
+pub(crate) mod headroom;
 pub mod latency;
 pub(crate) mod python_api;
 #[cfg(test)]

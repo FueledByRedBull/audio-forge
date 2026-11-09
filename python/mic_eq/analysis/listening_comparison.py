@@ -11,8 +11,8 @@ from typing import Any
 import numpy as np
 
 from .auto_eq import simulate_candidate_chain
-from .auto_eq_parts.headroom import _flatten_chain_settings
 from .cancellation import AnalysisCancelled
+from ..mic_eq_core import flatten_chain_settings
 
 
 logger = logging.getLogger(__name__)
@@ -407,7 +407,7 @@ def _render_scope(
             "input pre-filter", "output safety",
         )
         return "full-chain Bypass output", stages
-    controls = _flatten_chain_settings(dict(chain))
+    controls = flatten_chain_settings(dict(chain))
     eq_enabled = _eq_settings(settings)["eq_enabled"]
     stages = list(RENDERED_STAGES if chain.get("full_chain") else RENDERED_STAGES[3:])
     for stage, enabled in (

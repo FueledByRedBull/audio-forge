@@ -556,8 +556,12 @@ logic behind items 4-8, 11 and 13 (`test_quick_undo.py`, `test_quick_shell.py`,
   does the same for the Linux bundle. Its binary hashes are provenance, not
   reproducible-build expectations.
 - `linux_package.py` refuses a Linux bundle that carries FFmpeg libraries,
-  lacks the libxcb libraries Qt's xcb plugin needs, or copies a library from a
-  build-host package that is not in its permissive list.
+  lacks the libxcb libraries Qt's xcb plugin needs, copies a library from a
+  build-host package that is not in its permissive list, or holds an ELF file
+  whose RPATH or RUNPATH names a directory outside the bundle. The interpreter
+  actions/setup-python installs names its own lib directory in libpython and
+  lib-dynload, so `build_linux.sh` removes those search paths with `patchelf`
+  (installed by `package-linux`) after PyInstaller.
 - The AppImage runtime pinned in `package-linux` (URL and SHA-256) must have
   a matching `appimage-runtime-type2-runtime-<tag>` entry in
   `licenses/source-manifest.json`; `check_workflows.py` fails when it does not.

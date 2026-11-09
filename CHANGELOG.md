@@ -16,6 +16,7 @@
 - Device lists leave out other apps' PipeWire streams. The query gives up after 2 s, so a PipeWire daemon that never answers can't hang the list.
 - SIGTERM and SIGHUP in the frozen build end the session cleanly, without the "Stop Audio and Quit?" question. Other signals, Ctrl+C included, do not. A SIGHUP that was already ignored, as under `nohup`, stays ignored.
 - The frozen build no longer passes `LD_LIBRARY_PATH`, `QT_PLUGIN_PATH` and `QML2_IMPORT_PATH` to the programs it opens; a file manager launched from AudioForge used to load the bundle's Qt and fail. The QML import path the bundle sets now reaches each Qt Quick scene before the variable is removed.
+- The native module and the bundled CPython libraries no longer carry the RPATH or RUNPATH of the machine that built them. The module is built with `maturin build` instead of `maturin develop`, whose editable build added the build directories to its RPATH; the release build clears the CPython libraries' RUNPATH with patchelf; and the bundle check now reads the RPATH and RUNPATH of every ELF file and fails on any entry that isn't relative to the bundle or points outside it.
 
 ### Sound
 
@@ -74,6 +75,26 @@
 
 - Health reads Rust's diagnostics through one parser, so the window, the export and the setup dialogs agree on a badly typed value. A boolean in a numeric field is no longer read as a number: `input_crest_factor_db: True` used to show as 1.0 dB and "Input: ALREADY COMPRESSED". The engine always sends the right types, so nothing changes in normal use.
 
+### Dialogs
+
+- The Auto-EQ calibration dialog, Voice Setup, the listening comparison and the Test my sound window are Qt Quick scenes, like the latency calibration and Guided Setup in 1.22.0. Voice Setup was the last setup dialog built with Widgets. Recording, analysis, applying, reports and the audio borrowing are unchanged, and so are the settings they recommend.
+- The step header in Auto-EQ and Voice Setup is a row with an underline under the current step, read as "Step N of 3: name" and "Step N of 5: name". The groups are cards with uppercase titles, read as named groups, and the page spacing is 16 px instead of 10 px.
+- Each picker has its caption above it and is read with its choice ("Tone preset: <choice>", "Output device: <choice>"), where it used to be read with a trailing colon and no choice. Row captions are no longer read on their own.
+- Voice Setup's three number fields (Typical evening-out, Strongest squeeze allowed, Target loudness) have the caption above, a minus and a plus button at the sides and the unit after the number, and are read as "<name>: <value> <unit>". Up and Down step by 1, a typed number is taken on Enter or when the field is left, and the ranges (1 to 8 dB, 1.5 to 12 dB, -24 to -12 LUFS, two decimals) are kept. The two limits are still available only with Custom compression.
+- The level-match option in the listening comparison is an on/off switch whose caption also toggles it. Enter on the focused switch flips it; before, Enter there pressed Keep.
+- The progress bar is the shared bordered track, read as "N percent". While the Auto-EQ analysis runs it shows a block sliding along the track, where the Widgets bar showed Qt's busy bar.
+- The level meter is as wide as its card and 120 px high. The time line ("Time remaining: 4s", "Complete") is the page's lead text size, and "Complete" is green. Voice Setup's phase line ("Capturing speech", "Recommendations ready") is the first line of the Recording card, centred and bold.
+- Voice Setup's review lines and the lines for a weak capture are chips in the Recommended Settings card, with the same colours and hover text. The EQ comparison graph is drawn by the same code as before.
+- Cancel, Retake, Compare Recording, Continue Anyway, Reject, Close and the recording window's Cancel use the plain button look instead of the semi-bold secondary style. The main button keeps the primary look.
+- The passage can no longer be selected with the mouse.
+- Tab goes first to the scrollable page, which shows a focus ring and scrolls with the arrow keys, Page Up, Page Down, Home and End, and then to the controls. A focused control scrolls into view.
+- Enter outside a button (on the page, on a closed picker or in a number field) does what the main button says when it is available, where it used to press whichever button the dialog made default. A typed number is taken first. Enter in an open picker list only chooses.
+- A button, picker or number field that hides or disables itself while it has the keyboard passes the keyboard to the page, so Tab keeps working.
+- Tooltips also show on keyboard focus, and each is the control's accessible description, as are the hover texts of the warning, result and review lines.
+- The minimum width of each dialog follows the text size; it was fixed (480, 500 and 480 px). The recording window grows to fit its prompt at large text sizes instead of wrapping.
+- A scene that fails to load no longer leaves a half-built window. The dialog says "This window could not open." with the reason and closes as cancelled; nothing is recorded and no audio is borrowed or muted. "Test my sound" shows its usual "Recording did not work" message.
+- In Voice Setup's final comparison, a comparison window that could not open now says "Final comparison could not open; previous settings put back" instead of reporting a declined comparison. The settings are still put back, and the report reason is `final_comparison_unavailable`.
+
 ### Window and dialogs
 
 - A device refresh that fails with any exception reaches the warning instead of escaping.
@@ -88,6 +109,10 @@
 - Unused code is gone (the compressor calibration's leftover search machinery, an unused card widget, unused native methods), and some DSP per-sample work is cheaper.
 - The release workflows re-check the tag before publishing, authorize dispatch in one shared action, and download assets through one bounded downloader; an asset already on disk is re-verified and fetched again if it fails. Nothing in the app changes.
 - A Silero test fixture was updated for the per-sample makeup ramp.
+- The Widgets stylesheet and layout helpers the setup dialogs used are gone (the step header, the progress, description, subdued, primary-button, step and status-chip styles, the accessibility helpers, the Widgets level meter and EQ comparison widget), along with the secondary button style. The dialogs share `Chip.qml`, `ProgressTrack.qml`, `NumberBox.qml` and one focus hand-off component. Nothing else in the app changes.
+- The numeric ranges of the gate, noise suppression, de-esser, compressor and limiter settings live in one table in the Rust core (`rust-core/src/config_ranges.rs`). The live setters clamp to it, and Python reads it to validate saved presets and bound the controls, where the numbers were kept in `processor.rs` and in a Python dictionary. No range changed, and a preset can't be validated without the native core, as nothing else in the app runs without it.
+- The shared analysis helpers (`clamp`, `band_mean`, `resample_poly`, peak finding), the offline VAD and the latency calibration analysis run in the Rust core instead of NumPy, step for step; results are bit for bit the same on every CPU (NumPy still designs the resampling filter and orders tied peaks), except the latency correlation, which goes through `realfft` and matches to rounding. Importing those analysis modules without the extension now raises ImportError.
+- Chain-settings flattening and the headroom verdict that Auto-EQ, Voice Setup and compressor calibration use run in the Rust core, with the same thresholds, messages and return shapes.
 
 ## v1.22.0
 

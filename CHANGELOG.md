@@ -43,7 +43,6 @@
 
 ### Start and Stop
 
-- On Windows the app no longer quits at launch with `OverflowError: int too long to convert` when the window icon's handle doesn't fit in 32 bits (issue 239, since 1.19.0).
 - Start from the File menu or Ctrl+Return right after a Stop is no longer ignored. The 0.5 s lockout now applies only to the Start/Stop button, from the last click on Stop.
 - Latency calibration, Auto-EQ, Voice Setup and Test my sound borrow audio through one owner. If one of them can't stop the engine when it finishes, the window shows "Stopping audio failed: ..." and the next release tries again, where the dialogs used to drop the error and forget they owned the audio.
 - Auto-EQ and Voice Setup stop audio at the end only if it still runs or a restart is pending.
@@ -98,6 +97,7 @@
 
 ### Window and dialogs
 
+- On Windows the app no longer quits at launch with `OverflowError: int too long to convert` when the window icon's handle doesn't fit in 32 bits (issue 239, reported on 1.19.0 to 1.22.0).
 - A device refresh that fails with any exception reaches the warning instead of escaping.
 - The listening comparison's "No playback device" notice clears when a device appears.
 - A window shown again after its shutdown ran, for example when a software-rendering relaunch fails, resumes the virtual-microphone watch.

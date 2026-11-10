@@ -313,7 +313,7 @@ def test_window_icon_handles_above_32_bits_reach_the_window(monkeypatch):
 
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(app_bootstrap.ctypes.windll, "shell32", Shell32())
-    window = Window()
+    window: Any = Window()
 
     app_bootstrap.apply_windows_window_icon(window)
 

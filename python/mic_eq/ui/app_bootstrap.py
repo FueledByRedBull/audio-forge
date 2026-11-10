@@ -3,6 +3,7 @@
 import contextlib
 import ctypes
 import faulthandler
+import functools
 import importlib
 import logging
 import os
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from ctypes import wintypes
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Callable, Iterator, Type, cast
@@ -226,6 +228,17 @@ def _application_icon() -> QIcon:
     return QIcon()
 
 
+@functools.cache
+def _send_message_w() -> Callable[..., int]:
+    # Without argtypes ctypes passes Python ints as C int, and an icon handle
+    # above 32 bits fails with OverflowError (issue 239). A private handle keeps
+    # these argtypes off the shared ctypes.windll.user32.
+    send_message = ctypes.WinDLL("user32").SendMessageW
+    send_message.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.HANDLE]
+    send_message.restype = wintypes.LPARAM
+    return send_message
+
+
 def apply_windows_window_icon(window: QMainWindow) -> None:
     """Set native small/large window icons from the frozen executable resource."""
     if os.name != "nt" or not getattr(sys, "frozen", False):
@@ -244,15 +257,15 @@ def apply_windows_window_icon(window: QMainWindow) -> None:
         return
 
     hwnd = int(window.winId())
-    user32 = ctypes.windll.user32
+    send_message = _send_message_w()
     wm_seticon = 0x0080
     icon_small = 0
     icon_big = 1
 
     if hicon_small.value:
-        user32.SendMessageW(hwnd, wm_seticon, icon_small, hicon_small.value)
+        send_message(hwnd, wm_seticon, icon_small, hicon_small.value)
     if hicon_large.value:
-        user32.SendMessageW(hwnd, wm_seticon, icon_big, hicon_large.value)
+        send_message(hwnd, wm_seticon, icon_big, hicon_large.value)
 
     setattr(window, "_audioforge_native_icons", (hicon_large, hicon_small))
 

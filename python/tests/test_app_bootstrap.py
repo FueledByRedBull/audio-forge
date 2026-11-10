@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import logging
 import os
@@ -294,6 +295,34 @@ def test_launcher_leaves_model_discovery_to_app_bootstrap(tmp_path, monkeypatch)
     runpy.run_path(str(launcher_path))
 
     assert "VAD_MODEL_PATH" not in app_bootstrap.os.environ
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows window icons")
+def test_window_icon_handles_above_32_bits_are_sent_without_overflow(monkeypatch):
+    # Issue 239: an icon handle above 32 bits crashed the frozen app at start.
+    large_handle, small_handle = 0xFFFFFFFFFF001234, 0x00007FFF00005678
+
+    class Shell32:
+        @staticmethod
+        def ExtractIconExW(_path, _index, large, small, _count):
+            large._obj.value, small._obj.value = large_handle, small_handle
+            return 1
+
+    class Window:
+        def winId(self):
+            return 0
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(app_bootstrap.ctypes.windll, "shell32", Shell32())
+    window: Any = Window()
+
+    app_bootstrap.apply_windows_window_icon(window)
+
+    large, small = getattr(window, "_audioforge_native_icons")
+    assert (large.value, small.value) == (large_handle, small_handle)
+    # A 32-bit lParam type would truncate these handles without raising.
+    lparam_type = getattr(app_bootstrap._send_message_w(), "argtypes")[3]
+    assert ctypes.sizeof(lparam_type) == ctypes.sizeof(ctypes.c_void_p)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows taskbar properties")

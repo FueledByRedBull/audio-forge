@@ -97,6 +97,7 @@
 
 ### Window and dialogs
 
+- On Windows the app no longer quits at launch with `OverflowError: int too long to convert` when the window icon's handle doesn't fit in 32 bits (issue 239, reported on 1.19.0 to 1.22.0).
 - A device refresh that fails with any exception reaches the warning instead of escaping.
 - The listening comparison's "No playback device" notice clears when a device appears.
 - A window shown again after its shutdown ran, for example when a software-rendering relaunch fails, resumes the virtual-microphone watch.

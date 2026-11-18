@@ -18,8 +18,6 @@ MANIFEST_PATH = REPO_ROOT / "release-assets.json"
 SOURCE_BUILD_STATUS = "verified-source-build"
 HEX_SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 PINNED_ARCHIVE_STATUS = "verified-upstream-archive"
-# The ONNX Runtime GitHub repository has returned 404 since 2026-11-18; the
-# Microsoft-signed NuGet package carries the same pinned binaries.
 PINNED_ARCHIVE_HOSTS = frozenset({"api.nuget.org"})
 KNOWN_ORIGIN_STATUSES = frozenset(
     {

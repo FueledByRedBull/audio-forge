@@ -2680,44 +2680,29 @@ def test_fetch_pinned_archive_rejects_unsafe_or_symlink_members(tmp_path):
         )
 
 
-def _tar_with(archive, members):
-    import tarfile
-
-    with tarfile.open(archive, "w:gz") as output:
-        for info, payload in members:
-            output.addfile(info, io.BytesIO(payload) if payload is not None else None)
-
-
-def test_fetch_pinned_tgz_extracts_only_the_named_regular_file(tmp_path):
-    import tarfile
-
-    payload = b"\x7fELF runtime"
-    regular = tarfile.TarInfo("package/lib/libruntime.so.1.2.3")
-    regular.size = len(payload)
-    link = tarfile.TarInfo("package/lib/libruntime.so")
-    link.type = tarfile.SYMTYPE
-    link.linkname = "libruntime.so.1.2.3"
-    archive = tmp_path / "runtime.tgz"
-    _tar_with(archive, [(regular, payload), (link, None)])
-
-    extracted = fetch_release_assets._extract_pinned_tar_member(
-        archive, tmp_path / "extract", "package/lib/libruntime.so.1.2.3"
+def test_fetch_pinned_archive_refuses_a_host_outside_the_allowlist(tmp_path, monkeypatch):
+    opened = []
+    monkeypatch.setattr(
+        urllib.request, "build_opener", lambda *_: opened.append(True) or None
     )
-    assert extracted.read_bytes() == payload
+    payload = b"runtime"
+    for url_field in ("source", "archive_url"):
+        entry = {
+            "source": "https://api.nuget.org/v3-flatcontainer/example.runtime/1.0.0/example.runtime.1.0.0.nupkg",
+            "origin": {
+                "archive_sha256": hashlib.sha256(payload).hexdigest(),
+                "archive_size": len(payload),
+            },
+        }
+        github = "https://github.com/example/runtime/releases/download/v1.0.0/runtime.zip"
+        if url_field == "source":
+            entry["source"] = github
+        else:
+            entry["origin"]["archive_url"] = github
 
-    with pytest.raises(RuntimeError, match="exactly one regular file"):
-        fetch_release_assets._extract_pinned_tar_member(
-            archive, tmp_path / "extract-link", "package/lib/libruntime.so"
-        )
-
-    escape = tarfile.TarInfo("../escape.so")
-    escape.size = 1
-    escaping = tmp_path / "escape.tgz"
-    _tar_with(escaping, [(escape, b"x")])
-    with pytest.raises(RuntimeError, match="unsafe member path"):
-        fetch_release_assets._extract_pinned_tar_member(
-            escaping, tmp_path / "extract-escape", "package/lib/libruntime.so.1.2.3"
-        )
+        with pytest.raises(ValueError, match="trusted NuGet HTTPS host"):
+            fetch_release_assets._download_pinned_archive(entry, tmp_path, {})
+    assert not opened
 
 
 def test_asset_manifest_keeps_only_the_requested_platform_and_shared_entries(tmp_path):

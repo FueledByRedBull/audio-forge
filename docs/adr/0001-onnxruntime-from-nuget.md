@@ -1,6 +1,6 @@
-# Decisions
+# ONNX Runtime CPU binaries come from the NuGet package
 
-## ONNX Runtime CPU binaries come from the NuGet package (2026-11-18)
+Date: 2026-11-18
 
 **Decision:** `fetch_release_assets.py` downloads the pinned ONNX Runtime 1.23.2
 CPU files from the Microsoft-signed `Microsoft.ML.OnnxRuntime` 1.23.2 package on

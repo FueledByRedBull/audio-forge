@@ -136,15 +136,18 @@ HEAD_IS_TAG_COMMIT = re.compile(
 # The ignore stops being allowed once the lock moves off that pin.
 # CVE-2026-59951, CVE-2026-116684, CVE-2026-116685, CVE-2026-116686: semgrep
 # pins mcp==1.29.0 (through 1.182.1); only its MCP server uses mcp.
-# CVE-2026-114603: semgrep pins opentelemetry-api~=1.37.0 (through 1.182.1); the
-# ReDoS is in TraceState.from_header for inbound tracestate headers, and semgrep
-# only exports telemetry.
+# CVE-2026-114603, CVE-2026-126360: semgrep pins opentelemetry-api~=1.37.0
+# (through 1.186.0); both are in parsing trace headers (TraceState.from_header,
+# TraceContextTextMapPropagator.extract). semgrep only exports telemetry and reads
+# traceparent only from its own environment with tracing on, which run_semgrep.py
+# never enables.
 AUDIT_IGNORES = {
     "CVE-2026-59951": ("mcp", "1.29.0"),
     "CVE-2026-116684": ("mcp", "1.29.0"),
     "CVE-2026-116685": ("mcp", "1.29.0"),
     "CVE-2026-116686": ("mcp", "1.29.0"),
     "CVE-2026-114603": ("opentelemetry-api", "1.37.0"),
+    "CVE-2026-126360": ("opentelemetry-api", "1.37.0"),
 }
 CARGO_LOCKED_COMMANDS = ("build", "test", "clippy", "run")
 ACTION_REF = re.compile(

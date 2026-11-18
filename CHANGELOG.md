@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Internal
+
+- The pinned ONNX Runtime 1.23.2 CPU files now download from Microsoft's signed `Microsoft.ML.OnnxRuntime` NuGet package, because the `microsoft/onnxruntime` GitHub repository returns 404. The files are byte-identical to the existing pins, and `api.nuget.org` is the only host allowed for pinned runtime archives.
+
 ## v1.23.0
 
 ### Upgrading

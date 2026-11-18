@@ -180,7 +180,7 @@ def _download_direct_url(url: str, destination: Path) -> None:
     )
 
 
-_PINNED_ARCHIVE_REFUSAL = "pinned runtime archives must use trusted GitHub HTTPS hosts"
+_PINNED_ARCHIVE_REFUSAL = "pinned runtime archives must use the trusted NuGet HTTPS host"
 
 
 def _manifest_pinned_archive_entry(

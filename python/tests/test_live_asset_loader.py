@@ -25,7 +25,7 @@ def _cpu_manifest(tmp_path: Path) -> Path:
                 "path": f"target/onnxruntime-cpu/lib/{name}",
                 "size": index,
                 "sha256": f"{index:064x}",
-                "source": "https://github.com/example/runtime.zip",
+                "source": "https://api.nuget.org/v3-flatcontainer/example.runtime/1.0.0/example.runtime.1.0.0.nupkg",
                 "origin": {
                     "status": "verified-upstream-archive",
                     "archive_sha256": archive_sha256,

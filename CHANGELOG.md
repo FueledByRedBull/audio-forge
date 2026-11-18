@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Internal
+
+- CVE-2026-126360, quadratic-time `traceparent` parsing in `opentelemetry-api` 1.37.0, is added to the pip-audit ignore table beside CVE-2026-114603. Semgrep 1.186.0 still pins `opentelemetry-api~=1.37.0`, so the development lock cannot move to the fixed 1.45.2. Semgrep reads `traceparent` only from its own environment with tracing on, which `run_semgrep.py` never enables.
+- The DeepFilter build lock moves `rustix` from 1.1.4 to 1.1.6 for RUSTSEC-2026-0486, which the Linux library pulls in through `tar` and `xattr`. Both build recipes replace a cached workspace lockfile whose hash `provenance.json` lists as superseded, as they already did for the manifest.
+
 ## v1.23.0
 
 ### Upgrading

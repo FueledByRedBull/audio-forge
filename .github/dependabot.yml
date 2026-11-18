@@ -15,7 +15,7 @@ updates:
     open-pull-requests-limit: 0
     ignore:
       # semgrep pins opentelemetry-api ~=1.37.0, so a bump breaks every Python job.
-      # Drop this with the CVE-2026-114603 pip-audit exception.
+      # Drop this with the CVE-2026-114603 and CVE-2026-126360 pip-audit exceptions.
       - dependency-name: opentelemetry-api
       # semgrep pins mcp ==1.29.0 exactly, so a bump cannot install. Drop this with the
       # mcp pip-audit exceptions.

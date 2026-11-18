@@ -316,7 +316,7 @@ def test_repository_workflow_release_gates_are_current():
 DEV_AUDIT = "pip_audit --require-hashes -r requirements/dev.txt --disable-pip"
 RUNTIME_AUDIT = "pip_audit --require-hashes -r requirements/runtime.txt --disable-pip"
 MCP_IGNORE = "--ignore-vuln CVE-2026-59951"
-OTEL_IGNORE = "--ignore-vuln CVE-2026-114603"
+OTEL_IGNORE = "--ignore-vuln CVE-2026-114603 --ignore-vuln CVE-2026-126360"
 MCP_SDK_IGNORES = " --ignore-vuln CVE-2026-116684 --ignore-vuln CVE-2026-116685 --ignore-vuln CVE-2026-116686"
 
 
@@ -416,7 +416,8 @@ def test_dev_audit_ignores_exactly_the_semgrep_pinned_advisories(workflow):
     source = workflow_file.read_text(encoding="utf-8")
     assert f"{DEV_AUDIT} {MCP_IGNORE} {OTEL_IGNORE}{MCP_SDK_IGNORES}" in source
     assert set(check_workflows.AUDIT_IGNORES) == {
-        "CVE-2026-59951", "CVE-2026-114603", "CVE-2026-116684", "CVE-2026-116685", "CVE-2026-116686",
+        "CVE-2026-59951", "CVE-2026-114603", "CVE-2026-126360", "CVE-2026-116684", "CVE-2026-116685",
+        "CVE-2026-116686",
     }
     dev_lock = check_workflows.DEV_LOCK_PATH.read_text(encoding="utf-8")
     for package, version in check_workflows.AUDIT_IGNORES.values():
@@ -426,7 +427,7 @@ def test_dev_audit_ignores_exactly_the_semgrep_pinned_advisories(workflow):
 @pytest.mark.parametrize(
     ("lock", "stale", "count"),
     [
-        ("mcp==1.29.0\nopentelemetry-api==1.45.1\n", "CVE-2026-114603", 1),
+        ("mcp==1.29.0\nopentelemetry-api==1.45.1\n", "CVE-2026-114603", 2),
         ("mcp==1.30.0\nopentelemetry-api==1.37.0\n", "CVE-2026-59951", 4),
     ],
 )

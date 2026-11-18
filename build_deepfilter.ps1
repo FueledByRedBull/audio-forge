@@ -330,7 +330,7 @@ if (Test-Path -LiteralPath $workspace) {
         } else {
             # The previous run may have stopped while writing its marker.
             # Validate its copied inputs before resuming setup.
-            Assert-FileHash (Join-Path $workspace "Cargo.lock") ([string]$provenance.lock.sha256) "Existing DeepFilter lockfile"
+            Assert-FileHashIn (Join-Path $workspace "Cargo.lock") (@([string]$provenance.lock.sha256) + @($provenance.lock.superseded_sha256 | ForEach-Object { [string]$_ })) "Existing DeepFilter lockfile"
             Assert-FileHashIn (Join-Path $workspace "libDF\src\capi.rs") @([string]$provenance.upstream.files.'libDF/src/capi.rs'.sha256, [string]$provenance.upstream.files.'libDF/src/capi.rs'.patched_sha256) "Existing C API source"
             Assert-FileHash (Join-Path $workspace "models\DeepFilterNet3_onnx.tar.gz") ([string]$provenance.models.'models/DeepFilterNet3_onnx.tar.gz'.sha256) "Existing standard model archive"
             Assert-FileHash (Join-Path $workspace "models\DeepFilterNet3_ll_onnx.tar.gz") ([string]$provenance.models.'models/DeepFilterNet3_ll_onnx.tar.gz'.sha256) "Existing low-latency model archive"
@@ -339,7 +339,7 @@ if (Test-Path -LiteralPath $workspace) {
         # A prior interrupted run may have prepared the workspace but not yet
         # written its marker. Accept it only when its copied inputs are exact;
         # never overwrite an unverified existing directory.
-        Assert-FileHash (Join-Path $workspace "Cargo.lock") ([string]$provenance.lock.sha256) "Existing DeepFilter lockfile"
+        Assert-FileHashIn (Join-Path $workspace "Cargo.lock") (@([string]$provenance.lock.sha256) + @($provenance.lock.superseded_sha256 | ForEach-Object { [string]$_ })) "Existing DeepFilter lockfile"
         Assert-FileHashIn (Join-Path $workspace "libDF\src\capi.rs") @([string]$provenance.upstream.files.'libDF/src/capi.rs'.sha256, [string]$provenance.upstream.files.'libDF/src/capi.rs'.patched_sha256) "Existing C API source"
         Assert-FileHash (Join-Path $workspace "models\DeepFilterNet3_onnx.tar.gz") ([string]$provenance.models.'models/DeepFilterNet3_onnx.tar.gz'.sha256) "Existing standard model archive"
         Assert-FileHash (Join-Path $workspace "models\DeepFilterNet3_ll_onnx.tar.gz") ([string]$provenance.models.'models/DeepFilterNet3_ll_onnx.tar.gz'.sha256) "Existing low-latency model archive"
@@ -367,7 +367,13 @@ if ((Get-Sha256 $workspaceManifest) -in $olderManifests) {
 if ((Get-Sha256 $workspaceManifest) -ne $manifestSha.ToUpperInvariant()) {
     throw "The build manifest in $workspace matches no known version of this recipe. Delete that folder and run again; it is recreated from the source cache."
 }
-Assert-FileHash (Join-Path $workspace "Cargo.lock") ([string]$provenance.lock.sha256) "Tracked DeepFilter lockfile"
+# The lockfile is refreshed the same way when the recipe has moved a locked crate.
+$workspaceLock = Join-Path $workspace "Cargo.lock"
+$olderLocks = @($provenance.lock.superseded_sha256 | ForEach-Object { ([string]$_).ToUpperInvariant() })
+if ((Get-Sha256 $workspaceLock) -in $olderLocks) {
+    Copy-Item -LiteralPath $trackedLock -Destination $workspaceLock -Force
+}
+Assert-FileHash $workspaceLock ([string]$provenance.lock.sha256) "Tracked DeepFilter lockfile"
 Assert-FileHash (Join-Path $workspace "models\DeepFilterNet3_onnx.tar.gz") ([string]$provenance.models.'models/DeepFilterNet3_onnx.tar.gz'.sha256) "Standard model archive"
 Assert-FileHash (Join-Path $workspace "models\DeepFilterNet3_ll_onnx.tar.gz") ([string]$provenance.models.'models/DeepFilterNet3_ll_onnx.tar.gz'.sha256) "Low-latency model archive"
 

@@ -3875,15 +3875,15 @@
     },
     {
       "build_role": "resolved DeepFilter C API dependency",
-      "filename": "rustix-1.1.4.crate",
-      "id": "deepfilter-cargo-rustix-1.1.4",
+      "filename": "rustix-1.1.6.crate",
+      "id": "deepfilter-cargo-rustix-1.1.6",
       "kind": "cargo-crate",
       "lock_file": "build-support/deepfilter/Cargo.lock",
       "name": "rustix",
-      "sha256": "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190",
-      "source_of_truth": "https://crates.io/crates/rustix/1.1.4",
-      "url": "https://crates.io/api/v1/crates/rustix/1.1.4/download",
-      "version": "1.1.4"
+      "sha256": "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa",
+      "source_of_truth": "https://crates.io/crates/rustix/1.1.6",
+      "url": "https://crates.io/api/v1/crates/rustix/1.1.6/download",
+      "version": "1.1.6"
     },
     {
       "build_role": "resolved DeepFilter C API dependency",
@@ -5347,11 +5347,11 @@
       "files": [
         {
           "path": "build_deepfilter.ps1",
-          "sha256": "466f923b9e1b266cbb674b8f6e775bcfc65875123504a393799c7a16e9666dad"
+          "sha256": "1d8ac7d15cebadd3152aab201effe313beca34a7211c3039ecad6c7f316ee46b"
         },
         {
           "path": "python/tools/build_deepfilter.py",
-          "sha256": "5ce7388c2505b91df856cb9d9ed9d1990213df8da723286b4f8879a033af46d3"
+          "sha256": "8b310efee5957fbdbc12d756e38575a2874f39abb9646508f82f0b0d81025f2d"
         },
         {
           "path": "python/tools/bounded_download.py",
@@ -5363,7 +5363,7 @@
         },
         {
           "path": "build-support/deepfilter/Cargo.lock",
-          "sha256": "35591d5e442d11e1208add6960ef7c5190454e3632fcde10d8a1d1b78136224f"
+          "sha256": "c22b7913cd4c8932010cc27cee3390832ef7388217d3c49572bcabdc619a36e4"
         },
         {
           "path": "build-support/deepfilter/capi.rs",
@@ -5371,7 +5371,7 @@
         },
         {
           "path": "build-support/deepfilter/provenance.json",
-          "sha256": "1e508b469285a9cce84df62c497f31808d08dbe8239a33e0b39ac811e0d0368f"
+          "sha256": "27ecc2492b9607dd3db993613c0dc6753d7270c8aa0036e79d895ce936614ed2"
         }
       ],
       "id": "deepfilter-build",

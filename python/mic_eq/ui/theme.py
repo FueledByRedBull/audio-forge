@@ -297,7 +297,7 @@ def contrast_theme_changed() -> bool:
     return windows_contrast_colors() != SYSTEM_CONTRAST_COLORS
 
 
-RADIUS_CARD = 16
+RADIUS_CARD = 18
 # The sidebar and the main pane.
 RADIUS_PANEL = 20
 RADIUS_CONTROL = 8
@@ -604,6 +604,21 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
     ("selected row line", PALETTE.accent_soft, flatten(PALETTE.accent_row_start, PALETTE.sidebar_top)),
     ("selected row icon", PALETTE.accent_bright, flatten(PALETTE.accent_tile_top, PALETTE.sidebar_top)),
     ("waiting pill text", PALETTE.text_primary, PALETTE.pill_surface),
+    # The play mark is text on the highlight in a contrast theme, so it takes accent_bright.
+    ("waiting pill play mark", PALETTE.accent_bright, flatten(PALETTE.accent_fill, PALETTE.pill_surface)),
+    # The route-check marks sit on their own tints over the card's lighter top.
+    ("passed check mark", PALETTE.status_ok_text, flatten(PALETTE.status_ok_fill, PALETTE.card_top)),
+    ("check to act on mark", PALETTE.status_warn_text, flatten(PALETTE.status_warn_surface, PALETTE.card_top)),
+    ("note check mark", PALETTE.text_muted, flatten(PALETTE.status_note_fill, PALETTE.card_top)),
+    # The sheen is brightest at the pane's top edge, where the headline and the headings are.
+    *(
+        (f"{label} under the pane's sheen", foreground, flatten(PALETTE.pane_glow, PALETTE.pane_top))
+        for label, foreground in (
+            ("primary text", PALETTE.text_primary),
+            ("muted text", PALETTE.text_muted),
+            ("success text", PALETTE.status_ok_text),
+        )
+    ),
     # The number on the selected EQ handle, dark on the band's color.
     *(
         (f"EQ band {number} number on handle", PALETTE.text_on_data_color, color)

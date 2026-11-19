@@ -56,6 +56,7 @@ from .overview_presentation import (
     OverviewInputs,
     OverviewView,
     describe_overview,
+    split_check,
 )
 from .quick_meter import QuickMeterItem
 from .quick_scene import QML_DIR, load_scene, quick_theme
@@ -282,8 +283,15 @@ class OverviewState(QObject):
     recommendSetup = Property(bool, lambda self: self._view.recommend_setup, notify=changed)
     setupLine = Property(str, lambda self: self._view.setup_line, notify=changed)
     checksTitle = Property(str, lambda self: self._view.checks_title, notify=changed)
+    # Each line whole, and split into its label and the device it names for the card.
     checks = Property(
-        list, lambda self: [{"text": text, "kind": kind} for text, kind in self._view.checks], notify=changed
+        list,
+        lambda self: [
+            {"text": text, "kind": kind, "label": label, "detail": detail}
+            for text, kind in self._view.checks
+            for label, detail in (split_check(text),)
+        ],
+        notify=changed,
     )
 
     @Slot()

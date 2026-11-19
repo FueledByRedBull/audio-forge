@@ -13,7 +13,7 @@ Item {
     implicitHeight: body.implicitHeight + 2 * pad
     Rectangle {
         anchors.fill: parent
-        radius: Look.t.radiusCard + 2
+        radius: Look.t.radiusCard
         border.color: Look.t.card_edge
         gradient: Gradient {
             GradientStop { position: 0; color: Look.t.card_top }

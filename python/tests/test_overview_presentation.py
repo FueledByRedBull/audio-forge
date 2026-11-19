@@ -14,6 +14,7 @@ from mic_eq.ui.overview_presentation import (
     UNMUTE_PENDING_ISSUE,
     OverviewInputs,
     describe_overview,
+    split_check,
 )
 
 NOW = datetime(2026, 11, 19, 12, 0, tzinfo=UTC)
@@ -231,3 +232,13 @@ def test_ready_lists_the_route_and_no_mic_lists_what_was_checked() -> None:
     nothing = describe_overview(replace(LIVE, running=False, no_mic=True, output_name="", output_found=False))
     assert nothing.checks[1] == ("No output devices detected", "warn")
     assert describe_overview(LIVE).checks == ()
+
+
+def test_a_check_splits_after_its_label_even_when_the_device_name_holds_the_separator() -> None:
+    ready = describe_overview(replace(LIVE, running=False, input_name="USB Mic · Front", output_name="Out · Rear"))
+    microphone, output = (text for text, _kind in ready.checks[:2])
+    assert split_check(microphone) == ("Microphone found", "USB Mic · Front")
+    # "Output set to" names its device in the label itself, so the line stays whole.
+    assert split_check(output) == ("Output set to Out · Rear", "")
+    no_mic = describe_overview(replace(LIVE, running=False, no_mic=True, input_name="", output_name="A · B"))
+    assert split_check(no_mic.checks[1][0]) == ("Output found", "A · B")

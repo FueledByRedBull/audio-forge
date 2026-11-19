@@ -896,6 +896,9 @@ Rectangle {
         }
     }
 
+    // The check drawn wherever something passed, on LineIcon's 12-unit grid.
+    readonly property string checkPath: "M2.5 6.5L5 9l4.5-5.5"
+
     // A state told by shape as well as colour: a check disc when fine, a triangle with "!" to
     // look at, a disc with "!" for a fault, a ring while idle.
     component StateMark: Canvas {
@@ -971,7 +974,7 @@ Rectangle {
             grid: 12
             stroke: parent.kind === "ok" ? root.t.status_ok_text : parent.kind === "warn" ? root.t.status_warn_text
                                                                                            : root.t.text_muted
-            path: parent.kind === "ok" ? "M2.5 6.5L5 9l4.5-5.5" : parent.kind === "warn" ? "M6 2.5v4.5M6 9.5v.2"
+            path: parent.kind === "ok" ? root.checkPath : parent.kind === "warn" ? "M6 2.5v4.5M6 9.5v.2"
                                                                                        : "M6 5.5v3.5M6 3v.2"
         }
     }
@@ -1421,9 +1424,7 @@ Rectangle {
         id: chip
         property var proxy
         readonly property string level: proxy && proxy.state !== "" ? proxy.state : "idle"
-        // With the audio stopped an idle reading says so in words.
-        readonly property string shown: !proxy ? "" : level === "idle" && !root.running ? "Health: not running"
-                                                                                      : proxy.text
+        readonly property string shown: proxy ? proxy.text : ""
         implicitHeight: 28
         implicitWidth: mark.width + 8 + healthText.implicitWidth
         Hint {
@@ -1504,7 +1505,7 @@ Rectangle {
                             height: 11
                             grid: 12
                             stroke: root.t.status_ok_text
-                            path: "M2.5 6.5L5 9l4.5-5.5"
+                            path: root.checkPath
                             anchors.verticalCenter: parent.verticalCenter
                         }
                         Text {
@@ -1683,8 +1684,7 @@ Rectangle {
             readonly property color glow: root.t.pane_glow
             anchors.fill: parent
             Accessible.ignored: true
-            onWidthChanged: requestPaint()
-            onHeightChanged: requestPaint()
+            // A resize repaints a Canvas by itself; a theme change does not.
             onGlowChanged: requestPaint()
             onPaint: {
                 const ctx = getContext("2d")
@@ -1759,7 +1759,8 @@ Rectangle {
                 readonly property var ov: root.m.overview
                 spacing: 20
 
-                // The status sentence: the state in words, beside a dot whose colour only repeats them.
+                // The status sentence: the state in words, beside a mark whose shape and colour only
+                // repeat them.
                 ColumnLayout {
                     spacing: 4
                     Layout.fillWidth: true
@@ -1773,26 +1774,64 @@ Rectangle {
                             Layout.alignment: Qt.AlignTop
                             Layout.topMargin: Math.max(0, (headline.font.pixelSize * 1.3 - 20) / 2)
                             Accessible.ignored: true
+                            // A soft halo once there is a state to tell.
                             Rectangle {
+                                visible: !statusDot.idle
                                 anchors.fill: parent
                                 radius: width / 2
                                 color: Qt.rgba(statusDot.color.r, statusDot.color.g, statusDot.color.b, 0.14)
                             }
-                            Rectangle {
+                            // Idle is an open ring; fine a disc, an issue a triangle, a fault or lost
+                            // callers a diamond, muted a square.
+                            Canvas {
                                 id: statusDot
                                 objectName: "overviewToneDot"
-                                anchors.centerIn: parent
-                                width: 10
-                                height: 10
-                                radius: 5
-                                color: ({
+                                property color color: ({
                                     ok: root.t.status_ok_text,
                                     warn: root.t.status_warn_text,
                                     bad: root.t.status_bad_text,
                                     mute: root.t.mute,
                                     callers: root.t.callers_affected
                                 })[overviewPage.ov.tone] ?? root.t.control_edge
+                                readonly property string tone: overviewPage.ov.tone
+                                readonly property bool idle: !["ok", "warn", "bad", "mute", "callers"].includes(tone)
+                                anchors.centerIn: parent
+                                width: idle ? 16 : 11
+                                height: width
                                 Behavior on color { ColorAnimation { duration: root.t.motionStatus } }
+                                onColorChanged: requestPaint()
+                                onIdleChanged: requestPaint()
+                                onToneChanged: requestPaint()
+                                onPaint: {
+                                    const ctx = getContext("2d")
+                                    const s = width
+                                    ctx.reset()
+                                    ctx.fillStyle = color
+                                    ctx.strokeStyle = color
+                                    ctx.beginPath()
+                                    if (idle) {
+                                        ctx.lineWidth = 2
+                                        ctx.arc(s / 2, s / 2, s / 2 - 1, 0, 2 * Math.PI)
+                                        ctx.stroke()
+                                        return
+                                    }
+                                    if (tone === "warn") {
+                                        ctx.moveTo(s / 2, 0)
+                                        ctx.lineTo(s, s)
+                                        ctx.lineTo(0, s)
+                                    } else if (tone === "bad" || tone === "callers") {
+                                        ctx.moveTo(s / 2, 0)
+                                        ctx.lineTo(s, s / 2)
+                                        ctx.lineTo(s / 2, s)
+                                        ctx.lineTo(0, s / 2)
+                                    } else if (tone === "mute") {
+                                        ctx.rect(0.5, 0.5, s - 1, s - 1)
+                                    } else {
+                                        ctx.arc(s / 2, s / 2, s / 2, 0, 2 * Math.PI)
+                                    }
+                                    ctx.closePath()
+                                    ctx.fill()
+                                }
                             }
                         }
                         StatusText {
@@ -1947,7 +1986,11 @@ Rectangle {
                 // stands over the card; a status after its dot ("All set") reads as a check.
                 ColumnLayout {
                     id: checksBlock
-                    readonly property var title: overviewPage.ov.checksTitle.split(" \u00b7 ")
+                    // The heading, and after its first separator the status ("All set").
+                    readonly property int cut: overviewPage.ov.checksTitle.indexOf(" \u00b7 ")
+                    readonly property string heading: cut < 0 ? overviewPage.ov.checksTitle
+                                                              : overviewPage.ov.checksTitle.slice(0, cut)
+                    readonly property string status: cut < 0 ? "" : overviewPage.ov.checksTitle.slice(cut + 3)
                     visible: overviewPage.ov.checks.length > 0
                     spacing: 10
                     Layout.fillWidth: true
@@ -1955,24 +1998,24 @@ Rectangle {
                         spacing: 14
                         Layout.leftMargin: 2
                         SectionLabel {
-                            text: checksBlock.title[0]
+                            text: checksBlock.heading
                             Accessible.role: Accessible.Heading
                             Accessible.name: overviewPage.ov.checksTitle
                         }
                         Row {
-                            visible: checksBlock.title.length > 1
+                            visible: checksBlock.status !== ""
                             spacing: 5
                             LineIcon {
                                 width: 12
                                 height: 12
                                 grid: 12
                                 stroke: root.t.status_ok_text
-                                path: "M2.5 6.5L5 9l4.5-5.5"
+                                path: root.checkPath
                                 anchors.verticalCenter: parent.verticalCenter
                             }
                             Text {
                                 textFormat: Text.PlainText
-                                text: checksBlock.title.slice(1).join(" \u00b7 ")
+                                text: checksBlock.status
                                 color: root.t.status_ok_text
                                 font.pixelSize: root.fsCaption
                                 Accessible.ignored: true
@@ -1990,8 +2033,8 @@ Rectangle {
                                 id: check
                                 required property var modelData
                                 required property int index
-                                // The part after the first dot names the device; it reads quieter.
-                                readonly property int cut: modelData.text.indexOf(" \u00b7 ")
+                                // The device a line names reads quieter than its label.
+                                readonly property bool split: modelData.detail !== ""
                                 implicitHeight: Math.max(46, checkLine.implicitHeight + 20)
                                 Layout.fillWidth: true
                                 Rectangle {
@@ -2017,7 +2060,7 @@ Rectangle {
                                     anchors.verticalCenter: parent.verticalCenter
                                     StatusText {
                                         id: checkText
-                                        text: check.cut > 0 ? check.modelData.text.slice(0, check.cut) : check.modelData.text
+                                        text: check.modelData.label
                                         color: check.modelData.kind === "note" ? root.t.text_muted : root.t.text_primary
                                         font.pixelSize: root.fsLead
                                         wrapMode: Text.Wrap
@@ -2026,8 +2069,8 @@ Rectangle {
                                         Layout.maximumWidth: checkLine.width
                                     }
                                     Text {
-                                        visible: check.cut > 0
-                                        text: check.cut > 0 ? check.modelData.text.slice(check.cut + 1) : ""
+                                        visible: check.split
+                                        text: "\u00b7 " + check.modelData.detail
                                         textFormat: Text.PlainText
                                         color: root.t.text_muted
                                         font.pixelSize: root.fsLead
@@ -2035,7 +2078,7 @@ Rectangle {
                                         Layout.fillWidth: true
                                         Accessible.ignored: true
                                     }
-                                    Item { visible: check.cut <= 0; Layout.fillWidth: true }
+                                    Item { visible: !check.split; Layout.fillWidth: true }
                                 }
                             }
                         }
@@ -2083,11 +2126,14 @@ Rectangle {
                             elide: Text.ElideRight
                             Layout.fillWidth: true
                         }
+                        // Which colour is which, with the level while the audio runs; the card
+                        // spells the halves out.
                         Repeater {
-                            model: [[root.t.signal_in, "IN \u00b7 your microphone"], [root.t.signal_out, "OUT \u00b7 what others hear"]]
+                            model: [[root.t.signal_in, "IN"], [root.t.signal_out, "OUT"]]
                             delegate: Row {
                                 id: key
                                 required property var modelData
+                                required property int index
                                 spacing: 6
                                 Rectangle {
                                     width: 8
@@ -2097,9 +2143,11 @@ Rectangle {
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
                                 Caption {
-                                    text: key.modelData[1]
+                                    text: key.modelData[1] + " " + (root.running ? root.m.meters[key.index].valueText
+                                                                                 : "\u2014")
                                     color: key.modelData[0]
                                     font.pixelSize: root.fsCaption
+                                    font.features: { "tnum": 1 }
                                 }
                             }
                         }
@@ -2142,23 +2190,21 @@ Rectangle {
                                     Accessible.name: "Level, last 10 seconds"
                                 }
                             }
-                            // Stopped: the centre line, which half is which, and a note of when the
-                            // trace begins. The legend above names the halves for a screen reader.
+                            // Which half is which: the microphone above the line, what others hear below.
                             Caption {
-                                visible: !root.running
+                                objectName: "ribbonInLabel"
                                 text: "IN \u00b7 your microphone"
                                 color: root.t.signal_in
                                 font.pixelSize: root.fsCaption
-                                Accessible.ignored: true
                             }
                             Caption {
-                                visible: !root.running
+                                objectName: "ribbonOutLabel"
                                 anchors.bottom: parent.bottom
                                 text: "OUT \u00b7 what others hear"
                                 color: root.t.signal_out
                                 font.pixelSize: root.fsCaption
-                                Accessible.ignored: true
                             }
+                            // Stopped: the centre line and a note of when the trace begins.
                             Rectangle {
                                 visible: !root.running
                                 width: parent.width
@@ -2190,7 +2236,7 @@ Rectangle {
                                             width: 10
                                             height: 10
                                             grid: 12
-                                            stroke: root.t.accent_text
+                                            stroke: root.t.accent_bright
                                             path: "M3.5 2l6.5 4-6.5 4z"
                                         }
                                     }

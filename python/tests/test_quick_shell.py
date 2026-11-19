@@ -1566,10 +1566,10 @@ def test_the_health_chip_is_a_toggle_the_keyboard_reaches_and_names(quick_window
         named = [item for item in stops if item.objectName() == "healthToggle"]
         assert named, "Tab never reaches the Health chip"
         toggle = named[0]
-        # Voice control says what it sees: the visible text names the button. Stopped and idle,
-        # the line says so in words rather than showing the model's placeholder.
-        chip = toggle.parentItem()
-        assert scene.name(toggle) == chip.property("shown") == "Health: not running"
+        # Voice control says what it sees: the visible text names the button.
+        chip = window.shell_texts["health_summary_label"]
+        shown = view.rootObject().findChild(QObject, "healthChip").property("shown")
+        assert scene.name(toggle) == shown == chip.text == "Health: not running"
         assert scene.description(toggle) == "Show audio health details"
         window._set_health_chip("health_summary_label", "Health: Check input", "warn")
         qapp.processEvents()
@@ -1685,9 +1685,7 @@ def test_the_health_text_is_exposed_once_as_the_buttons_name(quick_window, qapp)
     with _AccessibleScene():
         view = quick_window.centralWidget()
         qapp.processEvents()
-        root = view.rootObject()
-        health = root.findChild(QObject, "healthChip").property("shown")
-        assert health == "Health: not running"
+        health = quick_window.shell_texts["health_summary_label"].text
         tree = texts(QAccessible.queryAccessibleInterface(view))
         assert sum(health in text for text in tree) == 1
 
@@ -2875,3 +2873,29 @@ def test_the_toolbar_latency_says_whether_the_route_was_measured(quick_window, q
     monkeypatch.setattr(window, "_refresh_latency_profile_engine", lambda _profile: False)
     window._apply_latency_compensation_for_current_devices()
     assert heard({"latency_compensation_ms": 48.0}) == "Latency: ~10 ms"
+
+
+def test_the_level_card_waits_for_start_again_after_a_stop(engine_window, qapp) -> None:
+    window, engine = engine_window
+
+    def shown(name: str) -> bool:
+        qapp.processEvents()
+        return _scene_item(window, name).isVisible()
+
+    def legend() -> list[str]:
+        heading = _scene_item(window, "ribbonCaption").parentItem()
+        keys = [item for row in heading.childItems() for item in row.childItems()]
+        return [item.property("text") for item in keys if str(item.property("text") or "").startswith(("IN", "OUT"))]
+
+    assert shown("ribbonWaiting") and not shown("levelRibbon")
+    # Stopped, the legend only keys the colours; the card spells the halves out.
+    assert legend() == ["IN \u2014", "OUT \u2014"]
+    assert _scene_item(window, "ribbonInLabel").property("text") == "IN \u00b7 your microphone"
+    assert _scene_item(window, "ribbonOutLabel").property("text") == "OUT \u00b7 what others hear"
+    window.start_btn_action.trigger()
+    assert engine.running and shown("levelRibbon") and not shown("ribbonWaiting")
+    assert [text.split(" ", 1)[1] for text in legend()] == [meter.valueText for meter in window.quick_bridge.model["meters"]]
+    window.stop_btn_action.trigger()
+    assert engine.running is False
+    assert shown("ribbonWaiting") and not shown("levelRibbon")
+    assert legend() == ["IN \u2014", "OUT \u2014"]

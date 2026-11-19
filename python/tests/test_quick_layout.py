@@ -18,6 +18,7 @@ from mic_eq.config import AppConfig
 from mic_eq.ui.main_window import MINIMUM_WINDOW_HEIGHT, MINIMUM_WINDOW_WIDTH, MainWindow
 from mic_eq.ui.processing_configuration import PresetOrigin
 from mic_eq.ui.quick_shell import InspectorState
+from mic_eq.ui.theme import RADIUS_PANEL
 
 INPUT = SimpleNamespace(name="CABLE Output (VB-Audio Virtual Cable)", is_default=True)
 OUTPUT = SimpleNamespace(name="Realtek Digital Output (Realtek USB Audio)", is_default=True)
@@ -432,7 +433,7 @@ def test_the_sidebar_and_the_main_panel_stand_apart_on_the_ground(qapp, monkeypa
         assert scene_rect(sidebar).left() == gap
         assert scene_rect(panel).left() - scene_rect(sidebar).right() == gap
         assert scene_rect(panel).right() == width - gap
-        assert sidebar.property("radius") == panel.property("radius") == 20
+        assert sidebar.property("radius") == panel.property("radius") == RADIUS_PANEL
         assert scene_rect(panel).contains(scene_rect(named(window, "mainPane")))
     finally:
         window.close()

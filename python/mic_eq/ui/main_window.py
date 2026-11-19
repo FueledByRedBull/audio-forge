@@ -33,7 +33,6 @@ from pathlib import Path
 from typing import Any
 
 from .components import plain_label
-from .eq_hold_compare import EQHoldCompare
 from .eq_presentation import EQPresentation
 from .eq_state import EQState
 from .processing_meters import ProcessingMeters
@@ -447,14 +446,6 @@ class MainWindow(QMainWindow):
         self._setup_menubar()
         self._setup_options_menu()
         self.engine_session.changed.connect(self._on_session_changed)
-        # Connected after the window's handler, so it reads the state a session event left.
-        self.eq_compare = EQHoldCompare(
-            self, self.eq_state, running=lambda: self._processing,
-            device_lost=lambda: self.shell_texts["callback_health_label"].state == "bad",
-        )
-        self.engine_session.changed.connect(self.eq_compare.session_changed)
-        self.shell_texts["callback_health_label"].changed.connect(self.eq_compare.refresh)
-        self.installEventFilter(self.eq_compare)
         for state in (self.limiter_state, self.deesser_state, self.compressor_state, self.gate_state, self.eq_state, self.noise_suppression_state):
             state.writeFailed.connect(
                 lambda message: self.status_message.showMessage(message, 7000)
@@ -3644,7 +3635,6 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close."""
-        self.eq_compare.release()
         # A Windows sign-out or shutdown waits on this close, so it never asks or refuses.
         session_ending = _session_is_ending()
         if not self._quitting and not session_ending:
@@ -3680,7 +3670,7 @@ class MainWindow(QMainWindow):
 
     def _shutdown(self) -> bool:
         """Save the settings and stop audio; closeEvent and an app quit without a close share this."""
-        self.eq_compare.release()
+        self.eq_state.release_original()
         if self._quit_dont_ask:
             self.config.confirm_quit_when_live = False
         watch = self.__dict__.get("virtual_microphone_watch")

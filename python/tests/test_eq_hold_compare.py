@@ -13,8 +13,8 @@ from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
 
 from mic_eq.config import EQBandSettings
-from mic_eq.ui.engine_session import RestartFailed
-from mic_eq.ui.eq_band_hint import band_hint, region_word
+from mic_eq.ui.engine_session import AudioBorrowed, RestartFailed
+from mic_eq.ui.eq_band_hint import band_hint
 from mic_eq.ui.eq_graph import EQGraphGeometry
 from mic_eq.ui.eq_hold_compare import EQ_OFF_REASON, HOLD_TIP, PILL_TEXT, STOPPED_REASON
 from mic_eq.ui.eq_state import EQState
@@ -24,6 +24,7 @@ from test_quick_accessibility import (  # noqa: F401  (fixtures)
     EQUALIZER,
     _focus,
     _items,
+    _with_proxy,
     _kind,
     _show,
     no_qml_warnings,
@@ -42,8 +43,11 @@ PILL = "Hearing your original voice · callers hear it too · release to return"
 class Processor:
     def __init__(self) -> None:
         self.enabled: list[bool] = []
+        self.refuse = False
 
     def set_eq_enabled(self, enabled: bool) -> None:
+        if self.refuse:
+            raise RuntimeError("engine refused")
         self.enabled.append(enabled)
 
     def apply_eq_layers(self, _correction, _tone) -> None:
@@ -84,34 +88,80 @@ def test_any_write_ends_the_hold_and_the_engine_runs_what_was_written(state) -> 
     assert state.processor.enabled[-1] is False
 
 
+def test_a_refused_hold_is_reported_and_nothing_is_held(state) -> None:
+    failures: list[str] = []
+    state.writeFailed.connect(failures.append)
+    state.processor.refuse = True
+    assert not state.hold_original()
+    assert not state.original_held and failures and "engine refused" in failures[0]
+
+
+def test_a_refused_release_keeps_the_hold_showing_and_is_reported(state) -> None:
+    failures: list[str] = []
+    held: list[bool] = []
+    state.writeFailed.connect(failures.append)
+    state.hold_original()
+    state.originalHeldChanged.connect(lambda: held.append(state.original_held))
+    state.processor.refuse = True
+    state.release_original()
+    assert state.original_held and held == [] and failures and "engine refused" in failures[-1]
+    state.processor.refuse = False
+    state.release_original()
+    assert not state.original_held and state.processor.enabled[-1] is True and held == [False]
+
+
+def test_a_refused_write_during_the_hold_keeps_it_until_the_engine_takes_one(state) -> None:
+    failures: list[str] = []
+    state.writeFailed.connect(failures.append)
+    state.hold_original()
+    state.processor.refuse = True
+    with pytest.raises(RuntimeError):
+        state.set_enabled(False)
+    assert state.original_held and failures
+    assert state.get_eq_settings().enabled
+    state.processor.refuse = False
+    state.set_band_value(0, "gain_db", 2.0)
+    state.flush()
+    assert not state.original_held and state.processor.enabled[-1] is True
+
+
 # The sentence under the band
-
-
-@pytest.mark.parametrize(
-    ("frequency_hz", "word"),
-    [(10.0, "rumble"), (40.0, "rumble"), (60.0, "warmth"), (120.0, "warmth"), (300.0, "boxiness"),
-     (1000.0, "body"), (3000.0, "clarity"), (8000.0, "air / hiss"), (20000.0, "air / hiss")],
-)
-def test_the_region_words_are_the_graph_strip_words(frequency_hz, word) -> None:
-    assert region_word(frequency_hz) == word
-    assert word in {region[3] for region in EQGraphGeometry.REGIONS}
 
 
 @pytest.mark.parametrize(
     ("filter_type", "frequency_hz", "gain_db", "sentence"),
     [
-        ("low_shelf", 80.0, -3.0, "Low shelf at 80 Hz · cut, so it reduces warmth from here down."),
-        ("low_shelf", 80.0, 3.0, "Low shelf at 80 Hz · boosted, so it adds warmth from here down."),
-        ("bell", 320.0, 2.0, "Bell at 320 Hz · boosted, so it adds boxiness around here."),
+        # Each region, at and just under its boundaries
+        ("bell", 40.0, 3.0, "Bell at 40 Hz · boosted, so it adds rumble around here."),
+        ("bell", 59.0, 3.0, "Bell at 59 Hz · boosted, so it adds rumble around here."),
+        ("bell", 60.0, -3.0, "Bell at 60 Hz · cut, so it reduces warmth around here."),
+        ("bell", 249.0, 2.0, "Bell at 249 Hz · boosted, so it adds warmth around here."),
+        ("bell", 250.0, 2.0, "Bell at 250 Hz · boosted, so it adds boxiness around here."),
         ("bell", 1280.0, -1.5, "Bell at 1.28 kHz · cut, so it reduces body around here."),
-        ("high_shelf", 8000.0, 4.0, "High shelf at 8 kHz · boosted, so it adds air / hiss from here up."),
-        ("high_shelf", 3000.0, 0.0,
+        ("bell", 2000.0, 1.0, "Bell at 2 kHz · boosted, so it adds clarity around here."),
+        ("high_shelf", 6000.0, 4.0, "High shelf at 6 kHz · boosted, so it adds air / hiss from here up."),
+        ("high_shelf", 20000.0, 4.0, "High shelf at 20 kHz · boosted, so it adds air / hiss from here up."),
+        ("low_shelf", 80.0, -3.0, "Low shelf at 80 Hz · cut, so it reduces warmth from here down."),
+        # Flat is what the gain box shows as 0: under a twentieth of a dB either way
+        ("high_shelf", 3000.0, 0.04,
          "High shelf at 3 kHz · flat, so it changes nothing yet; raise it for more clarity, lower it for less."),
-        ("high_pass", 40.0, 0.0,
-         "High-pass at 40 Hz · it removes everything below this frequency, starting with the rumble."),
-        ("low_pass", 12000.0, 0.0,
+        ("high_shelf", 3000.0, -0.04,
+         "High shelf at 3 kHz · flat, so it changes nothing yet; raise it for more clarity, lower it for less."),
+        ("high_shelf", 3000.0, -0.06, "High shelf at 3 kHz · cut, so it reduces clarity from here up."),
+        # Pass filters speak of the region an octave past the corner; gain plays no part
+        ("high_pass", 80.0, 6.0,
+         "High-pass at 80 Hz · it removes everything below this frequency, starting with the rumble."),
+        ("high_pass", 119.0, 0.0,
+         "High-pass at 119 Hz · it removes everything below this frequency, starting with the rumble."),
+        ("high_pass", 120.0, 0.0,
+         "High-pass at 120 Hz · it removes everything below this frequency, starting with the warmth."),
+        ("low_pass", 1000.0, 0.0,
+         "Low-pass at 1 kHz · it removes everything above this frequency, starting with the clarity."),
+        ("low_pass", 12000.0, -6.0,
          "Low-pass at 12 kHz · it removes everything above this frequency, starting with the air / hiss."),
-        ("notch", 1000.0, 0.0,
+        ("notch", 50.0, 0.0,
+         "Notch at 50 Hz · it takes out a narrow slice of the rumble, for a hum or a ringing tone."),
+        ("notch", 1000.0, 9.0,
          "Notch at 1 kHz · it takes out a narrow slice of the body, for a hum or a ringing tone."),
     ],
 )
@@ -119,30 +169,13 @@ def test_the_sentence_names_the_band_and_what_it_does_there(filter_type, frequen
     assert band_hint(filter_type, frequency_hz, gain_db) == sentence
 
 
-REGION_FREQUENCIES = [(low + high) / 2 for _name, low, high, _word in EQGraphGeometry.REGIONS]
-
-
-@pytest.mark.parametrize("frequency_hz", REGION_FREQUENCIES)
-@pytest.mark.parametrize(
-    ("filter_type", "reach"),
-    [("bell", "around here"), ("low_shelf", "from here down"), ("high_shelf", "from here up")],
-)
-@pytest.mark.parametrize(
-    ("gain_db", "direction"),
-    [(6.0, "boosted, so it adds"), (-6.0, "cut, so it reduces"), (0.0, "flat, so it changes nothing yet"),
-     (0.04, "flat, so it changes nothing yet"), (-0.04, "flat, so it changes nothing yet")],
-)
-def test_every_region_type_and_direction_has_its_words(frequency_hz, filter_type, reach, gain_db, direction) -> None:
-    sentence = band_hint(filter_type, frequency_hz, gain_db)
-    assert region_word(frequency_hz) in sentence and direction in sentence
-    assert (reach in sentence) == (direction != "flat, so it changes nothing yet")
-
-
-@pytest.mark.parametrize("frequency_hz", REGION_FREQUENCIES)
-@pytest.mark.parametrize("filter_type", ["high_pass", "low_pass", "notch"])
-def test_filters_without_gain_read_the_same_at_any_gain(frequency_hz, filter_type) -> None:
-    sentences = {band_hint(filter_type, frequency_hz, gain) for gain in (-6.0, 0.0, 6.0)}
-    assert len(sentences) == 1 and region_word(frequency_hz) in sentences.pop()
+def test_a_band_that_is_off_or_an_equalizer_that_is_off_says_so() -> None:
+    assert band_hint("bell", 1000.0, 3.0, band_on=False) == "Band off · switch it on to hear it."
+    assert band_hint("bell", 1000.0, 3.0, stage_on=False) == "The equalizer is off, so this band changes nothing."
+    assert (
+        band_hint("high_pass", 80.0, 0.0, band_on=False, stage_on=False)
+        == "The equalizer is off, so this band changes nothing."
+    )
 
 
 # The scene
@@ -260,17 +293,32 @@ def test_b_on_the_focused_graph_holds_and_ignores_auto_repeat(live, qapp) -> Non
     assert not _held(window)
 
 
-def test_b_is_no_window_shortcut(live, qapp) -> None:
+def test_b_on_the_focused_button_holds_as_its_keycap_says(live, qapp) -> None:
     window = live
     _focus(window, _find(window, "holdOriginal"), qapp)
     _key(window, QEvent.Type.KeyPress, Qt.Key.Key_B, "b")
+    assert _held(window)
+    _key(window, QEvent.Type.KeyRelease, Qt.Key.Key_B, "b", repeat=True)
+    _key(window, QEvent.Type.KeyPress, Qt.Key.Key_B, "b", repeat=True)
+    assert _held(window)
+    _key(window, QEvent.Type.KeyRelease, Qt.Key.Key_B, "b")
+    assert not _held(window)
+
+
+def test_b_is_no_window_shortcut(live, qapp) -> None:
+    window = live
+    view = window.centralWidget()
+    tone = _with_proxy(window, "Btn", window.quick_bridge.model["eq"]["tone"])
+    _focus(window, tone, qapp)
+    _key(window, QEvent.Type.KeyPress, Qt.Key.Key_B, "b")
     assert not _held(window)
     _key(window, QEvent.Type.KeyRelease, Qt.Key.Key_B, "b")
-    graph = _graph_item(window.centralWidget().rootObject())
-    _focus(window, graph, qapp)
-    QTest.keyClick(window.centralWidget(), Qt.Key.Key_B, Qt.KeyboardModifier.ControlModifier)
-    qapp.processEvents()
-    assert not _held(window)
+    for item in (_find(window, "holdOriginal"), _graph_item(view.rootObject())):
+        _focus(window, item, qapp)
+        QTest.keyPress(view, Qt.Key.Key_B, Qt.KeyboardModifier.ControlModifier)
+        qapp.processEvents()
+        assert not _held(window)
+        QTest.keyRelease(view, Qt.Key.Key_B, Qt.KeyboardModifier.ControlModifier)
 
 
 def test_moving_the_focus_returns(live, qapp) -> None:
@@ -363,6 +411,16 @@ def test_a_lost_device_returns(live, qapp) -> None:
     assert not _compare(window).enabled
 
 
+def test_voice_setup_or_test_my_sound_borrowing_the_audio_returns(live, qapp) -> None:
+    window = live
+    _hold(window, qapp)
+    # The dialog may never take the focus from the window; the borrow alone ends the hold.
+    window.engine_session._emit(AudioBorrowed("voice setup", False))
+    qapp.processEvents()
+    assert not _held(window)
+    _after_hold_ends_elsewhere_the_next_hold_works(window, qapp)
+
+
 def test_a_dropped_scene_returns(live, qapp) -> None:
     window = live
     _hold(window, qapp)
@@ -384,13 +442,21 @@ def test_quitting_returns_before_anything_is_saved(live, qapp, monkeypatch) -> N
     assert not window.eq_state.original_held
 
 
-def test_closing_the_window_returns_first(live, qapp) -> None:
+def test_closing_the_window_returns_on_its_way_through_shutdown(live, qapp, monkeypatch) -> None:
     window = live
     _hold(window, qapp)
+    shutdown = window._shutdown
+    seen: list[bool] = []
+
+    def spy() -> bool:
+        seen.append(window.eq_state.original_held)
+        return shutdown()
+
+    monkeypatch.setattr(window, "_shutdown", spy)
     window._quitting = True
     window.close()
     qapp.processEvents()
-    assert not window.eq_state.original_held and _engine_on(window)
+    assert seen and not window.eq_state.original_held and _engine_on(window)
 
 
 def test_the_hold_leaves_no_trace_in_history_dirty_state_or_saves(live, qapp, monkeypatch) -> None:
@@ -489,8 +555,14 @@ def test_the_pill_says_in_words_what_is_playing(live, qapp) -> None:
     assert words.property("text") == PILL
     with _AccessibleScene() as scene:
         assert scene.name(pill) == PILL
-    graph = _find(window, "eqGraphWell")
-    assert graph.mapRectToScene(graph.boundingRect()).contains(pill.mapRectToScene(pill.boundingRect()))
+        assert QAccessible.queryAccessibleInterface(pill).role() == QAccessible.Role.AlertMessage
+    graph = _graph_item(window.centralWidget().rootObject())
+    assert graph is not None and _rect(graph).contains(_rect(pill))
+    # On the region strip, clear of the plot and of a handle at the top of its range.
+    top = _rect(graph).top()
+    assert _rect(pill).bottom() <= top + EQGraphGeometry.REGION_STRIP_HEIGHT
+    highest = EQGraphGeometry.gain_to_y(EQGraphGeometry.GAIN_MAX_DB, graph.width(), graph.height())
+    assert _rect(pill).bottom() < top + highest - EQGraphGeometry.SELECTED_HANDLE_RADIUS
     _key(window, QEvent.Type.KeyRelease, Qt.Key.Key_B, "b")
     assert not pill.isVisible()
 
@@ -516,7 +588,7 @@ def test_the_band_panel_describes_the_selected_band_and_follows_it(quick_window,
 
     def expected(index: int) -> str:
         band = window.eq_state.get_band(index)
-        return band_hint(band.filter_type, band.frequency_hz, band.gain_db)
+        return band_hint(band.filter_type, band.frequency_hz, band.gain_db, band_on=band.enabled)
 
     window.eq_state.select_band(2)
     qapp.processEvents()
@@ -528,7 +600,16 @@ def test_the_band_panel_describes_the_selected_band_and_follows_it(quick_window,
     window.eq_state.set_band(2, EQBandSettings("high_pass", 90.0, 0.0, 0.707))
     window.eq_state.flush()
     qapp.processEvents()
-    assert hint.property("text") == "High-pass at 90 Hz · it removes everything below this frequency, starting with the warmth."
+    assert hint.property("text") == "High-pass at 90 Hz · it removes everything below this frequency, starting with the rumble."
+    window.eq_state.set_band_value(2, "enabled", False)
+    window.eq_state.flush()
+    qapp.processEvents()
+    assert hint.property("text") == "Band off · switch it on to hear it."
+    window.eq_state.set_band_value(2, "enabled", True)
+    window.eq_state.set_enabled(False)
+    window.eq_state.flush()
+    qapp.processEvents()
+    assert hint.property("text") == "The equalizer is off, so this band changes nothing."
     with _AccessibleScene() as scene:
         assert scene.name(hint) == hint.property("text")
 
@@ -561,6 +642,9 @@ def test_the_header_and_the_band_sentence_keep_clear_at_the_minimum_width(
             assert not _rect(item).intersects(_rect(other)), (_kind(item), _kind(other))
     hold = _find(window, "holdOriginal")
     assert _rect(_find(window, "holdKeycap")).right() <= _rect(hold).right()
+    # Short of room it says Hold beside its keycap, whole, never a cut-off letter or two.
+    label = hold.property("contentItem")
+    assert label.property("text") in ("Hold", "Hold to hear original") and not label.property("truncated")
     hint = _find(window, "bandHint")
     panel = _find(window, "bandPanel")
     assert panel.mapRectToScene(panel.boundingRect()).contains(_rect(hint))

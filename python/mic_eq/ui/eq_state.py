@@ -178,15 +178,29 @@ class EQState(RateLimitedStageState[EQSettings]):
         sees it. The engine's own switch crossfades, so the change does not click.
         """
         if not self._original_held and self._settings.enabled and self._applied_settings.enabled:
-            self.processor.set_eq_enabled(False)
+            try:
+                self.processor.set_eq_enabled(False)
+            except Exception as error:
+                self.writeFailed.emit(f"{self._stage_name} could not be bypassed: {error}")
+                return False
             self._original_held = True
             self.originalHeldChanged.emit()
         return self._original_held
 
     def release_original(self) -> None:
+        """Turn the stage back to its settings; a refused switch keeps the hold showing."""
+        if not self._original_held:
+            return
+        try:
+            self._end_hold(self._applied_settings.enabled)
+        except Exception as error:
+            self.writeFailed.emit(f"{self._stage_name} could not be turned back on: {error}")
+
+    def _end_hold(self, enabled: bool) -> None:
+        """Send the stage switch; a hold ends only once the engine took it."""
+        self.processor.set_eq_enabled(enabled)
         if self._original_held:
             self._original_held = False
-            self.processor.set_eq_enabled(self._applied_settings.enabled)
             self.originalHeldChanged.emit()
 
     def get_eq_settings(self) -> EQSettings:
@@ -271,17 +285,12 @@ class EQState(RateLimitedStageState[EQSettings]):
     def _write(self, settings: EQSettings) -> None:
         # Any write is an edit, even one to the values already there: it ends a held
         # listen to the original, and the engine runs what was written.
-        ended, self._original_held = self._original_held, False
-        try:
-            self.processor.set_eq_enabled(settings.enabled)
-            correction = settings.correction_bands or EQSettings().bands
-            self.processor.apply_eq_layers(
-                [band.to_native() for band in correction],
-                [band.to_native() for band in settings.bands],
-            )
-        finally:
-            if ended:
-                self.originalHeldChanged.emit()
+        self._end_hold(settings.enabled)
+        correction = settings.correction_bands or EQSettings().bands
+        self.processor.apply_eq_layers(
+            [band.to_native() for band in correction],
+            [band.to_native() for band in settings.bands],
+        )
 
     def set_settings(self, settings: dict) -> None:
         if "bands" in settings:

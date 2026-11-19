@@ -288,17 +288,18 @@ Rectangle {
         Hint { text: btn.help }
     }
 
-    // Held by the mouse or by Space, it plays the voice without the equalizer; letting go, or
-    // losing the press, the focus or the view, returns it. Only the item that began a hold ends it.
+    // Held by the mouse, by Space or by the B on its keycap, it plays the voice without the
+    // equalizer; letting go, or losing the press, the focus or the view, returns it. Only the
+    // item that began a hold ends it.
     component HoldBtn: PushButton {
         id: hold
         property var proxy
         property bool holding: false
         // A hold ended elsewhere (an edit, Stop, the window going away) is no longer this button's.
-        readonly property bool held: proxy.held
+        readonly property bool held: proxy ? proxy.held : false
         onHeldChanged: if (!held) holding = false
         function begin() {
-            if (!holding && proxy.enabled) {
+            if (!holding && proxy && proxy.enabled) {
                 proxy.press()
                 holding = proxy.held
             }
@@ -309,38 +310,56 @@ Rectangle {
                 proxy.release()
             }
         }
-        text: proxy.text
-        enabled: proxy.enabled
-        look: proxy.held ? "soft" : "plain"
-        leftPadding: 14
-        rightPadding: 14 + keycap.width + 8
-        implicitWidth: leftPadding + contentItem.implicitWidth + rightPadding
+        function holdKey(event) {
+            return event.key === Qt.Key_Space
+                || (event.key === Qt.Key_B && event.modifiers === Qt.NoModifier)
+        }
+        // Measured in the held look's weight, so a hold does not reflow the header.
+        TextMetrics {
+            id: fullLabel
+            text: hold.proxy ? hold.proxy.text : ""
+            font.pixelSize: Look.fsBody
+            font.weight: Font.DemiBold
+        }
+        TextMetrics {
+            id: shortLabel
+            text: hold.proxy ? hold.proxy.shortText : ""
+            font: fullLabel.font
+        }
+        readonly property real shortWidth: leftPadding + Math.ceil(shortLabel.advanceWidth) + rightPadding
+        // Short of room for the whole label, it says Hold beside its keycap; never less.
+        text: !proxy ? "" : availableWidth >= Math.ceil(fullLabel.advanceWidth) ? proxy.text : proxy.shortText
+        enabled: proxy ? proxy.enabled : false
+        look: held ? "soft" : "plain"
+        leftPadding: 12
+        rightPadding: 8 + keycap.width + 8
+        implicitWidth: leftPadding + Math.ceil(fullLabel.advanceWidth) + rightPadding
         onPressedChanged: pressed ? begin() : end()
         onCanceled: end()
         onActiveFocusChanged: if (!activeFocus) end()
         onVisibleChanged: if (!visible) end()
         onEnabledChanged: if (!enabled) end()
         Keys.onPressed: event => {
-            if (event.key === Qt.Key_Space) {
+            if (holdKey(event)) {
                 event.accepted = true
                 if (!event.isAutoRepeat)
                     begin()
             }
         }
         Keys.onReleased: event => {
-            if (event.key === Qt.Key_Space) {
+            if (event.key === Qt.Key_Space || event.key === Qt.Key_B) {
                 event.accepted = true
                 if (!event.isAutoRepeat)
                     end()
             }
         }
-        Accessible.name: proxy.name
-        Accessible.description: proxy.toolTip
-        Hint { text: hold.proxy.toolTip }
+        Accessible.name: proxy ? proxy.name : ""
+        Accessible.description: proxy ? proxy.toolTip : ""
+        Hint { text: hold.proxy ? hold.proxy.toolTip : "" }
         EscChip {
             id: keycap
             objectName: "holdKeycap"
-            text: hold.proxy.keycap
+            text: hold.proxy ? hold.proxy.keycap : ""
             anchors.right: parent.right
             anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
@@ -1976,9 +1995,9 @@ Rectangle {
                         objectName: "holdOriginal"
                         proxy: equalizerPage.eq.compare
                         Layout.alignment: Qt.AlignTop
-                        // A narrow header cuts the label short before anything overlaps; the tip and name keep it whole.
+                        // A narrow header shortens the label before anything overlaps; the tip and name keep it whole.
                         Layout.fillWidth: true
-                        Layout.minimumWidth: leftPadding + rightPadding + 24
+                        Layout.minimumWidth: shortWidth
                         Layout.preferredWidth: implicitWidth
                         Layout.maximumWidth: implicitWidth
                     }
@@ -2088,23 +2107,24 @@ Rectangle {
                         }
                         FocusRing { visible: parent.activeFocus }
                     }
-                    // While the original plays, in words: the colour is never the only sign.
+                    // While the original plays, in words: the colour is never the only sign. It sits
+                    // on the region strip, above the plot, so no handle is ever under it.
                     Rectangle {
                         objectName: "originalPill"
                         visible: equalizerPage.eq.compare.held
                         x: Math.round((graphWell.width - width) / 2)
-                        y: graphWell.inset + 48
+                        y: graphWell.inset + Math.max(0, Math.round((equalizerPage.eq.regionStrip - height) / 2))
                         width: Math.min(pillText.implicitWidth + 24, graphWell.width - 24)
-                        height: pillText.implicitHeight + 12
+                        height: pillText.implicitHeight + 8
                         radius: height / 2
                         color: root.t.status_info_surface
                         border.color: root.t.status_info_border
-                        Accessible.role: Accessible.StaticText
+                        Accessible.role: Accessible.AlertMessage
                         Accessible.name: pillText.text
                         Text {
                             id: pillText
                             x: 12
-                            y: 6
+                            y: 4
                             width: parent.width - 24
                             text: equalizerPage.eq.compare.pill
                             textFormat: Text.PlainText

@@ -7,7 +7,7 @@ import math
 from PySide6.QtCore import QObject, QLocale, Property, Signal, Slot
 
 from ..config import EQ_SLOPES_DB_PER_OCTAVE
-from .eq_band_hint import band_hint
+from .eq_band_hint import band_hint, shown_gain_tenths
 from .eq_state import (
     EQState, EQ_FILTER_OPTIONS, GAIN_FILTER_TYPES, PASS_FILTER_TYPES, Q_FILTER_TYPES,
     _format_auto_eq_diagnostics, _format_frequency_label,
@@ -72,11 +72,14 @@ class EQControl(QObject):
         if key == "enabled":
             view.update(name=f"Enable {band_name}", text="On", toolTip="Enable this EQ band", checked=band.enabled)
         elif key == "hint":
-            view["text"] = band_hint(band.filter_type, band.frequency_hz, band.gain_db)
+            view["text"] = band_hint(
+                band.filter_type, band.frequency_hz, band.gain_db,
+                band_on=band.enabled, stage_on=self._owner.get_eq_settings().enabled,
+            )
         elif key == "frequencyLabel":
             view.update(text=_format_frequency_label(band.frequency_hz), toolTip=f"{band_name} center frequency")
         elif key in {"gain", "gainLabel"}:
-            value = int(round(band.gain_db * 10))
+            value = shown_gain_tenths(band.gain_db)
             view["enabled"] = band.filter_type in GAIN_FILTER_TYPES
             if key == "gain":
                 view.update(name=f"{band_name} gain", value=float(value), minimum=-120.0, maximum=120.0, step=1.0)

@@ -21,7 +21,7 @@ from .compressor_calibration import (
     _COMPRESSOR_P95_TARGET_TOLERANCE_DB,
     _calibrate_compressor_threshold,
     _compressor_p95_target_status,
-    _normalise_limiter_settings,
+    normalise_limiter_settings,
 )
 from .deesser_fusion import (
     CLIP_FEATURE_NAMES,
@@ -941,7 +941,7 @@ def analyze_voice_setup(
         progress_callback("Measuring speech and room noise...", 5)
     if sample_rate != 48_000:
         raise ValueError("Voice setup analysis requires a 48000 Hz sample rate")
-    effective_limiter_settings = _normalise_limiter_settings(limiter_settings)
+    effective_limiter_settings = normalise_limiter_settings(limiter_settings)
     if effective_limiter_settings is None:
         raise ValueError("limiter settings are incomplete")
     noise_arr = np.asarray(noise_audio, dtype=float)
@@ -1739,7 +1739,7 @@ def validate_voice_setup_verification(
             ["verification_capture_invalid"],
         )
 
-    effective_limiter_settings = _normalise_limiter_settings(
+    effective_limiter_settings = normalise_limiter_settings(
         setup_result.get("limiter_settings"),
         require_complete=True,
     )

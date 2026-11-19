@@ -27,7 +27,7 @@ from ..analysis.noise_reference import (
 from ..analysis.voice_setup import (
     GATE_MODE_LABELS,
     MAX_VERIFICATION_BAD_CAPTURES,
-    _normalise_limiter_settings,
+    normalise_limiter_settings,
     analyze_voice_setup,
     raw_capture_is_clipped,
     reduce_for_verification,
@@ -286,7 +286,7 @@ def _candidate_settings_error(
     if not isinstance(setup_result, Mapping):
         return "voice setup result is missing"
     try:
-        limiter_settings = _normalise_limiter_settings(
+        limiter_settings = normalise_limiter_settings(
             setup_result.get("limiter_settings"), require_complete=True
         )
     except ValueError:

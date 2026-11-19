@@ -100,6 +100,18 @@ def test_all_semantic_text_pairs_meet_wcag_aa_contrast() -> None:
     assert min(measured.values()) >= 4.5, measured
 
 
+def test_dim_text_on_glass_keeps_a_margin() -> None:
+    glass = {
+        name: contrast_ratio(foreground, background)
+        for name, foreground, background in TEXT_CONTRAST_PAIRS
+        if "glass over" in name
+    }
+    # Three text tiers on two glass kinds over seven grounds.
+    assert len(glass) == 3 * 2 * 7
+    assert {name.split(" on ")[0] for name in glass} == {"primary text", "muted text", "dim text"}
+    assert min(glass.values()) >= 4.55, glass
+
+
 def test_control_edges_switch_tracks_and_slider_tracks_meet_three_to_one() -> None:
     measured = {name: contrast_ratio(fg, bg) for name, fg, bg in CONTROL_BOUNDARY_PAIRS}
     assert measured and min(measured.values()) >= 3.0, measured
@@ -249,7 +261,7 @@ def test_a_contrast_theme_takes_every_surface_text_and_accent_from_the_system() 
         palette.action_secondary,
     ]
     assert set(surfaces) == {SYSTEM_COLORS["window"]}
-    assert {palette.text_primary, palette.text_muted, palette.data_text, palette.border} == {
+    assert {palette.text_primary, palette.text_muted, palette.data_text, palette.border, palette.accent_text} == {
         SYSTEM_COLORS["window_text"]
     }
     assert palette.action_disabled_text == SYSTEM_COLORS["gray_text"]

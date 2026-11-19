@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+import ast
+from dataclasses import asdict, fields
+from pathlib import Path
 import re
 import sys
 import types
@@ -20,6 +22,7 @@ from mic_eq.ui.theme import (
     MOTION,
     PALETTE,
     REDUCED_MOTION_FADE_MS,
+    RESERVED_FOR_LATER,
     SemanticPalette,
     TYPE_FLOOR_PX,
     TYPE_SCALE_PX,
@@ -173,6 +176,57 @@ def test_flatten_lays_a_translucent_token_over_its_ground() -> None:
         flatten("not-a-color", "#000000")
 
 
+def _scene_readers(names: list[str]) -> set[str]:
+    """Tokens a scene reads: ``t.name``, or ``t["head" + x + "tail"]`` for every name it can make."""
+
+    source = "\n".join(path.read_text(encoding="utf-8") for path in QML_DIR.glob("*.qml"))
+    read = {name for name in names if re.search(rf"\bt\.{name}\b", source)}
+    for head, tail in re.findall(r'\bt\["(\w+)"\s*\+[^\]]*?\+\s*"(\w+)"\]', source):
+        read |= {n for n in names if n.startswith(head) and n.endswith(tail) and len(n) > len(head + tail)}
+    return read
+
+
+def _is_described_not_read(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> bool:
+    """True inside theme.py's palette definition, contrast theme builder and contrast tables."""
+
+    described_functions = {"build_palette", "control_boundary_pairs", "SemanticPalette"}
+    tables = {"TEXT_CONTRAST_PAIRS", "CONTROL_BOUNDARY_PAIRS"}
+    while node in parents:
+        node = parents[node]
+        if isinstance(node, ast.FunctionDef | ast.ClassDef) and node.name in described_functions:
+            return True
+        if isinstance(node, ast.Assign | ast.AnnAssign):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(target, ast.Name) and target.id in tables for target in targets):
+                return True
+    return False
+
+
+def _python_readers(names: list[str]) -> set[str]:
+    """Tokens the app's Python code reads as an attribute, outside theme.py's own descriptions."""
+
+    package = Path(theme.__file__).parent.parent
+    read: set[str] = set()
+    for path in package.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in names:
+                if path.name != "theme.py" or not _is_described_not_read(node, parents):
+                    read.add(node.attr)
+    return read
+
+
+def test_every_palette_token_has_a_reader() -> None:
+    names = [field.name for field in fields(SemanticPalette)]
+    read = _scene_readers(names) | _python_readers(names)
+    assert set(RESERVED_FOR_LATER) <= set(names)
+    # A token that gains a reader leaves the reserved list, so the list never goes stale.
+    assert not set(RESERVED_FOR_LATER) & read, sorted(set(RESERVED_FOR_LATER) & read)
+    assert sorted(set(names) - read - set(RESERVED_FOR_LATER)) == []
+    assert "analyser" not in names
+
+
 def test_the_focus_ring_has_its_own_token_in_scenes_and_widgets() -> None:
     ring = (QML_DIR / "FocusRing.qml").read_text(encoding="utf-8")
     assert "border.color: Look.t.focus_ring" in ring
@@ -190,6 +244,18 @@ def test_level_colors_are_not_told_apart_by_red_against_green_alone() -> None:
     assert danger.hslHue() < 20 or danger.hslHue() > 340
 
 
+def test_the_meter_caution_step_reads_its_own_token_and_keeps_its_hue_under_a_contrast_theme() -> None:
+    from mic_eq.ui import level_meter
+
+    source = Path(level_meter.__file__).read_text(encoding="utf-8")
+    assert "status_warn" not in source and "data_warning" not in source
+    assert level_meter.LevelMeter.COLOR_YELLOW == QColor(PALETTE.meter_caution)
+    contrast = build_palette(SYSTEM_COLORS)
+    assert contrast.meter_caution == PALETTE.meter_caution
+    caution, danger = QColor(contrast.meter_caution), QColor(contrast.meter_danger)
+    assert min(abs(caution.hslHue() - danger.hslHue()), 360 - abs(caution.hslHue() - danger.hslHue())) >= 30
+
+
 def test_callers_affected_has_its_own_hue_and_stays_readable() -> None:
     mark = QColor(PALETTE.callers_affected)
 
@@ -198,10 +264,10 @@ def test_callers_affected_has_its_own_hue_and_stays_readable() -> None:
         return min(gap, 360 - gap)
 
     # Not the amber of actions, the yellow of warnings, the red of errors, the violet of
-    # Mute or the blues of the level and analyser traces.
+    # Mute or the blues of the level traces.
     for taken in (
         PALETTE.accent, PALETTE.status_warn_text, PALETTE.status_bad_text, PALETTE.mute,
-        PALETTE.signal_in, PALETTE.signal_in_fill, PALETTE.analyser, PALETTE.status_ok_text,
+        PALETTE.signal_in, PALETTE.signal_in_fill, PALETTE.status_ok_text,
     ):
         assert hue_gap(taken) >= 30, taken
     for ground in (PALETTE.pane_surface, PALETTE.card_surface, PALETTE.sidebar_top):

@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QAbstractNativeEventFilter, QCoreApplication, QLockFile, QObject, Qt, QTimer, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import QMainWindow
+from PySide6.QtWidgets import QWidget
 
 from .login_startup import APP_ID, LOGIN_STARTUP_ARGUMENT
 
@@ -376,7 +376,7 @@ def _shorten(text: str, room: int) -> str:
     return text if len(text) <= room else text[: max(room - 3, 0)] + "..."
 
 
-def activate_window(window: QMainWindow) -> None:
+def activate_window(window: QWidget) -> None:
     """Show and focus a hidden/minimized Qt window after a second launch."""
 
     # Only un-minimize; showNormal() would also shrink a maximized window.

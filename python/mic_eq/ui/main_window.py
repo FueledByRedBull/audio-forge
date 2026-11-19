@@ -30,7 +30,7 @@ from contextlib import nullcontext
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .components import plain_label
 from .eq_presentation import EQPresentation
@@ -162,6 +162,9 @@ from ..config import (
     legacy_latency_profile_key,
     LatencyCalibrationProfile,
 )
+
+if TYPE_CHECKING:
+    from .compact_window import CompactWindow
 
 
 # Enable debug logging
@@ -436,6 +439,8 @@ class MainWindow(QMainWindow):
         self._mute_hotkey: GlobalMuteHotkey | None = None
         self._close_to_tray_action: QAction | None = None
         self._mute_hotkey_action: QAction | None = None
+        # Made the first time it opens (compact_window.py); it reads the scene's own model.
+        self.compact_window: "CompactWindow | None" = None
 
         # Shared state first: the view only renders it.
         self._setup_shell_models()
@@ -659,9 +664,17 @@ class MainWindow(QMainWindow):
             self._settings_card("Help", self._help_menu),
         ]
 
+        from .compact_window import COMPACT_SHORTCUT
         from .quick_shell import install_quick_shell
 
         install_quick_shell(self)
+        # The tray menu holds it too; the shortcut belongs to this window, not the desktop.
+        self.compact_window_action = QAction("Compact window", self)
+        self.compact_window_action.setShortcut(COMPACT_SHORTCUT)
+        self.compact_window_action.setAutoRepeat(False)
+        self.compact_window_action.setToolTip("Show a small window to keep beside a call")
+        self.compact_window_action.triggered.connect(self._open_compact_window)
+        self.addAction(self.compact_window_action)
 
     def _set_health_chip(self, key: str, text: str, state: str) -> None:
         self.shell_texts[key].update(text=text, status=state)
@@ -1480,6 +1493,7 @@ class MainWindow(QMainWindow):
         show_action = QAction("Show AudioForge", self)
         show_action.triggered.connect(self._show_from_tray)
         self._tray_menu.addAction(show_action)
+        self._tray_menu.addAction(self.compact_window_action)
 
         self._tray_mute_action = QAction("Mute Output", self)
         self._tray_mute_action.setCheckable(True)
@@ -1538,7 +1552,16 @@ class MainWindow(QMainWindow):
             self._shutdown()
 
     def _show_from_tray(self) -> None:
-        activate_window(self)
+        compact = self.compact_window
+        if compact is not None and compact.isVisible():
+            compact.expand()
+        else:
+            activate_window(self)
+
+    def _open_compact_window(self) -> None:
+        from .compact_window import open_compact_window
+
+        open_compact_window(self)
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (
@@ -3167,7 +3190,7 @@ class MainWindow(QMainWindow):
             running = self.processor.is_running()
         except (AttributeError, OSError, RuntimeError):
             running = False
-        if running and self.isVisible() and not self.isMinimized():
+        if running and (self.isVisible() and not self.isMinimized() or _compact_shown(self)):
             if not timer.isActive():
                 # The getters kept collecting while the timer was stopped; the
                 # first tick must not report that whole gap as new clipping.
@@ -3204,7 +3227,7 @@ class MainWindow(QMainWindow):
             self.health_monitor.memory = replace(self.health_monitor.memory, backend_warning=None)
             self._reset_health_labels()
             return
-        if self.__dict__.get("_hidden_to_tray") and self.isHidden():
+        if self.__dict__.get("_hidden_to_tray") and self.isHidden() and not _compact_shown(self):
             return
         self._live_meters_invalidated = False
 
@@ -3672,6 +3695,9 @@ class MainWindow(QMainWindow):
         watch = self.__dict__.get("virtual_microphone_watch")
         if watch is not None:
             watch.stop()
+        compact = self.__dict__.get("compact_window")
+        if compact is not None:
+            compact.close()
         return self.engine_session.shutdown(ENGINE_CALL_WAIT_MS, save=self._save_on_shutdown)
 
     def _save_on_shutdown(self) -> bool:
@@ -3690,6 +3716,12 @@ class MainWindow(QMainWindow):
             geometry["maximized"] = True
         self.config.window_geometry = geometry
         return self._save_ui_state()
+
+
+def _compact_shown(window) -> bool:
+    """Whether the compact window is on screen; its meters run on this window's timer."""
+    compact = window.__dict__.get("compact_window")
+    return compact is not None and compact.isVisible() and not compact.isMinimized()
 
 
 def run_app():

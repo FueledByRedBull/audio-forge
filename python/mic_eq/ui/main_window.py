@@ -2686,8 +2686,30 @@ class MainWindow(QMainWindow):
         self.engine_session.request_restart()
 
     def _request_stop(self, source: StopSource) -> None:
+        """A Stop the user pressed: live audio asks first, since callers would hear nothing."""
+        if self._audio_is_live() and not self._confirm_stop():
+            return
         self._cancel_login_startup_for_click()
+        # The box can stay open for a while: the engine session checks again what there is to
+        # stop, so audio that stopped meanwhile is neither stopped twice nor reported as failed.
         self.engine_session.request_stop(source)
+
+    def _audio_is_live(self) -> bool:
+        return self.engine_session.view.busy is None and bool(self.processor.is_running())
+
+    def _confirm_stop(self) -> bool:
+        box = QMessageBox(
+            QMessageBox.Icon.Question,
+            "Stop Audio?",
+            "Callers will hear nothing until audio is started again.",
+            parent=self,
+        )
+        stop_button = box.addButton("Stop audio", QMessageBox.ButtonRole.AcceptRole)
+        keep_button = box.addButton("Keep running", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(stop_button)
+        box.setEscapeButton(keep_button)
+        box.exec()
+        return box.clickedButton() is stop_button
 
     def _cancel_login_startup_for_click(self) -> None:
         if self.engine_session.view.busy is None and self.__dict__.get("_login_startup_deadline") is not None:

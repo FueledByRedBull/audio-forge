@@ -529,7 +529,7 @@ def test_a_scene_that_does_not_load_says_so_and_closes_without_starting_anything
     assert connected == [], "no quit hook"
     assert owner.processor.is_running() is False and owner.engine_session.view.user_muted is False
     assert not dialog._capture_start_timer.isActive() and not dialog.recording_timer.isActive()
-    assert dialog._audio_lease is None and dialog._analysis_workers == []
+    assert dialog._audio_lease is None and dialog._workers.workers == []
     dialog.reject()
     assert dialog.result() == REJECTED
     dialog.deleteLater()

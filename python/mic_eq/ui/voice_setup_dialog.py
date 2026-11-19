@@ -47,18 +47,16 @@ from ..config import (
 from .processing_configuration import Checkpoint, ProcessingConfiguration
 from .capture_session import (
     CaptureSession,
-    device_label as _device_label,
-    device_name as _device_name,
     find_processor_owner as _find_processor_owner,
     owner_calibration_context_key as _owner_calibration_context_key,
     processor_sample_rate as _processor_sample_rate,
 )
-from .engine_session import AudioLease, AudioUnavailable, RouteMismatch, unavailable_text
+from .engine_session import AudioLease, borrow_audio_for
 from .analysis_worker import (
     CancellableWorker,
     CaptureAnalysis,
     CaptureAnalysisWorker,
-    start_capture_analysis,
+    WorkerSet,
 )
 from .calibration_support import (
     RAINBOW_PASSAGE,
@@ -67,8 +65,6 @@ from .calibration_support import (
     filtered_capture_for_analysis as _filtered_capture_for_analysis,
     format_db as _format_db,
     format_percent as _format_percent,
-    on_analysis_thread_finished,
-    wait_for_analysis_workers,
 )
 from .components import session_is_ending
 from .layout_constants import configure_resizable_dialog
@@ -513,13 +509,9 @@ class VoiceSetupDialog(QDialog):
         # What each stage was set to before this setup, for the "Before:" lines.
         self._review_current: dict[str, Mapping[str, Any]] = {}
         self._capture_context_key: str | None = None
-        self.analysis_worker: (
-            VoiceSetupWorker | VoiceSetupVerificationWorker | CaptureAnalysisWorker | None
-        ) = None
-        self._analysis_workers: list[
+        self._workers: WorkerSet[
             VoiceSetupWorker | VoiceSetupVerificationWorker | CaptureAnalysisWorker
-        ] = []
-        self._analysis_generation = 0
+        ] = WorkerSet(self._finish_close)
         # The recording phase a take in "capture_analyzing" came from.
         self._capture_phase = "voice_recording"
         self._close_requested = False
@@ -770,60 +762,38 @@ class VoiceSetupDialog(QDialog):
             QMessageBox.critical(self, "Error", plain_error("Could not find audio processor"))
             return False
 
-        session = parent.engine_session
-        try:
-            self._audio_lease = session.borrow(_VOICE_SETUP_MUTE_REASON)
-            return True
-        except RouteMismatch as mismatch:
-            selected_input, selected_output = (_device_name(item) for item in mismatch.selected)
-            active_pair = tuple(_device_name(item) for item in mismatch.active)
-            reply = QMessageBox.question(
-                self,
-                "Switch Devices for Voice Setup?",
-                "Voice setup should record from your selected devices.\n\n"
-                f"Selected input: {_device_label(selected_input, '(Default Input)')}\n"
-                f"Selected output: {_device_label(selected_output, '(Default Output)')}\n\n"
-                f"Active input: {_device_label(active_pair[0], '(Default Input)')}\n"
-                f"Active output: {_device_label(active_pair[1], '(Default Output)')}\n\n"
-                "Switch now?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        def keep_running_devices() -> None:
+            self.view_model.set_warning(
+                "Setup canceled. The microphone and speakers that were "
+                "already running were kept.",
+                state="warn",
+                strong=False,
             )
-            if reply != QMessageBox.StandardButton.Yes:
-                self.view_model.set_warning(
-                    "Setup canceled. The microphone and speakers that were "
-                    "already running were kept.",
-                    state="warn",
-                    strong=False,
-                )
-                # The state, button text and selector stay as the dialog had them.
-                self.view_model.set_page(startEnabled=True)
-                return False
+            # The state, button text and selector stay as the dialog had them.
+            self.view_model.set_page(startEnabled=True)
 
-            try:
-                self._audio_lease = session.borrow(_VOICE_SETUP_MUTE_REASON, switch_route=True)
-            except AudioUnavailable as exc:
-                QMessageBox.critical(
-                    self,
-                    "Audio Error",
-                    unavailable_text(
-                        exc,
-                        "AudioForge could not switch to your selected devices.",
-                        "Check that they are connected and not used by another app.",
-                    ),
-                )
-                return False
-            return True
-        except AudioUnavailable as exc:
-            QMessageBox.critical(
-                self,
-                "Audio Error",
-                unavailable_text(
-                    exc,
-                    "AudioForge could not start the microphone and speakers.",
-                    "Check that they are connected and not used by another app, then try again.",
-                ),
-            )
+        lease = borrow_audio_for(
+            parent.engine_session,
+            _VOICE_SETUP_MUTE_REASON,
+            title="Switch Devices for Voice Setup?",
+            lead="Voice setup should record from your selected devices.",
+            prompts=self,
+            on_declined=keep_running_devices,
+        )
+        if lease is None:
             return False
+        self._audio_lease = lease
+        return True
+
+    def ask(self, title: str, text: str) -> bool:
+        """The ``SetupPrompts`` this dialog gives ``borrow_audio_for``, with ``fail``."""
+        reply = QMessageBox.question(
+            self, title, text, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
+    def fail(self, title: str, text: str) -> None:
+        QMessageBox.critical(self, title, text)
 
     def _begin_recording_capture(self) -> None:
         self._capture_start_timer.stop()
@@ -1027,14 +997,12 @@ class VoiceSetupDialog(QDialog):
 
         phase = self.setup_state
         self._cancel_analysis_workers()
-        generation = self._analysis_generation + 1
-        self._analysis_generation = generation
+        generation = self._workers.begin()
         self._capture_phase = phase
         self.setup_state = "capture_analyzing"
         self.view_model.set_page(startEnabled=False)
         self.view_model.set_warning("Checking the recording...", state="info", strong=True)
-        start_capture_analysis(
-            self,
+        self._workers.start_capture(
             partial(
                 _analyze_capture,
                 raw_audio,
@@ -1051,7 +1019,7 @@ class VoiceSetupDialog(QDialog):
         )
 
     def _on_capture_analysis_failed(self, error: str, phase: str, generation: int) -> None:
-        if generation != self._analysis_generation or self._close_requested:
+        if not self._workers.is_current(generation) or self._close_requested:
             return
         self.setup_state = phase
         self._on_recording_failed(plain_error(f"Recording error: {error}"))
@@ -1064,7 +1032,7 @@ class VoiceSetupDialog(QDialog):
         generation: int,
     ) -> None:
         """Decide about a finished take once its post-processing is done."""
-        if generation != self._analysis_generation or self._close_requested:
+        if not self._workers.is_current(generation) or self._close_requested:
             return
         self.setup_state = phase
         self.view_model.set_page(startEnabled=True)
@@ -1165,8 +1133,7 @@ class VoiceSetupDialog(QDialog):
                 limiter_settings = candidate_limiter_settings
 
         self._cancel_analysis_workers()
-        generation = self._analysis_generation + 1
-        self._analysis_generation = generation
+        generation = self._workers.begin()
         target_preset = self.get_selected_curve()
         dynamics_intensity = self.view_model.selected("dynamics")
         custom_target_p95_db = self.view_model.number("p95")
@@ -1246,8 +1213,7 @@ class VoiceSetupDialog(QDialog):
                 processing_mode=processing_mode,
             )
         )
-        self.analysis_worker = worker
-        self._analysis_workers.append(worker)
+        self._workers.track(worker)
         worker.step_progress.connect(
             lambda step_name, percentage, token=generation: self._on_analysis_step(
                 step_name, percentage, token
@@ -1261,11 +1227,6 @@ class VoiceSetupDialog(QDialog):
                 plain_error(error), token
             )
         )
-        worker.finished.connect(
-            lambda finished_worker=worker: self._on_analysis_thread_finished(
-                finished_worker
-            )
-        )
         worker.start()
 
     def _on_analysis_step(
@@ -1274,7 +1235,7 @@ class VoiceSetupDialog(QDialog):
         percentage: int,
         generation: int | None = None,
     ) -> None:
-        if generation is not None and generation != self._analysis_generation:
+        if generation is not None and not self._workers.is_current(generation):
             return
         if self._close_requested:
             return
@@ -1284,7 +1245,7 @@ class VoiceSetupDialog(QDialog):
     def _on_analysis_complete(
         self, setup_result: dict[str, Any], generation: int | None = None
     ) -> None:
-        if generation is not None and generation != self._analysis_generation:
+        if generation is not None and not self._workers.is_current(generation):
             return
         if self._close_requested:
             return
@@ -2187,8 +2148,7 @@ class VoiceSetupDialog(QDialog):
             return
 
         self._cancel_analysis_workers()
-        generation = self._analysis_generation + 1
-        self._analysis_generation = generation
+        generation = self._workers.begin()
         self.setup_state = "verification_analyzing"
         self.view_model.set_page(
             startEnabled=False,
@@ -2212,8 +2172,7 @@ class VoiceSetupDialog(QDialog):
             raw_noise_audio=self.preview_noise_audio,
             raw_verification_speech_audio=self.preview_verification_audio,
         )
-        self.analysis_worker = worker
-        self._analysis_workers.append(worker)
+        self._workers.track(worker)
         worker.step_progress.connect(
             lambda step_name, percentage, token=generation: self._on_analysis_step(
                 step_name, percentage, token
@@ -2227,11 +2186,6 @@ class VoiceSetupDialog(QDialog):
         worker.failed.connect(
             lambda error, token=generation: self._on_verification_failed(
                 plain_error(error), token
-            )
-        )
-        worker.finished.connect(
-            lambda finished_worker=worker: self._on_analysis_thread_finished(
-                finished_worker
             )
         )
         worker.start()
@@ -2375,7 +2329,7 @@ class VoiceSetupDialog(QDialog):
     def _on_verification_complete(
         self, result: dict[str, Any], generation: int | None = None
     ) -> None:
-        if generation is not None and generation != self._analysis_generation:
+        if generation is not None and not self._workers.is_current(generation):
             return
         if self._close_requested:
             return
@@ -2578,7 +2532,7 @@ class VoiceSetupDialog(QDialog):
     def _on_verification_failed(
         self, error: str, generation: int | None = None
     ) -> None:
-        if generation is not None and generation != self._analysis_generation:
+        if generation is not None and not self._workers.is_current(generation):
             return
         if self._close_requested:
             return
@@ -2608,7 +2562,7 @@ class VoiceSetupDialog(QDialog):
         self._report("failed", ["verification_failed"], [self.view_model.warning_text])
 
     def _on_analysis_failed(self, error: str, generation: int | None = None) -> None:
-        if generation is not None and generation != self._analysis_generation:
+        if generation is not None and not self._workers.is_current(generation):
             return
         if self._close_requested:
             return
@@ -2783,11 +2737,7 @@ class VoiceSetupDialog(QDialog):
     def _cancel_analysis_workers(self) -> None:
         """Cancel work without dropping ownership of a running QThread."""
         verification_was_active = self.setup_state == "verification_analyzing"
-        self._analysis_generation += 1
-        for worker in tuple(self._analysis_workers):
-            if worker.isRunning():
-                worker.stop()
-        self.analysis_worker = None
+        self._workers.cancel()
         if verification_was_active:
             restored = self._restore_pre_setup_snapshot()
             self._final_comparison_pending = False
@@ -2804,17 +2754,10 @@ class VoiceSetupDialog(QDialog):
                 else "Check canceled; previous settings not fully put back",
             )
 
-    def _on_analysis_thread_finished(self, worker) -> None:
-        on_analysis_thread_finished(self, worker)
-
     def _finish_close(self) -> None:
-        if not self._close_requested or any(
-            worker.isRunning() for worker in self._analysis_workers
-        ):
+        if not self._close_requested or self._workers.running():
             return
-        for worker in tuple(self._analysis_workers):
-            worker.deleteLater()
-        self._analysis_workers.clear()
+        self._workers.discard()
         self._close_requested = False
         self.noise_audio = None
         self.voice_audio = None
@@ -2825,7 +2768,9 @@ class VoiceSetupDialog(QDialog):
 
     # A real method, so Qt drops the aboutToQuit connection when the dialog is destroyed.
     def _wait_for_analysis_workers(self) -> None:
-        wait_for_analysis_workers(self)
+        """Keep application shutdown from destroying a running QThread."""
+        self._request_close(False)
+        self._workers.join()
 
     def _request_close(self, accepted: bool) -> None:
         if self._close_requested:
@@ -2853,7 +2798,7 @@ class VoiceSetupDialog(QDialog):
             )
         self._close_requested = True
         self._close_result = accepted
-        if any(worker.isRunning() for worker in self._analysis_workers):
+        if self._workers.running():
             self.view_model.set_page(startEnabled=False, retakeEnabled=False)
             self.view_model.set_warning("Canceling analysis...", state="info", strong=True)
             return

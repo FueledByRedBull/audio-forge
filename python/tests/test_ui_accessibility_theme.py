@@ -17,8 +17,6 @@ from PySide6.QtGui import QColor, QIcon, QPalette, QPixmap
 
 from mic_eq.config import AppConfig
 from mic_eq.ui.calibration_dialog import CalibrationDialog
-from mic_eq.ui.first_run_setup_dialog import FirstRunSetupDialog
-from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog
 from mic_eq.ui.main_window import (
     HEALTH_DECISION_KEYS,
     HEALTH_LAYOUT_KEYS,
@@ -29,7 +27,13 @@ from mic_eq.ui.level_meter import SCALE_TEXT_GAP, _scale_mark_geometry
 from mic_eq.ui.shell_specs import TEXT_SPECS
 from mic_eq.ui import theme
 from accessibility_audit import audit_widget_tree
-from test_first_run_setup import at_scene_minimum, cut_short_texts, scene_item, scene_items
+from test_first_run_setup import (
+    at_scene_minimum,
+    cut_short_texts,
+    scene_item,
+    scene_items,
+    wired_setup_dialog,
+)
 from mic_eq.ui.theme import (
     CONTROL_BOUNDARY_PAIRS,
     PALETTE,
@@ -48,6 +52,7 @@ from mic_eq.ui.theme import (
 )
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from test_quick_shell import _load_config_without_devices
+from capture_helpers import wired_latency_dialog
 
 
 UI_ROOT = Path(__file__).resolve().parents[1] / "mic_eq" / "ui"
@@ -341,7 +346,7 @@ def test_workflow_dialogs_have_named_controls(
     dialogs = (
         CalibrationDialog(window),
         VoiceSetupDialog(window),
-        LatencyCalibrationDialog(window),
+        wired_latency_dialog(window),
     )
 
     problems = {
@@ -369,7 +374,7 @@ def test_first_run_setup_buttons_fit_the_minimum_dialog(
         lambda _config: True,
     )
     isolated_main_window.config.first_run_setup_step = step
-    dialog = FirstRunSetupDialog(isolated_main_window)
+    dialog = wired_setup_dialog(isolated_main_window)
     minimum = dialog.minimumSize()
     dialog.show()
     qapp.processEvents()

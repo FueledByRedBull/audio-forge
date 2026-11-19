@@ -1808,7 +1808,7 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(
     }
     dialog._candidate_metadata = deepcopy(dialog.setup_result["_candidate"])
     dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
-    dialog._analysis_generation = 1
+    dialog._workers.generation = 1
     with monkeypatch.context() as patch:
         patch.setattr(dialog, "_show_summary", lambda _result: None)
         dialog._on_analysis_complete(dialog.setup_result)
@@ -1864,7 +1864,7 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(
     dialog._apply_setup()
     dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
     dialog._complete_verification(np.zeros(16, dtype=np.float32))
-    worker = dialog.analysis_worker
+    worker = dialog._workers.current
     assert worker is not None
     try:
         assert entered.wait(2.0)
@@ -1874,7 +1874,7 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(
         QTimer.singleShot(0, lambda: events.append("responsive"))
         qapp.processEvents()
         assert events == ["responsive"]
-        stale_generation = dialog._analysis_generation
+        stale_generation = dialog._workers.generation
         dialog.reject()
         assert worker.wait(2_000)
         dialog._on_verification_complete({"decision": "accept"}, generation=stale_generation)
@@ -1939,7 +1939,7 @@ def test_incomplete_candidate_offers_retake_instead_of_apply(
     result[field] = value
     dialog._candidate_metadata = deepcopy(result["_candidate"])
     dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
-    dialog._analysis_generation = 1
+    dialog._workers.generation = 1
     try:
         dialog._on_analysis_complete(result)
         assert dialog.setup_state == "noise_ready"
@@ -1974,7 +1974,7 @@ def test_complete_advisory_candidate_still_offers_apply(owner):
         result = _advisory_result(owner)
         dialog._candidate_metadata = deepcopy(result["_candidate"])
         dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
-        dialog._analysis_generation = 1
+        dialog._workers.generation = 1
         dialog._on_analysis_complete(result)
         assert dialog.setup_state == "completed"
         assert dialog.view_model.shown["startText"] == "Apply Suggestions"

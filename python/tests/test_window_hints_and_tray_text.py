@@ -11,11 +11,11 @@ from PySide6.QtGui import QAccessible
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QWidget
 
-from mic_eq.ui import latency_calibration_dialog as latency_ui
 from mic_eq.ui.control_specs import control_label
 from mic_eq.ui.desktop_integration import TRAY_TOOLTIP_LIMIT, build_tray_tooltip
 from mic_eq.ui.health import advice_for
 from mic_eq.ui.main_window import NO_DESTINATION_WARNING
+from capture_helpers import wired_latency_dialog
 
 LONG_INPUT = "Microphone (Realtek High Definition Audio(SST)) with a very long suffix"
 LONG_OUTPUT = "CABLE Input (VB-Audio Virtual Cable) with a very long suffix on it too"
@@ -113,7 +113,7 @@ def _latency_dialog(profile: dict | None = None) -> Any:
     owner.processor = Mock()
     owner.processor.get_engine_latency_ms.return_value = 0.0
     owner.processor.stop_raw_recording.return_value = np.zeros(10, dtype=np.float32)
-    dialog = latency_ui.LatencyCalibrationDialog(owner, existing_profile=profile)
+    dialog = wired_latency_dialog(owner, existing_profile=profile)
     setattr(dialog, "_owner", owner)  # the dialog does not own its parent
     return dialog
 

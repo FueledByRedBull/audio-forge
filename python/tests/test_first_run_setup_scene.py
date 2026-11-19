@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import Mock
 
 import pytest
 from PySide6.QtCore import QPointF, Qt, qInstallMessageHandler
@@ -35,6 +36,7 @@ from test_first_run_setup import (
     scene_item,
     scene_items,
     scene_text,
+    wired_setup_dialog,
 )
 from test_quick_shell import _AccessibleScene, _wait_until
 
@@ -743,7 +745,7 @@ def test_a_scene_that_does_not_load_raises_before_progress_is_touched(qapp, monk
     )
     owner = _Owner(config, _Processor())
     with pytest.raises(FirstRunSetupLoadError, match="no such file"):
-        FirstRunSetupDialog(owner, restart_completed=True)
+        wired_setup_dialog(owner, restart_completed=True)
     assert saves == []
     assert config.first_run_setup_state == "completed" and config.first_run_setup_step == "voice"
     assert set(config.first_run_setup_steps.values()) == {"completed"}
@@ -759,7 +761,12 @@ def test_a_setup_that_cannot_load_tells_the_user_and_opens_nothing(monkeypatch, 
     shown: list[tuple] = []
     monkeypatch.setattr("mic_eq.ui.main_window.FirstRunSetupDialog", broken)
     monkeypatch.setattr("mic_eq.ui.main_window.QMessageBox.critical", lambda *args: shown.append(args))
-    MainWindow._show_first_run_setup(cast(Any, SimpleNamespace()))
+    window = SimpleNamespace(
+        _on_device_changed=Mock(),
+        _on_auto_voice_setup_clicked=Mock(),
+        _on_latency_calibration_clicked=Mock(),
+    )
+    MainWindow._show_first_run_setup(cast(Any, window))
     assert len(shown) == 1 and "could not open" in shown[0][2]
     assert "no details" not in shown[0][2], "the details are for the log, not the message box"
     assert "no details" in caplog.text

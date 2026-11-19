@@ -373,7 +373,7 @@ def test_auto_eq_failures_and_refused_takes_are_reported(qapp, monkeypatch) -> N
     owner, dialog, records = _auto_eq()
     try:
         _capture(dialog, monkeypatch, "broadcast")
-        dialog._on_analysis_failed("Setup lost track.", generation=dialog._analysis_generation)
+        dialog._on_analysis_failed("Setup lost track.", generation=dialog._workers.generation)
         dialog.recording_state = "recording"
         dialog._on_recording_complete(_clipped())
         dialog.recording_state = "recording"
@@ -637,7 +637,7 @@ def test_auto_eq_closing_after_a_failed_analysis_keeps_the_failed_record(qapp, m
     owner, dialog, records = _auto_eq(owner=_owner_with())
     _complete(dialog, monkeypatch, _candidate(1.0, owner.preset.eq))
     dialog.recording_state = "analyzing"
-    dialog._on_analysis_failed("Setup lost track.", generation=dialog._analysis_generation)
+    dialog._on_analysis_failed("Setup lost track.", generation=dialog._workers.generation)
 
     dialog.reject()
 

@@ -10,6 +10,7 @@ import numpy as np
 from PySide6.QtWidgets import QWidget
 
 from mic_eq.ui import latency_calibration_dialog as latency_ui
+from capture_helpers import wired_latency_dialog
 
 
 def test_application_quit_waits_for_a_running_latency_analysis(qapp, monkeypatch):
@@ -30,7 +31,7 @@ def test_application_quit_waits_for_a_running_latency_analysis(qapp, monkeypatch
     processor.recording_level_db.return_value = -40.0
     processor.is_recording_complete.return_value = True
     processor.stop_raw_recording.return_value = np.zeros(48_000, dtype=np.float32)
-    dialog = latency_ui.LatencyCalibrationDialog(owner)
+    dialog = wired_latency_dialog(owner)
     dialog._probe = np.zeros(64, dtype=np.float32)
     dialog._probe_started = True
     dialog._played_probe = True

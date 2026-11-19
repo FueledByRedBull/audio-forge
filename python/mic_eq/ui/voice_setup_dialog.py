@@ -675,9 +675,7 @@ class VoiceSetupDialog(QDialog):
         elif self.setup_state == "verification_ready":
             self._start_recording_phase("verification_recording")
         elif self.setup_state in {"level_check", "noise_recording", "voice_recording"}:
-            QMessageBox.information(
-                self, "Recording", "Please let the recording finish."
-            )
+            self.inform("Recording", "Please let the recording finish.")
 
     def _continue_past_level(self) -> None:
         """Go on to the room noise although the level check did not say it was good."""
@@ -759,7 +757,7 @@ class VoiceSetupDialog(QDialog):
     def _ensure_processor_ready(self) -> bool:
         parent = _find_processor_owner(self.parent())
         if not parent:
-            QMessageBox.critical(self, "Error", plain_error("Could not find audio processor"))
+            self.fail("Error", plain_error("Could not find audio processor"))
             return False
 
         def keep_running_devices() -> None:
@@ -794,6 +792,45 @@ class VoiceSetupDialog(QDialog):
 
     def fail(self, title: str, text: str) -> None:
         QMessageBox.critical(self, title, text)
+
+    def ask_defaulting_no(self, title: str, text: str) -> bool:
+        """``ask`` with No as the default button, so Enter does not say yes."""
+        reply = QMessageBox.question(
+            self,
+            title,
+            text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
+    def inform(self, title: str, text: str) -> None:
+        QMessageBox.information(self, title, text)
+
+    def warn(self, title: str, text: str) -> None:
+        QMessageBox.warning(self, title, text)
+
+    def compare(self, **comparison: Any) -> bool | None:
+        """Show the listening comparison: whether the proposal was kept, or None when the
+        window could not open."""
+        from .listening_comparison_dialog import ListeningComparisonDialog
+
+        dialog = ListeningComparisonDialog(**comparison, parent=self)
+        try:
+            keep = dialog.exec() == int(QDialog.DialogCode.Accepted)
+            # A window that could not open says so itself; it is not an answer.
+            if not keep and dialog.load_error is not None:
+                return None
+            return keep
+        finally:
+            dialog.deleteLater()
+
+    def persist_calibration(
+        self, owner: Any, scope: str, curve: str, stages: tuple[str, ...]
+    ) -> None:
+        from .calibration_history import persist_calibration
+
+        persist_calibration(self, owner, scope, curve, stages)
 
     def _begin_recording_capture(self) -> None:
         self._capture_start_timer.stop()
@@ -1721,10 +1758,8 @@ class VoiceSetupDialog(QDialog):
             return
         error = self._candidate_identity_error(owner)
         if error:
-            QMessageBox.warning(self, "Recording out of date", plain_stale(error))
+            self.warn("Recording out of date", plain_stale(error))
             return
-        from .listening_comparison_dialog import ListeningComparisonDialog
-
         try:
             snapshot = self._pre_setup_snapshot
             if self._final_comparison_pending and snapshot is not None:
@@ -1742,8 +1777,7 @@ class VoiceSetupDialog(QDialog):
             # The EQ Apply writes: the correction layer over the retained tone layer.
             proposed_eq = _candidate_preset(configuration, self.setup_result)[0].eq.to_dict()
         except Exception as error:
-            QMessageBox.warning(
-                self,
+            self.warn(
                 "Comparison unavailable",
                 f"The comparison could not be prepared ({error}). Close and reopen this window.",
             )
@@ -1763,25 +1797,22 @@ class VoiceSetupDialog(QDialog):
         suppression = self.setup_result.get("suppressor_settings")
         if isinstance(suppression, Mapping):
             proposed_chain["rnnoise"] = deepcopy(suppression)
-        dialog = ListeningComparisonDialog(
-            audio_data=self.preview_voice_audio
-            if self.preview_voice_audio is not None
-            else self.voice_audio,
-            sample_rate=_processor_sample_rate(owner),
-            current_settings=current_settings,
-            proposed_settings=proposed_eq,
-            current_chain_settings=current_chain,
-            proposed_chain_settings=proposed_chain,
-            parent=self,
-        )
         owner.engine_session.hold_mute("listening_comparison", True)
         try:
-            keep = dialog.exec() == int(QDialog.DialogCode.Accepted)
-            # A window that could not open says so itself; it is not an answer.
-            unavailable = not keep and dialog.load_error is not None
+            answer = self.compare(
+                audio_data=self.preview_voice_audio
+                if self.preview_voice_audio is not None
+                else self.voice_audio,
+                sample_rate=_processor_sample_rate(owner),
+                current_settings=current_settings,
+                proposed_settings=proposed_eq,
+                current_chain_settings=current_chain,
+                proposed_chain_settings=proposed_chain,
+            )
         finally:
             owner.engine_session.hold_mute("listening_comparison", False)
-            dialog.deleteLater()
+        keep = answer is True
+        unavailable = answer is None
         if keep:
             if self._final_comparison_pending:
                 self._finalize_verified_setup()
@@ -1828,8 +1859,7 @@ class VoiceSetupDialog(QDialog):
         configuration = self._configuration
         parent = _find_processor_owner(self.parent())
         if configuration is None or not parent or self.setup_result is None:
-            QMessageBox.critical(
-                self,
+            self.fail(
                 "Error",
                 "The settings could not be applied. Close this window and open it again.",
             )
@@ -1837,8 +1867,7 @@ class VoiceSetupDialog(QDialog):
 
         candidate_error = _candidate_settings_error(self.setup_result)
         if candidate_error is not None:
-            QMessageBox.critical(
-                self,
+            self.fail(
                 "Incomplete Voice Setup",
                 f"{plain_incomplete(candidate_error)} Nothing was changed. "
                 "Record the voice passage again.",
@@ -1852,8 +1881,7 @@ class VoiceSetupDialog(QDialog):
 
         identity_error = self._candidate_identity_error(parent)
         if identity_error is not None:
-            QMessageBox.critical(
-                self,
+            self.fail(
                 "Recording out of date",
                 f"{plain_stale(identity_error)} Nothing was changed.",
             )
@@ -1864,16 +1892,12 @@ class VoiceSetupDialog(QDialog):
             reasons = plain_reasons(diagnostics.get("uncertainty_reasons") or ()) or [
                 "The recording was too weak to check the settings fully."
             ]
-            reply = QMessageBox.question(
-                self,
+            if not self.ask_defaulting_no(
                 "Apply Suggested Settings?",
                 "These settings did not pass every check:\n\n"
                 + "\n".join(f"- {reason}" for reason in reasons)
                 + "\n\nApply them anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
+            ):
                 return
 
         if self._pre_setup_snapshot is None:
@@ -1892,8 +1916,7 @@ class VoiceSetupDialog(QDialog):
                     "Failed to capture the complete voice setup rollback snapshot",
                     exc_info=True,
                 )
-                QMessageBox.critical(
-                    self,
+                self.fail(
                     "Error",
                     "AudioForge could not save your current settings first, so nothing was "
                     f"changed ({error}).",
@@ -1911,7 +1934,7 @@ class VoiceSetupDialog(QDialog):
                 else "The new settings could not be applied, and your previous settings could not "
                 f"be fully put back ({exc}). Press Retake to try again."
             )
-            QMessageBox.critical(self, "Error", message)
+            self.fail("Error", message)
             self._report("failed", ["apply_failed"], [message])
             return
         mode_note = self._mode_switch_note()
@@ -2246,13 +2269,11 @@ class VoiceSetupDialog(QDialog):
             return
         parent = _find_processor_owner(self.parent())
         if parent is None:
-            QMessageBox.critical(
-                self, "Voice Setup", plain_error("Could not find audio processor")
-            )
+            self.fail("Voice Setup", plain_error("Could not find audio processor"))
             return
         identity_error = self._candidate_identity_error(parent)
         if identity_error is not None:
-            QMessageBox.warning(self, "Recording out of date", plain_stale(identity_error))
+            self.warn("Recording out of date", plain_stale(identity_error))
             restored = self._restore_pre_setup_snapshot()
             self._final_comparison_pending = False
             self._refresh_review()
@@ -2283,8 +2304,7 @@ class VoiceSetupDialog(QDialog):
             parent.status_message.showMessage("Verified voice setup applied", 5000)
         metrics_text = verification_summary(result)
         mode_note = self._mode_switch_note()
-        QMessageBox.information(
-            self,
+        self.inform(
             "Voice Setup Verified",
             "Your new settings were checked on a second recording and passed, and you "
             "kept them after the final comparison.\n\n"
@@ -2315,10 +2335,7 @@ class VoiceSetupDialog(QDialog):
             else None
         ) or self.get_selected_curve()
         self.setup_applied.emit(str(target_curve))
-        from .calibration_history import persist_calibration
-
-        persist_calibration(
-            self,
+        self.persist_calibration(
             parent,
             "full_voice_setup",
             str(target_curve),
@@ -2648,24 +2665,15 @@ class VoiceSetupDialog(QDialog):
         self._cleanup_recording_tap()
 
     def _on_retake_clicked(self) -> None:
-        reply = QMessageBox.question(
-            self,
-            "Discard Setup?",
-            "Discard the current setup captures and start over?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
+        if self.ask("Discard Setup?", "Discard the current setup captures and start over?"):
             self._reset_setup_ui()
 
     def _on_cancel_clicked(self) -> None:
         if self.setup_state in {"noise_recording", "voice_recording"}:
-            reply = QMessageBox.question(
-                self,
+            if not self.ask(
                 "Cancel Recording?",
                 "Discard the current capture and return to the main window?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
+            ):
                 return
         self.reject()
 

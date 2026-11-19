@@ -446,6 +446,8 @@ class QuickBridge(QObject):
 
         # Nothing is left to let go of a hold the scene began.
         self._window.eq_state.release_original()
+        # The compact window shows this scene's proxies too.
+        self._window.close_compact_window()
         self.deleteLater()
 
     levelsChanged = Signal()

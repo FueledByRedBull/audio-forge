@@ -12,7 +12,7 @@ from mic_eq import eq_magnitude_response_v2, input_prefilter_response_db
 from mic_eq.analysis.eq_quality import EqInteractionWarning, evaluate_eq_quality
 from mic_eq.config import EQSettings
 from .eq_state import EQ_FILTER_OPTIONS
-from .theme import PALETTE, RADIUS_CONTROL, qcolor
+from .theme import PALETTE, RADIUS_CONTROL, TYPE_TICK_PX, painter_font, qcolor
 
 
 # A band that is off: the native response gives it exactly 0 dB.
@@ -55,19 +55,22 @@ def format_frequency_hz(frequency_hz: float, *, exact: bool = False) -> str:
 class EQGraphGeometry:
     """Size-dependent coordinate mapping and handle hit testing."""
 
-    REGION_STRIP_HEIGHT = 22
+    # Two lines: the region's name, and under it what a change there is heard as.
+    REGION_STRIP_HEIGHT = 40
     REGIONS = (
-        ("SUB BASS", 20.0, 60.0),
-        ("BASS", 60.0, 250.0),
-        ("LOW MIDS", 250.0, 500.0),
-        ("MID RANGE", 500.0, 2000.0),
-        ("UPPER MIDS", 2000.0, 6000.0),
-        ("HIGHS", 6000.0, 20000.0),
+        ("SUB BASS", 20.0, 60.0, "rumble"),
+        ("BASS", 60.0, 250.0, "warmth"),
+        ("LOW MIDS", 250.0, 500.0, "boxiness"),
+        ("MID RANGE", 500.0, 2000.0, "body"),
+        ("UPPER MIDS", 2000.0, 6000.0, "clarity"),
+        ("HIGHS", 6000.0, 20000.0, "air / hiss"),
     )
+    # A narrower plot shows the names alone.
+    HINT_MIN_PLOT_WIDTH = 560.0
 
     MARGIN_LEFT = 40
     MARGIN_RIGHT = 10
-    MARGIN_TOP = 34
+    MARGIN_TOP = 52
     MARGIN_BOTTOM = 20
     FREQUENCY_MIN_HZ = 20.0
     FREQUENCY_MAX_HZ = 20_000.0
@@ -75,7 +78,8 @@ class EQGraphGeometry:
     GAIN_MAX_DB = 12.0
     DISPLAY_DB_MIN = -15.0
     DISPLAY_DB_MAX = 15.0
-    HANDLE_RADIUS = 6.0
+    HANDLE_RADIUS = 5.0
+    SELECTED_HANDLE_RADIUS = 9.0
     HIT_RADIUS = 11.0
     GAIN_FILTER_TYPES = frozenset({"bell", "low_shelf", "high_shelf"})
     # A shelf's own curve is at half its gain at the corner, where its handle
@@ -764,7 +768,12 @@ class EQGraphRenderer:
     AXIS_TOLERANCE_DB = 0.3
     CASING_WIDTH = 3.0
     MUTED_OPACITY = 0.4
-    LABEL_POINT_SIZE = 8
+    LABEL_PX = 12
+    REGION_PX = 12
+    REGION_TRACKING = 0.6
+    HANDLE_NUMBER_PX = 12
+    # A handle that is on sits in a ring of the graph's ground, which keeps it apart from the curves.
+    HANDLE_RING_WIDTH = 2.0
     LABEL_PADDING = (6.0, 3.0)
     READOUT_GAP = 14.0
     CAPTION_INSET = 6.0
@@ -806,34 +815,11 @@ class EQGraphRenderer:
         def freq_to_x(freq: float) -> float:
             return geometry.frequency_to_x(freq, width, height)
 
-        region_font = painter.font()
-        region_font.setPointSize(7)
-        painter.save()
-        painter.setFont(region_font)
-        for name, low_hz, high_hz in geometry.REGIONS:
-            left = int(freq_to_x(low_hz)) + 1
-            right = int(freq_to_x(high_hz)) - 1
-            painter.fillRect(
-                left,
-                0,
-                right - left,
-                geometry.REGION_STRIP_HEIGHT,
-                qcolor(PALETTE.data_surface_raised),
-            )
-            painter.setPen(qcolor(PALETTE.data_text_muted))
-            if painter.fontMetrics().horizontalAdvance(name) < right - left - 4:
-                painter.drawText(
-                    left,
-                    0,
-                    right - left,
-                    geometry.REGION_STRIP_HEIGHT,
-                    Qt.AlignmentFlag.AlignCenter,
-                    name,
-                )
-        painter.restore()
+        cls._paint_regions(painter, width, height)
 
         grid_pen = QPen(qcolor(PALETTE.data_grid), 1)
         zero_pen = QPen(qcolor(PALETTE.border_strong), 1)
+        painter.setFont(painter_font(TYPE_TICK_PX, floor=TYPE_TICK_PX))
         painter.setPen(grid_pen)
         for db in (-12, -6, 0, 6, 12):
             y = db_to_y(db)
@@ -857,7 +843,7 @@ class EQGraphRenderer:
 
         cls._paint_curves(painter, model, width, height)
 
-        caption = cls.caption_layout(painter.font(), model, width, height)
+        caption = cls.caption_layout(model, width, height)
         if caption is not None:
             cls._paint_label(painter, *caption, PALETTE.data_text)
 
@@ -900,36 +886,34 @@ class EQGraphRenderer:
         if not handles:
             painter.restore()
             return
-        number_font = painter.font()
-        number_font.setPointSize(7)
-        number_font.setBold(True)
+        number_font = painter_font(cls.HANDLE_NUMBER_PX, weight=QFont.Weight.Bold)
+        ring = cls.HANDLE_RING_WIDTH
         for index, band in enumerate(model.bands):
             x, y = model.band_handle_position(index, width, height)
             selected = index == model.selected_band_index
             enabled = bool(band[5])
             fill = qcolor(PALETTE.eq_band_colors[index % len(PALETTE.eq_band_colors)])
-            radius = geometry.HANDLE_RADIUS + (2.0 if selected else 0.0)
-            painter.setPen(
-                QPen(qcolor(PALETTE.data_handle_selected), 2.0)
-                if selected
-                else QPen(fill, 1.5)
-            )
-            # An off band is a hollow ring, but a selected one carries a number
-            # that must not land on the curve behind it.
-            painter.setBrush(
-                fill
-                if enabled
-                else qcolor(PALETTE.data_surface)
-                if selected
-                else Qt.BrushStyle.NoBrush
-            )
+            radius = geometry.SELECTED_HANDLE_RADIUS if selected else geometry.HANDLE_RADIUS
+            center = QPointF(x, y)
+            if selected or enabled:
+                # The ring lies outside the fill, so the fill keeps its full radius.
+                painter.setPen(
+                    QPen(qcolor(PALETTE.data_handle_selected if selected else PALETTE.data_surface), ring)
+                )
+                # An off band is drawn hollow, but a selected one carries a number
+                # that must not land on the curve behind it.
+                painter.setBrush(fill if enabled else qcolor(PALETTE.data_surface))
+                painter.drawEllipse(center, radius + ring / 2, radius + ring / 2)
+            else:
+                painter.setPen(QPen(fill, 1.5))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(center, radius, radius)
             box = QRect(
                 int(round(x - radius)),
                 int(round(y - radius)),
                 int(round(radius * 2.0)),
                 int(round(radius * 2.0)),
             )
-            painter.drawEllipse(box)
             if selected:
                 # The number the band editor shows beside the same color.
                 painter.setFont(number_font)
@@ -942,6 +926,45 @@ class EQGraphRenderer:
         painter.restore()
 
     @classmethod
+    def _paint_regions(cls, painter: QPainter, width: int, height: int) -> None:
+        """The strip of named regions over the plot, each with its hint when the plot is wide."""
+        geometry = cls.GEOMETRY
+        strip = geometry.REGION_STRIP_HEIGHT
+        plot_width, _plot_height = geometry.plot_size(width, height)
+        hinted = plot_width >= geometry.HINT_MIN_PLOT_WIDTH
+        name_font = painter_font(
+            cls.REGION_PX, weight=QFont.Weight.DemiBold, tracking=cls.REGION_TRACKING
+        )
+        hint_font = painter_font(cls.REGION_PX)
+        name_room = QFontMetricsF(name_font)
+        hint_room = QFontMetricsF(hint_font)
+        half = strip // 2
+        painter.save()
+        painter.setPen(qcolor(PALETTE.data_text_muted))
+        for name, low_hz, high_hz, hint in geometry.REGIONS:
+            left = int(geometry.frequency_to_x(low_hz, width, height)) + 1
+            right = int(geometry.frequency_to_x(high_hz, width, height)) - 1
+            room = right - left
+            painter.fillRect(left, 0, room, strip, qcolor(PALETTE.data_surface_raised))
+            if name_room.horizontalAdvance(name) >= room - 4:
+                continue
+            with_hint = hinted and hint_room.horizontalAdvance(hint) < room - 4
+            painter.setFont(name_font)
+            if with_hint:
+                painter.drawText(
+                    left, 0, room, half + 1,
+                    Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, name,
+                )
+                painter.setFont(hint_font)
+                painter.drawText(
+                    left, half + 1, room, half - 1,
+                    Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, hint,
+                )
+            else:
+                painter.drawText(left, 0, room, strip, Qt.AlignmentFlag.AlignCenter, name)
+        painter.restore()
+
+    @classmethod
     def _plot_rect(cls, width: float, height: float) -> QRectF:
         geometry = cls.GEOMETRY
         return QRectF(
@@ -951,21 +974,18 @@ class EQGraphRenderer:
         )
 
     @classmethod
-    def _label_font(cls, font: QFont) -> QFont:
-        label = QFont(font)
-        label.setPointSize(cls.LABEL_POINT_SIZE)
-        label.setBold(True)
-        return label
+    def _label_font(cls) -> QFont:
+        return painter_font(cls.LABEL_PX, weight=QFont.Weight.DemiBold)
 
     @classmethod
-    def _label_size(cls, font: QFont, text: str) -> tuple[float, float]:
-        metrics = QFontMetricsF(cls._label_font(font))
+    def _label_size(cls, text: str) -> tuple[float, float]:
+        metrics = QFontMetricsF(cls._label_font())
         pad_x, pad_y = cls.LABEL_PADDING
         return metrics.horizontalAdvance(text) + 2 * pad_x, metrics.height() + 2 * pad_y
 
     @classmethod
     def readout_layout(
-        cls, font: QFont, model: EQGraphModel, width: float, height: float
+        cls, model: EQGraphModel, width: float, height: float
     ) -> tuple[str, QRectF] | None:
         """The readout's text and box: a dragged band's numbers, else the total under the pointer.
 
@@ -987,7 +1007,7 @@ class EQGraphRenderer:
             anchor = QPointF(hover_x, hover_y)
         else:
             return None
-        box_width, box_height = cls._label_size(font, text)
+        box_width, box_height = cls._label_size(text)
         plot = cls._plot_rect(width, height)
         x = anchor.x() + cls.READOUT_GAP
         if x + box_width > plot.right():
@@ -1001,13 +1021,13 @@ class EQGraphRenderer:
 
     @classmethod
     def caption_layout(
-        cls, font: QFont, model: EQGraphModel, width: float, height: float
+        cls, model: EQGraphModel, width: float, height: float
     ) -> tuple[str, QRectF] | None:
         """The "EQ not running" caption in the first plot corner no handle is near."""
         text = model.not_running_label
         if not text:
             return None
-        box_width, box_height = cls._label_size(font, text)
+        box_width, box_height = cls._label_size(text)
         plot = cls._plot_rect(width, height)
         inset = cls.CAPTION_INSET
         left, top = plot.left() + inset, plot.top() + inset
@@ -1039,7 +1059,7 @@ class EQGraphRenderer:
         cls, painter: QPainter, text: str, box: QRectF, color: str
     ) -> None:
         painter.save()
-        painter.setFont(cls._label_font(painter.font()))
+        painter.setFont(cls._label_font())
         painter.setPen(QPen(qcolor(PALETTE.border_strong), 1))
         painter.setBrush(qcolor(PALETTE.data_surface_raised))
         painter.drawRoundedRect(box, 3, 3)
@@ -1051,7 +1071,7 @@ class EQGraphRenderer:
     def _paint_readout(
         cls, painter: QPainter, model: EQGraphModel, width: int, height: int
     ) -> None:
-        layout = cls.readout_layout(painter.font(), model, width, height)
+        layout = cls.readout_layout(model, width, height)
         if layout is None:
             return
         if model.dragging_band_index is None and model.hover is not None:

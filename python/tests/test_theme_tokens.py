@@ -223,3 +223,16 @@ def test_scene_animations_take_their_length_from_the_motion_tokens(name) -> None
     durations = re.findall(r"duration:\s*([^;}\n]+)", (QML_DIR / name).read_text(encoding="utf-8"))
     assert durations
     assert all(re.search(r"\bt\.motion\w*\b", value) for value in durations), durations
+
+
+def test_new_band_colors_keep_band_numbers_readable() -> None:
+    assert all(
+        contrast_ratio(PALETTE.text_on_data_color, color) >= 4.5 for color in PALETTE.eq_band_colors
+    )
+
+
+def test_adjacent_band_colors_differ_in_hue() -> None:
+    hues = [QColor(color).hsvHueF() * 360 for color in PALETTE.eq_band_colors]
+    for left, right in zip(hues, hues[1:]):
+        gap = abs(left - right)
+        assert min(gap, 360 - gap) >= 20, (left, right)

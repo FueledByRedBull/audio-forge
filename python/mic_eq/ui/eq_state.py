@@ -20,6 +20,7 @@ from ..config import (
 from ..config_parts.settings import _default_filter_type
 from .auto_eq_explanation import explain_auto_eq, target_profile_text
 from .calibration_support import format_db, format_percent
+from .overview_presentation import DOT
 from .stage_state import RateLimitedStageState
 
 
@@ -463,4 +464,5 @@ class EQState(RateLimitedStageState[EQSettings]):
             return f"{active} active band" if active == 1 else f"{active} active bands"
 
         correction = self._settings.correction_bands
-        return f"Auto-EQ: {count(correction) if correction is not None else 'none'} | Tone: {count(self._settings.bands)}"
+        auto_eq = count(correction) if correction is not None else "none"
+        return f"Auto-EQ: {auto_eq} {DOT} Tone: {count(self._settings.bands)}"

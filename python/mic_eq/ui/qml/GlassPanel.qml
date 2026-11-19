@@ -14,13 +14,15 @@ Item {
     property rect backdropRect
     readonly property bool blurAllowed: GraphicsInfo.api !== GraphicsInfo.Software
     readonly property bool effectsOn: blurAllowed && !Look.t.reducedTransparency && !Look.t.highContrast
+    // A panel in a scrolling page's flow passes the wheel on, so the page still scrolls under it.
+    property bool holdsWheel: true
 
     // A press, hover or wheel on bare glass stays with the panel instead of reaching what is under it.
     MouseArea {
         anchors.fill: parent
         hoverEnabled: true
         acceptedButtons: Qt.AllButtons
-        onWheel: wheel => wheel.accepted = true
+        onWheel: wheel => wheel.accepted = glass.holdsWheel
     }
     Rectangle {
         anchors.fill: parent

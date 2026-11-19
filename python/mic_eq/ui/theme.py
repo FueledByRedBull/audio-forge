@@ -12,7 +12,7 @@ import os
 import sys
 
 from PySide6.QtCore import QPointF, QRectF, QSize
-from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPen
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QIcon, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QApplication
 
 
@@ -126,17 +126,18 @@ class SemanticPalette:
     glass_shadow: str = "#80000000"
 
     # One color per EQ band, in band order; data color, not accent.
+    # Desaturated, so a band reads as data and not as a state; neighbours differ in hue.
     eq_band_colors: tuple[str, ...] = (
-        "#a78bfa",
-        "#6d8bff",
-        "#f472b6",
-        "#f87171",
-        "#fb923c",
-        "#fbbf24",
-        "#a3e635",
-        "#34d399",
-        "#22d3ee",
-        "#38bdf8",
+        "#a79ae0",
+        "#8aa3dc",
+        "#86b9cc",
+        "#88c4a8",
+        "#a8c98c",
+        "#dad083",
+        "#d9a974",
+        "#d98f86",
+        "#cf8aa8",
+        "#b890cc",
     )
 
     # A level runs blue-grey, then yellow, then red at the hot end, so no step is told
@@ -250,6 +251,8 @@ def contrast_theme_changed() -> bool:
 
 RADIUS_CARD = 10
 RADIUS_CONTROL = 8
+# A recessed well that holds a graph.
+RADIUS_WELL = 14
 UI_FONT_FAMILIES = ("Segoe UI Variable Text", "Segoe UI")
 
 # Text sizes in pixels at the default app font. Text that carries information is never
@@ -257,6 +260,26 @@ UI_FONT_FAMILIES = ("Segoe UI Variable Text", "Segoe UI")
 TYPE_FLOOR_PX = 12
 TYPE_TICK_PX = 11
 TYPE_SCALE_PX = {"caption": 12, "body": 13, "lead": 15, "heading": 18, "title": 20, "display": 28}
+
+
+def painter_font(
+    px: int, *, weight: QFont.Weight | None = None, tracking: float = 0.0, floor: int = TYPE_FLOOR_PX
+) -> QFont:
+    """The app font at ``px`` for a QPainter, following the app font as the scenes' text does.
+
+    The size scales with the app font (9 pt is the scale as written) and never drops below
+    ``floor``; axis ticks pass ``floor=TYPE_TICK_PX``.
+    """
+
+    font = QFont(QGuiApplication.font())
+    point_size = font.pointSizeF()
+    zoom = point_size / 9 if point_size > 0 else 1.0
+    font.setPixelSize(max(floor, round(px * zoom)))
+    if weight is not None:
+        font.setWeight(weight)
+    if tracking:
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, tracking)
+    return font
 
 
 @dataclass(frozen=True)

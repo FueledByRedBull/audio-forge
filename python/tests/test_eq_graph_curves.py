@@ -6,10 +6,11 @@ import re
 
 import pytest
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QFont, QGuiApplication, QImage, QPainter
+from PySide6.QtGui import QGuiApplication, QImage, QPainter
 from PySide6.QtTest import QSignalSpy
 
 from mic_eq import AudioProcessor, eq_magnitude_response_v2, input_prefilter_response_db
+from mic_eq.ui.chain_presentation import PREFILTER_HIGHPASS_HZ, ChainInputs, describe_chain
 from mic_eq.ui.eq_graph import (
     OFF_BAND,
     EQGraphGeometry,
@@ -20,6 +21,9 @@ from mic_eq.ui.eq_graph import (
 from mic_eq.ui.theme import PALETTE, qcolor
 
 WIDTH, HEIGHT = 900, 300
+# Where the plot starts under the region strip, and how tall it is.
+PLOT_TOP = EQGraphGeometry.MARGIN_TOP
+PLOT_HEIGHT = HEIGHT - EQGraphGeometry.MARGIN_TOP - EQGraphGeometry.MARGIN_BOTTOM
 FLAT = [("bell", 1000.0, 0.0, 1.0, 12, True)] * 10
 # type, Hz, dB, Q, slope, on
 TONE = [
@@ -90,15 +94,6 @@ def lightness(image: QImage, x: int, y: int) -> int:
     return image.pixelColor(x, y).lightness()
 
 
-def warmth(image: QImage, x: int, ys: range) -> int:
-    """How orange the warmest pixel of a few columns is: red above blue."""
-    return max(
-        image.pixelColor(column, y).red() - image.pixelColor(column, y).blue()
-        for column in range(x - 3, x + 4)
-        for y in ys
-    )
-
-
 def apart(pixel, color: str) -> int:
     target = qcolor(color)
     return (
@@ -115,6 +110,24 @@ def distance_to(image: QImage, x: int, ys: range, color: str) -> int:
         for column in range(x - 3, x + 4)
         for y in ys
     )
+
+
+def band_tone(image: QImage, x: int, ys: range, color: str) -> int:
+    """How bright the brightest pixel of a few columns in a band's hue is, or 0 with none.
+
+    A pixel counts when its hue is within 25 degrees of the band's and its saturation is at
+    least 40, so the white total, the grey grid and the other bands' hues do not.
+    """
+    hue = qcolor(color).hsvHue()
+    tones = [
+        pixel.value()
+        for column in range(x - 3, x + 4)
+        for y in ys
+        if (pixel := image.pixelColor(column, y)).hsvSaturation() >= 40
+        and pixel.hsvHue() >= 0
+        and min(abs(pixel.hsvHue() - hue), 360 - abs(pixel.hsvHue() - hue)) <= 25
+    ]
+    return max(tones, default=0)
 
 
 def segment_middle(model: EQGraphModel, index: int) -> int:
@@ -272,14 +285,15 @@ def test_the_eq_switch_mutes_the_bands_instead_of_hiding_them(qapp):
     tone = with_band(tone, 1, frequency_hz=1300.0, gain_db=-6.0)
     column = x_at(850.0)
     plot = range(EQGraphGeometry.MARGIN_TOP + 4, HEIGHT - EQGraphGeometry.MARGIN_BOTTOM)
+    color = PALETTE.eq_band_colors[4]
 
     on = paint(model_with(tone))
     muted = paint(model_with(tone, enabled=False))
     gone = paint(model_with(with_band(tone, 4, enabled=False), enabled=False))
 
-    assert warmth(on, column, plot) > 150
-    assert 30 < warmth(muted, column, plot) < 150
-    assert warmth(gone, column, plot) < 15
+    assert band_tone(on, column, plot, color) > 150
+    assert 50 < band_tone(muted, column, plot, color) < 150
+    assert band_tone(gone, column, plot, color) < 15
 
 
 def test_the_total_is_drawn_where_the_model_says(qapp):
@@ -318,22 +332,22 @@ def test_an_enabled_band_draws_its_own_color_and_an_off_band_does_not(qapp):
     off = paint(model_with(with_band(tone, 4, enabled=False)))
 
     assert distance_to(on, x, plot, color) < 36
-    assert distance_to(off, x, plot, color) > 150
+    assert band_tone(off, x, plot, color) < 15
 
 
 def test_the_selected_band_is_drawn_on_top_of_its_neighbours(qapp):
-    # Bands 3 and 4 are the same curve, and band 0 cancels both from the total.
-    tone = with_band(FLAT, 3, frequency_hz=1200.0, gain_db=6.0)
-    tone = with_band(tone, 4, frequency_hz=1200.0, gain_db=6.0)
+    # Bands 2 and 6 are the same curve, and band 0 cancels both from the total.
+    tone = with_band(FLAT, 2, frequency_hz=1200.0, gain_db=6.0)
+    tone = with_band(tone, 6, frequency_hz=1200.0, gain_db=6.0)
     tone = with_band(tone, 0, frequency_hz=1200.0, gain_db=-12.0)
     x = x_at(850.0)
     plot = range(EQGraphGeometry.MARGIN_TOP + 4, HEIGHT - EQGraphGeometry.MARGIN_BOTTOM)
 
-    for selected in (3, 4):
+    for selected in (2, 6):
         model = model_with(tone)
         model.select_band(selected)
         image = paint(model)
-        other = 7 - selected
+        other = 8 - selected
         winner = distance_to(image, x, plot, PALETTE.eq_band_colors[selected])
         loser = distance_to(image, x, plot, PALETTE.eq_band_colors[other])
         assert winner < 36 and winner + 40 < loser, selected
@@ -400,11 +414,13 @@ def test_the_selected_handle_prints_its_number(qapp):
     model = model_with(tone)
     x, y = (round(v) for v in EQGraphGeometry.band_handle_position(model.bands, 4, WIDTH, HEIGHT))
 
+    # Within the fill of a handle that is not selected; its ring of the ground lies outside.
     def dark(image):
         return sum(
             image.pixelColor(x + dx, y + dy).lightness() < 90
             for dx in range(-4, 5)
             for dy in range(-4, 5)
+            if dx * dx + dy * dy <= 16
         )
 
     plain = dark(paint(model))
@@ -521,7 +537,7 @@ def test_a_gain_handle_follows_the_pointer_and_the_gain_moves_by_the_ratio(
         with_band(FLAT, 4, filter_type=filter_type, frequency_hz=3000.0, gain_db=3.0, q=0.7)
     )
     x, y = model.band_handle_position(4, WIDTH, HEIGHT)
-    pixels_per_db = (HEIGHT - 54) / 30.0
+    pixels_per_db = PLOT_HEIGHT / 30.0
 
     assert model.mouse_press(x, y, WIDTH, HEIGHT)
     assert model.mouse_move(x, y - 20, WIDTH, HEIGHT)
@@ -539,7 +555,7 @@ def test_a_shelf_handle_follows_the_pointer_at_any_q(qapp, filter_type, q, trave
     )
     x, y = model.band_handle_position(4, WIDTH, HEIGHT)
     own = model.band_curves_db[4][model.freq_points.index(3000.0)]
-    pixels_per_db = (HEIGHT - 54) / 30.0
+    pixels_per_db = PLOT_HEIGHT / 30.0
 
     assert own == pytest.approx(1.5, abs=1e-6)
     assert model.mouse_press(x, y, WIDTH, HEIGHT)
@@ -642,13 +658,13 @@ def test_exact_frequencies_never_hide_a_hertz_in_the_kilohertz_rounding():
 
 
 def readout_of(model):
-    layout = EQGraphRenderer.readout_layout(QFont(), model, WIDTH, HEIGHT)
+    layout = EQGraphRenderer.readout_layout(model, WIDTH, HEIGHT)
     assert layout is not None
     return layout
 
 
 def caption_of(model):
-    layout = EQGraphRenderer.caption_layout(QFont(), model, WIDTH, HEIGHT)
+    layout = EQGraphRenderer.caption_layout(model, WIDTH, HEIGHT)
     assert layout is not None
     return layout
 
@@ -737,7 +753,7 @@ def test_leaving_the_graph_or_the_plot_removes_the_readout(qapp):
         model.set_hover(400, 150, WIDTH, HEIGHT)
         model.set_hover(x, y, WIDTH, HEIGHT)
         assert model.hover is None
-        assert EQGraphRenderer.readout_layout(QFont(), model, WIDTH, HEIGHT) is None
+        assert EQGraphRenderer.readout_layout(model, WIDTH, HEIGHT) is None
     model.set_hover(400, 150, WIDTH, HEIGHT)
     model.clear_hover()
     assert model.hover is None and hovered.count() > 2
@@ -766,7 +782,7 @@ def test_dragging_a_band_reads_that_bands_numbers_instead(qapp):
 
 @pytest.mark.parametrize(
     ("x", "y"),
-    [(42, 36), (WIDTH - 12, 36), (42, HEIGHT - 22), (WIDTH - 12, HEIGHT - 22), (450, 150)],
+    [(42, PLOT_TOP + 2), (WIDTH - 12, PLOT_TOP + 2), (42, HEIGHT - 22), (WIDTH - 12, HEIGHT - 22), (450, 150)],
 )
 def test_the_readout_stays_in_the_plot_and_off_the_pointer(qapp, x, y):
     model = model_with(FLAT)
@@ -887,6 +903,7 @@ def test_a_graph_that_is_not_running_is_muted_and_captioned(qapp):
     tone = with_band(tone, 1, frequency_hz=1300.0, gain_db=-6.0)
     column = x_at(850.0)
     plot = range(EQGraphGeometry.MARGIN_TOP + 4, HEIGHT - EQGraphGeometry.MARGIN_BOTTOM)
+    color = PALETTE.eq_band_colors[4]
     model = model_with(tone)
     running = paint(model)
     model.set_engine_mode("bypass")
@@ -901,13 +918,13 @@ def test_a_graph_that_is_not_running_is_muted_and_captioned(qapp):
     )
 
     assert text == "EQ not running: Bypass"
-    assert warmth(running, column, plot) > 150
-    assert 30 < warmth(stopped, column, plot) < 150
+    assert band_tone(running, column, plot, color) > 150
+    assert 50 < band_tone(stopped, column, plot, color) < 150
     assert inked > 40
 
 
 def test_the_caption_has_no_place_in_a_running_graph(qapp):
-    assert EQGraphRenderer.caption_layout(QFont(), model_with(FLAT), WIDTH, HEIGHT) is None
+    assert EQGraphRenderer.caption_layout(model_with(FLAT), WIDTH, HEIGHT) is None
 
 
 def test_the_caption_keeps_off_the_handles(qapp):
@@ -989,3 +1006,71 @@ def test_a_double_click_asks_for_the_band_under_the_pointer_only(qapp):
     assert requests.count() == 0
     assert model.request_band_reset(x + 3, y + 3, WIDTH, HEIGHT)
     assert requests.at(0)[0] == 4 and model.selected_band_index == 4
+
+
+class TextRecorder(QPainter):
+    """A painter that keeps each text it draws with the pixel size its font asks for."""
+
+    def __init__(self, image: QImage) -> None:
+        super().__init__(image)
+        self.texts: list[tuple[str, int]] = []
+
+    def drawText(self, *args) -> None:  # noqa: N802 - Qt's name
+        self.texts.append((str(args[-1]), self.font().pixelSize()))
+        super().drawText(*args)
+
+
+def painted_texts(model: EQGraphModel, width: int = WIDTH, height: int = HEIGHT) -> list[tuple[str, int]]:
+    image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(0)
+    painter = TextRecorder(image)
+    EQGraphRenderer.paint(painter, model, width, height)
+    painter.end()
+    return painter.texts
+
+
+def test_painted_eq_text_meets_the_type_floor(qapp):
+    model = model_with(TONE, AUTO_EQ)
+    model.select_band(4)
+    model.set_hover(x_at(1250.0), 150, WIDTH, HEIGHT)
+    texts = painted_texts(model)
+    model.set_engine_mode("bypass")
+    texts += painted_texts(model)
+
+    tick_texts = {"-12", "-6", "0 dB", "+6", "+12", "20", "50", "100", "200", "500", "1k", "2k", "5k", "10k", "20k"}
+    ticks = [size for text, size in texts if text in tick_texts]
+    others = [(text, size) for text, size in texts if text not in tick_texts]
+    assert ticks and others
+    assert min(ticks) >= 11
+    # Region names and hints, the band number, the readout and the caption.
+    assert {"MID RANGE", "body", "5", "EQ not running: Bypass"} <= {text for text, _size in others}
+    assert all(size >= 12 for _text, size in others), others
+
+
+def test_region_names_stay_uppercase_and_carry_their_hint_when_wide(qapp):
+    regions = EQGraphGeometry.REGIONS
+    names = [name for name, _low, _high, _hint in regions]
+    hints = [hint for _name, _low, _high, hint in regions]
+    assert all(name == name.upper() for name in names)
+    assert hints == ["rumble", "warmth", "boxiness", "body", "clarity", "air / hiss"]
+
+    wide = {text for text, _size in painted_texts(model_with(FLAT), 1400)}
+    assert set(names) <= wide and set(hints) <= wide
+    plot_edge = EQGraphGeometry.MARGIN_LEFT + EQGraphGeometry.MARGIN_RIGHT
+    at_threshold = {
+        text
+        for text, _size in painted_texts(model_with(FLAT), int(EQGraphGeometry.HINT_MIN_PLOT_WIDTH) + plot_edge)
+    }
+    assert set(hints) & at_threshold
+    # A hint goes with its name: none shows under a name that does not fit.
+    assert all(name in at_threshold for name, hint in zip(names, hints) if hint in at_threshold)
+    narrow = {text for text, _size in painted_texts(model_with(FLAT), 480)}
+    assert not set(hints) & narrow
+    assert "BASS" in narrow
+
+
+def test_the_high_pass_label_matches_the_prefilter(qapp):
+    response = input_prefilter_response_db([float(PREFILTER_HIGHPASS_HZ)], "off", 48_000.0)[0]
+    # The corner of the high-pass, with the DC blocker's share on top of its -3 dB.
+    assert -4.0 < response < -3.0
+    assert describe_chain(ChainInputs())["cleanup"].line == f"HP {PREFILTER_HIGHPASS_HZ} Hz"

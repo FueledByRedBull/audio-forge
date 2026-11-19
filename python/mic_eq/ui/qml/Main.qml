@@ -15,8 +15,6 @@ Rectangle {
     readonly property var t: Look.t
     readonly property bool hasIcons: Look.hasIcons
     readonly property bool wide: width >= 1200
-    // The band editor needs more room than the rest of the page for two columns.
-    readonly property bool roomy: width >= 1400
     readonly property bool running: m.top.stop.enabled
     readonly property bool pressing: pointer.active
     readonly property int fsCaption: Look.fsCaption
@@ -596,6 +594,8 @@ Rectangle {
         property int leftInset: 8
         property int rightInset: 16
         property string scrollName: "Page scroll bar"
+        // The page's ground behind its content; it stays put while the content scrolls.
+        property color ground: "transparent"
         contentHeight: column.implicitHeight + 24
         boundsBehavior: Flickable.StopAtBounds
         // A mouse drag belongs to the controls; wheel, scroll bar and touch still scroll.
@@ -623,6 +623,13 @@ Rectangle {
                 radius: 3
                 color: bar.pressed || bar.hovered ? root.t.text_muted : root.t.control_edge
             }
+        }
+        Rectangle {
+            parent: page
+            anchors.fill: parent
+            z: -1
+            radius: root.t.radiusCard
+            color: page.ground
         }
         ColumnLayout {
             id: column
@@ -1103,8 +1110,9 @@ Rectangle {
             + Math.max(latencyFigure.implicitWidth, latencyCaption.implicitWidth)
             + 1 + transport.implicitWidth + reasonWidth
         readonly property bool full: fullWidth <= width
-        // Measured on one line, so the reason's own wrapping cannot feed back into the layout.
-        readonly property real reasonWidth: startBlocked.visible ? Math.ceil(reasonMetrics.width) : 0
+        // Measured on one line, so the reason's own wrapping cannot feed back into the layout. The
+        // laid-out line can run a pixel past the metric, which would wrap its last word.
+        readonly property real reasonWidth: startBlocked.visible ? Math.ceil(reasonMetrics.width) + 2 : 0
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
@@ -1218,9 +1226,9 @@ Rectangle {
             Item {
                 id: startReason
                 Layout.fillWidth: true
-                // In a narrow window the reason wraps onto two lines rather than vanish; cut short
-                // with large text, it is whole in the tooltip.
-                Layout.minimumWidth: Math.min(toolbar.reasonWidth, 80)
+                // A row that fits keeps the reason on one line. In a narrow window it wraps onto two
+                // lines rather than vanish; cut short with large text, it is whole in the tooltip.
+                Layout.minimumWidth: toolbar.full ? toolbar.reasonWidth : Math.min(toolbar.reasonWidth, 80)
                 implicitWidth: toolbar.reasonWidth
                 implicitHeight: startBlocked.height
                 StatusText {
@@ -1851,51 +1859,158 @@ Rectangle {
             Page {
                 id: equalizerPage
                 objectName: "equalizerPage"
-                Surface {
-                    id: eqCard
-                    readonly property var eq: root.m.eq
-                    readonly property var band: eq.bands[eq.band.index]
-                    readonly property bool calibrated: eq.diagnostics.data.calibrated
+                readonly property var eq: root.m.eq
+                readonly property int bandIndex: eq.band.index
+                readonly property var band: eq.bands[bandIndex]
+                readonly property color bandColor: root.t.bandColors[bandIndex]
+                readonly property bool calibrated: eq.diagnostics.data.calibrated
+                ground: root.t.pane_surface
+                onBandIndexChanged: connector.follow()
+
+                // The page header: the switch, the title over what each layer holds, then the actions.
+                RowLayout {
+                    spacing: 12
                     Layout.fillWidth: true
-                    CardHeader {
-                        card: eqCard.eq
+                    Layout.topMargin: 4
+                    Toggle { proxy: equalizerPage.eq.toggle; Layout.alignment: Qt.AlignTop; Layout.topMargin: 4 }
+                    ColumnLayout {
+                        spacing: 2
                         Layout.fillWidth: true
-                        Caption { text: eqCard.eq.layers.text; visible: root.wide }
-                        Btn { proxy: eqCard.eq.tone }
-                        IconBtn { proxy: eqCard.eq.menu; glyph: root.m.glyphs.more; label: "More" }
+                        RowLayout {
+                            spacing: 8
+                            Text {
+                                objectName: "equalizerTitle"
+                                textFormat: Text.PlainText
+                                text: "Equalizer"
+                                color: root.t.text_primary
+                                font.pixelSize: root.fsTitle
+                                font.weight: Font.DemiBold
+                            }
+                            // An EQ that is off keeps its controls at full strength; this says why nothing happens.
+                            Caption { text: "Off"; visible: !equalizerPage.eq.toggle.checked }
+                            IconBtn {
+                                glyph: root.m.glyphs.help
+                                hint: equalizerPage.eq.help
+                                label: "?"
+                                onClicked: root.showTip(this, hint, true)
+                                onActiveFocusChanged: if (!activeFocus) root.hideTip(this)
+                                Keys.onEscapePressed: root.hideTip(this)
+                                Accessible.name: "Help for " + equalizerPage.eq.title.toLowerCase()
+                                Accessible.description: hint
+                            }
+                        }
+                        Caption {
+                            objectName: "equalizerLayers"
+                            text: equalizerPage.eq.layers.text
+                            tip: truncated ? text : ""
+                            Layout.fillWidth: true
+                        }
                     }
+                    Btn { proxy: equalizerPage.eq.tone; Layout.alignment: Qt.AlignTop }
+                    Btn { proxy: root.m.presets.autoEq; Layout.alignment: Qt.AlignTop }
+                    IconBtn {
+                        proxy: equalizerPage.eq.menu
+                        glyph: root.m.glyphs.more
+                        label: "More"
+                        Layout.alignment: Qt.AlignTop
+                    }
+                }
+
+                // The graph in its well; the connector runs from the band's handle down to its panel.
+                Rectangle {
+                    id: graphWell
+                    objectName: "eqGraphWell"
+                    readonly property int inset: 6
+                    implicitHeight: eqGraph.implicitHeight + 2 * inset
+                    radius: root.t.radiusWell
+                    color: root.t.data_surface
+                    border.color: root.t.border
+                    Layout.fillWidth: true
                     EQGraphItem {
                         id: eqGraph
                         objectName: "eqGraph"
-                        graph: eqCard.eq.curve
-                        Layout.fillWidth: true
-                        implicitHeight: 300
+                        graph: equalizerPage.eq.curve
+                        x: graphWell.inset
+                        y: graphWell.inset
+                        width: graphWell.width - 2 * graphWell.inset
+                        height: graphWell.height - 2 * graphWell.inset
+                        implicitHeight: 320
                         activeFocusOnTab: true
                         Accessible.role: Accessible.Graphic
                         Accessible.name: "Equalizer graph"
                         Accessible.description: eqGraph.graph ? eqGraph.graph.accessibleDescription : ""
+                        onHandlesChanged: connector.follow()
                         FocusRing { visible: parent.activeFocus }
                     }
-                    Caption {
-                        text: eqCard.eq.layers.text
-                        visible: !root.wide
-                        Layout.fillWidth: true
+                    Rectangle {
+                        id: connector
+                        property real handleX: 0
+                        property real handleBottom: 0
+                        objectName: "bandConnector"
+                        function follow() {
+                            handleX = eqGraph.handleX(equalizerPage.bandIndex)
+                            handleBottom = eqGraph.handleBottom(equalizerPage.bandIndex)
+                        }
+                        x: eqGraph.x + Math.round(handleX)
+                        y: eqGraph.y + handleBottom
+                        width: 1
+                        height: Math.max(0, bandPanel.y - graphWell.y - y)
+                        color: equalizerPage.bandColor
+                        Accessible.ignored: true
+                        Component.onCompleted: follow()
                     }
-                    Chip {
-                        proxy: eqCard.eq.diagnostics
-                        visible: proxy.shown && eqCard.calibrated
-                        Layout.fillWidth: true
-                    }
-                    // One row when there is room, two when the window is narrow.
-                    GridLayout {
-                        columns: root.roomy ? 2 : 1
-                        columnSpacing: 12
-                        rowSpacing: 10
-                        Layout.fillWidth: true
+                }
+
+                // The selected band, docked under the graph in the page's flow; it never covers the graph.
+                GlassPanel {
+                    id: bandPanel
+                    objectName: "bandPanel"
+                    holdsWheel: false
+                    implicitHeight: panelColumn.implicitHeight + 2 * 16
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: 760
+                    Layout.alignment: Qt.AlignHCenter
+                    Accessible.role: Accessible.Grouping
+                    Accessible.name: "EQ band " + (equalizerPage.bandIndex + 1)
+                    ColumnLayout {
+                        id: panelColumn
+                        x: 20
+                        y: 16
+                        width: parent.width - 40
+                        spacing: 12
                         RowLayout {
-                            objectName: "bandEditorRow"
-                            spacing: 12
+                            spacing: 10
                             Layout.fillWidth: true
+                            // The band's number on its colour, as the graph prints it on the selected handle.
+                            Rectangle {
+                                implicitWidth: 22
+                                implicitHeight: 22
+                                radius: 11
+                                color: equalizerPage.bandColor
+                                Accessible.ignored: true
+                                Text {
+                                    textFormat: Text.PlainText
+                                    anchors.centerIn: parent
+                                    text: equalizerPage.bandIndex + 1
+                                    color: root.t.text_on_data_color
+                                    font.pixelSize: root.fsCaption
+                                    font.weight: Font.Bold
+                                }
+                            }
+                            Text {
+                                objectName: "bandTitle"
+                                textFormat: Text.PlainText
+                                text: "Band " + (equalizerPage.bandIndex + 1) + " \u00b7 " + equalizerPage.band.type.text
+                                color: root.t.text_primary
+                                font.pixelSize: root.fsLead
+                                font.weight: Font.DemiBold
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                            Caption {
+                                text: equalizerPage.band.frequencyLabel.text
+                                tip: equalizerPage.band.frequencyLabel.toolTip
+                            }
                             IconBtn {
                                 glyph: root.m.glyphs.previous
                                 label: "Prev"
@@ -1908,56 +2023,109 @@ Rectangle {
                                 hint: "Next EQ band"
                                 onClicked: root.ui.stepBand(1)
                             }
-                            // The band the editor shows; the graph prints this number on its handle once selected.
-                            Rectangle {
-                                implicitWidth: 20
-                                implicitHeight: 20
-                                radius: 10
-                                color: root.t.bandColors[eqCard.eq.band.index]
-                                Text {
-                                    textFormat: Text.PlainText
-                                    anchors.centerIn: parent
-                                    text: eqCard.eq.band.index + 1
-                                    color: root.t.text_on_data_color
-                                    font.pixelSize: root.fsCaption
-                                    font.weight: Font.DemiBold
+                            Toggle { proxy: equalizerPage.band.enabled }
+                        }
+                        // Two rows: the panel's width leaves the gain fader too little room beside the fields.
+                        ColumnLayout {
+                            spacing: 10
+                            Layout.fillWidth: true
+                            RowLayout {
+                                objectName: "bandEditorRow"
+                                spacing: 12
+                                Layout.fillWidth: true
+                                Picker { proxy: equalizerPage.band.type; implicitWidth: 130 }
+                                Caption { text: "Gain" }
+                                Fader { proxy: equalizerPage.band.gain; unit: 0.1; Layout.fillWidth: true }
+                                ValueBox {
+                                    objectName: "gainBox"
+                                    proxy: equalizerPage.band.gain
+                                    display: equalizerPage.band.gainLabel
+                                    implicitWidth: 64
                                 }
                             }
-                            Text {
-                                textFormat: Text.PlainText
-                                text: eqCard.band.frequencyLabel.text
-                                color: root.t.text_primary
-                                font.pixelSize: root.fsLead
-                                font.weight: Font.DemiBold
-                                Layout.preferredWidth: 58
-                            }
-                            Toggle { proxy: eqCard.band.enabled }
-                            Picker { proxy: eqCard.band.type; implicitWidth: 130 }
-                            Caption { text: "Gain" }
-                            Fader { proxy: eqCard.band.gain; unit: 0.1; Layout.fillWidth: true }
-                            ValueBox {
-                                objectName: "gainBox"
-                                proxy: eqCard.band.gain
-                                display: eqCard.band.gainLabel
-                                implicitWidth: 64
+                            RowLayout {
+                                spacing: 12
+                                Caption { text: "Freq" }
+                                ValueBox { proxy: equalizerPage.band.frequency; implicitWidth: 84 }
+                                Caption { text: "Width (Q)"; visible: equalizerPage.band.q.shown }
+                                ValueBox {
+                                    proxy: equalizerPage.band.q
+                                    visible: proxy.shown
+                                    opacity: proxy.enabled ? 1 : 0.45
+                                    implicitWidth: 56
+                                }
+                                Caption { text: "Slope"; visible: equalizerPage.band.slope.shown }
+                                Picker {
+                                    proxy: equalizerPage.band.slope
+                                    visible: proxy.shown
+                                    implicitWidth: 120
+                                }
                             }
                         }
+                        Rectangle {
+                            implicitHeight: 1
+                            color: root.t.glass_edge
+                            Layout.fillWidth: true
+                        }
+                        // What calibration found, a mark beside the words, then how each line is drawn.
                         RowLayout {
-                            spacing: 12
-                            Caption { text: "Freq" }
-                            ValueBox { proxy: eqCard.band.frequency; implicitWidth: 84 }
-                            Caption { text: "Q"; visible: eqCard.band.q.shown }
-                            ValueBox {
-                                proxy: eqCard.band.q
-                                visible: proxy.shown
-                                opacity: proxy.enabled ? 1 : 0.45
-                                implicitWidth: 56
+                            spacing: 8
+                            visible: equalizerPage.eq.diagnostics.shown && equalizerPage.calibrated
+                            Layout.fillWidth: true
+                            Text {
+                                objectName: "diagnosticsMark"
+                                readonly property string state_: equalizerPage.eq.diagnostics.state
+                                textFormat: Text.PlainText
+                                text: ({ ok: "\u2713", warn: "!", bad: "\u00d7" })[state_] ?? "\u2013"
+                                color: root.t["status_" + state_ + "_text"] ?? root.t.text_muted
+                                font.pixelSize: root.fsBody
+                                font.weight: Font.Bold
+                                Accessible.ignored: true
                             }
-                            Caption { text: "Slope"; visible: eqCard.band.slope.shown }
-                            Picker {
-                                proxy: eqCard.band.slope
-                                visible: proxy.shown
-                                implicitWidth: 120
+                            Chip { proxy: equalizerPage.eq.diagnostics; Layout.fillWidth: true }
+                        }
+                        Flow {
+                            spacing: 20
+                            Layout.fillWidth: true
+                            Repeater {
+                                model: equalizerPage.eq.legend
+                                delegate: Row {
+                                    id: entry
+                                    objectName: "legendEntry"
+                                    required property var modelData
+                                    readonly property string lineStyle: modelData.lineStyle
+                                    readonly property string text: modelData.text
+                                    readonly property color sample: ({
+                                        solid: root.t.data_curve,
+                                        dashed: root.t.data_text,
+                                        dotted: root.t.data_text_muted,
+                                        dot: equalizerPage.bandColor
+                                    })[lineStyle]
+                                    spacing: 7
+                                    // The line drawn as the graph draws it: whole, in dashes, in dots, or a handle's dot.
+                                    Item {
+                                        width: 16
+                                        height: entryText.height
+                                        Row {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            spacing: 2
+                                            Repeater {
+                                                model: ({ solid: 1, dashed: 3, dotted: 4, dot: 1 })[entry.lineStyle]
+                                                delegate: Rectangle {
+                                                    width: ({ solid: 16, dashed: 4, dotted: 2, dot: 8 })[entry.lineStyle]
+                                                    height: entry.lineStyle === "dot" ? 8 : 2
+                                                    radius: entry.lineStyle === "dot" ? 4 : entry.lineStyle === "dotted" ? 1 : 0
+                                                    color: entry.sample
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Caption {
+                                        id: entryText
+                                        text: entry.text
+                                        font.pixelSize: root.fsCaption
+                                    }
+                                }
                             }
                         }
                     }

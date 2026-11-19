@@ -2175,9 +2175,17 @@ def test_both_actions_are_named_for_assistive_technology(engine_window, qapp) ->
         assert scene.description(_scene_item(window, "overviewChooseMicrophone")) == (
             window.choose_microphone_btn_action.toolTip()
         )
-        assert scene.name(_scene_item(window, "overviewCallersNotice")) == (
-            "Callers hear nothing until the audio is back."
-        )
+        from PySide6.QtGui import QAccessible
+
+        sentence = "Callers hear nothing until the audio is back."
+        root = window.centralWidget().rootObject()
+        nodes = [
+            iface for iface in (QAccessible.queryAccessibleInterface(item) for item in _items(root))
+            if iface is not None and iface.text(QAccessible.Text.Name) == sentence
+        ]
+        assert len(nodes) == 1  # read once, not again for the text inside
+        assert nodes[0].object() is _scene_item(window, "overviewCallersNotice")
+        assert nodes[0].role() == QAccessible.Role.AlertMessage
 
 
 def test_the_mute_keeps_its_violet_while_the_callers_notice_shows(engine_window, qapp) -> None:

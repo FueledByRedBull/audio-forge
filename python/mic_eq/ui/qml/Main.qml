@@ -1554,6 +1554,7 @@ Rectangle {
                         radius: root.t.radiusControl
                         color: root.t.callers_affected_fill
                         border.color: root.t.callers_affected_edge
+                        Accessible.role: Accessible.AlertMessage
                         Accessible.name: callersNoticeText.text
                         Text {
                             id: callersNoticeText
@@ -1566,8 +1567,7 @@ Rectangle {
                             color: root.t.callers_affected_text
                             font.pixelSize: root.fsBody
                             wrapMode: Text.Wrap
-                            Accessible.role: Accessible.AlertMessage
-                            Accessible.name: text
+                            Accessible.ignored: true
                         }
                     }
                     // Callers hear nothing here already, so neither action asks for confirmation.

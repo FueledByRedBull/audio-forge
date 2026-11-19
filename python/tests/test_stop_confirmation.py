@@ -177,7 +177,7 @@ def test_audio_that_stopped_by_itself_while_the_box_was_open_is_not_stopped_twic
     assert engine.calls == [] and not engine.running
 
 
-def test_a_retry_pending_after_the_box_opened_is_cancelled_once(live):
+def test_a_retry_pending_after_the_box_opened_is_left_pending_and_nothing_is_stopped(live):
     window, engine, ask = live
 
     def device_lost_then_confirmed() -> bool:
@@ -189,7 +189,74 @@ def test_a_retry_pending_after_the_box_opened_is_cancelled_once(live):
 
     _button(window)
 
-    assert engine.calls == ["stop"] and not engine.restart_requested
+    assert engine.calls == [] and engine.restart_requested
+
+
+def test_a_muted_output_stops_without_asking(live):
+    window, engine, ask = live
+    window.engine_session.set_user_muted(True)
+
+    _button(window)
+
+    ask.assert_not_called()
+    assert engine.calls == ["mute", "stop"]
+
+
+def test_only_a_button_or_menu_stop_asks(live):
+    window, engine, ask = live
+
+    window._request_stop("window")
+
+    ask.assert_not_called()
+    assert engine.calls == ["stop"]
+
+
+def test_ctrl_period_pressed_on_the_shown_window_reaches_the_question(live, qapp):
+    window, engine, ask = live
+    window.show()
+    window.activateWindow()
+    assert QTest.qWaitForWindowActive(window)
+
+    QTest.keyClick(window, Qt.Key.Key_Period, Qt.KeyboardModifier.ControlModifier)
+
+    ask.assert_called_once_with()
+    assert engine.calls == ["stop"]
+
+
+def test_the_quick_shell_stop_button_reaches_the_question(live, qapp):
+    window, engine, ask = live
+    ask.return_value = False
+    stop = window.quick_bridge.model["top"]["stop"]
+
+    stop.click()
+
+    ask.assert_called_once_with()
+    assert engine.calls == [] and engine.running
+
+
+def test_the_box_closes_as_keep_running_when_the_audio_stops_on_its_own(
+    isolated_main_window, monkeypatch
+):
+    window: Any = isolated_main_window
+    engine = FakeEngine()
+    window.processor = window.engine_session.processor = engine
+    engine.running = True
+    window._sync_processing_controls()
+    monkeypatch.setattr(MainWindow, "_confirm_stop", _CONFIRM_STOP)
+    closed: list[bool] = []
+
+    def exec_(box: QMessageBox) -> int:
+        box.show()
+        window.engine_session.request_stop("own_microphone")  # the audio stops while it is open
+        closed.append(not box.isVisible())
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", exec_)
+
+    _button(window)
+
+    assert closed == [True]
+    assert engine.calls == ["stop"] and window._stop_box is None
 
 
 @pytest.fixture

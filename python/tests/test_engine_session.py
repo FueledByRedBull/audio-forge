@@ -740,6 +740,20 @@ def test_quit_asks_only_while_live_audio_would_stop(rig):
     assert asked == [True]
 
 
+def test_a_stop_asks_only_for_live_audio_callers_can_hear(rig):
+    assert not rig.session.stop_needs_confirm()  # stopped
+    rig.running()
+    assert rig.session.stop_needs_confirm()
+    rig.session.set_user_muted(True)
+    assert not rig.session.stop_needs_confirm()  # muted: callers already hear nothing
+    rig.session.set_user_muted(False)
+    rig.session.hold_mute("setup", True)
+    assert not rig.session.stop_needs_confirm()
+    rig.session.hold_mute("setup", False)
+    rig.session._busy = "stop"
+    assert not rig.session.stop_needs_confirm()  # a call is out
+
+
 def test_shutdown_drops_late_answers_and_stops_only_beside_no_call(rig):
     rig.running()
     rig.session.request_stop("button")

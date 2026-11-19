@@ -27,8 +27,17 @@ from mic_eq.ui.engine_session import (
     StartFailed,
     StopFailed,
     Stopped,
+    borrow_audio_for,
 )
-from engine_fakes import DESTINATION, MIC, FakeEngine, FakePreparation, ManualClock, ManualTasks
+from engine_fakes import (
+    DESTINATION,
+    MIC,
+    FakeEngine,
+    FakePreparation,
+    ManualClock,
+    ManualTasks,
+    RecordingPrompts,
+)
 
 
 class _Panic(BaseException):
@@ -521,6 +530,90 @@ def test_a_borrow_that_cannot_start_says_why_and_owns_nothing(rig):
     with pytest.raises(AudioUnavailable, match="Select a destination"):
         rig.session.borrow("test_my_sound")
     assert rig.events(AudioBorrowed) == []
+
+
+
+def _borrow_for_setup(rig: Rig, prompts: RecordingPrompts, declined: list[bool]):
+    return borrow_audio_for(
+        rig.session,
+        "voice_setup",
+        title="Switch Devices?",
+        lead="Setup should record from your selected devices.",
+        prompts=prompts,
+        on_declined=lambda: declined.append(True),
+    )
+
+
+def _running_on_the_headset(rig: Rig) -> None:
+    rig.prepare.route = (DeviceIdentity(name="Headset", direction="input"), DESTINATION)
+    rig.running()
+    rig.prepare.route = (MIC, DESTINATION)
+
+
+def test_a_setup_borrow_on_the_selected_route_asks_nothing(rig):
+    prompts, declined = RecordingPrompts(), []
+
+    lease = _borrow_for_setup(rig, prompts, declined)
+
+    assert lease is not None and lease.started and rig.engine.lifecycle() == ["start"]
+    assert prompts.asked == [] and prompts.failures == [] and declined == []
+
+
+def test_a_setup_borrow_on_another_route_keeps_it_when_the_user_says_no(rig):
+    _running_on_the_headset(rig)
+    prompts, declined = RecordingPrompts(answer=False), []
+
+    assert _borrow_for_setup(rig, prompts, declined) is None
+
+    assert prompts.asked == [(
+        "Switch Devices?",
+        "Setup should record from your selected devices.\n\n"
+        "Selected input: Microphone\nSelected output: Destination\n\n"
+        "Active input: Headset\nActive output: Destination\n\n"
+        "Switch now?",
+    )]
+    assert declined == [True] and prompts.failures == []
+    assert rig.engine.lifecycle() == []
+
+
+def test_a_setup_borrow_on_another_route_moves_it_when_the_user_says_yes(rig):
+    _running_on_the_headset(rig)
+    prompts, declined = RecordingPrompts(answer=True), []
+
+    lease = _borrow_for_setup(rig, prompts, declined)
+
+    assert lease is not None and not lease.started
+    assert rig.engine.lifecycle() == ["stop", "start"]
+    assert rig.engine.route[0] is not None and rig.engine.route[0].name == "Microphone"
+    assert len(prompts.asked) == 1 and declined == [] and prompts.failures == []
+
+
+def test_a_setup_borrow_that_cannot_get_audio_says_why(rig):
+    rig.engine.start_error = RuntimeError("no microphone")
+    prompts, declined = RecordingPrompts(), []
+
+    assert _borrow_for_setup(rig, prompts, declined) is None
+
+    assert prompts.failures == [(
+        "Audio Error",
+        "AudioForge could not start the microphone and speakers.\n\nno microphone\n\n"
+        "Check that they are connected and not used by another app, then try again.",
+    )]
+    assert prompts.asked == [] and declined == []
+
+
+def test_a_setup_borrow_whose_switch_fails_says_why_after_the_yes(rig):
+    _running_on_the_headset(rig)
+    rig.engine.start_error = RuntimeError("busy")
+    prompts, declined = RecordingPrompts(answer=True), []
+
+    assert _borrow_for_setup(rig, prompts, declined) is None
+
+    assert len(prompts.asked) == 1 and declined == []
+    [(title, text)] = prompts.failures
+    assert title == "Audio Error"
+    assert text.startswith("AudioForge could not switch to your selected devices.\n\nbusy")
+    assert text.endswith("Check that they are connected and not used by another app.")
 
 
 # --- quit and shutdown ---------------------------------------------------------------------

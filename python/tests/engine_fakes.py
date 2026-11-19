@@ -183,3 +183,19 @@ def lend_audio(dialog: Any) -> bool:
     """Stands in for a setup dialog's own borrow: the audio is ready under a lease that does nothing."""
     dialog._audio_lease = Mock(spec=AudioLease)
     return True
+
+
+class RecordingPrompts:
+    """A setup dialog's prompts that record what was asked and said, answering with ``answer``."""
+
+    def __init__(self, answer: bool = False) -> None:
+        self.answer = answer
+        self.asked: list[tuple[str, str]] = []
+        self.failures: list[tuple[str, str]] = []
+
+    def ask(self, title: str, text: str) -> bool:
+        self.asked.append((title, text))
+        return self.answer
+
+    def fail(self, title: str, text: str) -> None:
+        self.failures.append((title, text))

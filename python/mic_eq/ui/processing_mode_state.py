@@ -40,7 +40,7 @@ class ProcessingModeState:
         show_status: Callable[[str, int], None],
         on_changed: Callable[[], None],
     ) -> None:
-        self._processor = processor
+        self.processor = processor
         self._choice = choice
         self._hold_mute = hold_mute
         self._show_status = show_status
@@ -64,10 +64,10 @@ class ProcessingModeState:
             self._choice.blockSignals(False)
 
         try:
-            if hasattr(self._processor, "set_raw_monitor_enabled"):
-                self._processor.set_raw_monitor_enabled(target == "raw")
-            if hasattr(self._processor, "set_bypass"):
-                self._processor.set_bypass(target == "bypass")
+            if hasattr(self.processor, "set_raw_monitor_enabled"):
+                self.processor.set_raw_monitor_enabled(target == "raw")
+            if hasattr(self.processor, "set_bypass"):
+                self.processor.set_bypass(target == "bypass")
         except Exception as error:
             raise RuntimeError(f"Processing mode could not be applied: {error}") from error
         self.applied = target

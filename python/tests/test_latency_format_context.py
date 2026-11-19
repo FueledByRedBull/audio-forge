@@ -482,6 +482,7 @@ def test_calibration_context_tracks_endpoint_format_without_changing_route_key(q
     owner.config = SimpleNamespace(
         input_channel_mode="phase_safe_mono", input_cleanup_mode="off"
     )
+    owner.processing_mode_state = SimpleNamespace(selected=lambda: "normal")
     input_identity, output_identity = _wasapi_route()
     owner.input_choice.addItem("Mic", input_identity)
     owner.output_choice.addItem("Cable", output_identity)

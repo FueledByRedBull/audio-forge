@@ -237,7 +237,7 @@ SYSTEM_COLORS = {
 def test_without_a_contrast_theme_the_dark_look_is_unchanged() -> None:
     dark = build_palette(None)
     assert dark == SemanticPalette()
-    assert (dark.app_surface, dark.text_primary, dark.accent) == ("#14171c", "#eef1f5", "#f2743a")
+    assert (dark.app_surface, dark.text_primary, dark.accent) == ("#0f1013", "#ececf0", "#d98a4e")
     assert dark.hover_text == dark.text_primary
 
 

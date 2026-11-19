@@ -9,7 +9,20 @@ from PySide6.QtCore import QUrl
 from PySide6.QtQuickWidgets import QQuickWidget
 
 from .components import icon_font
-from .theme import PALETTE, RADIUS_CARD, RADIUS_CONTROL, prefers_reduced_motion, qcolor
+from .theme import (
+    EASE_PANEL_CLOSE,
+    EASE_PANEL_OPEN,
+    GLASS,
+    PALETTE,
+    RADIUS_CARD,
+    RADIUS_CONTROL,
+    TYPE_FLOOR_PX,
+    TYPE_SCALE_PX,
+    TYPE_TICK_PX,
+    motion_durations,
+    prefers_reduced_motion,
+    qcolor,
+)
 
 QML_DIR = Path(__file__).parent / "qml"
 
@@ -27,13 +40,34 @@ def quick_theme() -> dict:
     """The theme tokens a scene reads as ``Look.t``."""
 
     font = icon_font()
+    reduced = prefers_reduced_motion()
+    durations = motion_durations(reduced)
     return {
         **{k: v for k, v in asdict(PALETTE).items() if isinstance(v, str)},
         "bandColors": list(PALETTE.eq_band_colors),
         "iconFont": font.family() if font is not None else "",
         "radiusCard": RADIUS_CARD,
         "radiusControl": RADIUS_CONTROL,
-        "motion": 0 if prefers_reduced_motion() else 140,
+        "radiusGlass": GLASS.radius,
+        "glassBlur": GLASS.blur,
+        "glassSaturation": GLASS.saturation,
+        "glassModalBlur": GLASS.modal_blur,
+        "glassModalSaturation": GLASS.modal_saturation,
+        "typeFloor": TYPE_FLOOR_PX,
+        "typeTick": TYPE_TICK_PX,
+        "typeScale": dict(TYPE_SCALE_PX),
+        # The color change of a control; reduced motion turns it off.
+        "motion": 0 if reduced else durations.color,
+        "reducedMotion": reduced,
+        "motionStatus": durations.status,
+        "motionCrossfade": durations.crossfade,
+        "motionSwitch": durations.switch,
+        "motionRow": durations.row,
+        "motionPanelOpen": durations.panel_open,
+        "motionPanelClose": durations.panel_close,
+        # Easing.BezierSpline control points, ending at (1, 1).
+        "easePanelOpen": [*EASE_PANEL_OPEN, 1.0, 1.0],
+        "easePanelClose": [*EASE_PANEL_CLOSE, 1.0, 1.0],
     }
 
 

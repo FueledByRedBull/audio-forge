@@ -18,7 +18,7 @@ os.environ["QT_SCALE_FACTOR"] = "1"
 os.environ["QT_FONT_DPI"] = "96"
 os.environ.setdefault("AUDIOFORGE_REDUCED_MOTION", "1")
 
-from PySide6.QtCore import QByteArray, QEventLoop, QObject, QTimer
+from PySide6.QtCore import QByteArray, QEventLoop, QObject, QPointF, QRectF, QTimer
 from PySide6.QtGui import QFont, QFontDatabase, QImageWriter
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -304,6 +304,29 @@ def _prepare_voice_setup(parent: MainWindow) -> VoiceSetupDialog:
     return dialog
 
 
+def _limiter_row_in_view(scene: Any) -> bool:
+    """Whether the sidebar's Limiter row lies wholly inside the scroll view that holds it."""
+    pending = [scene]
+    while pending:
+        item = pending.pop()
+        if item.property("name") == "Limiter" and item.property("detail") is not None:
+            break
+        pending.extend(item.childItems())
+    else:
+        return False
+    view = item.parentItem()
+    while view is not None and view.property("contentY") is None:
+        view = view.parentItem()
+    if view is None:
+        return False
+
+    def rect(target: Any) -> QRectF:
+        return target.mapRectToScene(QRectF(QPointF(0, 0), target.size()))
+
+    shown = rect(view).intersected(QRectF(0, 0, scene.width(), scene.height()))
+    return item.isVisible() and shown.contains(rect(item))
+
+
 def _wait_for_next_frame() -> None:
     loop = QEventLoop()
     QTimer.singleShot(100, loop.quit)
@@ -335,6 +358,7 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
     outputs: list[dict[str, Any]] = []
     processing_scroll_position = 0
     processing_scroll_maximum = 0
+    limiter_in_view = False
     try:
         for specification in SCREENSHOTS[:2]:
             if specification["view"] == "routing_eq":
@@ -349,6 +373,8 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
                 )
                 page.setProperty("contentY", processing_scroll_maximum)
                 processing_scroll_position = round(page.property("contentY"))
+                app.processEvents()
+                limiter_in_view = _limiter_row_in_view(scene)
             _show_running_state(window)
             app.processEvents()
             # The scene draws a change on its next frame; without waiting the grab shows the one before.
@@ -444,8 +470,8 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
             "all_pngs_compressed": all(
                 item["bytes"] < item["width"] * item["height"] for item in outputs
             ),
-            # The Overview may hold every card without scrolling; either way the limiter is in view.
-            "processing_scrolled_to_limiter": processing_scroll_position == processing_scroll_maximum,
+            # The limiter is the last stage of the chain the processing view shows.
+            "processing_scrolled_to_limiter": limiter_in_view,
             "sanitized_sources_only": True,
         },
         "view_state": {

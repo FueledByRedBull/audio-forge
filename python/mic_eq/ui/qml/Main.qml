@@ -23,6 +23,7 @@ Rectangle {
     readonly property int fsBody: Look.fsBody
     readonly property int fsLead: Look.fsLead
     readonly property int fsHeading: Look.fsHeading
+    readonly property int fsTitle: Look.fsTitle
     readonly property int fsDisplay: Look.fsDisplay
     // When the last tooltip closed; the next one opens at once if it follows closely.
     property double tipClosedAt: 0
@@ -30,6 +31,17 @@ Rectangle {
     color: t.app_surface
 
     onPressingChanged: if (pressing) tip.close()
+    // Another page or the Overview row closes the inspector too; focus never stays on the hidden panel.
+    onInspectingChanged: {
+        if (inspecting)
+            return
+        for (let item = Window.activeFocusItem; item; item = item.parent) {
+            if (item === inspector) {
+                returnFocus(Qt.OtherFocusReason)
+                return
+            }
+        }
+    }
     // Esc closes a tip that keyboard focus opened, as it closes one the help button opened;
     // without a tip it closes the inspector.
     Keys.onEscapePressed: event => {
@@ -883,8 +895,11 @@ Rectangle {
         }
     }
 
-    // A stage's switch on its sidebar row; the same model as the switch on the stage card.
-    component ChainSwitch: Toggle {}
+    // A stage's switch on its sidebar row; the same model as the switch on the stage card. Its name
+    // is that switch's too, so the description says which of the two this is.
+    component ChainSwitch: Toggle {
+        Accessible.description: ["In the signal chain", proxy ? proxy.toolTip : ""].filter(part => part !== "").join(". ")
+    }
 
     // A small uppercase heading over a group in the sidebar.
     component SectionLabel: Text {
@@ -1039,7 +1054,9 @@ Rectangle {
             m.page.setIndex(0)
             inspectorOrigin = button
             m.inspector.show(row.key)
-            inspectorPanel(row.key).first.forceActiveFocus(reason)
+            const panel = inspectorPanel(row.key)
+            if (panel)
+                panel.first.forceActiveFocus(reason)
         }
     }
 
@@ -1052,11 +1069,15 @@ Rectangle {
         return null
     }
 
-    // Focus goes back to the row that opened the inspector.
+    // Focus goes back to the row that opened the inspector, or else to the Overview row. It moves
+    // before the close, so the close finds it outside the panel.
     function closeInspector(reason) {
+        returnFocus(reason)
         m.inspector.close()
-        if (inspectorOrigin)
-            inspectorOrigin.forceActiveFocus(reason)
+    }
+
+    function returnFocus(reason) {
+        (inspectorOrigin ?? overviewRow.button).forceActiveFocus(reason)
     }
 
     // The toolbar meters keep their size whatever they read, so the row does not shift.
@@ -1080,8 +1101,10 @@ Rectangle {
             + modeKey.width + 6 + modeMetrics.width + 36
             + muteButton.implicitWidth + 2 * root.readoutWidth + meterGrid.columnSpacing
             + Math.max(latencyFigure.implicitWidth, latencyCaption.implicitWidth)
-            + 1 + transport.implicitWidth + startReason.implicitWidth
+            + 1 + transport.implicitWidth + reasonWidth
         readonly property bool full: fullWidth <= width
+        // Measured on one line, so the reason's own wrapping cannot feed back into the layout.
+        readonly property real reasonWidth: startBlocked.visible ? Math.ceil(reasonMetrics.width) : 0
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
@@ -1098,6 +1121,7 @@ Rectangle {
             color: root.t.border
         }
         TextMetrics { id: modeKey; text: "Mode"; font.pixelSize: root.fsBody }
+        TextMetrics { id: reasonMetrics; text: startBlocked.text; font: startBlocked.font }
         // The widest choice, bold as a choice that changes the sound is shown.
         TextMetrics {
             id: modeMetrics
@@ -1128,7 +1152,7 @@ Rectangle {
                 Layout.preferredWidth: 240
                 Layout.maximumWidth: 260
                 // The pickers give up width first; a cut name is whole in the tooltip.
-                Layout.minimumWidth: toolbar.full ? 140 : 120
+                Layout.minimumWidth: toolbar.full ? 140 : 100
             }
             Picker {
                 proxy: root.m.top.output
@@ -1136,7 +1160,7 @@ Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredWidth: 240
                 Layout.maximumWidth: 260
-                Layout.minimumWidth: toolbar.full ? 140 : 120
+                Layout.minimumWidth: toolbar.full ? 140 : 100
             }
             IconBtn { id: refresh; proxy: root.m.top.refresh; glyph: root.m.glyphs.refresh; label: "Refresh" }
             Picker {
@@ -1194,16 +1218,17 @@ Rectangle {
             Item {
                 id: startReason
                 Layout.fillWidth: true
-                // In a narrow window the reason wraps onto two lines rather than vanish.
-                Layout.minimumWidth: startBlocked.visible ? 96 : 0
-                implicitWidth: startBlocked.visible ? startBlocked.implicitWidth : 0
+                // In a narrow window the reason wraps onto two lines rather than vanish; cut short
+                // with large text, it is whole in the tooltip.
+                Layout.minimumWidth: Math.min(toolbar.reasonWidth, 80)
+                implicitWidth: toolbar.reasonWidth
                 implicitHeight: startBlocked.height
                 StatusText {
                     id: startBlocked
                     objectName: "startBlockedReason"
                     visible: root.m.overview.state === "no_mic" && !root.running
                     text: root.m.startBlockedReason
-                    width: Math.min(implicitWidth, parent.width)
+                    width: Math.min(toolbar.reasonWidth, parent.width)
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     horizontalAlignment: Text.AlignRight
@@ -1320,6 +1345,7 @@ Rectangle {
                 Accessible.role: Accessible.Grouping
                 Accessible.name: "Navigation"
                 NavRow {
+                    id: overviewRow
                     name: "Overview"
                     detail: root.m.overview.navLine
                     current: root.m.page.index === 0 && !root.inspecting
@@ -1482,7 +1508,7 @@ Rectangle {
                             }
                             Rectangle {
                                 id: statusDot
-                                objectName: "transmissionDot"
+                                objectName: "overviewToneDot"
                                 anchors.centerIn: parent
                                 width: 10
                                 height: 10
@@ -1640,7 +1666,8 @@ Rectangle {
                             readonly property var levels: root.ui.levels
                             width: ribbonBox.width + step
                             height: ribbonBox.height
-                            onLevelsChanged: scroll.restart()
+                            // Hidden with its page, it takes each reading without sliding.
+                            onLevelsChanged: if (visible) scroll.restart()
                             NumberAnimation on x {
                                 id: scroll
                                 objectName: "ribbonScroll"
@@ -2014,8 +2041,24 @@ Rectangle {
                     easing.bezierCurve: root.t.easePanelOpen
                 }
             },
+            // The panel stays in place while it fades, then leaves.
             Transition {
                 from: "open"
+                enabled: Look.reducedMotion
+                SequentialAnimation {
+                    NumberAnimation {
+                        objectName: "inspectorReducedCloseFade"
+                        property: "opacity"
+                        duration: root.t.motionPanelClose
+                        easing.type: Easing.BezierSpline
+                        easing.bezierCurve: root.t.easePanelClose
+                    }
+                    PropertyAction { property: "progress" }
+                }
+            },
+            Transition {
+                from: "open"
+                enabled: !Look.reducedMotion
                 NumberAnimation {
                     objectName: "inspectorCloseMove"
                     property: "progress"

@@ -12,7 +12,7 @@ Item {
     property Item backdrop: null
     // The part of `backdrop` the panel covers, in the backdrop's coordinates.
     property rect backdropRect
-    property bool blurAllowed: GraphicsInfo.api !== GraphicsInfo.Software
+    readonly property bool blurAllowed: GraphicsInfo.api !== GraphicsInfo.Software
     readonly property bool effectsOn: blurAllowed && !Look.t.reducedTransparency && !Look.t.highContrast
 
     // A press, hover or wheel on bare glass stays with the panel instead of reaching what is under it.
@@ -37,7 +37,8 @@ Item {
     Loader {
         objectName: "glassBlur"
         anchors.fill: parent
-        active: glass.effectsOn && glass.backdrop !== null
+        // Hidden glass shows nothing, so nothing behind it is captured or blurred.
+        active: glass.effectsOn && glass.backdrop !== null && glass.visible
         sourceComponent: Item {
             ShaderEffectSource {
                 id: behind

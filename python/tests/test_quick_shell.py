@@ -33,7 +33,7 @@ from mic_eq.config import AppConfig, DeviceIdentity
 from mic_eq.config_parts.settings import q_from_bandwidth_octaves
 from mic_eq.ui import health
 from mic_eq.ui.health import HealthReadings
-from mic_eq.ui.main_window import PAGE_NAMES, MainWindow
+from mic_eq.ui.main_window import NO_MIC_START_TIP, PAGE_NAMES, MainWindow
 from mic_eq.ui.processing_configuration import PresetOrigin
 from mic_eq.ui import quick_shell
 from mic_eq.ui.calibration_history import persist_calibration
@@ -41,7 +41,14 @@ from mic_eq.ui.eq_quick_graph import EQGraphItem, EQGraphPreview
 from mic_eq.ui.eq_graph import EQGraphGeometry
 from mic_eq.ui.level_meter import CLIP_FLAT_TOP_SAMPLES
 from mic_eq.ui.quick_meter import QuickMeterItem
-from mic_eq.ui.overview_presentation import CLIPPING_NOTE, MUTED_DETAIL, NO_MIC_DETAIL, RECOMMEND_SETUP_HINT
+from mic_eq.ui.overview_presentation import (
+    CLIPPING_NOTE,
+    MUTE_PENDING_ISSUE,
+    MUTED_DETAIL,
+    NO_MIC_DETAIL,
+    NO_MIC_REASON,
+    RECOMMEND_SETUP_HINT,
+)
 from mic_eq.ui.quick_shell import InspectorState, SettingControl
 from mic_eq.ui.theme import PALETTE
 
@@ -1241,35 +1248,61 @@ def test_the_inspector_state_opens_known_stages_and_keeps_the_last_one_while_clo
     assert (state.shown, state.stageKey, spy.count()) == (False, "limiter", 3)
 
 
+# The software renderer's solid glass is checked under that renderer, in quick_software_checks.py.
 GLASS_CASES = {
     "blurred": ({}, True),
-    "software": ({"blurAllowed": False}, False),
     "reduced-transparency": ({"theme": {"reducedTransparency": True}}, False),
     "contrast": ({"theme": {"highContrast": True}}, False),
 }
 
 
-@pytest.mark.parametrize("case", GLASS_CASES)
-def test_the_glass_panel_is_solid_without_its_blur(qapp, case) -> None:
+def _glass_probe(theme_changes: dict, glass_body: str = ""):
+    """A GlassPanel over a plain backdrop in an engine of its own: (probe or None, engine, errors)."""
     from PySide6.QtCore import QByteArray, QUrl
     from PySide6.QtQml import QQmlComponent, QQmlEngine
 
     from mic_eq.ui.quick_scene import QML_DIR, quick_theme
 
-    changes, blurred = GLASS_CASES[case]
-    theme = {**quick_theme(), "reducedTransparency": False, "highContrast": False, **changes.get("theme", {})}
+    theme = {**quick_theme(), "reducedTransparency": False, "highContrast": False, **theme_changes}
     engine = QQmlEngine()
     engine.rootContext().setContextProperty("theme", theme)
-    component = QQmlComponent(engine)
-    allowed = changes.get("blurAllowed", True)
+    # Owned by the engine, so what it creates outlives this function.
+    component = QQmlComponent(engine, engine)
     source = (
         "import QtQuick\nItem {\n    Rectangle { id: behind; width: 200; height: 200 }\n"
-        f"    GlassPanel {{ objectName: \"glass\"; width: 100; height: 100; backdrop: behind; "
-        f"blurAllowed: {'true' if allowed else 'false'} }}\n}}\n"
+        f"    GlassPanel {{ objectName: \"glass\"; width: 100; height: 100; backdrop: behind; {glass_body} }}\n}}\n"
     )
     component.setData(QByteArray(source.encode()), QUrl.fromLocalFile(str(QML_DIR / "GlassProbe.qml")))
     probe = component.create()
-    assert probe is not None, [error.toString() for error in component.errors()]
+    return probe, engine, [error.toString() for error in component.errors()]
+
+
+def test_hidden_glass_captures_and_blurs_nothing(qapp) -> None:
+    probe, engine, errors = _glass_probe({})
+    assert probe is not None, errors
+    glass, blur = (probe.findChild(QObject, name) for name in ("glass", "glassBlur"))
+    assert glass is not None and blur is not None
+    assert blur.property("active") is True
+    glass.setProperty("visible", False)
+    assert blur.property("active") is False
+    glass.setProperty("visible", True)
+    assert blur.property("active") is True
+    probe.deleteLater()
+    engine.deleteLater()
+
+
+def test_the_glass_blur_follows_the_renderer_and_cannot_be_forced(qapp) -> None:
+    probe, engine, errors = _glass_probe({}, "blurAllowed: false")
+    assert probe is None
+    assert any("blurAllowed" in error and "read-only" in error for error in errors), errors
+    engine.deleteLater()
+
+
+@pytest.mark.parametrize("case", GLASS_CASES)
+def test_the_glass_panel_is_solid_without_its_blur(qapp, case) -> None:
+    changes, blurred = GLASS_CASES[case]
+    probe, engine, errors = _glass_probe(changes.get("theme", {}))
+    assert probe is not None, errors
     glass, blur, fill = (probe.findChild(QObject, name) for name in ("glass", "glassBlur", "glassFill"))
     assert glass is not None and blur is not None and fill is not None
     assert glass.property("effectsOn") is blurred
@@ -1707,10 +1740,7 @@ def engine_window(quick_window, monkeypatch):
 
 
 def _status_dot(window):
-    return window.centralWidget().rootObject().findChild(QObject, "transmissionDot")
-
-
-NO_MIC_REASON = "Start audio, no microphone to start from"
+    return window.centralWidget().rootObject().findChild(QObject, "overviewToneDot")
 
 
 def _menu_start(window):
@@ -1726,11 +1756,11 @@ def test_no_mic_window_blocks_start(quick_window, qapp) -> None:
     assert window.input_choice.count() == 0
     assert not window.start_btn_action.isEnabled()
     start = window.quick_bridge.model["top"]["start"]
-    assert start.toolTip == NO_MIC_REASON
+    assert start.toolTip == NO_MIC_START_TIP
     qapp.processEvents()
     reason = window.centralWidget().rootObject().findChild(QObject, "startBlockedReason")
     assert reason is not None and reason.property("visible")
-    assert reason.property("text") == "No microphone to start from"
+    assert reason.property("text") == NO_MIC_REASON
 
 
 def test_menu_start_without_mic_shows_no_failure_dialog(quick_window, monkeypatch) -> None:
@@ -1808,7 +1838,7 @@ def test_the_status_dot_shows_sound_running_and_heard(engine_window, qapp) -> No
     engine.mute_error = True
     window.user_mute_checkbox_action.setChecked(True)
     assert window.shell_texts["transmission_status_label"].text.endswith("Mute pending")
-    assert colour() == palette("mute")
+    assert colour() == palette("status_warn_text")
 
     window.stop_btn_action.trigger()
     assert colour() == palette("control_edge")
@@ -1917,6 +1947,43 @@ def test_each_live_state_is_said_in_words_and_marked_by_the_dot(engine_window, q
     window.stop_btn_action.trigger()
     assert engine.running is False
     assert _sentence(window)[0] == "Ready when you are"
+
+
+def test_a_refused_mute_is_an_issue_and_never_says_others_hear_silence(engine_window, qapp) -> None:
+    window, engine = engine_window
+    window.start_btn_action.trigger()
+    engine.mute_error = True
+    window.user_mute_checkbox_action.setChecked(True)
+    qapp.processEvents()
+    assert _sentence(window) == ("Live · 1 issue", MUTE_PENDING_ISSUE)
+    assert window.quick_bridge.model["overview"].state == "live_issue"
+    _wait_for_colour(window)
+    assert _status_dot(window).property("color").name() == QColor(PALETTE.status_warn_text).name()
+    # Once the engine takes the mute, callers hear silence.
+    engine.mute_error = False
+    window.user_mute_checkbox_action.setChecked(False)
+    window.user_mute_checkbox_action.setChecked(True)
+    qapp.processEvents()
+    assert _sentence(window) == ("Muted · others hear silence", MUTED_DETAIL)
+
+
+def test_the_overview_counts_live_issues_and_names_the_mode(engine_window, qapp) -> None:
+    window, _engine = engine_window
+    texts = window.shell_texts
+    window.start_btn_action.trigger()
+    texts["output_health_label"].update(text="Output: Too quiet", status="warn")
+    texts["dropped_label"].update(text="Drops: 12", status="warn")
+    qapp.processEvents()
+    assert _sentence(window)[0] == "Live · 2 issues"
+    assert _nav_detail(window, "Overview") == "Live · 2 issues"
+    texts["output_health_label"].update(text="Output: OK", status="ok")
+    texts["dropped_label"].update(text="Drops: 0", status="ok")
+    window.processing_mode_choice.setIndex(1)
+    qapp.processEvents()
+    assert _sentence(window)[0] == "Live · Bypass, voice chain off"
+    window.processing_mode_choice.setIndex(2)
+    qapp.processEvents()
+    assert _sentence(window)[0] == "Live · Raw Monitor, no processing"
 
 
 def test_the_overview_announces_each_new_state_once(engine_window, qapp, monkeypatch) -> None:

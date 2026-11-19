@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from PySide6.QtCore import QObject, QRectF
+from PySide6.QtCore import QObject, QRectF, qInstallMessageHandler
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtQuickWidgets import QQuickWidget
@@ -272,6 +272,28 @@ def test_the_status_message_keeps_its_room_at_the_worst_combination(minimum_wind
     assert caption_tip(calibration) == ""
 
 
+def assert_toolbar_fits(window: MainWindow, width: int) -> None:
+    """Nothing in the toolbar leaves it, and each part of its row keeps its own room."""
+    bar = named(window, "toolbar")
+    edge = scene_rect(bar)
+    assert edge.right() == pytest.approx(width)
+    beyond = [
+        f"{item.metaObject().className()} {item.objectName()!r} {scene_rect(item)}"
+        for item in shown_items(bar)
+        if scene_rect(item).right() > edge.right() + 0.5
+        or scene_rect(item).top() < edge.top() - 0.5
+        or scene_rect(item).bottom() > edge.bottom() + 0.5
+    ]
+    assert not beyond, f"the toolbar is {edge}: {beyond}"
+    row = named(window, "toolRow")
+    parts = sorted(
+        (scene_rect(child) for child in row.childItems() if child.isVisible() and child.width() > 0),
+        key=QRectF.left,
+    )
+    for left, right in zip(parts, parts[1:]):
+        assert left.right() <= right.left() + 0.5, f"{left} runs into {right}"
+
+
 # The tightest cells: the minimum width, the `wide` threshold and the widest window kept, at the
 # smallest and largest font, with Mute pressed and the mode changed. Other cells leave more room.
 @pytest.mark.parametrize("point_size", [9, 14])
@@ -287,31 +309,39 @@ def test_the_toolbar_fits_one_row_at_every_font_size_and_width(
             window.user_mute_checkbox_action.setChecked(True)
             window.processing_mode_choice.setIndex(1)
         settle(qapp)
+        assert_toolbar_fits(window, width)
         bar = named(window, "toolbar")
-        edge = scene_rect(bar)
-        assert edge.right() == pytest.approx(width)
-        beyond = [
-            f"{item.metaObject().className()} {item.objectName()!r} {scene_rect(item)}"
-            for item in shown_items(bar)
-            if scene_rect(item).right() > edge.right() + 0.5
-            or scene_rect(item).top() < edge.top() - 0.5
-            or scene_rect(item).bottom() > edge.bottom() + 0.5
-        ]
-        assert not beyond, f"the toolbar is {edge}: {beyond}"
-        # Each part of the row keeps its own room.
-        row = named(window, "toolRow")
-        parts = sorted(
-            (scene_rect(child) for child in row.childItems() if child.isVisible() and child.width() > 0),
-            key=QRectF.left,
-        )
-        for left, right in zip(parts, parts[1:]):
-            assert left.right() <= right.left() + 0.5, f"{left} runs into {right}"
         mute = next(item for item in shown_items(bar) if item.metaObject().className().startswith("MuteBtn"))
         assert mute.property("on") is (state == "muted-bypass")
     finally:
         window.close()
         window.deleteLater()
         qapp.processEvents()
+
+
+@pytest.mark.parametrize("point_size", [9, 14])
+def test_the_toolbar_fits_the_no_microphone_reason_at_the_minimum_width(
+    qapp, monkeypatch, segoe_font, point_size
+) -> None:
+    messages: list[str] = []
+    previous = qInstallMessageHandler(lambda _mode, _context, message: messages.append(message))
+    qapp.setFont(QFont(qapp.font().family(), point_size))
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Ready")
+    try:
+        monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
+        window._refresh_devices()
+        settle(qapp)
+        reason = named(window, "startBlockedReason")
+        assert reason.isVisible() and reason.property("text") == "No microphone to start from"
+        assert_toolbar_fits(window, MINIMUM_WINDOW_WIDTH)
+        # Cut short, the reason is whole in its tooltip.
+        assert reason.property("tip") == (reason.property("text") if reason.property("truncated") else "")
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+        qInstallMessageHandler(previous)
+    assert [message for message in messages if "inding loop" in message or ".qml" in message] == []
 
 
 @pytest.mark.parametrize(

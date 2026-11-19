@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-DOT = "·"
+from .overview_presentation import DOT
+
 # A reduction this deep fills the row's activity bar.
 FULL_ACTIVITY_DB = 12.0
 

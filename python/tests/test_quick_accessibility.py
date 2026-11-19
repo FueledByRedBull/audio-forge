@@ -713,7 +713,7 @@ def test_each_signal_chain_row_carries_its_stage_switch_under_the_same_name(quic
     rows = window.quick_bridge.model["sidebar"]["chain"]
     # Input cleanup is a setting with several modes, not a stage that switches on and off.
     assert [row["name"] for row in rows if row["toggle"] is None] == ["Input cleanup"]
-    with _AccessibleScene():
+    with _AccessibleScene() as scene:
         for row in rows:
             if row["toggle"] is None:
                 continue
@@ -724,6 +724,26 @@ def test_each_signal_chain_row_carries_its_stage_switch_under_the_same_name(quic
             card_switch = _with_proxy(window, "Toggle", row["toggle"])
             assert _iface(switch).text(Text.Name) == _iface(card_switch).text(Text.Name) != ""
             assert bool(_iface(switch).state().checked) is row["toggle"].checked
+            # The description tells the two apart.
+            assert scene.description(switch).startswith("In the signal chain")
+            assert scene.description(card_switch) != scene.description(switch)
+
+
+@pytest.mark.parametrize("width", [900, 1400])
+def test_every_stage_switch_is_at_least_a_24_px_target(quick_window, qapp, width) -> None:
+    window = quick_window
+    _show(window, qapp, width=width)
+    rows = [row for row in window.quick_bridge.model["sidebar"]["chain"] if row["toggle"]]
+    sizes = {}
+    for row in rows:
+        sizes[f"sidebar {row['name']}"] = _with_proxy(window, "ChainSwitch", row["toggle"])
+        if row["card"] is not None:
+            _inspect(window, qapp, row["key"])
+            sizes[f"inspector {row['name']}"] = _with_proxy(window, "Toggle", row["toggle"])
+    assert len(sizes) == 2 * len(rows) - 1  # the Equalizer's own switch is on its page
+    small = {name: (item.width(), item.height()) for name, item in sizes.items()
+             if item.width() < 24 or item.height() < 24}
+    assert small == {}
 
 
 def test_a_signal_chain_row_opens_its_page_or_its_stage_inspector(quick_window, qapp) -> None:
@@ -1229,6 +1249,23 @@ def test_the_ribbon_takes_each_reading_and_slides_only_with_full_motion(request,
         assert strip.x() == pytest.approx(-strip.property("step"))
 
 
+def test_the_ribbon_slides_only_while_the_overview_shows(full_motion_window, qapp) -> None:
+    window = full_motion_window
+    _show(window, qapp, HEALTH)
+    bridge = window.quick_bridge
+    bridge._trace_timer.stop()
+    scroll = window.centralWidget().rootObject().findChild(QObject, "ribbonScroll")
+    # A slide started while the page showed may still be waiting for a frame; only new ones count.
+    scroll.setProperty("running", False)
+    bridge._levels.extend([[-20.0, -24.0]] * 3)
+    bridge.levelsChanged.emit()
+    assert scroll.property("running") is False
+    window.shell_page.setIndex(OVERVIEW)
+    qapp.processEvents()
+    bridge.levelsChanged.emit()
+    assert scroll.property("running") is True
+
+
 def test_a_switch_knob_snaps_under_reduced_motion(reduced_motion_window, qapp) -> None:
     window = reduced_motion_window
     _show(window, qapp)
@@ -1713,6 +1750,45 @@ def test_the_inspector_closes_when_another_page_opens(quick_window, qapp) -> Non
         assert not inspector.shown and _iface(overview).state().selected
 
 
+def _inside(item, ancestor) -> bool:
+    while item is not None:
+        if item is ancestor:
+            return True
+        item = item.parentItem()
+    return False
+
+
+@pytest.mark.parametrize("how", ["page", "overview-click", "unopened"])
+def test_focus_leaves_the_inspector_however_it_closes(quick_window, qapp, how) -> None:
+    window = quick_window
+    _show(window, qapp)
+    inspector = window.quick_bridge.model["inspector"]
+    panel = window.centralWidget().rootObject().findChild(QObject, "inspector")
+    with _AccessibleScene():
+        row = _named(window, "Compressor", *PLAIN_BUTTONS)
+        overview = _named(window, "Overview", *PLAIN_BUTTONS)
+        if how == "unopened":
+            # Opened without a row, as the model can be: focus falls back to the Overview row.
+            _inspect(window, qapp, "compressor")
+            _focus(window, _with_proxy(window, "Toggle", window.quick_bridge.model["stages"][3]["toggle"]), qapp)
+        else:
+            _activate(window, row, Qt.Key.Key_Return, qapp)
+            QTest.qWait(400)
+        assert inspector.shown and _inside(_focused(window), panel)
+        if how == "overview-click":
+            _click(window, overview, qapp)
+        else:
+            window.shell_page.setIndex(HEALTH if how == "page" else OVERVIEW)
+            if how == "unopened":
+                inspector.close()
+            qapp.processEvents()
+        assert not inspector.shown
+        focused = _focused(window)
+        assert focused is not None and not _inside(focused, panel)
+        expected = {"page": row, "overview-click": overview, "unopened": overview}[how]
+        assert focused is expected
+
+
 def test_the_input_cleanup_inspector_holds_the_settings_pickers_and_no_switch(quick_window, qapp) -> None:
     window = quick_window
     _show(window, qapp)
@@ -1791,8 +1867,13 @@ def test_under_reduced_motion_the_inspector_fades_without_sliding(reduced_motion
     assert 0 < panel.property("opacity") < 1
     window.quick_bridge.model["inspector"].close()
     QTest.qWait(30)
-    assert panel.property("progress") == 0
+    # It fades where it stands, then goes.
+    assert panel.property("progress") == 1
     assert 0 < panel.property("opacity") < 1
+    assert panel.isVisible()
+    QTest.qWait(window.quick_bridge.model["theme"]["motionPanelClose"] + 100)
+    assert panel.property("progress") == 0
+    assert panel.property("opacity") == 0 and not panel.isVisible()
 
 
 def _text_blocks(source: str):

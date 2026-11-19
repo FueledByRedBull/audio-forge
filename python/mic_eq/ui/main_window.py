@@ -383,6 +383,8 @@ class MainWindow(QMainWindow):
         self._login_startup_deadline: float | None = None
         self._login_startup_next_retry = 0.0
         self._login_startup_message = ""
+        # Whether the last device listing worked and held no input.
+        self._input_listing_empty = False
         # Capture the persisted IDs before normal UI restoration can enrich a
         # name-only selection from today's enumeration.
         self._login_startup_route = (
@@ -1381,7 +1383,7 @@ class MainWindow(QMainWindow):
         if now >= deadline:
             reason = (
                 "no microphone is available"
-                if records_own_microphone(saved_input)
+                if records_own_microphone(saved_input) or self.no_microphone()
                 else "saved endpoints did not become available"
             )
             self._cancel_login_startup(f"Login stopped: {reason}")
@@ -1392,7 +1394,10 @@ class MainWindow(QMainWindow):
             find_identity_index(self._combo_identities(self.output_choice), saved_output),
         )
         if min(indices) < 0:
-            self._login_startup_message = "Login waiting for saved audio endpoints"
+            self._login_startup_message = (
+                "Login waiting for a microphone" if self.no_microphone()
+                else "Login waiting for saved audio endpoints"
+            )
             self.status_message.showMessage(self._login_startup_message)
             self.stop_btn_action.setEnabled(True)
             return
@@ -2840,7 +2845,7 @@ class MainWindow(QMainWindow):
 
     def no_microphone(self) -> bool:
         """Whether the device listing worked and found no input to start from."""
-        return bool(self.__dict__.get("_input_listing_empty")) and self.input_choice.count() == 0
+        return self._input_listing_empty and self.input_choice.count() == 0
 
     def _sync_start_action(self, idle: bool) -> None:
         blocked = self.no_microphone()

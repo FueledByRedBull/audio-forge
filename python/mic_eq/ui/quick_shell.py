@@ -196,7 +196,9 @@ def overview_inputs(window) -> OverviewInputs:
         device_advice=advice_for(texts["callback_health_label"].text),
         input_bad=texts["input_health_label"].state == "bad",
         input_advice=advice_for(texts["input_health_label"].text),
-        muted=session.output_muted or session.mute_error,
+        muted=session.output_muted,
+        mute_error=session.mute_error,
+        mute_requested=session.mute_requested,
         issues=tuple(issues),
         mode=window._processing_mode(),
         backend=_backend_name(window, noise["model"]) if noise["enabled"] else "",
@@ -735,7 +737,6 @@ class QuickBridge(QObject):
             "meters": [w.input_meter, w.output_meter],
             "status": {
                 "message": w.status_message,
-                "transmission": text("transmission_status_label"),
                 "calibration": text("calibration_status_label"),
                 "health": text("health_summary_label"),
             },

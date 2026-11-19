@@ -26,6 +26,9 @@ CLIPPING_NOTE = "Clipping happens before AudioForge, so the limiter can't fix it
 MUTED_DETAIL = (
     "Your microphone is still on, but nothing reaches the call. Press Ctrl+M to unmute."
 )
+# The engine refused the mute, so it is pending, not in force.
+MUTE_PENDING_ISSUE = "Mute pending: the mute did not apply, so callers still hear your microphone."
+UNMUTE_PENDING_ISSUE = "Unmute pending: the unmute did not apply, so callers may still hear silence."
 RETRYING_DETAIL = (
     "The selected devices stopped, and AudioForge keeps retrying them. "
     "Check that the device is connected."
@@ -54,7 +57,11 @@ class OverviewInputs:
     device_advice: str = ""
     input_bad: bool = False
     input_advice: str = ""
+    # A mute the engine accepted; a refused one is ``mute_error`` instead.
     muted: bool = False
+    mute_error: bool = False
+    # What the refused change asked for: a mute, or an unmute.
+    mute_requested: bool = False
     # The advice of each Health row that warns or fails, worst first.
     issues: tuple[str, ...] = ()
     mode: str = "normal"
@@ -111,22 +118,26 @@ def _route(inputs: OverviewInputs) -> str:
 
 def _sentence(inputs: OverviewInputs) -> tuple[str, str, str, str, str]:
     """The state key, headline, detail, tone and sidebar line, first match wins."""
-    if inputs.no_mic:
+    # Running audio follows its own path: a device that went away is a lost device.
+    if inputs.no_mic and not inputs.running:
         return "no_mic", "No microphone found", NO_MIC_DETAIL, "warn", f"Stopped {DOT} no microphone"
     if inputs.restart_pending or (inputs.running and inputs.device_bad):
         detail = inputs.device_advice if inputs.device_bad and inputs.device_advice else RETRYING_DETAIL
         return "device_lost", "Your callers can't hear you", detail, "callers", f"Live {DOT} device lost"
     if not inputs.running:
         return "ready", "Ready when you are", _route(inputs), "idle", f"Ready {DOT} not running"
+    # Callers hear silence while muted, so a clipping microphone is not what they get.
+    if inputs.muted:
+        return "muted", f"Muted {DOT} others hear silence", MUTED_DETAIL, "mute", f"Live {DOT} muted"
     if inputs.input_bad:
         detail = " ".join(part for part in (inputs.input_advice, CLIPPING_NOTE) if part)
         return "clipping", f"Live {DOT} your mic is clipping", detail, "bad", f"Live {DOT} clipping"
-    if inputs.muted:
-        return "muted", f"Muted {DOT} others hear silence", MUTED_DETAIL, "mute", f"Live {DOT} muted"
-    if inputs.issues:
-        count = len(inputs.issues)
+    pending = MUTE_PENDING_ISSUE if inputs.mute_requested else UNMUTE_PENDING_ISSUE
+    issues = ((pending,) if inputs.mute_error else ()) + inputs.issues
+    if issues:
+        count = len(issues)
         line = f"Live {DOT} {count} issue{'s' if count != 1 else ''}"
-        return "live_issue", line, inputs.issues[0], "warn", line
+        return "live_issue", line, issues[0], "warn", line
     mode = inputs.mode if inputs.mode in LIVE_HEADLINES else "normal"
     peaks = _peaks(inputs.output_peak_db)
     if mode == "normal":

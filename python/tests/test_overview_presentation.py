@@ -9,7 +9,9 @@ import pytest
 
 from mic_eq.ui.chain_presentation import ChainInputs, describe_chain
 from mic_eq.ui.overview_presentation import (
+    MUTE_PENDING_ISSUE,
     RECOMMEND_SETUP_HINT,
+    UNMUTE_PENDING_ISSUE,
     OverviewInputs,
     describe_overview,
 )
@@ -27,9 +29,17 @@ LIVE = OverviewInputs(
         ({}, "live"),
         ({"issues": ("Lower the input gain.",)}, "live_issue"),
         ({"issues": ("a",), "muted": True}, "muted"),
-        ({"issues": ("a",), "muted": True, "input_bad": True}, "clipping"),
+        # Callers hear silence while muted, so the mute outranks a clipping microphone.
+        ({"issues": ("a",), "muted": True, "input_bad": True}, "muted"),
+        ({"input_bad": True}, "clipping"),
         ({"issues": ("a",), "muted": True, "input_bad": True, "device_bad": True}, "device_lost"),
-        ({"muted": True, "input_bad": True, "device_bad": True, "no_mic": True}, "no_mic"),
+        # A refused mute is no mute: what callers get is still the microphone.
+        ({"mute_error": True}, "live_issue"),
+        ({"mute_error": True, "input_bad": True}, "clipping"),
+        # No microphone is a stopped state; running audio whose device went away has lost it.
+        ({"muted": True, "input_bad": True, "device_bad": True, "no_mic": True}, "device_lost"),
+        ({"no_mic": True}, "live"),
+        ({"running": False, "muted": True, "input_bad": True, "device_bad": True, "no_mic": True}, "no_mic"),
         ({"running": False}, "ready"),
         ({"running": False, "restart_pending": True}, "device_lost"),
         ({"running": False, "no_mic": True, "restart_pending": True}, "no_mic"),
@@ -69,6 +79,17 @@ def test_each_state_says_what_is_happening_in_words() -> None:
     muted = view(muted=True)
     assert muted.headline == "Muted · others hear silence" and muted.tone == "mute"
     assert "Ctrl+M" in muted.detail
+
+    refused = view(mute_error=True, mute_requested=True)
+    assert (refused.headline, refused.detail, refused.tone) == ("Live · 1 issue", MUTE_PENDING_ISSUE, "warn")
+    assert "callers still hear" in refused.detail and "silence" not in refused.headline
+    # The refused mute comes first among the issues and is counted with them.
+    both = view(mute_error=True, mute_requested=True, issues=("Lower the input gain.",))
+    assert (both.headline, both.detail) == ("Live · 2 issues", MUTE_PENDING_ISSUE)
+    # A refused unmute may leave callers hearing silence, so it never claims they hear the mic.
+    unmute = view(mute_error=True)
+    assert (unmute.headline, unmute.detail) == ("Live · 1 issue", UNMUTE_PENDING_ISSUE)
+    assert "still hear your microphone" not in unmute.detail
 
     clipping = view(input_bad=True, input_advice="Turn the microphone down.")
     assert clipping.headline == "Live · your mic is clipping" and clipping.tone == "bad"
@@ -160,6 +181,6 @@ def test_ready_lists_the_route_and_no_mic_lists_what_was_checked() -> None:
     assert [kind for _text, kind in no_mic.checks] == ["warn", "ok", "note"]
     assert no_mic.checks[0][0] == "No input devices detected · the Input list is empty"
     assert no_mic.checks[1][0] == "Output found · CABLE Input"
-    nothing = describe_overview(replace(LIVE, no_mic=True, output_name="", output_found=False))
+    nothing = describe_overview(replace(LIVE, running=False, no_mic=True, output_name="", output_found=False))
     assert nothing.checks[1] == ("No output devices detected", "warn")
     assert describe_overview(LIVE).checks == ()

@@ -26,14 +26,7 @@ def current_calibration(owner: Any, scope: str) -> CalibrationResult | None:
     for result in reversed(owner.config.calibration_results):
         if result.scope != scope:
             continue
-        # Version 1 stored the complete preset identity. Keep matching it
-        # against that same canonical payload while newer records can split
-        # correction from downstream verification.
-        if (
-            result.matches(context, settings)
-            if result.version == 1
-            else result.matches_capture_and_correction(context, correction)
-        ):
+        if result.matches_capture_and_correction(context, correction):
             return result
     return None
 
@@ -42,9 +35,7 @@ def calibration_verification_matches(owner: Any, result: CalibrationResult) -> b
     """Whether a matching capture/correction record still verifies output."""
     settings = calibration_settings(owner)
     _correction, verification = calibration_settings_parts(settings)
-    return result.matches_verification(
-        settings if result.version == 1 else verification
-    )
+    return result.matches_verification(verification)
 
 
 def save_calibration_result(

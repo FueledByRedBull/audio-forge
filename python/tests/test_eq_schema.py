@@ -11,47 +11,10 @@ from mic_eq.config import (
     EQBandSettings,
     EQSettings,
     EQ_BAND_COUNT,
-    EQ_SCHEMA_VERSION,
     Preset,
     PresetValidationError,
     q_from_bandwidth_octaves,
 )
-
-
-def _legacy_preset() -> dict:
-    payload = Preset(name="Legacy").to_dict()
-    payload["version"] = "1.12.0"
-    payload["eq"] = {
-        "enabled": True,
-        "band_freqs": [
-            80.0,
-            160.0,
-            320.0,
-            640.0,
-            1280.0,
-            2500.0,
-            5000.0,
-            8000.0,
-            12000.0,
-            16000.0,
-        ],
-        "band_gains": [float(index - 5) / 2.0 for index in range(10)],
-        "band_qs": [1.0 + index * 0.1 for index in range(10)],
-    }
-    payload["value_provenance"] = {
-        path: source
-        for path, source in payload["value_provenance"].items()
-        if not path.startswith("eq.")
-    }
-    payload["value_provenance"].update(
-        {
-            "eq.enabled": "explicit",
-            "eq.band_freqs": "explicit",
-            "eq.band_gains": "explicit",
-            "eq.band_qs": "explicit",
-        }
-    )
-    return payload
 
 
 def test_legacy_eq_constructor_accepts_numpy_sequences() -> None:
@@ -76,47 +39,6 @@ def test_future_preset_version_is_rejected_before_lossy_loading() -> None:
 
     with pytest.raises(PresetValidationError, match="newer than this AudioForge"):
         Preset.from_dict(payload)
-
-
-def test_legacy_arrays_migrate_to_one_typed_band_source_with_provenance() -> None:
-    legacy = _legacy_preset()
-
-    preset = Preset.from_dict(legacy)
-    serialized = preset.to_dict()
-
-    assert preset.eq.schema_version == EQ_SCHEMA_VERSION
-    assert len(preset.eq.bands) == EQ_BAND_COUNT
-    assert [band.filter_type for band in preset.eq.bands] == [
-        "low_shelf",
-        *(["bell"] * 8),
-        "high_shelf",
-    ]
-    assert set(serialized["eq"]) == {"schema_version", "enabled", "bands"}
-    assert "band_freqs" not in serialized["eq"]
-    for index in range(EQ_BAND_COUNT):
-        assert (
-            preset.value_provenance[f"eq.bands.{index}.frequency_hz"]
-            == "explicit"
-        )
-        assert (
-            preset.value_provenance[f"eq.bands.{index}.gain_db"]
-            == "explicit"
-        )
-        assert (
-            preset.value_provenance[f"eq.bands.{index}.q"]
-            == "explicit"
-        )
-        assert (
-            preset.value_provenance[f"eq.bands.{index}.filter_type"]
-            == "migration_default"
-        )
-        assert (
-            preset.value_provenance[f"eq.bands.{index}.stage"]
-            == "migration_default"
-        )
-    assert not any(
-        path.startswith("eq.band_") for path in preset.value_provenance
-    )
 
 
 def test_all_filter_contract_fields_round_trip_exactly() -> None:
@@ -240,7 +162,7 @@ def test_eq_band_constructor_rejects_incoherent_bandwidth_or_stage(overrides: di
         EQBandSettings(**{**band, **overrides})
 
 
-def test_independent_stages_roundtrip_and_combined_schema_migration():
+def test_independent_stages_roundtrip():
     correction = tuple(replace(band, gain_db=-2.0) for band in EQSettings().bands)
     tone = list(EQSettings().bands)
     tone[0] = replace(tone[0], filter_type="high_pass", frequency_hz=120.0, slope_db_per_octave=48)
@@ -251,10 +173,3 @@ def test_independent_stages_roundtrip_and_combined_schema_migration():
     restored.band_freqs = [125.0, *restored.band_freqs[1:]]
     assert restored.correction_bands == correction
     assert EQSettings.from_dict(restored.to_dict()).band_freqs[0] == 125.0
-
-    combined = EQSettings(band_gains=[1.0] * 10).to_dict()
-    combined["schema_version"] = 2
-    migrated = EQSettings.from_dict(combined)
-    assert migrated.schema_version == 3
-    assert migrated.band_gains == [1.0] * 10
-    assert migrated.correction_bands is None

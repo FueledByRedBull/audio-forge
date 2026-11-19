@@ -236,6 +236,12 @@ def close_windows_without_the_quit_question(monkeypatch):
     monkeypatch.setattr("mic_eq.ui.main_window.MainWindow._quit_choice", lambda _self: "quit")
 
 
+@pytest.fixture(autouse=True)
+def stop_without_the_confirm_question(monkeypatch):
+    """A Stop pressed while a test fakes a running engine must not wait for an answer."""
+    monkeypatch.setattr("mic_eq.ui.main_window.MainWindow._confirm_stop", lambda _self: True)
+
+
 @pytest.fixture(autouse=True, scope="module")
 def collect_the_last_module_garbage():
     """Free what the last module left in reference cycles here, on the main thread.

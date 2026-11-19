@@ -364,6 +364,7 @@ class MainWindow(QMainWindow):
     HEALTH_PAGE_INDEX = 1
     SETTINGS_PAGE_INDEX = 2
     EQUALIZER_PAGE_INDEX = 3
+    _stop_box: QMessageBox | None = None  # the open Stop question, for a stop that happens meanwhile
 
     def __init__(self, *, login_startup: bool = False):
         super().__init__()
@@ -2806,8 +2807,32 @@ class MainWindow(QMainWindow):
         self._select_combo_identity(self.input_choice, identity)
 
     def _request_stop(self, source: StopSource) -> None:
+        """A Stop the user pressed: live audio asks first, since callers would hear nothing."""
+        if source in ("button", "menu") and self.engine_session.stop_needs_confirm():
+            # The answer was for live audio; if it stopped meanwhile, a pending retry is not
+            # the user's to abandon here.
+            if not self._confirm_stop() or not self.engine_session.audio_is_live():
+                return
         self._cancel_login_startup_for_click()
         self.engine_session.request_stop(source)
+
+    def _confirm_stop(self) -> bool:
+        box = QMessageBox(
+            QMessageBox.Icon.Question,
+            "Stop Audio?",
+            "Callers will hear nothing until audio is started again.",
+            parent=self,
+        )
+        stop_button = box.addButton("Stop audio", QMessageBox.ButtonRole.AcceptRole)
+        keep_button = box.addButton("Keep running", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(stop_button)
+        box.setEscapeButton(keep_button)
+        self._stop_box = box
+        try:
+            box.exec()
+        finally:
+            self._stop_box = None
+        return box.clickedButton() is stop_button
 
     def _cancel_login_startup_for_click(self) -> None:
         if self.engine_session.view.busy is None and self.__dict__.get("_login_startup_deadline") is not None:
@@ -2859,6 +2884,13 @@ class MainWindow(QMainWindow):
 
     def _on_session_changed(self, view: SessionView) -> None:
         """Redraw from the engine session; its event names the prompt a transition asks for."""
+        stop_box = self._stop_box
+        if (
+            stop_box is not None
+            and not isinstance(view.event, MuteApplied)
+            and not self.engine_session.audio_is_live()
+        ):
+            stop_box.close()  # audio that stopped on its own is not asked about; this is Keep running
         match view.event:
             case MuteApplied():
                 tray_mute_action = self.__dict__.get("_tray_mute_action")

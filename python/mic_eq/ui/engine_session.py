@@ -635,6 +635,19 @@ class EngineSession(QObject):
         self._emit(AudioReleased(lease.purpose, report))
         return report
 
+    # --- stop confirm ------------------------------------------------------------------------
+
+    def audio_is_live(self) -> bool:
+        """The engine runs and no call is out on the worker, so nothing else is stopping it."""
+        return self._busy is None and bool(self.processor.is_running())
+
+    def stop_needs_confirm(self) -> bool:
+        """Whether a Stop the user pressed asks first: live audio callers can hear.
+
+        A muted output already leaves callers hearing nothing, so stopping it asks nothing.
+        """
+        return self.audio_is_live() and not self.view.output_muted
+
     # --- quit --------------------------------------------------------------------------------
 
     def quit_choice(self, ask: Callable[[], QuitChoice], *, confirm: bool) -> QuitChoice:

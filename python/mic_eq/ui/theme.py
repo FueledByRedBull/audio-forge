@@ -523,6 +523,32 @@ def prefers_reduced_motion() -> bool:
         return False
 
 
+def prefers_reduced_transparency() -> bool:
+    """Return whether the user turned Windows transparency effects off.
+
+    ``AUDIOFORGE_REDUCED_TRANSPARENCY`` overrides it, as ``AUDIOFORGE_REDUCED_MOTION``
+    does for motion. Windows keeps the switch (Personalization or Accessibility, Visual
+    effects) as ``EnableTransparency`` in the user's Personalize key; a missing value
+    means transparency is on.
+    """
+
+    override = os.getenv("AUDIOFORGE_REDUCED_TRANSPARENCY")
+    if override is not None:
+        return override.strip().lower() in {"1", "true", "yes", "on"}
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+        ) as key:
+            value, _kind = winreg.QueryValueEx(key, "EnableTransparency")
+        return value == 0
+    except OSError:
+        return False
+
+
 def application_stylesheet() -> str:
     """Return the one stylesheet that gives stock Qt widgets the app's look."""
 

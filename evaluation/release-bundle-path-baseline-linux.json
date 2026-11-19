@@ -613,6 +613,7 @@
     "_internal/mic_eq/ui/qml/ChoiceBox.qml",
     "_internal/mic_eq/ui/qml/FirstRunSetup.qml",
     "_internal/mic_eq/ui/qml/FocusRing.qml",
+    "_internal/mic_eq/ui/qml/GlassPanel.qml",
     "_internal/mic_eq/ui/qml/KeyButton.qml",
     "_internal/mic_eq/ui/qml/LatencyCalibration.qml",
     "_internal/mic_eq/ui/qml/ListeningComparison.qml",

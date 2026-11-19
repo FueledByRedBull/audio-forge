@@ -12,7 +12,7 @@ from __future__ import annotations
 import sys
 
 import pytest
-from PySide6.QtCore import QObject, QPointF, Qt, qInstallMessageHandler
+from PySide6.QtCore import QElapsedTimer, QObject, QPointF, QRectF, Qt, qInstallMessageHandler
 from PySide6.QtGui import QAccessible
 from PySide6.QtQml import QQmlEngine, QQmlExpression, QQmlProperty
 from PySide6.QtTest import QTest
@@ -114,6 +114,13 @@ def _show(window, qapp, page: int = OVERVIEW, width: int = 1400) -> None:
     window.centralWidget().setFocus()
     window.shell_page.setIndex(page)
     qapp.processEvents()
+
+
+def _inspect(window, qapp, key: str) -> None:
+    """Open the inspector of the stage ``key`` and let it finish opening."""
+    window.quick_bridge.model["inspector"].show(key)
+    qapp.processEvents()
+    QTest.qWait(400)
 
 
 def _open_every_disclosure(window, qapp) -> None:
@@ -317,15 +324,14 @@ def test_icon_buttons_are_named_by_what_they_do_not_by_their_tooltip_text(icon_w
 
 def test_the_help_buttons_name_what_they_explain_and_describe_it(icon_window, qapp) -> None:
     window = icon_window
-    _show(window, qapp)
-    stages = window.quick_bridge.model["stages"]
-    help_text = stages[1]["help"]
+    _show(window, qapp, EQUALIZER)
+    help_text = window.quick_bridge.model["eq"]["help"]
     with _AccessibleScene() as scene:
         button = next(
             button for button in _of_kind(window, "IconBtn")
             if scene.description(button) == help_text
         )
-        assert "noise gate" in scene.name(button).lower()
+        assert "equalizer" in scene.name(button).lower()
         assert len(scene.name(button)) <= 60
 
 
@@ -347,7 +353,8 @@ def test_chips_read_as_name_then_text_and_follow_the_text(quick_window, qapp) ->
 def test_a_disclosure_says_whether_its_section_is_shown(quick_window, qapp) -> None:
     window = quick_window
     _show(window, qapp)
-    disclosure = _named(window, "Show COMPRESSOR advanced", "Disclosure")
+    _inspect(window, qapp, "compressor")
+    disclosure = _named(window, "Show Compressor advanced", "Disclosure")
     advanced = window.quick_bridge.model["stages"][3]["advanced"]
     attack = advanced[0]["proxy"]
     with _AccessibleScene() as scene:
@@ -357,10 +364,10 @@ def test_a_disclosure_says_whether_its_section_is_shown(quick_window, qapp) -> N
         _focus(window, disclosure, qapp)
         _press(window, Qt.Key.Key_Space, qapp)
 
-        assert scene.name(disclosure) == "Hide COMPRESSOR advanced"
+        assert scene.name(disclosure) == "Hide Compressor advanced"
         assert [i for i in _of_kind(window, "ValueBox") if i.property("proxy") is attack]
         _press(window, Qt.Key.Key_Space, qapp)
-        assert scene.name(disclosure) == "Show COMPRESSOR advanced"
+        assert scene.name(disclosure) == "Show Compressor advanced"
         assert not [i for i in _of_kind(window, "ValueBox") if i.property("proxy") is attack]
 
 
@@ -608,13 +615,17 @@ def _positions(names: list[str], landmarks: list[str]) -> list[int]:
 # 1200 is wide but not roomy (one band-editor column); 1400 and up has two.
 @pytest.mark.parametrize("width", [1200, 1400, 1800])
 def test_tab_visits_the_page_in_reading_order(either_window, qapp, width) -> None:
+    _inspect(either_window, qapp, "suppression")
     names = _page_names(either_window, qapp, OVERVIEW, width, FRAME_LANDMARKS)
     landmarks = ["Enable noise suppression", "Noise suppression backend", "Noise suppression strength"]
     positions = _positions(names, landmarks)
     assert positions == sorted(positions), dict(zip(landmarks, positions))
-    # Each card's own switch comes before its controls.
+    # Each stage's own switch comes before its controls. Tab starts again from the top.
+    _inspect(either_window, qapp, "gate")
+    either_window.centralWidget().rootObject().forceActiveFocus()
+    names = _page_names(either_window, qapp, OVERVIEW, width, FRAME_LANDMARKS)
     assert names.index("Enable noise gate") < names.index("Gate manual threshold")
-    assert names.index("Gate manual threshold") < names.index("Show NOISE GATE advanced")
+    assert names.index("Gate manual threshold") < names.index("Show Noise gate advanced")
 
 
 @pytest.mark.parametrize("width", [1200, 1400, 1800])
@@ -661,8 +672,9 @@ def test_the_keyboard_activates_a_button(quick_window, qapp, monkeypatch, key) -
 def test_the_keyboard_opens_a_disclosure(quick_window, qapp, key) -> None:
     window = quick_window
     _show(window, qapp)
+    _inspect(window, qapp, "limiter")
     with _AccessibleScene():
-        disclosure = _named(window, "Show LIMITER advanced", "Disclosure")
+        disclosure = _named(window, "Show Limiter advanced", "Disclosure")
     _activate(window, disclosure, key, qapp)
     assert disclosure.property("open") is True
 
@@ -706,31 +718,35 @@ def test_each_signal_chain_row_carries_its_stage_switch_under_the_same_name(quic
             assert bool(_iface(switch).state().checked) is row["toggle"].checked
 
 
-def test_a_signal_chain_row_opens_its_page_or_brings_its_stage_card_into_view(quick_window, qapp) -> None:
+def test_a_signal_chain_row_opens_its_page_or_its_stage_inspector(quick_window, qapp) -> None:
     window = quick_window
     _show(window, qapp, EQUALIZER, width=900)
     window.resize(900, 640)
     QTest.qWait(50)
     rows = {row["name"]: row for row in window.quick_bridge.model["sidebar"]["chain"]}
-    page = next(item for item in _items(window.centralWidget().rootObject()) if item.objectName() == "overviewPage")
+    inspector = window.quick_bridge.model["inspector"]
+    shown = window.centralWidget().rootObject().findChild(QObject, "inspector")
 
     def open_row(name: str) -> None:
         with _AccessibleScene():
             _activate(window, _named(window, name, *PLAIN_BUTTONS), Qt.Key.Key_Space, qapp)
-        QTest.qWait(50)
+        QTest.qWait(400)
 
     open_row("Input cleanup")
-    assert window.shell_page.currentIndex() == SETTINGS
+    assert window.shell_page.currentIndex() == OVERVIEW
+    assert (inspector.shown, inspector.stageKey) == (True, "cleanup")
     open_row("Equalizer")
     assert window.shell_page.currentIndex() == EQUALIZER
+    assert not inspector.shown
     limiter = _with_proxy(window, "Toggle", rows["Limiter"]["toggle"])
     open_row("Limiter")
     assert window.shell_page.currentIndex() == OVERVIEW
-    assert page.property("contentY") > 0
-    assert _in_view(limiter, page)
+    assert (inspector.shown, inspector.stageKey) == (True, "limiter")
+    assert limiter.isVisible() and _in_view(limiter, shown)
     gate = _with_proxy(window, "Toggle", rows["Noise gate"]["toggle"])
     open_row("Noise gate")
-    assert _in_view(gate, page)
+    assert inspector.stageKey == "gate"
+    assert gate.isVisible() and _in_view(gate, shown) and not limiter.isVisible()
 
 
 @pytest.mark.parametrize("key", ACTIVATION_KEYS)
@@ -958,6 +974,8 @@ def _shows_focus(window, item) -> bool:
 def test_the_focused_control_always_shows_where_focus_is(either_window, qapp, page) -> None:
     window = either_window
     _show(window, qapp, page)
+    if page == OVERVIEW:
+        _inspect(window, qapp, "gate")
     view = window.centralWidget()
     stops = _tab_cycle(window, qapp, page)
     # Walk the cycle again, judging each stop while it holds focus.
@@ -974,7 +992,9 @@ def test_the_focused_control_always_shows_where_focus_is(either_window, qapp, pa
         assert len([ring for ring in _of_kind(window, "FocusRing") if ring.isVisible()]) == 1
     assert unmarked == []
     expected = {
-        OVERVIEW: {"Toggle", "ChainSwitch", "Fader", "Picker", "Btn", "MuteBtn", "LinkBtn", "Disclosure"},
+        OVERVIEW: {
+            "Toggle", "ChainSwitch", "Fader", "Picker", "Btn", "MuteBtn", "LinkBtn", "Disclosure", "CloseBtn",
+        },
         SETTINGS: {"SettingRow", "Picker"},
         EQUALIZER: {"Toggle", "Fader", "Picker", "QQuickTextInput", "EQGraphItem"},
     }
@@ -1059,28 +1079,37 @@ def test_an_opened_advanced_section_stays_open_when_the_window_crosses_the_wide_
     window = quick_window
     window.resize(1400, 900)
     qapp.processEvents()
-    opened = [d for d in _of_kind(window, "Disclosure") if d.property("subject") == "COMPRESSOR"]
+    _inspect(window, qapp, "compressor")
+    opened = [d for d in _of_kind(window, "Disclosure") if d.property("subject") == "Compressor"]
     opened[0].setProperty("open", True)
     qapp.processEvents()
     window.resize(1000, 900)
     qapp.processEvents()
-    again = [d for d in _of_kind(window, "Disclosure") if d.property("subject") == "COMPRESSOR"]
+    again = [d for d in _of_kind(window, "Disclosure") if d.property("subject") == "Compressor"]
     assert again and again[0].property("open") is True
 
 
 def test_a_stage_that_is_off_says_so_and_keeps_its_controls_at_full_strength(quick_window, qapp) -> None:
     window = quick_window
     _show(window, qapp)
+    _inspect(window, qapp, "gate")
     model = window.quick_bridge.model
     gate = model["stages"][1]
     assert gate["toggle"].checked
-    badges = lambda: [  # noqa: E731
-        c for c in _of_kind(window, "Caption") if c.property("text") == "Off" and c.isVisible()
-    ]
-    already_off = len(badges())
-    gate["toggle"].click()
-    qapp.processEvents()
-    assert len(badges()) == already_off + 1
+    row_button = _named(window, "Noise gate", *PLAIN_BUTTONS)
+
+    def says() -> tuple[list[str], str]:
+        status = [
+            c.property("text") for c in _of_kind(window, "StatusText")
+            if c.property("text").startswith("Noise gate is") and c.isVisible()
+        ]
+        return status, _iface(row_button).text(Text.Description)
+
+    with _AccessibleScene():
+        assert says() == (["Noise gate is on"], "On")
+        gate["toggle"].click()
+        qapp.processEvents()
+        assert says() == (["Noise gate is off"], "Off")
     threshold = gate["rows"][0]["proxy"]
     row = next(
         r for r in _of_kind(window, "ControlRow") if r.property("p") is threshold
@@ -1135,10 +1164,10 @@ def test_the_navigation_is_a_named_group_and_the_meters_have_roles(quick_window,
 
 def test_a_help_tip_opened_by_the_keyboard_goes_when_focus_moves_on(quick_window, qapp) -> None:
     window = quick_window
-    _show(window, qapp)
+    _show(window, qapp, EQUALIZER)
     root = window.centralWidget().rootObject()
     tip = root.findChild(QObject, "tooltip")
-    help_text = window.quick_bridge.model["stages"][1]["help"]
+    help_text = window.quick_bridge.model["eq"]["help"]
     button = next(b for b in _of_kind(window, "IconBtn") if b.property("hint") == help_text)
     _focus(window, button, qapp)
     _press(window, Qt.Key.Key_Space, qapp)
@@ -1155,6 +1184,13 @@ def test_a_help_tip_opened_by_the_keyboard_goes_when_focus_moves_on(quick_window
 @pytest.fixture
 def reduced_motion_window(request, monkeypatch):
     monkeypatch.setenv("AUDIOFORGE_REDUCED_MOTION", "1")
+    return request.getfixturevalue("quick_window")
+
+
+@pytest.fixture
+def full_motion_window(request, monkeypatch):
+    # Windows can report its animations off on its own; the slide must not depend on that.
+    monkeypatch.setenv("AUDIOFORGE_REDUCED_MOTION", "0")
     return request.getfixturevalue("quick_window")
 
 
@@ -1431,15 +1467,18 @@ def test_a_mode_that_changes_the_sound_stands_out_in_its_picker(quick_window, qa
 def test_help_is_in_the_accessible_description_not_only_in_the_hover_tip(quick_window, qapp) -> None:
     window = quick_window
     _show(window, qapp)
-    _open_every_disclosure(window, qapp)
     wrong, checked = [], 0
     with _AccessibleScene() as scene:
-        for item in _of_kind(window, "Toggle", "Fader", "Picker", "Btn"):
-            tip = getattr(item.property("proxy"), "toolTip", "")
-            if item.isVisible() and tip:
-                checked += 1
-                if scene.description(item) != tip:
-                    wrong.append(f"{_kind(item)} {scene.name(item)!r}")
+        # Each stage's controls show only in its inspector.
+        for key in ("cleanup", "gate", "suppression", "deesser", "compressor", "limiter"):
+            _inspect(window, qapp, key)
+            _open_every_disclosure(window, qapp)
+            for item in _of_kind(window, "Toggle", "Fader", "Picker", "Btn"):
+                tip = getattr(item.property("proxy"), "toolTip", "")
+                if item.isVisible() and tip:
+                    checked += 1
+                    if scene.description(item) != tip:
+                        wrong.append(f"{_kind(item)} {scene.name(item)!r}")
         band = window.quick_bridge.model["eq"]["bands"][0]["frequency"]
         box = next(
             child for child in _with_proxy(window, "ValueBox", band).childItems()
@@ -1490,6 +1529,7 @@ def test_keyboard_focus_shows_the_help_of_a_control_and_escape_closes_it(quick_w
 def test_control_edges_and_tracks_draw_from_the_control_edge_token(quick_window, qapp) -> None:
     window = quick_window
     _show(window, qapp)
+    _inspect(window, qapp, "compressor")
     _open_every_disclosure(window, qapp)
     model = window.quick_bridge.model
     edge = model["theme"]["control_edge"].lower()
@@ -1515,41 +1555,215 @@ def test_control_edges_and_tracks_draw_from_the_control_edge_token(quick_window,
 
 
 @pytest.mark.parametrize("width", [900, 1200, 1400, 1800])
-def test_the_stage_cards_are_visited_and_laid_out_in_signal_order(quick_window, qapp, width) -> None:
+def test_the_stage_inspectors_are_opened_and_stacked_in_signal_order(quick_window, qapp, width) -> None:
     window = quick_window
-    stops = _tab_cycle(window, qapp, width=width)
-    grid = window.centralWidget().rootObject().findChild(QObject, "stageGrid")
-
-    def in_grid(item) -> bool:
-        while item is not None and item is not grid:
-            item = item.parentItem()
-        return item is grid
-
-    # The sidebar names the same switches in signal order; this is about the cards.
-    with _AccessibleScene() as scene:
-        names = [scene.name(item) for item in stops if in_grid(item)]
-    switches = [
-        "Enable noise suppression", "Enable noise gate", "Enable de-esser", "Enable compressor", "Enable limiter",
+    _show(window, qapp, width=width)
+    root = window.centralWidget().rootObject()
+    stack = root.findChild(QObject, "inspectorStack")
+    inspector = window.quick_bridge.model["inspector"]
+    chain = [row for row in window.quick_bridge.model["sidebar"]["chain"] if row["card"]]
+    panels = [item for item in stack.childItems() if _kind(item) == "InspectorPanel"]
+    assert [panel.property("card")["key"] for panel in panels] == [row["key"] for row in chain] == [
+        "cleanup", "gate", "suppression", "deesser", "compressor", "limiter",
     ]
-    positions = [names.index(name) for name in switches]
-    assert positions == sorted(positions), dict(zip(switches, positions))
+    view = window.centralWidget()
+    with _AccessibleScene() as scene:
+        for row in chain:
+            _activate(window, _named(window, row["name"], *PLAIN_BUTTONS), Qt.Key.Key_Return, qapp)
+            QTest.qWait(400)
+            assert inspector.stageKey == row["key"]
+            assert [panel.isVisible() for panel in panels] == [p is panels[chain.index(row)] for p in panels]
+            # The stage's own switch comes first; Input cleanup has none, so its close button does.
+            focused = view.quickWindow().activeFocusItem()
+            expected = f"Enable {row['name'].lower()}" if row["toggle"] else f"Close {row['name']}"
+            assert scene.name(focused) == expected
+            assert QRectF(0, 0, width, 900).contains(
+                focused.mapRectToScene(QRectF(0, 0, focused.width(), focused.height()))
+            )
 
-    cards = [item for item in grid.childItems() if _kind(item) == "StageCard"]
-    assert len(cards) == 5
-    rows = [(card.x(), card.y(), card.x() + card.width(), card.y() + card.height()) for card in cards]
-    assert grid.property("implicitHeight") >= max(row[3] for row in rows)
-    # One column under 1200 px, otherwise two: left to right, then down, each under the card above it.
-    wide = width >= 1200
-    assert len({round(row[0]) for row in rows}) == (2 if wide else 1)
-    for first, second in ((0, 1), (0, 2), (1, 3), (2, 4)) if wide else ((0, 1), (1, 2), (2, 3), (3, 4)):
-        above, below = rows[first], rows[second]
-        if above[0] == below[0]:
-            assert below[1] > above[3], (first, second)
+
+def _focused(window):
+    return window.centralWidget().quickWindow().activeFocusItem()
+
+
+@pytest.mark.parametrize("how", ["mouse", "space", "return"])
+def test_a_stage_row_opens_its_inspector_and_escape_gives_focus_back(quick_window, qapp, how) -> None:
+    window = quick_window
+    _show(window, qapp)
+    inspector = window.quick_bridge.model["inspector"]
+    compressor = window.quick_bridge.model["stages"][3]
+    with _AccessibleScene() as scene:
+        row = _named(window, "Compressor", *PLAIN_BUTTONS)
+        if how == "mouse":
+            _click(window, row, qapp)
         else:
-            assert below[0] >= above[2] and below[1] == above[1] == 0, (first, second)
-    for i, a in enumerate(rows):
-        for b in rows[i + 1:]:
-            assert a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1], (a, b)
+            _activate(window, row, Qt.Key.Key_Space if how == "space" else Qt.Key.Key_Return, qapp)
+        QTest.qWait(400)
+        assert (inspector.shown, inspector.stageKey) == (True, "compressor")
+        assert _iface(row).state().selected
+        panel = window.centralWidget().rootObject().findChild(QObject, "inspector")
+        assert scene.name(panel) == "Compressor inspector" and _iface(panel).role() == Role.Grouping
+        # Focus goes to the stage's switch, wearing its ring only when the keyboard put it there.
+        switch = _with_proxy(window, "Toggle", compressor["toggle"])
+        assert _focused(window) is switch
+        assert (len(_rings(window, switch)) == 1) is (how != "mouse")
+
+        _press(window, Qt.Key.Key_Escape, qapp)
+        assert not inspector.shown
+        assert _focused(window) is row and len(_rings(window, row)) == 1
+        assert not _iface(row).state().selected
+        QTest.qWait(400)
+        assert not panel.isVisible()
+
+
+def test_the_close_button_is_named_for_its_stage_and_gives_focus_back(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    inspector = window.quick_bridge.model["inspector"]
+    with _AccessibleScene() as scene:
+        row = _named(window, "Compressor", *PLAIN_BUTTONS)
+        _activate(window, row, Qt.Key.Key_Return, qapp)
+        close = _named(window, "Close Compressor", "CloseBtn")
+        assert _iface(close).role() == Role.Button and scene.description(close) == "Esc"
+        # Its ring shows on the glass.
+        _focus(window, close, qapp)
+        assert len(_rings(window, close)) == 1
+        _press(window, Qt.Key.Key_Space, qapp)
+        assert not inspector.shown
+        assert _focused(window) is row
+
+
+def test_one_inspector_shows_at_a_time_and_its_row_closes_it(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    inspector = window.quick_bridge.model["inspector"]
+    with _AccessibleScene():
+        gate_row = _named(window, "Noise gate", *PLAIN_BUTTONS)
+        compressor_row = _named(window, "Compressor", *PLAIN_BUTTONS)
+        _click(window, gate_row, qapp)
+        _click(window, compressor_row, qapp)
+        QTest.qWait(400)
+        assert inspector.stageKey == "compressor"
+        shown = [panel for panel in _of_kind(window, "InspectorPanel") if panel.isVisible()]
+        assert [panel.property("card")["key"] for panel in shown] == ["compressor"]
+        assert [_iface(row).state().selected for row in (gate_row, compressor_row)] == [False, True]
+        _click(window, compressor_row, qapp)
+        assert not inspector.shown
+        assert _focused(window) is compressor_row
+
+
+def test_a_stage_keeps_its_open_sections_when_another_is_inspected(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    gate = window.quick_bridge.model["stages"][1]
+    _inspect(window, qapp, "gate")
+    disclosure = _named(window, "Show Noise gate advanced", "Disclosure")
+    disclosure.setProperty("open", True)
+    threshold = _with_proxy(window, "Fader", gate["rows"][0]["proxy"])
+    _inspect(window, qapp, "deesser")
+    assert not threshold.isVisible()
+    _inspect(window, qapp, "gate")
+    assert disclosure.property("open") is True
+    assert _with_proxy(window, "Fader", gate["rows"][0]["proxy"]) is threshold and threshold.isVisible()
+
+
+def test_the_inspector_closes_when_another_page_opens(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    inspector = window.quick_bridge.model["inspector"]
+    _inspect(window, qapp, "limiter")
+    window.shell_page.setIndex(HEALTH)
+    qapp.processEvents()
+    assert not inspector.shown
+    window.shell_page.setIndex(OVERVIEW)
+    _inspect(window, qapp, "limiter")
+    with _AccessibleScene():
+        overview = _named(window, "Overview", *PLAIN_BUTTONS)
+        assert not _iface(overview).state().selected
+        _activate(window, overview, Qt.Key.Key_Space, qapp)
+        assert not inspector.shown and _iface(overview).state().selected
+
+
+def test_the_input_cleanup_inspector_holds_the_settings_pickers_and_no_switch(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    _inspect(window, qapp, "cleanup")
+    panel = next(p for p in _of_kind(window, "InspectorPanel") if p.isVisible())
+    shown = [item for item in _items(panel) if item.isVisible()]
+    assert not [item for item in shown if _kind(item) == "Toggle"]
+    pickers = [item for item in shown if _kind(item) == "Picker"]
+    assert [item.property("proxy") for item in pickers] == [
+        window.input_cleanup_mode_choice, window.input_channel_mode_choice,
+    ]
+    # The Settings page shows the same two choices.
+    for proxy in (window.input_cleanup_mode_choice, window.input_channel_mode_choice):
+        assert len([item for item in _of_kind(window, "Picker") if item.property("proxy") is proxy]) == 2
+    before = window.input_cleanup_mode_choice.index
+    window.input_cleanup_mode_choice.setIndex((before + 1) % len(window.input_cleanup_mode_choice.items))
+    qapp.processEvents()
+    assert pickers[0].property("currentIndex") == window.input_cleanup_mode_choice.index != before
+
+
+@pytest.mark.parametrize("key", ["cleanup", "gate", "suppression", "deesser", "compressor", "limiter"])
+def test_every_control_in_a_stage_inspector_is_reached_and_named(quick_window, qapp, key) -> None:
+    window = quick_window
+    _show(window, qapp)
+    _inspect(window, qapp, key)
+    _open_every_disclosure(window, qapp)
+    panel = next(p for p in _of_kind(window, "InspectorPanel") if p.isVisible())
+    inside = {id(item) for item in _items(panel)}
+    controls = [item for item in _tabbable(window, KEYBOARD_KINDS + ("CloseBtn",)) if id(item) in inside]
+    assert controls
+    stops = _tab_cycle(window, qapp)
+    with _AccessibleScene() as scene:
+        assert [f"{_kind(item)} {scene.name(item)!r}" for item in controls if item not in stops] == []
+        assert [_kind(item) for item in controls if not scene.name(item)] == []
+
+
+def _slide(window, qapp, act, limit_ms: int) -> tuple[int, list[tuple[int, float]]]:
+    """How long the inspector takes to slide after ``act``, and its progress along the way."""
+    panel = window.centralWidget().rootObject().findChild(QObject, "inspector")
+    start = panel.property("progress")
+    timer = QElapsedTimer()
+    timer.start()
+    act()
+    samples = []
+    while panel.property("progress") == start or 0 < panel.property("progress") < 1:
+        assert timer.elapsed() < limit_ms, samples[-3:]
+        QTest.qWait(5)
+        samples.append((timer.elapsed(), panel.property("progress")))
+    return timer.elapsed(), samples
+
+
+def test_the_inspector_slides_on_the_panel_tokens(full_motion_window, qapp) -> None:
+    window = full_motion_window
+    theme = window.quick_bridge.model["theme"]
+    inspector = window.quick_bridge.model["inspector"]
+    _show(window, qapp)
+    opening, samples = _slide(window, qapp, lambda: inspector.show("gate"), 2000)
+    assert theme["motionPanelOpen"] * 0.8 <= opening <= theme["motionPanelOpen"] + 300
+    # Opening eases out: most of the way is covered in the first half of the time.
+    early = [progress for elapsed, progress in samples if elapsed <= theme["motionPanelOpen"] * 0.4]
+    assert early and max(early) > 0.75
+    closing, samples = _slide(window, qapp, inspector.close, 2000)
+    assert theme["motionPanelClose"] * 0.8 <= closing <= theme["motionPanelClose"] + 300
+    # Closing eases in: it starts slowly and leaves fast.
+    early = [progress for elapsed, progress in samples if elapsed <= theme["motionPanelClose"] * 0.4]
+    assert early and min(early) > 0.6
+
+
+def test_under_reduced_motion_the_inspector_fades_without_sliding(reduced_motion_window, qapp) -> None:
+    window = reduced_motion_window
+    _show(window, qapp)
+    panel = window.centralWidget().rootObject().findChild(QObject, "inspector")
+    window.quick_bridge.model["inspector"].show("gate")
+    QTest.qWait(30)
+    assert panel.property("progress") == 1
+    assert 0 < panel.property("opacity") < 1
+    window.quick_bridge.model["inspector"].close()
+    QTest.qWait(30)
+    assert panel.property("progress") == 0
+    assert 0 < panel.property("opacity") < 1
 
 
 def _text_blocks(source: str):

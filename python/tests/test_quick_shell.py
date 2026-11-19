@@ -39,7 +39,7 @@ from mic_eq.ui.eq_quick_graph import EQGraphItem
 from mic_eq.ui.eq_graph import EQGraphGeometry
 from mic_eq.ui.level_meter import CLIP_FLAT_TOP_SAMPLES
 from mic_eq.ui.quick_meter import QuickMeterItem
-from mic_eq.ui.quick_shell import SettingControl
+from mic_eq.ui.quick_shell import InspectorState, SettingControl
 from mic_eq.ui.theme import PALETTE
 
 
@@ -72,6 +72,10 @@ def test_live_data_changes_repaint_existing_qml_items(quick_window, name) -> Non
     # Supply telemetry without opening audio devices or running stopped-stream refreshes.
     for timer in window.findChildren(QTimer):
         timer.stop()
+    if name in {"compressor", "deesser"}:
+        # A stage's meter is in its inspector.
+        window.quick_bridge.model["inspector"].show(name)
+        QTest.qWait(400)
     target = {
         "input": window.input_meter,
         "output": window.output_meter,
@@ -1177,8 +1181,16 @@ def test_keyboard_focus_scrolls_its_control_into_view(quick_window, qapp) -> Non
     view = quick_window.centralWidget()
     view.setFocus()
     qapp.processEvents()
-    limiter = quick_window.quick_bridge.model["stages"][-1]
-    toggle = _find(view.rootObject(), "Toggle", limiter["toggle"])
+    compressor = quick_window.quick_bridge.model["stages"][3]
+    quick_window.quick_bridge.model["inspector"].show("compressor")
+    QTest.qWait(400)
+    disclosure = next(
+        item for item in _items(view.rootObject())
+        if item.metaObject().className().startswith("Disclosure") and item.property("subject") == "Compressor"
+    )
+    disclosure.setProperty("open", True)
+    QTest.qWait(100)  # the opened rows are laid out
+    toggle = _find(view.rootObject(), "Toggle", _rows(compressor)["Sidechain high-pass"]["proxy"])
     assert toggle is not None
     page = toggle
     while page is not None and page.property("contentY") is None:
@@ -1187,6 +1199,68 @@ def test_keyboard_focus_scrolls_its_control_into_view(quick_window, qapp) -> Non
     toggle.forceActiveFocus()
     qapp.processEvents()
     assert page.property("contentY") > 0
+
+
+def _items(root):
+    for child in root.childItems():
+        yield child
+        yield from _items(child)
+
+
+def test_the_inspector_state_opens_known_stages_and_keeps_the_last_one_while_closed(qapp) -> None:
+    owner = QObject()
+    state = InspectorState(owner, ["gate", "limiter"])
+    spy = QSignalSpy(state.changed)
+    state.show("equalizer")
+    assert (state.shown, state.stageKey, spy.count()) == (False, "", 0)
+    state.show("gate")
+    state.show("gate")
+    assert (state.shown, state.stageKey, spy.count()) == (True, "gate", 1)
+    state.show("limiter")
+    state.close()
+    state.close()
+    # The panel that fades out is the one that was open.
+    assert (state.shown, state.stageKey, spy.count()) == (False, "limiter", 3)
+
+
+GLASS_CASES = {
+    "blurred": ({}, True),
+    "software": ({"blurAllowed": False}, False),
+    "reduced-transparency": ({"theme": {"reducedTransparency": True}}, False),
+    "contrast": ({"theme": {"highContrast": True}}, False),
+}
+
+
+@pytest.mark.parametrize("case", GLASS_CASES)
+def test_the_glass_panel_is_solid_without_its_blur(qapp, case) -> None:
+    from PySide6.QtCore import QByteArray, QUrl
+    from PySide6.QtQml import QQmlComponent, QQmlEngine
+
+    from mic_eq.ui.quick_scene import QML_DIR, quick_theme
+
+    changes, blurred = GLASS_CASES[case]
+    theme = {**quick_theme(), "reducedTransparency": False, "highContrast": False, **changes.get("theme", {})}
+    engine = QQmlEngine()
+    engine.rootContext().setContextProperty("theme", theme)
+    component = QQmlComponent(engine)
+    allowed = changes.get("blurAllowed", True)
+    source = (
+        "import QtQuick\nItem {\n    Rectangle { id: behind; width: 200; height: 200 }\n"
+        f"    GlassPanel {{ objectName: \"glass\"; width: 100; height: 100; backdrop: behind; "
+        f"blurAllowed: {'true' if allowed else 'false'} }}\n}}\n"
+    )
+    component.setData(QByteArray(source.encode()), QUrl.fromLocalFile(str(QML_DIR / "GlassProbe.qml")))
+    probe = component.create()
+    assert probe is not None, [error.toString() for error in component.errors()]
+    glass, blur, fill = (probe.findChild(QObject, name) for name in ("glass", "glassBlur", "glassFill"))
+    assert glass is not None and blur is not None and fill is not None
+    assert glass.property("effectsOn") is blurred
+    assert blur.property("active") is blurred
+    assert fill.property("color").name(QColor.NameFormat.HexArgb) == (
+        PALETTE.glass if blurred else PALETTE.glass_solid
+    )
+    probe.deleteLater()
+    engine.deleteLater()
 
 
 def _queue_limiter_ceiling(window, *, reject: bool = False) -> list[float]:

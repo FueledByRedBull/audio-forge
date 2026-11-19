@@ -30,10 +30,13 @@ Rectangle {
     color: t.app_surface
 
     onPressingChanged: if (pressing) tip.close()
-    // Esc closes a tip that keyboard focus opened, as it closes one the help button opened.
+    // Esc closes a tip that keyboard focus opened, as it closes one the help button opened;
+    // without a tip it closes the inspector.
     Keys.onEscapePressed: event => {
         if (tip.visible)
             tip.close()
+        else if (inspecting)
+            closeInspector(Qt.TabFocusReason)
         else
             event.accepted = false
     }
@@ -484,75 +487,6 @@ Rectangle {
         }
     }
 
-    component StageCard: Surface {
-        id: stage
-        property var card
-        CardHeader { card: stage.card; Layout.fillWidth: true }
-        Chip {
-            proxy: stage.card.alert
-            visible: !!proxy && (proxy.state === "warn" || proxy.state === "bad")
-            Layout.fillWidth: true
-        }
-        Repeater {
-            model: stage.card.rows
-            delegate: ControlRow {
-                required property var modelData
-                row: modelData
-                Layout.fillWidth: true
-            }
-        }
-        ColumnLayout {
-            visible: stage.card.trace && root.ui.levels.length > 1
-            spacing: 6
-            Layout.fillWidth: true
-            LevelTrace {
-                points: root.ui.levels
-                Layout.fillWidth: true
-                implicitHeight: 52
-                Accessible.role: Accessible.Graphic
-                Accessible.name: "Input and output level history"
-            }
-            Row {
-                spacing: 14
-                Repeater {
-                    model: [["Input", root.t.text_muted], ["Output", root.t.accent]]
-                    delegate: Row {
-                        required property var modelData
-                        spacing: 6
-                        Rectangle {
-                            width: 10
-                            height: 2
-                            color: parent.modelData[1]
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                        Text {
-                            textFormat: Text.PlainText
-                            text: parent.modelData[0]
-                            color: root.t.text_muted
-                            font.pixelSize: root.fsCaption
-                        }
-                    }
-                }
-            }
-        }
-        Disclosure {
-            id: more
-            text: "Advanced"
-            subject: stage.card.title
-            visible: stage.card.advanced.length > 0
-            Layout.fillWidth: true
-        }
-        Repeater {
-            model: more.open ? stage.card.advanced : []
-            delegate: ControlRow {
-                required property var modelData
-                row: modelData
-                Layout.fillWidth: true
-                FadeIn on opacity {}
-            }
-        }
-    }
-
     // One line of the Settings page: a switch, an action, or a menu.
     component SettingRow: ModelButton {
         id: setting
@@ -668,11 +602,6 @@ Rectangle {
             else if (top + item.height > contentY + height - 12)
                 contentY = Math.min(contentHeight - height, top + item.height - height + 12)
         }
-        // Bring `item` to the top of the page.
-        function reveal(item) {
-            const top = item.mapToItem(contentItem, 0, 0).y
-            contentY = Math.max(0, Math.min(contentHeight - height, top - 12))
-        }
         ScrollBar.vertical: ScrollBar {
             id: bar
             Accessible.name: page.scrollName
@@ -689,6 +618,203 @@ Rectangle {
             y: 4
             width: parent.width - page.leftInset - page.rightInset
             spacing: 16
+        }
+    }
+
+    // The cross that closes the inspector, drawn as two strokes so it needs no icon font.
+    component CloseBtn: KeyButton {
+        id: closer
+        implicitWidth: 30
+        implicitHeight: 30
+        Accessible.role: Accessible.Button
+        Accessible.description: "Esc"
+        background: Rectangle {
+            radius: root.t.radiusControl
+            color: closer.hovered ? root.t.control_hover : "transparent"
+            FocusRing { control: closer }
+        }
+        contentItem: Item {
+            Repeater {
+                model: [45, -45]
+                delegate: Rectangle {
+                    required property int modelData
+                    anchors.centerIn: parent
+                    width: 14
+                    height: 2
+                    radius: 1
+                    rotation: modelData
+                    color: closer.hovered ? root.t.hover_text : root.t.text_muted
+                }
+            }
+        }
+    }
+
+    // One stage in the inspector: its switch, its controls and readings, and what it is for.
+    component InspectorPanel: ColumnLayout {
+        id: panel
+        // A stage of `m.stages`, or the Input cleanup card.
+        required property var modelData
+        readonly property alias card: panel.modelData
+        // Where keyboard focus lands when the panel opens.
+        readonly property Item first: card.toggle ? onSwitch : closeButton
+        signal closeRequested(int reason)
+        spacing: 0
+        RowLayout {
+            spacing: 10
+            Layout.fillWidth: true
+            Layout.margins: 18
+            Layout.bottomMargin: 10
+            Text {
+                text: panel.card.name
+                textFormat: Text.PlainText
+                color: root.t.text_primary
+                font.pixelSize: root.fsLead
+                font.weight: Font.DemiBold
+                elide: Text.ElideRight
+                Layout.fillWidth: true
+                Accessible.role: Accessible.Heading
+                Accessible.name: text
+            }
+            // The key that does what the cross does.
+            Rectangle {
+                implicitWidth: escCap.implicitWidth + 12
+                implicitHeight: 22
+                radius: root.t.radiusControl
+                color: root.t.control_surface
+                border.color: root.t.control_edge
+                Text {
+                    id: escCap
+                    anchors.centerIn: parent
+                    text: "Esc"
+                    textFormat: Text.PlainText
+                    color: root.t.text_muted
+                    font.pixelSize: Look.fsTick
+                    Accessible.ignored: true
+                }
+            }
+            CloseBtn {
+                id: closeButton
+                Accessible.name: "Close " + panel.card.name
+                onClicked: panel.closeRequested(visualFocus ? Qt.TabFocusReason : Qt.MouseFocusReason)
+            }
+        }
+        RowLayout {
+            visible: !!panel.card.toggle
+            spacing: 12
+            Layout.fillWidth: true
+            Layout.leftMargin: 18
+            Layout.rightMargin: 18
+            Layout.bottomMargin: 12
+            // Said in words, so the state does not rest on the switch's colour.
+            StatusText {
+                text: panel.card.name + (panel.card.toggle && panel.card.toggle.checked ? " is on" : " is off")
+                color: root.t.text_primary
+                Layout.fillWidth: true
+            }
+            Toggle { id: onSwitch; proxy: panel.card.toggle }
+        }
+        Rectangle {
+            implicitHeight: 1
+            color: root.t.glass_edge
+            Layout.fillWidth: true
+        }
+        Page {
+            leftInset: 18
+            rightInset: 12
+            spacing: 14
+            scrollName: panel.card.name + " scroll bar"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.topMargin: 10
+            Chip {
+                proxy: panel.card.alert
+                visible: !!proxy && (proxy.state === "warn" || proxy.state === "bad")
+                Layout.fillWidth: true
+            }
+            Repeater {
+                model: panel.card.rows
+                delegate: ControlRow {
+                    required property var modelData
+                    row: modelData
+                    Layout.fillWidth: true
+                }
+            }
+            ColumnLayout {
+                visible: panel.card.trace && root.ui.levels.length > 1
+                spacing: 6
+                Layout.fillWidth: true
+                LevelTrace {
+                    points: root.ui.levels
+                    Layout.fillWidth: true
+                    implicitHeight: 52
+                    Accessible.role: Accessible.Graphic
+                    Accessible.name: "Input and output level history"
+                }
+                Row {
+                    spacing: 14
+                    Repeater {
+                        model: [["Input", root.t.text_muted], ["Output", root.t.accent]]
+                        delegate: Row {
+                            required property var modelData
+                            spacing: 6
+                            Rectangle {
+                                width: 10
+                                height: 2
+                                color: parent.modelData[1]
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                textFormat: Text.PlainText
+                                text: parent.modelData[0]
+                                color: root.t.text_muted
+                                font.pixelSize: root.fsCaption
+                            }
+                        }
+                    }
+                }
+            }
+            Disclosure {
+                id: more
+                text: "Advanced"
+                subject: panel.card.name
+                visible: panel.card.advanced.length > 0
+                Layout.fillWidth: true
+            }
+            Repeater {
+                model: more.open ? panel.card.advanced : []
+                delegate: ControlRow {
+                    required property var modelData
+                    row: modelData
+                    Layout.fillWidth: true
+                    FadeIn on opacity {}
+                }
+            }
+            Chip {
+                proxy: panel.card.readout ?? null
+                visible: !!proxy
+                Layout.fillWidth: true
+            }
+            BodyText {
+                text: panel.card.help
+                visible: text !== ""
+                color: root.t.text_muted
+                Layout.bottomMargin: 8
+            }
+        }
+        Rectangle {
+            implicitHeight: 1
+            color: root.t.glass_edge
+            Layout.fillWidth: true
+        }
+        RowLayout {
+            spacing: 8
+            Layout.fillWidth: true
+            Layout.margins: 12
+            IconBtn { proxy: root.m.presets.undo; glyph: root.m.glyphs.undo; visible: root.hasIcons }
+            IconBtn { proxy: root.m.presets.redo; glyph: root.m.glyphs.redo; visible: root.hasIcons }
+            Btn { proxy: root.m.presets.undo; visible: !root.hasIcons }
+            Btn { proxy: root.m.presets.redo; visible: !root.hasIcons }
+            Item { Layout.fillWidth: true }
         }
     }
 
@@ -777,6 +903,8 @@ Rectangle {
         property bool current: false
         property bool dim: false
         property var toggle: null
+        // The row's button, where focus goes back to when what it opened closes.
+        readonly property alias button: navButton
         signal opened()
         implicitHeight: 46
         KeyButton {
@@ -878,14 +1006,36 @@ Rectangle {
         }
     }
 
-    // A chain row opens its own page, or else scrolls the Overview to the stage's card.
-    function openChainRow(row) {
+    // A chain row opens its own page, or else its stage's inspector beside the Overview; the row of
+    // the open inspector closes it.
+    function openChainRow(row, button) {
+        const reason = button.visualFocus ? Qt.TabFocusReason : Qt.MouseFocusReason
         if (row.page >= 0) {
             m.page.setIndex(row.page)
-            return
+        } else if (inspecting && m.inspector.stageKey === row.key) {
+            closeInspector(reason)
+        } else {
+            m.page.setIndex(0)
+            inspectorOrigin = button
+            m.inspector.show(row.key)
+            inspectorPanel(row.key).first.forceActiveFocus(reason)
         }
-        m.page.setIndex(0)
-        overviewPage.reveal(stageCards.itemAt(row.stage))
+    }
+
+    function inspectorPanel(key) {
+        for (let i = 0; i < inspectorPanels.count; ++i) {
+            const panel = inspectorPanels.itemAt(i) as InspectorPanel
+            if (panel?.card?.key === key)
+                return panel
+        }
+        return null
+    }
+
+    // Focus goes back to the row that opened the inspector.
+    function closeInspector(reason) {
+        m.inspector.close()
+        if (inspectorOrigin)
+            inspectorOrigin.forceActiveFocus(reason)
     }
 
     // The toolbar meters keep their size whatever they read, so the row does not shift.
@@ -1128,21 +1278,26 @@ Rectangle {
                 Accessible.name: "Navigation"
                 NavRow {
                     name: "Overview"
-                    current: root.m.page.index === 0
-                    onOpened: root.m.page.setIndex(0)
+                    current: root.m.page.index === 0 && !root.inspecting
+                    onOpened: {
+                        root.m.inspector.close()
+                        root.m.page.setIndex(0)
+                    }
                     Layout.fillWidth: true
                 }
                 SectionLabel { text: "SIGNAL CHAIN"; Layout.topMargin: 14; Layout.bottomMargin: 4 }
                 Repeater {
                     model: root.m.sidebar.chain
                     delegate: NavRow {
+                        id: chainRow
                         required property var modelData
                         name: modelData.name
                         toggle: modelData.toggle
                         detail: modelData.state ? modelData.state.text : modelData.toggle.checked ? "On" : "Off"
                         dim: !!modelData.toggle && !modelData.toggle.checked
-                        current: modelData.page === root.m.equalizerPage && root.m.page.index === modelData.page
-                        onOpened: root.openChainRow(modelData)
+                        current: modelData.page >= 0 ? root.m.page.index === modelData.page
+                                                     : root.inspecting && root.m.inspector.stageKey === modelData.key
+                        onOpened: root.openChainRow(modelData, chainRow.button)
                         Layout.fillWidth: true
                     }
                 }
@@ -1236,6 +1391,7 @@ Rectangle {
         anchors.top: toolbar.bottom
         anchors.bottom: parent.bottom
         anchors.leftMargin: root.wide ? 24 : 12
+        anchors.rightMargin: root.inspectorRoom
         anchors.topMargin: 16
         anchors.bottomMargin: 8
         spacing: 12
@@ -1284,40 +1440,6 @@ Rectangle {
                     Btn { proxy: root.m.presets.testSound }
                     Btn { proxy: root.m.presets.autoEq }
                     Btn { objectName: "voiceSetupButton"; proxy: root.m.presets.voiceSetup }
-                }
-
-                // Signal order reads left to right, then down. The cards are siblings in that order, so Tab
-                // and screen readers follow it; each sits under the card above it in its column.
-                Item {
-                    id: stageGrid
-                    objectName: "stageGrid"
-                    readonly property int lanes: root.wide ? 2 : 1
-                    readonly property int gap: 16
-                    Layout.fillWidth: true
-                    implicitHeight: {
-                        let bottom = 0
-                        for (let i = 0; i < stageCards.count; ++i) {
-                            const card = stageCards.itemAt(i)
-                            if (card)
-                                bottom = Math.max(bottom, card.y + card.height)
-                        }
-                        return bottom
-                    }
-                    Repeater {
-                        id: stageCards
-                        model: root.m.stages
-                        delegate: StageCard {
-                            required property int index
-                            required property var modelData
-                            readonly property Item above: index >= stageGrid.lanes
-                                                          ? stageCards.itemAt(index - stageGrid.lanes) : null
-                            card: modelData
-                            width: (stageGrid.width - (stageGrid.lanes - 1) * stageGrid.gap) / stageGrid.lanes
-                            height: implicitHeight
-                            x: (index % stageGrid.lanes) * (width + stageGrid.gap)
-                            y: above ? above.y + above.height + stageGrid.gap : 0
-                        }
-                    }
                 }
             }
 
@@ -1553,6 +1675,108 @@ Rectangle {
             Layout.leftMargin: 8
             Layout.rightMargin: 16
             tip: truncated ? text : ""
+        }
+    }
+
+    // The inspector sits at the right under the toolbar. A wide window gives it a rail of its own
+    // and the main pane narrows; a narrower one lays it over the pane as glass.
+    readonly property bool inspecting: m.inspector.shown
+    readonly property bool docked: wide
+    readonly property int inspectorGap: 12
+    readonly property real inspectorRoom: docked ? inspector.progress * inspector.travel : 0
+    property Item inspectorOrigin: null
+
+    Rectangle {
+        objectName: "inspectorRail"
+        anchors.right: parent.right
+        anchors.top: toolbar.bottom
+        anchors.bottom: parent.bottom
+        width: root.inspectorRoom
+        visible: width > 0
+        color: root.t.rail_surface
+        Rectangle {
+            width: 1
+            height: parent.height
+            color: root.t.border
+        }
+    }
+
+    GlassPanel {
+        id: inspector
+        objectName: "inspector"
+        // 0 while closed and 1 while open; the panel slides in by it.
+        property real progress: 0
+        readonly property real travel: width + 2 * root.inspectorGap
+        readonly property InspectorPanel panel: root.inspectorPanel(root.m.inspector.stageKey)
+        width: 400
+        x: root.width - width - root.inspectorGap
+        y: toolbar.y + toolbar.height + root.inspectorGap
+        height: root.height - y - root.inspectorGap
+        opacity: 0
+        visible: root.inspecting || opacity > 0
+        backdrop: root.docked ? null : mainPane
+        backdropRect: Qt.rect(x + slide.x - mainPane.x, y - mainPane.y, width, height)
+        transform: Translate { id: slide; x: (1 - inspector.progress) * inspector.travel }
+        Accessible.role: Accessible.Grouping
+        Accessible.name: panel ? panel.card.name + " inspector" : ""
+        states: State {
+            name: "open"
+            when: root.inspecting
+            PropertyChanges { inspector.progress: 1; inspector.opacity: 1 }
+        }
+        // Under reduced motion the panel does not slide; it only fades.
+        transitions: [
+            Transition {
+                to: "open"
+                NumberAnimation {
+                    objectName: "inspectorOpenMove"
+                    property: "progress"
+                    duration: Look.movement(root.t.motionPanelOpen)
+                    easing.type: Easing.BezierSpline
+                    easing.bezierCurve: root.t.easePanelOpen
+                }
+                NumberAnimation {
+                    objectName: "inspectorOpenFade"
+                    property: "opacity"
+                    duration: root.t.motionPanelOpen
+                    easing.type: Easing.BezierSpline
+                    easing.bezierCurve: root.t.easePanelOpen
+                }
+            },
+            Transition {
+                from: "open"
+                NumberAnimation {
+                    objectName: "inspectorCloseMove"
+                    property: "progress"
+                    duration: Look.movement(root.t.motionPanelClose)
+                    easing.type: Easing.BezierSpline
+                    easing.bezierCurve: root.t.easePanelClose
+                }
+                NumberAnimation {
+                    objectName: "inspectorCloseFade"
+                    property: "opacity"
+                    duration: root.t.motionPanelClose
+                    easing.type: Easing.BezierSpline
+                    easing.bezierCurve: root.t.easePanelClose
+                }
+            }
+        ]
+        // Every panel stays alive, so a stage keeps its open sections; only the current one shows.
+        Item {
+            objectName: "inspectorStack"
+            anchors.fill: parent
+            Repeater {
+                id: inspectorPanels
+                model: root.m.sidebar.chain.filter(row => !!row.card).map(row => row.card)
+                delegate: InspectorPanel {
+                    readonly property bool current: card.key === root.m.inspector.stageKey
+                    anchors.fill: parent
+                    visible: current
+                    onCurrentChanged: if (current) crossfade.restart()
+                    onCloseRequested: reason => root.closeInspector(reason)
+                    FadeIn on opacity { id: crossfade; duration: root.t.motionCrossfade }
+                }
+            }
         }
     }
 

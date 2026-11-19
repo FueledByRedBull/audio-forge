@@ -87,6 +87,33 @@ class LevelTrace(QQuickPaintedItem):
             )
 
 
+class InspectorState(QObject):
+    """Which stage the docked inspector shows, and whether it is open."""
+
+    changed = Signal()
+
+    def __init__(self, parent: QObject, keys: list[str]):
+        super().__init__(parent)
+        self._keys = frozenset(keys)
+        self._key, self._shown = "", False
+
+    # The key stays when the inspector closes, so the panel that fades out is the one that was open.
+    stageKey = Property(str, lambda self: self._key, notify=changed)
+    shown = Property(bool, lambda self: self._shown, notify=changed)
+
+    @Slot(str)
+    def show(self, key: str) -> None:
+        if key in self._keys and (key, True) != (self._key, self._shown):
+            self._key, self._shown = key, True
+            self.changed.emit()
+
+    @Slot()
+    def close(self) -> None:
+        if self._shown:
+            self._shown = False
+            self.changed.emit()
+
+
 class QuickBridge(QObject):
     """Shared state and commands exposed to the QML scene."""
 
@@ -213,7 +240,7 @@ class QuickBridge(QObject):
         stages = [
             {
                 "trace": True, "alert": text("backend_diag_label"),
-                "title": "NOISE SUPPRESSION", "name": "Noise suppression", "menu": None,
+                "key": "suppression", "title": "NOISE SUPPRESSION", "name": "Noise suppression", "menu": None,
                 "help": (
                     "Removes steady background noise such as fans and hum. The "
                     "backend choice affects cleanup quality, CPU use and latency. "
@@ -231,7 +258,7 @@ class QuickBridge(QObject):
                 "advanced": [],
             },
             {
-                "trace": False, "alert": None, "title": "NOISE GATE", "name": "Noise gate", "menu": None,
+                "trace": False, "alert": None, "key": "gate", "title": "NOISE GATE", "name": "Noise gate", "menu": None,
                 "help": (
                     "Reduces gain when the signal falls below the threshold, so "
                     "background noise drops out during silence. The gate uses 3 dB "
@@ -257,7 +284,7 @@ class QuickBridge(QObject):
                 ],
             },
             {
-                "trace": False, "alert": None, "title": "DE-ESSER", "name": "De-esser", "menu": None,
+                "trace": False, "alert": None, "key": "deesser", "title": "DE-ESSER", "name": "De-esser", "menu": None,
                 "help": (
                     "Reduces harsh sibilance (s, sh, t). Auto mode tracks the "
                     "balance between sibilance and voice and adjusts the reduction "
@@ -280,7 +307,7 @@ class QuickBridge(QObject):
                 ],
             },
             {
-                "trace": False, "alert": None, "title": "COMPRESSOR", "name": "Compressor", "menu": None,
+                "trace": False, "alert": None, "key": "compressor", "title": "COMPRESSOR", "name": "Compressor", "menu": None,
                 "help": (
                     "Evens out your level by turning down the loudest moments. "
                     "Threshold sets where it starts working; ratio sets how hard."
@@ -308,6 +335,7 @@ class QuickBridge(QObject):
             {
                 "trace": False,
                 "alert": None,
+                "key": "limiter",
                 "title": "LIMITER",
                 "name": "Limiter",
                 "help": (
@@ -318,6 +346,7 @@ class QuickBridge(QObject):
                 "toggle": SettingControl(w.limiter_state, "limiter", "enabled", self),
                 "menu": None,
                 "rows": [state_field("limiter", "ceiling_db", slider=True)],
+                "readout": text("output_health_label"),
                 "advanced": [
                     state_row("limiter", "toggle", "careful_output_enabled"),
                     state_field("limiter", "release_ms"),
@@ -335,26 +364,41 @@ class QuickBridge(QObject):
         settings_cards = w.shell_settings_cards
         eq_toggle = EQControl(w.eq_state, "enabled", None, self)
 
-        def chain_row(name: str, toggle=None, *, stage: int = -1, page: int = -1, state=None) -> dict:
-            # A row opens its page, or else scrolls the Overview to its stage card.
-            return {"name": name, "toggle": toggle, "stage": stage, "page": page, "state": state}
+        # Input cleanup always runs, so its inspector holds the Settings pickers and no switch.
+        cleanup = {
+            "key": "cleanup", "name": "Input cleanup", "toggle": None, "trace": False, "alert": None,
+            "help": "", "readout": None, "advanced": [],
+            "rows": [
+                row("combo", w.input_cleanup_mode_choice, "Cleanup"),
+                row("combo", w.input_channel_mode_choice, "Input mode"),
+            ],
+        }
 
-        by_title = {stage["title"]: index for index, stage in enumerate(stages)}
+        def chain_row(name: str, toggle=None, *, card=None, page: int = -1, state=None) -> dict:
+            # A row opens its page, or else the inspector of its card.
+            return {
+                "name": name, "toggle": toggle, "card": card, "key": card["key"] if card else "",
+                "page": page, "state": state,
+            }
 
-        def stage_row(title: str) -> dict:
-            index = by_title[title]
-            return chain_row(stages[index]["name"], stages[index]["toggle"], stage=index)
+        by_key = {stage["key"]: stage for stage in stages}
 
-        # In signal order, which is not the order of the stage cards.
+        def stage_row(key: str) -> dict:
+            return chain_row(by_key[key]["name"], by_key[key]["toggle"], card=by_key[key])
+
+        # In signal order, which is not the order of the stages above.
         chain = [
-            chain_row("Input cleanup", page=w.SETTINGS_PAGE_INDEX, state=w.input_cleanup_mode_choice),
-            stage_row("NOISE GATE"),
-            stage_row("NOISE SUPPRESSION"),
-            stage_row("DE-ESSER"),
+            chain_row("Input cleanup", card=cleanup, state=w.input_cleanup_mode_choice),
+            stage_row("gate"),
+            stage_row("suppression"),
+            stage_row("deesser"),
             chain_row("Equalizer", eq_toggle, page=w.EQUALIZER_PAGE_INDEX),
-            stage_row("COMPRESSOR"),
-            stage_row("LIMITER"),
+            stage_row("compressor"),
+            stage_row("limiter"),
         ]
+        inspector = InspectorState(self, [row["key"] for row in chain if row["card"]])
+        # Another page has no inspector beside it.
+        w.shell_page.selected.connect(inspector.close)
 
         return {
             "theme": quick_theme(),
@@ -376,6 +420,7 @@ class QuickBridge(QObject):
             "healthPage": w.HEALTH_PAGE_INDEX,
             "settingsPage": w.SETTINGS_PAGE_INDEX,
             "equalizerPage": w.EQUALIZER_PAGE_INDEX,
+            "inspector": inspector,
             "banners": [
                 text("device_warning_banner"),
                 text("config_warning_banner"),

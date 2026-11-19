@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import re
+import sys
+import types
 
 import pytest
 from PySide6.QtCore import QByteArray, QUrl
@@ -23,6 +25,7 @@ from mic_eq.ui.theme import (
     contrast_ratio,
     flatten,
     motion_durations,
+    prefers_reduced_transparency,
 )
 
 SYSTEM_COLORS = {
@@ -102,6 +105,49 @@ def test_reduced_motion_swaps_every_duration_for_a_short_fade(qapp, monkeypatch)
     assert set(fades) == {REDUCED_MOTION_FADE_MS}
     assert set(asdict(motion_durations(True)).values()) == {REDUCED_MOTION_FADE_MS}
     assert motion_durations(False) == MOTION
+
+
+def test_prefers_reduced_transparency_reads_env_override_and_registry(qapp, monkeypatch) -> None:
+    values: dict[str, int] = {"EnableTransparency": 0}
+    opened: list[str] = []
+
+    class Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def open_key(_root, path):
+        opened.append(path)
+        return Key()
+
+    def query(_key, name):
+        if name not in values:
+            raise FileNotFoundError(name)
+        return values[name], 4
+
+    winreg = types.SimpleNamespace(HKEY_CURRENT_USER=object(), OpenKey=open_key, QueryValueEx=query)
+    monkeypatch.setitem(sys.modules, "winreg", winreg)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("AUDIOFORGE_REDUCED_TRANSPARENCY", raising=False)
+    assert prefers_reduced_transparency() is True
+    assert opened == [r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"]
+    assert quick_theme()["reducedTransparency"] is True
+    values["EnableTransparency"] = 1
+    assert prefers_reduced_transparency() is False
+    # Windows writes the value only once the switch is used; until then transparency is on.
+    del values["EnableTransparency"]
+    assert prefers_reduced_transparency() is False
+
+    monkeypatch.setenv("AUDIOFORGE_REDUCED_TRANSPARENCY", "1")
+    assert prefers_reduced_transparency() is True
+    values["EnableTransparency"] = 0
+    monkeypatch.setenv("AUDIOFORGE_REDUCED_TRANSPARENCY", "0")
+    assert prefers_reduced_transparency() is False
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv("AUDIOFORGE_REDUCED_TRANSPARENCY")
+    assert prefers_reduced_transparency() is False
 
 
 def test_glass_is_translucent_in_the_dark_look_and_the_window_color_under_a_contrast_theme(qapp) -> None:

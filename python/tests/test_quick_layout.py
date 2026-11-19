@@ -17,6 +17,7 @@ from PySide6.QtTest import QTest
 from mic_eq.config import AppConfig
 from mic_eq.ui.main_window import MINIMUM_WINDOW_HEIGHT, MINIMUM_WINDOW_WIDTH, MainWindow
 from mic_eq.ui.processing_configuration import PresetOrigin
+from mic_eq.ui.quick_shell import InspectorState
 
 INPUT = SimpleNamespace(name="CABLE Output (VB-Audio Virtual Cable)", is_default=True)
 OUTPUT = SimpleNamespace(name="Realtek Digital Output (Realtek USB Audio)", is_default=True)
@@ -322,6 +323,46 @@ def test_the_sidebar_width_follows_the_wide_breakpoint(qapp, monkeypatch, segoe_
     try:
         assert named(window, "sidebar").width() == sidebar_width
         assert scene_rect(named(window, "mainPane")).left() > sidebar_width
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize("width", [MINIMUM_WINDOW_WIDTH, 1199, 1200, 1600])
+def test_the_inspector_docks_from_the_wide_breakpoint_and_lies_over_the_pane_below_it(
+    qapp, monkeypatch, segoe_font, width
+) -> None:
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Ready", width=width)
+    try:
+        before = scene_rect(named(window, "mainPane"))
+        inspector = window.findChild(InspectorState)
+        assert inspector is not None
+        inspector.show("compressor")
+        QTest.qWait(400)
+        panel = named(window, "inspector")
+        glass = scene_rect(panel)
+        assert glass.width() == 400
+        assert glass.top() > scene_rect(named(window, "toolbar")).bottom()
+        assert glass.bottom() < MINIMUM_WINDOW_HEIGHT and glass.right() < width
+        pane = scene_rect(named(window, "mainPane"))
+        rail = named(window, "inspectorRail")
+        if width >= 1200:
+            # Docked: the pane makes room, and the glass has nothing behind it to blur.
+            assert pane.right() == width - 424 < glass.left()
+            assert rail.isVisible() and scene_rect(rail).left() == pane.right()
+            assert panel.property("backdrop") is None
+        else:
+            # Over the pane, which keeps its width and shows through the glass.
+            assert pane == before and glass.left() < pane.right()
+            assert not rail.isVisible()
+            assert panel.property("backdrop").objectName() == "mainPane"
+        overflowing = [
+            f"{item.metaObject().className()} left={scene_rect(item).left():.1f} right={scene_rect(item).right():.1f}"
+            for item in shown_items(panel)
+            if scene_rect(item).left() < glass.left() - 0.5 or scene_rect(item).right() > glass.right() + 0.5
+        ]
+        assert not overflowing, f"the inspector spans {glass.left():.1f} to {glass.right():.1f}: {overflowing}"
     finally:
         window.close()
         window.deleteLater()

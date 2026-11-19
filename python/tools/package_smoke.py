@@ -40,6 +40,7 @@ REQUIRED_BUNDLE_FILES = (
     "_internal/mic_eq/ui/qml/Chip.qml",
     "_internal/mic_eq/ui/qml/ChoiceBox.qml",
     "_internal/mic_eq/ui/qml/FocusRing.qml",
+    "_internal/mic_eq/ui/qml/GlassPanel.qml",
     "_internal/mic_eq/ui/qml/KeyButton.qml",
     "_internal/mic_eq/ui/qml/ModelButton.qml",
     "_internal/mic_eq/ui/qml/MutedText.qml",

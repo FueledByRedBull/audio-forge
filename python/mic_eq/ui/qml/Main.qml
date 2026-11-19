@@ -843,13 +843,8 @@ Rectangle {
         background: Rectangle {
             radius: root.t.radiusToolbarControl
             color: mute.on ? root.t.mute_fill : mute.hovered ? root.t.control_hover : root.t.control_surface
-            gradient: mute.on || mute.hovered ? null : muteFill
+            gradient: mute.on || mute.hovered ? null : Look.raisedFill
             border.color: mute.on ? root.t.mute_edge : root.t.control_edge
-            Gradient {
-                id: muteFill
-                GradientStop { position: 0; color: root.t.toolbar_control_top }
-                GradientStop { position: 1; color: root.t.toolbar_control_bottom }
-            }
             Behavior on color { ColorAnimation { duration: root.t.motionRow } }
             FocusRing { control: mute }
         }
@@ -1093,15 +1088,29 @@ Rectangle {
         id: toolbar
         objectName: "toolbar"
         readonly property int gap: 10
+        // The pane's inset from the window and the row's inset in the pane: full, and narrow so
+        // a narrow row keeps its room.
+        readonly property int fullInset: 10
+        readonly property int narrowInset: 4
+        readonly property int fullLeftPad: 18
+        readonly property int fullRightPad: 16
+        readonly property int narrowPad: 10
+        // The chevron's room, with its two gaps less its negative margins; none when hidden.
+        readonly property real routeWidth: route.visible
+            ? route.implicitWidth + 2 * gap + route.Layout.leftMargin + route.Layout.rightMargin : 0
         // The row with every part shown, at the full insets. In less room the brand, the mode's
         // key word, the dB readings and the latency caption give way.
-        readonly property real fullWidth: 2 * 10 + 18 + 16
-            + 11 * gap + brand.implicitWidth + 2 * 140 + route.implicitWidth - 8 + refresh.implicitWidth
+        readonly property real fullWidth: 2 * fullInset + fullLeftPad + fullRightPad
+            + 10 * gap + brand.implicitWidth + 2 * toolbar.pickerMinimum + routeWidth + refresh.implicitWidth
             + modeKey.width + 6 + modeMetrics.width + 36
             + muteButton.implicitWidth + root.readoutWidth
             + Math.max(latencyFigure.implicitWidth, latencyCaption.implicitWidth)
             + 1 + transport.implicitWidth + reasonWidth
         readonly property bool full: fullWidth <= width
+        // A device picker's width with every part shown; the pickers reach their preferred
+        // width before the brand widens to line up with the sidebar.
+        readonly property int pickerMinimum: 140
+        readonly property int pickerPreferred: 236
         // Measured on one line, so the reason's own wrapping cannot feed back into the layout. The
         // laid-out line can run a pixel past the metric, which would wrap its last word.
         readonly property real reasonWidth: startBlocked.visible ? Math.ceil(reasonMetrics.width) + 2 : 0
@@ -1126,7 +1135,7 @@ Rectangle {
             id: island
             objectName: "toolbarPane"
             // A narrow bar keeps its inset small, so the row keeps its room.
-            x: toolbar.full ? 10 : 4
+            x: toolbar.full ? toolbar.fullInset : toolbar.narrowInset
             y: x
             width: parent.width - 2 * x
             // One pixel short of the bottom, so the rim stays inside the bar.
@@ -1151,17 +1160,19 @@ Rectangle {
             id: toolRow
             objectName: "toolRow"
             anchors.fill: island
-            anchors.leftMargin: toolbar.full ? 18 : 10
-            anchors.rightMargin: toolbar.full ? 16 : 10
+            anchors.leftMargin: toolbar.full ? toolbar.fullLeftPad : toolbar.narrowPad
+            anchors.rightMargin: toolbar.full ? toolbar.fullRightPad : toolbar.narrowPad
             spacing: toolbar.gap
             Row {
                 id: brand
                 objectName: "brand"
                 visible: toolbar.full
                 spacing: 10
-                // With room to spare, the pickers start where the sidebar ends.
+                // With room to spare once the pickers have theirs, the pickers start where the
+                // sidebar ends.
                 Layout.minimumWidth: implicitWidth
-                Layout.preferredWidth: implicitWidth + Math.max(0, Math.min(toolbar.width - toolbar.fullWidth,
+                Layout.preferredWidth: implicitWidth + Math.max(0, Math.min(
+                    toolbar.width - toolbar.fullWidth - 2 * (toolbar.pickerPreferred - toolbar.pickerMinimum),
                     sidebar.x + sidebar.width + 10 - island.x - toolRow.anchors.leftMargin - toolbar.gap - implicitWidth))
                 // The app mark: an amber tile with a waveform, drawn here so it scales cleanly.
                 Rectangle {
@@ -1177,16 +1188,22 @@ Rectangle {
                         GradientStop { position: 1; color: root.t.brand_mark_bottom }
                     }
                     Repeater {
-                        // Five strokes, short to tall to short, as a voice's waveform.
-                        model: [3, 7, 11, 7, 3]
+                        // A dot, then four strokes as a voice's waveform: x, y, width, height,
+                        // each 1.5 px thick with round ends.
+                        model: [
+                            [6.0, 11.25, 2.7, 1.5],
+                            [8.4, 8.625, 1.5, 6.75],
+                            [10.8, 6.375, 1.5, 11.25],
+                            [13.2, 8.25, 1.5, 7.5],
+                            [15.6, 10.125, 1.5, 3.75],
+                        ]
                         delegate: Rectangle {
-                            required property int modelData
-                            required property int index
-                            width: 1.6
-                            height: modelData
-                            radius: width / 2
-                            x: 6.2 + index * 2.4
-                            y: (brandMark.height - height) / 2
+                            required property var modelData
+                            x: modelData[0]
+                            y: modelData[1]
+                            width: modelData[2]
+                            height: modelData[3]
+                            radius: 0.75
                             color: root.t.brand_mark_glyph
                         }
                     }
@@ -1204,12 +1221,11 @@ Rectangle {
                 proxy: root.m.top.input
                 raised: true
                 glyph: root.hasIcons ? root.m.glyphs.mic : ""
-                glyphSize: root.fsLead
                 Layout.fillWidth: true
-                Layout.preferredWidth: 240
+                Layout.preferredWidth: toolbar.pickerPreferred
                 Layout.maximumWidth: 260
                 // The pickers give up width first; a cut name is whole in the tooltip.
-                Layout.minimumWidth: toolbar.full ? 140 : 100
+                Layout.minimumWidth: toolbar.full ? toolbar.pickerMinimum : 100
             }
             // The signal runs from the microphone to the output.
             Text {
@@ -1230,11 +1246,10 @@ Rectangle {
                 proxy: root.m.top.output
                 raised: true
                 glyph: root.hasIcons ? root.m.glyphs.speaker : ""
-                glyphSize: root.fsLead
                 Layout.fillWidth: true
-                Layout.preferredWidth: 240
+                Layout.preferredWidth: toolbar.pickerPreferred
                 Layout.maximumWidth: 260
-                Layout.minimumWidth: toolbar.full ? 140 : 100
+                Layout.minimumWidth: toolbar.full ? toolbar.pickerMinimum : 100
             }
             IconBtn { id: refresh; proxy: root.m.top.refresh; glyph: root.m.glyphs.refresh; label: "Refresh" }
             Picker {

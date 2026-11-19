@@ -131,7 +131,7 @@ def test_a_horizontal_meter_paints_the_bar_instead_of_the_upright_meter(qapp):
 
 
 def test_a_segmented_meter_lights_its_steps_by_length_and_keeps_the_peak_line(qapp):
-    from mic_eq.ui.level_meter import SEGMENT_PITCH
+    from mic_eq.ui.level_meter import SEGMENT_GAP, SEGMENT_INSET_X, SEGMENT_PITCH
     from mic_eq.ui.theme import PALETTE
 
     size = (72, 8)
@@ -163,12 +163,20 @@ def test_a_segmented_meter_lights_its_steps_by_length_and_keeps_the_peak_line(qa
 
     middle = size[1] // 2
     unlit = QColor(PALETTE.meter_segment_off)
+    track = QColor(PALETTE.meter_track)
+
+    def step_x(index: int) -> int:
+        return int(SEGMENT_INSET_X + index * SEGMENT_PITCH)
+
     # -30 dB is half the scale: the steps on the quiet half are lit, those on the loud half are not.
-    lit_step, dark_step = int(SEGMENT_PITCH * 2 + 1), int(size[0] * 0.75) // 4 * 4 + 1
+    lit_step, dark_step = step_x(2), step_x(13)
     assert actual.pixelColor(lit_step, middle) != unlit
     assert actual.pixelColor(dark_step, middle) == unlit
-    # A gap separates the steps, so the bar reads as a row of steps.
-    assert actual.pixelColor(int(SEGMENT_PITCH * 2 - 0.5), middle).alpha() == 0
+    # A gap shows the dark track between the steps, so the bar reads as a row of steps.
+    gap = actual.pixelColor(step_x(2) + int(SEGMENT_PITCH - SEGMENT_GAP), middle)
+    assert gap.alpha() == track.alpha() and gap != unlit
+    # A ring around the track holds the bar's shape against the pane.
+    assert actual.pixelColor(size[0] // 2, 0).lightness() > gap.lightness()
     # The peak hold line at -12 dB stays, in its own colour.
     peak_x = int(size[0] * 0.8)
     assert actual.pixelColor(peak_x, middle) == QColor(PALETTE.meter_peak)

@@ -28,6 +28,7 @@ from PySide6.QtGui import (
     QAccessible,
     QAccessibleAnnouncementEvent,
     QDesktopServices,
+    QKeySequence,
     QPainter,
     QPen,
     QPolygonF,
@@ -38,7 +39,7 @@ from PySide6.QtQuickWidgets import QQuickWidget
 
 from .chain_presentation import ChainInputs, ChainLine, describe_chain
 from . import platform_text
-from .command_palette import CommandPalette, window_commands
+from .command_palette import SHORTCUT as PALETTE_SHORTCUT, CommandPalette, window_commands
 from .components import Glyph
 from .engine_session import Restarted, RestartFailed, Started, Stopped
 from .desktop_integration import RENDERER_RELAUNCH_ENV, relaunch_with_software_rendering
@@ -58,6 +59,7 @@ from .overview_presentation import (
     OverviewInputs,
     OverviewView,
     describe_overview,
+    split_check,
 )
 from .quick_meter import QuickMeterItem
 from .quick_scene import QML_DIR, load_scene, quick_theme
@@ -284,8 +286,15 @@ class OverviewState(QObject):
     recommendSetup = Property(bool, lambda self: self._view.recommend_setup, notify=changed)
     setupLine = Property(str, lambda self: self._view.setup_line, notify=changed)
     checksTitle = Property(str, lambda self: self._view.checks_title, notify=changed)
+    # Each line whole, and split into its label and the device it names for the card.
     checks = Property(
-        list, lambda self: [{"text": text, "kind": kind} for text, kind in self._view.checks], notify=changed
+        list,
+        lambda self: [
+            {"text": text, "kind": kind, "label": label, "detail": detail}
+            for text, kind in self._view.checks
+            for label, detail in (split_check(text),)
+        ],
+        notify=changed,
     )
 
     @Slot()
@@ -507,6 +516,12 @@ class QuickBridge(QObject):
 
     def _row(self, kind: str, proxy, label: str = "") -> dict:
         return {"kind": kind, "label": label, "proxy": proxy}
+
+    @staticmethod
+    def keycaps(shortcut: QKeySequence | str) -> list[str]:
+        """A shortcut's keys as their caps read; Return is labelled Enter, as on the key."""
+        text = QKeySequence(shortcut).toString(QKeySequence.SequenceFormat.PortableText)
+        return ["Enter" if key == "Return" else key for key in text.split("+")]
 
     def _build_model(self, w) -> dict:
         row = self._row
@@ -842,6 +857,13 @@ class QuickBridge(QObject):
                 ],
             },
             "stages": stages,
+            # The row of window shortcuts on the Overview, read from the actions themselves.
+            "shortcuts": [
+                {"keys": self.keycaps(w.start_menu_action.shortcut()), "action": "Start"},
+                {"keys": self.keycaps(w.stop_menu_action.shortcut()), "action": "Stop"},
+                {"keys": self.keycaps(w.user_mute_checkbox_action.shortcut()), "action": "Mute"},
+                {"keys": self.keycaps(PALETTE_SHORTCUT), "action": "Search"},
+            ],
             "meters": [w.input_meter, w.output_meter],
             "status": {
                 "message": w.status_message,

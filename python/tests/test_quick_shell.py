@@ -1589,7 +1589,8 @@ def test_the_health_chip_is_a_toggle_the_keyboard_reaches_and_names(quick_window
         toggle = named[0]
         # Voice control says what it sees: the visible text names the button.
         chip = window.shell_texts["health_summary_label"]
-        assert chip.text and scene.name(toggle) == chip.text
+        shown = view.rootObject().findChild(QObject, "healthChip").property("shown")
+        assert scene.name(toggle) == shown == chip.text == "Health: not running"
         assert scene.description(toggle) == "Show audio health details"
         window._set_health_chip("health_summary_label", "Health: Check input", "warn")
         qapp.processEvents()
@@ -2893,3 +2894,55 @@ def test_the_toolbar_latency_says_whether_the_route_was_measured(quick_window, q
     monkeypatch.setattr(window, "_refresh_latency_profile_engine", lambda _profile: False)
     window._apply_latency_compensation_for_current_devices()
     assert heard({"latency_compensation_ms": 48.0}) == "Latency: ~10 ms"
+
+
+def test_the_level_card_waits_for_start_again_after_a_stop(engine_window, qapp) -> None:
+    window, engine = engine_window
+
+    def shown(name: str) -> bool:
+        qapp.processEvents()
+        return _scene_item(window, name).isVisible()
+
+    def legend() -> list[str]:
+        heading = _scene_item(window, "ribbonCaption").parentItem()
+        keys = [item for row in heading.childItems() for item in row.childItems()]
+        return [item.property("text") for item in keys if str(item.property("text") or "").startswith(("IN", "OUT"))]
+
+    assert shown("ribbonWaiting") and not shown("levelRibbon")
+    # Stopped, the legend only keys the colours; the card spells the halves out.
+    assert legend() == ["IN \u2014", "OUT \u2014"]
+    assert _scene_item(window, "ribbonInLabel").property("text") == "IN \u00b7 your microphone"
+    assert _scene_item(window, "ribbonOutLabel").property("text") == "OUT \u00b7 what others hear"
+    window.start_btn_action.trigger()
+    assert engine.running and shown("levelRibbon") and not shown("ribbonWaiting")
+    assert [text.split(" ", 1)[1] for text in legend()] == [meter.valueText for meter in window.quick_bridge.model["meters"]]
+    window.stop_btn_action.trigger()
+    assert engine.running is False
+    assert shown("ribbonWaiting") and not shown("levelRibbon")
+    assert legend() == ["IN \u2014", "OUT \u2014"]
+
+
+def test_the_shortcut_row_shows_the_windows_own_shortcuts_one_phrase_each(quick_window, qapp) -> None:
+    from mic_eq.ui.command_palette import SHORTCUT
+
+    window = quick_window
+    qapp.processEvents()
+    row = _scene_item(window, "shortcutRow")
+    items = [item for item in row.childItems() if item.metaObject().className().startswith("QQuickRow")]
+    actions = (window.start_menu_action, window.stop_menu_action, window.user_mute_checkbox_action)
+    real = [action.shortcut().toString() for action in actions] + [SHORTCUT]
+    assert real == ["Ctrl+Return", "Ctrl+.", "Ctrl+M", "Ctrl+K"]
+
+    def caps(item) -> list[str]:
+        return [
+            label.property("text")
+            for key in item.childItems() if key.metaObject().className().startswith("QQuickRectangle")
+            for label in key.childItems()
+        ]
+
+    # The caps spell the real keys; Return is labelled Enter, as on the key itself.
+    assert ["+".join(caps(item)).replace("Enter", "Return") for item in items] == real
+    with _AccessibleScene() as scene:
+        assert [scene.name(item) for item in items] == [
+            "Ctrl+Enter: Start", "Ctrl+.: Stop", "Ctrl+M: Mute", "Ctrl+K: Search",
+        ]

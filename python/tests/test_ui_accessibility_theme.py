@@ -84,7 +84,7 @@ def test_compact_health_aggregation_and_stop(isolated_main_window, states, mute_
     assert window.shell_texts["health_summary_label"].state == expected
     window.engine_session.stop_now()
     window._update_meters()
-    assert window.shell_texts["health_summary_label"].text == "Health: --"
+    assert window.shell_texts["health_summary_label"].text == "Health: not running"
     assert window.shell_texts["health_summary_label"].state == "idle"
     # Nothing the last reading said about itself is left behind.
     assert window.shell_texts["health_advice_label"].text == TEXT_SPECS["health_advice_label"].text

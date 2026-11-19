@@ -26,7 +26,7 @@ Rectangle {
     // When the last tooltip closed; the next one opens at once if it follows closely.
     property double tipClosedAt: 0
 
-    color: t.app_surface
+    color: t.window_ground
 
     onPressingChanged: if (pressing) tip.close()
     // Another page or the Overview row closes the inspector too; focus never stays on the hidden panel.
@@ -1015,16 +1015,164 @@ Rectangle {
         Accessible.description: ["In the signal chain", proxy ? proxy.toolTip : ""].filter(part => part !== "").join(". ")
     }
 
-    // A small uppercase heading over a group in the sidebar.
+    // A heading over a group in the sidebar, or over a card on a page.
     component SectionLabel: Text {
         textFormat: Text.PlainText
-        color: root.t.text_dim
-        font.pixelSize: root.fsCaption
+        color: root.t.text_primary
+        font.pixelSize: root.fsBody
         font.weight: Font.DemiBold
-        font.letterSpacing: 1.2
     }
 
-    // One sidebar row: a button with the name and a state line, and the stage's switch if it has one.
+    // A line icon drawn from SVG path data on a square grid of `grid` units, so it needs no
+    // icon font and follows the theme's colours.
+    component LineIcon: Canvas {
+        id: icon
+        property string path
+        property color stroke: root.t.tile_icon
+        property real grid: 18
+        property real lineWidth: 1.5
+        implicitWidth: 16
+        implicitHeight: 16
+        Accessible.ignored: true
+        onPathChanged: requestPaint()
+        onStrokeChanged: requestPaint()
+        onPaint: {
+            const ctx = getContext("2d")
+            ctx.reset()
+            ctx.scale(width / grid, height / grid)
+            ctx.lineWidth = lineWidth
+            ctx.lineCap = "round"
+            ctx.lineJoin = "round"
+            ctx.strokeStyle = stroke
+            ctx.path = path
+            ctx.stroke()
+        }
+    }
+
+    // The check drawn wherever something passed, on LineIcon's 12-unit grid.
+    readonly property string checkPath: "M2.5 6.5L5 9l4.5-5.5"
+
+    // A state told by shape as well as colour: a check disc when fine, a triangle with "!" to
+    // look at, a disc with "!" for a fault, a ring while idle.
+    component StateMark: Canvas {
+        property string level: "idle"
+        implicitWidth: 14
+        implicitHeight: 14
+        Accessible.ignored: true
+        onLevelChanged: requestPaint()
+        onPaint: {
+            const ctx = getContext("2d")
+            const s = width
+            const mark = root.t.app_surface
+            ctx.reset()
+            ctx.lineCap = "round"
+            ctx.lineJoin = "round"
+            if (level === "ok" || level === "bad") {
+                ctx.fillStyle = level === "ok" ? root.t.status_ok_dot : root.t.status_bad_text
+                ctx.beginPath()
+                ctx.arc(s / 2, s / 2, s / 2, 0, 2 * Math.PI)
+                ctx.fill()
+            } else if (level === "warn") {
+                ctx.fillStyle = root.t.status_warn_border
+                ctx.beginPath()
+                ctx.moveTo(s / 2, 0.04 * s)
+                ctx.lineTo(0.98 * s, 0.92 * s)
+                ctx.lineTo(0.02 * s, 0.92 * s)
+                ctx.closePath()
+                ctx.fill()
+            } else {
+                ctx.strokeStyle = root.t.text_dim
+                ctx.lineWidth = 2
+                ctx.beginPath()
+                ctx.arc(s / 2, s / 2, s / 2 - 1, 0, 2 * Math.PI)
+                ctx.stroke()
+                return
+            }
+            ctx.strokeStyle = mark
+            ctx.lineWidth = Math.max(1.4, s / 9)
+            ctx.beginPath()
+            if (level === "ok") {
+                ctx.moveTo(0.24 * s, 0.52 * s)
+                ctx.lineTo(0.42 * s, 0.70 * s)
+                ctx.lineTo(0.78 * s, 0.30 * s)
+                ctx.stroke()
+                return
+            }
+            const top = level === "warn" ? 0.36 : 0.24
+            ctx.moveTo(s / 2, top * s)
+            ctx.lineTo(s / 2, (top + 0.28) * s)
+            ctx.stroke()
+            ctx.fillStyle = mark
+            ctx.beginPath()
+            ctx.arc(s / 2, (top + 0.44) * s, ctx.lineWidth * 0.6, 0, 2 * Math.PI)
+            ctx.fill()
+        }
+    }
+
+    // The round mark at the start of a route check line: a check that passed, "!" to act on, or
+    // "i" for a note.
+    component CheckMark: Rectangle {
+        property string kind: "ok"
+        implicitWidth: 26
+        implicitHeight: 26
+        radius: 13
+        color: kind === "ok" ? root.t.status_ok_fill : kind === "warn" ? root.t.status_warn_surface
+                                                                       : root.t.status_note_fill
+        border.color: kind === "warn" ? root.t.status_warn_border : root.t.tile_edge
+        Accessible.ignored: true
+        LineIcon {
+            anchors.centerIn: parent
+            width: 12
+            height: 12
+            grid: 12
+            stroke: parent.kind === "ok" ? root.t.status_ok_text : parent.kind === "warn" ? root.t.status_warn_text
+                                                                                           : root.t.text_muted
+            path: parent.kind === "ok" ? root.checkPath : parent.kind === "warn" ? "M6 2.5v4.5M6 9.5v.2"
+                                                                                       : "M6 5.5v3.5M6 3v.2"
+        }
+    }
+
+    // A raised, rounded panel on the window ground: the sidebar and the main pane.
+    component Panel: Rectangle {
+        id: panel
+        property color topColor: root.t.sidebar_top
+        property color bottomColor: root.t.sidebar_bottom
+        radius: root.t.radiusPanel
+        border.color: root.t.panel_edge
+        gradient: Gradient {
+            GradientStop { position: 0; color: panel.topColor }
+            GradientStop { position: 1; color: panel.bottomColor }
+        }
+        // The light catching the top edge.
+        Rectangle {
+            x: panel.radius
+            y: 1
+            width: parent.width - 2 * panel.radius
+            height: 1
+            color: root.t.panel_highlight
+        }
+    }
+
+    // The sidebar row icons, as path data on an 18-unit grid, keyed as the rows' lines are.
+    readonly property var rowIcons: ({
+        overview: "M4 2.5h2.5a1.5 1.5 0 0 1 1.5 1.5v2.5a1.5 1.5 0 0 1 -1.5 1.5h-2.5a1.5 1.5 0 0 1 -1.5 -1.5v-2.5"
+                  + "a1.5 1.5 0 0 1 1.5 -1.5zM11.5 2.5h2.5a1.5 1.5 0 0 1 1.5 1.5v2.5a1.5 1.5 0 0 1 -1.5 1.5h-2.5"
+                  + "a1.5 1.5 0 0 1 -1.5 -1.5v-2.5a1.5 1.5 0 0 1 1.5 -1.5zM4 10h10a1.5 1.5 0 0 1 1.5 1.5v2.5"
+                  + "a1.5 1.5 0 0 1 -1.5 1.5h-10a1.5 1.5 0 0 1 -1.5 -1.5v-2.5a1.5 1.5 0 0 1 1.5 -1.5z",
+        cleanup: "M9 2a2.5 2.5 0 0 1 2.5 2.5v4a2.5 2.5 0 0 1 -2.5 2.5a2.5 2.5 0 0 1 -2.5 -2.5v-4"
+                 + "a2.5 2.5 0 0 1 2.5 -2.5zM3.5 8.5a5.5 5.5 0 0 0 11 0M9 14v2.5",
+        gate: "M2 12h3V6h3v8h3V4h3v8h2",
+        suppression: "M2 9h2l1.5-5 2.5 10 2.5-8L12 11l1-2h3",
+        deesser: "M12.5 5.5C12 4 10.5 3.5 9 3.5 7 3.5 6 4.5 6 5.8c0 3 6.5 1.5 6.5 4.6 0 1.4-1.4 2.2-3.2 2.2"
+                 + "-1.6 0-3-.6-3.5-2.1",
+        eq: "M5 2.5v13M9 2.5v13M13 2.5v13M6.6 11a1.6 1.6 0 1 1 -3.2 0a1.6 1.6 0 1 1 3.2 0z"
+            + "M10.6 6a1.6 1.6 0 1 1 -3.2 0a1.6 1.6 0 1 1 3.2 0zM14.6 10a1.6 1.6 0 1 1 -3.2 0a1.6 1.6 0 1 1 3.2 0z",
+        compressor: "M3 3.5l5 5.5-5 5.5M15 3.5L10 9l5 5.5",
+        limiter: "M2.5 4.5h13M3 15c1.5 0 2-4 3.5-4s1.5 3 3 3 2-9 3.5-9"
+    })
+
+    // One sidebar row: an icon tile, a button with the name and a state line, and the stage's
+    // switch if it has one.
     component NavRow: Item {
         id: nav
         property string name
@@ -1032,13 +1180,18 @@ Rectangle {
         property bool current: false
         property bool dim: false
         property var toggle: null
-        // How hard the stage works, 0 to 1, drawn as a bar beside the state line when metered.
+        // How hard the stage works, 0 to 1, drawn as a bar after the state line when metered.
         property real activity: 0
         property bool metered: false
+        // The row's icon as path data; a narrow window leaves the tiles out, so names stay whole.
+        property string icon: ""
+        readonly property bool tiled: icon !== "" && root.wide
+        readonly property real textLeft: tiled ? 54 : 12
+        readonly property real textRight: !!toggle ? 54 : 12
         // The row's button, where focus goes back to when what it opened closes.
         readonly property alias button: navButton
         signal opened()
-        implicitHeight: 46
+        implicitHeight: 52
         KeyButton {
             id: navButton
             readonly property bool current: nav.current
@@ -1049,59 +1202,104 @@ Rectangle {
             Accessible.description: nav.detail
             Accessible.selectable: true
             Accessible.selected: nav.current
+            // Hover fills the row; keyboard focus only draws the ring.
             background: Rectangle {
-                radius: 10
-                color: navButton.current ? root.t.accent_fill : navButton.hovered ? root.t.control_hover : "transparent"
-                border.color: navButton.current ? root.t.accent_edge : "transparent"
+                radius: 14
+                color: navButton.hovered && !navButton.current ? root.t.control_hover : "transparent"
                 Behavior on color { ColorAnimation { duration: root.t.motionRow } }
+                // The selected row lights from its left end.
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 14
+                    opacity: navButton.current ? 1 : 0
+                    border.color: root.t.accent_edge
+                    gradient: Gradient {
+                        orientation: Gradient.Horizontal
+                        GradientStop { position: 0; color: root.t.accent_row_start }
+                        GradientStop { position: 1; color: root.t.accent_row_end }
+                    }
+                    Behavior on opacity { NumberAnimation { duration: root.t.motionRow } }
+                }
                 FocusRing { control: navButton; outset: -2 }
             }
-            contentItem: Column {
-                topPadding: nav.detail !== "" ? 6 : 0
-                spacing: 1
-                Text {
-                    width: parent.width
-                    height: nav.detail !== "" ? implicitHeight : nav.height
-                    text: nav.name
-                    textFormat: Text.PlainText
-                    leftPadding: 12
-                    rightPadding: !!nav.toggle ? 52 : 12
-                    color: nav.dim ? root.t.text_dim : root.t.text_primary
-                    font.pixelSize: root.fsBody
-                    font.weight: Font.Medium
-                    elide: Text.ElideRight
-                    verticalAlignment: Text.AlignVCenter
-                    Behavior on color { ColorAnimation { duration: root.t.motionRow } }
+            contentItem: Item {
+                Rectangle {
+                    visible: nav.tiled
+                    x: 12
+                    width: 32
+                    height: 32
+                    radius: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    // Off, the tile keeps only its edge.
+                    border.color: navButton.current ? root.t.accent_tile_edge : root.t.tile_edge
+                    gradient: Gradient {
+                        GradientStop {
+                            position: 0
+                            color: navButton.current ? root.t.accent_tile_top : nav.dim ? "transparent" : root.t.tile_top
+                        }
+                        GradientStop {
+                            position: 1
+                            color: navButton.current ? root.t.accent_tile_bottom
+                                                     : nav.dim ? "transparent" : root.t.tile_bottom
+                        }
+                    }
+                    LineIcon {
+                        anchors.centerIn: parent
+                        path: nav.icon
+                        stroke: navButton.current ? root.t.accent_bright : nav.dim ? root.t.text_dim : root.t.tile_icon
+                    }
                 }
-                Text {
-                    id: navDetail
-                    width: parent.width
-                    visible: nav.detail !== ""
-                    text: nav.detail
-                    textFormat: Text.PlainText
-                    leftPadding: 12
-                    rightPadding: (!!nav.toggle ? 52 : 12) + (nav.metered ? 38 : 0)
-                    color: nav.current ? root.t.accent_soft : nav.dim ? root.t.text_dim : root.t.text_muted
-                    font.pixelSize: root.fsCaption
-                    elide: Text.ElideRight
+                Column {
+                    x: nav.textLeft
+                    width: parent.width - nav.textLeft - nav.textRight
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 1
+                    Text {
+                        width: parent.width
+                        text: nav.name
+                        textFormat: Text.PlainText
+                        color: nav.dim ? root.t.text_dim : root.t.text_primary
+                        font.pixelSize: root.fsBody
+                        font.weight: Font.DemiBold
+                        elide: Text.ElideRight
+                        Behavior on color { ColorAnimation { duration: root.t.motionRow } }
+                    }
+                    Row {
+                        visible: nav.detail !== ""
+                        width: parent.width
+                        spacing: 8
+                        Text {
+                            id: navDetail
+                            width: Math.min(implicitWidth, parent.width - (activityBar.visible ? activityBar.width + 8 : 0))
+                            text: nav.detail
+                            textFormat: Text.PlainText
+                            color: nav.current ? root.t.accent_soft : nav.dim ? root.t.text_dim : root.t.text_muted
+                            font.pixelSize: root.fsCaption
+                            elide: Text.ElideRight
+                        }
+                        // Empty while the stage is idle; a stage that is off shows none.
+                        Rectangle {
+                            id: activityBar
+                            visible: nav.metered && !nav.dim
+                            width: 36
+                            height: 4
+                            radius: 2
+                            anchors.verticalCenter: navDetail.verticalCenter
+                            color: root.t.activity_track
+                            Accessible.ignored: true
+                            Rectangle {
+                                width: parent.width * nav.activity
+                                height: parent.height
+                                radius: parent.radius
+                                gradient: Gradient {
+                                    orientation: Gradient.Horizontal
+                                    GradientStop { position: 0; color: root.t.activity_low }
+                                    GradientStop { position: 1; color: root.t.activity_high }
+                                }
+                            }
+                        }
+                    }
                 }
-            }
-        }
-        Rectangle {
-            visible: nav.metered
-            width: 30
-            height: 3
-            radius: 1.5
-            anchors.right: parent.right
-            anchors.rightMargin: !!nav.toggle ? 60 : 12
-            y: navButton.contentItem.y + navDetail.y + (navDetail.height - height) / 2
-            color: root.t.control_edge
-            Accessible.ignored: true
-            Rectangle {
-                width: parent.width * nav.activity
-                height: parent.height
-                radius: parent.radius
-                color: root.t.meter_reduction
             }
         }
         ChainSwitch {
@@ -1537,28 +1735,58 @@ Rectangle {
         }
     }
 
+    // The sidebar and the main pane stand apart on the window ground by this gap.
+    readonly property int panelGap: 10
+
+    // The Health line in the sidebar footer: a mark whose shape says the state, and the reading.
+    component HealthChip: Item {
+        id: chip
+        property var proxy
+        readonly property string level: proxy && proxy.state !== "" ? proxy.state : "idle"
+        readonly property string shown: proxy ? proxy.text : ""
+        implicitHeight: 28
+        implicitWidth: mark.width + 8 + healthText.implicitWidth
+        Hint {
+            text: chip.proxy
+                  ? [healthText.truncated ? healthText.text : "", chip.proxy.toolTip].filter(t => t !== "").join("\n\n")
+                  : ""
+        }
+        Text {
+            id: healthText
+            x: mark.width + 8
+            width: Math.min(implicitWidth, chip.width - x)
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: chip.shown
+            color: chip.level === "warn" || chip.level === "bad" ? root.t["status_" + chip.level + "_text"]
+                                                                 : root.t.text_primary
+            font.pixelSize: root.fsCaption
+            font.weight: Font.DemiBold
+            elide: Text.ElideRight
+            Accessible.ignored: true
+        }
+        StateMark {
+            id: mark
+            level: chip.level
+            anchors.verticalCenter: parent.verticalCenter
+        }
+    }
+
     // Sidebar: the preset, the pages and the signal chain, and the health of the stream.
-    Rectangle {
+    Panel {
         id: sidebar
         objectName: "sidebar"
         anchors.left: parent.left
         anchors.top: toolbar.bottom
         anchors.bottom: parent.bottom
-        width: root.wide ? 260 : 220
-        gradient: Gradient {
-            GradientStop { position: 0; color: root.t.sidebar_top }
-            GradientStop { position: 1; color: root.t.sidebar_bottom }
-        }
-        Rectangle {
-            anchors.right: parent.right
-            width: 1
-            height: parent.height
-            color: root.t.border
-        }
+        anchors.margins: root.panelGap
+        width: root.wide ? 256 : 220
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: 12
-            anchors.rightMargin: 13
+            anchors.topMargin: 22
+            anchors.leftMargin: 8
+            anchors.rightMargin: 8
+            anchors.bottomMargin: 12
             spacing: 12
 
             ColumnLayout {
@@ -1567,8 +1795,10 @@ Rectangle {
                 readonly property var preset: root.m.presets.status.data
                 spacing: 8
                 Layout.fillWidth: true
+                Layout.leftMargin: 12
+                Layout.rightMargin: 12
                 Accessible.name: root.m.presets.status.name + ": " + root.m.presets.status.text
-                SectionLabel { text: "PRESET" }
+                SectionLabel { text: "Preset" }
                 RowLayout {
                     spacing: 8
                     Layout.fillWidth: true
@@ -1585,30 +1815,57 @@ Rectangle {
                         // A name cut short is shown whole in the tooltip.
                         Hint { text: parent.truncated ? parent.text : "" }
                     }
+                    // Saved is a check and a word; unsaved changes keep their warning chip.
+                    Row {
+                        visible: !presetBlock.preset.modified
+                        spacing: 4
+                        LineIcon {
+                            width: 11
+                            height: 11
+                            grid: 12
+                            stroke: root.t.status_ok_text
+                            path: root.checkPath
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                        Text {
+                            textFormat: Text.PlainText
+                            text: "Saved"
+                            color: root.t.status_ok_text
+                            font.pixelSize: root.fsCaption
+                        }
+                    }
                     Rectangle {
+                        visible: presetBlock.preset.modified
                         implicitWidth: stateText.implicitWidth + 16
                         implicitHeight: 20
                         radius: 10
-                        color: presetBlock.preset.modified ? root.t.status_warn_surface : root.t.status_idle_surface
-                        border.color: presetBlock.preset.modified ? root.t.status_warn_border
-                                                                  : root.t.status_idle_border
+                        color: root.t.status_warn_surface
+                        border.color: root.t.status_warn_border
                         Text {
                             id: stateText
                             textFormat: Text.PlainText
                             anchors.centerIn: parent
-                            text: presetBlock.preset.modified ? "Unsaved changes" : "Saved"
-                            color: presetBlock.preset.modified ? root.t.status_warn_text : root.t.status_idle_text
+                            text: "Unsaved changes"
+                            color: root.t.status_warn_text
                             font.pixelSize: root.fsCaption
                         }
                     }
                     Item { Layout.fillWidth: true }
                 }
                 Flow {
+                    id: presetButtons
                     spacing: 8
                     Layout.fillWidth: true
-                    Btn { proxy: root.m.presets.menu }
-                    IconBtn { proxy: root.m.presets.undo; glyph: root.m.glyphs.undo; visible: root.hasIcons }
-                    IconBtn { proxy: root.m.presets.redo; glyph: root.m.glyphs.redo; visible: root.hasIcons }
+                    Layout.topMargin: 4
+                    // With the undo and redo icons beside it, Presets takes the rest of the row.
+                    Btn {
+                        proxy: root.m.presets.menu
+                        width: root.hasIcons ? Math.max(implicitWidth, presetButtons.width - undoIcon.width - redoIcon.width
+                                                        - 2 * presetButtons.spacing)
+                                             : implicitWidth
+                    }
+                    IconBtn { id: undoIcon; proxy: root.m.presets.undo; glyph: root.m.glyphs.undo; visible: root.hasIcons }
+                    IconBtn { id: redoIcon; proxy: root.m.presets.redo; glyph: root.m.glyphs.redo; visible: root.hasIcons }
                     // Without a system icon font the two are spelled out.
                     Btn { proxy: root.m.presets.undo; visible: !root.hasIcons }
                     Btn { proxy: root.m.presets.redo; visible: !root.hasIcons }
@@ -1618,17 +1875,20 @@ Rectangle {
             Page {
                 id: navigation
                 leftInset: 0
-                rightInset: 8
+                // Room for the scroll bar only when there is one.
+                rightInset: contentHeight > height ? 8 : 0
                 spacing: 2
                 scrollName: "Navigation scroll bar"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                Layout.topMargin: 8
                 Accessible.role: Accessible.Grouping
                 Accessible.name: "Navigation"
                 NavRow {
                     id: overviewRow
                     name: "Overview"
                     detail: root.m.overview.navLine
+                    icon: root.rowIcons.overview
                     current: root.m.page.index === 0 && !root.inspecting
                     onOpened: {
                         root.m.inspector.close()
@@ -1636,7 +1896,12 @@ Rectangle {
                     }
                     Layout.fillWidth: true
                 }
-                SectionLabel { text: "SIGNAL CHAIN"; Layout.topMargin: 14; Layout.bottomMargin: 4 }
+                SectionLabel {
+                    text: "Signal chain"
+                    Layout.topMargin: 16
+                    Layout.bottomMargin: 6
+                    Layout.leftMargin: 12
+                }
                 Repeater {
                     model: root.m.sidebar.chain
                     delegate: NavRow {
@@ -1648,6 +1913,7 @@ Rectangle {
                         detail: line.line
                         activity: line.activity
                         metered: line.metered
+                        icon: root.rowIcons[modelData.line] ?? ""
                         dim: !!modelData.toggle && !modelData.toggle.checked
                         current: modelData.page >= 0 ? root.m.page.index === modelData.page
                                                      : root.inspecting && root.m.inspector.stageKey === modelData.key
@@ -1664,17 +1930,17 @@ Rectangle {
                 Layout.fillWidth: true
                 Rectangle {
                     implicitHeight: 1
-                    color: root.t.border
+                    color: root.t.panel_edge
                     Layout.fillWidth: true
                     Layout.bottomMargin: 4
                 }
-                Chip {
+                HealthChip {
+                    id: healthChip
+                    objectName: "healthChip"
                     proxy: root.m.status.health
-                    announced: false
-                    single: true
-                    implicitHeight: 28
                     // A long reading is cut short; the tooltip and the name carry all of it.
-                    Layout.maximumWidth: footer.width
+                    Layout.maximumWidth: footer.width - 24
+                    Layout.leftMargin: 12
                     ModelButton {
                         id: healthToggle
                         objectName: "healthToggle"
@@ -1683,7 +1949,7 @@ Rectangle {
                         onRequested: root.m.page.setIndex(checked ? root.m.healthPage : 0)
                         Accessible.role: Accessible.Button
                         // Named by what it shows; the action goes in the description.
-                        Accessible.name: root.m.status.health.text
+                        Accessible.name: healthChip.shown
                         Accessible.description: checked ? "Hide audio health details" : "Show audio health details"
                         background: Item { FocusRing { control: healthToggle } }
                     }
@@ -1695,11 +1961,15 @@ Rectangle {
                     wrapMode: Text.Wrap
                     Layout.fillWidth: true
                     Layout.topMargin: 6
+                    Layout.leftMargin: 12
+                    Layout.rightMargin: 12
                     tip: truncated ? text : ""
                 }
+                // Tight enough that the link and the gear share the narrow sidebar at a large font.
                 RowLayout {
-                    spacing: 8
+                    spacing: 4
                     Layout.fillWidth: true
+                    Layout.leftMargin: 12
                     LinkBtn { proxy: root.m.sidebar.measureLatency; Layout.leftMargin: -4 }
                     Item { Layout.fillWidth: true }
                     IconBtn {
@@ -1715,16 +1985,56 @@ Rectangle {
         }
     }
 
-    ColumnLayout {
-        id: mainPane
-        objectName: "mainPane"
+    // The main pane's raised panel, with a cool sheen across its top. It gives way to the rail
+    // of a docked inspector.
+    Panel {
+        id: mainPanel
+        objectName: "mainPanel"
         anchors.left: sidebar.right
         anchors.right: parent.right
         anchors.top: toolbar.bottom
         anchors.bottom: parent.bottom
+        anchors.margins: root.panelGap
+        anchors.rightMargin: root.panelGap + root.inspectorRoom
+        topColor: root.t.pane_top
+        bottomColor: root.t.pane_bottom
+        Canvas {
+            id: sheen
+            readonly property color glow: root.t.pane_glow
+            anchors.fill: parent
+            Accessible.ignored: true
+            // A resize repaints a Canvas by itself; a theme change does not.
+            onGlowChanged: requestPaint()
+            onPaint: {
+                const ctx = getContext("2d")
+                ctx.reset()
+                const r = root.t.radiusPanel
+                ctx.beginPath()
+                ctx.roundedRect(0, 0, width, height, r, r)
+                ctx.clip()
+                // An ellipse 700 by 260 across, centred above the top edge.
+                const squash = 260 / 700
+                ctx.translate(width * 0.3, -60)
+                ctx.scale(1, squash)
+                const sheenFill = ctx.createRadialGradient(0, 0, 0, 0, 0, 700)
+                sheenFill.addColorStop(0, glow)
+                sheenFill.addColorStop(0.7, "transparent")
+                ctx.fillStyle = sheenFill
+                ctx.fillRect(-width * 0.3, 0, width, (height + 60) / squash)
+            }
+        }
+    }
+
+    ColumnLayout {
+        id: mainPane
+        objectName: "mainPane"
+        anchors.left: mainPanel.left
+        anchors.right: mainPanel.right
+        anchors.top: mainPanel.top
+        anchors.bottom: mainPanel.bottom
         anchors.leftMargin: root.wide ? 24 : 12
-        anchors.rightMargin: root.inspectorRoom
-        anchors.topMargin: 16
+        anchors.rightMargin: root.wide ? 16 : 4
+        anchors.topMargin: root.wide ? 26 : 16
         anchors.bottomMargin: 8
         spacing: 12
 
@@ -1766,9 +2076,10 @@ Rectangle {
                 id: overviewPage
                 objectName: "overviewPage"
                 readonly property var ov: root.m.overview
-                spacing: 20
+                spacing: 14
 
-                // The status sentence: the state in words, beside a dot whose colour only repeats them.
+                // The status sentence: the state in words, beside a mark whose shape and colour only
+                // repeat them.
                 ColumnLayout {
                     spacing: 4
                     Layout.fillWidth: true
@@ -1782,26 +2093,64 @@ Rectangle {
                             Layout.alignment: Qt.AlignTop
                             Layout.topMargin: Math.max(0, (headline.font.pixelSize * 1.3 - 20) / 2)
                             Accessible.ignored: true
+                            // A soft halo once there is a state to tell.
                             Rectangle {
+                                visible: !statusDot.idle
                                 anchors.fill: parent
                                 radius: width / 2
                                 color: Qt.rgba(statusDot.color.r, statusDot.color.g, statusDot.color.b, 0.14)
                             }
-                            Rectangle {
+                            // Idle is an open ring; fine a disc, an issue a triangle, a fault or lost
+                            // callers a diamond, muted a square.
+                            Canvas {
                                 id: statusDot
                                 objectName: "overviewToneDot"
-                                anchors.centerIn: parent
-                                width: 10
-                                height: 10
-                                radius: 5
-                                color: ({
+                                property color color: ({
                                     ok: root.t.status_ok_text,
                                     warn: root.t.status_warn_text,
                                     bad: root.t.status_bad_text,
                                     mute: root.t.mute,
                                     callers: root.t.callers_affected
                                 })[overviewPage.ov.tone] ?? root.t.control_edge
+                                readonly property string tone: overviewPage.ov.tone
+                                readonly property bool idle: !["ok", "warn", "bad", "mute", "callers"].includes(tone)
+                                anchors.centerIn: parent
+                                width: idle ? 16 : 11
+                                height: width
                                 Behavior on color { ColorAnimation { duration: root.t.motionStatus } }
+                                onColorChanged: requestPaint()
+                                onIdleChanged: requestPaint()
+                                onToneChanged: requestPaint()
+                                onPaint: {
+                                    const ctx = getContext("2d")
+                                    const s = width
+                                    ctx.reset()
+                                    ctx.fillStyle = color
+                                    ctx.strokeStyle = color
+                                    ctx.beginPath()
+                                    if (idle) {
+                                        ctx.lineWidth = 2
+                                        ctx.arc(s / 2, s / 2, s / 2 - 1, 0, 2 * Math.PI)
+                                        ctx.stroke()
+                                        return
+                                    }
+                                    if (tone === "warn") {
+                                        ctx.moveTo(s / 2, 0)
+                                        ctx.lineTo(s, s)
+                                        ctx.lineTo(0, s)
+                                    } else if (tone === "bad" || tone === "callers") {
+                                        ctx.moveTo(s / 2, 0)
+                                        ctx.lineTo(s, s / 2)
+                                        ctx.lineTo(s / 2, s)
+                                        ctx.lineTo(0, s / 2)
+                                    } else if (tone === "mute") {
+                                        ctx.rect(0.5, 0.5, s - 1, s - 1)
+                                    } else {
+                                        ctx.arc(s / 2, s / 2, s / 2, 0, 2 * Math.PI)
+                                    }
+                                    ctx.closePath()
+                                    ctx.fill()
+                                }
                             }
                         }
                         StatusText {
@@ -1952,151 +2301,285 @@ Rectangle {
                     }
                 }
 
-                // What AudioForge checked, and for a missing microphone the way out.
-                Surface {
-                    objectName: "overviewChecks"
+                // What AudioForge checked, and for a missing microphone the way out. The heading
+                // stands over the card; a status after its dot ("All set") reads as a check.
+                ColumnLayout {
+                    id: checksBlock
+                    // The heading, and after its first separator the status ("All set").
+                    readonly property int cut: overviewPage.ov.checksTitle.indexOf(" \u00b7 ")
+                    readonly property string heading: cut < 0 ? overviewPage.ov.checksTitle
+                                                              : overviewPage.ov.checksTitle.slice(0, cut)
+                    readonly property string status: cut < 0 ? "" : overviewPage.ov.checksTitle.slice(cut + 3)
                     visible: overviewPage.ov.checks.length > 0
-                    spacing: 8
+                    spacing: 10
                     Layout.fillWidth: true
-                    Title { text: overviewPage.ov.checksTitle }
-                    Repeater {
-                        model: overviewPage.ov.checks
-                        delegate: RowLayout {
-                            id: check
-                            required property var modelData
-                            spacing: 8
-                            Layout.fillWidth: true
-                            // A dot for a check that passed, "!" for one to act on, a dash for a note:
-                            // shapes that need no icon font, beside words that say the same.
-                            Item {
-                                implicitWidth: 14
-                                implicitHeight: checkText.implicitHeight
-                                Layout.alignment: Qt.AlignTop
+                    RowLayout {
+                        spacing: 14
+                        Layout.leftMargin: 2
+                        SectionLabel {
+                            text: checksBlock.heading
+                            Accessible.role: Accessible.Heading
+                            Accessible.name: overviewPage.ov.checksTitle
+                        }
+                        Row {
+                            visible: checksBlock.status !== ""
+                            spacing: 5
+                            LineIcon {
+                                width: 12
+                                height: 12
+                                grid: 12
+                                stroke: root.t.status_ok_text
+                                path: root.checkPath
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                textFormat: Text.PlainText
+                                text: checksBlock.status
+                                color: root.t.status_ok_text
+                                font.pixelSize: root.fsCaption
                                 Accessible.ignored: true
+                            }
+                        }
+                    }
+                    Surface {
+                        objectName: "overviewChecks"
+                        pad: 0
+                        spacing: 0
+                        Layout.fillWidth: true
+                        Repeater {
+                            model: overviewPage.ov.checks
+                            delegate: Item {
+                                id: check
+                                required property var modelData
+                                required property int index
+                                // The device a line names reads quieter than its label.
+                                readonly property bool split: modelData.detail !== ""
+                                implicitHeight: Math.max(40, checkLine.implicitHeight + 16)
+                                Layout.fillWidth: true
                                 Rectangle {
-                                    visible: check.modelData.kind === "ok"
-                                    width: 7
-                                    height: 7
-                                    radius: 3.5
-                                    anchors.centerIn: parent
-                                    color: root.t.status_ok_text
+                                    visible: check.index > 0
+                                    x: 18
+                                    width: parent.width - 36
+                                    height: 1
+                                    color: root.t.panel_edge
                                 }
-                                Text {
-                                    visible: check.modelData.kind !== "ok"
-                                    text: check.modelData.kind === "warn" ? "!" : "\u2013"
-                                    textFormat: Text.PlainText
-                                    color: check.modelData.kind === "warn" ? root.t.status_warn_text : root.t.text_muted
-                                    font.pixelSize: root.fsBody
-                                    font.weight: Font.DemiBold
-                                    anchors.centerIn: parent
+                                CheckMark {
+                                    id: checkMark
+                                    kind: check.modelData.kind
+                                    x: 18
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                RowLayout {
+                                    id: checkLine
+                                    spacing: 6
+                                    anchors.left: checkMark.right
+                                    anchors.leftMargin: 12
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 18
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    StatusText {
+                                        id: checkText
+                                        text: check.modelData.label
+                                        color: check.modelData.kind === "note" ? root.t.text_muted : root.t.text_primary
+                                        font.pixelSize: root.fsLead
+                                        wrapMode: Text.Wrap
+                                        elide: Text.ElideNone
+                                        Accessible.name: check.modelData.text
+                                        Layout.maximumWidth: checkLine.width
+                                    }
+                                    Text {
+                                        visible: check.split
+                                        text: "\u00b7 " + check.modelData.detail
+                                        textFormat: Text.PlainText
+                                        color: root.t.text_muted
+                                        font.pixelSize: root.fsLead
+                                        wrapMode: Text.Wrap
+                                        Layout.fillWidth: true
+                                        Accessible.ignored: true
+                                    }
+                                    Item { visible: !check.split; Layout.fillWidth: true }
                                 }
                             }
-                            StatusText {
-                                id: checkText
-                                text: check.modelData.text
-                                color: check.modelData.kind === "note" ? root.t.text_muted : root.t.text_primary
-                                font.pixelSize: root.fsBody
+                        }
+                        ColumnLayout {
+                            visible: overviewPage.ov.state === "no_mic"
+                            spacing: 10
+                            Layout.fillWidth: true
+                            Layout.margins: 18
+                            Layout.topMargin: 6
+                            Btn {
+                                objectName: "overviewRefresh"
+                                proxy: root.m.top.refresh
+                                text: "Refresh audio devices"
+                                look: "primary"
+                            }
+                            Picker {
+                                proxy: root.m.top.input
+                                glyph: root.hasIcons ? root.m.glyphs.mic : ""
+                                Layout.preferredWidth: 320
+                                Layout.maximumWidth: 320
+                            }
+                            Caption {
+                                text: "Pick your microphone here once it appears, then press Start."
                                 wrapMode: Text.Wrap
                                 Layout.fillWidth: true
                             }
                         }
                     }
-                    ColumnLayout {
-                        visible: overviewPage.ov.state === "no_mic"
-                        spacing: 10
-                        Layout.fillWidth: true
-                        Layout.topMargin: 6
-                        Btn {
-                            objectName: "overviewRefresh"
-                            proxy: root.m.top.refresh
-                            text: "Refresh audio devices"
-                            look: "primary"
-                        }
-                        Picker {
-                            proxy: root.m.top.input
-                            glyph: root.hasIcons ? root.m.glyphs.mic : ""
-                            Layout.preferredWidth: 320
-                            Layout.maximumWidth: 320
-                        }
-                        Caption {
-                            text: "Pick your microphone here once it appears, then press Start."
-                            wrapMode: Text.Wrap
-                            Layout.fillWidth: true
-                        }
-                    }
                 }
 
                 // Ten seconds of level: the microphone above the line, what others hear below.
-                Surface {
-                    objectName: "levelRibbonCard"
-                    spacing: 8
+                ColumnLayout {
+                    spacing: 10
                     Layout.fillWidth: true
                     RowLayout {
-                        spacing: 14
+                        spacing: 16
                         Layout.fillWidth: true
+                        Layout.leftMargin: 2
                         StatusText {
                             objectName: "ribbonCaption"
                             text: overviewPage.ov.ribbonCaption
-                            font.pixelSize: root.fsCaption
+                            color: root.t.text_primary
+                            font.pixelSize: root.fsBody
+                            font.weight: Font.DemiBold
                             elide: Text.ElideRight
                             Layout.fillWidth: true
                         }
-                        Caption {
-                            text: "IN \u00b7 your microphone"
-                            color: root.t.signal_in
-                            font.pixelSize: root.fsCaption
-                        }
-                        Caption {
-                            text: "OUT \u00b7 what others hear"
-                            color: root.t.signal_out
-                            font.pixelSize: root.fsCaption
+                        // Which colour is which, with the level while the audio runs; the card
+                        // spells the halves out.
+                        Repeater {
+                            model: [[root.t.signal_in, "IN"], [root.t.signal_out, "OUT"]]
+                            delegate: Row {
+                                id: key
+                                required property var modelData
+                                required property int index
+                                spacing: 6
+                                Rectangle {
+                                    width: 8
+                                    height: 8
+                                    radius: 4
+                                    color: key.modelData[0]
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                Caption {
+                                    text: key.modelData[1] + " " + (root.running ? root.m.meters[key.index].valueText
+                                                                                 : "\u2014")
+                                    color: key.modelData[0]
+                                    font.pixelSize: root.fsCaption
+                                    font.features: { "tnum": 1 }
+                                }
+                            }
                         }
                     }
-                    Rectangle {
-                        id: ribbonBox
-                        implicitHeight: root.wide ? 96 : 72
-                        radius: root.t.radiusControl
-                        color: root.t.data_surface
-                        clip: true
+                    Surface {
+                        objectName: "levelRibbonCard"
+                        pad: 12
+                        spacing: 0
                         Layout.fillWidth: true
-                        // One sample wider than the box, slid by that sample between readings.
                         Item {
-                            id: ribbonStrip
-                            readonly property real step: ribbonBox.width / (root.m.ribbonPoints - 1)
-                            readonly property var levels: root.ui.levels
-                            width: ribbonBox.width + step
-                            height: ribbonBox.height
-                            // Hidden with its page, it takes each reading without sliding.
-                            onLevelsChanged: if (visible) scroll.restart()
-                            NumberAnimation on x {
-                                id: scroll
-                                objectName: "ribbonScroll"
-                                running: false
-                                from: 0
-                                to: -ribbonStrip.step
-                                duration: Look.movement(root.m.levelIntervalMs)
+                            id: ribbonBox
+                            implicitHeight: root.wide ? 80 : 72
+                            clip: true
+                            Layout.fillWidth: true
+                            // One sample wider than the box, slid by that sample between readings.
+                            Item {
+                                id: ribbonStrip
+                                readonly property real step: ribbonBox.width / (root.m.ribbonPoints - 1)
+                                readonly property var levels: root.ui.levels
+                                width: ribbonBox.width + step
+                                height: ribbonBox.height
+                                // Hidden with its page, it takes each reading without sliding.
+                                onLevelsChanged: if (visible) scroll.restart()
+                                NumberAnimation on x {
+                                    id: scroll
+                                    objectName: "ribbonScroll"
+                                    running: false
+                                    from: 0
+                                    to: -ribbonStrip.step
+                                    duration: Look.movement(root.m.levelIntervalMs)
+                                }
+                                LevelRibbon {
+                                    objectName: "levelRibbon"
+                                    // Nothing is measured while the audio is stopped.
+                                    visible: root.running
+                                    width: ribbonStrip.width
+                                    height: ribbonStrip.height
+                                    points: ribbonStrip.levels
+                                    Accessible.role: Accessible.Graphic
+                                    Accessible.name: "Level, last 10 seconds"
+                                }
                             }
-                            LevelRibbon {
-                                objectName: "levelRibbon"
-                                width: ribbonStrip.width
-                                height: ribbonStrip.height
-                                points: ribbonStrip.levels
-                                Accessible.role: Accessible.Graphic
-                                Accessible.name: "Level, last 10 seconds"
+                            // Which half is which: the microphone above the line, what others hear below.
+                            Caption {
+                                objectName: "ribbonInLabel"
+                                text: "IN \u00b7 your microphone"
+                                color: root.t.signal_in
+                                font.pixelSize: root.fsCaption
+                            }
+                            Caption {
+                                objectName: "ribbonOutLabel"
+                                anchors.bottom: parent.bottom
+                                text: "OUT \u00b7 what others hear"
+                                color: root.t.signal_out
+                                font.pixelSize: root.fsCaption
+                            }
+                            // Stopped: the centre line and a note of when the trace begins.
+                            Rectangle {
+                                visible: !root.running
+                                width: parent.width
+                                height: 1
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: root.t.data_grid
+                            }
+                            Rectangle {
+                                objectName: "ribbonWaiting"
+                                visible: !root.running
+                                anchors.centerIn: parent
+                                implicitWidth: waitingRow.implicitWidth + 32
+                                implicitHeight: 34
+                                radius: height / 2
+                                color: root.t.pill_surface
+                                border.color: root.t.pill_edge
+                                Row {
+                                    id: waitingRow
+                                    anchors.centerIn: parent
+                                    spacing: 10
+                                    Rectangle {
+                                        width: 22
+                                        height: 22
+                                        radius: 11
+                                        color: root.t.accent_fill
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        LineIcon {
+                                            anchors.centerIn: parent
+                                            width: 10
+                                            height: 10
+                                            grid: 12
+                                            stroke: root.t.accent_bright
+                                            path: "M3.5 2l6.5 4-6.5 4z"
+                                        }
+                                    }
+                                    StatusText {
+                                        text: "Starts when you press Start"
+                                        color: root.t.text_primary
+                                        font.pixelSize: root.fsCaption
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                }
                             }
                         }
                     }
                 }
 
                 // A look at the curve; the Equalizer page edits it.
-                Surface {
-                    objectName: "eqPreviewCard"
-                    spacing: 8
+                ColumnLayout {
+                    spacing: 10
                     Layout.fillWidth: true
                     RowLayout {
-                        spacing: 12
+                        spacing: 14
                         Layout.fillWidth: true
-                        Title { text: "Equalizer" }
+                        Layout.leftMargin: 2
+                        SectionLabel { text: "Equalizer"; Accessible.role: Accessible.Heading; Accessible.name: text }
                         Caption { text: root.m.eq.layers.text; Layout.fillWidth: true; elide: Text.ElideRight }
                         Btn {
                             objectName: "openEqualizer"
@@ -2105,14 +2588,20 @@ Rectangle {
                             onClicked: root.m.page.setIndex(root.m.equalizerPage)
                         }
                     }
-                    EQGraphPreview {
-                        objectName: "eqPreview"
-                        graph: root.m.eq.curve
-                        implicitHeight: root.wide ? 150 : 130
+                    Surface {
+                        objectName: "eqPreviewCard"
+                        pad: 14
+                        spacing: 0
                         Layout.fillWidth: true
-                        Accessible.role: Accessible.Graphic
-                        Accessible.name: "Equalizer preview"
-                        Accessible.description: root.m.eq.curve ? root.m.eq.curve.accessibleDescription : ""
+                        EQGraphPreview {
+                            objectName: "eqPreview"
+                            graph: root.m.eq.curve
+                            implicitHeight: root.wide ? 150 : 130
+                            Layout.fillWidth: true
+                            Accessible.role: Accessible.Graphic
+                            Accessible.name: "Equalizer preview"
+                            Accessible.description: root.m.eq.curve ? root.m.eq.curve.accessibleDescription : ""
+                        }
                     }
                 }
 
@@ -2136,6 +2625,62 @@ Rectangle {
                         font.pixelSize: root.fsCaption
                         wrapMode: Text.Wrap
                         Layout.fillWidth: true
+                    }
+                    Rectangle {
+                        implicitHeight: 1
+                        color: root.t.panel_edge
+                        Layout.fillWidth: true
+                        Layout.topMargin: 2
+                    }
+                    // The window's shortcuts, read from its own actions; a narrow pane wraps them.
+                    Flow {
+                        objectName: "shortcutRow"
+                        spacing: 20
+                        Layout.fillWidth: true
+                        Repeater {
+                            model: root.m.shortcuts
+                            delegate: Row {
+                                id: shortcut
+                                required property var modelData
+                                spacing: 6
+                                Accessible.role: Accessible.StaticText
+                                Accessible.name: modelData.keys.join("+") + ": " + modelData.action
+                                Repeater {
+                                    model: shortcut.modelData.keys
+                                    delegate: Rectangle {
+                                        id: keycap
+                                        required property string modelData
+                                        implicitWidth: Math.max(22, keyLabel.implicitWidth + 12)
+                                        implicitHeight: 22
+                                        radius: 7
+                                        border.color: root.t.key_edge
+                                        gradient: Gradient {
+                                            GradientStop { position: 0; color: root.t.key_top }
+                                            GradientStop { position: 1; color: root.t.key_bottom }
+                                        }
+                                        Accessible.ignored: true
+                                        Text {
+                                            id: keyLabel
+                                            anchors.centerIn: parent
+                                            textFormat: Text.PlainText
+                                            text: keycap.modelData
+                                            color: root.t.key_text
+                                            font.pixelSize: root.fsCaption
+                                            font.weight: Font.DemiBold
+                                        }
+                                    }
+                                }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    leftPadding: 2
+                                    textFormat: Text.PlainText
+                                    text: shortcut.modelData.action
+                                    color: root.t.text_muted
+                                    font.pixelSize: root.fsCaption
+                                    Accessible.ignored: true
+                                }
+                            }
+                        }
                     }
                 }
             }

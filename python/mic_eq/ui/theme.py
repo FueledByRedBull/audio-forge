@@ -28,6 +28,27 @@ class SemanticPalette:
     card_surface: str = "#18191d"
     toolbar_top: str = "#1b1c21"
     toolbar_bottom: str = "#15161a"
+    sidebar_top: str = "#17181d"
+    sidebar_bottom: str = "#131418"
+    # The window ground. The sidebar and the main pane stand on it as raised, rounded
+    # panels with a gap around them; their faint edge and lit top line say where they end.
+    window_ground: str = "#07080a"
+    panel_edge: str = "#0effffff"
+    panel_highlight: str = "#13ffffff"
+    pane_top: str = "#111319"
+    pane_bottom: str = "#0c0d11"
+    # A cool sheen across the top of the main pane.
+    pane_glow: str = "#21788cdc"
+    # A card on the main pane runs from card_top down to card_surface; the edge and the lit
+    # top line are translucent white.
+    card_top: str = "#202126"
+    card_edge: str = "#13ffffff"
+    card_highlight: str = "#17ffffff"
+    # The tile behind a sidebar row's icon, and the icon drawn on it.
+    tile_top: str = "#17ffffff"
+    tile_bottom: str = "#08ffffff"
+    tile_edge: str = "#1affffff"
+    tile_icon: str = "#c9ced8"
     # The top bar is a rounded pane on the ground: a faint lit edge inside a dark rim.
     toolbar_edge: str = "#0effffff"
     toolbar_rim: str = "#8c000000"
@@ -38,8 +59,6 @@ class SemanticPalette:
     brand_mark_top: str = "#f0ab72"
     brand_mark_bottom: str = "#c86d33"
     brand_mark_glyph: str = "#fff6ee"
-    sidebar_top: str = "#202127"
-    sidebar_bottom: str = "#18191d"
     control_surface: str = "#1d1e21"
     control_surface_alt: str = "#191a1c"
     control_hover: str = "#27282b"
@@ -70,6 +89,12 @@ class SemanticPalette:
     accent_bright: str = "#ffd9b8"
     accent_fill: str = "#2ed98a4e"
     accent_edge: str = "#59d98a4e"
+    # The selected sidebar row lights from its left end; its icon tile is amber too.
+    accent_row_start: str = "#4dd98a4e"
+    accent_row_end: str = "#1ad98a4e"
+    accent_tile_top: str = "#57e8a574"
+    accent_tile_bottom: str = "#1fe8a574"
+    accent_tile_edge: str = "#80e8a574"
     # Violet is Mute and nothing else.
     mute: str = "#b9a3f5"
     mute_text: str = "#cdbcf8"
@@ -106,6 +131,9 @@ class SemanticPalette:
     status_ok_text: str = "#8fcfa5"
     status_ok_border: str = "#254739"
     status_ok_dot: str = "#5fd39a"
+    # The round mark behind a check that passed, or behind a note.
+    status_ok_fill: str = "#298fcfa5"
+    status_note_fill: str = "#14ffffff"
     status_warn_surface: str = "#26231a"
     status_warn_text: str = "#f5d97a"
     # Solid, not the soft edge: an empty picker is marked by it and needs 3:1.
@@ -168,6 +196,18 @@ class SemanticPalette:
     meter_peak: str = "#ececf0"
     meter_scale: str = "#9b9fa9"
     meter_reduction: str = "#a9bbd4"
+    # The small bar under a sidebar row: how hard the stage works, from grey to near white.
+    activity_track: str = "#14ffffff"
+    activity_low: str = "#8a8f9a"
+    activity_high: str = "#e8eaef"
+    # The pill that says what an empty graph waits for.
+    pill_surface: str = "#1b1f28"
+    pill_edge: str = "#57ffffff"
+    # A keycap in the shortcut row: a raised, lightly lit key with a bright label.
+    key_top: str = "#24ffffff"
+    key_bottom: str = "#0fffffff"
+    key_edge: str = "#38ffffff"
+    key_text: str = "#eef0f4"
     # The unlit steps of a segmented level bar.
     meter_segment_off: str = "#2a2c33"
     # The dark track behind the steps, ringed so the bar holds its shape against the pane.
@@ -269,6 +309,16 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         status_ok_dot=text, signal_in=text, signal_in_fill=text, signal_out=text,
         glass=window, glass_solid=window, glass_modal=window,
         glass_edge=text, glass_edge_modal=text, glass_highlight=window, glass_shadow="#00000000",
+        window_ground=window, panel_edge=text, panel_highlight=window,
+        pane_top=window, pane_bottom=window, pane_glow="#00000000",
+        card_top=window, card_edge=text, card_highlight=window,
+        tile_top=window, tile_bottom=window, tile_edge=text, tile_icon=text,
+        accent_row_start=accent, accent_row_end=accent,
+        accent_tile_top=accent, accent_tile_bottom=accent, accent_tile_edge=accent,
+        status_ok_fill=window, status_note_fill=window,
+        activity_track=disabled, activity_low=text, activity_high=text,
+        pill_surface=window, pill_edge=text,
+        key_top=window, key_bottom=window, key_edge=text, key_text=text,
     )
 
 
@@ -284,7 +334,9 @@ def contrast_theme_changed() -> bool:
     return windows_contrast_colors() != SYSTEM_CONTRAST_COLORS
 
 
-RADIUS_CARD = 10
+RADIUS_CARD = 18
+# The sidebar and the main pane.
+RADIUS_PANEL = 20
 RADIUS_CONTROL = 8
 # A recessed well that holds a graph.
 RADIUS_WELL = 14
@@ -590,6 +642,47 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
     ),
     ("signal in label", PALETTE.signal_in, PALETTE.data_surface),
     ("signal out label", PALETTE.signal_out, PALETTE.data_surface),
+    *(
+        (f"{label} on {ground_name}", foreground, ground)
+        for ground_name, ground in (
+            ("card top", PALETTE.card_top),
+            ("pane top", PALETTE.pane_top),
+            ("pane bottom", PALETTE.pane_bottom),
+            ("sidebar top", PALETTE.sidebar_top),
+            ("sidebar bottom", PALETTE.sidebar_bottom),
+        )
+        for label, foreground in (
+            ("primary text", PALETTE.text_primary),
+            ("muted text", PALETTE.text_muted),
+            ("dim text", PALETTE.text_dim),
+            ("success text", PALETTE.status_ok_text),
+            ("warning text", PALETTE.status_warn_text),
+            ("error text", PALETTE.status_bad_text),
+            ("signal in label", PALETTE.signal_in),
+            ("signal out label", PALETTE.signal_out),
+        )
+    ),
+    ("icon on a tile", PALETTE.tile_icon, flatten(PALETTE.tile_top, PALETTE.sidebar_top)),
+    ("selected row name", PALETTE.text_primary, flatten(PALETTE.accent_row_start, PALETTE.sidebar_top)),
+    ("selected row line", PALETTE.accent_soft, flatten(PALETTE.accent_row_start, PALETTE.sidebar_top)),
+    ("selected row icon", PALETTE.accent_bright, flatten(PALETTE.accent_tile_top, PALETTE.sidebar_top)),
+    ("waiting pill text", PALETTE.text_primary, PALETTE.pill_surface),
+    ("keycap label", PALETTE.key_text, flatten(PALETTE.key_top, PALETTE.pane_bottom)),
+    # The play mark is text on the highlight in a contrast theme, so it takes accent_bright.
+    ("waiting pill play mark", PALETTE.accent_bright, flatten(PALETTE.accent_fill, PALETTE.pill_surface)),
+    # The route-check marks sit on their own tints over the card's lighter top.
+    ("passed check mark", PALETTE.status_ok_text, flatten(PALETTE.status_ok_fill, PALETTE.card_top)),
+    ("check to act on mark", PALETTE.status_warn_text, flatten(PALETTE.status_warn_surface, PALETTE.card_top)),
+    ("note check mark", PALETTE.text_muted, flatten(PALETTE.status_note_fill, PALETTE.card_top)),
+    # The sheen is brightest at the pane's top edge, where the headline and the headings are.
+    *(
+        (f"{label} under the pane's sheen", foreground, flatten(PALETTE.pane_glow, PALETTE.pane_top))
+        for label, foreground in (
+            ("primary text", PALETTE.text_primary),
+            ("muted text", PALETTE.text_muted),
+            ("success text", PALETTE.status_ok_text),
+        )
+    ),
     # The band strip's badge: the band's number, dark on the band's color.
     *(
         (f"EQ band {number} number on its badge", PALETTE.text_on_data_color, color)

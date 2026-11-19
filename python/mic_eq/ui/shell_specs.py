@@ -78,7 +78,7 @@ TEXT_SPECS = {
     "calibration_status_label": _TextSpec(
         "No saved calibration", "Saved calibration validity"
     ),
-    "health_summary_label": _TextSpec("Health: --", "Compact audio health summary"),
+    "health_summary_label": _TextSpec("Health: not running", "Compact audio health summary"),
     "route_status_label": _TextSpec("Route: --", "Current audio route"),
     "health_advice_label": _TextSpec(
         "Start processing to see audio health.", "Audio health advice"

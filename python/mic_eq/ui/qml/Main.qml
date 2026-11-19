@@ -303,6 +303,84 @@ Rectangle {
         Hint { text: btn.help }
     }
 
+    // Held by the mouse, by Space or by the B on its keycap, it plays the voice without the
+    // equalizer; letting go, or losing the press, the focus or the view, returns it. Only the
+    // item that began a hold ends it.
+    component HoldBtn: PushButton {
+        id: hold
+        property var proxy
+        property bool holding: false
+        // A hold ended elsewhere (an edit, Stop, the window going away) is no longer this button's.
+        readonly property bool held: proxy ? proxy.held : false
+        onHeldChanged: if (!held) holding = false
+        function begin() {
+            if (!holding && proxy && proxy.enabled) {
+                proxy.press()
+                holding = proxy.held
+            }
+        }
+        function end() {
+            if (holding) {
+                holding = false
+                proxy.release()
+            }
+        }
+        function holdKey(event) {
+            return event.key === Qt.Key_Space
+                || (event.key === Qt.Key_B && event.modifiers === Qt.NoModifier)
+        }
+        // Measured in the held look's weight, so a hold does not reflow the header.
+        TextMetrics {
+            id: fullLabel
+            text: hold.proxy ? hold.proxy.text : ""
+            font.pixelSize: Look.fsBody
+            font.weight: Font.DemiBold
+        }
+        TextMetrics {
+            id: shortLabel
+            text: hold.proxy ? hold.proxy.shortText : ""
+            font: fullLabel.font
+        }
+        readonly property real shortWidth: leftPadding + Math.ceil(shortLabel.advanceWidth) + rightPadding
+        // Short of room for the whole label, it says Hold beside its keycap; never less.
+        text: !proxy ? "" : availableWidth >= Math.ceil(fullLabel.advanceWidth) ? proxy.text : proxy.shortText
+        enabled: proxy ? proxy.enabled : false
+        look: held ? "soft" : "plain"
+        leftPadding: 12
+        rightPadding: 8 + keycap.width + 8
+        implicitWidth: leftPadding + Math.ceil(fullLabel.advanceWidth) + rightPadding
+        onPressedChanged: pressed ? begin() : end()
+        onCanceled: end()
+        onActiveFocusChanged: if (!activeFocus) end()
+        onVisibleChanged: if (!visible) end()
+        onEnabledChanged: if (!enabled) end()
+        Keys.onPressed: event => {
+            if (holdKey(event)) {
+                event.accepted = true
+                if (!event.isAutoRepeat)
+                    begin()
+            }
+        }
+        Keys.onReleased: event => {
+            if (event.key === Qt.Key_Space || event.key === Qt.Key_B) {
+                event.accepted = true
+                if (!event.isAutoRepeat)
+                    end()
+            }
+        }
+        Accessible.name: proxy ? proxy.name : ""
+        Accessible.description: proxy ? proxy.toolTip : ""
+        Hint { text: hold.proxy ? hold.proxy.toolTip : "" }
+        EscChip {
+            id: keycap
+            objectName: "holdKeycap"
+            text: hold.proxy ? hold.proxy.keycap : ""
+            anchors.right: parent.right
+            anchors.rightMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+        }
+    }
+
     component IconBtn: KeyButton {
         id: iconBtn
         property var proxy: null
@@ -893,41 +971,10 @@ Rectangle {
         }
     }
 
-    // Mute stays pressed while the output is muted, in the mute violet; its words do not change.
-    component MuteBtn: ModelButton {
+    // The shared Mute button, with the scene's hover help.
+    component MuteBtn: MuteButton {
         id: mute
-        property var proxy
-        on: proxy ? proxy.checked : false
-        enabled: proxy ? proxy.enabled : false
-        onRequested: proxy.click()
-        opacity: enabled ? 1 : 0.45
-        implicitWidth: muteMetrics.width + 28
-        implicitHeight: 32
-        Accessible.role: Accessible.Button
-        Accessible.name: proxy ? proxy.name : ""
-        Accessible.description: proxy ? proxy.toolTip : ""
-        // A button that stays pressed toggles, so assistive technology can switch it as a toggle too.
-        Accessible.onToggleAction: click()
         Hint { text: mute.proxy ? mute.proxy.toolTip : "" }
-        // Measured bold, so pressing it does not change its width.
-        TextMetrics { id: muteMetrics; text: muteLabel.text; font.pixelSize: root.fsBody; font.weight: Font.DemiBold }
-        background: Rectangle {
-            radius: root.t.radiusControl
-            color: mute.on ? root.t.mute_fill : mute.hovered ? root.t.control_hover : root.t.control_surface
-            border.color: mute.on ? root.t.mute_edge : root.t.control_edge
-            Behavior on color { ColorAnimation { duration: root.t.motionRow } }
-            FocusRing { control: mute }
-        }
-        contentItem: Text {
-            id: muteLabel
-            text: "Mute"
-            textFormat: Text.PlainText
-            color: mute.on ? root.t.mute_text : mute.hovered ? root.t.hover_text : root.t.text_primary
-            font.pixelSize: root.fsBody
-            font.weight: mute.on ? Font.DemiBold : Font.Normal
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-        }
     }
 
     // A command shown as underlined text beside the note it belongs to.
@@ -2190,49 +2237,66 @@ Rectangle {
                     }
                 }
 
-                // Under the header, on the right: undo, then how many edits are unsaved and the latest one in words, with its age.
-                ColumnLayout {
-                    id: undoHistory
-                    objectName: "undoHistory"
-                    readonly property var history: root.m.presets.history
-                    spacing: 2
-                    Layout.alignment: Qt.AlignRight
-                    // On a narrow page the chip and the caption elide.
+                // Under the header: hold to compare on the left, the edit history on the right.
+                RowLayout {
+                    id: historyRow
+                    spacing: 12
                     Layout.fillWidth: true
-                    Layout.minimumWidth: 30 + 6 + 48
-                    Layout.preferredWidth: undoRow.implicitWidth
-                    Layout.maximumWidth: 240
-                    // The caption's line stays reserved, so the page under it does not move when it appears.
-                    Layout.minimumHeight: undoRow.implicitHeight + spacing + undoCaption.implicitHeight
-                    RowLayout {
-                        id: undoRow
-                        spacing: 6
-                        Layout.alignment: Qt.AlignRight
-                        Layout.maximumWidth: undoHistory.width
-                        IconBtn {
-                            objectName: "equalizerUndo"
-                            proxy: root.m.presets.undo
-                            glyph: root.m.glyphs.undo
-                            label: "Undo"
-                        }
-                        Chip {
-                            objectName: "undoChip"
-                            proxy: undoHistory.history
-                            visible: undoHistory.history.count > 0
-                            single: true
-                            Layout.fillWidth: true
-                            Layout.maximumWidth: implicitWidth
-                        }
-                    }
-                    Caption {
-                        id: undoCaption
-                        objectName: "undoCaption"
-                        text: undoHistory.history.caption
-                        visible: text !== ""
-                        font.pixelSize: root.fsCaption
-                        horizontalAlignment: Text.AlignRight
-                        tip: truncated ? text : ""
+                    HoldBtn {
+                        objectName: "holdOriginal"
+                        proxy: equalizerPage.eq.compare
+                        Layout.alignment: Qt.AlignTop
+                        // Short of room the label shortens before anything overlaps; the tip and name keep it whole.
                         Layout.fillWidth: true
+                        Layout.minimumWidth: shortWidth
+                        Layout.preferredWidth: implicitWidth
+                        Layout.maximumWidth: implicitWidth
+                    }
+                    Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                    // Undo, then how many edits are unsaved and the latest one in words, with its age.
+                    ColumnLayout {
+                        id: undoHistory
+                        objectName: "undoHistory"
+                        readonly property var history: root.m.presets.history
+                        spacing: 2
+                        Layout.alignment: Qt.AlignTop
+                        // A fixed column at the right edge; the chip and the caption elide inside it.
+                        Layout.minimumWidth: 30 + 6 + 48
+                        Layout.preferredWidth: 240
+                        Layout.maximumWidth: 240
+                        // The caption's line stays reserved, so the graph below never moves when it appears.
+                        Layout.minimumHeight: undoRow.implicitHeight + spacing + undoCaption.implicitHeight
+                        RowLayout {
+                            id: undoRow
+                            spacing: 6
+                            Layout.alignment: Qt.AlignRight
+                            Layout.fillWidth: false
+                            Layout.maximumWidth: undoHistory.width
+                            IconBtn {
+                                objectName: "equalizerUndo"
+                                proxy: root.m.presets.undo
+                                glyph: root.m.glyphs.undo
+                                label: "Undo"
+                            }
+                            Chip {
+                                objectName: "undoChip"
+                                proxy: undoHistory.history
+                                visible: undoHistory.history.count > 0
+                                single: true
+                                Layout.fillWidth: true
+                                Layout.maximumWidth: implicitWidth
+                            }
+                        }
+                        Caption {
+                            id: undoCaption
+                            objectName: "undoCaption"
+                            text: undoHistory.history.caption
+                            visible: text !== ""
+                            font.pixelSize: root.fsCaption
+                            horizontalAlignment: Text.AlignRight
+                            tip: truncated ? text : ""
+                            Layout.fillWidth: true
+                        }
                     }
                 }
 
@@ -2242,8 +2306,18 @@ Rectangle {
                     id: graphWell
                     objectName: "eqGraphWell"
                     readonly property int inset: 6
+                    // B held on the focused graph plays the original; the graph ends only its own hold.
+                    property bool holdingOriginal: false
+                    readonly property bool originalHeld: equalizerPage.eq.compare.held
+                    onOriginalHeldChanged: if (!originalHeld) holdingOriginal = false
+                    function endOriginal() {
+                        if (holdingOriginal) {
+                            holdingOriginal = false
+                            equalizerPage.eq.compare.release()
+                        }
+                    }
                     readonly property real room: equalizerPage.height - 28 - eqHeader.implicitHeight
-                                                 - undoHistory.Layout.minimumHeight - bandPanel.implicitHeight
+                                                 - historyRow.implicitHeight - bandPanel.implicitHeight
                                                  - eqFooter.implicitHeight - 4 * equalizerPage.spacing - 4
                     implicitHeight: Math.max(eqGraph.implicitHeight + 2 * inset, Math.floor(room))
                     radius: root.t.radiusWell
@@ -2265,7 +2339,54 @@ Rectangle {
                         Accessible.name: "Equalizer graph"
                         Accessible.description: eqGraph.graph ? eqGraph.graph.accessibleDescription : ""
                         onHandlesChanged: connector.follow()
+                        onActiveFocusChanged: if (!eqGraph.activeFocus) graphWell.endOriginal()
+                        onVisibleChanged: if (!eqGraph.visible) graphWell.endOriginal()
+                        Keys.onPressed: event => {
+                            if (event.key !== Qt.Key_B || event.modifiers !== Qt.NoModifier)
+                                return
+                            event.accepted = true
+                            if (!event.isAutoRepeat && !graphWell.holdingOriginal && equalizerPage.eq.compare.enabled) {
+                                equalizerPage.eq.compare.press()
+                                graphWell.holdingOriginal = equalizerPage.eq.compare.held
+                            }
+                        }
+                        Keys.onReleased: event => {
+                            if (event.key !== Qt.Key_B)
+                                return
+                            event.accepted = true
+                            if (!event.isAutoRepeat)
+                                graphWell.endOriginal()
+                        }
                         FocusRing { visible: parent.activeFocus }
+                    }
+                    // While the original plays, in words: the colour is never the only sign. It sits
+                    // on the region strip, above the plot, so no handle is ever under it.
+                    Rectangle {
+                        objectName: "originalPill"
+                        visible: equalizerPage.eq.compare.held
+                        x: Math.round((graphWell.width - width) / 2)
+                        y: graphWell.inset + Math.max(0, Math.round((equalizerPage.eq.regionStrip - height) / 2))
+                        width: Math.min(pillText.implicitWidth + 24, graphWell.width - 24)
+                        height: pillText.implicitHeight + 8
+                        radius: height / 2
+                        color: root.t.status_info_surface
+                        border.color: root.t.status_info_border
+                        Accessible.role: Accessible.AlertMessage
+                        Accessible.name: pillText.text
+                        Text {
+                            id: pillText
+                            x: 12
+                            y: 4
+                            width: parent.width - 24
+                            text: equalizerPage.eq.compare.pill
+                            textFormat: Text.PlainText
+                            color: root.t.status_info_text
+                            font.pixelSize: root.fsCaption
+                            font.weight: Font.DemiBold
+                            wrapMode: Text.Wrap
+                            horizontalAlignment: Text.AlignHCenter
+                            Accessible.ignored: true
+                        }
                     }
                     Rectangle {
                         id: connector
@@ -2400,6 +2521,14 @@ Rectangle {
                                     implicitWidth: 120
                                 }
                             }
+                        }
+                        // What the band does to the voice where it sits, in one sentence.
+                        StatusText {
+                            objectName: "bandHint"
+                            text: equalizerPage.band.hint.text
+                            wrapMode: Text.Wrap
+                            elide: Text.ElideNone
+                            Layout.fillWidth: true
                         }
                     }
                 }
@@ -2618,6 +2747,15 @@ Rectangle {
                 }
             }
         }
+    }
+
+    // Ctrl+K opens it (its window action is in command_palette.py); it lies over every pane.
+    CommandPalette {
+        objectName: "commandPalette"
+        anchors.fill: parent
+        commands: root.m.palette
+        backdrop: mainPane
+        fallbackFocus: overviewRow.button
     }
 
     // On top, so a press is seen before the control under it takes focus:

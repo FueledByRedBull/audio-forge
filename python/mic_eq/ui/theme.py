@@ -151,13 +151,9 @@ class SemanticPalette:
     meter_reduction: str = "#a9bbd4"
 
 
-# Tokens with no reader yet, kept for work that is planned: the modal glass panel.
-# test_every_palette_token_has_a_reader fails for any other token without a reader, and
-# for an entry here once it gains one.
-RESERVED_FOR_LATER: tuple[str, ...] = (
-    "glass_modal",
-    "glass_edge_modal",
-)
+# Tokens with no reader yet, kept for work that is planned. test_every_palette_token_has_a_reader
+# fails for any other token without a reader, and for an entry here once it gains one.
+RESERVED_FOR_LATER: tuple[str, ...] = ()
 
 
 def windows_contrast_colors() -> dict[str, str] | None:
@@ -512,6 +508,30 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
         )
     ),
     ("muted text on modal glass", PALETTE.text_muted, flatten(PALETTE.glass_modal, PALETTE.app_surface)),
+    # The command palette's rows, on its modal glass and on the selected row's fill over it.
+    *(
+        (f"palette {label} on modal glass", foreground, flatten(PALETTE.glass_modal, PALETTE.app_surface))
+        for label, foreground in (
+            ("primary text", PALETTE.text_primary),
+            ("dim text", PALETTE.text_dim),
+            ("disabled text", PALETTE.action_disabled_text),
+            ("accent text", PALETTE.accent_text),
+            ("callers text", PALETTE.callers_affected_text),
+        )
+    ),
+    *(
+        (
+            f"palette {label} on the selected row",
+            foreground,
+            flatten(PALETTE.accent_fill, flatten(PALETTE.glass_modal, PALETTE.app_surface)),
+        )
+        for label, foreground in (
+            ("title", PALETTE.hover_text),
+            ("muted text", PALETTE.text_muted),
+            ("accent text", PALETTE.accent_text),
+            ("callers text", PALETTE.callers_affected_text),
+        )
+    ),
     ("signal in label", PALETTE.signal_in, PALETTE.data_surface),
     ("signal out label", PALETTE.signal_out, PALETTE.data_surface),
     # The number on the selected EQ handle, dark on the band's color.

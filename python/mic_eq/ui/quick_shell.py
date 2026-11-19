@@ -38,11 +38,14 @@ from PySide6.QtQuickWidgets import QQuickWidget
 
 from .chain_presentation import PREFILTER_HIGHPASS_HZ, ChainInputs, ChainLine, describe_chain
 from . import platform_text
+from .command_palette import CommandPalette, window_commands
 from .components import Glyph
 from .engine_session import Restarted, RestartFailed, Started, Stopped
 from .desktop_integration import RENDERER_RELAUNCH_ENV, relaunch_with_software_rendering
 from .control_specs import control_label
 from .eq_controls import EQControl
+from .eq_graph import EQGraphGeometry
+from .eq_hold_compare import EQHoldCompare
 from .eq_quick_compare import EQComparisonItem
 from .device_selection import VIRTUAL_OUTPUT_MARKERS
 from .eq_quick_graph import EQGraphItem, EQGraphPreview
@@ -441,6 +444,10 @@ class QuickBridge(QObject):
     def release(self) -> None:
         """Release scene adapters when the scene is dropped."""
 
+        # Nothing is left to let go of a hold the scene began.
+        self._window.eq_state.release_original()
+        # The compact window shows this scene's proxies too.
+        self._window.close_compact_window()
         self.deleteLater()
 
     levelsChanged = Signal()
@@ -662,7 +669,7 @@ class QuickBridge(QObject):
 
         bands = [
             {key: EQControl(w.eq_state, key, index, self) for key in (
-                "frequencyLabel", "enabled", "type", "gain", "gainLabel", "frequency", "q", "slope",
+                "frequencyLabel", "enabled", "type", "gain", "gainLabel", "frequency", "q", "slope", "hint",
             )}
             for index in range(10)
         ]
@@ -723,7 +730,44 @@ class QuickBridge(QObject):
                 "route_status_label", "preset_status_label", "calibration_status_label",
             )),
         ])
+        # Connected after the window's and the Overview's handlers, so it reads the state they left.
+        compare = EQHoldCompare(self, w.eq_state, overview)
+        w.engine_session.changed.connect(compare.session_changed)
+        w.installEventFilter(compare)
         inspector = InspectorState(self, [row["key"] for row in chain if row["card"]])
+        top = {
+            "input": w.input_choice,
+            "output": w.output_choice,
+            "refresh": action("refresh_btn"),
+            "mode": w.processing_mode_choice,
+            "mute": action("user_mute_checkbox"),
+            "start": action("start_btn"),
+            "stop": action("stop_btn"),
+            "restart": action("restart_audio_btn"),
+            "chooseMicrophone": action("choose_microphone_btn"),
+            "latency": text("latency_readout_label"),
+        }
+        presets = {
+            "status": text("preset_status_label"),
+            "menu": menu(w.presets_menu, "Presets"),
+            "undo": action("_undo_auto_eq_button"),
+            "redo": action("redo_button"),
+            "history": w.history_chip,
+            "testSound": action("test_sound_button"),
+            "autoEq": action("auto_eq_button"),
+            "voiceSetup": action("auto_voice_setup_button"),
+        }
+        preset_actions = [ActionControl(item, self) for item in w.builtin_presets_menu.actions()]
+        commands = window_commands(
+            top=top, presets=presets, chain=chain, stages=by_key, preset_actions=preset_actions,
+        )
+        palette = CommandPalette(self, w, commands, [
+            *(top[key].changed for key in ("start", "stop", "mute")),
+            *(presets[key].changed for key in ("testSound", "voiceSetup")),
+            *(row["toggle"].changed for row in chain if row["toggle"] is not None),
+            *(command.setting.changed for command in commands if command.setting is not None),
+            *(proxy.changed for proxy in preset_actions),
+        ])
         # Another page has no inspector beside it.
         w.shell_page.selected.connect(inspector.close)
 
@@ -756,18 +800,7 @@ class QuickBridge(QObject):
                 text("device_warning_banner"),
                 text("config_warning_banner"),
             ],
-            "top": {
-                "input": w.input_choice,
-                "output": w.output_choice,
-                "refresh": action("refresh_btn"),
-                "mode": w.processing_mode_choice,
-                "mute": action("user_mute_checkbox"),
-                "start": action("start_btn"),
-                "stop": action("stop_btn"),
-                "restart": action("restart_audio_btn"),
-                "chooseMicrophone": action("choose_microphone_btn"),
-                "latency": text("latency_readout_label"),
-            },
+            "top": top,
             "sidebar": {
                 "chain": chain,
                 "lines": chain_lines,
@@ -775,16 +808,8 @@ class QuickBridge(QObject):
                     w.latency_calibration_action, self, text="Measure latency",
                 ),
             },
-            "presets": {
-                "status": text("preset_status_label"),
-                "menu": menu(w.presets_menu, "Presets"),
-                "undo": action("_undo_auto_eq_button"),
-                "redo": action("redo_button"),
-                "history": w.history_chip,
-                "testSound": action("test_sound_button"),
-                "autoEq": action("auto_eq_button"),
-                "voiceSetup": action("auto_voice_setup_button"),
-            },
+            "presets": presets,
+            "palette": palette,
             "eq": {
                 "trace": False, "alert": None, "title": "EQUALIZER",
                 "help": (
@@ -803,6 +828,9 @@ class QuickBridge(QObject):
                 "diagnostics": EQControl(w.eq_state, "diagnostics", None, self),
                 "band": EQControl(w.eq_state, "band", None, self),
                 "bands": bands,
+                "compare": compare,
+                # The height of the named regions drawn across the top of the graph.
+                "regionStrip": EQGraphGeometry.REGION_STRIP_HEIGHT,
                 # How each line of the graph is drawn, named in words beside its sample.
                 "legend": [
                     {"text": "Total (what you hear)", "lineStyle": "solid"},
@@ -898,6 +926,8 @@ def install_quick_shell(window) -> None:
 
     window.setCentralWidget(view)
     window.quick_bridge = bridge
+    # Every text field of the scene is inside the view, so the palette's shortcut is kept here.
+    view.installEventFilter(bridge._model["palette"])
     # A scene that loads can still fail to render, for example without a
     # usable graphics adapter.
     view.sceneGraphError.connect(lambda _error, message: _scene_stopped(window, message))

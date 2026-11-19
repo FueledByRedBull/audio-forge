@@ -69,12 +69,13 @@ class SettingControl(QObject):
         )),
         notify=changed,
     )
+    def format_value(self, value: float) -> str:
+        """``value`` as the control shows a number: its places, then its unit."""
+        return self._locale.toString(value, "f", self._spec.decimals) + self._spec.suffix
+
     text = Property(
         str,
-        lambda self: (
-            self._choices[self.index] if self._choices else
-            self._locale.toString(self.value, "f", self._spec.decimals) + self._spec.suffix
-        ),
+        lambda self: self._choices[self.index] if self._choices else self.format_value(self.value),
         notify=changed,
     )
     items = Property(list, lambda self: list(self._choices), constant=True)

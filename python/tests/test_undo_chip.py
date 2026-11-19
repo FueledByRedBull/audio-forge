@@ -341,6 +341,15 @@ def test_the_chip_is_hidden_with_nothing_to_save_and_counts_edits_when_there_are
     assert not _find(window, "undoChip").isVisible()
 
 
+def test_the_graph_stays_put_when_the_chip_and_caption_appear(equalizer, qapp) -> None:
+    window, _clock = equalizer
+    well = _find(window, "eqGraphWell")
+    before = well.mapToScene(QPointF(0, 0))
+    _scene_edit(window, qapp, 0, -3.0)
+    assert _find(window, "undoCaption").isVisible()
+    assert well.mapToScene(QPointF(0, 0)) == before
+
+
 def test_the_caption_shows_only_for_a_change_that_has_words(equalizer, qapp) -> None:
     window, clock = equalizer
     caption = _find(window, "undoCaption")

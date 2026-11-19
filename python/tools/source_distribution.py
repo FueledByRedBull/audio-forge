@@ -216,7 +216,9 @@ ONNXRUNTIME_SOURCE = {
     "name": "ONNX Runtime",
     "version": "1.23.2",
     "filename": "onnxruntime-a83fc4d58cb48eb68890dd689f94f28288cf2278.tar.gz",
-    "url": "https://codeload.github.com/microsoft/onnxruntime/tar.gz/a83fc4d58cb48eb68890dd689f94f28288cf2278",
+    # codeload.github.com no longer serves this commit; the mirror is the same
+    # bytes, recovered from the v1.23.0 source bundle and bound by sha256.
+    "url": "https://github.com/FueledByRedBull/audio-forge/releases/download/third-party-sources/onnxruntime-a83fc4d58cb48eb68890dd689f94f28288cf2278.tar.gz",
     "sha256": "7270fab0d96d964959b35648014230c00fa2a9cb98df087e5fd5c2b2c24c8085",
     "source_of_truth": "https://github.com/microsoft/onnxruntime/commit/a83fc4d58cb48eb68890dd689f94f28288cf2278",
     "license": "MIT",

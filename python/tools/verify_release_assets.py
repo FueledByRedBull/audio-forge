@@ -18,14 +18,7 @@ MANIFEST_PATH = REPO_ROOT / "release-assets.json"
 SOURCE_BUILD_STATUS = "verified-source-build"
 HEX_SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 PINNED_ARCHIVE_STATUS = "verified-upstream-archive"
-PINNED_ARCHIVE_HOSTS = frozenset(
-    {
-        "github.com",
-        "github-releases.githubusercontent.com",
-        "objects.githubusercontent.com",
-        "release-assets.githubusercontent.com",
-    }
-)
+PINNED_ARCHIVE_HOSTS = frozenset({"api.nuget.org"})
 KNOWN_ORIGIN_STATUSES = frozenset(
     {
         SOURCE_BUILD_STATUS,
@@ -254,7 +247,7 @@ def _verify_pinned_archive_metadata(asset: dict[str, Any], raw_path: str) -> lis
             or parsed.port not in {None, 443}
             or parsed.fragment
         ):
-            errors.append(f"{raw_path}: pinned archive source URL is not trusted GitHub HTTPS")
+            errors.append(f"{raw_path}: pinned archive source URL is not trusted NuGet HTTPS")
     archive_sha = origin.get("archive_sha256")
     if not isinstance(archive_sha, str) or not HEX_SHA256.fullmatch(archive_sha):
         errors.append(f"{raw_path}: pinned archive SHA-256 is invalid")

@@ -2,7 +2,7 @@
 OBS-style level meters
 
 Meters are QObject models that hold the readings and know how to paint them;
-MeterWidget and the Qt Quick item are thin views over a model.
+The Qt Quick item is a thin view over a model.
 LevelMeter shows RMS level as a filled bar with peak hold indicator.
 Color gradient: green → yellow → red
 """
@@ -12,7 +12,6 @@ import time
 from collections import deque
 from collections.abc import Callable
 
-from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Property, QObject, Qt, QTimer, QRectF, Signal, Slot
 from PySide6.QtGui import QPainter, QLinearGradient, QPen, QFont
 
@@ -571,34 +570,3 @@ class ConfidenceMeter(MeterModel):
         painter.setPen(QPen(qcolor(PALETTE.meter_peak), 2))
         painter.drawLine(threshold_x, 0, threshold_x, height)
 
-
-class MeterWidget(QWidget):
-    """Paint a meter model and mirror its accessible name, tooltip and enabled state."""
-
-    def __init__(self, model: MeterModel, parent=None):
-        super().__init__(parent)
-        self.model = model
-        self.setAccessibleName(model.property("name"))
-        self.setToolTip(model.property("toolTip"))
-        self.setAccessibleDescription(model.property("description"))
-        if isinstance(model, LevelMeter):
-            # Wider minimum to accommodate the scale.
-            self.setMinimumSize(50 if model.show_scale else 25, 120)
-        elif isinstance(model, GainReductionMeter):
-            self.setMinimumHeight(16)
-            self.setMaximumHeight(20)
-        else:
-            self.setMinimumHeight(20)
-        model.changed.connect(self._model_changed)
-        self.setEnabled(model.property("enabled"))
-
-    def _model_changed(self) -> None:
-        self.setEnabled(self.model.property("enabled"))
-        description = self.model.property("description")
-        if description != self.accessibleDescription():
-            self.setAccessibleDescription(description)
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        self.model.paint_meter(painter, self.width(), self.height())

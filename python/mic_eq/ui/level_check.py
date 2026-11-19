@@ -47,7 +47,7 @@ ROOM_LOUD_DB = -35.0
 class LevelVerdict:
     code: str  # good, too_hot, too_quiet, silent or unreadable
     message: str
-    state: str  # the message_text_style state: ok, warn or bad
+    state: str  # the state of the message: ok, warn or bad
     peak_db: float | None = None
     speech_db: float | None = None
     # Positive: raise the microphone level by this much. Negative: lower it.

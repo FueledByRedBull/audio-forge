@@ -13,6 +13,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rubato = "0.14"  # High-quality resampling
+# FFT correlation for latency calibration; the version rubato already resolves.
+realfft = "3.5"
 
 # Noise suppression (RNNoise)
 nnnoiseless = { version = "0.5", default-features = false }

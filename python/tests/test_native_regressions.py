@@ -60,7 +60,7 @@ def test_full_chain_final_output_is_bounded(mode, limiter_enabled):
 
 @pytest.mark.parametrize("gain_db,safe", [(12.0, False), (0.0, True)])
 def test_pre_limiter_headroom_is_measured_before_any_protection(gain_db, safe):
-    from mic_eq.analysis.auto_eq_parts.headroom import _is_headroom_safe
+    from mic_eq.mic_eq_core import is_headroom_safe
 
     time_axis = np.arange(4800, dtype=np.float32) / SAMPLE_RATE
     audio = (0.4 * np.sin(2 * np.pi * 1000 * time_axis)).astype(np.float32)
@@ -75,7 +75,7 @@ def test_pre_limiter_headroom_is_measured_before_any_protection(gain_db, safe):
         assert result["pre_limiter_true_peak_db"] == pytest.approx(
             20 * np.log10(0.4) + gain_db, abs=0.02
         )
-        assert _is_headroom_safe(result) is safe
+        assert is_headroom_safe(result) is safe
         assert max(abs(sample) for sample in result["output_audio"]) <= 1.0
         assert (result["true_peak_limiter_input_db"] is None) is (not enabled)
     assert results[0]["pre_limiter_true_peak_db"] == pytest.approx(
@@ -86,7 +86,7 @@ def test_pre_limiter_headroom_is_measured_before_any_protection(gain_db, safe):
 
 
 def test_hot_eq_candidate_cannot_pass_headroom_with_limiter_disabled():
-    from mic_eq.analysis.auto_eq_parts.headroom import _is_headroom_safe
+    from mic_eq.mic_eq_core import is_headroom_safe
 
     audio = (0.4 * np.sin(2 * np.pi * 1000 * np.arange(4800) / SAMPLE_RATE)).astype(np.float32)
     bands = EQ_BANDS.copy()
@@ -97,7 +97,7 @@ def test_hot_eq_candidate_cannot_pass_headroom_with_limiter_disabled():
     })
     assert result["pre_limiter_true_peak_db"] > 3.9
     assert max(result["output_audio"]) == 1.0
-    assert not _is_headroom_safe(result)
+    assert not is_headroom_safe(result)
 
 
 @pytest.mark.parametrize("enabled", [False, True])

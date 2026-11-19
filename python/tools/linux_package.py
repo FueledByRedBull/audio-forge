@@ -13,10 +13,12 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
 import tomllib
+from typing import NamedTuple
 
 from release_version import parse_version
 
@@ -162,6 +164,122 @@ def project_version() -> str:
         return tomllib.load(handle)["project"]["version"]
 
 
+PT_LOAD, PT_DYNAMIC = 1, 2
+DT_NULL, DT_STRTAB, DT_STRSZ, DT_RPATH, DT_RUNPATH = 0, 5, 10, 15, 29
+
+
+class _Segment(NamedTuple):
+    kind: int
+    offset: int
+    address: int
+    size: int
+
+
+def elf_search_paths(path: Path) -> list[tuple[str, str]]:
+    """The DT_RPATH and DT_RUNPATH strings of the ELF file ``path`` as (tag, value); none for other files."""
+    with path.open("rb") as handle:
+        ident = handle.read(16)
+        # The ELF magic number, not an encoded payload.
+        if len(ident) < 16 or ident[:4] != b"\x7fELF":  # nosemgrep: generic-obfuscation-stringified-binaries
+            return []
+        order = "<" if ident[5] == 1 else ">"
+        if ident[4] == 2:
+            header, program, dynamic, picks = "HHIQQQIHHHHHH", "IIQQQQQQ", "qQ", (0, 2, 3, 5)
+        else:
+            header, program, dynamic, picks = "HHIIIIIHHHHHH", "IIIIIIII", "iI", (0, 1, 2, 4)
+        fields = struct.unpack(order + header, handle.read(struct.calcsize(order + header)))
+        phoff, phentsize, phnum = fields[4], fields[8], fields[9]
+        segments = []
+        for index in range(phnum):
+            handle.seek(phoff + index * phentsize)
+            entry = struct.unpack(order + program, handle.read(struct.calcsize(order + program)))
+            segments.append(_Segment(*(entry[pick] for pick in picks)))
+        dynamic_segment = next((segment for segment in segments if segment.kind == PT_DYNAMIC), None)
+        if dynamic_segment is None:
+            return []
+        handle.seek(dynamic_segment.offset)
+        raw = handle.read(dynamic_segment.size)
+        size = struct.calcsize(order + dynamic)
+        entries = []
+        for tag, value in struct.iter_unpack(order + dynamic, raw[: len(raw) - len(raw) % size]):
+            if tag == DT_NULL:
+                break
+            entries.append((tag, value))
+        wanted = [(tag, value) for tag, value in entries if tag in (DT_RPATH, DT_RUNPATH)]
+        if not wanted:
+            return []
+        values = dict(entries)
+        strtab = values.get(DT_STRTAB)
+        load = next((segment for segment in segments if segment.kind == PT_LOAD and strtab is not None
+                     and segment.address <= strtab < segment.address + segment.size), None)
+        if strtab is None or load is None or DT_STRSZ not in values:
+            raise ValueError(f"{path} has a search path but no readable string table")
+        handle.seek(load.offset + strtab - load.address)
+        table = handle.read(values[DT_STRSZ])
+    names = {DT_RPATH: "RPATH", DT_RUNPATH: "RUNPATH"}
+    return [(names[tag], os.fsdecode(table[value:].split(b"\0", 1)[0])) for tag, value in wanted]
+
+
+def _outside_bundle(entry: str, origin: Path, bundle: Path) -> bool:
+    """Whether the library search path ``entry`` of a file in ``origin`` leaves ``bundle``."""
+    for token in ("$ORIGIN", "${ORIGIN}"):
+        if entry == token or entry.startswith(token + "/"):
+            target = os.path.normpath(os.path.join(origin, entry[len(token):].lstrip("/")))
+            return not Path(target).is_relative_to(os.path.normpath(bundle))
+    return True
+
+
+class _SearchPaths(NamedTuple):
+    path: Path
+    relative: str
+    entries: list[tuple[str, str]]  # (RPATH or RUNPATH, one entry of it)
+    outside: list[tuple[str, str]]
+    error: str | None
+
+
+def _bundle_search_paths(bundle: Path) -> list[_SearchPaths]:
+    """The library search paths of each file in ``bundle`` that has any or cannot be read."""
+    found = []
+    for path in sorted(bundle.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        relative = path.relative_to(bundle).as_posix()
+        try:
+            search_paths = elf_search_paths(path)
+        except (OSError, OverflowError, ValueError, struct.error) as exc:
+            found.append(_SearchPaths(path, relative, [], [], f"cannot read the library search paths of {relative}: {exc}"))
+            continue
+        entries = [(tag, entry) for tag, value in search_paths for entry in value.split(":")]
+        if entries:
+            outside = [(tag, entry) for tag, entry in entries if _outside_bundle(entry, path.parent, bundle)]
+            found.append(_SearchPaths(path, relative, entries, outside, None))
+    return found
+
+
+def clear_outside_search_paths(bundle: Path) -> list[str]:
+    """Remove the RPATH and RUNPATH of each file in ``bundle`` whose search paths all leave it.
+
+    The interpreter actions/setup-python installs names its own lib directory in
+    libpython and every lib-dynload module. A file that mixes such entries with
+    ones inside the bundle stops the build rather than losing the inside ones.
+    """
+    patchelf = shutil.which("patchelf")
+    cleared = []
+    for found in _bundle_search_paths(bundle):
+        if found.error:
+            raise SystemExit(found.error)
+        if not found.outside:
+            continue
+        if len(found.outside) != len(found.entries):
+            shown = ":".join(entry for _tag, entry in found.entries)
+            raise SystemExit(f"{found.relative} searches both inside and outside the bundle: {shown}")
+        if patchelf is None:
+            raise SystemExit(f"patchelf is required to remove the search paths outside the bundle from {found.relative}")
+        subprocess.run([patchelf, "--remove-rpath", str(found.path)], check=True)
+        cleared.append(found.relative)
+    return cleared
+
+
 def check_bundle(bundle: Path, version: str) -> list[str]:
     """Problems that make ``bundle`` unfit to ship; empty when it is ready."""
     internal = bundle / "_internal"
@@ -195,6 +313,15 @@ def check_bundle(bundle: Path, version: str) -> list[str]:
             errors.append(f"bundles FFmpeg, which the app never uses: {relative}")
         if any(f"PySide6/Qt/plugins/{plugin}" in relative for plugin in UNUSED_QT_PLUGINS):
             errors.append(f"bundles an unused Qt plugin: {relative}")
+    # A search path outside the bundle makes the loader look on the user's
+    # machine (a build host's home or toolcache) before the system libraries.
+    for found in _bundle_search_paths(bundle):
+        if found.error:
+            errors.append(found.error)
+        for tag in ("RPATH", "RUNPATH"):
+            shown = [entry or "''" for kind, entry in found.outside if kind == tag]
+            if shown:
+                errors.append(f"{found.relative} has {tag} entries outside the bundle: {':'.join(shown)}")
     # Releases are built on Ubuntu; the table names Debian packages, so a pacman
     # host (a local Arch build) cannot be checked against it.
     notices = internal / "licenses" / "system"
@@ -290,13 +417,20 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--bundle", type=Path, default=ROOT / "dist" / "AudioForge")
     parser.add_argument("--output", type=Path, default=ROOT / "dist")
-    parser.add_argument("--appimagetool", type=Path, help="appimagetool executable; omit to skip the AppImage")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--appimagetool", type=Path, help="appimagetool executable; omit to skip the AppImage")
     parser.add_argument("--appimage-runtime", type=Path, help="pinned AppImage runtime for appimagetool to embed")
-    parser.add_argument("--check-only", action="store_true", help="check the bundle without packaging it")
+    mode.add_argument("--check-only", action="store_true", help="check the bundle without packaging it")
+    mode.add_argument("--clear-search-paths", action="store_true",
+                      help="remove library search paths outside the bundle (needs patchelf when there are any)")
     args = parser.parse_args()
     bundle = args.bundle.resolve()
     if sys.platform != "linux":
         parser.error("Linux packages are built on Linux")
+    if args.clear_search_paths:
+        cleared = clear_outside_search_paths(bundle)
+        print(f"Removed the library search paths outside the bundle from {len(cleared)} files", *cleared, sep="\n  ")
+        return 0
     version = project_version()
     errors = check_bundle(bundle, version)
     if errors:

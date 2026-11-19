@@ -1511,7 +1511,6 @@ def test_28_unavailable_headroom_does_not_fabricate_metrics(monkeypatch):
 @pytest.mark.parametrize(
     ("failure_mode", "expected_kind"),
     [
-        ("unavailable", "unavailable"),
         ("runtime", "runtime_error"),
         ("invalid", "invalid_result"),
     ],
@@ -1519,17 +1518,15 @@ def test_28_unavailable_headroom_does_not_fabricate_metrics(monkeypatch):
 def test_native_headroom_failure_classification_is_explicit(
     monkeypatch, failure_mode, expected_kind
 ):
-    if failure_mode == "unavailable":
-        monkeypatch.setattr(mic_eq, "CORE_AVAILABLE", False)
-    elif failure_mode == "runtime":
+    if failure_mode == "runtime":
         monkeypatch.setattr(
-            mic_eq_core,
+            headroom_module,
             "simulate_auto_eq_chain",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
         )
     else:
         monkeypatch.setattr(
-            mic_eq_core,
+            headroom_module,
             "simulate_auto_eq_chain",
             lambda *_args, **_kwargs: {"output_true_peak_db": -3.0},
         )
@@ -1546,7 +1543,7 @@ def test_native_headroom_failure_classification_is_explicit(
 
 
 def test_headroom_safety_fails_closed_for_missing_metrics():
-    assert headroom_module._is_headroom_safe({}) is False
+    assert mic_eq_core.is_headroom_safe({}) is False
 
 
 def test_voice_safe_flat_target_preserves_broad_speech_shape():

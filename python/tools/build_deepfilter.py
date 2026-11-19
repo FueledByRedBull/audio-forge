@@ -245,7 +245,11 @@ def build(output: Path, attestation_path: Path, *, allow_untested_rust: bool) ->
         else:
             # An interrupted run may have prepared the workspace without its marker;
             # accept it only when its copied inputs are exact.
-            assert_hash(workspace / "Cargo.lock", lock["sha256"], "Existing DeepFilter lockfile")
+            assert_hash_in(
+                workspace / "Cargo.lock",
+                [lock["sha256"], *lock.get("superseded_sha256", [])],
+                "Existing DeepFilter lockfile",
+            )
             assert_hash_in(workspace / "libDF/src/capi.rs", capi_hashes, "Existing C API source")
             for model in MODELS:
                 assert_hash(workspace / model, provenance["models"][model]["sha256"], f"Existing {model}")
@@ -268,7 +272,11 @@ def build(output: Path, attestation_path: Path, *, allow_untested_rust: bool) ->
             f"The build manifest in {workspace} matches no known version of this recipe. "
             "Delete that folder and run again; it is recreated from the source cache."
         )
-    assert_hash(workspace / "Cargo.lock", lock["sha256"], "Tracked DeepFilter lockfile")
+    # The lockfile is refreshed the same way when the recipe has moved a locked crate.
+    workspace_lock = workspace / "Cargo.lock"
+    if sha256(workspace_lock) in {value.upper() for value in lock.get("superseded_sha256", [])}:
+        shutil.copyfile(TRACKED_LOCK, workspace_lock)
+    assert_hash(workspace_lock, lock["sha256"], "Tracked DeepFilter lockfile")
     for model in MODELS:
         assert_hash(workspace / model, provenance["models"][model]["sha256"], model)
 

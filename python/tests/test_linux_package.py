@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -68,6 +69,156 @@ def test_ffmpeg_and_a_bundle_without_the_xcb_libraries_are_refused(tmp_path):
     assert "bundles FFmpeg, which the app never uses: _internal/PySide6/Qt/lib/libavcodec.so.61" in errors
     assert "bundles FFmpeg, which the app never uses: _internal/libswresample.so.5" in errors
     assert len(errors) == 3
+
+
+def _elf(path, *search_paths, wide=True, order="<"):
+    """Write a minimal shared object whose dynamic section holds ``search_paths`` (tag, value)."""
+    strtab = b"\0"
+    entries = []
+    for tag, value in search_paths:
+        entries.append(({"RPATH": 15, "RUNPATH": 29}[tag], len(strtab)))
+        strtab += value.encode() + b"\0"
+    header, program, dynamic = ("HHIQQQIHHHHHH", "IIQQQQQQ", "qQ") if wide else ("HHIIIIIHHHHHH", "IIIIIIII", "iI")
+    base = 0x10000
+    program_offset = 16 + struct.calcsize(order + header)
+    dynamic_offset = program_offset + 2 * struct.calcsize(order + program)
+    entries += [(5, base + dynamic_offset + (len(entries) + 3) * struct.calcsize(order + dynamic)), (10, len(strtab)), (0, 0)]
+    table = b"".join(struct.pack(order + dynamic, tag, value) for tag, value in entries)
+    total = dynamic_offset + len(table) + len(strtab)
+
+    def segment(kind, offset, size):
+        if wide:
+            return struct.pack(order + program, kind, 4, offset, base + offset, base + offset, size, size, 8)
+        return struct.pack(order + program, kind, offset, base + offset, base + offset, size, size, 4, 8)
+
+    ident = b"\x7fELF" + bytes((2 if wide else 1, 1 if order == "<" else 2, 1)) + bytes(9)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        ident
+        + struct.pack(order + header, 3, 62, 1, 0, program_offset, 0, 0, program_offset,
+                      struct.calcsize(order + program), 2, 0, 0, 0)
+        + segment(1, 0, total) + segment(2, dynamic_offset, len(table)) + table + strtab
+    )
+
+
+@pytest.mark.parametrize(("wide", "order"), [(True, "<"), (False, ">")])
+def test_the_library_search_paths_are_read_from_the_dynamic_section(tmp_path, wide, order):
+    library = tmp_path / "libexample.so"
+    _elf(library, ("RPATH", "/usr/lib"), ("RUNPATH", "$ORIGIN/../lib"), wide=wide, order=order)
+    assert linux_package.elf_search_paths(library) == [("RPATH", "/usr/lib"), ("RUNPATH", "$ORIGIN/../lib")]
+    _elf(library, wide=wide, order=order)
+    assert linux_package.elf_search_paths(library) == []
+    # A file with no program headers has no dynamic section at all.
+    library.write_bytes(library.read_bytes()[:16] + struct.pack(
+        order + ("HHIQQQIHHHHHH" if wide else "HHIIIIIHHHHHH"), 1, 62, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    assert linux_package.elf_search_paths(library) == []
+
+
+def test_library_search_paths_outside_the_bundle_are_refused(tmp_path):
+    bundle = _bundle(tmp_path)
+    module = bundle / "_internal/mic_eq/mic_eq_core.cpython-313-x86_64-linux-gnu.so"
+    # What `maturin develop` left in the 1.22.0 module on a runner with patchelf.
+    leaked = "/home/runner/work/audio-forge/audio-forge/target/release/build/libspa-sys-78b153ad82a8aae9/out"
+    _elf(module, ("RPATH", f"/usr/lib/x86_64-linux-gnu:$ORIGIN:{leaked}"))
+    _elf(bundle / "_internal/libpython3.13.so.1.0", ("RUNPATH", "/opt/hostedtoolcache/Python/3.13.17/x64/lib"))
+    _elf(bundle / "_internal/PySide6/Qt/lib/libQt6Core.so.6", ("RUNPATH", "$ORIGIN"))
+    _elf(bundle / "_internal/PySide6/Qt/plugins/platforms/libqxcb.so", ("RUNPATH", "${ORIGIN}/../../lib"))
+    _elf(bundle / "_internal/numpy/core/_umath.so", ("RPATH", "$ORIGIN/../../../../lib"))
+    (bundle / "_internal/libtruncated.so").write_bytes(b"\x7fELF\x02\x01\x01" + bytes(11))
+    # An empty entry is the working directory.
+    _elf(bundle / "_internal/libempty.so", ("RUNPATH", "$ORIGIN::"))
+
+    errors = linux_package.check_bundle(bundle, "1.2.3")
+
+    assert errors == [
+        "_internal/libempty.so has RUNPATH entries outside the bundle: '':''",
+        "_internal/libpython3.13.so.1.0 has RUNPATH entries outside the bundle: "
+        "/opt/hostedtoolcache/Python/3.13.17/x64/lib",
+        errors[2],
+        f"_internal/mic_eq/mic_eq_core.cpython-313-x86_64-linux-gnu.so has RPATH entries outside the bundle: "
+        f"/usr/lib/x86_64-linux-gnu:{leaked}",
+        "_internal/numpy/core/_umath.so has RPATH entries outside the bundle: $ORIGIN/../../../../lib",
+    ]
+    assert errors[2].startswith("cannot read the library search paths of _internal/libtruncated.so: ")
+
+
+def _patchelf_host(monkeypatch, available=True):
+    calls = []
+    monkeypatch.setattr(linux_package.shutil, "which", lambda name: "/usr/bin/patchelf" if available else None)
+    monkeypatch.setattr(linux_package.subprocess, "run", lambda command, **kwargs: calls.append(command))
+    return calls
+
+
+def test_search_paths_that_only_leave_the_bundle_are_removed_with_patchelf(tmp_path, monkeypatch):
+    bundle = _bundle(tmp_path)
+    toolcache = "/opt/hostedtoolcache/Python/3.13.17/x64/lib"
+    _elf(bundle / "_internal/libpython3.13.so.1.0", ("RUNPATH", toolcache))
+    _elf(bundle / "_internal/python3.13/lib-dynload/_ssl.cpython-313-x86_64-linux-gnu.so", ("RUNPATH", toolcache))
+    _elf(bundle / "_internal/PySide6/Qt/lib/libQt6Core.so.6", ("RUNPATH", "$ORIGIN"))
+    calls = _patchelf_host(monkeypatch)
+
+    cleared = linux_package.clear_outside_search_paths(bundle)
+
+    expected = ["_internal/libpython3.13.so.1.0", "_internal/python3.13/lib-dynload/_ssl.cpython-313-x86_64-linux-gnu.so"]
+    assert cleared == expected
+    assert calls == [["/usr/bin/patchelf", "--remove-rpath", str(bundle / relative)] for relative in expected]
+
+
+def test_clearing_search_paths_needs_patchelf_only_when_one_leaves_the_bundle(tmp_path, monkeypatch):
+    bundle = _bundle(tmp_path)
+    _elf(bundle / "_internal/PySide6/Qt/lib/libQt6Core.so.6", ("RUNPATH", "$ORIGIN"))
+    calls = _patchelf_host(monkeypatch, available=False)
+    assert linux_package.clear_outside_search_paths(bundle) == []
+
+    _elf(bundle / "_internal/libpython3.13.so.1.0", ("RUNPATH", "/opt/hostedtoolcache/Python/3.13.17/x64/lib"))
+    with pytest.raises(SystemExit, match="patchelf is required .* _internal/libpython3.13.so.1.0"):
+        linux_package.clear_outside_search_paths(bundle)
+    assert calls == []
+
+
+def test_a_search_path_mixing_inside_and_outside_entries_stops_the_build(tmp_path, monkeypatch):
+    bundle = _bundle(tmp_path)
+    _elf(bundle / "_internal/libmixed.so", ("RPATH", "$ORIGIN:/usr/local/lib"))
+    calls = _patchelf_host(monkeypatch)
+    with pytest.raises(SystemExit, match=r"_internal/libmixed.so searches both inside and outside the bundle: \$ORIGIN:/usr/local/lib"):
+        linux_package.clear_outside_search_paths(bundle)
+    assert calls == []
+
+
+def test_clearing_names_a_file_whose_search_paths_cannot_be_read(tmp_path, monkeypatch):
+    bundle = _bundle(tmp_path)
+    (bundle / "_internal/libtruncated.so").write_bytes(b"\x7fELF\x02\x01\x01" + bytes(11))
+    calls = _patchelf_host(monkeypatch)
+    with pytest.raises(SystemExit, match="cannot read the library search paths of _internal/libtruncated.so: "):
+        linux_package.clear_outside_search_paths(bundle)
+    assert calls == []
+
+
+@pytest.mark.parametrize("mode", [["--check-only"], ["--appimagetool", "appimagetool"]])
+def test_clearing_search_paths_is_its_own_mode(tmp_path, monkeypatch, capsys, mode):
+    monkeypatch.setattr(sys, "argv", ["linux_package.py", "--bundle", str(tmp_path), "--clear-search-paths", *mode])
+    with pytest.raises(SystemExit) as exit_info:
+        linux_package.main()
+    assert exit_info.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(not (shutil.which("patchelf") and shutil.which("cc")), reason="needs patchelf and a C compiler")
+def test_patchelf_leaves_a_bundle_the_check_accepts(tmp_path):
+    bundle = _bundle(tmp_path)
+    source = tmp_path / "leak.c"
+    source.write_text("int leak(void) { return 1; }\n")
+    library = bundle / "_internal/python3.13/lib-dynload/leak.so"
+    library.parent.mkdir(parents=True)
+    subprocess.run(["cc", "-shared", "-fPIC", "-Wl,-rpath,/opt/hostedtoolcache/x64/lib", "-o", str(library), str(source)],
+                   check=True)
+    assert linux_package.elf_search_paths(library)
+    assert linux_package.check_bundle(bundle, "1.2.3")
+
+    assert linux_package.clear_outside_search_paths(bundle) == ["_internal/python3.13/lib-dynload/leak.so"]
+
+    assert linux_package.elf_search_paths(library) == []
+    assert linux_package.check_bundle(bundle, "1.2.3") == []
 
 
 def test_the_xcb_libraries_are_the_ones_qt_links_and_no_system_policy_covers():

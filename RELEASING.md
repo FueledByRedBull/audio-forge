@@ -277,7 +277,7 @@ stress test, then:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
-.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951 --ignore-vuln CVE-2026-114603 --ignore-vuln CVE-2026-116684 --ignore-vuln CVE-2026-116685 --ignore-vuln CVE-2026-116686
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-59951 --ignore-vuln CVE-2026-114603 --ignore-vuln CVE-2026-126360 --ignore-vuln CVE-2026-116684 --ignore-vuln CVE-2026-116685 --ignore-vuln CVE-2026-116686
 .\.venv\Scripts\python.exe python\tools\run_semgrep.py --sarif semgrep-results.sarif
 .\.venv\Scripts\python.exe python\tools\check_versions.py
 .\.venv\Scripts\python.exe python\tools\check_workflows.py
@@ -306,11 +306,14 @@ cargo audit
   The runtime audit has no ignores. The development audit ignores only
   ids caused by a Semgrep pin. CVE-2026-59951, CVE-2026-116684,
   CVE-2026-116685 and CVE-2026-116686: Semgrep pins `mcp==1.29.0` and only
-  its MCP server uses it. CVE-2026-114603: Semgrep pins
-  `opentelemetry-api~=1.37.0`; the ReDoS is in parsing inbound `tracestate`
-  headers, and Semgrep only exports telemetry. Remove each ignore when Semgrep
-  allows `mcp>=1.30.0` or `opentelemetry-api>=1.45.1`; `check_workflows.py`
-  rejects an ignore once the lock stops pinning 1.29.0 or 1.37.0.
+  its MCP server uses it. CVE-2026-114603 and CVE-2026-126360: Semgrep pins
+  `opentelemetry-api~=1.37.0`; both are in parsing `tracestate` and
+  `traceparent` values. Semgrep only exports telemetry and reads `traceparent`
+  only from its own environment with tracing on, which `run_semgrep.py` never
+  enables. Remove each ignore
+  when Semgrep allows `mcp>=1.30.0` or `opentelemetry-api>=1.45.2`;
+  `check_workflows.py` rejects an ignore once the lock stops pinning 1.29.0 or
+  1.37.0.
 - **Package check:** `package-check.yml` builds the bundle and the MSI and
   runs the package smoke, the hidden `--smoke-test` and the MSI smoke on every
   push to `master` and on pull requests that touch packaging inputs. It
@@ -556,8 +559,12 @@ logic behind items 4-8, 11 and 13 (`test_quick_undo.py`, `test_quick_shell.py`,
   does the same for the Linux bundle. Its binary hashes are provenance, not
   reproducible-build expectations.
 - `linux_package.py` refuses a Linux bundle that carries FFmpeg libraries,
-  lacks the libxcb libraries Qt's xcb plugin needs, or copies a library from a
-  build-host package that is not in its permissive list.
+  lacks the libxcb libraries Qt's xcb plugin needs, copies a library from a
+  build-host package that is not in its permissive list, or holds an ELF file
+  whose RPATH or RUNPATH names a directory outside the bundle. The interpreter
+  actions/setup-python installs names its own lib directory in libpython and
+  lib-dynload, so `build_linux.sh` removes those search paths with `patchelf`
+  (installed by `package-linux`) after PyInstaller.
 - The AppImage runtime pinned in `package-linux` (URL and SHA-256) must have
   a matching `appimage-runtime-type2-runtime-<tag>` entry in
   `licenses/source-manifest.json`; `check_workflows.py` fails when it does not.

@@ -13,6 +13,7 @@ import json
 import stat
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -316,7 +317,7 @@ def test_repository_workflow_release_gates_are_current():
 DEV_AUDIT = "pip_audit --require-hashes -r requirements/dev.txt --disable-pip"
 RUNTIME_AUDIT = "pip_audit --require-hashes -r requirements/runtime.txt --disable-pip"
 MCP_IGNORE = "--ignore-vuln CVE-2026-59951"
-OTEL_IGNORE = "--ignore-vuln CVE-2026-114603"
+OTEL_IGNORE = "--ignore-vuln CVE-2026-114603 --ignore-vuln CVE-2026-126360"
 MCP_SDK_IGNORES = " --ignore-vuln CVE-2026-116684 --ignore-vuln CVE-2026-116685 --ignore-vuln CVE-2026-116686"
 
 
@@ -416,7 +417,8 @@ def test_dev_audit_ignores_exactly_the_semgrep_pinned_advisories(workflow):
     source = workflow_file.read_text(encoding="utf-8")
     assert f"{DEV_AUDIT} {MCP_IGNORE} {OTEL_IGNORE}{MCP_SDK_IGNORES}" in source
     assert set(check_workflows.AUDIT_IGNORES) == {
-        "CVE-2026-59951", "CVE-2026-114603", "CVE-2026-116684", "CVE-2026-116685", "CVE-2026-116686",
+        "CVE-2026-59951", "CVE-2026-114603", "CVE-2026-126360", "CVE-2026-116684", "CVE-2026-116685",
+        "CVE-2026-116686",
     }
     dev_lock = check_workflows.DEV_LOCK_PATH.read_text(encoding="utf-8")
     for package, version in check_workflows.AUDIT_IGNORES.values():
@@ -426,7 +428,7 @@ def test_dev_audit_ignores_exactly_the_semgrep_pinned_advisories(workflow):
 @pytest.mark.parametrize(
     ("lock", "stale", "count"),
     [
-        ("mcp==1.29.0\nopentelemetry-api==1.45.1\n", "CVE-2026-114603", 1),
+        ("mcp==1.29.0\nopentelemetry-api==1.45.1\n", "CVE-2026-114603", 2),
         ("mcp==1.30.0\nopentelemetry-api==1.37.0\n", "CVE-2026-59951", 4),
     ],
 )
@@ -2637,7 +2639,7 @@ def test_fetch_pinned_archive_rejects_oversized_response(tmp_path, monkeypatch):
             self.close()
 
         def geturl(self):
-            return "https://github.com/example/project/releases/download/v1/runtime.zip"
+            return "https://api.nuget.org/v3-flatcontainer/example.runtime/1.0.0/example.runtime.1.0.0.nupkg"
 
     class Opener:
         def open(self, request, timeout):
@@ -2645,7 +2647,7 @@ def test_fetch_pinned_archive_rejects_oversized_response(tmp_path, monkeypatch):
 
     monkeypatch.setattr(urllib.request, "build_opener", lambda *_: Opener())
     entry = {
-        "source": "https://github.com/example/project/releases/download/v1/runtime.zip",
+        "source": "https://api.nuget.org/v3-flatcontainer/example.runtime/1.0.0/example.runtime.1.0.0.nupkg",
         "origin": {
             "archive_sha256": hashlib.sha256(payload).hexdigest(),
             "archive_size": len(payload) - 1,
@@ -2679,44 +2681,29 @@ def test_fetch_pinned_archive_rejects_unsafe_or_symlink_members(tmp_path):
         )
 
 
-def _tar_with(archive, members):
-    import tarfile
-
-    with tarfile.open(archive, "w:gz") as output:
-        for info, payload in members:
-            output.addfile(info, io.BytesIO(payload) if payload is not None else None)
-
-
-def test_fetch_pinned_tgz_extracts_only_the_named_regular_file(tmp_path):
-    import tarfile
-
-    payload = b"\x7fELF runtime"
-    regular = tarfile.TarInfo("package/lib/libruntime.so.1.2.3")
-    regular.size = len(payload)
-    link = tarfile.TarInfo("package/lib/libruntime.so")
-    link.type = tarfile.SYMTYPE
-    link.linkname = "libruntime.so.1.2.3"
-    archive = tmp_path / "runtime.tgz"
-    _tar_with(archive, [(regular, payload), (link, None)])
-
-    extracted = fetch_release_assets._extract_pinned_tar_member(
-        archive, tmp_path / "extract", "package/lib/libruntime.so.1.2.3"
+def test_fetch_pinned_archive_refuses_a_host_outside_the_allowlist(tmp_path, monkeypatch):
+    opened = []
+    monkeypatch.setattr(
+        urllib.request, "build_opener", lambda *_: opened.append(True) or None
     )
-    assert extracted.read_bytes() == payload
+    payload = b"runtime"
+    for url_field in ("source", "archive_url"):
+        entry = {
+            "source": "https://api.nuget.org/v3-flatcontainer/example.runtime/1.0.0/example.runtime.1.0.0.nupkg",
+            "origin": {
+                "archive_sha256": hashlib.sha256(payload).hexdigest(),
+                "archive_size": len(payload),
+            },
+        }
+        github = "https://github.com/example/runtime/releases/download/v1.0.0/runtime.zip"
+        if url_field == "source":
+            entry["source"] = github
+        else:
+            entry["origin"]["archive_url"] = github
 
-    with pytest.raises(RuntimeError, match="exactly one regular file"):
-        fetch_release_assets._extract_pinned_tar_member(
-            archive, tmp_path / "extract-link", "package/lib/libruntime.so"
-        )
-
-    escape = tarfile.TarInfo("../escape.so")
-    escape.size = 1
-    escaping = tmp_path / "escape.tgz"
-    _tar_with(escaping, [(escape, b"x")])
-    with pytest.raises(RuntimeError, match="unsafe member path"):
-        fetch_release_assets._extract_pinned_tar_member(
-            escaping, tmp_path / "extract-escape", "package/lib/libruntime.so.1.2.3"
-        )
+        with pytest.raises(ValueError, match="trusted NuGet HTTPS host"):
+            fetch_release_assets._download_pinned_archive(entry, tmp_path, {})
+    assert not opened
 
 
 def test_asset_manifest_keeps_only_the_requested_platform_and_shared_entries(tmp_path):
@@ -2763,7 +2750,7 @@ def test_repository_manifest_pins_a_linux_cpu_ort_archive():
     assert not any(path.endswith(".so.1.23.2") for path in windows.entries)
     assert "df.dll" in windows.entries and "df.dll" not in linux.entries
     origin = linux.entries[linux_runtime[0]]["origin"]
-    assert origin["archive_member"] == "onnxruntime-linux-x64-1.23.2/lib/libonnxruntime.so.1.23.2"
+    assert origin["archive_member"] == "runtimes/linux-x64/native/libonnxruntime.so"
 
 
 def test_verify_release_assets_validates_pinned_archive_contract(tmp_path, monkeypatch):
@@ -2778,7 +2765,7 @@ def test_verify_release_assets_validates_pinned_archive_contract(tmp_path, monke
                         "path": "runtime.dll",
                         "size": runtime.stat().st_size,
                         "sha256": hashlib.sha256(runtime.read_bytes()).hexdigest(),
-                        "source": "https://github.com/example/project/releases/download/v1/runtime.zip",
+                        "source": "https://api.nuget.org/v3-flatcontainer/example.runtime/1.0.0/example.runtime.1.0.0.nupkg",
                         "origin": {
                             "status": "verified-upstream-archive",
                             "runtime": "CPU-only Windows x64",
@@ -2801,6 +2788,96 @@ def test_verify_release_assets_validates_pinned_archive_contract(tmp_path, monke
     manifest.write_text(json.dumps(invalid), encoding="utf-8")
     errors = verify_release_assets.verify_assets(manifest)
     assert any("CPU-only runtime" in error for error in errors)
+
+
+def test_repository_manifest_hydrates_every_cpu_ort_file_from_the_nuget_package():
+    for platform in ("windows", "linux"):
+        manifest = verify_release_assets.load_asset_manifest(platform=platform)
+        for path, entry in manifest.entries.items():
+            if not path.startswith("target/onnxruntime-cpu/"):
+                continue
+            source = urllib.parse.urlsplit(entry["source"])
+            assert source.scheme == "https"
+            assert source.hostname in verify_release_assets.PINNED_ARCHIVE_HOSTS
+            assert source.path.endswith("/microsoft.ml.onnxruntime.1.23.2.nupkg")
+            assert entry["origin"]["package"] == "Microsoft.ML.OnnxRuntime"
+            assert entry["origin"]["archive_member"].startswith("runtimes/")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/runtime.zip",
+        "http://api.nuget.org/v3-flatcontainer/example.runtime/1.0.0/example.runtime.1.0.0.nupkg",
+        "https://api.nuget.org.evil.example/example.runtime.1.0.0.nupkg",
+        "https://user@api.nuget.org/v3-flatcontainer/example.runtime.1.0.0.nupkg",
+    ],
+)
+def test_verify_release_assets_trusts_only_nuget_https_for_pinned_archives(
+    tmp_path, monkeypatch, source
+):
+    runtime = tmp_path / "runtime.dll"
+    runtime.write_bytes(b"runtime")
+    manifest = tmp_path / "release-assets.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "assets": [
+                    {
+                        "path": "runtime.dll",
+                        "size": runtime.stat().st_size,
+                        "sha256": hashlib.sha256(runtime.read_bytes()).hexdigest(),
+                        "source": source,
+                        "origin": {
+                            "status": "verified-upstream-archive",
+                            "runtime": "CPU-only Windows x64",
+                            "archive_sha256": "a" * 64,
+                            "archive_size": 123,
+                            "archive_member": "runtimes/win-x64/native/runtime.dll",
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(verify_release_assets, "REPO_ROOT", tmp_path)
+
+    errors = verify_release_assets.verify_assets(manifest)
+
+    assert len(errors) == 1
+    assert errors[0].endswith("runtime.dll: pinned archive source URL is not trusted NuGet HTTPS")
+
+
+def test_fetch_installs_a_nupkg_member_under_its_pinned_asset_name(tmp_path, monkeypatch):
+    payload = b"\x7fELF runtime"
+    package = tmp_path / "downloads" / "example.runtime.1.0.0.nupkg"
+    package.parent.mkdir()
+    with zipfile.ZipFile(package, "w") as output:
+        output.writestr("[Content_Types].xml", b"<Types/>")
+        output.writestr("runtimes/linux-x64/native/libruntime.so", payload)
+    destination = "target/onnxruntime-cpu/lib/libruntime.so.1.0.0"
+    manifest = tmp_path / "release-assets.json"
+    manifest.write_text(json.dumps({"fallback_release_tag": "v1.0.0", "assets": [{
+        "path": destination, "size": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "source": "https://api.nuget.org/v3-flatcontainer/example.runtime/1.0.0/example.runtime.1.0.0.nupkg",
+        "origin": {"status": "verified-upstream-archive", "runtime": "CPU-only Linux x86_64",
+                   "archive_sha256": hashlib.sha256(package.read_bytes()).hexdigest(),
+                   "archive_size": package.stat().st_size,
+                   "archive_member": "runtimes/linux-x64/native/libruntime.so"},
+    }]}))
+    monkeypatch.setattr(fetch_release_assets, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(verify_release_assets, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(fetch_release_assets, "MANIFEST_PATH", manifest)
+    monkeypatch.setattr(fetch_release_assets.sys, "argv", ["fetch", "--only-cpu-runtime", "--force"])
+    monkeypatch.setattr(fetch_release_assets, "_download_pinned_archive",
+                        lambda _entry, _root, _cache: package)
+
+    assert fetch_release_assets.main() == 0
+
+    assert (tmp_path / destination).read_bytes() == payload
+    assert not (tmp_path / "target/onnxruntime-cpu/lib/libruntime.so").exists()
 
 
 def test_fetch_release_assets_default_tag_comes_from_manifest(tmp_path, monkeypatch):
@@ -2910,7 +2987,7 @@ def test_forced_hydration_rejects_bad_bytes_before_replacing_asset(
         entry.update(source="https://example.com/model.bin",
                      origin={"status": "pinned-upstream-model"})
     elif source_kind == "pinned":
-        entry.update(source="https://github.com/example/runtime/releases/download/v1/runtime.zip",
+        entry.update(source="https://api.nuget.org/v3-flatcontainer/example.runtime/1.0.0/example.runtime.1.0.0.nupkg",
                      origin={"status": "verified-upstream-archive", "runtime": "CPU-only Windows x64",
                              "archive_sha256": "a" * 64, "archive_size": 123,
                              "archive_member": "package/model.bin"})

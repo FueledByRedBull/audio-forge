@@ -1,11 +1,10 @@
-"""The Quick meter adapter and the widget view paint the same meter model."""
+"""The Quick meter adapter paints the meter model."""
 
-from PySide6.QtCore import QPoint, QSizeF, Qt
-from PySide6.QtGui import QImage, QPainter, QRegion
+from PySide6.QtCore import QSizeF, Qt
+from PySide6.QtGui import QImage, QPainter
 from PySide6.QtTest import QSignalSpy
-from PySide6.QtWidgets import QWidget
 
-from mic_eq.ui.level_meter import ConfidenceMeter, GainReductionMeter, LevelMeter, MeterWidget
+from mic_eq.ui.level_meter import ConfidenceMeter, GainReductionMeter, LevelMeter
 from mic_eq.ui.quick_meter import QuickMeterItem
 
 
@@ -25,7 +24,7 @@ def _image(size: tuple[int, int]) -> QImage:
     return image
 
 
-def test_quick_meter_and_widget_paint_the_same_snapshot_as_the_model(qapp):
+def test_quick_meter_paints_the_same_snapshot_as_the_model(qapp):
     level = LevelMeter("IN", show_scale=True)
     level.set_levels(-18.0, -4.0)
     reduction = GainReductionMeter()
@@ -42,8 +41,6 @@ def test_quick_meter_and_widget_paint_the_same_snapshot_as_the_model(qapp):
         item = QuickMeterItem()
         item.setProperty("source", meter)
         item.setSize(QSizeF(*size))
-        view = MeterWidget(meter)
-        view.resize(*size)
 
         expected = _image(size)
         painter = QPainter(expected)
@@ -55,14 +52,8 @@ def test_quick_meter_and_widget_paint_the_same_snapshot_as_the_model(qapp):
         item.paint(painter)
         painter.end()
 
-        rendered = _image(size)
-        # Without DrawWindowBackground, only the meter's own painting lands on the image.
-        view.render(rendered, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren)
-
         assert actual == expected
-        assert rendered == expected
         item.deleteLater()
-        view.deleteLater()
 
     qapp.processEvents()
 
@@ -91,21 +82,6 @@ def test_meter_changes_and_enabled_state_reach_quick_repaint_source(qapp):
     assert repaint_notifications.count() == 3
 
     item.deleteLater()
-    qapp.processEvents()
-
-
-def test_widget_mirrors_the_meter_models_presentation(qapp):
-    meter = ConfidenceMeter("Voice activity confidence", "Real-time VAD confidence")
-    view = MeterWidget(meter)
-    assert view.accessibleName() == "Voice activity confidence"
-    assert view.toolTip() == "Real-time VAD confidence"
-    assert view.isEnabled()
-
-    meter.set_enabled(False)
-    assert not view.isEnabled()
-    meter.set_enabled(True)
-    assert view.isEnabled()
-    view.deleteLater()
     qapp.processEvents()
 
 

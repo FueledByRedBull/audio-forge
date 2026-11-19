@@ -11,11 +11,11 @@ from typing import Any
 import numpy as np
 
 from .auto_eq import simulate_candidate_chain
-from .auto_eq_parts.headroom import _is_headroom_safe
 from .cancellation import check_analysis_cancelled
 from .parallel import ANALYSIS_WORKERS
 from .signal_processing import clamp as _clamp
 from ..config import LimiterSettings
+from ..mic_eq_core import is_headroom_safe
 
 _DEFAULT_LIMITER_SETTINGS: dict[str, Any] = asdict(LimiterSettings())
 _LIMITER_SETTING_KEYS = frozenset(_DEFAULT_LIMITER_SETTINGS)
@@ -403,7 +403,7 @@ class _CompressorCalibration:
                 "output_true_peak_db": float(
                     best_simulation.get("output_true_peak_db", -120.0)
                 ),
-                "headroom_safe": _is_headroom_safe(best_simulation),
+                "headroom_safe": is_headroom_safe(best_simulation),
                 "limiter_gain_reduction_db": float(
                     best_simulation.get("limiter_gain_reduction_db", 0.0)
                 ),

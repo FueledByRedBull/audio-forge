@@ -9,6 +9,11 @@ Item {
     property string label
     default property alias content: column.data
 
+    // Give the page the keyboard, for a control that is about to hide or disable itself.
+    function focusPage() {
+        scroll.forceActiveFocus(Qt.TabFocusReason)
+    }
+
     Flickable {
         id: scroll
         objectName: "contentScroll"

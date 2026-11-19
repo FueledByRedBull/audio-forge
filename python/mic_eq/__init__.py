@@ -79,6 +79,8 @@ try:
         input_prefilter_response_db,
         list_input_devices,
         list_output_devices,
+        noise_model_ids,
+        processing_ranges,
     )
 
     CORE_AVAILABLE = True
@@ -104,6 +106,8 @@ except ImportError as error:
     analyze_vad_probabilities = _missing_core
     eq_magnitude_response_v2 = _missing_core
     input_prefilter_response_db = _missing_core
+    noise_model_ids = _missing_core
+    processing_ranges = _missing_core
 
 from .config import (  # noqa: E402
     BUILTIN_PRESETS,
@@ -120,6 +124,8 @@ __all__ = [
     "list_output_devices",
     "eq_magnitude_response_v2",
     "input_prefilter_response_db",
+    "noise_model_ids",
+    "processing_ranges",
     "analyze_vad_probabilities",
     "configure_deepfilter_runtime_paths",
     "CORE_AVAILABLE",

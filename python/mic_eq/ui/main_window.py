@@ -105,6 +105,7 @@ from .engine_tasks import EngineTasks, attempt
 from .theme import contrast_theme_changed, muted_icon, themed_menu
 from .overview_presentation import NO_MIC_REASON
 from .processing_mode_state import ProcessingModeState
+from .undo_chip import UndoChip
 from .processing_configuration import (
     CONFIGURATION_MUTE,
     LoadOutcome,
@@ -411,6 +412,7 @@ class MainWindow(QMainWindow):
             save_config=self._save_config_safely,
         )
         self._history_timer.timeout.connect(self.configuration.commit_edit)
+        self.history_chip = UndoChip(self, self.configuration)
         self._undo_action = None
         self._redo_action = None
         self._calibration_dialog_open = False
@@ -2955,6 +2957,7 @@ class MainWindow(QMainWindow):
                 if undo_label
                 else "No processing-configuration edit to undo"
             )
+        self.history_chip.refresh()
 
     def undo_configuration(self) -> None:
         """Undo one validated processing-configuration snapshot."""

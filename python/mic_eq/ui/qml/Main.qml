@@ -1899,6 +1899,41 @@ Rectangle {
                         label: "More"
                         Layout.alignment: Qt.AlignTop
                     }
+                    // Undo, then how many edits are unsaved and the latest one in words, with its age.
+                    ColumnLayout {
+                        id: undoHistory
+                        objectName: "undoHistory"
+                        readonly property var history: root.m.presets.history
+                        spacing: 2
+                        Layout.alignment: Qt.AlignTop
+                        Layout.maximumWidth: 240
+                        RowLayout {
+                            spacing: 6
+                            Layout.alignment: Qt.AlignRight
+                            IconBtn {
+                                objectName: "equalizerUndo"
+                                proxy: root.m.presets.undo
+                                hint: "Undo"
+                                glyph: root.m.glyphs.undo
+                                label: "Undo"
+                            }
+                            Chip {
+                                objectName: "undoChip"
+                                proxy: undoHistory.history
+                                visible: undoHistory.history.count > 0
+                                single: true
+                            }
+                        }
+                        Caption {
+                            objectName: "undoCaption"
+                            text: undoHistory.history.caption
+                            visible: text !== ""
+                            font.pixelSize: root.fsCaption
+                            horizontalAlignment: Text.AlignRight
+                            tip: truncated ? text : ""
+                            Layout.fillWidth: true
+                        }
+                    }
                 }
 
                 // The graph in its well; the connector runs from the band's handle down to its panel.

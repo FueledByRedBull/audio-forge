@@ -368,6 +368,8 @@ class QuickBridge(QObject):
         self._trace_timer = QTimer(self)
         self._trace_timer.setInterval(TRACE_INTERVAL_MS)
         self._trace_timer.timeout.connect(self._sample_levels)
+        # The age beside Undo moves on with this timer, which runs only while the window shows.
+        self._trace_timer.timeout.connect(window.history_chip.refresh)
         # A readout, not an animation: reduced motion keeps it. Like the meters, it
         # runs only while the window shows.
         window.installEventFilter(self)
@@ -711,6 +713,7 @@ class QuickBridge(QObject):
                 "menu": menu(w.presets_menu, "Presets"),
                 "undo": action("_undo_auto_eq_button"),
                 "redo": action("redo_button"),
+                "history": w.history_chip,
                 "testSound": action("test_sound_button"),
                 "autoEq": action("auto_eq_button"),
                 "voiceSetup": action("auto_voice_setup_button"),

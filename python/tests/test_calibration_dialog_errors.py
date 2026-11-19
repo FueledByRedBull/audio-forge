@@ -50,19 +50,20 @@ def test_stalled_capture_fails_and_releases_only_capture_owned_state(
     session.set_user_muted(True)
     setattr(owner, "engine_session", session)
     dialog = dialog_type(parent=owner)
+    flow = dialog if dialog_type is CalibrationDialog else dialog.flow
     # The take borrowed the audio already; a capture mutes through that lease.
-    dialog._audio_lease = AudioLease(session, "capture", started=False)
-    report = Mock(wraps=dialog._report)
-    monkeypatch.setattr(dialog, "_report", report)
+    flow._audio_lease = AudioLease(session, "capture", started=False)
+    report = Mock(wraps=flow._report)
+    monkeypatch.setattr(flow, "_report", report)
     if dialog_type is CalibrationDialog:
         dialog.recording_state = capture_state
     else:
-        dialog.setup_state = capture_state
+        dialog.flow.setup_state = capture_state
 
     try:
-        dialog._begin_recording_capture()
-        assert dialog._capture_session is not None
-        started_at = dialog._capture_session.deadline.started_at
+        flow._begin_recording_capture()
+        assert flow._capture_session is not None
+        started_at = flow._capture_session.deadline.started_at
         assert started_at is not None
         monkeypatch.setattr(
             capture_session.time,
@@ -70,18 +71,18 @@ def test_stalled_capture_fails_and_releases_only_capture_owned_state(
             lambda: started_at + 4.0,
         )
 
-        dialog._poll_recording_progress()
+        flow._poll_recording_progress()
 
         if dialog_type is CalibrationDialog:
             text = dialog.view_model.warning_text
             assert (dialog.view_model.warning_state, dialog.view_model.warning_strong) == ("bad", True)
         else:
-            text = dialog.view_model.warning_text
-            assert (dialog.view_model.warning_state, dialog.view_model.warning_strong) == ("bad", True)
+            text = dialog.flow.view_model.warning_text
+            assert (dialog.flow.view_model.warning_state, dialog.flow.view_model.warning_strong) == ("bad", True)
         assert "The microphone stopped sending sound" in text and "record again" in text
         assert report.call_args.args[:2] == ("failed", ["recording_failed"])
-        assert dialog.recording_timer.isActive() is False
-        assert dialog._capture_session is None
+        assert flow.recording_timer.isActive() is False
+        assert flow._capture_session is None
         assert session.view.mute_reasons == frozenset()
         assert session.view.user_muted is True
         assert processor.set_recovery_suppressed.call_args_list == [
@@ -114,7 +115,7 @@ def test_a_take_refused_while_the_engine_is_busy_says_to_wait_not_to_check_devic
         if isinstance(dialog, CalibrationDialog):
             assert dialog._borrow_audio(session) is None
         else:
-            assert dialog._ensure_processor_ready() is False
+            assert dialog.flow._ensure_processor_ready() is False
         assert len(messages) == 1
         assert "Wait a moment and try again" in messages[0]
         assert "connected" not in messages[0]
@@ -175,7 +176,7 @@ def test_a_switch_refused_because_the_engine_went_busy_says_to_wait(qapp, monkey
         if isinstance(dialog, CalibrationDialog):
             assert dialog._borrow_audio(session) is None
         else:
-            assert dialog._ensure_processor_ready() is False
+            assert dialog.flow._ensure_processor_ready() is False
         assert messages == ["Audio is starting, stopping or recovering. Wait a moment and try again."]
     finally:
         dialog.reject()

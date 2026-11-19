@@ -102,10 +102,10 @@ def test_voice_setup_stops_its_recording_and_analysis_when_closed(
     try:
         voice.show()
         session = _Session()
-        voice.setup_state = "voice_recording"
-        voice._capture_session = session
-        voice.recording_timer.start()
-        worker = _blocked_analysis(voice)
+        voice.flow.setup_state = "voice_recording"
+        voice.flow._capture_session = session
+        voice.flow.recording_timer.start()
+        worker = _blocked_analysis(voice.flow)
 
         closed = voice.close()
         alive = worker.isRunning()
@@ -113,11 +113,11 @@ def test_voice_setup_stops_its_recording_and_analysis_when_closed(
             worker.wait()
         _settle(qapp)
 
-        assert not voice.recording_timer.isActive() and session.cleaned
+        assert not voice.flow.recording_timer.isActive() and session.cleaned
         if ending:
             # Accepted at once, with the thread joined: nothing is left to wait for.
             assert closed and not voice.isVisible() and not alive
-            assert voice.result() == REJECTED and voice._workers.workers == []
+            assert voice.result() == REJECTED and voice.flow._workers.workers == []
         else:
             # As before: the close is vetoed while the thread winds down, then the dialog closes itself.
             assert not closed
@@ -130,7 +130,7 @@ def test_voice_setup_closes_for_a_session_end_even_when_its_old_settings_cannot_
     voice, session_ending, qapp, monkeypatch  # noqa: F811
 ) -> None:
     voice.show()
-    monkeypatch.setattr(voice, "_restore_pre_setup_snapshot", lambda: False)
+    monkeypatch.setattr(voice.flow, "_restore_pre_setup_snapshot", lambda: False)
     assert voice.close() and not voice.isVisible()
 
 
@@ -138,9 +138,9 @@ def test_voice_setup_still_refuses_a_normal_close_when_its_old_settings_cannot_b
     voice, qapp, monkeypatch  # noqa: F811
 ) -> None:
     voice.show()
-    monkeypatch.setattr(voice, "_restore_pre_setup_snapshot", lambda: False)
+    monkeypatch.setattr(voice.flow, "_restore_pre_setup_snapshot", lambda: False)
     assert not voice.close() and voice.isVisible()
-    assert "Close blocked" in voice.view_model.shown["phaseText"]
+    assert "Close blocked" in voice.flow.view_model.shown["phaseText"]
 
 
 @pytest.mark.parametrize("ending", [True, False], ids=["session-ending", "normal"])

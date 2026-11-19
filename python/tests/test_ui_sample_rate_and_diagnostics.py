@@ -115,10 +115,10 @@ def test_setup_level_warnings_use_actual_peak_not_rms_estimate(window):
     assert "peaks at -1.0 dB" in calibration.view_model.warning_text
 
     voice_setup = VoiceSetupDialog(parent=window, configuration=window.configuration)
-    voice_setup.setup_state = "voice_recording"
-    voice_setup._update_level(-20.0, -1.0)
-    assert (voice_setup.level_meter.rms_db, voice_setup.level_meter.peak_db) == (-20.0, -1.0)
-    assert "peaks at -1.0 dB" in voice_setup.view_model.warning_text
+    voice_setup.flow.setup_state = "voice_recording"
+    voice_setup.flow._update_level(-20.0, -1.0)
+    assert (voice_setup.flow.level_meter.rms_db, voice_setup.flow.level_meter.peak_db) == (-20.0, -1.0)
+    assert "peaks at -1.0 dB" in voice_setup.flow.view_model.warning_text
 
 
 class _SignalStub:
@@ -513,14 +513,15 @@ def test_calibration_and_voice_setup_cancel_invalidate_delayed_capture_start(
     processor.sample_rate.return_value = 48_000
     _use_processor(window, processor)
     dialog = dialog_class(parent=window)
-    setattr(dialog, state_attribute, recording_state)
-    dialog._capture_start_timer.start(1)
+    flow = dialog if dialog_class is CalibrationDialog else dialog.flow
+    setattr(flow, state_attribute, recording_state)
+    flow._capture_start_timer.start(1)
 
     dialog.reject()
     _process_events_for(qapp, 25)
 
     processor.start_raw_recording.assert_not_called()
-    assert not dialog._capture_start_timer.isActive()
+    assert not flow._capture_start_timer.isActive()
 
 
 def test_calibration_ignores_stale_analysis_generation(window):
@@ -1999,11 +2000,11 @@ def test_latency_calibration_respects_user_mute(window, monkeypatch):
 def test_voice_setup_dynamics_intensity_controls_custom_targets(qapp):
     dialog = VoiceSetupDialog()
 
-    assert dialog.view_model.selected("dynamics") == "balanced"
+    assert dialog.flow.view_model.selected("dynamics") == "balanced"
     assert scene_item(dialog, "p95Number").isEnabled() is False
     assert scene_item(dialog, "peakNumber").isEnabled() is False
 
-    dialog.view_model.pickDynamics(DYNAMICS_KEYS.index("custom"))
+    dialog.flow.view_model.pickDynamics(DYNAMICS_KEYS.index("custom"))
     qapp.processEvents()
 
     assert scene_item(dialog, "p95Number").isEnabled() is True

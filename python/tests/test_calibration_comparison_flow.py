@@ -27,12 +27,13 @@ def test_comparison_uses_one_capture_and_existing_apply_path(qapp, monkeypatch, 
     )
     owner.engine_session = Mock()
     dialog = dialog_type(owner, configuration=owner.configuration)
+    flow = dialog if dialog_type is CalibrationDialog else dialog.flow
     def unexpected_warning(_parent, title, message):
         pytest.fail(f"Unexpected comparison warning: {title}: {message}")
 
     monkeypatch.setattr(QMessageBox, "warning", unexpected_warning)
     audio = np.zeros(48000, dtype=np.float32)
-    monkeypatch.setattr(dialog, "_candidate_identity_error", lambda *args: None)
+    monkeypatch.setattr(flow, "_candidate_identity_error", lambda *args: None)
     apply = Mock()
     if dialog_type is CalibrationDialog:
         dialog.audio_data = audio
@@ -46,20 +47,20 @@ def test_comparison_uses_one_capture_and_existing_apply_path(qapp, monkeypatch, 
         dialog.recording_state = "ready"
         monkeypatch.setattr(dialog, "_apply_eq_settings", apply)
     else:
-        dialog.voice_audio = audio
-        dialog.preview_voice_audio = audio
+        dialog.flow.voice_audio = audio
+        dialog.flow.preview_voice_audio = audio
         eq = EQSettings(band_gains=[1.0] * 10)
-        dialog.setup_result = {
+        dialog.flow.setup_result = {
             "eq_settings": {"band_freqs": eq.band_freqs, "band_gains": eq.band_gains, "band_qs": eq.band_qs},
             "gate_settings": {}, "deesser_settings": {}, "compressor_settings": {}, "limiter_settings": {}}
-        dialog.setup_state = "completed"
-        monkeypatch.setattr(dialog, "_apply_setup", apply)
+        dialog.flow.setup_state = "completed"
+        monkeypatch.setattr(dialog.flow, "_apply_setup", apply)
     comparison = Mock()
     comparison.exec.return_value = int(QDialog.DialogCode.Accepted if keep else QDialog.DialogCode.Rejected)
     factory = Mock(return_value=comparison)
     monkeypatch.setattr(listening_comparison_dialog, "ListeningComparisonDialog", factory)
     try:
-        dialog._compare_recording()
+        flow._compare_recording()
         assert factory.call_args.kwargs["audio_data"] is audio
         assert factory.call_args.kwargs["current_chain_settings"]["full_chain"] is True
         assert factory.call_args.kwargs["current_chain_settings"]["input_pre_filtered"] is False

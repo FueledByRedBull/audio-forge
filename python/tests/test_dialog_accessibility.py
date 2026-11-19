@@ -118,10 +118,10 @@ def test_the_first_run_dialog_visits_top_to_bottom_then_its_buttons_left_to_righ
 
 
 def test_the_recording_note_does_not_stand_over_a_running_analysis(voice, monkeypatch) -> None:  # noqa: F811
-    monkeypatch.setattr(voice, "_start_analysis", lambda: None)
-    voice.setup_state = "voice_recording"
-    voice.view_model.set_page(timeText="Complete!")
-    finish_take(voice, _voice(0.2, seconds=10.0))
-    assert voice.setup_state == "analyzing"
-    assert voice.view_model.shown["phaseText"] == "Analyzing recordings"
-    assert voice.view_model.shown["timeText"] == "Analysis in progress"
+    monkeypatch.setattr(voice.flow, "_start_analysis", lambda: None)
+    voice.flow.setup_state = "voice_recording"
+    voice.flow.view_model.set_page(timeText="Complete!")
+    finish_take(voice.flow, _voice(0.2, seconds=10.0))
+    assert voice.flow.setup_state == "analyzing"
+    assert voice.flow.view_model.shown["phaseText"] == "Analyzing recordings"
+    assert voice.flow.view_model.shown["timeText"] == "Analysis in progress"

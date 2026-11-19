@@ -116,6 +116,7 @@ def _source_hashes() -> dict[str, str]:
         "python/mic_eq/ui/qml/ScrollPage.qml",
         "python/mic_eq/ui/qml/VoiceSetup.qml",
         "python/mic_eq/ui/voice_setup_dialog.py",
+        "python/mic_eq/ui/voice_setup_flow.py",
         "python/mic_eq/ui/voice_setup_view.py",
     )
     return {path: _sha256(REPO_ROOT / path) for path in paths}
@@ -254,21 +255,21 @@ def _show_running_state(window: MainWindow) -> None:
 
 def _prepare_voice_setup(parent: MainWindow) -> VoiceSetupDialog:
     dialog = VoiceSetupDialog(parent, configuration=parent.configuration)
-    dialog.recording_timer.stop()
+    dialog.flow.recording_timer.stop()
     dialog.resize(780, 760)
-    dialog.view_model.pickCurve(list(TARGET_CURVES).index("broadcast"))
-    dialog.view_model.pickDynamics(DYNAMICS_KEYS.index("balanced"))
-    dialog.setup_state = "completed"
-    dialog.view_model.set_page(
+    dialog.flow.view_model.pickCurve(list(TARGET_CURVES).index("broadcast"))
+    dialog.flow.view_model.pickDynamics(DYNAMICS_KEYS.index("balanced"))
+    dialog.flow.setup_state = "completed"
+    dialog.flow.view_model.set_page(
         recordingShown=True,
         phaseText="Recommendations ready",
         progress=100,
         timeText="Capture and analysis complete",
         startText="Apply Voice Setup",
     )
-    dialog.level_meter.set_levels(-24.0, -10.0)
-    dialog.view_model.set_warning("Validated settings are ready to review.", state="ok", strong=True)
-    dialog._show_summary(
+    dialog.flow.level_meter.set_levels(-24.0, -10.0)
+    dialog.flow.view_model.set_warning("Validated settings are ready to review.", state="ok", strong=True)
+    dialog.flow._show_summary(
         {
             "diagnostics": {
                 "setup_confidence": 0.91,
@@ -358,7 +359,7 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
         dialog = _prepare_voice_setup(window)
         dialog.show()
         app.processEvents()
-        eq_recommendation_shown = "max correction" in dialog.view_model.chip("eq")["text"]
+        eq_recommendation_shown = "max correction" in dialog.flow.view_model.chip("eq")["text"]
         specification = SCREENSHOTS[2]
         path = output_dir / specification["filename"]
         width, height = _write_optimized_png(dialog, path)

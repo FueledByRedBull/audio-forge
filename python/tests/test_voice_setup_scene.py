@@ -16,11 +16,12 @@ from PySide6.QtWidgets import QDialog
 
 from capture_helpers import finish_take
 from mic_eq.config import TARGET_CURVES, EQSettings, build_eq_candidate_settings
-from mic_eq.ui import voice_setup_dialog
+from mic_eq.ui import voice_setup_flow
 from mic_eq.ui.calibration_support import RAINBOW_PASSAGE
 from mic_eq.ui.capture_session import LIVE_OUTPUT_MUTED_NOTICE
 from mic_eq.ui.theme import PALETTE
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+from mic_eq.ui.voice_setup_flow import VoiceSetupFlow
 from mic_eq.ui.voice_setup_view import DYNAMICS, DYNAMICS_KEYS, VoiceSetupView
 from test_auto_eq_candidate_lifecycle import _Owner
 from test_first_run_setup import at_scene_minimum, choose, cut_short_texts, press, scene_item, scene_items, scene_text
@@ -65,7 +66,7 @@ def open_dialog(qapp):
         dialog = VoiceSetupDialog(owner, configuration=owner.configuration)
         made.append((dialog, owner))
         if everything:
-            dialog.view_model.set_page(**EVERYTHING)
+            dialog.flow.view_model.set_page(**EVERYTHING)
         dialog.show()
         qapp.processEvents()
         dialog.activateWindow()
@@ -172,7 +173,7 @@ def test_the_scene_loads_and_every_control_has_its_accessible_name(open_dialog) 
 
 def test_a_text_that_changes_is_read_with_its_new_text(open_dialog) -> None:
     dialog = open_dialog(everything=True)
-    view = dialog.view_model
+    view = dialog.flow.view_model
     with _AccessibleScene() as scene:
         assert scene.name(scene_item(dialog, "warningText")) == "Ready to record"
         view.set_warning("Moving closer helps", state="info", strong=True)
@@ -204,7 +205,7 @@ def test_a_text_that_changes_is_read_with_its_new_text(open_dialog) -> None:
 
 def test_the_review_shows_the_five_lines_in_order_and_only_with_a_summary(open_dialog) -> None:
     dialog = open_dialog()
-    view = dialog.view_model
+    view = dialog.flow.view_model
     lines = ["overallChip", "issueChip0", "eqChip", "gateChip", "deesserChip", "compressorChip"]
     view.set_issues(["One reason."])
     view.set_page(recordingShown=True, reviewShown=True)
@@ -248,29 +249,29 @@ METER = {"progressBar", "timeText", "levelMeter"}
 def test_each_state_of_the_run_shows_its_own_cards(open_dialog, state, step, shown) -> None:
     dialog = open_dialog()
     # As soon as a run has begun, and with a result to review.
-    dialog.view_model.set_page(recordingShown=True, summaryShown=True)
-    dialog.setup_state = state
+    dialog.flow.view_model.set_page(recordingShown=True, summaryShown=True)
+    dialog.flow.setup_state = state
     assert {key for key in CARDS if scene_item(dialog, key).isVisible()} == shown
     assert scene_item(dialog, "stepHeader").property("width") > 0
     with _AccessibleScene() as scene:
         assert scene.name(scene_item(dialog, "stepHeader")) == f"Step {step + 1} of 5: {STEP_NAMES[step]}"
-    assert dialog.view_model.shown["recordingTitle"] == ("Review" if step == 4 else "Recording")
+    assert dialog.flow.view_model.shown["recordingTitle"] == ("Review" if step == 4 else "Recording")
     assert scene_item(dialog, "compareButton").isVisible() is (step == 4)
 
 
 def test_a_take_being_checked_stays_on_the_step_it_was_recorded_on(open_dialog) -> None:
     dialog = open_dialog()
     for phase, step in (("level_check", 1), ("noise_recording", 2), ("voice_recording", 3)):
-        dialog._capture_phase = phase
-        dialog.setup_state = "capture_analyzing"
-        assert dialog.view_model.shown["step"] == step, phase
+        dialog.flow._capture_phase = phase
+        dialog.flow.setup_state = "capture_analyzing"
+        assert dialog.flow.view_model.shown["step"] == step, phase
 
 
 def test_a_failed_take_stays_on_its_own_step(open_dialog) -> None:
     dialog = open_dialog()
-    dialog._failed_step = 2
-    dialog.setup_state = "idle"
-    assert dialog.view_model.shown["step"] == 2 and scene_item(dialog, "noiseCard").isVisible()
+    dialog.flow._failed_step = 2
+    dialog.flow.setup_state = "idle"
+    assert dialog.flow.view_model.shown["step"] == 2 and scene_item(dialog, "noiseCard").isVisible()
     assert not scene_item(dialog, "curveCard").isVisible()
 
 
@@ -320,12 +321,12 @@ def test_enter_presses_the_focused_button_and_escape_closes_the_dialog(open_dial
 @pytest.mark.parametrize("key", [Qt.Key.Key_Return, Qt.Key.Key_Enter])
 def test_enter_outside_a_button_does_what_the_main_button_says(open_dialog, monkeypatch, key) -> None:
     calls: list[str] = []
-    monkeypatch.setattr(VoiceSetupDialog, "_on_start_clicked", lambda self: calls.append("start"))
+    monkeypatch.setattr(VoiceSetupFlow, "_on_start_clicked", lambda self: calls.append("start"))
     dialog = open_dialog()
     scene_item(dialog, "contentScroll").forceActiveFocus(Qt.FocusReason.TabFocusReason)
     QTest.keyClick(dialog.quick_view, key)
     assert calls == ["start"]
-    dialog.view_model.set_page(startEnabled=False, startText="Recording Noise...")
+    dialog.flow.view_model.set_page(startEnabled=False, startText="Recording Noise...")
     QTest.keyClick(dialog.quick_view, key)
     assert calls == ["start"], "the main button is not available"
 
@@ -344,7 +345,7 @@ def test_space_and_a_click_on_each_button_run_the_dialogs_command(
     open_dialog, monkeypatch, qapp, button, command
 ) -> None:
     calls: list[str] = []
-    monkeypatch.setattr(VoiceSetupDialog, command, lambda self: calls.append(command))
+    monkeypatch.setattr(VoiceSetupFlow, command, lambda self: calls.append(command))
     dialog = open_dialog(everything=True)
     scene_item(dialog, button).forceActiveFocus(Qt.FocusReason.TabFocusReason)
     QTest.keyClick(dialog.quick_view, Qt.Key.Key_Space)
@@ -357,17 +358,17 @@ def test_space_and_a_click_on_each_button_run_the_dialogs_command(
 def test_the_pickers_choose_from_the_keyboard_and_the_dialog_reads_the_choice(open_dialog) -> None:
     dialog = open_dialog()
     keys = list(TARGET_CURVES)
-    assert dialog.get_selected_curve() == keys[0]
+    assert dialog.flow.get_selected_curve() == keys[0]
     assert scene_item(dialog, "curveDescription").property("text") == FIRST_CURVE.description
     choose(dialog, "curvePicker", 1)
-    assert dialog.get_selected_curve() == keys[1]
+    assert dialog.flow.get_selected_curve() == keys[1]
     assert scene_item(dialog, "curveDescription").property("text") == TARGET_CURVES[keys[1]].description
-    assert dialog.view_model.selected("dynamics") == "balanced"
+    assert dialog.flow.view_model.selected("dynamics") == "balanced"
     choose(dialog, "dynamicsPicker", DYNAMICS_KEYS.index("dense"))
-    assert dialog.view_model.selected("dynamics") == "dense"
+    assert dialog.flow.view_model.selected("dynamics") == "dense"
     with _AccessibleScene() as scene:
         assert scene.name(scene_item(dialog, "dynamicsPicker")) == "Compression: Dense"
-    assert dialog.view_model.dynamics == [name for _key, name in DYNAMICS]
+    assert dialog.flow.view_model.dynamics == [name for _key, name in DYNAMICS]
 
 
 def test_the_dynamics_choice_and_the_limits_are_kept_in_the_settings(open_dialog) -> None:
@@ -379,20 +380,20 @@ def test_the_dynamics_choice_and_the_limits_are_kept_in_the_settings(open_dialog
     box = scene_item(dialog, "p95Number")
     box.forceActiveFocus(Qt.FocusReason.TabFocusReason)
     QTest.keyClick(dialog.quick_view, Qt.Key.Key_Up)
-    assert dialog.view_model.number("p95") == 4.5 and config.voice_setup_custom_p95_db == 4.5
+    assert dialog.flow.view_model.number("p95") == 4.5 and config.voice_setup_custom_p95_db == 4.5
     QTest.keyClick(dialog.quick_view, Qt.Key.Key_Down)
     QTest.keyClick(dialog.quick_view, Qt.Key.Key_Down)
-    assert dialog.view_model.number("p95") == 2.5 and config.voice_setup_custom_p95_db == 2.5
+    assert dialog.flow.view_model.number("p95") == 2.5 and config.voice_setup_custom_p95_db == 2.5
     # The loudness target is not part of the dynamics setting.
     scene_item(dialog, "lufsNumber").forceActiveFocus(Qt.FocusReason.TabFocusReason)
     QTest.keyClick(dialog.quick_view, Qt.Key.Key_Up)
-    assert dialog.view_model.number("lufs") == -17.0
+    assert dialog.flow.view_model.number("lufs") == -17.0
     assert not hasattr(config, "voice_setup_target_lufs")
 
 
 def test_a_number_is_stepped_from_the_keyboard_typed_and_held_in_its_range(open_dialog, qapp) -> None:
     dialog = open_dialog(custom=True)
-    view = dialog.view_model
+    view = dialog.flow.view_model
     box = scene_item(dialog, "peakNumber")
     box.forceActiveFocus(Qt.FocusReason.TabFocusReason)
     for _ in range(10):
@@ -427,9 +428,9 @@ def test_the_limits_are_for_the_custom_setting_and_every_field_locks_with_its_ca
     assert {key: item.isEnabled() for key, item in items.items()} == {
         "curvePicker": True, "dynamicsPicker": True, "p95Number": False, "peakNumber": False, "lufsNumber": True,
     }
-    dialog.view_model.pickDynamics(DYNAMICS_KEYS.index("custom"))
+    dialog.flow.view_model.pickDynamics(DYNAMICS_KEYS.index("custom"))
     assert all(item.isEnabled() for item in items.values())
-    view = dialog.view_model
+    view = dialog.flow.view_model
     view.set_page(curveEnabled=False)
     assert not items["curvePicker"].isEnabled() and items["dynamicsPicker"].isEnabled()
     view.set_page(curveEnabled=True, curveGroupEnabled=False)
@@ -445,7 +446,7 @@ def test_enter_on_a_closed_picker_does_what_the_main_button_says_but_in_its_open
     open_dialog, monkeypatch, qapp
 ) -> None:
     calls: list[str] = []
-    monkeypatch.setattr(VoiceSetupDialog, "_on_start_clicked", lambda self: calls.append("start"))
+    monkeypatch.setattr(VoiceSetupFlow, "_on_start_clicked", lambda self: calls.append("start"))
     dialog = open_dialog()
     picker = scene_item(dialog, "curvePicker")
     picker.forceActiveFocus(Qt.FocusReason.TabFocusReason)
@@ -456,7 +457,7 @@ def test_enter_on_a_closed_picker_does_what_the_main_button_says_but_in_its_open
     QTest.keyClick(dialog.quick_view, Qt.Key.Key_Return)
     qapp.processEvents()
     assert picker.property("down") is False and calls == [], "Enter in the open list only chose"
-    assert dialog.get_selected_curve() == list(TARGET_CURVES)[1]
+    assert dialog.flow.get_selected_curve() == list(TARGET_CURVES)[1]
     QTest.keyClick(dialog.quick_view, Qt.Key.Key_Return)
     assert calls == ["start"]
 
@@ -465,7 +466,7 @@ def test_enter_in_a_number_field_commits_what_was_typed_and_does_what_the_main_b
     open_dialog, monkeypatch, qapp
 ) -> None:
     calls: list[float] = []
-    monkeypatch.setattr(VoiceSetupDialog, "_on_start_clicked", lambda self: calls.append(self.view_model.number("p95")))
+    monkeypatch.setattr(VoiceSetupFlow, "_on_start_clicked", lambda self: calls.append(self.view_model.number("p95")))
     dialog = open_dialog(custom=True)
     scene_item(dialog, "p95Number").forceActiveFocus(Qt.FocusReason.TabFocusReason)
     QTest.keyClick(dialog.quick_view, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
@@ -484,7 +485,7 @@ def test_nothing_is_cut_short_or_runs_off_a_small_dialog(open_dialog, qapp, larg
         qapp.setFont(bigger)
     try:
         dialog = open_dialog(everything=True, custom=True)
-        dialog.view_model.set_warning(LONG_WARNING, state="warn", strong=True)
+        dialog.flow.view_model.set_warning(LONG_WARNING, state="warn", strong=True)
         assert dialog.minimumWidth() >= min(
             dialog.quick_view.rootObject().property("minimumWidth"), dialog.screen().availableGeometry().width() - 48
         )
@@ -506,7 +507,7 @@ def test_nothing_is_cut_short_or_runs_off_a_small_dialog(open_dialog, qapp, larg
              "overrideText": "Continue Despite Clipping Risk", "startText": "Check Level Again"},
         ]
         for row in rows:
-            dialog.view_model.set_page(**row)
+            dialog.flow.view_model.set_page(**row)
             QTest.qWait(60)  # the layout settles on the next frame
             shown = [key for key in BUTTONS if scene_item(dialog, key).isVisible()]
             xs = [scene_item(dialog, key).mapToScene(QPointF(0, 0)).x() for key in shown]
@@ -524,9 +525,9 @@ def test_every_main_button_label_fits_beside_the_other_buttons(open_dialog, qapp
 
     dialog = open_dialog(everything=True)
     at_scene_minimum(dialog, qapp)
-    dialog.view_model.set_page(retakeShown=True, compareShown=True, overrideShown=False)
+    dialog.flow.view_model.set_page(retakeShown=True, compareShown=True, overrideShown=False)
     for label in START_LABELS:
-        dialog.view_model.set_page(startText=label)
+        dialog.flow.view_model.set_page(startText=label)
         QTest.qWait(30)
         start = scene_item(dialog, "startButton")
         edge = start.mapToScene(QPointF(start.width(), 0)).x()
@@ -572,23 +573,23 @@ def test_a_button_that_disables_or_hides_itself_hands_the_keyboard_to_the_page(o
     button = button.split("-")[0]
     scene_item(dialog, button).forceActiveFocus(Qt.FocusReason.TabFocusReason)
     assert _focus_name(dialog).removesuffix("Input") == button
-    dialog.view_model.set_page(**hides)
+    dialog.flow.view_model.set_page(**hides)
     qapp.processEvents()
     assert _focus_name(dialog) == "contentScroll"
     # A button that goes while it is not focused moves nothing.
-    dialog.view_model.set_page(**{k: not v for k, v in hides.items()})
+    dialog.flow.view_model.set_page(**{k: not v for k, v in hides.items()})
     scene_item(dialog, "cancelButton").forceActiveFocus(Qt.FocusReason.TabFocusReason)
-    dialog.view_model.set_page(**hides)
+    dialog.flow.view_model.set_page(**hides)
     assert _focus_name(dialog) == "cancelButton"
 
 
 def test_the_level_meter_follows_the_dialogs_meter_and_reads_its_levels(open_dialog) -> None:
     dialog = open_dialog(everything=True)
-    assert dialog.level_meter is dialog.view_model.level_meter
-    dialog.level_meter.set_levels(-20.0, -1.0)
+    assert dialog.flow.level_meter is dialog.flow.view_model.level_meter
+    dialog.flow.level_meter.set_levels(-20.0, -1.0)
     with _AccessibleScene() as scene:
         description = scene.description(scene_item(dialog, "levelMeter"))
-    assert description == dialog.level_meter.property("accessibleText") and description != ""
+    assert description == dialog.flow.level_meter.property("accessibleText") and description != ""
 
 
 def test_the_eq_comparison_is_described_and_painted_without_scene_messages(open_dialog, qapp) -> None:
@@ -597,25 +598,25 @@ def test_the_eq_comparison_is_described_and_painted_without_scene_messages(open_
     frequencies = [60.0, 120.0, 250.0, 500.0, 1000.0, 2000.0, 3200.0, 6300.0, 10000.0, 16000.0]
     gains = [0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     proposed = build_eq_candidate_settings(flat, frequencies, gains, [1.41] * 10, layer="correction", enabled=True)
-    dialog.eq_compare.set_curves(flat, proposed, 48_000.0)
+    dialog.flow.eq_compare.set_curves(flat, proposed, 48_000.0)
     qapp.processEvents()
     with _AccessibleScene() as scene:
         description = scene.description(scene_item(dialog, "eqCompare"))
-    assert description == dialog.eq_compare.description() and description.startswith("Largest change: +")
+    assert description == dialog.flow.eq_compare.description() and description.startswith("Largest change: +")
     assert dialog.quick_view.grabFramebuffer().isNull() is False
 
 
 def test_the_main_button_is_named_by_what_it_says_at_each_step(open_dialog, monkeypatch) -> None:
-    monkeypatch.setattr(voice_setup_dialog, "CaptureSession", _Session)
+    monkeypatch.setattr(voice_setup_flow, "CaptureSession", _Session)
     dialog = open_dialog()
-    monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: _lend(dialog))
+    monkeypatch.setattr(dialog.flow, "_ensure_processor_ready", lambda: _lend(dialog.flow))
     with _AccessibleScene() as scene:
         start = scene_item(dialog, "startButton")
         assert scene.name(start) == scene_text(dialog, "startButton") == "Start Voice Setup"
-        dialog._on_start_clicked()
-        dialog._capture_start_timer.stop()
+        dialog.flow._on_start_clicked()
+        dialog.flow._capture_start_timer.stop()
         assert scene.name(start) == scene_text(dialog, "startButton") == "Checking Level..."
-        finish_take(dialog, HOT)
+        finish_take(dialog.flow, HOT)
         assert scene.name(start) == scene_text(dialog, "startButton") == "Check Level Again"
         assert scene.name(scene_item(dialog, "overrideButton")) == "Continue Despite Clipping Risk"
 
@@ -635,7 +636,7 @@ def test_the_mute_notice_is_a_warning_chip_that_says_the_call_is_muted(open_dial
 
 def test_the_passage_is_shown_whole_and_never_scrolled_inside_the_page(open_dialog, qapp) -> None:
     dialog = open_dialog()
-    dialog.setup_state = "level_check"  # the passage is read from the level check on
+    dialog.flow.setup_state = "level_check"  # the passage is read from the level check on
     dialog.resize(520, 700)
     qapp.processEvents()
     passages = [i for i in scene_items(dialog.quick_view.rootObject()) if i.property("text") == RAINBOW_PASSAGE]
@@ -730,7 +731,7 @@ def test_a_scene_that_does_not_load_says_so_and_closes_without_starting_anything
     shown: list[str] = []
     quitting = SimpleNamespace(aboutToQuit=SimpleNamespace(connect=connected.append))
     module = "mic_eq.ui.voice_setup_dialog"
-    monkeypatch.setattr(f"{module}.QCoreApplication", SimpleNamespace(instance=lambda: quitting))
+    monkeypatch.setattr("mic_eq.ui.voice_setup_flow.QCoreApplication", SimpleNamespace(instance=lambda: quitting))
     monkeypatch.setattr(f"{module}.load_scene", lambda *_args: "no such file")
     monkeypatch.setattr(f"{module}.QMessageBox.critical", lambda _parent, title, text: shown.append(f"{title}: {text}"))
     owner = _Owner()
@@ -740,8 +741,8 @@ def test_a_scene_that_does_not_load_says_so_and_closes_without_starting_anything
     assert len(shown) == 1 and shown[0].startswith("Auto Voice Setup: ") and "no such file" in shown[0]
     assert connected == [], "no quit hook"
     assert owner.processor.is_running() is False and owner.engine_session.view.user_muted is False
-    assert not dialog._capture_start_timer.isActive() and not dialog.recording_timer.isActive()
-    assert dialog._audio_lease is None and dialog._workers.workers == []
+    assert not dialog.flow._capture_start_timer.isActive() and not dialog.flow.recording_timer.isActive()
+    assert dialog.flow._audio_lease is None and dialog.flow._workers.workers == []
     dialog.reject()
     assert dialog.result() == REJECTED
     dialog.deleteLater()
@@ -771,11 +772,11 @@ def test_the_width_budget_holds_every_label_the_main_and_override_buttons_can_sh
         if isinstance(node, ast.IfExp):
             return values(node.body) | values(node.orelse)
         if isinstance(node, ast.Name) and node.id == "_APPLY_VERIFY_AGAIN_LABEL":
-            return {voice_setup_dialog._APPLY_VERIFY_AGAIN_LABEL}
+            return {voice_setup_flow._APPLY_VERIFY_AGAIN_LABEL}
         return {node.value} if isinstance(node, ast.Constant) and isinstance(node.value, str) else set()
 
     literals = set()
-    for node in ast.walk(ast.parse(inspect.getsource(voice_setup_dialog))):
+    for node in ast.walk(ast.parse(inspect.getsource(voice_setup_flow))):
         if isinstance(node, ast.keyword) and node.arg == "startText":
             literals |= values(node.value)
     assert literals and literals <= set(START_LABELS), literals - set(START_LABELS)

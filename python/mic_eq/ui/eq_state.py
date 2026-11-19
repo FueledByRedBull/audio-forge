@@ -149,6 +149,7 @@ class EQState(RateLimitedStageState[EQSettings]):
     presentationChanged = Signal()
     configurationEditStarted = Signal()
     configurationEditFinished = Signal(str)
+    originalHeldChanged = Signal()
     _stage_name = "EQ"
 
     def __init__(
@@ -164,6 +165,29 @@ class EQState(RateLimitedStageState[EQSettings]):
         self.selected_band: int | None = None
         self.show_markers = False
         self._diagnostics: dict | None = None
+        self._original_held = False
+
+    @property
+    def original_held(self) -> bool:
+        return self._original_held
+
+    def hold_original(self) -> bool:
+        """Turn the stage off in the engine alone, for a listen to the voice without it.
+
+        The settings stay as they are, so no history entry, unsaved change or save
+        sees it. The engine's own switch crossfades, so the change does not click.
+        """
+        if not self._original_held and self._settings.enabled and self._applied_settings.enabled:
+            self.processor.set_eq_enabled(False)
+            self._original_held = True
+            self.originalHeldChanged.emit()
+        return self._original_held
+
+    def release_original(self) -> None:
+        if self._original_held:
+            self._original_held = False
+            self.processor.set_eq_enabled(self._applied_settings.enabled)
+            self.originalHeldChanged.emit()
 
     def get_eq_settings(self) -> EQSettings:
         """Return desired settings, including edits queued for the DSP."""
@@ -245,12 +269,19 @@ class EQState(RateLimitedStageState[EQSettings]):
         self._queue(candidate, label=label, notify=notify)
 
     def _write(self, settings: EQSettings) -> None:
-        self.processor.set_eq_enabled(settings.enabled)
-        correction = settings.correction_bands or EQSettings().bands
-        self.processor.apply_eq_layers(
-            [band.to_native() for band in correction],
-            [band.to_native() for band in settings.bands],
-        )
+        # Any write is an edit, even one to the values already there: it ends a held
+        # listen to the original, and the engine runs what was written.
+        ended, self._original_held = self._original_held, False
+        try:
+            self.processor.set_eq_enabled(settings.enabled)
+            correction = settings.correction_bands or EQSettings().bands
+            self.processor.apply_eq_layers(
+                [band.to_native() for band in correction],
+                [band.to_native() for band in settings.bands],
+            )
+        finally:
+            if ended:
+                self.originalHeldChanged.emit()
 
     def set_settings(self, settings: dict) -> None:
         if "bands" in settings:

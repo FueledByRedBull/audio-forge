@@ -288,6 +288,65 @@ Rectangle {
         Hint { text: btn.help }
     }
 
+    // Held by the mouse or by Space, it plays the voice without the equalizer; letting go, or
+    // losing the press, the focus or the view, returns it. Only the item that began a hold ends it.
+    component HoldBtn: PushButton {
+        id: hold
+        property var proxy
+        property bool holding: false
+        // A hold ended elsewhere (an edit, Stop, the window going away) is no longer this button's.
+        readonly property bool held: proxy.held
+        onHeldChanged: if (!held) holding = false
+        function begin() {
+            if (!holding && proxy.enabled) {
+                proxy.press()
+                holding = proxy.held
+            }
+        }
+        function end() {
+            if (holding) {
+                holding = false
+                proxy.release()
+            }
+        }
+        text: proxy.text
+        enabled: proxy.enabled
+        look: proxy.held ? "soft" : "plain"
+        leftPadding: 14
+        rightPadding: 14 + keycap.width + 8
+        implicitWidth: leftPadding + contentItem.implicitWidth + rightPadding
+        onPressedChanged: pressed ? begin() : end()
+        onCanceled: end()
+        onActiveFocusChanged: if (!activeFocus) end()
+        onVisibleChanged: if (!visible) end()
+        onEnabledChanged: if (!enabled) end()
+        Keys.onPressed: event => {
+            if (event.key === Qt.Key_Space) {
+                event.accepted = true
+                if (!event.isAutoRepeat)
+                    begin()
+            }
+        }
+        Keys.onReleased: event => {
+            if (event.key === Qt.Key_Space) {
+                event.accepted = true
+                if (!event.isAutoRepeat)
+                    end()
+            }
+        }
+        Accessible.name: proxy.name
+        Accessible.description: proxy.toolTip
+        Hint { text: hold.proxy.toolTip }
+        EscChip {
+            id: keycap
+            objectName: "holdKeycap"
+            text: hold.proxy.keycap
+            anchors.right: parent.right
+            anchors.rightMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+        }
+    }
+
     component IconBtn: KeyButton {
         id: iconBtn
         property var proxy: null
@@ -1913,6 +1972,16 @@ Rectangle {
                             Layout.fillWidth: true
                         }
                     }
+                    HoldBtn {
+                        objectName: "holdOriginal"
+                        proxy: equalizerPage.eq.compare
+                        Layout.alignment: Qt.AlignTop
+                        // A narrow header cuts the label short before anything overlaps; the tip and name keep it whole.
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: leftPadding + rightPadding + 24
+                        Layout.preferredWidth: implicitWidth
+                        Layout.maximumWidth: implicitWidth
+                    }
                     Btn { proxy: equalizerPage.eq.tone; Layout.alignment: Qt.AlignTop }
                     Btn { proxy: root.m.presets.autoEq; Layout.alignment: Qt.AlignTop }
                     IconBtn {
@@ -1970,6 +2039,16 @@ Rectangle {
                     id: graphWell
                     objectName: "eqGraphWell"
                     readonly property int inset: 6
+                    // B held on the focused graph plays the original; the graph ends only its own hold.
+                    property bool holdingOriginal: false
+                    readonly property bool originalHeld: equalizerPage.eq.compare.held
+                    onOriginalHeldChanged: if (!originalHeld) holdingOriginal = false
+                    function endOriginal() {
+                        if (holdingOriginal) {
+                            holdingOriginal = false
+                            equalizerPage.eq.compare.release()
+                        }
+                    }
                     implicitHeight: eqGraph.implicitHeight + 2 * inset
                     radius: root.t.radiusWell
                     color: root.t.data_surface
@@ -1989,7 +2068,53 @@ Rectangle {
                         Accessible.name: "Equalizer graph"
                         Accessible.description: eqGraph.graph ? eqGraph.graph.accessibleDescription : ""
                         onHandlesChanged: connector.follow()
+                        onActiveFocusChanged: if (!eqGraph.activeFocus) graphWell.endOriginal()
+                        onVisibleChanged: if (!eqGraph.visible) graphWell.endOriginal()
+                        Keys.onPressed: event => {
+                            if (event.key !== Qt.Key_B || event.modifiers !== Qt.NoModifier)
+                                return
+                            event.accepted = true
+                            if (!event.isAutoRepeat && !graphWell.holdingOriginal && equalizerPage.eq.compare.enabled) {
+                                equalizerPage.eq.compare.press()
+                                graphWell.holdingOriginal = equalizerPage.eq.compare.held
+                            }
+                        }
+                        Keys.onReleased: event => {
+                            if (event.key !== Qt.Key_B)
+                                return
+                            event.accepted = true
+                            if (!event.isAutoRepeat)
+                                graphWell.endOriginal()
+                        }
                         FocusRing { visible: parent.activeFocus }
+                    }
+                    // While the original plays, in words: the colour is never the only sign.
+                    Rectangle {
+                        objectName: "originalPill"
+                        visible: equalizerPage.eq.compare.held
+                        x: Math.round((graphWell.width - width) / 2)
+                        y: graphWell.inset + 48
+                        width: Math.min(pillText.implicitWidth + 24, graphWell.width - 24)
+                        height: pillText.implicitHeight + 12
+                        radius: height / 2
+                        color: root.t.status_info_surface
+                        border.color: root.t.status_info_border
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: pillText.text
+                        Text {
+                            id: pillText
+                            x: 12
+                            y: 6
+                            width: parent.width - 24
+                            text: equalizerPage.eq.compare.pill
+                            textFormat: Text.PlainText
+                            color: root.t.status_info_text
+                            font.pixelSize: root.fsCaption
+                            font.weight: Font.DemiBold
+                            wrapMode: Text.Wrap
+                            horizontalAlignment: Text.AlignHCenter
+                            Accessible.ignored: true
+                        }
                     }
                     Rectangle {
                         id: connector
@@ -2110,6 +2235,14 @@ Rectangle {
                                     implicitWidth: 120
                                 }
                             }
+                        }
+                        // What the band does to the voice where it sits, in one sentence.
+                        StatusText {
+                            objectName: "bandHint"
+                            text: equalizerPage.band.hint.text
+                            wrapMode: Text.Wrap
+                            elide: Text.ElideNone
+                            Layout.fillWidth: true
                         }
                         Rectangle {
                             implicitHeight: 1

@@ -7,6 +7,7 @@ import math
 from PySide6.QtCore import QObject, QLocale, Property, Signal, Slot
 
 from ..config import EQ_SLOPES_DB_PER_OCTAVE
+from .eq_band_hint import band_hint
 from .eq_state import (
     EQState, EQ_FILTER_OPTIONS, GAIN_FILTER_TYPES, PASS_FILTER_TYPES, Q_FILTER_TYPES,
     _format_auto_eq_diagnostics, _format_frequency_label,
@@ -26,7 +27,9 @@ class EQControl(QObject):
         allowed = {"enabled", "band", "layers", "diagnostics"}
         if index is not None:
             state.get_band(index)
-            allowed = {"frequencyLabel", "enabled", "type", "gain", "gainLabel", "frequency", "q", "slope"}
+            allowed = {
+                "frequencyLabel", "enabled", "type", "gain", "gainLabel", "frequency", "q", "slope", "hint",
+            }
         if key not in allowed:
             raise ValueError(f"Unknown EQ control: {key}")
         self._owner = state
@@ -68,6 +71,8 @@ class EQControl(QObject):
         band_name = f"EQ band {index + 1}"
         if key == "enabled":
             view.update(name=f"Enable {band_name}", text="On", toolTip="Enable this EQ band", checked=band.enabled)
+        elif key == "hint":
+            view["text"] = band_hint(band.filter_type, band.frequency_hz, band.gain_db)
         elif key == "frequencyLabel":
             view.update(text=_format_frequency_label(band.frequency_hz), toolTip=f"{band_name} center frequency")
         elif key in {"gain", "gainLabel"}:

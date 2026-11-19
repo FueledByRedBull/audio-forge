@@ -384,6 +384,8 @@ class QuickBridge(QObject):
     def release(self) -> None:
         """Release scene adapters when the scene is dropped."""
 
+        # Nothing is left to let go of a hold the scene began.
+        self._window.eq_compare.release()
         self.deleteLater()
 
     levelsChanged = Signal()
@@ -605,7 +607,7 @@ class QuickBridge(QObject):
 
         bands = [
             {key: EQControl(w.eq_state, key, index, self) for key in (
-                "frequencyLabel", "enabled", "type", "gain", "gainLabel", "frequency", "q", "slope",
+                "frequencyLabel", "enabled", "type", "gain", "gainLabel", "frequency", "q", "slope", "hint",
             )}
             for index in range(10)
         ]
@@ -744,6 +746,7 @@ class QuickBridge(QObject):
                 "diagnostics": EQControl(w.eq_state, "diagnostics", None, self),
                 "band": EQControl(w.eq_state, "band", None, self),
                 "bands": bands,
+                "compare": w.eq_compare,
                 # How each line of the graph is drawn, named in words beside its sample.
                 "legend": [
                     {"text": "Total (what you hear)", "lineStyle": "solid"},

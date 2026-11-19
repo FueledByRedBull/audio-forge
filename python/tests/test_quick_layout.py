@@ -360,7 +360,7 @@ def test_a_wide_toolbar_keeps_the_no_microphone_reason_on_one_line(qapp, monkeyp
 
 
 @pytest.mark.parametrize(
-    ("width", "sidebar_width"), [(MINIMUM_WINDOW_WIDTH, 220), (1199, 220), (1200, 260), (1600, 260)]
+    ("width", "sidebar_width"), [(MINIMUM_WINDOW_WIDTH, 220), (1199, 220), (1200, 256), (1600, 256)]
 )
 def test_the_sidebar_width_follows_the_wide_breakpoint(qapp, monkeypatch, segoe_font, width, sidebar_width) -> None:
     window = build_minimum_window(qapp, monkeypatch, "DaBest", "Ready", width=width)
@@ -393,8 +393,11 @@ def test_the_inspector_docks_from_the_wide_breakpoint_and_lies_over_the_pane_bel
         rail = named(window, "inspectorRail")
         if width >= 1200:
             # Docked: the pane makes room, and the glass has nothing behind it to blur.
-            assert pane.right() == width - 424 < glass.left()
-            assert rail.isVisible() and scene_rect(rail).left() == pane.right()
+            # The main panel ends one ground gap before the rail, and the pane keeps its inset.
+            main_panel = scene_rect(named(window, "mainPanel"))
+            assert main_panel.right() == width - 424 - 10 < glass.left()
+            assert pane.right() == main_panel.right() - 16
+            assert rail.isVisible() and scene_rect(rail).left() == main_panel.right() + 10
             assert panel.property("backdrop") is None
         else:
             # Over the pane, which keeps its width and shows through the glass.
@@ -407,6 +410,105 @@ def test_the_inspector_docks_from_the_wide_breakpoint_and_lies_over_the_pane_bel
             if scene_rect(item).left() < glass.left() - 0.5 or scene_rect(item).right() > glass.right() + 0.5
         ]
         assert not overflowing, f"the inspector spans {glass.left():.1f} to {glass.right():.1f}: {overflowing}"
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def navigation_rows(window: MainWindow) -> list[QQuickItem]:
+    return [
+        item for item in shown_items(named(window, "sidebar")) if item.metaObject().className().startswith("NavRow")
+    ]
+
+
+@pytest.mark.parametrize("width", [MINIMUM_WINDOW_WIDTH, 1600])
+def test_the_sidebar_and_the_main_panel_stand_apart_on_the_ground(qapp, monkeypatch, segoe_font, width) -> None:
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Ready", width=width)
+    try:
+        sidebar = named(window, "sidebar")
+        panel = named(window, "mainPanel")
+        gap = 10
+        assert scene_rect(sidebar).left() == gap
+        assert scene_rect(panel).left() - scene_rect(sidebar).right() == gap
+        assert scene_rect(panel).right() == width - gap
+        assert sidebar.property("radius") == panel.property("radius") == 20
+        assert scene_rect(panel).contains(scene_rect(named(window, "mainPane")))
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize(("width", "tiled"), [(MINIMUM_WINDOW_WIDTH, False), (1199, False), (1200, True)])
+def test_the_row_icons_show_only_where_the_names_keep_their_room(
+    qapp, monkeypatch, segoe_font, width, tiled
+) -> None:
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Ready", width=width)
+    try:
+        rows = navigation_rows(window)
+        assert len(rows) == 8
+        assert [row.property("tiled") for row in rows] == [tiled] * 8
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_the_stopped_health_line_says_it_is_not_running(qapp, monkeypatch, segoe_font) -> None:
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Ready")
+    try:
+        chip = health_chip(window)
+        assert chip.property("level") == "idle"
+        assert chip.property("shown") == "Health: not running"
+        window._set_health_chip("health_summary_label", "Drops: 0", "ok")
+        settle(qapp)
+        assert chip.property("shown") == "Drops: 0"
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_the_stopped_level_card_waits_for_start(qapp, monkeypatch, segoe_font) -> None:
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Ready")
+    try:
+        waiting = named(window, "ribbonWaiting")
+        assert waiting.isVisible()
+        assert not named(window, "levelRibbon").isVisible()
+        assert scene_rect(named(window, "levelRibbonCard")).contains(scene_rect(waiting))
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+# The largest font at the minimum width is where the panels, the rows and the footer are tightest.
+def test_the_panels_keep_clear_at_the_minimum_width_and_a_large_font(qapp, monkeypatch, segoe_font) -> None:
+    qapp.setFont(QFont(qapp.font().family(), 14))
+    window = build_minimum_window(qapp, monkeypatch, LONG_PRESET, "Ready")
+    try:
+        test_nothing_in_the_main_pane_runs_into_the_sidebar_or_off_the_window(window)
+        test_the_sidebar_footer_parts_do_not_overlap(window)
+        sidebar = scene_rect(named(window, "sidebar"))
+        for row in navigation_rows(window):
+            box = scene_rect(row)
+            assert sidebar.left() <= box.left() and box.right() <= sidebar.right(), row.property("name")
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_each_route_check_has_its_round_mark_in_the_card(qapp, monkeypatch, segoe_font) -> None:
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Ready", width=1440)
+    try:
+        card = named(window, "overviewChecks")
+        repeater = next(item for item in card.findChildren(QObject) if item.metaObject().className() == "QQuickRepeater")
+        marks = [item for item in shown_items(card) if item.metaObject().className().startswith("CheckMark")]
+        assert len(marks) == repeater.property("count") > 0
+        assert {mark.property("kind") for mark in marks} <= {"ok", "warn", "note"}
+        assert all(mark.width() == mark.height() == 2 * mark.property("radius") for mark in marks)
     finally:
         window.close()
         window.deleteLater()

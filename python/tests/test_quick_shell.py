@@ -1566,9 +1566,10 @@ def test_the_health_chip_is_a_toggle_the_keyboard_reaches_and_names(quick_window
         named = [item for item in stops if item.objectName() == "healthToggle"]
         assert named, "Tab never reaches the Health chip"
         toggle = named[0]
-        # Voice control says what it sees: the visible text names the button.
-        chip = window.shell_texts["health_summary_label"]
-        assert chip.text and scene.name(toggle) == chip.text
+        # Voice control says what it sees: the visible text names the button. Stopped and idle,
+        # the line says so in words rather than showing the model's placeholder.
+        chip = toggle.parentItem()
+        assert scene.name(toggle) == chip.property("shown") == "Health: not running"
         assert scene.description(toggle) == "Show audio health details"
         window._set_health_chip("health_summary_label", "Health: Check input", "warn")
         qapp.processEvents()
@@ -1684,7 +1685,9 @@ def test_the_health_text_is_exposed_once_as_the_buttons_name(quick_window, qapp)
     with _AccessibleScene():
         view = quick_window.centralWidget()
         qapp.processEvents()
-        health = quick_window.shell_texts["health_summary_label"].text
+        root = view.rootObject()
+        health = root.findChild(QObject, "healthChip").property("shown")
+        assert health == "Health: not running"
         tree = texts(QAccessible.queryAccessibleInterface(view))
         assert sum(health in text for text in tree) == 1
 

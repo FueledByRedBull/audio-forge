@@ -6,11 +6,19 @@ import QtQuick
 QtObject {
     readonly property var t: theme
     readonly property bool hasIcons: t.iconFont !== ""
-    // The sizes of text, in pixels, follow the app font (9 pt is 12 px); nothing is smaller than 12.
+    readonly property bool reducedMotion: t.reducedMotion
+    // The sizes of text, in pixels, follow the app font (9 pt is the scale as written).
+    // Text that carries information never drops below the floor; only ticks and keycaps
+    // use the smaller tick size.
     readonly property real zoom: Application.font.pointSize > 0 ? Application.font.pointSize / 9 : 1
-    readonly property int fsCaption: Math.round(12 * zoom)
-    readonly property int fsBody: Math.round(13 * zoom)
-    readonly property int fsLead: Math.round(15 * zoom)
-    readonly property int fsHeading: Math.round(18 * zoom)
-    readonly property int fsTitle: Math.round(20 * zoom)
+    function scaled(px: real, floor: int): int {
+        return Math.max(floor, Math.round(px * zoom))
+    }
+    readonly property int fsTick: scaled(t.typeTick, t.typeTick)
+    readonly property int fsCaption: scaled(t.typeScale.caption, t.typeFloor)
+    readonly property int fsBody: scaled(t.typeScale.body, t.typeFloor)
+    readonly property int fsLead: scaled(t.typeScale.lead, t.typeFloor)
+    readonly property int fsHeading: scaled(t.typeScale.heading, t.typeFloor)
+    readonly property int fsTitle: scaled(t.typeScale.title, t.typeFloor)
+    readonly property int fsDisplay: scaled(t.typeScale.display, t.typeFloor)
 }

@@ -126,9 +126,9 @@ def test_the_muted_tray_icon_crosses_out_a_corner_and_keeps_the_rest(qapp) -> No
     before = icon.pixmap(QSize(32, 32)).toImage()
     after = muted.pixmap(QSize(32, 32)).toImage()
     assert after.pixelColor(2, 2) == before.pixelColor(2, 2)
-    # The badge is not colour alone: a light slash crosses its fill.
-    assert after.pixelColor(22, 28).name() == PALETTE.action_destructive
-    assert after.pixelColor(22, 22).red() > 200
+    # The badge is not colour alone: a dark slash crosses its violet fill.
+    assert after.pixelColor(22, 28).name() == PALETTE.mute
+    assert contrast_ratio(after.pixelColor(22, 22).name(), PALETTE.mute) >= 3
     assert muted_icon(QIcon()).isNull()
 
 
@@ -237,7 +237,7 @@ SYSTEM_COLORS = {
 def test_without_a_contrast_theme_the_dark_look_is_unchanged() -> None:
     dark = build_palette(None)
     assert dark == SemanticPalette()
-    assert (dark.app_surface, dark.text_primary, dark.accent) == ("#14171c", "#eef1f5", "#f2743a")
+    assert (dark.app_surface, dark.text_primary, dark.accent) == ("#0f1013", "#ececf0", "#d98a4e")
     assert dark.hover_text == dark.text_primary
 
 

@@ -7,7 +7,7 @@ from drifting apart across different Windows appearance settings.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 import os
 import sys
 
@@ -20,63 +20,102 @@ from PySide6.QtWidgets import QApplication
 class SemanticPalette:
     """Colors used by the application chrome and its data canvases."""
 
-    app_surface: str = "#14171c"
-    rail_surface: str = "#0f1115"
-    card_surface: str = "#1b1f26"
-    control_surface: str = "#262b34"
-    control_surface_alt: str = "#20242c"
-    control_hover: str = "#2f3540"
-    border: str = "#2b313b"
-    border_strong: str = "#3d4552"
+    # Near-black inks in fine steps. Opaque tokens that stand for a translucent white
+    # fill or hairline are that fill laid over the window ground, so contrast is measurable.
+    app_surface: str = "#0f1013"
+    pane_surface: str = "#0f1115"
+    rail_surface: str = "#14161b"
+    card_surface: str = "#18191d"
+    toolbar_top: str = "#1b1c21"
+    toolbar_bottom: str = "#15161a"
+    sidebar_top: str = "#202127"
+    sidebar_bottom: str = "#18191d"
+    control_surface: str = "#1d1e21"
+    control_surface_alt: str = "#191a1c"
+    control_hover: str = "#27282b"
+    border: str = "#202124"
+    border_strong: str = "#2c2d2f"
     # The edge of a control, a switch track and a slider track: 3:1 against every surface
     # a control sits on (WCAG 1.4.11). The two borders above only divide surfaces.
-    control_edge: str = "#7c8696"
-    text_primary: str = "#eef1f5"
-    text_muted: str = "#a2abb8"
-    text_on_emphasis: str = "#ffffff"
-    text_on_accent: str = "#14171c"
+    control_edge: str = "#7d818b"
+    focus_ring: str = "#cfe0ff"
+    text_primary: str = "#ececf0"
+    text_muted: str = "#9b9fa9"
+    # The lowest text tier; it still carries meaning, so it keeps AA contrast.
+    text_dim: str = "#8b8f99"
+    text_on_emphasis: str = "#ececf0"
+    text_on_accent: str = "#1b1005"
     # Dark text on a data color (EQ band, clip); a contrast theme keeps those colors.
-    text_on_data_color: str = "#14171c"
+    text_on_data_color: str = "#0f1013"
     # Text on a hovered or selected control; the dark look keeps the normal text color.
-    hover_text: str = "#eef1f5"
-    accent: str = "#f2743a"
-    accent_hover: str = "#ff8a55"
-    accent_pressed: str = "#d9612b"
+    hover_text: str = "#ececf0"
+    # Amber is selection and the primary action, nothing else.
+    accent: str = "#d98a4e"
+    accent_hover: str = "#e29559"
+    accent_pressed: str = "#c47c46"
+    accent_text: str = "#e8a574"
+    accent_soft: str = "#e8c5a6"
+    accent_bright: str = "#ffd9b8"
+    accent_fill: str = "#2ed98a4e"
+    accent_edge: str = "#59d98a4e"
+    # Violet is Mute and nothing else.
+    mute: str = "#b9a3f5"
+    mute_text: str = "#cdbcf8"
+    text_on_mute: str = "#1a1230"
+    mute_fill: str = "#29b9a3f5"
+    mute_edge: str = "#73b9a3f5"
 
-    action_primary: str = "#f2743a"
-    action_destructive: str = "#b3261e"
-    action_destructive_border: str = "#dc4a41"
-    action_secondary: str = "#262b34"
-    action_disabled: str = "#232830"
-    action_disabled_text: str = "#8f98a6"
-    action_disabled_surface: str = "#1e2229"
-    action_disabled_border: str = "#2b313b"
+    action_primary: str = "#d98a4e"
+    # Stop while live is neutral: only the action that begins something is amber.
+    action_destructive: str = "#1d1e21"
+    action_destructive_border: str = "#7d818b"
+    action_secondary: str = "#1d1e21"
+    action_disabled: str = "#2c2d2f"
+    action_disabled_text: str = "#8b8f99"
+    action_disabled_surface: str = "#191a1c"
+    action_disabled_border: str = "#202124"
 
-    status_ok_surface: str = "#16352b"
-    status_ok_text: str = "#86efac"
-    status_ok_border: str = "#2f855a"
-    status_warn_surface: str = "#3b2e14"
-    status_warn_text: str = "#fcd34d"
-    status_warn_border: str = "#a16207"
-    status_bad_surface: str = "#401d24"
-    status_bad_text: str = "#fda4af"
-    status_bad_border: str = "#be123c"
-    status_info_surface: str = "#172d4d"
-    status_info_text: str = "#93c5fd"
-    status_info_border: str = "#2563eb"
-    status_idle_surface: str = "#20242c"
-    status_idle_text: str = "#cbd5e1"
-    status_idle_border: str = "#3d4552"
+    status_ok_surface: str = "#172420"
+    status_ok_text: str = "#8fcfa5"
+    status_ok_border: str = "#254739"
+    status_ok_dot: str = "#5fd39a"
+    status_warn_surface: str = "#26231a"
+    status_warn_text: str = "#f5d97a"
+    # Solid, not the soft edge: an empty picker is marked by it and needs 3:1.
+    status_warn_border: str = "#f2cf5b"
+    status_bad_surface: str = "#27191c"
+    status_bad_text: str = "#ff8a80"
+    status_bad_border: str = "#52292c"
+    status_info_surface: str = "#1d1e21"
+    status_info_text: str = "#ececf0"
+    status_info_border: str = "#7d818b"
+    status_idle_surface: str = "#1d1e21"
+    status_idle_text: str = "#9b9fa9"
+    status_idle_border: str = "#2c2d2f"
 
-    data_surface: str = "#111419"
-    data_surface_raised: str = "#1b1f26"
-    data_grid: str = "#333a45"
-    data_text: str = "#d6dde7"
-    data_text_muted: str = "#aeb8c5"
-    data_curve: str = "#e6ebf2"
-    data_marker: str = "#facc15"
-    data_warning: str = "#fbbf24"
-    data_handle_selected: str = "#ffffff"
+    data_surface: str = "#0c0d10"
+    data_surface_raised: str = "#14161b"
+    data_grid: str = "#242528"
+    data_text: str = "#ececf0"
+    data_text_muted: str = "#9b9fa9"
+    data_curve: str = "#e6e8ee"
+    data_marker: str = "#e8c5a6"
+    data_warning: str = "#f2cf5b"
+    data_handle_selected: str = "#ececf0"
+    # The microphone (IN), what callers hear (OUT) and the EQ analyser, each one job only.
+    signal_in: str = "#a9bbd4"
+    signal_in_fill: str = "#7ea4dc"
+    signal_out: str = "#e6e8ee"
+    analyser: str = "#5e9eff"
+
+    # Panels that dock beside live content; translucent over the ground behind them.
+    glass: str = "#8c282c36"
+    glass_solid: str = "#d122252e"
+    glass_modal: str = "#b8242832"
+    glass_edge: str = "#1affffff"
+    glass_edge_modal: str = "#1fffffff"
+    glass_highlight: str = "#12ffffff"
+    glass_shadow: str = "#80000000"
 
     # One color per EQ band, in band order; data color, not accent.
     eq_band_colors: tuple[str, ...] = (
@@ -92,13 +131,15 @@ class SemanticPalette:
         "#38bdf8",
     )
 
-    meter_safe: str = "#3ecf8e"
-    meter_caution: str = "#f5c542"
-    meter_danger: str = "#ef5350"
-    meter_clip: str = "#ff3b30"
-    meter_peak: str = "#ffffff"
-    meter_scale: str = "#a2abb8"
-    meter_reduction: str = "#f5c542"
+    # A level runs blue-grey, then yellow, then red at the hot end, so no step is told
+    # from its neighbour by red against green.
+    meter_safe: str = "#7ea4dc"
+    meter_caution: str = "#f2cf5b"
+    meter_danger: str = "#ff6b6b"
+    meter_clip: str = "#ff6b6b"
+    meter_peak: str = "#ececf0"
+    meter_scale: str = "#9b9fa9"
+    meter_reduction: str = "#a9bbd4"
 
 
 
@@ -174,6 +215,14 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         data_text=text, data_text_muted=text, data_curve=text,
         data_marker=accent, data_warning=accent, data_handle_selected=text,
         meter_scale=text, meter_peak=text,
+        pane_surface=window, toolbar_top=window, toolbar_bottom=window,
+        sidebar_top=window, sidebar_bottom=window, focus_ring=accent, text_dim=text,
+        accent_text=accent, accent_soft=on_accent, accent_bright=on_accent,
+        accent_fill=accent, accent_edge=accent,
+        mute=accent, text_on_mute=on_accent, mute_text=text, mute_fill=window, mute_edge=accent,
+        status_ok_dot=text, signal_in=text, signal_in_fill=text, signal_out=text, analyser=text,
+        glass=window, glass_solid=window, glass_modal=window,
+        glass_edge=text, glass_edge_modal=text, glass_highlight=window, glass_shadow="#00000000",
     )
 
 
@@ -190,8 +239,56 @@ def contrast_theme_changed() -> bool:
 
 
 RADIUS_CARD = 10
-RADIUS_CONTROL = 6
+RADIUS_CONTROL = 8
 UI_FONT_FAMILIES = ("Segoe UI Variable Text", "Segoe UI")
+
+# Text sizes in pixels at the default app font. Text that carries information is never
+# below TYPE_FLOOR_PX; only axis ticks and keycaps use the smaller tick size.
+TYPE_FLOOR_PX = 12
+TYPE_TICK_PX = 11
+TYPE_SCALE_PX = {"caption": 12, "body": 13, "lead": 15, "heading": 18, "title": 20, "display": 28}
+
+
+@dataclass(frozen=True)
+class GlassRecipe:
+    """How a docked glass panel is drawn; the colors are the palette's glass tokens."""
+
+    radius: int = 22
+    blur: int = 26
+    saturation: float = 1.3
+    modal_blur: int = 40
+    modal_saturation: float = 1.4
+
+
+GLASS = GlassRecipe()
+
+
+@dataclass(frozen=True)
+class MotionDurations:
+    """Durations in milliseconds; reduced motion swaps each for a short opacity fade."""
+
+    color: int = 150
+    status: int = 150
+    crossfade: int = 120
+    switch: int = 120
+    row: int = 120
+    panel_open: int = 300
+    panel_close: int = 200
+
+
+MOTION = MotionDurations()
+REDUCED_MOTION_FADE_MS = 100
+# Cubic-bezier control points: the panel decelerates as it opens and accelerates as it closes.
+EASE_PANEL_OPEN = (0.16, 1.0, 0.3, 1.0)
+EASE_PANEL_CLOSE = (0.42, 0.0, 1.0, 1.0)
+
+
+def motion_durations(reduced: bool) -> MotionDurations:
+    """The durations to use, with every one a short fade while reduced motion is on."""
+
+    if not reduced:
+        return MOTION
+    return MotionDurations(**{name: REDUCED_MOTION_FADE_MS for name in asdict(MOTION)})
 
 
 def application_palette() -> QPalette:
@@ -272,6 +369,24 @@ def contrast_ratio(foreground: str, background: str) -> float:
     return (lighter + 0.05) / (darker + 0.05)
 
 
+def flatten(value: str, ground: str) -> str:
+    """The opaque color a translucent token shows over ``ground``, for measuring contrast."""
+
+    color, behind = QColor(value), QColor(ground)
+    if not color.isValid() or not behind.isValid():
+        raise ValueError(f"Invalid color token: {value!r} over {ground!r}")
+    alpha = color.alphaF()
+
+    def mix(front: float, back: float) -> float:
+        return alpha * front + (1 - alpha) * back
+
+    return QColor.fromRgbF(
+        mix(color.redF(), behind.redF()),
+        mix(color.greenF(), behind.greenF()),
+        mix(color.blueF(), behind.blueF()),
+    ).name()
+
+
 TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
     ("primary text", PALETTE.text_primary, PALETTE.app_surface),
     ("muted text", PALETTE.text_muted, PALETTE.app_surface),
@@ -299,6 +414,31 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
     ("idle status", PALETTE.status_idle_text, PALETTE.status_idle_surface),
     ("data text", PALETTE.data_text, PALETTE.data_surface),
     ("muted data text", PALETTE.data_text_muted, PALETTE.data_surface),
+    ("dim text", PALETTE.text_dim, PALETTE.app_surface),
+    ("dim text on card", PALETTE.text_dim, PALETTE.card_surface),
+    ("dim text on sidebar", PALETTE.text_dim, PALETTE.sidebar_top),
+    ("muted text on toolbar", PALETTE.text_muted, PALETTE.toolbar_top),
+    ("primary text on pane", PALETTE.text_primary, PALETTE.pane_surface),
+    ("accent link text", PALETTE.accent_text, PALETTE.app_surface),
+    (
+        "recommended action",
+        PALETTE.accent_bright,
+        flatten(PALETTE.accent_fill, PALETTE.app_surface),
+    ),
+    (
+        "selected row secondary text",
+        PALETTE.accent_soft,
+        flatten(PALETTE.accent_fill, PALETTE.sidebar_top),
+    ),
+    ("pressed mute", PALETTE.mute_text, flatten(PALETTE.mute_fill, PALETTE.toolbar_top)),
+    ("text on solid mute", PALETTE.text_on_mute, PALETTE.mute),
+    ("mute text", PALETTE.mute_text, PALETTE.app_surface),
+    ("primary text on glass", PALETTE.text_primary, flatten(PALETTE.glass, PALETTE.app_surface)),
+    ("muted text on glass", PALETTE.text_muted, flatten(PALETTE.glass, PALETTE.app_surface)),
+    ("muted text on compact glass", PALETTE.text_muted, flatten(PALETTE.glass_solid, PALETTE.app_surface)),
+    ("muted text on modal glass", PALETTE.text_muted, flatten(PALETTE.glass_modal, PALETTE.app_surface)),
+    ("signal in label", PALETTE.signal_in, PALETTE.data_surface),
+    ("signal out label", PALETTE.signal_out, PALETTE.data_surface),
     # The number on the selected EQ handle, dark on the band's color.
     *(
         (f"EQ band {number} number on handle", PALETTE.text_on_data_color, color)
@@ -314,8 +454,10 @@ def control_boundary_pairs(palette: SemanticPalette) -> tuple[tuple[str, str, st
         ("control edge on app surface", palette.control_edge, palette.app_surface),
         ("control edge on card", palette.control_edge, palette.card_surface),
         ("control edge on field", palette.control_edge, palette.control_surface),
-        ("switch on, slider fill and focus ring on card", palette.accent, palette.card_surface),
-        ("focus ring on app surface", palette.accent, palette.app_surface),
+        ("switch on and slider fill on card", palette.accent, palette.card_surface),
+        ("focus ring on card", palette.focus_ring, palette.card_surface),
+        ("focus ring on app surface", palette.focus_ring, palette.app_surface),
+        ("focus ring on glass", palette.focus_ring, flatten(palette.glass, palette.app_surface)),
         ("danger button edge on card", palette.action_destructive_border, palette.card_surface),
         ("empty picker edge on card", palette.status_warn_border, palette.card_surface),
     )
@@ -336,9 +478,9 @@ def muted_icon(icon: QIcon) -> QIcon:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         side = pixmap.width() * 0.6
         badge = QRectF(pixmap.width() - side, pixmap.height() - side, side, side).adjusted(1, 1, -1, -1)
-        mark = QPen(qcolor(PALETTE.text_on_emphasis), max(1.0, side / 8))
+        mark = QPen(qcolor(PALETTE.text_on_mute), max(1.0, side / 8))
         painter.setPen(mark)
-        painter.setBrush(qcolor(PALETTE.action_destructive))
+        painter.setBrush(qcolor(PALETTE.mute))
         painter.drawEllipse(badge)
         centre, reach = badge.center(), side * 0.2
         painter.drawLine(centre + QPointF(reach, -reach), centre + QPointF(-reach, reach))
@@ -390,7 +532,7 @@ QPushButton {{ background-color: {p.action_secondary}; color: {p.text_primary};
     padding: 6px 10px; }}
 QPushButton:hover {{ background-color: {p.control_hover}; color: {p.hover_text}; }}
 QPushButton:pressed {{ background-color: {p.control_surface_alt}; }}
-QPushButton:focus {{ border-color: {p.text_primary}; }}
+QPushButton:focus {{ border-color: {p.focus_ring}; }}
 QPushButton:disabled {{ background-color: {p.action_disabled_surface};
     color: {p.action_disabled_text}; border-color: {p.action_disabled_border}; }}
 
@@ -401,7 +543,7 @@ QComboBox, QLineEdit {{ background-color: {p.control_surface};
 QComboBox:hover, QLineEdit:hover {{
     border-color: {p.text_muted}; }}
 QComboBox:focus, QLineEdit:focus {{
-    border-color: {p.accent}; }}
+    border-color: {p.focus_ring}; }}
 QComboBox:disabled, QLineEdit:disabled {{
     background-color: {p.action_disabled_surface};
     color: {p.action_disabled_text}; }}

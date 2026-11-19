@@ -11,6 +11,6 @@ Rectangle {
     radius: height / 2 < 9 ? height / 2 : 9
     color: "transparent"
     border.width: 2
-    border.color: Look.t.accent
+    border.color: Look.t.focus_ring
     visible: control.visualFocus
 }

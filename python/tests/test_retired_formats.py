@@ -46,11 +46,13 @@ def test_an_unversioned_preset_is_refused_with_the_resave_instruction():
 
 
 def test_a_preset_stamped_1_22_0_is_refused_with_the_resave_instruction():
-    with pytest.raises(PresetValidationError) as refusal:
+    with pytest.raises(shared_module.PresetTooOldError) as refusal:
         Preset.from_dict(_preset_payload(version="1.22.0"))
 
-    assert "1.22.0" in str(refusal.value)
-    assert "1.23.0" in str(refusal.value)
+    assert str(refusal.value) == (
+        "This preset was saved by AudioForge 1.22.0, which this version no longer "
+        "converts. Open it in AudioForge 1.23.0, save it again, then open it here."
+    )
 
 
 @pytest.mark.parametrize("version", ["1.0.0", "1.6.0", "1.10.0", "", "not a version", None])

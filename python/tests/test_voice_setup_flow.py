@@ -67,7 +67,10 @@ class _Prompts:
     def compare(self, **_comparison: Any) -> bool | None:
         raise AssertionError("no comparison is expected")
 
-    def persist_calibration(self, *_args: Any) -> None:
+    def persist_calibration(
+        self, owner: Any, scope: str, curve: str, stages: tuple[str, ...]
+    ) -> None:
+        del owner, scope, curve, stages
         raise AssertionError("nothing is expected to be saved")
 
 

@@ -8,22 +8,25 @@ import time
 import numpy as np
 
 from mic_eq.analysis.cancellation import AnalysisCancelled
+from mic_eq.analysis.voice_setup import VoiceSetupRequest
 from mic_eq.ui.voice_setup_dialog import VoiceSetupWorker
 
 
 def _worker() -> VoiceSetupWorker:
     return VoiceSetupWorker(
-        np.zeros(16, dtype=np.float32),
-        np.zeros(16, dtype=np.float32),
-        48_000,
-        "broadcast",
-        vad_available=False,
-        dynamics_intensity="balanced",
-        custom_target_p95_db=3.5,
-        custom_peak_cap_db=8.0,
-        limiter_settings={},
-        noise_metadata=None,
-        voice_metadata=None,
+        VoiceSetupRequest(
+            np.zeros(16, dtype=np.float32),
+            np.zeros(16, dtype=np.float32),
+            48_000,
+            "broadcast",
+            vad_available=False,
+            dynamics_intensity="balanced",
+            custom_target_p95_db=3.5,
+            custom_peak_cap_db=8.0,
+            limiter_settings={},
+            noise_metadata=None,
+            speech_metadata=None,
+        )
     )
 
 

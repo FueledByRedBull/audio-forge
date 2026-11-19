@@ -9,7 +9,7 @@ before the UI offers to apply them.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import asdict
+from dataclasses import KW_ONLY, asdict, dataclass
 from typing import Any, NamedTuple
 
 import numpy as np
@@ -910,32 +910,60 @@ def _fit_loudness_to_headroom(
     return fitted if _headroom_safe(fitted[1], allowance_db) else (dict(compressor), simulation)
 
 
+@dataclass(frozen=True, eq=False)
+class VoiceSetupRequest:
+    """Inputs of one Voice Setup analysis, named as ``analyze_voice_setup`` reads them."""
+
+    noise_audio: np.ndarray
+    speech_audio: np.ndarray
+    sample_rate: int
+    target_preset: str = "broadcast"
+    _: KW_ONLY
+    vad_available: bool = True
+    dynamics_intensity: str = "balanced"
+    custom_target_p95_db: float = 3.5
+    custom_peak_cap_db: float = 8.0
+    target_lufs: float | None = None
+    limiter_settings: Mapping[str, Any] | None = None
+    noise_model: str = "rnnoise"
+    suppressor_strength: float = 1.0
+    suppressor_enabled: bool = True
+    incumbent_settings: Mapping[str, Any] | None = None
+    raw_noise_audio: np.ndarray | None = None
+    raw_speech_audio: np.ndarray | None = None
+    input_cleanup_mode: str = "off"
+    processing_mode: str = "normal"
+    noise_metadata: CaptureMetadata | Mapping[str, Any] | None = None
+    speech_metadata: CaptureMetadata | Mapping[str, Any] | None = None
+
+
 def analyze_voice_setup(
-    noise_audio: np.ndarray,
-    speech_audio: np.ndarray,
-    sample_rate: int,
-    target_preset: str = "broadcast",
+    request: VoiceSetupRequest,
     *,
-    vad_available: bool = True,
-    dynamics_intensity: str = "balanced",
-    custom_target_p95_db: float = 3.5,
-    custom_peak_cap_db: float = 8.0,
-    target_lufs: float | None = None,
-    limiter_settings: Mapping[str, Any] | None = None,
-    noise_model: str = "rnnoise",
-    suppressor_strength: float = 1.0,
-    suppressor_enabled: bool = True,
-    incumbent_settings: Mapping[str, Any] | None = None,
-    raw_noise_audio: np.ndarray | None = None,
-    raw_speech_audio: np.ndarray | None = None,
-    input_cleanup_mode: str = "off",
-    processing_mode: str = "normal",
-    noise_metadata: CaptureMetadata | Mapping[str, Any] | None = None,
-    speech_metadata: CaptureMetadata | Mapping[str, Any] | None = None,
     cancel_check: Callable[[], bool] | None = None,
     progress_callback: Callable[[str, int], None] | None = None,
 ) -> dict[str, Any]:
     """Analyze 48 kHz captures and validate the combined recommended chain."""
+    noise_audio = request.noise_audio
+    speech_audio = request.speech_audio
+    sample_rate = request.sample_rate
+    target_preset = request.target_preset
+    vad_available = request.vad_available
+    dynamics_intensity = request.dynamics_intensity
+    custom_target_p95_db = request.custom_target_p95_db
+    custom_peak_cap_db = request.custom_peak_cap_db
+    target_lufs = request.target_lufs
+    limiter_settings = request.limiter_settings
+    noise_model = request.noise_model
+    suppressor_strength = request.suppressor_strength
+    suppressor_enabled = request.suppressor_enabled
+    incumbent_settings = request.incumbent_settings
+    raw_noise_audio = request.raw_noise_audio
+    raw_speech_audio = request.raw_speech_audio
+    input_cleanup_mode = request.input_cleanup_mode
+    processing_mode = request.processing_mode
+    noise_metadata = request.noise_metadata
+    speech_metadata = request.speech_metadata
     check_analysis_cancelled(cancel_check)
     if progress_callback is not None:
         progress_callback("Measuring speech and room noise...", 5)
@@ -2290,6 +2318,7 @@ def reduce_for_verification(
 
 __all__ = [
     "GATE_MODE_LABELS",
+    "VoiceSetupRequest",
     "analyze_voice_setup",
     "validate_voice_setup_verification",
 ]

@@ -650,7 +650,7 @@ def voice_setup(ctx: dict[str, Any], vad_available: bool) -> dict[str, Any]:
     Returns the outcome (``applied`` or ``refused`` with the veto, ``failed`` when Auto-EQ could not run), the
     steps the proposal changes, and the readings of the proposal and of what the user ends with.
     """
-    from mic_eq.analysis.voice_setup import analyze_voice_setup
+    from mic_eq.analysis.voice_setup import VoiceSetupRequest, analyze_voice_setup
     from mic_eq.config import EQSettings, Preset
 
     raw_noise, raw = ctx["raw_noise"], ctx["raw"]
@@ -660,11 +660,11 @@ def voice_setup(ctx: dict[str, Any], vad_available: bool) -> dict[str, Any]:
     started = time.process_time()
     with _unclear_recording_tap() as validation:
         try:
-            result = analyze_voice_setup(
+            result = analyze_voice_setup(VoiceSetupRequest(
                 noise, setup, SAMPLE_RATE, "broadcast", vad_available=vad_available,
                 incumbent_settings={"gate": asdict(preset.gate), "rnnoise": asdict(preset.rnnoise),
                                     "eq": EQSettings().to_dict()},
-                raw_noise_audio=raw_noise, raw_speech_audio=raw)
+                raw_noise_audio=raw_noise, raw_speech_audio=raw))
         except ValueError as error:
             if str(error) not in CAPTURE_REFUSALS:  # anything else is a fault
                 raise

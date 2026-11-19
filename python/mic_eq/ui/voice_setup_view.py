@@ -8,9 +8,11 @@ from typing import Any
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from ..analysis.voice_setup import MAX_VERIFICATION_BAD_CAPTURES
+from .calibration_support import TOO_LOUD_DB, TOO_QUIET_DB
 from .capture_session import LIVE_OUTPUT_MUTED_NOTICE
 from .components import Glyph
 from .eq_compare import EQComparison
+from .level_check import TakeRule
 from .level_meter import LevelMeter
 
 STATES = frozenset({"ok", "warn", "bad", "info", "idle"})
@@ -24,6 +26,13 @@ def _known_state(state: str) -> str:
 
 # The steps of the progress strip, in order.
 STEPS = ("Target", "Level", "Room noise", "Voice", "Review")
+# Where the words under the level bar stand: its floor, then the levels the checks judge by.
+METER_MARKS = (
+    (LevelMeter.DB_MIN, ""),
+    (TOO_QUIET_DB, "too quiet"),
+    (TOO_LOUD_DB, "clip"),
+)
+RULE_STATES = frozenset({"fine", "watch", "refused"})
 # The label of the main button in each state of the dialog; the scene is wide enough for the longest.
 START_LABELS = (
     "Start Voice Setup",
@@ -96,6 +105,8 @@ EMPTY_PAGE = {
     "mutedShown": False,
     "recordingShown": False,
     "recordingTitle": "Recording",
+    "recordingNow": False,
+    "readTitle": "",
     "meterShown": False,
     "reviewShown": False,
     "summaryShown": False,
@@ -107,6 +118,10 @@ EMPTY_PAGE = {
     "phaseText": "Ready to start setup",
     "timeText": "",
     "timeDone": False,
+    "recordedText": "",
+    "levelText": "Input level --",
+    "rulesShown": False,
+    "hintShown": True,
     "progress": 0,
     "eqCompareShown": False,
     "retakeShown": False,
@@ -121,6 +136,15 @@ EMPTY_PAGE = {
 }
 
 
+def _meter_marks() -> list[dict[str, object]]:
+    """Each mark's words and where it sits along the level bar, from 0 at the floor to 1."""
+    span = LevelMeter.DB_MAX - LevelMeter.DB_MIN
+    return [
+        {"text": f"{db:.0f} {words}".strip(), "at": (db - LevelMeter.DB_MIN) / span}
+        for db, words in METER_MARKS
+    ]
+
+
 class VoiceSetupView(QObject):
     """The view model of ``VoiceSetup.qml``; the dialog owns the recordings and the analysis."""
 
@@ -128,6 +152,7 @@ class VoiceSetupView(QObject):
     statusChanged = Signal()
     chipsChanged = Signal()
     choicesChanged = Signal()
+    rulesChanged = Signal()
 
     def __init__(
         self,
@@ -161,6 +186,7 @@ class VoiceSetupView(QObject):
             key: {"key": key, "text": EMPTY_CHIPS[key], "tip": "", "state": "idle"} for key in CHIP_KEYS
         }
         self._issues: list[str] = []
+        self._rules: list[dict[str, str]] = []
         self.level_meter = LevelMeter("Level", show_scale=True, parent=self)
         self.eq_compare = EQComparison(self)
 
@@ -186,6 +212,9 @@ class VoiceSetupView(QObject):
     overrideLabels = Property(list, lambda self: list(OVERRIDE_LABELS), constant=True)
     mutedNotice = Property(str, lambda self: LIVE_OUTPUT_MUTED_NOTICE, constant=True)
     expandGlyph = Property(str, lambda self: Glyph.EXPAND, constant=True)
+    headerGlyph = Property(str, lambda self: Glyph.MICROPHONE, constant=True)
+    meterMarks = Property(list, lambda self: _meter_marks(), constant=True)
+    rules = Property(list, lambda self: [dict(rule) for rule in self._rules], notify=rulesChanged)
     meter = Property(QObject, lambda self: self.level_meter, constant=True)
     eqCompare = Property(QObject, lambda self: self.eq_compare, constant=True)
 
@@ -265,6 +294,17 @@ class VoiceSetupView(QObject):
         if lines != self._issues:
             self._issues = list(lines)
             self.chipsChanged.emit()
+
+    def set_rules(self, rules: tuple[TakeRule, ...]) -> None:
+        """The rows that say how the take being recorded stands against the checks."""
+        rows = []
+        for rule in rules:
+            if rule.state not in RULE_STATES:
+                raise ValueError(f"unknown rule state {rule.state!r}")
+            rows.append({"name": rule.name, "status": rule.status_word, "detail": rule.detail, "state": rule.state})
+        if rows != self._rules:
+            self._rules = rows
+            self.rulesChanged.emit()
 
     def _pick(self, group: str, index: int) -> bool:
         if not 0 <= index < len(self._choices[group]) or index == self._index[group]:

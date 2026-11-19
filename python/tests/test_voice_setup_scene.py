@@ -9,7 +9,7 @@ from typing import Any, cast
 
 import pytest
 from PySide6.QtCore import QPointF, Qt, qInstallMessageHandler
-from PySide6.QtGui import QAccessible, QFont
+from PySide6.QtGui import QAccessible, QColor, QFont
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QDialog
@@ -19,7 +19,8 @@ from mic_eq.config import TARGET_CURVES, EQSettings, build_eq_candidate_settings
 from mic_eq.ui import voice_setup_flow
 from mic_eq.ui.calibration_support import RAINBOW_PASSAGE
 from mic_eq.ui.capture_session import LIVE_OUTPUT_MUTED_NOTICE
-from mic_eq.ui.theme import PALETTE
+from mic_eq.ui.level_check import TakeRule
+from mic_eq.ui.theme import PALETTE, contrast_ratio, flatten
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from mic_eq.ui.voice_setup_flow import VoiceSetupFlow
 from mic_eq.ui.voice_setup_view import DYNAMICS, DYNAMICS_KEYS, VoiceSetupView
@@ -143,7 +144,7 @@ def test_the_scene_loads_and_every_control_has_its_accessible_name(open_dialog) 
         "curveCard": "Tone preset",
         "dynamicsCard": "Dynamics",
         "noiseCard": "Capture room noise",
-        "voiceCard": "Read this passage aloud",
+        "voiceCard": "Read for the full 10 seconds",
         "recordingCard": "Recording",
         "reviewCard": "Recommended Settings",
     }
@@ -627,11 +628,137 @@ def _lend(dialog: Any) -> bool:
     return lend_audio(dialog)
 
 
-def test_the_mute_notice_is_a_warning_chip_that_says_the_call_is_muted(open_dialog) -> None:
+def test_muted_banner_uses_the_mute_role_and_says_so_in_words(open_dialog) -> None:
     dialog = open_dialog(everything=True)
     notice = scene_item(dialog, "mutedNotice")
     text = notice.property("text").lower()
-    assert notice.property("tone") == "warn" and "muted" in text and "call" in text
+    assert "muted" in text and "call" in text
+    assert QColor(notice.property("color")).name(QColor.NameFormat.HexArgb) == PALETTE.mute_fill
+    assert scene_text(dialog, "mutedLead") == "Live output muted."
+    ground = flatten(PALETTE.mute_fill, PALETTE.pane_surface)
+    assert contrast_ratio(PALETTE.mute_text, ground) >= 4.5
+
+
+def test_voice_setup_rule_rows_pair_a_glyph_with_words(open_dialog) -> None:
+    dialog = open_dialog()
+    dialog.flow.view_model.set_page(recordingShown=True)
+    dialog.flow.setup_state = "voice_recording"
+    assert scene_item(dialog, "takeRules").isVisible()
+    dialog.flow.view_model.set_rules(
+        (
+            TakeRule("Too quiet", "Fine so far", "Your words under -40 dB", "fine"),
+            TakeRule("Clipped", "Clipped", "Peaks held at full scale", "refused"),
+            TakeRule("Too short", "Keep reading", "Under 3 seconds recorded", "watch"),
+        )
+    )
+    expected = [("check", "Fine so far"), ("cross", "Clipped"), ("clock", "Keep reading")]
+    with _AccessibleScene() as scene:
+        for index, (shape, status) in enumerate(expected):
+            assert scene_item(dialog, f"takeRuleMark{index}").property("shape") == shape
+            assert scene_text(dialog, f"takeRuleStatus{index}") == status
+            row = scene_item(dialog, f"takeRule{index}")
+            assert scene.name(row).startswith(f"{row.property('modelData')['name']}: {status}. ")
+    with pytest.raises(ValueError):
+        dialog.flow.view_model.set_rules((TakeRule("Too quiet", "Fine", "", "green"),))
+
+
+@pytest.mark.parametrize(
+    ("state", "shown"),
+    [("idle", False), ("level_check", False), ("noise_recording", False), ("voice_recording", True),
+     ("verification_recording", False), ("completed", False)],
+)
+def test_the_take_rules_are_shown_only_beside_the_voice_take_they_judge(open_dialog, state, shown) -> None:
+    dialog = open_dialog()
+    dialog.flow.view_model.set_page(recordingShown=True)
+    dialog.flow.setup_state = state
+    assert scene_item(dialog, "takeRules").isVisible() is shown
+
+
+@pytest.mark.parametrize(
+    ("state", "shown"),
+    [("idle", True), ("voice_recording", True), ("verification_recording", False),
+     ("verification_analyzing", False), ("completed", False), ("final_comparison_ready", False)],
+)
+def test_the_settings_unchanged_hint_hides_once_settings_are_applied(open_dialog, state, shown) -> None:
+    dialog = open_dialog()
+    dialog.flow.setup_state = state
+    hint = scene_item(dialog, "settingsHint")
+    assert hint.isVisible() is shown
+    assert hint.property("text") == "Your settings stay as they were until you apply the review."
+
+
+@pytest.mark.parametrize(
+    ("state", "words"),
+    [
+        ("idle", ["This step", "Next", "Next", "Next", "Next"]),
+        ("noise_ready", ["Done", "Done", "Done", "This step", "Next"]),
+        ("voice_recording", ["Done", "Done", "Done", "Recording now", "Next"]),
+        ("completed", ["Done", "Done", "Done", "Done", "This step"]),
+    ],
+)
+def test_each_step_says_in_words_where_the_run_is(open_dialog, state, words) -> None:
+    dialog = open_dialog()
+    dialog.flow.setup_state = state
+    assert [scene_text(dialog, f"stepState{index}") for index in range(5)] == words
+
+
+def test_the_level_bar_marks_where_each_check_judges_the_level(open_dialog) -> None:
+    dialog = open_dialog()
+    dialog.flow.setup_state = "voice_recording"
+    marks = dialog.flow.view_model.property("meterMarks")
+    assert [mark["text"] for mark in marks] == ["-60", "-40 too quiet", "-3 clip"]
+    assert [mark["at"] for mark in marks] == sorted(mark["at"] for mark in marks)
+    assert marks[0]["at"] == 0.0 and 0.0 < marks[-1]["at"] < 1.0
+    shown = [i.property("text") for i in scene_items(dialog.quick_view.rootObject()) if i.objectName() == "meterMark"]
+    assert shown == ["-60", "-40 too quiet", "-3 clip"]
+
+
+def test_a_take_reads_out_its_length_and_its_level_as_it_records(open_dialog) -> None:
+    dialog = open_dialog()
+    dialog.flow.setup_state = "voice_recording"
+    dialog.flow._recording_duration = 10.0
+    dialog.flow._update_time_remaining(6.0)
+    dialog.flow._update_level(-22.4, -8.43)
+    assert scene_text(dialog, "recordedText") == "4 s of 10 s recorded"
+    assert scene_text(dialog, "levelText") == "Input level -22 dB \u00b7 peak -8.4 dB"
+    with _AccessibleScene() as scene:
+        assert scene.name(scene_item(dialog, "voiceCard")) == "Read for the full 10 seconds"
+
+
+def test_dialog_header_esc_and_close_cancel_the_dialog(open_dialog, qapp, monkeypatch) -> None:
+    clicks: list[None] = []
+    closes: list[bool] = []
+    on_cancel, request_close = VoiceSetupFlow._on_cancel_clicked, VoiceSetupFlow.request_close
+
+    def counted_cancel(self) -> None:
+        clicks.append(None)
+        on_cancel(self)
+
+    def counted_close(self, accepted: bool) -> None:
+        if not self._close_requested:
+            closes.append(accepted)
+        request_close(self, accepted)
+
+    monkeypatch.setattr(VoiceSetupFlow, "_on_cancel_clicked", counted_cancel)
+    monkeypatch.setattr(VoiceSetupFlow, "request_close", counted_close)
+
+    dialog = open_dialog()
+    assert scene_text(dialog, "dialogTitle") == "Auto Voice Setup"
+    with _AccessibleScene() as scene:
+        close = scene_item(dialog, "closeButton")
+        assert scene.name(close) == "Close" and scene.description(close) == "Esc"
+    press(dialog, "closeButton")
+    qapp.processEvents()
+    assert (len(clicks), closes) == (1, [False])
+    assert not dialog.isVisible() and dialog.result() == REJECTED
+
+    clicks.clear()
+    closes.clear()
+    again = open_dialog()
+    QTest.keyClick(again.quick_view, Qt.Key.Key_Escape)
+    qapp.processEvents()
+    assert (len(clicks), closes) == (0, [False])
+    assert not again.isVisible() and again.result() == REJECTED
 
 
 def test_the_passage_is_shown_whole_and_never_scrolled_inside_the_page(open_dialog, qapp) -> None:

@@ -35,7 +35,7 @@ MUTE_TIP = (
 
 STEP_CONTENT = {
     "devices": (
-        "1. Choose devices",
+        "Choose devices",
         "Select the microphone and destination for your calls, games, or recording. "
         + (
             "Choose a virtual cable when another app should receive AudioForge output."
@@ -46,7 +46,7 @@ STEP_CONTENT = {
         "Use this route",
     ),
     "route": (
-        "2. Check speech and clipping",
+        "Check speech and clipping",
         "Start processing, speak at a normal level, and watch the input and output "
         "levels and clipping indicators. Then check your call, game, or recording "
         "app for the microphone signal and confirm it below. AudioForge cannot "
@@ -61,12 +61,15 @@ STEP_CONTENT = {
         "Open latency calibration",
     ),
     "voice": (
-        "3. Calibrate the voice chain",
+        "Calibrate the voice chain",
         "Run voice setup to tune the chain. After it finishes, check the result in your destination app.",
         "Open Voice Setup",
     ),
 }
 
+
+# What the step rail says about each step: the one shown, then the saved states.
+STEP_STATE_WORDS = {"current": "This step", "completed": "Done", "skipped": "Skipped", "pending": "Not started"}
 
 # The main button says one of these; the scene sizes the dialog for the longest.
 ACTION_LABELS = [*(content[2] for content in STEP_CONTENT.values()), "Confirm signal", "Retry save"]
@@ -239,13 +242,15 @@ class FirstRunSetupDialog(QDialog):
             owner_mute_checkbox.toggled.connect(self._sync_mute_control)
         self._render_step()
         # The scene's own minimum grows with the text size; the dialog opens at least that wide.
-        minimum_width = max(440, int(self.quick_view.rootObject().property("minimumWidth")))
+        # Its header stands above the page, which keeps the height it needs.
+        scene = self.quick_view.rootObject()
+        minimum_width = max(440, int(scene.property("minimumWidth")))
         configure_resizable_dialog(
             self,
             preferred_width=max(620, minimum_width),
             preferred_height=660,
             minimum_width=minimum_width,
-            minimum_height=340,
+            minimum_height=340 + int(scene.property("headerHeight")),
         )
 
     def _setup_ui(self) -> None:
@@ -389,6 +394,7 @@ class FirstRunSetupDialog(QDialog):
             progressCount=completed_count,
             progressTotal=len(DEFAULT_SETUP_STEPS),
             progressText=f"{completed_count} of {len(DEFAULT_SETUP_STEPS)} steps completed",
+            steps=[self._rail_entry(default_step) for default_step in DEFAULT_SETUP_STEPS],
             devicesShown=step == "devices",
             routeShown=step == "route",
             latencyShown=step != "latency",
@@ -410,6 +416,10 @@ class FirstRunSetupDialog(QDialog):
                 else "Ready. Progress is saved if you close this window.",
                 "info",
             )
+
+    def _rail_entry(self, step: str) -> dict[str, str]:
+        state = "current" if step == self.current_step else self.config.first_run_setup_steps.get(step, "pending")
+        return {"name": STEP_CONTENT[step][0], "state": state, "word": STEP_STATE_WORDS[state]}
 
     def _set_status(self, message: str, state: str) -> None:
         if self._progress_unsaved:

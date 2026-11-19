@@ -18,6 +18,8 @@ EMPTY_PAGE = {
     "progressCount": 0,
     "progressTotal": 1,
     "progressText": "",
+    # The step rail: each step's name, its state (current, completed, skipped or pending) and the word for it.
+    "steps": [],
     "devicesShown": False,
     "routeShown": False,
     "latencyShown": False,
@@ -86,6 +88,7 @@ class FirstRunSetupView(QObject):
     actionLabels = Property(list, lambda self: self._action_labels, constant=True)
     muteTip = Property(str, lambda self: self._mute_tip, constant=True)
     expandGlyph = Property(str, lambda self: Glyph.EXPAND, constant=True)
+    headerGlyph = Property(str, lambda self: Glyph.MICROPHONE, constant=True)
     inputMeter = Property(QObject, lambda self: self.input_meter, constant=True)
     outputMeter = Property(QObject, lambda self: self.output_meter, constant=True)
 

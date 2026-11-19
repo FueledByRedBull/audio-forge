@@ -29,18 +29,28 @@ Rectangle {
         const level = plain("Cancel") + override + start + 3 * 8
         return Math.max(review, level) + 24 + 2
     }
-    // The steps in a row, with the room the header margins take.
+    // The steps wrap, so the widest one sets the room they need: its mark, its name or the
+    // longest state word under it, and the margins.
     readonly property int stepsWidth: {
-        plainFont.font
-        let width = 2 * 16
+        boldFont.font
+        captionFont.font
+        let widest = Math.ceil(captionFont.advanceWidth("Recording now"))
         for (const name of vm.steps)
-            width += Math.ceil(boldFont.advanceWidth(name)) + 16
-        return width
+            widest = Math.max(widest, Math.ceil(boldFont.advanceWidth(name)))
+        return 2 * 16 + 16 + 8 + widest
+    }
+    // The header: the tile, the title, the keycap and the cross, with the gaps between them.
+    readonly property int headerWidth: {
+        titleFont.font
+        tickFont.font
+        return 2 * 16 + 30 + Math.ceil(titleFont.advanceWidth("Auto Voice Setup")) + 2
+               + Math.ceil(tickFont.advanceWidth("Esc")) + 12 + 30 + 3 * 12
     }
     // The room a field needs: the page and card margins around it at its narrowest.
-    readonly property int minimumWidth: Math.max(actionsWidth, stepsWidth, 120 + 40 + 32)
+    readonly property int minimumWidth: Math.max(actionsWidth, stepsWidth, headerWidth, 120 + 40 + 32)
+    readonly property string whereText: "Step " + (page.step + 1) + " of " + vm.steps.length + ": " + stepName
 
-    color: Look.t.app_surface
+    color: Look.t.pane_surface
     focus: true
 
     FontMetrics {
@@ -51,6 +61,19 @@ Rectangle {
         id: boldFont
         font.pixelSize: Look.fsBody
         font.weight: Font.DemiBold
+    }
+    FontMetrics {
+        id: captionFont
+        font.pixelSize: Look.fsCaption
+    }
+    FontMetrics {
+        id: titleFont
+        font.pixelSize: Look.fsTitle
+        font.weight: Font.DemiBold
+    }
+    FontMetrics {
+        id: tickFont
+        font.pixelSize: Look.fsTick
     }
 
     // Enter outside a button does what the main button says; Escape is left to the dialog.
@@ -163,35 +186,63 @@ Rectangle {
         anchors.fill: parent
         spacing: 0
 
-        // Where the run is: target, level, room noise, voice, review.
-        Row {
+        DialogHeader {
+            title: "Auto Voice Setup"
+            subtitle: root.whereText
+            glyph: root.vm.headerGlyph
+            // The step strip below reads where the run is.
+            subtitleAnnounced: false
+            Layout.fillWidth: true
+            Layout.margins: 16
+            Layout.bottomMargin: 0
+            onCloseRequested: root.vm.cancel()
+        }
+
+        // Where the run is: target, level, room noise, voice, review. Each step says its state
+        // in words beside a mark: done, this step or recording now, next.
+        Flow {
             objectName: "stepHeader"
             spacing: 16
             Layout.fillWidth: true
             Layout.margins: 16
             Layout.bottomMargin: 0
             Accessible.role: Accessible.StaticText
-            Accessible.name: "Step " + (root.page.step + 1) + " of " + root.vm.steps.length + ": " + root.stepName
+            Accessible.name: root.whereText
             Repeater {
                 model: root.vm.steps
-                delegate: Column {
+                delegate: Row {
                     id: stepItem
+                    objectName: "step" + index
                     required property int index
                     required property string modelData
-                    readonly property bool current: index === root.page.step
-                    spacing: 4
-                    Text {
-                        text: stepItem.modelData
-                        textFormat: Text.PlainText
-                        color: stepItem.current ? Look.t.text_primary : Look.t.text_muted
-                        font.pixelSize: Look.fsBody
-                        font.weight: stepItem.current ? Font.DemiBold : Font.Normal
-                        Accessible.ignored: true
+                    readonly property string state_: index < root.page.step ? "done"
+                                                    : index === root.page.step ? "now" : "next"
+                    readonly property string word: state_ === "done" ? "Done"
+                                                   : state_ === "next" ? "Next"
+                                                   : root.page.recordingNow ? "Recording now" : "This step"
+                    spacing: 8
+                    StepMark {
+                        shape: ({ done: "check", now: "dot", next: "ring" })[stepItem.state_]
+                        color: stepItem.state_ === "done" ? Look.t.status_ok_dot
+                             : stepItem.state_ === "now" ? Look.t.accent : Look.t.text_muted
+                        anchors.verticalCenter: parent.verticalCenter
                     }
-                    Rectangle {
-                        width: parent.width
-                        height: 2
-                        color: stepItem.current ? Look.t.accent : "transparent"
+                    Column {
+                        spacing: 0
+                        Text {
+                            text: stepItem.modelData
+                            textFormat: Text.PlainText
+                            color: stepItem.state_ === "next" ? Look.t.text_muted : Look.t.text_primary
+                            font.pixelSize: Look.fsBody
+                            font.weight: stepItem.state_ === "now" ? Font.DemiBold : Font.Normal
+                            Accessible.ignored: true
+                        }
+                        MutedText {
+                            objectName: "stepState" + stepItem.index
+                            text: stepItem.word
+                            font.pixelSize: Look.fsCaption
+                            Accessible.ignored: true
+                        }
                     }
                 }
             }
@@ -293,7 +344,7 @@ Rectangle {
                 pad: 16
                 Accessible.role: Accessible.Grouping
                 Accessible.name: voiceTitle.text
-                Title { id: voiceTitle; text: "Read this passage aloud"; Accessible.ignored: true }
+                Title { id: voiceTitle; text: root.page.readTitle; Accessible.ignored: true }
                 // The text grows with the passage, so no line is cut and nothing scrolls inside the page.
                 BodyText {
                     objectName: "passageText"
@@ -304,12 +355,53 @@ Rectangle {
                 }
             }
 
-            Chip {
+            // The mute's own colours, with the words leading: the live output is silent.
+            Rectangle {
                 objectName: "mutedNotice"
+                readonly property string text: root.vm.mutedNotice
                 visible: root.page.mutedShown
-                text: root.vm.mutedNotice
-                tone: "warn"
+                implicitHeight: mutedRow.implicitHeight + 20
+                radius: Look.t.radiusControl
+                color: Look.t.mute_fill
+                border.color: Look.t.mute_edge
                 Layout.fillWidth: true
+                Accessible.role: Accessible.StaticText
+                Accessible.name: text
+                RowLayout {
+                    id: mutedRow
+                    spacing: 10
+                    anchors { fill: parent; margins: 10; leftMargin: 12 }
+                    Rectangle {
+                        implicitWidth: 10
+                        implicitHeight: 10
+                        radius: 5
+                        color: Look.t.mute
+                        Layout.alignment: Qt.AlignTop
+                        Layout.topMargin: 4
+                    }
+                    ColumnLayout {
+                        spacing: 2
+                        Layout.fillWidth: true
+                        Text {
+                            objectName: "mutedLead"
+                            text: "Live output muted."
+                            textFormat: Text.PlainText
+                            color: Look.t.mute_text
+                            font.pixelSize: Look.fsBody
+                            font.weight: Font.Bold
+                            Accessible.ignored: true
+                        }
+                        Text {
+                            text: root.vm.mutedNotice
+                            textFormat: Text.PlainText
+                            color: Look.t.mute_text
+                            font.pixelSize: Look.fsBody
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true
+                            Accessible.ignored: true
+                        }
+                    }
+                }
             }
 
             Surface {
@@ -349,15 +441,65 @@ Rectangle {
                     Accessible.role: Accessible.StaticText
                     Accessible.name: text
                 }
-                QuickMeterItem {
-                    objectName: "levelMeter"
-                    visible: root.page.meterShown
-                    source: root.vm.meter
+                MutedText {
+                    objectName: "recordedText"
+                    visible: root.page.meterShown && text !== ""
+                    text: root.page.recordedText
+                    font.pixelSize: Look.fsCaption
+                    horizontalAlignment: Text.AlignHCenter
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 120
-                    Accessible.role: Accessible.ProgressBar
-                    Accessible.name: "Voice Setup input level"
-                    Accessible.description: root.vm.meter.accessibleText
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: text
+                }
+                MutedText {
+                    objectName: "levelText"
+                    visible: root.page.meterShown
+                    text: root.page.levelText
+                    // The meter reads the level itself.
+                    Accessible.ignored: true
+                }
+                // The bar, with a line where each check judges the level, and the words for them under it.
+                ColumnLayout {
+                    visible: root.page.meterShown
+                    spacing: 4
+                    Layout.fillWidth: true
+                    QuickMeterItem {
+                        id: levelBar
+                        objectName: "levelMeter"
+                        horizontal: true
+                        source: root.vm.meter
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 12
+                        Accessible.role: Accessible.ProgressBar
+                        Accessible.name: "Voice Setup input level"
+                        Accessible.description: root.vm.meter.accessibleText
+                        Repeater {
+                            model: root.vm.meterMarks
+                            delegate: Rectangle {
+                                required property var modelData
+                                visible: modelData.at > 0
+                                x: Math.round(levelBar.width * modelData.at)
+                                width: 1
+                                height: levelBar.height
+                                color: Look.t.text_primary
+                            }
+                        }
+                    }
+                    Item {
+                        implicitHeight: Look.fsCaption + 4
+                        Layout.fillWidth: true
+                        Repeater {
+                            model: root.vm.meterMarks
+                            delegate: MutedText {
+                                required property var modelData
+                                objectName: "meterMark"
+                                x: Math.max(0, Math.min(parent.width * modelData.at, parent.width - width))
+                                text: modelData.text
+                                font.pixelSize: Look.fsCaption
+                                Accessible.ignored: true
+                            }
+                        }
+                    }
                 }
                 BodyText {
                     objectName: "warningText"
@@ -368,6 +510,73 @@ Rectangle {
                     horizontalAlignment: Text.AlignHCenter
                     Accessible.role: Accessible.StaticText
                     Accessible.name: text
+                }
+                // The checks that refuse a take, each with a mark and words for how the take stands.
+                ColumnLayout {
+                    objectName: "takeRules"
+                    visible: root.page.rulesShown
+                    spacing: 8
+                    Layout.fillWidth: true
+                    MutedText {
+                        text: "Setup checks this take for:"
+                        font.weight: Font.DemiBold
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: text
+                    }
+                    Repeater {
+                        model: root.vm.rules
+                        delegate: RowLayout {
+                            id: rule
+                            required property int index
+                            required property var modelData
+                            readonly property string state_: modelData.state
+                            readonly property color tint: state_ === "fine" ? Look.t.status_ok_text
+                                                        : state_ === "refused" ? Look.t.status_bad_text
+                                                        : Look.t.text_muted
+                            objectName: "takeRule" + index
+                            spacing: 10
+                            Layout.fillWidth: true
+                            Accessible.role: Accessible.StaticText
+                            Accessible.name: modelData.name + ": " + modelData.status + ". " + modelData.detail
+                            StepMark {
+                                objectName: "takeRuleMark" + rule.index
+                                shape: ({ fine: "check", watch: "clock", refused: "cross" })[rule.state_]
+                                color: rule.state_ === "fine" ? Look.t.status_ok_dot : rule.tint
+                                Layout.alignment: Qt.AlignTop
+                                Layout.topMargin: 1
+                            }
+                            ColumnLayout {
+                                spacing: 0
+                                Layout.fillWidth: true
+                                RowLayout {
+                                    spacing: 8
+                                    Text {
+                                        text: rule.modelData.name
+                                        textFormat: Text.PlainText
+                                        color: Look.t.text_primary
+                                        font.pixelSize: Look.fsBody
+                                        font.weight: Font.DemiBold
+                                        Accessible.ignored: true
+                                    }
+                                    Text {
+                                        objectName: "takeRuleStatus" + rule.index
+                                        text: rule.modelData.status
+                                        textFormat: Text.PlainText
+                                        color: rule.tint
+                                        font.pixelSize: Look.fsBody
+                                        Accessible.ignored: true
+                                    }
+                                }
+                                MutedText {
+                                    text: rule.modelData.detail
+                                    font.pixelSize: Look.fsCaption
+                                    wrapMode: Text.Wrap
+                                    Layout.fillWidth: true
+                                    Accessible.ignored: true
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -417,6 +626,20 @@ Rectangle {
                     Accessible.name: text
                 }
             }
+        }
+
+        MutedText {
+            objectName: "settingsHint"
+            visible: root.page.hintShown
+            text: "Your settings stay as they were until you apply the review."
+            font.pixelSize: Look.fsCaption
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
+            Layout.leftMargin: 16
+            Layout.rightMargin: 16
+            Layout.topMargin: 10
+            Accessible.role: Accessible.StaticText
+            Accessible.name: text
         }
 
         // The actions stay in view while the page above them scrolls.

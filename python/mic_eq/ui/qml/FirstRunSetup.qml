@@ -32,10 +32,19 @@ Rectangle {
     }
     // The room a caption needs beside a choice: the page and card margins, the gap and a short choice.
     readonly property int deviceMargins: 40 + 32 + 12 + 140
-    // The narrowest the dialog can be without cutting off its actions or its captions.
-    readonly property int minimumWidth: Math.max(actionsWidth, captionWidth + deviceMargins)
+    // The header: the tile, the title, the keycap and the cross, with the gaps between them.
+    readonly property int headerWidth: {
+        titleFont.font
+        tickFont.font
+        return 2 * 16 + 30 + Math.ceil(titleFont.advanceWidth("AudioForge Setup")) + 2
+               + Math.ceil(tickFont.advanceWidth("Esc")) + 12 + 30 + 3 * 12
+    }
+    // The narrowest the dialog can be without cutting off its actions, its captions or its title.
+    readonly property int minimumWidth: Math.max(actionsWidth, captionWidth + deviceMargins, headerWidth)
+    // The height the header and its margin take above the page.
+    readonly property int headerHeight: header.implicitHeight + 16
 
-    color: Look.t.app_surface
+    color: Look.t.pane_surface
     focus: true
 
     FontMetrics {
@@ -46,6 +55,15 @@ Rectangle {
         id: boldFont
         font.pixelSize: Look.fsBody
         font.weight: Font.DemiBold
+    }
+    FontMetrics {
+        id: titleFont
+        font.pixelSize: Look.fsTitle
+        font.weight: Font.DemiBold
+    }
+    FontMetrics {
+        id: tickFont
+        font.pixelSize: Look.fsTick
     }
 
     // Enter outside a button does what the main button says; Escape is left to the dialog.
@@ -93,27 +111,72 @@ Rectangle {
         anchors.fill: parent
         spacing: 0
 
+        DialogHeader {
+            id: header
+            title: "AudioForge Setup"
+            subtitle: root.page.progressText
+            subtitleName: "progressText"
+            glyph: root.vm.headerGlyph
+            // The bar is read with it; the text alone would be heard twice.
+            subtitleAnnounced: false
+            Layout.fillWidth: true
+            Layout.margins: 16
+            Layout.bottomMargin: 0
+            onCloseRequested: root.vm.pause()
+        }
+
         ScrollPage {
             label: "Audio setup page"
             Layout.fillWidth: true
             Layout.fillHeight: true
 
-            ColumnLayout {
-                spacing: 4
+            ProgressTrack {
+                objectName: "progressBar"
+                fraction: root.page.progressCount / root.page.progressTotal
                 Layout.fillWidth: true
-                ProgressTrack {
-                    objectName: "progressBar"
-                    fraction: root.page.progressCount / root.page.progressTotal
-                    Layout.fillWidth: true
-                    Accessible.name: "Setup progress"
-                    Accessible.description: root.page.progressText
-                }
-                MutedText {
-                    objectName: "progressText"
-                    text: root.page.progressText
-                    font.pixelSize: Look.fsCaption
-                    // The bar is read with it; the text alone would be heard twice.
-                    Accessible.ignored: true
+                Accessible.name: "Setup progress"
+                Accessible.description: root.page.progressText
+            }
+
+            // The steps from first to last, each with a mark and the word for its state.
+            ColumnLayout {
+                objectName: "stepRail"
+                spacing: 8
+                Layout.fillWidth: true
+                Repeater {
+                    model: root.page.steps
+                    delegate: RowLayout {
+                        id: railStep
+                        required property int index
+                        required property var modelData
+                        readonly property string state_: modelData.state
+                        objectName: "railStep" + index
+                        spacing: 10
+                        Layout.fillWidth: true
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: modelData.name + ": " + modelData.word
+                        StepMark {
+                            shape: ({ current: "dot", completed: "check", skipped: "dash" })[railStep.state_] ?? "ring"
+                            color: railStep.state_ === "current" ? Look.t.accent
+                                 : railStep.state_ === "completed" ? Look.t.status_ok_dot : Look.t.text_muted
+                        }
+                        Text {
+                            text: railStep.modelData.name
+                            textFormat: Text.PlainText
+                            color: railStep.state_ === "current" ? Look.t.text_primary : Look.t.text_muted
+                            font.pixelSize: Look.fsBody
+                            font.weight: railStep.state_ === "current" ? Font.DemiBold : Font.Normal
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true
+                            Accessible.ignored: true
+                        }
+                        MutedText {
+                            objectName: "railState" + railStep.index
+                            text: railStep.modelData.word
+                            font.pixelSize: Look.fsCaption
+                            Accessible.ignored: true
+                        }
+                    }
                 }
             }
 
@@ -246,6 +309,17 @@ Rectangle {
                 Accessible.name: "Open advanced latency calibration"
                 Layout.alignment: Qt.AlignLeft
                 onClicked: root.vm.openLatency()
+            }
+            MutedText {
+                objectName: "latencyCaption"
+                visible: root.page.latencyShown
+                text: "Optional. Also on the Settings page."
+                font.pixelSize: Look.fsCaption
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+                Layout.topMargin: -8
+                Accessible.role: Accessible.StaticText
+                Accessible.name: text
             }
         }
 

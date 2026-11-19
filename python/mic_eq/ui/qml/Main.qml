@@ -695,22 +695,7 @@ Rectangle {
                 Accessible.name: text
             }
             // The key that does what the cross does.
-            Rectangle {
-                implicitWidth: escCap.implicitWidth + 12
-                implicitHeight: 22
-                radius: root.t.radiusControl
-                color: root.t.control_surface
-                border.color: root.t.control_edge
-                Text {
-                    id: escCap
-                    anchors.centerIn: parent
-                    text: "Esc"
-                    textFormat: Text.PlainText
-                    color: root.t.text_muted
-                    font.pixelSize: Look.fsTick
-                    Accessible.ignored: true
-                }
-            }
+            EscChip {}
             CloseBtn {
                 id: closeButton
                 Accessible.name: "Close " + panel.card.name

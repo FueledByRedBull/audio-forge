@@ -91,6 +91,10 @@ class OverviewView:
     # The card under the sentence: each line and whether it is "ok", a "warn" or a "note".
     checks_title: str
     checks: tuple[tuple[str, str], ...]
+    # A manual restart while the engine waits to retry would cancel that retry, and if the
+    # devices are still gone nothing would reconnect them later; it is offered only for
+    # running audio whose callbacks stalled.
+    offer_restart: bool = False
 
     @property
     def callers_affected(self) -> bool:
@@ -194,4 +198,5 @@ def describe_overview(inputs: OverviewInputs) -> OverviewView:
         setup_line=setup_line,
         checks_title=checks_title,
         checks=checks,
+        offer_restart=state == "device_lost" and not inputs.restart_pending,
     )

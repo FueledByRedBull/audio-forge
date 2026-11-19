@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 Route = tuple[DeviceIdentity | None, DeviceIdentity | None]
 StartSource = Literal["button", "menu"]
-StopSource = Literal["button", "menu", "window", "own_microphone"]
+StopSource = Literal["button", "menu", "window", "own_microphone", "restart"]
 QuitChoice = Literal["quit", "tray", "cancel"]
 
 # Start and Stop share one button that turns back into Start as soon as a stop ends (about
@@ -246,7 +246,8 @@ class EngineSession(QObject):
         self._clock = clock
         self._busy: str | None = None
         self._recovering = False
-        self._start_after_recovery = False
+        # What a click asked for while a recovery poll held the engine; a restart outranks a start.
+        self._after_recovery: Literal["start", "restart"] | None = None
         self._recovery_failing = False
         self._button_stop_at: float | None = None
         self._user_muted = False
@@ -316,7 +317,7 @@ class EngineSession(QObject):
             return
         if self._recovering:
             # Queued behind that call, the start would meet the streams a retry reopened.
-            self._start_after_recovery = True
+            self._after_recovery = self._after_recovery or "start"
             return
         self._start_on_worker()
 
@@ -403,6 +404,34 @@ class EngineSession(QObject):
         self._emit(Stopped(source))
         return True
 
+    # --- Restart -----------------------------------------------------------------------------
+
+    def request_restart(self) -> None:
+        """Stop, then start the selected route again: one intent, so no Start lockout applies.
+
+        Ignored while a call is out; it cancels a restart that waits to retry, as a Stop does.
+        """
+        if self._busy:
+            return
+        if self._recovering:
+            self._after_recovery = "restart"
+            return
+        self._restart_on_worker()
+
+    def _restart_on_worker(self) -> None:
+        if self._busy:
+            return
+        if not self._stop_needed():
+            self._start_on_worker()
+            return
+        self._run("stop", self.processor.stop, self._finish_restart_stop)
+
+    def _finish_restart_stop(self, outcome: Any) -> None:
+        # The window reads the route to start only once the engine stopped (it answers True
+        # while running), and on this thread, before any other click gets to the session.
+        if self._finish_stop(outcome, "restart"):
+            self._start_on_worker()
+
     def stop_in_background(self) -> None:
         """Stop after a failed configuration write: queued behind a start or recovery that holds the engine."""
         self._tasks.submit(self.processor.stop, self._background_stop_done)
@@ -433,7 +462,7 @@ class EngineSession(QObject):
 
     def _recovery_serviced(self, outcome: Any) -> None:
         self._recovering = False
-        start, self._start_after_recovery = self._start_after_recovery, False
+        queued, self._after_recovery = self._after_recovery, None
         if self._closed:
             return
         try:
@@ -461,7 +490,9 @@ class EngineSession(QObject):
             if not self._recovery_failing:
                 logger.warning("Rust recovery service failed", exc_info=True)
             self._recovery_failing = True
-        if start:
+        if queued == "restart":
+            self._restart_on_worker()
+        elif queued == "start":
             self._start_on_worker()
 
     # --- output mute -------------------------------------------------------------------------

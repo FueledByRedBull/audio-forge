@@ -239,6 +239,7 @@ class OverviewState(QObject):
     detail = Property(str, lambda self: self._view.detail, notify=changed)
     tone = Property(str, lambda self: self._view.tone, notify=changed)
     callersAffected = Property(bool, lambda self: self._view.callers_affected, notify=changed)
+    offerRestart = Property(bool, lambda self: self._view.offer_restart, notify=changed)
     navLine = Property(str, lambda self: self._view.nav_line, notify=changed)
     ribbonCaption = Property(str, lambda self: self._view.ribbon_caption, notify=changed)
     recommendSetup = Property(bool, lambda self: self._view.recommend_setup, notify=changed)
@@ -706,6 +707,7 @@ class QuickBridge(QObject):
                 "mute": action("user_mute_checkbox"),
                 "start": action("start_btn"),
                 "stop": action("stop_btn"),
+                "restart": action("restart_audio_btn"),
                 "latency": text("latency_readout_label"),
             },
             "sidebar": {

@@ -51,6 +51,14 @@ def test_overview_priority_order(changes, state) -> None:
     assert describe_overview(replace(LIVE, **changes)).state == state
 
 
+def test_restart_is_offered_only_for_running_audio_whose_device_failed() -> None:
+    assert describe_overview(replace(LIVE, device_bad=True)).offer_restart
+    # Restarting would cancel the engine's own retry, and nothing would reconnect gone devices.
+    assert not describe_overview(replace(LIVE, running=False, restart_pending=True)).offer_restart
+    for changes in ({}, {"running": False}, {"input_bad": True}, {"muted": True}, {"no_mic": True, "running": False}):
+        assert not describe_overview(replace(LIVE, **changes)).offer_restart, changes
+
+
 def test_each_state_says_what_is_happening_in_words() -> None:
     def view(**changes):
         return describe_overview(replace(LIVE, **changes))

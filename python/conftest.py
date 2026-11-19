@@ -183,6 +183,7 @@ def isolated_main_window(qapp, monkeypatch):
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
     monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
+    monkeypatch.setattr("mic_eq.ui.main_window.find_presets_refused_for_age", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
     window = MainWindow()

@@ -152,6 +152,7 @@ def _install_sanitized_sources():
         ),
         save_config=lambda _config: True,
         list_presets=lambda: [],
+        find_presets_refused_for_age=lambda: [],
         list_input_devices=lambda: list(SANITIZED_INPUT_DEVICES),
         list_output_devices=lambda: list(SANITIZED_OUTPUT_DEVICES),
     )

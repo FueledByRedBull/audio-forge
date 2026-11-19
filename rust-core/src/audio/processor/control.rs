@@ -1,3 +1,22 @@
+use crate::config_ranges::{
+    COMPRESSOR_ADAPTIVE_RELEASE_DEFAULT, COMPRESSOR_ATTACK_DEFAULT_MS,
+    COMPRESSOR_AUTO_MAKEUP_DEFAULT, COMPRESSOR_ENABLED_DEFAULT, COMPRESSOR_MAKEUP_DEFAULT_DB,
+    COMPRESSOR_NOISE_REFERENCE_RELIABILITY_DEFAULT, COMPRESSOR_RATIO_DEFAULT,
+    COMPRESSOR_RELEASE_DEFAULT_MS, COMPRESSOR_SIDECHAIN_HIGHPASS_DEFAULT,
+    COMPRESSOR_TARGET_LUFS_DEFAULT, COMPRESSOR_THRESHOLD_DEFAULT_DB, DEESSER_ATTACK_DEFAULT_MS,
+    DEESSER_AUTO_AMOUNT_DEFAULT, DEESSER_AUTO_ENABLED_DEFAULT, DEESSER_ENABLED_DEFAULT,
+    DEESSER_HIGH_CUT_DEFAULT_HZ, DEESSER_LOW_CUT_DEFAULT_HZ, DEESSER_MAX_REDUCTION_DEFAULT_DB,
+    DEESSER_RATIO_DEFAULT, DEESSER_RELEASE_DEFAULT_MS, DEESSER_THRESHOLD_DEFAULT_DB,
+    EQ_ENABLED_DEFAULT, GATE_ATTACK_DEFAULT_MS, GATE_ENABLED_DEFAULT, GATE_RELEASE_DEFAULT_MS,
+    GATE_THRESHOLD_DEFAULT_DB, LIMITER_CAREFUL_OUTPUT_DEFAULT, LIMITER_CEILING_DEFAULT_DB,
+    LIMITER_ENABLED_DEFAULT, LIMITER_RELEASE_DEFAULT_MS, NOISE_MODEL_DEFAULT,
+    RNNOISE_ENABLED_DEFAULT,
+};
+#[cfg(feature = "vad")]
+use crate::config_ranges::{
+    GATE_AUTO_THRESHOLD_DEFAULT, GATE_MARGIN_DEFAULT_DB, GATE_MODE_DEFAULT, VAD_HOLD_DEFAULT_MS,
+    VAD_PRE_GAIN_DEFAULT, VAD_THRESHOLD_DEFAULT,
+};
 use crate::dsp::eq::{EqBandConfig, EqFilterType, NUM_BANDS};
 use crate::dsp::noise_suppressor::{
     ControlledNoiseSuppressionEngine as NoiseSuppressionEngine, NoiseModel,
@@ -91,22 +110,22 @@ pub(super) struct GateControlState {
 impl GateControlState {
     pub(super) fn new() -> Self {
         Self {
-            enabled: true,
-            threshold_db: -40.0,
-            attack_ms: 10.0,
-            release_ms: 100.0,
+            enabled: GATE_ENABLED_DEFAULT,
+            threshold_db: GATE_THRESHOLD_DEFAULT_DB,
+            attack_ms: GATE_ATTACK_DEFAULT_MS,
+            release_ms: GATE_RELEASE_DEFAULT_MS,
             #[cfg(feature = "vad")]
-            gate_mode: GateMode::ThresholdOnly,
+            gate_mode: GateMode::from_u8(GATE_MODE_DEFAULT).unwrap_or(GateMode::ThresholdOnly),
             #[cfg(feature = "vad")]
-            vad_threshold: 0.48,
+            vad_threshold: VAD_THRESHOLD_DEFAULT as f32,
             #[cfg(feature = "vad")]
-            hold_ms: 200.0,
+            hold_ms: VAD_HOLD_DEFAULT_MS as f32,
             #[cfg(feature = "vad")]
-            pre_gain: 1.0,
+            pre_gain: VAD_PRE_GAIN_DEFAULT as f32,
             #[cfg(feature = "vad")]
-            auto_threshold: true,
+            auto_threshold: GATE_AUTO_THRESHOLD_DEFAULT,
             #[cfg(feature = "vad")]
-            margin_db: 10.0,
+            margin_db: GATE_MARGIN_DEFAULT_DB as f32,
         }
     }
 }
@@ -218,8 +237,8 @@ pub(super) struct SuppressorControlState {
 impl SuppressorControlState {
     pub(super) fn new() -> Self {
         Self {
-            enabled: true,
-            model: NoiseModel::RNNoise,
+            enabled: RNNOISE_ENABLED_DEFAULT,
+            model: NOISE_MODEL_DEFAULT,
         }
     }
 }
@@ -285,7 +304,7 @@ pub(super) struct EqControlSnapshot {
 impl EqControlSnapshot {
     pub(super) fn new() -> Self {
         Self {
-            enabled: true,
+            enabled: EQ_ENABLED_DEFAULT,
             correction_bands: std::array::from_fn(EqBandConfig::default_for_index),
             tone_bands: std::array::from_fn(EqBandConfig::default_for_index),
         }
@@ -466,16 +485,16 @@ pub(super) struct DeesserControlState {
 impl DeesserControlState {
     pub(super) fn new() -> Self {
         Self {
-            enabled: false,
-            auto_enabled: true,
-            auto_amount: 0.5,
-            low_cut_hz: 4000.0,
-            high_cut_hz: 11_000.0,
-            threshold_db: -28.0,
-            ratio: 4.0,
-            attack_ms: 2.0,
-            release_ms: 80.0,
-            max_reduction_db: 6.0,
+            enabled: DEESSER_ENABLED_DEFAULT,
+            auto_enabled: DEESSER_AUTO_ENABLED_DEFAULT,
+            auto_amount: DEESSER_AUTO_AMOUNT_DEFAULT,
+            low_cut_hz: DEESSER_LOW_CUT_DEFAULT_HZ,
+            high_cut_hz: DEESSER_HIGH_CUT_DEFAULT_HZ,
+            threshold_db: DEESSER_THRESHOLD_DEFAULT_DB,
+            ratio: DEESSER_RATIO_DEFAULT,
+            attack_ms: DEESSER_ATTACK_DEFAULT_MS,
+            release_ms: DEESSER_RELEASE_DEFAULT_MS,
+            max_reduction_db: DEESSER_MAX_REDUCTION_DEFAULT_DB,
         }
     }
 }
@@ -555,17 +574,18 @@ pub(super) struct CompressorControlState {
 impl CompressorControlState {
     pub(super) fn new() -> Self {
         Self {
-            enabled: true,
-            threshold_db: -20.0,
-            ratio: 4.0,
-            attack_ms: 10.0,
-            base_release_ms: 200.0,
-            makeup_gain_db: 0.0,
-            adaptive_release: false,
-            auto_makeup_enabled: false,
-            target_lufs: -18.0,
-            noise_reference_reliability: 0.0,
-            sidechain_highpass_enabled: true,
+            enabled: COMPRESSOR_ENABLED_DEFAULT,
+            threshold_db: COMPRESSOR_THRESHOLD_DEFAULT_DB,
+            ratio: COMPRESSOR_RATIO_DEFAULT,
+            attack_ms: COMPRESSOR_ATTACK_DEFAULT_MS,
+            // The release for the starting mode, which is manual.
+            base_release_ms: COMPRESSOR_RELEASE_DEFAULT_MS,
+            makeup_gain_db: COMPRESSOR_MAKEUP_DEFAULT_DB,
+            adaptive_release: COMPRESSOR_ADAPTIVE_RELEASE_DEFAULT,
+            auto_makeup_enabled: COMPRESSOR_AUTO_MAKEUP_DEFAULT,
+            target_lufs: COMPRESSOR_TARGET_LUFS_DEFAULT,
+            noise_reference_reliability: COMPRESSOR_NOISE_REFERENCE_RELIABILITY_DEFAULT,
+            sidechain_highpass_enabled: COMPRESSOR_SIDECHAIN_HIGHPASS_DEFAULT,
         }
     }
 }
@@ -656,10 +676,10 @@ pub(super) const CAREFUL_OUTPUT_CEILING_DB: f64 = -1.5;
 impl LimiterControlState {
     pub(super) fn new() -> Self {
         Self {
-            enabled: true,
-            ceiling_db: -0.5,
-            release_ms: 50.0,
-            careful_output_enabled: true,
+            enabled: LIMITER_ENABLED_DEFAULT,
+            ceiling_db: LIMITER_CEILING_DEFAULT_DB,
+            release_ms: LIMITER_RELEASE_DEFAULT_MS,
+            careful_output_enabled: LIMITER_CAREFUL_OUTPUT_DEFAULT,
         }
     }
 }

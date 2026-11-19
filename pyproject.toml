@@ -36,7 +36,7 @@ dev = [
     "pip-audit>=2.10.1",
     "pip-tools>=7.6.1",
     "pip==26.2.1",
-    "semgrep>=1.179.0",
+    "semgrep>=1.186.0",
     "PyYAML>=6.0.3",
     "scipy>=1.18.0",
     "zizmor>=1.31.1",

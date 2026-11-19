@@ -183,6 +183,11 @@ ACTION_SPECS = {
     "restart_audio_btn": _ActionSpec(
         "Restart audio", "Stops the audio and starts it again with the same microphone and output.", "Restart audio",
     ),
+    "choose_microphone_btn": _ActionSpec(
+        "Choose another microphone",
+        "Pick another microphone from the Input list; the audio starts on it, and it stays your choice.",
+        "Choose another microphone",
+    ),
     "_undo_auto_eq_button": _ActionSpec(
         "Undo",
         "Undo the most recent processing-configuration edit (Ctrl+Z)",

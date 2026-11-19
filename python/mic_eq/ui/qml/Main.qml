@@ -1543,21 +1543,65 @@ Rectangle {
                         Layout.fillWidth: true
                         Layout.leftMargin: 32
                     }
-                    // Callers hear nothing here already, so the restart asks for no confirmation.
+                    // The words carry the news; the pink fill only repeats it.
+                    Rectangle {
+                        objectName: "overviewCallersNotice"
+                        visible: overviewPage.ov.callersAffected
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 32
+                        Layout.topMargin: 10
+                        implicitHeight: callersNoticeText.implicitHeight + 16
+                        radius: root.t.radiusControl
+                        color: root.t.callers_affected_fill
+                        border.color: root.t.callers_affected_edge
+                        Accessible.role: Accessible.AlertMessage
+                        Accessible.name: callersNoticeText.text
+                        Text {
+                            id: callersNoticeText
+                            objectName: "overviewCallersNoticeText"
+                            textFormat: Text.PlainText
+                            x: 8
+                            y: 8
+                            width: parent.width - 16
+                            text: overviewPage.ov.callersLine
+                            color: root.t.callers_affected_text
+                            font.pixelSize: root.fsBody
+                            wrapMode: Text.Wrap
+                            Accessible.ignored: true
+                        }
+                    }
+                    // Callers hear nothing here already, so neither action asks for confirmation.
                     ColumnLayout {
-                        visible: overviewPage.ov.offerRestart
+                        visible: overviewPage.ov.offerRestart || overviewPage.ov.offerChooseMicrophone
                         spacing: 6
                         Layout.fillWidth: true
                         Layout.leftMargin: 32
                         Layout.topMargin: 10
-                        Btn {
-                            objectName: "overviewRestart"
-                            proxy: root.m.top.restart
-                            look: "primary"
+                        RowLayout {
+                            spacing: 8
+                            Btn {
+                                objectName: "overviewRestart"
+                                visible: overviewPage.ov.offerRestart
+                                proxy: root.m.top.restart
+                                look: "primary"
+                            }
+                            Btn {
+                                objectName: "overviewChooseMicrophone"
+                                visible: overviewPage.ov.offerChooseMicrophone
+                                proxy: root.m.top.chooseMicrophone
+                            }
                         }
                         Caption {
                             objectName: "overviewRestartLine"
+                            visible: overviewPage.ov.offerRestart
                             text: "Stops the audio and starts it again with the same microphone and output."
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true
+                        }
+                        Caption {
+                            objectName: "overviewChooseMicrophoneLine"
+                            visible: overviewPage.ov.offerChooseMicrophone
+                            text: "Pick another microphone from the Input list; the audio starts on it, and it stays your choice."
                             wrapMode: Text.Wrap
                             Layout.fillWidth: true
                         }

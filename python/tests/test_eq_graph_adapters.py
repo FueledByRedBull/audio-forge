@@ -144,6 +144,20 @@ def test_quick_graph_hover_reads_out_and_leaving_removes_it(qapp):
     assert model.hover is None
 
 
+def test_quick_graph_shows_the_layers_it_is_asked_for_and_refuses_others(qapp):
+    item = EQGraphItem()
+    changed = QSignalSpy(item.showChanged)
+    assert item.property("show") == "total"
+
+    item.setProperty("show", "tone")
+    assert item.property("show") == "tone" and changed.count() == 1
+    item.setProperty("show", "tone")
+    assert changed.count() == 1
+    with pytest.raises(ValueError):
+        item._set_show("input")
+    assert item.property("show") == "tone"
+
+
 def test_quick_graph_double_click_asks_for_a_reset_of_the_handle_under_it(qapp):
     model = EQGraphModel()
     item = EQGraphItem()

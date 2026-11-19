@@ -1,6 +1,6 @@
 """Shared EQ graph data and menus, rendered by the Qt Quick view."""
 
-from PySide6.QtCore import QObject, QTimer, Slot
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 from PySide6.QtWidgets import QWidget
 
 from .eq_graph import EQGraphModel
@@ -11,6 +11,9 @@ from ..config_parts.app_config import INPUT_CLEANUP_MODES
 
 class EQPresentation(QObject):
     """Shared graph data and menus."""
+
+    # The options menu's help entry: the page shows the graph's help beside the menu's button.
+    helpRequested = Signal()
 
     def __init__(self, state: EQState, parent: QObject | None = None):
         super().__init__(parent)
@@ -50,9 +53,13 @@ class EQPresentation(QObject):
             action.setToolTip(tooltip)
             action.triggered.connect(handler)
         tone_menu.setToolTipsVisible(True)
+        tone_menu.setTitle("Tone preset")
         self.tone_menu = tone_menu
 
+        # The page's More menu: the tone presets, the layer resets, then the help.
         options_menu = themed_menu(widget_parent)
+        options_menu.addMenu(tone_menu)
+        options_menu.addSeparator()
         clear_action = options_menu.addAction("Clear Auto-EQ")
         clear_action.setToolTip("Remove the calibrated EQ layer while keeping the tone")
         clear_action.triggered.connect(state.clear_correction)
@@ -61,6 +68,10 @@ class EQPresentation(QObject):
             "Reset character gains to zero while retaining the Auto-EQ layer"
         )
         reset_action.triggered.connect(state.reset_tone)
+        options_menu.addSeparator()
+        help_action = options_menu.addAction("How the graph works")
+        help_action.setToolTip("What each line of the graph shows, and the keys that edit a band")
+        help_action.triggered.connect(self.helpRequested)
         options_menu.setToolTipsVisible(True)
         self.options_menu = options_menu
 

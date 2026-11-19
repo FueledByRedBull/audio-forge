@@ -186,6 +186,8 @@ Rectangle {
         id: box
         property var proxy
         property var display: null
+        // Shown muted after the value, outside the text that is edited.
+        property string unit: ""
         readonly property var source: display ? display : proxy
         implicitWidth: 92
         implicitHeight: 30
@@ -194,11 +196,24 @@ Rectangle {
         border.color: root.t.control_edge
         Hint { text: box.proxy ? box.proxy.toolTip : ""; focused: input.activeFocus && !input.readOnly }
         FocusRing { visible: input.activeFocus && !input.readOnly }
+        Text {
+            id: unitText
+            visible: box.unit !== ""
+            anchors.right: parent.right
+            anchors.rightMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            text: box.unit
+            textFormat: Text.PlainText
+            color: root.t.text_muted
+            font.pixelSize: root.fsCaption
+            Accessible.ignored: true
+        }
         TextInput {
             id: input
             anchors.fill: parent
             anchors.margins: 6
-            horizontalAlignment: TextInput.AlignHCenter
+            anchors.rightMargin: box.unit !== "" ? unitText.implicitWidth + 12 : 6
+            horizontalAlignment: box.unit !== "" ? TextInput.AlignRight : TextInput.AlignHCenter
             verticalAlignment: TextInput.AlignVCenter
             text: box.source ? box.source.text : ""
             readOnly: box.display !== null
@@ -295,18 +310,20 @@ Rectangle {
         // Shown in place of the glyph when the system has no icon font.
         property string label: ""
         property string hint: proxy ? proxy.toolTip : ""
+        // On a filled square, for a button that stands apart from the text around it.
+        property bool filled: false
         enabled: proxy ? proxy.enabled : true
         opacity: enabled ? 1 : 0.4
-        implicitWidth: Math.max(30, face.implicitWidth + 16)
-        implicitHeight: 30
+        implicitWidth: Math.max(filled ? 32 : 30, face.implicitWidth + 16)
+        implicitHeight: filled ? 32 : 30
         onClicked: if (proxy) root.press(this, proxy)
         Accessible.role: Accessible.Button
         Accessible.name: proxy && proxy.name !== "" ? proxy.name : proxy && proxy.text !== "" ? proxy.text : hint
         Accessible.description: proxy ? hint : ""
         Hint { text: iconBtn.hint }
         background: Rectangle {
-            radius: root.t.radiusControl
-            color: iconBtn.hovered ? root.t.control_hover : "transparent"
+            radius: iconBtn.filled ? root.t.radiusControl + 4 : root.t.radiusControl
+            color: iconBtn.hovered ? root.t.control_hover : iconBtn.filled ? root.t.control_surface : "transparent"
             FocusRing { control: iconBtn }
         }
         contentItem: Text {
@@ -318,6 +335,60 @@ Rectangle {
             color: iconBtn.hovered ? root.t.hover_text : root.t.text_muted
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
+        }
+    }
+
+    // The mark beside a status line, drawn in shapes so no font can turn it into a box: a check
+    // for "ok", a bar over a dot for "warn", a cross for "bad", else a dash. The words carry the meaning.
+    component StatusMark: Item {
+        id: statusMark
+        property string state_: ""
+        property color color: root.t.text_muted
+        implicitWidth: 12
+        implicitHeight: 12
+        Accessible.ignored: true
+        // The check: an L turned on its side.
+        Item {
+            objectName: "checkShape"
+            visible: statusMark.state_ === "ok"
+            anchors.centerIn: parent
+            anchors.verticalCenterOffset: -1
+            width: 10
+            height: 5
+            rotation: -45
+            Rectangle { width: 2; height: 5; radius: 1; color: statusMark.color }
+            Rectangle { y: 3; width: 10; height: 2; radius: 1; color: statusMark.color }
+        }
+        Rectangle {
+            visible: statusMark.state_ === "warn"
+            x: 5
+            y: 0
+            width: 2
+            height: 8
+            radius: 1
+            color: statusMark.color
+        }
+        Rectangle {
+            visible: statusMark.state_ === "warn"
+            x: 5
+            y: 10
+            width: 2
+            height: 2
+            radius: 1
+            color: statusMark.color
+        }
+        Repeater {
+            model: statusMark.state_ === "bad" ? [45, -45]
+                 : statusMark.state_ !== "ok" && statusMark.state_ !== "warn" ? [0] : []
+            delegate: Rectangle {
+                required property int modelData
+                anchors.centerIn: parent
+                width: 11
+                height: 2
+                radius: 1
+                rotation: modelData
+                color: statusMark.color
+            }
         }
     }
 
@@ -1968,19 +2039,33 @@ Rectangle {
                 readonly property var band: eq.bands[bandIndex]
                 readonly property color bandColor: root.t.bandColors[bandIndex]
                 readonly property bool calibrated: eq.diagnostics.data.calibrated
+                // Which layers the graph draws: "total", "tone" or "auto_eq", as the Show buttons pick.
+                property string show: "total"
                 ground: root.t.pane_surface
                 onBandIndexChanged: connector.follow()
 
-                // The page header: the switch, the title over what each layer holds, then the actions.
-                RowLayout {
-                    spacing: 12
+                // The More menu's help entry opens the graph's help under the menu's button.
+                Connections {
+                    target: equalizerPage.eq.helpSource
+                    function onHelpRequested() { root.showTip(moreButton, equalizerPage.eq.help, true) }
+                }
+
+                // The page header: the title over what each layer holds, then what the graph shows
+                // and the actions. A narrow page puts those on a line of their own.
+                GridLayout {
+                    id: eqHeader
+                    objectName: "equalizerHeader"
+                    readonly property bool roomy: width >= eqControls.implicitWidth + 300
+                    columns: roomy ? 2 : 1
+                    columnSpacing: 12
+                    rowSpacing: 12
                     Layout.fillWidth: true
                     Layout.topMargin: 4
-                    Toggle { proxy: equalizerPage.eq.toggle; Layout.alignment: Qt.AlignTop; Layout.topMargin: 4 }
                     ColumnLayout {
                         spacing: 2
                         Layout.fillWidth: true
-                        // The layer line elides before the actions beside it give way.
+                        Layout.alignment: Qt.AlignTop
+                        // The layer line elides before the controls beside it give way.
                         Layout.preferredWidth: equalizerTitleRow.implicitWidth
                         RowLayout {
                             id: equalizerTitleRow
@@ -1995,16 +2080,6 @@ Rectangle {
                             }
                             // An EQ that is off keeps its controls at full strength; this says why nothing happens.
                             Caption { text: "Off"; visible: !equalizerPage.eq.toggle.checked }
-                            IconBtn {
-                                glyph: root.m.glyphs.help
-                                hint: equalizerPage.eq.help
-                                label: "?"
-                                onClicked: root.showTip(this, hint, true)
-                                onActiveFocusChanged: if (!activeFocus) root.hideTip(this)
-                                Keys.onEscapePressed: root.hideTip(this)
-                                Accessible.name: "Help for " + equalizerPage.eq.title.toLowerCase()
-                                Accessible.description: hint
-                            }
                         }
                         Caption {
                             objectName: "equalizerLayers"
@@ -2013,64 +2088,164 @@ Rectangle {
                             Layout.fillWidth: true
                         }
                     }
-                    Btn { proxy: equalizerPage.eq.tone; Layout.alignment: Qt.AlignTop }
-                    Btn { proxy: root.m.presets.autoEq; Layout.alignment: Qt.AlignTop }
-                    IconBtn {
-                        proxy: equalizerPage.eq.menu
-                        glyph: root.m.glyphs.more
-                        label: "More"
-                        Layout.alignment: Qt.AlignTop
-                    }
-                    // Undo, then how many edits are unsaved and the latest one in words, with its age.
-                    ColumnLayout {
-                        id: undoHistory
-                        objectName: "undoHistory"
-                        readonly property var history: root.m.presets.history
-                        spacing: 2
-                        Layout.alignment: Qt.AlignTop
-                        // It gives way before the header overflows: the chip and the caption elide.
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: 30 + 6 + 48
-                        Layout.preferredWidth: undoRow.implicitWidth
-                        Layout.maximumWidth: 240
-                        RowLayout {
-                            id: undoRow
-                            spacing: 6
-                            Layout.alignment: Qt.AlignRight
-                            Layout.maximumWidth: undoHistory.width
-                            IconBtn {
-                                objectName: "equalizerUndo"
-                                proxy: root.m.presets.undo
-                                glyph: root.m.glyphs.undo
-                                label: "Undo"
-                            }
-                            Chip {
-                                objectName: "undoChip"
-                                proxy: undoHistory.history
-                                visible: undoHistory.history.count > 0
-                                single: true
-                                Layout.fillWidth: true
-                                Layout.maximumWidth: implicitWidth
+                    RowLayout {
+                        id: eqControls
+                        spacing: 8
+                        Layout.alignment: Qt.AlignTop | (eqHeader.roomy ? Qt.AlignRight : Qt.AlignLeft)
+                        Caption { text: "Show" }
+                        // Which layers the graph draws; one is always chosen.
+                        Rectangle {
+                            objectName: "eqShow"
+                            implicitWidth: showRow.implicitWidth + 6
+                            implicitHeight: 32
+                            Layout.rightMargin: 4
+                            radius: root.t.radiusControl + 2
+                            color: root.t.control_surface
+                            border.color: root.t.control_edge
+                            Accessible.role: Accessible.Grouping
+                            Accessible.name: "Show on the graph"
+                            Row {
+                                id: showRow
+                                x: 3
+                                y: 3
+                                Repeater {
+                                    model: [
+                                        { key: "total", text: "Total", tip: "What you hear: every EQ layer with the input filter" },
+                                        { key: "tone", text: "Tone", tip: "Your bands and their sum, without the Auto-EQ layer" },
+                                        { key: "auto_eq", text: "Auto-EQ", tip: "The Auto-EQ correction alone" }
+                                    ]
+                                    delegate: KeyButton {
+                                        id: choice
+                                        required property var modelData
+                                        // The chosen layer, worn as a current page tab wears it.
+                                        readonly property bool current: equalizerPage.show === modelData.key
+                                        objectName: "eqShow_" + modelData.key
+                                        text: modelData.text
+                                        implicitWidth: choiceText.implicitWidth + 24
+                                        implicitHeight: 26
+                                        onClicked: equalizerPage.show = modelData.key
+                                        Accessible.role: Accessible.RadioButton
+                                        Accessible.name: text
+                                        Accessible.description: modelData.tip
+                                        Accessible.checkable: true
+                                        Accessible.checked: current
+                                        Hint { text: choice.modelData.tip }
+                                        background: Rectangle {
+                                            radius: root.t.radiusControl
+                                            color: choice.current ? root.t.control_hover : "transparent"
+                                            FocusRing { control: choice }
+                                        }
+                                        contentItem: Text {
+                                            id: choiceText
+                                            text: choice.text
+                                            textFormat: Text.PlainText
+                                            color: choice.current ? root.t.hover_text
+                                                 : choice.hovered ? root.t.text_primary : root.t.text_muted
+                                            font.pixelSize: root.fsBody
+                                            font.weight: Font.DemiBold
+                                            horizontalAlignment: Text.AlignHCenter
+                                            verticalAlignment: Text.AlignVCenter
+                                        }
+                                    }
+                                }
                             }
                         }
-                        Caption {
-                            objectName: "undoCaption"
-                            text: undoHistory.history.caption
-                            visible: text !== ""
-                            font.pixelSize: root.fsCaption
-                            horizontalAlignment: Text.AlignRight
-                            tip: truncated ? text : ""
-                            Layout.fillWidth: true
+                        Btn { proxy: root.m.presets.autoEq; look: "soft" }
+                        // The tone presets, the layer resets and the graph's help.
+                        Btn {
+                            id: moreButton
+                            objectName: "eqMore"
+                            proxy: equalizerPage.eq.menu
+                            text: "More"
+                            implicitWidth: moreFace.implicitWidth + 28
+                            // The help it opened goes when focus moves on, or on Escape.
+                            onActiveFocusChanged: if (!activeFocus) root.hideTip(this)
+                            Keys.onEscapePressed: root.hideTip(this)
+                            contentItem: Item {
+                                implicitWidth: moreFace.implicitWidth
+                                implicitHeight: moreFace.implicitHeight
+                                Row {
+                                    id: moreFace
+                                    anchors.centerIn: parent
+                                    spacing: 6
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: moreButton.text
+                                        textFormat: Text.PlainText
+                                        color: moreButton.hovered ? root.t.hover_text : root.t.text_primary
+                                        font.pixelSize: root.fsBody
+                                    }
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        visible: root.hasIcons
+                                        text: root.m.glyphs.expand
+                                        textFormat: Text.PlainText
+                                        color: moreButton.hovered ? root.t.hover_text : root.t.text_muted
+                                        font.family: root.t.iconFont
+                                        font.pixelSize: root.fsCaption - 2
+                                    }
+                                }
+                            }
                         }
                     }
                 }
 
-                // The graph in its well; the connector runs from the band's handle down to its panel.
+                // Under the header, on the right: undo, then how many edits are unsaved and the latest one in words, with its age.
+                ColumnLayout {
+                    id: undoHistory
+                    objectName: "undoHistory"
+                    readonly property var history: root.m.presets.history
+                    spacing: 2
+                    Layout.alignment: Qt.AlignRight
+                    // On a narrow page the chip and the caption elide.
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 30 + 6 + 48
+                    Layout.preferredWidth: undoRow.implicitWidth
+                    Layout.maximumWidth: 240
+                    // The caption's line stays reserved, so the page under it does not move when it appears.
+                    Layout.minimumHeight: undoRow.implicitHeight + spacing + undoCaption.implicitHeight
+                    RowLayout {
+                        id: undoRow
+                        spacing: 6
+                        Layout.alignment: Qt.AlignRight
+                        Layout.maximumWidth: undoHistory.width
+                        IconBtn {
+                            objectName: "equalizerUndo"
+                            proxy: root.m.presets.undo
+                            glyph: root.m.glyphs.undo
+                            label: "Undo"
+                        }
+                        Chip {
+                            objectName: "undoChip"
+                            proxy: undoHistory.history
+                            visible: undoHistory.history.count > 0
+                            single: true
+                            Layout.fillWidth: true
+                            Layout.maximumWidth: implicitWidth
+                        }
+                    }
+                    Caption {
+                        id: undoCaption
+                        objectName: "undoCaption"
+                        text: undoHistory.history.caption
+                        visible: text !== ""
+                        font.pixelSize: root.fsCaption
+                        horizontalAlignment: Text.AlignRight
+                        tip: truncated ? text : ""
+                        Layout.fillWidth: true
+                    }
+                }
+
+                // The graph in its well, taking the height the page leaves it; the connector runs
+                // from the band's handle down to its panel.
                 Rectangle {
                     id: graphWell
                     objectName: "eqGraphWell"
                     readonly property int inset: 6
-                    implicitHeight: eqGraph.implicitHeight + 2 * inset
+                    readonly property real room: equalizerPage.height - 28 - eqHeader.implicitHeight
+                                                 - undoHistory.Layout.minimumHeight - bandPanel.implicitHeight
+                                                 - eqFooter.implicitHeight - 4 * equalizerPage.spacing - 4
+                    implicitHeight: Math.max(eqGraph.implicitHeight + 2 * inset, Math.floor(room))
                     radius: root.t.radiusWell
                     color: root.t.data_surface
                     border.color: root.t.border
@@ -2079,6 +2254,7 @@ Rectangle {
                         id: eqGraph
                         objectName: "eqGraph"
                         graph: equalizerPage.eq.curve
+                        show: equalizerPage.show
                         x: graphWell.inset
                         y: graphWell.inset
                         width: graphWell.width - 2 * graphWell.inset
@@ -2110,7 +2286,8 @@ Rectangle {
                     }
                 }
 
-                // The selected band, docked under the graph in the page's flow; it never covers the graph.
+                // The selected band on a slim strip of glass, docked under the graph in the page's flow;
+                // it never covers the graph.
                 GlassPanel {
                     id: bandPanel
                     objectName: "bandPanel"
@@ -2123,19 +2300,20 @@ Rectangle {
                     Accessible.name: "EQ band " + (equalizerPage.bandIndex + 1)
                     ColumnLayout {
                         id: panelColumn
-                        x: 20
+                        x: 24
                         y: 16
-                        width: parent.width - 40
+                        width: parent.width - 48
                         spacing: 12
                         RowLayout {
-                            spacing: 10
+                            spacing: 8
                             Layout.fillWidth: true
-                            // The band's number on its colour, as the graph prints it on the selected handle.
+                            // The band's number on its colour, beside the graph's handle in the same colour.
                             Rectangle {
                                 implicitWidth: 22
                                 implicitHeight: 22
                                 radius: 11
                                 color: equalizerPage.bandColor
+                                Layout.rightMargin: 2
                                 Accessible.ignored: true
                                 Text {
                                     textFormat: Text.PlainText
@@ -2156,54 +2334,66 @@ Rectangle {
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
                             }
-                            Caption {
-                                text: equalizerPage.band.frequencyLabel.text
-                                tip: equalizerPage.band.frequencyLabel.toolTip
-                            }
                             IconBtn {
                                 glyph: root.m.glyphs.previous
                                 label: "Prev"
                                 hint: "Previous EQ band"
+                                filled: true
                                 onClicked: root.ui.stepBand(-1)
                             }
                             IconBtn {
                                 glyph: root.m.glyphs.next
                                 label: "Next"
                                 hint: "Next EQ band"
+                                filled: true
                                 onClicked: root.ui.stepBand(1)
                             }
-                            Toggle { proxy: equalizerPage.band.enabled }
+                            Toggle { proxy: equalizerPage.band.enabled; Layout.leftMargin: 6 }
                         }
-                        // Two rows: the panel's width leaves the gain fader too little room beside the fields.
-                        ColumnLayout {
-                            spacing: 10
+                        // One row while the gain fader keeps room beside the fields; two on a narrow page.
+                        GridLayout {
+                            id: bandEditor
+                            objectName: "bandEditorRow"
+                            readonly property bool oneRow: width >= gainRow.implicitWidth + columnSpacing + fieldsRow.implicitWidth
+                            columns: oneRow ? 2 : 1
+                            columnSpacing: 18
+                            rowSpacing: 10
                             Layout.fillWidth: true
                             RowLayout {
-                                objectName: "bandEditorRow"
-                                spacing: 12
+                                id: gainRow
+                                spacing: 8
                                 Layout.fillWidth: true
-                                Picker { proxy: equalizerPage.band.type; implicitWidth: 130 }
-                                Caption { text: "Gain" }
-                                Fader { proxy: equalizerPage.band.gain; unit: 0.1; Layout.fillWidth: true }
+                                Caption { text: "Type"; font.pixelSize: root.fsCaption }
+                                Picker { proxy: equalizerPage.band.type; implicitWidth: 140 }
+                                Caption { text: "Gain"; font.pixelSize: root.fsCaption; Layout.leftMargin: 8 }
+                                Fader {
+                                    proxy: equalizerPage.band.gain
+                                    unit: 0.1
+                                    implicitWidth: 90
+                                    Layout.minimumWidth: 80
+                                    Layout.fillWidth: true
+                                }
                                 ValueBox {
                                     objectName: "gainBox"
                                     proxy: equalizerPage.band.gain
                                     display: equalizerPage.band.gainLabel
-                                    implicitWidth: 64
+                                    unit: "dB"
+                                    implicitWidth: 76
                                 }
                             }
                             RowLayout {
-                                spacing: 12
-                                Caption { text: "Freq" }
-                                ValueBox { proxy: equalizerPage.band.frequency; implicitWidth: 84 }
-                                Caption { text: "Width (Q)"; visible: equalizerPage.band.q.shown }
+                                id: fieldsRow
+                                spacing: 8
+                                Caption { text: "Freq"; font.pixelSize: root.fsCaption }
+                                ValueBox { proxy: equalizerPage.band.frequency; implicitWidth: 76 }
+                                Caption { text: "Width Q"; font.pixelSize: root.fsCaption; visible: equalizerPage.band.q.shown; Layout.leftMargin: 6 }
                                 ValueBox {
                                     proxy: equalizerPage.band.q
                                     visible: proxy.shown
                                     opacity: proxy.enabled ? 1 : 0.45
                                     implicitWidth: 56
                                 }
-                                Caption { text: "Slope"; visible: equalizerPage.band.slope.shown }
+                                Caption { text: "Slope"; font.pixelSize: root.fsCaption; visible: equalizerPage.band.slope.shown; Layout.leftMargin: 6 }
                                 Picker {
                                     proxy: equalizerPage.band.slope
                                     visible: proxy.shown
@@ -2211,69 +2401,88 @@ Rectangle {
                                 }
                             }
                         }
-                        Rectangle {
-                            implicitHeight: 1
-                            color: root.t.glass_edge
-                            Layout.fillWidth: true
+                    }
+                }
+
+                // Under the graph: what calibration found, a mark beside the words, then how each line is drawn.
+                RowLayout {
+                    id: eqFooter
+                    objectName: "eqFooter"
+                    spacing: 24
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 4
+                    Layout.rightMargin: 4
+                    RowLayout {
+                        id: eqStatus
+                        objectName: "eqStatus"
+                        readonly property var proxy: equalizerPage.eq.diagnostics
+                        readonly property string state_: proxy.state !== "" ? proxy.state : "idle"
+                        spacing: 6
+                        visible: proxy.shown && equalizerPage.calibrated
+                        Layout.fillWidth: true
+                        StatusMark {
+                            objectName: "diagnosticsMark"
+                            state_: eqStatus.state_
+                            color: root.t["status_" + eqStatus.state_ + "_text"] ?? root.t.text_muted
                         }
-                        // What calibration found, a mark beside the words, then how each line is drawn.
-                        RowLayout {
-                            spacing: 8
-                            visible: equalizerPage.eq.diagnostics.shown && equalizerPage.calibrated
+                        Text {
+                            id: statusWords
+                            textFormat: Text.PlainText
+                            text: eqStatus.proxy.text
+                            color: root.t["status_" + eqStatus.state_ + "_text"] ?? root.t.text_muted
+                            font.pixelSize: root.fsCaption
+                            elide: Text.ElideRight
                             Layout.fillWidth: true
-                            Text {
-                                objectName: "diagnosticsMark"
-                                readonly property string state_: equalizerPage.eq.diagnostics.state
-                                textFormat: Text.PlainText
-                                text: ({ ok: "\u2713", warn: "!", bad: "\u00d7" })[state_] ?? "\u2013"
-                                color: root.t["status_" + state_ + "_text"] ?? root.t.text_muted
-                                font.pixelSize: root.fsBody
-                                font.weight: Font.Bold
-                                Accessible.ignored: true
+                            Accessible.role: Accessible.StaticText
+                            Accessible.name: eqStatus.proxy.name !== "" ? eqStatus.proxy.name + ": " + text : text
+                            Accessible.description: eqStatus.proxy.toolTip
+                            Hint {
+                                text: [statusWords.truncated ? statusWords.text : "", eqStatus.proxy.toolTip]
+                                      .filter(t => t !== "").join("\n\n")
                             }
-                            Chip { proxy: equalizerPage.eq.diagnostics; Layout.fillWidth: true }
                         }
-                        Flow {
-                            spacing: 20
-                            Layout.fillWidth: true
-                            Repeater {
-                                model: equalizerPage.eq.legend
-                                delegate: Row {
-                                    id: entry
-                                    objectName: "legendEntry"
-                                    required property var modelData
-                                    readonly property string lineStyle: modelData.lineStyle
-                                    readonly property string text: modelData.text
-                                    readonly property color sample: ({
-                                        solid: root.t.data_curve,
-                                        dashed: root.t.data_text,
-                                        dotted: root.t.data_text_muted,
-                                        dot: equalizerPage.bandColor
-                                    })[lineStyle]
-                                    spacing: 7
-                                    // The line drawn as the graph draws it: whole, in dashes, in dots, or a handle's dot.
-                                    Item {
-                                        width: 16
-                                        height: entryText.height
-                                        Row {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            spacing: 2
-                                            Repeater {
-                                                model: ({ solid: 1, dashed: 3, dotted: 4, dot: 1 })[entry.lineStyle]
-                                                delegate: Rectangle {
-                                                    width: ({ solid: 16, dashed: 4, dotted: 2, dot: 8 })[entry.lineStyle]
-                                                    height: entry.lineStyle === "dot" ? 8 : 2
-                                                    radius: entry.lineStyle === "dot" ? 4 : entry.lineStyle === "dotted" ? 1 : 0
-                                                    color: entry.sample
-                                                }
+                    }
+                    Item { visible: !eqStatus.visible; implicitHeight: 1; Layout.fillWidth: true }
+                    Row {
+                        id: legendRow
+                        spacing: 24
+                        Repeater {
+                            model: equalizerPage.eq.legend
+                            delegate: Row {
+                                id: entry
+                                objectName: "legendEntry"
+                                required property var modelData
+                                readonly property string lineStyle: modelData.lineStyle
+                                readonly property string text: modelData.text
+                                readonly property color sample: ({
+                                    solid: root.t.data_curve,
+                                    dashed: root.t.data_text,
+                                    dotted: root.t.data_text_muted,
+                                    dot: equalizerPage.bandColor
+                                })[lineStyle]
+                                spacing: 7
+                                // The line drawn as the graph draws it: whole, in dashes, in dots, or a handle's dot.
+                                Item {
+                                    width: 16
+                                    height: entryText.height
+                                    Row {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        spacing: 2
+                                        Repeater {
+                                            model: ({ solid: 1, dashed: 3, dotted: 4, dot: 1 })[entry.lineStyle]
+                                            delegate: Rectangle {
+                                                width: ({ solid: 16, dashed: 4, dotted: 2, dot: 8 })[entry.lineStyle]
+                                                height: entry.lineStyle === "dot" ? 8 : 2
+                                                radius: entry.lineStyle === "dot" ? 4 : entry.lineStyle === "dotted" ? 1 : 0
+                                                color: entry.sample
                                             }
                                         }
                                     }
-                                    Caption {
-                                        id: entryText
-                                        text: entry.text
-                                        font.pixelSize: root.fsCaption
-                                    }
+                                }
+                                Caption {
+                                    id: entryText
+                                    text: entry.text
+                                    font.pixelSize: root.fsCaption
                                 }
                             }
                         }

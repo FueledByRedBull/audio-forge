@@ -175,7 +175,8 @@ def test_a_toggle_reports_checkbox_role_name_and_whether_it_is_on(quick_window, 
     window = quick_window
     model = window.quick_bridge.model
     _show(window, qapp, EQUALIZER)
-    eq_switch = _with_proxy(window, "Toggle", model["eq"]["toggle"])
+    # The EQ switches on and off from its row in the signal chain.
+    eq_switch = _with_proxy(window, "ChainSwitch", model["eq"]["toggle"])
     mute = _with_proxy(window, "MuteBtn", model["top"]["mute"])
     assert model["eq"]["toggle"].checked and not model["top"]["mute"].checked
     with _AccessibleScene():
@@ -328,17 +329,32 @@ def test_icon_buttons_are_named_by_what_they_do_not_by_their_tooltip_text(icon_w
         assert _iface(names["Undo"]).state().disabled
 
 
-def test_the_help_buttons_name_what_they_explain_and_describe_it(icon_window, qapp) -> None:
-    window = icon_window
+def _eq_help_action(window):
+    return next(
+        action for action in window.eq_presentation.options_menu.actions()
+        if action.text() == "How the graph works"
+    )
+
+
+def test_the_equalizer_help_is_named_in_the_more_menu_and_opens_under_it(quick_window, qapp) -> None:
+    window = quick_window
     _show(window, qapp, EQUALIZER)
-    help_text = window.quick_bridge.model["eq"]["help"]
-    with _AccessibleScene() as scene:
-        button = next(
-            button for button in _of_kind(window, "IconBtn")
-            if scene.description(button) == help_text
-        )
-        assert "equalizer" in scene.name(button).lower()
-        assert len(scene.name(button)) <= 60
+    model = window.quick_bridge.model
+    help_text = model["eq"]["help"]
+    more = _with_proxy(window, "Btn", model["eq"]["menu"])
+    tip = window.centralWidget().rootObject().findChild(QObject, "tooltip")
+    assert more.isVisible() and more.property("text") == "More"
+    # The menu keeps every action the header had: the tone presets, the resets and the help.
+    menu = window.eq_presentation.options_menu
+    titles = [action.text() for action in menu.actions() if not action.isSeparator()]
+    assert titles == ["Tone preset", "Clear Auto-EQ", "Reset tone", "How the graph works"]
+    assert menu.actions()[0].menu() is window.eq_presentation.tone_menu
+    action = _eq_help_action(window)
+    assert 0 < len(action.toolTip()) <= 90 and action.toolTip() != help_text
+    action.trigger()
+    qapp.processEvents()
+    assert tip.property("visible") is True and tip.property("text") == help_text
+    assert tip.property("parent") == more
 
 
 def test_chips_read_as_name_then_text_and_follow_the_text(quick_window, qapp) -> None:
@@ -641,7 +657,7 @@ def test_tab_visits_the_page_in_reading_order(either_window, qapp, width) -> Non
 def test_tab_visits_the_equalizer_page_in_reading_order(either_window, qapp, width) -> None:
     names = _page_names(either_window, qapp, EQUALIZER, width, FRAME_LANDMARKS)
     landmarks = [
-        "Enable EQ", "Tone preset", "Equalizer graph",
+        "Total", "Tone", "Equalizer options", "Equalizer graph",
         "Enable EQ band 1", "EQ band 1 filter type", "EQ band 1 gain", "EQ band 1 center frequency",
     ]
     positions = _positions(names, landmarks)
@@ -712,6 +728,7 @@ def test_each_signal_chain_row_carries_its_stage_switch_under_the_same_name(quic
     window = quick_window
     _show(window, qapp)
     rows = window.quick_bridge.model["sidebar"]["chain"]
+    eq_toggle = window.quick_bridge.model["eq"]["toggle"]
     # Input cleanup is a setting with several modes, not a stage that switches on and off.
     assert [row["name"] for row in rows if row["toggle"] is None] == ["Input cleanup"]
     with _AccessibleScene() as scene:
@@ -721,6 +738,11 @@ def test_each_signal_chain_row_carries_its_stage_switch_under_the_same_name(quic
             switch = _with_proxy(window, "ChainSwitch", row["toggle"])
             assert switch.isVisible(), row["name"]
             assert _iface(switch).role() == Role.CheckBox
+            if row["toggle"] is eq_toggle:
+                # The equalizer page has no switch of its own: this row is the EQ's one switch.
+                assert not [i for i in _of_kind(window, "Toggle") if i.property("proxy") is eq_toggle]
+                assert _iface(switch).text(Text.Name) == "Enable EQ"
+                continue
             # A screen reader hears the same name here as on the stage's own card.
             card_switch = _with_proxy(window, "Toggle", row["toggle"])
             assert _iface(switch).text(Text.Name) == _iface(card_switch).text(Text.Name) != ""
@@ -1025,7 +1047,7 @@ def test_the_focused_control_always_shows_where_focus_is(either_window, qapp, pa
             "Toggle", "ChainSwitch", "Fader", "Picker", "Btn", "MuteBtn", "LinkBtn", "Disclosure", "CloseBtn",
         },
         SETTINGS: {"SettingRow", "Picker"},
-        EQUALIZER: {"Toggle", "Fader", "Picker", "QQuickTextInput", "EQGraphItem"},
+        EQUALIZER: {"Toggle", "Fader", "Picker", "QQuickTextInput", "EQGraphItem", "KeyButton", "Btn"},
     }
     assert expected[page] <= seen
 
@@ -1162,7 +1184,7 @@ def test_icon_buttons_are_still_there_without_the_icon_font(no_icon_font_window,
         if button.property("label")
     }
     assert faces and all(faces.values())
-    assert {"Refresh", "Settings", "More", "Prev", "Next", "?"} <= set(faces)
+    assert {"Refresh", "Settings", "Undo", "Prev", "Next"} <= set(faces)
 
 
 def test_a_warning_banner_sits_under_the_top_bar_and_is_an_alert(quick_window, qapp) -> None:
@@ -1197,13 +1219,16 @@ def test_a_help_tip_opened_by_the_keyboard_goes_when_focus_moves_on(quick_window
     root = window.centralWidget().rootObject()
     tip = root.findChild(QObject, "tooltip")
     help_text = window.quick_bridge.model["eq"]["help"]
-    button = next(b for b in _of_kind(window, "IconBtn") if b.property("hint") == help_text)
+    button = _with_proxy(window, "Btn", window.quick_bridge.model["eq"]["menu"])
     _focus(window, button, qapp)
-    _press(window, Qt.Key.Key_Space, qapp)
+    # The menu's help entry, chosen from the keyboard, opens the help under the button.
+    _eq_help_action(window).trigger()
+    qapp.processEvents()
     assert tip.property("visible") is True and tip.property("text") == help_text
     _press(window, Qt.Key.Key_Escape, qapp)
     assert tip.property("visible") is False
-    _press(window, Qt.Key.Key_Space, qapp)
+    _eq_help_action(window).trigger()
+    qapp.processEvents()
     assert tip.property("visible") is True
     _press(window, Qt.Key.Key_Tab, qapp)
     # The next control may show its own help; the help that was asked for goes.
@@ -1346,9 +1371,101 @@ def test_the_band_panel_docks_under_the_graph(quick_window, qapp, width) -> None
     window = quick_window
     _show(window, qapp, EQUALIZER, width)
     QTest.qWait(50)
-    well, graph, panel = (_eq_item(window, name) for name in ("eqGraphWell", "eqGraph", "bandPanel"))
+    page, well, graph, panel, footer = (
+        _eq_item(window, name) for name in ("equalizerPage", "eqGraphWell", "eqGraph", "bandPanel", "eqFooter")
+    )
     assert _scene_y(panel) >= _scene_y(well) + well.height()
-    assert graph.height() == graph.implicitHeight() == 320
+    # The graph takes the height the page leaves it, never less than its own, and the page does not scroll.
+    assert graph.height() >= graph.implicitHeight() == 320
+    assert page.property("contentHeight") <= page.height()
+    # The legend and the calibration line sit under the band strip, at the foot of the graph card.
+    assert _scene_y(footer) >= _scene_y(panel) + panel.height()
+
+
+def test_the_band_strip_keeps_its_fields_apart_at_every_width(quick_window, qapp) -> None:
+    window = quick_window
+    for width in (900, 1400):
+        _show(window, qapp, EQUALIZER, width)
+        QTest.qWait(50)
+        editor = _eq_item(window, "bandEditorRow")
+        one_row = editor.property("oneRow")
+        rows = [row for row in editor.childItems() if row.isVisible()]
+        assert len(rows) == 2
+        first, second = (row.mapRectToScene(row.boundingRect()) for row in rows)
+        assert not first.intersects(second), width
+        if one_row:
+            assert abs(first.center().y() - second.center().y()) < 2
+        else:
+            assert second.top() >= first.bottom()
+        for row in rows:
+            fields = [item for item in row.childItems() if item.isVisible()]
+            for left, right in zip(fields, fields[1:]):
+                assert _scene_x(left) + left.width() <= _scene_x(right), (width, left, right)
+            panel = _eq_item(window, "bandPanel")
+            assert _scene_x(fields[-1]) + fields[-1].width() <= _scene_x(panel) + panel.width()
+
+
+def test_the_band_strip_names_the_frequency_once(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp, EQUALIZER)
+    QTest.qWait(50)
+    band = window.quick_bridge.model["eq"]["bands"][0]
+    label = band["frequencyLabel"].text
+    assert label
+    panel = _eq_item(window, "bandPanel")
+    # The frequency field holds the value; no caption repeats it beside the title.
+    repeated = [
+        item for item in _items(panel)
+        if item.isVisible() and _kind(item) != "QQuickTextInput" and item.property("text") == label
+    ]
+    assert repeated == []
+
+
+def test_the_gain_field_names_its_unit_outside_the_value(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp, EQUALIZER)
+    box = _eq_item(window, "gainBox")
+    field = next(item for item in _items(box) if _kind(item) == "QQuickTextInput")
+    unit = next(item for item in _items(box) if _kind(item) == "QQuickText")
+    assert unit.isVisible() and unit.property("text") == "dB"
+    assert "dB" not in field.property("text")
+    assert field.x() + field.width() <= unit.x()
+
+
+def test_the_calibration_mark_is_drawn_not_typed(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp, EQUALIZER)
+    mark = _eq_item(window, "diagnosticsMark")
+    # A glyph can fall back to a box in a font without it; shapes cannot.
+    for item in (mark, *_items(mark)):
+        assert _kind(item) != "QQuickText", item
+        assert "✓" not in str(item.property("text") or "")
+    check = next(item for item in _items(mark) if item.objectName() == "checkShape")
+    for state, shown in (("ok", True), ("warn", False), ("bad", False), ("idle", False)):
+        mark.setProperty("state_", state)
+        qapp.processEvents()
+        assert check.property("visible") is shown or not mark.isVisible(), state
+
+
+def test_show_picks_which_layers_the_graph_draws(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp, EQUALIZER)
+    QTest.qWait(50)
+    graph = _eq_item(window, "eqGraph")
+    preview = next(item for item in _of_kind(window, "EQGraphPreview") if item is not graph)
+    assert graph.property("show") == "total"
+    with _AccessibleScene():
+        for key in ("tone", "auto_eq", "total"):
+            choice = _eq_item(window, "eqShow_" + key)
+            assert _iface(choice).role() == Role.RadioButton
+            _click(window, choice, qapp)
+            assert graph.property("show") == key
+            for other in ("total", "tone", "auto_eq"):
+                assert bool(_iface(_eq_item(window, "eqShow_" + other)).state().checked) is (other == key)
+        _activate(window, _eq_item(window, "eqShow_tone"), Qt.Key.Key_Space, qapp)
+        assert graph.property("show") == "tone"
+    # The overview's preview always shows what you hear.
+    assert preview.property("show") == "total"
 
 
 @pytest.mark.parametrize("width", [900, 1199, 1200, 1400])
@@ -1476,7 +1593,7 @@ def test_a_switch_row_in_settings_acts_once_whichever_way_it_is_used(quick_windo
 def test_a_refused_switch_goes_back_to_the_models_state(quick_window, qapp) -> None:
     window = quick_window
     _show(window, qapp, EQUALIZER)
-    toggle = _with_proxy(window, "Toggle", window.quick_bridge.model["eq"]["toggle"])
+    toggle = _with_proxy(window, "ChainSwitch", window.quick_bridge.model["eq"]["toggle"])
     on = toggle.property("on")
     # The model does not change: the switch must not keep the flipped state.
     toggle.property("proxy").click = lambda: None

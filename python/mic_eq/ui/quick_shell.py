@@ -796,7 +796,8 @@ class QuickBridge(QObject):
                 ),
                 "toggle": eq_toggle,
                 "menu": menu(eq.options_menu, "Equalizer options"), "rows": [], "advanced": [],
-                "tone": menu(eq.tone_menu, "Tone preset"),
+                # Asks the page for the help above, from the options menu.
+                "helpSource": eq,
                 "curve": eq.graph_model,
                 "layers": EQControl(w.eq_state, "layers", None, self),
                 "diagnostics": EQControl(w.eq_state, "diagnostics", None, self),

@@ -65,11 +65,11 @@ def with_band(bands, index, **fields):
     return [*bands[:index], tuple(band[name] for name in names), *bands[index + 1 :]]
 
 
-def paint(model: EQGraphModel) -> QImage:
+def paint(model: EQGraphModel, show: str = "total") -> QImage:
     image = QImage(WIDTH, HEIGHT, QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(0)
     painter = QPainter(image)
-    EQGraphRenderer.paint(painter, model, WIDTH, HEIGHT)
+    EQGraphRenderer.paint(painter, model, WIDTH, HEIGHT, show=show)
     painter.end()
     return image
 
@@ -409,34 +409,33 @@ def test_the_input_filter_is_dotted_and_is_not_a_band(qapp):
     assert all(brightest(i) < 40 for i in skipped)
 
 
-def test_the_selected_handle_prints_its_number(qapp):
-    tone = with_band(FLAT, 4, frequency_hz=2000.0, gain_db=3.0)
+def test_the_selected_handle_wears_the_selection_ring(qapp):
+    tone = with_band(FLAT, 4, frequency_hz=2000.0, gain_db=6.0)
     model = model_with(tone)
     x, y = (round(v) for v in EQGraphGeometry.band_handle_position(model.bands, 4, WIDTH, HEIGHT))
+    ring = round(EQGraphGeometry.SELECTION_RING_RADIUS)
 
-    # Within the fill of a handle that is not selected; its ring of the ground lies outside.
-    def dark(image):
-        return sum(
-            image.pixelColor(x + dx, y + dy).lightness() < 90
-            for dx in range(-4, 5)
-            for dy in range(-4, 5)
-            if dx * dx + dy * dy <= 16
+    # Above and below the handle, on the ring; the total runs across, not up.
+    def ring_tone(image):
+        return min(
+            apart(image.pixelColor(x + dx, y + dy), PALETTE.data_handle_selected)
+            for dx in (-1, 0, 1)
+            for dy in (-ring - 1, -ring, -ring + 1, ring - 1, ring, ring + 1)
         )
 
-    plain = dark(paint(model))
+    assert ring_tone(paint(model)) > 150
     model.select_band(4)
-    assert plain == 0
-    assert dark(paint(model)) >= 8
+    assert ring_tone(paint(model)) < 60
 
 
-def test_a_selected_band_that_is_off_keeps_its_number_off_the_total(qapp):
+def test_a_selected_band_that_is_off_covers_the_total_under_its_handle(qapp):
     # An off band at 0 dB sits right on a flat total.
     tone = with_band(FLAT, 4, frequency_hz=2000.0, enabled=False)
     model = model_with(tone)
     model.select_band(4)
     x, y = (round(v) for v in EQGraphGeometry.band_handle_position(model.bands, 4, WIDTH, HEIGHT))
 
-    assert apart(paint(model).pixelColor(x + 5, y), PALETTE.data_surface) < 30
+    assert apart(paint(model).pixelColor(x + 3, y), PALETTE.data_surface) < 30
 
 
 def test_markers_sit_on_the_total_at_the_nearest_sample(qapp):
@@ -448,7 +447,122 @@ def test_markers_sit_on_the_total_at_the_nearest_sample(qapp):
     x = line_x(marker_hz)
     y = line_y(model.total_response_db[nearest])
 
-    assert apart(paint(model).pixelColor(x, y), PALETTE.data_marker) < 40
+    image = paint(model)
+    # An open ring on the total: the marker's colour around the sample, not at its centre.
+    radius = round(EQGraphRenderer.MARKER_RADIUS)
+    around = range(y - radius - 1, y + radius + 2)
+    assert distance_to(image, x, around, PALETTE.data_marker) < 60
+    # No line runs down the plot at the marker.
+    for row in (PLOT_TOP + 4, PLOT_TOP + PLOT_HEIGHT - 4):
+        assert apart(image.pixelColor(x, row), PALETTE.data_marker) > 200
+
+
+def test_markers_ride_the_auto_eq_layer_when_there_is_one(qapp):
+    auto = with_band(FLAT, 9, filter_type="high_shelf", frequency_hz=20.0, gain_db=-8.0)
+    tone = with_band(FLAT, 9, filter_type="high_shelf", frequency_hz=20.0, gain_db=10.0)
+    model = model_with(tone, auto)
+    model.set_band_markers([1000.0])
+    nearest = min(range(len(model.freq_points)), key=lambda i: abs(model.freq_points[i] - 1000.0))
+    x = line_x(1000.0)
+    on_layer = line_y(model.correction_response_db[nearest])
+    radius = round(EQGraphRenderer.MARKER_RADIUS)
+    image = paint(model)
+
+    assert distance_to(image, x, range(on_layer - radius - 1, on_layer + radius + 2), PALETTE.data_marker) < 60
+    # Nothing of the marker on the total, far above the layer.
+    on_total = line_y(model.total_response_db[nearest])
+    model.clear_band_markers()
+    plain = paint(model)
+    assert on_total < on_layer - 40
+    assert all(
+        image.pixelColor(column, row) == plain.pixelColor(column, row)
+        for column in range(x - 6, x + 7)
+        for row in range(on_total - 6, on_total + 7)
+    )
+
+
+def test_the_tone_view_draws_the_bands_and_their_sum_and_nothing_of_the_auto_eq_layer(qapp):
+    tone = with_band(FLAT, 4, frequency_hz=1200.0, gain_db=6.0)
+    auto = with_band(FLAT, 9, filter_type="high_shelf", frequency_hz=20.0, gain_db=-8.0)
+    model = model_with(tone, auto)
+    model.set_band_markers([5000.0])
+    index = segment_near(model, 5000.0, 0)
+    x, layer_y = segment_middle(model, index), y_at(model.correction_response_db[index])
+
+    def layer(image):
+        return max(lightness(image, x, layer_y + dy) for dy in (-2, -1, 0, 1, 2))
+
+    total_view, tone_view = paint(model, "total"), paint(model, "tone")
+    assert layer(total_view) > 120
+    assert layer(tone_view) < 40
+    # The thick curve is the bands' sum, 8 dB over the total; read beside the band's handle.
+    side = min(range(len(model.freq_points)), key=lambda i: abs(model.freq_points[i] - 2000.0))
+    assert model.tone_response_db[side] - model.total_response_db[side] > 7.0
+    column = round(EQGraphGeometry.frequency_to_x(model.freq_points[side], WIDTH, HEIGHT))
+    assert max(lightness(tone_view, column, y_at(model.tone_response_db[side]) + dy) for dy in (-1, 0, 1)) > 200
+    assert lightness(tone_view, column, y_at(model.total_response_db[side])) < 120
+
+
+def test_the_auto_eq_view_draws_the_layer_alone(qapp):
+    tone = with_band(FLAT, 4, frequency_hz=1200.0, gain_db=9.0)
+    auto = with_band(FLAT, 9, filter_type="high_shelf", frequency_hz=20.0, gain_db=-6.0)
+    model = model_with(tone, auto)
+    image = paint(model, "auto_eq")
+    plot = range(PLOT_TOP + 4, HEIGHT - EQGraphGeometry.MARGIN_BOTTOM)
+
+    # No band curve away from the handle, and no thick total at its peak.
+    assert band_tone(image, x_at(850.0), plot, PALETTE.eq_band_colors[4]) < 15
+    peak = x_at(1200.0)
+    assert lightness(image, peak, y_at(model.total_response_db[model.freq_points.index(1200.0)])) < 120
+    # The Auto-EQ layer's dashes are there.
+    index = segment_near(model, 3000.0, 0)
+    x, y = segment_middle(model, index), y_at(model.correction_response_db[index])
+    assert max(lightness(image, x, y + dy) for dy in (-1, 0, 1)) > 120
+
+
+def test_the_graph_refuses_a_layer_it_does_not_know(qapp):
+    image = QImage(WIDTH, HEIGHT, QImage.Format.Format_ARGB32_Premultiplied)
+    painter = QPainter(image)
+    try:
+        with pytest.raises(ValueError):
+            EQGraphRenderer.paint(painter, model_with(FLAT), WIDTH, HEIGHT, show="input")
+    finally:
+        painter.end()
+
+
+def test_the_readout_reads_the_curve_the_view_shows(qapp):
+    model = model_with(TONE, AUTO_EQ)
+    column = x_at(2320.0)
+    hz = EQGraphGeometry.x_to_frequency(column, WIDTH, HEIGHT)
+    model.set_hover(column, 150, WIDTH, HEIGHT)
+    tone = eq_magnitude_response_v2([hz], TONE, model.sample_rate)[0]
+    auto = eq_magnitude_response_v2([hz], AUTO_EQ, model.sample_rate)[0]
+
+    for show, expected in (("tone", tone), ("auto_eq", auto), ("total", model.response_at(hz))):
+        layout = EQGraphRenderer.readout_layout(model, WIDTH, HEIGHT, show)
+        assert layout is not None
+        shown = float(layout[0].rsplit("  ", 1)[1].removesuffix(" dB"))
+        assert shown == pytest.approx(expected, abs=0.051), show
+
+
+def test_the_high_pass_corner_is_named_on_the_total_only_where_it_is_drawn(qapp):
+    model = model_with(FLAT)
+    label = f"High-pass {PREFILTER_HIGHPASS_HZ} Hz"
+
+    assert label in {text for text, _size in painted_texts(model)}
+    for show in ("tone", "auto_eq"):
+        assert label not in {text for text, _size in painted_texts(model, show=show)}, show
+    model.set_engine_mode("raw")
+    assert label not in {text for text, _size in painted_texts(model)}
+
+
+def test_a_short_plot_leaves_the_high_pass_corner_unnamed(qapp):
+    model = model_with(FLAT)
+    label = f"High-pass {PREFILTER_HIGHPASS_HZ} Hz"
+    chrome = EQGraphGeometry.MARGIN_TOP + EQGraphGeometry.MARGIN_BOTTOM
+    tall_enough = int(EQGraphRenderer.HIGH_PASS_LABEL_MIN_PLOT_HEIGHT) + chrome
+    assert label in {text for text, _size in painted_texts(model, WIDTH, tall_enough)}
+    assert label not in {text for text, _size in painted_texts(model, WIDTH, tall_enough - 1)}
 
 
 def test_the_axis_has_a_zero_line_and_every_decade_down_to_20_hz(qapp):
@@ -1020,11 +1134,13 @@ class TextRecorder(QPainter):
         super().drawText(*args)
 
 
-def painted_texts(model: EQGraphModel, width: int = WIDTH, height: int = HEIGHT) -> list[tuple[str, int]]:
+def painted_texts(
+    model: EQGraphModel, width: int = WIDTH, height: int = HEIGHT, *, show: str = "total"
+) -> list[tuple[str, int]]:
     image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(0)
     painter = TextRecorder(image)
-    EQGraphRenderer.paint(painter, model, width, height)
+    EQGraphRenderer.paint(painter, model, width, height, show=show)
     painter.end()
     return painter.texts
 
@@ -1042,16 +1158,18 @@ def test_painted_eq_text_meets_the_type_floor(qapp):
     others = [(text, size) for text, size in texts if text not in tick_texts]
     assert ticks and others
     assert min(ticks) >= 11
-    # Region names and hints, the band number, the readout and the caption.
-    assert {"MID RANGE", "body", "5", "EQ not running: Bypass"} <= {text for text, _size in others}
+    # Region names and hints, the high-pass corner, the readout and the caption.
+    assert {"Mid range", "body", f"High-pass {PREFILTER_HIGHPASS_HZ} Hz", "EQ not running: Bypass"} <= {
+        text for text, _size in others
+    }
     assert all(size >= 12 for _text, size in others), others
 
 
-def test_region_names_stay_uppercase_and_carry_their_hint_when_wide(qapp):
+def test_region_names_are_sentence_case_and_carry_their_hint_when_wide(qapp):
     regions = EQGraphGeometry.REGIONS
     names = [name for name, _low, _high, _hint in regions]
     hints = [hint for _name, _low, _high, hint in regions]
-    assert all(name == name.upper() for name in names)
+    assert names == ["Sub bass", "Bass", "Low mids", "Mid range", "Upper mids", "Highs"]
     assert hints == ["rumble", "warmth", "boxiness", "body", "clarity", "air / hiss"]
 
     wide = {text for text, _size in painted_texts(model_with(FLAT), 1400)}
@@ -1069,9 +1187,17 @@ def test_region_names_stay_uppercase_and_carry_their_hint_when_wide(qapp):
     assert not set(hints) & just_under
     # A hint goes with its name: none shows under a name that does not fit.
     assert all(name in at_threshold for name, hint in zip(names, hints) if hint in at_threshold)
-    narrow = {text for text, _size in painted_texts(model_with(FLAT), 480)}
+    narrow = {text for text, _size in painted_texts(model_with(FLAT), 400)}
     assert not set(hints) & narrow
-    assert "BASS" in narrow
+    assert "Bass" in narrow and "Low mids" not in narrow
+
+
+def test_the_regions_are_parted_by_dividers_in_the_strip(qapp):
+    image = paint(model_with(FLAT))
+    strip_middle = EQGraphGeometry.REGION_STRIP_HEIGHT // 2 + EQGraphRenderer.REGION_INSET // 2
+    for _name, low_hz, _high, _hint in EQGraphGeometry.REGIONS[1:]:
+        x = line_x(low_hz)
+        assert lightness(image, x, strip_middle) > lightness(image, x + 6, strip_middle) + 10, low_hz
 
 
 def test_the_high_pass_label_matches_the_prefilter(qapp):

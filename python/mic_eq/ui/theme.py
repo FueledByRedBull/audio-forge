@@ -109,7 +109,8 @@ class SemanticPalette:
     data_curve: str = "#e6e8ee"
     data_marker: str = "#e8c5a6"
     data_warning: str = "#f2cf5b"
-    data_handle_selected: str = "#ececf0"
+    # The ring around the selected EQ handle: the selection color.
+    data_handle_selected: str = "#d98a4e"
     # The microphone (IN) and what callers hear (OUT), each one job only.
     signal_in: str = "#a9bbd4"
     signal_in_fill: str = "#7ea4dc"
@@ -229,7 +230,7 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         status_idle_surface=window, status_idle_text=text, status_idle_border=text,
         data_surface=window, data_surface_raised=window, data_grid=disabled,
         data_text=text, data_text_muted=text, data_curve=text,
-        data_marker=accent, data_warning=accent, data_handle_selected=text,
+        data_marker=accent, data_warning=accent, data_handle_selected=accent,
         meter_scale=text, meter_peak=text,
         pane_surface=window, toolbar_top=window, toolbar_bottom=window,
         sidebar_top=window, sidebar_bottom=window, focus_ring=accent, text_dim=text,

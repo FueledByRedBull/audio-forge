@@ -67,6 +67,13 @@ def window(isolated_main_window, qapp):
         shown._tray_icon.hide()
 
 
+@pytest.fixture
+def patch(window):
+    """Patches on the window's own objects, undone before the window is deleted."""
+    with pytest.MonkeyPatch.context() as patcher:
+        yield patcher
+
+
 def _tray(window: Any, monkeypatch) -> Any:
     base = QPixmap(32, 32)
     base.fill(QColor(PALETTE.card_surface))
@@ -179,11 +186,11 @@ def test_the_tray_opens_it_and_closing_it_leaves_a_hidden_main_window_in_the_tra
 
 
 def test_from_a_shown_main_window_it_hides_the_main_window_without_a_tray_notice(
-    window, qapp, monkeypatch
+    window, qapp, monkeypatch, patch
 ) -> None:
     item = _tray_item(window, monkeypatch, "Compact window")
     notes: list[str] = []
-    monkeypatch.setattr(window._tray_icon, "showMessage", lambda title, *_args: notes.append(title))
+    patch.setattr(window._tray_icon, "showMessage", lambda title, *_args: notes.append(title))
     item.trigger()
     qapp.processEvents()
     assert not window.isVisible()
@@ -220,15 +227,15 @@ def test_without_a_tray_closing_it_brings_the_main_window_back(window, qapp, mon
     assert window.isVisible() and not compact.isVisible()
 
 
-def test_stopped_and_lost_device_show_the_overview_words(window, qapp, monkeypatch) -> None:
+def test_stopped_and_lost_device_show_the_overview_words(window, qapp, patch) -> None:
     compact = _open(window, qapp)
     overview = window.quick_bridge.model["overview"]
     headline = _item(compact, "compactHeadline")
     assert overview.state in ("ready", "no_mic")
     assert headline.property("text") == overview.headline != ""
 
-    monkeypatch.setattr(window, "no_microphone", lambda: False)
-    monkeypatch.setattr(window, "_restart_pending", lambda: True)
+    patch.setattr(window, "no_microphone", lambda: False)
+    patch.setattr(window, "_restart_pending", lambda: True)
     overview.refresh()
     qapp.processEvents()
     assert overview.state == "device_lost"
@@ -253,7 +260,7 @@ def test_it_holds_the_status_health_meters_mute_preset_expand_latency_and_no_sto
     assert compact.quick_view.rootObject().property("ui") is window.quick_bridge
 
 
-def test_mute_presets_and_expand_act_through_the_shared_commands(window, qapp, monkeypatch) -> None:
+def test_mute_presets_and_expand_act_through_the_shared_commands(window, qapp, patch) -> None:
     compact = _open(window, qapp)
     _click(compact, "compactMute", qapp)
     assert window.user_mute_checkbox_action.isChecked()
@@ -263,7 +270,7 @@ def test_mute_presets_and_expand_act_through_the_shared_commands(window, qapp, m
     assert not _item(compact, "compactMute").property("checked")
 
     popped: list = []
-    monkeypatch.setattr(window.presets_menu, "popup", lambda position, *_args: popped.append(position))
+    patch.setattr(window.presets_menu, "popup", lambda position, *_args: popped.append(position))
     presets = _item(compact, "compactPresets")
     assert presets.property("text") == window.shell_texts["preset_status_label"].data["name"]
     _click(compact, "compactPresets", qapp)
@@ -275,8 +282,8 @@ def test_mute_presets_and_expand_act_through_the_shared_commands(window, qapp, m
     assert window.isVisible() and not compact.isVisible()
 
 
-def test_keep_on_top_switches_the_window_flag_and_lasts_the_session(window, qapp, monkeypatch) -> None:
-    monkeypatch.setattr(window, "processor", _Running(window.processor))
+def test_keep_on_top_switches_the_window_flag_and_lasts_the_session(window, qapp, patch) -> None:
+    patch.setattr(window, "processor", _Running(window.processor))
     compact = _open(window, qapp)
     flag = Qt.WindowType.WindowStaysOnTopHint
     handle = compact.windowHandle()
@@ -300,8 +307,8 @@ def test_keep_on_top_switches_the_window_flag_and_lasts_the_session(window, qapp
     assert compact.windowFlags() & flag and compact.isVisible()
 
 
-def test_the_meters_run_only_while_it_shows(window, qapp, monkeypatch) -> None:
-    monkeypatch.setattr(window, "processor", _Running(window.processor))
+def test_the_meters_run_only_while_it_shows(window, qapp, patch) -> None:
+    patch.setattr(window, "processor", _Running(window.processor))
     compact = _open(window, qapp)
     assert not window.isVisible()
     assert window.meter_timer.isActive()
@@ -408,11 +415,11 @@ def test_every_control_is_a_named_tab_stop_in_reading_order(window, qapp) -> Non
     assert _name(health).endswith(window.shell_texts["health_summary_label"].text)
 
 
-def test_the_mute_and_presets_buttons_explain_themselves_inside_the_window(window, qapp, monkeypatch) -> None:
+def test_the_mute_and_presets_buttons_explain_themselves_inside_the_window(window, qapp, patch) -> None:
     long_name = "A preset with a name far too long for the compact window button"
     compact = _open(window, qapp)
     # The window rewrites the summary from the configuration; hold it so the long name stays.
-    monkeypatch.setattr(window, "_update_session_summary", lambda: None)
+    patch.setattr(window, "_update_session_summary", lambda: None)
     window.shell_texts["preset_status_label"].update(data={"name": long_name, "modified": False})
     compact.resize(compact.minimumSize())
     qapp.processEvents()

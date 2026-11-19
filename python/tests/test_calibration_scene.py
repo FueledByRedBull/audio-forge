@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 from PySide6.QtCore import QPointF, Qt, qInstallMessageHandler
-from PySide6.QtGui import QAccessible, QFont
+from PySide6.QtGui import QAccessible, QColor, QFont
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QDialog
@@ -21,7 +21,7 @@ from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.calibration_support import RAINBOW_PASSAGE
 from mic_eq.ui.calibration_view import CalibrationView
 from mic_eq.ui.capture_session import LIVE_OUTPUT_MUTED_NOTICE
-from mic_eq.ui.theme import PALETTE
+from mic_eq.ui.theme import PALETTE, contrast_ratio, flatten
 from test_auto_eq_candidate_lifecycle import _Owner
 from test_setup_level_check_flow import HOT, _Session
 from test_first_run_setup import at_scene_minimum, choose, cut_short_texts, press, scene_item, scene_items, scene_text
@@ -448,11 +448,15 @@ def test_the_main_button_is_named_by_what_it_says_at_each_step(open_dialog, monk
         assert scene.name(scene_item(dialog, "overrideButton")) == "Continue Despite Clipping Risk"
 
 
-def test_the_mute_notice_is_a_warning_chip_that_says_the_call_is_muted(open_dialog) -> None:
+def test_muted_banner_uses_the_mute_role_and_says_so_in_words(open_dialog) -> None:
     dialog = open_dialog(everything=True)
     notice = scene_item(dialog, "mutedNotice")
     text = notice.property("text").lower()
-    assert notice.property("tone") == "warn" and "muted" in text and "call" in text
+    assert "muted" in text and "call" in text
+    assert QColor(notice.property("color")).name(QColor.NameFormat.HexArgb) == PALETTE.mute_fill
+    assert scene_text(dialog, "mutedLead") == "Live output muted."
+    ground = flatten(PALETTE.mute_fill, PALETTE.pane_surface)
+    assert contrast_ratio(PALETTE.mute_text, ground) >= 4.5
 
 
 def test_the_passage_is_shown_whole_and_never_scrolled_inside_the_page(open_dialog, qapp) -> None:

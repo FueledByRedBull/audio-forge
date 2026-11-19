@@ -98,7 +98,7 @@ Rectangle {
     component FadeIn: NumberAnimation {
         from: 0
         to: 1
-        duration: root.t.motion
+        duration: root.t.motionColor
         easing.type: Easing.OutCubic
     }
 
@@ -177,7 +177,7 @@ Rectangle {
             radius: 8
             color: root.t.text_primary
             scale: fader.pressed ? 1.15 : 1
-            Behavior on scale { NumberAnimation { duration: root.t.motion / 2 } }
+            Behavior on scale { NumberAnimation { duration: Look.movement(root.t.motionColor / 2) } }
             FocusRing { control: fader }
         }
     }
@@ -463,7 +463,7 @@ Rectangle {
             color: disclosure.hovered || disclosure.open
                    ? root.t.control_surface : root.t.control_surface_alt
             border.color: root.t.control_edge
-            Behavior on color { ColorAnimation { duration: root.t.motion } }
+            Behavior on color { ColorAnimation { duration: root.t.motionColor } }
             FocusRing { control: disclosure }
         }
         contentItem: RowLayout {
@@ -492,7 +492,7 @@ Rectangle {
                 color: root.t.text_primary
                 Layout.rightMargin: 14
                 rotation: disclosure.open ? 180 : 0
-                Behavior on rotation { NumberAnimation { duration: root.t.motion } }
+                Behavior on rotation { NumberAnimation { duration: Look.movement(root.t.motionColor) } }
             }
         }
     }
@@ -1667,7 +1667,7 @@ Rectangle {
                                 running: false
                                 from: 0
                                 to: -ribbonStrip.step
-                                duration: root.t.motion > 0 ? root.m.levelIntervalMs : 0
+                                duration: Look.movement(root.m.levelIntervalMs)
                             }
                             LevelRibbon {
                                 objectName: "levelRibbon"

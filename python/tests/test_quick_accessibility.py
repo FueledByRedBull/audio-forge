@@ -1225,7 +1225,7 @@ def full_motion_window(request, monkeypatch):
 
 def test_reduced_motion_keeps_the_level_trace_running(reduced_motion_window) -> None:
     bridge = reduced_motion_window.quick_bridge
-    assert bridge.model["theme"]["motion"] == 0
+    assert bridge.model["theme"]["reducedMotion"] is True
     assert bridge._trace_timer.isActive()
 
 

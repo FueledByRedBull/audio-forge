@@ -291,10 +291,9 @@ Rectangle {
                 Accessible.name: text
             }
 
-            Chip {
+            MuteBanner {
                 objectName: "mutedNotice"
                 text: root.vm.mutedNotice
-                tone: "warn"
                 Layout.fillWidth: true
             }
         }

@@ -311,7 +311,11 @@ GLASS = GlassRecipe()
 
 @dataclass(frozen=True)
 class MotionDurations:
-    """Durations in milliseconds; reduced motion swaps each for a short opacity fade."""
+    """Durations in milliseconds.
+
+    Reduced motion swaps each for a short fade, except ``busy``, the period of a sweep that
+    stops instead. Anything that moves takes 0 ms under reduced motion (``Look.movement``).
+    """
 
     color: int = 150
     status: int = 150
@@ -320,6 +324,7 @@ class MotionDurations:
     row: int = 120
     panel_open: int = 300
     panel_close: int = 200
+    busy: int = 900
 
 
 MOTION = MotionDurations()
@@ -330,11 +335,13 @@ EASE_PANEL_CLOSE = (0.42, 0.0, 1.0, 1.0)
 
 
 def motion_durations(reduced: bool) -> MotionDurations:
-    """The durations to use, with every one a short fade while reduced motion is on."""
+    """The durations to use, with each a short fade while reduced motion is on."""
 
     if not reduced:
         return MOTION
-    return MotionDurations(**{name: REDUCED_MOTION_FADE_MS for name in asdict(MOTION)})
+    return MotionDurations(
+        **{name: REDUCED_MOTION_FADE_MS for name in asdict(MOTION) if name != "busy"}
+    )
 
 
 def application_palette() -> QPalette:

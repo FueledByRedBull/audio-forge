@@ -355,53 +355,11 @@ Rectangle {
                 }
             }
 
-            // The mute's own colours, with the words leading: the live output is silent.
-            Rectangle {
+            MuteBanner {
                 objectName: "mutedNotice"
-                readonly property string text: root.vm.mutedNotice
                 visible: root.page.mutedShown
-                implicitHeight: mutedRow.implicitHeight + 20
-                radius: Look.t.radiusControl
-                color: Look.t.mute_fill
-                border.color: Look.t.mute_edge
+                text: root.vm.mutedNotice
                 Layout.fillWidth: true
-                Accessible.role: Accessible.StaticText
-                Accessible.name: text
-                RowLayout {
-                    id: mutedRow
-                    spacing: 10
-                    anchors { fill: parent; margins: 10; leftMargin: 12 }
-                    Rectangle {
-                        implicitWidth: 10
-                        implicitHeight: 10
-                        radius: 5
-                        color: Look.t.mute
-                        Layout.alignment: Qt.AlignTop
-                        Layout.topMargin: 4
-                    }
-                    ColumnLayout {
-                        spacing: 2
-                        Layout.fillWidth: true
-                        Text {
-                            objectName: "mutedLead"
-                            text: "Live output muted."
-                            textFormat: Text.PlainText
-                            color: Look.t.mute_text
-                            font.pixelSize: Look.fsBody
-                            font.weight: Font.Bold
-                            Accessible.ignored: true
-                        }
-                        Text {
-                            text: root.vm.mutedNotice
-                            textFormat: Text.PlainText
-                            color: Look.t.mute_text
-                            font.pixelSize: Look.fsBody
-                            wrapMode: Text.Wrap
-                            Layout.fillWidth: true
-                            Accessible.ignored: true
-                        }
-                    }
-                }
             }
 
             Surface {

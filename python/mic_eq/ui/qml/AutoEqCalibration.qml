@@ -252,11 +252,10 @@ Rectangle {
                 }
             }
 
-            Chip {
+            MuteBanner {
                 objectName: "mutedNotice"
                 visible: root.page.mutedShown
                 text: root.vm.mutedNotice
-                tone: "warn"
                 Layout.fillWidth: true
             }
 

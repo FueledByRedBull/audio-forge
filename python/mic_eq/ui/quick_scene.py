@@ -63,15 +63,17 @@ def quick_theme() -> dict:
         "typeFloor": TYPE_FLOOR_PX,
         "typeTick": TYPE_TICK_PX,
         "typeScale": dict(TYPE_SCALE_PX),
-        # The color change of a control; reduced motion turns it off.
-        "motion": 0 if reduced else durations.color,
+        # Under reduced motion each length is the short fade; a moving property takes 0 ms
+        # there through Look.movement, and a busy sweep stops.
         "reducedMotion": reduced,
+        "motionColor": durations.color,
         "motionStatus": durations.status,
         "motionCrossfade": durations.crossfade,
         "motionSwitch": durations.switch,
         "motionRow": durations.row,
         "motionPanelOpen": durations.panel_open,
         "motionPanelClose": durations.panel_close,
+        "motionBusy": durations.busy,
         # Easing.BezierSpline control points, ending at (1, 1).
         "easePanelOpen": [*EASE_PANEL_OPEN, 1.0, 1.0],
         "easePanelClose": [*EASE_PANEL_CLOSE, 1.0, 1.0],

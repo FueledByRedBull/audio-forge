@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 import pytest
 from PySide6.QtCore import QPointF, Qt, QTimer, qInstallMessageHandler
-from PySide6.QtGui import QAccessible, QFont
+from PySide6.QtGui import QAccessible, QColor, QFont
 from PySide6.QtMultimedia import QAudioDevice, QMediaDevices
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtTest import QTest
@@ -156,7 +156,11 @@ def test_a_text_that_changes_is_read_with_its_new_text(open_dialog) -> None:
         assert scene.name(scene_item(dialog, "statusText")) == "Moving closer helps"
         assert scene.name(scene_item(dialog, "progressText")) == "Rendering current and proposed settings..."
         assert scene.description(scene_item(dialog, "progressBar")) == "15 percent"
-    assert scene_item(dialog, "mutedNotice").isVisible()
+    notice = scene_item(dialog, "mutedNotice")
+    assert notice.isVisible()
+    # The same mute banner as the setup dialogs, told in words as well as its colour.
+    assert QColor(notice.property("color")).name(QColor.NameFormat.HexArgb) == PALETTE.mute_fill
+    assert scene_item(dialog, "mutedLead").property("text") == "Live output muted."
 
 
 @pytest.mark.parametrize("test_my_sound", [False, True])
@@ -405,6 +409,8 @@ def test_the_recording_window_loads_names_its_parts_and_shows_the_progress(qapp)
             seen["progress"] = access.description(scene_item(scene, "progressBar"))
             seen["view"] = QAccessible.queryAccessibleInterface(scene.quick_view).text(QAccessible.Text.Name)
         seen["fraction"] = scene_item(scene, "progressBar").property("fraction")
+        seen["banner"] = (QColor(scene_item(scene, "mutedNotice").property("color")).name(QColor.NameFormat.HexArgb),
+                          scene_item(scene, "mutedLead").property("text"))
         scene.dialog.reject()
 
     audio, window = _while_recording(qapp, look)
@@ -417,6 +423,7 @@ def test_the_recording_window_loads_names_its_parts_and_shows_the_progress(qapp)
     }
     assert seen["view"] == "Test my sound recording" and seen["focus"] == "cancelButton"
     assert (seen["progress"], seen["fraction"]) == ("50 percent", 0.5)
+    assert seen["banner"] == (PALETTE.mute_fill, "Live output muted.")
     assert window.mutes == [(True, "test_my_sound"), (False, "test_my_sound")], "the capture is released"
 
 

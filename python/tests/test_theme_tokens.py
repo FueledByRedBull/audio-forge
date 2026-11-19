@@ -96,7 +96,8 @@ def test_scenes_get_the_motion_durations(qapp, monkeypatch) -> None:
     monkeypatch.setenv("AUDIOFORGE_REDUCED_MOTION", "0")
     theme = quick_theme()
     assert theme["reducedMotion"] is False
-    assert (theme["motion"], theme["motionStatus"], theme["motionCrossfade"]) == (150, 150, 120)
+    assert (theme["motionColor"], theme["motionStatus"], theme["motionCrossfade"]) == (150, 150, 120)
+    assert theme["motionBusy"] == 900
     assert (theme["motionSwitch"], theme["motionRow"]) == (120, 120)
     assert (theme["motionPanelOpen"], theme["motionPanelClose"]) == (300, 200)
     assert theme["easePanelOpen"] == [0.16, 1.0, 0.3, 1.0, 1.0, 1.0]
@@ -107,11 +108,16 @@ def test_reduced_motion_swaps_every_duration_for_a_short_fade(qapp, monkeypatch)
     monkeypatch.setenv("AUDIOFORGE_REDUCED_MOTION", "1")
     theme = quick_theme()
     assert theme["reducedMotion"] is True
-    assert theme["motion"] == 0
-    fades = [theme[key] for key in theme if key.startswith("motion") and key != "motion"]
+    # Colour and opacity fade briefly; what moves takes 0 ms through Look.movement, and the
+    # busy sweep stops, so its period is not a fade.
+    assert theme["motionColor"] == REDUCED_MOTION_FADE_MS
+    fades = [theme[key] for key in theme if key.startswith("motion") and key != "motionBusy"]
     assert len(fades) == len(asdict(MOTION)) - 1
     assert set(fades) == {REDUCED_MOTION_FADE_MS}
-    assert set(asdict(motion_durations(True)).values()) == {REDUCED_MOTION_FADE_MS}
+    assert theme["motionBusy"] == MOTION.busy
+    assert {n: v for n, v in asdict(motion_durations(True)).items() if n != "busy"} == {
+        n: REDUCED_MOTION_FADE_MS for n in asdict(MOTION) if n != "busy"
+    }
     assert motion_durations(False) == MOTION
 
 
@@ -289,11 +295,74 @@ def test_a_switch_that_is_on_differs_from_one_that_is_off_by_more_than_hue() -> 
     assert build_palette(SYSTEM_COLORS).switch_on == SYSTEM_COLORS["window_text"]
 
 
-@pytest.mark.parametrize("name", ["Main.qml", "SwitchButton.qml"])
-def test_scene_animations_take_their_length_from_the_motion_tokens(name) -> None:
-    durations = re.findall(r"duration:\s*([^;}\n]+)", (QML_DIR / name).read_text(encoding="utf-8"))
-    assert durations
-    assert all(re.search(r"\bt\.motion\w*\b", value) for value in durations), durations
+# Properties that move something; an animation on one takes 0 ms under reduced motion.
+_MOVING = {"x", "y", "z", "scale", "rotation", "width", "height", "progress", "contentX", "contentY", "position"}
+_QML_FILES = sorted(QML_DIR.glob("*.qml"))
+
+
+def _timed_animations(source: str) -> list[tuple[str, str]]:
+    """Every ``duration:`` in ``source`` as (the property it animates, its expression).
+
+    The property is the ``property:`` of the animation block or the ``on <name>`` of its header
+    or of an enclosing one; it is empty when neither says (a reusable animation type).
+    """
+
+    blocks: list[tuple[int, int, str]] = []
+    opened: list[tuple[int, str]] = []
+    for match in re.finditer(r"[{}]", source):
+        if match.group() == "{":
+            header = re.split(r"[{}\n]", source[: match.start()])[-1].strip()
+            opened.append((match.start(), header))
+        else:
+            start, header = opened.pop()
+            blocks.append((start, match.start(), header))
+    found = []
+    for duration in re.finditer(r"\bduration:\s*([^;}\r\n]+)", source):
+        around = sorted((b for b in blocks if b[0] < duration.start() < b[1]), key=lambda b: b[0])
+        start, end, _ = around[-1]
+        body = source[start + 1 : end]
+        while "{" in body:
+            body = re.sub(r"\{[^{}]*\}", "", body)
+        named = re.search(r'\bproperty:\s*"(\w+)"', body)
+        target = named.group(1) if named else next(
+            (m.group(1) for _, _, header in reversed(around) if (m := re.search(r"\bon\s+(\w+)$", header))), ""
+        )
+        found.append((target, duration.group(1).strip()))
+    return found
+
+
+def test_scene_animations_take_their_length_from_the_motion_tokens() -> None:
+    timed = [
+        (path.name, duration)
+        for path in _QML_FILES
+        for _, duration in _timed_animations(path.read_text(encoding="utf-8"))
+    ]
+    assert len(timed) >= 20
+    # The meter's reading interval is the only length that is not a theme token.
+    token = r"\bt\.motion[A-Z]\w*\b"
+    assert [(name, d) for name, d in timed if not re.search(token, d) and "m.levelIntervalMs" not in d] == []
+    assert {name for name, d in timed if "levelIntervalMs" in d} == {"Main.qml"}
+
+
+def test_moving_animations_go_through_movement() -> None:
+    moving = []
+    for path in _QML_FILES:
+        source = path.read_text(encoding="utf-8")
+        for target, duration in _timed_animations(source):
+            if target in _MOVING:
+                moving.append((path.name, target, duration))
+            elif target == "phase":
+                # The busy sweep moves a block along its track; reduced motion stops it.
+                assert "running: bar.busy && !Look.reducedMotion" in source, path.name
+    assert [item for item in moving if "Look.movement(" not in item[2]] == []
+    # The inspector slide, the switch knob, the chevron, the fader handle and the ribbon are found.
+    assert {target for _, target, _ in moving} >= {"x", "scale", "rotation", "progress"}
+
+
+def test_no_scene_reads_the_retired_motion_key() -> None:
+    retired = re.compile(r"\bt\.motion\b|\bt\[\"motion\"\]|\btheme\.motion\b")
+    assert [path.name for path in _QML_FILES if retired.search(path.read_text(encoding="utf-8"))] == []
+    assert "motion" not in quick_theme() and "motionColor" in quick_theme()
 
 
 def test_new_band_colors_keep_band_numbers_readable() -> None:

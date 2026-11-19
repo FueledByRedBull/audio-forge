@@ -496,6 +496,7 @@ fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(config_ranges::processing_ranges, m)?)?;
+    m.add_function(wrap_pyfunction!(config_ranges::processing_defaults, m)?)?;
     m.add_function(wrap_pyfunction!(config_ranges::noise_model_ids, m)?)?;
 
     analysis::headroom::register(m)?;

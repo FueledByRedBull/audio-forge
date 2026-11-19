@@ -1,4 +1,4 @@
-"""Finish a take the way the dialogs now do: its post-processing runs on a worker."""
+"""Setup-dialog helpers: finish a take on its post-processing worker, wire a dialog as the window does."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import numpy as np
 from PySide6.QtWidgets import QApplication
 
 from mic_eq.ui.analysis_worker import CaptureAnalysisWorker
+from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog
 
 
 def settle(dialog: Any) -> None:
@@ -23,6 +24,20 @@ def settle(dialog: Any) -> None:
 def finish_take(dialog: Any, audio: np.ndarray) -> None:
     dialog._on_recording_complete(audio)
     settle(dialog)
+
+
+def wired_latency_dialog(parent: Any, *args: Any, **kwargs: Any) -> LatencyCalibrationDialog:
+    """The latency dialog saving through its parent's handlers, as MainWindow wires it.
+
+    The handlers are looked up when used, so a test can still swap them after building the dialog.
+    """
+    return LatencyCalibrationDialog(
+        parent,
+        *args,
+        save_profile=lambda profile: parent._on_latency_calibration_saved(profile),
+        reset_profile=lambda: parent._on_latency_calibration_reset(),
+        **kwargs,
+    )
 
 
 RATE = 48_000

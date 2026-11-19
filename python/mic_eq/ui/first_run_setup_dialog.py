@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import Qt, QTimer
@@ -155,9 +156,23 @@ class FirstRunSetupLoadError(RuntimeError):
 class FirstRunSetupDialog(QDialog):
     """Persisted setup flow for selecting a route and running checks."""
 
-    def __init__(self, owner: Any, *, restart_completed: bool = False):
+    def __init__(
+        self,
+        owner: Any,
+        *,
+        restart_completed: bool = False,
+        device_changed: Callable[[], object],
+        run_voice_setup: Callable[[], bool],
+        run_latency: Callable[[], bool] | None,
+    ):
+        """The ``run_*`` callables open Voice Setup and latency calibration and say whether each
+        applied or saved; without ``run_latency`` the setup offers no latency calibration.
+        """
         super().__init__(owner)
         self.owner = owner
+        self._device_changed = device_changed
+        self._run_voice_setup = run_voice_setup
+        self._run_latency = run_latency
         self.setWindowTitle("AudioForge Setup")
         self.setModal(True)
         # The scene comes first: if it cannot load, the saved progress is left as it was.
@@ -258,7 +273,7 @@ class FirstRunSetupDialog(QDialog):
         )
         self.view_model.set_muted(self.owner.engine_session.view.user_muted)
         self.view_model.set_page(
-            latencyEnabled=callable(getattr(self.owner, "_on_latency_calibration_clicked", None))
+            latencyEnabled=self._run_latency is not None
         )
         register_qml_types()
         self.quick_view = QQuickWidget(self)
@@ -464,7 +479,7 @@ class FirstRunSetupDialog(QDialog):
             output_combo.blockSignals(output_signals_blocked)
         if route_changed:
             self._route_check_phase = "speech"
-            self.owner._on_device_changed()
+            self._device_changed()
         return (
             input_combo.currentIndex() == input_index
             and output_combo.currentIndex() == output_index
@@ -536,7 +551,7 @@ class FirstRunSetupDialog(QDialog):
             launcher = self._scene_focus()
             self.hide()
             try:
-                applied = bool(self.owner._on_auto_voice_setup_clicked())
+                applied = bool(self._run_voice_setup())
             except Exception:
                 logger.exception("Voice Setup failed inside the first-run setup")
                 applied = False
@@ -592,7 +607,7 @@ class FirstRunSetupDialog(QDialog):
         launcher = self._scene_focus()
         self.hide()
         try:
-            saved = bool(self.owner._on_latency_calibration_clicked())
+            saved = self._run_latency is not None and bool(self._run_latency())
         except Exception:
             logger.exception("Latency calibration failed inside the first-run setup")
             saved = False

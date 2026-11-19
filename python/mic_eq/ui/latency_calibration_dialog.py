@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Callable
 from math import gcd
 from typing import Any
 
@@ -149,10 +150,20 @@ class LatencyCalibrationLoadError(RuntimeError):
 class LatencyCalibrationDialog(QDialog):
     """Dialog that runs and applies latency calibration."""
 
-    def __init__(self, parent=None, existing_profile: dict | None = None):
+    def __init__(
+        self,
+        parent=None,
+        existing_profile: dict | None = None,
+        *,
+        save_profile: Callable[[dict], bool],
+        reset_profile: Callable[[], bool],
+    ):
+        """``save_profile`` stores a measured profile, ``reset_profile`` drops it; both say if that was saved."""
         super().__init__(parent)
         self.setWindowTitle("Latency Calibration")
         self.setModal(True)
+        self._save_profile = save_profile
+        self._reset_profile = reset_profile
 
         self.worker: LatencyCalibrationWorker | None = None
         self._capture_session: CaptureSession | None = None
@@ -506,7 +517,7 @@ class LatencyCalibrationDialog(QDialog):
             )
             return
 
-        if owner is None or not owner._on_latency_calibration_saved(self._latest_profile):
+        if owner is None or not self._save_profile(self._latest_profile):
             self.view_model.set_status(
                 "Calibration could not be saved. Check settings-folder access and retry."
             )
@@ -514,8 +525,7 @@ class LatencyCalibrationDialog(QDialog):
         self.accept()
 
     def _on_reset_clicked(self):
-        owner = find_processor_owner(self.parent())
-        if owner is None or not owner._on_latency_calibration_reset():
+        if find_processor_owner(self.parent()) is None or not self._reset_profile():
             self.view_model.set_status("Calibration reset could not be saved. Retry when settings can be saved.")
             return
         self._latest_profile = None

@@ -18,11 +18,11 @@ from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QDialog
 
 from mic_eq.ui.calibration_dialog import CalibrationDialog
-from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog
 from mic_eq.ui.listening_comparison_dialog import ListeningComparisonDialog
 from test_listening_comparison import _settings
 from test_setup_level_check_flow import voice  # noqa: F401  (a fixture)
 from test_voice_setup_integration import real_main_window  # noqa: F401  (a fixture)
+from capture_helpers import wired_latency_dialog
 
 REJECTED = int(QDialog.DialogCode.Rejected)
 
@@ -179,7 +179,7 @@ def test_auto_eq_stops_its_recording_and_analysis_when_closed(
 def test_latency_calibration_stops_its_measurement_when_closed(
     isolated_main_window, qapp, ending
 ) -> None:
-    dialog = LatencyCalibrationDialog(isolated_main_window)
+    dialog = wired_latency_dialog(isolated_main_window)
     qapp.setProperty("audioforge_session_ending", ending)
     try:
         dialog.show()

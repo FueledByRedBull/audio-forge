@@ -17,8 +17,9 @@ from mic_eq.config import (
     build_device_route_key,
 )
 from mic_eq.ui.main_window import MainWindow
-from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog, LatencyCalibrationLoadError
+from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationLoadError
 from engine_fakes import fake_session
+from capture_helpers import wired_latency_dialog
 
 
 def _profile(context: tuple[int | None, ...] | None) -> LatencyCalibrationProfile:
@@ -124,7 +125,7 @@ def test_latency_dialog_waits_for_successful_save_before_accepting(qapp):
     owner._calibration_context_key = lambda: "context"
     owner._on_latency_calibration_saved = Mock(return_value=False)
     profile = _profile((48_000, 1, 48_000, 2)).to_dict()
-    dialog = LatencyCalibrationDialog(owner, existing_profile=profile)
+    dialog = wired_latency_dialog(owner, existing_profile=profile)
     try:
         dialog._on_accept_clicked()
         assert dialog.result() == dialog.DialogCode.Rejected
@@ -146,6 +147,8 @@ def test_cancelled_latency_dialog_does_not_report_an_old_profile_as_saved(monkey
         _latency_profile_key=lambda: "route",
         _current_latency_profile=lambda: _profile((48_000, 1, 48_000, 2)),
         _refresh_latency_profile_engine=lambda _profile: False,
+        _on_latency_calibration_saved=Mock(),
+        _on_latency_calibration_reset=Mock(),
         _calibration_dialog_open=False,
         processor=Mock(is_recovery_suppressed=Mock(return_value=False)),
     )
@@ -163,6 +166,8 @@ def test_a_latency_dialog_that_cannot_load_tells_the_user_and_reports_nothing_sa
     owner = SimpleNamespace(
         _latency_profile_key=lambda: "route",
         _current_latency_profile=lambda: None,
+        _on_latency_calibration_saved=Mock(),
+        _on_latency_calibration_reset=Mock(),
         _calibration_dialog_open=False,
         processor=Mock(is_recovery_suppressed=Mock(return_value=False)),
     )
@@ -352,7 +357,7 @@ def test_dialog_rejects_result_after_route_context_changes(qapp):
             return self.context
 
     owner = Owner()
-    dialog = LatencyCalibrationDialog(
+    dialog = wired_latency_dialog(
         owner,
         existing_profile={
             "capture_format_context": [48_000, 1, 48_000, 2],
@@ -390,7 +395,7 @@ def test_failed_retake_clears_old_profile_before_accept(qapp, monkeypatch):
             return self.route
 
     owner = Owner()
-    dialog = LatencyCalibrationDialog(
+    dialog = wired_latency_dialog(
         owner,
         existing_profile={
             "capture_format_context": [48_000, 1, 48_000, 2],
@@ -459,7 +464,7 @@ def test_running_stream_on_different_route_is_rejected(qapp):
             return "selected-context"
 
     owner = Owner()
-    dialog = LatencyCalibrationDialog(owner)
+    dialog = wired_latency_dialog(owner)
 
     dialog._on_run_clicked()
 

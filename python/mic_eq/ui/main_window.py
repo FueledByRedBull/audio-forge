@@ -1883,7 +1883,13 @@ class MainWindow(QMainWindow):
         self, _checked: bool = False, *, restart_completed: bool = True
     ) -> None:
         try:
-            dialog = FirstRunSetupDialog(self, restart_completed=restart_completed)
+            dialog = FirstRunSetupDialog(
+                self,
+                restart_completed=restart_completed,
+                device_changed=self._on_device_changed,
+                run_voice_setup=self._on_auto_voice_setup_clicked,
+                run_latency=self._on_latency_calibration_clicked,
+            )
         except FirstRunSetupLoadError as error:
             logger.error("Guided Setup did not open: %s", error)
             QMessageBox.critical(
@@ -2240,7 +2246,12 @@ class MainWindow(QMainWindow):
         existing_profile = profile.to_dict() if profile is not None else None
 
         try:
-            dialog = LatencyCalibrationDialog(self, existing_profile=existing_profile)
+            dialog = LatencyCalibrationDialog(
+                self,
+                existing_profile=existing_profile,
+                save_profile=self._on_latency_calibration_saved,
+                reset_profile=self._on_latency_calibration_reset,
+            )
         except LatencyCalibrationLoadError as error:
             logger.error("Latency calibration did not open: %s", error)
             QMessageBox.critical(

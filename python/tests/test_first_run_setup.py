@@ -153,6 +153,23 @@ def save_config_ok(monkeypatch):
     )
 
 
+def wired_setup_dialog(owner: Any, **kwargs: Any) -> FirstRunSetupDialog:
+    """The dialog wired to the owner's handlers, as MainWindow wires it to its own.
+
+    The handlers are looked up when used, so a test can still swap them after building the
+    dialog; an owner without a latency handler gets a setup without latency calibration.
+    """
+    return FirstRunSetupDialog(
+        owner,
+        device_changed=lambda: owner._on_device_changed(),
+        run_voice_setup=lambda: owner._on_auto_voice_setup_clicked(),
+        run_latency=None
+        if getattr(owner, "_on_latency_calibration_clicked", None) is None
+        else lambda: owner._on_latency_calibration_clicked(),
+        **kwargs,
+    )
+
+
 def opening_setup_dialogs(qapp):
     """Build the dialog and show it, so the scene takes real clicks and keys.
 
@@ -161,7 +178,7 @@ def opening_setup_dialogs(qapp):
     made: list[FirstRunSetupDialog] = []
 
     def make(owner: Any, **kwargs: Any) -> FirstRunSetupDialog:
-        dialog = FirstRunSetupDialog(owner, **kwargs)
+        dialog = wired_setup_dialog(owner, **kwargs)
         made.append(dialog)
         dialog.show()
         qapp.processEvents()
@@ -349,7 +366,7 @@ def test_closing_during_level_check_stops_only_processing_it_started(
 ):
     config = _route_step_config()
     owner = _Owner(config, _Processor(running=running_before))
-    dialog = FirstRunSetupDialog(owner)
+    dialog = wired_setup_dialog(owner)
 
     dialog._run_current_step()
     assert dialog._route_check_timer.isActive()
@@ -374,7 +391,7 @@ def test_setup_mute_control_tracks_external_owner_changes(qapp, open_setup):
 def test_setup_records_skips_and_can_resume_them(qapp, save_config_ok):
     config = AppConfig()
     owner = _Owner(config, _Processor(running=True))
-    dialog = FirstRunSetupDialog(owner)
+    dialog = wired_setup_dialog(owner)
 
     for _step in range(3):
         dialog._skip_step()
@@ -386,7 +403,7 @@ def test_setup_records_skips_and_can_resume_them(qapp, save_config_ok):
     )
     assert config.first_run_setup_steps["latency"] == "pending"
 
-    resumed = FirstRunSetupDialog(owner)
+    resumed = wired_setup_dialog(owner)
     assert resumed.current_step == "devices"
     assert all(
         config.first_run_setup_steps[step] == "pending"
@@ -505,7 +522,7 @@ def test_setup_keeps_same_running_route(qapp, save_config_ok):
     config = AppConfig()
     processor = _Processor(running=True)
     owner = _Owner(config, processor)
-    dialog = FirstRunSetupDialog(owner)
+    dialog = wired_setup_dialog(owner)
 
     dialog._run_current_step()
 
@@ -517,7 +534,7 @@ def test_setup_destination_confirmation_rechecks_mute_and_stream(qapp, save_conf
     config = _route_step_config()
     processor = _Processor(running=True)
     owner = _Owner(config, processor)
-    dialog = FirstRunSetupDialog(owner)
+    dialog = wired_setup_dialog(owner)
 
     dialog._route_check_phase = "destination"
     owner.user_muted = True
@@ -535,7 +552,7 @@ def test_setup_destination_confirmation_rechecks_mute_and_stream(qapp, save_conf
 def test_setup_ignores_late_route_timer_after_navigation(qapp, save_config_ok):
     config = _route_step_config()
     owner = _Owner(config, _Processor())
-    dialog = FirstRunSetupDialog(owner)
+    dialog = wired_setup_dialog(owner)
 
     dialog._run_current_step()
     assert dialog._route_check_pending is True
@@ -551,7 +568,7 @@ def test_setup_ignores_late_route_timer_after_navigation(qapp, save_config_ok):
 def test_setup_missing_devices_stays_on_route_selection(qapp, save_config_ok):
     owner = _Owner(AppConfig(), _Processor())
     owner.output_choice.clear()
-    dialog = FirstRunSetupDialog(owner)
+    dialog = wired_setup_dialog(owner)
 
     dialog._run_current_step()
 
@@ -624,7 +641,7 @@ def test_setup_resumes_legacy_saved_latency_step(qapp, save_config_ok):
     )
     owner = _Owner(config, _Processor())
     owner.latency_saved = True
-    dialog = FirstRunSetupDialog(owner)
+    dialog = wired_setup_dialog(owner)
 
     assert dialog.current_step == "latency"
     dialog._run_current_step()
@@ -657,7 +674,7 @@ def test_setup_save_false_keeps_navigation_usable_and_marks_progress_unsaved(
         "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: False
     )
     owner = _Owner(AppConfig(), _Processor())
-    dialog = FirstRunSetupDialog(owner)
+    dialog = wired_setup_dialog(owner)
 
     dialog._run_current_step()
 
@@ -676,7 +693,7 @@ def test_setup_save_exceptions_keep_dialog_usable(qapp, monkeypatch, failure):
     monkeypatch.setattr(
         "mic_eq.ui.first_run_setup_dialog.save_config", fail_save
     )
-    dialog = FirstRunSetupDialog(_Owner(AppConfig(), _Processor()))
+    dialog = wired_setup_dialog(_Owner(AppConfig(), _Processor()))
 
     assert dialog.current_step == "devices"
     assert dialog._progress_unsaved is True
@@ -707,7 +724,7 @@ def test_setup_failed_finish_offers_retry_without_repeating_voice(qapp, monkeypa
     )
     owner = _Owner(config, _Processor())
     owner.voice_applied = True
-    dialog = FirstRunSetupDialog(owner)
+    dialog = wired_setup_dialog(owner)
 
     dialog._run_current_step()
 
@@ -779,7 +796,7 @@ def test_resume_skipped_voice_does_not_enter_optional_latency(qapp, save_config_
         first_run_setup_steps={"devices": "completed", "route": "completed",
                                "latency": "pending", "voice": "skipped"},
     )
-    dialog = FirstRunSetupDialog(_Owner(config, _Processor()))
+    dialog = wired_setup_dialog(_Owner(config, _Processor()))
     assert dialog.current_step == "voice"
     assert config.first_run_setup_steps["latency"] == "pending"
     dialog.reject()
@@ -788,7 +805,7 @@ def test_resume_skipped_voice_does_not_enter_optional_latency(qapp, save_config_
 def test_route_feedback_shows_idle_levels_when_processor_stops(qapp, save_config_ok):
     config = _route_step_config()
     processor = _Processor(running=True)
-    dialog = FirstRunSetupDialog(_Owner(config, processor))
+    dialog = wired_setup_dialog(_Owner(config, processor))
     input_meter, output_meter = dialog.view_model.input_meter, dialog.view_model.output_meter
 
     processor.running = False
@@ -823,7 +840,7 @@ def test_closing_rerun_setup_restores_completed_state(
         first_run_setup_steps={"devices": outcome, "route": "completed",
                                "latency": "pending", "voice": outcome},
     )
-    dialog = FirstRunSetupDialog(_Owner(config, _Processor()), restart_completed=True)
+    dialog = wired_setup_dialog(_Owner(config, _Processor()), restart_completed=True)
     saves_after_constructor = len(saved_states)
     dialog._skip_step()
     saves_after_step_change = len(saved_states)
@@ -845,7 +862,7 @@ def test_finishing_rerun_setup_ends_completed(qapp, monkeypatch):
         lambda config: saved_states.append(config.first_run_setup_state) or True,
     )
     config = AppConfig(first_run_setup_state="completed")
-    dialog = FirstRunSetupDialog(_Owner(config, _Processor()), restart_completed=True)
+    dialog = wired_setup_dialog(_Owner(config, _Processor()), restart_completed=True)
     for step in ("devices", "route", "voice"):
         config.first_run_setup_steps[step] = "completed"
 
@@ -863,7 +880,7 @@ def test_skipping_through_rerun_setup_ends_completed_with_skips(qapp, monkeypatc
         lambda config: saved_states.append(config.first_run_setup_state) or True,
     )
     config = AppConfig(first_run_setup_state="completed")
-    dialog = FirstRunSetupDialog(_Owner(config, _Processor()), restart_completed=True)
+    dialog = wired_setup_dialog(_Owner(config, _Processor()), restart_completed=True)
 
     for _step in range(3):
         dialog._skip_step()
@@ -877,7 +894,7 @@ def test_skipping_through_rerun_setup_ends_completed_with_skips(qapp, monkeypatc
 @pytest.mark.parametrize("entry_state", ["not_started", "in_progress"])
 def test_closing_first_run_setup_stays_in_progress(qapp, save_config_ok, entry_state):
     config = AppConfig(first_run_setup_state=entry_state)
-    FirstRunSetupDialog(_Owner(config, _Processor())).reject()
+    wired_setup_dialog(_Owner(config, _Processor())).reject()
 
     assert config.first_run_setup_state == "in_progress"
 
@@ -898,7 +915,7 @@ def test_rerun_resumes_paused_progress_from_settings(qapp, monkeypatch, how):
         first_run_setup_steps={step: "completed" for step in FIRST_RUN_SETUP_STEPS},
     )
     owner = _Owner(config, _Processor())
-    dialog = FirstRunSetupDialog(owner, restart_completed=True)
+    dialog = wired_setup_dialog(owner, restart_completed=True)
     config.first_run_setup_steps["devices"] = "completed"
     dialog._advance_or_finish()
     if how == "reject":
@@ -906,7 +923,7 @@ def test_rerun_resumes_paused_progress_from_settings(qapp, monkeypatch, how):
     else:
         assert dialog._finish_setup() is True
 
-    resumed = FirstRunSetupDialog(owner, restart_completed=True)
+    resumed = wired_setup_dialog(owner, restart_completed=True)
 
     assert config.first_run_setup_steps["devices"] == "completed"
     assert resumed.current_step == "route"
@@ -919,7 +936,7 @@ def test_fully_completed_setup_restarts_from_settings(qapp, save_config_ok):
         first_run_setup_step="voice",
         first_run_setup_steps={step: "completed" for step in FIRST_RUN_SETUP_STEPS},
     )
-    dialog = FirstRunSetupDialog(_Owner(config, _Processor()), restart_completed=True)
+    dialog = wired_setup_dialog(_Owner(config, _Processor()), restart_completed=True)
 
     assert dialog.current_step == "devices"
     assert set(config.first_run_setup_steps.values()) == {"pending"}
@@ -933,7 +950,7 @@ def test_failed_save_on_close_keeps_entry_state_in_memory(qapp, monkeypatch, ent
         lambda _config: next(save_results),
     )
     config = AppConfig(first_run_setup_state=entry_state)
-    dialog = FirstRunSetupDialog(_Owner(config, _Processor()), restart_completed=True)
+    dialog = wired_setup_dialog(_Owner(config, _Processor()), restart_completed=True)
 
     dialog.reject()
 
@@ -975,7 +992,7 @@ def test_rerun_failed_save_messages_do_not_promise_a_launch_prompt(qapp, monkeyp
         "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: False
     )
     config = AppConfig(first_run_setup_state="completed")
-    dialog = FirstRunSetupDialog(_Owner(config, _Processor()), restart_completed=True)
+    dialog = wired_setup_dialog(_Owner(config, _Processor()), restart_completed=True)
 
     assert "launch" not in scene_text(dialog, "statusText")
     dialog.reject()
@@ -1009,7 +1026,7 @@ def test_onboarding_route_check_stops_for_user_mute(qapp, save_config_ok) -> Non
             return True
 
     owner = Owner()
-    dialog = FirstRunSetupDialog(owner)
+    dialog = wired_setup_dialog(owner)
     try:
         dialog._run_current_step()
         assert owner.start_calls == 0

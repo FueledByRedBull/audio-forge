@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QDialog, QWidget
 from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog, LatencyCalibrationLoadError
 from mic_eq.ui.latency_calibration_view import NO_READINGS, LatencyCalibrationView
 from test_quick_shell import _AccessibleScene
+from capture_helpers import wired_latency_dialog
 
 PROFILE = {
     "capture_format_context": [48_000, 1, 48_000, 2],
@@ -43,7 +44,7 @@ def dialog(qapp):
     made: list[LatencyCalibrationDialog] = []
 
     def make(profile: dict | None = None) -> LatencyCalibrationDialog:
-        dialog = LatencyCalibrationDialog(None, existing_profile=profile)
+        dialog = wired_latency_dialog(None, existing_profile=profile)
         made.append(dialog)
         dialog.show()
         qapp.processEvents()
@@ -311,7 +312,7 @@ def test_a_scene_that_does_not_load_raises_before_anything_is_connected(qapp, mo
     monkeypatch.setattr("mic_eq.ui.latency_calibration_dialog.load_scene", lambda *_args: "no such file")
     parent = QWidget()
     with pytest.raises(LatencyCalibrationLoadError, match="no such file"):
-        LatencyCalibrationDialog(parent)
+        wired_latency_dialog(parent)
     assert connected == []
     assert parent.findChildren(QDialog) == []
     parent.deleteLater()

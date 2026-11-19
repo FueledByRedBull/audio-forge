@@ -33,6 +33,32 @@ CLIP_FLAT_TOP_SAMPLES = round(48_000 * CLIP_FLAT_TOP_S)
 CLIP_STRIP_SECONDS = 0.5
 # How far back peaks are remembered for the health advice.
 RECENT_PEAK_SECONDS = 10.0
+# A segmented bar's steps: each is lit or not, with a gap between, so the level reads by length.
+# They stay inside the track's rounded ends and leave its ring showing above and below.
+SEGMENT_PITCH = 4.0
+SEGMENT_GAP = 1.0
+SEGMENT_INSET_X = 2.0
+SEGMENT_INSET_Y = 1.0
+
+
+def level_ramp(x1: float, y1: float, x2: float, y2: float) -> QLinearGradient:
+    """The level colors from quiet at (x1, y1) to full scale at (x2, y2): blue-grey, yellow, then red."""
+    gradient = QLinearGradient(x1, y1, x2, y2)
+    gradient.setColorAt(0.0, qcolor(PALETTE.meter_safe))
+    gradient.setColorAt(0.67, qcolor(PALETTE.meter_caution))  # -20 dB
+    gradient.setColorAt(0.9, qcolor(PALETTE.meter_danger))  # -6 dB
+    gradient.setColorAt(1.0, qcolor(PALETTE.meter_danger))  # 0 dB
+    return gradient
+
+
+def _step_lefts(width: float) -> list[float]:
+    """The left edge of each step that fits inside a bar ``width`` wide."""
+    lefts = []
+    left = SEGMENT_INSET_X
+    while left + SEGMENT_PITCH - SEGMENT_GAP <= width - SEGMENT_INSET_X:
+        lefts.append(left)
+        left += SEGMENT_PITCH
+    return lefts
 
 
 def _linear_to_db(value: float | None) -> float | None:
@@ -119,6 +145,10 @@ class MeterModel(QObject):
 
     def paint_bar(self, painter: QPainter, width: float, height: float) -> None:
         """Paint this meter as a thin horizontal bar, quiet at the left."""
+        raise NotImplementedError
+
+    def paint_segmented_bar(self, painter: QPainter, width: float, height: float) -> None:
+        """Paint this meter as a horizontal bar of short steps, quiet at the left."""
         raise NotImplementedError
 
 
@@ -400,14 +430,7 @@ class LevelMeter(MeterModel):
         if self.rms_db > self.DB_MIN:
             bar_rect = QRectF(4, rms_y, meter_width - 6, meter_height + 4 - rms_y)
 
-            # Create gradient
-            gradient = QLinearGradient(0, meter_height + 4, 0, 4)
-            gradient.setColorAt(0.0, self.COLOR_GREEN)  # Bottom (quiet)
-            gradient.setColorAt(0.67, self.COLOR_YELLOW)  # -20 dB
-            gradient.setColorAt(0.9, self.COLOR_RED)  # -6 dB
-            gradient.setColorAt(1.0, self.COLOR_RED)  # 0 dB
-
-            painter.fillRect(bar_rect, gradient)
+            painter.fillRect(bar_rect, level_ramp(0, meter_height + 4, 0, 4))
 
         # Draw peak hold line
         if self.peak_hold_db > self.DB_MIN:
@@ -483,12 +506,7 @@ class LevelMeter(MeterModel):
             return width * (1.0 - self._db_to_y(db, 1.0))
 
         if self.rms_db > self.DB_MIN:
-            gradient = QLinearGradient(0, 0, width, 0)
-            gradient.setColorAt(0.0, self.COLOR_GREEN)
-            gradient.setColorAt(0.67, self.COLOR_YELLOW)
-            gradient.setColorAt(0.9, self.COLOR_RED)
-            gradient.setColorAt(1.0, self.COLOR_RED)
-            painter.setBrush(gradient)
+            painter.setBrush(level_ramp(0, 0, width, 0))
             painter.drawRoundedRect(QRectF(0, 0, x_of(self.rms_db), height), radius, radius)
 
         if self.peak_hold_db > self.DB_MIN:
@@ -498,6 +516,44 @@ class LevelMeter(MeterModel):
 
         if self.is_clipping:
             painter.fillRect(QRectF(width - 4.0, 0, 4.0, height), self.COLOR_CLIP)
+
+    def paint_segmented_bar(self, painter: QPainter, width: float, height: float) -> None:
+        """Paint the level as a row of steps lit up to the level, with the peak hold line and the clip strip."""
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        radius = height / 2
+        # The dark track with its ring, so the unlit steps read against the pane behind.
+        painter.setPen(QPen(qcolor(PALETTE.meter_track_ring), 1.0))
+        painter.setBrush(qcolor(PALETTE.meter_track))
+        painter.drawRoundedRect(QRectF(0.5, 0.5, width - 1.0, height - 1.0), radius - 0.5, radius - 0.5)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        def x_of(db: float) -> float:
+            return width * (1.0 - self._db_to_y(db, 1.0))
+
+        # Steps sit inside the track's rounded ends; a step lights once the level reaches into it.
+        lit_to = x_of(self.rms_db) if self.rms_db > self.DB_MIN else 0.0
+        steps = [
+            QRectF(left, SEGMENT_INSET_Y, SEGMENT_PITCH - SEGMENT_GAP, height - 2 * SEGMENT_INSET_Y)
+            for left in _step_lefts(width)
+        ]
+        # The ramp spans the whole bar, so a lit step keeps the color of its place on the scale.
+        painter.setBrush(level_ramp(0, 0, width, 0))
+        for step in steps:
+            if step.left() < lit_to:
+                painter.drawRect(step)
+        painter.setBrush(qcolor(PALETTE.meter_segment_off))
+        for step in steps:
+            if step.left() >= lit_to:
+                painter.drawRect(step)
+
+        inner = QRectF(SEGMENT_INSET_X, SEGMENT_INSET_Y, width - 2 * SEGMENT_INSET_X, height - 2 * SEGMENT_INSET_Y)
+        if self.peak_hold_db > self.DB_MIN:
+            peak_color = self.COLOR_CLIP if self.peak_hold_db >= -0.5 else self.COLOR_PEAK_HOLD
+            x = max(inner.left() + 1.0, min(inner.right() - 1.0, x_of(self.peak_hold_db)))
+            painter.fillRect(QRectF(x - 1.0, inner.top(), 2.0, inner.height()), peak_color)
+
+        if self.is_clipping:
+            painter.fillRect(QRectF(inner.right() - 4.0, inner.top(), 4.0, inner.height()), self.COLOR_CLIP)
 
 
 class GainReductionMeter(MeterModel):

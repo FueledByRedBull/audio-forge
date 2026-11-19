@@ -261,7 +261,7 @@ def test_a_contrast_theme_takes_every_surface_text_and_accent_from_the_system() 
         palette.action_secondary,
     ]
     assert set(surfaces) == {SYSTEM_COLORS["window"]}
-    assert {palette.text_primary, palette.text_muted, palette.data_text, palette.border} == {
+    assert {palette.text_primary, palette.text_muted, palette.data_text, palette.border, palette.accent_text} == {
         SYSTEM_COLORS["window_text"]
     }
     assert palette.action_disabled_text == SYSTEM_COLORS["gray_text"]

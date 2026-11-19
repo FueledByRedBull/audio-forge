@@ -235,7 +235,8 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         meter_scale=text, meter_peak=text,
         pane_surface=window, toolbar_top=window, toolbar_bottom=window,
         sidebar_top=window, sidebar_bottom=window, focus_ring=accent, text_dim=text,
-        accent_text=accent, accent_soft=on_accent, accent_bright=on_accent,
+        # Highlight is a fill colour in these themes, not one made to be read on the window.
+        accent_text=text, accent_soft=on_accent, accent_bright=on_accent,
         accent_fill=accent, accent_edge=accent,
         mute=accent, text_on_mute=on_accent, mute_text=text, mute_fill=window, mute_edge=accent,
         callers_affected=text, callers_affected_text=text, callers_affected_fill=window,

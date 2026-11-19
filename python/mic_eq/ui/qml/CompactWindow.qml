@@ -3,6 +3,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Templates as T
 import AudioForge
 
 Rectangle {
@@ -20,11 +21,46 @@ Rectangle {
 
     color: t.app_surface
 
-    // A stray Escape during a call must not close or move anything.
-    Keys.onEscapePressed: event => event.accepted = true
-
     TextMetrics { id: clipMetrics; text: "CLIP"; font.pixelSize: Look.fsCaption; font.weight: Font.DemiBold }
     TextMetrics { id: outMetrics; text: "OUT"; font.pixelSize: Look.fsCaption; font.weight: Font.DemiBold }
+
+    // One shared tooltip, kept inside this small window.
+    Tip {
+        id: tip
+        objectName: "compactTooltip"
+        delay: 500
+        margins: 8
+        width: Math.min(implicitWidth, root.width - 2 * margins)
+    }
+
+    function showTip(item, text) {
+        if (text === "")
+            return
+        tip.parent = item
+        tip.text = text
+        tip.open()
+    }
+
+    function hideTip(item) {
+        if (tip.parent === item)
+            tip.close()
+    }
+
+    // Hovering the parent or moving keyboard focus onto it shows the help, when there is any.
+    component Hint: HoverHandler {
+        property string text: ""
+        property bool shown: true
+        property bool focused: (parent as T.Control)?.visualFocus === true
+        onHoveredChanged: sync()
+        onFocusedChanged: sync()
+        onShownChanged: sync()
+        function sync() {
+            if ((hovered || focused) && shown)
+                root.showTip(parent, text)
+            else
+                root.hideTip(parent)
+        }
+    }
 
     // Menus that belong to a button open under it, also from the keyboard.
     function press(item, proxy) {
@@ -40,41 +76,6 @@ Rectangle {
         onClicked: if (proxy) root.press(this, proxy)
         Accessible.name: proxy && proxy.name !== "" ? proxy.name : text
         Accessible.description: proxy ? proxy.toolTip : ""
-    }
-
-    // Mute stays pressed while the output is muted, as in the main window.
-    component MuteBtn: ModelButton {
-        id: mute
-        property var proxy
-        on: proxy ? proxy.checked : false
-        enabled: proxy ? proxy.enabled : false
-        onRequested: proxy.click()
-        opacity: enabled ? 1 : 0.45
-        implicitWidth: muteMetrics.width + 28
-        implicitHeight: 32
-        Accessible.role: Accessible.Button
-        Accessible.name: proxy ? proxy.name : ""
-        Accessible.description: proxy ? proxy.toolTip : ""
-        Accessible.onToggleAction: click()
-        // Measured bold, so pressing it does not change its width.
-        TextMetrics { id: muteMetrics; text: muteLabel.text; font.pixelSize: Look.fsBody; font.weight: Font.DemiBold }
-        background: Rectangle {
-            radius: root.t.radiusControl
-            color: mute.on ? root.t.mute_fill : mute.hovered ? root.t.control_hover : root.t.control_surface
-            border.color: mute.on ? root.t.mute_edge : root.t.control_edge
-            Behavior on color { ColorAnimation { duration: root.t.motionRow } }
-            FocusRing { control: mute }
-        }
-        contentItem: Text {
-            id: muteLabel
-            text: "Mute"
-            textFormat: Text.PlainText
-            color: mute.on ? root.t.mute_text : mute.hovered ? root.t.hover_text : root.t.text_primary
-            font.pixelSize: Look.fsBody
-            font.weight: mute.on ? Font.DemiBold : Font.Normal
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-        }
     }
 
     // A level meter: its name, or CLIP on a filled tag, and a thin bar.
@@ -163,12 +164,8 @@ Rectangle {
             color: root.t["status_" + tone + "_surface"] ?? root.t.status_idle_surface
             border.color: root.t["status_" + tone + "_border"] ?? root.t.status_idle_border
             Layout.fillWidth: true
-            HoverHandler { id: healthHover }
-            Tip {
-                text: health.proxy.text
-                delay: 500
-                visible: healthHover.hovered && healthText.truncated
-            }
+            // The full text, when it does not fit.
+            Hint { text: health.proxy.text; shown: healthText.truncated }
             Text {
                 id: healthText
                 anchors.fill: parent
@@ -222,13 +219,25 @@ Rectangle {
         RowLayout {
             spacing: 8
             Layout.fillWidth: true
-            MuteBtn { objectName: "compactMute"; proxy: root.m.top.mute }
+            MuteButton {
+                id: compactMute
+                objectName: "compactMute"
+                proxy: root.m.top.mute
+                Hint { text: compactMute.proxy.toolTip }
+            }
             Btn {
+                id: compactPresets
                 objectName: "compactPresets"
                 proxy: root.m.presets.menu
                 // The button shows the preset in use and opens the Presets menu.
-                text: root.preset.name ?? proxy.text
+                text: root.preset.name
                 Accessible.description: root.m.presets.status.text
+                // The full preset name when the button cuts it short, then what the button does.
+                Hint {
+                    text: (compactPresets.contentItem as Text)?.truncated
+                        ? compactPresets.text + "\n" + compactPresets.proxy.toolTip
+                        : compactPresets.proxy.toolTip
+                }
                 Layout.fillWidth: true
                 Layout.minimumWidth: 60
                 Layout.preferredWidth: 60

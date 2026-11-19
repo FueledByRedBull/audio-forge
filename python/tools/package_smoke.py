@@ -44,6 +44,7 @@ REQUIRED_BUNDLE_FILES = (
     "_internal/mic_eq/ui/qml/Main.qml",
     "_internal/mic_eq/ui/qml/ModelButton.qml",
     "_internal/mic_eq/ui/qml/MuteBanner.qml",
+    "_internal/mic_eq/ui/qml/MuteButton.qml",
     "_internal/mic_eq/ui/qml/MutedText.qml",
     "_internal/mic_eq/ui/qml/NumberBox.qml",
     "_internal/mic_eq/ui/qml/ProgressTrack.qml",

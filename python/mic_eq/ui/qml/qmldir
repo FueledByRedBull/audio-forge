@@ -9,6 +9,7 @@ GlassPanel 1.0 GlassPanel.qml
 KeyButton 1.0 KeyButton.qml
 ModelButton 1.0 ModelButton.qml
 MuteBanner 1.0 MuteBanner.qml
+MuteButton 1.0 MuteButton.qml
 MutedText 1.0 MutedText.qml
 NumberBox 1.0 NumberBox.qml
 ProgressTrack 1.0 ProgressTrack.qml

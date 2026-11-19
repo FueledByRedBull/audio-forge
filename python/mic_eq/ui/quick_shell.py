@@ -29,6 +29,7 @@ from PySide6.QtQuick import QQuickPaintedItem, QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 
 from .chain_presentation import PREFILTER_HIGHPASS_HZ, ChainInputs, ChainLine, describe_chain
+from .command_palette import CommandPalette, window_commands
 from .components import Glyph
 from .desktop_integration import RENDERER_RELAUNCH_ENV, relaunch_with_software_rendering
 from .control_specs import control_label
@@ -455,8 +456,11 @@ class QuickBridge(QObject):
             # QMenu/QAction are the shared native command owners.
             return ActionControl(target.menuAction(), self, name=label, text=label, menu=target)
 
+        controls: dict[tuple[str, str], SettingControl] = {}
+
         def control(section: str, key: str) -> SettingControl:
-            return SettingControl(getattr(w, section + "_state"), section, key, self)
+            controls[(section, key)] = SettingControl(getattr(w, section + "_state"), section, key, self)
+            return controls[(section, key)]
 
         def state_field(section: str, key: str, *, slider: bool = False) -> dict:
             return {
@@ -658,6 +662,41 @@ class QuickBridge(QObject):
             )),
         ])
         inspector = InspectorState(self, [row["key"] for row in chain if row["card"]])
+        top = {
+            "input": w.input_choice,
+            "output": w.output_choice,
+            "refresh": action("refresh_btn"),
+            "mode": w.processing_mode_choice,
+            "mute": action("user_mute_checkbox"),
+            "start": action("start_btn"),
+            "stop": action("stop_btn"),
+            "restart": action("restart_audio_btn"),
+            "latency": text("latency_readout_label"),
+        }
+        presets = {
+            "status": text("preset_status_label"),
+            "menu": menu(w.presets_menu, "Presets"),
+            "undo": action("_undo_auto_eq_button"),
+            "redo": action("redo_button"),
+            "testSound": action("test_sound_button"),
+            "autoEq": action("auto_eq_button"),
+            "voiceSetup": action("auto_voice_setup_button"),
+        }
+        preset_actions = [ActionControl(item, self) for item in w.builtin_presets_menu.actions()]
+        commands = window_commands(
+            top=top, presets=presets, chain=chain, settings=controls, preset_actions=preset_actions,
+            pages=[
+                ("Overview", 0), ("Health", w.HEALTH_PAGE_INDEX), ("Settings", w.SETTINGS_PAGE_INDEX),
+                ("Equalizer", w.EQUALIZER_PAGE_INDEX),
+            ],
+            page_state=w.shell_page,
+        )
+        palette = CommandPalette(self, w, commands, [
+            *(top[key].changed for key in ("start", "stop", "mute")),
+            *(presets[key].changed for key in ("testSound", "voiceSetup")),
+            *(row["toggle"].changed for row in chain if row["toggle"] is not None),
+            *(proxy.changed for proxy in (*controls.values(), *preset_actions)),
+        ])
         # Another page has no inspector beside it.
         w.shell_page.selected.connect(inspector.close)
 
@@ -690,17 +729,7 @@ class QuickBridge(QObject):
                 text("device_warning_banner"),
                 text("config_warning_banner"),
             ],
-            "top": {
-                "input": w.input_choice,
-                "output": w.output_choice,
-                "refresh": action("refresh_btn"),
-                "mode": w.processing_mode_choice,
-                "mute": action("user_mute_checkbox"),
-                "start": action("start_btn"),
-                "stop": action("stop_btn"),
-                "restart": action("restart_audio_btn"),
-                "latency": text("latency_readout_label"),
-            },
+            "top": top,
             "sidebar": {
                 "chain": chain,
                 "lines": chain_lines,
@@ -708,15 +737,8 @@ class QuickBridge(QObject):
                     w.latency_calibration_action, self, text="Measure latency",
                 ),
             },
-            "presets": {
-                "status": text("preset_status_label"),
-                "menu": menu(w.presets_menu, "Presets"),
-                "undo": action("_undo_auto_eq_button"),
-                "redo": action("redo_button"),
-                "testSound": action("test_sound_button"),
-                "autoEq": action("auto_eq_button"),
-                "voiceSetup": action("auto_voice_setup_button"),
-            },
+            "presets": presets,
+            "palette": palette,
             "eq": {
                 "trace": False, "alert": None, "title": "EQUALIZER",
                 "help": (

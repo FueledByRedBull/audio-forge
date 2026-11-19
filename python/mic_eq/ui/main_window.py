@@ -1070,6 +1070,7 @@ class MainWindow(QMainWindow):
         # Built-in presets submenu
         builtin_menu = presets_menu.addMenu("&Complete Sound Presets")
         assert builtin_menu is not None
+        self.builtin_presets_menu = builtin_menu
         for key, preset in BUILTIN_PRESETS.items():
             action = QAction(preset.name, self)
             action.setToolTip(preset.description)

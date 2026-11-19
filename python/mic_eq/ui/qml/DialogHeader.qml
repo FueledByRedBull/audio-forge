@@ -14,6 +14,10 @@ RowLayout {
     // False when another item already reads the subtitle, such as a progress bar or a step strip.
     property bool subtitleAnnounced: true
     property string subtitleName: "dialogSubtitle"
+    // A subtitle that is a whole instruction wraps instead of being cut off at the edge.
+    property bool subtitleWraps: false
+    // The name of the cross, for a dialog whose own Close button already has the default.
+    property string closeName: "closeButton"
     signal closeRequested()
     spacing: 12
 
@@ -53,6 +57,8 @@ RowLayout {
             objectName: header.subtitleName
             text: header.subtitle
             visible: text !== ""
+            wrapMode: header.subtitleWraps ? Text.Wrap : Text.NoWrap
+            elide: header.subtitleWraps ? Text.ElideNone : Text.ElideRight
             Layout.fillWidth: true
             Accessible.ignored: !header.subtitleAnnounced
             Accessible.role: Accessible.StaticText
@@ -67,7 +73,7 @@ RowLayout {
     // out of the Tab order.
     KeyButton {
         id: closer
-        objectName: "closeButton"
+        objectName: header.closeName
         focusPolicy: Qt.NoFocus
         implicitWidth: 30
         implicitHeight: 30

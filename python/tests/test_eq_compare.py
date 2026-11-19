@@ -13,6 +13,7 @@ from mic_eq.config import EQSettings, build_eq_candidate_settings
 from mic_eq.ui.eq_compare import EQComparison, eq_response_db
 from mic_eq.ui.eq_quick_compare import EQComparisonItem
 from mic_eq.ui.theme import PALETTE, qcolor
+from test_eq_graph_curves import TextRecorder
 
 FREQUENCIES = [60.0, 120.0, 250.0, 500.0, 1000.0, 2000.0, 3200.0, 6300.0, 10000.0, 16000.0]
 
@@ -128,3 +129,20 @@ def test_it_says_what_now_is_when_the_eq_is_not_in_use(qapp) -> None:
     assert "the EQ now, which Raw monitor does not use" in widget.description()
     widget.set_curves(flat, proposal, 48_000.0)
     assert "Raw monitor" not in widget.description()
+
+
+def test_comparison_painter_text_meets_the_type_floor(qapp) -> None:
+    flat = EQSettings(enabled=True)
+    widget = EQComparison()
+    widget.set_curves(flat, _proposal(flat, [3.0] * 10), 48_000.0, unused_mode="raw")
+    image = QImage(520, 180, QImage.Format.Format_ARGB32_Premultiplied)
+    painter = TextRecorder(image)
+    widget.paint(painter, 520.0, 180.0)
+    painter.end()
+
+    tick_texts = {"100 Hz", "1 kHz", "10 kHz"}
+    ticks = [size for text, size in painter.texts if text in tick_texts or text.endswith(" dB")]
+    others = [(text, size) for text, size in painter.texts if text not in tick_texts and not text.endswith(" dB")]
+    assert len(ticks) == 6 and min(ticks) >= 11, painter.texts
+    assert {text for text, _size in others} == {"Now (not used in Raw monitor)", "Proposed"}
+    assert all(size >= 12 for _text, size in others), others

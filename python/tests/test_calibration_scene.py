@@ -559,3 +559,40 @@ def test_the_width_budget_holds_every_label_the_main_and_override_buttons_can_sh
         if isinstance(node, ast.keyword) and node.arg == "startText":
             literals |= values(node.value)
     assert literals and literals <= set(START_LABELS), literals - set(START_LABELS)
+
+
+def test_dialog_header_esc_and_close_cancel_the_dialog(open_dialog, qapp, monkeypatch) -> None:
+    clicks: list[None] = []
+    closes: list[bool] = []
+    on_cancel, request_close = CalibrationDialog._on_cancel_clicked, CalibrationDialog._request_close
+
+    def counted_cancel(self) -> None:
+        clicks.append(None)
+        on_cancel(self)
+
+    def counted_close(self, accepted: bool) -> None:
+        if not self._close_requested:
+            closes.append(accepted)
+        request_close(self, accepted)
+
+    monkeypatch.setattr(CalibrationDialog, "_on_cancel_clicked", counted_cancel)
+    monkeypatch.setattr(CalibrationDialog, "_request_close", counted_close)
+
+    dialog = open_dialog()
+    assert scene_text(dialog, "dialogTitle") == "Auto-EQ Voice Tone"
+    assert scene_text(dialog, "dialogSubtitle") == "Step 1 of 3: " + dialog.view_model.steps[0]
+    with _AccessibleScene() as scene:
+        close = scene_item(dialog, "closeButton")
+        assert scene.name(close) == "Close" and scene.description(close) == "Esc"
+    press(dialog, "closeButton")
+    qapp.processEvents()
+    assert (len(clicks), closes) == (1, [False])
+    assert not dialog.isVisible() and dialog.result() == REJECTED
+
+    clicks.clear()
+    closes.clear()
+    again = open_dialog()
+    QTest.keyClick(again.quick_view, Qt.Key.Key_Escape)
+    qapp.processEvents()
+    assert (len(clicks), closes) == (0, [False])
+    assert not again.isVisible() and again.result() == REJECTED

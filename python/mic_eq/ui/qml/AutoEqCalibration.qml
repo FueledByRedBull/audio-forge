@@ -43,10 +43,17 @@ Rectangle {
             width += Math.ceil(boldFont.advanceWidth(name)) + 16
         return width
     }
+    // The header: the tile, the title, the keycap and the cross, with the gaps between them.
+    readonly property int headerWidth: {
+        titleFont.font
+        tickFont.font
+        return 2 * 16 + 30 + Math.ceil(titleFont.advanceWidth("Auto-EQ Voice Tone")) + 2
+               + Math.ceil(tickFont.advanceWidth("Esc")) + 12 + 30 + 3 * 12
+    }
     // The room a picker needs: the page and card margins around it at its narrowest.
-    readonly property int minimumWidth: Math.max(actionsWidth, stepsWidth, 120 + 40 + 32)
+    readonly property int minimumWidth: Math.max(actionsWidth, stepsWidth, headerWidth, 120 + 40 + 32)
 
-    color: Look.t.app_surface
+    color: Look.t.pane_surface
     focus: true
 
     FontMetrics {
@@ -57,6 +64,15 @@ Rectangle {
         id: boldFont
         font.pixelSize: Look.fsBody
         font.weight: Font.DemiBold
+    }
+    FontMetrics {
+        id: titleFont
+        font.pixelSize: Look.fsTitle
+        font.weight: Font.DemiBold
+    }
+    FontMetrics {
+        id: tickFont
+        font.pixelSize: Look.fsTick
     }
 
     // Enter outside a button does what the main button says; Escape is left to the dialog.
@@ -123,6 +139,18 @@ Rectangle {
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
+
+        DialogHeader {
+            title: "Auto-EQ Voice Tone"
+            subtitle: "Step " + (root.page.step + 1) + " of " + root.vm.steps.length + ": " + root.stepName
+            glyph: root.vm.headerGlyph
+            // The step strip below reads where the run is.
+            subtitleAnnounced: false
+            Layout.fillWidth: true
+            Layout.margins: 16
+            Layout.bottomMargin: 0
+            onCloseRequested: root.vm.cancel()
+        }
 
         // Where the run is: set up, record, review.
         Row {

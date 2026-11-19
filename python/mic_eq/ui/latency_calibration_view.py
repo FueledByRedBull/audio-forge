@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from .components import Glyph
 from .level_meter import LevelMeter
 
 NO_READINGS = {
@@ -57,6 +58,7 @@ class LatencyCalibrationView(QObject):
     # Accept is the main action once there is a result; until then it is Run.
     acceptEnabled = Property(bool, lambda self: self._accept_enabled, notify=acceptEnabledChanged)
     meter = Property(QObject, lambda self: self.level_meter, constant=True)
+    headerGlyph = Property(str, lambda self: Glyph.HEALTH, constant=True)
 
     def set_readings(self, readings: dict[str, str]) -> None:
         if readings != self._readings:

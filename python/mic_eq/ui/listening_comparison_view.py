@@ -14,6 +14,7 @@ STATES = frozenset({"ok", "warn", "bad", "info", "idle"})
 # What the page shows before the dialog has rendered anything.
 EMPTY_PAGE = {
     "pageName": "Listening comparison page",
+    "title": "Before/After Listening Comparison",
     "scope": "",
     "scopeWarning": "",
     "progressText": "Preparing comparison...",
@@ -72,6 +73,7 @@ class ListeningComparisonView(QObject):
     details = Property(dict, lambda self: self._details, notify=detailsChanged)
     mutedNotice = Property(str, lambda self: LIVE_OUTPUT_MUTED_NOTICE, constant=True)
     expandGlyph = Property(str, lambda self: Glyph.EXPAND, constant=True)
+    headerGlyph = Property(str, lambda self: Glyph.SPEAKER, constant=True)
 
     @property
     def output_index(self) -> int:

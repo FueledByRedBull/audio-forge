@@ -556,3 +556,35 @@ def test_the_view_model_refuses_a_field_the_page_does_not_have() -> None:
     assert "keepEnabld" not in view.shown
     view.set_page(keepEnabled=True)
     assert view.shown["keepEnabled"] is True
+
+
+@pytest.mark.parametrize("test_my_sound", [False, True])
+def test_dialog_header_esc_and_close_cancel_the_dialog(open_dialog, qapp, monkeypatch, test_my_sound) -> None:
+    closes: list[bool] = []
+    request_close = ListeningComparisonDialog._request_close
+
+    def counted_close(self, accepted: bool) -> None:
+        if not self._close_requested:
+            closes.append(accepted)
+        request_close(self, accepted)
+
+    monkeypatch.setattr(ListeningComparisonDialog, "_request_close", counted_close)
+
+    dialog = open_dialog(test_my_sound=test_my_sound)
+    title = "Test my sound" if test_my_sound else "Before/After Listening Comparison"
+    assert scene_text(dialog, "dialogTitle") == title == dialog.windowTitle()
+    assert scene_text(dialog, "scopeText") == dialog.view_model.shown["scope"] != ""
+    with _AccessibleScene() as scene:
+        close = scene_item(dialog, "closeButton")
+        assert scene.name(close) == "Close" and scene.description(close) == "Esc"
+    press(dialog, "closeButton")
+    qapp.processEvents()
+    assert closes == [False]
+    assert not dialog.isVisible() and dialog.result() == REJECTED
+
+    closes.clear()
+    again = open_dialog(test_my_sound=test_my_sound)
+    QTest.keyClick(again.quick_view, Qt.Key.Key_Escape)
+    qapp.processEvents()
+    assert closes == [False]
+    assert not again.isVisible() and again.result() == REJECTED

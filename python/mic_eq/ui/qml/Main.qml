@@ -841,9 +841,15 @@ Rectangle {
         // Measured bold, so pressing it does not change its width.
         TextMetrics { id: muteMetrics; text: muteLabel.text; font.pixelSize: root.fsBody; font.weight: Font.DemiBold }
         background: Rectangle {
-            radius: root.t.radiusControl
+            radius: root.t.radiusToolbarControl
             color: mute.on ? root.t.mute_fill : mute.hovered ? root.t.control_hover : root.t.control_surface
+            gradient: mute.on || mute.hovered ? null : muteFill
             border.color: mute.on ? root.t.mute_edge : root.t.control_edge
+            Gradient {
+                id: muteFill
+                GradientStop { position: 0; color: root.t.toolbar_control_top }
+                GradientStop { position: 1; color: root.t.toolbar_control_bottom }
+            }
             Behavior on color { ColorAnimation { duration: root.t.motionRow } }
             FocusRing { control: mute }
         }
@@ -1017,7 +1023,8 @@ Rectangle {
         QuickMeterItem {
             source: readout.meter
             horizontal: true
-            implicitHeight: 6
+            segmented: true
+            implicitHeight: 8
             Layout.preferredWidth: root.readoutBarWidth
             Accessible.role: Accessible.ProgressBar
             Accessible.name: readout.meter.name
@@ -1086,12 +1093,12 @@ Rectangle {
         id: toolbar
         objectName: "toolbar"
         readonly property int gap: 10
-        // The row with every part shown. In less room the brand, the mode's key word, the dB
-        // readings and the latency caption give way, and the two meters stack.
-        readonly property real fullWidth: toolRow.anchors.leftMargin + toolRow.anchors.rightMargin + 10 * gap
-            + brand.implicitWidth + 2 * 140 + refresh.implicitWidth
+        // The row with every part shown, at the full insets. In less room the brand, the mode's
+        // key word, the dB readings and the latency caption give way.
+        readonly property real fullWidth: 2 * 10 + 18 + 16
+            + 11 * gap + brand.implicitWidth + 2 * 140 + route.implicitWidth - 8 + refresh.implicitWidth
             + modeKey.width + 6 + modeMetrics.width + 36
-            + muteButton.implicitWidth + 2 * root.readoutWidth + meterGrid.columnSpacing
+            + muteButton.implicitWidth + root.readoutWidth
             + Math.max(latencyFigure.implicitWidth, latencyCaption.implicitWidth)
             + 1 + transport.implicitWidth + reasonWidth
         readonly property bool full: fullWidth <= width
@@ -1101,17 +1108,35 @@ Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        // Taller only when large text stacks the meters past the usual height.
-        height: Math.max(56, toolRow.implicitHeight + 8)
-        gradient: Gradient {
-            GradientStop { position: 0; color: root.t.toolbar_top }
-            GradientStop { position: 1; color: root.t.toolbar_bottom }
+        // The bar is a rounded pane inset from the window edges, taller only when large text
+        // makes the stacked meters taller than the usual height.
+        height: island.y + Math.max(58, toolRow.implicitHeight + 12) + 1
+        color: "transparent"
+        // A dark rim just outside the pane, so its edge holds against the ground.
+        Rectangle {
+            x: island.x - 1
+            y: island.y - 1
+            width: island.width + 2
+            height: island.height + 2
+            radius: island.radius + 1
+            color: "transparent"
+            border.color: root.t.toolbar_rim
         }
         Rectangle {
-            anchors.bottom: parent.bottom
-            width: parent.width
-            height: 1
-            color: root.t.border
+            id: island
+            objectName: "toolbarPane"
+            // A narrow bar keeps its inset small, so the row keeps its room.
+            x: toolbar.full ? 10 : 4
+            y: x
+            width: parent.width - 2 * x
+            // One pixel short of the bottom, so the rim stays inside the bar.
+            height: parent.height - y - 1
+            radius: root.t.radiusToolbar
+            border.color: root.t.toolbar_edge
+            gradient: Gradient {
+                GradientStop { position: 0; color: root.t.toolbar_top }
+                GradientStop { position: 1; color: root.t.toolbar_bottom }
+            }
         }
         TextMetrics { id: modeKey; text: "Mode"; font.pixelSize: root.fsBody }
         TextMetrics { id: reasonMetrics; text: startBlocked.text; font: startBlocked.font }
@@ -1125,31 +1150,87 @@ Rectangle {
         RowLayout {
             id: toolRow
             objectName: "toolRow"
-            anchors.fill: parent
-            anchors.leftMargin: 16
-            anchors.rightMargin: 12
+            anchors.fill: island
+            anchors.leftMargin: toolbar.full ? 18 : 10
+            anchors.rightMargin: toolbar.full ? 16 : 10
             spacing: toolbar.gap
-            Text {
+            Row {
                 id: brand
+                objectName: "brand"
                 visible: toolbar.full
-                text: "AudioForge"
-                textFormat: Text.PlainText
-                color: root.t.text_primary
-                font.pixelSize: root.fsLead
-                font.weight: Font.DemiBold
+                spacing: 10
+                // With room to spare, the pickers start where the sidebar ends.
+                Layout.minimumWidth: implicitWidth
+                Layout.preferredWidth: implicitWidth + Math.max(0, Math.min(toolbar.width - toolbar.fullWidth,
+                    sidebar.x + sidebar.width + 10 - island.x - toolRow.anchors.leftMargin - toolbar.gap - implicitWidth))
+                // The app mark: an amber tile with a waveform, drawn here so it scales cleanly.
+                Rectangle {
+                    id: brandMark
+                    objectName: "brandMark"
+                    width: 24
+                    height: 24
+                    radius: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    Accessible.ignored: true
+                    gradient: Gradient {
+                        GradientStop { position: 0; color: root.t.brand_mark_top }
+                        GradientStop { position: 1; color: root.t.brand_mark_bottom }
+                    }
+                    Repeater {
+                        // Five strokes, short to tall to short, as a voice's waveform.
+                        model: [3, 7, 11, 7, 3]
+                        delegate: Rectangle {
+                            required property int modelData
+                            required property int index
+                            width: 1.6
+                            height: modelData
+                            radius: width / 2
+                            x: 6.2 + index * 2.4
+                            y: (brandMark.height - height) / 2
+                            color: root.t.brand_mark_glyph
+                        }
+                    }
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "AudioForge"
+                    textFormat: Text.PlainText
+                    color: root.t.text_primary
+                    font.pixelSize: root.fsLead + 1
+                    font.weight: Font.DemiBold
+                }
             }
             Picker {
                 proxy: root.m.top.input
+                raised: true
                 glyph: root.hasIcons ? root.m.glyphs.mic : ""
+                glyphSize: root.fsLead
                 Layout.fillWidth: true
                 Layout.preferredWidth: 240
                 Layout.maximumWidth: 260
                 // The pickers give up width first; a cut name is whole in the tooltip.
                 Layout.minimumWidth: toolbar.full ? 140 : 100
             }
+            // The signal runs from the microphone to the output.
+            Text {
+                id: route
+                objectName: "routeChevron"
+                visible: root.hasIcons
+                // Closer to the pickers than the gap between other parts, as it joins them.
+                Layout.leftMargin: -4
+                Layout.rightMargin: -4
+                text: root.m.glyphs.next
+                textFormat: Text.PlainText
+                font.family: root.t.iconFont
+                font.pixelSize: root.fsCaption
+                color: root.t.text_dim
+                Accessible.ignored: true
+            }
             Picker {
                 proxy: root.m.top.output
+                raised: true
                 glyph: root.hasIcons ? root.m.glyphs.speaker : ""
+                glyphSize: root.fsLead
                 Layout.fillWidth: true
                 Layout.preferredWidth: 240
                 Layout.maximumWidth: 260
@@ -1158,17 +1239,19 @@ Rectangle {
             IconBtn { id: refresh; proxy: root.m.top.refresh; glyph: root.m.glyphs.refresh; label: "Refresh" }
             Picker {
                 proxy: root.m.top.mode
+                raised: true
                 key: toolbar.full ? "Mode" : ""
                 alert: root.m.top.mode.index > 0
                 implicitWidth: (key !== "" ? modeKey.width + 6 : 0) + modeMetrics.width + 36
             }
             // The levels and the latency sit between Mute and Start, so one slip cannot hit both.
             MuteBtn { id: muteButton; proxy: root.m.top.mute }
+            // IN over OUT, so the two levels read as one pair and take the room of one.
             GridLayout {
                 id: meterGrid
-                columns: toolbar.full ? 2 : 1
-                columnSpacing: 14
-                rowSpacing: 4
+                objectName: "meterGrid"
+                columns: 1
+                rowSpacing: 2
                 Repeater {
                     model: root.m.meters
                     delegate: LevelReadout {
@@ -1192,7 +1275,7 @@ Rectangle {
                         textFormat: Text.PlainText
                         color: root.t.text_primary
                         font.pixelSize: root.fsBody
-                        font.weight: Font.DemiBold
+                        font.weight: Font.Medium
                         font.features: { "tnum": 1 }
                         Accessible.role: Accessible.StaticText
                         Accessible.name: latencyCaption.text + ": " + text
@@ -1234,17 +1317,86 @@ Rectangle {
             }
             Rectangle {
                 implicitWidth: 1
-                implicitHeight: 28
+                implicitHeight: 24
                 color: root.t.border_strong
             }
+            // Start is amber and Stop a light neutral, each lit from above, with a play or stop
+            // mark before the word, so the two differ by shape and lightness, not hue alone.
             Btn {
                 id: transport
+                objectName: "transport"
                 proxy: root.running ? root.m.top.stop : root.m.top.start
                 text: root.running ? "Stop" : "Start"
-                look: root.running ? "danger" : "primary"
-                implicitWidth: Math.max(92, contentItem.implicitWidth + 28)
+                implicitWidth: Math.max(92, contentItem.implicitWidth + 32)
                 implicitHeight: 34
                 Accessible.name: proxy.text
+                background: Rectangle {
+                    radius: root.t.radiusToolbarControl
+                    scale: transport.pressed ? 0.98 : 1
+                    gradient: Gradient {
+                        GradientStop { position: 0; color: root.running ? root.t.stop_top : root.t.start_top }
+                        GradientStop { position: 1; color: root.running ? root.t.stop_bottom : root.t.start_bottom }
+                    }
+                    // Hover lifts the face a little, whichever it is.
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: parent.radius
+                        color: root.t.transport_hover
+                        visible: transport.hovered
+                    }
+                    FocusRing { control: transport }
+                }
+                contentItem: Item {
+                    implicitWidth: transportFace.implicitWidth
+                    implicitHeight: transportFace.implicitHeight
+                    Row {
+                        id: transportFace
+                        anchors.centerIn: parent
+                        spacing: 7
+                        readonly property color ink: root.running ? root.t.text_on_stop : root.t.text_on_accent
+                        Item {
+                            width: 12
+                            height: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                            Rectangle {
+                                objectName: "stopMark"
+                                visible: root.running
+                                x: 2.5
+                                y: 2.5
+                                width: 7
+                                height: 7
+                                radius: 1.5
+                                color: transportFace.ink
+                            }
+                            Canvas {
+                                objectName: "playMark"
+                                visible: !root.running
+                                anchors.fill: parent
+                                readonly property color ink: transportFace.ink
+                                onInkChanged: requestPaint()
+                                onPaint: {
+                                    const g = getContext("2d")
+                                    g.reset()
+                                    g.fillStyle = ink
+                                    g.beginPath()
+                                    g.moveTo(3, 1.5)
+                                    g.lineTo(10.5, 6)
+                                    g.lineTo(3, 10.5)
+                                    g.closePath()
+                                    g.fill()
+                                }
+                            }
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: transport.text
+                            textFormat: Text.PlainText
+                            color: transportFace.ink
+                            font.pixelSize: root.fsBody
+                            font.weight: Font.DemiBold
+                        }
+                    }
+                }
             }
         }
     }

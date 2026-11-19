@@ -386,13 +386,15 @@ def test_the_undo_button_is_named_disabled_with_nothing_to_undo_and_undoes_on_a_
         assert _iface(button).state().disabled
 
 
+# Fonts on other platforms run wider than here; 60 px under the minimum stands in for them.
+@pytest.mark.parametrize("width", [MINIMUM_WINDOW_WIDTH, MINIMUM_WINDOW_WIDTH - 60], ids=["minimum", "wider-fonts"])
 def test_the_undo_group_keeps_clear_of_the_header_buttons_at_the_minimum_width(
-    quick_window, qapp  # noqa: F811
+    quick_window, qapp, width  # noqa: F811
 ) -> None:
     window = quick_window
     window.configuration.clock = Clock()
-    window.setMinimumSize(MINIMUM_WINDOW_WIDTH, MINIMUM_WINDOW_HEIGHT)
-    window.resize(MINIMUM_WINDOW_WIDTH, MINIMUM_WINDOW_HEIGHT)
+    window.setMinimumSize(width, MINIMUM_WINDOW_HEIGHT)
+    window.resize(width, MINIMUM_WINDOW_HEIGHT)
     window.shell_page.setIndex(EQUALIZER)
     qapp.processEvents()
     window.eq_state.set_band_value(9, "frequency_hz", 15000.5)

@@ -21,7 +21,7 @@ _DEFAULT_LIMITER_SETTINGS: dict[str, Any] = asdict(LimiterSettings())
 _LIMITER_SETTING_KEYS = frozenset(_DEFAULT_LIMITER_SETTINGS)
 
 
-def _normalise_limiter_settings(
+def normalise_limiter_settings(
     settings: Mapping[str, Any] | None = None,
     *,
     require_complete: bool = False,
@@ -129,7 +129,7 @@ class _CompressorCalibration:
         self.cancel_check = cancel_check
         self.progress_callback = progress_callback
         self.calibrated = dict(compressor_settings)
-        effective_limiter_settings = _normalise_limiter_settings(limiter_settings)
+        effective_limiter_settings = normalise_limiter_settings(limiter_settings)
         if effective_limiter_settings is None:
             raise ValueError("limiter settings are incomplete")
         self.effective_limiter_settings = effective_limiter_settings

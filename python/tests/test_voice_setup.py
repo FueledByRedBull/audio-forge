@@ -21,6 +21,7 @@ from mic_eq.analysis.voice_setup import (
     _recommend_gate_settings,
     _shape_error_db,
     _vad_masked_speech_features,
+    VoiceSetupRequest,
     analyze_voice_setup,
     MAX_VERIFICATION_ADJUSTMENTS,
     TARGET_LUFS_MAX,
@@ -74,10 +75,10 @@ def test_the_setup_analysis_measures_a_capture_again_only_for_another_vad_gain(m
     monkeypatch.setattr(voice_setup_module, "analyze_offline_vad", fake_offline_vad)
     monkeypatch.setattr(voice_setup_module, "tune_gate_suppression_dynamics", stop_at_tuning)
     with pytest.raises(Stop):
-        analyze_voice_setup(
+        analyze_voice_setup(VoiceSetupRequest(
             _make_noise(48_000), _make_voice(48_000, seconds=_FULL_ANALYSIS_VOICE_SECONDS, level=level),
             48_000, "broadcast", vad_available=True,
-        )
+        ))
 
     assert len(gains) == analyses
     assert (gains[-1] != 1.0) == (analyses == 4)
@@ -105,9 +106,11 @@ def test_causal_vad_mapping_keeps_exact_44k1_window_timing():
 def test_voice_setup_rejects_unsupported_sample_rate_before_analysis():
     with pytest.raises(ValueError, match="48000 Hz"):
         analyze_voice_setup(
-            np.zeros(1, dtype=np.float32),
-            np.zeros(1, dtype=np.float32),
-            44_100,
+            VoiceSetupRequest(
+                np.zeros(1, dtype=np.float32),
+                np.zeros(1, dtype=np.float32),
+                44_100,
+            )
         )
 
 
@@ -293,10 +296,10 @@ def test_requested_loudness_is_fitted_to_the_headroom_the_chain_reports(monkeypa
 def test_a_request_that_already_fits_the_headroom_is_left_alone():
     sample_rate = 48_000
     noise, voice = _make_noise(sample_rate), _make_voice(sample_rate, seconds=_FULL_ANALYSIS_VOICE_SECONDS)
-    result = analyze_voice_setup(
+    result = analyze_voice_setup(VoiceSetupRequest(
         noise, voice, sample_rate, "broadcast", vad_available=False, target_lufs=-20.0,
         raw_noise_audio=noise, raw_speech_audio=voice,
-    )
+    ))
     diagnostics = result["diagnostics"]
 
     assert diagnostics["requested_loudness_headroom_safe"] is True
@@ -547,13 +550,15 @@ def test_compressor_target_miss_alone_blocks_recommendation(monkeypatch):
     )
 
     missed = analyze_voice_setup(
-        noise,
-        speech,
-        sample_rate,
-        "broadcast",
-        vad_available=False,
-        raw_noise_audio=noise,
-        raw_speech_audio=speech,
+        VoiceSetupRequest(
+            noise,
+            speech,
+            sample_rate,
+            "broadcast",
+            vad_available=False,
+            raw_noise_audio=noise,
+            raw_speech_audio=speech,
+        )
     )
     assert missed["diagnostics"]["weak_capture"] is False
     assert missed["diagnostics"]["joint_tuning"]["apply_recommended"] is True
@@ -572,13 +577,15 @@ def test_compressor_target_miss_alone_blocks_recommendation(monkeypatch):
 
     measured_p95 = 3.5
     met = analyze_voice_setup(
-        noise,
-        speech,
-        sample_rate,
-        "broadcast",
-        vad_available=False,
-        raw_noise_audio=noise,
-        raw_speech_audio=speech,
+        VoiceSetupRequest(
+            noise,
+            speech,
+            sample_rate,
+            "broadcast",
+            vad_available=False,
+            raw_noise_audio=noise,
+            raw_speech_audio=speech,
+        )
     )
     assert met["diagnostics"]["weak_capture"] is False
     assert met["eq_settings"]["apply_recommended"] is True
@@ -588,14 +595,15 @@ def test_compressor_target_miss_alone_blocks_recommendation(monkeypatch):
 
 
 def _analyze_clean_capture(
-    monkeypatch, alter=None, *, noise=None, speech=None, headroom_at=None, output_at=None, **options
+    monkeypatch, alter=None, *, noise=None, speech=None, headroom_at=None, output_at=None,
+    cancel_check=None, progress_callback=None, **options
 ):
     """Run a clean capture past stubbed slow stages, optionally altering one input.
 
     ``headroom_at`` maps the compressor a final-check render uses to the
     headroom it reports, or to the whole safety reading as a dict; ``output_at``
     maps that compressor and the input to the audio it renders; ``options`` go to
-    ``analyze_voice_setup``.
+    the ``VoiceSetupRequest``, ``cancel_check`` and ``progress_callback`` to ``analyze_voice_setup``.
     """
     eq_settings = {
         "band_freqs": [80, 160, 315, 630, 1250, 2500, 4000, 6300, 10000, 16000],
@@ -667,14 +675,18 @@ def _analyze_clean_capture(
     if speech is None:
         speech = _make_voice(sample_rate, seconds=5.0)
     return analyze_voice_setup(
-        noise,
-        speech,
-        sample_rate,
-        "broadcast",
-        vad_available=False,
-        raw_noise_audio=noise,
-        raw_speech_audio=speech,
-        **options,
+        VoiceSetupRequest(
+            noise,
+            speech,
+            sample_rate,
+            "broadcast",
+            vad_available=False,
+            raw_noise_audio=noise,
+            raw_speech_audio=speech,
+            **options,
+        ),
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
     )
 
 

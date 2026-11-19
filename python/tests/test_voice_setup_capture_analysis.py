@@ -14,7 +14,11 @@ import numpy as np
 import pytest
 
 from mic_eq.analysis import voice_setup as voice_setup_module
-from mic_eq.analysis.voice_setup import analyze_voice_setup, validate_voice_setup_verification
+from mic_eq.analysis.voice_setup import (
+    VoiceSetupRequest,
+    analyze_voice_setup,
+    validate_voice_setup_verification,
+)
 from test_voice_setup import _FULL_ANALYSIS_VOICE_SECONDS, _make_noise, _make_voice
 
 
@@ -49,12 +53,14 @@ def test_voice_setup_uses_vad_assisted_when_available(monkeypatch):
         simulate_with_supplied_vad,
     )
     result = analyze_voice_setup(
-        _make_noise(sample_rate),
-        _make_voice(sample_rate, seconds=_FULL_ANALYSIS_VOICE_SECONDS),
-        sample_rate,
-        "streaming",
-        vad_available=True,
-        limiter_settings=limiter,
+        VoiceSetupRequest(
+            _make_noise(sample_rate),
+            _make_voice(sample_rate, seconds=_FULL_ANALYSIS_VOICE_SECONDS),
+            sample_rate,
+            "streaming",
+            vad_available=True,
+            limiter_settings=limiter,
+        )
     )
 
     assert result["gate_settings"]["gate_mode"] == 1
@@ -92,11 +98,13 @@ def labelled_analysis():
         if label not in results:
             noise_amplitude, voice_options, _expected_apply = LABELLED_FIXTURES[label]
             results[label] = analyze_voice_setup(
-                _make_noise(sample_rate, amplitude=noise_amplitude),
-                _make_voice(sample_rate, seconds=5.0, **voice_options),
-                sample_rate,
-                "broadcast",
-                vad_available=False,
+                VoiceSetupRequest(
+                    _make_noise(sample_rate, amplitude=noise_amplitude),
+                    _make_voice(sample_rate, seconds=5.0, **voice_options),
+                    sample_rate,
+                    "broadcast",
+                    vad_available=False,
+                )
             )
         return results[label]
 

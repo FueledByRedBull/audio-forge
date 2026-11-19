@@ -9,7 +9,7 @@ from functools import partial
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -27,7 +27,8 @@ from ..analysis.noise_reference import (
 from ..analysis.voice_setup import (
     GATE_MODE_LABELS,
     MAX_VERIFICATION_BAD_CAPTURES,
-    _normalise_limiter_settings,
+    VoiceSetupRequest,
+    normalise_limiter_settings,
     analyze_voice_setup,
     raw_capture_is_clipped,
     reduce_for_verification,
@@ -286,7 +287,7 @@ def _candidate_settings_error(
     if not isinstance(setup_result, Mapping):
         return "voice setup result is missing"
     try:
-        limiter_settings = _normalise_limiter_settings(
+        limiter_settings = normalise_limiter_settings(
             setup_result.get("limiter_settings"), require_complete=True
         )
     except ValueError:
@@ -335,77 +336,25 @@ class VoiceSetupWorker(CancellableWorker):
     result_ready = Signal(dict)
     _failure_log = "Voice Setup analysis failed"
 
-    def __init__(
-        self,
-        noise_audio: np.ndarray,
-        voice_audio: np.ndarray,
-        sample_rate: int,
-        target_preset: str,
-        *,
-        vad_available: bool,
-        dynamics_intensity: str,
-        custom_target_p95_db: float,
-        custom_peak_cap_db: float,
-        limiter_settings: Mapping[str, Any] | None,
-        noise_metadata: CaptureMetadata | None,
-        voice_metadata: CaptureMetadata | None,
-        target_lufs: float | None = None,
-        noise_model: str = "rnnoise",
-        suppressor_strength: float = 1.0,
-        incumbent_settings: Mapping[str, Any] | None = None,
-        raw_noise_audio: np.ndarray | None = None,
-        raw_speech_audio: np.ndarray | None = None,
-        input_cleanup_mode: str = "off",
-        processing_mode: str = "normal",
-    ) -> None:
+    def __init__(self, request: VoiceSetupRequest) -> None:
         super().__init__()
-        self.noise_audio = noise_audio
-        self.voice_audio = voice_audio
-        self.sample_rate = sample_rate
-        self.target_preset = target_preset
-        self.vad_available = vad_available
-        self.dynamics_intensity = dynamics_intensity
-        self.custom_target_p95_db = custom_target_p95_db
-        self.custom_peak_cap_db = custom_peak_cap_db
-        self.limiter_settings = (
-            dict(limiter_settings) if limiter_settings is not None else None
+        self.request = replace(
+            request,
+            limiter_settings=(
+                dict(request.limiter_settings)
+                if request.limiter_settings is not None
+                else None
+            ),
+            incumbent_settings=deepcopy(request.incumbent_settings),
         )
-        self.noise_metadata = noise_metadata
-        self.voice_metadata = voice_metadata
-        self.target_lufs = target_lufs
-        self.noise_model = noise_model
-        self.suppressor_strength = suppressor_strength
-        self.incumbent_settings = deepcopy(incumbent_settings)
-        self.raw_noise_audio = raw_noise_audio
-        self.raw_speech_audio = raw_speech_audio
-        self.input_cleanup_mode = input_cleanup_mode
-        self.processing_mode = processing_mode
 
     def _run(self) -> None:
         if self._should_stop():
             return
         result = analyze_voice_setup(
-            self.noise_audio,
-            self.voice_audio,
-            self.sample_rate,
-            self.target_preset,
-            vad_available=self.vad_available,
-            dynamics_intensity=self.dynamics_intensity,
-            custom_target_p95_db=self.custom_target_p95_db,
-            custom_peak_cap_db=self.custom_peak_cap_db,
-            target_lufs=self.target_lufs,
-            limiter_settings=self.limiter_settings,
-            noise_metadata=self.noise_metadata,
-            speech_metadata=self.voice_metadata,
+            self.request,
             cancel_check=self._should_stop,
             progress_callback=self.step_progress.emit,
-            noise_model=self.noise_model,
-            suppressor_strength=self.suppressor_strength,
-            incumbent_settings=self.incumbent_settings,
-            raw_noise_audio=self.raw_noise_audio,
-            raw_speech_audio=self.raw_speech_audio,
-            input_cleanup_mode=self.input_cleanup_mode,
-            processing_mode=self.processing_mode,
         )
         if self._should_stop():
             return
@@ -1275,25 +1224,27 @@ class VoiceSetupDialog(QDialog):
         )
         self.view_model.set_page(curveGroupEnabled=False, dynamicsEnabled=False, progress=0)
         worker = VoiceSetupWorker(
-            self.noise_audio,
-            self.voice_audio,
-            _processor_sample_rate(parent),
-            target_preset,
-            vad_available=vad_available,
-            dynamics_intensity=dynamics_intensity,
-            custom_target_p95_db=custom_target_p95_db,
-            custom_peak_cap_db=custom_peak_cap_db,
-            limiter_settings=limiter_settings,
-            noise_metadata=self.noise_metadata,
-            voice_metadata=self.voice_metadata,
-            target_lufs=target_lufs,
-            noise_model=str((suppression or {}).get("model", "rnnoise")),
-            suppressor_strength=float((suppression or {}).get("strength", 1.0)),
-            incumbent_settings=incumbent,
-            raw_noise_audio=raw_noise_audio,
-            raw_speech_audio=raw_speech_audio,
-            input_cleanup_mode=input_cleanup_mode,
-            processing_mode=processing_mode,
+            VoiceSetupRequest(
+                self.noise_audio,
+                self.voice_audio,
+                _processor_sample_rate(parent),
+                target_preset,
+                vad_available=vad_available,
+                dynamics_intensity=dynamics_intensity,
+                custom_target_p95_db=custom_target_p95_db,
+                custom_peak_cap_db=custom_peak_cap_db,
+                limiter_settings=limiter_settings,
+                noise_metadata=self.noise_metadata,
+                speech_metadata=self.voice_metadata,
+                target_lufs=target_lufs,
+                noise_model=str((suppression or {}).get("model", "rnnoise")),
+                suppressor_strength=float((suppression or {}).get("strength", 1.0)),
+                incumbent_settings=incumbent,
+                raw_noise_audio=raw_noise_audio,
+                raw_speech_audio=raw_speech_audio,
+                input_cleanup_mode=input_cleanup_mode,
+                processing_mode=processing_mode,
+            )
         )
         self.analysis_worker = worker
         self._analysis_workers.append(worker)

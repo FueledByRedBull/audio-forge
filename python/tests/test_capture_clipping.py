@@ -8,7 +8,11 @@ import numpy as np
 import pytest
 
 from mic_eq.analysis import voice_setup
-from mic_eq.analysis.voice_setup import raw_capture_is_clipped, validate_voice_setup_verification
+from mic_eq.analysis.voice_setup import (
+    VoiceSetupRequest,
+    raw_capture_is_clipped,
+    validate_voice_setup_verification,
+)
 from mic_eq.config import EQSettings, Preset
 
 RATES = [44_100, 48_000]
@@ -114,11 +118,15 @@ def test_the_setup_analysis_refuses_sustained_clipping_but_not_a_stray_sample():
 
     with pytest.raises(ValueError, match="too short"):
         voice_setup.analyze_voice_setup(
-            stray, short, rate, "broadcast", raw_noise_audio=stray, raw_speech_audio=short
+            VoiceSetupRequest(
+                stray, short, rate, "broadcast", raw_noise_audio=stray, raw_speech_audio=short
+            )
         )
     with pytest.raises(ValueError, match="non-finite or clipped"):
         voice_setup.analyze_voice_setup(
-            sustained, short, rate, "broadcast", raw_noise_audio=sustained, raw_speech_audio=short
+            VoiceSetupRequest(
+                sustained, short, rate, "broadcast", raw_noise_audio=sustained, raw_speech_audio=short
+            )
         )
 
 
@@ -129,9 +137,13 @@ def test_the_setup_analysis_refuses_a_clipped_capture_whichever_raw_capture_it_i
     sustained[100:106] = 1.0
 
     with pytest.raises(ValueError, match="non-finite or clipped"):
-        voice_setup.analyze_voice_setup(short, short, rate, "broadcast", raw_noise_audio=sustained)
+        voice_setup.analyze_voice_setup(
+            VoiceSetupRequest(short, short, rate, "broadcast", raw_noise_audio=sustained)
+        )
     with pytest.raises(ValueError, match="non-finite or clipped"):
-        voice_setup.analyze_voice_setup(short, short, rate, "broadcast", raw_speech_audio=sustained)
+        voice_setup.analyze_voice_setup(
+            VoiceSetupRequest(short, short, rate, "broadcast", raw_speech_audio=sustained)
+        )
 
 
 def test_the_verification_passage_is_refused_for_sustained_clipping_only():
@@ -214,7 +226,7 @@ def test_the_setup_analysis_refuses_a_non_finite_filtered_capture_without_raw_ca
     {"noise": noise, "speech": speech}[which][2_000] = np.nan
 
     with pytest.raises(ValueError, match="filtered setup captures are non-finite") as refusal:
-        voice_setup.analyze_voice_setup(noise, speech, rate, "broadcast")
+        voice_setup.analyze_voice_setup(VoiceSetupRequest(noise, speech, rate, "broadcast"))
     from mic_eq.ui.setup_messages import plain_error
 
     assert "held invalid data" in plain_error(str(refusal.value))

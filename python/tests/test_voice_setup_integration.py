@@ -19,6 +19,7 @@ from PySide6.QtCore import QElapsedTimer, QEventLoop, QThread, QTimer
 from PySide6.QtWidgets import QDialog, QMessageBox
 
 from mic_eq.analysis.voice_setup import (
+    VoiceSetupRequest,
     analyze_voice_setup,
     validate_voice_setup_verification,
 )
@@ -675,13 +676,15 @@ def test_voice_setup_tone_and_lufs_survive_apply_save_and_restart(real_main_wind
     noise, speech = _short_voice_captures(int(window.processor.sample_rate()))
     _bind_capture_context(dialog, noise, speech)
     analysis = analyze_voice_setup(
-        noise,
-        speech,
-        int(window.processor.sample_rate()),
-        "broadcast",
-        vad_available=False,
-        target_lufs=-19.0,
-        limiter_settings=window.limiter_state.get_settings(),
+        VoiceSetupRequest(
+            noise,
+            speech,
+            int(window.processor.sample_rate()),
+            "broadcast",
+            vad_available=False,
+            target_lufs=-19.0,
+            limiter_settings=window.limiter_state.get_settings(),
+        )
     )
     assert analysis["eq_settings"] is not None
     result = _voice_setup_result(window, dialog, analysis=analysis)
@@ -740,9 +743,9 @@ def test_the_analysis_builds_the_typed_candidate_eq_from_what_the_dialog_sends(
     sent: list[dict[str, Any]] = []
     analyze = voice_setup_dialog.analyze_voice_setup
 
-    def recording_analysis(*args, **kwargs):
-        sent.append(deepcopy(kwargs["incumbent_settings"]))
-        return analyze(*args, **kwargs)
+    def recording_analysis(request, **kwargs):
+        sent.append(deepcopy(request.incumbent_settings))
+        return analyze(request, **kwargs)
 
     monkeypatch.setattr(voice_setup_dialog, "analyze_voice_setup", recording_analysis)
     with _dismissed(dialog):
@@ -1052,7 +1055,7 @@ def test_the_analysis_assumes_the_processing_the_candidate_will_run(
 
     window = real_main_window
     window._set_processing_mode(mode)
-    sent: list[dict[str, Any]] = []
+    sent: list[VoiceSetupRequest] = []
 
     class _Signal:
         def connect(self, _slot):
@@ -1061,8 +1064,8 @@ def test_the_analysis_assumes_the_processing_the_candidate_will_run(
     class _Worker:
         step_progress = result_ready = failed = finished = _Signal()
 
-        def __init__(self, *_args, **kwargs):
-            sent.append(kwargs)
+        def __init__(self, request):
+            sent.append(request)
 
         def start(self):
             pass
@@ -1081,7 +1084,7 @@ def test_the_analysis_assumes_the_processing_the_candidate_will_run(
     with _dismissed(dialog):
         dialog._start_analysis()
 
-        assert sent[0]["processing_mode"] == "normal"
+        assert sent[0].processing_mode == "normal"
 
 
 @pytest.mark.parametrize("mode", ["normal", "bypass"])

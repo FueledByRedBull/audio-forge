@@ -9,6 +9,7 @@ import pytest
 
 from mic_eq.analysis import voice_setup
 from mic_eq.analysis.cancellation import AnalysisCancelled
+from mic_eq.analysis.voice_setup import VoiceSetupRequest
 from mic_eq.config import EQ_FREQUENCIES, EQSettings, Preset, build_eq_candidate_settings
 
 
@@ -563,11 +564,13 @@ def _run_initial_analysis(
     monkeypatch.setattr(voice_setup, "tune_gate_suppression_dynamics", tune)
     monkeypatch.setattr(voice_setup, "simulate_candidate_chain", simulate)
     result = voice_setup.analyze_voice_setup(
-        noise * 0.9, speech * 0.9, sample_rate, vad_available=False,
-        incumbent_settings={"eq": eq_payload(incumbent_eq),
-                            "gate": asdict(preset.gate), "rnnoise": asdict(preset.rnnoise)},
-        raw_noise_audio=noise, raw_speech_audio=speech,
-        input_cleanup_mode="gentle", processing_mode=processing_mode,
+        VoiceSetupRequest(
+            noise * 0.9, speech * 0.9, sample_rate, vad_available=False,
+            incumbent_settings={"eq": eq_payload(incumbent_eq),
+                                "gate": asdict(preset.gate), "rnnoise": asdict(preset.rnnoise)},
+            raw_noise_audio=noise, raw_speech_audio=speech,
+            input_cleanup_mode="gentle", processing_mode=processing_mode,
+        ),
         progress_callback=lambda _text, value: progress.append(value),
     )
     return {

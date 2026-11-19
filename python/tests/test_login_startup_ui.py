@@ -196,6 +196,25 @@ def test_login_stops_at_the_deadline_and_names_the_missing_microphone(follow_def
     assert window.status_message.text == "Login stopped: no microphone is available"
 
 
+def test_login_with_no_microphone_at_all_waits_for_one_and_says_so_at_the_deadline(startup_window):
+    window, clock, devices = startup_window
+    devices["input"] = []
+    window.begin_login_startup()
+    clock[0] += 30
+    window._service_login_startup()
+
+    assert window.no_microphone()
+    assert window._login_startup_message == "Login waiting for a microphone"
+    assert window.status_message.text == "Login waiting for a microphone"
+    clock[0] += 31
+    window._service_login_startup()
+
+    window.processor.start.assert_not_called()
+    assert window._login_startup_deadline is None
+    assert window._login_startup_message == "Login stopped: no microphone is available"
+    assert window.status_message.text == "Login stopped: no microphone is available"
+
+
 def test_login_with_a_saved_specific_microphone_starts_at_once_whatever_the_default(
     startup_window, monkeypatch
 ):

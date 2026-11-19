@@ -12,6 +12,7 @@ from .shell_state import TextState
 
 COMPRESSOR_GR_NAME = "Compressor gain reduction"
 DEESSER_GR_NAME = "De-esser gain reduction"
+LIMITER_GR_NAME = "Limiter gain reduction"
 CONFIDENCE_NAME = "Voice activity confidence"
 CONFIDENCE_TIP = "Real-time VAD confidence (red=low, green=high)"
 # Accessible name and tooltip of each compressor readout.
@@ -40,6 +41,8 @@ class ProcessingMeters(QObject):
         self.gate_state = gate_state
         self.compressor_gr = GainReductionMeter(COMPRESSOR_GR_NAME, parent=self)
         self.deesser_gr = GainReductionMeter(DEESSER_GR_NAME, parent=self)
+        # Read from each diagnostics tick; the engine has no faster limiter getter.
+        self.limiter_gr = GainReductionMeter(LIMITER_GR_NAME, parent=self)
         self.confidence = ConfidenceMeter(CONFIDENCE_NAME, CONFIDENCE_TIP, parent=self)
         self.text_states = {
             key: TextState(self, text="--", name=name, tip=tip)

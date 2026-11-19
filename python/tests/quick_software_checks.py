@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import QObject, QPointF, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
 
@@ -27,6 +28,7 @@ from test_quick_shell import (  # noqa: F401  (tests and fixtures repeated under
 )
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.quick_shell import graphics_api
+from mic_eq.ui.theme import PALETTE
 
 
 def test_the_scene_renders_with_the_software_adapter_and_without_shadows(quick_window) -> None:  # noqa: F811
@@ -51,12 +53,31 @@ def test_the_scene_renders_with_the_software_adapter_and_without_shadows(quick_w
     assert not quick_window.centralWidget().grabFramebuffer().isNull()
 
 
+def test_glass_panel_is_solid_under_software(quick_window, qapp) -> None:  # noqa: F811
+    for width in (1400, 900):  # docked, then laid over the main pane
+        quick_window.resize(width, 900)
+        quick_window.quick_bridge.model["inspector"].show("compressor")
+        QTest.qWait(400)
+        root = quick_window.centralWidget().rootObject()
+        glass = root.findChild(QObject, "inspector")
+        assert glass.isVisible() and glass.property("effectsOn") is False
+        assert glass.findChild(QObject, "glassBlur").property("active") is False
+        fill = glass.findChild(QObject, "glassFill").property("color").name(QColor.NameFormat.HexArgb)
+        assert fill == PALETTE.glass_solid
+        pending: list[QQuickItem] = [root]
+        while pending:
+            item = pending.pop()
+            assert "MultiEffect" not in item.metaObject().className()
+            pending.extend(item.childItems())
+    assert not quick_window.centralWidget().grabFramebuffer().isNull()
+
+
 def test_a_click_on_the_health_chip_switches_the_page_and_back(quick_window, qapp) -> None:  # noqa: F811
     quick_window.resize(1400, 900)
     qapp.processEvents()
     view = quick_window.centralWidget()
     toggle = view.rootObject().findChild(QObject, "healthToggle")
-    mic = view.rootObject().findChild(QObject, "micPage")
+    mic = view.rootObject().findChild(QObject, "overviewPage")
     assert toggle is not None and mic is not None
     centre = toggle.mapToScene(QPointF(toggle.width() / 2, toggle.height() / 2)).toPoint()
 

@@ -19,9 +19,9 @@ from test_quick_layout import (  # noqa: F401  (tests and fixtures repeated at t
     segoe_font,
     test_a_long_preset_name_is_elided_and_whole_in_the_tooltip,
     test_an_elided_status_caption_has_its_full_text_as_its_tip,
-    test_nothing_in_the_content_column_runs_under_the_meters,
+    test_nothing_in_the_main_pane_runs_into_the_sidebar_or_off_the_window,
     test_the_scene_is_built_at_its_minimum_width,
-    test_the_status_strip_texts_do_not_overlap,
+    test_the_sidebar_footer_parts_do_not_overlap,
 )
 from test_quick_shell import (  # noqa: F401  (tests and fixtures repeated at this scale)
     mic_page,

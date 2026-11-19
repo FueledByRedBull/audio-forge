@@ -1629,6 +1629,8 @@ def test_update_diagnostics_surfaces_output_recovery_and_reuses_diagnostics(wind
 def test_stopped_diagnostics_continue_native_recovery_and_reconcile_controls(window):
     processor = _StoppedRecoveryProcessor()
     _recovery_setup(window, processor)
+    # Start is offered only with a microphone to start from.
+    window.input_choice.addItem("Mic A", DeviceIdentity(name="Mic A", direction="input"))
 
     window._update_diagnostics()
 

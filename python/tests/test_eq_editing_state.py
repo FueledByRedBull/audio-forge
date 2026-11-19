@@ -187,7 +187,9 @@ def test_eq_graph_pass_filter_is_horizontal_only_and_clamped(quick_window, qapp)
     window = quick_window
     # Wide enough that the pointer can travel past the graph's right edge.
     window.resize(1500, 1000)
+    window.shell_page.setIndex(window.EQUALIZER_PAGE_INDEX)
     qapp.processEvents()
+    QTest.qWait(50)
     item = _graph_item(window.centralWidget().rootObject())
     assert item is not None
     band_index = 3

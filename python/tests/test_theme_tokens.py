@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import re
+import sys
+import types
 
 import pytest
 from PySide6.QtCore import QByteArray, QUrl
@@ -22,6 +25,7 @@ from mic_eq.ui.theme import (
     contrast_ratio,
     flatten,
     motion_durations,
+    prefers_reduced_transparency,
 )
 
 SYSTEM_COLORS = {
@@ -103,6 +107,49 @@ def test_reduced_motion_swaps_every_duration_for_a_short_fade(qapp, monkeypatch)
     assert motion_durations(False) == MOTION
 
 
+def test_prefers_reduced_transparency_reads_env_override_and_registry(qapp, monkeypatch) -> None:
+    values: dict[str, int] = {"EnableTransparency": 0}
+    opened: list[str] = []
+
+    class Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def open_key(_root, path):
+        opened.append(path)
+        return Key()
+
+    def query(_key, name):
+        if name not in values:
+            raise FileNotFoundError(name)
+        return values[name], 4
+
+    winreg = types.SimpleNamespace(HKEY_CURRENT_USER=object(), OpenKey=open_key, QueryValueEx=query)
+    monkeypatch.setitem(sys.modules, "winreg", winreg)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("AUDIOFORGE_REDUCED_TRANSPARENCY", raising=False)
+    assert prefers_reduced_transparency() is True
+    assert opened == [r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"]
+    assert quick_theme()["reducedTransparency"] is True
+    values["EnableTransparency"] = 1
+    assert prefers_reduced_transparency() is False
+    # Windows writes the value only once the switch is used; until then transparency is on.
+    del values["EnableTransparency"]
+    assert prefers_reduced_transparency() is False
+
+    monkeypatch.setenv("AUDIOFORGE_REDUCED_TRANSPARENCY", "1")
+    assert prefers_reduced_transparency() is True
+    values["EnableTransparency"] = 0
+    monkeypatch.setenv("AUDIOFORGE_REDUCED_TRANSPARENCY", "0")
+    assert prefers_reduced_transparency() is False
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv("AUDIOFORGE_REDUCED_TRANSPARENCY")
+    assert prefers_reduced_transparency() is False
+
+
 def test_glass_is_translucent_in_the_dark_look_and_the_window_color_under_a_contrast_theme(qapp) -> None:
     glass_tokens = ("glass", "glass_solid", "glass_modal")
     assert all(0 < QColor(getattr(PALETTE, name)).alpha() < 255 for name in glass_tokens)
@@ -136,3 +183,43 @@ def test_level_colors_are_not_told_apart_by_red_against_green_alone() -> None:
     assert 190 <= safe.hslHue() <= 250
     assert safe.blue() > safe.green() and safe.blue() > safe.red()
     assert danger.hslHue() < 20 or danger.hslHue() > 340
+
+
+def test_callers_affected_has_its_own_hue_and_stays_readable() -> None:
+    mark = QColor(PALETTE.callers_affected)
+
+    def hue_gap(other: str) -> int:
+        gap = abs(mark.hslHue() - QColor(other).hslHue())
+        return min(gap, 360 - gap)
+
+    # Not the amber of actions, the yellow of warnings, the red of errors, the violet of
+    # Mute or the blues of the level and analyser traces.
+    for taken in (
+        PALETTE.accent, PALETTE.status_warn_text, PALETTE.status_bad_text, PALETTE.mute,
+        PALETTE.signal_in, PALETTE.signal_in_fill, PALETTE.analyser, PALETTE.status_ok_text,
+    ):
+        assert hue_gap(taken) >= 30, taken
+    for ground in (PALETTE.pane_surface, PALETTE.card_surface, PALETTE.sidebar_top):
+        assert contrast_ratio(PALETTE.callers_affected_text, ground) >= 4.5
+        assert contrast_ratio(PALETTE.callers_affected, ground) >= 3
+    fill = flatten(PALETTE.callers_affected_fill, PALETTE.pane_surface)
+    assert contrast_ratio(PALETTE.callers_affected_text, fill) >= 4.5
+    contrast = build_palette(SYSTEM_COLORS)
+    assert contrast.callers_affected == contrast.callers_affected_text == SYSTEM_COLORS["window_text"]
+
+
+def test_a_switch_that_is_on_differs_from_one_that_is_off_by_more_than_hue() -> None:
+    # On is a filled light track and off an outline in the edge colour: a colour-blind user
+    # tells them apart by lightness and fill, and the on track holds 3:1 where switches sit.
+    on, off = QColor(PALETTE.switch_on), QColor(PALETTE.control_edge)
+    assert on.lightness() - off.lightness() >= 60
+    for ground in (PALETTE.app_surface, PALETTE.sidebar_top, PALETTE.card_surface):
+        assert contrast_ratio(PALETTE.switch_on, ground) >= 3
+    assert build_palette(SYSTEM_COLORS).switch_on == SYSTEM_COLORS["window_text"]
+
+
+@pytest.mark.parametrize("name", ["Main.qml", "SwitchButton.qml"])
+def test_scene_animations_take_their_length_from_the_motion_tokens(name) -> None:
+    durations = re.findall(r"duration:\s*([^;}\n]+)", (QML_DIR / name).read_text(encoding="utf-8"))
+    assert durations
+    assert all(re.search(r"\bt\.motion\w*\b", value) for value in durations), durations

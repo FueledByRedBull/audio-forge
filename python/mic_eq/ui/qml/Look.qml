@@ -7,6 +7,10 @@ QtObject {
     readonly property var t: theme
     readonly property bool hasIcons: t.iconFont !== ""
     readonly property bool reducedMotion: t.reducedMotion
+    // Under reduced motion nothing moves; only fades run, at the theme's own fade length.
+    function movement(ms: int): int {
+        return reducedMotion ? 0 : ms
+    }
     // The sizes of text, in pixels, follow the app font (9 pt is the scale as written).
     // Text that carries information never drops below the floor; only ticks and keycaps
     // use the smaller tick size.

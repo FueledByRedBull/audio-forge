@@ -1,4 +1,4 @@
-// A text button. `look` is "plain", "primary" or "danger".
+// A text button. `look` is "plain", "primary", "danger" or "soft", the last for a step worth taking next.
 import QtQuick
 
 KeyButton {
@@ -13,9 +13,11 @@ KeyButton {
         radius: Look.t.radiusControl
         color: btn.look === "primary" ? (btn.hovered ? Look.t.accent_hover : Look.t.accent)
              : btn.look === "danger" ? Look.t.action_destructive
+             : btn.look === "soft" ? (btn.hovered ? Look.t.control_hover : Look.t.accent_fill)
              : btn.hovered ? Look.t.control_hover : Look.t.control_surface
         border.color: btn.look === "plain" ? Look.t.control_edge
-                    : btn.look === "danger" ? Look.t.action_destructive_border : "transparent"
+                    : btn.look === "danger" ? Look.t.action_destructive_border
+                    : btn.look === "soft" ? Look.t.accent_edge : "transparent"
         scale: btn.pressed ? 0.98 : 1
         FocusRing { control: btn }
     }
@@ -25,6 +27,7 @@ KeyButton {
         textFormat: Text.PlainText
         color: btn.look === "primary" ? Look.t.text_on_accent
              : btn.look === "danger" ? Look.t.text_on_emphasis
+             : btn.look === "soft" ? Look.t.accent_bright
              : btn.hovered ? Look.t.hover_text : Look.t.text_primary
         font.pixelSize: Look.fsBody
         font.weight: btn.look === "plain" ? Font.Normal : Font.DemiBold

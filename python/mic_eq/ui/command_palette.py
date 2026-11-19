@@ -150,7 +150,7 @@ class CommandPalette(QObject):
         self.action.setShortcut(QKeySequence(SHORTCUT))
         self.action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
         self.action.setAutoRepeat(False)
-        self.action.triggered.connect(self.open)
+        self.action.triggered.connect(self.show_palette)
         window.addAction(self.action)
 
     shown = Property(bool, lambda self: self._shown, notify=changed)
@@ -215,7 +215,7 @@ class CommandPalette(QObject):
             self._refresh()
 
     @Slot()
-    def open(self) -> None:
+    def show_palette(self) -> None:
         if self._shown:
             return
         self._shown, self._query = True, ""

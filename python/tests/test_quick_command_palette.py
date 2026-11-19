@@ -83,7 +83,7 @@ def test_typing_filters_the_rows_and_an_empty_result_says_so(quick_window, qapp)
     window = quick_window
     _show(window, qapp)
     palette = _palette(window)
-    palette.open()
+    palette.show_palette()
     everything = [row["title"] for row in palette.rows]
     assert {"Start processing", "Stop processing", "Mute", "Run Auto Voice Setup", "Test my sound"} <= set(everything)
     assert {"Noise gate", "Noise suppression", "De-esser", "Equalizer", "Compressor", "Limiter"} <= set(everything)
@@ -113,14 +113,14 @@ def test_typing_filters_the_rows_and_an_empty_result_says_so(quick_window, qapp)
 def test_an_action_row_triggers_the_toolbar_action(quick_window, qapp) -> None:
     window = quick_window
     palette = _palette(window)
-    palette.open()
+    palette.show_palette()
     spy = QSignalSpy(window.user_mute_checkbox_action.triggered)
     _select(palette, "Mute")
     palette.run()
     assert spy.count() == 1
     assert window.engine_session.view.user_muted
     assert not palette.shown
-    palette.open()
+    palette.show_palette()
     # The same row now unmutes, as the toolbar button does.
     _select(palette, "Unmute")
     palette.run()
@@ -133,7 +133,7 @@ def test_a_stage_row_toggles_through_the_stage_switch(quick_window) -> None:
     compressor = next(row["toggle"] for row in window.quick_bridge.model["sidebar"]["chain"] if row["name"] == "Compressor")
     before = window.compressor_state.get_settings()["enabled"]
     spy = QSignalSpy(compressor.changed)
-    palette.open()
+    palette.show_palette()
     row = _select(palette, "Compressor")
     assert row["value"] == ("On" if before else "Off")
     palette.run()
@@ -147,7 +147,7 @@ def test_a_preset_row_loads_through_the_presets_menu(quick_window) -> None:
     preset = list(BUILTIN_PRESETS.values())[-1]
     action = next(item for item in window.builtin_presets_menu.actions() if item.text() == preset.name)
     spy = QSignalSpy(action.triggered)
-    palette.open()
+    palette.show_palette()
     row = _select(palette, preset.name)
     assert row["detail"] == preset.description
     palette.run()
@@ -158,7 +158,7 @@ def test_a_preset_row_loads_through_the_presets_menu(quick_window) -> None:
 def test_the_mute_row_is_named_for_what_it_does_now(quick_window) -> None:
     window = quick_window
     palette = _palette(window)
-    palette.open()
+    palette.show_palette()
     assert "Mute" in [row["title"] for row in palette.rows]
     # Muted from the toolbar while the palette is open: the row follows.
     window.user_mute_checkbox_action.trigger()
@@ -174,7 +174,7 @@ def test_a_disabled_action_shows_disabled_and_does_nothing(quick_window, qapp) -
     palette = _palette(window)
     assert not window.stop_btn_action.isEnabled()
     spy = QSignalSpy(window.stop_btn_action.triggered)
-    palette.open()
+    palette.show_palette()
     row = _select(palette, "Stop processing")
     assert row["enabled"] is False
     qapp.processEvents()
@@ -206,7 +206,7 @@ def test_a_numeric_draft_changes_with_the_arrows_and_esc_discards_it(quick_windo
     _press(window, Qt.Key.Key_Escape, qapp)
     assert not palette.shown
     assert window.limiter_state.get_settings()["ceiling_db"] == before
-    palette.open()
+    palette.show_palette()
     _select(palette, "Limiter ceiling")
     assert palette.rows[palette.current]["draft"] is False
 
@@ -217,7 +217,7 @@ def test_enter_applies_a_numeric_draft_as_an_undoable_edit(quick_window, qapp) -
     palette = _palette(window)
     before = window.configuration.current.compressor.threshold_db
     after = before + 2 * float(_setting(window, "compressor", "threshold_db").property("step"))
-    palette.open()
+    palette.show_palette()
     _select(palette, "Compressor threshold")
     assert palette.adjust(1) and palette.adjust(1)
     assert window.configuration.current.compressor.threshold_db == before
@@ -232,7 +232,7 @@ def test_enter_applies_a_numeric_draft_as_an_undoable_edit(quick_window, qapp) -
 
 def test_left_and_right_on_a_row_that_is_not_numeric_leave_it_alone(quick_window) -> None:
     palette = _palette(quick_window)
-    palette.open()
+    palette.show_palette()
     _select(palette, "Compressor")
     # Not handled, so the search field moves its cursor instead.
     assert palette.adjust(1) is False
@@ -262,7 +262,7 @@ def test_a_draft_goes_when_its_setting_is_disabled(quick_window) -> None:
     window = quick_window
     palette = _palette(window)
     window.compressor_state.set_value("auto_makeup_enabled", False)
-    palette.open()
+    palette.show_palette()
     _select(palette, "Compressor makeup gain")
     assert palette.adjust(1)
     assert palette.rows[palette.current]["draft"] is True
@@ -279,7 +279,7 @@ def test_changing_the_filter_drops_every_draft(quick_window) -> None:
     window = quick_window
     palette = _palette(window)
     before = window.limiter_state.get_settings()["ceiling_db"]
-    palette.open()
+    palette.show_palette()
     _select(palette, "Limiter ceiling")
     assert palette.adjust(-1)
     palette.setQuery("limiter ceil")
@@ -293,7 +293,7 @@ def test_the_callers_line_is_on_exactly_the_rows_that_change_what_callers_hear(q
     window = quick_window
     _show(window, qapp)
     palette = _palette(window)
-    palette.open()
+    palette.show_palette()
     qapp.processEvents()
     # Test my sound and Auto Voice Setup hold the live output muted while they run.
     muting = {"Run Auto Voice Setup", "Test my sound"}
@@ -379,7 +379,7 @@ def test_a_click_selects_a_row_and_a_click_on_the_selected_row_runs_it(quick_win
     _show(window, qapp)
     palette = _palette(window)
     before = window.limiter_state.get_settings()["enabled"]
-    palette.open()
+    palette.show_palette()
     palette.setQuery("limiter")
     # Clicked once the panel has settled.
     QTest.qWait(window.quick_bridge.model["theme"]["motionPanelOpen"] + 100)
@@ -469,7 +469,7 @@ def test_ctrl_k_under_a_modal_dialog_does_not_open_the_palette(quick_window, qap
 def test_the_panel_stays_inside_the_pane_when_the_window_resizes(quick_window, qapp) -> None:
     window = quick_window
     _show(window, qapp)
-    _palette(window).open()
+    _palette(window).show_palette()
     qapp.processEvents()
     pane = _scene(window, "commandPalette").property("backdrop")
     glass = _scene(window, "paletteGlass")
@@ -484,7 +484,7 @@ def test_the_search_field_and_rows_are_named_for_assistive_technology(quick_wind
     window = quick_window
     _show(window, qapp)
     palette = _palette(window)
-    palette.open()
+    palette.show_palette()
     palette.setQuery("compressor")
     palette.select(next(i for i, row in enumerate(palette.rows) if row["title"] == "Compressor ratio"))
     assert palette.adjust(1)
@@ -508,7 +508,7 @@ def test_an_empty_result_is_announced(quick_window, monkeypatch) -> None:
     monkeypatch.setattr(QAccessible, "isActive", staticmethod(lambda: True))
     monkeypatch.setattr(QAccessible, "updateAccessibility", staticmethod(lambda event: sent.append(event.message())))
     palette = _palette(quick_window)
-    palette.open()
+    palette.show_palette()
     palette.setQuery("no such command")
     assert sent == [NO_MATCH_TEXT]
     palette.setQuery("no such command at all")
@@ -531,7 +531,7 @@ def test_under_reduced_motion_the_palette_only_fades(request, monkeypatch, qapp,
     theme = window.quick_bridge.model["theme"]
     overlay = _scene(window, "commandPalette")
     palette = _palette(window)
-    palette.open()
+    palette.show_palette()
     assert _duration(window, "move") == (0 if motion == "reduced" else theme["motionPanelOpen"])
     assert _duration(window, "fade") == theme["motionCrossfade"] > 0
     QTest.qWait(max(theme["motionPanelOpen"], theme["motionCrossfade"]) + 100)

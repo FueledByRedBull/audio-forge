@@ -288,6 +288,19 @@ def test_deesser_controls_share_exact_settings_and_derived_availability(quick_wi
     assert quick_window.configuration.current.deesser.high_cut_hz == 12200
 
 
+def test_deesser_auto_hint_shows_while_auto_is_on(quick_window) -> None:
+    hint = quick_window.shell_texts["deesser_auto_hint"]
+    card = quick_window.quick_bridge.model["stages"][2]
+    assert hint in [row["proxy"] for row in card["rows"]]
+    assert hint.text == "Threshold and ratio follow Auto while it is on."
+    quick_window.deesser_state.set_settings({"auto_enabled": True})
+    assert hint.shown
+    quick_window.deesser_state.set_settings({"auto_enabled": False})
+    assert not hint.shown
+    quick_window.deesser_state.set_settings({"auto_enabled": True})
+    assert hint.shown
+
+
 def test_limiter_reads_shared_state_without_polling(quick_window) -> None:
     bridge = quick_window.quick_bridge
     control = _rows(bridge.model["stages"][-1])["Ceiling"]["proxy"]

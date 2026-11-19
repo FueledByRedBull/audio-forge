@@ -436,6 +436,8 @@ class MainWindow(QMainWindow):
 
         # Shared state first: the view only renders it.
         self._setup_shell_models()
+        self.deesser_state.changed.connect(self._show_deesser_auto_hint)
+        self._show_deesser_auto_hint()
         self._setup_menubar()
         self._setup_options_menu()
         self.engine_session.changed.connect(self._on_session_changed)
@@ -738,6 +740,10 @@ class MainWindow(QMainWindow):
         if not saved:
             message += "; preference could not be saved"
         self.status_message.showMessage(message, 6000 if not saved else 3000)
+
+    def _show_deesser_auto_hint(self) -> None:
+        """Tell the de-esser inspector why Threshold and Ratio are dimmed."""
+        self.shell_texts["deesser_auto_hint"].update(shown=bool(self.deesser_state.get_settings()["auto_enabled"]))
 
     def _update_session_summary(self) -> None:
         """Keep the compact route/preset/transmission summary current."""

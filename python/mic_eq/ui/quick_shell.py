@@ -529,6 +529,7 @@ class QuickBridge(QObject):
                 "toggle": control("deesser", "enabled"),
                 "rows": [
                     state_row("deesser", "toggle", "auto_enabled"),
+                    row("text", text("deesser_auto_hint")),
                     state_field("deesser", "auto_amount", slider=True),
                     row("meter", meters.deesser_gr, "Reduction"),
                 ],

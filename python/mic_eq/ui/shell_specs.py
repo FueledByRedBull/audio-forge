@@ -125,6 +125,9 @@ TEXT_SPECS = {
     "dropped_label": _TextSpec(
         "Drops: --", "Dropped audio samples", DROPPED_DIAGNOSTICS_TOOLTIP
     ),
+    "deesser_auto_hint": _TextSpec(
+        "Threshold and ratio follow Auto while it is on.", "De-esser Auto note", shown=False
+    ),
     "recovery_diag_label": _TextSpec(
         "Recovery: --",
         "Stream recovery health",

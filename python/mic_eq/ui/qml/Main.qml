@@ -23,7 +23,6 @@ Rectangle {
     readonly property int fsBody: Look.fsBody
     readonly property int fsLead: Look.fsLead
     readonly property int fsHeading: Look.fsHeading
-    readonly property int fsTitle: Look.fsTitle
     readonly property int fsDisplay: Look.fsDisplay
     // When the last tooltip closed; the next one opens at once if it follows closely.
     property double tipClosedAt: 0

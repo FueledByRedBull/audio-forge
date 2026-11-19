@@ -141,7 +141,7 @@ class VoiceSetupPrompts(SetupPrompts, Protocol):
     def warn(self, title: str, text: str) -> None:
         ...
 
-    def compare(self, **comparison: Any) -> bool | None:
+    def show_comparison(self, **comparison: Any) -> bool | None:
         """The listening comparison: whether the proposal was kept, or None when it could not open."""
         ...
 
@@ -756,7 +756,7 @@ class VoiceSetupFlow(QObject):
                 state="warn",
                 strong=False,
             )
-            # The state, button text and selector stay as the dialog had them.
+            # The state, button text and selector stay as they were.
             self.view_model.set_page(startEnabled=True)
 
         lease = borrow_audio_for(
@@ -1739,7 +1739,7 @@ class VoiceSetupFlow(QObject):
             proposed_chain["rnnoise"] = deepcopy(suppression)
         owner.engine_session.hold_mute("listening_comparison", True)
         try:
-            answer = self._prompts.compare(
+            answer = self._prompts.show_comparison(
                 audio_data=self.preview_voice_audio
                 if self.preview_voice_audio is not None
                 else self.voice_audio,
@@ -2544,7 +2544,7 @@ class VoiceSetupFlow(QObject):
         self._report("failed", ["analysis_failed"], [error])
 
     def _reject_capture(self, message: str) -> None:
-        """Refuse a finished take and leave the dialog ready to record it again."""
+        """Refuse a finished take and leave the flow ready to record it again."""
         noise_step = self.setup_state == "noise_recording"
         # A verification take keeps the status its failure already set.
         verification_step = self.setup_state == "verification_recording"

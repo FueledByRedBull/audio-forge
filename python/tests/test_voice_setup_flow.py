@@ -64,7 +64,7 @@ class _Prompts:
     def warn(self, title: str, text: str) -> None:
         self.calls.append(("warn", title, text))
 
-    def compare(self, **_comparison: Any) -> bool | None:
+    def show_comparison(self, **_comparison: Any) -> bool | None:
         raise AssertionError("no comparison is expected")
 
     def persist_calibration(

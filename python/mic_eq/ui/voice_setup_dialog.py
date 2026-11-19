@@ -82,7 +82,7 @@ class VoiceSetupDialog(QDialog):
         return reason
 
     def ask(self, title: str, text: str) -> bool:
-        """The ``SetupPrompts`` this dialog gives ``borrow_audio_for``, with ``fail``."""
+        """The ``SetupPrompts`` answer the flow passes to ``borrow_audio_for``, with ``fail``."""
         reply = QMessageBox.question(
             self, title, text, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
@@ -108,7 +108,7 @@ class VoiceSetupDialog(QDialog):
     def warn(self, title: str, text: str) -> None:
         QMessageBox.warning(self, title, text)
 
-    def compare(self, **comparison: Any) -> bool | None:
+    def show_comparison(self, **comparison: Any) -> bool | None:
         """Show the listening comparison: whether the proposal was kept, or None when the
         window could not open."""
         from .listening_comparison_dialog import ListeningComparisonDialog

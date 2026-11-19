@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from PySide6.QtCore import QPointF, Qt, qInstallMessageHandler
@@ -780,3 +780,25 @@ def test_the_width_budget_holds_every_label_the_main_and_override_buttons_can_sh
         if isinstance(node, ast.keyword) and node.arg == "startText":
             literals |= values(node.value)
     assert literals and literals <= set(START_LABELS), literals - set(START_LABELS)
+
+
+def test_the_dialog_asks_the_advisory_question_with_no_as_the_default(monkeypatch) -> None:
+    from mic_eq.ui import voice_setup_dialog
+    from PySide6.QtWidgets import QMessageBox
+
+    asked: list[tuple[Any, ...]] = []
+
+    def question(*args: Any) -> QMessageBox.StandardButton:
+        asked.append(args)
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(voice_setup_dialog.QMessageBox, "question", question)
+    answer = VoiceSetupDialog.ask_defaulting_no(
+        cast(VoiceSetupDialog, None), "Apply Suggested Settings?", "Apply them?"
+    )
+
+    assert answer is False
+    [(_parent, title, text, buttons, default)] = asked
+    assert (title, text) == ("Apply Suggested Settings?", "Apply them?")
+    assert buttons == QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    assert default == QMessageBox.StandardButton.No

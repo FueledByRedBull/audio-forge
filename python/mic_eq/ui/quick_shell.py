@@ -44,6 +44,8 @@ from .engine_session import Restarted, RestartFailed, Started, Stopped
 from .desktop_integration import RENDERER_RELAUNCH_ENV, relaunch_with_software_rendering
 from .control_specs import control_label
 from .eq_controls import EQControl
+from .eq_graph import EQGraphGeometry
+from .eq_hold_compare import EQHoldCompare
 from .eq_quick_compare import EQComparisonItem
 from .device_selection import VIRTUAL_OUTPUT_MARKERS
 from .eq_quick_graph import EQGraphItem, EQGraphPreview
@@ -442,6 +444,10 @@ class QuickBridge(QObject):
     def release(self) -> None:
         """Release scene adapters when the scene is dropped."""
 
+        # Nothing is left to let go of a hold the scene began.
+        self._window.eq_state.release_original()
+        # The compact window shows this scene's proxies too.
+        self._window.close_compact_window()
         self.deleteLater()
 
     levelsChanged = Signal()
@@ -663,7 +669,7 @@ class QuickBridge(QObject):
 
         bands = [
             {key: EQControl(w.eq_state, key, index, self) for key in (
-                "frequencyLabel", "enabled", "type", "gain", "gainLabel", "frequency", "q", "slope",
+                "frequencyLabel", "enabled", "type", "gain", "gainLabel", "frequency", "q", "slope", "hint",
             )}
             for index in range(10)
         ]
@@ -724,6 +730,10 @@ class QuickBridge(QObject):
                 "route_status_label", "preset_status_label", "calibration_status_label",
             )),
         ])
+        # Connected after the window's and the Overview's handlers, so it reads the state they left.
+        compare = EQHoldCompare(self, w.eq_state, overview)
+        w.engine_session.changed.connect(compare.session_changed)
+        w.installEventFilter(compare)
         inspector = InspectorState(self, [row["key"] for row in chain if row["card"]])
         top = {
             "input": w.input_choice,
@@ -817,6 +827,9 @@ class QuickBridge(QObject):
                 "diagnostics": EQControl(w.eq_state, "diagnostics", None, self),
                 "band": EQControl(w.eq_state, "band", None, self),
                 "bands": bands,
+                "compare": compare,
+                # The height of the named regions drawn across the top of the graph.
+                "regionStrip": EQGraphGeometry.REGION_STRIP_HEIGHT,
                 # How each line of the graph is drawn, named in words beside its sample.
                 "legend": [
                     {"text": "Total (what you hear)", "lineStyle": "solid"},

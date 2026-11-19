@@ -58,11 +58,12 @@ class Preparation(Protocol):
         """After a window Start or an automatic restart worked: the streams are new, so redo what depends on them."""
         ...
 
-    def select_input(self, identity: DeviceIdentity) -> bool:
-        """With the engine stopped: select ``identity`` as the input, saved as a pick in the Input list is.
+    def has_input(self, identity: DeviceIdentity) -> bool:
+        """Whether ``identity`` is still in the Input list, so a switch to it can select it."""
+        ...
 
-        False when it is no longer listed; the window has said so, and nothing starts.
-        """
+    def select_input(self, identity: DeviceIdentity) -> None:
+        """With the engine stopped: select ``identity`` as the input, saved as a pick in the Input list is."""
         ...
 
 
@@ -124,6 +125,13 @@ class RestartFailed:
 
 
 @dataclass(frozen=True)
+class InputSwitchRefused:
+    """The microphone a switch asked for is no longer listed; the engine was not touched."""
+
+    identity: DeviceIdentity
+
+
+@dataclass(frozen=True)
 class BackgroundStopFailed:
     error: Exception
 
@@ -142,7 +150,7 @@ class AudioReleased:
 
 SessionEvent = (
     ControlsChanged | MuteApplied | Started | StartFailed | Stopped | StopFailed | Restarted
-    | RestartFailed | BackgroundStopFailed | AudioBorrowed | AudioReleased
+    | RestartFailed | InputSwitchRefused | BackgroundStopFailed | AudioBorrowed | AudioReleased
 )
 
 
@@ -255,10 +263,10 @@ class EngineSession(QObject):
         self._clock = clock
         self._busy: str | None = None
         self._recovering = False
-        # What a click asked for while a recovery poll held the engine; a restart or a switch to
-        # another input outranks a start, and the later of those two wins.
-        self._after_recovery: Literal["start", "restart", "input_switch"] | None = None
-        self._input_after_recovery: DeviceIdentity | None = None
+        # What a click asked for while a recovery poll held the engine: a start, a restart, or a
+        # switch to the microphone given. A restart or a switch outranks a start; between those
+        # two, the later wins.
+        self._after_recovery: Literal["start", "restart"] | DeviceIdentity | None = None
         self._recovery_failing = False
         self._button_stop_at: float | None = None
         self._user_muted = False
@@ -440,13 +448,16 @@ class EngineSession(QObject):
         if self._busy:
             return
         if self._recovering:
-            self._after_recovery = "input_switch"
-            self._input_after_recovery = identity
+            self._after_recovery = identity
             return
         self._switch_input_on_worker(identity)
 
     def _switch_input_on_worker(self, identity: DeviceIdentity) -> None:
         if self._busy:
+            return
+        # Checked before the stop: a stop would cancel the retry for nothing.
+        if not self._prepare.has_input(identity):
+            self._emit(InputSwitchRefused(identity))
             return
         if not self._stop_needed():
             self._start_on_input(identity)
@@ -459,8 +470,8 @@ class EngineSession(QObject):
             self._start_on_input(identity)
 
     def _start_on_input(self, identity: DeviceIdentity) -> None:
-        if self._prepare.select_input(identity):
-            self._start_on_worker(switched_input=identity)
+        self._prepare.select_input(identity)
+        self._start_on_worker(switched_input=identity)
 
     def _restart_on_worker(self) -> None:
         if self._busy:
@@ -507,7 +518,6 @@ class EngineSession(QObject):
     def _recovery_serviced(self, outcome: Any) -> None:
         self._recovering = False
         queued, self._after_recovery = self._after_recovery, None
-        switch_to, self._input_after_recovery = self._input_after_recovery, None
         if self._closed:
             return
         try:
@@ -535,8 +545,8 @@ class EngineSession(QObject):
             if not self._recovery_failing:
                 logger.warning("Rust recovery service failed", exc_info=True)
             self._recovery_failing = True
-        if queued == "input_switch" and switch_to is not None:
-            self._switch_input_on_worker(switch_to)
+        if isinstance(queued, DeviceIdentity):
+            self._switch_input_on_worker(queued)
         elif queued == "restart":
             self._restart_on_worker()
         elif queued == "start":

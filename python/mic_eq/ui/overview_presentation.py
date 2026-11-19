@@ -29,6 +29,7 @@ MUTED_DETAIL = (
 # The engine refused the mute, so it is pending, not in force.
 MUTE_PENDING_ISSUE = "Mute pending: the mute did not apply, so callers still hear your microphone."
 UNMUTE_PENDING_ISSUE = "Unmute pending: the unmute did not apply, so callers may still hear silence."
+CALLERS_LINE = "Callers hear nothing until the audio is back."
 RETRYING_DETAIL = (
     "The selected devices stopped, and AudioForge keeps retrying them. "
     "Check that the device is connected."
@@ -53,8 +54,9 @@ class OverviewInputs:
     running: bool = False
     no_mic: bool = False
     restart_pending: bool = False
-    # The microphone a switch from the device-lost page could not start on; empty otherwise.
-    input_switch_failure: str = ""
+    # The Input list's label of the microphone a switch from the device-lost page could not
+    # start on; empty otherwise.
+    failed_switch_device: str = ""
     device_bad: bool = False
     device_advice: str = ""
     input_bad: bool = False
@@ -100,6 +102,8 @@ class OverviewView:
     # Another microphone is the way out when the device is gone, so it is offered while the
     # engine retries too: the stop cancels a retry for the device being replaced.
     offer_choose_microphone: bool = False
+    # The notice under the sentence while callers get nothing; empty otherwise.
+    callers_line: str = ""
 
     @property
     def callers_affected(self) -> bool:
@@ -137,8 +141,8 @@ def _sentence(inputs: OverviewInputs) -> tuple[str, str, str, str, str]:
     # Running audio follows its own path: a device that went away is a lost device.
     if inputs.no_mic and not inputs.running:
         return "no_mic", "No microphone found", NO_MIC_DETAIL, "warn", f"Stopped {DOT} no microphone"
-    if inputs.input_switch_failure and not inputs.running and not inputs.restart_pending:
-        detail = switch_failed_detail(inputs.input_switch_failure)
+    if inputs.failed_switch_device and not inputs.running and not inputs.restart_pending:
+        detail = switch_failed_detail(inputs.failed_switch_device)
         return "device_lost", "Your callers can't hear you", detail, "callers", f"Stopped {DOT} microphone failed"
     if inputs.restart_pending or (inputs.running and inputs.device_bad):
         detail = inputs.device_advice if inputs.device_bad and inputs.device_advice else RETRYING_DETAIL
@@ -215,4 +219,5 @@ def describe_overview(inputs: OverviewInputs) -> OverviewView:
         checks=checks,
         offer_restart=state == "device_lost" and not inputs.restart_pending,
         offer_choose_microphone=state == "device_lost",
+        callers_line=CALLERS_LINE if tone == "callers" else "",
     )

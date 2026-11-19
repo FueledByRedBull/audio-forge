@@ -68,7 +68,7 @@ def test_another_microphone_is_offered_whenever_the_device_is_lost_even_while_th
 
 
 def test_a_switch_that_could_not_start_says_which_microphone_and_that_the_audio_is_stopped() -> None:
-    view = describe_overview(replace(LIVE, running=False, input_switch_failure="USB Headset"))
+    view = describe_overview(replace(LIVE, running=False, failed_switch_device="USB Headset"))
 
     assert view.state == "device_lost" and view.callers_affected
     assert view.headline == "Your callers can't hear you"
@@ -76,9 +76,17 @@ def test_a_switch_that_could_not_start_says_which_microphone_and_that_the_audio_
     assert view.nav_line == "Stopped · microphone failed"
     assert view.offer_restart and view.offer_choose_microphone
     # Running audio or a retry the engine holds tells its own story.
-    assert describe_overview(replace(LIVE, input_switch_failure="USB Headset")).state == "live"
-    retrying = describe_overview(replace(LIVE, running=False, restart_pending=True, input_switch_failure="X"))
+    assert describe_overview(replace(LIVE, failed_switch_device="USB Headset")).state == "live"
+    retrying = describe_overview(replace(LIVE, running=False, restart_pending=True, failed_switch_device="X"))
     assert "could not start" not in retrying.detail
+
+
+def test_the_callers_line_says_in_words_that_callers_hear_nothing_only_when_they_do() -> None:
+    for changes in ({"device_bad": True}, {"running": False, "restart_pending": True}):
+        view = describe_overview(replace(LIVE, **changes))
+        assert view.callers_affected and view.callers_line == "Callers hear nothing until the audio is back."
+    for changes in ({}, {"running": False}, {"muted": True}, {"input_bad": True}, {"no_mic": True, "running": False}):
+        assert describe_overview(replace(LIVE, **changes)).callers_line == "", changes
 
 
 def test_each_state_says_what_is_happening_in_words() -> None:

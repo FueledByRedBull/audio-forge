@@ -18,6 +18,7 @@ from mic_eq.ui.engine_session import (
     ControlsChanged,
     EngineBusy,
     EngineSession,
+    InputSwitchRefused,
     MuteApplied,
     RestartFailed,
     Restarted,
@@ -541,12 +542,25 @@ def test_an_input_switch_whose_stop_fails_keeps_the_old_microphone_and_starts_no
     assert rig.prepare.route == (MIC, DESTINATION)
 
 
-def test_an_input_switch_to_a_microphone_no_longer_listed_starts_nothing(rig):
+def test_an_input_switch_to_a_microphone_no_longer_listed_leaves_the_engine_and_its_retry_alone(rig):
+    rig.engine.restart_requested = True  # the retry a stop would cancel
     rig.prepare.listed = False
     rig.session.request_input_switch(HEADSET)
 
-    assert rig.engine.lifecycle() == ["select"] and rig.tasks.pending == []
-    assert rig.events(Started) == [] and rig.events(StartFailed) == []
+    assert rig.engine.lifecycle() == [] and rig.tasks.pending == []
+    assert rig.engine.restart_requested and rig.prepare.selected == []
+    assert rig.events(InputSwitchRefused) == [InputSwitchRefused(HEADSET)]
+
+
+def test_an_input_switch_queued_behind_a_recovery_poll_is_checked_when_it_runs(rig):
+    rig.running()
+    rig.session.tick()
+    rig.session.request_input_switch(HEADSET)
+    rig.prepare.listed = False  # gone by the time the poll answers
+    rig.tasks.run()
+
+    assert rig.engine.lifecycle() == ["service_recovery"] and rig.engine.running
+    assert rig.events(InputSwitchRefused) == [InputSwitchRefused(HEADSET)]
 
 
 # --- output mute -----------------------------------------------------------------------------

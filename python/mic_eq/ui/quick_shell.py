@@ -27,7 +27,6 @@ from PySide6.QtGui import QAccessible, QAccessibleAnnouncementEvent, QPainter, Q
 from PySide6.QtQml import qmlRegisterType, qmlRegisterUncreatableType
 from PySide6.QtQuick import QQuickPaintedItem, QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
-from PySide6.QtWidgets import QMenu
 
 from .chain_presentation import PREFILTER_HIGHPASS_HZ, ChainInputs, ChainLine, describe_chain
 from .components import Glyph
@@ -193,7 +192,7 @@ def overview_inputs(window) -> OverviewInputs:
         running=_window_running(window),
         no_mic=window.no_microphone(),
         restart_pending=session.busy is None and window._restart_pending(),
-        input_switch_failure=window._input_switch_failure,
+        failed_switch_device=window._failed_switch_device,
         device_bad=texts["callback_health_label"].state == "bad",
         device_advice=advice_for(texts["callback_health_label"].text),
         input_bad=texts["input_health_label"].state == "bad",
@@ -242,6 +241,7 @@ class OverviewState(QObject):
     callersAffected = Property(bool, lambda self: self._view.callers_affected, notify=changed)
     offerRestart = Property(bool, lambda self: self._view.offer_restart, notify=changed)
     offerChooseMicrophone = Property(bool, lambda self: self._view.offer_choose_microphone, notify=changed)
+    callersLine = Property(str, lambda self: self._view.callers_line, notify=changed)
     navLine = Property(str, lambda self: self._view.nav_line, notify=changed)
     ribbonCaption = Property(str, lambda self: self._view.ribbon_caption, notify=changed)
     recommendSetup = Property(bool, lambda self: self._view.recommend_setup, notify=changed)
@@ -443,7 +443,7 @@ class QuickBridge(QObject):
         def text(name: str):
             return w.shell_texts[name]
 
-        def action(name: str, menu: QMenu | None = None):
+        def action(name: str):
             spec = ACTION_SPECS[name]
             command = getattr(w, name + "_action")
             if spec.shortcut:
@@ -452,7 +452,7 @@ class QuickBridge(QObject):
                 # Holding the keys must not flap a live mute, as the global hotkey does not.
                 command.setAutoRepeat(False)
                 w.addAction(command)
-            return ActionControl(command, self, name=spec.name, locked_tip=spec.locked_tip, menu=menu)
+            return ActionControl(command, self, name=spec.name, locked_tip=spec.locked_tip, menu=command.menu())
 
         def menu(target, label: str):
             # QMenu/QAction are the shared native command owners.
@@ -702,7 +702,7 @@ class QuickBridge(QObject):
                 "start": action("start_btn"),
                 "stop": action("stop_btn"),
                 "restart": action("restart_audio_btn"),
-                "chooseMicrophone": action("choose_microphone_btn", w.choose_microphone_menu),
+                "chooseMicrophone": action("choose_microphone_btn"),
                 "latency": text("latency_readout_label"),
             },
             "sidebar": {

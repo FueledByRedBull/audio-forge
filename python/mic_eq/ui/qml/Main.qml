@@ -1554,23 +1554,25 @@ Rectangle {
                         radius: root.t.radiusControl
                         color: root.t.callers_affected_fill
                         border.color: root.t.callers_affected_edge
+                        Accessible.name: callersNoticeText.text
                         Text {
                             id: callersNoticeText
                             objectName: "overviewCallersNoticeText"
                             textFormat: Text.PlainText
-                            anchors.fill: parent
-                            anchors.margins: 8
-                            text: "Callers hear nothing until the audio is back."
+                            x: 8
+                            y: 8
+                            width: parent.width - 16
+                            text: overviewPage.ov.callersLine
                             color: root.t.callers_affected_text
                             font.pixelSize: root.fsBody
                             wrapMode: Text.Wrap
-                            Accessible.role: Accessible.StaticText
+                            Accessible.role: Accessible.AlertMessage
                             Accessible.name: text
                         }
                     }
                     // Callers hear nothing here already, so neither action asks for confirmation.
                     ColumnLayout {
-                        visible: overviewPage.ov.state === "device_lost"
+                        visible: overviewPage.ov.offerRestart || overviewPage.ov.offerChooseMicrophone
                         spacing: 6
                         Layout.fillWidth: true
                         Layout.leftMargin: 32
@@ -1599,7 +1601,7 @@ Rectangle {
                         Caption {
                             objectName: "overviewChooseMicrophoneLine"
                             visible: overviewPage.ov.offerChooseMicrophone
-                            text: "Pick another microphone from the list; the audio starts on it, and it stays your choice."
+                            text: "Pick another microphone from the Input list; the audio starts on it, and it stays your choice."
                             wrapMode: Text.Wrap
                             Layout.fillWidth: true
                         }

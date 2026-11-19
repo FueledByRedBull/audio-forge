@@ -37,6 +37,8 @@ class ConfigurationSnapshot:
     # The preset the window showed with this sound. The entries of one load share it, so a later
     # save shows through all of them; a different load is a different record.
     preset_record: dict[str, Any] | None = field(default=None, compare=False, repr=False)
+    # Monotonic seconds when the entry was taken; only the age shown beside Undo reads it.
+    taken_at: float = field(default=0.0, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.processing_mode not in {None, "normal", "bypass", "raw"}:
@@ -53,6 +55,7 @@ class ConfigurationSnapshot:
         calibration_context_key: str | None = None,
         processing_mode: str | None = None,
         preset_record: dict[str, Any] | None = None,
+        taken_at: float = 0.0,
     ) -> "ConfigurationSnapshot":
         preset = Preset.from_dict(preset.to_dict())
         payload_json = json.dumps(
@@ -65,6 +68,7 @@ class ConfigurationSnapshot:
         snapshot = cls(
             payload_json, str(label), str(source),
             noise_reference_reliability, calibration_context_key, processing_mode, preset_record,
+            taken_at,
         )
         snapshot.to_preset()
         return snapshot
@@ -90,6 +94,8 @@ class BoundedConfigurationHistory:
         self._limit = limit
         self._entries: list[ConfigurationSnapshot] = []
         self._cursor = -1
+        # Moves whenever the entries or the cursor do, so a reading of the history can be reused.
+        self._revision = 0
         # The live (route key, noise-reference reliability) as of the last commit or restore.
         # A route change moves it without being an edit, so it is kept apart from the entries.
         self._observed: tuple[str | None, float] = (None, 0.0)
@@ -107,10 +113,18 @@ class BoundedConfigurationHistory:
         return self._cursor
 
     @property
+    def revision(self) -> int:
+        return self._revision
+
+    @property
     def current(self) -> ConfigurationSnapshot | None:
         if not 0 <= self._cursor < len(self._entries):
             return None
         return self._entries[self._cursor]
+
+    @property
+    def previous(self) -> ConfigurationSnapshot | None:
+        return self._entries[self._cursor - 1] if self.can_undo else None
 
     @property
     def can_undo(self) -> bool:
@@ -130,10 +144,19 @@ class BoundedConfigurationHistory:
             return None
         return self._entries[self._cursor + 1].label
 
+    def steps_to(self, matches: Callable[[ConfigurationSnapshot], bool]) -> int | None:
+        """Undo or redo steps from the cursor to the nearest entry that ``matches``; None when none does."""
+        for distance in range(len(self._entries)):
+            for index in (self._cursor - distance, self._cursor + distance):
+                if 0 <= index < len(self._entries) and matches(self._entries[index]):
+                    return distance
+        return None
+
     def initialize(self, snapshot: ConfigurationSnapshot) -> None:
         snapshot.to_preset()
         self._entries = [snapshot]
         self._cursor = 0
+        self._revision += 1
         self._observe(snapshot)
 
     def record(self, snapshot: ConfigurationSnapshot) -> bool:
@@ -161,6 +184,7 @@ class BoundedConfigurationHistory:
             del self._entries[self._cursor + 1 :]
         self._entries.append(snapshot)
         self._cursor = len(self._entries) - 1
+        self._revision += 1
         self._observe(snapshot)
         overflow = len(self._entries) - self._limit
         if overflow > 0:
@@ -179,6 +203,7 @@ class BoundedConfigurationHistory:
         target.to_preset()
         restore(target)
         self._cursor = target_index
+        self._revision += 1
         self._observe_restored(target)
         return target
 
@@ -193,6 +218,7 @@ class BoundedConfigurationHistory:
         target.to_preset()
         restore(target)
         self._cursor = target_index
+        self._revision += 1
         self._observe_restored(target)
         return target
 

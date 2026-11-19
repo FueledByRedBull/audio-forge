@@ -730,7 +730,7 @@ def test_a_scene_that_does_not_load_says_so_and_closes_without_starting_anything
     shown: list[str] = []
     quitting = SimpleNamespace(aboutToQuit=SimpleNamespace(connect=connected.append))
     module = "mic_eq.ui.voice_setup_dialog"
-    monkeypatch.setattr(f"{module}.QApplication", SimpleNamespace(instance=lambda: quitting))
+    monkeypatch.setattr(f"{module}.QCoreApplication", SimpleNamespace(instance=lambda: quitting))
     monkeypatch.setattr(f"{module}.load_scene", lambda *_args: "no such file")
     monkeypatch.setattr(f"{module}.QMessageBox.critical", lambda _parent, title, text: shown.append(f"{title}: {text}"))
     owner = _Owner()

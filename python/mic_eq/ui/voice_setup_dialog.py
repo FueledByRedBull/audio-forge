@@ -13,9 +13,9 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QTimer, Signal
 from PySide6.QtQuickWidgets import QQuickWidget
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QMessageBox, QVBoxLayout
 
 from ..analysis.noise_reference import (
     SILENT_REFERENCE_GUIDANCE,
@@ -432,6 +432,8 @@ class VoiceSetupDialog(QDialog):
     """Record room tone and speech, then recommend a voice chain."""
 
     setup_applied = Signal(str)
+    # Whether the run ended accepted; emitted once the close may go ahead.
+    closed = Signal(bool)
 
     # Which step each state of the state machine belongs to.
     STEP_FOR_STATE = {
@@ -489,6 +491,9 @@ class VoiceSetupDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Auto Voice Setup")
         self.setModal(True)
+        self.closed.connect(self._done)
+        # The main window whose processor, states and config setup reads and writes.
+        self._host = parent
         # Without one, setup can measure and recommend but not apply.
         self._configuration = configuration
 
@@ -548,7 +553,7 @@ class VoiceSetupDialog(QDialog):
             # Nothing is recorded; exec() says why and closes.
             logger.error("Voice Setup did not open: %s", self._load_error)
             return
-        app = QApplication.instance()
+        app = QCoreApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self._wait_for_analysis_workers)
         # The scene's own minimum grows with the text size; the dialog opens at least that wide.
@@ -577,7 +582,7 @@ class VoiceSetupDialog(QDialog):
         return super().exec()
 
     def _current_target_lufs(self) -> float:
-        state = getattr(self.parent(), "compressor_state", None)
+        state = getattr(self._host, "compressor_state", None)
         getter = getattr(state, "get_settings", None)
         if callable(getter):
             try:
@@ -594,7 +599,7 @@ class VoiceSetupDialog(QDialog):
 
     def _setup_ui(self) -> str | None:
         """Build the view model and load the scene; return why it did not load, or None."""
-        config = getattr(self.parent(), "config", None)
+        config = getattr(self._host, "config", None)
         configured = str(getattr(config, "voice_setup_dynamics_intensity", "balanced"))
         self.view_model = VoiceSetupView(
             curves=tuple((key, curve.name) for key, curve in TARGET_CURVES.items()),
@@ -642,7 +647,7 @@ class VoiceSetupDialog(QDialog):
         self.view_model.set_page(curveDescription=curve.description)
 
     def _on_dynamics_intensity_changed(self) -> None:
-        config = getattr(self.parent(), "config", None)
+        config = getattr(self._host, "config", None)
         if config is not None:
             config.voice_setup_dynamics_intensity = self.view_model.selected("dynamics")
             config.voice_setup_custom_p95_db = self.view_model.number("p95")
@@ -755,7 +760,7 @@ class VoiceSetupDialog(QDialog):
         self._capture_start_timer.start(100)
 
     def _ensure_processor_ready(self) -> bool:
-        parent = _find_processor_owner(self.parent())
+        parent = _find_processor_owner(self._host)
         if not parent:
             self.fail("Error", plain_error("Could not find audio processor"))
             return False
@@ -842,7 +847,7 @@ class VoiceSetupDialog(QDialog):
         }:
             return
 
-        parent = _find_processor_owner(self.parent())
+        parent = _find_processor_owner(self._host)
         if not parent:
             self._on_recording_failed(plain_error("Could not find audio processor"))
             return
@@ -900,7 +905,7 @@ class VoiceSetupDialog(QDialog):
             self.recording_timer.stop()
             return
 
-        parent = _find_processor_owner(self.parent())
+        parent = _find_processor_owner(self._host)
         if not parent:
             self._on_recording_failed(plain_error("Could not find audio processor"))
             return
@@ -1149,7 +1154,7 @@ class VoiceSetupDialog(QDialog):
             self._on_analysis_failed(plain_error("Missing room-noise or speech capture."))
             return
 
-        parent = _find_processor_owner(self.parent())
+        parent = _find_processor_owner(self._host)
         if not parent:
             self._on_analysis_failed(plain_error("Could not find audio processor"))
             return
@@ -1380,7 +1385,7 @@ class VoiceSetupDialog(QDialog):
         try:
             # Read once: later renders happen with the candidate already applied.
             if state_name not in self._review_current:
-                current = getattr(self.parent(), state_name).get_settings()
+                current = getattr(self._host, state_name).get_settings()
                 if not isinstance(current, Mapping):
                     return text
                 self._review_current[state_name] = deepcopy(current)
@@ -1449,7 +1454,7 @@ class VoiceSetupDialog(QDialog):
             measured["level_override"] = self._level_override
         self._reported = True
         report_setup_result(
-            _find_processor_owner(self.parent()),
+            _find_processor_owner(self._host),
             "voice_setup",
             outcome,
             reason_codes=reason_codes,
@@ -1461,7 +1466,7 @@ class VoiceSetupDialog(QDialog):
         """Draw the proposed EQ over the one from before this setup, or nothing if there is none."""
         self.view_model.set_page(eqCompareShown=False)
         configuration = self._configuration
-        owner = _find_processor_owner(self.parent())
+        owner = _find_processor_owner(self._host)
         if eq_settings is None or configuration is None or owner is None:
             return
         try:
@@ -1753,7 +1758,7 @@ class VoiceSetupDialog(QDialog):
         ):
             return
         configuration = self._configuration
-        owner = _find_processor_owner(self.parent())
+        owner = _find_processor_owner(self._host)
         if configuration is None or owner is None:
             return
         error = self._candidate_identity_error(owner)
@@ -1857,7 +1862,7 @@ class VoiceSetupDialog(QDialog):
 
     def _apply_setup(self) -> None:
         configuration = self._configuration
-        parent = _find_processor_owner(self.parent())
+        parent = _find_processor_owner(self._host)
         if configuration is None or not parent or self.setup_result is None:
             self.fail(
                 "Error",
@@ -2165,7 +2170,7 @@ class VoiceSetupDialog(QDialog):
                 "Setup lost track of its recordings. Start the setup again."
             )
             return
-        processor_owner = _find_processor_owner(self.parent())
+        processor_owner = _find_processor_owner(self._host)
         if processor_owner is None:
             self._on_verification_failed(plain_error("Could not find audio processor"))
             return
@@ -2267,7 +2272,7 @@ class VoiceSetupDialog(QDialog):
         """Persist and close after the verified candidate is accepted."""
         if self.setup_result is None:
             return
-        parent = _find_processor_owner(self.parent())
+        parent = _find_processor_owner(self._host)
         if parent is None:
             self.fail("Voice Setup", plain_error("Could not find audio processor"))
             return
@@ -2341,7 +2346,7 @@ class VoiceSetupDialog(QDialog):
             str(target_curve),
             _VERIFIED_STAGES,
         )
-        self.accept()
+        self.request_close(True)
 
     def _on_verification_complete(
         self, result: dict[str, Any], generation: int | None = None
@@ -2361,7 +2366,7 @@ class VoiceSetupDialog(QDialog):
         advice = result.get("suppressor_dulling_advice")
         advice_suffix = f" {plain_advice(advice)}" if advice else ""
         metrics_text = verification_summary(result)
-        parent = _find_processor_owner(self.parent())
+        parent = _find_processor_owner(self._host)
         if parent is None:
             self._on_verification_failed(plain_error("Could not find audio processor"))
             return
@@ -2675,7 +2680,7 @@ class VoiceSetupDialog(QDialog):
                 "Discard the current capture and return to the main window?",
             ):
                 return
-        self.reject()
+        self.request_close(False)
 
     def _reset_setup_ui(self) -> None:
         self.view_model.set_page(compareEnabled=False)
@@ -2772,15 +2777,15 @@ class VoiceSetupDialog(QDialog):
         self.preview_noise_audio = None
         self.preview_voice_audio = None
         self.preview_verification_audio = None
-        QDialog.done(self, int(QDialog.DialogCode.Accepted if self._close_result else QDialog.DialogCode.Rejected))
+        self.closed.emit(self._close_result)
 
     # A real method, so Qt drops the aboutToQuit connection when the dialog is destroyed.
     def _wait_for_analysis_workers(self) -> None:
         """Keep application shutdown from destroying a running QThread."""
-        self._request_close(False)
+        self.request_close(False)
         self._workers.join()
 
-    def _request_close(self, accepted: bool) -> None:
+    def request_close(self, accepted: bool) -> None:
         if self._close_requested:
             return
         self.setup_state = "idle"
@@ -2815,6 +2820,9 @@ class VoiceSetupDialog(QDialog):
     def get_selected_curve(self) -> str:
         return self.view_model.selected("curve")
 
+    def _done(self, accepted: bool) -> None:
+        QDialog.done(self, int(QDialog.DialogCode.Accepted if accepted else QDialog.DialogCode.Rejected))
+
     def closeEvent(self, event) -> None:
         if session_is_ending():
             # A veto here would stop Windows from signing out: stop the work, join its threads, close.
@@ -2822,12 +2830,12 @@ class VoiceSetupDialog(QDialog):
             self._finish_close()
             event.accept()
             return
-        self._request_close(False)
+        self.request_close(False)
         event.ignore()
 
     def accept(self) -> None:
-        self._request_close(True)
+        self.request_close(True)
 
     def reject(self) -> None:
         """Never leave a temporary candidate active when the dialog closes."""
-        self._request_close(False)
+        self.request_close(False)

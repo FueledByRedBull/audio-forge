@@ -2070,6 +2070,8 @@ Rectangle {
                         Layout.minimumWidth: 30 + 6 + 48
                         Layout.preferredWidth: 240
                         Layout.maximumWidth: 240
+                        // The caption's line stays reserved, so the graph below never moves when it appears.
+                        Layout.minimumHeight: undoRow.implicitHeight + spacing + undoCaption.implicitHeight
                         RowLayout {
                             id: undoRow
                             spacing: 6
@@ -2092,6 +2094,7 @@ Rectangle {
                             }
                         }
                         Caption {
+                            id: undoCaption
                             objectName: "undoCaption"
                             text: undoHistory.history.caption
                             visible: text !== ""

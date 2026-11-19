@@ -31,6 +31,7 @@ from PySide6.QtWidgets import QMessageBox
 from mic_eq.config import AppConfig, DeviceIdentity
 from mic_eq.config_parts.settings import q_from_bandwidth_octaves
 from mic_eq.ui import health
+from mic_eq.ui.health import HealthReadings
 from mic_eq.ui.main_window import PAGE_NAMES, MainWindow
 from mic_eq.ui.processing_configuration import PresetOrigin
 from mic_eq.ui.eq_quick_graph import EQGraphItem
@@ -162,9 +163,7 @@ def test_a_quick_session_keeps_the_scene_from_start_to_close(quick_window, monke
     window.output_meter.set_levels(-24.0, -12.0)
     window._update_meters()
     window._update_diagnostics()
-    window._update_diagnostic_labels(
-        diagnostics={}, latency_ms=10.0, dsp_time_ms=0.2, input_buf=0, rnnoise_buf=0,
-    )
+    _judge(window, diagnostics={}, latency_ms=10.0, dsp_time_ms=0.2, input_buf=0, rnnoise_buf=0)
     window._set_health_chip("input_health_label", "Input: hot", "warn")
     window.quick_bridge.stepBand(1)
     window.quick_bridge._sample_levels()
@@ -1042,6 +1041,18 @@ def _load_config_without_devices(monkeypatch) -> None:
     monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
 
 
+def _judge(window, *, diagnostics, now: float = 0.0, **readings) -> None:
+    """One diagnostics tick at monotonic time ``now``: the window's health monitor judges it and the window shows it."""
+    view = window.health_monitor.judge(
+        diagnostics,
+        HealthReadings(
+            output_muted=window.engine_session.view.output_muted, processing=window._processing, **readings
+        ),
+        now=now,
+    )
+    window._show_health(view)
+
+
 def test_level_history_follows_the_meters_and_clears_when_they_stop(quick_window) -> None:
     bridge = quick_window.quick_bridge
     quick_window.input_meter.set_levels(-30.0, -20.0)
@@ -1502,9 +1513,7 @@ def test_a_read_only_value_box_is_no_tab_stop_copies_and_shows_no_edit_ring(
 def test_the_drops_tooltip_does_not_promise_a_right_click_quick_lacks(quick_window) -> None:
     drops = quick_window.shell_texts["dropped_label"]
     assert "right-click" not in drops.toolTip.lower()
-    quick_window._update_diagnostic_labels(
-        diagnostics={}, latency_ms=10.0, dsp_time_ms=0.2, input_buf=0, rnnoise_buf=0,
-    )
+    _judge(quick_window, diagnostics={}, latency_ms=10.0, dsp_time_ms=0.2, input_buf=0, rnnoise_buf=0)
     assert "Technical counters" in drops.toolTip
     assert "right-click" not in drops.toolTip.lower()
 
@@ -1601,7 +1610,7 @@ def _status_dot(window):
 
 
 def _diagnostic_labels(window, **changes) -> None:
-    window._update_diagnostic_labels(**{
+    _judge(window, **{
         "diagnostics": {}, "latency_ms": 10.0, "dsp_time_ms": 0.2, "input_buf": 0,
         "rnnoise_buf": 0, "input_rms_db": -30.0, "output_rms_db": -30.0,
         "input_callback_age_ms": 0, "output_callback_age_ms": 0, **changes,
@@ -1644,15 +1653,14 @@ def test_the_status_dot_shows_sound_running_and_heard(engine_window, qapp) -> No
     assert colour() == palette("control_edge")
 
 
-def test_the_device_grace_starts_over_after_stop_and_start(engine_window, monkeypatch) -> None:
+def test_the_device_grace_starts_over_after_stop_and_start(engine_window) -> None:
     window, _engine = engine_window
     clock = [1000.0]
-    monkeypatch.setattr("mic_eq.ui.main_window.time.monotonic", lambda: clock[0])
     never = 2**64 - 1  # what the engine reports before a device's first callback
     row = window.shell_texts["callback_health_label"]
 
     def tick() -> None:
-        _diagnostic_labels(window, input_callback_age_ms=never, output_callback_age_ms=never)
+        _diagnostic_labels(window, input_callback_age_ms=never, output_callback_age_ms=never, now=clock[0])
 
     window.start_btn_action.trigger()
     tick()

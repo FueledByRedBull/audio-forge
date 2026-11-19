@@ -64,7 +64,7 @@ from mic_eq.config import (
     legacy_latency_profile_key,
 )
 from test_first_run_setup import scene_item
-from test_quick_shell import _load_config_without_devices
+from test_quick_shell import _judge, _load_config_without_devices
 
 
 def _use_processor(window, processor) -> None:
@@ -840,7 +840,8 @@ def test_main_window_diagnostics_include_new_metrics():
 def test_health_panel_reports_input_output_and_callback_states(window):
     _recovery_setup(window)
 
-    window._update_diagnostic_labels(
+    _judge(
+        window,
         diagnostics=_healthy_runtime_diagnostics(),
         latency_ms=24.0,
         dsp_time_ms=0.5,
@@ -861,7 +862,8 @@ def test_health_panel_reports_input_output_and_callback_states(window):
     assert re.search(r"input\s+12 ms\b.*output\s+14 ms\b", activity)
     assert window.shell_texts["callback_health_label"].state == "ok"
 
-    window._update_diagnostic_labels(
+    _judge(
+        window,
         diagnostics=_healthy_runtime_diagnostics(
             clip_event_count=1,
             output_clip_event_count=1,
@@ -904,7 +906,7 @@ def _labels(window, **changes):
         input_callback_age_ms=10, output_callback_age_ms=10,
     )
     args.update(changes)
-    window._update_diagnostic_labels(**args)
+    _judge(window, **args)
 
 
 NEVER = 2**64 - 1
@@ -944,23 +946,22 @@ def test_a_device_that_has_not_called_back_yet_is_unknown_not_a_huge_number(wind
     ],
 )
 def test_a_device_that_never_starts_is_a_warning_once_the_startup_grace_is_over(
-    window, monkeypatch, input_age, output_age, input_says, output_says
+    window, input_age, output_age, input_says, output_says
 ):
     clock = [1000.0]
-    monkeypatch.setattr("mic_eq.ui.main_window.time.monotonic", lambda: clock[0])
     _recovery_setup(window)
     chip = window.shell_texts["callback_health_label"]
 
-    _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age)
+    _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age, now=clock[0])
     clock[0] += DEVICE_STARTUP_GRACE_SECONDS - 2
-    _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age)
+    _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age, now=clock[0])
     text = chip.text
     assert chip.state != "warn"
     assert text.startswith("Device activity:")
     assert re.search(rf"input[^,]*{input_says}", text) and re.search(rf"output[^,]*{output_says}", text)
 
     clock[0] += 3
-    _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age)
+    _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age, now=clock[0])
     assert (chip.text, chip.state) == (text, "warn")
     summary = window.shell_texts["health_summary_label"]
     assert (summary.text, summary.state) == (text, "warn")
@@ -968,86 +969,82 @@ def test_a_device_that_never_starts_is_a_warning_once_the_startup_grace_is_over(
     assert " ms" not in window.shell_texts["health_advice_label"].text
 
     window._processing = False  # not processing: nothing to warn about
-    _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age)
+    _labels(window, input_callback_age_ms=input_age, output_callback_age_ms=output_age, now=clock[0])
     assert chip.state != "warn"
 
 
-def test_a_restart_long_after_processing_began_gets_the_startup_grace_again(window, monkeypatch):
+def test_a_restart_long_after_processing_began_gets_the_startup_grace_again(window):
     clock = [1000.0]
-    monkeypatch.setattr("mic_eq.ui.main_window.time.monotonic", lambda: clock[0])
     _recovery_setup(window)
     window._processing = True  # the engine has run for a while
     chip = window.shell_texts["callback_health_label"]
 
-    _labels(window)
+    _labels(window, now=clock[0])
     assert chip.state == "ok"
 
     # An engine restart that bypasses the window's Start: both ages are back to the sentinel.
-    _labels(window, input_callback_age_ms=NEVER, output_callback_age_ms=NEVER)
+    _labels(window, input_callback_age_ms=NEVER, output_callback_age_ms=NEVER, now=clock[0])
     assert chip.state != "warn"
     clock[0] += DEVICE_STARTUP_GRACE_SECONDS - 1
-    _labels(window, input_callback_age_ms=NEVER, output_callback_age_ms=NEVER)
+    _labels(window, input_callback_age_ms=NEVER, output_callback_age_ms=NEVER, now=clock[0])
     assert chip.state != "warn"
 
     clock[0] += 2
-    _labels(window, input_callback_age_ms=NEVER, output_callback_age_ms=NEVER)
+    _labels(window, input_callback_age_ms=NEVER, output_callback_age_ms=NEVER, now=clock[0])
     assert chip.state == "warn"
 
     # The device recovers, then a second restart waits out a fresh grace.
-    _labels(window)
-    _labels(window, input_callback_age_ms=NEVER, output_callback_age_ms=NEVER)
+    _labels(window, now=clock[0])
+    _labels(window, input_callback_age_ms=NEVER, output_callback_age_ms=NEVER, now=clock[0])
     assert chip.state != "warn"
 
 
-def test_gate_chatter_alone_is_the_gate_not_an_engine_fault(window, monkeypatch):
+def test_gate_chatter_alone_is_the_gate_not_an_engine_fault(window):
     clock = [10.0]
-    monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
     _recovery_setup(window)
     chip = window.shell_texts["dropped_label"]
     summary = window.shell_texts["health_summary_label"]
-    _labels(window, diagnostics=_healthy_runtime_diagnostics())
+    _labels(window, now=clock[0], diagnostics=_healthy_runtime_diagnostics())
     assert chip.state == "ok"
 
     # Everything is zero except a gate-chatter counter that keeps rising.
     for events in (1, 2, 3):
         clock[0] += 1
-        _labels(window, diagnostics=_healthy_runtime_diagnostics(gate_chatter_event_count=events))
+        _labels(window, now=clock[0], diagnostics=_healthy_runtime_diagnostics(gate_chatter_event_count=events))
         assert chip.state == "warn" and _nothing_dropped(chip.text) and "chatter" in chip.text
         assert "fault" not in chip.text
     assert window.shell_texts["gate_health_label"].text.startswith("Gate: CHATTERING")
     assert summary.state == "warn"
 
 
-def test_a_real_error_counter_still_reads_as_an_engine_fault(window, monkeypatch):
+def test_a_real_error_counter_still_reads_as_an_engine_fault(window):
     clock = [10.0]
-    monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
     _recovery_setup(window)
     chip = window.shell_texts["dropped_label"]
-    _labels(window, diagnostics=_healthy_runtime_diagnostics())
+    _labels(window, now=clock[0], diagnostics=_healthy_runtime_diagnostics())
 
     clock[0] += 1
-    _labels(window, diagnostics=_healthy_runtime_diagnostics(
+    _labels(window, now=clock[0], diagnostics=_healthy_runtime_diagnostics(
         gate_chatter_event_count=1, input_callback_error_count=1,
     ))
 
     assert chip.state == "warn" and _nothing_dropped(chip.text) and "fault" in chip.text
 
 
-def test_the_drops_row_never_claims_attention_for_zero_drops(window, monkeypatch):
+def test_the_drops_row_never_claims_attention_for_zero_drops(window):
     from mic_eq.ui.health import advice_for
 
     clock = [10.0]
-    monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
     _recovery_setup(window)
     chip = window.shell_texts["dropped_label"]
-    _labels(window, diagnostics=_healthy_runtime_diagnostics(rt_error_name="input_queue_full"))
+    _labels(window, now=clock[0], diagnostics=_healthy_runtime_diagnostics(rt_error_name="input_queue_full"))
     assert chip.state == "warn"
     assert _nothing_dropped(chip.text) and "error" in chip.text and "fault" not in chip.text
     assert advice_for(chip.text) == ""
     assert "0 samples" not in chip.text
 
     # With real numbers the row keeps them and names the first cause.
-    _labels(window, diagnostics=_healthy_runtime_diagnostics(
+    _labels(window, now=clock[0], diagnostics=_healthy_runtime_diagnostics(
         input_dropped_samples=12, stream_restart_count=1, rt_error_name="input_queue_full",
     ))
     assert chip.text.startswith("Drops:")
@@ -1056,7 +1053,7 @@ def test_the_drops_row_never_claims_attention_for_zero_drops(window, monkeypatch
     assert "12 samples so far" in advice_for(chip.text)
 
     clock[0] += 5.1  # the drops are no longer recent
-    _labels(window, diagnostics=_healthy_runtime_diagnostics(input_dropped_samples=12, stream_restart_count=1))
+    _labels(window, now=clock[0], diagnostics=_healthy_runtime_diagnostics(input_dropped_samples=12, stream_restart_count=1))
     assert chip.state == "ok" and "attention" not in chip.text
     assert all(re.search(rf"\b{part}\b", chip.text) for part in ("12 samples", "0 dropouts", "1 restart"))
 
@@ -1064,7 +1061,8 @@ def test_the_drops_row_never_claims_attention_for_zero_drops(window, monkeypatch
 def test_health_panel_reports_gate_chatter_and_underruns(window):
     _recovery_setup(window)
 
-    window._update_diagnostic_labels(
+    _judge(
+        window,
         diagnostics=_healthy_runtime_diagnostics(
             gate_chatter_event_count=1,
             output_underrun_total=2,
@@ -1188,7 +1186,8 @@ def test_input_phase_warning_marks_diagnostics_warn(window):
     _recovery_setup(window)
     diagnostics = _diag_counters(input_phase_warning_count=1, input_stereo_correlation=-0.91)
 
-    window._update_diagnostic_labels(
+    _judge(
+        window,
         diagnostics=diagnostics,
         latency_ms=24.0,
         dsp_time_ms=0.5,
@@ -1682,7 +1681,7 @@ def test_a_counter_that_starts_over_does_not_warn_until_it_grows_again(window):
 def test_the_window_starts_from_the_zero_the_engine_exports(window):
     # A fresh engine counts from zero, and the window has seen nothing yet.
     assert window.processor.get_runtime_diagnostics()["noise_selection_dropped_count"] == 0
-    assert window._health_memory.noise_drops_seen == 0
+    assert window.health_monitor.memory.noise_drops_seen == 0
 
 
 class _RefusingProcessor(_MeterProcessor):
@@ -1728,19 +1727,21 @@ def test_the_dropped_selection_warning_is_announced_to_assistive_technology(wind
     assert announced.count(NOISE_SELECTION_DROPPED_WARNING) == 1
 
 
-def test_stale_output_underrun_and_recovery_totals_do_not_warn(window, monkeypatch):
-    monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: 10.0)
+def test_stale_output_underrun_and_recovery_totals_do_not_warn(window):
     _recovery_setup(window)
     diagnostics = _diag_counters(
         output_underrun_total=4, output_retime_adjustment_count=606, input_backlog_recovery_count=0,
         input_backlog_dropped_samples=0, clip_event_count=0, clip_peak_db=-120.0,
         input_resampler_active=False, output_resampler_active=False, noise_model="deepfilter",
     )
-    window._stream_health = RecentStreamHealth()
-    window._stream_health.observe(RuntimeSnapshot.parse(diagnostics), now=0.0)
-    window._health_memory = replace(window._health_memory, output_underrun_total=4)
+    monitor = window.health_monitor
+    monitor.stream_health = RecentStreamHealth()
+    monitor.stream_health.observe(RuntimeSnapshot.parse(diagnostics), now=0.0)
+    monitor.memory = replace(monitor.memory, output_underrun_total=4)
 
-    window._update_diagnostic_labels(
+    _judge(
+        window,
+        now=10.0,
         diagnostics=diagnostics,
         latency_ms=64.0,
         dsp_time_ms=0.6,
@@ -1754,14 +1755,15 @@ def test_stale_output_underrun_and_recovery_totals_do_not_warn(window, monkeypat
     assert window.shell_texts["recovery_diag_label"].state == "ok"
 
 
-def test_new_output_underrun_total_warns_for_stability_window(window, monkeypatch):
+def test_new_output_underrun_total_warns_for_stability_window(window):
     clock = [10.0]
-    monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
     _recovery_setup(window)
     diagnostics = _diag_counters(output_underrun_total=5, output_retime_adjustment_count=0)
-    window._health_memory = replace(window._health_memory, output_underrun_total=4)
+    window.health_monitor.memory = replace(window.health_monitor.memory, output_underrun_total=4)
 
-    window._update_diagnostic_labels(
+    _judge(
+        window,
+        now=clock[0],
         diagnostics=diagnostics,
         latency_ms=64.0,
         dsp_time_ms=0.6,
@@ -1772,7 +1774,9 @@ def test_new_output_underrun_total_warns_for_stability_window(window, monkeypatc
     assert window.shell_texts["dropped_label"].state == "warn"
     clock[0] += 5.1
 
-    window._update_diagnostic_labels(
+    _judge(
+        window,
+        now=clock[0],
         diagnostics=diagnostics,
         latency_ms=64.0,
         dsp_time_ms=0.6,
@@ -1790,7 +1794,8 @@ def test_the_output_clip_counter_is_a_support_counter_and_does_not_warn(window):
         output_clip_event_count=1, output_clip_peak_db=-0.25, limiter_effective_ceiling_db=-1.5,
     )
 
-    window._update_diagnostic_labels(
+    _judge(
+        window,
         diagnostics=diagnostics,
         latency_ms=32.0,
         dsp_time_ms=0.4,
@@ -1812,7 +1817,8 @@ def test_new_output_true_peak_event_warns_once(window):
         output_true_peak_db=0.4, limiter_effective_ceiling_db=-1.5,
     )
 
-    window._update_diagnostic_labels(
+    _judge(
+        window,
         diagnostics=diagnostics,
         latency_ms=32.0,
         dsp_time_ms=0.4,
@@ -1826,7 +1832,8 @@ def test_new_output_true_peak_event_warns_once(window):
     assert "TPK:0.4" in window.shell_texts["dropped_label"].toolTip
     assert window.shell_texts["dropped_label"].state == "warn"
 
-    window._update_diagnostic_labels(
+    _judge(
+        window,
         diagnostics=diagnostics,
         latency_ms=32.0,
         dsp_time_ms=0.4,
@@ -1839,16 +1846,17 @@ def test_new_output_true_peak_event_warns_once(window):
     assert window.shell_texts["dropped_label"].state == "ok"
 
 
-def test_new_gate_chatter_event_warns_for_stability_window(window, monkeypatch):
+def test_new_gate_chatter_event_warns_for_stability_window(window):
     clock = [10.0]
-    monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
     _recovery_setup(window)
     diagnostics = _diag_counters(
         output_retime_adjustment_count=0, clip_event_count=0, clip_peak_db=-120.0,
         output_clip_event_count=0, output_clip_peak_db=-120.0, gate_chatter_event_count=1,
     )
 
-    window._update_diagnostic_labels(
+    _judge(
+        window,
+        now=clock[0],
         diagnostics=diagnostics,
         latency_ms=32.0,
         dsp_time_ms=0.4,
@@ -1860,7 +1868,9 @@ def test_new_gate_chatter_event_warns_for_stability_window(window, monkeypatch):
     assert window.shell_texts["dropped_label"].state == "warn"
     clock[0] += 5.1
 
-    window._update_diagnostic_labels(
+    _judge(
+        window,
+        now=clock[0],
         diagnostics=diagnostics,
         latency_ms=32.0,
         dsp_time_ms=0.4,

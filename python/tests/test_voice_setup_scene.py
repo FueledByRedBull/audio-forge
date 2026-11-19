@@ -321,7 +321,7 @@ def test_enter_presses_the_focused_button_and_escape_closes_the_dialog(open_dial
 @pytest.mark.parametrize("key", [Qt.Key.Key_Return, Qt.Key.Key_Enter])
 def test_enter_outside_a_button_does_what_the_main_button_says(open_dialog, monkeypatch, key) -> None:
     calls: list[str] = []
-    monkeypatch.setattr(VoiceSetupFlow, "_on_start_clicked", lambda self: calls.append("start"))
+    monkeypatch.setattr(VoiceSetupFlow, "start", lambda self: calls.append("start"))
     dialog = open_dialog()
     scene_item(dialog, "contentScroll").forceActiveFocus(Qt.FocusReason.TabFocusReason)
     QTest.keyClick(dialog.quick_view, key)
@@ -335,10 +335,10 @@ def test_enter_outside_a_button_does_what_the_main_button_says(open_dialog, monk
     ("button", "command"),
     [
         ("cancelButton", "_on_cancel_clicked"),
-        ("retakeButton", "_on_retake_clicked"),
-        ("compareButton", "_compare_recording"),
+        ("retakeButton", "retake"),
+        ("compareButton", "compare"),
         ("overrideButton", "_continue_past_level"),
-        ("startButton", "_on_start_clicked"),
+        ("startButton", "start"),
     ],
 )
 def test_space_and_a_click_on_each_button_run_the_dialogs_command(
@@ -446,7 +446,7 @@ def test_enter_on_a_closed_picker_does_what_the_main_button_says_but_in_its_open
     open_dialog, monkeypatch, qapp
 ) -> None:
     calls: list[str] = []
-    monkeypatch.setattr(VoiceSetupFlow, "_on_start_clicked", lambda self: calls.append("start"))
+    monkeypatch.setattr(VoiceSetupFlow, "start", lambda self: calls.append("start"))
     dialog = open_dialog()
     picker = scene_item(dialog, "curvePicker")
     picker.forceActiveFocus(Qt.FocusReason.TabFocusReason)
@@ -466,7 +466,7 @@ def test_enter_in_a_number_field_commits_what_was_typed_and_does_what_the_main_b
     open_dialog, monkeypatch, qapp
 ) -> None:
     calls: list[float] = []
-    monkeypatch.setattr(VoiceSetupFlow, "_on_start_clicked", lambda self: calls.append(self.view_model.number("p95")))
+    monkeypatch.setattr(VoiceSetupFlow, "start", lambda self: calls.append(self.view_model.number("p95")))
     dialog = open_dialog(custom=True)
     scene_item(dialog, "p95Number").forceActiveFocus(Qt.FocusReason.TabFocusReason)
     QTest.keyClick(dialog.quick_view, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
@@ -613,7 +613,7 @@ def test_the_main_button_is_named_by_what_it_says_at_each_step(open_dialog, monk
     with _AccessibleScene() as scene:
         start = scene_item(dialog, "startButton")
         assert scene.name(start) == scene_text(dialog, "startButton") == "Start Voice Setup"
-        dialog.flow._on_start_clicked()
+        dialog.flow.start()
         dialog.flow._capture_start_timer.stop()
         assert scene.name(start) == scene_text(dialog, "startButton") == "Checking Level..."
         finish_take(dialog.flow, HOT)

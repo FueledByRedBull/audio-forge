@@ -1,4 +1,4 @@
-// Auto Voice Setup dialog scene. The dialog (voice_setup_dialog.py) owns the recordings and the
+// Auto Voice Setup dialog scene. The flow (voice_setup_flow.py) owns the recordings and the
 // analysis; `vm` is its VoiceSetupView: what is shown here, and the commands sent back.
 pragma ComponentBehavior: Bound
 import QtQuick

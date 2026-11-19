@@ -62,13 +62,13 @@ def voice(real_main_window, monkeypatch):  # noqa: F811
 
 def _check(dialog: VoiceSetupDialog, take: np.ndarray) -> None:
     """Start the level check and finish it with ``take``."""
-    dialog.flow._on_start_clicked()
+    dialog.flow.start()
     dialog.flow._capture_start_timer.stop()
-    dialog.flow._on_recording_complete(take)
+    dialog.flow.take_finished(take)
 
 
 def test_voice_setup_opens_with_a_three_second_level_check(voice) -> None:
-    voice.flow._on_start_clicked()
+    voice.flow.start()
 
     assert voice.flow.setup_state == "level_check"
     assert voice.flow._recording_duration == 3.0
@@ -94,7 +94,7 @@ def test_a_good_level_goes_on_to_the_room_noise_with_one_click(voice) -> None:
     assert voice.flow.view_model.shown["startText"] == "Record Room Noise"
     assert not voice.flow.view_model.shown["overrideShown"]
 
-    voice.flow._on_start_clicked()
+    voice.flow.start()
     voice.flow._capture_start_timer.stop()
 
     assert voice.flow.setup_state == "noise_recording"
@@ -111,11 +111,11 @@ def test_a_hot_level_stops_before_any_take_and_can_be_overridden_by_name(voice) 
     assert voice.flow.view_model.shown["overrideShown"]
     assert voice.flow.view_model.shown["overrideText"] == "Continue Despite Clipping Risk"
 
-    voice.flow._on_start_clicked()  # the primary action checks again; it never records
+    voice.flow.start()  # the primary action checks again; it never records
     voice.flow._capture_start_timer.stop()
     assert voice.flow.setup_state == "level_check"
 
-    voice.flow._on_recording_complete(HOT)
+    voice.flow.take_finished(HOT)
     voice.flow._continue_past_level()
     voice.flow._capture_start_timer.stop()
 
@@ -154,7 +154,7 @@ def test_nothing_heard_cannot_be_continued_past(voice, take, start) -> None:
 
 
 def test_a_failed_check_returns_to_the_start(voice) -> None:
-    voice.flow._on_start_clicked()
+    voice.flow.start()
     voice.flow._capture_start_timer.stop()
 
     voice.flow._on_recording_failed("The microphone stopped sending sound.")
@@ -166,7 +166,7 @@ def test_a_failed_check_returns_to_the_start(voice) -> None:
 
 
 def test_closing_during_the_check_releases_the_capture(voice) -> None:
-    voice.flow._on_start_clicked()
+    voice.flow.start()
     voice.flow._capture_start_timer.stop()
     voice.flow._begin_recording_capture()
     session = _Session.instances[-1]
@@ -183,7 +183,7 @@ def test_retaking_after_a_level_result_starts_over(voice, monkeypatch) -> None:
     monkeypatch.setattr(QMessageBox, "question", lambda *_a, **_k: QMessageBox.StandardButton.Yes)
     _check(voice, HOT)
 
-    voice.flow._on_retake_clicked()
+    voice.flow.retake()
 
     assert voice.flow.setup_state == "idle"
     assert not voice.flow.view_model.shown["overrideShown"]
@@ -191,7 +191,7 @@ def test_retaking_after_a_level_result_starts_over(voice, monkeypatch) -> None:
 
 
 def test_the_check_meter_speaks_the_same_words_as_the_verdict(voice) -> None:
-    voice.flow._on_start_clicked()
+    voice.flow.start()
     voice.flow._capture_start_timer.stop()
 
     voice.flow._update_level(-20.0, -0.4)
@@ -316,7 +316,7 @@ def test_the_meter_names_the_window_peak_in_a_pause(request, fixture, update_met
     dialog = request.getfixturevalue(fixture)
     flow = dialog.flow if fixture == "voice" else dialog
     update = getattr(flow, update_method)
-    flow._on_start_clicked()
+    (flow.start if fixture == "voice" else flow._on_start_clicked)()
     flow._capture_start_timer.stop()
 
     update(-25.0, -7.0)  # a loud word
@@ -373,7 +373,7 @@ def test_retake_room_noise_starts_the_room_noise_take_and_keeps_the_level_choice
     assert "play safe" not in text
     assert voice.parent().last_setup_result["outcome"] == "refused"
 
-    voice.flow._on_start_clicked()
+    voice.flow.start()
     voice.flow._capture_start_timer.stop()
 
     assert voice.flow.setup_state == "noise_recording"
@@ -384,13 +384,13 @@ def test_retake_room_noise_starts_the_room_noise_take_and_keeps_the_level_choice
 
 def test_retaking_after_a_failed_room_noise_take_records_the_room_noise_too(voice) -> None:
     _check(voice, GOOD)
-    voice.flow._on_start_clicked()
+    voice.flow.start()
     voice.flow._capture_start_timer.stop()
 
     voice.flow._on_recording_failed("The microphone stopped sending sound.")
 
     assert voice.flow.view_model.shown["startText"] == "Retake Room Noise"
-    voice.flow._on_start_clicked()
+    voice.flow.start()
     voice.flow._capture_start_timer.stop()
     assert voice.flow.setup_state == "noise_recording"
 
@@ -405,7 +405,7 @@ def test_a_click_in_the_room_noise_is_pointed_out_and_setup_can_go_on(voice) -> 
     assert "read the passage aloud" in text and "10 seconds" in text
     assert (voice.flow.view_model.warning_state, voice.flow.view_model.warning_strong) == ("warn", True)
 
-    voice.flow._on_start_clicked()
+    voice.flow.start()
     voice.flow._capture_start_timer.stop()
     assert voice.flow.setup_state == "voice_recording"
 

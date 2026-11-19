@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 
 from mic_eq.ui.analysis_worker import CaptureAnalysisWorker
 from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog
+from mic_eq.ui.voice_setup_flow import VoiceSetupFlow
 
 
 def settle(dialog: Any) -> None:
@@ -22,7 +23,10 @@ def settle(dialog: Any) -> None:
 
 
 def finish_take(dialog: Any, audio: np.ndarray) -> None:
-    dialog._on_recording_complete(audio)
+    if isinstance(dialog, VoiceSetupFlow):
+        dialog.take_finished(audio)
+    else:
+        dialog._on_recording_complete(audio)
     settle(dialog)
 
 

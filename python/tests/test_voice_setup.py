@@ -1810,8 +1810,8 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(
     dialog.flow.noise_audio = dialog.flow.voice_audio = np.zeros(16, dtype=np.float32)
     dialog.flow._workers.generation = 1
     with monkeypatch.context() as patch:
-        patch.setattr(dialog.flow, "_show_summary", lambda _result: None)
-        dialog.flow._on_analysis_complete(dialog.flow.setup_result)
+        patch.setattr(dialog.flow, "show_summary", lambda _result: None)
+        dialog.flow.analysis_finished(dialog.flow.setup_result)
     monkeypatch.setattr(
         "mic_eq.ui.voice_setup_dialog.QMessageBox.critical",
         Mock(side_effect=AssertionError("unexpected voice setup error dialog")),
@@ -1821,7 +1821,7 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(
     dialog.flow.view_model.pickCurve(list(TARGET_CURVES).index("podcast"))
     dialog.flow.view_model.pickDynamics(DYNAMICS_KEYS.index("dense"))
     dialog.flow.view_model.setNumber("lufs", -14.0)
-    dialog.flow._apply_setup()
+    dialog.flow.apply()
     assert dialog.flow.setup_state == "verification_ready"
     assert dialog.flow.setup_result["_candidate"]["target"] == {
         "curve": "broadcast",
@@ -1847,7 +1847,7 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(
         patch.setattr("mic_eq.ui.voice_setup_dialog.QMessageBox.critical", show_error)
         patch.setattr(owner.eq_state, "set_settings",
                       Mock(side_effect=RuntimeError("sentinel apply failure")))
-        dialog.flow._apply_setup()
+        dialog.flow.apply()
         assert show_error.call_count == 1
     assert owner.compressor_state.get_settings(include_calibration=True) == old_compressor
     assert owner.limiter_state.get_settings() == old_limiter
@@ -1861,7 +1861,7 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(
         raise AnalysisCancelled("closed")
     monkeypatch.setattr("mic_eq.ui.voice_setup_flow.validate_voice_setup_verification",
                         blocked_verification)
-    dialog.flow._apply_setup()
+    dialog.flow.apply()
     dialog.flow.noise_audio = dialog.flow.voice_audio = np.zeros(16, dtype=np.float32)
     dialog.flow._complete_verification(np.zeros(16, dtype=np.float32))
     worker = dialog.flow._workers.current
@@ -1877,7 +1877,7 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(
         stale_generation = dialog.flow._workers.generation
         dialog.reject()
         assert worker.wait(2_000)
-        dialog.flow._on_verification_complete({"decision": "accept"}, generation=stale_generation)
+        dialog.flow.verification_finished({"decision": "accept"}, generation=stale_generation)
         assert "verification" not in dialog.flow.setup_result
         assert owner.compressor_state.get_settings(include_calibration=True) == old_compressor
         assert owner.limiter_state.get_settings() == old_limiter
@@ -1941,7 +1941,7 @@ def test_incomplete_candidate_offers_retake_instead_of_apply(
     dialog.flow.noise_audio = dialog.flow.voice_audio = np.zeros(16, dtype=np.float32)
     dialog.flow._workers.generation = 1
     try:
-        dialog.flow._on_analysis_complete(result)
+        dialog.flow.analysis_finished(result)
         assert dialog.flow.setup_state == "noise_ready"
         assert dialog.flow.view_model.shown["startText"] == "Record Voice Again"
         assert dialog.flow.view_model.shown["retakeShown"]
@@ -1958,7 +1958,7 @@ def test_incomplete_candidate_offers_retake_instead_of_apply(
 
         show_error = Mock()
         monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.QMessageBox.critical", show_error)
-        dialog.flow._apply_setup()
+        dialog.flow.apply()
         show_error.assert_called_once()
         assert show_error.call_args.args[1] == "Incomplete Voice Setup"
     finally:
@@ -1975,7 +1975,7 @@ def test_complete_advisory_candidate_still_offers_apply(owner):
         dialog.flow._candidate_metadata = deepcopy(result["_candidate"])
         dialog.flow.noise_audio = dialog.flow.voice_audio = np.zeros(16, dtype=np.float32)
         dialog.flow._workers.generation = 1
-        dialog.flow._on_analysis_complete(result)
+        dialog.flow.analysis_finished(result)
         assert dialog.flow.setup_state == "completed"
         assert dialog.flow.view_model.shown["startText"] == "Apply Suggestions"
         assert not scene_item(dialog, "curvePicker").isEnabled()
@@ -2016,33 +2016,33 @@ def test_review_shows_settings_before_and_after(owner):
             "compressor_settings": compressor,
             "eq_settings": None,
         }
-        dialog.flow._show_summary(result)
+        dialog.flow.show_summary(result)
         recommended, before = dialog.flow.view_model.chip("gate")["text"].split("\nBefore: ")
         assert recommended.endswith(f"opens above {before_db - 6.0:.1f} dB")
         assert before.endswith(f"opens above {before_db:.1f} dB")
         assert dialog.flow.view_model.chip("deesser")["text"].endswith("(unchanged)")
         assert dialog.flow.view_model.chip("compressor")["text"].endswith("(only finer settings change)")
 
-        orphan.flow._show_summary(result)
+        orphan.flow.show_summary(result)
         assert orphan.flow.view_model.chip("gate")["text"] == f"Noise gate: {recommended.split(': ', 1)[1]}"
         assert "unchanged" not in orphan.flow.view_model.chip("deesser")["text"]
 
         # A loudness target the capture's peaks cannot carry is lowered, and said so.
         result["diagnostics"] |= {"loudness_lowered_db": 4.0, "compressor_target_lufs": -18.0}
         compressor |= {"auto_makeup_enabled": True, "target_lufs": -22.0}
-        orphan.flow._show_summary(result)
+        orphan.flow.show_summary(result)
         assert orphan.flow.view_model.chip("compressor")["text"].endswith(
             "aiming for -22 LUFS\nYou asked for -18 LUFS; "
             "it was lowered so peaks do not overload the limiter."
         )
         compressor |= {"auto_makeup_enabled": False, "target_lufs": -18.0}
-        orphan.flow._show_summary(result)
+        orphan.flow.show_summary(result)
         assert orphan.flow.view_model.chip("compressor")["text"].endswith(
             "\nMakeup was held 4 dB lower so peaks do not overload the limiter."
         )
         # Makeup does not fall in whole decibels once it reaches zero.
         result["diagnostics"]["loudness_lowered_db"] = 2.5
-        orphan.flow._show_summary(result)
+        orphan.flow.show_summary(result)
         assert orphan.flow.view_model.chip("compressor")["text"].endswith(
             "\nMakeup was held 2.5 dB lower so peaks do not overload the limiter."
         )

@@ -82,7 +82,7 @@ def _gated_voice_take(dialog: VoiceSetupDialog, monkeypatch, state: str) -> _Spy
         dialog.flow.noise_audio = _make_noise(RATE)
     dialog.flow.setup_state = state
     dialog.flow._current_capture_metadata = None
-    dialog.flow._on_recording_complete(_speech() if state == "voice_recording" else _make_noise(RATE))
+    dialog.flow.take_finished(_speech() if state == "voice_recording" else _make_noise(RATE))
     assert prefilter.entered.wait(5.0)
     return prefilter
 
@@ -176,7 +176,7 @@ def test_voice_setup_waits_in_its_own_state_and_then_continues(voice, monkeypatc
 
     assert voice.flow.setup_state == "capture_analyzing"
     assert not voice.flow.view_model.shown["startEnabled"]
-    voice.flow._on_start_clicked()  # nothing to do while the take is checked
+    voice.flow.start()  # nothing to do while the take is checked
     assert voice.flow.setup_state == "capture_analyzing"
     prefilter.release.set()
     settle(voice.flow)
@@ -218,7 +218,7 @@ def test_application_quit_joins_a_take_still_being_checked(voice, monkeypatch) -
     worker = voice.flow._workers.workers[0]
     threading.Timer(0.1, prefilter.release.set).start()
 
-    voice.flow._wait_for_analysis_workers()
+    voice.flow.wait_for_analysis_workers()
 
     assert not worker.isRunning()
     assert not voice.flow._workers.workers

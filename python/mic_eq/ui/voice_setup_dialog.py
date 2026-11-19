@@ -136,8 +136,8 @@ class VoiceSetupDialog(QDialog):
     def closeEvent(self, event) -> None:
         if session_is_ending():
             # A veto here would stop Windows from signing out: stop the work, join its threads, close.
-            self.flow._wait_for_analysis_workers()
-            self.flow._finish_close()
+            self.flow.wait_for_analysis_workers()
+            self.flow.finish_close()
             event.accept()
             return
         self.flow.request_close(False)

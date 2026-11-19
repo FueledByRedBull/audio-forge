@@ -269,7 +269,7 @@ def _prepare_voice_setup(parent: MainWindow) -> VoiceSetupDialog:
     )
     dialog.flow.level_meter.set_levels(-24.0, -10.0)
     dialog.flow.view_model.set_warning("Validated settings are ready to review.", state="ok", strong=True)
-    dialog.flow._show_summary(
+    dialog.flow.show_summary(
         {
             "diagnostics": {
                 "setup_confidence": 0.91,

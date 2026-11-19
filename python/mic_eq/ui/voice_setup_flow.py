@@ -538,7 +538,7 @@ class VoiceSetupFlow(QObject):
         self._capture_context_key: str | None = None
         self._workers: WorkerSet[
             VoiceSetupWorker | VoiceSetupVerificationWorker | CaptureAnalysisWorker
-        ] = WorkerSet(self._finish_close)
+        ] = WorkerSet(self.finish_close)
         # The recording phase a take in "capture_analyzing" came from.
         self._capture_phase = "voice_recording"
         self._close_requested = False
@@ -560,7 +560,7 @@ class VoiceSetupFlow(QObject):
         self._failed_step: int | None = None
         # Whether this run has already told the main window how it ended.
         self._reported = False
-        # Whether this dialog has reported the outcome of an analysis, which a refused retake
+        # Whether this run has reported the outcome of an analysis, which a refused retake
         # does not replace.
         self._result_reported = False
 
@@ -588,11 +588,11 @@ class VoiceSetupFlow(QObject):
             passage=RAINBOW_PASSAGE,
             curve_changed=self._on_curve_changed,
             dynamics_changed=self._on_dynamics_intensity_changed,
-            start=self._on_start_clicked,
+            start=self.start,
             override=self._continue_past_level,
             cancel=self._on_cancel_clicked,
-            retake=self._on_retake_clicked,
-            compare=self._compare_recording,
+            retake=self.retake,
+            compare=self.compare,
             parent=self,
         )
         self.level_meter = self.view_model.level_meter
@@ -606,7 +606,7 @@ class VoiceSetupFlow(QObject):
         """Join the workers before the application quits; the dialog asks once its scene loaded."""
         app = QCoreApplication.instance()
         if app is not None:
-            app.aboutToQuit.connect(self._wait_for_analysis_workers)
+            app.aboutToQuit.connect(self.wait_for_analysis_workers)
 
     def _current_target_lufs(self) -> float:
         state = getattr(self._host, "compressor_state", None)
@@ -637,7 +637,7 @@ class VoiceSetupFlow(QObject):
             config.voice_setup_custom_p95_db = self.view_model.number("p95")
             config.voice_setup_custom_peak_cap_db = self.view_model.number("peak")
 
-    def _on_start_clicked(self) -> None:
+    def start(self) -> None:
         if self.setup_state == "idle":
             self.view_model.set_page(recordingShown=True)
             # A take that failed is recorded again; the level choice made before it stays.
@@ -658,9 +658,9 @@ class VoiceSetupFlow(QObject):
         elif self.setup_state == "noise_ready":
             self._start_recording_phase("voice_recording")
         elif self.setup_state == "final_comparison_ready":
-            self._compare_recording()
+            self.compare()
         elif self.setup_state == "completed" and self.setup_result is not None:
-            self._apply_setup()
+            self.apply()
         elif self.setup_state == "verification_ready":
             self._start_recording_phase("verification_recording")
         elif self.setup_state in {"level_check", "noise_recording", "voice_recording"}:
@@ -877,7 +877,7 @@ class VoiceSetupFlow(QObject):
                 if audio is None:
                     self._on_recording_failed(plain_error("Recording failed - no audio data"))
                     return
-                self._on_recording_complete(np.asarray(audio, dtype=np.float32))
+                self.take_finished(np.asarray(audio, dtype=np.float32))
         except Exception as exc:
             self.recording_timer.stop()
             self._on_recording_failed(plain_error(f"Recording error: {exc}"))
@@ -936,7 +936,7 @@ class VoiceSetupFlow(QObject):
         if choices.override is not None:
             self.view_model.set_page(overrideText=choices.override)
 
-    def _on_recording_complete(self, audio_data: np.ndarray) -> None:
+    def take_finished(self, audio_data: np.ndarray) -> None:
         if self.setup_state == "level_check":
             self._finish_level_check(audio_data)
             return
@@ -1197,7 +1197,7 @@ class VoiceSetupFlow(QObject):
             )
         )
         worker.result_ready.connect(
-            lambda result, token=generation: self._on_analysis_complete(result, token)
+            lambda result, token=generation: self.analysis_finished(result, token)
         )
         worker.failed.connect(
             lambda error, token=generation: self._on_analysis_failed(
@@ -1219,7 +1219,7 @@ class VoiceSetupFlow(QObject):
         self.view_model.set_warning(step_name)
         self.view_model.set_page(progress=percentage)
 
-    def _on_analysis_complete(
+    def analysis_finished(
         self, setup_result: dict[str, Any], generation: int | None = None
     ) -> None:
         if generation is not None and not self._workers.is_current(generation):
@@ -1290,7 +1290,7 @@ class VoiceSetupFlow(QObject):
             state = "warn"
         self.view_model.set_warning(state=state, strong=True)
         self.view_model.set_page(progress=100)
-        self._show_summary(setup_result)
+        self.show_summary(setup_result)
         if not candidate_complete:
             self._report(
                 "refused",
@@ -1425,9 +1425,9 @@ class VoiceSetupFlow(QObject):
         """Redraw the review lines after the applied settings or their status changed."""
         # Only a result that was drawn once is complete enough to draw again.
         if self.setup_result is not None and self._summary_result is self.setup_result:
-            self._show_summary(self.setup_result)
+            self.show_summary(self.setup_result)
 
-    def _show_summary(self, setup_result: dict[str, Any]) -> None:
+    def show_summary(self, setup_result: dict[str, Any]) -> None:
         diagnostics = setup_result["diagnostics"]
         overall_conf = float(diagnostics["setup_confidence"])
         word, state = quality_word(
@@ -1685,7 +1685,7 @@ class VoiceSetupFlow(QObject):
             )
         return None
 
-    def _compare_recording(self) -> None:
+    def compare(self) -> None:
         if (
             self.setup_state not in {"completed", "final_comparison_ready"}
             or self.voice_audio is None
@@ -1757,9 +1757,9 @@ class VoiceSetupFlow(QObject):
             if self._final_comparison_pending:
                 self._finalize_verified_setup()
             else:
-                self._apply_setup()
+                self.apply()
         elif self._final_comparison_pending:
-            restored = self._restore_pre_setup_snapshot()
+            restored = self.restore_previous()
             self._final_comparison_pending = False
             self._refresh_review()
             self.setup_state = "completed"
@@ -1795,7 +1795,7 @@ class VoiceSetupFlow(QObject):
                 [self.view_model.warning_text],
             )
 
-    def _apply_setup(self) -> None:
+    def apply(self) -> None:
         configuration = self._configuration
         parent = _find_processor_owner(self._host)
         if configuration is None or not parent or self.setup_result is None:
@@ -1867,7 +1867,7 @@ class VoiceSetupFlow(QObject):
             self._apply_candidate_configuration(parent)
             self._sync_setup_result_with_applied_states(parent)
         except Exception as exc:
-            restored = self._restore_pre_setup_snapshot()
+            restored = self.restore_previous()
             message = (
                 f"The new settings could not be applied, so your previous settings were put back ({exc})."
                 if restored
@@ -2142,7 +2142,7 @@ class VoiceSetupFlow(QObject):
             )
         )
         worker.result_ready.connect(
-            lambda result, token=generation: self._on_verification_complete(
+            lambda result, token=generation: self.verification_finished(
                 result, token
             )
         )
@@ -2153,7 +2153,7 @@ class VoiceSetupFlow(QObject):
         )
         worker.start()
 
-    def _restore_pre_setup_snapshot(self) -> bool:
+    def restore_previous(self) -> bool:
         configuration = self._configuration
         if self._pre_setup_snapshot is None:
             return True
@@ -2188,7 +2188,7 @@ class VoiceSetupFlow(QObject):
             or self.noise_audio is None
             or self.voice_audio is None
         ):
-            restored = self._restore_pre_setup_snapshot()
+            restored = self.restore_previous()
             self._on_analysis_failed(
                 "Setup lost track of its recordings. "
                 + (
@@ -2214,7 +2214,7 @@ class VoiceSetupFlow(QObject):
         identity_error = self._candidate_identity_error(parent)
         if identity_error is not None:
             self._prompts.warn("Recording out of date", plain_stale(identity_error))
-            restored = self._restore_pre_setup_snapshot()
+            restored = self.restore_previous()
             self._final_comparison_pending = False
             self._refresh_review()
             self.setup_state = "completed"
@@ -2283,7 +2283,7 @@ class VoiceSetupFlow(QObject):
         )
         self.request_close(True)
 
-    def _on_verification_complete(
+    def verification_finished(
         self, result: dict[str, Any], generation: int | None = None
     ) -> None:
         if generation is not None and not self._workers.is_current(generation):
@@ -2308,7 +2308,7 @@ class VoiceSetupFlow(QObject):
         if decision == "accept":
             identity_error = self._candidate_identity_error(parent)
             if identity_error is not None:
-                restored = self._restore_pre_setup_snapshot()
+                restored = self.restore_previous()
                 candidate = self.setup_result.get("_candidate")
                 if isinstance(candidate, dict):
                     candidate["verified_stages"] = []
@@ -2439,7 +2439,7 @@ class VoiceSetupFlow(QObject):
             self._start_verification_worker(self._verification_audio)
             return
         elif decision == "rollback":
-            restored = self._restore_pre_setup_snapshot()
+            restored = self.restore_previous()
             self._final_comparison_pending = False
             self.setup_state = "completed"
             self.view_model.set_page(compareEnabled=True, startText=_APPLY_VERIFY_AGAIN_LABEL)
@@ -2493,7 +2493,7 @@ class VoiceSetupFlow(QObject):
             return
         if self._close_requested:
             return
-        restored = self._restore_pre_setup_snapshot()
+        restored = self.restore_previous()
         self._final_comparison_pending = False
         self.setup_state = "completed" if self.setup_result is not None else "noise_ready"
         self.view_model.set_page(
@@ -2569,7 +2569,7 @@ class VoiceSetupFlow(QObject):
             [error],
         )
         if verification_failed:
-            restored = self._restore_pre_setup_snapshot()
+            restored = self.restore_previous()
             self._reset_verification_state()
             self._final_comparison_pending = False
             self.view_model.set_page(startText=_APPLY_VERIFY_AGAIN_LABEL)
@@ -2604,7 +2604,7 @@ class VoiceSetupFlow(QObject):
             self.view_model.set_page(dynamicsEnabled=True, targetEnabled=True)
         self._cleanup_recording_tap()
 
-    def _on_retake_clicked(self) -> None:
+    def retake(self) -> None:
         if self._prompts.ask("Discard Setup?", "Discard the current setup captures and start over?"):
             self._reset_setup_ui()
 
@@ -2619,7 +2619,7 @@ class VoiceSetupFlow(QObject):
 
     def _reset_setup_ui(self) -> None:
         self.view_model.set_page(compareEnabled=False)
-        if not self._restore_pre_setup_snapshot():
+        if not self.restore_previous():
             self.view_model.set_page(phaseText="Reset blocked; previous settings not fully put back")
             self.view_model.set_warning(
                 "Your previous settings could not be fully put back. Press Retake to try again.",
@@ -2687,7 +2687,7 @@ class VoiceSetupFlow(QObject):
         verification_was_active = self.setup_state == "verification_analyzing"
         self._workers.cancel()
         if verification_was_active:
-            restored = self._restore_pre_setup_snapshot()
+            restored = self.restore_previous()
             self._final_comparison_pending = False
             self.setup_state = "completed" if self.setup_result is not None else "noise_ready"
             self.view_model.set_page(
@@ -2702,7 +2702,7 @@ class VoiceSetupFlow(QObject):
                 else "Check canceled; previous settings not fully put back",
             )
 
-    def _finish_close(self) -> None:
+    def finish_close(self) -> None:
         if not self._close_requested or self._workers.running():
             return
         self._workers.discard()
@@ -2715,7 +2715,7 @@ class VoiceSetupFlow(QObject):
         self.closed.emit(self._close_result)
 
     # A real method, so Qt drops the aboutToQuit connection when the flow is destroyed.
-    def _wait_for_analysis_workers(self) -> None:
+    def wait_for_analysis_workers(self) -> None:
         """Keep application shutdown from destroying a running QThread."""
         self.request_close(False)
         self._workers.join()
@@ -2729,7 +2729,7 @@ class VoiceSetupFlow(QObject):
         self._cancel_analysis_workers()
         self._cleanup_recording_tap()
         self._stop_owned_processor()
-        if not self._restore_pre_setup_snapshot():
+        if not self.restore_previous():
             self.view_model.set_page(phaseText="Close blocked; previous settings not fully put back")
             self.view_model.set_warning(
                 "Your previous settings could not be fully put back. Press Retake to try again.",
@@ -2750,7 +2750,7 @@ class VoiceSetupFlow(QObject):
             self.view_model.set_page(startEnabled=False, retakeEnabled=False)
             self.view_model.set_warning("Canceling analysis...", state="info", strong=True)
             return
-        self._finish_close()
+        self.finish_close()
 
     def get_selected_curve(self) -> str:
         return self.view_model.selected("curve")

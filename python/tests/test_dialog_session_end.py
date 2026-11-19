@@ -130,7 +130,7 @@ def test_voice_setup_closes_for_a_session_end_even_when_its_old_settings_cannot_
     voice, session_ending, qapp, monkeypatch  # noqa: F811
 ) -> None:
     voice.show()
-    monkeypatch.setattr(voice.flow, "_restore_pre_setup_snapshot", lambda: False)
+    monkeypatch.setattr(voice.flow, "restore_previous", lambda: False)
     assert voice.close() and not voice.isVisible()
 
 
@@ -138,7 +138,7 @@ def test_voice_setup_still_refuses_a_normal_close_when_its_old_settings_cannot_b
     voice, qapp, monkeypatch  # noqa: F811
 ) -> None:
     voice.show()
-    monkeypatch.setattr(voice.flow, "_restore_pre_setup_snapshot", lambda: False)
+    monkeypatch.setattr(voice.flow, "restore_previous", lambda: False)
     assert not voice.close() and voice.isVisible()
     assert "Close blocked" in voice.flow.view_model.shown["phaseText"]
 

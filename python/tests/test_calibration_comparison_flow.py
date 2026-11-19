@@ -54,13 +54,13 @@ def test_comparison_uses_one_capture_and_existing_apply_path(qapp, monkeypatch, 
             "eq_settings": {"band_freqs": eq.band_freqs, "band_gains": eq.band_gains, "band_qs": eq.band_qs},
             "gate_settings": {}, "deesser_settings": {}, "compressor_settings": {}, "limiter_settings": {}}
         dialog.flow.setup_state = "completed"
-        monkeypatch.setattr(dialog.flow, "_apply_setup", apply)
+        monkeypatch.setattr(dialog.flow, "apply", apply)
     comparison = Mock()
     comparison.exec.return_value = int(QDialog.DialogCode.Accepted if keep else QDialog.DialogCode.Rejected)
     factory = Mock(return_value=comparison)
     monkeypatch.setattr(listening_comparison_dialog, "ListeningComparisonDialog", factory)
     try:
-        flow._compare_recording()
+        (flow._compare_recording if dialog_type is CalibrationDialog else flow.compare)()
         assert factory.call_args.kwargs["audio_data"] is audio
         assert factory.call_args.kwargs["current_chain_settings"]["full_chain"] is True
         assert factory.call_args.kwargs["current_chain_settings"]["input_pre_filtered"] is False

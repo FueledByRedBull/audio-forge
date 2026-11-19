@@ -17,3 +17,11 @@ shipped bytes do not change.
 **Alternatives:** wait for the GitHub repository to come back (blocks every PR
 until then); mirror the old archives in an AudioForge release (an extra copy to
 keep and a weaker origin than Microsoft's signed package).
+
+**Source archive (2026-11-19):** the corresponding-source bundle needs the
+ONNX Runtime source tree at commit `a83fc4d58cb4`, which the NuGet package does
+not carry and `codeload.github.com` no longer serves. It now downloads from the
+`third-party-sources` release of this repository. That file was taken from the
+published v1.23.0 source bundle and matches the existing SHA-256 pin, so the
+source of truth stays the upstream commit. Rejected: Software Heritage or a repack
+of another mirror (a repack is not byte-identical to the pin).

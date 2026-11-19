@@ -443,7 +443,6 @@ jobs:
           cache: pip
           cache-dependency-path: requirements/dev.txt
       - name: Install system build dependencies
-        timeout-minutes: 10
         run: |
           # A stalled mirror otherwise holds the job until its timeout.
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30"; Acquire::https::Timeout "30";' \
@@ -534,7 +533,6 @@ jobs:
           cache: pip
           cache-dependency-path: requirements/dev.txt
       - name: Install system build dependencies
-        timeout-minutes: 10
         run: |
           # A stalled mirror otherwise holds the job until its timeout.
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30"; Acquire::https::Timeout "30";' \

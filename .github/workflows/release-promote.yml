@@ -557,7 +557,6 @@ jobs:
 
       - name: Install the libraries the Linux app starts with
         shell: bash
-        timeout-minutes: 10
         run: |
           # A stalled mirror otherwise holds the job until its timeout.
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30"; Acquire::https::Timeout "30";' \

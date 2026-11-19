@@ -20,16 +20,27 @@ from PySide6.QtCore import (
     QPointF,
     Qt,
     QTimer,
+    QUrl,
     Signal,
     Slot,
 )
-from PySide6.QtGui import QAccessible, QAccessibleAnnouncementEvent, QPainter, QPen, QPolygonF
+from PySide6.QtGui import (
+    QAccessible,
+    QAccessibleAnnouncementEvent,
+    QDesktopServices,
+    QPainter,
+    QPen,
+    QPolygonF,
+)
 from PySide6.QtQml import qmlRegisterType, qmlRegisterUncreatableType
 from PySide6.QtQuick import QQuickPaintedItem, QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 
 from .chain_presentation import PREFILTER_HIGHPASS_HZ, ChainInputs, ChainLine, describe_chain
+from . import platform_text
+from .command_palette import CommandPalette, window_commands
 from .components import Glyph
+from .engine_session import Restarted, RestartFailed, Started, Stopped
 from .desktop_integration import RENDERER_RELAUNCH_ENV, relaunch_with_software_rendering
 from .control_specs import control_label
 from .eq_controls import EQControl
@@ -37,7 +48,15 @@ from .eq_quick_compare import EQComparisonItem
 from .device_selection import VIRTUAL_OUTPUT_MARKERS
 from .eq_quick_graph import EQGraphItem, EQGraphPreview
 from .health import HEALTH_PEAK_WINDOW_SECONDS, advice_for
-from .overview_presentation import NO_MIC_REASON, OverviewInputs, OverviewView, describe_overview
+from .overview_presentation import (
+    NO_MIC_REASON,
+    SOUND_SETTINGS_FAILED,
+    SOUND_SETTINGS_LINE,
+    SOUND_SETTINGS_URI,
+    OverviewInputs,
+    OverviewView,
+    describe_overview,
+)
 from .quick_meter import QuickMeterItem
 from .quick_scene import QML_DIR, load_scene, quick_theme
 from .shell_specs import ACTION_SPECS, HEALTH_DECISION_KEYS, HEALTH_LAYOUT_KEYS
@@ -226,6 +245,12 @@ class OverviewState(QObject):
     def __init__(self, parent: QObject, window, sources) -> None:
         super().__init__(parent)
         self._window = window
+        # Replaceable, so a test never opens the real Settings app.
+        self.open_url = lambda url: QDesktopServices.openUrl(QUrl(url))
+        # "Remind me later" lasts until processing stops or starts again; nothing is saved.
+        self._notice_dismissed = False
+        self._settings_failed = False
+        window.engine_session.changed.connect(self._on_session)
         self._view: OverviewView = describe_overview(overview_inputs(window))
         self._announced = self._view.state
         self._announce = QTimer(self)
@@ -241,6 +266,15 @@ class OverviewState(QObject):
     tone = Property(str, lambda self: self._view.tone, notify=changed)
     callersAffected = Property(bool, lambda self: self._view.callers_affected, notify=changed)
     offerRestart = Property(bool, lambda self: self._view.offer_restart, notify=changed)
+    showClippingNotice = Property(
+        bool, lambda self: self._view.show_clipping_notice and not self._notice_dismissed, notify=changed
+    )
+    # Only Windows has a Sound settings page to open.
+    offerSoundSettings = Property(bool, lambda self: platform_text.IS_WINDOWS, notify=changed)
+    soundSettingsLine = Property(str, lambda self: SOUND_SETTINGS_LINE, constant=True)
+    soundSettingsFailure = Property(
+        str, lambda self: SOUND_SETTINGS_FAILED if self._settings_failed else "", notify=changed
+    )
     offerChooseMicrophone = Property(bool, lambda self: self._view.offer_choose_microphone, notify=changed)
     callersLine = Property(str, lambda self: self._view.callers_line, notify=changed)
     navLine = Property(str, lambda self: self._view.nav_line, notify=changed)
@@ -251,6 +285,27 @@ class OverviewState(QObject):
     checks = Property(
         list, lambda self: [{"text": text, "kind": kind} for text, kind in self._view.checks], notify=changed
     )
+
+    @Slot()
+    def openSoundSettings(self) -> None:
+        self._settings_failed = not self.open_url(SOUND_SETTINGS_URI)
+        self.changed.emit()
+
+    @Slot()
+    def dismissNotice(self) -> None:
+        self._notice_dismissed = True
+        self.changed.emit()
+
+    @Slot(object)
+    def _on_session(self, session_view) -> None:
+        # A recovery restart ends a stall or a lost device without a Start or Stop; a Voice Setup
+        # lease belongs to the same run, so it does not.
+        if isinstance(session_view.event, Started | Stopped | Restarted | RestartFailed) and (
+            self._notice_dismissed or self._settings_failed
+        ):
+            self._notice_dismissed = False
+            self._settings_failed = False
+            self.changed.emit()
 
     @Slot()
     def refresh(self) -> None:
@@ -672,6 +727,39 @@ class QuickBridge(QObject):
             )),
         ])
         inspector = InspectorState(self, [row["key"] for row in chain if row["card"]])
+        top = {
+            "input": w.input_choice,
+            "output": w.output_choice,
+            "refresh": action("refresh_btn"),
+            "mode": w.processing_mode_choice,
+            "mute": action("user_mute_checkbox"),
+            "start": action("start_btn"),
+            "stop": action("stop_btn"),
+            "restart": action("restart_audio_btn"),
+            "chooseMicrophone": action("choose_microphone_btn"),
+            "latency": text("latency_readout_label"),
+        }
+        presets = {
+            "status": text("preset_status_label"),
+            "menu": menu(w.presets_menu, "Presets"),
+            "undo": action("_undo_auto_eq_button"),
+            "redo": action("redo_button"),
+            "history": w.history_chip,
+            "testSound": action("test_sound_button"),
+            "autoEq": action("auto_eq_button"),
+            "voiceSetup": action("auto_voice_setup_button"),
+        }
+        preset_actions = [ActionControl(item, self) for item in w.builtin_presets_menu.actions()]
+        commands = window_commands(
+            top=top, presets=presets, chain=chain, stages=by_key, preset_actions=preset_actions,
+        )
+        palette = CommandPalette(self, w, commands, [
+            *(top[key].changed for key in ("start", "stop", "mute")),
+            *(presets[key].changed for key in ("testSound", "voiceSetup")),
+            *(row["toggle"].changed for row in chain if row["toggle"] is not None),
+            *(command.setting.changed for command in commands if command.setting is not None),
+            *(proxy.changed for proxy in preset_actions),
+        ])
         # Another page has no inspector beside it.
         w.shell_page.selected.connect(inspector.close)
 
@@ -704,18 +792,7 @@ class QuickBridge(QObject):
                 text("device_warning_banner"),
                 text("config_warning_banner"),
             ],
-            "top": {
-                "input": w.input_choice,
-                "output": w.output_choice,
-                "refresh": action("refresh_btn"),
-                "mode": w.processing_mode_choice,
-                "mute": action("user_mute_checkbox"),
-                "start": action("start_btn"),
-                "stop": action("stop_btn"),
-                "restart": action("restart_audio_btn"),
-                "chooseMicrophone": action("choose_microphone_btn"),
-                "latency": text("latency_readout_label"),
-            },
+            "top": top,
             "sidebar": {
                 "chain": chain,
                 "lines": chain_lines,
@@ -723,16 +800,8 @@ class QuickBridge(QObject):
                     w.latency_calibration_action, self, text="Measure latency",
                 ),
             },
-            "presets": {
-                "status": text("preset_status_label"),
-                "menu": menu(w.presets_menu, "Presets"),
-                "undo": action("_undo_auto_eq_button"),
-                "redo": action("redo_button"),
-                "history": w.history_chip,
-                "testSound": action("test_sound_button"),
-                "autoEq": action("auto_eq_button"),
-                "voiceSetup": action("auto_voice_setup_button"),
-            },
+            "presets": presets,
+            "palette": palette,
             "eq": {
                 "trace": False, "alert": None, "title": "EQUALIZER",
                 "help": (
@@ -845,6 +914,8 @@ def install_quick_shell(window) -> None:
 
     window.setCentralWidget(view)
     window.quick_bridge = bridge
+    # Every text field of the scene is inside the view, so the palette's shortcut is kept here.
+    view.installEventFilter(bridge._model["palette"])
     # A scene that loads can still fail to render, for example without a
     # usable graphics adapter.
     view.sceneGraphError.connect(lambda _error, message: _scene_stopped(window, message))

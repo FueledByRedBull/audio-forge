@@ -1512,6 +1512,62 @@ Rectangle {
                         Layout.fillWidth: true
                         Layout.leftMargin: 32
                     }
+                    // The way to where clipping can be fixed, or to leave it for this run.
+                    Rectangle {
+                        objectName: "overviewClippingNotice"
+                        visible: overviewPage.ov.showClippingNotice
+                        implicitHeight: noticeBody.implicitHeight + 24
+                        radius: root.t.radiusControl
+                        color: root.t.status_bad_surface
+                        border.color: root.t.status_bad_border
+                        Accessible.role: Accessible.Grouping
+                        Accessible.name: "Clipping actions"
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 32
+                        Layout.rightMargin: 16
+                        Layout.topMargin: 10
+                        ColumnLayout {
+                            id: noticeBody
+                            spacing: 8
+                            anchors { left: parent.left; right: parent.right; top: parent.top; margins: 12 }
+                            StatusText {
+                                objectName: "overviewSoundSettingsLine"
+                                visible: overviewPage.ov.offerSoundSettings
+                                text: overviewPage.ov.soundSettingsLine
+                                color: root.t.status_bad_text
+                                font.pixelSize: root.fsCaption
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            StatusText {
+                                objectName: "overviewSoundSettingsFailure"
+                                visible: text !== ""
+                                text: overviewPage.ov.soundSettingsFailure
+                                color: root.t.status_bad_text
+                                font.pixelSize: root.fsBody
+                                font.weight: Font.DemiBold
+                                wrapMode: Text.Wrap
+                                Accessible.role: Accessible.AlertMessage
+                                Layout.fillWidth: true
+                            }
+                            RowLayout {
+                                spacing: 8
+                                Layout.fillWidth: true
+                                PushButton {
+                                    objectName: "overviewShowMeHow"
+                                    visible: overviewPage.ov.offerSoundSettings
+                                    text: "Show me how"
+                                    look: "primary"
+                                    onClicked: overviewPage.ov.openSoundSettings()
+                                }
+                                PushButton {
+                                    objectName: "overviewRemindLater"
+                                    text: "Remind me later"
+                                    onClicked: overviewPage.ov.dismissNotice()
+                                }
+                            }
+                        }
+                    }
                     // The words carry the news; the pink fill only repeats it.
                     Rectangle {
                         objectName: "overviewCallersNotice"
@@ -2322,6 +2378,15 @@ Rectangle {
                 }
             }
         }
+    }
+
+    // Ctrl+K opens it (its window action is in command_palette.py); it lies over every pane.
+    CommandPalette {
+        objectName: "commandPalette"
+        anchors.fill: parent
+        commands: root.m.palette
+        backdrop: mainPane
+        fallbackFocus: overviewRow.button
     }
 
     // On top, so a press is seen before the control under it takes focus:

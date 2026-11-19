@@ -2,6 +2,7 @@ singleton Look 1.0 Look.qml
 BodyText 1.0 BodyText.qml
 Chip 1.0 Chip.qml
 ChoiceBox 1.0 ChoiceBox.qml
+CommandPalette 1.0 CommandPalette.qml
 DialogHeader 1.0 DialogHeader.qml
 EscChip 1.0 EscChip.qml
 FocusRing 1.0 FocusRing.qml

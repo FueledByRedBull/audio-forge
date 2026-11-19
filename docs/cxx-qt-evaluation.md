@@ -65,12 +65,11 @@ packages.
   `installer/linux/` holds the desktop entry and AppStream metainfo. There is
   no `packaging/` directory.
 
-A local 1.23.0 Windows build (not compared with the published archive) is
-225 MB. Of that, about 70 MB is Qt itself (Qt6 DLLs, plugins, QML modules,
-`opengl32sw.dll`), 45 MB models, 31 MB DeepFilter and ONNX Runtime. The
-Python-only part is roughly 60 MB: PySide6 bindings (23 MB of `.pyd`),
-NumPy and its OpenBLAS (28 MB), `python313.dll` and the standard library
-(about 9 MB), shiboken6 and pywin32.
+In the bundle, Qt itself (Qt6 DLLs, plugins, QML modules, `opengl32sw.dll`)
+is the largest part, followed by the models and the DeepFilter and ONNX
+Runtime libraries. The Python-only part is the PySide6 bindings, NumPy and its
+OpenBLAS, `python313.dll` and the standard library, shiboken6 and pywin32; a
+cxx-qt binary drops it and keeps everything else.
 
 ### With a cxx-qt binary
 
@@ -210,7 +209,8 @@ QtWidgets, so all of this must become QML (`ApplicationWindow`, Qt Quick
 Dialogs, a tray from `Qt.labs.platform` or a Rust crate) before or during the
 switch. The software-rendering relaunch in `quick_shell.py` is written against
 `QQuickWidget` and would move to `QQuickWindow`. The listening comparison plays
-audio through QtMultimedia's `QAudioSink`, which cxx-qt-lib does not bind.
+audio through QtMultimedia's `QAudioSink`; a cxx-qt build would need its own
+binding for it, or would play the comparison through the Rust output path.
 
 Moving the hosts to QML is worth doing on its own under PySide6: it is the
 same work either way, it removes QtWidgets from the bundle, and it is the step
@@ -274,8 +274,8 @@ Risks:
 - The realtime engine gains nothing. Python is not on the callback, render or
   DSP-loop path today, so latency, CPU and audio output are unchanged by the
   switch.
-- Gains are modest and measurable without the rewrite: about 60 MB of bundle,
-  interpreter start-up, and the PyO3 binding layer (about 4,500 lines).
+- Gains are modest and measurable without the rewrite: the Python-only part of
+  the bundle, interpreter start-up, and the PyO3 binding layer (about 4,500 lines).
 
 ## 6. Recommendation
 

@@ -103,6 +103,7 @@ from .engine_session import (
 )
 from .engine_tasks import EngineTasks, attempt
 from .theme import contrast_theme_changed, muted_icon
+from .processing_mode_state import ProcessingModeState
 from .processing_configuration import (
     CONFIGURATION_MUTE,
     LoadOutcome,
@@ -587,6 +588,13 @@ class MainWindow(QMainWindow):
             for label, data in choice_spec.options:
                 state.addItem(label, data)
             setattr(self, key + "_choice", state)
+        self.processing_mode_state = ProcessingModeState(
+            self.processor,
+            self.processing_mode_choice,
+            hold_mute=lambda muted: self.set_temporary_output_mute(muted, "processing_mode_error"),
+            show_status=self._configuration_host.show_status,
+            on_changed=lambda: self._update_session_summary(),
+        )
         self.processing_mode_choice.currentIndexChanged.connect(self._on_processing_mode_changed)
 
         commands = {
@@ -688,68 +696,15 @@ class MainWindow(QMainWindow):
         except Exception:
             logger.warning("Failed to apply input cleanup mode", exc_info=True)
 
-    @staticmethod
-    def _is_valid_processing_mode(mode: object) -> bool:
-        return isinstance(mode, str) and any(
-            mode == option_mode for _label, option_mode in PROCESSING_MODE_OPTIONS
-        )
-
     def _processing_mode(self) -> str:
-        """Return the selected mode, or its last applied value during initialization."""
-        combo = self.__dict__.get("processing_mode_choice")
-        if combo is not None:
-            mode = combo.currentData()
-            if self._is_valid_processing_mode(mode):
-                return str(mode)
-        return self.__dict__.get("_applied_processing_mode", "normal")
+        """Return the selected mode."""
+        return self.processing_mode_state.selected()
 
     def _set_processing_mode(self, mode: str, *, notify: bool = False) -> None:
-        target = mode if self._is_valid_processing_mode(mode) else "normal"
-        combo = self.__dict__.get("processing_mode_choice")
-        if combo is not None:
-            index = combo.findData(target)
-            if index >= 0 and combo.currentIndex() != index:
-                combo.blockSignals(True)
-                combo.setCurrentIndex(index)
-                combo.blockSignals(False)
-
-        try:
-            if hasattr(self.processor, "set_raw_monitor_enabled"):
-                self.processor.set_raw_monitor_enabled(target == "raw")
-            if hasattr(self.processor, "set_bypass"):
-                self.processor.set_bypass(target == "bypass")
-        except Exception as error:
-            raise RuntimeError(f"Processing mode could not be applied: {error}") from error
-        self._applied_processing_mode = target
-
-        if notify:
-            message = {
-                "normal": "Processing active",
-                "bypass": (
-                    "Voice effects bypassed; input conditioning and configured "
-                    "output protection remain"
-                ),
-                "raw": "Raw monitor enabled for this session; it is not stored in presets",
-            }[target]
-            self.status_message.showMessage(message)
-        update_summary = getattr(self, "_update_session_summary", None)
-        if callable(update_summary):
-            update_summary()
+        self.processing_mode_state.set(mode, notify=notify)
 
     def _on_processing_mode_changed(self, _index: int) -> None:
-        previous = self.__dict__.get("_applied_processing_mode", "normal")
-        try:
-            self._set_processing_mode(self._processing_mode(), notify=True)
-        except RuntimeError as error:
-            try:
-                self._set_processing_mode(previous)
-            except RuntimeError:
-                self.set_temporary_output_mute(True, "processing_mode_error")
-                self.status_message.showMessage(f"{error}; output muted because restoration failed")
-                return
-            self.status_message.showMessage(f"{error}; previous mode restored", 6000)
-        else:
-            self.set_temporary_output_mute(False, "processing_mode_error")
+        if self.processing_mode_state.choose():
             self.configuration.note_edit()
 
     def set_temporary_output_mute(

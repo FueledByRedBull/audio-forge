@@ -2035,16 +2035,6 @@ Rectangle {
                             Layout.fillWidth: true
                         }
                     }
-                    HoldBtn {
-                        objectName: "holdOriginal"
-                        proxy: equalizerPage.eq.compare
-                        Layout.alignment: Qt.AlignTop
-                        // A narrow header shortens the label before anything overlaps; the tip and name keep it whole.
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: shortWidth
-                        Layout.preferredWidth: implicitWidth
-                        Layout.maximumWidth: implicitWidth
-                    }
                     Btn { proxy: equalizerPage.eq.tone; Layout.alignment: Qt.AlignTop }
                     Btn { proxy: root.m.presets.autoEq; Layout.alignment: Qt.AlignTop }
                     IconBtn {
@@ -2053,6 +2043,22 @@ Rectangle {
                         label: "More"
                         Layout.alignment: Qt.AlignTop
                     }
+                }
+                // Under the header: hold to compare on the left, the edit history on the right.
+                RowLayout {
+                    spacing: 12
+                    Layout.fillWidth: true
+                    HoldBtn {
+                        objectName: "holdOriginal"
+                        proxy: equalizerPage.eq.compare
+                        Layout.alignment: Qt.AlignTop
+                        // Short of room the label shortens before anything overlaps; the tip and name keep it whole.
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: shortWidth
+                        Layout.preferredWidth: implicitWidth
+                        Layout.maximumWidth: implicitWidth
+                    }
+                    Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
                     // Undo, then how many edits are unsaved and the latest one in words, with its age.
                     ColumnLayout {
                         id: undoHistory
@@ -2060,15 +2066,15 @@ Rectangle {
                         readonly property var history: root.m.presets.history
                         spacing: 2
                         Layout.alignment: Qt.AlignTop
-                        // It gives way before the header overflows: the chip and the caption elide.
-                        Layout.fillWidth: true
+                        // A fixed column at the right edge; the chip and the caption elide inside it.
                         Layout.minimumWidth: 30 + 6 + 48
-                        Layout.preferredWidth: undoRow.implicitWidth
+                        Layout.preferredWidth: 240
                         Layout.maximumWidth: 240
                         RowLayout {
                             id: undoRow
                             spacing: 6
                             Layout.alignment: Qt.AlignRight
+                            Layout.fillWidth: false
                             Layout.maximumWidth: undoHistory.width
                             IconBtn {
                                 objectName: "equalizerUndo"

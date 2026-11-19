@@ -21,6 +21,7 @@ from mic_eq.ui.desktop_integration import (
 )
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.noise_suppression_state import NoiseSuppressionState
+from mic_eq.ui.processing_mode_state import ProcessingModeState
 from mic_eq.ui import desktop_integration
 from mic_eq.ui.theme import PALETTE, muted_icon
 from engine_fakes import fake_session
@@ -86,6 +87,13 @@ def test_processing_mode_updates_both_native_flags() -> None:
     owner.processor = _Processor()
     owner.status_message = SimpleNamespace(showMessage=lambda *_args: None)
     owner._update_session_summary = lambda: None
+    owner.processing_mode_state = ProcessingModeState(
+        owner.processor,
+        owner.processing_mode_choice,
+        hold_mute=lambda _muted: None,
+        show_status=lambda *_args: None,
+        on_changed=owner._update_session_summary,
+    )
 
     MainWindow._set_processing_mode(owner, "bypass")
     assert owner._processing_mode() == "bypass"

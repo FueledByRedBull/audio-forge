@@ -422,3 +422,15 @@ def test_the_widget_dialogs_and_menus_still_follow_the_contrast_theme(monkeypatc
     assert flatten(dark.glass_solid, dark.app_surface) not in sheet
     assert f"QDialog {{ background-color: {SYSTEM_COLORS['window']}" in sheet
     assert f"QMenu::item:selected {{ background-color: {SYSTEM_COLORS['highlight']}" in sheet
+
+
+def test_the_top_bar_colours_follow_a_contrast_theme() -> None:
+    contrast = build_palette(SYSTEM_COLORS)
+    window, text = SYSTEM_COLORS["window"], SYSTEM_COLORS["window_text"]
+    assert contrast.toolbar_control_top == contrast.toolbar_control_bottom == window
+    assert contrast.toolbar_edge == text
+    assert contrast.start_top == contrast.start_bottom == SYSTEM_COLORS["highlight"]
+    assert (contrast.stop_top, contrast.stop_bottom, contrast.text_on_stop) == (text, text, window)
+    assert contrast.brand_mark_glyph == SYSTEM_COLORS["highlight_text"]
+    # Start and Stop differ by lightness as well as hue, for a colour-blind reader.
+    assert abs(QColor(PALETTE.stop_bottom).lightness() - QColor(PALETTE.start_bottom).lightness()) >= 40

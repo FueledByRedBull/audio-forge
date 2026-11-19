@@ -1,10 +1,11 @@
 // Mute: it stays pressed while the output is muted, in the mute violet; its words do not change.
-// `proxy` is the shared mute command.
+// `proxy` is the shared mute command; `raised` gives it the top bar's raised fill and rounder corners.
 import QtQuick
 
 ModelButton {
     id: mute
     property var proxy
+    property bool raised: false
     on: proxy ? proxy.checked : false
     enabled: proxy ? proxy.enabled : false
     onRequested: proxy.click()
@@ -19,8 +20,9 @@ ModelButton {
     // Measured bold, so pressing it does not change its width.
     TextMetrics { id: muteMetrics; text: muteLabel.text; font.pixelSize: Look.fsBody; font.weight: Font.DemiBold }
     background: Rectangle {
-        radius: Look.t.radiusControl
+        radius: mute.raised ? Look.t.radiusToolbarControl : Look.t.radiusControl
         color: mute.on ? Look.t.mute_fill : mute.hovered ? Look.t.control_hover : Look.t.control_surface
+        gradient: mute.raised && !mute.on && !mute.hovered ? Look.raisedFill : null
         border.color: mute.on ? Look.t.mute_edge : Look.t.control_edge
         Behavior on color { ColorAnimation { duration: Look.t.motionRow } }
         FocusRing { control: mute }

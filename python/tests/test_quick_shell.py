@@ -158,6 +158,27 @@ def test_transport_follows_the_stop_action(quick_window) -> None:
     assert root.property("running") is False
 
 
+def test_start_and_stop_differ_by_shape_not_only_colour(quick_window, qapp) -> None:
+    # A play mark while stopped and a stop mark while running, never both: a colour-blind
+    # user tells the two buttons apart by shape.
+    window = quick_window
+    root = window.centralWidget().rootObject()
+    play, stop = root.findChild(QObject, "playMark"), root.findChild(QObject, "stopMark")
+    assert play is not None and stop is not None
+
+    def marks() -> tuple[bool, bool]:
+        qapp.processEvents()
+        return play.property("visible"), stop.property("visible")
+
+    assert marks() == (True, False)
+    window.start_btn_action.setEnabled(False)
+    window.stop_btn_action.setEnabled(True)
+    assert marks() == (False, True)
+    window.start_btn_action.setEnabled(True)
+    window.stop_btn_action.setEnabled(False)
+    assert marks() == (True, False)
+
+
 def test_a_quick_session_keeps_the_scene_from_start_to_close(quick_window, monkeypatch) -> None:
     """Start, run, change pages and close with the scene as the window's content."""
 

@@ -534,3 +534,36 @@ def test_the_shortcut_row_wraps_clear_at_the_minimum_width(qapp, monkeypatch, se
         window.close()
         window.deleteLater()
         qapp.processEvents()
+
+
+@pytest.mark.parametrize("point_size", [9, 14])
+def test_the_top_bar_shows_the_mark_and_the_route_chevron_in_order(qapp, monkeypatch, segoe_font, point_size) -> None:
+    qapp.setFont(QFont(qapp.font().family(), point_size))
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Ready", width=1440)
+    try:
+        assert_toolbar_fits(window, 1440)
+        bar = scene_rect(named(window, "toolbar"))
+        pane = scene_rect(named(window, "toolbarPane"))
+        # The bar is a pane inset from the window's edges, and the panels start below it.
+        assert pane.left() > bar.left() and pane.right() < bar.right() and pane.top() > bar.top()
+        assert pane.bottom() == pytest.approx(bar.bottom() - 1)
+        assert scene_rect(named(window, "sidebar")).top() >= pane.bottom()
+        mark, chevron = scene_rect(named(window, "brandMark")), scene_rect(named(window, "routeChevron"))
+        assert named(window, "brand").isVisible() and mark.width() == mark.height() == 24
+        assert named(window, "routeChevron").isVisible()
+        pickers = sorted(
+            (scene_rect(item) for item in shown_items(named(window, "toolRow"))
+             if item.metaObject().className().startswith("Picker")),
+            key=QRectF.left,
+        )
+        microphone, output = pickers[0], pickers[1]
+        assert mark.right() < microphone.left() and microphone.right() < chevron.left() < chevron.right() < output.left()
+        # IN sits over OUT.
+        meters = [item for item in shown_items(named(window, "meterGrid"))
+                  if item.metaObject().className() == "QuickMeterItem"]
+        assert len(meters) == 2 and all(meter.property("segmented") for meter in meters)
+        assert scene_rect(meters[0]).bottom() < scene_rect(meters[1]).top()
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()

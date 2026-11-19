@@ -49,6 +49,16 @@ class SemanticPalette:
     tile_bottom: str = "#08ffffff"
     tile_edge: str = "#1affffff"
     tile_icon: str = "#c9ced8"
+    # The top bar is a rounded pane on the ground: a faint lit edge inside a dark rim.
+    toolbar_edge: str = "#0effffff"
+    toolbar_rim: str = "#8c000000"
+    # A control in the top bar is a lighter step over the bar, top to bottom.
+    toolbar_control_top: str = "#17ffffff"
+    toolbar_control_bottom: str = "#0bffffff"
+    # The app mark beside the name: an amber tile with a light waveform on it.
+    brand_mark_top: str = "#f0ab72"
+    brand_mark_bottom: str = "#c86d33"
+    brand_mark_glyph: str = "#fff6ee"
     control_surface: str = "#1d1e21"
     control_surface_alt: str = "#191a1c"
     control_hover: str = "#27282b"
@@ -99,7 +109,16 @@ class SemanticPalette:
     callers_affected_edge: str = "#73e25a9a"
 
     action_primary: str = "#d98a4e"
-    # Stop while live is neutral: only the action that begins something is amber.
+    # Start and Stop in the top bar are lit from above. Stop while live is neutral: only the
+    # action that begins something is amber.
+    start_top: str = "#eea56b"
+    start_bottom: str = "#d07c3e"
+    stop_top: str = "#f3f4f7"
+    stop_bottom: str = "#d9dbe2"
+    text_on_stop: str = "#121318"
+    # Laid over Start or Stop while the pointer is on it.
+    transport_hover: str = "#14ffffff"
+    # A button's "danger" look, for an action that ends or removes something: neutral, not amber.
     action_destructive: str = "#1d1e21"
     action_destructive_border: str = "#7d818b"
     action_secondary: str = "#1d1e21"
@@ -188,6 +207,11 @@ class SemanticPalette:
     key_bottom: str = "#0fffffff"
     key_edge: str = "#38ffffff"
     key_text: str = "#eef0f4"
+    # The unlit steps of a segmented level bar.
+    meter_segment_off: str = "#2a2c33"
+    # The dark track behind the steps, ringed so the bar holds its shape against the pane.
+    meter_track: str = "#73000000"
+    meter_track_ring: str = "#0fffffff"
 
 
 # Tokens with no reader yet, kept for work that is planned. test_every_palette_token_has_a_reader
@@ -266,7 +290,13 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         data_surface=window, data_surface_raised=window, data_grid=disabled,
         data_text=text, data_text_muted=text, data_curve=text,
         data_marker=accent, data_warning=accent, data_handle_selected=text,
-        meter_scale=text, meter_peak=text,
+        meter_scale=text, meter_peak=text, meter_segment_off=disabled, meter_track=window, meter_track_ring=text,
+        toolbar_edge=text, toolbar_rim="#00000000",
+        toolbar_control_top=window, toolbar_control_bottom=window,
+        brand_mark_top=accent, brand_mark_bottom=accent, brand_mark_glyph=on_accent,
+        start_top=accent, start_bottom=accent, stop_top=text, stop_bottom=text, text_on_stop=window,
+        # Like the other buttons here, a contrast theme shows no hover tint on Start and Stop.
+        transport_hover="#00000000",
         pane_surface=window, toolbar_top=window, toolbar_bottom=window,
         sidebar_top=window, sidebar_bottom=window, focus_ring=accent, text_dim=text,
         # Highlight is a fill colour in these themes, not one made to be read on the window.
@@ -309,6 +339,9 @@ RADIUS_PANEL = 20
 RADIUS_CONTROL = 8
 # A recessed well that holds a graph.
 RADIUS_WELL = 14
+# The top bar pane, and the controls in it.
+RADIUS_TOOLBAR = 20
+RADIUS_TOOLBAR_CONTROL = 12
 RADIUS_MENU = 16
 RADIUS_ITEM = 10
 MENU_HOVER_WHITE = "#17ffffff"
@@ -530,6 +563,21 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
         flatten(PALETTE.accent_fill, PALETTE.sidebar_top),
     ),
     ("pressed mute", PALETTE.mute_text, flatten(PALETTE.mute_fill, PALETTE.toolbar_top)),
+    ("text on a top bar control", PALETTE.text_primary, flatten(PALETTE.toolbar_control_top, PALETTE.toolbar_top)),
+    ("muted text on a top bar control", PALETTE.text_muted, flatten(PALETTE.toolbar_control_top, PALETTE.toolbar_top)),
+    ("Start text, top", PALETTE.text_on_accent, PALETTE.start_top),
+    ("Start text, bottom", PALETTE.text_on_accent, PALETTE.start_bottom),
+    ("Stop text, top", PALETTE.text_on_stop, PALETTE.stop_top),
+    ("Stop text, bottom", PALETTE.text_on_stop, PALETTE.stop_bottom),
+    # Hover lays a light tint over the face.
+    *(
+        (f"{name} text on its hovered face, {end}", ink, flatten(PALETTE.transport_hover, face))
+        for name, ink, faces in (
+            ("Start", PALETTE.text_on_accent, (PALETTE.start_top, PALETTE.start_bottom)),
+            ("Stop", PALETTE.text_on_stop, (PALETTE.stop_top, PALETTE.stop_bottom)),
+        )
+        for end, face in zip(("top", "bottom"), faces)
+    ),
     ("text on solid mute", PALETTE.text_on_mute, PALETTE.mute),
     ("mute text", PALETTE.mute_text, PALETTE.app_surface),
     ("callers affected text", PALETTE.callers_affected_text, PALETTE.pane_surface),

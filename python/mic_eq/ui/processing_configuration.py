@@ -73,7 +73,7 @@ class LoadStatus(Enum):
     # The preset file is not a valid preset.
     INVALID = "invalid"
     # The engine refused it, its file cannot be read right now, or an older AudioForge saved it;
-    # it may load next time.
+    # it may load next time (an older AudioForge's file once it is re-saved).
     NOT_APPLIED = "not_applied"
 
 

@@ -137,6 +137,7 @@ from ..diagnostics_export import (
     write_diagnostics_snapshot,
 )
 from ..config import (
+    OLDEST_OPENED_VERSION,
     Preset,
     DeviceIdentity,
     PresetValidationError,
@@ -2664,10 +2665,10 @@ class MainWindow(QMainWindow):
         self._report_problem(
             "presets_refused_for_age",
             f"{count} presets were saved by an older AudioForge and can't be opened here. "
-            "Open and re-save them in AudioForge 1.23.0."
+            f"Open and re-save them in AudioForge {OLDEST_OPENED_VERSION}."
             if count > 1
             else "1 preset was saved by an older AudioForge and can't be opened here. "
-            "Open and re-save it in AudioForge 1.23.0.",
+            f"Open and re-save it in AudioForge {OLDEST_OPENED_VERSION}.",
         )
 
     def _on_device_changed(self, changed: ChoiceState | None = None):

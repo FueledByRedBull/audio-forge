@@ -2280,7 +2280,7 @@ Rectangle {
                                 required property int index
                                 // The device a line names reads quieter than its label.
                                 readonly property bool split: modelData.detail !== ""
-                                implicitHeight: Math.max(46, checkLine.implicitHeight + 20)
+                                implicitHeight: Math.max(40, checkLine.implicitHeight + 16)
                                 Layout.fillWidth: true
                                 Rectangle {
                                     visible: check.index > 0
@@ -2404,7 +2404,7 @@ Rectangle {
                         Layout.fillWidth: true
                         Item {
                             id: ribbonBox
-                            implicitHeight: root.wide ? 80 : 72
+                            implicitHeight: root.wide ? 66 : 72
                             clip: true
                             Layout.fillWidth: true
                             // One sample wider than the box, slid by that sample between readings.
@@ -2516,14 +2516,17 @@ Rectangle {
                     }
                     Surface {
                         objectName: "eqPreviewCard"
-                        pad: 14
+                        pad: 6
                         spacing: 0
                         Layout.fillWidth: true
                         EQGraphPreview {
                             objectName: "eqPreview"
                             graph: root.m.eq.curve
-                            implicitHeight: root.wide ? 150 : 130
+                            implicitHeight: root.wide ? 140 : 130
                             Layout.fillWidth: true
+                            // The card's side room; its top and bottom stay tight.
+                            Layout.leftMargin: 8
+                            Layout.rightMargin: 8
                             Accessible.role: Accessible.Graphic
                             Accessible.name: "Equalizer preview"
                             Accessible.description: root.m.eq.curve ? root.m.eq.curve.accessibleDescription : ""

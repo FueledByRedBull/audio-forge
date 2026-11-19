@@ -19,6 +19,7 @@ from mic_eq.ui.main_window import MINIMUM_WINDOW_HEIGHT, MINIMUM_WINDOW_WIDTH, M
 from mic_eq.ui.processing_configuration import PresetOrigin
 from mic_eq.ui.quick_shell import InspectorState
 from mic_eq.ui.theme import RADIUS_PANEL
+from tools.capture_repository_screenshots import _install_sanitized_sources, _prepare_main_window
 
 INPUT = SimpleNamespace(name="CABLE Output (VB-Audio Virtual Cable)", is_default=True)
 OUTPUT = SimpleNamespace(name="Realtek Digital Output (Realtek USB Audio)", is_default=True)
@@ -530,6 +531,37 @@ def test_the_shortcut_row_wraps_clear_at_the_minimum_width(qapp, monkeypatch, se
         for index, box in enumerate(items):
             assert not any(box.intersects(other) for other in items[index + 1:]), box
         assert scene_rect(row).top() >= scene_rect(named(window, "setupLine")).bottom()
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize("banner", [False, True])
+def test_the_overview_fits_without_scrolling_at_1440_by_900(qapp, segoe_font, banner) -> None:
+    """The README capture's window, font and route, at the size the design was drawn for.
+
+    A one-line warning banner above the page leaves it room as well.
+    """
+    with _install_sanitized_sources():
+        window = _prepare_main_window()
+    if banner:
+        window.shell_texts["config_warning_banner"].update(
+            text="13 presets were saved by an older AudioForge and can't be opened here. "
+            "Open and re-save them in AudioForge 1.23.0.",
+            shown=True,
+        )
+    window.resize(1440, 900)
+    window.show()
+    for _ in range(3):
+        qapp.processEvents()
+        QTest.qWait(30)
+    try:
+        page = named(window, "overviewPage")
+        while page.property("scrollName") != "Page scroll bar":
+            page = page.parentItem()
+        # A few pixels to spare, so a one-line change shows here before it shows a scroll bar.
+        assert page.property("contentHeight") <= page.height() - 4, (page.property("contentHeight"), page.height())
     finally:
         window.close()
         window.deleteLater()

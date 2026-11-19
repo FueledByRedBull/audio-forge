@@ -246,8 +246,8 @@ class EngineSession(QObject):
         self._clock = clock
         self._busy: str | None = None
         self._recovering = False
-        self._start_after_recovery = False
-        self._restart_after_recovery = False
+        # What a click asked for while a recovery poll held the engine; a restart outranks a start.
+        self._after_recovery: Literal["start", "restart"] | None = None
         self._recovery_failing = False
         self._button_stop_at: float | None = None
         self._user_muted = False
@@ -317,7 +317,7 @@ class EngineSession(QObject):
             return
         if self._recovering:
             # Queued behind that call, the start would meet the streams a retry reopened.
-            self._start_after_recovery = True
+            self._after_recovery = self._after_recovery or "start"
             return
         self._start_on_worker()
 
@@ -414,7 +414,7 @@ class EngineSession(QObject):
         if self._busy:
             return
         if self._recovering:
-            self._restart_after_recovery = True
+            self._after_recovery = "restart"
             return
         self._restart_on_worker()
 
@@ -462,8 +462,7 @@ class EngineSession(QObject):
 
     def _recovery_serviced(self, outcome: Any) -> None:
         self._recovering = False
-        start, self._start_after_recovery = self._start_after_recovery, False
-        restart, self._restart_after_recovery = self._restart_after_recovery, False
+        queued, self._after_recovery = self._after_recovery, None
         if self._closed:
             return
         try:
@@ -491,9 +490,9 @@ class EngineSession(QObject):
             if not self._recovery_failing:
                 logger.warning("Rust recovery service failed", exc_info=True)
             self._recovery_failing = True
-        if restart:
+        if queued == "restart":
             self._restart_on_worker()
-        elif start:
+        elif queued == "start":
             self._start_on_worker()
 
     # --- output mute -------------------------------------------------------------------------

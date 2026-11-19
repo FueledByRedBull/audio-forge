@@ -1545,7 +1545,7 @@ Rectangle {
                     }
                     // Callers hear nothing here already, so the restart asks for no confirmation.
                     ColumnLayout {
-                        visible: overviewPage.ov.state === "device_lost"
+                        visible: overviewPage.ov.offerRestart
                         spacing: 6
                         Layout.fillWidth: true
                         Layout.leftMargin: 32

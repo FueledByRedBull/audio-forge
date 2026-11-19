@@ -1919,16 +1919,32 @@ def test_only_a_lost_device_offers_restart_audio(engine_window, qapp, monkeypatc
     assert not restart.property("visible") and not line.property("visible")
 
 
+def test_a_lost_device_that_the_engine_retries_offers_no_restart(engine_window, qapp, monkeypatch) -> None:
+    window, engine = engine_window
+    restart = _scene_item(window, "overviewRestart")
+    monkeypatch.setattr(engine, "is_recovery_requested", lambda: True, raising=False)
+    window.shell_texts["callback_health_label"].update(text="Callbacks: stalled", status="bad")
+    qapp.processEvents()
+
+    assert _sentence(window)[0] == "Your callers can't hear you"
+    assert not restart.property("visible")
+
+
 def test_a_restart_from_the_overview_stops_and_starts_the_audio(engine_window, qapp) -> None:
     window, engine = engine_window
     window.start_btn_action.trigger()
-    stops: list[None] = []
+    calls: list[str] = []
     stop = engine.stop
-    engine.stop = lambda: (stops.append(None), stop())[1]
+
+    def recorded_stop() -> None:
+        calls.append("stop" if engine.running else "stop while stopped")
+        stop()
+
+    engine.stop = recorded_stop
     window.quick_bridge.model["top"]["restart"].click()
     qapp.processEvents()
 
-    assert stops == [None] and engine.running
+    assert calls == ["stop"] and engine.running
     assert _sentence(window)[0] == "Live · your voice is clean"
 
 

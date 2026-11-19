@@ -2682,12 +2682,16 @@ class MainWindow(QMainWindow):
         self._request_stop("menu")
 
     def _on_restart_audio_clicked(self) -> None:
+        self._cancel_login_startup_for_click()
         self.engine_session.request_restart()
 
     def _request_stop(self, source: StopSource) -> None:
+        self._cancel_login_startup_for_click()
+        self.engine_session.request_stop(source)
+
+    def _cancel_login_startup_for_click(self) -> None:
         if self.engine_session.view.busy is None and self.__dict__.get("_login_startup_deadline") is not None:
             self._cancel_login_startup()
-        self.engine_session.request_stop(source)
 
     def start_route(self, interactive: bool) -> Route | bool:
         """The route a window Start opens, or the final answer when there is nothing to start."""

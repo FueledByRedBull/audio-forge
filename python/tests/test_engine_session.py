@@ -355,6 +355,9 @@ def test_a_restart_is_not_dropped_by_the_lockout_after_a_button_stop(rig):
     rig.running()
     rig.session.request_stop("button")
     rig.tasks.run()
+    rig.session.request_start("button")
+    rig.tasks.run()
+    assert not rig.engine.running  # the lockout is on: a button Start is dropped here
     rig.session.request_start("menu")
     rig.tasks.run()
     rig.session.request_restart()  # the clock has not moved: still inside the lockout
@@ -363,6 +366,14 @@ def test_a_restart_is_not_dropped_by_the_lockout_after_a_button_stop(rig):
 
     assert rig.engine.lifecycle() == ["stop", "start", "compensation", "stop", "start", "compensation"]
     assert rig.engine.running
+
+
+def test_a_restart_with_nothing_to_stop_only_starts(rig):
+    rig.session.request_restart()
+    rig.tasks.run()
+
+    assert rig.engine.lifecycle() == ["start", "compensation"] and rig.engine.running
+    assert rig.events(Stopped) == [] and len(rig.events(Started)) == 1
 
 
 def test_a_restart_while_a_call_is_out_is_ignored(rig):

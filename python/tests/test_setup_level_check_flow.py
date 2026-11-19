@@ -52,9 +52,9 @@ class _Session:
 @pytest.fixture
 def voice(real_main_window, monkeypatch):  # noqa: F811
     _Session.instances = []
-    monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.CaptureSession", _Session)
+    monkeypatch.setattr("mic_eq.ui.voice_setup_flow.CaptureSession", _Session)
     dialog = VoiceSetupDialog(parent=real_main_window)
-    monkeypatch.setattr(dialog, "_ensure_processor_ready", lambda: lend_audio(dialog))
+    monkeypatch.setattr(dialog.flow, "_ensure_processor_ready", lambda: lend_audio(dialog.flow))
     yield dialog
     dialog.reject()
     dialog.deleteLater()
@@ -62,81 +62,81 @@ def voice(real_main_window, monkeypatch):  # noqa: F811
 
 def _check(dialog: VoiceSetupDialog, take: np.ndarray) -> None:
     """Start the level check and finish it with ``take``."""
-    dialog._on_start_clicked()
-    dialog._capture_start_timer.stop()
-    dialog._on_recording_complete(take)
+    dialog.flow.start()
+    dialog.flow._capture_start_timer.stop()
+    dialog.flow.take_finished(take)
 
 
 def test_voice_setup_opens_with_a_three_second_level_check(voice) -> None:
-    voice._on_start_clicked()
+    voice.flow.start()
 
-    assert voice.setup_state == "level_check"
-    assert voice._recording_duration == 3.0
-    assert voice.view_model.shown["phaseText"] == "Checking your level"
-    assert "3 seconds" in voice.view_model.warning_text
-    assert voice.view_model.shown["step"] == 1 and STEPS[1] == "Level"
-    assert voice.view_model.shown["voiceShown"]  # the passage to speak from
-    assert not voice.view_model.shown["noiseShown"]
+    assert voice.flow.setup_state == "level_check"
+    assert voice.flow._recording_duration == 3.0
+    assert voice.flow.view_model.shown["phaseText"] == "Checking your level"
+    assert "3 seconds" in voice.flow.view_model.warning_text
+    assert voice.flow.view_model.shown["step"] == 1 and STEPS[1] == "Level"
+    assert voice.flow.view_model.shown["voiceShown"]  # the passage to speak from
+    assert not voice.flow.view_model.shown["noiseShown"]
 
-    voice._capture_start_timer.stop()
-    voice._begin_recording_capture()
-    voice.recording_timer.stop()
+    voice.flow._capture_start_timer.stop()
+    voice.flow._begin_recording_capture()
+    voice.flow.recording_timer.stop()
     assert _Session.instances[-1].started == [3.0]  # the check is captured like a take
 
 
 def test_a_good_level_goes_on_to_the_room_noise_with_one_click(voice) -> None:
     _check(voice, GOOD)
 
-    assert voice.setup_state == "level_result"
-    assert voice._level_verdict.code == "good"
-    assert "good" in voice.view_model.warning_text
-    assert f"{voice._level_verdict.peak_db:.1f} dB" in voice.view_model.warning_text
-    assert voice.view_model.shown["startText"] == "Record Room Noise"
-    assert not voice.view_model.shown["overrideShown"]
+    assert voice.flow.setup_state == "level_result"
+    assert voice.flow._level_verdict.code == "good"
+    assert "good" in voice.flow.view_model.warning_text
+    assert f"{voice.flow._level_verdict.peak_db:.1f} dB" in voice.flow.view_model.warning_text
+    assert voice.flow.view_model.shown["startText"] == "Record Room Noise"
+    assert not voice.flow.view_model.shown["overrideShown"]
 
-    voice._on_start_clicked()
-    voice._capture_start_timer.stop()
+    voice.flow.start()
+    voice.flow._capture_start_timer.stop()
 
-    assert voice.setup_state == "noise_recording"
-    assert voice._recording_duration == 2.0
+    assert voice.flow.setup_state == "noise_recording"
+    assert voice.flow._recording_duration == 2.0
 
 
 def test_a_hot_level_stops_before_any_take_and_can_be_overridden_by_name(voice) -> None:
     _check(voice, HOT)
 
-    assert voice.setup_state == "level_result"
-    assert voice.view_model.warning_text.startswith(HOT_MESSAGE)
-    assert "may clip" in voice.view_model.warning_text
-    assert voice.view_model.shown["startText"] == "Check Level Again"
-    assert voice.view_model.shown["overrideShown"]
-    assert voice.view_model.shown["overrideText"] == "Continue Despite Clipping Risk"
+    assert voice.flow.setup_state == "level_result"
+    assert voice.flow.view_model.warning_text.startswith(HOT_MESSAGE)
+    assert "may clip" in voice.flow.view_model.warning_text
+    assert voice.flow.view_model.shown["startText"] == "Check Level Again"
+    assert voice.flow.view_model.shown["overrideShown"]
+    assert voice.flow.view_model.shown["overrideText"] == "Continue Despite Clipping Risk"
 
-    voice._on_start_clicked()  # the primary action checks again; it never records
-    voice._capture_start_timer.stop()
-    assert voice.setup_state == "level_check"
+    voice.flow.start()  # the primary action checks again; it never records
+    voice.flow._capture_start_timer.stop()
+    assert voice.flow.setup_state == "level_check"
 
-    voice._on_recording_complete(HOT)
-    voice._continue_past_level()
-    voice._capture_start_timer.stop()
+    voice.flow.take_finished(HOT)
+    voice.flow._continue_past_level()
+    voice.flow._capture_start_timer.stop()
 
-    assert voice.setup_state == "noise_recording"
-    assert voice._level_override == "too_hot"
+    assert voice.flow.setup_state == "noise_recording"
+    assert voice.flow._level_override == "too_hot"
 
 
 def test_a_quiet_level_may_continue_with_a_warning(voice) -> None:
     _check(voice, QUIET)
 
-    assert voice.setup_state == "level_result"
-    text = voice.view_model.warning_text
+    assert voice.flow.setup_state == "level_result"
+    text = voice.flow.view_model.warning_text
     assert text.startswith("Your voice is quiet:") and "-40 dB or louder" in text
     assert "less reliable" in text
-    assert voice.view_model.shown["overrideText"] == "Continue Anyway"
+    assert voice.flow.view_model.shown["overrideText"] == "Continue Anyway"
 
-    voice._continue_past_level()
-    voice._capture_start_timer.stop()
+    voice.flow._continue_past_level()
+    voice.flow._capture_start_timer.stop()
 
-    assert voice.setup_state == "noise_recording"
-    assert voice._level_override == "too_quiet"
+    assert voice.flow.setup_state == "noise_recording"
+    assert voice.flow._level_override == "too_quiet"
 
 
 @pytest.mark.parametrize(
@@ -147,34 +147,34 @@ def test_a_quiet_level_may_continue_with_a_warning(voice) -> None:
 def test_nothing_heard_cannot_be_continued_past(voice, take, start) -> None:
     _check(voice, take)
 
-    assert voice.setup_state == "level_result"
-    assert voice.view_model.warning_text.startswith(start)
-    assert not voice.view_model.shown["overrideShown"]
-    assert voice.view_model.shown["startText"] == "Check Level Again"
+    assert voice.flow.setup_state == "level_result"
+    assert voice.flow.view_model.warning_text.startswith(start)
+    assert not voice.flow.view_model.shown["overrideShown"]
+    assert voice.flow.view_model.shown["startText"] == "Check Level Again"
 
 
 def test_a_failed_check_returns_to_the_start(voice) -> None:
-    voice._on_start_clicked()
-    voice._capture_start_timer.stop()
+    voice.flow.start()
+    voice.flow._capture_start_timer.stop()
 
-    voice._on_recording_failed("The microphone stopped sending sound.")
+    voice.flow._on_recording_failed("The microphone stopped sending sound.")
 
-    assert voice.setup_state == "idle"
-    assert voice.view_model.shown["startText"] == "Start Voice Setup"
-    assert voice.view_model.shown["startEnabled"]
-    assert not voice.view_model.shown["overrideShown"]
+    assert voice.flow.setup_state == "idle"
+    assert voice.flow.view_model.shown["startText"] == "Start Voice Setup"
+    assert voice.flow.view_model.shown["startEnabled"]
+    assert not voice.flow.view_model.shown["overrideShown"]
 
 
 def test_closing_during_the_check_releases_the_capture(voice) -> None:
-    voice._on_start_clicked()
-    voice._capture_start_timer.stop()
-    voice._begin_recording_capture()
+    voice.flow.start()
+    voice.flow._capture_start_timer.stop()
+    voice.flow._begin_recording_capture()
     session = _Session.instances[-1]
 
     voice.reject()
 
-    assert session.cleaned and voice.setup_state == "idle"
-    assert voice.recording_timer.isActive() is False
+    assert session.cleaned and voice.flow.setup_state == "idle"
+    assert voice.flow.recording_timer.isActive() is False
 
 
 def test_retaking_after_a_level_result_starts_over(voice, monkeypatch) -> None:
@@ -183,20 +183,20 @@ def test_retaking_after_a_level_result_starts_over(voice, monkeypatch) -> None:
     monkeypatch.setattr(QMessageBox, "question", lambda *_a, **_k: QMessageBox.StandardButton.Yes)
     _check(voice, HOT)
 
-    voice._on_retake_clicked()
+    voice.flow.retake()
 
-    assert voice.setup_state == "idle"
-    assert not voice.view_model.shown["overrideShown"]
-    assert voice._level_override is None
+    assert voice.flow.setup_state == "idle"
+    assert not voice.flow.view_model.shown["overrideShown"]
+    assert voice.flow._level_override is None
 
 
 def test_the_check_meter_speaks_the_same_words_as_the_verdict(voice) -> None:
-    voice._on_start_clicked()
-    voice._capture_start_timer.stop()
+    voice.flow.start()
+    voice.flow._capture_start_timer.stop()
 
-    voice._update_level(-20.0, -0.4)
+    voice.flow._update_level(-20.0, -0.4)
 
-    assert voice.view_model.warning_text == HOT_MESSAGE
+    assert voice.flow.view_model.warning_text == HOT_MESSAGE
 
 
 # --- Auto-EQ -----------------------------------------------------------------------------
@@ -314,15 +314,16 @@ def test_auto_eq_keeps_ownership_of_a_processor_it_started_for_the_check(auto_eq
 )
 def test_the_meter_names_the_window_peak_in_a_pause(request, fixture, update_method) -> None:
     dialog = request.getfixturevalue(fixture)
-    update = getattr(dialog, update_method)
-    dialog._on_start_clicked()
-    dialog._capture_start_timer.stop()
+    flow = dialog.flow if fixture == "voice" else dialog
+    update = getattr(flow, update_method)
+    (flow.start if fixture == "voice" else flow._on_start_clicked)()
+    flow._capture_start_timer.stop()
 
     update(-25.0, -7.0)  # a loud word
     for _ in range(14):
         update(-70.0, -34.8)  # the pause after it
 
-    shown = dialog.view_model.warning_text
+    shown = flow.view_model.warning_text
     assert shown == "The level is good: your voice peaks at -7.0 dB."
 
 
@@ -355,81 +356,81 @@ def _loud_room_noise() -> np.ndarray:
 
 def _record_room_noise(voice: VoiceSetupDialog, take: np.ndarray) -> None:
     _check(voice, QUIET)
-    voice._continue_past_level()
-    voice._capture_start_timer.stop()
-    assert voice.setup_state == "noise_recording"
-    finish_take(voice, take)
+    voice.flow._continue_past_level()
+    voice.flow._capture_start_timer.stop()
+    assert voice.flow.setup_state == "noise_recording"
+    finish_take(voice.flow, take)
 
 
 def test_retake_room_noise_starts_the_room_noise_take_and_keeps_the_level_choice(voice) -> None:
     _record_room_noise(voice, _loud_room_noise())
 
-    assert voice.setup_state == "idle"
-    assert voice.view_model.shown["startText"] == "Retake Room Noise"
-    text = voice.view_model.warning_text
+    assert voice.flow.setup_state == "idle"
+    assert voice.flow.view_model.shown["startText"] == "Retake Room Noise"
+    text = voice.flow.view_model.warning_text
     assert "A loud sound was picked up" in text
     assert "Record the room noise again" in text and "room is quiet" in text
     assert "play safe" not in text
     assert voice.parent().last_setup_result["outcome"] == "refused"
 
-    voice._on_start_clicked()
-    voice._capture_start_timer.stop()
+    voice.flow.start()
+    voice.flow._capture_start_timer.stop()
 
-    assert voice.setup_state == "noise_recording"
-    assert voice.view_model.shown["phaseText"] == "Capturing room noise"
-    assert voice._level_override == "too_quiet"
-    assert voice._recording_duration == 2.0
+    assert voice.flow.setup_state == "noise_recording"
+    assert voice.flow.view_model.shown["phaseText"] == "Capturing room noise"
+    assert voice.flow._level_override == "too_quiet"
+    assert voice.flow._recording_duration == 2.0
 
 
 def test_retaking_after_a_failed_room_noise_take_records_the_room_noise_too(voice) -> None:
     _check(voice, GOOD)
-    voice._on_start_clicked()
-    voice._capture_start_timer.stop()
+    voice.flow.start()
+    voice.flow._capture_start_timer.stop()
 
-    voice._on_recording_failed("The microphone stopped sending sound.")
+    voice.flow._on_recording_failed("The microphone stopped sending sound.")
 
-    assert voice.view_model.shown["startText"] == "Retake Room Noise"
-    voice._on_start_clicked()
-    voice._capture_start_timer.stop()
-    assert voice.setup_state == "noise_recording"
+    assert voice.flow.view_model.shown["startText"] == "Retake Room Noise"
+    voice.flow.start()
+    voice.flow._capture_start_timer.stop()
+    assert voice.flow.setup_state == "noise_recording"
 
 
 def test_a_click_in_the_room_noise_is_pointed_out_and_setup_can_go_on(voice) -> None:
     _record_room_noise(voice, _room_noise(click=True))
 
-    assert voice.setup_state == "noise_ready"
-    assert voice.view_model.shown["startEnabled"] and voice.view_model.shown["startText"] == "Record Voice"
-    text = voice.view_model.warning_text
+    assert voice.flow.setup_state == "noise_ready"
+    assert voice.flow.view_model.shown["startEnabled"] and voice.flow.view_model.shown["startText"] == "Record Voice"
+    text = voice.flow.view_model.warning_text
     assert "A click or bump was heard" in text and "Press Retake and record the room noise again" in text
     assert "read the passage aloud" in text and "10 seconds" in text
-    assert (voice.view_model.warning_state, voice.view_model.warning_strong) == ("warn", True)
+    assert (voice.flow.view_model.warning_state, voice.flow.view_model.warning_strong) == ("warn", True)
 
-    voice._on_start_clicked()
-    voice._capture_start_timer.stop()
-    assert voice.setup_state == "voice_recording"
+    voice.flow.start()
+    voice.flow._capture_start_timer.stop()
+    assert voice.flow.setup_state == "voice_recording"
 
 
 def test_a_clean_room_noise_take_says_nothing_about_clicks(voice) -> None:
     _record_room_noise(voice, _room_noise())
 
-    assert voice.setup_state == "noise_ready"
-    text = voice.view_model.warning_text
+    assert voice.flow.setup_state == "noise_ready"
+    text = voice.flow.view_model.warning_text
     assert "read the passage aloud" in text and "10 seconds" in text
     assert "click" not in text
-    assert (voice.view_model.warning_state, voice.view_model.warning_strong) == ("ok", True)
+    assert (voice.flow.view_model.warning_state, voice.flow.view_model.warning_strong) == ("ok", True)
 
 
 def test_the_live_message_is_not_restyled_while_it_stays_the_same(voice) -> None:
     styles: list[str] = []
-    voice.view_model.statusChanged.connect(lambda: styles.append(voice.view_model.warning_state))
+    voice.flow.view_model.statusChanged.connect(lambda: styles.append(voice.flow.view_model.warning_state))
 
-    voice._show_live_message("Room is quiet", "ok")
-    voice._show_live_message("Room is quiet", "ok")
-    voice._show_live_message("Room is quiet", "ok")
+    voice.flow._show_live_message("Room is quiet", "ok")
+    voice.flow._show_live_message("Room is quiet", "ok")
+    voice.flow._show_live_message("Room is quiet", "ok")
     assert len(styles) == 1
 
-    voice._show_live_message("Room is noisy", "warn")
-    assert len(styles) == 2 and voice.view_model.warning_text == "Room is noisy"
+    voice.flow._show_live_message("Room is noisy", "warn")
+    assert len(styles) == 2 and voice.flow.view_model.warning_text == "Room is noisy"
 
 
 def test_auto_eq_logs_the_assumed_rate_when_the_processor_rate_cannot_be_read(

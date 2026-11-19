@@ -9,7 +9,7 @@ import numpy as np
 
 from mic_eq.analysis.cancellation import AnalysisCancelled
 from mic_eq.analysis.voice_setup import VoiceSetupRequest
-from mic_eq.ui.voice_setup_dialog import VoiceSetupWorker
+from mic_eq.ui.voice_setup_flow import VoiceSetupWorker
 
 
 def _worker() -> VoiceSetupWorker:
@@ -41,7 +41,7 @@ def test_analysis_worker_forwards_backend_progress(qapp, monkeypatch):
         return {"status": "ok"}
 
     monkeypatch.setattr(
-        "mic_eq.ui.voice_setup_dialog.analyze_voice_setup", fake_analysis
+        "mic_eq.ui.voice_setup_flow.analyze_voice_setup", fake_analysis
     )
     worker = _worker()
     worker.step_progress.connect(lambda label, value: progress.append((label, value)))
@@ -70,7 +70,7 @@ def test_analysis_worker_cancellation_still_stops_backend(qapp, monkeypatch):
         raise AnalysisCancelled("sentinel")
 
     monkeypatch.setattr(
-        "mic_eq.ui.voice_setup_dialog.analyze_voice_setup", blocking_analysis
+        "mic_eq.ui.voice_setup_flow.analyze_voice_setup", blocking_analysis
     )
     worker = _worker()
     worker.result_ready.connect(results.append)

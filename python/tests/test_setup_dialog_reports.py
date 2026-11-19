@@ -79,12 +79,12 @@ def test_an_incomplete_voice_result_is_reported_as_refused(real_main_window) -> 
     result = _voice_setup_result(real_main_window, dialog)
     result["eq_settings"] = {"band_freqs": [1000.0]}
     with _dismissed(dialog):
-        dialog._on_analysis_complete(result)
+        dialog.flow.analysis_finished(result)
 
         assert [r["outcome"] for r in records] == ["refused"]
         _check_record(records[0], "voice_setup")
         assert records[0]["reason_codes"] == ["incomplete_result"]
-        assert records[0]["messages"] == [dialog.view_model.warning_text]
+        assert records[0]["messages"] == [dialog.flow.view_model.warning_text]
 
 
 def test_an_advisory_voice_result_is_reported_with_its_reasons(real_main_window) -> None:
@@ -98,7 +98,7 @@ def test_an_advisory_voice_result_is_reported_with_its_reasons(real_main_window)
     ]
     result["diagnostics"]["noise_referenced_snr_db"] = 12.5
     with _dismissed(dialog):
-        dialog._on_analysis_complete(result)
+        dialog.flow.analysis_finished(result)
 
         assert [r["outcome"] for r in records] == ["advisory"]
         _check_record(records[0], "voice_setup")
@@ -121,7 +121,7 @@ def test_a_weak_capture_reports_which_check_failed(real_main_window, cause, code
         {"weak_capture": True, "apply_recommended": False, "noise_referenced_snr_db": 12.5, **cause}
     )
     with _dismissed(dialog):
-        dialog._on_analysis_complete(result)
+        dialog.flow.analysis_finished(result)
 
         assert code in records[0]["reason_codes"]
 
@@ -137,8 +137,8 @@ def test_a_verified_voice_setup_is_reported_with_the_checked_numbers(
     monkeypatch.setattr(real_main_window, "_prompt_save_current_preset", lambda **_k: None)
     _comparison_dialog(monkeypatch, {}, keep=True)
     with _dismissed(dialog):
-        dialog._on_verification_complete(_verdict_with_dulling_advisory("accept", advised=False))
-        dialog._on_start_clicked()
+        dialog.flow.verification_finished(_verdict_with_dulling_advisory("accept", advised=False))
+        dialog.flow.start()
 
         verified = [r for r in records if r["outcome"] == "verified"]
         assert len(verified) == 1
@@ -151,7 +151,7 @@ def test_a_rolled_back_verification_is_reported_with_its_codes(real_main_window)
     records = _voice(real_main_window)
     dialog, _speech = _verifying_dialog(real_main_window)
     with _dismissed(dialog):
-        dialog._on_verification_complete(_verdict_with_dulling_advisory("rollback", advised=False))
+        dialog.flow.verification_finished(_verdict_with_dulling_advisory("rollback", advised=False))
 
         assert records[-1]["outcome"] == "rolled_back"
         _check_record(records[-1], "voice_setup")
@@ -165,8 +165,8 @@ def test_a_declined_final_comparison_is_reported_as_rolled_back(
     dialog, _speech = _verifying_dialog(real_main_window)
     _comparison_dialog(monkeypatch, {}, keep=False)
     with _dismissed(dialog):
-        dialog._on_verification_complete(_verdict_with_dulling_advisory("accept", advised=False))
-        dialog._compare_recording()
+        dialog.flow.verification_finished(_verdict_with_dulling_advisory("accept", advised=False))
+        dialog.flow.compare()
 
         assert records[-1]["outcome"] == "rolled_back"
         assert records[-1]["reason_codes"] == ["final_comparison_declined"]
@@ -179,15 +179,15 @@ def test_a_final_comparison_that_cannot_open_is_not_reported_as_declined(
     dialog, _speech = _verifying_dialog(real_main_window)
     _comparison_dialog(monkeypatch, {}, load_error="no such file")
     with _dismissed(dialog):
-        dialog._on_verification_complete(_verdict_with_dulling_advisory("accept", advised=False))
-        dialog._compare_recording()
+        dialog.flow.verification_finished(_verdict_with_dulling_advisory("accept", advised=False))
+        dialog.flow.compare()
 
-        assert dialog.view_model.shown["phaseText"] == "Final comparison could not open; previous settings put back"
-        warning = dialog.view_model.warning_text
+        assert dialog.flow.view_model.shown["phaseText"] == "Final comparison could not open; previous settings put back"
+        warning = dialog.flow.view_model.warning_text
         assert warning.startswith("The final comparison could not open, so your old settings were kept.")
         assert "Your old settings are active." in warning
-        assert "declined" not in dialog.view_model.shown["phaseText"] and "You kept" not in warning
-        assert dialog.setup_state == "completed" and dialog._final_comparison_pending is False
+        assert "declined" not in dialog.flow.view_model.shown["phaseText"] and "You kept" not in warning
+        assert dialog.flow.setup_state == "completed" and dialog.flow._final_comparison_pending is False
         assert records[-1]["outcome"] == "rolled_back"
         assert records[-1]["reason_codes"] == ["final_comparison_unavailable"]
         assert records[-1]["messages"] == [warning]
@@ -197,10 +197,10 @@ def test_failures_are_reported_as_failed(real_main_window) -> None:
     records = _voice(real_main_window)
     dialog, _speech = _verifying_dialog(real_main_window)
     with _dismissed(dialog):
-        dialog._on_verification_failed("The second recording is gone.")
-        dialog._on_analysis_failed("Setup lost track of its recordings.")
-        dialog.setup_state = "noise_recording"
-        dialog._on_recording_failed("The microphone stopped sending sound.")
+        dialog.flow._on_verification_failed("The second recording is gone.")
+        dialog.flow._on_analysis_failed("Setup lost track of its recordings.")
+        dialog.flow.setup_state = "noise_recording"
+        dialog.flow._on_recording_failed("The microphone stopped sending sound.")
 
         assert [r["outcome"] for r in records] == ["failed", "failed", "failed"]
         assert [r["reason_codes"] for r in records] == [
@@ -218,7 +218,7 @@ def test_closing_after_a_result_is_cancelled_and_before_one_is_silent(real_main_
     assert records == []
 
     dialog, _speech = _review_dialog(real_main_window)
-    dialog._on_analysis_complete(_voice_setup_result(real_main_window, dialog))
+    dialog.flow.analysis_finished(_voice_setup_result(real_main_window, dialog))
     dialog.reject()
     dialog.deleteLater()
 
@@ -230,7 +230,7 @@ def test_closing_after_a_result_is_cancelled_and_before_one_is_silent(real_main_
 
 
 def _issue_lines(dialog: VoiceSetupDialog) -> list[str]:
-    return dialog.view_model.issue_lines
+    return dialog.flow.view_model.issue_lines
 
 
 def test_the_review_shows_each_weak_capture_clause_as_its_own_line(real_main_window) -> None:
@@ -248,7 +248,7 @@ def test_the_review_shows_each_weak_capture_clause_as_its_own_line(real_main_win
         },
     )
     with _dismissed(dialog):
-        dialog._on_analysis_complete(result)
+        dialog.flow.analysis_finished(result)
 
         lines = _issue_lines(dialog)
         assert len(lines) == 4
@@ -264,7 +264,7 @@ def test_a_reliable_review_has_no_capture_lines_and_a_new_result_replaces_old_on
     weak = _voice_setup_result(real_main_window, dialog)
     weak["diagnostics"].update(weak_capture=True, vad_active_duration_s=1.0)
     with _dismissed(dialog):
-        dialog._show_summary(weak)
+        dialog.flow.show_summary(weak)
         assert len(_issue_lines(dialog)) == 1
 
         # Each line is read out as its own sentence.
@@ -273,7 +273,7 @@ def test_a_reliable_review_has_no_capture_lines_and_a_new_result_replaces_old_on
             spoken = " ".join((scene.name(chip), scene.description(chip)))
             assert _issue_lines(dialog)[0] in spoken
 
-        dialog._show_summary(_voice_setup_result(real_main_window, dialog))
+        dialog.flow.show_summary(_voice_setup_result(real_main_window, dialog))
         assert _issue_lines(dialog) == []
 
 
@@ -283,12 +283,12 @@ def test_the_review_calls_the_score_a_capture_quality_never_confidence(real_main
     with _dismissed(dialog):
         for apply_recommended, weak in ((True, False), (False, False), (False, True)):
             result["diagnostics"].update(apply_recommended=apply_recommended, weak_capture=weak)
-            dialog._show_summary(result)
-            text = dialog.view_model.chip("overall")["text"] + dialog.view_model.chip("overall")["tip"]
+            dialog.flow.show_summary(result)
+            text = dialog.flow.view_model.chip("overall")["text"] + dialog.flow.view_model.chip("overall")["tip"]
             assert "onfidence" not in text
             assert text.startswith("Weak capture" if weak else "Good capture")
-        assert "92%" in dialog.view_model.chip("overall")["tip"]
-        assert "92%" not in dialog.view_model.chip("overall")["text"]
+        assert "92%" in dialog.flow.view_model.chip("overall")["tip"]
+        assert "92%" not in dialog.flow.view_model.chip("overall")["text"]
 
 
 def test_the_review_says_why_noise_suppression_and_the_gate_were_not_tuned(real_main_window) -> None:
@@ -299,14 +299,14 @@ def test_the_review_says_why_noise_suppression_and_the_gate_were_not_tuned(real_
         result["diagnostics"]["joint_tuning"] = {
             "status": "withheld", "withheld_for": "questionable_noise_reference", "reasons": [],
         }
-        dialog._show_summary(result)
-        assert dialog.view_model.chip("overall")["text"].endswith(
+        dialog.flow.show_summary(result)
+        assert dialog.flow.view_model.chip("overall")["text"].endswith(
             "\nNoise suppression and the gate were not tuned because the room-noise "
             "recording was not steady. Your current settings are kept."
         )
         result["diagnostics"]["joint_tuning"] = {"apply_recommended": True, "reasons": []}
-        dialog._show_summary(result)
-        assert dialog.view_model.chip("overall")["text"].endswith(
+        dialog.flow.show_summary(result)
+        assert dialog.flow.view_model.chip("overall")["text"].endswith(
             "\nNew noise suppression and gate settings passed the checks."
         )
 
@@ -316,17 +316,17 @@ def test_a_suggestions_only_result_makes_apply_the_secondary_action(real_main_wi
     result = _voice_setup_result(real_main_window, dialog)
     result["diagnostics"]["apply_recommended"] = False
     with _dismissed(dialog):
-        dialog._on_analysis_complete(result)
+        dialog.flow.analysis_finished(result)
 
-        assert dialog.view_model.shown["phaseText"] == "Suggestions only: not every check passed"
-        assert dialog.view_model.shown["startText"] == "Apply Suggestions"
-        assert dialog.view_model.shown["startLook"] == "plain"
+        assert dialog.flow.view_model.shown["phaseText"] == "Suggestions only: not every check passed"
+        assert dialog.flow.view_model.shown["startText"] == "Apply Suggestions"
+        assert dialog.flow.view_model.shown["startLook"] == "plain"
 
-        dialog._reset_setup_ui()
+        dialog.flow._reset_setup_ui()
         _bind_capture_context(dialog, *_short_voice_captures(48_000))
-        dialog._on_analysis_complete(_voice_setup_result(real_main_window, dialog))
-        assert dialog.view_model.shown["phaseText"] == "Recommendations ready"
-        assert dialog.view_model.shown["startLook"] == "primary"
+        dialog.flow.analysis_finished(_voice_setup_result(real_main_window, dialog))
+        assert dialog.flow.view_model.shown["phaseText"] == "Recommendations ready"
+        assert dialog.flow.view_model.shown["startLook"] == "primary"
 
 
 # --- Auto-EQ -----------------------------------------------------------------------------
@@ -442,31 +442,31 @@ def test_the_comparison_keeps_the_original_eq_as_now_after_apply(real_main_windo
     result = _voice_setup_result(real_main_window, dialog)
     result["eq_settings"] = _legacy_eq(real_main_window, [3.0] + [0.0] * 9)
     with _dismissed(dialog):
-        dialog._on_analysis_complete(result)
-        assert dialog.view_model.shown["eqCompareShown"]
-        before = dialog.eq_compare.largest_change()
+        dialog.flow.analysis_finished(result)
+        assert dialog.flow.view_model.shown["eqCompareShown"]
+        before = dialog.flow.eq_compare.largest_change()
         assert before[0] == pytest.approx(3.0, abs=1.0)
-        assert dialog.eq_compare.description().startswith("Largest change: +")
+        assert dialog.flow.eq_compare.description().startswith("Largest change: +")
 
-        dialog._apply_setup()
-        assert dialog.setup_state == "verification_ready"
+        dialog.flow.apply()
+        assert dialog.flow.setup_state == "verification_ready"
 
-        assert dialog.eq_compare.largest_change() == pytest.approx(before)
-        assert dialog.view_model.shown["eqCompareShown"]
+        assert dialog.flow.eq_compare.largest_change() == pytest.approx(before)
+        assert dialog.flow.view_model.shown["eqCompareShown"]
 
 
 def test_a_review_without_a_tone_result_draws_no_comparison(real_main_window) -> None:
     dialog, _speech = _review_dialog(real_main_window)
     result = _voice_setup_result(real_main_window, dialog)
     with _dismissed(dialog):
-        dialog._show_summary(result)
-        assert dialog.view_model.shown["eqCompareShown"]
+        dialog.flow.show_summary(result)
+        assert dialog.flow.view_model.shown["eqCompareShown"]
 
         result["eq_settings"] = None
         result["eq_error"] = "Recording too unclear. Please try again."
-        dialog._show_summary(result)
+        dialog.flow.show_summary(result)
 
-        assert not dialog.view_model.shown["eqCompareShown"]
+        assert not dialog.flow.view_model.shown["eqCompareShown"]
 
 
 def test_the_auto_eq_result_draws_the_proposed_eq_only_when_it_offers_one(qapp, monkeypatch) -> None:
@@ -487,7 +487,7 @@ def test_the_auto_eq_result_draws_the_proposed_eq_only_when_it_offers_one(qapp, 
 
 
 def _current_step(dialog) -> int:
-    return dialog.view_model.shown["step"]
+    return dialog.flow.view_model.shown["step"]
 
 
 def test_a_rejected_room_noise_take_stays_on_its_own_step_with_a_clean_meter(
@@ -495,43 +495,43 @@ def test_a_rejected_room_noise_take_stays_on_its_own_step_with_a_clean_meter(
 ) -> None:
     dialog = VoiceSetupDialog(parent=real_main_window, configuration=real_main_window.configuration)
     with _dismissed(dialog):
-        dialog.setup_state = "noise_recording"
-        dialog.level_meter.set_levels(-12.0, -0.2)
-        dialog.view_model.set_page(timeText="Time remaining: 1s")
+        dialog.flow.setup_state = "noise_recording"
+        dialog.flow.level_meter.set_levels(-12.0, -0.2)
+        dialog.flow.view_model.set_page(timeText="Time remaining: 1s")
 
-        dialog._on_recording_complete(np.full(48_000, np.nan, dtype=np.float32))
+        dialog.flow.take_finished(np.full(48_000, np.nan, dtype=np.float32))
 
-        assert dialog.setup_state == "idle"
+        assert dialog.flow.setup_state == "idle"
         assert STEPS[_current_step(dialog)] == "Room noise"
-        assert dialog.view_model.shown["noiseShown"] and not dialog.view_model.shown["targetShown"]
-        assert dialog.view_model.shown["recordingTitle"] == "Recording"
-        assert dialog.level_meter.measurement_available is False
-        assert dialog.level_meter.is_clipping is False
-        assert dialog.view_model.shown["timeText"] == "Ready to record again"
-        assert "Time remaining" not in dialog.view_model.shown["timeText"]
+        assert dialog.flow.view_model.shown["noiseShown"] and not dialog.flow.view_model.shown["targetShown"]
+        assert dialog.flow.view_model.shown["recordingTitle"] == "Recording"
+        assert dialog.flow.level_meter.measurement_available is False
+        assert dialog.flow.level_meter.is_clipping is False
+        assert dialog.flow.view_model.shown["timeText"] == "Ready to record again"
+        assert "Time remaining" not in dialog.flow.view_model.shown["timeText"]
 
 
 def test_a_failed_level_check_stays_on_the_level_step(real_main_window) -> None:
     dialog = VoiceSetupDialog(parent=real_main_window, configuration=real_main_window.configuration)
     with _dismissed(dialog):
-        dialog.setup_state = "level_check"
-        dialog._on_recording_failed("The microphone stopped sending sound.")
+        dialog.flow.setup_state = "level_check"
+        dialog.flow._on_recording_failed("The microphone stopped sending sound.")
 
         assert STEPS[_current_step(dialog)] == "Level"
 
-        dialog._reset_setup_ui()
+        dialog.flow._reset_setup_ui()
         assert STEPS[_current_step(dialog)] == "Target"
 
 
 def test_compare_belongs_to_the_review_alone(real_main_window) -> None:
     dialog, _speech = _review_dialog(real_main_window)
     with _dismissed(dialog):
-        assert not dialog.view_model.shown["compareShown"]
+        assert not dialog.flow.view_model.shown["compareShown"]
 
-        dialog._on_analysis_complete(_voice_setup_result(real_main_window, dialog))
+        dialog.flow.analysis_finished(_voice_setup_result(real_main_window, dialog))
         assert STEPS[_current_step(dialog)] == "Review"
-        assert dialog.view_model.shown["recordingTitle"] == "Review"
-        assert dialog.view_model.shown["compareShown"] and dialog.view_model.shown["compareEnabled"]
+        assert dialog.flow.view_model.shown["recordingTitle"] == "Review"
+        assert dialog.flow.view_model.shown["compareShown"] and dialog.flow.view_model.shown["compareEnabled"]
 
 
 def test_the_auto_eq_review_is_titled_review_and_shows_compare_only_there(qapp, monkeypatch) -> None:
@@ -563,7 +563,7 @@ def test_voice_closing_after_an_advisory_result_keeps_the_advisory_record(real_m
     result = _voice_setup_result(real_main_window, dialog)
     result["diagnostics"]["apply_recommended"] = False
     result["diagnostics"]["uncertainty_reasons"] = ["too little VAD-active speech"]
-    dialog._on_analysis_complete(result)
+    dialog.flow.analysis_finished(result)
 
     _ended(dialog)
 
@@ -575,9 +575,9 @@ def test_voice_cancelling_after_a_refused_result_keeps_the_refused_record(real_m
     dialog, _speech = _review_dialog(real_main_window)
     result = _voice_setup_result(real_main_window, dialog)
     result["eq_settings"] = {"band_freqs": [1000.0]}
-    dialog._on_analysis_complete(result)
+    dialog.flow.analysis_finished(result)
 
-    dialog._on_cancel_clicked()
+    dialog.flow._on_cancel_clicked()
     dialog.deleteLater()
 
     assert [r["outcome"] for r in records] == ["refused"]
@@ -588,9 +588,9 @@ def test_voice_closing_after_a_failure_or_a_rollback_keeps_that_record(real_main
         records = _voice(real_main_window)
         dialog, _speech = _verifying_dialog(real_main_window)
         if outcome == "failed":
-            dialog._on_verification_failed("The second recording is gone.")
+            dialog.flow._on_verification_failed("The second recording is gone.")
         else:
-            dialog._on_verification_complete(_verdict_with_dulling_advisory("rollback", advised=False))
+            dialog.flow.verification_finished(_verdict_with_dulling_advisory("rollback", advised=False))
 
         _ended(dialog)
 
@@ -602,11 +602,11 @@ def test_voice_a_retake_starts_a_new_run_that_can_be_cancelled(real_main_window)
     dialog, _speech = _review_dialog(real_main_window)
     result = _voice_setup_result(real_main_window, dialog)
     result["diagnostics"]["apply_recommended"] = False
-    dialog._on_analysis_complete(result)
+    dialog.flow.analysis_finished(result)
 
-    dialog._reset_setup_ui()
+    dialog.flow._reset_setup_ui()
     _bind_capture_context(dialog, *_short_voice_captures(48_000))
-    dialog._on_analysis_complete(_voice_setup_result(real_main_window, dialog))
+    dialog.flow.analysis_finished(_voice_setup_result(real_main_window, dialog))
     _ended(dialog)
 
     assert [r["outcome"] for r in records] == ["advisory", "cancelled"]
@@ -663,9 +663,9 @@ def test_an_advisory_result_says_each_capture_problem_once(real_main_window) -> 
         ],
     )
     try:
-        dialog._on_analysis_complete(result)
+        dialog.flow.analysis_finished(result)
 
-        warning = dialog.view_model.warning_text
+        warning = dialog.flow.view_model.warning_text
         assert "These settings did not pass every check, so treat them as suggestions" in warning
         assert "final safety check on your recording did not pass" in warning
         assert warning.endswith("suggestions only.")
@@ -688,9 +688,9 @@ def test_an_advisory_result_whose_only_causes_are_capture_problems_keeps_just_th
         uncertainty_reasons=["too little VAD-active speech"],
     )
     try:
-        dialog._on_analysis_complete(result)
+        dialog.flow.analysis_finished(result)
 
-        warning = dialog.view_model.warning_text
+        warning = dialog.flow.view_model.warning_text
         assert "These settings did not pass every check, so treat them as suggestions" in warning
         assert "final safety check" not in warning
     finally:
@@ -719,10 +719,10 @@ def test_the_voice_review_says_when_the_eq_now_is_not_in_use(real_main_window, m
     result = _voice_setup_result(real_main_window, dialog)
     result["eq_settings"] = _legacy_eq(real_main_window, [3.0] + [0.0] * 9)
     try:
-        dialog._on_analysis_complete(result)
+        dialog.flow.analysis_finished(result)
 
-        assert dialog.eq_compare.lines()[0][0] == "Now (not used in Bypass)"
-        assert "does not use" in dialog.eq_compare.description()
+        assert dialog.flow.eq_compare.lines()[0][0] == "Now (not used in Bypass)"
+        assert "does not use" in dialog.flow.eq_compare.description()
     finally:
         _ended(dialog)
 
@@ -753,12 +753,12 @@ def test_a_comparison_that_cannot_be_drawn_is_logged_and_left_out(
     def refuse(*_args, **_kwargs):
         raise RuntimeError("no response")
 
-    monkeypatch.setattr(dialog.eq_compare, "set_curves", refuse)
+    monkeypatch.setattr(dialog.flow.eq_compare, "set_curves", refuse)
     try:
-        with caplog.at_level(logging.WARNING, logger="mic_eq.ui.voice_setup_dialog"):
-            dialog._show_summary(result)
+        with caplog.at_level(logging.WARNING, logger="mic_eq.ui.voice_setup_flow"):
+            dialog.flow.show_summary(result)
 
-        assert not dialog.view_model.shown["eqCompareShown"]
+        assert not dialog.flow.view_model.shown["eqCompareShown"]
         assert any(
             record.levelno == logging.WARNING and "EQ comparison" in record.getMessage()
             for record in caplog.records
@@ -775,8 +775,8 @@ def _say_yes(monkeypatch) -> None:
 
 
 def _refuse_voice_take(dialog: VoiceSetupDialog) -> None:
-    dialog.setup_state = "noise_recording"
-    dialog._on_recording_complete(np.full(48_000, np.nan, dtype=np.float32))
+    dialog.flow.setup_state = "noise_recording"
+    dialog.flow.take_finished(np.full(48_000, np.nan, dtype=np.float32))
 
 
 def _advisory_voice_result(window, dialog) -> dict[str, Any]:
@@ -790,16 +790,16 @@ def test_voice_setup_reports_a_refused_verification_take_after_an_advisory_resul
 ) -> None:
     records = _voice(real_main_window)
     dialog, _speech = _review_dialog(real_main_window)
-    dialog._on_analysis_complete(_advisory_voice_result(real_main_window, dialog))
+    dialog.flow.analysis_finished(_advisory_voice_result(real_main_window, dialog))
     with _dismissed(dialog):
-        dialog.setup_state = "verification_recording"
-        dialog._reject_capture("The second take was not usable.")
+        dialog.flow.setup_state = "verification_recording"
+        dialog.flow._reject_capture("The second take was not usable.")
 
         assert [(r["outcome"], r["reason_codes"]) for r in records] == [
             ("advisory", records[0]["reason_codes"]),
             ("refused", ["recording_rejected"]),
         ]
-        assert dialog.setup_state == "completed"
+        assert dialog.flow.setup_state == "completed"
 
 
 def test_voice_setup_reports_a_refused_take_when_nothing_better_exists(
@@ -809,9 +809,9 @@ def test_voice_setup_reports_a_refused_take_when_nothing_better_exists(
     _say_yes(monkeypatch)
     dialog, _speech = _review_dialog(real_main_window)
     # A result still waiting to be applied is dropped by a retake without being reported.
-    dialog._on_analysis_complete(_voice_setup_result(real_main_window, dialog))
+    dialog.flow.analysis_finished(_voice_setup_result(real_main_window, dialog))
     try:
-        dialog._on_retake_clicked()
+        dialog.flow.retake()
         _refuse_voice_take(dialog)
         dialog.reject()
 
@@ -828,15 +828,15 @@ def test_a_new_result_after_a_refused_retake_is_reported_and_a_later_refusal_is_
     records = _voice(real_main_window)
     _say_yes(monkeypatch)
     dialog, _speech = _review_dialog(real_main_window)
-    dialog._on_analysis_complete(_advisory_voice_result(real_main_window, dialog))
+    dialog.flow.analysis_finished(_advisory_voice_result(real_main_window, dialog))
     with _dismissed(dialog):
-        dialog._on_retake_clicked()
+        dialog.flow.retake()
         _refuse_voice_take(dialog)
         _bind_capture_context(dialog, *_short_voice_captures(48_000))
         second = _voice_setup_result(real_main_window, dialog)
         second["eq_settings"] = {"band_freqs": [1000.0]}
-        dialog._on_analysis_complete(second)
-        dialog._on_retake_clicked()
+        dialog.flow.analysis_finished(second)
+        dialog.flow.retake()
         _refuse_voice_take(dialog)
         dialog.reject()  # the retake dropped the result, so closing adds no "cancelled"
 

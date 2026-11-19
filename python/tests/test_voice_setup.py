@@ -36,7 +36,7 @@ from mic_eq.analysis.auto_eq import get_target_curve, simulate_candidate_chain
 from mic_eq.analysis.cancellation import AnalysisCancelled
 from capture_helpers import finish_take
 from mic_eq.config import TARGET_CURVES, Preset
-from mic_eq.ui.voice_setup_dialog import (
+from mic_eq.ui.voice_setup_flow import (
     VoiceSetupVerificationWorker,
     _candidate_settings_error,
 )
@@ -1718,7 +1718,7 @@ def test_verification_worker_cancellation_does_not_emit_result(qapp, monkeypatch
         raise AnalysisCancelled("sentinel")
 
     monkeypatch.setattr(
-        "mic_eq.ui.voice_setup_dialog.validate_voice_setup_verification",
+        "mic_eq.ui.voice_setup_flow.validate_voice_setup_verification",
         blocking_validation,
     )
     worker = VoiceSetupVerificationWorker(
@@ -1750,7 +1750,7 @@ def test_verification_worker_reports_failure(monkeypatch):
         raise RuntimeError("sentinel")
 
     monkeypatch.setattr(
-        "mic_eq.ui.voice_setup_dialog.validate_voice_setup_verification",
+        "mic_eq.ui.voice_setup_flow.validate_voice_setup_verification",
         failing_validation,
     )
     worker = VoiceSetupVerificationWorker(
@@ -1794,7 +1794,7 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(
     dialog = VoiceSetupDialog(parent=owner, configuration=owner.configuration)
     limiter = {"enabled": False, "ceiling_db": -2.5, "release_ms": 175.0,
                "careful_output_enabled": False}
-    dialog.setup_result = {
+    dialog.flow.setup_result = {
         "_candidate": _full_voice_candidate_metadata("test-route"),
         "diagnostics": {"apply_recommended": True},
         "gate_settings": owner.gate_state.get_settings(),
@@ -1806,38 +1806,38 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(
         "eq_settings": {"band_freqs": list(np.geomspace(60.0, 16_000.0, 10)),
                         "band_gains": [1.0] * 10, "band_qs": [1.41] * 10},
     }
-    dialog._candidate_metadata = deepcopy(dialog.setup_result["_candidate"])
-    dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
-    dialog._workers.generation = 1
+    dialog.flow._candidate_metadata = deepcopy(dialog.flow.setup_result["_candidate"])
+    dialog.flow.noise_audio = dialog.flow.voice_audio = np.zeros(16, dtype=np.float32)
+    dialog.flow._workers.generation = 1
     with monkeypatch.context() as patch:
-        patch.setattr(dialog, "_show_summary", lambda _result: None)
-        dialog._on_analysis_complete(dialog.setup_result)
+        patch.setattr(dialog.flow, "show_summary", lambda _result: None)
+        dialog.flow.analysis_finished(dialog.flow.setup_result)
     monkeypatch.setattr(
         "mic_eq.ui.voice_setup_dialog.QMessageBox.critical",
         Mock(side_effect=AssertionError("unexpected voice setup error dialog")),
     )
     assert not scene_item(dialog, "curvePicker").isEnabled()
     assert not scene_item(dialog, "dynamicsPicker").isEnabled()
-    dialog.view_model.pickCurve(list(TARGET_CURVES).index("podcast"))
-    dialog.view_model.pickDynamics(DYNAMICS_KEYS.index("dense"))
-    dialog.view_model.setNumber("lufs", -14.0)
-    dialog._apply_setup()
-    assert dialog.setup_state == "verification_ready"
-    assert dialog.setup_result["_candidate"]["target"] == {
+    dialog.flow.view_model.pickCurve(list(TARGET_CURVES).index("podcast"))
+    dialog.flow.view_model.pickDynamics(DYNAMICS_KEYS.index("dense"))
+    dialog.flow.view_model.setNumber("lufs", -14.0)
+    dialog.flow.apply()
+    assert dialog.flow.setup_state == "verification_ready"
+    assert dialog.flow.setup_result["_candidate"]["target"] == {
         "curve": "broadcast",
         "target_lufs": -18.0,
         "dynamics_intensity": "balanced",
     }
-    assert dialog.setup_result["_candidate"]["options"]["dynamics_intensity"] == (
+    assert dialog.flow.setup_result["_candidate"]["options"]["dynamics_intensity"] == (
         "balanced"
     )
-    assert dialog.setup_result["compressor_settings"]["threshold_db"] == -21.123
-    assert dialog.setup_result["compressor_settings"]["ratio"] == 2.3476
-    assert dialog.setup_result["compressor_settings"]["target_p95_reduction_db"] == 3.5
-    assert dialog.setup_result["deesser_settings"]["auto_amount"] == 0.3476
-    assert dialog.setup_result["limiter_settings"] == limiter
+    assert dialog.flow.setup_result["compressor_settings"]["threshold_db"] == -21.123
+    assert dialog.flow.setup_result["compressor_settings"]["ratio"] == 2.3476
+    assert dialog.flow.setup_result["compressor_settings"]["target_p95_reduction_db"] == 3.5
+    assert dialog.flow.setup_result["deesser_settings"]["auto_amount"] == 0.3476
+    assert dialog.flow.setup_result["limiter_settings"] == limiter
     assert owner.eq_state.get_settings()["enabled"] is True
-    dialog._on_verification_failed("sentinel failure")
+    dialog.flow._on_verification_failed("sentinel failure")
     assert owner.compressor_state.get_settings(include_calibration=True) == old_compressor
     assert owner.limiter_state.get_settings() == old_limiter
     assert owner.eq_state.get_settings() == old_eq
@@ -1847,7 +1847,7 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(
         patch.setattr("mic_eq.ui.voice_setup_dialog.QMessageBox.critical", show_error)
         patch.setattr(owner.eq_state, "set_settings",
                       Mock(side_effect=RuntimeError("sentinel apply failure")))
-        dialog._apply_setup()
+        dialog.flow.apply()
         assert show_error.call_count == 1
     assert owner.compressor_state.get_settings(include_calibration=True) == old_compressor
     assert owner.limiter_state.get_settings() == old_limiter
@@ -1859,12 +1859,12 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(
         while not cancel_check():
             time.sleep(0.005)
         raise AnalysisCancelled("closed")
-    monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.validate_voice_setup_verification",
+    monkeypatch.setattr("mic_eq.ui.voice_setup_flow.validate_voice_setup_verification",
                         blocked_verification)
-    dialog._apply_setup()
-    dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
-    dialog._complete_verification(np.zeros(16, dtype=np.float32))
-    worker = dialog._workers.current
+    dialog.flow.apply()
+    dialog.flow.noise_audio = dialog.flow.voice_audio = np.zeros(16, dtype=np.float32)
+    dialog.flow._complete_verification(np.zeros(16, dtype=np.float32))
+    worker = dialog.flow._workers.current
     assert worker is not None
     try:
         assert entered.wait(2.0)
@@ -1874,11 +1874,11 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(
         QTimer.singleShot(0, lambda: events.append("responsive"))
         qapp.processEvents()
         assert events == ["responsive"]
-        stale_generation = dialog._workers.generation
+        stale_generation = dialog.flow._workers.generation
         dialog.reject()
         assert worker.wait(2_000)
-        dialog._on_verification_complete({"decision": "accept"}, generation=stale_generation)
-        assert "verification" not in dialog.setup_result
+        dialog.flow.verification_finished({"decision": "accept"}, generation=stale_generation)
+        assert "verification" not in dialog.flow.setup_result
         assert owner.compressor_state.get_settings(include_calibration=True) == old_compressor
         assert owner.limiter_state.get_settings() == old_limiter
         assert owner.eq_state.get_settings() == old_eq
@@ -1937,28 +1937,28 @@ def test_incomplete_candidate_offers_retake_instead_of_apply(
     dialog = VoiceSetupDialog(parent=owner, configuration=owner.configuration)
     result = _advisory_result(owner)
     result[field] = value
-    dialog._candidate_metadata = deepcopy(result["_candidate"])
-    dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
-    dialog._workers.generation = 1
+    dialog.flow._candidate_metadata = deepcopy(result["_candidate"])
+    dialog.flow.noise_audio = dialog.flow.voice_audio = np.zeros(16, dtype=np.float32)
+    dialog.flow._workers.generation = 1
     try:
-        dialog._on_analysis_complete(result)
-        assert dialog.setup_state == "noise_ready"
-        assert dialog.view_model.shown["startText"] == "Record Voice Again"
-        assert dialog.view_model.shown["retakeShown"]
-        text = dialog.view_model.warning_text
+        dialog.flow.analysis_finished(result)
+        assert dialog.flow.setup_state == "noise_ready"
+        assert dialog.flow.view_model.shown["startText"] == "Record Voice Again"
+        assert dialog.flow.view_model.shown["retakeShown"]
+        text = dialog.flow.view_model.warning_text
         assert "incomplete" in text and "missing" in text
         assert "Record the voice passage again" in text
         assert "passed" not in text
-        assert not dialog._advisory_only
+        assert not dialog.flow._advisory_only
         recorded = owner.last_setup_result
         assert recorded is not None
         assert recorded["outcome"] == "refused"
         assert recorded["reason_codes"] == ["incomplete_result"]
-        assert "Apply" not in dialog.view_model.shown["startText"]
+        assert "Apply" not in dialog.flow.view_model.shown["startText"]
 
         show_error = Mock()
         monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.QMessageBox.critical", show_error)
-        dialog._apply_setup()
+        dialog.flow.apply()
         show_error.assert_called_once()
         assert show_error.call_args.args[1] == "Incomplete Voice Setup"
     finally:
@@ -1972,18 +1972,18 @@ def test_complete_advisory_candidate_still_offers_apply(owner):
     dialog = VoiceSetupDialog(parent=owner, configuration=owner.configuration)
     try:
         result = _advisory_result(owner)
-        dialog._candidate_metadata = deepcopy(result["_candidate"])
-        dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
-        dialog._workers.generation = 1
-        dialog._on_analysis_complete(result)
-        assert dialog.setup_state == "completed"
-        assert dialog.view_model.shown["startText"] == "Apply Suggestions"
+        dialog.flow._candidate_metadata = deepcopy(result["_candidate"])
+        dialog.flow.noise_audio = dialog.flow.voice_audio = np.zeros(16, dtype=np.float32)
+        dialog.flow._workers.generation = 1
+        dialog.flow.analysis_finished(result)
+        assert dialog.flow.setup_state == "completed"
+        assert dialog.flow.view_model.shown["startText"] == "Apply Suggestions"
         assert not scene_item(dialog, "curvePicker").isEnabled()
         assert not scene_item(dialog, "dynamicsPicker").isEnabled()
-        text = dialog.view_model.warning_text
+        text = dialog.flow.view_model.warning_text
         assert "did not pass every check" in text and "suggestions" in text
         assert "All checks passed" not in text
-        assert dialog._advisory_only
+        assert dialog.flow._advisory_only
         recorded = owner.last_setup_result
         assert recorded is not None
         assert recorded["outcome"] == "advisory"
@@ -2016,34 +2016,34 @@ def test_review_shows_settings_before_and_after(owner):
             "compressor_settings": compressor,
             "eq_settings": None,
         }
-        dialog._show_summary(result)
-        recommended, before = dialog.view_model.chip("gate")["text"].split("\nBefore: ")
+        dialog.flow.show_summary(result)
+        recommended, before = dialog.flow.view_model.chip("gate")["text"].split("\nBefore: ")
         assert recommended.endswith(f"opens above {before_db - 6.0:.1f} dB")
         assert before.endswith(f"opens above {before_db:.1f} dB")
-        assert dialog.view_model.chip("deesser")["text"].endswith("(unchanged)")
-        assert dialog.view_model.chip("compressor")["text"].endswith("(only finer settings change)")
+        assert dialog.flow.view_model.chip("deesser")["text"].endswith("(unchanged)")
+        assert dialog.flow.view_model.chip("compressor")["text"].endswith("(only finer settings change)")
 
-        orphan._show_summary(result)
-        assert orphan.view_model.chip("gate")["text"] == f"Noise gate: {recommended.split(': ', 1)[1]}"
-        assert "unchanged" not in orphan.view_model.chip("deesser")["text"]
+        orphan.flow.show_summary(result)
+        assert orphan.flow.view_model.chip("gate")["text"] == f"Noise gate: {recommended.split(': ', 1)[1]}"
+        assert "unchanged" not in orphan.flow.view_model.chip("deesser")["text"]
 
         # A loudness target the capture's peaks cannot carry is lowered, and said so.
         result["diagnostics"] |= {"loudness_lowered_db": 4.0, "compressor_target_lufs": -18.0}
         compressor |= {"auto_makeup_enabled": True, "target_lufs": -22.0}
-        orphan._show_summary(result)
-        assert orphan.view_model.chip("compressor")["text"].endswith(
+        orphan.flow.show_summary(result)
+        assert orphan.flow.view_model.chip("compressor")["text"].endswith(
             "aiming for -22 LUFS\nYou asked for -18 LUFS; "
             "it was lowered so peaks do not overload the limiter."
         )
         compressor |= {"auto_makeup_enabled": False, "target_lufs": -18.0}
-        orphan._show_summary(result)
-        assert orphan.view_model.chip("compressor")["text"].endswith(
+        orphan.flow.show_summary(result)
+        assert orphan.flow.view_model.chip("compressor")["text"].endswith(
             "\nMakeup was held 4 dB lower so peaks do not overload the limiter."
         )
         # Makeup does not fall in whole decibels once it reaches zero.
         result["diagnostics"]["loudness_lowered_db"] = 2.5
-        orphan._show_summary(result)
-        assert orphan.view_model.chip("compressor")["text"].endswith(
+        orphan.flow.show_summary(result)
+        assert orphan.flow.view_model.chip("compressor")["text"].endswith(
             "\nMakeup was held 2.5 dB lower so peaks do not overload the limiter."
         )
     finally:
@@ -2097,30 +2097,30 @@ def test_silent_room_noise_moves_on_and_a_leaky_gate_is_a_weak_reference(owner):
 
     dialog = VoiceSetupDialog(parent=owner, configuration=owner.configuration)
     try:
-        dialog.setup_state = "noise_recording"
-        finish_take(dialog, np.zeros(96_000, dtype=np.float32))
-        assert dialog.setup_state == "noise_ready"
-        assert dialog.noise_audio is not None
-        assert dialog.view_model.shown["phaseText"] == "Room noise captured"
-        assert dialog.view_model.shown["startText"] == "Record Voice"
-        assert dialog.view_model.warning_text.startswith(SILENT_REFERENCE_GUIDANCE)
+        dialog.flow.setup_state = "noise_recording"
+        finish_take(dialog.flow, np.zeros(96_000, dtype=np.float32))
+        assert dialog.flow.setup_state == "noise_ready"
+        assert dialog.flow.noise_audio is not None
+        assert dialog.flow.view_model.shown["phaseText"] == "Room noise captured"
+        assert dialog.flow.view_model.shown["startText"] == "Record Voice"
+        assert dialog.flow.view_model.warning_text.startswith(SILENT_REFERENCE_GUIDANCE)
 
         # A leaky gate is unsteady on every take, so it is used as a weak reference.
         leaky_gate = _make_noise(48_000)
         for start in range(0, leaky_gate.size, 19_200):
             leaky_gate[start : start + 9_600] = 0.0
-        dialog.setup_state = "noise_recording"
-        finish_take(dialog, leaky_gate)
-        assert dialog.setup_state == "noise_ready"
+        dialog.flow.setup_state = "noise_recording"
+        finish_take(dialog.flow, leaky_gate)
+        assert dialog.flow.setup_state == "noise_ready"
         unsteady = analyze_noise_reference(
-            dialog.noise_audio, None, 48_000, noise_metadata=dialog.noise_metadata
+            dialog.flow.noise_audio, None, 48_000, noise_metadata=dialog.flow.noise_metadata
         )
         assert unsteady.status == "invalid"
-        assert plain_reasons(unsteady.reasons)[0] in dialog.view_model.warning_text
-        assert "Setup will play safe" in dialog.view_model.warning_text
-        assert "retake it" in dialog.view_model.warning_text
-        assert "retake" in dialog.view_model.warning_text
-        assert (dialog.view_model.warning_state, dialog.view_model.warning_strong) == ("warn", True)
+        assert plain_reasons(unsteady.reasons)[0] in dialog.flow.view_model.warning_text
+        assert "Setup will play safe" in dialog.flow.view_model.warning_text
+        assert "retake it" in dialog.flow.view_model.warning_text
+        assert "retake" in dialog.flow.view_model.warning_text
+        assert (dialog.flow.view_model.warning_state, dialog.flow.view_model.warning_strong) == ("warn", True)
     finally:
         dialog.reject()
         dialog.deleteLater()
@@ -2131,7 +2131,7 @@ def voice_dialog(monkeypatch, owner):
     from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
     dialog = VoiceSetupDialog(parent=owner, configuration=owner.configuration)
-    monkeypatch.setattr(dialog, "_start_analysis", lambda: None)
+    monkeypatch.setattr(dialog.flow, "_start_analysis", lambda: None)
     yield dialog
     dialog.reject()
     dialog.deleteLater()
@@ -2139,9 +2139,9 @@ def voice_dialog(monkeypatch, owner):
 
 def _finish_take(dialog, step, audio):
     """Finish a take as the recording poll does, with the labels it leaves behind."""
-    dialog.setup_state = step
-    dialog.view_model.set_page(phaseText="Capturing", progress=100, timeText="Complete!")
-    finish_take(dialog, audio)
+    dialog.flow.setup_state = step
+    dialog.flow.view_model.set_page(phaseText="Capturing", progress=100, timeText="Complete!")
+    finish_take(dialog.flow, audio)
 
 
 def _poked(audio, index, value):
@@ -2182,17 +2182,17 @@ def test_a_rejected_room_noise_take_asks_for_a_retake(voice_dialog, take, tokens
 
     _finish_take(voice_dialog, "noise_recording", take())
 
-    text = voice_dialog.view_model.warning_text
+    text = voice_dialog.flow.view_model.warning_text
     assert all(token in text for token in tokens)
     assert SILENT_REFERENCE_GUIDANCE not in text
     if "Restart the audio stream" not in tokens:
         assert "Restart the audio stream" not in text
-    assert voice_dialog.setup_state == "idle"
-    assert voice_dialog.noise_audio is None and voice_dialog.preview_noise_audio is None
-    assert voice_dialog.view_model.shown["phaseText"] == "Room-noise capture rejected"
-    assert voice_dialog.view_model.shown["startText"] == "Retake Room Noise"
-    assert voice_dialog.view_model.shown["timeText"] == "Ready to record again"
-    assert voice_dialog.view_model.shown["progress"] == 0
+    assert voice_dialog.flow.setup_state == "idle"
+    assert voice_dialog.flow.noise_audio is None and voice_dialog.flow.preview_noise_audio is None
+    assert voice_dialog.flow.view_model.shown["phaseText"] == "Room-noise capture rejected"
+    assert voice_dialog.flow.view_model.shown["startText"] == "Retake Room Noise"
+    assert voice_dialog.flow.view_model.shown["timeText"] == "Ready to record again"
+    assert voice_dialog.flow.view_model.shown["progress"] == 0
 
 
 @pytest.mark.parametrize(
@@ -2209,18 +2209,18 @@ def test_a_rejected_room_noise_take_asks_for_a_retake(voice_dialog, take, tokens
 )
 def test_a_rejected_voice_take_asks_for_another_voice_take(voice_dialog, take, tokens):
     _finish_take(voice_dialog, "noise_recording", np.zeros(96_000, dtype=np.float32))
-    assert voice_dialog.setup_state == "noise_ready"
+    assert voice_dialog.flow.setup_state == "noise_ready"
 
     _finish_take(voice_dialog, "voice_recording", take())
 
-    assert all(token in voice_dialog.view_model.warning_text for token in tokens)
-    assert voice_dialog.setup_state == "noise_ready"
-    assert voice_dialog.noise_audio is not None
-    assert voice_dialog.voice_audio is None and voice_dialog.preview_voice_audio is None
-    assert voice_dialog.view_model.shown["phaseText"] == "Voice capture rejected"
-    assert voice_dialog.view_model.shown["startText"] == "Record Voice"
-    assert voice_dialog.view_model.shown["timeText"] == "Ready to record again"
-    assert voice_dialog.view_model.shown["progress"] == 0
+    assert all(token in voice_dialog.flow.view_model.warning_text for token in tokens)
+    assert voice_dialog.flow.setup_state == "noise_ready"
+    assert voice_dialog.flow.noise_audio is not None
+    assert voice_dialog.flow.voice_audio is None and voice_dialog.flow.preview_voice_audio is None
+    assert voice_dialog.flow.view_model.shown["phaseText"] == "Voice capture rejected"
+    assert voice_dialog.flow.view_model.shown["startText"] == "Record Voice"
+    assert voice_dialog.flow.view_model.shown["timeText"] == "Ready to record again"
+    assert voice_dialog.flow.view_model.shown["progress"] == 0
 
 
 def test_a_verification_reduction_steps_each_implicated_control_within_its_limits():

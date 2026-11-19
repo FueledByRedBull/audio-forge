@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from mic_eq.analysis.noise_reference import SILENT_REFERENCE_GUIDANCE
-from mic_eq.ui import calibration_dialog, voice_setup_dialog
+from mic_eq.ui import calibration_dialog, voice_setup_flow
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.calibration_support import filtered_capture_for_analysis
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
@@ -61,28 +61,28 @@ def voice(real_main_window, monkeypatch):  # noqa: F811
     dialog = VoiceSetupDialog(parent=real_main_window)
     analyses: list[int] = []
     setattr(dialog, "analyses", analyses)  # noqa: B010 (read back by the tests)
-    monkeypatch.setattr(dialog, "_start_analysis", lambda: analyses.append(1))
+    monkeypatch.setattr(dialog.flow, "_start_analysis", lambda: analyses.append(1))
     yield dialog
     dialog.reject()
-    settle(dialog)
+    settle(dialog.flow)
     dialog.deleteLater()
 
 
 def _take(dialog: VoiceSetupDialog, state: str, audio: np.ndarray, *, finish=finish_take) -> None:
-    dialog.setup_state = state
-    dialog.view_model.set_page(phaseText="Capturing")
-    dialog._current_capture_metadata = None
-    finish(dialog, audio)
+    dialog.flow.setup_state = state
+    dialog.flow.view_model.set_page(phaseText="Capturing")
+    dialog.flow._current_capture_metadata = None
+    finish(dialog.flow, audio)
 
 
 def _gated_voice_take(dialog: VoiceSetupDialog, monkeypatch, state: str) -> _Spy:
     """Finish a take of the phase ``state`` and hold its post-processing open; returns the spy that holds it."""
-    prefilter = _Spy(monkeypatch, voice_setup_dialog, "_filtered_capture_for_analysis", gated=True)
+    prefilter = _Spy(monkeypatch, voice_setup_flow, "_filtered_capture_for_analysis", gated=True)
     if state == "voice_recording":
-        dialog.noise_audio = _make_noise(RATE)
-    dialog.setup_state = state
-    dialog._current_capture_metadata = None
-    dialog._on_recording_complete(_speech() if state == "voice_recording" else _make_noise(RATE))
+        dialog.flow.noise_audio = _make_noise(RATE)
+    dialog.flow.setup_state = state
+    dialog.flow._current_capture_metadata = None
+    dialog.flow.take_finished(_speech() if state == "voice_recording" else _make_noise(RATE))
     assert prefilter.entered.wait(5.0)
     return prefilter
 
@@ -91,139 +91,139 @@ def test_a_good_room_noise_take_is_kept_filtered_and_voice_comes_next(voice) -> 
     raw = _make_noise(RATE)
     _take(voice, "noise_recording", raw)
 
-    assert voice.setup_state == "noise_ready"
-    assert voice.view_model.shown["phaseText"] == "Room noise captured"
-    assert voice.view_model.shown["startText"] == "Record Voice"
-    assert voice.view_model.shown["startEnabled"]
-    assert voice.view_model.warning_text == "Now read the passage aloud for the full 10 seconds."
-    assert np.array_equal(voice.preview_noise_audio, raw)
-    assert np.array_equal(voice.noise_audio, filtered_capture_for_analysis(raw, RATE))
+    assert voice.flow.setup_state == "noise_ready"
+    assert voice.flow.view_model.shown["phaseText"] == "Room noise captured"
+    assert voice.flow.view_model.shown["startText"] == "Record Voice"
+    assert voice.flow.view_model.shown["startEnabled"]
+    assert voice.flow.view_model.warning_text == "Now read the passage aloud for the full 10 seconds."
+    assert np.array_equal(voice.flow.preview_noise_audio, raw)
+    assert np.array_equal(voice.flow.noise_audio, filtered_capture_for_analysis(raw, RATE))
 
 
 def test_a_silent_room_noise_take_moves_on_with_the_silent_reference_advice(voice) -> None:
     _take(voice, "noise_recording", np.zeros(2 * RATE, dtype=np.float32))
 
-    assert voice.setup_state == "noise_ready"
-    assert voice.noise_audio is not None
-    assert voice.view_model.warning_text.startswith(SILENT_REFERENCE_GUIDANCE)
-    assert voice.view_model.warning_text.endswith("Now read the passage aloud for the full 10 seconds.")
+    assert voice.flow.setup_state == "noise_ready"
+    assert voice.flow.noise_audio is not None
+    assert voice.flow.view_model.warning_text.startswith(SILENT_REFERENCE_GUIDANCE)
+    assert voice.flow.view_model.warning_text.endswith("Now read the passage aloud for the full 10 seconds.")
 
 
 def test_a_room_noise_take_the_analysis_cannot_use_is_rejected(voice) -> None:
     _take(voice, "noise_recording", _make_noise(RATE, seconds=0.5))
 
-    assert voice.setup_state == "idle"
-    assert voice.noise_audio is None and voice.preview_noise_audio is None
-    assert voice.view_model.shown["phaseText"] == "Room-noise capture rejected"
-    assert voice.view_model.shown["startText"] == "Retake Room Noise"
-    assert all(token in voice.view_model.warning_text for token in _TOO_SHORT)
+    assert voice.flow.setup_state == "idle"
+    assert voice.flow.noise_audio is None and voice.flow.preview_noise_audio is None
+    assert voice.flow.view_model.shown["phaseText"] == "Room-noise capture rejected"
+    assert voice.flow.view_model.shown["startText"] == "Retake Room Noise"
+    assert all(token in voice.flow.view_model.warning_text for token in _TOO_SHORT)
 
 
 def test_a_silent_voice_take_is_a_microphone_fault(voice) -> None:
-    voice.noise_audio = _make_noise(RATE)
+    voice.flow.noise_audio = _make_noise(RATE)
     _take(voice, "voice_recording", np.zeros(RATE, dtype=np.float32))
 
-    assert voice.setup_state == "noise_ready"
-    assert voice.voice_audio is None and voice.preview_voice_audio is None
-    assert voice.view_model.shown["phaseText"] == "Voice capture rejected"
-    assert voice.view_model.shown["startText"] == "Record Voice"
-    assert all(token in voice.view_model.warning_text for token in _NO_SOUND)
+    assert voice.flow.setup_state == "noise_ready"
+    assert voice.flow.voice_audio is None and voice.flow.preview_voice_audio is None
+    assert voice.flow.view_model.shown["phaseText"] == "Voice capture rejected"
+    assert voice.flow.view_model.shown["startText"] == "Record Voice"
+    assert all(token in voice.flow.view_model.warning_text for token in _NO_SOUND)
     assert voice.analyses == []
 
 
 def test_a_good_voice_take_starts_the_setup_analysis(voice) -> None:
-    voice.noise_audio = _make_noise(RATE)
+    voice.flow.noise_audio = _make_noise(RATE)
     raw = _speech()
     _take(voice, "voice_recording", raw)
 
-    assert voice.setup_state == "analyzing"
+    assert voice.flow.setup_state == "analyzing"
     assert voice.analyses == [1]
-    assert voice.view_model.shown["startText"] == "Analyzing..."
-    assert not voice.view_model.shown["startEnabled"]
-    assert voice.view_model.shown["phaseText"] == "Analyzing recordings"
-    assert voice.view_model.warning_text == "Building recommendations for your voice chain."
-    assert np.array_equal(voice.preview_voice_audio, raw)
-    assert np.array_equal(voice.voice_audio, filtered_capture_for_analysis(raw, RATE))
+    assert voice.flow.view_model.shown["startText"] == "Analyzing..."
+    assert not voice.flow.view_model.shown["startEnabled"]
+    assert voice.flow.view_model.shown["phaseText"] == "Analyzing recordings"
+    assert voice.flow.view_model.warning_text == "Building recommendations for your voice chain."
+    assert np.array_equal(voice.flow.preview_voice_audio, raw)
+    assert np.array_equal(voice.flow.voice_audio, filtered_capture_for_analysis(raw, RATE))
 
 
 def test_a_verification_take_goes_to_the_verification_with_the_filtered_audio(
     voice, monkeypatch
 ) -> None:
     received: list[np.ndarray] = []
-    monkeypatch.setattr(voice, "_complete_verification", received.append)
+    monkeypatch.setattr(voice.flow, "_complete_verification", received.append)
     raw = _speech()
     _take(voice, "verification_recording", raw)
 
-    assert voice.setup_state == "verification_recording"
-    assert np.array_equal(voice.preview_verification_audio, raw)
+    assert voice.flow.setup_state == "verification_recording"
+    assert np.array_equal(voice.flow.preview_verification_audio, raw)
     assert len(received) == 1
     assert np.array_equal(received[0], filtered_capture_for_analysis(raw, RATE))
 
 
 def test_voice_setup_post_processing_runs_off_the_gui_thread(voice, monkeypatch) -> None:
-    prefilter = _Spy(monkeypatch, voice_setup_dialog, "_filtered_capture_for_analysis")
-    reference = _Spy(monkeypatch, voice_setup_dialog, "analyze_noise_reference")
+    prefilter = _Spy(monkeypatch, voice_setup_flow, "_filtered_capture_for_analysis")
+    reference = _Spy(monkeypatch, voice_setup_flow, "analyze_noise_reference")
 
     _take(voice, "noise_recording", _make_noise(RATE))
 
     assert prefilter.off_the_gui_thread
     assert reference.off_the_gui_thread
-    assert voice.setup_state == "noise_ready"
+    assert voice.flow.setup_state == "noise_ready"
 
 
 def test_voice_setup_waits_in_its_own_state_and_then_continues(voice, monkeypatch) -> None:
     prefilter = _gated_voice_take(voice, monkeypatch, "voice_recording")
 
-    assert voice.setup_state == "capture_analyzing"
-    assert not voice.view_model.shown["startEnabled"]
-    voice._on_start_clicked()  # nothing to do while the take is checked
-    assert voice.setup_state == "capture_analyzing"
+    assert voice.flow.setup_state == "capture_analyzing"
+    assert not voice.flow.view_model.shown["startEnabled"]
+    voice.flow.start()  # nothing to do while the take is checked
+    assert voice.flow.setup_state == "capture_analyzing"
     prefilter.release.set()
-    settle(voice)
+    settle(voice.flow)
 
-    assert voice.setup_state == "analyzing" and voice.analyses == [1]
+    assert voice.flow.setup_state == "analyzing" and voice.analyses == [1]
 
 
 def test_closing_voice_setup_while_a_take_is_checked_drops_the_result(voice, monkeypatch) -> None:
     prefilter = _gated_voice_take(voice, monkeypatch, "voice_recording")
 
     voice.reject()
-    assert voice._close_requested
-    assert voice.view_model.warning_text == "Canceling analysis..."
+    assert voice.flow._close_requested
+    assert voice.flow.view_model.warning_text == "Canceling analysis..."
     prefilter.release.set()
-    settle(voice)
+    settle(voice.flow)
 
     assert voice.analyses == []
-    assert voice.setup_state == "idle"
-    assert voice.voice_audio is None and voice.preview_voice_audio is None
-    assert not voice._close_requested  # the close went through once the worker was done
+    assert voice.flow.setup_state == "idle"
+    assert voice.flow.voice_audio is None and voice.flow.preview_voice_audio is None
+    assert not voice.flow._close_requested  # the close went through once the worker was done
     assert voice.result() == voice.DialogCode.Rejected
-    assert not voice._workers.workers
+    assert not voice.flow._workers.workers
 
 
 def test_starting_over_while_a_take_is_checked_drops_the_result(voice, monkeypatch) -> None:
     prefilter = _gated_voice_take(voice, monkeypatch, "noise_recording")
 
-    voice._reset_setup_ui()
+    voice.flow._reset_setup_ui()
     prefilter.release.set()
-    settle(voice)
+    settle(voice.flow)
 
-    assert voice.setup_state == "idle"
-    assert voice.noise_audio is None and voice.preview_noise_audio is None
-    assert voice.view_model.shown["phaseText"] == "Ready to start setup"
+    assert voice.flow.setup_state == "idle"
+    assert voice.flow.noise_audio is None and voice.flow.preview_noise_audio is None
+    assert voice.flow.view_model.shown["phaseText"] == "Ready to start setup"
 
 
 def test_application_quit_joins_a_take_still_being_checked(voice, monkeypatch) -> None:
     prefilter = _gated_voice_take(voice, monkeypatch, "noise_recording")
-    worker = voice._workers.workers[0]
+    worker = voice.flow._workers.workers[0]
     threading.Timer(0.1, prefilter.release.set).start()
 
-    voice._wait_for_analysis_workers()
+    voice.flow.wait_for_analysis_workers()
 
     assert not worker.isRunning()
-    assert not voice._workers.workers
-    settle(voice)
-    assert voice.noise_audio is None
+    assert not voice.flow._workers.workers
+    settle(voice.flow)
+    assert voice.flow.noise_audio is None
 
 
 def test_a_take_that_cannot_be_post_processed_fails_like_a_recording_error(
@@ -232,13 +232,13 @@ def test_a_take_that_cannot_be_post_processed_fails_like_a_recording_error(
     def broken(_audio, _rate):
         raise RuntimeError("Native input conditioning is unavailable")
 
-    monkeypatch.setattr(voice_setup_dialog, "_filtered_capture_for_analysis", broken)
+    monkeypatch.setattr(voice_setup_flow, "_filtered_capture_for_analysis", broken)
     _take(voice, "noise_recording", _make_noise(RATE))
 
-    assert voice.setup_state == "idle"
-    assert voice.noise_audio is None
-    assert voice.view_model.shown["startEnabled"]
-    assert "Native input conditioning is unavailable" in voice.view_model.warning_text
+    assert voice.flow.setup_state == "idle"
+    assert voice.flow.noise_audio is None
+    assert voice.flow.view_model.shown["startEnabled"]
+    assert "Native input conditioning is unavailable" in voice.flow.view_model.warning_text
 
 
 # --- Auto-EQ -----------------------------------------------------------------------------

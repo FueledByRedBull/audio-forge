@@ -11,7 +11,7 @@ from mic_eq.ui import (
     analysis_worker,
     latency_calibration_dialog,
     listening_comparison_dialog,
-    voice_setup_dialog,
+    voice_setup_flow,
 )
 
 
@@ -20,7 +20,7 @@ def _audio() -> np.ndarray:
 
 
 def _voice_worker():
-    return voice_setup_dialog.VoiceSetupWorker(
+    return voice_setup_flow.VoiceSetupWorker(
         VoiceSetupRequest(
             _audio(), _audio(), 48_000, "broadcast",
             vad_available=False, dynamics_intensity="medium",
@@ -31,7 +31,7 @@ def _voice_worker():
 
 
 def _verification_worker():
-    return voice_setup_dialog.VoiceSetupVerificationWorker(
+    return voice_setup_flow.VoiceSetupVerificationWorker(
         _audio(), _audio(), _audio(), 48_000, {}, "broadcast"
     )
 
@@ -48,8 +48,8 @@ def _latency_worker():
     ("module", "function", "make_worker", "message"),
     [
         (analysis_worker, "analyze_auto_eq", lambda: analysis_worker.AnalysisWorker(_audio(), 48_000), "Auto-EQ"),
-        (voice_setup_dialog, "analyze_voice_setup", _voice_worker, "Voice Setup analysis"),
-        (voice_setup_dialog, "validate_voice_setup_verification", _verification_worker, "verification"),
+        (voice_setup_flow, "analyze_voice_setup", _voice_worker, "Voice Setup analysis"),
+        (voice_setup_flow, "validate_voice_setup_verification", _verification_worker, "verification"),
         (listening_comparison_dialog, "render_comparison", _comparison_worker, "Listening comparison"),
         (latency_calibration_dialog, "analyze_latency", _latency_worker, "Latency calibration"),
     ],

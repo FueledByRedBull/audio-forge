@@ -50,13 +50,11 @@ from .compressor_state import CompressorState
 from .gate_state import GateState
 from .level_meter import LevelMeter
 from .health import (
-    HEALTH_PEAK_WINDOW_SECONDS,
+    READINGS_UNAVAILABLE,
     Chip,
-    HealthMemory,
-    HealthReadings,
-    RecentStreamHealth,
+    HealthMonitor,
+    HealthView,
     health_summary,
-    runtime_health,
 )
 from .calibration_dialog import CalibrationDialog
 from .latency_calibration_dialog import (
@@ -181,16 +179,6 @@ ENGINE_CALL_WAIT_MS = 3_000
 # Set on the app while Qt asks to commit data for a sign-out or shutdown; the dialogs read it too.
 SESSION_ENDING_PROPERTY = "audioforge_session_ending"
 SAVE_PROBLEM = "Settings could not be saved, so recent changes may be lost when AudioForge closes."
-
-
-# The native getters the meters and Health read; an older extension module lacks them.
-METER_GETTERS = (
-    "take_input_peak_since_read",
-    "take_output_pre_limiter_peak_since_read",
-    "take_output_peak_since_read",
-    "get_input_full_scale_count",
-    "get_output_full_scale_count",
-)
 
 
 def _session_is_ending() -> bool:
@@ -417,9 +405,7 @@ class MainWindow(QMainWindow):
         self._redo_action = None
         self._calibration_dialog_open = False
         self._processing = False
-        self._stream_health = RecentStreamHealth()
-        # What the last diagnostics tick saw, for the next one to compare against.
-        self._health_memory = HealthMemory()
+        self.health_monitor = HealthMonitor()
         # The latest Voice Setup or Auto-EQ outcome, kept for the diagnostics export.
         self.last_setup_result: dict | None = None
         # Why the Qt Quick view could not run, while the error screen shows; the
@@ -2836,7 +2822,7 @@ class MainWindow(QMainWindow):
                 self.output_choice.setEnabled(True)
                 self.refresh_btn_action.setEnabled(True)
                 self._processing = False
-                self._health_memory = replace(self._health_memory, device_wait_since=None)
+                self.health_monitor.memory = replace(self.health_monitor.memory, device_wait_since=None)
                 self._sync_meter_timer()
                 self._update_session_summary()
                 if source == "own_microphone":
@@ -3251,7 +3237,7 @@ class MainWindow(QMainWindow):
             running = False
         if not running:
             self._invalidate_live_meters()
-            self._health_memory = replace(self._health_memory, backend_warning=None)
+            self.health_monitor.memory = replace(self.health_monitor.memory, backend_warning=None)
             self._reset_health_labels()
             return
         if self.__dict__.get("_hidden_to_tray") and self.isHidden():
@@ -3363,7 +3349,9 @@ class MainWindow(QMainWindow):
             sync_meters()
         if not running:
             self._processing = False
-            self._health_memory = replace(self._health_memory, device_wait_since=None, backend_warning=None)
+            self.health_monitor.memory = replace(
+                self.health_monitor.memory, device_wait_since=None, backend_warning=None
+            )
             if stopped_changed:
                 self._reset_health_labels()
             # A failed native restart intentionally leaves recovery pending
@@ -3378,126 +3366,35 @@ class MainWindow(QMainWindow):
                     update_summary()
             return
 
-        try:
-            for name in METER_GETTERS:
-                getattr(self.processor, name)
-            diagnostics = self.processor.get_runtime_diagnostics()
-            input_rms = self.processor.get_input_rms_db()
-            output_rms = self.processor.get_output_rms_db()
-            output_buf = self.processor.get_output_buffer_samples()
-            latency_ms = self.processor.get_latency_ms()
-            dsp_time_ms = self.processor.get_dsp_time_smoothed_ms()
-            input_buf = self.processor.get_input_buffer_smoothed_samples()
-            rnnoise_buf = self.processor.get_buffer_smoothed_samples()
-            input_callback_age_ms = self.processor.get_input_callback_age_ms()
-            output_callback_age_ms = self.processor.get_output_callback_age_ms()
-            if not isinstance(diagnostics, dict) or not all(math.isfinite(value) for value in (
-                input_rms, output_rms, output_buf, latency_ms, dsp_time_ms,
-                input_buf, rnnoise_buf, input_callback_age_ms, output_callback_age_ms,
-            )):
-                raise ValueError("Invalid live telemetry")
-        except (AttributeError, OSError, RuntimeError, TypeError, ValueError, OverflowError):
-            self._reset_health_labels()
-            self._set_health_chip("health_summary_label", "Health: readings unavailable", "warn")
-            self.shell_texts["health_advice_label"].update(text=(
-                "AudioForge could not read the audio engine's status, so Health cannot be checked. "
-                "Stop and start processing; if this keeps happening, restart AudioForge."
-            ))
-            # Missing presentation data must not suppress native recovery service.
-            self.engine_session.tick()
-            return
-
-        self._update_diagnostic_labels(
-            diagnostics=diagnostics,
-            latency_ms=latency_ms,
-            dsp_time_ms=dsp_time_ms,
-            input_buf=input_buf,
-            rnnoise_buf=rnnoise_buf,
-            input_rms_db=input_rms,
-            output_rms_db=output_rms,
-            input_callback_age_ms=input_callback_age_ms,
-            output_callback_age_ms=output_callback_age_ms,
-            input_peak_db=self.input_meter.recent_peak_db(HEALTH_PEAK_WINDOW_SECONDS),
-            input_full_scale_samples=self.input_meter.full_scale_samples_within(HEALTH_PEAK_WINDOW_SECONDS),
-            output_peak_db=self.output_meter.recent_peak_db(HEALTH_PEAK_WINDOW_SECONDS),
-            output_at_full_scale=self.output_meter.clipped_within(HEALTH_PEAK_WINDOW_SECONDS),
+        reading = self.health_monitor.read(
+            self.processor,
+            self.input_meter,
+            self.output_meter,
             limiter_enabled=bool(self.limiter_state.get_settings()["enabled"]),
+            output_muted=self.engine_session.view.output_muted,
+            processing=self._processing,
         )
+        if reading is None:
+            self._show_health(READINGS_UNAVAILABLE)
+        else:
+            self._show_health(self.health_monitor.judge(*reading, now=time.monotonic()))
+        # Missing presentation data must not suppress native recovery service.
         self.engine_session.tick()
 
-    def _update_diagnostic_labels(
-        self,
-        *,
-        diagnostics: dict,
-        latency_ms: float,
-        dsp_time_ms: float,
-        input_buf: int,
-        rnnoise_buf: int,
-        input_rms_db: float | None = None,
-        output_rms_db: float | None = None,
-        input_callback_age_ms: int | None = None,
-        output_callback_age_ms: int | None = None,
-        input_peak_db: float | None = None,
-        input_full_scale_samples: int = 0,
-        output_peak_db: float | None = None,
-        output_at_full_scale: bool = False,
-        limiter_enabled: bool = True,
-    ) -> None:
-        """Render the Health chips for one runtime diagnostic snapshot; ``health.runtime_health`` decides them.
-
-        The peak and clip arguments come from the meters' held peaks, so a clip
-        stays visible for several seconds and the old per-tick clip counters
-        no longer decide the Input and Output lines.
-        """
-        snapshot = RuntimeSnapshot.parse(diagnostics)
-        if not hasattr(self, "_stream_health"):
-            self._stream_health = RecentStreamHealth()
-        try:
-            recent_events = self._stream_health.observe(snapshot)
-        except ValueError:
+    def _show_health(self, view: HealthView) -> None:
+        """Render one tick's Health view; ``health.HealthMonitor`` decides it."""
+        if view.reset:
             self._reset_health_labels()
-            self._set_health_chip("recovery_diag_label", "Recovery: counters could not be read", "warn")
-            return
-        recovery_pending = False
-        for name in ("is_recovering", "is_recovery_requested"):
-            getter = getattr(getattr(self, "processor", None), name, None)
-            if callable(getter):
-                try:
-                    recovery_pending = recovery_pending or bool(getter())
-                except (OSError, RuntimeError, TypeError, ValueError):
-                    recovery_pending = True
-        report = runtime_health(
-            snapshot,
-            HealthReadings(
-                latency_ms=latency_ms,
-                dsp_time_ms=dsp_time_ms,
-                input_buf=input_buf,
-                rnnoise_buf=rnnoise_buf,
-                input_rms_db=input_rms_db,
-                output_rms_db=output_rms_db,
-                input_callback_age_ms=input_callback_age_ms,
-                output_callback_age_ms=output_callback_age_ms,
-                input_peak_db=input_peak_db,
-                input_full_scale_samples=input_full_scale_samples,
-                output_peak_db=output_peak_db,
-                output_at_full_scale=output_at_full_scale,
-                limiter_enabled=limiter_enabled,
-                output_muted=self.engine_session.view.output_muted,
-                recovery_pending=recovery_pending,
-                processing=self._processing,
-            ),
-            recent_events=recent_events,
-            memory=self._health_memory,
-            now=time.monotonic(),
-        )
-        self._health_memory = report.memory
-        for key, chip in report.chips.items():
+        for key, chip in view.chips.items():
             self._set_health_chip(key, chip.text, chip.state)
             if chip.tip is not None:
                 self.shell_texts[key].update(tip=chip.tip)
-        for message, timeout in report.messages:
+        for message, timeout in view.messages:
             self.status_message.showMessage(message, timeout)
-        self._update_health_summary()
+        if view.advice is not None:
+            self.shell_texts["health_advice_label"].update(text=view.advice)
+        if not view.reset:
+            self._update_health_summary()
 
     def _update_health_summary(self) -> None:
         """Summarize the worst health chip and say what to do about it."""

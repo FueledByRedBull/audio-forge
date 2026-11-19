@@ -1,8 +1,9 @@
 """Health decisions: which chip says what, from a runtime snapshot and the live readings.
 
-Nothing here touches Qt or the engine. :func:`runtime_health` turns one
-diagnostics tick into chips, status messages and what the next tick needs to
-remember; the window only renders the result.
+Nothing here touches Qt. :func:`runtime_health` turns one diagnostics tick
+into chips, status messages and what the next tick needs to remember;
+:class:`HealthMonitor` reads the engine for it and keeps that memory, and the
+window only renders the result.
 """
 
 from __future__ import annotations
@@ -10,9 +11,10 @@ from __future__ import annotations
 import math
 import re
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Protocol
 
 from ..runtime_snapshot import RuntimeSnapshot
 from .platform_text import SOUND_SETTINGS
@@ -773,3 +775,138 @@ def health_summary(rows: Sequence[Chip], *, mute_error: bool = False) -> Chip:
             "idle": TEXT_SPECS["health_advice_label"].text,
         }.get(state, "Check the items marked below.")
     return Chip(issues[0] if issues else f"Health: {state.upper()}", state, advice)
+
+
+# The native getters the meters and Health read; an older extension module lacks them.
+METER_GETTERS = (
+    "take_input_peak_since_read",
+    "take_output_pre_limiter_peak_since_read",
+    "take_output_peak_since_read",
+    "get_input_full_scale_count",
+    "get_output_full_scale_count",
+)
+
+
+class PeakMeter(Protocol):
+    """The held peaks and clips of a level meter, which the Health lines read."""
+
+    def recent_peak_db(self, seconds: float) -> float | None: ...
+
+    def full_scale_samples_within(self, seconds: float) -> int: ...
+
+    def clipped_within(self, seconds: float) -> bool: ...
+
+
+@dataclass(frozen=True, slots=True)
+class HealthView:
+    """What the Health page shows for one tick.
+
+    ``chips`` are keyed by their text-state name and set a tooltip only when
+    they carry one; ``messages`` go to the status line in order. A ``reset``
+    view clears every chip first and is not summarized from the chips, so the
+    summary and ``advice`` are what the view sets, or the reset text.
+    """
+
+    chips: Mapping[str, Chip]
+    messages: tuple[tuple[str, int], ...] = ()
+    advice: str | None = None
+    reset: bool = False
+
+
+READINGS_UNAVAILABLE = HealthView(
+    chips=MappingProxyType({"health_summary_label": Chip("Health: readings unavailable", "warn")}),
+    advice=(
+        "AudioForge could not read the audio engine's status, so Health cannot be checked. "
+        "Stop and start processing; if this keeps happening, restart AudioForge."
+    ),
+    reset=True,
+)
+_COUNTERS_UNREADABLE = HealthView(
+    chips=MappingProxyType({"recovery_diag_label": Chip("Recovery: counters could not be read", "warn")}),
+    reset=True,
+)
+
+
+@dataclass(slots=True)
+class HealthMonitor:
+    """Reads the engine once per diagnostics tick and judges it, carrying what the next tick compares against."""
+
+    stream_health: RecentStreamHealth = field(default_factory=RecentStreamHealth)
+    memory: HealthMemory = field(default_factory=HealthMemory)
+
+    @staticmethod
+    def read(
+        processor: Any,
+        input_meter: PeakMeter,
+        output_meter: PeakMeter,
+        *,
+        limiter_enabled: bool,
+        output_muted: bool,
+        processing: bool,
+    ) -> tuple[dict[str, Any], HealthReadings] | None:
+        """The runtime diagnostics and live readings for one tick, or None when the engine cannot be read.
+
+        A missing getter, a failing read or a non-finite value makes the whole
+        tick unreadable. The peak and clip readings come from the meters' held
+        peaks, so a clip stays visible for several seconds.
+        """
+        try:
+            for name in METER_GETTERS:
+                getattr(processor, name)
+            diagnostics = processor.get_runtime_diagnostics()
+            input_rms = processor.get_input_rms_db()
+            output_rms = processor.get_output_rms_db()
+            output_buf = processor.get_output_buffer_samples()
+            latency_ms = processor.get_latency_ms()
+            dsp_time_ms = processor.get_dsp_time_smoothed_ms()
+            input_buf = processor.get_input_buffer_smoothed_samples()
+            rnnoise_buf = processor.get_buffer_smoothed_samples()
+            input_callback_age_ms = processor.get_input_callback_age_ms()
+            output_callback_age_ms = processor.get_output_callback_age_ms()
+            if not isinstance(diagnostics, dict) or not all(math.isfinite(value) for value in (
+                input_rms, output_rms, output_buf, latency_ms, dsp_time_ms,
+                input_buf, rnnoise_buf, input_callback_age_ms, output_callback_age_ms,
+            )):
+                return None
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError, OverflowError):
+            return None
+        recovery_pending = False
+        for name in ("is_recovering", "is_recovery_requested"):
+            getter = getattr(processor, name, None)
+            if callable(getter):
+                try:
+                    recovery_pending = recovery_pending or bool(getter())
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    recovery_pending = True
+        return diagnostics, HealthReadings(
+            latency_ms=latency_ms,
+            dsp_time_ms=dsp_time_ms,
+            input_buf=input_buf,
+            rnnoise_buf=rnnoise_buf,
+            input_rms_db=input_rms,
+            output_rms_db=output_rms,
+            input_callback_age_ms=input_callback_age_ms,
+            output_callback_age_ms=output_callback_age_ms,
+            input_peak_db=input_meter.recent_peak_db(HEALTH_PEAK_WINDOW_SECONDS),
+            input_full_scale_samples=input_meter.full_scale_samples_within(HEALTH_PEAK_WINDOW_SECONDS),
+            output_peak_db=output_meter.recent_peak_db(HEALTH_PEAK_WINDOW_SECONDS),
+            output_at_full_scale=output_meter.clipped_within(HEALTH_PEAK_WINDOW_SECONDS),
+            limiter_enabled=limiter_enabled,
+            output_muted=output_muted,
+            recovery_pending=recovery_pending,
+            processing=processing,
+        )
+
+    def judge(self, diagnostics: dict[str, Any], readings: HealthReadings, *, now: float) -> HealthView:
+        """The Health view for one tick; ``now`` is its monotonic time.
+
+        The summary chip is not included: the window reads it back from the chips it shows.
+        """
+        snapshot = RuntimeSnapshot.parse(diagnostics)
+        try:
+            recent_events = self.stream_health.observe(snapshot, now=now)
+        except ValueError:
+            return _COUNTERS_UNREADABLE
+        report = runtime_health(snapshot, readings, recent_events=recent_events, memory=self.memory, now=now)
+        self.memory = report.memory
+        return HealthView(chips=report.chips, messages=report.messages)

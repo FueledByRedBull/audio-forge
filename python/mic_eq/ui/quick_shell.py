@@ -28,6 +28,7 @@ from PySide6.QtGui import (
     QAccessible,
     QAccessibleAnnouncementEvent,
     QDesktopServices,
+    QKeySequence,
     QPainter,
     QPen,
     QPolygonF,
@@ -38,7 +39,7 @@ from PySide6.QtQuickWidgets import QQuickWidget
 
 from .chain_presentation import PREFILTER_HIGHPASS_HZ, ChainInputs, ChainLine, describe_chain
 from . import platform_text
-from .command_palette import CommandPalette, window_commands
+from .command_palette import SHORTCUT as PALETTE_SHORTCUT, CommandPalette, window_commands
 from .components import Glyph
 from .engine_session import Restarted, RestartFailed, Started, Stopped
 from .desktop_integration import RENDERER_RELAUNCH_ENV, relaunch_with_software_rendering
@@ -516,6 +517,12 @@ class QuickBridge(QObject):
     def _row(self, kind: str, proxy, label: str = "") -> dict:
         return {"kind": kind, "label": label, "proxy": proxy}
 
+    @staticmethod
+    def keycaps(shortcut: QKeySequence | str) -> list[str]:
+        """A shortcut's keys as their caps read; Return is labelled Enter, as on the key."""
+        text = QKeySequence(shortcut).toString(QKeySequence.SequenceFormat.PortableText)
+        return ["Enter" if key == "Return" else key for key in text.split("+")]
+
     def _build_model(self, w) -> dict:
         row = self._row
         def text(name: str):
@@ -847,6 +854,13 @@ class QuickBridge(QObject):
                 ],
             },
             "stages": stages,
+            # The row of window shortcuts on the Overview, read from the actions themselves.
+            "shortcuts": [
+                {"keys": self.keycaps(w.start_menu_action.shortcut()), "action": "Start"},
+                {"keys": self.keycaps(w.stop_menu_action.shortcut()), "action": "Stop"},
+                {"keys": self.keycaps(w.user_mute_checkbox_action.shortcut()), "action": "Mute"},
+                {"keys": self.keycaps(PALETTE_SHORTCUT), "action": "Search"},
+            ],
             "meters": [w.input_meter, w.output_meter],
             "status": {
                 "message": w.status_message,

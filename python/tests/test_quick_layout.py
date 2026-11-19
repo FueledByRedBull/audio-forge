@@ -514,3 +514,23 @@ def test_each_route_check_has_its_round_mark_in_the_card(qapp, monkeypatch, sego
         window.close()
         window.deleteLater()
         qapp.processEvents()
+
+
+@pytest.mark.parametrize("point_size", [9, 14])
+def test_the_shortcut_row_wraps_clear_at_the_minimum_width(qapp, monkeypatch, segoe_font, point_size) -> None:
+    qapp.setFont(QFont(qapp.font().family(), point_size))
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Ready")
+    try:
+        row = named(window, "shortcutRow")
+        pane = scene_rect(named(window, "mainPane"))
+        items = sorted((scene_rect(item) for item in shown_items(row) if item.parentItem() is row), key=QRectF.top)
+        assert len(items) == 4
+        for box in items:
+            assert pane.left() <= box.left() and box.right() <= pane.right() + 0.5, box
+        for index, box in enumerate(items):
+            assert not any(box.intersects(other) for other in items[index + 1:]), box
+        assert scene_rect(row).top() >= scene_rect(named(window, "setupLine")).bottom()
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()

@@ -183,6 +183,11 @@ class SemanticPalette:
     # The pill that says what an empty graph waits for.
     pill_surface: str = "#1b1f28"
     pill_edge: str = "#57ffffff"
+    # A keycap in the shortcut row: a raised, lightly lit key with a bright label.
+    key_top: str = "#24ffffff"
+    key_bottom: str = "#0fffffff"
+    key_edge: str = "#38ffffff"
+    key_text: str = "#eef0f4"
 
 
 # Tokens with no reader yet, kept for work that is planned. test_every_palette_token_has_a_reader
@@ -282,6 +287,7 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         status_ok_fill=window, status_note_fill=window,
         activity_track=disabled, activity_low=text, activity_high=text,
         pill_surface=window, pill_edge=text,
+        key_top=window, key_bottom=window, key_edge=text, key_text=text,
     )
 
 
@@ -604,6 +610,7 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
     ("selected row line", PALETTE.accent_soft, flatten(PALETTE.accent_row_start, PALETTE.sidebar_top)),
     ("selected row icon", PALETTE.accent_bright, flatten(PALETTE.accent_tile_top, PALETTE.sidebar_top)),
     ("waiting pill text", PALETTE.text_primary, PALETTE.pill_surface),
+    ("keycap label", PALETTE.key_text, flatten(PALETTE.key_top, PALETTE.pane_bottom)),
     # The play mark is text on the highlight in a contrast theme, so it takes accent_bright.
     ("waiting pill play mark", PALETTE.accent_bright, flatten(PALETTE.accent_fill, PALETTE.pill_surface)),
     # The route-check marks sit on their own tints over the card's lighter top.

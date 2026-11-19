@@ -358,6 +358,8 @@ class MainWindow(QMainWindow):
     restart_audio_btn_action: QAction
     choose_microphone_btn_action: QAction
     user_mute_checkbox_action: QAction
+    start_menu_action: QAction
+    stop_menu_action: QAction
     _undo_auto_eq_button_action: QAction
     redo_button_action: QAction
     test_sound_button_action: QAction
@@ -1052,11 +1054,13 @@ class MainWindow(QMainWindow):
         start_action.setShortcut("Ctrl+Return")
         start_action.triggered.connect(self._on_menu_start)
         file_menu.addAction(start_action)
+        self.start_menu_action = start_action
 
         stop_action = QAction("S&top Processing", self)
         stop_action.setShortcut("Ctrl+.")
         stop_action.triggered.connect(self._on_menu_stop)
         file_menu.addAction(stop_action)
+        self.stop_menu_action = stop_action
 
         file_menu.addSeparator()
 

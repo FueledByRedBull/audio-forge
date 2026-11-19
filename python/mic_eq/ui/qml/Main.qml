@@ -1835,7 +1835,7 @@ Rectangle {
                 id: overviewPage
                 objectName: "overviewPage"
                 readonly property var ov: root.m.overview
-                spacing: 20
+                spacing: 14
 
                 // The status sentence: the state in words, beside a mark whose shape and colour only
                 // repeat them.
@@ -2237,7 +2237,7 @@ Rectangle {
                         Layout.fillWidth: true
                         Item {
                             id: ribbonBox
-                            implicitHeight: root.wide ? 90 : 72
+                            implicitHeight: root.wide ? 80 : 72
                             clip: true
                             Layout.fillWidth: true
                             // One sample wider than the box, slid by that sample between readings.
@@ -2384,6 +2384,62 @@ Rectangle {
                         font.pixelSize: root.fsCaption
                         wrapMode: Text.Wrap
                         Layout.fillWidth: true
+                    }
+                    Rectangle {
+                        implicitHeight: 1
+                        color: root.t.panel_edge
+                        Layout.fillWidth: true
+                        Layout.topMargin: 2
+                    }
+                    // The window's shortcuts, read from its own actions; a narrow pane wraps them.
+                    Flow {
+                        objectName: "shortcutRow"
+                        spacing: 20
+                        Layout.fillWidth: true
+                        Repeater {
+                            model: root.m.shortcuts
+                            delegate: Row {
+                                id: shortcut
+                                required property var modelData
+                                spacing: 6
+                                Accessible.role: Accessible.StaticText
+                                Accessible.name: modelData.keys.join("+") + ": " + modelData.action
+                                Repeater {
+                                    model: shortcut.modelData.keys
+                                    delegate: Rectangle {
+                                        id: keycap
+                                        required property string modelData
+                                        implicitWidth: Math.max(22, keyLabel.implicitWidth + 12)
+                                        implicitHeight: 22
+                                        radius: 7
+                                        border.color: root.t.key_edge
+                                        gradient: Gradient {
+                                            GradientStop { position: 0; color: root.t.key_top }
+                                            GradientStop { position: 1; color: root.t.key_bottom }
+                                        }
+                                        Accessible.ignored: true
+                                        Text {
+                                            id: keyLabel
+                                            anchors.centerIn: parent
+                                            textFormat: Text.PlainText
+                                            text: keycap.modelData
+                                            color: root.t.key_text
+                                            font.pixelSize: root.fsCaption
+                                            font.weight: Font.DemiBold
+                                        }
+                                    }
+                                }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    leftPadding: 2
+                                    textFormat: Text.PlainText
+                                    text: shortcut.modelData.action
+                                    color: root.t.text_muted
+                                    font.pixelSize: root.fsCaption
+                                    Accessible.ignored: true
+                                }
+                            }
+                        }
                     }
                 }
             }

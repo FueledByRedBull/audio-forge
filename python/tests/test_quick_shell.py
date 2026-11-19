@@ -2899,3 +2899,29 @@ def test_the_level_card_waits_for_start_again_after_a_stop(engine_window, qapp) 
     assert engine.running is False
     assert shown("ribbonWaiting") and not shown("levelRibbon")
     assert legend() == ["IN \u2014", "OUT \u2014"]
+
+
+def test_the_shortcut_row_shows_the_windows_own_shortcuts_one_phrase_each(quick_window, qapp) -> None:
+    from mic_eq.ui.command_palette import SHORTCUT
+
+    window = quick_window
+    qapp.processEvents()
+    row = _scene_item(window, "shortcutRow")
+    items = [item for item in row.childItems() if item.metaObject().className().startswith("QQuickRow")]
+    actions = (window.start_menu_action, window.stop_menu_action, window.user_mute_checkbox_action)
+    real = [action.shortcut().toString() for action in actions] + [SHORTCUT]
+    assert real == ["Ctrl+Return", "Ctrl+.", "Ctrl+M", "Ctrl+K"]
+
+    def caps(item) -> list[str]:
+        return [
+            label.property("text")
+            for key in item.childItems() if key.metaObject().className().startswith("QQuickRectangle")
+            for label in key.childItems()
+        ]
+
+    # The caps spell the real keys; Return is labelled Enter, as on the key itself.
+    assert ["+".join(caps(item)).replace("Enter", "Return") for item in items] == real
+    with _AccessibleScene() as scene:
+        assert [scene.name(item) for item in items] == [
+            "Ctrl+Enter: Start", "Ctrl+.: Stop", "Ctrl+M: Mute", "Ctrl+K: Search",
+        ]

@@ -19,7 +19,6 @@ from mic_eq.ui.main_window import MINIMUM_WINDOW_HEIGHT, MINIMUM_WINDOW_WIDTH, M
 from mic_eq.ui.processing_configuration import PresetOrigin
 from mic_eq.ui.quick_shell import InspectorState
 from mic_eq.ui.theme import RADIUS_PANEL
-from tools.capture_repository_screenshots import _install_sanitized_sources, _prepare_main_window
 
 INPUT = SimpleNamespace(name="CABLE Output (VB-Audio Virtual Cable)", is_default=True)
 OUTPUT = SimpleNamespace(name="Realtek Digital Output (Realtek USB Audio)", is_default=True)
@@ -537,12 +536,15 @@ def test_the_shortcut_row_wraps_clear_at_the_minimum_width(qapp, monkeypatch, se
         qapp.processEvents()
 
 
-def test_the_overview_fits_without_scrolling_at_1440_by_900(qapp, monkeypatch, segoe_font) -> None:
+def test_the_overview_fits_without_scrolling_at_1440_by_900(qapp, segoe_font) -> None:
     """The README capture's window, font and route, at the size the design was drawn for.
 
     No warning banner: with one, the page may scroll at this size.
     """
-    monkeypatch.setattr("mic_eq.ui.main_window.find_presets_refused_for_age", lambda: [])
+    # Imported here: the capture module pins QT_SCALE_FACTOR when it loads, and the high-DPI
+    # checks import this file in a child process that runs at another scale.
+    from tools.capture_repository_screenshots import _install_sanitized_sources, _prepare_main_window
+
     with _install_sanitized_sources():
         window = _prepare_main_window()
     window.resize(1440, 900)

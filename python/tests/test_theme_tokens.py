@@ -352,8 +352,9 @@ def test_moving_animations_go_through_movement() -> None:
             if target in _MOVING:
                 moving.append((path.name, target, duration))
             elif target == "phase":
-                # The busy sweep moves a block along its track; reduced motion stops it.
-                assert "running: bar.busy && !Look.reducedMotion" in source, path.name
+                # The busy sweep moves a block along its track; reduced motion stops it, and so does
+                # hiding the bar.
+                assert "running: bar.busy && bar.visible && !Look.reducedMotion" in source, path.name
     assert [item for item in moving if "Look.movement(" not in item[2]] == []
     # The inspector slide, the switch knob, the chevron, the fader handle and the ribbon are found.
     assert {target for _, target, _ in moving} >= {"x", "scale", "rotation", "progress"}

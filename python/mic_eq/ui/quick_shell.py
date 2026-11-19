@@ -442,6 +442,8 @@ class QuickBridge(QObject):
     def release(self) -> None:
         """Release scene adapters when the scene is dropped."""
 
+        # The compact window shows this scene's proxies too.
+        self._window.close_compact_window()
         self.deleteLater()
 
     levelsChanged = Signal()

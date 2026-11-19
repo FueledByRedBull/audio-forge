@@ -333,11 +333,13 @@ def test_tray_menu_keeps_its_items_and_mute_check(isolated_main_window, monkeypa
     try:
         assert [action.text() for action in menu.actions() if not action.isSeparator()] == [
             "Show AudioForge",
+            "Compact window",
             "Mute Output",
             "Keep running in tray when window is closed",
             "Quit AudioForge",
         ]
-        assert [action.isSeparator() for action in menu.actions()] == [False, False, True, False, True, False]
+        assert [action.isSeparator() for action in menu.actions()] == [False, False, False, True, False, True, False]
+        assert window.compact_window_action.shortcut().toString() == "Ctrl+Shift+A"
         assert window._tray_mute_action.isCheckable()
         assert menu.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
     finally:
@@ -351,7 +353,7 @@ def test_menu_items_meet_the_target_size(isolated_main_window, monkeypatch, qapp
         menu.show()
         qapp.processEvents()
         heights = [menu.actionGeometry(action).height() for action in menu.actions() if not action.isSeparator()]
-        assert len(heights) == 4 and min(heights) >= 36, heights
+        assert len(heights) == 5 and min(heights) >= 36, heights
         menu.close()
     finally:
         window._tray_icon.hide()

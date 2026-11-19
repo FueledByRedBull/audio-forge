@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from ..config import BUILTIN_PRESETS
+from ..config_parts.presets import RefusedPreset
 
 STARTUP_BUILTIN_PREFIX = "builtin:"
 STARTUP_CUSTOM_PREFIX = "custom:"
@@ -97,3 +98,24 @@ def route_preset_selection(
         return None
     name, filepath = matches[0]
     return startup_custom_file_id(filepath.name), (name, filepath)
+
+
+def refusal_reason_for_preset_id(
+    preset_id: str, refused: list[RefusedPreset]
+) -> str | None:
+    """Why the one preset file behind a custom preset ID is refused for age, if it is.
+
+    Only the presets folder counts: the library lists no imported file, so no ID names one.
+    """
+    refused = [item for item in refused if not item.imported]
+    if preset_id.startswith(STARTUP_CUSTOM_FILE_PREFIX):
+        identity = preset_id[len(STARTUP_CUSTOM_FILE_PREFIX):]
+        matches = [item for item in refused if item.path.name == identity]
+    elif preset_id.startswith(STARTUP_CUSTOM_PREFIX):
+        identity = preset_id[len(STARTUP_CUSTOM_PREFIX):]
+        matches = [
+            item for item in refused if item.name == identity or item.path.name == identity
+        ]
+    else:
+        matches = [item for item in refused if item.name == preset_id]
+    return matches[0].reason if len(matches) == 1 else None

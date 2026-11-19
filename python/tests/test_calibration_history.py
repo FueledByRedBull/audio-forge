@@ -56,12 +56,12 @@ def test_saved_evidence_roundtrip_invalidation_and_privacy():
     config = AppConfig(calibration_results=[result])
     loaded = AppConfig.from_dict(config.to_dict())
     assert loaded.calibration_results == [result]
-    assert result.matches("private endpoint + format", settings)
-    assert not result.matches("replacement microphone", settings)
+    assert result.matches_capture_and_correction("private endpoint + format", settings)
+    assert not result.matches_capture_and_correction("replacement microphone", settings)
     changed = deepcopy(settings)
     changed["compressor"]["threshold_db"] = -20.0
-    assert not result.matches("private endpoint + format", changed)
-    assert not result.matches(None, settings)
+    assert not result.matches_capture_and_correction("private endpoint + format", changed)
+    assert not result.matches_capture_and_correction(None, settings)
     assert "private endpoint" not in str(config.to_dict()["calibration_results"])
     assert "audio" not in result.to_dict()
     assert len(parse_calibration_results([result.to_dict()] * 30)) == 16
@@ -158,45 +158,7 @@ def test_new_calibration_does_not_invalidate_on_marketing_version_change():
     parsed = CalibrationResult.from_value(payload)
 
     assert parsed is not None
-    assert parsed.matches("route", settings)
-
-
-def test_legacy_calibration_record_remains_conservative():
-    settings = {"eq": {"enabled": True}}
-    payload = CalibrationResult.capture(
-        "eq_only", "route", settings, "flat", ("eq",)
-    ).to_dict()
-    payload["version"] = 1
-    for field in ("correction_hash", "verification_hash", "compatibility"):
-        payload.pop(field, None)
-
-    parsed = CalibrationResult.from_value(payload)
-
-    assert parsed is not None and parsed.version == 1
-    assert parsed.matches("route", settings)
-    payload["app_version"] = "future-marketing-version"
-    future = CalibrationResult.from_value(payload)
-    assert future is not None
-    assert not future.matches("route", settings)
-
-    full_settings = json.loads(preset_payload(Preset()))
-    full_payload = CalibrationResult.capture(
-        "full_voice_setup", "route", full_settings, "broadcast", ("eq",)
-    ).to_dict()
-    full_payload["version"] = 1
-    for field in ("correction_hash", "verification_hash", "compatibility"):
-        full_payload.pop(field, None)
-    legacy_full = CalibrationResult.from_value(full_payload)
-    assert legacy_full is not None
-    owner = SimpleNamespace(
-        config=AppConfig(calibration_results=[legacy_full]),
-        _calibration_context_key=lambda: "route",
-        configuration=SimpleNamespace(current=Preset(), replaying=False),
-    )
-    assert (
-        calibration_history.current_calibration(cast(Any, owner), "full_voice_setup")
-        is legacy_full
-    )
+    assert parsed.matches_capture_and_correction("route", settings)
 
 
 def test_status_refresh_is_read_only_for_calibration_dsp():

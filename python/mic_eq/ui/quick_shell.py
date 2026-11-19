@@ -456,11 +456,8 @@ class QuickBridge(QObject):
             # QMenu/QAction are the shared native command owners.
             return ActionControl(target.menuAction(), self, name=label, text=label, menu=target)
 
-        controls: dict[tuple[str, str], SettingControl] = {}
-
         def control(section: str, key: str) -> SettingControl:
-            controls[(section, key)] = SettingControl(getattr(w, section + "_state"), section, key, self)
-            return controls[(section, key)]
+            return SettingControl(getattr(w, section + "_state"), section, key, self)
 
         def state_field(section: str, key: str, *, slider: bool = False) -> dict:
             return {
@@ -684,18 +681,14 @@ class QuickBridge(QObject):
         }
         preset_actions = [ActionControl(item, self) for item in w.builtin_presets_menu.actions()]
         commands = window_commands(
-            top=top, presets=presets, chain=chain, settings=controls, preset_actions=preset_actions,
-            pages=[
-                ("Overview", 0), ("Health", w.HEALTH_PAGE_INDEX), ("Settings", w.SETTINGS_PAGE_INDEX),
-                ("Equalizer", w.EQUALIZER_PAGE_INDEX),
-            ],
-            page_state=w.shell_page,
+            top=top, presets=presets, chain=chain, stages=by_key, preset_actions=preset_actions,
         )
         palette = CommandPalette(self, w, commands, [
             *(top[key].changed for key in ("start", "stop", "mute")),
             *(presets[key].changed for key in ("testSound", "voiceSetup")),
             *(row["toggle"].changed for row in chain if row["toggle"] is not None),
-            *(proxy.changed for proxy in (*controls.values(), *preset_actions)),
+            *(command.setting.changed for command in commands if command.setting is not None),
+            *(proxy.changed for proxy in preset_actions),
         ])
         # Another page has no inspector beside it.
         w.shell_page.selected.connect(inspector.close)
@@ -851,6 +844,8 @@ def install_quick_shell(window) -> None:
 
     window.setCentralWidget(view)
     window.quick_bridge = bridge
+    # Every text field of the scene is inside the view, so the palette's shortcut is kept here.
+    view.installEventFilter(bridge._model["palette"])
     # A scene that loads can still fail to render, for example without a
     # usable graphics adapter.
     view.sceneGraphError.connect(lambda _error, message: _scene_stopped(window, message))

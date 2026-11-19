@@ -2272,6 +2272,7 @@ Rectangle {
         anchors.fill: parent
         commands: root.m.palette
         backdrop: mainPane
+        fallbackFocus: overviewRow.button
     }
 
     // On top, so a press is seen before the control under it takes focus:

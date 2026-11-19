@@ -10,18 +10,21 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from PySide6.QtCore import Property, QObject, Qt, Signal, Slot
-from PySide6.QtGui import QAccessible, QAccessibleAnnouncementEvent, QAction, QKeySequence
+from PySide6.QtCore import Property, QEvent, QObject, Qt, Signal, Slot
+from PySide6.QtGui import QAccessible, QAccessibleAnnouncementEvent, QAction, QKeyEvent, QKeySequence
 from PySide6.QtWidgets import QWidget
 
+from .control_specs import control_label
 from .processing_controls import SettingControl
-from .shell_state import ActionControl, PageState
+from .shell_state import ActionControl
 
 SHORTCUT = "Ctrl+K"
 CALLERS_LINE = "Callers hear this."
+# Test my sound and Auto Voice Setup hold the live output muted while they record or play.
+CALLERS_MUTED_LINE = "Callers hear nothing while it runs."
 NO_MATCH_TEXT = "No matching commands"
 # The numeric settings a row can change: each one sets a level or an amount callers hear, and
-# the setting's own range keeps every step safe. (section, key, title)
+# the setting's own range keeps every step safe. (stage, setting, title)
 NUMBER_SETTINGS = (
     ("gate", "threshold_db", "Gate threshold"),
     ("compressor", "threshold_db", "Compressor threshold"),
@@ -33,25 +36,27 @@ NUMBER_SETTINGS = (
 
 @dataclass(frozen=True)
 class Command:
-    """One row: what it is called, what it says, and how it runs."""
+    """One row: what it is called, what it says, and how it runs.
+
+    A row with a ``setting`` is numeric: Enter applies its draft. Any other row runs ``run``.
+    """
 
     key: str
     group: str
-    kind: str  # "action", "toggle", "number" or "page"
     title: Callable[[], str]
     detail: Callable[[], str]
     enabled: Callable[[], bool]
-    run: Callable[[], None]
-    callers: bool
+    callers: str
+    run: Callable[[], None] | None = None
     value: Callable[[], str] = lambda: ""
     setting: SettingControl | None = None
 
 
 def action_command(key: str, title: str | Callable[[], str], detail: str, proxy: ActionControl,
-                   *, callers: bool, group: str = "Action") -> Command:
+                   *, callers: str, group: str = "Action") -> Command:
     return Command(
-        key, group, "action", title if callable(title) else (lambda: title), lambda: detail,
-        lambda: bool(proxy.property("enabled")), proxy.click, callers,
+        key, group, title if callable(title) else (lambda: title), lambda: detail,
+        lambda: bool(proxy.property("enabled")), callers, run=proxy.click,
     )
 
 
@@ -59,16 +64,18 @@ def preset_command(proxy: ActionControl) -> Command:
     """A built-in preset, loaded through its entry in the Presets menu."""
 
     name = str(proxy.property("text"))
-    return action_command("preset:" + name, name, proxy.action.toolTip(), proxy, callers=True, group="Preset")
+    return action_command(
+        "preset:" + name, name, proxy.action.toolTip(), proxy, callers=CALLERS_LINE, group="Preset",
+    )
 
 
 def toggle_command(name: str, proxy) -> Command:
     """A stage's on/off switch, through the proxy its page uses."""
 
     return Command(
-        "stage:" + name, "Stage", "toggle", lambda: name,
+        "stage:" + name, "Stage", lambda: name,
         lambda: "Enter turns it off." if proxy.property("checked") else "Enter turns it on.",
-        lambda: bool(proxy.property("enabled")), proxy.click, True,
+        lambda: bool(proxy.property("enabled")), CALLERS_LINE, run=proxy.click,
         value=lambda: "On" if proxy.property("checked") else "Off",
     )
 
@@ -77,48 +84,49 @@ def number_command(key: str, title: str, proxy: SettingControl) -> Command:
     """A numeric setting; the palette keeps a draft of it until Enter."""
 
     return Command(
-        "setting:" + key, "Setting", "number", lambda: title,
+        "setting:" + key, "Setting", lambda: title,
         lambda: "Left and Right change it; Enter applies it.",
-        lambda: bool(proxy.property("enabled")), lambda: None, True, value=lambda: str(proxy.property("text")),
-        setting=proxy,
+        lambda: bool(proxy.property("enabled")), CALLERS_LINE,
+        value=lambda: str(proxy.property("text")), setting=proxy,
     )
 
 
-def page_command(name: str, index: int, pages: PageState) -> Command:
-    return Command(
-        "page:" + name, "Page", "page", lambda: "Open " + name, lambda: f"Show the {name} page.",
-        lambda: True, lambda: pages.setIndex(index), False,
-    )
+def stage_setting(stage: dict, section: str, key: str) -> SettingControl:
+    """The proxy a stage's page shows for one of its settings."""
+
+    label = control_label(section, key)
+    return next(row["proxy"] for row in stage["rows"] + stage["advanced"] if row["label"] == label)
 
 
 def window_commands(
-    *, top: dict, presets: dict, chain: list[dict], settings: dict[tuple[str, str], SettingControl],
-    preset_actions: list[ActionControl], pages: list[tuple[str, int]], page_state: PageState,
+    *, top: dict, presets: dict, chain: list[dict], stages: dict[str, dict], preset_actions: list[ActionControl],
 ) -> list[Command]:
-    """The rows, built from the proxies the scene's toolbar, stage rows, menus and pages use."""
+    """The rows, built from the proxies the scene's toolbar, stage pages and menus use."""
 
     mute: ActionControl = top["mute"]
     return [
-        action_command("start", "Start processing", "Start processing your voice.", top["start"], callers=True),
-        action_command("stop", "Stop processing", "Stop processing your voice.", top["stop"], callers=True),
+        action_command(
+            "start", "Start processing", "Start processing your voice.", top["start"], callers=CALLERS_LINE,
+        ),
+        action_command("stop", "Stop processing", "Stop processing your voice.", top["stop"], callers=CALLERS_LINE),
         action_command(
             "mute", lambda: "Unmute" if mute.property("checked") else "Mute",
-            "Keep transmission muted until you turn it off.", mute, callers=True,
+            "Keep transmission muted until you turn it off.", mute, callers=CALLERS_LINE,
         ),
         action_command(
             "voice_setup", "Run Auto Voice Setup",
-            "Record room noise and speech, then set up the voice chain.", presets["voiceSetup"], callers=False,
+            "Record room noise and speech, then set up the voice chain.", presets["voiceSetup"],
+            callers=CALLERS_MUTED_LINE,
         ),
         action_command(
             "test_sound", "Test my sound",
             "Record five seconds, then hear the recording and the current settings.",
-            presets["testSound"], callers=False,
+            presets["testSound"], callers=CALLERS_MUTED_LINE,
         ),
         *(toggle_command(row["name"], row["toggle"]) for row in chain if row["toggle"] is not None),
         *(preset_command(proxy) for proxy in preset_actions),
-        *(number_command(f"{section}.{key}", title, settings[(section, key)])
+        *(number_command(f"{section}.{key}", title, stage_setting(stages[section], section, key))
           for section, key, title in NUMBER_SETTINGS),
-        *(page_command(name, index, page_state) for name, index in pages),
     ]
 
 
@@ -152,21 +160,39 @@ class CommandPalette(QObject):
     noMatchText = Property(str, lambda self: NO_MATCH_TEXT, constant=True)
     shortcut = Property(str, lambda self: SHORTCUT, constant=True)
 
+    def eventFilter(self, watched, event) -> bool:
+        """Keep Ctrl+K for the palette when a text field in the scene would take it as an edit key.
+
+        Some platforms bind Ctrl+K to "delete to the end of the line"; a field that claims the key
+        would stop the window shortcut. Installed on the scene's view, which holds every field.
+        """
+        if (
+            event.type() == QEvent.Type.ShortcutOverride
+            and isinstance(event, QKeyEvent)
+            and QKeySequence(event.keyCombination()) == self.action.shortcut()
+        ):
+            event.ignore()
+            return True
+        return False
+
     def _row(self, command: Command) -> dict:
         detail, value = command.detail(), command.value()
         draft = self._drafts.get(command.key)
         if draft is not None and command.setting is not None:
             value = command.setting.format_value(draft)
             detail = f"Was {command.setting.property('text')}. Enter applies it; Esc discards it."
-        callers = CALLERS_LINE if command.callers else ""
         return {
-            "key": command.key, "group": command.group, "kind": command.kind,
-            "title": command.title(), "detail": detail, "callers": callers,
-            "description": f"{detail} {callers}".strip(), "enabled": bool(command.enabled()),
+            "key": command.key, "group": command.group,
+            "title": command.title(), "detail": detail, "callers": command.callers,
+            "description": f"{detail} {command.callers}".strip(), "enabled": bool(command.enabled()),
             "value": value, "draft": draft is not None,
         }
 
     def _refresh(self, *, reselect: bool = False) -> None:
+        # A draft of a setting that has become disabled could not be applied; it goes.
+        for command in self._commands:
+            if command.key in self._drafts and not command.enabled():
+                del self._drafts[command.key]
         terms = self._query.casefold().split()
         matches = []
         rows = []
@@ -211,21 +237,33 @@ class CommandPalette(QObject):
     def setQuery(self, query: str) -> None:
         if query != self._query:
             self._query = query
+            # A draft never survives out of sight, in a row the new filter may hide.
+            self._drafts.clear()
             self._refresh(reselect=True)
             self.changed.emit()
+            if not self._rows:
+                self._announce(NO_MATCH_TEXT)
 
     @Slot(int)
     def move(self, step: int) -> None:
         """Move the selection by ``step`` rows, stopping at either end."""
         if self._rows:
             self.select(max(0, min(len(self._rows) - 1, self._current + step)))
-            self._announce()
+            self._announce_current()
 
     @Slot(int)
     def select(self, index: int) -> None:
         if 0 <= index < len(self._rows) and index != self._current:
             self._current = index
             self.changed.emit()
+
+    @Slot(int)
+    def clickAt(self, index: int) -> None:
+        """A click selects a row; a click on the selected row runs it."""
+        if index == self._current:
+            self.run()
+        else:
+            self.select(index)
 
     def _selected(self) -> Command | None:
         return self._matches[self._current] if 0 <= self._current < len(self._matches) else None
@@ -247,13 +285,8 @@ class CommandPalette(QObject):
             else:
                 self._drafts[command.key] = draft
             self._refresh()
-            self._announce()
+            self._announce_current()
         return True
-
-    @Slot(int)
-    def adjustAt(self, index: int, direction: int) -> None:
-        self.select(index)
-        self.adjust(direction)
 
     @Slot()
     def run(self) -> None:
@@ -269,17 +302,15 @@ class CommandPalette(QObject):
                 # As a page edit does: the value, then the release that ends the edit in history.
                 command.setting.setValue(draft)
                 command.setting.released()
-        else:
+        elif command.run is not None:
             command.run()
 
-    @Slot(int)
-    def runAt(self, index: int) -> None:
-        self.select(index)
-        self.run()
-
-    def _announce(self) -> None:
+    def _announce_current(self) -> None:
         # The search field keeps focus, so the selected row is told to assistive technology.
-        if 0 <= self._current < len(self._rows) and QAccessible.isActive():
+        if 0 <= self._current < len(self._rows):
             row = self._rows[self._current]
-            text = ", ".join(part for part in (row["title"], row["value"], row["description"]) if part)
+            self._announce(", ".join(part for part in (row["title"], row["value"], row["description"]) if part))
+
+    def _announce(self, text: str) -> None:
+        if QAccessible.isActive():
             QAccessible.updateAccessibility(QAccessibleAnnouncementEvent(self._window, text))

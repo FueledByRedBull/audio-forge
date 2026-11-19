@@ -13,66 +13,47 @@ Item {
     property Item backdrop: null
     // Where focus was when the palette opened; it goes back there when the palette closes.
     property Item origin: null
+    // Where focus goes instead when the origin is gone or hidden by then.
+    property Item fallbackFocus: null
     readonly property bool shown: commands.shown
+    // Whether the running transition opens the panel; set before it starts, so its length is
+    // the opening or the closing one.
+    property bool opening: false
     // 0 while closed and 1 while open; the panel drops in by it.
-    property real progress: shown ? 1 : 0
+    property real progress: 0
     readonly property real drop: 12
 
-    // A pointer's way to step a numeric draft; the keyboard's is Left and Right.
-    component Stepper: Rectangle {
-        id: stepper
-        property string sign
-        signal stepped()
-        anchors.verticalCenter: parent.verticalCenter
-        implicitWidth: 24
-        implicitHeight: 24
-        radius: Look.t.radiusControl
-        color: press.containsMouse ? Look.t.control_hover : "transparent"
-        border.color: Look.t.control_edge
-        Accessible.ignored: true
-        Text {
-            anchors.centerIn: parent
-            text: stepper.sign
-            textFormat: Text.PlainText
-            color: Look.t.text_primary
-            font.pixelSize: Look.fsBody
-            Accessible.ignored: true
-        }
-        MouseArea {
-            id: press
-            anchors.fill: parent
-            hoverEnabled: true
-            onClicked: stepper.stepped()
-            Accessible.ignored: true
-        }
-    }
-
     visible: shown || opacity > 0
-    opacity: shown ? 1 : 0
+    opacity: 0
 
     Behavior on opacity {
-        NumberAnimation { objectName: "paletteFade"; duration: Look.t.motionCrossfade }
+        NumberAnimation { id: fade; objectName: "paletteFade"; duration: Look.t.motionCrossfade }
     }
     // Under reduced motion the panel does not drop in; it only fades.
     Behavior on progress {
         NumberAnimation {
+            id: move
             objectName: "paletteMove"
-            duration: Look.movement(Look.t.motionPanelOpen)
+            duration: Look.movement(overlay.opening ? Look.t.motionPanelOpen : Look.t.motionPanelClose)
             easing.type: Easing.BezierSpline
             easing.bezierCurve: Look.t.easePanelOpen
         }
     }
 
     onShownChanged: {
+        opening = shown
+        progress = shown ? 1 : 0
+        opacity = shown ? 1 : 0
         if (shown) {
             origin = Window.activeFocusItem
             field.text = ""
             field.forceActiveFocus(Qt.ShortcutFocusReason)
         } else {
-            const back = origin
+            const back = origin && origin.visible && origin.enabled ? origin : fallbackFocus
             origin = null
+            // As a keyboard move, so the control's focus ring shows where focus landed.
             if (back)
-                back.forceActiveFocus(Qt.OtherFocusReason)
+                back.forceActiveFocus(Qt.TabFocusReason)
         }
     }
 
@@ -82,6 +63,9 @@ Item {
         function onChanged() {
             Qt.callLater(overlay.reveal)
         }
+    }
+    function plain(event) {
+        return (event.modifiers & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) === 0
     }
     function reveal() {
         if (commands.current >= 0)
@@ -139,9 +123,10 @@ Item {
                 onTextChanged: overlay.commands.setQuery(text)
                 Keys.onUpPressed: overlay.commands.move(-1)
                 Keys.onDownPressed: overlay.commands.move(1)
-                // On a numeric row the arrows step its value; elsewhere they move the cursor.
-                Keys.onLeftPressed: event => event.accepted = overlay.commands.adjust(-1)
-                Keys.onRightPressed: event => event.accepted = overlay.commands.adjust(1)
+                // On a numeric row a plain arrow steps its value; elsewhere, or with Shift or
+                // Ctrl held, the arrows move the cursor.
+                Keys.onLeftPressed: event => event.accepted = overlay.plain(event) && overlay.commands.adjust(-1)
+                Keys.onRightPressed: event => event.accepted = overlay.plain(event) && overlay.commands.adjust(1)
                 Keys.onReturnPressed: event => { if (!event.isAutoRepeat) overlay.commands.run() }
                 Keys.onEnterPressed: event => { if (!event.isAutoRepeat) overlay.commands.run() }
                 Keys.onEscapePressed: overlay.commands.close()
@@ -175,7 +160,6 @@ Item {
                     required property var modelData
                     required property int index
                     readonly property bool selected: index === overlay.commands.current
-                    readonly property bool numeric: modelData.kind === "number"
                     width: ListView.view.width
                     height: Math.max(44, texts.implicitHeight + 12)
                     radius: Look.t.radiusControl
@@ -187,12 +171,12 @@ Item {
                     Accessible.description: modelData.description
                     Accessible.selectable: true
                     Accessible.selected: selected
-
                     MouseArea {
                         id: pointer
                         anchors.fill: parent
                         hoverEnabled: true
-                        onClicked: overlay.commands.runAt(row.index)
+                        // A click selects a row; a click on the selected row runs it.
+                        onClicked: overlay.commands.clickAt(row.index)
                         Accessible.ignored: true
                     }
                     Column {
@@ -208,7 +192,7 @@ Item {
                             text: row.modelData.title
                             textFormat: Text.PlainText
                             elide: Text.ElideRight
-                            color: !row.enabled ? Look.t.action_disabled_text
+                            color: !row.enabled ? (row.selected ? Look.t.text_muted : Look.t.action_disabled_text)
                                 : row.selected ? Look.t.hover_text : Look.t.text_primary
                             font.pixelSize: Look.fsBody
                             Accessible.ignored: true
@@ -243,7 +227,6 @@ Item {
                         anchors.rightMargin: 10
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 4
-                        Stepper { visible: row.numeric; sign: "-"; onStepped: overlay.commands.adjustAt(row.index, -1) }
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
                             text: row.modelData.value
@@ -254,18 +237,16 @@ Item {
                             font.features: { "tnum": 1 }
                             Accessible.ignored: true
                         }
-                        Stepper { visible: row.numeric; sign: "+"; onStepped: overlay.commands.adjustAt(row.index, 1) }
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
                             leftPadding: 6
                             text: row.modelData.group
                             textFormat: Text.PlainText
-                            color: Look.t.text_dim
+                            color: row.selected ? Look.t.text_muted : Look.t.text_dim
                             font.pixelSize: Look.fsCaption
                             Accessible.ignored: true
                         }
                     }
-
                 }
             }
 

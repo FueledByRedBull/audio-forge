@@ -511,6 +511,30 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
         )
     ),
     ("muted text on modal glass", PALETTE.text_muted, flatten(PALETTE.glass_modal, PALETTE.app_surface)),
+    # The command palette's rows, on its modal glass and on the selected row's fill over it.
+    *(
+        (f"palette {label} on modal glass", foreground, flatten(PALETTE.glass_modal, PALETTE.app_surface))
+        for label, foreground in (
+            ("primary text", PALETTE.text_primary),
+            ("dim text", PALETTE.text_dim),
+            ("disabled text", PALETTE.action_disabled_text),
+            ("accent text", PALETTE.accent_text),
+            ("callers text", PALETTE.callers_affected_text),
+        )
+    ),
+    *(
+        (
+            f"palette {label} on the selected row",
+            foreground,
+            flatten(PALETTE.accent_fill, flatten(PALETTE.glass_modal, PALETTE.app_surface)),
+        )
+        for label, foreground in (
+            ("title", PALETTE.hover_text),
+            ("muted text", PALETTE.text_muted),
+            ("accent text", PALETTE.accent_text),
+            ("callers text", PALETTE.callers_affected_text),
+        )
+    ),
     ("signal in label", PALETTE.signal_in, PALETTE.data_surface),
     ("signal out label", PALETTE.signal_out, PALETTE.data_surface),
     # The number on the selected EQ handle, dark on the band's color.

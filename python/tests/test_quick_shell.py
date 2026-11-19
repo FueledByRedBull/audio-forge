@@ -31,7 +31,7 @@ from PySide6.QtWidgets import QMenu, QMessageBox
 
 from mic_eq.config import AppConfig, DeviceIdentity
 from mic_eq.config_parts.settings import q_from_bandwidth_octaves
-from mic_eq.ui import health
+from mic_eq.ui import health, platform_text
 from mic_eq.ui.health import HealthReadings
 from mic_eq.ui.main_window import NO_MIC_START_TIP, PAGE_NAMES, MainWindow
 from mic_eq.ui.processing_configuration import PresetOrigin
@@ -48,6 +48,8 @@ from mic_eq.ui.overview_presentation import (
     NO_MIC_DETAIL,
     NO_MIC_REASON,
     RECOMMEND_SETUP_HINT,
+    SOUND_SETTINGS_FAILED,
+    SOUND_SETTINGS_LINE,
 )
 from mic_eq.ui.quick_shell import InspectorState, SettingControl
 from mic_eq.ui.theme import PALETTE
@@ -1948,6 +1950,148 @@ def test_a_restart_from_the_overview_stops_and_starts_the_audio(engine_window, q
     assert _sentence(window)[0] == "Live · your voice is clean"
 
 
+def _clipping_notice(window) -> dict:
+    names = {
+        "block": "overviewClippingNotice", "note": "overviewClippingNote", "line": "overviewSoundSettingsLine",
+        "failure": "overviewSoundSettingsFailure", "show": "overviewShowMeHow", "later": "overviewRemindLater",
+    }
+    return {key: _scene_item(window, name) for key, name in names.items()}
+
+
+def _clip(window, qapp, clipping: bool = True) -> None:
+    window.shell_texts["input_health_label"].update(
+        text="Input: CLIPPING" if clipping else "Input: OK", status="bad" if clipping else "ok",
+    )
+    qapp.processEvents()
+
+
+def test_the_clipping_notice_names_the_limit_and_the_way_to_sound_settings(engine_window, qapp) -> None:
+    window, _engine = engine_window
+    notice = _clipping_notice(window)
+    window.start_btn_action.trigger()
+    qapp.processEvents()
+    assert not notice["block"].property("visible")
+
+    _clip(window, qapp)
+    assert _sentence(window)[0] == "Live \u00b7 your mic is clipping"
+    assert notice["block"].property("visible")
+    assert notice["note"].property("text") == CLIPPING_NOTE
+    assert notice["line"].property("text") == SOUND_SETTINGS_LINE
+    assert SOUND_SETTINGS_LINE == "\u201cShow me how\u201d opens Windows Sound settings."
+    assert not notice["failure"].property("visible")
+    assert notice["show"].property("text") == "Show me how" and notice["show"].property("look") == "primary"
+    assert notice["later"].property("text") == "Remind me later" and notice["later"].property("look") == "plain"
+    # The fix text appears once on the Overview: in the notice, not in the sentence's detail.
+    assert CLIPPING_NOTE not in _sentence(window)[1]
+    assert notice["note"].property("color").name() == QColor(PALETTE.status_bad_text).name()
+
+    _clip(window, qapp, clipping=False)
+    assert not notice["block"].property("visible")
+
+
+def test_show_me_how_opens_windows_sound_settings_through_the_injected_opener(engine_window, qapp) -> None:
+    window, _engine = engine_window
+    overview = window.quick_bridge.model["overview"]
+    opened: list[str] = []
+    overview.open_url = lambda url: opened.append(url) or True
+    window.start_btn_action.trigger()
+    _clip(window, qapp)
+    notice = _clipping_notice(window)
+
+    notice["show"].click()
+    qapp.processEvents()
+    assert opened == ["ms-settings:sound"]
+    assert not notice["failure"].property("visible")
+    assert notice["block"].property("visible")
+
+
+def test_a_sound_settings_that_does_not_open_says_so_in_words(engine_window, qapp) -> None:
+    window, _engine = engine_window
+    overview = window.quick_bridge.model["overview"]
+    results = iter([False, True])
+    overview.open_url = lambda _url: next(results)
+    window.start_btn_action.trigger()
+    _clip(window, qapp)
+    notice = _clipping_notice(window)
+
+    notice["show"].click()
+    qapp.processEvents()
+    assert notice["failure"].property("visible")
+    assert notice["failure"].property("text") == SOUND_SETTINGS_FAILED
+    assert "Settings > System > Sound" in SOUND_SETTINGS_FAILED
+
+    notice["show"].click()
+    qapp.processEvents()
+    assert not notice["failure"].property("visible")
+
+
+def test_remind_me_later_hides_the_notice_until_processing_stops_or_starts(engine_window, qapp) -> None:
+    window, _engine = engine_window
+    window.start_btn_action.trigger()
+    _clip(window, qapp)
+    notice = _clipping_notice(window)
+
+    notice["later"].click()
+    qapp.processEvents()
+    assert not notice["block"].property("visible")
+    # The sentence and its advice stay; only the notice goes.
+    assert _sentence(window)[0] == "Live \u00b7 your mic is clipping"
+    _clip(window, qapp, clipping=False)
+    _clip(window, qapp)
+    assert not notice["block"].property("visible")
+
+    # A button Start right after a button Stop is dropped; the menu's is not.
+    window.stop_btn_action.trigger()
+    qapp.processEvents()
+    _menu_start(window).trigger()
+    _clip(window, qapp)
+    assert notice["block"].property("visible")
+
+    # Stopping alone also ends the wait.
+    notice["later"].click()
+    qapp.processEvents()
+    assert not notice["block"].property("visible")
+    window.stop_btn_action.trigger()
+    qapp.processEvents()
+    assert window.quick_bridge.model["overview"]._notice_dismissed is False
+    _menu_start(window).trigger()
+    _clip(window, qapp)
+    assert notice["block"].property("visible")
+
+
+def test_the_clipping_notice_offers_no_sound_settings_off_windows(engine_window, qapp, monkeypatch) -> None:
+    window, _engine = engine_window
+    window.start_btn_action.trigger()
+    _clip(window, qapp)
+    notice = _clipping_notice(window)
+    assert notice["show"].property("visible") and notice["line"].property("visible")
+
+    monkeypatch.setattr(platform_text, "IS_WINDOWS", False)
+    window.quick_bridge.model["overview"].changed.emit()
+    qapp.processEvents()
+    assert not notice["show"].property("visible") and not notice["line"].property("visible")
+    # The note and the way to wait it out stay.
+    assert notice["block"].property("visible") and notice["later"].property("visible")
+    assert notice["note"].property("text") == CLIPPING_NOTE
+
+
+def test_tab_reaches_both_clipping_notice_buttons_and_assistive_technology_names_them(
+    engine_window, qapp,
+) -> None:
+    window, _engine = engine_window
+    window.start_btn_action.trigger()
+    _clip(window, qapp)
+    notice = _clipping_notice(window)
+    assert notice["show"].property("activeFocusOnTab") and notice["later"].property("activeFocusOnTab")
+
+    with _AccessibleScene() as scene:
+        names = [item.objectName() for item in _tab_stops(window, qapp)]
+        assert "overviewShowMeHow" in names and "overviewRemindLater" in names
+        assert names.index("overviewShowMeHow") < names.index("overviewRemindLater")
+        assert scene.name(notice["show"]) == "Show me how"
+        assert scene.name(notice["later"]) == "Remind me later"
+
+
 def test_ready_recommends_auto_voice_setup_until_one_is_saved(engine_window, qapp, monkeypatch) -> None:
     window, _engine = engine_window
     qapp.processEvents()
@@ -1993,7 +2137,7 @@ def test_each_live_state_is_said_in_words_and_marked_by_the_dot(engine_window, q
 
     texts["input_health_label"].update(text="Input: CLIPPING", status="bad")
     headline, detail = _sentence(window)
-    assert headline == "Live · your mic is clipping" and detail.endswith(CLIPPING_NOTE)
+    assert headline == "Live · your mic is clipping" and CLIPPING_NOTE not in detail
     assert dot() == palette("status_bad_text")
     texts["input_health_label"].update(text="Input: OK", status="ok")
 

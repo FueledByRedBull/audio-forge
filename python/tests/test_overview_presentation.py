@@ -9,6 +9,7 @@ import pytest
 
 from mic_eq.ui.chain_presentation import ChainInputs, describe_chain
 from mic_eq.ui.overview_presentation import (
+    CLIPPING_NOTE,
     MUTE_PENDING_ISSUE,
     RECOMMEND_SETUP_HINT,
     UNMUTE_PENDING_ISSUE,
@@ -59,6 +60,17 @@ def test_restart_is_offered_only_for_running_audio_whose_device_failed() -> None
         assert not describe_overview(replace(LIVE, **changes)).offer_restart, changes
 
 
+def test_the_clipping_notice_is_shown_only_in_the_clipping_state() -> None:
+    assert describe_overview(replace(LIVE, input_bad=True)).show_clipping_notice
+    # Muted, a lost device and a stopped engine outrank clipping, and none of them offers the notice.
+    for changes in (
+        {}, {"issues": ("a",)}, {"muted": True, "input_bad": True},
+        {"device_bad": True, "input_bad": True}, {"running": False, "input_bad": True},
+        {"no_mic": True, "running": False, "input_bad": True},
+    ):
+        assert not describe_overview(replace(LIVE, **changes)).show_clipping_notice, changes
+
+
 def test_each_state_says_what_is_happening_in_words() -> None:
     def view(**changes):
         return describe_overview(replace(LIVE, **changes))
@@ -101,8 +113,9 @@ def test_each_state_says_what_is_happening_in_words() -> None:
 
     clipping = view(input_bad=True, input_advice="Turn the microphone down.")
     assert clipping.headline == "Live · your mic is clipping" and clipping.tone == "bad"
-    assert clipping.detail.startswith("Turn the microphone down. ")
-    assert "before AudioForge" in clipping.detail
+    # The fix text lives once, in the notice under the sentence.
+    assert clipping.detail == "Turn the microphone down."
+    assert CLIPPING_NOTE not in clipping.detail
 
     lost = view(device_bad=True, device_advice="Check that the device is connected.")
     assert lost.headline == "Your callers can't hear you"

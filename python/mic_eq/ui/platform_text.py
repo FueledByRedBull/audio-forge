@@ -4,5 +4,7 @@ from __future__ import annotations
 
 import sys
 
+IS_WINDOWS = sys.platform == "win32"
+
 # Where the user changes the microphone level: "in Windows or on the microphone".
-SOUND_SETTINGS = "Windows" if sys.platform == "win32" else "your sound settings"
+SOUND_SETTINGS = "Windows" if IS_WINDOWS else "your sound settings"

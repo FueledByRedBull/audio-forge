@@ -1543,6 +1543,66 @@ Rectangle {
                         Layout.fillWidth: true
                         Layout.leftMargin: 32
                     }
+                    // What the limiter cannot do about clipping, and the way to where it can be fixed.
+                    Rectangle {
+                        objectName: "overviewClippingNotice"
+                        visible: overviewPage.ov.showClippingNotice
+                        implicitHeight: noticeBody.implicitHeight + 24
+                        radius: root.t.radiusControl
+                        color: root.t.status_bad_surface
+                        border.color: root.t.status_bad_border
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 32
+                        Layout.topMargin: 10
+                        ColumnLayout {
+                            id: noticeBody
+                            spacing: 8
+                            anchors { left: parent.left; right: parent.right; top: parent.top; margins: 12 }
+                            StatusText {
+                                objectName: "overviewClippingNote"
+                                text: overviewPage.ov.clippingNote
+                                color: root.t.status_bad_text
+                                font.pixelSize: root.fsBody
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            StatusText {
+                                objectName: "overviewSoundSettingsLine"
+                                visible: overviewPage.ov.offerSoundSettings
+                                text: overviewPage.ov.soundSettingsLine
+                                color: root.t.status_bad_text
+                                font.pixelSize: root.fsCaption
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            StatusText {
+                                objectName: "overviewSoundSettingsFailure"
+                                visible: text !== ""
+                                text: overviewPage.ov.soundSettingsFailure
+                                color: root.t.status_bad_text
+                                font.pixelSize: root.fsBody
+                                font.weight: Font.DemiBold
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            RowLayout {
+                                spacing: 8
+                                Layout.fillWidth: true
+                                PushButton {
+                                    objectName: "overviewShowMeHow"
+                                    visible: overviewPage.ov.offerSoundSettings
+                                    text: "Show me how"
+                                    look: "primary"
+                                    onClicked: overviewPage.ov.openSoundSettings()
+                                }
+                                PushButton {
+                                    objectName: "overviewRemindLater"
+                                    text: "Remind me later"
+                                    onClicked: overviewPage.ov.dismissNotice()
+                                }
+                            }
+                        }
+                    }
                     // Callers hear nothing here already, so the restart asks for no confirmation.
                     ColumnLayout {
                         visible: overviewPage.ov.offerRestart

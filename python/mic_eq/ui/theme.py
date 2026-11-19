@@ -52,7 +52,7 @@ class SemanticPalette:
     # Amber is selection and the primary action, nothing else.
     accent: str = "#d98a4e"
     accent_hover: str = "#e29559"
-    accent_pressed: str = "#d98a4e"
+    accent_pressed: str = "#c47c46"
     accent_text: str = "#e8a574"
     accent_soft: str = "#e8c5a6"
     accent_bright: str = "#ffd9b8"
@@ -478,9 +478,9 @@ def muted_icon(icon: QIcon) -> QIcon:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         side = pixmap.width() * 0.6
         badge = QRectF(pixmap.width() - side, pixmap.height() - side, side, side).adjusted(1, 1, -1, -1)
-        mark = QPen(qcolor(PALETTE.text_on_emphasis), max(1.0, side / 8))
+        mark = QPen(qcolor(PALETTE.text_on_mute), max(1.0, side / 8))
         painter.setPen(mark)
-        painter.setBrush(qcolor(PALETTE.action_destructive))
+        painter.setBrush(qcolor(PALETTE.mute))
         painter.drawEllipse(badge)
         centre, reach = badge.center(), side * 0.2
         painter.drawLine(centre + QPointF(reach, -reach), centre + QPointF(-reach, reach))

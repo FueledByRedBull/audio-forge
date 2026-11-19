@@ -36,7 +36,7 @@ from PySide6.QtQml import qmlRegisterType, qmlRegisterUncreatableType
 from PySide6.QtQuick import QQuickPaintedItem, QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 
-from .chain_presentation import PREFILTER_HIGHPASS_HZ, ChainInputs, ChainLine, describe_chain
+from .chain_presentation import ChainInputs, ChainLine, describe_chain
 from . import platform_text
 from .command_palette import CommandPalette, window_commands
 from .components import Glyph
@@ -44,7 +44,7 @@ from .engine_session import Restarted, RestartFailed, Started, Stopped
 from .desktop_integration import RENDERER_RELAUNCH_ENV, relaunch_with_software_rendering
 from .control_specs import control_label
 from .eq_controls import EQControl
-from .eq_graph import EQGraphGeometry
+from .eq_graph import GRAPH_VIEWS, EQGraphGeometry
 from .eq_hold_compare import EQHoldCompare
 from .eq_quick_compare import EQComparisonItem
 from .device_selection import VIRTUAL_OUTPUT_MARKERS
@@ -831,12 +831,14 @@ class QuickBridge(QObject):
                 "compare": compare,
                 # The height of the named regions drawn across the top of the graph.
                 "regionStrip": EQGraphGeometry.REGION_STRIP_HEIGHT,
-                # How each line of the graph is drawn, named in words beside its sample.
-                "legend": [
-                    {"text": "Total (what you hear)", "lineStyle": "solid"},
-                    {"text": "Auto-EQ", "lineStyle": "dashed"},
-                    {"text": f"High-pass {PREFILTER_HIGHPASS_HZ} Hz", "lineStyle": "dotted"},
-                    {"text": "Bands", "lineStyle": "dot"},
+                # What the graph can show, each with its legend: the lines that view draws,
+                # named in words beside a sample of each.
+                "views": [
+                    {
+                        "key": view.key, "text": view.text, "tip": view.tip, "bands": view.bands,
+                        "legend": [{"text": text, "lineStyle": style} for text, style in view.legend],
+                    }
+                    for view in GRAPH_VIEWS
                 ],
             },
             "stages": stages,

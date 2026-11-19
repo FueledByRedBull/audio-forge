@@ -315,9 +315,9 @@ def test_the_total_is_filled_back_to_zero_for_boosts_and_cuts(qapp):
     def red(model, db):
         return paint(model).pixelColor(x, y_at(db)).red()
 
-    # Between the curve and the 0 dB line is tinted; beyond the curve is not.
-    assert red(boost, 3.0) > red(boost, 10.0) + 20
-    assert red(cut, -3.0) > red(cut, -10.0) + 20
+    # Between the curve and the 0 dB line is tinted, faintly; beyond the curve is not.
+    for model, inside, beyond in ((boost, 3.0, 10.0), (cut, -3.0, -10.0)):
+        assert 8 < red(model, inside) - red(model, beyond) < 20
 
 
 def test_an_enabled_band_draws_its_own_color_and_an_off_band_does_not(qapp):
@@ -518,6 +518,37 @@ def test_the_auto_eq_view_draws_the_layer_alone(qapp):
     index = segment_near(model, 3000.0, 0)
     x, y = segment_middle(model, index), y_at(model.correction_response_db[index])
     assert max(lightness(image, x, y + dy) for dy in (-1, 0, 1)) > 120
+
+
+def test_the_auto_eq_view_draws_no_band_handles(qapp):
+    tone = with_band(FLAT, 4, frequency_hz=2000.0, gain_db=6.0)
+    model = model_with(tone)
+    model.select_band(4)
+    x, y = (round(v) for v in EQGraphGeometry.band_handle_position(model.bands, 4, WIDTH, HEIGHT))
+    ring = round(EQGraphGeometry.SELECTION_RING_RADIUS)
+
+    def handle_drawn(image):
+        on_ring = min(
+            apart(image.pixelColor(x + dx, y + dy), PALETTE.data_handle_selected)
+            for dx in (-1, 0, 1)
+            for dy in (-ring, ring)
+        )
+        return on_ring < 60 or band_tone(image, x, range(y - 2, y + 3), PALETTE.eq_band_colors[4]) > 120
+
+    assert handle_drawn(paint(model, "tone"))
+    assert not handle_drawn(paint(model, "auto_eq"))
+
+
+def test_every_layer_lookup_refuses_a_view_it_does_not_know(qapp):
+    model = model_with(FLAT)
+    for call in (
+        lambda: model.response_at(1000.0, "input"),
+        lambda: model.thick_response_db("input"),
+        lambda: EQGraphRenderer.readout_layout(model, WIDTH, HEIGHT, "input"),
+    ):
+        model.set_hover(x_at(1000.0), 150, WIDTH, HEIGHT)
+        with pytest.raises(ValueError, match="unknown EQ graph layer"):
+            call()
 
 
 def test_the_graph_refuses_a_layer_it_does_not_know(qapp):

@@ -6,7 +6,7 @@ from PySide6.QtCore import QObject, Property, Qt, Signal, Slot
 from PySide6.QtGui import QHoverEvent, QKeyEvent, QMouseEvent, QPainter
 from PySide6.QtQuick import QQuickPaintedItem
 
-from .eq_graph import SHOW_LAYERS, EQGraphModel, EQGraphRenderer
+from .eq_graph import EQGraphModel, EQGraphRenderer, graph_view
 
 
 class EQGraphPreview(QQuickPaintedItem):
@@ -50,8 +50,7 @@ class EQGraphPreview(QQuickPaintedItem):
         return self._show
 
     def _set_show(self, value: str) -> None:
-        if value not in SHOW_LAYERS:
-            raise ValueError(f"unknown EQ graph layer: {value!r}")
+        graph_view(value)  # An unknown view is a ValueError.
         if value == self._show:
             return
         self._show = value
@@ -117,10 +116,15 @@ class EQGraphItem(EQGraphPreview):
         _x, y = self._graph.band_handle_position(band, self.width(), self.height())
         return y + reach
 
+    def _edits_bands(self) -> bool:
+        # The Auto-EQ view draws no band handles, so the graph takes no edits on them.
+        return graph_view(self._show).bands
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         graph = self._graph
         if (
             graph is None
+            or not self._edits_bands()
             or event.button() != Qt.MouseButton.LeftButton
             or graph.nearest_band_handle(
                 event.position().x(),
@@ -147,6 +151,7 @@ class EQGraphItem(EQGraphPreview):
         graph = self._graph
         if (
             graph is None
+            or not self._edits_bands()
             or event.button() != Qt.MouseButton.LeftButton
             or not graph.request_band_reset(
                 event.position().x(),

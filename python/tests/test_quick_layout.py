@@ -444,3 +444,27 @@ def test_the_top_bar_shows_the_mark_and_the_route_chevron_in_order(qapp, monkeyp
         window.close()
         window.deleteLater()
         qapp.processEvents()
+
+
+@pytest.mark.parametrize("point_size", [9, 14])
+def test_the_equalizer_legend_leaves_the_calibration_line_its_words(qapp, monkeypatch, segoe_font, point_size) -> None:
+    qapp.setFont(QFont(qapp.font().family(), point_size))
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Ready")
+    try:
+        window.eq_state.set_auto_eq_diagnostics({"analysis_confidence": 0.8, "eq_confidence": 0.8})
+        window.shell_page.setIndex(3)
+        settle(qapp)
+        footer, words, legend = (named(window, name) for name in ("eqFooter", "eqStatusWords", "legendRow"))
+        assert words.isVisible() and words.property("text")
+        line, shown = scene_rect(footer), scene_rect(words)
+        # The words keep the width they need, or the whole line when that is short of it.
+        assert words.width() >= min(words.implicitWidth(), line.right() - shown.left()) - 1
+        entries = [scene_rect(item) for item in shown_items(legend) if item.objectName() == "legendEntry"]
+        assert len(entries) == 4
+        for entry in entries:
+            assert not entry.intersects(shown), f"{entry} runs into the words at {shown}"
+            assert line.left() - 0.5 <= entry.left() and entry.right() <= line.right() + 0.5, entry
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()

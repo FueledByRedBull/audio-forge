@@ -598,6 +598,16 @@ Rectangle {
         Item { Layout.fillWidth: true }
     }
 
+    // The chevron after a label whose control opens something: a menu, a list or a section.
+    component Chevron: Text {
+        visible: root.hasIcons
+        text: root.m.glyphs.expand
+        textFormat: Text.PlainText
+        font.family: root.t.iconFont
+        font.pixelSize: root.fsCaption
+        color: root.t.text_muted
+    }
+
     // A full-width row that opens the section under it.
     component Disclosure: KeyButton {
         id: disclosure
@@ -632,12 +642,7 @@ Rectangle {
                 color: root.t.text_muted
                 font.pixelSize: root.fsCaption
             }
-            Text {
-                textFormat: Text.PlainText
-                text: root.m.glyphs.expand
-                visible: root.hasIcons
-                font.family: root.t.iconFont
-                font.pixelSize: root.fsCaption
+            Chevron {
                 color: root.t.text_primary
                 Layout.rightMargin: 14
                 rotation: disclosure.open ? 180 : 0
@@ -690,14 +695,10 @@ Rectangle {
                 Accessible.ignored: true
                 Layout.rightMargin: 10
             }
-            Text {
-                textFormat: Text.PlainText
+            Chevron {
                 visible: !setting.isSwitch && setting.enabled && root.hasIcons
                 text: setting.row.kind === "menu" ? root.m.glyphs.expand : root.m.glyphs.next
                 Layout.rightMargin: 14
-                font.family: root.t.iconFont
-                font.pixelSize: root.fsCaption
-                color: root.t.text_muted
             }
         }
     }
@@ -745,7 +746,9 @@ Rectangle {
         property string scrollName: "Page scroll bar"
         // The page's ground behind its content; it stays put while the content scrolls.
         property color ground: "transparent"
-        contentHeight: column.implicitHeight + 24
+        // The height the page keeps from its content: the room above the column and below it.
+        readonly property int verticalOverhead: 24
+        contentHeight: column.implicitHeight + verticalOverhead
         boundsBehavior: Flickable.StopAtBounds
         // A mouse drag belongs to the controls; wheel, scroll bar and touch still scroll.
         acceptedButtons: Qt.NoButton
@@ -2255,6 +2258,7 @@ Rectangle {
                 readonly property bool calibrated: eq.diagnostics.data.calibrated
                 // Which layers the graph draws: "total", "tone" or "auto_eq", as the Show buttons pick.
                 property string show: "total"
+                readonly property var view: eq.views.find(choice => choice.key === show)
                 ground: root.t.pane_surface
                 onBandIndexChanged: connector.follow()
 
@@ -2309,6 +2313,7 @@ Rectangle {
                         Caption { text: "Show" }
                         // Which layers the graph draws; one is always chosen.
                         Rectangle {
+                            id: showGroup
                             objectName: "eqShow"
                             implicitWidth: showRow.implicitWidth + 6
                             implicitHeight: 32
@@ -2318,16 +2323,22 @@ Rectangle {
                             border.color: root.t.control_edge
                             Accessible.role: Accessible.Grouping
                             Accessible.name: "Show on the graph"
+                            // Left and right move the choice, as in a radio group; the group is one Tab stop.
+                            function step(by) {
+                                const views = equalizerPage.eq.views
+                                let index = views.findIndex(choice => choice.key === equalizerPage.show)
+                                index = (index + by + views.length) % views.length
+                                // Focus first: the choice that keeps focus keeps its Tab stop.
+                                showChoices.itemAt(index).forceActiveFocus(Qt.TabFocusReason)
+                                equalizerPage.show = views[index].key
+                            }
                             Row {
                                 id: showRow
                                 x: 3
                                 y: 3
                                 Repeater {
-                                    model: [
-                                        { key: "total", text: "Total", tip: "What you hear: every EQ layer with the input filter" },
-                                        { key: "tone", text: "Tone", tip: "Your bands and their sum, without the Auto-EQ layer" },
-                                        { key: "auto_eq", text: "Auto-EQ", tip: "The Auto-EQ correction alone" }
-                                    ]
+                                    id: showChoices
+                                    model: equalizerPage.eq.views
                                     delegate: KeyButton {
                                         id: choice
                                         required property var modelData
@@ -2337,7 +2348,10 @@ Rectangle {
                                         text: modelData.text
                                         implicitWidth: choiceText.implicitWidth + 24
                                         implicitHeight: 26
+                                        focusPolicy: current ? Qt.StrongFocus : Qt.ClickFocus
                                         onClicked: equalizerPage.show = modelData.key
+                                        Keys.onLeftPressed: showGroup.step(-1)
+                                        Keys.onRightPressed: showGroup.step(1)
                                         Accessible.role: Accessible.RadioButton
                                         Accessible.name: text
                                         Accessible.description: modelData.tip
@@ -2389,13 +2403,9 @@ Rectangle {
                                         color: moreButton.hovered ? root.t.hover_text : root.t.text_primary
                                         font.pixelSize: root.fsBody
                                     }
-                                    Text {
+                                    Chevron {
                                         anchors.verticalCenter: parent.verticalCenter
-                                        visible: root.hasIcons
-                                        text: root.m.glyphs.expand
-                                        textFormat: Text.PlainText
                                         color: moreButton.hovered ? root.t.hover_text : root.t.text_muted
-                                        font.family: root.t.iconFont
                                         font.pixelSize: root.fsCaption - 2
                                     }
                                 }
@@ -2483,9 +2493,10 @@ Rectangle {
                             equalizerPage.eq.compare.release()
                         }
                     }
-                    readonly property real room: equalizerPage.height - 28 - eqHeader.implicitHeight
+                    readonly property real room: equalizerPage.height - equalizerPage.verticalOverhead
+                                                 - eqHeader.Layout.topMargin - eqHeader.implicitHeight
                                                  - historyRow.implicitHeight - bandPanel.implicitHeight
-                                                 - eqFooter.implicitHeight - 4 * equalizerPage.spacing - 4
+                                                 - eqFooter.implicitHeight - 4 * equalizerPage.spacing
                     implicitHeight: Math.max(eqGraph.implicitHeight + 2 * inset, Math.floor(room))
                     radius: root.t.radiusWell
                     color: root.t.data_surface
@@ -2504,7 +2515,8 @@ Rectangle {
                         activeFocusOnTab: true
                         Accessible.role: Accessible.Graphic
                         Accessible.name: "Equalizer graph"
-                        Accessible.description: eqGraph.graph ? eqGraph.graph.accessibleDescription : ""
+                        Accessible.description: "Showing " + equalizerPage.view.text + ". "
+                                                + (eqGraph.graph ? eqGraph.graph.accessibleDescription : "")
                         onHandlesChanged: connector.follow()
                         onActiveFocusChanged: if (!eqGraph.activeFocus) graphWell.endOriginal()
                         onVisibleChanged: if (!eqGraph.visible) graphWell.endOriginal()
@@ -2560,6 +2572,8 @@ Rectangle {
                         property real handleX: 0
                         property real handleBottom: 0
                         objectName: "bandConnector"
+                        // The Auto-EQ view draws no band handles to run from.
+                        visible: equalizerPage.view.bands
                         function follow() {
                             handleX = eqGraph.handleX(equalizerPage.bandIndex)
                             handleBottom = eqGraph.handleBottom(equalizerPage.bandIndex)
@@ -2701,10 +2715,15 @@ Rectangle {
                 }
 
                 // Under the graph: what calibration found, a mark beside the words, then how each line is drawn.
-                RowLayout {
+                // Short of room the legend goes under the words and wraps there.
+                GridLayout {
                     id: eqFooter
                     objectName: "eqFooter"
-                    spacing: 24
+                    readonly property bool oneLine: !eqStatus.visible
+                                                    || eqStatus.implicitWidth + columnSpacing + legendRow.naturalWidth <= width
+                    columns: oneLine ? 2 : 1
+                    columnSpacing: 24
+                    rowSpacing: 6
                     Layout.fillWidth: true
                     Layout.leftMargin: 4
                     Layout.rightMargin: 4
@@ -2723,6 +2742,7 @@ Rectangle {
                         }
                         Text {
                             id: statusWords
+                            objectName: "eqStatusWords"
                             textFormat: Text.PlainText
                             text: eqStatus.proxy.text
                             color: root.t["status_" + eqStatus.state_ + "_text"] ?? root.t.text_muted
@@ -2739,11 +2759,29 @@ Rectangle {
                         }
                     }
                     Item { visible: !eqStatus.visible; implicitHeight: 1; Layout.fillWidth: true }
-                    Row {
+                    Flow {
                         id: legendRow
+                        objectName: "legendRow"
+                        // The entries' width on one line, which decides where the legend goes.
+                        property int entriesChanged: 0
+                        readonly property real naturalWidth: {
+                            entriesChanged
+                            let total = 0
+                            for (let i = 0; i < legendEntries.count; ++i) {
+                                const entry = legendEntries.itemAt(i)
+                                total += (i > 0 ? spacing : 0) + (entry ? entry.implicitWidth : 0)
+                            }
+                            return total
+                        }
                         spacing: 24
+                        Layout.fillWidth: !eqFooter.oneLine
+                        Layout.preferredWidth: eqFooter.oneLine ? naturalWidth : -1
+                        Layout.alignment: Qt.AlignVCenter
                         Repeater {
-                            model: equalizerPage.eq.legend
+                            id: legendEntries
+                            model: equalizerPage.view.legend
+                            onItemAdded: legendRow.entriesChanged++
+                            onItemRemoved: legendRow.entriesChanged++
                             delegate: Row {
                                 id: entry
                                 objectName: "legendEntry"
@@ -2754,7 +2792,8 @@ Rectangle {
                                     solid: root.t.data_curve,
                                     dashed: root.t.data_text,
                                     dotted: root.t.data_text_muted,
-                                    dot: equalizerPage.bandColor
+                                    dot: equalizerPage.bandColor,
+                                    ring: root.t.data_marker
                                 })[lineStyle]
                                 spacing: 7
                                 // The line drawn as the graph draws it: whole, in dashes, in dots, or a handle's dot.
@@ -2765,12 +2804,16 @@ Rectangle {
                                         anchors.verticalCenter: parent.verticalCenter
                                         spacing: 2
                                         Repeater {
-                                            model: ({ solid: 1, dashed: 3, dotted: 4, dot: 1 })[entry.lineStyle]
+                                            model: ({ solid: 1, dashed: 3, dotted: 4, dot: 1, ring: 1 })[entry.lineStyle]
                                             delegate: Rectangle {
-                                                width: ({ solid: 16, dashed: 4, dotted: 2, dot: 8 })[entry.lineStyle]
-                                                height: entry.lineStyle === "dot" ? 8 : 2
-                                                radius: entry.lineStyle === "dot" ? 4 : entry.lineStyle === "dotted" ? 1 : 0
-                                                color: entry.sample
+                                                readonly property bool round: entry.lineStyle === "dot" || entry.lineStyle === "ring"
+                                                width: ({ solid: 16, dashed: 4, dotted: 2, dot: 8, ring: 8 })[entry.lineStyle]
+                                                height: round ? 8 : 2
+                                                radius: round ? 4 : entry.lineStyle === "dotted" ? 1 : 0
+                                                // A ring is open, as the graph draws an Auto-EQ band's mark.
+                                                color: entry.lineStyle === "ring" ? "transparent" : entry.sample
+                                                border.width: entry.lineStyle === "ring" ? 1.5 : 0
+                                                border.color: entry.sample
                                             }
                                         }
                                     }

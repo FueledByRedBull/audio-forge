@@ -606,6 +606,8 @@ def test_tab_reaches_every_enabled_control_on_the_page(either_window, qapp, page
             # A switch row owns the click, so its switch is no stop of its own.
             if item not in stops
             and not (_kind(item) == "Toggle" and _kind(item.parentItem().parentItem()) == "SettingRow")
+            # A radio group is one stop, its current choice; the arrow keys reach the others.
+            and not (_iface(item).role() == Role.RadioButton and item.property("current") is False)
         ]
     assert missed == []
 
@@ -657,7 +659,7 @@ def test_tab_visits_the_page_in_reading_order(either_window, qapp, width) -> Non
 def test_tab_visits_the_equalizer_page_in_reading_order(either_window, qapp, width) -> None:
     names = _page_names(either_window, qapp, EQUALIZER, width, FRAME_LANDMARKS)
     landmarks = [
-        "Total", "Tone", "Equalizer options", "Equalizer graph",
+        "Total", "Equalizer options", "Equalizer graph",
         "Enable EQ band 1", "EQ band 1 filter type", "EQ band 1 gain", "EQ band 1 center frequency",
     ]
     positions = _positions(names, landmarks)
@@ -738,17 +740,18 @@ def test_each_signal_chain_row_carries_its_stage_switch_under_the_same_name(quic
             switch = _with_proxy(window, "ChainSwitch", row["toggle"])
             assert switch.isVisible(), row["name"]
             assert _iface(switch).role() == Role.CheckBox
+            assert bool(_iface(switch).state().checked) is row["toggle"].checked
+            assert scene.description(switch).startswith("In the signal chain")
             if row["toggle"] is eq_toggle:
                 # The equalizer page has no switch of its own: this row is the EQ's one switch.
                 assert not [i for i in _of_kind(window, "Toggle") if i.property("proxy") is eq_toggle]
                 assert _iface(switch).text(Text.Name) == "Enable EQ"
+                assert _iface(switch).state().checkable and row["toggle"].checked
                 continue
             # A screen reader hears the same name here as on the stage's own card.
             card_switch = _with_proxy(window, "Toggle", row["toggle"])
             assert _iface(switch).text(Text.Name) == _iface(card_switch).text(Text.Name) != ""
-            assert bool(_iface(switch).state().checked) is row["toggle"].checked
             # The description tells the two apart.
-            assert scene.description(switch).startswith("In the signal chain")
             assert scene.description(card_switch) != scene.description(switch)
 
 
@@ -1466,6 +1469,69 @@ def test_show_picks_which_layers_the_graph_draws(quick_window, qapp) -> None:
         assert graph.property("show") == "tone"
     # The overview's preview always shows what you hear.
     assert preview.property("show") == "total"
+
+
+def test_the_show_choices_are_one_tab_stop_that_the_arrow_keys_move(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp, EQUALIZER)
+    QTest.qWait(50)
+    graph = _eq_item(window, "eqGraph")
+    choices = {key: _eq_item(window, "eqShow_" + key) for key in ("total", "tone", "auto_eq")}
+    _focus(window, choices["total"], qapp)
+    # Right moves to the next choice and wraps; Left goes back. The chosen one alone takes Tab.
+    for key, expected in (
+        (Qt.Key.Key_Right, "tone"), (Qt.Key.Key_Right, "auto_eq"),
+        (Qt.Key.Key_Right, "total"), (Qt.Key.Key_Left, "auto_eq"),
+    ):
+        _press(window, key, qapp)
+        assert graph.property("show") == expected
+        assert _focused(window) is choices[expected]
+        assert [k for k, choice in choices.items() if choice.property("activeFocusOnTab")] == [expected]
+    with _AccessibleScene() as scene:
+        for key, name in (("auto_eq", "Auto-EQ"), ("tone", "Tone"), ("total", "Total")):
+            _click(window, choices[key], qapp)
+            # A screen reader hears which view the graph shows.
+            assert scene.description(graph).startswith(f"Showing {name}. "), key
+
+
+LEGENDS = {
+    "total": ["Total (what you hear)", "Auto-EQ", f"High-pass {PREFILTER_HIGHPASS_HZ} Hz", "Bands"],
+    "tone": ["Tone (your bands)", "Bands"],
+    "auto_eq": ["Auto-EQ", "Auto-EQ bands"],
+}
+
+
+@pytest.mark.parametrize("key", ["total", "tone", "auto_eq"])
+def test_the_legend_lists_only_what_the_view_draws(quick_window, qapp, key) -> None:
+    window = quick_window
+    _show(window, qapp, EQUALIZER)
+    _click(window, _eq_item(window, "eqShow_" + key), qapp)
+    QTest.qWait(50)
+    entries = sorted(
+        (item for item in _items(window.centralWidget().rootObject())
+         if item.objectName() == "legendEntry" and item.isVisible()),
+        key=_scene_x,
+    )
+    assert [entry.property("text") for entry in entries] == LEGENDS[key]
+    # The Auto-EQ view draws no band handles, so nothing runs from one to the band strip.
+    assert _eq_item(window, "bandConnector").isVisible() is (key != "auto_eq")
+
+
+def test_the_chosen_view_looks_apart_from_the_others(themed_window, qapp) -> None:
+    window = themed_window
+    _show(window, qapp, EQUALIZER)
+    _click(window, _eq_item(window, "eqShow_tone"), qapp)
+    QTest.qWait(50)
+
+    def look(key):
+        choice = _eq_item(window, "eqShow_" + key)
+        return _colour(choice.property("background"), "color"), _colour(choice.property("contentItem"), "color")
+
+    chosen = look("tone")
+    for other in ("total", "auto_eq"):
+        fill, text = look(other)
+        # The fill and the words both change, under a contrast theme as well.
+        assert fill != chosen[0] and text != chosen[1], other
 
 
 @pytest.mark.parametrize("width", [900, 1199, 1200, 1400])

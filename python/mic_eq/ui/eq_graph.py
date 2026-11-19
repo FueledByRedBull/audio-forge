@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 from bisect import bisect_left
+from dataclasses import dataclass
+from functools import lru_cache
 
 from PySide6.QtCore import Property, QLineF, QObject, QPointF, QRect, QRectF, Qt, Signal, Slot
 from PySide6.QtGui import (
@@ -30,8 +32,60 @@ OFF_BAND: tuple[str, float, float, float, int, bool] = ("bell", 1000.0, 0.0, 1.0
 FILTER_NAMES = {filter_type: name for name, filter_type in EQ_FILTER_OPTIONS}
 # The processing modes in which the EQ does not run, as the graph names them.
 NOT_RUNNING_MODES = {"bypass": "Bypass", "raw": "Raw monitor"}
+
+
+@dataclass(frozen=True)
+class GraphView:
+    """One choice of what the graph shows, and the legend of what it then draws."""
+
+    key: str
+    text: str
+    tip: str
+    # The thick curve: the total or the tone sum; the Auto-EQ view draws none.
+    thick: bool
+    # The user's bands: their curves, their handles and the edits made on the graph.
+    bands: bool
+    # The Auto-EQ layer, dashed, with the rings at its bands.
+    auto_eq: bool
+    # The input filter, dotted; with it the thick curve is what the signal gets.
+    input_filter: bool
+    # Each line drawn, in words and in the style the legend draws beside them.
+    legend: tuple[tuple[str, str], ...]
+
+
+HIGH_PASS_LEGEND = (f"High-pass {PREFILTER_HIGHPASS_HZ} Hz", "dotted")
 # What the graph shows: everything the signal gets, the user's bands, or the Auto-EQ layer.
-SHOW_LAYERS = ("total", "tone", "auto_eq")
+GRAPH_VIEWS = (
+    GraphView(
+        "total", "Total", "What you hear: every EQ layer with the input filter",
+        thick=True, bands=True, auto_eq=True, input_filter=True,
+        legend=(
+            ("Total (what you hear)", "solid"), ("Auto-EQ", "dashed"), HIGH_PASS_LEGEND, ("Bands", "dot"),
+        ),
+    ),
+    GraphView(
+        "tone", "Tone", "Your bands and their sum, without the Auto-EQ layer",
+        thick=True, bands=True, auto_eq=False, input_filter=False,
+        legend=(("Tone (your bands)", "solid"), ("Bands", "dot")),
+    ),
+    GraphView(
+        "auto_eq", "Auto-EQ", "The Auto-EQ correction alone",
+        thick=False, bands=False, auto_eq=True, input_filter=False,
+        legend=(("Auto-EQ", "dashed"), ("Auto-EQ bands", "ring")),
+    ),
+)
+SHOW_LAYERS = tuple(view.key for view in GRAPH_VIEWS)
+_VIEWS_BY_KEY = {view.key: view for view in GRAPH_VIEWS}
+
+
+def graph_view(show: str) -> GraphView:
+    """The view ``show`` names, one of ``SHOW_LAYERS``; any other value is a ValueError."""
+    try:
+        return _VIEWS_BY_KEY[show]
+    except (KeyError, TypeError):
+        raise ValueError(f"unknown EQ graph layer: {show!r}") from None
+
+
 GRAPH_HELP = (
     "Click and drag a band handle. Left and right change frequency; "
     "up and down change gain for bell and shelf filters. Use left bracket "
@@ -274,7 +328,7 @@ class EQGraphModel(QObject):
         self.freq_points = list(self._base_freq_points)
         self.response_db = [0.0] * len(self.freq_points)
         # The user's bands alone, without the Auto-EQ layer.
-        self.tone_response_db = list(self.response_db)
+        self.tone_response_db = self.response_db
         self._update_response()
         self._description = self.accessible_description()
         self.changed.connect(self._refresh_description)
@@ -395,20 +449,24 @@ class EQGraphModel(QObject):
         what the signal gets; the tone and the Auto-EQ layer are each what that
         layer is set to do.
         """
+        view = graph_view(show)
         frequencies = [frequency_hz]
-        stages = {
-            "total": (self.bands, self.correction_bands),
-            "tone": (self.bands,),
-            "auto_eq": (self.correction_bands,),
-        }[show]
+        stages = (self.bands if view.bands else (), self.correction_bands if view.auto_eq else ())
         eq = sum(
             eq_magnitude_response_v2(frequencies, stage, self.sample_rate)[0]
             for stage in stages
             if stage
         )
-        if show != "total":
+        if not view.input_filter:
             return eq
         return self._input_filter(frequencies)[0] + (eq if self.eq_running else 0.0)
+
+    def thick_response_db(self, show: str) -> list[float] | None:
+        """The thick curve ``show`` draws: the total, the tone sum, or None in the Auto-EQ view."""
+        view = graph_view(show)
+        if not view.thick:
+            return None
+        return self.total_response_db if view.input_filter else self.tone_response_db
 
     def set_hover(self, x: float, y: float, width: float, height: float) -> None:
         geometry = self.GEOMETRY
@@ -698,7 +756,7 @@ class EQGraphModel(QObject):
             }
         )
         self.response_db = self._response(self.bands)
-        self.tone_response_db = list(self.response_db)
+        self.tone_response_db = self.response_db
         self.correction_response_db = (
             self._response(self.correction_bands) if self.correction_bands else []
         )
@@ -792,9 +850,9 @@ class EQGraphRenderer:
     GLOW = ((7.0, 18), (4.0, 36))
     SELECTED_BAND_WIDTH = 1.6
     BAND_WIDTH = 1.2
-    # The fill between the thick curve and 0 dB is strongest at the axis and
-    # fades out toward the top and the bottom of the plot.
-    FILL_ALPHA = 34
+    # The fill between the thick curve and 0 dB is faint, about 7 % white at
+    # the axis, and fades out toward the top and the bottom of the plot.
+    FILL_ALPHA = 18
     AXIS_TOLERANCE_DB = 0.3
     CASING_WIDTH = 3.0
     MUTED_OPACITY = 0.4
@@ -832,8 +890,7 @@ class EQGraphRenderer:
         the signal gets with every layer; the tone draws the user's bands and
         their sum; the Auto-EQ draws the correction layer alone.
         """
-        if show not in SHOW_LAYERS:
-            raise ValueError(f"unknown EQ graph layer: {show!r}")
+        view = graph_view(show)
         geometry = cls.GEOMETRY
         width = max(1, int(round(width)))
         height = max(1, int(round(height)))
@@ -895,7 +952,7 @@ class EQGraphRenderer:
         if caption is not None:
             cls._paint_label(painter, *caption, PALETTE.data_text)
 
-        if model.band_markers and show != "tone":
+        if model.band_markers and view.auto_eq:
             # Open rings on the Auto-EQ layer at its bands, or on the total without one.
             carrier = (
                 model.correction_response_db
@@ -927,7 +984,7 @@ class EQGraphRenderer:
                 painter.drawRect(x - 2, margin_top, 4, marker_height)
             painter.setBrush(Qt.BrushStyle.NoBrush)
 
-        if not handles:
+        if not handles or not view.bands:
             painter.restore()
             return
         ring = cls.HANDLE_RING_WIDTH
@@ -1129,6 +1186,16 @@ class EQGraphRenderer:
             )
         cls._paint_label(painter, *layout, PALETTE.data_text)
 
+    @classmethod
+    @lru_cache(maxsize=8)
+    def _fill_gradient(cls, top: float, bottom: float, color: str) -> QLinearGradient:
+        """The fill under the thick curve, built once for each plot and curve color."""
+        fill = QLinearGradient(0.0, top, 0.0, bottom)
+        fill.setColorAt(0.0, qcolor(color, alpha=0))
+        fill.setColorAt(0.5, qcolor(color, alpha=cls.FILL_ALPHA))
+        fill.setColorAt(1.0, qcolor(color, alpha=0))
+        return fill
+
     @staticmethod
     def _active_runs(values: list[float]) -> list[range]:
         """Segments of one band's curve where it leaves the 0 dB axis.
@@ -1197,17 +1264,14 @@ class EQGraphRenderer:
         plot = QRectF(geometry.MARGIN_LEFT, top, plot_width, plot_height)
         painter.setClipRect(plot)
         zero_y = top + geometry.DISPLAY_DB_MAX * pixels_per_db
-        thick = {"total": model.total_response_db, "tone": model.tone_response_db}.get(show)
+        view = graph_view(show)
+        thick = model.thick_response_db(show)
         # The tone is what the EQ would do; it is muted, as the bands are, when the EQ does not run.
-        thick_muted = show == "tone" and not model.eq_running
+        thick_muted = not view.input_filter and not model.eq_running
         if thick is not None:
             line = [QPointF(x, y) for x, y in zip(xs, ys(thick))]
-            fill = QLinearGradient(0.0, plot.top(), 0.0, plot.bottom())
-            fill.setColorAt(0.0, qcolor(PALETTE.data_curve, alpha=0))
-            fill.setColorAt(0.5, qcolor(PALETTE.data_curve, alpha=cls.FILL_ALPHA))
-            fill.setColorAt(1.0, qcolor(PALETTE.data_curve, alpha=0))
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(fill)
+            painter.setBrush(cls._fill_gradient(plot.top(), plot.bottom(), PALETTE.data_curve))
             painter.setOpacity(cls.MUTED_OPACITY if thick_muted else 1.0)
             painter.drawPolygon(
                 QPolygonF([QPointF(xs[0], zero_y), *line, QPointF(xs[-1], zero_y)])
@@ -1215,7 +1279,7 @@ class EQGraphRenderer:
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setOpacity(1.0)
 
-        if show != "auto_eq":
+        if view.bands:
             if not model.eq_running:
                 painter.setOpacity(cls.MUTED_OPACITY)
             selected = model.selected_band_index
@@ -1232,7 +1296,7 @@ class EQGraphRenderer:
                     painter.drawLines(segments(ys(curve), run))
             painter.setOpacity(1.0)
 
-        if show == "total":
+        if view.input_filter:
             # Dotted: the input conditioning is not a band and not the Auto-EQ layer.
             conditioning = ys(model.input_filter_db)
             painter.setPen(pen(PALETTE.data_text_muted, cls.BAND_WIDTH))
@@ -1264,7 +1328,7 @@ class EQGraphRenderer:
             painter.drawPolyline(QPolygonF(line))
             painter.setOpacity(1.0)
 
-        if model.correction_response_db and show != "tone":
+        if model.correction_response_db and view.auto_eq:
             # Dashed by leaving out every third segment, which costs a fraction
             # of stroking a dashed polyline. The dark casing keeps the dashes
             # visible on top of the total when the tone layer is flat and the

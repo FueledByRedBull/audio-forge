@@ -423,6 +423,8 @@ def test_a_click_that_runs_at_once_does_not_flicker_the_controls(isolated_main_w
     window: Any = isolated_main_window
     window.input_choice.addItem("Microphone", DeviceIdentity(name="Microphone", direction="input"))
     window.output_choice.addItem("Destination", DeviceIdentity(name="Destination", direction="output"))
+    # The refresh lists the microphone again; with none listed Start rightly turns off.
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: [SimpleNamespace(name="Microphone")])
     monkeypatch.setattr(window, "_apply_input_preferences_for_current_route", lambda: None)
     window._engine.threaded = False  # the synchronous mode the controls must not flicker in
     changes: list[str] = []

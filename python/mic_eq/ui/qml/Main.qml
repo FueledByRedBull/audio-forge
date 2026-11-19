@@ -24,6 +24,7 @@ Rectangle {
     readonly property int fsLead: Look.fsLead
     readonly property int fsHeading: Look.fsHeading
     readonly property int fsTitle: Look.fsTitle
+    readonly property int fsDisplay: Look.fsDisplay
     // When the last tooltip closed; the next one opens at once if it follows closely.
     property double tipClosedAt: 0
 
@@ -903,6 +904,9 @@ Rectangle {
         property bool current: false
         property bool dim: false
         property var toggle: null
+        // How hard the stage works, 0 to 1, drawn as a bar beside the state line when metered.
+        property real activity: 0
+        property bool metered: false
         // The row's button, where focus goes back to when what it opened closes.
         readonly property alias button: navButton
         signal opened()
@@ -942,16 +946,34 @@ Rectangle {
                     Behavior on color { ColorAnimation { duration: root.t.motionRow } }
                 }
                 Text {
+                    id: navDetail
                     width: parent.width
                     visible: nav.detail !== ""
                     text: nav.detail
                     textFormat: Text.PlainText
                     leftPadding: 12
-                    rightPadding: !!nav.toggle ? 52 : 12
-                    color: nav.current ? root.t.accent_soft : root.t.text_muted
+                    rightPadding: (!!nav.toggle ? 52 : 12) + (nav.metered ? 38 : 0)
+                    color: nav.current ? root.t.accent_soft : nav.dim ? root.t.text_dim : root.t.text_muted
                     font.pixelSize: root.fsCaption
                     elide: Text.ElideRight
                 }
+            }
+        }
+        Rectangle {
+            visible: nav.metered
+            width: 30
+            height: 3
+            radius: 1.5
+            anchors.right: parent.right
+            anchors.rightMargin: !!nav.toggle ? 60 : 12
+            y: navButton.contentItem.y + navDetail.y + (navDetail.height - height) / 2
+            color: root.t.control_edge
+            Accessible.ignored: true
+            Rectangle {
+                width: parent.width * nav.activity
+                height: parent.height
+                radius: parent.radius
+                color: root.t.meter_reduction
             }
         }
         ChainSwitch {
@@ -1059,7 +1081,7 @@ Rectangle {
             + modeKey.width + 6 + modeMetrics.width + 36
             + muteButton.implicitWidth + 2 * root.readoutWidth + meterGrid.columnSpacing
             + Math.max(latencyFigure.implicitWidth, latencyCaption.implicitWidth)
-            + 1 + transport.implicitWidth
+            + 1 + transport.implicitWidth + startReason.implicitWidth
         readonly property bool full: fullWidth <= width
         anchors.left: parent.left
         anchors.right: parent.right
@@ -1170,7 +1192,29 @@ Rectangle {
                     }
                 }
             }
-            Item { Layout.fillWidth: true }
+            Item {
+                id: startReason
+                Layout.fillWidth: true
+                // In a narrow window the reason wraps onto two lines rather than vanish.
+                Layout.minimumWidth: startBlocked.visible ? 96 : 0
+                implicitWidth: startBlocked.visible ? startBlocked.implicitWidth : 0
+                implicitHeight: startBlocked.height
+                StatusText {
+                    id: startBlocked
+                    objectName: "startBlockedReason"
+                    visible: root.m.overview.state === "no_mic" && !root.running
+                    text: root.m.startBlockedReason
+                    width: Math.min(implicitWidth, parent.width)
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    horizontalAlignment: Text.AlignRight
+                    font.pixelSize: root.fsCaption
+                    wrapMode: Text.WordWrap
+                    maximumLineCount: 2
+                    elide: Text.ElideRight
+                    tip: truncated ? text : ""
+                }
+            }
             Rectangle {
                 implicitWidth: 1
                 implicitHeight: 28
@@ -1278,6 +1322,7 @@ Rectangle {
                 Accessible.name: "Navigation"
                 NavRow {
                     name: "Overview"
+                    detail: root.m.overview.navLine
                     current: root.m.page.index === 0 && !root.inspecting
                     onOpened: {
                         root.m.inspector.close()
@@ -1291,9 +1336,12 @@ Rectangle {
                     delegate: NavRow {
                         id: chainRow
                         required property var modelData
+                        readonly property var line: root.m.sidebar.lines.lines[modelData.line]
                         name: modelData.name
                         toggle: modelData.toggle
-                        detail: modelData.state ? modelData.state.text : modelData.toggle.checked ? "On" : "Off"
+                        detail: line.line
+                        activity: line.activity
+                        metered: line.metered
                         dim: !!modelData.toggle && !modelData.toggle.checked
                         current: modelData.page >= 0 ? root.m.page.index === modelData.page
                                                      : root.inspecting && root.m.inspector.stageKey === modelData.key
@@ -1313,28 +1361,6 @@ Rectangle {
                     color: root.t.border
                     Layout.fillWidth: true
                     Layout.bottomMargin: 4
-                }
-                RowLayout {
-                    spacing: 8
-                    Layout.fillWidth: true
-                    // Heard (green), muted or waiting for a mute (amber), or stopped; the words say which.
-                    Rectangle {
-                        objectName: "transmissionDot"
-                        implicitWidth: 8
-                        implicitHeight: 8
-                        radius: 4
-                        color: ({ ok: root.t.status_ok_text, warn: root.t.status_warn_text })[
-                            root.m.status.transmission.state] ?? root.t.control_edge
-                        Behavior on color { ColorAnimation { duration: root.t.motionStatus } }
-                    }
-                    StatusText {
-                        objectName: "statusTransmission"
-                        text: root.m.status.transmission.text
-                        color: root.t.text_primary
-                        font.pixelSize: root.fsCaption
-                        Layout.fillWidth: true
-                        tip: truncated ? text : ""
-                    }
                 }
                 Chip {
                     proxy: root.m.status.health
@@ -1433,13 +1459,258 @@ Rectangle {
             Page {
                 id: overviewPage
                 objectName: "overviewPage"
-                Flow {
-                    spacing: 12
+                readonly property var ov: root.m.overview
+                spacing: 20
+
+                // The status sentence: the state in words, beside a dot whose colour only repeats them.
+                ColumnLayout {
+                    spacing: 4
                     Layout.fillWidth: true
-                    Layout.topMargin: 2
-                    Btn { proxy: root.m.presets.testSound }
-                    Btn { proxy: root.m.presets.autoEq }
-                    Btn { objectName: "voiceSetupButton"; proxy: root.m.presets.voiceSetup }
+                    Layout.topMargin: 4
+                    RowLayout {
+                        spacing: 12
+                        Layout.fillWidth: true
+                        Item {
+                            implicitWidth: 20
+                            implicitHeight: 20
+                            Layout.alignment: Qt.AlignTop
+                            Layout.topMargin: Math.max(0, (headline.font.pixelSize * 1.3 - 20) / 2)
+                            Accessible.ignored: true
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: width / 2
+                                color: Qt.rgba(statusDot.color.r, statusDot.color.g, statusDot.color.b, 0.14)
+                            }
+                            Rectangle {
+                                id: statusDot
+                                objectName: "transmissionDot"
+                                anchors.centerIn: parent
+                                width: 10
+                                height: 10
+                                radius: 5
+                                color: ({
+                                    ok: root.t.status_ok_text,
+                                    warn: root.t.status_warn_text,
+                                    bad: root.t.status_bad_text,
+                                    mute: root.t.mute,
+                                    callers: root.t.callers_affected
+                                })[overviewPage.ov.tone] ?? root.t.control_edge
+                                Behavior on color { ColorAnimation { duration: root.t.motionStatus } }
+                            }
+                        }
+                        StatusText {
+                            id: headline
+                            objectName: "overviewHeadline"
+                            text: overviewPage.ov.headline
+                            color: overviewPage.ov.callersAffected ? root.t.callers_affected_text : root.t.text_primary
+                            font.pixelSize: root.fsDisplay
+                            font.weight: Font.DemiBold
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true
+                            onTextChanged: settle.restart()
+                            NumberAnimation on opacity {
+                                id: settle
+                                from: 0.35
+                                to: 1
+                                duration: root.t.motionStatus
+                                easing.type: Easing.OutCubic
+                            }
+                        }
+                    }
+                    StatusText {
+                        objectName: "overviewDetail"
+                        text: overviewPage.ov.detail
+                        font.pixelSize: root.fsBody
+                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 32
+                    }
+                }
+
+                // What AudioForge checked, and for a missing microphone the way out.
+                Surface {
+                    objectName: "overviewChecks"
+                    visible: overviewPage.ov.checks.length > 0
+                    spacing: 8
+                    Layout.fillWidth: true
+                    Title { text: overviewPage.ov.checksTitle }
+                    Repeater {
+                        model: overviewPage.ov.checks
+                        delegate: RowLayout {
+                            id: check
+                            required property var modelData
+                            spacing: 8
+                            Layout.fillWidth: true
+                            // A dot for a check that passed, "!" for one to act on, a dash for a note:
+                            // shapes that need no icon font, beside words that say the same.
+                            Item {
+                                implicitWidth: 14
+                                implicitHeight: checkText.implicitHeight
+                                Layout.alignment: Qt.AlignTop
+                                Accessible.ignored: true
+                                Rectangle {
+                                    visible: check.modelData.kind === "ok"
+                                    width: 7
+                                    height: 7
+                                    radius: 3.5
+                                    anchors.centerIn: parent
+                                    color: root.t.status_ok_text
+                                }
+                                Text {
+                                    visible: check.modelData.kind !== "ok"
+                                    text: check.modelData.kind === "warn" ? "!" : "\u2013"
+                                    textFormat: Text.PlainText
+                                    color: check.modelData.kind === "warn" ? root.t.status_warn_text : root.t.text_muted
+                                    font.pixelSize: root.fsBody
+                                    font.weight: Font.DemiBold
+                                    anchors.centerIn: parent
+                                }
+                            }
+                            StatusText {
+                                id: checkText
+                                text: check.modelData.text
+                                color: check.modelData.kind === "note" ? root.t.text_muted : root.t.text_primary
+                                font.pixelSize: root.fsBody
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                        }
+                    }
+                    ColumnLayout {
+                        visible: overviewPage.ov.state === "no_mic"
+                        spacing: 10
+                        Layout.fillWidth: true
+                        Layout.topMargin: 6
+                        Btn {
+                            objectName: "overviewRefresh"
+                            proxy: root.m.top.refresh
+                            text: "Refresh audio devices"
+                            look: "primary"
+                        }
+                        Picker {
+                            proxy: root.m.top.input
+                            glyph: root.hasIcons ? root.m.glyphs.mic : ""
+                            Layout.preferredWidth: 320
+                            Layout.maximumWidth: 320
+                        }
+                        Caption {
+                            text: "Pick your microphone here once it appears, then press Start."
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true
+                        }
+                    }
+                }
+
+                // Ten seconds of level: the microphone above the line, what others hear below.
+                Surface {
+                    objectName: "levelRibbonCard"
+                    spacing: 8
+                    Layout.fillWidth: true
+                    RowLayout {
+                        spacing: 14
+                        Layout.fillWidth: true
+                        StatusText {
+                            objectName: "ribbonCaption"
+                            text: overviewPage.ov.ribbonCaption
+                            font.pixelSize: root.fsCaption
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                        }
+                        Caption {
+                            text: "IN \u00b7 your microphone"
+                            color: root.t.signal_in
+                            font.pixelSize: root.fsCaption
+                        }
+                        Caption {
+                            text: "OUT \u00b7 what others hear"
+                            color: root.t.signal_out
+                            font.pixelSize: root.fsCaption
+                        }
+                    }
+                    Rectangle {
+                        id: ribbonBox
+                        implicitHeight: root.wide ? 96 : 72
+                        radius: root.t.radiusControl
+                        color: root.t.data_surface
+                        clip: true
+                        Layout.fillWidth: true
+                        // One sample wider than the box, slid by that sample between readings.
+                        Item {
+                            id: ribbonStrip
+                            readonly property real step: ribbonBox.width / (root.m.ribbonPoints - 1)
+                            readonly property var levels: root.ui.levels
+                            width: ribbonBox.width + step
+                            height: ribbonBox.height
+                            onLevelsChanged: scroll.restart()
+                            NumberAnimation on x {
+                                id: scroll
+                                objectName: "ribbonScroll"
+                                running: false
+                                from: 0
+                                to: -ribbonStrip.step
+                                duration: root.t.motion > 0 ? root.m.levelIntervalMs : 0
+                            }
+                            LevelRibbon {
+                                objectName: "levelRibbon"
+                                width: ribbonStrip.width
+                                height: ribbonStrip.height
+                                points: ribbonStrip.levels
+                                Accessible.role: Accessible.Graphic
+                                Accessible.name: "Level, last 10 seconds"
+                            }
+                        }
+                    }
+                }
+
+                // A look at the curve; the Equalizer page edits it.
+                Surface {
+                    objectName: "eqPreviewCard"
+                    spacing: 8
+                    Layout.fillWidth: true
+                    RowLayout {
+                        spacing: 12
+                        Layout.fillWidth: true
+                        Title { text: "Equalizer" }
+                        Caption { text: root.m.eq.layers.text; Layout.fillWidth: true; elide: Text.ElideRight }
+                        Btn {
+                            objectName: "openEqualizer"
+                            text: "Open equalizer"
+                            enabled: true
+                            onClicked: root.m.page.setIndex(root.m.equalizerPage)
+                        }
+                    }
+                    EQGraphPreview {
+                        objectName: "eqPreview"
+                        graph: root.m.eq.curve
+                        implicitHeight: root.wide ? 150 : 130
+                        Layout.fillWidth: true
+                        Accessible.role: Accessible.Graphic
+                        Accessible.name: "Equalizer preview"
+                        Accessible.description: root.m.eq.curve ? root.m.eq.curve.accessibleDescription : ""
+                    }
+                }
+
+                ColumnLayout {
+                    spacing: 8
+                    Layout.fillWidth: true
+                    Flow {
+                        spacing: 12
+                        Layout.fillWidth: true
+                        Btn {
+                            objectName: "voiceSetupButton"
+                            proxy: root.m.presets.voiceSetup
+                            look: overviewPage.ov.recommendSetup ? "soft" : "plain"
+                        }
+                        Btn { proxy: root.m.presets.testSound }
+                        Btn { proxy: root.m.presets.autoEq }
+                    }
+                    StatusText {
+                        objectName: "setupLine"
+                        text: overviewPage.ov.setupLine
+                        font.pixelSize: root.fsCaption
+                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                    }
                 }
             }
 
@@ -1569,6 +1840,7 @@ Rectangle {
                     }
                     EQGraphItem {
                         id: eqGraph
+                        objectName: "eqGraph"
                         graph: eqCard.eq.curve
                         Layout.fillWidth: true
                         implicitHeight: 300

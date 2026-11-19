@@ -197,7 +197,7 @@ ACTION_SPECS = {
         "Your live output is muted while it records.",
     ),
     "auto_voice_setup_button": _ActionSpec(
-        "Auto Voice Setup",
+        "Run Auto Voice Setup",
         "Record room noise and speech, then calibrate EQ, gate/VAD,\n"
         "de-esser, and compressor in one pass. Your live output is muted while it records.",
     ),

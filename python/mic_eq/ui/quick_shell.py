@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 from collections import deque
+from datetime import UTC, datetime
 from functools import cache
 
 from PySide6.QtCore import (
@@ -22,20 +23,24 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QPainter, QPen
+from PySide6.QtGui import QAccessible, QAccessibleAnnouncementEvent, QPainter, QPen, QPolygonF
 from PySide6.QtQml import qmlRegisterType, qmlRegisterUncreatableType
 from PySide6.QtQuick import QQuickPaintedItem, QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 
+from .chain_presentation import ChainInputs, ChainLine, describe_chain
 from .components import Glyph
 from .desktop_integration import RENDERER_RELAUNCH_ENV, relaunch_with_software_rendering
 from .control_specs import control_label
 from .eq_controls import EQControl
 from .eq_quick_compare import EQComparisonItem
-from .eq_quick_graph import EQGraphItem
+from .device_selection import VIRTUAL_OUTPUT_MARKERS
+from .eq_quick_graph import EQGraphItem, EQGraphPreview
+from .health import HEALTH_PEAK_WINDOW_SECONDS, advice_for
+from .overview_presentation import NO_MIC_REASON, OverviewInputs, OverviewView, describe_overview
 from .quick_meter import QuickMeterItem
 from .quick_scene import QML_DIR, load_scene, quick_theme
-from .shell_specs import ACTION_SPECS
+from .shell_specs import ACTION_SPECS, HEALTH_DECISION_KEYS, HEALTH_LAYOUT_KEYS
 from .shell_state import ActionControl
 from .noise_controls import NoiseControl
 from .quick_error_screen import show_quick_error
@@ -45,6 +50,9 @@ from .theme import PALETTE, RADIUS_CONTROL, qcolor
 # Level history behind the noise suppression trace: 6 seconds at 20 Hz.
 TRACE_INTERVAL_MS = 50
 TRACE_POINTS = 120
+# The Overview ribbon shows 10 seconds; the history keeps one sample more, the one it scrolls in.
+RIBBON_POINTS = 200
+LEVEL_HISTORY = RIBBON_POINTS + 1
 # A shown window with no scene graph after this many checks has no renderer.
 RENDERER_CHECK_MS = 1000
 RENDERER_CHECKS = 3
@@ -72,7 +80,8 @@ class LevelTrace(QQuickPaintedItem):
         painter.setBrush(qcolor(PALETTE.data_surface))
         painter.drawRoundedRect(self.boundingRect(), RADIUS_CONTROL, RADIUS_CONTROL)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        first = TRACE_POINTS - len(self._points)
+        points = self._points[-TRACE_POINTS:]
+        first = TRACE_POINTS - len(points)
         for line, color in enumerate((PALETTE.text_muted, PALETTE.accent)):
             painter.setPen(QPen(qcolor(color), 1.5))
             painter.drawPolyline(
@@ -80,11 +89,238 @@ class LevelTrace(QQuickPaintedItem):
                     QPointF(
                         width * (first + index) / (TRACE_POINTS - 1),
                         # -60 dB at the bottom, 0 dB at the top.
-                        4 + (height - 8) * (1 - min(1.0, max(0.0, (point[line] + 60) / 60))),
+                        4 + (height - 8) * (1 - _level_share(point[line])),
                     )
-                    for index, point in enumerate(self._points)
+                    for index, point in enumerate(points)
                 ]
             )
+
+
+def _level_share(db: float) -> float:
+    """How far up a level sits on the -60 to 0 dB scale, from 0 to 1."""
+    return min(1.0, max(0.0, (db + 60) / 60))
+
+
+class LevelRibbon(QQuickPaintedItem):
+    """The last ten seconds of level, mirrored: the microphone above the centre line, what callers hear below.
+
+    The item is one sample wider than the window it shows through; the scene slides
+    it by that sample between updates, so it scrolls without a repaint per frame.
+    """
+
+    pointsChanged = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._points: list[list[float]] = []
+        self.setAntialiasing(True)
+        self.visibleChanged.connect(self.update)
+
+    def _set_points(self, points: list) -> None:
+        self._points = points
+        self.pointsChanged.emit()
+        if self.isVisible():
+            self.update()
+
+    points = Property(list, lambda self: self._points, _set_points, notify=pointsChanged)
+
+    def paint(self, painter: QPainter) -> None:
+        width, middle = self.width(), self.height() / 2
+        reach = middle - 2
+        painter.setPen(QPen(qcolor(PALETTE.data_grid), 1))
+        painter.drawLine(QPointF(0, middle), QPointF(width, middle))
+        points = self._points[-LEVEL_HISTORY:]
+        if len(points) < 2:
+            return
+        step = width / RIBBON_POINTS
+        first = LEVEL_HISTORY - len(points)
+        for line, (stroke, fill, alpha, side) in enumerate((
+            (PALETTE.signal_in, PALETTE.signal_in_fill, 0.42, -1),
+            (PALETTE.signal_out, PALETTE.signal_out, 0.30, 1),
+        )):
+            tops = [
+                QPointF(step * (first + index), middle + side * reach * _level_share(point[line]))
+                for index, point in enumerate(points)
+            ]
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(qcolor(fill, alpha=round(255 * alpha)))
+            painter.drawPolygon(QPolygonF([QPointF(tops[0].x(), middle), *tops, QPointF(tops[-1].x(), middle)]))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(qcolor(stroke), 1.2))
+            painter.drawPolyline(tops)
+
+
+def _window_running(window) -> bool:
+    # The session's own flag: the engine is not asked while it is mid-call.
+    return bool(window.__dict__.get("_processing"))
+
+
+def _backend_name(window, model: str) -> str:
+    """The suppressor's short name: its menu label without the note in brackets."""
+    labels = dict(window.noise_suppression_state.models)
+    return labels.get(model, model).split(" (")[0]
+
+
+def _last_voice_setup(results) -> datetime | None:
+    times = []
+    for result in results:
+        if result.scope != "full_voice_setup":
+            continue
+        try:
+            stamp = datetime.fromisoformat(result.created_at)
+        except ValueError:
+            continue
+        times.append(stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC))
+    return max(times, default=None)
+
+
+def overview_inputs(window) -> OverviewInputs:
+    """What the Overview reads from the window, all of it main-thread state."""
+    texts = window.shell_texts
+    session = window.engine_session.view
+    issues = [
+        advice_for(texts[key].text) or texts[key].text
+        for level in ("bad", "warn")
+        for key in HEALTH_DECISION_KEYS + HEALTH_LAYOUT_KEYS
+        if texts[key].state == level
+    ]
+    noise = window.noise_suppression_state.get_settings()
+    input_name = window._device_name_from_identity(window._combo_device_identity(window.input_choice)) or ""
+    output_name = window._device_name_from_identity(window._combo_device_identity(window.output_choice)) or ""
+    return OverviewInputs(
+        now=datetime.now(UTC),
+        running=_window_running(window),
+        no_mic=window.no_microphone(),
+        restart_pending=session.busy is None and window._restart_pending(),
+        device_bad=texts["callback_health_label"].state == "bad",
+        device_advice=advice_for(texts["callback_health_label"].text),
+        input_bad=texts["input_health_label"].state == "bad",
+        input_advice=advice_for(texts["input_health_label"].text),
+        muted=session.output_muted or session.mute_error,
+        issues=tuple(issues),
+        mode=window._processing_mode(),
+        backend=_backend_name(window, noise["model"]) if noise["enabled"] else "",
+        output_peak_db=window.output_meter.recent_peak_db(HEALTH_PEAK_WINDOW_SECONDS),
+        input_name=input_name,
+        output_name=output_name,
+        output_found=window.output_choice.count() > 0,
+        output_virtual=any(marker in output_name.lower() for marker in VIRTUAL_OUTPUT_MARKERS),
+        preset_name=window.configuration.identity.name or "Default",
+        last_setup=_last_voice_setup(window.config.calibration_results),
+    )
+
+
+class OverviewState(QObject):
+    """The Overview's status sentence and card, worked out again whenever what they read changes.
+
+    Assistive technology hears the sentence once each time the state itself changes,
+    after the tick that changed it has settled, never for a new reading of the same state.
+    """
+
+    changed = Signal()
+
+    def __init__(self, parent: QObject, window, sources) -> None:
+        super().__init__(parent)
+        self._window = window
+        self._view: OverviewView = describe_overview(overview_inputs(window))
+        self._announced = self._view.state
+        self._announce = QTimer(self)
+        self._announce.setSingleShot(True)
+        self._announce.setInterval(0)
+        self._announce.timeout.connect(self._announce_state)
+        for signal in sources:
+            signal.connect(self.refresh)
+
+    state = Property(str, lambda self: self._view.state, notify=changed)
+    headline = Property(str, lambda self: self._view.headline, notify=changed)
+    detail = Property(str, lambda self: self._view.detail, notify=changed)
+    tone = Property(str, lambda self: self._view.tone, notify=changed)
+    callersAffected = Property(bool, lambda self: self._view.callers_affected, notify=changed)
+    navLine = Property(str, lambda self: self._view.nav_line, notify=changed)
+    ribbonCaption = Property(str, lambda self: self._view.ribbon_caption, notify=changed)
+    recommendSetup = Property(bool, lambda self: self._view.recommend_setup, notify=changed)
+    setupLine = Property(str, lambda self: self._view.setup_line, notify=changed)
+    checksTitle = Property(str, lambda self: self._view.checks_title, notify=changed)
+    checks = Property(
+        list, lambda self: [{"text": text, "kind": kind} for text, kind in self._view.checks], notify=changed
+    )
+
+    @Slot()
+    def refresh(self) -> None:
+        view = describe_overview(overview_inputs(self._window))
+        if view != self._view:
+            self._view = view
+            self.changed.emit()
+        if view.state != self._announced:
+            self._announce.start()
+
+    @Slot()
+    def _announce_state(self) -> None:
+        view = self._view
+        if view.state == self._announced:
+            return
+        self._announced = view.state
+        if QAccessible.isActive():
+            QAccessible.updateAccessibility(
+                QAccessibleAnnouncementEvent(self._window, f"{view.headline}. {view.detail}")
+            )
+
+
+def chain_inputs(window) -> ChainInputs:
+    meters = window.processing_meters
+
+    def reduction(meter) -> float | None:
+        return meter.gain_reduction_db if meter.measurement_available else None
+
+    noise = window.noise_suppression_state.get_settings()
+    gate = window.gate_state.get_settings()
+    eq = window.eq_state.get_eq_settings()
+    return ChainInputs(
+        running=_window_running(window),
+        cleanup_mode=window.input_cleanup_mode_choice.currentText() or "Off",
+        gate_enabled=bool(gate["enabled"]),
+        gate_threshold_db=float(gate["threshold_db"]),
+        suppression_enabled=bool(noise["enabled"]),
+        backend=_backend_name(window, noise["model"]),
+        strength=float(noise["strength"]),
+        deesser_enabled=bool(window.deesser_state.get_settings()["enabled"]),
+        deesser_reduction_db=reduction(meters.deesser_gr),
+        eq_enabled=eq.enabled,
+        eq_bands=sum(1 for band in eq.bands if band.enabled),
+        compressor_enabled=bool(window.compressor_state.get_settings()["enabled"]),
+        compressor_reduction_db=reduction(meters.compressor_gr),
+        limiter_enabled=bool(window.limiter_state.get_settings()["enabled"]),
+        limiter_reduction_db=reduction(meters.limiter_gr),
+    )
+
+
+class ChainLines(QObject):
+    """The state line and activity of each chain row, keyed as the rows are."""
+
+    changed = Signal()
+
+    def __init__(self, parent: QObject, window, sources) -> None:
+        super().__init__(parent)
+        self._window = window
+        self._lines: dict[str, ChainLine] = describe_chain(chain_inputs(window))
+        for signal in sources:
+            signal.connect(self.refresh)
+
+    lines = Property(
+        dict,
+        lambda self: {
+            key: {"line": line.line, "activity": line.activity, "metered": line.metered}
+            for key, line in self._lines.items()
+        },
+        notify=changed,
+    )
+
+    @Slot()
+    def refresh(self) -> None:
+        lines = describe_chain(chain_inputs(self._window))
+        if lines != self._lines:
+            self._lines = lines
+            self.changed.emit()
 
 
 class InspectorState(QObject):
@@ -126,7 +362,7 @@ class QuickBridge(QObject):
             # Its controls are wired to shared state; none may outlive the failure.
             self.deleteLater()
             raise
-        self._levels: deque[list[float]] = deque(maxlen=TRACE_POINTS)
+        self._levels: deque[list[float]] = deque(maxlen=LEVEL_HISTORY)
         self._trace_timer = QTimer(self)
         self._trace_timer.setInterval(TRACE_INTERVAL_MS)
         self._trace_timer.timeout.connect(self._sample_levels)
@@ -374,28 +610,49 @@ class QuickBridge(QObject):
             ],
         }
 
-        def chain_row(name: str, toggle=None, *, card=None, page: int = -1, state=None) -> dict:
-            # A row opens its page, or else the inspector of its card.
+        def chain_row(name: str, line: str, toggle=None, *, card=None, page: int = -1) -> dict:
+            # A row opens its page, or else the inspector of its card; ``line`` keys its state line.
             return {
                 "name": name, "toggle": toggle, "card": card, "key": card["key"] if card else "",
-                "page": page, "state": state,
+                "page": page, "line": line,
             }
 
         by_key = {stage["key"]: stage for stage in stages}
 
         def stage_row(key: str) -> dict:
-            return chain_row(by_key[key]["name"], by_key[key]["toggle"], card=by_key[key])
+            return chain_row(by_key[key]["name"], key, by_key[key]["toggle"], card=by_key[key])
 
         # In signal order, which is not the order of the stages above.
         chain = [
-            chain_row("Input cleanup", card=cleanup, state=w.input_cleanup_mode_choice),
+            chain_row("Input cleanup", "cleanup", card=cleanup),
             stage_row("gate"),
             stage_row("suppression"),
             stage_row("deesser"),
-            chain_row("Equalizer", eq_toggle, page=w.EQUALIZER_PAGE_INDEX),
+            chain_row("Equalizer", "eq", eq_toggle, page=w.EQUALIZER_PAGE_INDEX),
             stage_row("compressor"),
             stage_row("limiter"),
         ]
+        meters_changed = [meter.changed for meter in (meters.compressor_gr, meters.deesser_gr, meters.limiter_gr)]
+        # The window handles a session event first; connected after it, these read the result.
+        session_changed = [
+            w.engine_session.changed, w.start_btn_action.changed, w.stop_btn_action.changed,
+            text("transmission_status_label").changed,
+        ]
+        chain_lines = ChainLines(self, w, [
+            *meters_changed, *session_changed, w.input_cleanup_mode_choice.changed,
+            *(state.changed for state in (
+                w.gate_state, w.noise_suppression_state, w.deesser_state, w.eq_state,
+                w.compressor_state, w.limiter_state,
+            )),
+        ])
+        overview = OverviewState(self, w, [
+            *session_changed, w.input_choice.changed, w.output_choice.changed,
+            w.processing_mode_choice.changed, w.noise_suppression_state.changed,
+            *(text(key).changed for key in (
+                *HEALTH_DECISION_KEYS, *HEALTH_LAYOUT_KEYS, "health_summary_label",
+                "route_status_label", "preset_status_label", "calibration_status_label",
+            )),
+        ])
         inspector = InspectorState(self, [row["key"] for row in chain if row["card"]])
         # Another page has no inspector beside it.
         w.shell_page.selected.connect(inspector.close)
@@ -421,6 +678,10 @@ class QuickBridge(QObject):
             "settingsPage": w.SETTINGS_PAGE_INDEX,
             "equalizerPage": w.EQUALIZER_PAGE_INDEX,
             "inspector": inspector,
+            "overview": overview,
+            "startBlockedReason": NO_MIC_REASON,
+            "ribbonPoints": RIBBON_POINTS,
+            "levelIntervalMs": TRACE_INTERVAL_MS,
             "banners": [
                 text("device_warning_banner"),
                 text("config_warning_banner"),
@@ -437,6 +698,7 @@ class QuickBridge(QObject):
             },
             "sidebar": {
                 "chain": chain,
+                "lines": chain_lines,
                 "measureLatency": ActionControl(
                     w.latency_calibration_action, self, text="Measure latency",
                 ),
@@ -530,6 +792,8 @@ def register_qml_types() -> None:
     qmlRegisterType(EQComparisonItem, "AudioForge", 1, 0, "EQComparisonItem")  # type: ignore[call-overload]
     qmlRegisterType(QuickMeterItem, "AudioForge", 1, 0, "QuickMeterItem")  # type: ignore[call-overload]
     qmlRegisterType(LevelTrace, "AudioForge", 1, 0, "LevelTrace")  # type: ignore[call-overload]
+    qmlRegisterType(LevelRibbon, "AudioForge", 1, 0, "LevelRibbon")  # type: ignore[call-overload]
+    qmlRegisterType(EQGraphPreview, "AudioForge", 1, 0, "EQGraphPreview")  # type: ignore[call-overload]
     qmlRegisterUncreatableType(QuickBridge, "AudioForge", 1, 0, "QuickBridge", "The window creates it")  # type: ignore[call-overload]
 
 

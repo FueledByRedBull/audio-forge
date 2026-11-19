@@ -17,6 +17,7 @@ from PySide6.QtGui import QAccessible
 from PySide6.QtQml import QQmlEngine, QQmlExpression, QQmlProperty
 from PySide6.QtTest import QTest
 
+from mic_eq.config import DeviceIdentity
 from mic_eq.ui.eq_state import EQ_FILTER_OPTIONS
 from test_quick_layout import segoe_font  # noqa: F401  (a fixture)
 from test_quick_shell import (
@@ -54,7 +55,11 @@ def no_qml_warnings():
 
 @pytest.fixture
 def quick_window(shell_window):  # noqa: F811
-    """The real main window with its Qt Quick scene, as test_quick_shell builds it."""
+    """The real main window with its Qt Quick scene, as test_quick_shell builds it.
+
+    It lists a microphone, so Start is offered as it is to most people.
+    """
+    shell_window.input_choice.addItem("Microphone", DeviceIdentity(name="Microphone", direction="input"))
     return shell_window
 
 
@@ -420,22 +425,25 @@ def test_the_status_strip_texts_are_read_by_assistive_technology_without_being_t
     window = quick_window
     _show(window, qapp)
     root = window.centralWidget().rootObject()
+    overview = window.quick_bridge.model["overview"]
     shown = {
-        "statusMessage": window.status_message,
-        "statusTransmission": window.shell_texts["transmission_status_label"],
-        "statusCalibration": window.shell_texts["calibration_status_label"],
+        "statusMessage": lambda: window.status_message.text,
+        "overviewHeadline": lambda: overview.headline,
+        "overviewDetail": lambda: overview.detail,
+        "statusCalibration": lambda: window.shell_texts["calibration_status_label"].text,
     }
     with _AccessibleScene() as scene:
         items = {name: root.findChild(QObject, name) for name in shown}
         for name, item in items.items():
             assert _iface(item) is not None, f"{name} is not exposed"
             assert _iface(item).role() == Role.StaticText
-            assert scene.name(item) == shown[name].text != ""
+            assert scene.name(item) == shown[name]() != ""
         window.status_message.showMessage("Output muted")
-        window.shell_texts["transmission_status_label"].update(text="Transmission: Running / Normal / Muted")
+        # The microphone goes away from the list, so the Overview says so.
+        window.input_choice.clear()
         qapp.processEvents()
         assert scene.name(items["statusMessage"]) == "Output muted"
-        assert scene.name(items["statusTransmission"]) == "Transmission: Running / Normal / Muted"
+        assert scene.name(items["overviewHeadline"]) == "No microphone found"
 
         stopped_on = {item.objectName() for item in _tab_stops(window, qapp)}
         assert not stopped_on & set(shown)
@@ -1106,7 +1114,7 @@ def test_a_stage_that_is_off_says_so_and_keeps_its_controls_at_full_strength(qui
         return status, _iface(row_button).text(Text.Description)
 
     with _AccessibleScene():
-        assert says() == (["Noise gate is on"], "On")
+        assert says() == (["Noise gate is on"], "-40 dB")
         gate["toggle"].click()
         qapp.processEvents()
         assert says() == (["Noise gate is off"], "Off")
@@ -1198,6 +1206,27 @@ def test_reduced_motion_keeps_the_level_trace_running(reduced_motion_window) -> 
     bridge = reduced_motion_window.quick_bridge
     assert bridge.model["theme"]["motion"] == 0
     assert bridge._trace_timer.isActive()
+
+
+@pytest.mark.parametrize("motion", ["reduced", "full"])
+def test_the_ribbon_takes_each_reading_and_slides_only_with_full_motion(request, qapp, motion) -> None:
+    window = request.getfixturevalue(f"{motion}_motion_window")
+    _show(window, qapp)
+    bridge = window.quick_bridge
+    ribbon = window.centralWidget().rootObject().findChild(QObject, "levelRibbon")
+    strip = ribbon.parentItem()
+    # Readings come by hand here; the sampler would clear them, as no meter is measuring.
+    bridge._trace_timer.stop()
+    bridge._levels.extend([[-20.0, -24.0]] * 5)
+    bridge.levelsChanged.emit()
+    QTest.qWait(25)
+    assert len(ribbon.property("points")) == 5
+    # Reduced motion shows the new reading at once; full motion slides it in over one reading.
+    scroll = window.centralWidget().rootObject().findChild(QObject, "ribbonScroll")
+    interval = bridge.model["levelIntervalMs"]
+    assert scroll.property("duration") == (0 if motion == "reduced" else interval)
+    if motion == "reduced":
+        assert strip.x() == pytest.approx(-strip.property("step"))
 
 
 def test_a_switch_knob_snaps_under_reduced_motion(reduced_motion_window, qapp) -> None:

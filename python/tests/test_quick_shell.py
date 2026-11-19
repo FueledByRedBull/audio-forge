@@ -27,7 +27,7 @@ from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtQml import QQmlProperty, qmlTypeId
 from PySide6.QtQuick import QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QMenu, QMessageBox
 
 from mic_eq.config import AppConfig, DeviceIdentity
 from mic_eq.config_parts.settings import q_from_bandwidth_octaves
@@ -35,10 +35,13 @@ from mic_eq.ui import health
 from mic_eq.ui.health import HealthReadings
 from mic_eq.ui.main_window import PAGE_NAMES, MainWindow
 from mic_eq.ui.processing_configuration import PresetOrigin
-from mic_eq.ui.eq_quick_graph import EQGraphItem
+from mic_eq.ui import quick_shell
+from mic_eq.ui.calibration_history import persist_calibration
+from mic_eq.ui.eq_quick_graph import EQGraphItem, EQGraphPreview
 from mic_eq.ui.eq_graph import EQGraphGeometry
 from mic_eq.ui.level_meter import CLIP_FLAT_TOP_SAMPLES
 from mic_eq.ui.quick_meter import QuickMeterItem
+from mic_eq.ui.overview_presentation import CLIPPING_NOTE, MUTED_DETAIL, NO_MIC_DETAIL, RECOMMEND_SETUP_HINT
 from mic_eq.ui.quick_shell import InspectorState, SettingControl
 from mic_eq.ui.theme import PALETTE
 
@@ -600,6 +603,8 @@ def _graph_item(item):
 def mic_page(quick_window, qapp):
     """The EQ graph and the Equalizer page holding it, in a window the page overflows."""
     quick_window.shell_page.setIndex(quick_window.EQUALIZER_PAGE_INDEX)
+    # Below the window's own minimum, which the page fits once no banner takes room.
+    quick_window.setMinimumSize(0, 0)
     quick_window.resize(900, 600)
     qapp.processEvents()
     graph = _graph_item(quick_window.centralWidget().rootObject())
@@ -930,8 +935,8 @@ def test_a_drag_moves_the_band_by_the_pointers_travel(quick_window, mic_page) ->
 def wide_page(quick_window, mic_page, qapp):
     """The Equalizer page in a window wide enough for the whole EQ card to show."""
     page = mic_page[1]
-    # The Equalizer page holds the EQ card alone, so only the shortest window overflows it.
-    quick_window.resize(1300, 640)
+    # The Equalizer page holds the EQ card alone, so only a window below the minimum overflows it.
+    quick_window.resize(1300, 560)
     qapp.processEvents()
     assert page.property("contentHeight") > page.height()
     return page
@@ -1692,6 +1697,65 @@ def _status_dot(window):
     return window.centralWidget().rootObject().findChild(QObject, "transmissionDot")
 
 
+NO_MIC_REASON = "Start audio, no microphone to start from"
+
+
+def _menu_start(window):
+    for menu in window.menuBar().findChildren(QMenu):
+        for action in menu.actions():
+            if action.text() == "&Start Processing":
+                return action
+    raise AssertionError("File > Start Processing is missing")
+
+
+def test_no_mic_window_blocks_start(quick_window, qapp) -> None:
+    window = quick_window
+    assert window.input_choice.count() == 0
+    assert not window.start_btn_action.isEnabled()
+    start = window.quick_bridge.model["top"]["start"]
+    assert start.toolTip == NO_MIC_REASON
+    qapp.processEvents()
+    reason = window.centralWidget().rootObject().findChild(QObject, "startBlockedReason")
+    assert reason is not None and reason.property("visible")
+    assert reason.property("text") == "No microphone to start from"
+
+
+def test_menu_start_without_mic_shows_no_failure_dialog(quick_window, monkeypatch) -> None:
+    window = quick_window
+    window.output_choice.addItem("Destination", DeviceIdentity(name="Destination", direction="output"))
+    dialogs: list[str] = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args, **_kw: dialogs.append(str(args[2:])))
+    monkeypatch.setattr(QMessageBox, "exec", lambda *_args: dialogs.append("exec"))
+    opened: list[object] = []
+    monkeypatch.setattr(
+        "mic_eq.ui.engine_session.start_processor_for_route",
+        lambda *args: opened.append(args) or "started",
+    )
+    _menu_start(window).trigger()
+    window.engine_session.request_start("menu")
+    QTest.qWait(100)
+    assert dialogs == [] and opened == []
+    assert not window.processor.is_running()
+    assert window.quick_bridge.model["overview"].state == "no_mic"
+
+
+def test_start_re_enables_when_a_mic_appears(quick_window) -> None:
+    window = quick_window
+    assert not window.start_btn_action.isEnabled()
+    window.input_choice.addItem("Microphone", DeviceIdentity(name="Microphone", direction="input"))
+    assert window.start_btn_action.isEnabled()
+    assert window.quick_bridge.model["top"]["start"].toolTip == "Start processing (Ctrl+Return)"
+
+
+def test_empty_input_picker_says_nothing_to_select_yet(quick_window) -> None:
+    window = quick_window
+    choice = window.quick_bridge.model["top"]["input"]
+    assert choice.placeholder == "Nothing to select yet"
+    picker = _find(window.centralWidget().rootObject(), "Picker", choice)
+    assert picker is not None and picker.property("prompting")
+    assert picker.property("prompt") == "Nothing to select yet"
+
+
 def _diagnostic_labels(window, **changes) -> None:
     _judge(window, **{
         "diagnostics": {}, "latency_ms": 10.0, "dsp_time_ms": 0.2, "input_buf": 0,
@@ -1725,16 +1789,196 @@ def test_the_status_dot_shows_sound_running_and_heard(engine_window, qapp) -> No
     window.start_btn_action.trigger()
     assert colour() == palette("status_ok_text")
     window.user_mute_checkbox_action.setChecked(True)
-    assert colour() == palette("status_warn_text")
+    assert colour() == palette("mute")
     window.user_mute_checkbox_action.setChecked(False)
     assert colour() == palette("status_ok_text")
     engine.mute_error = True
     window.user_mute_checkbox_action.setChecked(True)
     assert window.shell_texts["transmission_status_label"].text.endswith("Mute pending")
-    assert colour() == palette("status_warn_text")
+    assert colour() == palette("mute")
 
     window.stop_btn_action.trigger()
     assert colour() == palette("control_edge")
+
+
+def _scene_item(window, name: str):
+    return window.centralWidget().rootObject().findChild(QObject, name)
+
+
+def _sentence(window) -> tuple[str, str]:
+    return tuple(_scene_item(window, name).property("text") for name in ("overviewHeadline", "overviewDetail"))
+
+
+def _nav_detail(window, name: str) -> str:
+    root = window.centralWidget().rootObject()
+    return next(
+        item.property("detail") for item in _items(root)
+        if item.property("name") == name and item.property("detail") is not None
+    )
+
+
+def _wait_for_colour(window) -> None:
+    QTest.qWait(window.quick_bridge.model["theme"]["motionStatus"] + 30)
+
+
+def _voice_setup_saved(window, scope: str, monkeypatch) -> None:
+    def refused(*_args: object) -> None:
+        raise AssertionError("the calibration record was not saved")
+
+    monkeypatch.setattr(QMessageBox, "warning", refused)
+    persist_calibration(window, window, scope, "flat", ("eq",))
+
+
+def test_the_no_mic_overview_says_what_was_checked_and_how_to_go_on(quick_window, qapp) -> None:
+    window = quick_window
+    qapp.processEvents()
+    assert _sentence(window) == ("No microphone found", NO_MIC_DETAIL)
+    assert _nav_detail(window, "Overview") == "Stopped · no microphone"
+    # The Overview says it, with what was checked, instead of a banner above it.
+    assert not window.shell_texts["device_warning_banner"].shown
+    assert _scene_item(window, "overviewChecks").property("visible")
+    assert _scene_item(window, "overviewRefresh").property("text") == "Refresh audio devices"
+    assert _scene_item(window, "ribbonCaption").property("text") == "Level · waiting for audio"
+    _wait_for_colour(window)
+    assert _status_dot(window).property("color").name() == QColor(PALETTE.status_warn_text).name()
+
+
+def test_ready_recommends_auto_voice_setup_until_one_is_saved(engine_window, qapp, monkeypatch) -> None:
+    window, _engine = engine_window
+    qapp.processEvents()
+    headline, detail = _sentence(window)
+    assert headline == "Ready when you are"
+    assert detail.startswith("Microphone > Destination · ")
+    assert _nav_detail(window, "Overview") == "Ready · not running"
+    setup = _scene_item(window, "voiceSetupButton")
+    assert setup.property("text") == "Run Auto Voice Setup" and setup.property("look") == "soft"
+    assert _scene_item(window, "setupLine").property("text") == RECOMMEND_SETUP_HINT
+    # An EQ-only calibration is not the whole setup, so the recommendation stays.
+    _voice_setup_saved(window, "eq_only", monkeypatch)
+    qapp.processEvents()
+    assert setup.property("look") == "soft"
+    _voice_setup_saved(window, "full_voice_setup", monkeypatch)
+    qapp.processEvents()
+    assert setup.property("look") == "plain"
+    assert _scene_item(window, "setupLine").property("text") == "Last Auto Voice Setup: today"
+    assert _sentence(window)[0] == "Ready when you are"
+
+
+def test_each_live_state_is_said_in_words_and_marked_by_the_dot(engine_window, qapp) -> None:
+    window, engine = engine_window
+    texts = window.shell_texts
+
+    def dot() -> str:
+        _wait_for_colour(window)
+        return _status_dot(window).property("color").name()
+
+    def palette(name: str) -> str:
+        return QColor(getattr(PALETTE, name)).name()
+
+    window.start_btn_action.trigger()
+    assert _sentence(window)[0] == "Live · your voice is clean"
+    assert _nav_detail(window, "Overview") == "Live · all stages"
+    assert _scene_item(window, "ribbonCaption").property("text") == "Level · last 10 seconds"
+    assert dot() == palette("status_ok_text")
+
+    window.user_mute_checkbox_action.setChecked(True)
+    assert _sentence(window) == ("Muted · others hear silence", MUTED_DETAIL)
+    assert dot() == palette("mute")
+    window.user_mute_checkbox_action.setChecked(False)
+
+    texts["input_health_label"].update(text="Input: CLIPPING", status="bad")
+    headline, detail = _sentence(window)
+    assert headline == "Live · your mic is clipping" and detail.endswith(CLIPPING_NOTE)
+    assert dot() == palette("status_bad_text")
+    texts["input_health_label"].update(text="Input: OK", status="ok")
+
+    texts["callback_health_label"].update(text="Callbacks: stalled", status="bad")
+    headline_item = _scene_item(window, "overviewHeadline")
+    assert headline_item.property("text") == "Your callers can't hear you"
+    assert window.quick_bridge.model["overview"].callersAffected
+    assert dot() == palette("callers_affected")
+    assert headline_item.property("color").name() == palette("callers_affected_text")
+    texts["callback_health_label"].update(text="Callbacks: OK", status="ok")
+    assert _sentence(window)[0] == "Live · your voice is clean"
+
+    window.stop_btn_action.trigger()
+    assert engine.running is False
+    assert _sentence(window)[0] == "Ready when you are"
+
+
+def test_the_overview_announces_each_new_state_once(engine_window, qapp, monkeypatch) -> None:
+    window, _engine = engine_window
+    heard: list[str] = []
+
+    class Accessibility:
+        @staticmethod
+        def isActive() -> bool:
+            return True
+
+        @staticmethod
+        def updateAccessibility(event) -> None:
+            heard.append(event.message())
+
+    monkeypatch.setattr(quick_shell, "QAccessible", Accessibility)
+    overview = window.quick_bridge.model["overview"]
+    window.start_btn_action.trigger()
+    qapp.processEvents()
+    assert heard == [f"{overview.headline}. {overview.detail}"]
+    # New readings of the same state are not announced again.
+    for _ in range(3):
+        overview.refresh()
+        qapp.processEvents()
+    assert len(heard) == 1
+    # A state that is over before the tick settles is never announced.
+    window.user_mute_checkbox_action.setChecked(True)
+    window.user_mute_checkbox_action.setChecked(False)
+    qapp.processEvents()
+    assert len(heard) == 1
+    window.user_mute_checkbox_action.setChecked(True)
+    qapp.processEvents()
+    assert heard[1:] == [f"Muted · others hear silence. {MUTED_DETAIL}"]
+
+
+def test_stopped_chain_rows_read_idle_and_name_their_settings(quick_window, qapp) -> None:
+    window = quick_window
+    qapp.processEvents()
+    assert _nav_detail(window, "Compressor") == "Idle"
+    assert _nav_detail(window, "Limiter") == "Idle"
+    assert _nav_detail(window, "Noise gate").endswith(" dB")
+    assert _nav_detail(window, "Input cleanup").startswith("HP 80 Hz")
+    window.limiter_state.set_value("enabled", False)
+    qapp.processEvents()
+    assert _nav_detail(window, "Limiter") == "Off"
+
+
+def test_the_limiter_row_reads_the_reduction_of_each_diagnostics_tick(engine_window, qapp) -> None:
+    window, engine = engine_window
+    native = engine.native
+    engine.get_runtime_diagnostics = lambda: {**native.get_runtime_diagnostics(), "limiter_gain_reduction_db": 3.24}
+    window.start_btn_action.trigger()
+    window._update_diagnostics()
+    qapp.processEvents()
+    assert _nav_detail(window, "Limiter") == "Reduction 3.2 dB"
+    window.stop_btn_action.trigger()
+    qapp.processEvents()
+    assert _nav_detail(window, "Limiter") == "Idle"
+
+
+def test_the_overview_previews_the_curve_without_taking_focus(quick_window, qapp) -> None:
+    window = quick_window
+    root = window.centralWidget().rootObject()
+    preview = _scene_item(window, "eqPreview")
+    assert isinstance(preview, EQGraphPreview) and not isinstance(preview, EQGraphItem)
+    assert preview.property("graph") is window.quick_bridge.model["eq"]["curve"]
+    assert preview not in _tab_stops(window, qapp)
+    graph = _graph_item(root)
+    assert graph is not None and graph.objectName() == "eqGraph"
+    open_button = _scene_item(window, "openEqualizer")
+    QTest.mouseClick(
+        window.centralWidget(), Qt.MouseButton.LeftButton,
+        pos=open_button.mapToScene(QPointF(open_button.width() / 2, open_button.height() / 2)).toPoint(),
+    )
+    assert window.shell_page.currentIndex() == window.EQUALIZER_PAGE_INDEX
 
 
 def test_the_device_grace_starts_over_after_stop_and_start(engine_window) -> None:

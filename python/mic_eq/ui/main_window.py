@@ -103,6 +103,7 @@ from .engine_session import (
 )
 from .engine_tasks import EngineTasks, attempt
 from .theme import contrast_theme_changed, muted_icon
+from .overview_presentation import NO_MIC_REASON
 from .processing_mode_state import ProcessingModeState
 from .processing_configuration import (
     CONFIGURATION_MUTE,
@@ -178,6 +179,8 @@ MINIMUM_WINDOW_HEIGHT = 640
 # The pages in navigation order; the shared page state and the page stack follow it.
 PAGE_NAMES = ("Overview", "Health", "Settings", "Equalizer")
 NO_DESTINATION_WARNING = "Warning: No output device is selected. Choose one in the Output list, then press Start."
+NO_INPUT_PLACEHOLDER = "Nothing to select yet"
+NO_MIC_START_TIP = "Start audio, no microphone to start from"
 # Windows allows a program a few seconds to end a session, and the save comes after this wait.
 ENGINE_CALL_WAIT_MS = 3_000
 # Set on the app while Qt asks to commit data for a sign-out or shutdown; the dialogs read it too.
@@ -457,6 +460,7 @@ class MainWindow(QMainWindow):
         # Populate device lists
         self._refresh_devices()
 
+        self.input_choice.changed.connect(self._on_input_list_changed)
         # Connect device change signals for persistence
         self.input_choice.currentIndexChanged.connect(
             lambda _index: self._on_device_changed(self.input_choice)
@@ -2257,12 +2261,14 @@ class MainWindow(QMainWindow):
             output_found = False
             config_dirty = False
             listing_errors: list[str] = []
+            self._input_listing_empty = False
 
             # Get input devices
             try:
                 if isinstance(input_devices, Exception):
                     raise input_devices
                 input_found = len(input_devices) > 0
+                self._input_listing_empty = not input_found
                 for device in input_devices:
                     identity = self._identity_from_device_info(device, "input")
                     self.input_choice.addItem(
@@ -2342,21 +2348,15 @@ class MainWindow(QMainWindow):
                 listing_errors.append(f"output devices ({e})")
                 logger.warning("Output device enumeration failed", exc_info=True)
 
+            self.input_choice.setPlaceholderText(NO_INPUT_PLACEHOLDER if self._input_listing_empty else "")
             # Update warning banner visibility and text
             if listing_errors:
                 self.shell_texts["device_warning_banner"].update(
                     text="Warning: Could not list " + " or ".join(listing_errors) + ".", shown=True
                 )
-            elif not input_found and not output_found:
-                self.shell_texts["device_warning_banner"].update(text=
-                    "Warning: No audio devices detected. Check your audio drivers and connections."
-                )
-                self.shell_texts["device_warning_banner"].update(shown=True)
             elif not input_found:
-                self.shell_texts["device_warning_banner"].update(text=
-                    "Warning: No input devices detected. Check your microphone connections."
-                )
-                self.shell_texts["device_warning_banner"].update(shown=True)
+                # The Overview states a missing microphone, with what was checked.
+                self.shell_texts["device_warning_banner"].update(shown=False)
             elif not output_found:
                 self.shell_texts["device_warning_banner"].update(text=
                     "Warning: No output devices detected. Check your audio output connections."
@@ -2699,6 +2699,12 @@ class MainWindow(QMainWindow):
                 banner.update(text=NO_DESTINATION_WARNING, shown=True)
             return False
 
+        if self.no_microphone():
+            self.status_message.showMessage(NO_MIC_REASON)
+            if interactive:
+                self.shell_page.setIndex(0)
+            return False
+
         self._apply_input_preferences_for_current_route()
         return (
             self._combo_device_identity(self.input_choice),
@@ -2738,7 +2744,7 @@ class MainWindow(QMainWindow):
                 self._show_start_failure(error, interactive)
             case Stopped(source=source):
                 self.status_message.showMessage("Processing stopped")
-                self.start_btn_action.setEnabled(True)
+                self._sync_start_action(True)
                 self.stop_btn_action.setEnabled(False)
                 self.input_choice.setEnabled(True)
                 self.output_choice.setEnabled(True)
@@ -2813,7 +2819,7 @@ class MainWindow(QMainWindow):
         busy = self.engine_session.view.busy is not None
         running = not busy and bool(self.processor.is_running())
         idle = not (busy or running)
-        self.start_btn_action.setEnabled(idle)
+        self._sync_start_action(idle)
         self.stop_btn_action.setEnabled(
             not busy
             and (running or self._restart_pending() or self.__dict__.get("_login_startup_deadline") is not None)
@@ -2825,6 +2831,20 @@ class MainWindow(QMainWindow):
             return
         self._update_session_summary()
         self._sync_meter_timer()
+
+    def no_microphone(self) -> bool:
+        """Whether the device listing worked and found no input to start from."""
+        return bool(self.__dict__.get("_input_listing_empty")) and self.input_choice.count() == 0
+
+    def _sync_start_action(self, idle: bool) -> None:
+        blocked = self.no_microphone()
+        self.start_btn_action.setEnabled(idle and not blocked)
+        self.start_btn_action.setToolTip(NO_MIC_START_TIP if blocked else ACTION_SPECS["start_btn"].tip)
+
+    def _on_input_list_changed(self) -> None:
+        # The engine is not asked while it is mid-call; the session resyncs the controls after.
+        if self.engine_session.view.busy is None:
+            self._sync_start_action(not self.processor.is_running())
 
     def _restart_pending(self) -> bool:
         """Whether the engine, streams stopped, is waiting to retry a failed restart; Stop cancels it."""
@@ -3146,6 +3166,7 @@ class MainWindow(QMainWindow):
         self.processing_meters.update_auto_makeup(None, None)
         self.processing_meters.text_states["current_release"].update(text="--")
         self.processing_meters.deesser_gr.set_gain_reduction(None)
+        self.processing_meters.limiter_gr.set_gain_reduction(None)
         self.gate_state.update_vad_confidence(None)
         self._live_meters_invalidated = True
 
@@ -3297,8 +3318,13 @@ class MainWindow(QMainWindow):
             processing=self._processing,
         )
         if reading is None:
+            self.processing_meters.limiter_gr.set_gain_reduction(None)
             self._show_health(READINGS_UNAVAILABLE)
         else:
+            limiter = reading[0].get("limiter_gain_reduction_db")
+            self.processing_meters.limiter_gr.set_gain_reduction(
+                float(limiter) if isinstance(limiter, int | float) else None
+            )
             self._show_health(self.health_monitor.judge(*reading, now=time.monotonic()))
         # Missing presentation data must not suppress native recovery service.
         self.engine_session.tick()

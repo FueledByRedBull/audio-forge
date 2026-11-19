@@ -9,17 +9,17 @@ from PySide6.QtQuick import QQuickPaintedItem
 from .eq_graph import EQGraphModel, EQGraphRenderer
 
 
-class EQGraphItem(QQuickPaintedItem):
-    """A QML graph item that paints and edits the shared model directly."""
+class EQGraphPreview(QQuickPaintedItem):
+    """The shared model's curves, read-only: no handles, input or focus."""
 
     graphChanged = Signal()
+    # The graph item paints the band handles a user drags.
+    HANDLES = False
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._graph: EQGraphModel | None = None
         self.setAntialiasing(True)
-        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
-        self.setAcceptHoverEvents(True)
 
     def _get_graph(self) -> QObject | None:
         return self._graph
@@ -55,7 +55,19 @@ class EQGraphItem(QQuickPaintedItem):
                 self._graph,
                 self.width(),
                 self.height(),
+                handles=self.HANDLES,
             )
+
+
+class EQGraphItem(EQGraphPreview):
+    """A QML graph item that paints and edits the shared model directly."""
+
+    HANDLES = True
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+        self.setAcceptHoverEvents(True)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         graph = self._graph

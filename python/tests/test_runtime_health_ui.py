@@ -754,6 +754,7 @@ def test_failed_diagnostics_still_service_recovery_when_presentation_is_hidden(q
         health_monitor=HealthMonitor(),
         input_meter=Mock(),
         output_meter=Mock(),
+        processing_meters=Mock(),
         limiter_state=SimpleNamespace(get_settings=lambda: {"enabled": True}),
         _processing=False,
     )
@@ -786,6 +787,7 @@ def test_a_stopped_tick_redoes_the_stopped_work_only_when_the_stopped_state_chan
         ),
         input_meter=Mock(),
         output_meter=Mock(),
+        processing_meters=Mock(),
         limiter_state=SimpleNamespace(get_settings=lambda: {"enabled": True}),
     )
     window._show_health = lambda view: MainWindow._show_health(window, view)

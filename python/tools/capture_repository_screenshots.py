@@ -92,6 +92,8 @@ def _source_hashes() -> dict[str, str]:
         "python/mic_eq/ui/quick_shell.py",
         "python/mic_eq/ui/shell_specs.py",
         "python/mic_eq/ui/quick_scene.py",
+        "python/mic_eq/ui/overview_presentation.py",
+        "python/mic_eq/ui/chain_presentation.py",
         "python/mic_eq/ui/qml/Main.qml",
         "python/mic_eq/ui/qml/qmldir",
         "python/mic_eq/ui/qml/Look.qml",

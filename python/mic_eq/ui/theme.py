@@ -66,6 +66,12 @@ class SemanticPalette:
     text_on_mute: str = "#1a1230"
     mute_fill: str = "#29b9a3f5"
     mute_edge: str = "#73b9a3f5"
+    # Rose-magenta says the call is not getting the voice; it is never the only sign,
+    # since its words carry the meaning for colour-blind readers.
+    callers_affected: str = "#e25a9a"
+    callers_affected_text: str = "#f07ab4"
+    callers_affected_fill: str = "#29e25a9a"
+    callers_affected_edge: str = "#73e25a9a"
 
     action_primary: str = "#d98a4e"
     # Stop while live is neutral: only the action that begins something is amber.
@@ -222,6 +228,8 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         accent_text=accent, accent_soft=on_accent, accent_bright=on_accent,
         accent_fill=accent, accent_edge=accent,
         mute=accent, text_on_mute=on_accent, mute_text=text, mute_fill=window, mute_edge=accent,
+        callers_affected=text, callers_affected_text=text, callers_affected_fill=window,
+        callers_affected_edge=text,
         status_ok_dot=text, signal_in=text, signal_in_fill=text, signal_out=text, analyser=text,
         glass=window, glass_solid=window, glass_modal=window,
         glass_edge=text, glass_edge_modal=text, glass_highlight=window, glass_shadow="#00000000",
@@ -435,6 +443,14 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
     ("pressed mute", PALETTE.mute_text, flatten(PALETTE.mute_fill, PALETTE.toolbar_top)),
     ("text on solid mute", PALETTE.text_on_mute, PALETTE.mute),
     ("mute text", PALETTE.mute_text, PALETTE.app_surface),
+    ("callers affected text", PALETTE.callers_affected_text, PALETTE.pane_surface),
+    ("callers affected text on card", PALETTE.callers_affected_text, PALETTE.card_surface),
+    ("callers affected text on sidebar", PALETTE.callers_affected_text, PALETTE.sidebar_top),
+    (
+        "callers affected text on its fill",
+        PALETTE.callers_affected_text,
+        flatten(PALETTE.callers_affected_fill, PALETTE.pane_surface),
+    ),
     ("primary text on glass", PALETTE.text_primary, flatten(PALETTE.glass, PALETTE.app_surface)),
     ("muted text on glass", PALETTE.text_muted, flatten(PALETTE.glass, PALETTE.app_surface)),
     ("muted text on compact glass", PALETTE.text_muted, flatten(PALETTE.glass_solid, PALETTE.app_surface)),
@@ -465,6 +481,10 @@ def control_boundary_pairs(palette: SemanticPalette) -> tuple[tuple[str, str, st
         ("focus ring on glass", palette.focus_ring, flatten(palette.glass, palette.app_surface)),
         ("danger button edge on card", palette.action_destructive_border, palette.card_surface),
         ("empty picker edge on card", palette.status_warn_border, palette.card_surface),
+        ("callers affected mark on pane", palette.callers_affected, palette.pane_surface),
+        ("callers affected mark on its fill", palette.callers_affected,
+         flatten(palette.callers_affected_fill, palette.pane_surface)),
+        ("callers affected edge on pane", palette.callers_affected_edge, palette.pane_surface),
     )
 
 

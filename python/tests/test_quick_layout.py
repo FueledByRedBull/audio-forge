@@ -146,8 +146,8 @@ def status_caption(window: MainWindow, text: str) -> QQuickItem:
     return next(item for item in shown_items(footer) if item.property("text") == text)
 
 
-# The unsaved flag only reaches the preset block; the footer reads the transmission, calibration
-# and health, so one saved and one long-named window cover it.
+# The unsaved flag only reaches the preset block; the footer reads the calibration and health,
+# so one saved and one long-named window cover it.
 @pytest.mark.parametrize("minimum_window", ["short", "long"], indirect=True)
 def test_an_elided_status_caption_has_its_full_text_as_its_tip(minimum_window) -> None:
     message = named(minimum_window, "statusMessage")
@@ -181,7 +181,7 @@ def test_the_sidebar_footer_parts_do_not_overlap(minimum_window) -> None:
         (scene_rect(child) for child in footer.childItems() if child.isVisible()),
         key=QRectF.top,
     )
-    assert len(boxes) == 5
+    assert len(boxes) == 4
     assert min(box.width() for box in boxes) > 0, "a part was squeezed out"
     for upper, lower in zip(boxes, boxes[1:]):
         assert upper.bottom() <= lower.top(), f"{upper} runs into {lower}"
@@ -265,9 +265,8 @@ def test_the_status_message_keeps_its_room_at_the_worst_combination(minimum_wind
     test_the_sidebar_footer_parts_do_not_overlap(window)
     message = named(window, "statusMessage")
     assert message.width() >= named(window, "mainPane").width() * 3 / 4
-    caption = status_caption(window, transmission)
-    assert caption.property("truncated") is True
-    assert caption_tip(caption) == transmission
+    # The Overview says the transmission now; the sidebar no longer shows it.
+    assert all(item.property("text") != transmission for item in shown_items(named(window, "sidebarFooter")))
     calibration = status_caption(window, STALE_CALIBRATION)
     assert calibration.property("truncated") is False
     assert caption_tip(calibration) == ""

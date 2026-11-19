@@ -185,6 +185,29 @@ def test_level_colors_are_not_told_apart_by_red_against_green_alone() -> None:
     assert danger.hslHue() < 20 or danger.hslHue() > 340
 
 
+def test_callers_affected_has_its_own_hue_and_stays_readable() -> None:
+    mark = QColor(PALETTE.callers_affected)
+
+    def hue_gap(other: str) -> int:
+        gap = abs(mark.hslHue() - QColor(other).hslHue())
+        return min(gap, 360 - gap)
+
+    # Not the amber of actions, the yellow of warnings, the red of errors, the violet of
+    # Mute or the blues of the level and analyser traces.
+    for taken in (
+        PALETTE.accent, PALETTE.status_warn_text, PALETTE.status_bad_text, PALETTE.mute,
+        PALETTE.signal_in, PALETTE.signal_in_fill, PALETTE.analyser, PALETTE.status_ok_text,
+    ):
+        assert hue_gap(taken) >= 30, taken
+    for ground in (PALETTE.pane_surface, PALETTE.card_surface, PALETTE.sidebar_top):
+        assert contrast_ratio(PALETTE.callers_affected_text, ground) >= 4.5
+        assert contrast_ratio(PALETTE.callers_affected, ground) >= 3
+    fill = flatten(PALETTE.callers_affected_fill, PALETTE.pane_surface)
+    assert contrast_ratio(PALETTE.callers_affected_text, fill) >= 4.5
+    contrast = build_palette(SYSTEM_COLORS)
+    assert contrast.callers_affected == contrast.callers_affected_text == SYSTEM_COLORS["window_text"]
+
+
 def test_a_switch_that_is_on_differs_from_one_that_is_off_by_more_than_hue() -> None:
     # On is a filled light track and off an outline in the edge colour: a colour-blind user
     # tells them apart by lightness and fill, and the on track holds 3:1 where switches sit.

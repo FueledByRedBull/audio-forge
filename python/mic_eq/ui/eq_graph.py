@@ -776,7 +776,10 @@ class EQGraphRenderer:
         model: EQGraphModel,
         width: float,
         height: float,
+        *,
+        handles: bool = True,
     ) -> None:
+        """``handles`` False paints the curves only, as a preview that cannot be edited."""
         geometry = cls.GEOMETRY
         width = max(1, int(round(width)))
         height = max(1, int(round(height)))
@@ -894,6 +897,9 @@ class EQGraphRenderer:
                 painter.drawRect(x - 2, margin_top, 4, marker_height)
             painter.setBrush(Qt.BrushStyle.NoBrush)
 
+        if not handles:
+            painter.restore()
+            return
         number_font = painter.font()
         number_font.setPointSize(7)
         number_font.setBold(True)

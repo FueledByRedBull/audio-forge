@@ -180,6 +180,9 @@ ACTION_SPECS = {
     ),
     "start_btn": _ActionSpec("Start Processing", "Start processing (Ctrl+Return)"),
     "stop_btn": _ActionSpec("Stop Processing", "Stop processing (Ctrl+.)", enabled=False),
+    "restart_audio_btn": _ActionSpec(
+        "Restart audio", "Stop the audio and start it again on the same devices", "Restart audio",
+    ),
     "_undo_auto_eq_button": _ActionSpec(
         "Undo",
         "Undo the most recent processing-configuration edit (Ctrl+Z)",

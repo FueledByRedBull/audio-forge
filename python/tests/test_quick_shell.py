@@ -1886,6 +1886,52 @@ def test_the_no_mic_overview_says_what_was_checked_and_how_to_go_on(quick_window
     assert _status_dot(window).property("color").name() == QColor(PALETTE.status_warn_text).name()
 
 
+def test_only_a_lost_device_offers_restart_audio(engine_window, qapp, monkeypatch) -> None:
+    window, _engine = engine_window
+    texts = window.shell_texts
+    restart = _scene_item(window, "overviewRestart")
+    line = _scene_item(window, "overviewRestartLine")
+    qapp.processEvents()
+    assert not restart.property("visible") and not line.property("visible")
+
+    window.start_btn_action.trigger()
+    qapp.processEvents()
+    assert not restart.property("visible")
+
+    texts["callback_health_label"].update(text="Callbacks: stalled", status="bad")
+    qapp.processEvents()
+    assert _sentence(window)[0] == "Your callers can't hear you"
+    assert restart.property("visible") and line.property("visible")
+    assert restart.property("text") == "Restart audio" and restart.property("look") == "primary"
+    assert restart.property("enabled") and restart.property("activeFocusOnTab")
+    assert window.quick_bridge.model["top"]["restart"].name == "Restart audio"
+    assert line.property("text") == (
+        "Stops the audio and starts it again with the same microphone and output."
+    )
+
+    restarts: list[None] = []
+    monkeypatch.setattr(window.engine_session, "request_restart", lambda: restarts.append(None))
+    window.quick_bridge.model["top"]["restart"].click()
+    assert restarts == [None]
+
+    texts["callback_health_label"].update(text="Callbacks: OK", status="ok")
+    qapp.processEvents()
+    assert not restart.property("visible") and not line.property("visible")
+
+
+def test_a_restart_from_the_overview_stops_and_starts_the_audio(engine_window, qapp) -> None:
+    window, engine = engine_window
+    window.start_btn_action.trigger()
+    stops: list[None] = []
+    stop = engine.stop
+    engine.stop = lambda: (stops.append(None), stop())[1]
+    window.quick_bridge.model["top"]["restart"].click()
+    qapp.processEvents()
+
+    assert stops == [None] and engine.running
+    assert _sentence(window)[0] == "Live · your voice is clean"
+
+
 def test_ready_recommends_auto_voice_setup_until_one_is_saved(engine_window, qapp, monkeypatch) -> None:
     window, _engine = engine_window
     qapp.processEvents()

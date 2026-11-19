@@ -1543,6 +1543,25 @@ Rectangle {
                         Layout.fillWidth: true
                         Layout.leftMargin: 32
                     }
+                    // Callers hear nothing here already, so the restart asks for no confirmation.
+                    ColumnLayout {
+                        visible: overviewPage.ov.state === "device_lost"
+                        spacing: 6
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 32
+                        Layout.topMargin: 10
+                        Btn {
+                            objectName: "overviewRestart"
+                            proxy: root.m.top.restart
+                            look: "primary"
+                        }
+                        Caption {
+                            objectName: "overviewRestartLine"
+                            text: "Stops the audio and starts it again with the same microphone and output."
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true
+                        }
+                    }
                 }
 
                 // What AudioForge checked, and for a missing microphone the way out.

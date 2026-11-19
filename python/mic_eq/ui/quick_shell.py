@@ -697,6 +697,7 @@ class QuickBridge(QObject):
                 "mute": action("user_mute_checkbox"),
                 "start": action("start_btn"),
                 "stop": action("stop_btn"),
+                "restart": action("restart_audio_btn"),
                 "latency": text("latency_readout_label"),
             },
             "sidebar": {

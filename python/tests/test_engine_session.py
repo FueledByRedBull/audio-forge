@@ -332,6 +332,102 @@ def test_a_stop_during_a_recovery_poll_stays_stopped(rig):
     assert not rig.engine.running
 
 
+# --- restart -------------------------------------------------------------------------------
+
+
+def test_a_restart_stops_then_starts_the_same_route(rig):
+    rig.running()
+    route = rig.engine.route
+    rig.session.request_restart()
+    assert rig.session.view.busy == "stop"
+    rig.tasks.run()
+    assert rig.session.view.busy == "start"  # the start went out before anything else could
+    rig.tasks.run()
+
+    assert rig.engine.lifecycle() == ["stop", "start", "compensation"]
+    assert rig.engine.route == route == (MIC, DESTINATION) and rig.engine.running
+    assert rig.events(Stopped) == [Stopped("restart")]
+    assert rig.events(Started) == [Started("started", True)]
+    assert rig.session.view.busy is None
+
+
+def test_a_restart_is_not_dropped_by_the_lockout_after_a_button_stop(rig):
+    rig.running()
+    rig.session.request_stop("button")
+    rig.tasks.run()
+    rig.session.request_start("menu")
+    rig.tasks.run()
+    rig.session.request_restart()  # the clock has not moved: still inside the lockout
+    rig.tasks.run()
+    rig.tasks.run()
+
+    assert rig.engine.lifecycle() == ["stop", "start", "compensation", "stop", "start", "compensation"]
+    assert rig.engine.running
+
+
+def test_a_restart_while_a_call_is_out_is_ignored(rig):
+    rig.running()
+    rig.session.request_stop("menu")
+    rig.session.request_restart()
+    rig.tasks.run()
+    rig.tasks.run()
+
+    assert rig.engine.lifecycle() == ["stop"] and not rig.engine.running
+    assert rig.events(Stopped) == [Stopped("menu")]
+
+
+def test_a_restart_cancels_a_retry_that_is_waiting_and_starts_again(rig):
+    rig.engine.restart_requested = True  # a failed restart: the streams are closed, the retry waits
+    rig.session.request_restart()
+    rig.tasks.run()
+    rig.tasks.run()
+
+    assert rig.engine.lifecycle() == ["stop", "start", "compensation"]
+    assert not rig.engine.restart_requested and rig.engine.running
+    assert rig.events(Stopped) == [Stopped("restart")]
+
+
+@pytest.mark.parametrize("reopened", [True, False])
+def test_a_restart_during_a_recovery_poll_waits_for_its_answer(rig, reopened):
+    rig.running()
+    rig.session.tick()
+    rig.session.request_restart()
+    assert len(rig.tasks.pending) == 1  # not queued beside the poll
+
+    rig.engine.recovery_result = reopened
+    for _ in range(3):
+        rig.tasks.run()
+
+    expected = ["service_recovery"] + (["compensation"] if reopened else [])
+    assert rig.engine.lifecycle() == expected + ["stop", "start", "compensation"]
+    assert rig.engine.running and rig.events(Stopped) == [Stopped("restart")]
+
+
+def test_a_restart_whose_start_fails_reports_it_as_a_failed_start(rig):
+    rig.running()
+    rig.engine.start_error = RuntimeError("audio device is busy")
+    rig.session.request_restart()
+    rig.tasks.run()
+    rig.tasks.run()
+
+    [failed] = rig.events(StartFailed)
+    assert str(failed.error) == "audio device is busy" and failed.interactive
+    assert rig.events(Stopped) == [Stopped("restart")] and not rig.events(Started)
+    assert rig.session.view.busy is None and not rig.engine.running
+
+
+def test_a_restart_whose_stop_fails_reports_it_and_starts_nothing(rig):
+    rig.running()
+    rig.engine.stop_error = OSError("device lost")
+    rig.session.request_restart()
+    rig.tasks.run()
+
+    [failed] = rig.events(StopFailed)
+    assert str(failed.error) == "device lost" and failed.source == "restart"
+    assert rig.engine.lifecycle() == ["stop"] and rig.tasks.pending == []
+    assert rig.session.view.busy is None
+
+
 # --- output mute -----------------------------------------------------------------------------
 
 

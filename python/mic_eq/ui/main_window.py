@@ -348,6 +348,7 @@ class MainWindow(QMainWindow):
     refresh_btn_action: QAction
     start_btn_action: QAction
     stop_btn_action: QAction
+    restart_audio_btn_action: QAction
     user_mute_checkbox_action: QAction
     _undo_auto_eq_button_action: QAction
     redo_button_action: QAction
@@ -607,7 +608,8 @@ class MainWindow(QMainWindow):
 
         commands = {
             "refresh_btn": self._on_refresh_clicked, "start_btn": self._on_start_clicked,
-            "stop_btn": self._on_stop_clicked, "_undo_auto_eq_button": self.undo_configuration,
+            "stop_btn": self._on_stop_clicked, "restart_audio_btn": self._on_restart_audio_clicked,
+            "_undo_auto_eq_button": self.undo_configuration,
             "redo_button": self.redo_configuration, "test_sound_button": self._on_test_my_sound_clicked,
             "auto_eq_button": self._on_auto_eq_clicked,
             "auto_voice_setup_button": self._on_auto_voice_setup_clicked,
@@ -2679,6 +2681,9 @@ class MainWindow(QMainWindow):
     def _on_menu_stop(self) -> None:
         self._request_stop("menu")
 
+    def _on_restart_audio_clicked(self) -> None:
+        self.engine_session.request_restart()
+
     def _request_stop(self, source: StopSource) -> None:
         if self.engine_session.view.busy is None and self.__dict__.get("_login_startup_deadline") is not None:
             self._cancel_login_startup()
@@ -2838,6 +2843,7 @@ class MainWindow(QMainWindow):
         self.input_choice.setEnabled(idle)
         self.output_choice.setEnabled(idle)
         self.refresh_btn_action.setEnabled(idle)
+        self.restart_audio_btn_action.setEnabled(not busy)
         if busy:
             return
         self._update_session_summary()

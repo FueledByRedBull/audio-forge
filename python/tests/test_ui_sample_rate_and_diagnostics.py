@@ -485,8 +485,8 @@ def test_calibration_analysis_uses_processor_sample_rate(window, monkeypatch):
     np.testing.assert_array_equal(
         _CaptureWorkerStub.last_init["headroom_audio_data"], dialog.audio_data
     )
-    assert dialog.analysis_worker is not None
-    assert dialog.analysis_worker.sample_rate == 44_100
+    assert dialog._workers.current is not None
+    assert dialog._workers.current.sample_rate == 44_100
 
     dialog.close()
 
@@ -525,7 +525,7 @@ def test_calibration_and_voice_setup_cancel_invalidate_delayed_capture_start(
 def test_calibration_ignores_stale_analysis_generation(window):
     _use_processor(window, _FakeProcessor())
     dialog = CalibrationDialog(parent=window, configuration=window.configuration)
-    dialog._analysis_generation = 2
+    dialog._workers.generation = 2
     dialog.recording_state = "analyzing"
     previous_step = dialog.view_model.warning_text
 
@@ -555,7 +555,7 @@ def test_analysis_close_waits_for_a_slow_worker_and_ignores_its_result(
     dialog.audio_data = np.ones(256, dtype=np.float32)
     dialog.preview_audio_data = dialog.audio_data.copy()
     dialog._start_analysis()
-    worker = dialog.analysis_worker
+    worker = dialog._workers.current
     assert worker is not None and worker.isRunning()
 
     dialog.reject()
@@ -563,7 +563,7 @@ def test_analysis_close_waits_for_a_slow_worker_and_ignores_its_result(
     assert worker.stop_requested is True
     _process_events_for(qapp, 2_100)
 
-    assert dialog._analysis_workers == []
+    assert dialog._workers.workers == []
     assert dialog._close_requested is False
     assert dialog.eq_settings is None
 

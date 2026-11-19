@@ -58,7 +58,7 @@ from .analysis_worker import (
     CancellableWorker,
     CaptureAnalysis,
     CaptureAnalysisWorker,
-    start_capture_analysis,
+    WorkerSet,
 )
 from .calibration_support import (
     RAINBOW_PASSAGE,
@@ -67,8 +67,6 @@ from .calibration_support import (
     filtered_capture_for_analysis as _filtered_capture_for_analysis,
     format_db as _format_db,
     format_percent as _format_percent,
-    on_analysis_thread_finished,
-    wait_for_analysis_workers,
 )
 from .components import session_is_ending
 from .layout_constants import configure_resizable_dialog
@@ -513,13 +511,9 @@ class VoiceSetupDialog(QDialog):
         # What each stage was set to before this setup, for the "Before:" lines.
         self._review_current: dict[str, Mapping[str, Any]] = {}
         self._capture_context_key: str | None = None
-        self.analysis_worker: (
-            VoiceSetupWorker | VoiceSetupVerificationWorker | CaptureAnalysisWorker | None
-        ) = None
-        self._analysis_workers: list[
+        self._workers: WorkerSet[
             VoiceSetupWorker | VoiceSetupVerificationWorker | CaptureAnalysisWorker
-        ] = []
-        self._analysis_generation = 0
+        ] = WorkerSet(self._finish_close)
         # The recording phase a take in "capture_analyzing" came from.
         self._capture_phase = "voice_recording"
         self._close_requested = False
@@ -1027,14 +1021,12 @@ class VoiceSetupDialog(QDialog):
 
         phase = self.setup_state
         self._cancel_analysis_workers()
-        generation = self._analysis_generation + 1
-        self._analysis_generation = generation
+        generation = self._workers.begin()
         self._capture_phase = phase
         self.setup_state = "capture_analyzing"
         self.view_model.set_page(startEnabled=False)
         self.view_model.set_warning("Checking the recording...", state="info", strong=True)
-        start_capture_analysis(
-            self,
+        self._workers.start_capture(
             partial(
                 _analyze_capture,
                 raw_audio,
@@ -1051,7 +1043,7 @@ class VoiceSetupDialog(QDialog):
         )
 
     def _on_capture_analysis_failed(self, error: str, phase: str, generation: int) -> None:
-        if generation != self._analysis_generation or self._close_requested:
+        if not self._workers.is_current(generation) or self._close_requested:
             return
         self.setup_state = phase
         self._on_recording_failed(plain_error(f"Recording error: {error}"))
@@ -1064,7 +1056,7 @@ class VoiceSetupDialog(QDialog):
         generation: int,
     ) -> None:
         """Decide about a finished take once its post-processing is done."""
-        if generation != self._analysis_generation or self._close_requested:
+        if not self._workers.is_current(generation) or self._close_requested:
             return
         self.setup_state = phase
         self.view_model.set_page(startEnabled=True)
@@ -1165,8 +1157,7 @@ class VoiceSetupDialog(QDialog):
                 limiter_settings = candidate_limiter_settings
 
         self._cancel_analysis_workers()
-        generation = self._analysis_generation + 1
-        self._analysis_generation = generation
+        generation = self._workers.begin()
         target_preset = self.get_selected_curve()
         dynamics_intensity = self.view_model.selected("dynamics")
         custom_target_p95_db = self.view_model.number("p95")
@@ -1246,8 +1237,7 @@ class VoiceSetupDialog(QDialog):
                 processing_mode=processing_mode,
             )
         )
-        self.analysis_worker = worker
-        self._analysis_workers.append(worker)
+        self._workers.track(worker)
         worker.step_progress.connect(
             lambda step_name, percentage, token=generation: self._on_analysis_step(
                 step_name, percentage, token
@@ -1261,11 +1251,6 @@ class VoiceSetupDialog(QDialog):
                 plain_error(error), token
             )
         )
-        worker.finished.connect(
-            lambda finished_worker=worker: self._on_analysis_thread_finished(
-                finished_worker
-            )
-        )
         worker.start()
 
     def _on_analysis_step(
@@ -1274,7 +1259,7 @@ class VoiceSetupDialog(QDialog):
         percentage: int,
         generation: int | None = None,
     ) -> None:
-        if generation is not None and generation != self._analysis_generation:
+        if generation is not None and not self._workers.is_current(generation):
             return
         if self._close_requested:
             return
@@ -1284,7 +1269,7 @@ class VoiceSetupDialog(QDialog):
     def _on_analysis_complete(
         self, setup_result: dict[str, Any], generation: int | None = None
     ) -> None:
-        if generation is not None and generation != self._analysis_generation:
+        if generation is not None and not self._workers.is_current(generation):
             return
         if self._close_requested:
             return
@@ -2187,8 +2172,7 @@ class VoiceSetupDialog(QDialog):
             return
 
         self._cancel_analysis_workers()
-        generation = self._analysis_generation + 1
-        self._analysis_generation = generation
+        generation = self._workers.begin()
         self.setup_state = "verification_analyzing"
         self.view_model.set_page(
             startEnabled=False,
@@ -2212,8 +2196,7 @@ class VoiceSetupDialog(QDialog):
             raw_noise_audio=self.preview_noise_audio,
             raw_verification_speech_audio=self.preview_verification_audio,
         )
-        self.analysis_worker = worker
-        self._analysis_workers.append(worker)
+        self._workers.track(worker)
         worker.step_progress.connect(
             lambda step_name, percentage, token=generation: self._on_analysis_step(
                 step_name, percentage, token
@@ -2227,11 +2210,6 @@ class VoiceSetupDialog(QDialog):
         worker.failed.connect(
             lambda error, token=generation: self._on_verification_failed(
                 plain_error(error), token
-            )
-        )
-        worker.finished.connect(
-            lambda finished_worker=worker: self._on_analysis_thread_finished(
-                finished_worker
             )
         )
         worker.start()
@@ -2375,7 +2353,7 @@ class VoiceSetupDialog(QDialog):
     def _on_verification_complete(
         self, result: dict[str, Any], generation: int | None = None
     ) -> None:
-        if generation is not None and generation != self._analysis_generation:
+        if generation is not None and not self._workers.is_current(generation):
             return
         if self._close_requested:
             return
@@ -2578,7 +2556,7 @@ class VoiceSetupDialog(QDialog):
     def _on_verification_failed(
         self, error: str, generation: int | None = None
     ) -> None:
-        if generation is not None and generation != self._analysis_generation:
+        if generation is not None and not self._workers.is_current(generation):
             return
         if self._close_requested:
             return
@@ -2608,7 +2586,7 @@ class VoiceSetupDialog(QDialog):
         self._report("failed", ["verification_failed"], [self.view_model.warning_text])
 
     def _on_analysis_failed(self, error: str, generation: int | None = None) -> None:
-        if generation is not None and generation != self._analysis_generation:
+        if generation is not None and not self._workers.is_current(generation):
             return
         if self._close_requested:
             return
@@ -2783,11 +2761,7 @@ class VoiceSetupDialog(QDialog):
     def _cancel_analysis_workers(self) -> None:
         """Cancel work without dropping ownership of a running QThread."""
         verification_was_active = self.setup_state == "verification_analyzing"
-        self._analysis_generation += 1
-        for worker in tuple(self._analysis_workers):
-            if worker.isRunning():
-                worker.stop()
-        self.analysis_worker = None
+        self._workers.cancel()
         if verification_was_active:
             restored = self._restore_pre_setup_snapshot()
             self._final_comparison_pending = False
@@ -2804,17 +2778,10 @@ class VoiceSetupDialog(QDialog):
                 else "Check canceled; previous settings not fully put back",
             )
 
-    def _on_analysis_thread_finished(self, worker) -> None:
-        on_analysis_thread_finished(self, worker)
-
     def _finish_close(self) -> None:
-        if not self._close_requested or any(
-            worker.isRunning() for worker in self._analysis_workers
-        ):
+        if not self._close_requested or self._workers.running():
             return
-        for worker in tuple(self._analysis_workers):
-            worker.deleteLater()
-        self._analysis_workers.clear()
+        self._workers.discard()
         self._close_requested = False
         self.noise_audio = None
         self.voice_audio = None
@@ -2825,7 +2792,9 @@ class VoiceSetupDialog(QDialog):
 
     # A real method, so Qt drops the aboutToQuit connection when the dialog is destroyed.
     def _wait_for_analysis_workers(self) -> None:
-        wait_for_analysis_workers(self)
+        """Keep application shutdown from destroying a running QThread."""
+        self._request_close(False)
+        self._workers.join()
 
     def _request_close(self, accepted: bool) -> None:
         if self._close_requested:
@@ -2853,7 +2822,7 @@ class VoiceSetupDialog(QDialog):
             )
         self._close_requested = True
         self._close_result = accepted
-        if any(worker.isRunning() for worker in self._analysis_workers):
+        if self._workers.running():
             self.view_model.set_page(startEnabled=False, retakeEnabled=False)
             self.view_model.set_warning("Canceling analysis...", state="info", strong=True)
             return

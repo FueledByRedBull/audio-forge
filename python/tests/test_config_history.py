@@ -297,7 +297,7 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
     dialog._candidate_target_metadata = ("broadcast", "adaptive", "conservative")
     dialog.audio_data = np.zeros(16, dtype=np.float32)
     dialog.preview_audio_data = dialog.audio_data.copy()
-    dialog._analysis_generation = 1
+    dialog._workers.generation = 1
     incumbent_preset = configuration.current
     dialog._analysis_incumbent_preset = incumbent_preset
     dialog._analysis_headroom_chain = _chain_settings(

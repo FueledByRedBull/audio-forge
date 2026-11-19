@@ -284,7 +284,7 @@ def test_retake_and_failed_next_analysis_cannot_apply_old_candidate(qapp, monkey
     owner = _Owner()
     with _dialog_for(owner) as dialog:
         _capture(dialog, monkeypatch, "broadcast")
-        generation_a = dialog._analysis_generation
+        generation_a = dialog._workers.generation
         assert dialog.recording_state == "analyzing"
         assert dialog.view_model.shown["startEnabled"] is False
         assert dialog.view_model.shown["choicesEnabled"] is False
@@ -305,7 +305,7 @@ def test_retake_and_failed_next_analysis_cannot_apply_old_candidate(qapp, monkey
         assert dialog._candidate_target_metadata is None
 
         _capture(dialog, monkeypatch, "podcast")
-        generation_b = dialog._analysis_generation
+        generation_b = dialog._workers.generation
         assert dialog.recording_state == "analyzing"
         assert dialog.eq_settings is None
         assert dialog.view_model.shown["choicesEnabled"] is False
@@ -325,7 +325,7 @@ def test_apply_uses_captured_target_and_enables_eq_after_bands(qapp, monkeypatch
     dialog.auto_eq_applied.connect(applied_targets.append)
     try:
         _capture(dialog, monkeypatch, "broadcast")
-        generation = dialog._analysis_generation
+        generation = dialog._workers.generation
         dialog._on_analysis_complete(
             _candidate(2.0, owner.preset.eq), generation=generation
         )
@@ -379,7 +379,7 @@ def test_typed_tone_candidate_matches_audition_and_applied_configuration(
     try:
         _capture(dialog, monkeypatch, "broadcast")
         dialog._on_analysis_complete(
-            _candidate(1.5, owner.preset.eq), generation=dialog._analysis_generation
+            _candidate(1.5, owner.preset.eq), generation=dialog._workers.generation
         )
 
         assert dialog.eq_settings is not None
@@ -448,7 +448,7 @@ def test_candidate_is_stale_after_incumbent_tone_changes(qapp, monkeypatch):
     with _dialog_for(owner) as dialog:
         _capture(dialog, monkeypatch, "broadcast")
         dialog._on_analysis_complete(
-            _candidate(1.0, owner.preset.eq), generation=dialog._analysis_generation
+            _candidate(1.0, owner.preset.eq), generation=dialog._workers.generation
         )
         candidate = dialog.eq_settings
         assert candidate is not None
@@ -478,7 +478,7 @@ def test_unavailable_headroom_never_enables_apply_or_audition(qapp, monkeypatch)
         }
         result["apply_recommended"] = False
 
-        dialog._on_analysis_complete(result, generation=dialog._analysis_generation)
+        dialog._on_analysis_complete(result, generation=dialog._workers.generation)
 
         assert dialog._candidate_proposal is None
         assert dialog.eq_settings is None
@@ -561,7 +561,7 @@ def _left_out(base_eq: EQSettings, headroom: dict[str, Any] | None = None) -> di
 
 def _complete(dialog: CalibrationDialog, monkeypatch, result: dict) -> None:
     _capture(dialog, monkeypatch, "broadcast")
-    dialog._on_analysis_complete(result, generation=dialog._analysis_generation)
+    dialog._on_analysis_complete(result, generation=dialog._workers.generation)
 
 
 _PURPOSES = ("allow the full correction", "leave enough room", "record again")
@@ -781,7 +781,7 @@ def test_only_an_authoritative_not_worsened_result_opens_the_gate(qapp, monkeypa
             _capture(dialog, monkeypatch, "broadcast")
             dialog._on_analysis_complete(
                 _over_the_rule(owner.preset.eq, headroom),
-                generation=dialog._analysis_generation,
+                generation=dialog._workers.generation,
             )
 
             assert dialog._candidate_proposal is None
@@ -827,7 +827,7 @@ def test_a_clipped_unreadable_or_silent_take_is_refused_before_any_analysis(
         assert text.endswith("record again.")
         assert _warning_state(dialog) == "bad"
         assert dialog.recording_state == "idle"
-        assert dialog.analysis_worker is None
+        assert dialog._workers.current is None
         assert dialog.audio_data is None and dialog.preview_audio_data is None
         assert dialog.view_model.shown["startEnabled"] is True
 
@@ -856,7 +856,7 @@ def test_headroom_checks_the_normal_path_where_the_eq_will_act(qapp, monkeypatch
         assert dialog._analysis_headroom_chain["processing_mode"] == "normal"
 
         dialog._on_analysis_complete(
-            _candidate(1.0, owner.preset.eq), generation=dialog._analysis_generation
+            _candidate(1.0, owner.preset.eq), generation=dialog._workers.generation
         )
         assert dialog.eq_settings is not None
         assert dialog._candidate_identity_error(dialog.eq_settings, owner) is None
@@ -878,7 +878,7 @@ def test_the_abstention_tooltip_does_not_outlive_its_result(qapp, monkeypatch):
         assert dialog.view_model.warning_tip == "headroom validation removed the usable correction"
 
         _capture(dialog, monkeypatch, "broadcast")
-        dialog._on_analysis_failed("B failed", generation=dialog._analysis_generation)
+        dialog._on_analysis_failed("B failed", generation=dialog._workers.generation)
         assert dialog.view_model.warning_tip == ""
 
         _complete(dialog, monkeypatch, _no_correction(_over_the_rule(owner.preset.eq)))
@@ -894,7 +894,7 @@ def test_progress_is_a_busy_bar_while_the_analysis_runs(qapp, monkeypatch):
     owner = _Owner()
     with _dialog_for(owner) as dialog:
         _capture(dialog, monkeypatch, "broadcast")
-        generation = dialog._analysis_generation
+        generation = dialog._workers.generation
         assert dialog.view_model.shown["progressBusy"] is True
 
         dialog._on_analysis_step("fitting the correction and checking headroom...", 10, generation)
@@ -905,7 +905,7 @@ def test_progress_is_a_busy_bar_while_the_analysis_runs(qapp, monkeypatch):
 
         _capture(dialog, monkeypatch, "broadcast")
         assert dialog.view_model.shown["progressBusy"] is True
-        dialog._on_analysis_failed("B failed", generation=dialog._analysis_generation)
+        dialog._on_analysis_failed("B failed", generation=dialog._workers.generation)
         assert dialog.view_model.shown["progressBusy"] is False
 
 
@@ -944,8 +944,8 @@ def test_the_tone_modes_are_named_for_what_they_do_and_keep_their_stored_values(
             assert dialog._candidate_metadata["options"] == {
                 "target_mode": stored, "smoothing_strength": "conservative",
             }
-            assert dialog.analysis_worker is not None
-            assert dialog.analysis_worker.target_mode == stored  # type: ignore[attr-defined]
+            assert dialog._workers.current is not None
+            assert dialog._workers.current.target_mode == stored  # type: ignore[attr-defined]
             dialog._reset_recording_ui()
     finally:
         dialog.reject()
@@ -1049,7 +1049,7 @@ def test_failed_typed_apply_does_not_enable_eq(qapp, monkeypatch):
     dialog = CalibrationDialog(owner, configuration=owner.configuration)
     try:
         _capture(dialog, monkeypatch, "broadcast")
-        generation = dialog._analysis_generation
+        generation = dialog._workers.generation
         dialog._on_analysis_complete(_candidate(), generation=generation)
         monkeypatch.setattr(QMessageBox, "critical", lambda *_args, **_kwargs: None)
 
@@ -1263,7 +1263,7 @@ def _install_eq_candidate(
 
     dialog.recording_state = "ready"
     dialog.audio_data = np.zeros(16, dtype=np.float32)
-    dialog._analysis_generation = 1
+    dialog._workers.generation = 1
     dialog.eq_settings = candidate
     dialog._candidate_target_metadata = ("broadcast", "adaptive", "conservative")
     dialog._candidate_metadata = deepcopy(metadata)

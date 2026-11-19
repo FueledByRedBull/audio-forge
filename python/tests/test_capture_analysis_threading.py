@@ -198,7 +198,7 @@ def test_closing_voice_setup_while_a_take_is_checked_drops_the_result(voice, mon
     assert voice.voice_audio is None and voice.preview_voice_audio is None
     assert not voice._close_requested  # the close went through once the worker was done
     assert voice.result() == voice.DialogCode.Rejected
-    assert not voice._analysis_workers
+    assert not voice._workers.workers
 
 
 def test_starting_over_while_a_take_is_checked_drops_the_result(voice, monkeypatch) -> None:
@@ -215,13 +215,13 @@ def test_starting_over_while_a_take_is_checked_drops_the_result(voice, monkeypat
 
 def test_application_quit_joins_a_take_still_being_checked(voice, monkeypatch) -> None:
     prefilter = _gated_voice_take(voice, monkeypatch, "noise_recording")
-    worker = voice._analysis_workers[0]
+    worker = voice._workers.workers[0]
     threading.Timer(0.1, prefilter.release.set).start()
 
     voice._wait_for_analysis_workers()
 
     assert not worker.isRunning()
-    assert not voice._analysis_workers
+    assert not voice._workers.workers
     settle(voice)
     assert voice.noise_audio is None
 
@@ -332,7 +332,7 @@ def test_closing_auto_eq_while_a_take_is_checked_drops_the_result(auto_eq, monke
     assert auto_eq.audio_data is None and auto_eq.preview_audio_data is None
     assert not auto_eq._close_requested
     assert auto_eq.result() == auto_eq.DialogCode.Rejected
-    assert not auto_eq._analysis_workers
+    assert not auto_eq._workers.workers
 
 
 def test_auto_eq_start_over_while_a_take_is_checked_drops_the_result(auto_eq, monkeypatch) -> None:
@@ -349,13 +349,13 @@ def test_auto_eq_start_over_while_a_take_is_checked_drops_the_result(auto_eq, mo
 
 def test_auto_eq_application_quit_joins_a_take_still_being_checked(auto_eq, monkeypatch) -> None:
     prefilter = _gated_auto_eq_take(auto_eq, monkeypatch)
-    worker = auto_eq._analysis_workers[0]
+    worker = auto_eq._workers.workers[0]
     threading.Timer(0.1, prefilter.release.set).start()
 
     auto_eq._wait_for_analysis_workers()
 
     assert not worker.isRunning()
-    assert not auto_eq._analysis_workers
+    assert not auto_eq._workers.workers
     settle(auto_eq)
     assert auto_eq.audio_data is None
 

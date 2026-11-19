@@ -12,7 +12,7 @@ from mic_eq.ui.analysis_worker import CaptureAnalysisWorker
 
 def settle(dialog: Any) -> None:
     """Join the take's post-processing, then deliver its queued results."""
-    for worker in tuple(dialog._analysis_workers):
+    for worker in tuple(dialog._workers.workers):
         if isinstance(worker, CaptureAnalysisWorker):
             worker.wait()
     app = QApplication.instance()

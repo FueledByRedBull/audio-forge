@@ -28,7 +28,7 @@ from .analysis_worker import (
     AnalysisWorker,
     CaptureAnalysis,
     CaptureAnalysisWorker,
-    start_capture_analysis,
+    WorkerSet,
 )
 from .auto_eq_explanation import (
     TARGET_MODE_LABELS,
@@ -81,8 +81,6 @@ from .calibration_support import (
     filtered_capture_for_analysis as _filtered_capture_for_analysis,
     format_db as _format_db,
     format_percent as _format_percent,
-    on_analysis_thread_finished,
-    wait_for_analysis_workers,
 )
 from .quick_scene import QML_DIR, load_scene, quick_theme
 from .quick_shell import register_qml_types
@@ -208,9 +206,9 @@ class CalibrationDialog(QDialog):
         self._level_verdict: LevelVerdict | None = None
         self._level_override: str | None = None
         self._recording_duration = RECORDING_DURATION
-        self.analysis_worker: AnalysisWorker | CaptureAnalysisWorker | None = None
-        self._analysis_workers: list[AnalysisWorker | CaptureAnalysisWorker] = []
-        self._analysis_generation = 0
+        self._workers: WorkerSet[AnalysisWorker | CaptureAnalysisWorker] = WorkerSet(
+            self._finish_close
+        )
         self._close_requested = False
         self._close_result = False
         self._audio_lease: AudioLease | None = None
@@ -558,8 +556,7 @@ class CalibrationDialog(QDialog):
                 return "Processing configuration changed after analysis"
         except Exception:
             return "Current processing configuration cannot be verified"
-        generation = capture.get("generation")
-        if generation != self._analysis_generation:
+        if not self._workers.is_current(capture.get("generation")):
             return "Auto-EQ candidate is stale"
         return None
 
@@ -569,7 +566,7 @@ class CalibrationDialog(QDialog):
             logger.debug("Start recording clicked")
 
         self._clear_eq_candidate()
-        self._cancel_analysis_workers()
+        self._workers.cancel()
 
         # Get parent's processor (MainWindow has it)
         parent = _find_processor_owner(self.parent())
@@ -820,14 +817,12 @@ class CalibrationDialog(QDialog):
         if raw_capture_is_clipped(raw_audio, sample_rate):
             self._reject_capture(clipped_message(raw_audio, sample_rate))
             return
-        self._cancel_analysis_workers()
-        generation = self._analysis_generation + 1
-        self._analysis_generation = generation
+        self._workers.cancel()
+        generation = self._workers.begin()
         self.recording_state = "capture_analyzing"
         self.view_model.set_page(progressBusy=True, startEnabled=False)
         self.view_model.set_warning("Checking the recording...", state="info", strong=True)
-        start_capture_analysis(
-            self,
+        self._workers.start_capture(
             partial(_analyze_capture, raw_audio, sample_rate),
             lambda result, token=generation: self._on_capture_analyzed(
                 result, raw_audio, token
@@ -836,7 +831,7 @@ class CalibrationDialog(QDialog):
         )
 
     def _on_capture_analysis_failed(self, error: str, generation: int) -> None:
-        if generation != self._analysis_generation or self._close_requested:
+        if not self._workers.is_current(generation) or self._close_requested:
             return
         self._on_recording_failed(plain_error(f"Recording error: {error}"))
 
@@ -844,7 +839,7 @@ class CalibrationDialog(QDialog):
         self, analysis: CaptureAnalysis, raw_audio: np.ndarray, generation: int
     ) -> None:
         """Decide about a finished take once its post-processing is done."""
-        if generation != self._analysis_generation or self._close_requested:
+        if not self._workers.is_current(generation) or self._close_requested:
             return
         if analysis.silent:
             self._reject_capture(
@@ -896,7 +891,7 @@ class CalibrationDialog(QDialog):
             self._on_analysis_failed("There is no recording to check. Record again.")
             return
 
-        self._cancel_analysis_workers()
+        self._workers.cancel()
 
         # Get parent's processor for sample rate
         parent = _find_processor_owner(self.parent())
@@ -972,8 +967,7 @@ class CalibrationDialog(QDialog):
             )
 
         # Create and start analysis worker
-        generation = self._analysis_generation + 1
-        self._analysis_generation = generation
+        generation = self._workers.begin()
         self._candidate_metadata["capture_identity"]["generation"] = generation
         try:
             worker = AnalysisWorker(
@@ -993,8 +987,7 @@ class CalibrationDialog(QDialog):
                 "Close and reopen this window, then try again."
             )
             return
-        self.analysis_worker = worker
-        self._analysis_workers.append(worker)
+        self._workers.track(worker)
         worker.step_progress.connect(
             lambda step_name, percentage, token=generation: self._on_analysis_step(
                 step_name, percentage, token
@@ -1010,11 +1003,6 @@ class CalibrationDialog(QDialog):
                 plain_error(error), token
             )
         )
-        worker.finished.connect(
-            lambda finished_worker=worker: self._on_analysis_thread_finished(
-                finished_worker
-            )
-        )
         worker.start()
 
         if DEBUG:
@@ -1027,7 +1015,7 @@ class CalibrationDialog(QDialog):
         generation: int | None = None,
     ):
         """Handle analysis step progress."""
-        if generation is not None and generation != self._analysis_generation:
+        if generation is not None and not self._workers.is_current(generation):
             return
         if self.recording_state != "analyzing":
             return
@@ -1041,7 +1029,7 @@ class CalibrationDialog(QDialog):
         self, eq_settings: dict, generation: int | None = None
     ):
         """Handle analysis completion."""
-        if generation is not None and generation != self._analysis_generation:
+        if generation is not None and not self._workers.is_current(generation):
             return
         if self.recording_state != "analyzing":
             return
@@ -1312,7 +1300,7 @@ class CalibrationDialog(QDialog):
 
     def _on_analysis_failed(self, error: str, generation: int | None = None):
         """Handle analysis failure."""
-        if generation is not None and generation != self._analysis_generation:
+        if generation is not None and not self._workers.is_current(generation):
             return
         if self.recording_state != "analyzing":
             return
@@ -1354,12 +1342,12 @@ class CalibrationDialog(QDialog):
             )
             if reply == QMessageBox.StandardButton.Yes:
                 self.recording_timer.stop()
-                self._cancel_analysis_workers()
+                self._workers.cancel()
                 self._cleanup_recording_tap()
                 self.reject()
         else:
             self.recording_timer.stop()
-            self._cancel_analysis_workers()
+            self._workers.cancel()
             self._cleanup_recording_tap()
             self.reject()
 
@@ -1368,7 +1356,7 @@ class CalibrationDialog(QDialog):
         self.view_model.set_page(compareEnabled=False)
         self._capture_start_timer.stop()
         self.recording_timer.stop()
-        self._cancel_analysis_workers()
+        self._workers.cancel()
         self._cleanup_recording_tap()
 
         # Stop processor if we started it ourselves
@@ -1453,25 +1441,10 @@ class CalibrationDialog(QDialog):
         if session is not None:
             session.cleanup()
 
-    def _cancel_analysis_workers(self) -> None:
-        """Cancel work without dropping ownership of a running QThread."""
-        self._analysis_generation += 1
-        for worker in tuple(self._analysis_workers):
-            if worker.isRunning():
-                worker.stop()
-        self.analysis_worker = None
-
-    def _on_analysis_thread_finished(self, worker) -> None:
-        on_analysis_thread_finished(self, worker)
-
     def _finish_close(self) -> None:
-        if not self._close_requested or any(
-            worker.isRunning() for worker in self._analysis_workers
-        ):
+        if not self._close_requested or self._workers.running():
             return
-        for worker in tuple(self._analysis_workers):
-            worker.deleteLater()
-        self._analysis_workers.clear()
+        self._workers.discard()
         self._close_requested = False
         self.audio_data = None
         self.preview_audio_data = None
@@ -1479,7 +1452,9 @@ class CalibrationDialog(QDialog):
 
     # A real method, so Qt drops the aboutToQuit connection when the dialog is destroyed.
     def _wait_for_analysis_workers(self) -> None:
-        wait_for_analysis_workers(self)
+        """Keep application shutdown from destroying a running QThread."""
+        self._request_close(False)
+        self._workers.join()
 
     def _request_close(self, accepted: bool) -> None:
         if self._close_requested:
@@ -1496,10 +1471,10 @@ class CalibrationDialog(QDialog):
         self._clear_eq_candidate()
         self._capture_start_timer.stop()
         self.recording_timer.stop()
-        self._cancel_analysis_workers()
+        self._workers.cancel()
         self._cleanup_recording_tap()
         self._stop_owned_processor()
-        if any(worker.isRunning() for worker in self._analysis_workers):
+        if self._workers.running():
             self.view_model.set_page(startEnabled=False, retakeEnabled=False)
             self.view_model.set_warning("Canceling analysis...", state="info", strong=True)
             return

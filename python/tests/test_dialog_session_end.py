@@ -17,7 +17,6 @@ import pytest
 from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QDialog
 
-from mic_eq.ui.analysis_worker import start_capture_analysis
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog
 from mic_eq.ui.listening_comparison_dialog import ListeningComparisonDialog
@@ -81,11 +80,11 @@ def _blocked_analysis(dialog) -> QThread:
 
     def analyze():
         running.set()
-        while not dialog._analysis_workers[0]._should_stop():
+        while not dialog._workers.workers[0]._should_stop():
             time.sleep(0.005)
 
-    start_capture_analysis(dialog, analyze, lambda _result: None, lambda _error: None)
-    worker = dialog._analysis_workers[0]
+    dialog._workers.start_capture(analyze, lambda _result: None, lambda _error: None)
+    worker = dialog._workers.workers[0]
     assert running.wait(5) and worker.isRunning()
     return worker
 
@@ -118,7 +117,7 @@ def test_voice_setup_stops_its_recording_and_analysis_when_closed(
         if ending:
             # Accepted at once, with the thread joined: nothing is left to wait for.
             assert closed and not voice.isVisible() and not alive
-            assert voice.result() == REJECTED and voice._analysis_workers == []
+            assert voice.result() == REJECTED and voice._workers.workers == []
         else:
             # As before: the close is vetoed while the thread winds down, then the dialog closes itself.
             assert not closed
@@ -167,7 +166,7 @@ def test_auto_eq_stops_its_recording_and_analysis_when_closed(
         assert not dialog.recording_timer.isActive() and session.cleaned
         if ending:
             assert closed and not dialog.isVisible() and not alive
-            assert dialog.result() == REJECTED and dialog._analysis_workers == []
+            assert dialog.result() == REJECTED and dialog._workers.workers == []
         else:
             assert not closed
             assert not dialog.isVisible() and dialog.result() == REJECTED

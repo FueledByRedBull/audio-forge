@@ -2404,7 +2404,7 @@ Rectangle {
                         Layout.fillWidth: true
                         Item {
                             id: ribbonBox
-                            implicitHeight: root.wide ? 66 : 72
+                            implicitHeight: root.wide ? 80 : 72
                             clip: true
                             Layout.fillWidth: true
                             // One sample wider than the box, slid by that sample between readings.
@@ -2516,17 +2516,14 @@ Rectangle {
                     }
                     Surface {
                         objectName: "eqPreviewCard"
-                        pad: 6
+                        pad: 14
                         spacing: 0
                         Layout.fillWidth: true
                         EQGraphPreview {
                             objectName: "eqPreview"
                             graph: root.m.eq.curve
-                            implicitHeight: root.wide ? 140 : 130
+                            implicitHeight: root.wide ? 150 : 130
                             Layout.fillWidth: true
-                            // The card's side room; its top and bottom stay tight.
-                            Layout.leftMargin: 8
-                            Layout.rightMargin: 8
                             Accessible.role: Accessible.Graphic
                             Accessible.name: "Equalizer preview"
                             Accessible.description: root.m.eq.curve ? root.m.eq.curve.accessibleDescription : ""

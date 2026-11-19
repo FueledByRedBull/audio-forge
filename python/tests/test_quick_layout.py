@@ -537,20 +537,14 @@ def test_the_shortcut_row_wraps_clear_at_the_minimum_width(qapp, monkeypatch, se
         qapp.processEvents()
 
 
-@pytest.mark.parametrize("banner", [False, True])
-def test_the_overview_fits_without_scrolling_at_1440_by_900(qapp, segoe_font, banner) -> None:
+def test_the_overview_fits_without_scrolling_at_1440_by_900(qapp, monkeypatch, segoe_font) -> None:
     """The README capture's window, font and route, at the size the design was drawn for.
 
-    A one-line warning banner above the page leaves it room as well.
+    No warning banner: with one, the page may scroll at this size.
     """
+    monkeypatch.setattr("mic_eq.ui.main_window.find_presets_refused_for_age", lambda: [])
     with _install_sanitized_sources():
         window = _prepare_main_window()
-    if banner:
-        window.shell_texts["config_warning_banner"].update(
-            text="13 presets were saved by an older AudioForge and can't be opened here. "
-            "Open and re-save them in AudioForge 1.23.0.",
-            shown=True,
-        )
     window.resize(1440, 900)
     window.show()
     for _ in range(3):

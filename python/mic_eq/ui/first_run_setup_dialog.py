@@ -177,7 +177,8 @@ class FirstRunSetupDialog(QDialog):
         self.setModal(True)
         # The scene comes first: if it cannot load, the saved progress is left as it was.
         self._setup_ui()
-        self._stream_health = getattr(owner, "_stream_health", None) or RecentStreamHealth()
+        monitor = getattr(owner, "health_monitor", None)
+        self._stream_health = getattr(monitor, "stream_health", None) or RecentStreamHealth()
         self.config = owner.config
         self._finalized = False
         self._progress_unsaved = False

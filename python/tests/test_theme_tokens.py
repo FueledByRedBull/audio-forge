@@ -11,16 +11,21 @@ import pytest
 from PySide6.QtCore import QByteArray, QUrl
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtQml import QQmlComponent, QQmlEngine
+from PySide6.QtWidgets import QMessageBox
 
+from mic_eq.ui import theme
 from mic_eq.ui.quick_scene import QML_DIR, quick_theme
 from mic_eq.ui.theme import (
+    MENU_HOVER_WHITE,
     MOTION,
     PALETTE,
     REDUCED_MOTION_FADE_MS,
+    SemanticPalette,
     TYPE_FLOOR_PX,
     TYPE_SCALE_PX,
     TYPE_TICK_PX,
     application_stylesheet,
+    themed_menu,
     build_palette,
     contrast_ratio,
     flatten,
@@ -236,3 +241,48 @@ def test_adjacent_band_colors_differ_in_hue() -> None:
     for left, right in zip(hues, hues[1:]):
         gap = abs(left - right)
         assert min(gap, 360 - gap) >= 20, (left, right)
+
+
+def test_message_boxes_and_menus_use_the_theme_surfaces(qapp) -> None:
+    sheet = application_stylesheet()
+    menu_ground = flatten(PALETTE.glass_solid, PALETTE.app_surface)
+    default_edge = flatten(PALETTE.accent_edge, PALETTE.pane_surface)
+    assert f"QDialog {{ background-color: {PALETTE.pane_surface}" in sheet
+    assert "QDialog QLabel { font-size: 13px" in sheet
+    assert f"QDialog QPushButton:default {{ border-color: {default_edge}; }}" in sheet
+    assert f"background-color: {menu_ground}; color: {PALETTE.text_primary}" in sheet
+    assert "border-radius: 16px; padding: 6px;" in sheet
+    assert "QMenu::indicator { width: 16px; height: 16px;" in sheet
+    assert f"QMenu::separator {{ height: 1px; background-color: {flatten(PALETTE.glass_edge, menu_ground)}" in sheet
+
+    box = QMessageBox(QMessageBox.Icon.Question, "Quit", "Quit now?", QMessageBox.StandardButton.Yes)
+    box.show()
+    qapp.processEvents()
+    assert box.grab().toImage().pixelColor(2, 2).name() == PALETTE.pane_surface
+    assert [button.height() for button in box.buttons()] == [36]
+    box.close()
+
+    menu = themed_menu()
+    menu.addAction("First")
+    menu.addAction("Second")
+    menu.show()
+    menu.setActiveAction(menu.actions()[0])
+    qapp.processEvents()
+    image = menu.grab().toImage()
+    row = menu.actionGeometry(menu.actions()[0])
+    assert image.pixelColor(image.width() // 2, 3).name() == menu_ground
+    # The rounded corner is see-through rather than a square of window ground.
+    assert image.pixelColor(0, 0).alpha() == 0
+    assert image.pixelColor(row.left() + 4, row.center().y()).name() == flatten(MENU_HOVER_WHITE, menu_ground)
+    menu.close()
+
+
+def test_the_widget_dialogs_and_menus_still_follow_the_contrast_theme(monkeypatch) -> None:
+    dark = SemanticPalette()
+    monkeypatch.setattr(theme, "PALETTE", build_palette(SYSTEM_COLORS))
+    sheet = application_stylesheet()
+    for name in ("pane_surface", "app_surface", "accent_edge", "control_hover"):
+        assert getattr(dark, name) not in sheet, name
+    assert flatten(dark.glass_solid, dark.app_surface) not in sheet
+    assert f"QDialog {{ background-color: {SYSTEM_COLORS['window']}" in sheet
+    assert f"QMenu::item:selected {{ background-color: {SYSTEM_COLORS['highlight']}" in sheet

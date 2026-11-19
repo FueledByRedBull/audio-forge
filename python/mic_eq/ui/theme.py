@@ -11,9 +11,9 @@ from dataclasses import asdict, dataclass, replace
 import os
 import sys
 
-from PySide6.QtCore import QPointF, QRectF, QSize
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QIcon, QPainter, QPalette, QPen
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
 
 @dataclass(frozen=True)
@@ -253,6 +253,9 @@ RADIUS_CARD = 10
 RADIUS_CONTROL = 8
 # A recessed well that holds a graph.
 RADIUS_WELL = 14
+RADIUS_MENU = 16
+RADIUS_ITEM = 10
+MENU_HOVER_WHITE = "#17ffffff"  # 9 % white
 UI_FONT_FAMILIES = ("Segoe UI Variable Text", "Segoe UI")
 
 # Text sizes in pixels at the default app font. Text that carries information is never
@@ -592,11 +595,28 @@ def prefers_reduced_transparency() -> bool:
         return False
 
 
+def themed_menu(parent: QWidget | None = None) -> QMenu:
+    """A menu whose rounded corners show what is behind it, not a square frame."""
+
+    menu = QMenu(parent)
+    menu.setWindowFlags(
+        menu.windowFlags() | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint
+    )
+    menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    return menu
+
+
 def application_stylesheet() -> str:
     """Return the one stylesheet that gives stock Qt widgets the app's look."""
 
     p = PALETTE
     control = f"border-radius: {RADIUS_CONTROL}px;"
+    # Qt menus cannot blur, so the glass is laid over the window ground to stay opaque.
+    menu_ground = flatten(p.glass_solid, p.app_surface)
+    if QColor(p.glass_solid).alpha() < 255:
+        menu_hover, menu_hover_text = flatten(MENU_HOVER_WHITE, menu_ground), p.text_primary
+    else:  # a contrast theme: the highlight pair, as every other selected row
+        menu_hover, menu_hover_text = p.control_hover, p.hover_text
     return f"""
 QToolTip {{ background-color: {p.control_surface}; color: {p.text_primary};
     border: 1px solid {p.border_strong}; padding: 6px 8px; }}
@@ -636,13 +656,23 @@ QScrollBar::handle:hover {{ background-color: {p.text_muted}; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 
-QMenu {{ background-color: {p.control_surface}; color: {p.text_primary};
-    border: 1px solid {p.border_strong}; padding: 4px; }}
-QMenu::item {{ padding: 6px 24px 6px 28px; border-radius: 4px; }}
-QMenu::item:selected {{ background-color: {p.control_hover}; color: {p.hover_text}; }}
+QDialog {{ background-color: {p.pane_surface}; color: {p.text_primary}; }}
+QDialog QLabel {{ font-size: 13px; color: {p.text_primary}; }}
+QDialog QPushButton {{ min-height: 22px; min-width: 56px; padding: 6px 16px;
+    border-radius: {RADIUS_ITEM}px; }}
+QDialog QPushButton:default {{ border-color: {flatten(p.accent_edge, p.pane_surface)}; }}
+QDialog QPushButton:default:focus {{ border-color: {p.focus_ring}; }}
+
+QMenu {{ background-color: {menu_ground}; color: {p.text_primary};
+    border: 1px solid {flatten(p.glass_edge, menu_ground)};
+    border-radius: {RADIUS_MENU}px; padding: 6px; }}
+QMenu::item {{ min-height: 20px; padding: 8px 18px 8px 34px;
+    border-radius: {RADIUS_ITEM}px; }}
+QMenu::item:selected {{ background-color: {menu_hover}; color: {menu_hover_text}; }}
 QMenu::item:disabled {{ color: {p.action_disabled_text}; }}
-QMenu::separator {{ height: 1px; background-color: {p.border};
-    margin: 4px 8px; }}
+QMenu::indicator {{ width: 16px; height: 16px; left: 9px; }}
+QMenu::separator {{ height: 1px; background-color: {flatten(p.glass_edge, menu_ground)};
+    margin: 6px 8px; }}
 
 QSplitter::handle {{ background: transparent; }}
 """

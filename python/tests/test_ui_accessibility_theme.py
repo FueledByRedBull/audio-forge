@@ -293,6 +293,7 @@ def test_the_widget_palette_and_stylesheet_follow_the_contrast_theme(monkeypatch
     stylesheet = application_stylesheet()
     assert SYSTEM_COLORS["window_text"] in stylesheet
     assert SemanticPalette().app_surface not in stylesheet and SemanticPalette().accent not in stylesheet
+    assert SemanticPalette().pane_surface not in stylesheet
 
 
 def _fake_windows(monkeypatch, *, contrast_on: bool) -> None:

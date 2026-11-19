@@ -102,7 +102,7 @@ from .engine_session import (
     StopSource,
 )
 from .engine_tasks import EngineTasks, attempt
-from .theme import contrast_theme_changed, muted_icon
+from .theme import contrast_theme_changed, muted_icon, themed_menu
 from .overview_presentation import NO_MIC_REASON
 from .processing_mode_state import ProcessingModeState
 from .processing_configuration import (
@@ -1473,7 +1473,7 @@ class MainWindow(QMainWindow):
         self._tray_icons = (icon, muted_icon(icon))
         self._tray_icon = QSystemTrayIcon(icon, self)
         self._tray_icon.setToolTip("AudioForge microphone processor")
-        self._tray_menu = QMenu(self)
+        self._tray_menu = themed_menu(self)
 
         show_action = QAction("Show AudioForge", self)
         show_action.triggered.connect(self._show_from_tray)

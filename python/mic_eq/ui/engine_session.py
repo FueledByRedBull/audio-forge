@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 Route = tuple[DeviceIdentity | None, DeviceIdentity | None]
 StartSource = Literal["button", "menu"]
-StopSource = Literal["button", "menu", "window", "own_microphone", "restart"]
+StopSource = Literal["button", "menu", "window", "own_microphone", "restart", "input_switch"]
 QuitChoice = Literal["quit", "tray", "cancel"]
 
 # Start and Stop share one button that turns back into Start as soon as a stop ends (about
@@ -56,6 +56,14 @@ class Preparation(Protocol):
 
     def engine_started(self) -> None:
         """After a window Start or an automatic restart worked: the streams are new, so redo what depends on them."""
+        ...
+
+    def has_input(self, identity: DeviceIdentity) -> bool:
+        """Whether ``identity`` is still in the Input list, so a switch to it can select it."""
+        ...
+
+    def select_input(self, identity: DeviceIdentity) -> None:
+        """With the engine stopped: select ``identity`` as the input, saved as a pick in the Input list is."""
         ...
 
 
@@ -87,6 +95,8 @@ class Started:
 class StartFailed:
     error: Exception
     interactive: bool
+    # The microphone a switch to another input selected before this start; None for any other start.
+    switched_input: DeviceIdentity | None = None
 
 
 @dataclass(frozen=True)
@@ -115,6 +125,13 @@ class RestartFailed:
 
 
 @dataclass(frozen=True)
+class InputSwitchRefused:
+    """The microphone a switch asked for is no longer listed; the engine was not touched."""
+
+    identity: DeviceIdentity
+
+
+@dataclass(frozen=True)
 class BackgroundStopFailed:
     error: Exception
 
@@ -133,7 +150,7 @@ class AudioReleased:
 
 SessionEvent = (
     ControlsChanged | MuteApplied | Started | StartFailed | Stopped | StopFailed | Restarted
-    | RestartFailed | BackgroundStopFailed | AudioBorrowed | AudioReleased
+    | RestartFailed | InputSwitchRefused | BackgroundStopFailed | AudioBorrowed | AudioReleased
 )
 
 
@@ -246,8 +263,10 @@ class EngineSession(QObject):
         self._clock = clock
         self._busy: str | None = None
         self._recovering = False
-        # What a click asked for while a recovery poll held the engine; a restart outranks a start.
-        self._after_recovery: Literal["start", "restart"] | None = None
+        # What a click asked for while a recovery poll held the engine: a start, a restart, or a
+        # switch to the microphone given. A restart or a switch outranks a start; between those
+        # two, the later wins.
+        self._after_recovery: Literal["start", "restart"] | DeviceIdentity | None = None
         self._recovery_failing = False
         self._button_stop_at: float | None = None
         self._user_muted = False
@@ -321,7 +340,7 @@ class EngineSession(QObject):
             return
         self._start_on_worker()
 
-    def _start_on_worker(self) -> None:
+    def _start_on_worker(self, switched_input: DeviceIdentity | None = None) -> None:
         if self._busy:
             return
         route = self._route_to_start(True)
@@ -329,7 +348,7 @@ class EngineSession(QObject):
             self._run(
                 "start",
                 partial(start_processor_for_route, self.processor, *route),
-                partial(self._finish_start, interactive=True),
+                partial(self._finish_start, interactive=True, switched_input=switched_input),
             )
 
     def start_now(self, *, interactive: bool = True) -> bool:
@@ -351,7 +370,9 @@ class EngineSession(QObject):
             return False
         return route
 
-    def _finish_start(self, outcome: Any, interactive: bool) -> bool:
+    def _finish_start(
+        self, outcome: Any, interactive: bool, switched_input: DeviceIdentity | None = None
+    ) -> bool:
         try:
             if isinstance(outcome, Exception):
                 raise outcome
@@ -367,7 +388,7 @@ class EngineSession(QObject):
                     self.processor.stop()
                 except Exception:
                     logger.exception("Could not stop audio after failed login startup")
-            self._emit(StartFailed(error, interactive))
+            self._emit(StartFailed(error, interactive, switched_input))
             return False
         self._owner = None
         self._emit(Started(outcome, interactive))
@@ -417,6 +438,40 @@ class EngineSession(QObject):
             self._after_recovery = "restart"
             return
         self._restart_on_worker()
+
+    def request_input_switch(self, identity: DeviceIdentity) -> None:
+        """Stop if needed, select ``identity`` as the input, then start on it: one intent, as a restart.
+
+        Ignored while a call is out. The stop cancels a restart that waits to retry, which is
+        what is wanted: that retry is for the device being replaced.
+        """
+        if self._busy:
+            return
+        if self._recovering:
+            self._after_recovery = identity
+            return
+        self._switch_input_on_worker(identity)
+
+    def _switch_input_on_worker(self, identity: DeviceIdentity) -> None:
+        if self._busy:
+            return
+        # Checked before the stop: a stop would cancel the retry for nothing.
+        if not self._prepare.has_input(identity):
+            self._emit(InputSwitchRefused(identity))
+            return
+        if not self._stop_needed():
+            self._start_on_input(identity)
+            return
+        self._run("stop", self.processor.stop, partial(self._finish_input_switch_stop, identity=identity))
+
+    def _finish_input_switch_stop(self, outcome: Any, identity: DeviceIdentity) -> None:
+        # A failed stop leaves the old device selected, so the route on screen stays the one that runs.
+        if self._finish_stop(outcome, "input_switch"):
+            self._start_on_input(identity)
+
+    def _start_on_input(self, identity: DeviceIdentity) -> None:
+        self._prepare.select_input(identity)
+        self._start_on_worker(switched_input=identity)
 
     def _restart_on_worker(self) -> None:
         if self._busy:
@@ -490,7 +545,9 @@ class EngineSession(QObject):
             if not self._recovery_failing:
                 logger.warning("Rust recovery service failed", exc_info=True)
             self._recovery_failing = True
-        if queued == "restart":
+        if isinstance(queued, DeviceIdentity):
+            self._switch_input_on_worker(queued)
+        elif queued == "restart":
             self._restart_on_worker()
         elif queued == "start":
             self._start_on_worker()

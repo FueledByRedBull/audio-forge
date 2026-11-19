@@ -67,6 +67,7 @@ from .theme import PALETTE, RADIUS_CONTROL, qcolor
 
 # Level history behind the noise suppression trace: 6 seconds at 20 Hz.
 TRACE_INTERVAL_MS = 50
+AGE_INTERVAL_MS = 1000
 TRACE_POINTS = 120
 # The Overview ribbon shows 10 seconds; the history keeps one sample more, the one it scrolls in.
 RIBBON_POINTS = 200
@@ -210,6 +211,7 @@ def overview_inputs(window) -> OverviewInputs:
         running=_window_running(window),
         no_mic=window.no_microphone(),
         restart_pending=session.busy is None and window._restart_pending(),
+        failed_switch_device=window._failed_switch_device,
         device_bad=texts["callback_health_label"].state == "bad",
         device_advice=advice_for(texts["callback_health_label"].text),
         input_bad=texts["input_health_label"].state == "bad",
@@ -272,6 +274,8 @@ class OverviewState(QObject):
     soundSettingsFailure = Property(
         str, lambda self: SOUND_SETTINGS_FAILED if self._settings_failed else "", notify=changed
     )
+    offerChooseMicrophone = Property(bool, lambda self: self._view.offer_choose_microphone, notify=changed)
+    callersLine = Property(str, lambda self: self._view.callers_line, notify=changed)
     navLine = Property(str, lambda self: self._view.nav_line, notify=changed)
     ribbonCaption = Property(str, lambda self: self._view.ribbon_caption, notify=changed)
     recommendSetup = Property(bool, lambda self: self._view.recommend_setup, notify=changed)
@@ -423,6 +427,10 @@ class QuickBridge(QObject):
         self._trace_timer = QTimer(self)
         self._trace_timer.setInterval(TRACE_INTERVAL_MS)
         self._trace_timer.timeout.connect(self._sample_levels)
+        # The age beside Undo counts whole seconds; like the meters, it runs only while the window shows.
+        self._age_timer = QTimer(self)
+        self._age_timer.setInterval(AGE_INTERVAL_MS)
+        self._age_timer.timeout.connect(window.history_chip.refresh)
         # A readout, not an animation: reduced motion keeps it. Like the meters, it
         # runs only while the window shows.
         window.installEventFilter(self)
@@ -443,14 +451,18 @@ class QuickBridge(QObject):
         if window.isVisible() and not window.isMinimized():
             if not self._trace_timer.isActive():
                 self._trace_timer.start()
+            if not self._age_timer.isActive():
+                self._age_timer.start()
         else:
             self._trace_timer.stop()
+            self._age_timer.stop()
 
     def eventFilter(self, watched, event) -> bool:
         kind = event.type()
         if kind == QEvent.Type.Hide:
             # Also sent while the window is destroyed, when it can no longer be asked.
             self._trace_timer.stop()
+            self._age_timer.stop()
         elif kind in (QEvent.Type.Show, QEvent.Type.WindowStateChange):
             self._sync_trace_timer()
         return False
@@ -503,7 +515,7 @@ class QuickBridge(QObject):
                 # Holding the keys must not flap a live mute, as the global hotkey does not.
                 command.setAutoRepeat(False)
                 w.addAction(command)
-            return ActionControl(command, self, name=spec.name, locked_tip=spec.locked_tip)
+            return ActionControl(command, self, name=spec.name, locked_tip=spec.locked_tip, menu=command.menu())
 
         def menu(target, label: str):
             # QMenu/QAction are the shared native command owners.
@@ -753,6 +765,7 @@ class QuickBridge(QObject):
                 "start": action("start_btn"),
                 "stop": action("stop_btn"),
                 "restart": action("restart_audio_btn"),
+                "chooseMicrophone": action("choose_microphone_btn"),
                 "latency": text("latency_readout_label"),
             },
             "sidebar": {
@@ -767,6 +780,7 @@ class QuickBridge(QObject):
                 "menu": menu(w.presets_menu, "Presets"),
                 "undo": action("_undo_auto_eq_button"),
                 "redo": action("redo_button"),
+                "history": w.history_chip,
                 "testSound": action("test_sound_button"),
                 "autoEq": action("auto_eq_button"),
                 "voiceSetup": action("auto_voice_setup_button"),

@@ -150,14 +150,12 @@ class SemanticPalette:
     meter_reduction: str = "#a9bbd4"
 
 
-# Tokens with no reader yet, kept for work that is planned: the modal glass panel and the
-# banner that says the call is not getting the voice. test_every_palette_token_has_a_reader
-# fails for any other token without a reader, and for an entry here once it gains one.
+# Tokens with no reader yet, kept for work that is planned: the modal glass panel.
+# test_every_palette_token_has_a_reader fails for any other token without a reader, and
+# for an entry here once it gains one.
 RESERVED_FOR_LATER: tuple[str, ...] = (
     "glass_modal",
     "glass_edge_modal",
-    "callers_affected_fill",
-    "callers_affected_edge",
 )
 
 

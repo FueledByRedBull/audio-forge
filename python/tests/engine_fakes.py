@@ -123,6 +123,8 @@ class FakePreparation:
         self.route = route
         self.answer: Route | bool | None = None  # what start_route says instead of the route
         self.prepared: list[bool] = []
+        self.selected: list[DeviceIdentity] = []
+        self.listed = True  # whether has_input finds the device it is asked about
         self.engine: FakeEngine | None = None
 
     def start_route(self, interactive: bool) -> Route | bool:
@@ -139,6 +141,16 @@ class FakePreparation:
     def engine_started(self) -> None:
         if self.engine is not None:
             self.engine.calls.append("compensation")
+
+    def has_input(self, identity: DeviceIdentity) -> bool:
+        del identity
+        return self.listed
+
+    def select_input(self, identity: DeviceIdentity) -> None:
+        if self.engine is not None:
+            self.engine.calls.append("select")
+        self.selected.append(identity)
+        self.route = (identity, self.route[1])
 
 
 class OwnerPreparation(FakePreparation):

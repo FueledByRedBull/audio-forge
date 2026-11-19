@@ -59,6 +59,28 @@ def test_restart_is_offered_only_for_running_audio_whose_device_failed() -> None
         assert not describe_overview(replace(LIVE, **changes)).offer_restart, changes
 
 
+def test_another_microphone_is_offered_whenever_the_device_is_lost_even_while_the_engine_retries() -> None:
+    for changes in ({"device_bad": True}, {"running": False, "restart_pending": True}):
+        view = describe_overview(replace(LIVE, **changes))
+        assert view.state == "device_lost" and view.offer_choose_microphone, changes
+    for changes in ({}, {"running": False}, {"input_bad": True}, {"muted": True}, {"no_mic": True, "running": False}):
+        assert not describe_overview(replace(LIVE, **changes)).offer_choose_microphone, changes
+
+
+def test_a_switch_that_could_not_start_says_which_microphone_and_that_the_audio_is_stopped() -> None:
+    view = describe_overview(replace(LIVE, running=False, input_switch_failure="USB Headset"))
+
+    assert view.state == "device_lost" and view.callers_affected
+    assert view.headline == "Your callers can't hear you"
+    assert "could not start on USB Headset" in view.detail and "the audio is stopped" in view.detail
+    assert view.nav_line == "Stopped · microphone failed"
+    assert view.offer_restart and view.offer_choose_microphone
+    # Running audio or a retry the engine holds tells its own story.
+    assert describe_overview(replace(LIVE, input_switch_failure="USB Headset")).state == "live"
+    retrying = describe_overview(replace(LIVE, running=False, restart_pending=True, input_switch_failure="X"))
+    assert "could not start" not in retrying.detail
+
+
 def test_each_state_says_what_is_happening_in_words() -> None:
     def view(**changes):
         return describe_overview(replace(LIVE, **changes))

@@ -1948,6 +1948,194 @@ def test_a_restart_from_the_overview_stops_and_starts_the_audio(engine_window, q
     assert _sentence(window)[0] == "Live · your voice is clean"
 
 
+HEADSET = DeviceIdentity(name="Headset", direction="input")
+
+
+def _lose_the_device(window, qapp) -> None:
+    window.start_btn_action.trigger()
+    window.shell_texts["callback_health_label"].update(text="Callbacks: stalled", status="bad")
+    qapp.processEvents()
+
+
+def _microphone_menu(window) -> dict[str, Any]:
+    menu = window.choose_microphone_menu
+    menu.aboutToShow.emit()
+    return {action.text(): action for action in menu.actions()}
+
+
+def test_a_lost_device_offers_another_microphone_even_while_the_engine_retries(
+    engine_window, qapp, monkeypatch
+) -> None:
+    window, engine = engine_window
+    choose = _scene_item(window, "overviewChooseMicrophone")
+    line = _scene_item(window, "overviewChooseMicrophoneLine")
+    qapp.processEvents()
+    assert not choose.property("visible") and not line.property("visible")
+
+    window.start_btn_action.trigger()
+    qapp.processEvents()
+    assert not choose.property("visible")
+
+    texts = window.shell_texts
+    texts["callback_health_label"].update(text="Callbacks: stalled", status="bad")
+    qapp.processEvents()
+    assert choose.property("visible") and line.property("visible")
+    assert choose.property("text") == "Choose another microphone" and choose.property("look") == "plain"
+    assert choose.property("enabled") and choose.property("activeFocusOnTab")
+    assert window.quick_bridge.model["top"]["chooseMicrophone"].name == "Choose another microphone"
+    assert line.property("text") == (
+        "Pick another microphone from the list; the audio starts on it, and it stays your choice."
+    )
+
+    # The engine waits to retry: Restart would cancel that, another microphone is still the way out.
+    window.stop_btn_action.trigger()
+    monkeypatch.setattr(engine, "is_recovery_requested", lambda: True, raising=False)
+    texts["callback_health_label"].update(text="Callbacks: OK", status="ok")
+    qapp.processEvents()
+    assert _sentence(window)[0] == "Your callers can't hear you"
+    assert choose.property("visible") and not _scene_item(window, "overviewRestart").property("visible")
+
+    monkeypatch.setattr(engine, "is_recovery_requested", lambda: False, raising=False)
+    window.engine_session.changed.emit(window.engine_session.view)
+    qapp.processEvents()
+    assert _sentence(window)[0] == "Ready when you are"
+    assert not choose.property("visible") and not line.property("visible")
+
+
+def test_the_microphone_list_is_the_input_pickers_own(engine_window) -> None:
+    window, _engine = engine_window
+    window.input_choice.addItem("Headset", HEADSET)
+    actions = _microphone_menu(window)
+
+    assert list(actions) == [window.input_choice.itemText(i) for i in range(window.input_choice.count())]
+    assert actions["Microphone"].isChecked() and not actions["Headset"].isChecked()
+
+
+def test_a_microphone_picked_on_the_lost_device_page_stops_saves_it_and_starts_on_it(
+    engine_window, qapp, monkeypatch
+) -> None:
+    window, engine = engine_window
+    window.input_choice.addItem("Headset", HEADSET)
+    saved: list[DeviceIdentity | None] = []
+    monkeypatch.setattr(
+        "mic_eq.ui.main_window.save_config",
+        lambda config: saved.append(config.last_input_device_identity) or True,
+    )
+    starts: list[object] = []
+
+    def start(processor, *devices) -> str:
+        starts.append(devices[0])
+        processor.running = True
+        return "started"
+
+    monkeypatch.setattr("mic_eq.ui.engine_session.start_processor_for_route", start)
+    _lose_the_device(window, qapp)
+    calls: list[str] = []
+    stop = engine.stop
+
+    def recorded_stop() -> None:
+        calls.append("stop" if engine.running else "stop while stopped")
+        stop()
+
+    engine.stop = recorded_stop
+    starts.clear()
+
+    _microphone_menu(window)["Headset"].trigger()
+    qapp.processEvents()
+
+    assert calls == ["stop"] and starts == [HEADSET] and engine.running
+    assert window._combo_device_identity(window.input_choice) == HEADSET
+    assert saved[-1] == HEADSET and window.config.last_input_device == "Headset"
+    window.shell_texts["callback_health_label"].update(text="Callbacks: OK", status="ok")
+    qapp.processEvents()
+    assert _sentence(window)[0] == "Live · your voice is clean"
+
+
+def test_cancelling_the_microphone_list_changes_nothing(engine_window, qapp, monkeypatch) -> None:
+    window, engine = engine_window
+    window.input_choice.addItem("Headset", HEADSET)
+    _lose_the_device(window, qapp)
+    switches: list[object] = []
+    monkeypatch.setattr(window.engine_session, "request_input_switch", switches.append)
+    before = (window.input_choice.currentIndex(), window.config.last_input_device_identity, engine.running)
+
+    window.quick_bridge.model["top"]["chooseMicrophone"].clickAt(100, 100)
+    menu = window.choose_microphone_menu
+    assert QTest.qWaitForWindowExposed(menu)
+    QTest.keyClick(menu, Qt.Key.Key_Escape)
+    qapp.processEvents()
+
+    assert not menu.isVisible() and switches == []
+    assert (window.input_choice.currentIndex(), window.config.last_input_device_identity, engine.running) == before
+    assert _sentence(window)[0] == "Your callers can't hear you"
+
+
+def test_a_microphone_that_does_not_start_is_named_and_both_ways_out_stay(engine_window, qapp, monkeypatch) -> None:
+    window, engine = engine_window
+    window.input_choice.addItem("Headset", HEADSET)
+    dialogs: list[str] = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args, **_kw: dialogs.append(str(args[2])))
+
+    def start(processor, *devices) -> str:
+        if devices[0] == HEADSET:
+            raise RuntimeError("audio device is busy")
+        processor.running = True
+        return "started"
+
+    monkeypatch.setattr("mic_eq.ui.engine_session.start_processor_for_route", start)
+    _lose_the_device(window, qapp)
+    _microphone_menu(window)["Headset"].trigger()
+    qapp.processEvents()
+
+    assert not engine.running and len(dialogs) == 1 and "audio device is busy" in dialogs[0]
+    headline, detail = _sentence(window)
+    assert headline == "Your callers can't hear you"
+    assert "could not start on Headset" in detail and "the audio is stopped" in detail
+    for name in ("overviewRestart", "overviewChooseMicrophone", "overviewCallersNotice"):
+        assert _scene_item(window, name).property("visible"), name
+
+    # A microphone that starts ends it.
+    _microphone_menu(window)["Microphone"].trigger()
+    window.shell_texts["callback_health_label"].update(text="Callbacks: OK", status="ok")
+    qapp.processEvents()
+    assert engine.running and _sentence(window)[0] == "Live · your voice is clean"
+
+
+def test_the_lost_device_page_says_in_words_that_callers_hear_nothing(engine_window, qapp) -> None:
+    window, _engine = engine_window
+    notice = _scene_item(window, "overviewCallersNotice")
+    words = _scene_item(window, "overviewCallersNoticeText")
+    qapp.processEvents()
+    assert not notice.property("visible")
+
+    _lose_the_device(window, qapp)
+    assert notice.property("visible")
+    assert words.property("text") == "Callers hear nothing until the audio is back."
+    assert notice.property("color") == QColor(PALETTE.callers_affected_fill)
+    assert QQmlProperty.read(notice, "border.color") == QColor(PALETTE.callers_affected_edge)
+    assert words.property("color") == QColor(PALETTE.callers_affected_text)
+
+    window.shell_texts["callback_health_label"].update(text="Callbacks: OK", status="ok")
+    qapp.processEvents()
+    assert not notice.property("visible")
+
+
+def test_tab_goes_from_restart_audio_to_choose_another_microphone(engine_window, qapp) -> None:
+    window, _engine = engine_window
+    window.resize(1400, 900)
+    window.activateWindow()
+    _lose_the_device(window, qapp)
+    view = window.centralWidget()
+    view.setFocus()
+    restart = _scene_item(window, "overviewRestart")
+    restart.forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    qapp.processEvents()
+    assert view.quickWindow().activeFocusItem() is restart
+
+    QTest.keyClick(view, Qt.Key.Key_Tab)
+    assert view.quickWindow().activeFocusItem() is _scene_item(window, "overviewChooseMicrophone")
+
+
 def test_ready_recommends_auto_voice_setup_until_one_is_saved(engine_window, qapp, monkeypatch) -> None:
     window, _engine = engine_window
     qapp.processEvents()

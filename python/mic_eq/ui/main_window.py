@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
 )
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QRect, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QIcon
+from PySide6.QtGui import QAction, QCursor, QDesktopServices, QGuiApplication, QIcon
 import os
 import sys
 import json
@@ -349,6 +349,7 @@ class MainWindow(QMainWindow):
     start_btn_action: QAction
     stop_btn_action: QAction
     restart_audio_btn_action: QAction
+    choose_microphone_btn_action: QAction
     user_mute_checkbox_action: QAction
     _undo_auto_eq_button_action: QAction
     redo_button_action: QAction
@@ -368,6 +369,9 @@ class MainWindow(QMainWindow):
         self._engine = EngineTasks(self)
         # Owns Start, Stop, recovery and the output mute; the window redraws from its views.
         self.engine_session = EngineSession(self.processor, self._engine, self)
+        # The microphone a switch from the Overview could not start on, until a start works
+        # or another input is picked; the Overview keeps saying so meanwhile.
+        self._input_switch_failure = ""
         stop_audio = self._stop_audio_on_worker
         self.limiter_state = LimiterState(self.processor, self, stop_audio=stop_audio)
         self.deesser_state = DeEsserState(self.processor, self, stop_audio=stop_audio)
@@ -609,6 +613,7 @@ class MainWindow(QMainWindow):
         commands = {
             "refresh_btn": self._on_refresh_clicked, "start_btn": self._on_start_clicked,
             "stop_btn": self._on_stop_clicked, "restart_audio_btn": self._on_restart_audio_clicked,
+            "choose_microphone_btn": self._on_choose_microphone_clicked,
             "_undo_auto_eq_button": self.undo_configuration,
             "redo_button": self.redo_configuration, "test_sound_button": self._on_test_my_sound_clicked,
             "auto_eq_button": self._on_auto_eq_clicked,
@@ -624,6 +629,9 @@ class MainWindow(QMainWindow):
                 action.setChecked(bool(self.config.user_muted))
             setattr(self, key + "_action", action)
             (action.toggled if action_spec.checkable else action.triggered).connect(commands[key])
+        # Lists the Input picker's own devices each time it opens.
+        self.choose_microphone_menu = QMenu(self)
+        self.choose_microphone_menu.aboutToShow.connect(self._refresh_choose_microphone_menu)
         self.shell_page = PageState(self, len(PAGE_NAMES))
         self.shell_page.selected.connect(self._on_page_changed)
 
@@ -2598,6 +2606,7 @@ class MainWindow(QMainWindow):
             banner.update(shown=False)
         if hasattr(self, "config"):  # Check config is initialized
             if changed is not self.output_choice:
+                self._input_switch_failure = ""
                 self._set_problem("input_device", None)
                 input_identity = self._combo_device_identity(self.input_choice)
                 self.config.last_input_device_identity = input_identity
@@ -2685,6 +2694,36 @@ class MainWindow(QMainWindow):
         self._cancel_login_startup_for_click()
         self.engine_session.request_restart()
 
+    def _on_choose_microphone_clicked(self) -> None:
+        self.choose_microphone_menu.popup(QCursor.pos())
+
+    def _refresh_choose_microphone_menu(self) -> None:
+        menu = self.choose_microphone_menu
+        menu.clear()
+        current = self.input_choice.currentIndex()
+        for index in range(self.input_choice.count()):
+            identity = coerce_device_identity(self.input_choice.itemData(index))
+            if identity is None:
+                continue
+            item = menu.addAction(self.input_choice.itemText(index))
+            item.setCheckable(True)
+            item.setChecked(index == current)
+            item.triggered.connect(partial(self._on_microphone_chosen, identity))
+        if menu.isEmpty():
+            menu.addAction("No microphones found").setEnabled(False)
+
+    def _on_microphone_chosen(self, identity: DeviceIdentity, _checked: bool = False) -> None:
+        self._cancel_login_startup_for_click()
+        self.engine_session.request_input_switch(identity)
+
+    def select_input(self, identity: DeviceIdentity) -> bool:
+        if self._select_combo_identity(self.input_choice, identity):
+            return True
+        self.status_message.showMessage(
+            f"{identity.name} is no longer in the Input list; refresh the audio devices", 6000
+        )
+        return False
+
     def _request_stop(self, source: StopSource) -> None:
         self._cancel_login_startup_for_click()
         self.engine_session.request_stop(source)
@@ -2750,6 +2789,7 @@ class MainWindow(QMainWindow):
             case ControlsChanged():
                 self._sync_processing_controls()
             case Started(result=result):
+                self._input_switch_failure = ""
                 self.status_message.showMessage(f"Processing: {result}")
                 self._clear_own_microphone_problem()
                 self.start_btn_action.setEnabled(False)
@@ -2760,7 +2800,9 @@ class MainWindow(QMainWindow):
                 self._processing = True
                 self._update_session_summary()
                 self._sync_meter_timer()
-            case StartFailed(error=error, interactive=interactive):
+            case StartFailed(error=error, interactive=interactive, switched_input=switched_input):
+                if switched_input is not None:
+                    self._input_switch_failure = switched_input.name
                 self._show_start_failure(error, interactive)
             case Stopped(source=source):
                 self.status_message.showMessage("Processing stopped")
@@ -2848,6 +2890,7 @@ class MainWindow(QMainWindow):
         self.output_choice.setEnabled(idle)
         self.refresh_btn_action.setEnabled(idle)
         self.restart_audio_btn_action.setEnabled(not busy)
+        self.choose_microphone_btn_action.setEnabled(not busy)
         if busy:
             return
         self._update_session_summary()

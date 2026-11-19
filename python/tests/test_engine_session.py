@@ -439,6 +439,116 @@ def test_a_restart_whose_stop_fails_reports_it_and_starts_nothing(rig):
     assert rig.session.view.busy is None
 
 
+# --- switch to another microphone -----------------------------------------------------------
+
+HEADSET = DeviceIdentity(name="Headset", direction="input")
+
+
+def test_an_input_switch_stops_then_selects_the_microphone_and_starts_on_it(rig):
+    rig.running()
+    rig.session.request_input_switch(HEADSET)
+    assert rig.session.view.busy == "stop"
+    rig.tasks.run()
+    assert rig.session.view.busy == "start"  # selected and started before anything else could
+    rig.tasks.run()
+
+    assert rig.engine.lifecycle() == ["stop", "select", "start", "compensation"]
+    assert rig.engine.route == (HEADSET, DESTINATION) and rig.engine.running
+    assert rig.events(Stopped) == [Stopped("input_switch")]
+    assert rig.events(Started) == [Started("started", True)]
+    assert rig.session.view.busy is None
+
+
+def test_an_input_switch_with_nothing_to_stop_selects_and_starts(rig):
+    rig.session.request_input_switch(HEADSET)
+    rig.tasks.run()
+
+    assert rig.engine.lifecycle() == ["select", "start", "compensation"]
+    assert rig.engine.route == (HEADSET, DESTINATION) and rig.engine.running
+    assert rig.events(Stopped) == []
+
+
+def test_an_input_switch_while_a_call_is_out_is_ignored(rig):
+    rig.running()
+    rig.session.request_stop("menu")
+    rig.session.request_input_switch(HEADSET)
+    rig.tasks.run()
+    rig.tasks.run()
+
+    assert rig.engine.lifecycle() == ["stop"] and not rig.engine.running
+    assert rig.prepare.selected == [] and rig.prepare.route == (MIC, DESTINATION)
+
+
+def test_an_input_switch_cancels_a_retry_that_is_waiting_and_starts_on_the_new_microphone(rig):
+    rig.engine.restart_requested = True  # a failed restart: the streams are closed, the retry waits
+    rig.session.request_input_switch(HEADSET)
+    rig.tasks.run()
+    rig.tasks.run()
+
+    assert rig.engine.lifecycle() == ["stop", "select", "start", "compensation"]
+    assert not rig.engine.restart_requested and rig.engine.route == (HEADSET, DESTINATION)
+
+
+@pytest.mark.parametrize("reopened", [True, False])
+def test_an_input_switch_during_a_recovery_poll_waits_for_its_answer(rig, reopened):
+    rig.running()
+    rig.session.tick()
+    rig.session.request_input_switch(HEADSET)
+    rig.session.request_start("menu")  # a later Start does not replace the switch
+    assert len(rig.tasks.pending) == 1 and rig.prepare.selected == []
+
+    rig.engine.recovery_result = reopened
+    for _ in range(3):
+        rig.tasks.run()
+
+    expected = ["service_recovery"] + (["compensation"] if reopened else [])
+    assert rig.engine.lifecycle() == expected + ["stop", "select", "start", "compensation"]
+    assert rig.engine.route == (HEADSET, DESTINATION) and rig.events(Stopped) == [Stopped("input_switch")]
+
+
+def test_an_input_switch_whose_start_fails_names_the_microphone_in_the_failed_start(rig):
+    rig.running()
+    rig.engine.start_error = RuntimeError("audio device is busy")
+    rig.session.request_input_switch(HEADSET)
+    rig.tasks.run()
+    rig.tasks.run()
+
+    [failed] = rig.events(StartFailed)
+    assert str(failed.error) == "audio device is busy" and failed.interactive
+    assert failed.switched_input == HEADSET
+    assert rig.events(Stopped) == [Stopped("input_switch")] and not rig.engine.running
+    assert rig.session.view.busy is None
+
+
+def test_a_start_that_is_no_input_switch_names_no_microphone_when_it_fails(rig):
+    rig.engine.start_error = RuntimeError("audio device is busy")
+    rig.session.request_restart()
+    rig.tasks.run()
+
+    [failed] = rig.events(StartFailed)
+    assert failed.switched_input is None
+
+
+def test_an_input_switch_whose_stop_fails_keeps_the_old_microphone_and_starts_nothing(rig):
+    rig.running()
+    rig.engine.stop_error = OSError("device lost")
+    rig.session.request_input_switch(HEADSET)
+    rig.tasks.run()
+
+    [failed] = rig.events(StopFailed)
+    assert failed.source == "input_switch"
+    assert rig.engine.lifecycle() == ["stop"] and rig.tasks.pending == []
+    assert rig.prepare.route == (MIC, DESTINATION)
+
+
+def test_an_input_switch_to_a_microphone_no_longer_listed_starts_nothing(rig):
+    rig.prepare.listed = False
+    rig.session.request_input_switch(HEADSET)
+
+    assert rig.engine.lifecycle() == ["select"] and rig.tasks.pending == []
+    assert rig.events(Started) == [] and rig.events(StartFailed) == []
+
+
 # --- output mute -----------------------------------------------------------------------------
 
 

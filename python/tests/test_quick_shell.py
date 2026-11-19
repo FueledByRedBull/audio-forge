@@ -1144,6 +1144,7 @@ def test_scene_control_reads_back_a_mode_the_processor_refused(quick_window) -> 
             native.set_bypass(enabled)
 
     quick_window.processor = quick_window.engine_session.processor = RejectBypass()
+    quick_window.processing_mode_state.processor = quick_window.processor
     notified: list[bool] = []
     mode.changed.connect(lambda: notified.append(True))
     mode.setIndex(1)

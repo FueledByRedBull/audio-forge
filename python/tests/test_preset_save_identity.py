@@ -478,6 +478,7 @@ def test_save_updates_owned_path_without_name_prompt(save_window, monkeypatch, t
 def test_unsaved_decision_preserves_failed_or_cancelled_saves(monkeypatch, reply, save_ok, expected):
     window = MainWindow.__new__(MainWindow)
     window._save_preset = Mock(return_value=save_ok)
+    window.processing_mode_state = Mock(selected=Mock(return_value="normal"))
     monkeypatch.setattr(main_window.QMessageBox, "question", lambda *_: reply)
     assert window._ask_to_save_sound_changes() is expected
     assert window._save_preset.call_count == int(reply == QMessageBox.StandardButton.Save)

@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Callable
 from copy import deepcopy
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
@@ -179,19 +179,78 @@ class CaptureAnalysisWorker(CancellableWorker):
             self.result_ready.emit(result)
 
 
-def start_capture_analysis(
-    dialog: Any,
-    analyze: Callable[[], Any],
-    on_result: Callable[[CaptureAnalysis], object],
-    on_failed: Callable[[str], object],
-) -> None:
-    """Post-process a finished take on a worker that ``dialog`` tracks, cancels and waits for."""
-    worker = CaptureAnalysisWorker(analyze)
-    dialog.analysis_worker = worker
-    dialog._analysis_workers.append(worker)
-    worker.result_ready.connect(on_result)
-    worker.failed.connect(on_failed)
-    worker.finished.connect(
-        lambda finished_worker=worker: dialog._on_analysis_thread_finished(finished_worker)
-    )
-    worker.start()
+class WorkerSet[W: CancellableWorker]:
+    """A setup dialog's analysis workers and the generation token that marks the current run.
+
+    A result whose token is no longer current is stale. Cancelling stops the workers but keeps
+    them until their threads end, so a closing dialog never drops a running QThread;
+    ``on_finished`` runs after each one ends.
+    """
+
+    def __init__(self, on_finished: Callable[[], object]) -> None:
+        self.workers: list[W] = []
+        self.current: W | None = None
+        self.generation = 0
+        self._on_finished = on_finished
+
+    def begin(self) -> int:
+        """A new token for the run about to start; every older one turns stale."""
+        self.generation += 1
+        return self.generation
+
+    def is_current(self, generation: object) -> bool:
+        return generation == self.generation
+
+    def track(self, worker: W) -> None:
+        """Make ``worker`` the current one and keep it until its thread ends."""
+        self.current = worker
+        self.workers.append(worker)
+        worker.finished.connect(lambda finished_worker=worker: self._finished(finished_worker))
+
+    def _finished(self, worker: W) -> None:
+        if worker in self.workers:
+            self.workers.remove(worker)
+        if self.current is worker:
+            self.current = None
+        worker.deleteLater()
+        self._on_finished()
+
+    def cancel(self) -> None:
+        """Make every token stale and ask the running workers to stop, without waiting."""
+        self.generation += 1
+        for worker in tuple(self.workers):
+            if worker.isRunning():
+                worker.stop()
+        self.current = None
+
+    def running(self) -> bool:
+        return any(worker.isRunning() for worker in self.workers)
+
+    def join(self) -> None:
+        """Stop and wait for every running worker; application shutdown must not destroy one."""
+        for worker in tuple(self.workers):
+            if worker.isRunning():
+                worker.stop()
+                worker.wait()
+        self.workers.clear()
+        self.current = None
+
+    def discard(self) -> None:
+        """Hand the workers, none of them running any more, to Qt for deletion."""
+        for worker in tuple(self.workers):
+            worker.deleteLater()
+        self.workers.clear()
+
+    def start_capture(
+        self,
+        analyze: Callable[[], Any],
+        on_result: Callable[[CaptureAnalysis], object],
+        on_failed: Callable[[str], object],
+    ) -> None:
+        """Post-process a finished take on a tracked worker."""
+        worker = CaptureAnalysisWorker(analyze)
+        # Every dialog that post-processes takes lists CaptureAnalysisWorker in its W.
+        self.track(cast(W, worker))
+        worker.result_ready.connect(on_result)
+        worker.failed.connect(on_failed)
+        worker.start()

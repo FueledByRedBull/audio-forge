@@ -9,6 +9,7 @@ from mic_eq.ui import calibration_dialog, voice_setup_dialog
 from mic_eq.ui.engine_session import AudioLease
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from engine_fakes import fake_session
+from capture_helpers import wired_latency_dialog
 
 
 def test_recording_failure_remains_visible_after_reset(qapp):
@@ -136,7 +137,7 @@ def test_latency_calibration_refused_while_the_engine_is_busy_says_to_wait(qapp,
     monkeypatch.setattr(
         latency_ui.QMessageBox, "critical", lambda _parent, _title, text: messages.append(text)
     )
-    dialog = latency_ui.LatencyCalibrationDialog(owner)
+    dialog = wired_latency_dialog(owner)
     try:
         dialog._on_run_clicked()
         assert messages == ["Audio is starting, stopping or recovering. Wait a moment and try again."]

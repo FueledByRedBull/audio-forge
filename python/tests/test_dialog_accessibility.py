@@ -13,7 +13,7 @@ from capture_helpers import _voice, finish_take
 from mic_eq.config import AppConfig
 from mic_eq.ui.first_run_setup_dialog import FirstRunSetupDialog
 from mic_eq.ui.theme import PALETTE
-from test_first_run_setup import _Owner, _Processor, press, scene_item, scene_text
+from test_first_run_setup import _Owner, _Processor, press, scene_item, scene_text, wired_setup_dialog
 from test_setup_level_check_flow import voice  # noqa: F401  (a fixture)
 from test_quick_shell import _AccessibleScene
 from test_voice_setup_integration import real_main_window  # noqa: F401  (a fixture)
@@ -37,7 +37,7 @@ def _first_run(
     owner = _Owner(config, _Processor())
     if not microphones:
         owner.input_choice.clear()
-    return FirstRunSetupDialog(owner), owner
+    return wired_setup_dialog(owner), owner
 
 
 def _open(dialog, qapp) -> None:

@@ -26,6 +26,7 @@ import logging
 import math
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
@@ -1871,7 +1872,13 @@ class MainWindow(QMainWindow):
         self, _checked: bool = False, *, restart_completed: bool = True
     ) -> None:
         try:
-            dialog = FirstRunSetupDialog(self, restart_completed=restart_completed)
+            dialog = FirstRunSetupDialog(
+                self,
+                restart_completed=restart_completed,
+                device_changed=self._on_device_changed,
+                run_voice_setup=self._on_auto_voice_setup_clicked,
+                run_latency=self._on_latency_calibration_clicked,
+            )
         except FirstRunSetupLoadError as error:
             logger.error("Guided Setup did not open: %s", error)
             QMessageBox.critical(
@@ -2237,7 +2244,12 @@ class MainWindow(QMainWindow):
         existing_profile = profile.to_dict() if profile is not None else None
 
         try:
-            dialog = LatencyCalibrationDialog(self, existing_profile=existing_profile)
+            dialog = LatencyCalibrationDialog(
+                self,
+                existing_profile=existing_profile,
+                save_profile=self._on_latency_calibration_saved,
+                reset_profile=self._on_latency_calibration_reset,
+            )
         except LatencyCalibrationLoadError as error:
             logger.error("Latency calibration did not open: %s", error)
             QMessageBox.critical(
@@ -2246,12 +2258,7 @@ class MainWindow(QMainWindow):
                 "The latency calibration window could not open. The log has the details.",
             )
             return False
-        self._calibration_dialog_open = True
-        try:
-            with recovery_paused(self.processor):
-                return _exec_and_release(dialog) == QDialog.DialogCode.Accepted
-        finally:
-            self._calibration_dialog_open = False
+        return self._exec_setup_dialog(dialog, commits_edits=False) == QDialog.DialogCode.Accepted
 
     def _on_latency_calibration_saved(self, profile_data: dict) -> bool:
         previous = dict(self.config.latency_calibration_profiles)
@@ -2906,6 +2913,20 @@ class MainWindow(QMainWindow):
         """Stop the engine after a failed configuration; a start or recovery on the worker may hold the lock."""
         self.engine_session.stop_in_background()
 
+    def _exec_setup_dialog(self, dialog: QDialog, *, commits_edits: bool) -> int:
+        """Run a setup dialog inside the configuration's dialog session, the open flag, the recovery pause.
+
+        With ``commits_edits`` the session commits a pending edit first, while calibration
+        evidence still syncs, and the dialog's changes become one history entry.
+        """
+        with self.configuration.dialog_session() if commits_edits else nullcontext():
+            self._calibration_dialog_open = True
+            try:
+                with recovery_paused(self.processor):
+                    return _exec_and_release(dialog)
+            finally:
+                self._calibration_dialog_open = False
+
     def _on_auto_eq_clicked(self):
         """Open Auto-EQ calibration dialog."""
         if DEBUG:
@@ -2914,14 +2935,7 @@ class MainWindow(QMainWindow):
         dialog = CalibrationDialog(self, configuration=self.configuration)
         # Connect signal to handle auto-EQ completion (preset save, undo button enable)
         dialog.auto_eq_applied.connect(self.on_auto_eq_applied)
-        # The session commits a pending edit first, while calibration evidence still syncs.
-        with self.configuration.dialog_session():
-            self._calibration_dialog_open = True
-            try:
-                with recovery_paused(self.processor):
-                    _exec_and_release(dialog)  # Modal dialog - blocks until user closes
-            finally:
-                self._calibration_dialog_open = False
+        self._exec_setup_dialog(dialog, commits_edits=True)
         self._sync_calibration_evidence()
         if DEBUG:
             logger.debug("Calibration dialog closed, result=%s", dialog.result())
@@ -2944,14 +2958,7 @@ class MainWindow(QMainWindow):
             self.on_voice_setup_applied(target_curve)
 
         dialog.setup_applied.connect(on_applied)
-        # The session commits a pending edit first, while calibration evidence still syncs.
-        with self.configuration.dialog_session():
-            self._calibration_dialog_open = True
-            try:
-                with recovery_paused(self.processor):
-                    _exec_and_release(dialog)
-            finally:
-                self._calibration_dialog_open = False
+        self._exec_setup_dialog(dialog, commits_edits=True)
         self._sync_calibration_evidence()
         return applied
 

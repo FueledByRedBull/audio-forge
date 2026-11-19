@@ -6,6 +6,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from mic_eq.analysis.voice_setup import VoiceSetupRequest
 from mic_eq.ui import (
     analysis_worker,
     latency_calibration_dialog,
@@ -20,10 +21,12 @@ def _audio() -> np.ndarray:
 
 def _voice_worker():
     return voice_setup_dialog.VoiceSetupWorker(
-        _audio(), _audio(), 48_000, "broadcast",
-        vad_available=False, dynamics_intensity="medium",
-        custom_target_p95_db=-20.0, custom_peak_cap_db=-3.0,
-        limiter_settings=None, noise_metadata=None, voice_metadata=None,
+        VoiceSetupRequest(
+            _audio(), _audio(), 48_000, "broadcast",
+            vad_available=False, dynamics_intensity="medium",
+            custom_target_p95_db=-20.0, custom_peak_cap_db=-3.0,
+            limiter_settings=None, noise_metadata=None, speech_metadata=None,
+        )
     )
 
 

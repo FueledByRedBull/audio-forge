@@ -65,6 +65,7 @@ from mic_eq.config import (
 )
 from test_first_run_setup import scene_item
 from test_quick_shell import _judge, _load_config_without_devices
+from capture_helpers import wired_latency_dialog
 
 
 def _use_processor(window, processor) -> None:
@@ -485,8 +486,8 @@ def test_calibration_analysis_uses_processor_sample_rate(window, monkeypatch):
     np.testing.assert_array_equal(
         _CaptureWorkerStub.last_init["headroom_audio_data"], dialog.audio_data
     )
-    assert dialog.analysis_worker is not None
-    assert dialog.analysis_worker.sample_rate == 44_100
+    assert dialog._workers.current is not None
+    assert dialog._workers.current.sample_rate == 44_100
 
     dialog.close()
 
@@ -525,7 +526,7 @@ def test_calibration_and_voice_setup_cancel_invalidate_delayed_capture_start(
 def test_calibration_ignores_stale_analysis_generation(window):
     _use_processor(window, _FakeProcessor())
     dialog = CalibrationDialog(parent=window, configuration=window.configuration)
-    dialog._analysis_generation = 2
+    dialog._workers.generation = 2
     dialog.recording_state = "analyzing"
     previous_step = dialog.view_model.warning_text
 
@@ -555,7 +556,7 @@ def test_analysis_close_waits_for_a_slow_worker_and_ignores_its_result(
     dialog.audio_data = np.ones(256, dtype=np.float32)
     dialog.preview_audio_data = dialog.audio_data.copy()
     dialog._start_analysis()
-    worker = dialog.analysis_worker
+    worker = dialog._workers.current
     assert worker is not None and worker.isRunning()
 
     dialog.reject()
@@ -563,7 +564,7 @@ def test_analysis_close_waits_for_a_slow_worker_and_ignores_its_result(
     assert worker.stop_requested is True
     _process_events_for(qapp, 2_100)
 
-    assert dialog._analysis_workers == []
+    assert dialog._workers.workers == []
     assert dialog._close_requested is False
     assert dialog.eq_settings is None
 
@@ -1949,7 +1950,7 @@ def _latency_window(window, processor):
 def test_latency_calibration_failure_stops_only_a_processor_it_started(window, running, started, stopped):
     processor = _LatencyProcessor(running=running)
     owner = _latency_window(window, processor)
-    dialog = LatencyCalibrationDialog(owner)
+    dialog = wired_latency_dialog(owner)
 
     dialog._on_run_clicked()
 
@@ -1971,7 +1972,7 @@ def test_a_dialog_whose_stop_fails_says_so_and_still_owns_the_audio(window, capl
     processor = _StopRefusedOnce(running=False)
     owner = _latency_window(window, processor)
     shown = _status_log(window)
-    dialog = dialog_type(owner)
+    dialog = wired_latency_dialog(owner) if dialog_type is LatencyCalibrationDialog else dialog_type(owner)
     with caplog.at_level("WARNING"):
         if dialog_type is LatencyCalibrationDialog:
             dialog._on_run_clicked()  # its capture fails, so it stops what it started
@@ -1996,7 +1997,7 @@ def test_latency_calibration_respects_user_mute(window, monkeypatch):
     processor.set_output_mute.reset_mock()
     notice = Mock()
     monkeypatch.setattr(QMessageBox, "information", notice)
-    dialog = LatencyCalibrationDialog(owner)
+    dialog = wired_latency_dialog(owner)
 
     dialog._on_run_clicked()
     assert processor.started == 0

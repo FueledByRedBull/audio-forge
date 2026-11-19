@@ -30,7 +30,7 @@ import pytest
 import bench_metrics as bm
 from mic_eq import CORE_AVAILABLE
 from mic_eq.analysis import compressor_calibration, joint_tuning
-from mic_eq.analysis.voice_setup import analyze_voice_setup
+from mic_eq.analysis.voice_setup import VoiceSetupRequest, analyze_voice_setup
 from mic_eq.config import EQSettings, Preset
 from test_bench_metrics import built_mix
 
@@ -80,10 +80,10 @@ def _analysis(mix_id: str, vad: bool, suppressor_strength: float | None = None) 
     suppressor = asdict(preset.rnnoise)
     if suppressor_strength is not None:
         suppressor["strength"] = suppressor_strength
-    result = analyze_voice_setup(
+    result = analyze_voice_setup(VoiceSetupRequest(
         ctx["noise"].astype(np.float32), ctx["noisy"].astype(np.float32), SR, "broadcast", vad_available=vad,
         incumbent_settings={"gate": asdict(preset.gate), "rnnoise": suppressor, "eq": EQSettings().to_dict()},
-        raw_noise_audio=ctx["raw_noise"], raw_speech_audio=ctx["raw"])
+        raw_noise_audio=ctx["raw_noise"], raw_speech_audio=ctx["raw"]))
     return _normalized(result)
 
 

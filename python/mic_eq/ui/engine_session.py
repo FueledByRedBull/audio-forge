@@ -21,6 +21,8 @@ from PySide6.QtCore import QObject, Signal
 from ..config import DeviceIdentity
 from .capture_session import (
     active_device_identities,
+    device_label,
+    device_name,
     restart_processor_for_route,
     route_identities_match,
 )
@@ -572,3 +574,69 @@ class EngineSession(QObject):
     def reopen(self) -> None:
         """A window shown again after a refused quit takes answers again, and must shut down again."""
         self._closed = False
+
+
+class SetupPrompts(Protocol):
+    """How a setup dialog asks and says why while ``borrow_audio_for`` gets it the audio."""
+
+    def ask(self, title: str, text: str) -> bool:
+        """A yes-or-no question; True when the answer is yes."""
+        ...
+
+    def fail(self, title: str, text: str) -> None:
+        """Say why there is no audio for the take."""
+        ...
+
+
+def borrow_audio_for(
+    session: EngineSession,
+    reason: str,
+    *,
+    title: str,
+    lead: str,
+    prompts: SetupPrompts,
+    on_declined: Callable[[], object],
+) -> AudioLease | None:
+    """The selected route's audio for a setup take, or None once ``prompts`` said why there is none.
+
+    Audio running on another route moves to the selected one only after a yes to ``title``,
+    which opens with ``lead``; ``on_declined`` runs after a no.
+    """
+    try:
+        return session.borrow(reason)
+    except RouteMismatch as mismatch:
+        selected_input, selected_output = (device_name(item) for item in mismatch.selected)
+        active_input, active_output = (device_name(item) for item in mismatch.active)
+        if not prompts.ask(
+            title,
+            f"{lead}\n\n"
+            f"Selected input: {device_label(selected_input, '(Default Input)')}\n"
+            f"Selected output: {device_label(selected_output, '(Default Output)')}\n\n"
+            f"Active input: {device_label(active_input, '(Default Input)')}\n"
+            f"Active output: {device_label(active_output, '(Default Output)')}\n\n"
+            "Switch now?",
+        ):
+            on_declined()
+            return None
+        try:
+            return session.borrow(reason, switch_route=True)
+        except AudioUnavailable as error:
+            prompts.fail(
+                "Audio Error",
+                unavailable_text(
+                    error,
+                    "AudioForge could not switch to your selected devices.",
+                    "Check that they are connected and not used by another app.",
+                ),
+            )
+            return None
+    except AudioUnavailable as error:
+        prompts.fail(
+            "Audio Error",
+            unavailable_text(
+                error,
+                "AudioForge could not start the microphone and speakers.",
+                "Check that they are connected and not used by another app, then try again.",
+            ),
+        )
+        return None

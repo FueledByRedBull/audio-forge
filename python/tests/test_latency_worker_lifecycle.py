@@ -11,6 +11,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QWidget
 
 from mic_eq.ui import latency_calibration_dialog as latency_ui
+from capture_helpers import wired_latency_dialog
 
 
 def test_cancel_keeps_running_latency_worker_owned_until_it_stops(qapp, monkeypatch):
@@ -31,7 +32,7 @@ def test_cancel_keeps_running_latency_worker_owned_until_it_stops(qapp, monkeypa
     processor.recording_level_db.return_value = -40.0
     processor.is_recording_complete.return_value = True
     processor.stop_raw_recording.return_value = np.zeros(48_000, dtype=np.float32)
-    dialog = latency_ui.LatencyCalibrationDialog(owner)
+    dialog = wired_latency_dialog(owner)
     dialog._probe = np.zeros(64, dtype=np.float32)
     dialog._probe_started = True
     dialog._played_probe = True
@@ -92,7 +93,7 @@ def test_cancel_keeps_running_latency_worker_owned_until_it_stops(qapp, monkeypa
 def test_latency_meter_shows_measured_rms_without_inventing_peak(qapp):
     owner = QWidget()
     setattr(owner, "processor", Mock())
-    dialog = latency_ui.LatencyCalibrationDialog(owner)
+    dialog = wired_latency_dialog(owner)
     try:
         dialog._on_level_update(-20.0)
 

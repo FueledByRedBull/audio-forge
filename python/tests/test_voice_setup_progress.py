@@ -82,3 +82,23 @@ def test_analysis_worker_cancellation_still_stops_backend(qapp, monkeypatch):
     qapp.processEvents()
 
     assert results == []
+
+
+def test_worker_keeps_its_own_copy_of_the_settings_it_was_given(qapp):
+    limiter = {"enabled": True, "ceiling_db": -1.0}
+    incumbent = {"gate": {"threshold_db": -45.0}}
+    worker = VoiceSetupWorker(
+        VoiceSetupRequest(
+            np.zeros(16, dtype=np.float32),
+            np.zeros(16, dtype=np.float32),
+            48_000,
+            limiter_settings=limiter,
+            incumbent_settings=incumbent,
+        )
+    )
+
+    limiter["ceiling_db"] = -6.0
+    incumbent["gate"]["threshold_db"] = -20.0
+
+    assert worker.request.limiter_settings == {"enabled": True, "ceiling_db": -1.0}
+    assert worker.request.incumbent_settings == {"gate": {"threshold_db": -45.0}}

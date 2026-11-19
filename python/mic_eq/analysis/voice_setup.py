@@ -912,7 +912,10 @@ def _fit_loudness_to_headroom(
 
 @dataclass(frozen=True, eq=False)
 class VoiceSetupRequest:
-    """Inputs of one Voice Setup analysis, named as ``analyze_voice_setup`` reads them."""
+    """Inputs of one Voice Setup analysis; the fields keep the analysis's parameter names.
+
+    ``eq=False`` because the capture arrays have no meaningful equality or hash.
+    """
 
     noise_audio: np.ndarray
     speech_audio: np.ndarray

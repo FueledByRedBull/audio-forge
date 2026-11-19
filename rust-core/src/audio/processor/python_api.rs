@@ -35,6 +35,7 @@ use super::{
 use super::{VAD_PRE_GAIN_MAX, VAD_PRE_GAIN_MIN, VAD_THRESHOLD_MAX, VAD_THRESHOLD_MIN};
 use crate::audio::input::InputChannelMode;
 use crate::audio::rt::FixedAudioBuffer;
+use crate::config_ranges as defaults;
 use crate::dsp::eq::{
     validate_eq_frequency_hz, validate_eq_gain_db, validate_eq_q, EqBandConfig, NUM_BANDS,
 };
@@ -148,18 +149,18 @@ pub(super) fn py_gate(
             "unknown gate mode {mode}; use 0, 1, or 2"
         ))
     })?;
-    let enabled = py_dict_bool(settings, "gate_enabled", true)?;
+    let enabled = py_dict_bool(settings, "gate_enabled", defaults::GATE_ENABLED_DEFAULT)?;
     let vad_threshold = py_dict_f64_in(
         settings,
         "gate_vad_threshold",
-        0.48,
+        defaults::VAD_THRESHOLD_DEFAULT,
         f64::from(VAD_THRESHOLD_MIN),
         f64::from(VAD_THRESHOLD_MAX),
     )? as f32;
     let vad_pre_gain = py_dict_f64_in(
         settings,
         "gate_vad_pre_gain",
-        1.0,
+        defaults::VAD_PRE_GAIN_DEFAULT,
         f64::from(VAD_PRE_GAIN_MIN),
         f64::from(VAD_PRE_GAIN_MAX),
     )? as f32;
@@ -167,21 +168,21 @@ pub(super) fn py_gate(
         py_dict_f64_in(
             settings,
             "gate_threshold_db",
-            -40.0,
+            defaults::GATE_THRESHOLD_DEFAULT_DB,
             GATE_THRESHOLD_MIN_DB,
             GATE_THRESHOLD_MAX_DB,
         )?,
         py_dict_f64_in(
             settings,
             "gate_attack_ms",
-            10.0,
+            defaults::GATE_ATTACK_DEFAULT_MS,
             GATE_ATTACK_MIN_MS,
             GATE_ATTACK_MAX_MS,
         )?,
         py_dict_f64_in(
             settings,
             "gate_release_ms",
-            100.0,
+            defaults::GATE_RELEASE_DEFAULT_MS,
             GATE_RELEASE_MIN_MS,
             GATE_RELEASE_MAX_MS,
         )?,
@@ -194,9 +195,19 @@ pub(super) fn py_gate(
     gate.set_gate_mode(mode);
     gate.set_enabled(enabled);
     gate.set_vad_threshold(vad_threshold);
-    gate.set_hold_time(py_dict_f64(settings, "gate_vad_hold_time_ms", 200.0)? as f32);
-    gate.set_auto_threshold(py_dict_bool(settings, "gate_auto_threshold_enabled", true)?);
-    gate.set_margin(py_dict_f64(settings, "gate_margin_db", 10.0)? as f32);
+    gate.set_hold_time(py_dict_f64(
+        settings,
+        "gate_vad_hold_time_ms",
+        defaults::VAD_HOLD_DEFAULT_MS,
+    )? as f32);
+    gate.set_auto_threshold(py_dict_bool(
+        settings,
+        "gate_auto_threshold_enabled",
+        defaults::GATE_AUTO_THRESHOLD_DEFAULT,
+    )?);
+    gate.set_margin(
+        py_dict_f64(settings, "gate_margin_db", defaults::GATE_MARGIN_DEFAULT_DB)? as f32,
+    );
     Ok(PyGate {
         gate,
         mode,
@@ -459,7 +470,7 @@ pub(super) fn simulate_input_frontend_with_activity(
         vad_threshold,
         vad_pre_gain,
         ..
-    } = py_gate(settings, sample_rate, 0)?;
+    } = py_gate(settings, sample_rate, defaults::GATE_MODE_DEFAULT)?;
     let vad_probabilities = py_dict_f32_vec(settings, "vad_probabilities")?.unwrap_or_default();
     let block_count = audio.len().div_ceil(RNNOISE_FRAME_SIZE);
     if !vad_probabilities.is_empty() && vad_probabilities.len() != block_count {
@@ -469,14 +480,23 @@ pub(super) fn simulate_input_frontend_with_activity(
         )));
     }
 
-    let suppressor_enabled = py_dict_bool(settings, "suppressor_enabled", true)?;
-    let suppressor_strength = py_dict_f64(settings, "suppressor_strength", 1.0)?;
+    let suppressor_enabled = py_dict_bool(
+        settings,
+        "suppressor_enabled",
+        defaults::RNNOISE_ENABLED_DEFAULT,
+    )?;
+    let suppressor_strength = py_dict_f64(
+        settings,
+        "suppressor_strength",
+        defaults::RNNOISE_STRENGTH_DEFAULT,
+    )?;
     if !(0.0..=1.0).contains(&suppressor_strength) {
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
             "suppressor_strength must be between 0 and 1",
         ));
     }
-    let suppressor_model_id = py_dict_string(settings, "noise_model", "rnnoise")?;
+    let suppressor_model_id =
+        py_dict_string(settings, "noise_model", defaults::NOISE_MODEL_DEFAULT.id())?;
     let suppressor_model = NoiseModel::from_id(&suppressor_model_id).ok_or_else(|| {
         PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
             "unknown noise model {suppressor_model_id:?}"
@@ -941,7 +961,7 @@ pub fn simulate_gate_suppressor_order(
             ..
         } = py_gate(settings, 48_000.0, 1)?;
         let strength = Arc::new(AtomicU32::new(suppressor_strength.to_bits()));
-        let model_id = py_dict_string(settings, "noise_model", "rnnoise")?;
+        let model_id = py_dict_string(settings, "noise_model", defaults::NOISE_MODEL_DEFAULT.id())?;
         let model = NoiseModel::from_id(&model_id).ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
                 "unknown noise model {model_id:?}"
@@ -1364,7 +1384,7 @@ pub fn simulate_auto_eq_chain(
         // `processing_mode` selects a path only for the explicit full-chain API;
         // preserve the legacy downstream simulation when full_chain is omitted.
         let full_processing = !full_chain || processing_mode == "normal";
-        let eq_enabled_default = py_dict_bool(settings, "enabled", true)?;
+        let eq_enabled_default = py_dict_bool(settings, "enabled", defaults::EQ_ENABLED_DEFAULT)?;
         let eq_enabled = py_dict_bool(settings, "eq_enabled", eq_enabled_default)?;
         processor.set_eq_enabled(full_processing && eq_enabled);
         let correction_configs =
@@ -1396,7 +1416,11 @@ pub fn simulate_auto_eq_chain(
             }
         }
 
-        let deesser_enabled = py_dict_bool(settings, "deesser_enabled", false)?;
+        let deesser_enabled = py_dict_bool(
+            settings,
+            "deesser_enabled",
+            defaults::DEESSER_ENABLED_DEFAULT,
+        )?;
         let return_output_audio = py_dict_bool(
             settings,
             "return_output_audio",
@@ -1405,18 +1429,58 @@ pub fn simulate_auto_eq_chain(
         processor.set_deesser_enabled(deesser_enabled && full_processing);
         if deesser_enabled && full_processing {
             let deesser = processor.deesser_mut();
-            deesser.set_auto_enabled(py_dict_bool(settings, "deesser_auto_enabled", true)?);
-            deesser.set_auto_amount(py_dict_f64(settings, "deesser_auto_amount", 0.5)?);
-            deesser.set_low_cut_hz(py_dict_f64(settings, "deesser_low_cut_hz", 4000.0)?);
-            deesser.set_high_cut_hz(py_dict_f64(settings, "deesser_high_cut_hz", 11_000.0)?);
-            deesser.set_threshold_db(py_dict_f64(settings, "deesser_threshold_db", -28.0)?);
-            deesser.set_ratio(py_dict_f64(settings, "deesser_ratio", 4.0)?);
-            deesser.set_attack_ms(py_dict_f64(settings, "deesser_attack_ms", 2.0)?);
-            deesser.set_release_ms(py_dict_f64(settings, "deesser_release_ms", 80.0)?);
-            deesser.set_max_reduction_db(py_dict_f64(settings, "deesser_max_reduction_db", 6.0)?);
+            deesser.set_auto_enabled(py_dict_bool(
+                settings,
+                "deesser_auto_enabled",
+                defaults::DEESSER_AUTO_ENABLED_DEFAULT,
+            )?);
+            deesser.set_auto_amount(py_dict_f64(
+                settings,
+                "deesser_auto_amount",
+                defaults::DEESSER_AUTO_AMOUNT_DEFAULT,
+            )?);
+            deesser.set_low_cut_hz(py_dict_f64(
+                settings,
+                "deesser_low_cut_hz",
+                defaults::DEESSER_LOW_CUT_DEFAULT_HZ,
+            )?);
+            deesser.set_high_cut_hz(py_dict_f64(
+                settings,
+                "deesser_high_cut_hz",
+                defaults::DEESSER_HIGH_CUT_DEFAULT_HZ,
+            )?);
+            deesser.set_threshold_db(py_dict_f64(
+                settings,
+                "deesser_threshold_db",
+                defaults::DEESSER_THRESHOLD_DEFAULT_DB,
+            )?);
+            deesser.set_ratio(py_dict_f64(
+                settings,
+                "deesser_ratio",
+                defaults::DEESSER_RATIO_DEFAULT,
+            )?);
+            deesser.set_attack_ms(py_dict_f64(
+                settings,
+                "deesser_attack_ms",
+                defaults::DEESSER_ATTACK_DEFAULT_MS,
+            )?);
+            deesser.set_release_ms(py_dict_f64(
+                settings,
+                "deesser_release_ms",
+                defaults::DEESSER_RELEASE_DEFAULT_MS,
+            )?);
+            deesser.set_max_reduction_db(py_dict_f64(
+                settings,
+                "deesser_max_reduction_db",
+                defaults::DEESSER_MAX_REDUCTION_DEFAULT_DB,
+            )?);
         }
 
-        let compressor_enabled = py_dict_bool(settings, "compressor_enabled", true)?;
+        let compressor_enabled = py_dict_bool(
+            settings,
+            "compressor_enabled",
+            defaults::COMPRESSOR_ENABLED_DEFAULT,
+        )?;
         processor.set_compressor_enabled(compressor_enabled && full_processing);
         if compressor_enabled && full_processing {
             let compressor = processor.compressor_mut();
@@ -1426,48 +1490,52 @@ pub fn simulate_auto_eq_chain(
                 py_dict_f64_in(
                     settings,
                     "compressor_threshold_db",
-                    -20.0,
+                    defaults::COMPRESSOR_THRESHOLD_DEFAULT_DB,
                     COMPRESSOR_THRESHOLD_MIN_DB,
                     COMPRESSOR_THRESHOLD_MAX_DB,
                 )?,
                 py_dict_f64_in(
                     settings,
                     "compressor_ratio",
-                    4.0,
+                    defaults::COMPRESSOR_RATIO_DEFAULT,
                     COMPRESSOR_RATIO_MIN,
                     COMPRESSOR_RATIO_MAX,
                 )?,
                 py_dict_f64_in(
                     settings,
                     "compressor_attack_ms",
-                    10.0,
+                    defaults::COMPRESSOR_ATTACK_DEFAULT_MS,
                     COMPRESSOR_ATTACK_MIN_MS,
                     COMPRESSOR_ATTACK_MAX_MS,
                 )?,
                 py_dict_f64_in(
                     settings,
                     "compressor_release_ms",
-                    200.0,
+                    defaults::COMPRESSOR_RELEASE_DEFAULT_MS,
                     COMPRESSOR_RELEASE_MIN_MS,
                     COMPRESSOR_RELEASE_MAX_MS,
                 )?,
                 py_dict_f64_in(
                     settings,
                     "compressor_makeup_gain_db",
-                    0.0,
+                    defaults::COMPRESSOR_MAKEUP_DEFAULT_DB,
                     COMPRESSOR_MAKEUP_MIN_DB,
                     COMPRESSOR_MAKEUP_MAX_DB,
                 )?,
                 6.0,
                 sample_rate,
             );
-            let adaptive_release = py_dict_bool(settings, "compressor_adaptive_release", false)?;
+            let adaptive_release = py_dict_bool(
+                settings,
+                "compressor_adaptive_release",
+                defaults::COMPRESSOR_ADAPTIVE_RELEASE_DEFAULT,
+            )?;
             compressor.set_adaptive_release(adaptive_release);
             if adaptive_release {
                 compressor.set_base_release_time(py_dict_f64_in(
                     settings,
                     "compressor_base_release_ms",
-                    50.0,
+                    defaults::COMPRESSOR_BASE_RELEASE_DEFAULT_MS,
                     COMPRESSOR_BASE_RELEASE_MIN_MS,
                     COMPRESSOR_BASE_RELEASE_MAX_MS,
                 )?);
@@ -1475,30 +1543,34 @@ pub fn simulate_auto_eq_chain(
             compressor.set_auto_makeup_enabled(py_dict_bool(
                 settings,
                 "compressor_auto_makeup_enabled",
-                false,
+                defaults::COMPRESSOR_AUTO_MAKEUP_DEFAULT,
             )?);
             compressor.set_noise_reference_reliability(py_dict_f64_in(
                 settings,
                 "compressor_noise_reference_reliability",
-                0.0,
+                defaults::COMPRESSOR_NOISE_REFERENCE_RELIABILITY_DEFAULT,
                 0.0,
                 1.0,
             )?);
             compressor.set_target_lufs(py_dict_f64_in(
                 settings,
                 "compressor_target_lufs",
-                -18.0,
+                defaults::COMPRESSOR_TARGET_LUFS_DEFAULT,
                 COMPRESSOR_TARGET_LUFS_MIN,
                 COMPRESSOR_TARGET_LUFS_MAX,
             )?);
             compressor.set_sidechain_highpass_enabled(py_dict_bool(
                 settings,
                 "compressor_sidechain_highpass_enabled",
-                true,
+                defaults::COMPRESSOR_SIDECHAIN_HIGHPASS_DEFAULT,
             )?);
         }
 
-        let limiter_enabled = py_dict_bool(settings, "limiter_enabled", true)?;
+        let limiter_enabled = py_dict_bool(
+            settings,
+            "limiter_enabled",
+            defaults::LIMITER_ENABLED_DEFAULT,
+        )?;
         processor.set_limiter_enabled(limiter_enabled);
         if full_chain && processing_mode != "normal" {
             // Live Raw and bypass skip the normal lookahead limiter; output_writer still
@@ -1508,12 +1580,15 @@ pub fn simulate_auto_eq_chain(
         let limiter_ceiling_db = py_dict_f64_in(
             settings,
             "limiter_ceiling_db",
-            -0.5,
+            defaults::LIMITER_CEILING_DEFAULT_DB,
             LIMITER_CEILING_MIN_DB,
             LIMITER_CEILING_MAX_DB,
         )?;
-        let careful_output_enabled =
-            py_dict_bool(settings, "limiter_careful_output_enabled", true)?;
+        let careful_output_enabled = py_dict_bool(
+            settings,
+            "limiter_careful_output_enabled",
+            defaults::LIMITER_CAREFUL_OUTPUT_DEFAULT,
+        )?;
         let effective_ceiling_db = if limiter_enabled {
             effective_limiter_ceiling_db(limiter_ceiling_db, careful_output_enabled) as f32
         } else {
@@ -1531,7 +1606,7 @@ pub fn simulate_auto_eq_chain(
             let release_ms = py_dict_f64_in(
                 settings,
                 "limiter_release_ms",
-                50.0,
+                defaults::LIMITER_RELEASE_DEFAULT_MS,
                 LIMITER_RELEASE_MIN_MS,
                 LIMITER_RELEASE_MAX_MS,
             )?;

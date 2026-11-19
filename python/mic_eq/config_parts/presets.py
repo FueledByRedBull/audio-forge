@@ -7,7 +7,7 @@ import json
 import os
 import tempfile
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import NamedTuple, Optional
 
@@ -53,6 +53,13 @@ _VALID_PROVENANCE_VALUES = {
     _PROVENANCE_MIGRATION_DEFAULT,
 }
 MAX_PRESET_FILE_BYTES = 1 << 20
+_STAGE_SETTINGS = {
+    "gate": GateSettings,
+    "rnnoise": RNNoiseSettings,
+    "deesser": DeEsserSettings,
+    "compressor": CompressorSettings,
+    "limiter": LimiterSettings,
+}
 
 
 def validate_preset_file_size(filepath: Path) -> None:
@@ -206,27 +213,8 @@ class Preset:
                         + ", ".join(sorted(missing_root))
                     )
                 section_fields = {
-                    "gate": {
-                        "enabled", "threshold_db", "attack_ms", "release_ms",
-                        "gate_mode", "vad_threshold", "vad_hold_time_ms",
-                        "vad_pre_gain", "auto_threshold_enabled", "gate_margin_db",
-                    },
-                    "rnnoise": {"enabled", "strength", "model"},
-                    "deesser": {
-                        "enabled", "auto_enabled", "auto_amount", "low_cut_hz",
-                        "high_cut_hz", "threshold_db", "ratio", "attack_ms",
-                        "release_ms", "max_reduction_db",
-                    },
-                    "compressor": {
-                        "enabled", "threshold_db", "ratio", "attack_ms",
-                        "release_ms", "makeup_gain_db", "adaptive_release",
-                        "base_release_ms", "auto_makeup_enabled", "target_lufs",
-                        "sidechain_highpass_enabled",
-                    },
-                    "limiter": {
-                        "enabled", "ceiling_db", "release_ms",
-                        "careful_output_enabled",
-                    },
+                    section: {setting.name for setting in fields(settings_class)}
+                    for section, settings_class in _STAGE_SETTINGS.items()
                 }
                 for section, expected_fields in section_fields.items():
                     values = data[section]
@@ -274,8 +262,9 @@ class Preset:
                 data["version"] = CURRENT_VERSION
 
             gate_data = data.get("gate", {})
+            gate_defaults = GateSettings()
             gate_ranges = validation_ranges()["gate"]
-            gate_mode_value = gate_data.get("gate_mode", 0)
+            gate_mode_value = gate_data.get("gate_mode", gate_defaults.gate_mode)
             if strict_current_schema and (
                 isinstance(gate_mode_value, bool)
                 or not isinstance(gate_mode_value, (int, float))
@@ -285,21 +274,25 @@ class Preset:
                     f"Invalid gate_mode in gate: {gate_mode_value!r} (must be an integer)"
                 )
             validated_gate = GateSettings(
-                enabled=_validate_bool(gate_data.get("enabled", True), "enabled", "gate"),
+                enabled=_validate_bool(
+                    gate_data.get("enabled", gate_defaults.enabled),
+                    "enabled",
+                    "gate",
+                ),
                 threshold_db=validate_range(
-                    gate_data.get("threshold_db", -40.0),
+                    gate_data.get("threshold_db", gate_defaults.threshold_db),
                     *gate_ranges["threshold_db"],
                     "threshold_db",
                     "gate",
                 ),
                 attack_ms=validate_range(
-                    gate_data.get("attack_ms", 10.0),
+                    gate_data.get("attack_ms", gate_defaults.attack_ms),
                     *gate_ranges["attack_ms"],
                     "attack_ms",
                     "gate",
                 ),
                 release_ms=validate_range(
-                    gate_data.get("release_ms", 100.0),
+                    gate_data.get("release_ms", gate_defaults.release_ms),
                     *gate_ranges["release_ms"],
                     "release_ms",
                     "gate",
@@ -313,30 +306,30 @@ class Preset:
                     )
                 ),
                 vad_threshold=validate_range(
-                    gate_data.get("vad_threshold", 0.48),
+                    gate_data.get("vad_threshold", gate_defaults.vad_threshold),
                     *gate_ranges["vad_threshold"],
                     "vad_threshold",
                     "gate",
                 ),
                 vad_hold_time_ms=validate_range(
-                    gate_data.get("vad_hold_time_ms", 200.0),
+                    gate_data.get("vad_hold_time_ms", gate_defaults.vad_hold_time_ms),
                     *gate_ranges["vad_hold_time_ms"],
                     "vad_hold_time_ms",
                     "gate",
                 ),
                 vad_pre_gain=validate_range(
-                    gate_data.get("vad_pre_gain", 1.0),
+                    gate_data.get("vad_pre_gain", gate_defaults.vad_pre_gain),
                     *gate_ranges["vad_pre_gain"],
                     "vad_pre_gain",
                     "gate",
                 ),
                 auto_threshold_enabled=_validate_bool(
-                    gate_data.get("auto_threshold_enabled", True),
+                    gate_data.get("auto_threshold_enabled", gate_defaults.auto_threshold_enabled),
                     "auto_threshold_enabled",
                     "gate",
                 ),
                 gate_margin_db=validate_range(
-                    gate_data.get("gate_margin_db", 10.0),
+                    gate_data.get("gate_margin_db", gate_defaults.gate_margin_db),
                     *gate_ranges["gate_margin_db"],
                     "gate_margin_db",
                     "gate",
@@ -348,105 +341,123 @@ class Preset:
             )
 
             comp_data = data.get("compressor", {})
+            comp_defaults = CompressorSettings()
             comp_ranges = validation_ranges()["compressor"]
             validated_comp = CompressorSettings(
-                enabled=_validate_bool(comp_data.get("enabled", True), "enabled", "compressor"),
+                enabled=_validate_bool(
+                    comp_data.get("enabled", comp_defaults.enabled),
+                    "enabled",
+                    "compressor",
+                ),
                 threshold_db=validate_range(
-                    comp_data.get("threshold_db", -20.0),
+                    comp_data.get("threshold_db", comp_defaults.threshold_db),
                     *comp_ranges["threshold_db"],
                     "threshold_db",
                     "compressor",
                 ),
                 ratio=validate_range(
-                    comp_data.get("ratio", 4.0),
+                    comp_data.get("ratio", comp_defaults.ratio),
                     *comp_ranges["ratio"],
                     "ratio",
                     "compressor",
                 ),
                 attack_ms=validate_range(
-                    comp_data.get("attack_ms", 10.0),
+                    comp_data.get("attack_ms", comp_defaults.attack_ms),
                     *comp_ranges["attack_ms"],
                     "attack_ms",
                     "compressor",
                 ),
                 release_ms=validate_range(
-                    comp_data.get("release_ms", 200.0),
+                    comp_data.get("release_ms", comp_defaults.release_ms),
                     *comp_ranges["release_ms"],
                     "release_ms",
                     "compressor",
                 ),
                 makeup_gain_db=validate_range(
-                    comp_data.get("makeup_gain_db", 0.0),
+                    comp_data.get("makeup_gain_db", comp_defaults.makeup_gain_db),
                     *comp_ranges["makeup_gain_db"],
                     "makeup_gain_db",
                     "compressor",
                 ),
                 adaptive_release=_validate_bool(
-                    comp_data.get("adaptive_release", False),
+                    comp_data.get("adaptive_release", comp_defaults.adaptive_release),
                     "adaptive_release",
                     "compressor",
                 ),
                 base_release_ms=validate_range(
-                    comp_data.get("base_release_ms", 50.0),
+                    comp_data.get("base_release_ms", comp_defaults.base_release_ms),
                     *comp_ranges["base_release_ms"],
                     "base_release_ms",
                     "compressor",
                 ),
                 auto_makeup_enabled=_validate_bool(
-                    comp_data.get("auto_makeup_enabled", False),
+                    comp_data.get("auto_makeup_enabled", comp_defaults.auto_makeup_enabled),
                     "auto_makeup_enabled",
                     "compressor",
                 ),
                 target_lufs=validate_range(
-                    comp_data.get("target_lufs", -18.0),
+                    comp_data.get("target_lufs", comp_defaults.target_lufs),
                     *comp_ranges["target_lufs"],
                     "target_lufs",
                     "compressor",
                 ),
                 sidechain_highpass_enabled=_validate_bool(
-                    comp_data.get("sidechain_highpass_enabled", True),
+                    comp_data.get(
+                        "sidechain_highpass_enabled",
+                        comp_defaults.sidechain_highpass_enabled,
+                    ),
                     "sidechain_highpass_enabled",
                     "compressor",
                 ),
             )
 
             lim_data = data.get("limiter", {})
+            lim_defaults = LimiterSettings()
             lim_ranges = validation_ranges()["limiter"]
             validated_lim = LimiterSettings(
-                enabled=_validate_bool(lim_data.get("enabled", True), "enabled", "limiter"),
+                enabled=_validate_bool(
+                    lim_data.get("enabled", lim_defaults.enabled),
+                    "enabled",
+                    "limiter",
+                ),
                 ceiling_db=validate_range(
-                    lim_data.get("ceiling_db", -0.5),
+                    lim_data.get("ceiling_db", lim_defaults.ceiling_db),
                     *lim_ranges["ceiling_db"],
                     "ceiling_db",
                     "limiter",
                 ),
                 release_ms=validate_range(
-                    lim_data.get("release_ms", 50.0),
+                    lim_data.get("release_ms", lim_defaults.release_ms),
                     *lim_ranges["release_ms"],
                     "release_ms",
                     "limiter",
                 ),
                 careful_output_enabled=_validate_bool(
-                    lim_data.get("careful_output_enabled", True),
+                    lim_data.get("careful_output_enabled", lim_defaults.careful_output_enabled),
                     "careful_output_enabled",
                     "limiter",
                 ),
             )
 
             rnnoise_data = data.get("rnnoise", {})
+            rnnoise_defaults = RNNoiseSettings()
             rnnoise_ranges = validation_ranges()["rnnoise"]
-            model = rnnoise_data.get("model", "rnnoise")
+            model = rnnoise_data.get("model", rnnoise_defaults.model)
             valid_models = noise_model_ids()
             if model not in valid_models and strict_current_schema:
                 raise PresetValidationError(
                     f"Invalid model in rnnoise: {model!r} (must be one of {list(valid_models)})"
                 )
             if model not in valid_models:
-                model = "rnnoise"
+                model = rnnoise_defaults.model
             validated_rnnoise = RNNoiseSettings(
-                enabled=_validate_bool(rnnoise_data.get("enabled", True), "enabled", "rnnoise"),
+                enabled=_validate_bool(
+                    rnnoise_data.get("enabled", rnnoise_defaults.enabled),
+                    "enabled",
+                    "rnnoise",
+                ),
                 strength=validate_range(
-                    rnnoise_data.get("strength", 1.0),
+                    rnnoise_data.get("strength", rnnoise_defaults.strength),
                     *rnnoise_ranges["strength"],
                     "strength",
                     "rnnoise",
@@ -455,15 +466,16 @@ class Preset:
             )
 
             deesser_data = data.get("deesser", {})
+            deesser_defaults = DeEsserSettings()
             deesser_ranges = validation_ranges()["deesser"]
             low_cut_hz = validate_range(
-                deesser_data.get("low_cut_hz", 4000.0),
+                deesser_data.get("low_cut_hz", deesser_defaults.low_cut_hz),
                 *deesser_ranges["low_cut_hz"],
                 "low_cut_hz",
                 "deesser",
             )
             high_cut_hz = validate_range(
-                deesser_data.get("high_cut_hz", 11000.0),
+                deesser_data.get("high_cut_hz", deesser_defaults.high_cut_hz),
                 *deesser_ranges["high_cut_hz"],
                 "high_cut_hz",
                 "deesser",
@@ -477,14 +489,18 @@ class Preset:
                 high_cut_hz = min(16000.0, low_cut_hz + 200.0)
                 low_cut_hz = min(low_cut_hz, high_cut_hz - 200.0)
             validated_deesser = DeEsserSettings(
-                enabled=_validate_bool(deesser_data.get("enabled", False), "enabled", "deesser"),
+                enabled=_validate_bool(
+                    deesser_data.get("enabled", deesser_defaults.enabled),
+                    "enabled",
+                    "deesser",
+                ),
                 auto_enabled=_validate_bool(
-                    deesser_data.get("auto_enabled", True),
+                    deesser_data.get("auto_enabled", deesser_defaults.auto_enabled),
                     "auto_enabled",
                     "deesser",
                 ),
                 auto_amount=validate_range(
-                    deesser_data.get("auto_amount", 0.5),
+                    deesser_data.get("auto_amount", deesser_defaults.auto_amount),
                     *deesser_ranges["auto_amount"],
                     "auto_amount",
                     "deesser",
@@ -492,31 +508,31 @@ class Preset:
                 low_cut_hz=low_cut_hz,
                 high_cut_hz=high_cut_hz,
                 threshold_db=validate_range(
-                    deesser_data.get("threshold_db", -28.0),
+                    deesser_data.get("threshold_db", deesser_defaults.threshold_db),
                     *deesser_ranges["threshold_db"],
                     "threshold_db",
                     "deesser",
                 ),
                 ratio=validate_range(
-                    deesser_data.get("ratio", 4.0),
+                    deesser_data.get("ratio", deesser_defaults.ratio),
                     *deesser_ranges["ratio"],
                     "ratio",
                     "deesser",
                 ),
                 attack_ms=validate_range(
-                    deesser_data.get("attack_ms", 2.0),
+                    deesser_data.get("attack_ms", deesser_defaults.attack_ms),
                     *deesser_ranges["attack_ms"],
                     "attack_ms",
                     "deesser",
                 ),
                 release_ms=validate_range(
-                    deesser_data.get("release_ms", 80.0),
+                    deesser_data.get("release_ms", deesser_defaults.release_ms),
                     *deesser_ranges["release_ms"],
                     "release_ms",
                     "deesser",
                 ),
                 max_reduction_db=validate_range(
-                    deesser_data.get("max_reduction_db", 6.0),
+                    deesser_data.get("max_reduction_db", deesser_defaults.max_reduction_db),
                     *deesser_ranges["max_reduction_db"],
                     "max_reduction_db",
                     "deesser",

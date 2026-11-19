@@ -375,7 +375,6 @@ class MainWindow(QMainWindow):
         self.output_meter = LevelMeter("OUT", show_scale=True, name="Output level meter", parent=self)
         # Load configuration
         self.config = load_config()
-        self.input_preferences = InputPreferences(self.config)
         self._login_startup = login_startup
         self._login_startup_deadline: float | None = None
         self._login_startup_next_retry = 0.0
@@ -2636,6 +2635,11 @@ class MainWindow(QMainWindow):
         self._apply_input_cleanup_mode(mode)
         self._save_input_preferences()
         self._sync_calibration_evidence(force_reset=True)
+
+    @property
+    def input_preferences(self) -> InputPreferences:
+        """Read and write the input preferences of whatever config the window holds now."""
+        return InputPreferences(self.config)
 
     def _save_input_preferences(self) -> None:
         saved = self._save_config_safely()

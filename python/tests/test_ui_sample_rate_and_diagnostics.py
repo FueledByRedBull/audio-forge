@@ -76,6 +76,7 @@ def _use_processor(window, processor) -> None:
         window.compressor_state, window.limiter_state, window.noise_suppression_state,
     ):
         state.processor = processor
+    window.processing_mode_state.processor = processor
 
 
 def _status_log(window) -> list[str]:
@@ -2124,6 +2125,15 @@ def test_legacy_global_modes_without_stable_identity_use_safe_defaults() -> None
 )
 def test_missing_route_or_input_override_does_not_fall_back_to_global_modes(config, route_key, input_key) -> None:
     assert InputPreferences(config).lookup(route_key, input_key) == InputDevicePreference()
+
+
+def test_window_input_preferences_follow_a_replaced_config() -> None:
+    window = MainWindow.__new__(MainWindow)
+    window.config = AppConfig(route_input_preferences={"route": InputDevicePreference("right", "strong")})
+    assert window.input_preferences.lookup("route", None) == InputDevicePreference("right", "strong")
+
+    window.config = AppConfig()
+    assert window.input_preferences.lookup("route", None) == InputDevicePreference()
 
 
 def test_route_input_preference_action_saves_visible_controls_for_current_route(

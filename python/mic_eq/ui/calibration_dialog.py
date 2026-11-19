@@ -59,19 +59,11 @@ from .setup_messages import (
 )
 from .capture_session import (
     CaptureSession,
-    device_label as _device_label,
-    device_name as _device_name,
     find_processor_owner as _find_processor_owner,
     owner_calibration_context_key as _owner_calibration_context_key,
     processor_sample_rate as _processor_sample_rate,
 )
-from .engine_session import (
-    AudioLease,
-    AudioUnavailable,
-    EngineSession,
-    RouteMismatch,
-    unavailable_text,
-)
+from .engine_session import AudioLease, EngineSession, borrow_audio_for
 from .processing_configuration import ProcessingConfiguration
 from .calibration_support import (
     AutoEqCandidate,
@@ -609,54 +601,29 @@ class CalibrationDialog(QDialog):
 
     def _borrow_audio(self, session: EngineSession) -> AudioLease | None:
         """The selected route's audio for this take, or None after saying why there is none."""
-        try:
-            return session.borrow(_TEMPORARY_MUTE_REASON)
-        except RouteMismatch as mismatch:
-            selected_input, selected_output = (_device_name(item) for item in mismatch.selected)
-            active_input, active_output = (_device_name(item) for item in mismatch.active)
-            reply = QMessageBox.question(
-                self,
-                "Switch Devices for Auto-EQ?",
-                "Auto-EQ should record from your selected devices.\n\n"
-                f"Selected input: {_device_label(selected_input, '(Default Input)')}\n"
-                f"Selected output: {_device_label(selected_output, '(Default Output)')}\n\n"
-                f"Active input: {_device_label(active_input, '(Default Input)')}\n"
-                f"Active output: {_device_label(active_output, '(Default Output)')}\n\n"
-                "Switch now?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                self.view_model.set_warning(
-                    "Recording canceled. The microphone and speakers that were "
-                    "already running were kept.",
-                    state="warn",
-                    strong=False,
-                )
-                return None
-            try:
-                return session.borrow(_TEMPORARY_MUTE_REASON, switch_route=True)
-            except AudioUnavailable as e:
-                QMessageBox.critical(
-                    self,
-                    "Audio Error",
-                    unavailable_text(
-                        e,
-                        "AudioForge could not switch to your selected devices.",
-                        "Check that they are connected and not used by another app.",
-                    ),
-                )
-                return None
-        except AudioUnavailable as e:
-            QMessageBox.critical(
-                self,
-                "Audio Error",
-                unavailable_text(
-                    e,
-                    "AudioForge could not start the microphone and speakers.",
-                    "Check that they are connected and not used by another app, then try again.",
-                ),
-            )
-            return None
+        return borrow_audio_for(
+            session,
+            _TEMPORARY_MUTE_REASON,
+            title="Switch Devices for Auto-EQ?",
+            lead="Auto-EQ should record from your selected devices.",
+            prompts=self,
+            on_declined=lambda: self.view_model.set_warning(
+                "Recording canceled. The microphone and speakers that were "
+                "already running were kept.",
+                state="warn",
+                strong=False,
+            ),
+        )
+
+    def ask(self, title: str, text: str) -> bool:
+        """The ``SetupPrompts`` this dialog gives ``borrow_audio_for``, with ``fail``."""
+        reply = QMessageBox.question(
+            self, title, text, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
+    def fail(self, title: str, text: str) -> None:
+        QMessageBox.critical(self, title, text)
 
     def _begin_recording_capture(self):
         """Start Rust-side recording and poll progress from the main Qt thread."""

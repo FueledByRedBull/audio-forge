@@ -47,13 +47,11 @@ from ..config import (
 from .processing_configuration import Checkpoint, ProcessingConfiguration
 from .capture_session import (
     CaptureSession,
-    device_label as _device_label,
-    device_name as _device_name,
     find_processor_owner as _find_processor_owner,
     owner_calibration_context_key as _owner_calibration_context_key,
     processor_sample_rate as _processor_sample_rate,
 )
-from .engine_session import AudioLease, AudioUnavailable, RouteMismatch, unavailable_text
+from .engine_session import AudioLease, borrow_audio_for
 from .analysis_worker import (
     CancellableWorker,
     CaptureAnalysis,
@@ -764,60 +762,38 @@ class VoiceSetupDialog(QDialog):
             QMessageBox.critical(self, "Error", plain_error("Could not find audio processor"))
             return False
 
-        session = parent.engine_session
-        try:
-            self._audio_lease = session.borrow(_VOICE_SETUP_MUTE_REASON)
-            return True
-        except RouteMismatch as mismatch:
-            selected_input, selected_output = (_device_name(item) for item in mismatch.selected)
-            active_pair = tuple(_device_name(item) for item in mismatch.active)
-            reply = QMessageBox.question(
-                self,
-                "Switch Devices for Voice Setup?",
-                "Voice setup should record from your selected devices.\n\n"
-                f"Selected input: {_device_label(selected_input, '(Default Input)')}\n"
-                f"Selected output: {_device_label(selected_output, '(Default Output)')}\n\n"
-                f"Active input: {_device_label(active_pair[0], '(Default Input)')}\n"
-                f"Active output: {_device_label(active_pair[1], '(Default Output)')}\n\n"
-                "Switch now?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        def keep_running_devices() -> None:
+            self.view_model.set_warning(
+                "Setup canceled. The microphone and speakers that were "
+                "already running were kept.",
+                state="warn",
+                strong=False,
             )
-            if reply != QMessageBox.StandardButton.Yes:
-                self.view_model.set_warning(
-                    "Setup canceled. The microphone and speakers that were "
-                    "already running were kept.",
-                    state="warn",
-                    strong=False,
-                )
-                # The state, button text and selector stay as the dialog had them.
-                self.view_model.set_page(startEnabled=True)
-                return False
+            # The state, button text and selector stay as the dialog had them.
+            self.view_model.set_page(startEnabled=True)
 
-            try:
-                self._audio_lease = session.borrow(_VOICE_SETUP_MUTE_REASON, switch_route=True)
-            except AudioUnavailable as exc:
-                QMessageBox.critical(
-                    self,
-                    "Audio Error",
-                    unavailable_text(
-                        exc,
-                        "AudioForge could not switch to your selected devices.",
-                        "Check that they are connected and not used by another app.",
-                    ),
-                )
-                return False
-            return True
-        except AudioUnavailable as exc:
-            QMessageBox.critical(
-                self,
-                "Audio Error",
-                unavailable_text(
-                    exc,
-                    "AudioForge could not start the microphone and speakers.",
-                    "Check that they are connected and not used by another app, then try again.",
-                ),
-            )
+        lease = borrow_audio_for(
+            parent.engine_session,
+            _VOICE_SETUP_MUTE_REASON,
+            title="Switch Devices for Voice Setup?",
+            lead="Voice setup should record from your selected devices.",
+            prompts=self,
+            on_declined=keep_running_devices,
+        )
+        if lease is None:
             return False
+        self._audio_lease = lease
+        return True
+
+    def ask(self, title: str, text: str) -> bool:
+        """The ``SetupPrompts`` this dialog gives ``borrow_audio_for``, with ``fail``."""
+        reply = QMessageBox.question(
+            self, title, text, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
+    def fail(self, title: str, text: str) -> None:
+        QMessageBox.critical(self, title, text)
 
     def _begin_recording_capture(self) -> None:
         self._capture_start_timer.stop()

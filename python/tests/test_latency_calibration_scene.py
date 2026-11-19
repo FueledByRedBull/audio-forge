@@ -317,3 +317,43 @@ def test_a_scene_that_does_not_load_raises_before_anything_is_connected(qapp, mo
     assert parent.findChildren(QDialog) == []
     parent.deleteLater()
     qapp.processEvents()
+
+
+def test_dialog_header_esc_and_close_cancel_the_dialog(dialog, qapp, monkeypatch) -> None:
+    clicks: list[None] = []
+    closes: list[bool] = []
+    on_close, request_close = LatencyCalibrationDialog._on_close_clicked, LatencyCalibrationDialog._request_close
+
+    def counted_click(self) -> None:
+        clicks.append(None)
+        on_close(self)
+
+    def counted_close(self, accepted: bool) -> None:
+        if not self._close_requested:
+            closes.append(accepted)
+        request_close(self, accepted)
+
+    monkeypatch.setattr(LatencyCalibrationDialog, "_on_close_clicked", counted_click)
+    monkeypatch.setattr(LatencyCalibrationDialog, "_request_close", counted_close)
+
+    made = dialog()
+    assert _item(made, "dialogTitle").property("text") == "Latency Calibration"
+    assert _item(made, "dialogSubtitle").property("text").startswith("Measure the delay of the selected microphone")
+    with _AccessibleScene() as scene:
+        cross = _item(made, "headerCloseButton")
+        assert scene.name(cross) == "Close" and scene.description(cross) == "Esc"
+        assert scene.name(_item(made, "closeButton")) == "Close latency calibration"
+    item = _item(made, "headerCloseButton")
+    centre = item.mapToScene(item.boundingRect().center()).toPoint()
+    QTest.mouseClick(made.quick_view, Qt.MouseButton.LeftButton, pos=centre)
+    qapp.processEvents()
+    assert (len(clicks), closes) == (1, [False])
+    assert not made.isVisible() and made.result() == made.DialogCode.Rejected
+
+    clicks.clear()
+    closes.clear()
+    again = dialog()
+    QTest.keyClick(again.quick_view, Qt.Key.Key_Escape)
+    qapp.processEvents()
+    assert (len(clicks), closes) == (0, [False])
+    assert not again.isVisible() and again.result() == again.DialogCode.Rejected

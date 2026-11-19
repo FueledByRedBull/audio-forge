@@ -672,7 +672,7 @@ def test_a_rerun_opens_on_the_first_device_step(qapp, open_setup) -> None:
         first_run_setup_steps={name: "completed" for name in ("devices", "route", "latency", "voice")},
     )
     dialog = open_setup(_Owner(config, _Processor()), restart_completed=True)
-    assert scene_text(dialog, "titleText") == "1. Choose devices"
+    assert scene_text(dialog, "titleText") == "Choose devices"
     assert scene_item(dialog, "devicesPanel").isVisible()
 
 
@@ -771,3 +771,60 @@ def test_a_setup_that_cannot_load_tells_the_user_and_opens_nothing(monkeypatch, 
     assert "no details" not in shown[0][2], "the details are for the log, not the message box"
     assert "no details" in caplog.text
     assert isinstance(shown[0][0], SimpleNamespace) or isinstance(shown[0][0], QWidget)
+
+
+@pytest.mark.parametrize(
+    ("step", "saved", "words"),
+    [
+        ("devices", {}, ["This step", "Not started", "Not started"]),
+        ("voice", {"devices": "completed", "route": "skipped"}, ["Done", "Skipped", "This step"]),
+        ("route", {"devices": "completed", "voice": "completed"}, ["Done", "This step", "Done"]),
+    ],
+)
+def test_first_run_rail_names_each_step_state(qapp, open_setup, step, saved, words) -> None:
+    owner = _owner(step)
+    owner.config.first_run_setup_steps.update(saved)
+    dialog = open_setup(owner)
+    names = [STEP_CONTENT[name][0] for name in STEPS]
+    shapes = {"This step": "dot", "Done": "check", "Skipped": "dash", "Not started": "ring"}
+    assert [scene_text(dialog, f"railState{index}") for index in range(len(STEPS))] == words
+    with _AccessibleScene() as scene:
+        for index, (name, word) in enumerate(zip(names, words, strict=True)):
+            row = scene_item(dialog, f"railStep{index}")
+            assert scene.name(row) == f"{name}: {word}"
+            marks = [i for i in scene_items(row) if i.property("shape") is not None]
+            assert [mark.property("shape") for mark in marks] == [shapes[word]]
+
+
+def test_dialog_header_esc_and_close_cancel_the_dialog(qapp, open_setup, monkeypatch) -> None:
+    rejects: list[None] = []
+    reject = FirstRunSetupDialog.reject
+
+    def counted(self) -> None:
+        rejects.append(None)
+        reject(self)
+
+    monkeypatch.setattr(FirstRunSetupDialog, "reject", counted)
+    dialog = open_setup(_owner())
+    assert scene_text(dialog, "dialogTitle") == "AudioForge Setup"
+    assert scene_text(dialog, "progressText") == "0 of 3 steps completed"
+    with _AccessibleScene() as scene:
+        close = scene_item(dialog, "closeButton")
+        assert scene.name(close) == "Close" and scene.description(close) == "Esc"
+    press(dialog, "closeButton")
+    qapp.processEvents()
+    assert len(rejects) == 1
+    assert not dialog.isVisible() and dialog.result() == dialog.DialogCode.Rejected
+
+    rejects.clear()
+    again = open_setup(_owner())
+    QTest.keyClick(again.quick_view, Qt.Key.Key_Escape)
+    qapp.processEvents()
+    assert len(rejects) == 1
+    assert not again.isVisible() and again.result() == again.DialogCode.Rejected
+
+
+def test_the_latency_check_says_it_is_optional_and_where_else_it_lives(qapp, open_setup) -> None:
+    dialog = open_setup(_owner())
+    caption = scene_item(dialog, "latencyCaption")
+    assert caption.isVisible() and caption.property("text") == "Optional. Also on the Settings page."

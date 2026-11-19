@@ -1,5 +1,5 @@
 // A progress bar: `fraction` (0 to 1) of the track is filled. While `busy` it shows a block
-// sliding along the track instead (still, when animations are off).
+// sliding along the track instead (still, under reduced motion).
 import QtQuick
 
 Rectangle {
@@ -32,10 +32,10 @@ Rectangle {
         radius: Look.t.radiusControl
         color: Look.t.accent
         SequentialAnimation on phase {
-            running: bar.busy && Look.t.motion > 0
+            running: bar.busy && bar.visible && !Look.reducedMotion
             loops: Animation.Infinite
-            NumberAnimation { from: 0; to: 1; duration: 900; easing.type: Easing.InOutQuad }
-            NumberAnimation { from: 1; to: 0; duration: 900; easing.type: Easing.InOutQuad }
+            NumberAnimation { from: 0; to: 1; duration: Look.t.motionBusy; easing.type: Easing.InOutQuad }
+            NumberAnimation { from: 1; to: 0; duration: Look.t.motionBusy; easing.type: Easing.InOutQuad }
         }
     }
 }

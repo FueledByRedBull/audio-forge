@@ -131,6 +131,7 @@ class CalibrationView(QObject):
     overrideLabels = Property(list, lambda self: list(OVERRIDE_LABELS), constant=True)
     mutedNotice = Property(str, lambda self: LIVE_OUTPUT_MUTED_NOTICE, constant=True)
     expandGlyph = Property(str, lambda self: Glyph.EXPAND, constant=True)
+    headerGlyph = Property(str, lambda self: Glyph.MICROPHONE, constant=True)
     meter = Property(QObject, lambda self: self.level_meter, constant=True)
     eqCompare = Property(QObject, lambda self: self.eq_compare, constant=True)
 

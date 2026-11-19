@@ -70,8 +70,10 @@ from .level_check import (
     LevelVerdict,
     clipped_message,
     level_choices,
+    level_text,
     live_verdict,
     room_noise_message,
+    take_rules,
     verdict_from_audio,
 )
 from .setup_messages import (
@@ -95,6 +97,8 @@ logger = logging.getLogger(__name__)
 
 NOISE_RECORDING_DURATION = 2.0
 VOICE_RECORDING_DURATION = 10.0
+# A block whose peak reaches the level the clipping rule counts from.
+_RECORDING_STATES = ("level_check", "noise_recording", "voice_recording", "verification_recording")
 _VOICE_SETUP_MUTE_REASON = "auto_voice_setup"
 # "&&" is a literal ampersand; a single "&" makes Qt underline the next character.
 _APPLY_VERIFY_AGAIN_LABEL = "Apply & Verify Again"
@@ -424,6 +428,14 @@ class VoiceSetupVerificationWorker(CancellableWorker):
         self.result_ready.emit(result)
 
 
+def _read_title(seconds: float) -> str:
+    return f"Read for the full {seconds:.0f} seconds"
+
+
+def _recorded_text(seconds: float, duration: float) -> str:
+    return f"{max(0.0, seconds):.0f} s of {duration:.0f} s recorded"
+
+
 def _analyze_capture(
     raw_audio: np.ndarray,
     sample_rate: int,
@@ -486,6 +498,7 @@ class VoiceSetupFlow(QObject):
             # A take that failed stays on its own step, with its message.
             step = self._failed_step
         suggestions = self._advisory_only and self._setup_state == "completed"
+        recording = self._setup_state in _RECORDING_STATES
         self.view_model.set_page(
             step=step,
             recordingTitle="Review" if step == 4 else "Recording",
@@ -497,8 +510,13 @@ class VoiceSetupFlow(QObject):
             voiceShown=step in (1, 3),
             reviewShown=step == 4,
             # Only a recording mutes the live output.
-            mutedShown=self._setup_state
-            in ("level_check", "noise_recording", "voice_recording", "verification_recording"),
+            mutedShown=recording,
+            recordingNow=recording,
+            readTitle=_read_title(LEVEL_CHECK_SECONDS if step == 1 else VOICE_RECORDING_DURATION),
+            # The checks that refuse a take are told beside the voice take they judge.
+            rulesShown=self._setup_state == "voice_recording",
+            # Settings change once the review is applied; a verification take runs on them.
+            hintShown=step < 4 and state not in ("verification_recording", "verification_analyzing"),
             startLook="plain" if suggestions else "primary",
             # The meter only matters while something is being recorded.
             meterShown=step in (1, 2, 3),
@@ -597,7 +615,10 @@ class VoiceSetupFlow(QObject):
         )
         self.level_meter = self.view_model.level_meter
         self.eq_compare = self.view_model.eq_compare
-        self.view_model.set_page(timeText=f"Time remaining: {NOISE_RECORDING_DURATION:.0f}s")
+        self.view_model.set_page(
+            timeText=f"Time remaining: {NOISE_RECORDING_DURATION:.0f}s",
+            readTitle=_read_title(VOICE_RECORDING_DURATION),
+        )
         self._show_step_for_state()
         self._on_dynamics_intensity_changed()
         self._on_curve_changed(0)
@@ -740,7 +761,9 @@ class VoiceSetupFlow(QObject):
         self.view_model.set_page(
             progress=0,
             timeText=f"Time remaining: {self._recording_duration:.0f}s",
+            recordedText=_recorded_text(0.0, self._recording_duration),
         )
+        self.view_model.set_rules(take_rules((), (), 0.0))
         self._capture_start_timer.start(100)
 
     def _ensure_processor_ready(self) -> bool:
@@ -865,6 +888,14 @@ class VoiceSetupFlow(QObject):
                 float(parent.processor.recording_level_db()),
                 float(parent.processor.get_input_peak_db()),
             )
+            if self.setup_state == "voice_recording":
+                self.view_model.set_rules(
+                    take_rules(
+                        self._recent_rms_db,
+                        self._recent_peak_db,
+                        self._recording_duration * progress,
+                    )
+                )
 
             if progress_pct >= 100 or parent.processor.is_recording_complete():
                 self.recording_timer.stop()
@@ -883,6 +914,9 @@ class VoiceSetupFlow(QObject):
             self._on_recording_failed(plain_error(f"Recording error: {exc}"))
 
     def _update_time_remaining(self, seconds: float) -> None:
+        self.view_model.set_page(
+            recordedText=_recorded_text(self._recording_duration - seconds, self._recording_duration)
+        )
         if seconds > 0:
             self.view_model.set_page(timeText=f"Time remaining: {seconds:.0f}s")
         else:
@@ -890,6 +924,7 @@ class VoiceSetupFlow(QObject):
 
     def _update_level(self, rms_db: float, peak_db: float) -> None:
         self.level_meter.set_levels(rms_db, peak_db)
+        self.view_model.set_page(levelText=level_text(rms_db, peak_db))
         self._recent_rms_db.append(rms_db)
         self._recent_peak_db.append(peak_db)
 

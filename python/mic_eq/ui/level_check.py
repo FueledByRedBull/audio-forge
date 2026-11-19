@@ -15,11 +15,14 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..analysis.noise_reference import capture_is_silent
-from ..analysis.voice_setup import CLIP_LEVEL, raw_capture_is_clipped
+from ..analysis.voice_setup import CLIP_LEVEL, SPEECH_MIN_DURATION_S, raw_capture_is_clipped
 from .calibration_support import TOO_LOUD_DB, TOO_QUIET_DB
+from .overview_presentation import DOT
 from .platform_text import SOUND_SETTINGS
 
 LEVEL_CHECK_SECONDS = 3.0
+# A meter peak at the clip level, in dB.
+FULL_SCALE_DB = 20.0 * math.log10(CLIP_LEVEL)
 # A quiet verdict needs this many 100 ms level updates (1.5 s) without any block above
 # the threshold, so the pauses between words do not trigger it.
 LEVEL_HOLD_UPDATES = 15
@@ -205,6 +208,50 @@ def live_verdict(
     if peak_db > TOO_LOUD_DB or full:
         return verdict_from_levels(peak_db, loudest, again=again)
     return None
+
+
+@dataclass(frozen=True)
+class TakeRule:
+    """One check on a voice take, and how the take being recorded stands against it."""
+
+    name: str
+    status_word: str
+    detail: str
+    state: str  # fine, watch or warn
+
+
+def take_rules(
+    recent_rms_db: Sequence[float],
+    recent_peak_db: Sequence[float],
+    recorded_s: float,
+) -> tuple[TakeRule, ...]:
+    """The rows beside a voice take: too quiet, clipped and too short.
+
+    They only describe while the take records. The quiet row follows the live verdict over the
+    same LEVEL_HOLD_UPDATES blocks. A peak at full scale only warns: the take is refused for
+    flat-topped samples (raw_capture_is_clipped), which a meter peak cannot tell apart, but no
+    refused take passes without one.
+    """
+    verdict = live_verdict(recent_rms_db, recent_peak_db)
+    if verdict is not None and verdict.code == "too_quiet":
+        quiet = ("Too quiet now", "warn")
+    elif len(recent_rms_db) < LEVEL_HOLD_UPDATES:
+        quiet = ("Keep reading", "watch")
+    else:
+        quiet = ("Fine so far", "fine")
+    at_full_scale = max(recent_peak_db, default=-120.0) >= FULL_SCALE_DB
+    clip = ("Peaks at full scale", "warn") if at_full_scale else ("Fine so far", "fine")
+    short = ("Keep reading", "watch") if recorded_s < SPEECH_MIN_DURATION_S else ("Fine so far", "fine")
+    return (
+        TakeRule("Too quiet", quiet[0], f"Your words under {TOO_QUIET_DB:.0f} dB", quiet[1]),
+        TakeRule("Clipped", clip[0], "Peaks cut flat at full scale", clip[1]),
+        TakeRule("Too short", short[0], f"Under {SPEECH_MIN_DURATION_S:g} seconds recorded", short[1]),
+    )
+
+
+def level_text(rms_db: float, peak_db: float) -> str:
+    """The meter's reading in words, beside the bar."""
+    return f"Input level {_db(rms_db, 0)} dB {DOT} peak {_db(peak_db)} dB"
 
 
 def room_noise_message(recent_rms_db: Sequence[float]) -> tuple[str, str]:

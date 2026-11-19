@@ -16,7 +16,7 @@ from PySide6.QtCore import Property, QObject, Qt, QTimer, QRectF, Signal, Slot
 from PySide6.QtGui import QPainter, QLinearGradient, QPen, QFont
 
 from ..analysis.voice_setup import CLIP_FLAT_TOP_S
-from .theme import PALETTE, qcolor
+from .theme import PALETTE, TYPE_TICK_PX, painter_font, qcolor
 
 
 SCALE_TICK_LENGTH = 3
@@ -421,10 +421,7 @@ class LevelMeter(MeterModel):
         # Draw scale with numbers
         if self.show_scale:
             painter.setPen(QPen(self.COLOR_SCALE, 1))
-            font = QFont()
-            font.setPointSize(7)
-            font.setBold(False)
-            painter.setFont(font)
+            painter.setFont(painter_font(11, floor=TYPE_TICK_PX))
 
             for db in self.SCALE_MARKS:
                 y = self._db_to_y(db, meter_height) + 4
@@ -464,10 +461,7 @@ class LevelMeter(MeterModel):
                 painter.setPen(QPen(qcolor(PALETTE.text_on_data_color)))
             else:
                 painter.setPen(QPen(qcolor(PALETTE.meter_scale)))
-            font = QFont()
-            font.setPointSize(9)
-            font.setBold(True)
-            painter.setFont(font)
+            painter.setFont(painter_font(12, weight=QFont.Weight.Bold))
             painter.drawText(
                 0,
                 height - label_height,
@@ -548,9 +542,7 @@ class GainReductionMeter(MeterModel):
 
         # Draw label
         painter.setPen(QPen(qcolor(PALETTE.meter_scale)))
-        font = QFont()
-        font.setPointSize(8)
-        painter.setFont(font)
+        painter.setFont(painter_font(12))
         text = f"GR: {self.gain_reduction_db:.1f} dB" if self.measurement_available else "GR: --"
         painter.drawText(0, 0, width, height, Qt.AlignmentFlag.AlignCenter, text)
 

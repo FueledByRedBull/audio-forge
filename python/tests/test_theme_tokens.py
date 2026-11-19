@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+import ast
+from dataclasses import asdict, fields
+from pathlib import Path
 import re
 import sys
 import types
@@ -11,16 +13,22 @@ import pytest
 from PySide6.QtCore import QByteArray, QUrl
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtQml import QQmlComponent, QQmlEngine
+from PySide6.QtWidgets import QMessageBox
 
+from mic_eq.ui import theme
 from mic_eq.ui.quick_scene import QML_DIR, quick_theme
 from mic_eq.ui.theme import (
+    MENU_HOVER_WHITE,
     MOTION,
     PALETTE,
     REDUCED_MOTION_FADE_MS,
+    RESERVED_FOR_LATER,
+    SemanticPalette,
     TYPE_FLOOR_PX,
     TYPE_SCALE_PX,
     TYPE_TICK_PX,
     application_stylesheet,
+    themed_menu,
     build_palette,
     contrast_ratio,
     flatten,
@@ -88,7 +96,8 @@ def test_scenes_get_the_motion_durations(qapp, monkeypatch) -> None:
     monkeypatch.setenv("AUDIOFORGE_REDUCED_MOTION", "0")
     theme = quick_theme()
     assert theme["reducedMotion"] is False
-    assert (theme["motion"], theme["motionStatus"], theme["motionCrossfade"]) == (150, 150, 120)
+    assert (theme["motionColor"], theme["motionStatus"], theme["motionCrossfade"]) == (150, 150, 120)
+    assert theme["motionBusy"] == 900
     assert (theme["motionSwitch"], theme["motionRow"]) == (120, 120)
     assert (theme["motionPanelOpen"], theme["motionPanelClose"]) == (300, 200)
     assert theme["easePanelOpen"] == [0.16, 1.0, 0.3, 1.0, 1.0, 1.0]
@@ -99,11 +108,16 @@ def test_reduced_motion_swaps_every_duration_for_a_short_fade(qapp, monkeypatch)
     monkeypatch.setenv("AUDIOFORGE_REDUCED_MOTION", "1")
     theme = quick_theme()
     assert theme["reducedMotion"] is True
-    assert theme["motion"] == 0
-    fades = [theme[key] for key in theme if key.startswith("motion") and key != "motion"]
+    # Colour and opacity fade briefly; what moves takes 0 ms through Look.movement, and the
+    # busy sweep stops, so its period is not a fade.
+    assert theme["motionColor"] == REDUCED_MOTION_FADE_MS
+    fades = [theme[key] for key in theme if key.startswith("motion") and key != "motionBusy"]
     assert len(fades) == len(asdict(MOTION)) - 1
     assert set(fades) == {REDUCED_MOTION_FADE_MS}
-    assert set(asdict(motion_durations(True)).values()) == {REDUCED_MOTION_FADE_MS}
+    assert theme["motionBusy"] == MOTION.busy
+    assert {n: v for n, v in asdict(motion_durations(True)).items() if n != "busy"} == {
+        n: REDUCED_MOTION_FADE_MS for n in asdict(MOTION) if n != "busy"
+    }
     assert motion_durations(False) == MOTION
 
 
@@ -168,6 +182,57 @@ def test_flatten_lays_a_translucent_token_over_its_ground() -> None:
         flatten("not-a-color", "#000000")
 
 
+def _scene_readers(names: list[str]) -> set[str]:
+    """Tokens a scene reads: ``t.name``, or ``t["head" + x + "tail"]`` for every name it can make."""
+
+    source = "\n".join(path.read_text(encoding="utf-8") for path in QML_DIR.glob("*.qml"))
+    read = {name for name in names if re.search(rf"\bt\.{name}\b", source)}
+    for head, tail in re.findall(r'\bt\["(\w+)"\s*\+[^\]]*?\+\s*"(\w+)"\]', source):
+        read |= {n for n in names if n.startswith(head) and n.endswith(tail) and len(n) > len(head + tail)}
+    return read
+
+
+def _is_described_not_read(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> bool:
+    """True inside theme.py's palette definition, contrast theme builder and contrast tables."""
+
+    described_functions = {"build_palette", "control_boundary_pairs", "SemanticPalette"}
+    tables = {"TEXT_CONTRAST_PAIRS", "CONTROL_BOUNDARY_PAIRS"}
+    while node in parents:
+        node = parents[node]
+        if isinstance(node, ast.FunctionDef | ast.ClassDef) and node.name in described_functions:
+            return True
+        if isinstance(node, ast.Assign | ast.AnnAssign):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(target, ast.Name) and target.id in tables for target in targets):
+                return True
+    return False
+
+
+def _python_readers(names: list[str]) -> set[str]:
+    """Tokens the app's Python code reads as an attribute, outside theme.py's own descriptions."""
+
+    package = Path(theme.__file__).parent.parent
+    read: set[str] = set()
+    for path in package.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in names:
+                if path.name != "theme.py" or not _is_described_not_read(node, parents):
+                    read.add(node.attr)
+    return read
+
+
+def test_every_palette_token_has_a_reader() -> None:
+    names = [field.name for field in fields(SemanticPalette)]
+    read = _scene_readers(names) | _python_readers(names)
+    assert set(RESERVED_FOR_LATER) <= set(names)
+    # A token that gains a reader leaves the reserved list, so the list never goes stale.
+    assert not set(RESERVED_FOR_LATER) & read, sorted(set(RESERVED_FOR_LATER) & read)
+    assert sorted(set(names) - read - set(RESERVED_FOR_LATER)) == []
+    assert "analyser" not in names
+
+
 def test_the_focus_ring_has_its_own_token_in_scenes_and_widgets() -> None:
     ring = (QML_DIR / "FocusRing.qml").read_text(encoding="utf-8")
     assert "border.color: Look.t.focus_ring" in ring
@@ -185,6 +250,18 @@ def test_level_colors_are_not_told_apart_by_red_against_green_alone() -> None:
     assert danger.hslHue() < 20 or danger.hslHue() > 340
 
 
+def test_the_meter_caution_step_reads_its_own_token_and_keeps_its_hue_under_a_contrast_theme() -> None:
+    from mic_eq.ui import level_meter
+
+    source = Path(level_meter.__file__).read_text(encoding="utf-8")
+    assert "status_warn" not in source and "data_warning" not in source
+    assert level_meter.LevelMeter.COLOR_YELLOW == QColor(PALETTE.meter_caution)
+    contrast = build_palette(SYSTEM_COLORS)
+    assert contrast.meter_caution == PALETTE.meter_caution
+    caution, danger = QColor(contrast.meter_caution), QColor(contrast.meter_danger)
+    assert min(abs(caution.hslHue() - danger.hslHue()), 360 - abs(caution.hslHue() - danger.hslHue())) >= 30
+
+
 def test_callers_affected_has_its_own_hue_and_stays_readable() -> None:
     mark = QColor(PALETTE.callers_affected)
 
@@ -193,10 +270,10 @@ def test_callers_affected_has_its_own_hue_and_stays_readable() -> None:
         return min(gap, 360 - gap)
 
     # Not the amber of actions, the yellow of warnings, the red of errors, the violet of
-    # Mute or the blues of the level and analyser traces.
+    # Mute or the blues of the level traces.
     for taken in (
         PALETTE.accent, PALETTE.status_warn_text, PALETTE.status_bad_text, PALETTE.mute,
-        PALETTE.signal_in, PALETTE.signal_in_fill, PALETTE.analyser, PALETTE.status_ok_text,
+        PALETTE.signal_in, PALETTE.signal_in_fill, PALETTE.status_ok_text,
     ):
         assert hue_gap(taken) >= 30, taken
     for ground in (PALETTE.pane_surface, PALETTE.card_surface, PALETTE.sidebar_top):
@@ -218,8 +295,130 @@ def test_a_switch_that_is_on_differs_from_one_that_is_off_by_more_than_hue() -> 
     assert build_palette(SYSTEM_COLORS).switch_on == SYSTEM_COLORS["window_text"]
 
 
-@pytest.mark.parametrize("name", ["Main.qml", "SwitchButton.qml"])
-def test_scene_animations_take_their_length_from_the_motion_tokens(name) -> None:
-    durations = re.findall(r"duration:\s*([^;}\n]+)", (QML_DIR / name).read_text(encoding="utf-8"))
-    assert durations
-    assert all(re.search(r"\bt\.motion\w*\b", value) for value in durations), durations
+# Properties that move something; an animation on one takes 0 ms under reduced motion.
+_MOVING = {"x", "y", "z", "scale", "rotation", "width", "height", "progress", "contentX", "contentY", "position"}
+_QML_FILES = sorted(QML_DIR.glob("*.qml"))
+
+
+def _timed_animations(source: str) -> list[tuple[str, str]]:
+    """Every ``duration:`` in ``source`` as (the property it animates, its expression).
+
+    The property is the ``property:`` of the animation block or the ``on <name>`` of its header
+    or of an enclosing one; it is empty when neither says (a reusable animation type).
+    """
+
+    blocks: list[tuple[int, int, str]] = []
+    opened: list[tuple[int, str]] = []
+    for match in re.finditer(r"[{}]", source):
+        if match.group() == "{":
+            header = re.split(r"[{}\n]", source[: match.start()])[-1].strip()
+            opened.append((match.start(), header))
+        else:
+            start, header = opened.pop()
+            blocks.append((start, match.start(), header))
+    found = []
+    for duration in re.finditer(r"\bduration:\s*([^;}\r\n]+)", source):
+        around = sorted((b for b in blocks if b[0] < duration.start() < b[1]), key=lambda b: b[0])
+        start, end, _ = around[-1]
+        body = source[start + 1 : end]
+        while "{" in body:
+            body = re.sub(r"\{[^{}]*\}", "", body)
+        named = re.search(r'\bproperty:\s*"(\w+)"', body)
+        target = named.group(1) if named else next(
+            (m.group(1) for _, _, header in reversed(around) if (m := re.search(r"\bon\s+(\w+)$", header))), ""
+        )
+        found.append((target, duration.group(1).strip()))
+    return found
+
+
+def test_scene_animations_take_their_length_from_the_motion_tokens() -> None:
+    timed = [
+        (path.name, duration)
+        for path in _QML_FILES
+        for _, duration in _timed_animations(path.read_text(encoding="utf-8"))
+    ]
+    assert len(timed) >= 20
+    # The meter's reading interval is the only length that is not a theme token.
+    token = r"\bt\.motion[A-Z]\w*\b"
+    assert [(name, d) for name, d in timed if not re.search(token, d) and "m.levelIntervalMs" not in d] == []
+    assert {name for name, d in timed if "levelIntervalMs" in d} == {"Main.qml"}
+
+
+def test_moving_animations_go_through_movement() -> None:
+    moving = []
+    for path in _QML_FILES:
+        source = path.read_text(encoding="utf-8")
+        for target, duration in _timed_animations(source):
+            if target in _MOVING:
+                moving.append((path.name, target, duration))
+            elif target == "phase":
+                # The busy sweep moves a block along its track; reduced motion stops it, and so does
+                # hiding the bar.
+                assert "running: bar.busy && bar.visible && !Look.reducedMotion" in source, path.name
+    assert [item for item in moving if "Look.movement(" not in item[2]] == []
+    # The inspector slide, the switch knob, the chevron, the fader handle and the ribbon are found.
+    assert {target for _, target, _ in moving} >= {"x", "scale", "rotation", "progress"}
+
+
+def test_no_scene_reads_the_retired_motion_key() -> None:
+    retired = re.compile(r"\bt\.motion\b|\bt\[\"motion\"\]|\btheme\.motion\b")
+    assert [path.name for path in _QML_FILES if retired.search(path.read_text(encoding="utf-8"))] == []
+    assert "motion" not in quick_theme() and "motionColor" in quick_theme()
+
+
+def test_new_band_colors_keep_band_numbers_readable() -> None:
+    assert all(
+        contrast_ratio(PALETTE.text_on_data_color, color) >= 4.5 for color in PALETTE.eq_band_colors
+    )
+
+
+def test_adjacent_band_colors_differ_in_hue() -> None:
+    hues = [QColor(color).hsvHueF() * 360 for color in PALETTE.eq_band_colors]
+    for left, right in zip(hues, hues[1:]):
+        gap = abs(left - right)
+        assert min(gap, 360 - gap) >= 20, (left, right)
+
+
+def test_message_boxes_and_menus_use_the_theme_surfaces(qapp) -> None:
+    sheet = application_stylesheet()
+    menu_ground = flatten(PALETTE.glass_solid, PALETTE.app_surface)
+    default_edge = flatten(PALETTE.accent_edge, PALETTE.pane_surface)
+    assert f"QDialog {{ background-color: {PALETTE.pane_surface}" in sheet
+    assert "QDialog QLabel { font-size: 13px" in sheet
+    assert f"QDialog QPushButton:default {{ border-color: {default_edge}; }}" in sheet
+    assert f"background-color: {menu_ground}; color: {PALETTE.text_primary}" in sheet
+    assert "border-radius: 16px; padding: 6px;" in sheet
+    assert "QMenu::indicator { width: 16px; height: 16px;" in sheet
+    assert f"QMenu::separator {{ height: 1px; background-color: {flatten(PALETTE.glass_edge, menu_ground)}" in sheet
+
+    box = QMessageBox(QMessageBox.Icon.Question, "Quit", "Quit now?", QMessageBox.StandardButton.Yes)
+    box.show()
+    qapp.processEvents()
+    assert box.grab().toImage().pixelColor(2, 2).name() == PALETTE.pane_surface
+    assert [button.height() for button in box.buttons()] == [36]
+    box.close()
+
+    menu = themed_menu()
+    menu.addAction("First")
+    menu.addAction("Second")
+    menu.show()
+    menu.setActiveAction(menu.actions()[0])
+    qapp.processEvents()
+    image = menu.grab().toImage()
+    row = menu.actionGeometry(menu.actions()[0])
+    assert image.pixelColor(image.width() // 2, 3).name() == menu_ground
+    # The rounded corner is see-through rather than a square of window ground.
+    assert image.pixelColor(0, 0).alpha() == 0
+    assert image.pixelColor(row.left() + 4, row.center().y()).name() == flatten(MENU_HOVER_WHITE, menu_ground)
+    menu.close()
+
+
+def test_the_widget_dialogs_and_menus_still_follow_the_contrast_theme(monkeypatch) -> None:
+    dark = SemanticPalette()
+    monkeypatch.setattr(theme, "PALETTE", build_palette(SYSTEM_COLORS))
+    sheet = application_stylesheet()
+    for name in ("pane_surface", "app_surface", "accent_edge", "control_hover"):
+        assert getattr(dark, name) not in sheet, name
+    assert flatten(dark.glass_solid, dark.app_surface) not in sheet
+    assert f"QDialog {{ background-color: {SYSTEM_COLORS['window']}" in sheet
+    assert f"QMenu::item:selected {{ background-color: {SYSTEM_COLORS['highlight']}" in sheet

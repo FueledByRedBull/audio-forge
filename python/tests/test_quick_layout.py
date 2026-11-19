@@ -344,6 +344,21 @@ def test_the_toolbar_fits_the_no_microphone_reason_at_the_minimum_width(
     assert [message for message in messages if "inding loop" in message or ".qml" in message] == []
 
 
+def test_a_wide_toolbar_keeps_the_no_microphone_reason_on_one_line(qapp, monkeypatch, segoe_font) -> None:
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Ready", width=1440)
+    try:
+        monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
+        window._refresh_devices()
+        settle(qapp)
+        reason = named(window, "startBlockedReason")
+        assert reason.isVisible() and reason.property("lineCount") == 1
+        assert not reason.property("truncated")
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
 @pytest.mark.parametrize(
     ("width", "sidebar_width"), [(MINIMUM_WINDOW_WIDTH, 220), (1199, 220), (1200, 260), (1600, 260)]
 )

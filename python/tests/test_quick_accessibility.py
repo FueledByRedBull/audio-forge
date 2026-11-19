@@ -18,6 +18,7 @@ from PySide6.QtQml import QQmlEngine, QQmlExpression, QQmlProperty
 from PySide6.QtTest import QTest
 
 from mic_eq.config import DeviceIdentity
+from mic_eq.ui.chain_presentation import PREFILTER_HIGHPASS_HZ
 from mic_eq.ui.eq_state import EQ_FILTER_OPTIONS
 from test_quick_layout import segoe_font  # noqa: F401  (a fixture)
 from test_quick_shell import (
@@ -620,7 +621,7 @@ def _positions(names: list[str], landmarks: list[str]) -> list[int]:
     ]
 
 
-# 1200 is wide but not roomy (one band-editor column); 1400 and up has two.
+# 1200 is the left edge of `wide`; 1400 and 1800 are wider still.
 @pytest.mark.parametrize("width", [1200, 1400, 1800])
 def test_tab_visits_the_page_in_reading_order(either_window, qapp, width) -> None:
     _inspect(either_window, qapp, "suppression")
@@ -1224,7 +1225,7 @@ def full_motion_window(request, monkeypatch):
 
 def test_reduced_motion_keeps_the_level_trace_running(reduced_motion_window) -> None:
     bridge = reduced_motion_window.quick_bridge
-    assert bridge.model["theme"]["motion"] == 0
+    assert bridge.model["theme"]["reducedMotion"] is True
     assert bridge._trace_timer.isActive()
 
 
@@ -1281,7 +1282,7 @@ def test_a_switch_knob_snaps_under_reduced_motion(reduced_motion_window, qapp) -
     assert knob.x() == (3 if was_on else track.width() - knob.width() - 3)
 
 
-# The tight cells are the left edge of each layout regime: the minimum, `wide` at 1200 and `roomy` at 1400.
+# The tight cells are the minimum, the left edge of `wide` at 1200, and 1400.
 # The widths are calibrated on Windows; Linux's offscreen platform lays text out in
 # the system fonts, which run wider.
 @pytest.mark.skipif(sys.platform != "win32", reason="layout widths calibrated on Windows fonts")
@@ -1297,6 +1298,57 @@ def test_the_gain_fader_keeps_room_beside_the_band_fields(quick_window, qapp, wi
     gain = window.quick_bridge.model["eq"]["bands"][0]["gain"]
     fader = _with_proxy(window, "Fader", gain)
     assert fader.width() >= 100
+
+
+def _eq_item(window, name: str):
+    return next(
+        item for item in _items(window.centralWidget().rootObject()) if item.objectName() == name
+    )
+
+
+def test_the_legend_names_each_line_style_in_words(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp, EQUALIZER)
+    QTest.qWait(50)
+    entries = [
+        item for item in _items(window.centralWidget().rootObject()) if item.objectName() == "legendEntry"
+    ]
+    styles = {entry.property("lineStyle"): entry.property("text") for entry in entries}
+    assert set(styles) == {"solid", "dashed", "dotted", "dot"}
+    assert all(text.strip() for text in styles.values())
+    assert styles["dotted"] == f"High-pass {PREFILTER_HIGHPASS_HZ} Hz"
+    assert all(entry.isVisible() for entry in entries)
+
+
+@pytest.mark.parametrize("width", [900, 1400])
+def test_the_band_panel_follows_the_selected_band(quick_window, qapp, width) -> None:
+    window = quick_window
+    _show(window, qapp, EQUALIZER, width)
+    QTest.qWait(50)
+    page, graph, connector, title = (
+        _eq_item(window, name) for name in ("equalizerPage", "eqGraph", "bandConnector", "bandTitle")
+    )
+    for step in range(3):
+        if step:
+            window.quick_bridge.stepBand(1)
+            QTest.qWait(50)
+        band = page.property("bandIndex")
+        assert band == step
+        assert title.property("text").startswith(f"Band {band + 1} · ")
+        handle = graph.mapToScene(QPointF(graph.handleX(band), graph.handleBottom(band)))
+        assert abs(_scene_x(connector) - handle.x()) <= 1
+        assert abs(_scene_y(connector) - handle.y()) <= 1
+    assert connector.height() > 0
+
+
+@pytest.mark.parametrize("width", [900, 1400])
+def test_the_band_panel_docks_under_the_graph(quick_window, qapp, width) -> None:
+    window = quick_window
+    _show(window, qapp, EQUALIZER, width)
+    QTest.qWait(50)
+    well, graph, panel = (_eq_item(window, name) for name in ("eqGraphWell", "eqGraph", "bandPanel"))
+    assert _scene_y(panel) >= _scene_y(well) + well.height()
+    assert graph.height() == graph.implicitHeight() == 320
 
 
 @pytest.mark.parametrize("width", [900, 1199, 1200, 1400])

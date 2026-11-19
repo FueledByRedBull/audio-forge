@@ -786,6 +786,7 @@ class RawProcessedDialog(ListeningComparisonDialog):
         reason = super()._setup_ui()
         self.view_model.set_page(
             pageName="Test my sound page",
+            title="Test my sound",
             scope="This is one recording of your microphone. Raw is what the "
             "microphone picked up. Processed is the same recording with your "
             "current settings.",

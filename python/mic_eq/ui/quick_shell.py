@@ -28,7 +28,7 @@ from PySide6.QtQml import qmlRegisterType, qmlRegisterUncreatableType
 from PySide6.QtQuick import QQuickPaintedItem, QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 
-from .chain_presentation import ChainInputs, ChainLine, describe_chain
+from .chain_presentation import PREFILTER_HIGHPASS_HZ, ChainInputs, ChainLine, describe_chain
 from .components import Glyph
 from .desktop_integration import RENDERER_RELAUNCH_ENV, relaunch_with_software_rendering
 from .control_specs import control_label
@@ -732,6 +732,13 @@ class QuickBridge(QObject):
                 "diagnostics": EQControl(w.eq_state, "diagnostics", None, self),
                 "band": EQControl(w.eq_state, "band", None, self),
                 "bands": bands,
+                # How each line of the graph is drawn, named in words beside its sample.
+                "legend": [
+                    {"text": "Total (what you hear)", "lineStyle": "solid"},
+                    {"text": "Auto-EQ", "lineStyle": "dashed"},
+                    {"text": f"High-pass {PREFILTER_HIGHPASS_HZ} Hz", "lineStyle": "dotted"},
+                    {"text": "Bands", "lineStyle": "dot"},
+                ],
             },
             "stages": stages,
             "meters": [w.input_meter, w.output_meter],

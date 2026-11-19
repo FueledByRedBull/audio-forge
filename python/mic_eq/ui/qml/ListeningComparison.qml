@@ -48,11 +48,13 @@ Rectangle {
         const refresh = Math.ceil(plainFont.advanceWidth("Refresh")) + 28
         return captionWidth + 12 + Math.max(playWidth + 12 + 140, 120 + 8 + refresh)
     }
+    // The header with the page margins either side.
+    readonly property int headerWidth: 2 * 16 + header.minimumWidth
     // The narrowest the dialog can be without cutting off its actions or its rows: the page and
     // card margins around the widest row.
-    readonly property int minimumWidth: Math.max(actionsWidth, rowWidth + 40 + 32)
+    readonly property int minimumWidth: Math.max(actionsWidth, rowWidth + 40 + 32, headerWidth)
 
-    color: Look.t.app_surface
+    color: Look.t.pane_surface
     focus: true
 
     FontMetrics {
@@ -90,20 +92,24 @@ Rectangle {
         anchors.fill: parent
         spacing: 0
 
+        DialogHeader {
+
+            id: header
+            title: root.page.title
+            subtitle: root.page.scope
+            subtitleName: "scopeText"
+            subtitleWraps: true
+            glyph: root.vm.headerGlyph
+            Layout.fillWidth: true
+            Layout.margins: 16
+            Layout.bottomMargin: 0
+            onCloseRequested: root.vm.reject()
+        }
+
         ScrollPage {
             label: root.page.pageName
             Layout.fillWidth: true
             Layout.fillHeight: true
-
-            MutedText {
-                objectName: "scopeText"
-                text: root.page.scope
-                font.pixelSize: Look.fsCaption
-                wrapMode: Text.Wrap
-                Layout.fillWidth: true
-                Accessible.role: Accessible.StaticText
-                Accessible.name: text
-            }
 
             Chip {
                 objectName: "scopeWarning"
@@ -273,10 +279,9 @@ Rectangle {
                 Accessible.name: text
             }
 
-            Chip {
+            MuteBanner {
                 objectName: "mutedNotice"
                 text: root.vm.mutedNotice
-                tone: "warn"
                 Layout.fillWidth: true
             }
         }

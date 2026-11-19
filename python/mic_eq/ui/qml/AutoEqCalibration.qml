@@ -43,10 +43,12 @@ Rectangle {
             width += Math.ceil(boldFont.advanceWidth(name)) + 16
         return width
     }
+    // The header with the page margins either side.
+    readonly property int headerWidth: 2 * 16 + header.minimumWidth
     // The room a picker needs: the page and card margins around it at its narrowest.
-    readonly property int minimumWidth: Math.max(actionsWidth, stepsWidth, 120 + 40 + 32)
+    readonly property int minimumWidth: Math.max(actionsWidth, stepsWidth, headerWidth, 120 + 40 + 32)
 
-    color: Look.t.app_surface
+    color: Look.t.pane_surface
     focus: true
 
     FontMetrics {
@@ -123,6 +125,20 @@ Rectangle {
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
+
+        DialogHeader {
+
+            id: header
+            title: "Auto-EQ Voice Tone"
+            subtitle: "Step " + (root.page.step + 1) + " of " + root.vm.steps.length + ": " + root.stepName
+            glyph: root.vm.headerGlyph
+            // The step strip below reads where the run is.
+            subtitleAnnounced: false
+            Layout.fillWidth: true
+            Layout.margins: 16
+            Layout.bottomMargin: 0
+            onCloseRequested: root.vm.cancel()
+        }
 
         // Where the run is: set up, record, review.
         Row {
@@ -224,11 +240,10 @@ Rectangle {
                 }
             }
 
-            Chip {
+            MuteBanner {
                 objectName: "mutedNotice"
                 visible: root.page.mutedShown
                 text: root.vm.mutedNotice
-                tone: "warn"
                 Layout.fillWidth: true
             }
 

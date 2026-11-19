@@ -9,7 +9,7 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
-from PySide6.QtCore import QRect, QSize, QUrl
+from PySide6.QtCore import QRect, QSize, Qt, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import QMessageBox, QSystemTrayIcon, QWidget
 
@@ -316,6 +316,45 @@ def test_the_tray_icon_carries_the_muted_badge_only_while_output_is_muted(
     window.engine_session.hold_mute("configuration", False)
     assert shown() == heard
     tray.hide()
+
+
+def _tray_menu(window: Any, monkeypatch):
+    base = QPixmap(32, 32)
+    base.fill(QColor(PALETTE.card_surface))
+    window.setWindowIcon(QIcon(base))
+    monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", lambda: True)
+    window._setup_desktop_integration(tray_only=True)
+    return window._tray_menu
+
+
+def test_tray_menu_keeps_its_items_and_mute_check(isolated_main_window, monkeypatch):
+    window: Any = isolated_main_window
+    menu = _tray_menu(window, monkeypatch)
+    try:
+        assert [action.text() for action in menu.actions() if not action.isSeparator()] == [
+            "Show AudioForge",
+            "Mute Output",
+            "Keep running in tray when window is closed",
+            "Quit AudioForge",
+        ]
+        assert [action.isSeparator() for action in menu.actions()] == [False, False, True, False, True, False]
+        assert window._tray_mute_action.isCheckable()
+        assert menu.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    finally:
+        window._tray_icon.hide()
+
+
+def test_menu_items_meet_the_target_size(isolated_main_window, monkeypatch, qapp):
+    window: Any = isolated_main_window
+    menu = _tray_menu(window, monkeypatch)
+    try:
+        menu.show()
+        qapp.processEvents()
+        heights = [menu.actionGeometry(action).height() for action in menu.actions() if not action.isSeparator()]
+        assert len(heights) == 4 and min(heights) >= 36, heights
+        menu.close()
+    finally:
+        window._tray_icon.hide()
 
 
 @pytest.mark.parametrize("folder_exists", [True, False])

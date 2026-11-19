@@ -490,6 +490,13 @@ def test_eq_activity_summary_matches_effective_filters_and_layer_state(quick_win
     assert "Tone: 0 active bands" in layers.text
 
 
+def test_layer_status_separates_layers_with_a_middle_dot(qapp):
+    state = EQState(Mock())
+    auto_eq, tone = state.layer_status().split(" · ")
+    assert auto_eq.startswith("Auto-EQ: ") and tone.startswith("Tone: ")
+    assert "|" not in state.layer_status()
+
+
 def test_building_the_eq_presentation_writes_nothing_to_the_processor(qapp):
     native = Mock()
     state = EQState(native)

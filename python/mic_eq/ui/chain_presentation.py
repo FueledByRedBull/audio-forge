@@ -13,6 +13,8 @@ from .overview_presentation import DOT
 
 # A reduction this deep fills the row's activity bar.
 FULL_ACTIVITY_DB = 12.0
+# The corner of the fixed input high-pass, as input_prefilter_response_db draws it.
+PREFILTER_HIGHPASS_HZ = 80
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +60,8 @@ def _reduction(enabled: bool, running: bool, reduction_db: float | None) -> Chai
 
 def describe_chain(inputs: ChainInputs) -> dict[str, ChainLine]:
     """Each row's line, keyed as the sidebar's chain rows are."""
-    cleanup = "HP 80 Hz" if inputs.cleanup_mode == "Off" else f"HP 80 Hz {DOT} {inputs.cleanup_mode}"
+    high_pass = f"HP {PREFILTER_HIGHPASS_HZ} Hz"
+    cleanup = high_pass if inputs.cleanup_mode == "Off" else f"{high_pass} {DOT} {inputs.cleanup_mode}"
     bands = f"{inputs.eq_bands} band{'s' if inputs.eq_bands != 1 else ''}"
     return {
         "cleanup": ChainLine(cleanup),

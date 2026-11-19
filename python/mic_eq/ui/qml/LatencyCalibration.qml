@@ -32,11 +32,13 @@ Rectangle {
     }
     // The room a label needs beside a value: the page and card margins, the gap and a short value.
     readonly property int readingMargins: 40 + 32 + 16 + 140
+    // The header with the page margins either side.
+    readonly property int headerWidth: 2 * 16 + header.minimumWidth
     // The narrowest the dialog can be without cutting off its actions or its labels.
     readonly property int minimumWidth: Math.max(Math.ceil(actions.implicitWidth) + 24,
-                                                 labelWidth + readingMargins)
+                                                 labelWidth + readingMargins, headerWidth)
 
-    color: Look.t.app_surface
+    color: Look.t.pane_surface
     focus: true
 
     FontMetrics {
@@ -80,17 +82,28 @@ Rectangle {
         anchors.fill: parent
         spacing: 0
 
+        DialogHeader {
+
+            id: header
+            title: "Latency Calibration"
+            subtitle: "Measure the delay of the selected microphone and output. For the best "
+                      + "result, use a loopback cable or a speaker-to-microphone path in a "
+                      + "quiet room. The measured delay corrects the latency AudioForge "
+                      + "reports. It does not reduce audio delay."
+            subtitleWraps: true
+            glyph: root.vm.headerGlyph
+            // The Close button below keeps the default name.
+            closeName: "headerCloseButton"
+            Layout.fillWidth: true
+            Layout.margins: 16
+            Layout.bottomMargin: 0
+            onCloseRequested: root.vm.close()
+        }
+
         ScrollPage {
             label: "Latency calibration page"
             Layout.fillWidth: true
             Layout.fillHeight: true
-
-            BodyText {
-                text: "Measure the delay of the selected microphone and output. For the best "
-                      + "result, use a loopback cable or a speaker-to-microphone path in a "
-                      + "quiet room. The measured delay corrects the latency AudioForge "
-                      + "reports. It does not reduce audio delay."
-            }
 
             Surface {
                 Layout.fillWidth: true

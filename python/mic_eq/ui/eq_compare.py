@@ -6,13 +6,13 @@ import math
 
 import numpy as np
 from PySide6.QtCore import Property, QObject, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 
 from mic_eq import eq_magnitude_response_v2
 from mic_eq.config import EQSettings
 
 from .eq_graph import format_frequency_hz
-from .theme import PALETTE, qcolor
+from .theme import PALETTE, TYPE_TICK_PX, painter_font, qcolor
 
 _F_MIN, _F_MAX = 20.0, 20_000.0
 _MARGIN_LEFT, _MARGIN_RIGHT, _MARGIN_TOP, _MARGIN_BOTTOM = 40.0, 12.0, 8.0, 22.0
@@ -119,9 +119,7 @@ class EQComparison(QObject):
             return plot.center().y() - plot.height() / 2.0 * max(-1.0, min(1.0, db / span))
 
         grid = qcolor(PALETTE.data_grid)
-        label_font = QFont(painter.font())
-        label_font.setPointSizeF(max(7.0, label_font.pointSizeF() - 1.0))
-        painter.setFont(label_font)
+        painter.setFont(painter_font(11, floor=TYPE_TICK_PX))
         muted = qcolor(PALETTE.data_text_muted)
         for frequency in _GRID_FREQUENCIES:
             painter.setPen(QPen(grid, 1.0))
@@ -158,6 +156,7 @@ class EQComparison(QObject):
             painter.setPen(pen)
             painter.drawPath(path)
         painter.setClipping(False)
+        painter.setFont(painter_font(12))
         self._paint_legend(painter, plot, lines, now_color, proposed_color)
 
     def _paint_legend(

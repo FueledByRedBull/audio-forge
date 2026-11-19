@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 import pytest
 from PySide6.QtCore import QPointF, Qt, QTimer, qInstallMessageHandler
-from PySide6.QtGui import QAccessible, QFont
+from PySide6.QtGui import QAccessible, QColor, QFont
 from PySide6.QtMultimedia import QAudioDevice, QMediaDevices
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtTest import QTest
@@ -156,7 +156,11 @@ def test_a_text_that_changes_is_read_with_its_new_text(open_dialog) -> None:
         assert scene.name(scene_item(dialog, "statusText")) == "Moving closer helps"
         assert scene.name(scene_item(dialog, "progressText")) == "Rendering current and proposed settings..."
         assert scene.description(scene_item(dialog, "progressBar")) == "15 percent"
-    assert scene_item(dialog, "mutedNotice").isVisible()
+    notice = scene_item(dialog, "mutedNotice")
+    assert notice.isVisible()
+    # The same mute banner as the setup dialogs, told in words as well as its colour.
+    assert QColor(notice.property("color")).name(QColor.NameFormat.HexArgb) == PALETTE.mute_fill
+    assert scene_item(dialog, "mutedLead").property("text") == "Live output muted."
 
 
 @pytest.mark.parametrize("test_my_sound", [False, True])
@@ -405,6 +409,8 @@ def test_the_recording_window_loads_names_its_parts_and_shows_the_progress(qapp)
             seen["progress"] = access.description(scene_item(scene, "progressBar"))
             seen["view"] = QAccessible.queryAccessibleInterface(scene.quick_view).text(QAccessible.Text.Name)
         seen["fraction"] = scene_item(scene, "progressBar").property("fraction")
+        seen["banner"] = (QColor(scene_item(scene, "mutedNotice").property("color")).name(QColor.NameFormat.HexArgb),
+                          scene_item(scene, "mutedLead").property("text"))
         scene.dialog.reject()
 
     audio, window = _while_recording(qapp, look)
@@ -417,6 +423,7 @@ def test_the_recording_window_loads_names_its_parts_and_shows_the_progress(qapp)
     }
     assert seen["view"] == "Test my sound recording" and seen["focus"] == "cancelButton"
     assert (seen["progress"], seen["fraction"]) == ("50 percent", 0.5)
+    assert seen["banner"] == (PALETTE.mute_fill, "Live output muted.")
     assert window.mutes == [(True, "test_my_sound"), (False, "test_my_sound")], "the capture is released"
 
 
@@ -556,3 +563,35 @@ def test_the_view_model_refuses_a_field_the_page_does_not_have() -> None:
     assert "keepEnabld" not in view.shown
     view.set_page(keepEnabled=True)
     assert view.shown["keepEnabled"] is True
+
+
+@pytest.mark.parametrize("test_my_sound", [False, True])
+def test_dialog_header_esc_and_close_cancel_the_dialog(open_dialog, qapp, monkeypatch, test_my_sound) -> None:
+    closes: list[bool] = []
+    request_close = ListeningComparisonDialog._request_close
+
+    def counted_close(self, accepted: bool) -> None:
+        if not self._close_requested:
+            closes.append(accepted)
+        request_close(self, accepted)
+
+    monkeypatch.setattr(ListeningComparisonDialog, "_request_close", counted_close)
+
+    dialog = open_dialog(test_my_sound=test_my_sound)
+    title = "Test my sound" if test_my_sound else "Before/After Listening Comparison"
+    assert scene_text(dialog, "dialogTitle") == title == dialog.windowTitle()
+    assert scene_text(dialog, "scopeText") == dialog.view_model.shown["scope"] != ""
+    with _AccessibleScene() as scene:
+        close = scene_item(dialog, "closeButton")
+        assert scene.name(close) == "Close" and scene.description(close) == "Esc"
+    press(dialog, "closeButton")
+    qapp.processEvents()
+    assert closes == [False]
+    assert not dialog.isVisible() and dialog.result() == REJECTED
+
+    closes.clear()
+    again = open_dialog(test_my_sound=test_my_sound)
+    QTest.keyClick(again.quick_view, Qt.Key.Key_Escape)
+    qapp.processEvents()
+    assert closes == [False]
+    assert not again.isVisible() and again.result() == REJECTED

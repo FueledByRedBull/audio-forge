@@ -206,7 +206,8 @@ class LatencyCalibrationDialog(QDialog):
             preferred_width=max(620, minimum_width),
             preferred_height=620,
             minimum_width=minimum_width,
-            minimum_height=360,
+            # The intro in the header takes room from the page, which still has to hold the meter and status.
+            minimum_height=380,
         )
 
         app = QApplication.instance()

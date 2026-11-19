@@ -11,9 +11,9 @@ from dataclasses import asdict, dataclass, replace
 import os
 import sys
 
-from PySide6.QtCore import QPointF, QRectF, QSize
-from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPen
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QIcon, QPainter, QPalette, QPen
+from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
 
 @dataclass(frozen=True)
@@ -110,11 +110,10 @@ class SemanticPalette:
     data_marker: str = "#e8c5a6"
     data_warning: str = "#f2cf5b"
     data_handle_selected: str = "#ececf0"
-    # The microphone (IN), what callers hear (OUT) and the EQ analyser, each one job only.
+    # The microphone (IN) and what callers hear (OUT), each one job only.
     signal_in: str = "#a9bbd4"
     signal_in_fill: str = "#7ea4dc"
     signal_out: str = "#e6e8ee"
-    analyser: str = "#5e9eff"
 
     # Panels that dock beside live content; translucent over the ground behind them.
     glass: str = "#8c282c36"
@@ -126,17 +125,18 @@ class SemanticPalette:
     glass_shadow: str = "#80000000"
 
     # One color per EQ band, in band order; data color, not accent.
+    # Desaturated, so a band reads as data and not as a state; neighbours differ in hue.
     eq_band_colors: tuple[str, ...] = (
-        "#a78bfa",
-        "#6d8bff",
-        "#f472b6",
-        "#f87171",
-        "#fb923c",
-        "#fbbf24",
-        "#a3e635",
-        "#34d399",
-        "#22d3ee",
-        "#38bdf8",
+        "#a79ae0",
+        "#8aa3dc",
+        "#86b9cc",
+        "#88c4a8",
+        "#a8c98c",
+        "#dad083",
+        "#d9a974",
+        "#d98f86",
+        "#cf8aa8",
+        "#b890cc",
     )
 
     # A level runs blue-grey, then yellow, then red at the hot end, so no step is told
@@ -149,6 +149,16 @@ class SemanticPalette:
     meter_scale: str = "#9b9fa9"
     meter_reduction: str = "#a9bbd4"
 
+
+# Tokens with no reader yet, kept for work that is planned: the modal glass panel and the
+# banner that says the call is not getting the voice. test_every_palette_token_has_a_reader
+# fails for any other token without a reader, and for an entry here once it gains one.
+RESERVED_FOR_LATER: tuple[str, ...] = (
+    "glass_modal",
+    "glass_edge_modal",
+    "callers_affected_fill",
+    "callers_affected_edge",
+)
 
 
 def windows_contrast_colors() -> dict[str, str] | None:
@@ -225,12 +235,13 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         meter_scale=text, meter_peak=text,
         pane_surface=window, toolbar_top=window, toolbar_bottom=window,
         sidebar_top=window, sidebar_bottom=window, focus_ring=accent, text_dim=text,
-        accent_text=accent, accent_soft=on_accent, accent_bright=on_accent,
+        # Highlight is a fill colour in these themes, not one made to be read on the window.
+        accent_text=text, accent_soft=on_accent, accent_bright=on_accent,
         accent_fill=accent, accent_edge=accent,
         mute=accent, text_on_mute=on_accent, mute_text=text, mute_fill=window, mute_edge=accent,
         callers_affected=text, callers_affected_text=text, callers_affected_fill=window,
         callers_affected_edge=text,
-        status_ok_dot=text, signal_in=text, signal_in_fill=text, signal_out=text, analyser=text,
+        status_ok_dot=text, signal_in=text, signal_in_fill=text, signal_out=text,
         glass=window, glass_solid=window, glass_modal=window,
         glass_edge=text, glass_edge_modal=text, glass_highlight=window, glass_shadow="#00000000",
     )
@@ -250,6 +261,11 @@ def contrast_theme_changed() -> bool:
 
 RADIUS_CARD = 10
 RADIUS_CONTROL = 8
+# A recessed well that holds a graph.
+RADIUS_WELL = 14
+RADIUS_MENU = 16
+RADIUS_ITEM = 10
+MENU_HOVER_WHITE = "#17ffffff"
 UI_FONT_FAMILIES = ("Segoe UI Variable Text", "Segoe UI")
 
 # Text sizes in pixels at the default app font. Text that carries information is never
@@ -257,6 +273,26 @@ UI_FONT_FAMILIES = ("Segoe UI Variable Text", "Segoe UI")
 TYPE_FLOOR_PX = 12
 TYPE_TICK_PX = 11
 TYPE_SCALE_PX = {"caption": 12, "body": 13, "lead": 15, "heading": 18, "title": 20, "display": 28}
+
+
+def painter_font(
+    px: int, *, weight: QFont.Weight | None = None, tracking: float = 0.0, floor: int = TYPE_FLOOR_PX
+) -> QFont:
+    """The app font at ``px`` for a QPainter, following the app font as the scenes' text does.
+
+    The size scales with the app font (9 pt is the scale as written) and never drops below
+    ``floor``; axis ticks pass ``floor=TYPE_TICK_PX``.
+    """
+
+    font = QFont(QGuiApplication.font())
+    point_size = font.pointSizeF()
+    zoom = point_size / 9 if point_size > 0 else 1.0
+    font.setPixelSize(max(floor, round(px * zoom)))
+    if weight is not None:
+        font.setWeight(weight)
+    if tracking:
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, tracking)
+    return font
 
 
 @dataclass(frozen=True)
@@ -275,7 +311,11 @@ GLASS = GlassRecipe()
 
 @dataclass(frozen=True)
 class MotionDurations:
-    """Durations in milliseconds; reduced motion swaps each for a short opacity fade."""
+    """Durations in milliseconds.
+
+    Reduced motion swaps each for a short fade, except ``busy``, the period of a sweep that
+    stops instead. Anything that moves takes 0 ms under reduced motion (``Look.movement``).
+    """
 
     color: int = 150
     status: int = 150
@@ -284,6 +324,7 @@ class MotionDurations:
     row: int = 120
     panel_open: int = 300
     panel_close: int = 200
+    busy: int = 900
 
 
 MOTION = MotionDurations()
@@ -294,11 +335,13 @@ EASE_PANEL_CLOSE = (0.42, 0.0, 1.0, 1.0)
 
 
 def motion_durations(reduced: bool) -> MotionDurations:
-    """The durations to use, with every one a short fade while reduced motion is on."""
+    """The durations to use, with each a short fade while reduced motion is on."""
 
     if not reduced:
         return MOTION
-    return MotionDurations(**{name: REDUCED_MOTION_FADE_MS for name in asdict(MOTION)})
+    return MotionDurations(
+        **{name: REDUCED_MOTION_FADE_MS for name in asdict(MOTION) if name != "busy"}
+    )
 
 
 def application_palette() -> QPalette:
@@ -451,9 +494,24 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
         PALETTE.callers_affected_text,
         flatten(PALETTE.callers_affected_fill, PALETTE.pane_surface),
     ),
-    ("primary text on glass", PALETTE.text_primary, flatten(PALETTE.glass, PALETTE.app_surface)),
-    ("muted text on glass", PALETTE.text_muted, flatten(PALETTE.glass, PALETTE.app_surface)),
-    ("muted text on compact glass", PALETTE.text_muted, flatten(PALETTE.glass_solid, PALETTE.app_surface)),
+    *(
+        (f"{label} on {glass_name} over {surface_name}", foreground, flatten(glass, surface))
+        for glass_name, glass in (("glass", PALETTE.glass), ("compact glass", PALETTE.glass_solid))
+        for surface_name, surface in (
+            ("app", PALETTE.app_surface),
+            ("rail", PALETTE.rail_surface),
+            ("pane", PALETTE.pane_surface),
+            ("sidebar top", PALETTE.sidebar_top),
+            ("sidebar bottom", PALETTE.sidebar_bottom),
+            ("card", PALETTE.card_surface),
+            ("control", PALETTE.control_surface),
+        )
+        for label, foreground in (
+            ("primary text", PALETTE.text_primary),
+            ("muted text", PALETTE.text_muted),
+            ("dim text", PALETTE.text_dim),
+        )
+    ),
     ("muted text on modal glass", PALETTE.text_muted, flatten(PALETTE.glass_modal, PALETTE.app_surface)),
     ("signal in label", PALETTE.signal_in, PALETTE.data_surface),
     ("signal out label", PALETTE.signal_out, PALETTE.data_surface),
@@ -569,11 +627,28 @@ def prefers_reduced_transparency() -> bool:
         return False
 
 
+def themed_menu(parent: QWidget | None = None) -> QMenu:
+    """A menu whose rounded corners show what is behind it, not a square frame."""
+
+    menu = QMenu(parent)
+    menu.setWindowFlags(
+        menu.windowFlags() | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint
+    )
+    menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    return menu
+
+
 def application_stylesheet() -> str:
     """Return the one stylesheet that gives stock Qt widgets the app's look."""
 
     p = PALETTE
     control = f"border-radius: {RADIUS_CONTROL}px;"
+    # Qt menus cannot blur, so the glass is laid over the window ground to stay opaque.
+    menu_ground = flatten(p.glass_solid, p.app_surface)
+    if QColor(p.glass_solid).alpha() < 255:
+        menu_hover, menu_hover_text = flatten(MENU_HOVER_WHITE, menu_ground), p.text_primary
+    else:  # a contrast theme: the highlight pair, as every other selected row
+        menu_hover, menu_hover_text = p.control_hover, p.hover_text
     return f"""
 QToolTip {{ background-color: {p.control_surface}; color: {p.text_primary};
     border: 1px solid {p.border_strong}; padding: 6px 8px; }}
@@ -613,13 +688,23 @@ QScrollBar::handle:hover {{ background-color: {p.text_muted}; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 
-QMenu {{ background-color: {p.control_surface}; color: {p.text_primary};
-    border: 1px solid {p.border_strong}; padding: 4px; }}
-QMenu::item {{ padding: 6px 24px 6px 28px; border-radius: 4px; }}
-QMenu::item:selected {{ background-color: {p.control_hover}; color: {p.hover_text}; }}
+QDialog {{ background-color: {p.pane_surface}; color: {p.text_primary}; }}
+QDialog QLabel {{ font-size: 13px; color: {p.text_primary}; }}
+QDialog QPushButton {{ min-height: 22px; min-width: 56px; padding: 6px 16px;
+    border-radius: {RADIUS_ITEM}px; }}
+QDialog QPushButton:default {{ border-color: {flatten(p.accent_edge, p.pane_surface)}; }}
+QDialog QPushButton:default:focus {{ border-color: {p.focus_ring}; }}
+
+QMenu {{ background-color: {menu_ground}; color: {p.text_primary};
+    border: 1px solid {flatten(p.glass_edge, menu_ground)};
+    border-radius: {RADIUS_MENU}px; padding: 6px; }}
+QMenu::item {{ min-height: 20px; padding: 8px 18px 8px 34px;
+    border-radius: {RADIUS_ITEM}px; }}
+QMenu::item:selected {{ background-color: {menu_hover}; color: {menu_hover_text}; }}
 QMenu::item:disabled {{ color: {p.action_disabled_text}; }}
-QMenu::separator {{ height: 1px; background-color: {p.border};
-    margin: 4px 8px; }}
+QMenu::indicator {{ width: 16px; height: 16px; left: 9px; }}
+QMenu::separator {{ height: 1px; background-color: {flatten(p.glass_edge, menu_ground)};
+    margin: 6px 8px; }}
 
 QSplitter::handle {{ background: transparent; }}
 """

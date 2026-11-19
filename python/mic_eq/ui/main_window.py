@@ -3837,6 +3837,9 @@ class MainWindow(QMainWindow):
 
     def _shutdown(self) -> bool:
         """Save the settings and stop audio; closeEvent and an app quit without a close share this."""
+        eq_state = self.__dict__.get("eq_state")
+        if eq_state is not None:
+            eq_state.release_original()  # a held compare must not reach the saved settings
         if self._quit_dont_ask:
             self.config.confirm_quit_when_live = False
         watch = self.__dict__.get("virtual_microphone_watch")

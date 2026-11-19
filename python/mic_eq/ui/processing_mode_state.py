@@ -54,7 +54,7 @@ class ProcessingModeState:
             return mode
         return self.applied
 
-    def set(self, mode: str, *, notify: bool = False) -> None:
+    def select(self, mode: str, *, notify: bool = False) -> None:
         """Show ``mode`` and apply it; raises RuntimeError, leaving ``applied`` unchanged, if the engine refuses."""
         target = mode if mode in PROCESSING_MODES else "normal"
         index = self._choice.findData(target)
@@ -84,10 +84,10 @@ class ProcessingModeState:
         """
         previous = self.applied
         try:
-            self.set(self.selected(), notify=True)
+            self.select(self.selected(), notify=True)
         except RuntimeError as error:
             try:
-                self.set(previous)
+                self.select(previous)
             except RuntimeError:
                 self._hold_mute(True)
                 self._show_status(f"{error}; output muted because restoration failed", 0)

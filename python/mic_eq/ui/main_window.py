@@ -700,7 +700,7 @@ class MainWindow(QMainWindow):
         return self.processing_mode_state.selected()
 
     def _set_processing_mode(self, mode: str, *, notify: bool = False) -> None:
-        self.processing_mode_state.set(mode, notify=notify)
+        self.processing_mode_state.select(mode, notify=notify)
 
     def _on_processing_mode_changed(self, _index: int) -> None:
         if self.processing_mode_state.choose():

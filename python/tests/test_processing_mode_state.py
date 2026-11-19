@@ -99,11 +99,11 @@ def test_selected_reads_the_choice_and_falls_back_to_the_applied_mode() -> None:
     ("mode", "raw", "bypass"),
     [("normal", False, False), ("bypass", False, True), ("raw", True, False)],
 )
-def test_set_applies_the_mode_to_both_engine_flags(mode, raw, bypass) -> None:
+def test_select_applies_the_mode_to_both_engine_flags(mode, raw, bypass) -> None:
     processor = _Processor()
     state, choice, recorder = _state(processor)
 
-    state.set(mode)
+    state.select(mode)
 
     assert (processor.raw, processor.bypass) == (raw, bypass)
     assert state.applied == mode
@@ -112,30 +112,30 @@ def test_set_applies_the_mode_to_both_engine_flags(mode, raw, bypass) -> None:
     assert recorder.statuses == []
 
 
-def test_set_shows_the_mode_without_signalling_and_treats_an_unknown_mode_as_normal() -> None:
+def test_select_shows_the_mode_without_signalling_and_treats_an_unknown_mode_as_normal() -> None:
     state, choice, _ = _state()
 
-    state.set("raw")
+    state.select("raw")
     assert choice.blocked == [True, False]
 
-    state.set("invalid")
+    state.select("invalid")
     assert state.applied == "normal"
     assert choice.mode == "normal"
 
 
-def test_set_announces_the_mode_only_when_asked() -> None:
+def test_select_announces_the_mode_only_when_asked() -> None:
     state, _, recorder = _state()
 
-    state.set("raw", notify=True)
+    state.select("raw", notify=True)
 
     assert recorder.statuses == [("Raw monitor enabled for this session; it is not stored in presets", 0)]
 
 
-def test_set_raises_and_keeps_the_applied_mode_when_the_engine_refuses() -> None:
+def test_select_raises_and_keeps_the_applied_mode_when_the_engine_refuses() -> None:
     state, _, recorder = _state(_Processor(fail_on=("bypass",)))
 
     with pytest.raises(RuntimeError, match="Processing mode could not be applied: bypass refused"):
-        state.set("bypass")
+        state.select("bypass")
 
     assert state.applied == "normal"
     assert recorder.changes == 0
@@ -157,7 +157,7 @@ def test_choose_applies_the_picked_mode_and_releases_the_error_mute() -> None:
 def test_choose_restores_the_previous_mode_when_the_new_one_is_refused() -> None:
     processor = _Processor()
     state, choice, recorder = _state(processor)
-    state.set("raw")
+    state.select("raw")
     processor.fail_on = ("bypass",)
     choice.mode = "bypass"
 

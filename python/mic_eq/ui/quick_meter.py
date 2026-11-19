@@ -14,11 +14,13 @@ class QuickMeterItem(QQuickPaintedItem):
 
     sourceChanged = Signal()
     horizontalChanged = Signal()
+    segmentedChanged = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._source: MeterModel | None = None
         self._horizontal = False
+        self._segmented = False
 
     def _get_source(self) -> MeterModel | None:
         return self._source
@@ -50,6 +52,15 @@ class QuickMeterItem(QQuickPaintedItem):
     # A thin bar, quiet at the left, instead of the default upright meter.
     horizontal = Property(bool, lambda self: self._horizontal, _set_horizontal, notify=horizontalChanged)
 
+    def _set_segmented(self, segmented: bool) -> None:
+        if segmented != self._segmented:
+            self._segmented = segmented
+            self.segmentedChanged.emit()
+            self.update()
+
+    # The horizontal bar drawn as a row of short steps; it has no effect on the upright meter.
+    segmented = Property(bool, lambda self: self._segmented, _set_segmented, notify=segmentedChanged)
+
     @Slot()  # Register before QML adds delegate properties to the metaobject.
     def _source_changed(self) -> None:
         if self.isVisible():
@@ -58,5 +69,10 @@ class QuickMeterItem(QQuickPaintedItem):
     def paint(self, painter: QPainter) -> None:
         if self._source is None:
             return
-        paint = self._source.paint_bar if self._horizontal else self._source.paint_meter
+        if not self._horizontal:
+            paint = self._source.paint_meter
+        elif self._segmented:
+            paint = self._source.paint_segmented_bar
+        else:
+            paint = self._source.paint_bar
         paint(painter, self.width(), self.height())

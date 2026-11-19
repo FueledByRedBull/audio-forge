@@ -4,9 +4,16 @@ pragma Singleton
 import QtQuick
 
 QtObject {
+    id: look
     readonly property var t: theme
     readonly property bool hasIcons: t.iconFont !== ""
     readonly property bool reducedMotion: t.reducedMotion
+    // The fill of a raised control in the top bar, lit from above; one object every such
+    // control shares, so a control that is not raised makes none.
+    readonly property Gradient raisedFill: Gradient {
+        GradientStop { position: 0; color: look.t.toolbar_control_top }
+        GradientStop { position: 1; color: look.t.toolbar_control_bottom }
+    }
     // Under reduced motion nothing moves; only fades run, at the theme's own fade length.
     function movement(ms: int): int {
         return reducedMotion ? 0 : ms

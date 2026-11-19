@@ -19,6 +19,9 @@ ComboBox {
     // Shown before the choice: an icon-font glyph and a muted key word, each when set.
     property string glyph: ""
     property string key: ""
+    // A box in the top bar: rounder, a lighter step lit from above, a larger glyph and
+    // medium-weight text.
+    property bool raised: false
     readonly property alias shown: shownText
     readonly property real windowHeight: Window.height
     opacity: enabled ? 1 : 0.45
@@ -36,7 +39,7 @@ ComboBox {
              : picker.alert ? Look.t.status_warn_text : Look.t.text_primary
         font.pixelSize: Look.fsBody
         font.italic: picker.prompting
-        font.weight: picker.alert ? Font.DemiBold : Font.Normal
+        font.weight: picker.alert ? Font.DemiBold : picker.raised ? Font.Medium : Font.Normal
         elide: Text.ElideRight
         verticalAlignment: Text.AlignVCenter
     }
@@ -50,8 +53,9 @@ ComboBox {
         color: picker.hovered || picker.down ? Look.t.hover_text : Look.t.text_muted
     }
     background: Rectangle {
-        radius: Look.t.radiusControl
+        radius: picker.raised ? Look.t.radiusToolbarControl : Look.t.radiusControl
         color: picker.hovered || picker.down ? Look.t.control_hover : Look.t.control_surface
+        gradient: picker.raised && !picker.hovered && !picker.down ? Look.raisedFill : null
         border.width: picker.alert ? 2 : 1
         border.color: picker.prompting ? Look.t.status_warn_border
                     : picker.alert ? Look.t.status_warn_text : Look.t.control_edge
@@ -67,7 +71,7 @@ ComboBox {
                 text: picker.glyph
                 textFormat: Text.PlainText
                 font.family: Look.t.iconFont
-                font.pixelSize: Look.fsBody
+                font.pixelSize: picker.raised ? Look.fsLead : Look.fsBody
                 color: Look.t.text_muted
             }
             Text {

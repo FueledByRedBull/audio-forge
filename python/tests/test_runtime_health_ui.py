@@ -10,7 +10,19 @@ from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QWidget
 
 from mic_eq.ui.first_run_setup_dialog import route_health_reason
-from mic_eq.ui.health import Chip, HealthMemory, HealthReport, RecentStreamHealth, advice_for
+from mic_eq.ui.health import (
+    HEALTH_PEAK_WINDOW_SECONDS,
+    METER_GETTERS,
+    NOISE_SELECTION_DROPPED_WARNING,
+    READINGS_UNAVAILABLE,
+    Chip,
+    HealthMemory,
+    HealthMonitor,
+    HealthReadings,
+    HealthReport,
+    RecentStreamHealth,
+    advice_for,
+)
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.shell_specs import (
     LATENCY_LOWER_BOUND_NOTE,
@@ -275,6 +287,144 @@ def test_latency_chip_is_a_lower_bound_until_the_route_is_measured(qapp):
 
     assert chip.text == "Latency: about 10 ms (processing 0.2 ms)"
     assert chip.toolTip == spec_tip
+
+
+class _ReadableEngine:
+    """Every getter the monitor reads, with values a test can override."""
+
+    def __init__(self, **values: Any) -> None:
+        self.values: dict[str, Any] = {
+            "get_runtime_diagnostics": {"output_underrun_total": 2},
+            "get_input_rms_db": -20.0, "get_output_rms_db": -18.0, "get_output_buffer_samples": 480,
+            "get_latency_ms": 24.0, "get_dsp_time_smoothed_ms": 0.5,
+            "get_input_buffer_smoothed_samples": 128, "get_buffer_smoothed_samples": 64,
+            "get_input_callback_age_ms": 5, "get_output_callback_age_ms": 7,
+            **{name: 0 for name in METER_GETTERS},
+            **values,
+        }
+
+    def __getattr__(self, name: str):
+        if name not in self.values:
+            raise AttributeError(name)
+        value = self.values[name]
+
+        def get():
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        return get
+
+
+def _meter(peak_db: float | None = None, full_scale: int = 0, clipped: bool = False) -> Any:
+    return SimpleNamespace(
+        recent_peak_db=Mock(return_value=peak_db),
+        full_scale_samples_within=Mock(return_value=full_scale),
+        clipped_within=Mock(return_value=clipped),
+    )
+
+
+def _read(engine: Any, input_meter: Any = None, output_meter: Any = None, **flags: bool):
+    flags = {"limiter_enabled": True, "output_muted": False, "processing": True, **flags}
+    return HealthMonitor.read(engine, input_meter or _meter(), output_meter or _meter(), **flags)
+
+
+def test_the_monitor_reads_the_engine_and_the_meters_held_peaks() -> None:
+    input_meter, output_meter = _meter(-3.5, 2, False), _meter(0.5, 0, True)
+
+    reading = _read(
+        _ReadableEngine(), input_meter, output_meter, limiter_enabled=False, output_muted=True,
+    )
+
+    assert reading == ({"output_underrun_total": 2}, HealthReadings(
+        latency_ms=24.0, dsp_time_ms=0.5, input_buf=128, rnnoise_buf=64,
+        input_rms_db=-20.0, output_rms_db=-18.0, input_callback_age_ms=5, output_callback_age_ms=7,
+        input_peak_db=-3.5, input_full_scale_samples=2, output_peak_db=0.5, output_at_full_scale=True,
+        limiter_enabled=False, output_muted=True, recovery_pending=False, processing=True,
+    ))
+    input_meter.recent_peak_db.assert_called_once_with(HEALTH_PEAK_WINDOW_SECONDS)
+    input_meter.full_scale_samples_within.assert_called_once_with(HEALTH_PEAK_WINDOW_SECONDS)
+    output_meter.recent_peak_db.assert_called_once_with(HEALTH_PEAK_WINDOW_SECONDS)
+    output_meter.clipped_within.assert_called_once_with(HEALTH_PEAK_WINDOW_SECONDS)
+
+
+@pytest.mark.parametrize(
+    "pending",
+    [{"is_recovering": True}, {"is_recovery_requested": True}, {"is_recovering": RuntimeError("busy")}],
+)
+def test_a_recovery_in_flight_or_unreadable_counts_as_a_pending_restart(pending) -> None:
+    reading = _read(_ReadableEngine(**{"is_recovering": False, "is_recovery_requested": False, **pending}))
+    assert reading is not None and reading[1].recovery_pending
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {"get_runtime_diagnostics": RuntimeError("no telemetry")},
+        {"get_runtime_diagnostics": [("output_underrun_total", 2)]},
+        {"get_latency_ms": float("nan")},
+        {"get_output_buffer_samples": float("inf")},
+        {"get_input_callback_age_ms": None},
+        {"get_dsp_time_smoothed_ms": OverflowError("too big")},
+        {"get_output_callback_age_ms": OSError("device gone")},
+    ],
+)
+def test_the_monitor_refuses_a_tick_it_cannot_fully_read(broken) -> None:
+    input_meter = _meter(-3.0)
+    assert _read(_ReadableEngine(**broken), input_meter) is None
+    input_meter.recent_peak_db.assert_not_called()
+
+
+@pytest.mark.parametrize("missing", [*METER_GETTERS, "get_output_rms_db"])
+def test_an_engine_without_a_getter_cannot_be_read(missing) -> None:
+    engine = _ReadableEngine()
+    del engine.values[missing]
+    assert _read(engine) is None
+
+
+def test_the_unreadable_view_resets_the_page_and_says_what_to_do() -> None:
+    assert READINGS_UNAVAILABLE.reset
+    assert READINGS_UNAVAILABLE.chips == {"health_summary_label": Chip("Health: readings unavailable", "warn")}
+    assert READINGS_UNAVAILABLE.messages == ()
+    advice = READINGS_UNAVAILABLE.advice or ""
+    assert "could not read" in advice and "Stop and start processing" in advice
+
+
+_JUDGED = HealthReadings(latency_ms=24.0, dsp_time_ms=0.5, input_buf=128, rnnoise_buf=0)
+
+
+def test_judge_remembers_each_tick_for_the_next() -> None:
+    monitor = HealthMonitor()
+
+    first = monitor.judge({"output_underrun_total": 2}, _JUDGED, now=10.0)
+
+    assert not first.reset and first.advice is None
+    assert first.chips["underrun_health_label"] == Chip("Dropouts: 2", "warn")
+    assert "health_summary_label" not in first.chips  # the window reads it back from the chips
+    assert monitor.memory.output_underrun_total == 2
+    assert monitor.stream_health.recent_events == {"output_underrun_total"}
+
+    second = monitor.judge({"output_underrun_total": 2}, _JUDGED, now=15.0)
+    assert second.chips["underrun_health_label"] == Chip("Dropouts: 2", "ok")
+    assert not monitor.stream_health.recent_events
+
+
+def test_judge_announces_a_dropped_selection_once() -> None:
+    monitor = HealthMonitor()
+    assert monitor.judge({"noise_selection_dropped_count": 1}, _JUDGED, now=0.0).messages == (
+        (NOISE_SELECTION_DROPPED_WARNING, 8000),
+    )
+    assert monitor.judge({"noise_selection_dropped_count": 1}, _JUDGED, now=1.0).messages == ()
+
+
+def test_judge_resets_the_page_when_the_counters_are_invalid_and_forgets_nothing() -> None:
+    monitor = HealthMonitor(memory=HealthMemory(output_underrun_total=3, noise_drops_seen=1))
+
+    view = monitor.judge({"input_dropped_samples": -1}, _JUDGED, now=0.0)
+
+    assert view.reset and view.advice is None and view.messages == ()
+    assert view.chips == {"recovery_diag_label": Chip("Recovery: counters could not be read", "warn")}
+    assert monitor.memory == HealthMemory(output_underrun_total=3, noise_drops_seen=1)
 
 
 def test_resetting_the_health_labels_drops_the_lower_bound_note(isolated_main_window):

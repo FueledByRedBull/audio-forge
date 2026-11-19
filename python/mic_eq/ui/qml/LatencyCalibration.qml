@@ -32,13 +32,8 @@ Rectangle {
     }
     // The room a label needs beside a value: the page and card margins, the gap and a short value.
     readonly property int readingMargins: 40 + 32 + 16 + 140
-    // The header: the tile, the title, the keycap and the cross, with the gaps between them.
-    readonly property int headerWidth: {
-        titleFont.font
-        tickFont.font
-        return 2 * 16 + 30 + Math.ceil(titleFont.advanceWidth("Latency Calibration")) + 2
-               + Math.ceil(tickFont.advanceWidth("Esc")) + 12 + 30 + 3 * 12
-    }
+    // The header with the page margins either side.
+    readonly property int headerWidth: 2 * 16 + header.minimumWidth
     // The narrowest the dialog can be without cutting off its actions or its labels.
     readonly property int minimumWidth: Math.max(Math.ceil(actions.implicitWidth) + 24,
                                                  labelWidth + readingMargins, headerWidth)
@@ -49,15 +44,6 @@ Rectangle {
     FontMetrics {
         id: labelFont
         font.pixelSize: Look.fsBody
-    }
-    FontMetrics {
-        id: titleFont
-        font.pixelSize: Look.fsTitle
-        font.weight: Font.DemiBold
-    }
-    FontMetrics {
-        id: tickFont
-        font.pixelSize: Look.fsTick
     }
 
     // Enter outside a button does what the main button says; Escape is left to the dialog.
@@ -97,6 +83,8 @@ Rectangle {
         spacing: 0
 
         DialogHeader {
+
+            id: header
             title: "Latency Calibration"
             subtitle: "Measure the delay of the selected microphone and output. For the best "
                       + "result, use a loopback cable or a speaker-to-microphone path in a "

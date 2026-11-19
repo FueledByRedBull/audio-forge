@@ -8,7 +8,6 @@ from collections.abc import Callable, Mapping
 from functools import partial
 import json
 import logging
-import math
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
@@ -24,7 +23,6 @@ from ..analysis.noise_reference import (
     capture_is_silent,
 )
 from ..analysis.voice_setup import (
-    CLIP_LEVEL,
     GATE_MODE_LABELS,
     MAX_VERIFICATION_BAD_CAPTURES,
     VoiceSetupRequest,
@@ -100,7 +98,6 @@ logger = logging.getLogger(__name__)
 NOISE_RECORDING_DURATION = 2.0
 VOICE_RECORDING_DURATION = 10.0
 # A block whose peak reaches the level the clipping rule counts from.
-_FULL_SCALE_DB = 20.0 * math.log10(CLIP_LEVEL)
 _RECORDING_STATES = ("level_check", "noise_recording", "voice_recording", "verification_recording")
 _VOICE_SETUP_MUTE_REASON = "auto_voice_setup"
 # "&&" is a literal ampersand; a single "&" makes Qt underline the next character.
@@ -766,7 +763,7 @@ class VoiceSetupFlow(QObject):
             timeText=f"Time remaining: {self._recording_duration:.0f}s",
             recordedText=_recorded_text(0.0, self._recording_duration),
         )
-        self.view_model.set_rules(take_rules((), (), 0.0, False))
+        self.view_model.set_rules(take_rules((), (), 0.0))
         self._capture_start_timer.start(100)
 
     def _ensure_processor_ready(self) -> bool:
@@ -897,7 +894,6 @@ class VoiceSetupFlow(QObject):
                         self._recent_rms_db,
                         self._recent_peak_db,
                         self._recording_duration * progress,
-                        max(self._recent_peak_db, default=-120.0) >= _FULL_SCALE_DB,
                     )
                 )
 

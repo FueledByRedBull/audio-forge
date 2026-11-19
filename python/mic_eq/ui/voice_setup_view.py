@@ -32,7 +32,7 @@ METER_MARKS = (
     (TOO_QUIET_DB, "too quiet"),
     (TOO_LOUD_DB, "clip"),
 )
-RULE_STATES = frozenset({"fine", "watch", "refused"})
+RULE_STATES = frozenset({"fine", "watch", "warn"})
 # The label of the main button in each state of the dialog; the scene is wide enough for the longest.
 START_LABELS = (
     "Start Voice Setup",

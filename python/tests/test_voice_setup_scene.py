@@ -647,11 +647,11 @@ def test_voice_setup_rule_rows_pair_a_glyph_with_words(open_dialog) -> None:
     dialog.flow.view_model.set_rules(
         (
             TakeRule("Too quiet", "Fine so far", "Your words under -40 dB", "fine"),
-            TakeRule("Clipped", "Clipped", "Peaks held at full scale", "refused"),
+            TakeRule("Clipped", "Peaks at full scale", "Peaks cut flat at full scale", "warn"),
             TakeRule("Too short", "Keep reading", "Under 3 seconds recorded", "watch"),
         )
     )
-    expected = [("check", "Fine so far"), ("cross", "Clipped"), ("clock", "Keep reading")]
+    expected = [("check", "Fine so far"), ("dash", "Peaks at full scale"), ("clock", "Keep reading")]
     with _AccessibleScene() as scene:
         for index, (shape, status) in enumerate(expected):
             assert scene_item(dialog, f"takeRuleMark{index}").property("shape") == shape

@@ -21,6 +21,8 @@ from .overview_presentation import DOT
 from .platform_text import SOUND_SETTINGS
 
 LEVEL_CHECK_SECONDS = 3.0
+# A meter peak at the clip level, in dB.
+FULL_SCALE_DB = 20.0 * math.log10(CLIP_LEVEL)
 # A quiet verdict needs this many 100 ms level updates (1.5 s) without any block above
 # the threshold, so the pauses between words do not trigger it.
 LEVEL_HOLD_UPDATES = 15
@@ -215,36 +217,34 @@ class TakeRule:
     name: str
     status_word: str
     detail: str
-    state: str  # fine, watch or refused
+    state: str  # fine, watch or warn
 
 
 def take_rules(
     recent_rms_db: Sequence[float],
     recent_peak_db: Sequence[float],
-    speech_s: float,
-    clipped: bool,
+    recorded_s: float,
 ) -> tuple[TakeRule, ...]:
     """The rows beside a voice take: too quiet, clipped and too short.
 
-    They only describe; the checks themselves decide. Clipped and too short takes are refused;
-    a quiet one is not, since the level check before the takes already let the user decide, so
-    its row only warns. Too quiet is the live verdict over the
-    same window of LEVEL_HOLD_UPDATES blocks, so a row keeps its state as long as the window
-    does. ``clipped`` is the caller's reading of the take, and ``speech_s`` the seconds
-    recorded so far, held against the minimum the analysis refuses below.
+    They only describe while the take records. The quiet row follows the live verdict over the
+    same LEVEL_HOLD_UPDATES blocks. A peak at full scale only warns: the take is refused for
+    flat-topped samples (raw_capture_is_clipped), which a meter peak cannot tell apart, but no
+    refused take passes without one.
     """
     verdict = live_verdict(recent_rms_db, recent_peak_db)
     if verdict is not None and verdict.code == "too_quiet":
-        quiet = ("Too quiet now", "watch")
+        quiet = ("Too quiet now", "warn")
     elif len(recent_rms_db) < LEVEL_HOLD_UPDATES:
         quiet = ("Keep reading", "watch")
     else:
         quiet = ("Fine so far", "fine")
-    clip = ("Clipped", "refused") if clipped else ("Fine so far", "fine")
-    short = ("Keep reading", "watch") if speech_s < SPEECH_MIN_DURATION_S else ("Fine so far", "fine")
+    at_full_scale = max(recent_peak_db, default=-120.0) >= FULL_SCALE_DB
+    clip = ("Peaks at full scale", "warn") if at_full_scale else ("Fine so far", "fine")
+    short = ("Keep reading", "watch") if recorded_s < SPEECH_MIN_DURATION_S else ("Fine so far", "fine")
     return (
         TakeRule("Too quiet", quiet[0], f"Your words under {TOO_QUIET_DB:.0f} dB", quiet[1]),
-        TakeRule("Clipped", clip[0], "Peaks held at full scale", clip[1]),
+        TakeRule("Clipped", clip[0], "Peaks cut flat at full scale", clip[1]),
         TakeRule("Too short", short[0], f"Under {SPEECH_MIN_DURATION_S:g} seconds recorded", short[1]),
     )
 

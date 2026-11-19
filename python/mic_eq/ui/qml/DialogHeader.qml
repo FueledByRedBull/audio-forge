@@ -20,6 +20,24 @@ RowLayout {
     property string closeName: "closeButton"
     signal closeRequested()
     spacing: 12
+    // The narrowest the header can be without cutting off its title: the tile, the title, the
+    // key chip and the cross, with the gaps between them.
+    readonly property int minimumWidth: {
+        titleMetrics.font
+        tickMetrics.font
+        return 30 + Math.ceil(titleMetrics.advanceWidth(header.title)) + 2
+               + Math.ceil(tickMetrics.advanceWidth(header.escHint)) + 12 + 30 + 3 * spacing
+    }
+
+    FontMetrics {
+        id: titleMetrics
+        font.pixelSize: Look.fsTitle
+        font.weight: Font.DemiBold
+    }
+    FontMetrics {
+        id: tickMetrics
+        font.pixelSize: Look.fsTick
+    }
 
     Rectangle {
         visible: Look.hasIcons && header.glyph !== ""

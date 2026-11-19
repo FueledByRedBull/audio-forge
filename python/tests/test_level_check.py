@@ -15,6 +15,7 @@ from mic_eq.analysis.voice_setup import SPEECH_MIN_DURATION_S, raw_capture_is_cl
 from mic_eq.ui import level_check
 from mic_eq.ui.calibration_support import TOO_QUIET_DB
 from mic_eq.ui.level_check import (
+    FULL_SCALE_DB,
     LEVEL_HOLD_UPDATES,
     clipped_message,
     level_text,
@@ -255,41 +256,40 @@ def _rule(rules, name):
 
 
 @pytest.mark.parametrize(
-    ("loudest", "speech_s", "clipped", "states"),
+    ("loudest", "peak", "recorded_s", "states"),
     [
-        (-40.1, 3.1, False, {"Too quiet": "watch", "Clipped": "fine", "Too short": "fine"}),
-        (-39.9, 3.1, False, {"Too quiet": "fine", "Clipped": "fine", "Too short": "fine"}),
-        (-39.9, 2.9, False, {"Too quiet": "fine", "Clipped": "fine", "Too short": "watch"}),
-        (-20.0, 5.0, True, {"Too quiet": "fine", "Clipped": "refused", "Too short": "fine"}),
+        (-40.1, -30.1, 3.1, {"Too quiet": "warn", "Clipped": "fine", "Too short": "fine"}),
+        (-39.9, -29.9, 3.1, {"Too quiet": "fine", "Clipped": "fine", "Too short": "fine"}),
+        (-39.9, -29.9, 2.9, {"Too quiet": "fine", "Clipped": "fine", "Too short": "watch"}),
+        (-20.0, FULL_SCALE_DB, 5.0, {"Too quiet": "fine", "Clipped": "warn", "Too short": "fine"}),
+        (-20.0, FULL_SCALE_DB - 0.01, 5.0, {"Too quiet": "fine", "Clipped": "fine", "Too short": "fine"}),
     ],
 )
-def test_take_rules_warn_on_quiet_and_refuse_clipped_and_short_takes(loudest, speech_s, clipped, states):
+def test_take_rules_warn_and_never_claim_to_refuse_a_take(loudest, peak, recorded_s, states):
     rms = [-70.0] * (LEVEL_HOLD_UPDATES - 1) + [loudest]
-    rules = take_rules(rms, [loudest + 10.0] * LEVEL_HOLD_UPDATES, speech_s, clipped)
+    rules = take_rules(rms, [-70.0] * (LEVEL_HOLD_UPDATES - 1) + [peak], recorded_s)
 
     assert [rule.name for rule in rules] == ["Too quiet", "Clipped", "Too short"]
     assert {rule.name: rule.state for rule in rules} == states
-    words = {"fine": "Fine so far", "watch": "Keep reading"}
+    words = {
+        ("Too quiet", "warn"): "Too quiet now",
+        ("Clipped", "warn"): "Peaks at full scale",
+        ("Too short", "watch"): "Keep reading",
+    }
     for rule in rules:
-        if rule.state in words and rule.name != "Too quiet":
-            assert rule.status_word == words[rule.state], rule
-    quiet = _rule(rules, "Too quiet")
-    assert quiet.detail == f"Your words under {TOO_QUIET_DB:.0f} dB"
-    # A quiet take is never refused, so its row warns rather than crossing it out.
-    assert quiet.status_word == ("Too quiet now" if states["Too quiet"] == "watch" else "Fine so far")
-    if clipped:
-        assert _rule(rules, "Clipped").status_word == "Clipped"
+        assert rule.status_word == words.get((rule.name, rule.state), "Fine so far"), rule
+    assert _rule(rules, "Too quiet").detail == f"Your words under {TOO_QUIET_DB:.0f} dB"
 
 
 def test_too_short_rule_names_the_real_minimum(monkeypatch):
-    rule = _rule(take_rules([], [], 0.0, False), "Too short")
+    rule = _rule(take_rules([], [], 0.0), "Too short")
     assert rule.detail == f"Under {SPEECH_MIN_DURATION_S:g} seconds recorded"
     assert "3 seconds" in rule.detail
 
     monkeypatch.setattr(level_check, "SPEECH_MIN_DURATION_S", 5.0)
-    assert _rule(take_rules([], [], 4.9, False), "Too short").state == "watch"
-    assert _rule(take_rules([], [], 5.0, False), "Too short").state == "fine"
-    assert "Under 5 seconds" in _rule(take_rules([], [], 0.0, False), "Too short").detail
+    assert _rule(take_rules([], [], 4.9), "Too short").state == "watch"
+    assert _rule(take_rules([], [], 5.0), "Too short").state == "fine"
+    assert "Under 5 seconds" in _rule(take_rules([], [], 0.0), "Too short").detail
 
 
 def test_a_quiet_row_waits_out_the_pauses_like_the_live_verdict():
@@ -299,7 +299,7 @@ def test_a_quiet_row_waits_out_the_pauses_like_the_live_verdict():
     for level in [-70.0] * LEVEL_HOLD_UPDATES + [-25.0] + [-70.0] * LEVEL_HOLD_UPDATES:
         rms.append(level)
         peaks.append(level + 10.0)
-        states.append(_rule(take_rules(rms, peaks, 5.0, False), "Too quiet").status_word)
+        states.append(_rule(take_rules(rms, peaks, 5.0), "Too quiet").status_word)
 
     assert states[: LEVEL_HOLD_UPDATES - 1] == ["Keep reading"] * (LEVEL_HOLD_UPDATES - 1)
     assert states[LEVEL_HOLD_UPDATES - 1] == "Too quiet now"
@@ -323,10 +323,10 @@ def test_a_quiet_row_waits_out_the_pauses_like_the_live_verdict():
 )
 def test_the_quiet_row_warns_exactly_when_the_live_verdict_says_too_quiet(rms, peaks):
     verdict = live_verdict(rms, peaks)
-    rule = _rule(take_rules(rms, peaks, 5.0, False), "Too quiet")
+    rule = _rule(take_rules(rms, peaks, 5.0), "Too quiet")
 
     assert (rule.status_word == "Too quiet now") == (verdict is not None and verdict.code == "too_quiet")
-    assert rule.state != "refused"
+    assert (rule.state == "warn") == (rule.status_word == "Too quiet now")
 
 
 @pytest.mark.parametrize(
@@ -339,10 +339,13 @@ def test_the_quiet_row_warns_exactly_when_the_live_verdict_says_too_quiet(rms, p
     ],
 )
 def test_the_clip_and_length_rows_follow_the_checks_that_refuse_a_take(take):
-    clipped = raw_capture_is_clipped(take, RATE)
-    rules = take_rules([], [], take.size / RATE, clipped)
+    peak_db = 20.0 * np.log10(max(float(np.max(np.abs(take))), 1e-6))
+    rules = take_rules([], [peak_db], take.size / RATE)
 
-    assert (_rule(rules, "Clipped").state == "refused") == clipped
+    # The row reads a meter peak, so it may warn about a take that passes, but it never stays
+    # fine on one the analysis refuses.
+    if raw_capture_is_clipped(take, RATE):
+        assert _rule(rules, "Clipped").state == "warn"
     # The analysis refuses a voice capture shorter than this many samples.
     too_short = take.size < int(RATE * SPEECH_MIN_DURATION_S)
     assert (_rule(rules, "Too short").state != "fine") == too_short

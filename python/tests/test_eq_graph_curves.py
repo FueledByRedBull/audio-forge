@@ -1062,6 +1062,11 @@ def test_region_names_stay_uppercase_and_carry_their_hint_when_wide(qapp):
         for text, _size in painted_texts(model_with(FLAT), int(EQGraphGeometry.HINT_MIN_PLOT_WIDTH) + plot_edge)
     }
     assert set(hints) & at_threshold
+    just_under = {
+        text
+        for text, _size in painted_texts(model_with(FLAT), int(EQGraphGeometry.HINT_MIN_PLOT_WIDTH) + plot_edge - 1)
+    }
+    assert not set(hints) & just_under
     # A hint goes with its name: none shows under a name that does not fit.
     assert all(name in at_threshold for name, hint in zip(names, hints) if hint in at_threshold)
     narrow = {text for text, _size in painted_texts(model_with(FLAT), 480)}

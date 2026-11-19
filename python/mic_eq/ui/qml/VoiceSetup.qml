@@ -39,13 +39,8 @@ Rectangle {
             widest = Math.max(widest, Math.ceil(boldFont.advanceWidth(name)))
         return 2 * 16 + 16 + 8 + widest
     }
-    // The header: the tile, the title, the keycap and the cross, with the gaps between them.
-    readonly property int headerWidth: {
-        titleFont.font
-        tickFont.font
-        return 2 * 16 + 30 + Math.ceil(titleFont.advanceWidth("Auto Voice Setup")) + 2
-               + Math.ceil(tickFont.advanceWidth("Esc")) + 12 + 30 + 3 * 12
-    }
+    // The header with the page margins either side.
+    readonly property int headerWidth: 2 * 16 + header.minimumWidth
     // The room a field needs: the page and card margins around it at its narrowest.
     readonly property int minimumWidth: Math.max(actionsWidth, stepsWidth, headerWidth, 120 + 40 + 32)
     readonly property string whereText: "Step " + (page.step + 1) + " of " + vm.steps.length + ": " + stepName
@@ -65,15 +60,6 @@ Rectangle {
     FontMetrics {
         id: captionFont
         font.pixelSize: Look.fsCaption
-    }
-    FontMetrics {
-        id: titleFont
-        font.pixelSize: Look.fsTitle
-        font.weight: Font.DemiBold
-    }
-    FontMetrics {
-        id: tickFont
-        font.pixelSize: Look.fsTick
     }
 
     // Enter outside a button does what the main button says; Escape is left to the dialog.
@@ -187,6 +173,8 @@ Rectangle {
         spacing: 0
 
         DialogHeader {
+
+            id: header
             title: "Auto Voice Setup"
             subtitle: root.whereText
             glyph: root.vm.headerGlyph
@@ -489,7 +477,7 @@ Rectangle {
                             required property var modelData
                             readonly property string state_: modelData.state
                             readonly property color tint: state_ === "fine" ? Look.t.status_ok_text
-                                                        : state_ === "refused" ? Look.t.status_bad_text
+                                                        : state_ === "warn" ? Look.t.status_warn_text
                                                         : Look.t.text_muted
                             objectName: "takeRule" + index
                             spacing: 10
@@ -498,7 +486,7 @@ Rectangle {
                             Accessible.name: modelData.name + ": " + modelData.status + ". " + modelData.detail
                             StepMark {
                                 objectName: "takeRuleMark" + rule.index
-                                shape: ({ fine: "check", watch: "clock", refused: "cross" })[rule.state_]
+                                shape: ({ fine: "check", watch: "clock", warn: "dash" })[rule.state_]
                                 color: rule.state_ === "fine" ? Look.t.status_ok_dot : rule.tint
                                 Layout.alignment: Qt.AlignTop
                                 Layout.topMargin: 1

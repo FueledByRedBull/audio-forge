@@ -265,7 +265,7 @@ RADIUS_CONTROL = 8
 RADIUS_WELL = 14
 RADIUS_MENU = 16
 RADIUS_ITEM = 10
-MENU_HOVER_WHITE = "#17ffffff"  # 9 % white
+MENU_HOVER_WHITE = "#17ffffff"
 UI_FONT_FAMILIES = ("Segoe UI Variable Text", "Segoe UI")
 
 # Text sizes in pixels at the default app font. Text that carries information is never

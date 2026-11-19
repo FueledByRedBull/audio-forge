@@ -48,13 +48,8 @@ Rectangle {
         const refresh = Math.ceil(plainFont.advanceWidth("Refresh")) + 28
         return captionWidth + 12 + Math.max(playWidth + 12 + 140, 120 + 8 + refresh)
     }
-    // The header: the tile, the title, the keycap and the cross, with the gaps between them.
-    readonly property int headerWidth: {
-        titleFont.font
-        tickFont.font
-        return 2 * 16 + 30 + Math.ceil(titleFont.advanceWidth("Before/After Listening Comparison")) + 2
-               + Math.ceil(tickFont.advanceWidth("Esc")) + 12 + 30 + 3 * 12
-    }
+    // The header with the page margins either side.
+    readonly property int headerWidth: 2 * 16 + header.minimumWidth
     // The narrowest the dialog can be without cutting off its actions or its rows: the page and
     // card margins around the widest row.
     readonly property int minimumWidth: Math.max(actionsWidth, rowWidth + 40 + 32, headerWidth)
@@ -70,15 +65,6 @@ Rectangle {
         id: boldFont
         font.pixelSize: Look.fsBody
         font.weight: Font.DemiBold
-    }
-    FontMetrics {
-        id: titleFont
-        font.pixelSize: Look.fsTitle
-        font.weight: Font.DemiBold
-    }
-    FontMetrics {
-        id: tickFont
-        font.pixelSize: Look.fsTick
     }
 
     // Enter outside a button keeps the proposal once it can be kept; Escape is left to the dialog.
@@ -107,6 +93,8 @@ Rectangle {
         spacing: 0
 
         DialogHeader {
+
+            id: header
             title: root.page.title
             subtitle: root.page.scope
             subtitleName: "scopeText"

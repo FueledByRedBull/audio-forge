@@ -16,6 +16,12 @@ use super::{
     DEESSER_RELEASE_MIN_MS, DEESSER_THRESHOLD_MAX_DB, DEESSER_THRESHOLD_MIN_DB,
     LIMITER_CEILING_MAX_DB, LIMITER_CEILING_MIN_DB, LIMITER_RELEASE_MAX_MS, LIMITER_RELEASE_MIN_MS,
 };
+use crate::config_ranges::{
+    COMPRESSOR_AUTO_MAKEUP_DEFAULT, COMPRESSOR_RELEASE_DEFAULT_MS,
+    COMPRESSOR_SIDECHAIN_HIGHPASS_DEFAULT, DEESSER_AUTO_AMOUNT_DEFAULT,
+    DEESSER_HIGH_CUT_DEFAULT_HZ, DEESSER_LOW_CUT_DEFAULT_HZ, DEESSER_MAX_REDUCTION_DEFAULT_DB,
+    DEESSER_RATIO_DEFAULT, DEESSER_THRESHOLD_DEFAULT_DB, LIMITER_CEILING_DEFAULT_DB,
+};
 use std::sync::atomic::Ordering;
 
 impl AudioProcessor {
@@ -88,7 +94,7 @@ impl AudioProcessor {
         if let Ok(d) = self.shared.deesser.shadow.lock() {
             d.auto_amount()
         } else {
-            0.5
+            DEESSER_AUTO_AMOUNT_DEFAULT
         }
     }
 
@@ -96,7 +102,7 @@ impl AudioProcessor {
         if let Ok(d) = self.shared.deesser.shadow.lock() {
             d.low_cut_hz()
         } else {
-            4000.0
+            DEESSER_LOW_CUT_DEFAULT_HZ
         }
     }
 
@@ -104,7 +110,7 @@ impl AudioProcessor {
         if let Ok(d) = self.shared.deesser.shadow.lock() {
             d.high_cut_hz()
         } else {
-            11_000.0
+            DEESSER_HIGH_CUT_DEFAULT_HZ
         }
     }
 
@@ -112,7 +118,7 @@ impl AudioProcessor {
         if let Ok(d) = self.shared.deesser.shadow.lock() {
             d.threshold_db()
         } else {
-            -28.0
+            DEESSER_THRESHOLD_DEFAULT_DB
         }
     }
 
@@ -120,7 +126,7 @@ impl AudioProcessor {
         if let Ok(d) = self.shared.deesser.shadow.lock() {
             d.ratio()
         } else {
-            4.0
+            DEESSER_RATIO_DEFAULT
         }
     }
 
@@ -128,7 +134,7 @@ impl AudioProcessor {
         if let Ok(d) = self.shared.deesser.shadow.lock() {
             d.max_reduction_db()
         } else {
-            6.0
+            DEESSER_MAX_REDUCTION_DEFAULT_DB
         }
     }
 
@@ -188,7 +194,7 @@ impl AudioProcessor {
                 c.current_release_time()
             }
         } else {
-            200.0
+            COMPRESSOR_RELEASE_DEFAULT_MS
         }
     }
 
@@ -197,7 +203,7 @@ impl AudioProcessor {
         if let Ok(c) = self.shared.compressor.shadow.lock() {
             c.sidechain_highpass_enabled()
         } else {
-            true
+            COMPRESSOR_SIDECHAIN_HIGHPASS_DEFAULT
         }
     }
 
@@ -245,7 +251,7 @@ impl AudioProcessor {
 
     /// Enable or disable conservative limiter headroom.
     pub fn set_limiter_careful_output_enabled(&self, enabled: bool) {
-        let mut requested_ceiling_db = -0.5;
+        let mut requested_ceiling_db = LIMITER_CEILING_DEFAULT_DB;
         if let Ok(mut control) = self.shared.limiter.control.lock() {
             control.careful_output_enabled = enabled;
             requested_ceiling_db = control.ceiling_db;
@@ -275,7 +281,10 @@ impl AudioProcessor {
         if let Ok(control) = self.shared.limiter.control.lock() {
             effective_limiter_ceiling_db(control.ceiling_db, control.careful_output_enabled)
         } else {
-            effective_limiter_ceiling_db(-0.5, self.is_limiter_careful_output_enabled())
+            effective_limiter_ceiling_db(
+                LIMITER_CEILING_DEFAULT_DB,
+                self.is_limiter_careful_output_enabled(),
+            )
         }
     }
 
@@ -303,7 +312,7 @@ impl AudioProcessor {
         if let Ok(c) = self.shared.compressor.shadow.lock() {
             c.auto_makeup_enabled()
         } else {
-            false
+            COMPRESSOR_AUTO_MAKEUP_DEFAULT
         }
     }
 

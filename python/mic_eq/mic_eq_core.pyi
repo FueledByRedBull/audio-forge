@@ -268,6 +268,14 @@ def processing_ranges() -> dict[str, dict[str, tuple[float, float]]]:
     them. Sections: gate, rnnoise, deesser, compressor and limiter.
     """
     ...
+def processing_defaults() -> dict[str, dict[str, bool | int | float | str]]:
+    """The native default of every persisted stage setting, by section and preset key.
+
+    The live controls and the offline parsers start from these values.
+    Sections: gate, eq (``enabled`` only; the bands carry their own
+    defaults), rnnoise, deesser, compressor and limiter.
+    """
+    ...
 def noise_model_ids() -> list[str]:
     """The noise model ids a saved preset may name, in listing order."""
     ...

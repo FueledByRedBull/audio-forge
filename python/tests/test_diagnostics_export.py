@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import fields
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from pathlib import Path
@@ -11,11 +12,24 @@ from typing import Any, cast
 
 import pytest
 
-from mic_eq.config import DeviceIdentity, Preset
+from mic_eq import mic_eq_core
+from mic_eq.config import (
+    CompressorSettings,
+    DeEsserSettings,
+    DeviceIdentity,
+    EQSettings,
+    GateSettings,
+    LimiterSettings,
+    Preset,
+    RNNoiseSettings,
+)
 from mic_eq.diagnostics_export import (
     MAX_SERIALIZED_BYTES,
     SCHEMA_NAME,
     SCHEMA_VERSION,
+    _EQ_BAND_FIELDS,
+    _PROCESSING_ENUMS,
+    _PROCESSING_FIELDS,
     _RUNTIME_ENUMS,
     build_diagnostics_snapshot,
     diagnostics_filename,
@@ -239,6 +253,31 @@ def _build(
         setup_result=setup_result,
         interface=interface,
     )
+
+
+def test_the_processing_allowlist_names_every_persisted_setting() -> None:
+    # The allowlist stays an explicit list, since it decides what leaves the
+    # machine; this keeps it from drifting from the settings it exports.
+    stages = {
+        "gate": GateSettings,
+        "rnnoise": RNNoiseSettings,
+        "deesser": DeEsserSettings,
+        "compressor": CompressorSettings,
+        "limiter": LimiterSettings,
+    }
+    native = mic_eq_core.processing_defaults()
+
+    assert set(_PROCESSING_FIELDS) == {*stages, "eq"}
+    for section, settings_class in stages.items():
+        names = {setting.name for setting in fields(settings_class)}
+        assert _PROCESSING_FIELDS[section] == names, section
+        assert set(native[section]) == names, section
+    layered = EQSettings(
+        correction_bands=EQSettings().bands, tone_bands=EQSettings().bands
+    ).to_dict()
+    assert _PROCESSING_FIELDS["eq"] == set(layered)
+    assert _EQ_BAND_FIELDS == set(layered["bands"][0])
+    assert _PROCESSING_ENUMS[("rnnoise", "model")] == set(mic_eq_core.noise_model_ids())
 
 
 def test_every_rust_rt_error_code_has_an_exported_name() -> None:

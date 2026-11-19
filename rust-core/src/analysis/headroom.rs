@@ -9,6 +9,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 
 use crate::catch_panic;
+use crate::config_ranges as defaults;
 
 pub(crate) const HEADROOM_TARGET_DB: f64 = 1.0;
 pub(crate) const LIMITER_GAIN_REDUCTION_WARN_DB: f64 = 1.0;
@@ -258,123 +259,225 @@ pub(crate) fn flatten_chain_settings<'py>(
             as_float(&get(section, key)?, default)
         };
 
-        flattened.set_item("deesser_enabled", section_bool(&deesser, "enabled", false)?)?;
+        flattened.set_item(
+            "deesser_enabled",
+            section_bool(&deesser, "enabled", defaults::DEESSER_ENABLED_DEFAULT)?,
+        )?;
         flattened.set_item(
             "deesser_auto_enabled",
-            section_bool(&deesser, "auto_enabled", true)?,
+            section_bool(
+                &deesser,
+                "auto_enabled",
+                defaults::DEESSER_AUTO_ENABLED_DEFAULT,
+            )?,
         )?;
         for (name, key, default) in [
-            ("deesser_auto_amount", "auto_amount", 0.5),
-            ("deesser_low_cut_hz", "low_cut_hz", 4000.0),
-            ("deesser_high_cut_hz", "high_cut_hz", 11000.0),
-            ("deesser_threshold_db", "threshold_db", -28.0),
-            ("deesser_ratio", "ratio", 4.0),
-            ("deesser_attack_ms", "attack_ms", 2.0),
-            ("deesser_release_ms", "release_ms", 80.0),
-            ("deesser_max_reduction_db", "max_reduction_db", 6.0),
+            (
+                "deesser_auto_amount",
+                "auto_amount",
+                defaults::DEESSER_AUTO_AMOUNT_DEFAULT,
+            ),
+            (
+                "deesser_low_cut_hz",
+                "low_cut_hz",
+                defaults::DEESSER_LOW_CUT_DEFAULT_HZ,
+            ),
+            (
+                "deesser_high_cut_hz",
+                "high_cut_hz",
+                defaults::DEESSER_HIGH_CUT_DEFAULT_HZ,
+            ),
+            (
+                "deesser_threshold_db",
+                "threshold_db",
+                defaults::DEESSER_THRESHOLD_DEFAULT_DB,
+            ),
+            ("deesser_ratio", "ratio", defaults::DEESSER_RATIO_DEFAULT),
+            (
+                "deesser_attack_ms",
+                "attack_ms",
+                defaults::DEESSER_ATTACK_DEFAULT_MS,
+            ),
+            (
+                "deesser_release_ms",
+                "release_ms",
+                defaults::DEESSER_RELEASE_DEFAULT_MS,
+            ),
+            (
+                "deesser_max_reduction_db",
+                "max_reduction_db",
+                defaults::DEESSER_MAX_REDUCTION_DEFAULT_DB,
+            ),
         ] {
             flattened.set_item(name, section_float(&deesser, key, default)?)?;
         }
 
         flattened.set_item(
             "compressor_enabled",
-            section_bool(&compressor, "enabled", true)?,
+            section_bool(&compressor, "enabled", defaults::COMPRESSOR_ENABLED_DEFAULT)?,
         )?;
         for (name, key, default) in [
-            ("compressor_threshold_db", "threshold_db", -20.0),
-            ("compressor_ratio", "ratio", 4.0),
-            ("compressor_attack_ms", "attack_ms", 10.0),
-            ("compressor_release_ms", "release_ms", 200.0),
-            ("compressor_makeup_gain_db", "makeup_gain_db", 0.0),
+            (
+                "compressor_threshold_db",
+                "threshold_db",
+                defaults::COMPRESSOR_THRESHOLD_DEFAULT_DB,
+            ),
+            (
+                "compressor_ratio",
+                "ratio",
+                defaults::COMPRESSOR_RATIO_DEFAULT,
+            ),
+            (
+                "compressor_attack_ms",
+                "attack_ms",
+                defaults::COMPRESSOR_ATTACK_DEFAULT_MS,
+            ),
+            (
+                "compressor_release_ms",
+                "release_ms",
+                defaults::COMPRESSOR_RELEASE_DEFAULT_MS,
+            ),
+            (
+                "compressor_makeup_gain_db",
+                "makeup_gain_db",
+                defaults::COMPRESSOR_MAKEUP_DEFAULT_DB,
+            ),
         ] {
             flattened.set_item(name, section_float(&compressor, key, default)?)?;
         }
         flattened.set_item(
             "compressor_adaptive_release",
-            section_bool(&compressor, "adaptive_release", false)?,
+            section_bool(
+                &compressor,
+                "adaptive_release",
+                defaults::COMPRESSOR_ADAPTIVE_RELEASE_DEFAULT,
+            )?,
         )?;
         flattened.set_item(
             "compressor_base_release_ms",
-            section_float(&compressor, "base_release_ms", 50.0)?,
+            section_float(
+                &compressor,
+                "base_release_ms",
+                defaults::COMPRESSOR_BASE_RELEASE_DEFAULT_MS,
+            )?,
         )?;
         flattened.set_item(
             "compressor_auto_makeup_enabled",
-            section_bool(&compressor, "auto_makeup_enabled", false)?,
+            section_bool(
+                &compressor,
+                "auto_makeup_enabled",
+                defaults::COMPRESSOR_AUTO_MAKEUP_DEFAULT,
+            )?,
         )?;
         flattened.set_item(
             "compressor_target_lufs",
-            section_float(&compressor, "target_lufs", -18.0)?,
+            section_float(
+                &compressor,
+                "target_lufs",
+                defaults::COMPRESSOR_TARGET_LUFS_DEFAULT,
+            )?,
         )?;
         flattened.set_item(
             "compressor_noise_reference_reliability",
-            section_float(&compressor, "noise_reference_reliability", 0.0)?,
+            section_float(
+                &compressor,
+                "noise_reference_reliability",
+                defaults::COMPRESSOR_NOISE_REFERENCE_RELIABILITY_DEFAULT,
+            )?,
         )?;
         flattened.set_item(
             "compressor_sidechain_highpass_enabled",
-            section_bool(&compressor, "sidechain_highpass_enabled", true)?,
+            section_bool(
+                &compressor,
+                "sidechain_highpass_enabled",
+                defaults::COMPRESSOR_SIDECHAIN_HIGHPASS_DEFAULT,
+            )?,
         )?;
 
-        flattened.set_item("limiter_enabled", section_bool(&limiter, "enabled", true)?)?;
+        flattened.set_item(
+            "limiter_enabled",
+            section_bool(&limiter, "enabled", defaults::LIMITER_ENABLED_DEFAULT)?,
+        )?;
         flattened.set_item(
             "limiter_ceiling_db",
-            section_float(&limiter, "ceiling_db", -0.5)?,
+            section_float(&limiter, "ceiling_db", defaults::LIMITER_CEILING_DEFAULT_DB)?,
         )?;
         flattened.set_item(
             "limiter_release_ms",
-            section_float(&limiter, "release_ms", 50.0)?,
+            section_float(&limiter, "release_ms", defaults::LIMITER_RELEASE_DEFAULT_MS)?,
         )?;
         flattened.set_item(
             "limiter_careful_output_enabled",
-            section_bool(&limiter, "careful_output_enabled", true)?,
+            section_bool(
+                &limiter,
+                "careful_output_enabled",
+                defaults::LIMITER_CAREFUL_OUTPUT_DEFAULT,
+            )?,
         )?;
 
         let mapping = py.import("collections.abc")?.getattr("Mapping")?;
         if gate.is_instance(&mapping)? {
-            flattened.set_item("gate_enabled", section_bool(&gate, "enabled", true)?)?;
+            flattened.set_item(
+                "gate_enabled",
+                section_bool(&gate, "enabled", defaults::GATE_ENABLED_DEFAULT)?,
+            )?;
             flattened.set_item(
                 "gate_threshold_db",
-                section_float(&gate, "threshold_db", -40.0)?,
+                section_float(&gate, "threshold_db", defaults::GATE_THRESHOLD_DEFAULT_DB)?,
             )?;
-            flattened.set_item("gate_attack_ms", section_float(&gate, "attack_ms", 10.0)?)?;
+            flattened.set_item(
+                "gate_attack_ms",
+                section_float(&gate, "attack_ms", defaults::GATE_ATTACK_DEFAULT_MS)?,
+            )?;
             flattened.set_item(
                 "gate_release_ms",
-                section_float(&gate, "release_ms", 100.0)?,
+                section_float(&gate, "release_ms", defaults::GATE_RELEASE_DEFAULT_MS)?,
             )?;
-            flattened.set_item("gate_mode", as_int(&get(&gate, "gate_mode")?, 0)?)?;
+            flattened.set_item(
+                "gate_mode",
+                as_int(
+                    &get(&gate, "gate_mode")?,
+                    i64::from(defaults::GATE_MODE_DEFAULT),
+                )?,
+            )?;
             flattened.set_item(
                 "gate_vad_threshold",
-                section_float(&gate, "vad_threshold", 0.48)?,
+                section_float(&gate, "vad_threshold", defaults::VAD_THRESHOLD_DEFAULT)?,
             )?;
             flattened.set_item(
                 "gate_vad_hold_time_ms",
-                section_float(&gate, "vad_hold_time_ms", 200.0)?,
+                section_float(&gate, "vad_hold_time_ms", defaults::VAD_HOLD_DEFAULT_MS)?,
             )?;
             flattened.set_item(
                 "gate_vad_pre_gain",
-                section_float(&gate, "vad_pre_gain", 1.0)?,
+                section_float(&gate, "vad_pre_gain", defaults::VAD_PRE_GAIN_DEFAULT)?,
             )?;
             flattened.set_item(
                 "gate_auto_threshold_enabled",
-                section_bool(&gate, "auto_threshold_enabled", true)?,
+                section_bool(
+                    &gate,
+                    "auto_threshold_enabled",
+                    defaults::GATE_AUTO_THRESHOLD_DEFAULT,
+                )?,
             )?;
             flattened.set_item(
                 "gate_margin_db",
-                section_float(&gate, "gate_margin_db", 10.0)?,
+                section_float(&gate, "gate_margin_db", defaults::GATE_MARGIN_DEFAULT_DB)?,
             )?;
         }
         if suppressor.is_instance(&mapping)? {
             flattened.set_item(
                 "suppressor_enabled",
-                section_bool(&suppressor, "enabled", true)?,
+                section_bool(&suppressor, "enabled", defaults::RNNOISE_ENABLED_DEFAULT)?,
             )?;
             flattened.set_item(
                 "suppressor_strength",
-                section_float(&suppressor, "strength", 1.0)?,
+                section_float(&suppressor, "strength", defaults::RNNOISE_STRENGTH_DEFAULT)?,
             )?;
             flattened.set_item(
                 "noise_model",
                 suppressor
-                    .call_method1("get", ("model", "rnnoise"))?
+                    .call_method1("get", ("model", defaults::NOISE_MODEL_DEFAULT.id()))?
                     .str()?,
             )?;
         }
@@ -443,7 +546,7 @@ pub(crate) fn band_array_eq_inputs(eq_settings: &Bound<'_, PyAny>) -> PyResult<(
         }
         let fallback = get(eq_settings, "eq_enabled")?;
         let enabled = eq_settings.call_method1("get", ("enabled", fallback))?;
-        Ok((bands, as_bool(&enabled, true)?))
+        Ok((bands, as_bool(&enabled, defaults::EQ_ENABLED_DEFAULT)?))
     })
 }
 

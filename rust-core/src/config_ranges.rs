@@ -1,13 +1,15 @@
-//! The numeric ranges of the processing settings.
+//! The numeric ranges and the defaults of the processing settings.
 //!
 //! The live setters clamp to these constants, and
 //! Python reads the same table through [`processing_ranges`] to validate saved
-//! presets and to bound the controls, so a range exists in one place.
+//! presets and to bound the controls, so a range exists in one place. The live
+//! controls and the offline parsers start from the defaults below, and
+//! [`processing_defaults`] publishes them for Python's parity test.
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::dsp::noise_suppressor::NOISE_MODEL_IDS;
+use crate::dsp::noise_suppressor::{NoiseModel, NOISE_MODEL_IDS};
 
 pub(crate) const GATE_THRESHOLD_MIN_DB: f64 = -80.0;
 pub(crate) const GATE_THRESHOLD_MAX_DB: f64 = -10.0;
@@ -62,6 +64,52 @@ pub(crate) const LIMITER_CEILING_MIN_DB: f64 = -12.0;
 pub(crate) const LIMITER_CEILING_MAX_DB: f64 = 0.0;
 pub(crate) const LIMITER_RELEASE_MIN_MS: f64 = 10.0;
 pub(crate) const LIMITER_RELEASE_MAX_MS: f64 = 500.0;
+
+pub(crate) const GATE_ENABLED_DEFAULT: bool = true;
+pub(crate) const GATE_THRESHOLD_DEFAULT_DB: f64 = -40.0;
+pub(crate) const GATE_ATTACK_DEFAULT_MS: f64 = 10.0;
+pub(crate) const GATE_RELEASE_DEFAULT_MS: f64 = 100.0;
+/// The wire value of `GateMode::ThresholdOnly`.
+pub(crate) const GATE_MODE_DEFAULT: u8 = 0;
+pub(crate) const VAD_THRESHOLD_DEFAULT: f64 = 0.48;
+pub(crate) const VAD_HOLD_DEFAULT_MS: f64 = 200.0;
+pub(crate) const VAD_PRE_GAIN_DEFAULT: f64 = 1.0;
+pub(crate) const GATE_AUTO_THRESHOLD_DEFAULT: bool = true;
+pub(crate) const GATE_MARGIN_DEFAULT_DB: f64 = 10.0;
+pub(crate) const EQ_ENABLED_DEFAULT: bool = true;
+pub(crate) const RNNOISE_ENABLED_DEFAULT: bool = true;
+pub(crate) const RNNOISE_STRENGTH_DEFAULT: f64 = 1.0;
+pub(crate) const NOISE_MODEL_DEFAULT: NoiseModel = NoiseModel::RNNoise;
+pub(crate) const DEESSER_ENABLED_DEFAULT: bool = false;
+pub(crate) const DEESSER_AUTO_ENABLED_DEFAULT: bool = true;
+pub(crate) const DEESSER_AUTO_AMOUNT_DEFAULT: f64 = 0.5;
+pub(crate) const DEESSER_LOW_CUT_DEFAULT_HZ: f64 = 4000.0;
+pub(crate) const DEESSER_HIGH_CUT_DEFAULT_HZ: f64 = 11_000.0;
+pub(crate) const DEESSER_THRESHOLD_DEFAULT_DB: f64 = -28.0;
+pub(crate) const DEESSER_RATIO_DEFAULT: f64 = 4.0;
+pub(crate) const DEESSER_ATTACK_DEFAULT_MS: f64 = 2.0;
+pub(crate) const DEESSER_RELEASE_DEFAULT_MS: f64 = 80.0;
+pub(crate) const DEESSER_MAX_REDUCTION_DEFAULT_DB: f64 = 6.0;
+pub(crate) const COMPRESSOR_ENABLED_DEFAULT: bool = true;
+pub(crate) const COMPRESSOR_THRESHOLD_DEFAULT_DB: f64 = -20.0;
+pub(crate) const COMPRESSOR_RATIO_DEFAULT: f64 = 4.0;
+pub(crate) const COMPRESSOR_ATTACK_DEFAULT_MS: f64 = 10.0;
+/// The manual release. The live control holds it as its release, since
+/// adaptive release starts off.
+pub(crate) const COMPRESSOR_RELEASE_DEFAULT_MS: f64 = 200.0;
+pub(crate) const COMPRESSOR_MAKEUP_DEFAULT_DB: f64 = 0.0;
+pub(crate) const COMPRESSOR_ADAPTIVE_RELEASE_DEFAULT: bool = false;
+/// The adaptive release's base, used only while adaptive release is on.
+pub(crate) const COMPRESSOR_BASE_RELEASE_DEFAULT_MS: f64 = 50.0;
+pub(crate) const COMPRESSOR_AUTO_MAKEUP_DEFAULT: bool = false;
+pub(crate) const COMPRESSOR_TARGET_LUFS_DEFAULT: f64 = -18.0;
+pub(crate) const COMPRESSOR_SIDECHAIN_HIGHPASS_DEFAULT: bool = true;
+/// Not a preset setting: the live control and the offline parsers start from it.
+pub(crate) const COMPRESSOR_NOISE_REFERENCE_RELIABILITY_DEFAULT: f64 = 0.0;
+pub(crate) const LIMITER_ENABLED_DEFAULT: bool = true;
+pub(crate) const LIMITER_CEILING_DEFAULT_DB: f64 = -0.5;
+pub(crate) const LIMITER_RELEASE_DEFAULT_MS: f64 = 50.0;
+pub(crate) const LIMITER_CAREFUL_OUTPUT_DEFAULT: bool = true;
 
 /// One section's settings as `(name, min, max)`, named as in a saved preset.
 type SectionRanges = &'static [(&'static str, f64, f64)];
@@ -158,6 +206,154 @@ const PROCESSING_RANGES: &[(&str, SectionRanges)] = &[
     ),
 ];
 
+#[derive(Clone, Copy)]
+enum DefaultValue {
+    Bool(bool),
+    Number(f64),
+    /// A gate mode's wire value, published as an integer.
+    GateMode(u8),
+    Model(NoiseModel),
+}
+
+/// One section's defaults as `(name, value)`, named as in a saved preset.
+type SectionDefaults = &'static [(&'static str, DefaultValue)];
+
+const PROCESSING_DEFAULTS: &[(&str, SectionDefaults)] = &[
+    (
+        "gate",
+        &[
+            ("enabled", DefaultValue::Bool(GATE_ENABLED_DEFAULT)),
+            (
+                "threshold_db",
+                DefaultValue::Number(GATE_THRESHOLD_DEFAULT_DB),
+            ),
+            ("attack_ms", DefaultValue::Number(GATE_ATTACK_DEFAULT_MS)),
+            ("release_ms", DefaultValue::Number(GATE_RELEASE_DEFAULT_MS)),
+            ("gate_mode", DefaultValue::GateMode(GATE_MODE_DEFAULT)),
+            ("vad_threshold", DefaultValue::Number(VAD_THRESHOLD_DEFAULT)),
+            (
+                "vad_hold_time_ms",
+                DefaultValue::Number(VAD_HOLD_DEFAULT_MS),
+            ),
+            ("vad_pre_gain", DefaultValue::Number(VAD_PRE_GAIN_DEFAULT)),
+            (
+                "auto_threshold_enabled",
+                DefaultValue::Bool(GATE_AUTO_THRESHOLD_DEFAULT),
+            ),
+            (
+                "gate_margin_db",
+                DefaultValue::Number(GATE_MARGIN_DEFAULT_DB),
+            ),
+        ],
+    ),
+    ("eq", &[("enabled", DefaultValue::Bool(EQ_ENABLED_DEFAULT))]),
+    (
+        "rnnoise",
+        &[
+            ("enabled", DefaultValue::Bool(RNNOISE_ENABLED_DEFAULT)),
+            ("strength", DefaultValue::Number(RNNOISE_STRENGTH_DEFAULT)),
+            ("model", DefaultValue::Model(NOISE_MODEL_DEFAULT)),
+        ],
+    ),
+    (
+        "deesser",
+        &[
+            ("enabled", DefaultValue::Bool(DEESSER_ENABLED_DEFAULT)),
+            (
+                "auto_enabled",
+                DefaultValue::Bool(DEESSER_AUTO_ENABLED_DEFAULT),
+            ),
+            (
+                "auto_amount",
+                DefaultValue::Number(DEESSER_AUTO_AMOUNT_DEFAULT),
+            ),
+            (
+                "low_cut_hz",
+                DefaultValue::Number(DEESSER_LOW_CUT_DEFAULT_HZ),
+            ),
+            (
+                "high_cut_hz",
+                DefaultValue::Number(DEESSER_HIGH_CUT_DEFAULT_HZ),
+            ),
+            (
+                "threshold_db",
+                DefaultValue::Number(DEESSER_THRESHOLD_DEFAULT_DB),
+            ),
+            ("ratio", DefaultValue::Number(DEESSER_RATIO_DEFAULT)),
+            ("attack_ms", DefaultValue::Number(DEESSER_ATTACK_DEFAULT_MS)),
+            (
+                "release_ms",
+                DefaultValue::Number(DEESSER_RELEASE_DEFAULT_MS),
+            ),
+            (
+                "max_reduction_db",
+                DefaultValue::Number(DEESSER_MAX_REDUCTION_DEFAULT_DB),
+            ),
+        ],
+    ),
+    (
+        "compressor",
+        &[
+            ("enabled", DefaultValue::Bool(COMPRESSOR_ENABLED_DEFAULT)),
+            (
+                "threshold_db",
+                DefaultValue::Number(COMPRESSOR_THRESHOLD_DEFAULT_DB),
+            ),
+            ("ratio", DefaultValue::Number(COMPRESSOR_RATIO_DEFAULT)),
+            (
+                "attack_ms",
+                DefaultValue::Number(COMPRESSOR_ATTACK_DEFAULT_MS),
+            ),
+            (
+                "release_ms",
+                DefaultValue::Number(COMPRESSOR_RELEASE_DEFAULT_MS),
+            ),
+            (
+                "makeup_gain_db",
+                DefaultValue::Number(COMPRESSOR_MAKEUP_DEFAULT_DB),
+            ),
+            (
+                "adaptive_release",
+                DefaultValue::Bool(COMPRESSOR_ADAPTIVE_RELEASE_DEFAULT),
+            ),
+            (
+                "base_release_ms",
+                DefaultValue::Number(COMPRESSOR_BASE_RELEASE_DEFAULT_MS),
+            ),
+            (
+                "auto_makeup_enabled",
+                DefaultValue::Bool(COMPRESSOR_AUTO_MAKEUP_DEFAULT),
+            ),
+            (
+                "target_lufs",
+                DefaultValue::Number(COMPRESSOR_TARGET_LUFS_DEFAULT),
+            ),
+            (
+                "sidechain_highpass_enabled",
+                DefaultValue::Bool(COMPRESSOR_SIDECHAIN_HIGHPASS_DEFAULT),
+            ),
+        ],
+    ),
+    (
+        "limiter",
+        &[
+            ("enabled", DefaultValue::Bool(LIMITER_ENABLED_DEFAULT)),
+            (
+                "ceiling_db",
+                DefaultValue::Number(LIMITER_CEILING_DEFAULT_DB),
+            ),
+            (
+                "release_ms",
+                DefaultValue::Number(LIMITER_RELEASE_DEFAULT_MS),
+            ),
+            (
+                "careful_output_enabled",
+                DefaultValue::Bool(LIMITER_CAREFUL_OUTPUT_DEFAULT),
+            ),
+        ],
+    ),
+];
+
 /// `{section: {setting: (min, max)}}` for every numeric processing setting.
 #[pyfunction]
 pub(crate) fn processing_ranges(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
@@ -166,6 +362,26 @@ pub(crate) fn processing_ranges(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
         let settings = PyDict::new(py);
         for &(name, min, max) in ranges {
             settings.set_item(name, (min, max))?;
+        }
+        sections.set_item(section, settings)?;
+    }
+    Ok(sections)
+}
+
+/// `{section: {setting: default}}` for every persisted stage setting outside
+/// the EQ bands, which carry their own per-band defaults.
+#[pyfunction]
+pub(crate) fn processing_defaults(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
+    let sections = PyDict::new(py);
+    for &(section, defaults) in PROCESSING_DEFAULTS {
+        let settings = PyDict::new(py);
+        for &(name, value) in defaults {
+            match value {
+                DefaultValue::Bool(value) => settings.set_item(name, value)?,
+                DefaultValue::Number(value) => settings.set_item(name, value)?,
+                DefaultValue::GateMode(value) => settings.set_item(name, value)?,
+                DefaultValue::Model(model) => settings.set_item(name, model.id())?,
+            }
         }
         sections.set_item(section, settings)?;
     }
@@ -212,6 +428,53 @@ mod tests {
         }
     }
 
+    fn default(section: &str, name: &str) -> DefaultValue {
+        PROCESSING_DEFAULTS
+            .iter()
+            .find(|(candidate, _)| *candidate == section)
+            .and_then(|(_, defaults)| defaults.iter().find(|(candidate, _)| *candidate == name))
+            .map(|&(_, value)| value)
+            .unwrap_or_else(|| panic!("no default for {section}.{name}"))
+    }
+
+    #[test]
+    fn every_ranged_setting_has_a_default_inside_its_range() {
+        for (section, ranges) in PROCESSING_RANGES {
+            for &(name, min, max) in *ranges {
+                let value = match default(section, name) {
+                    DefaultValue::Number(value) => value,
+                    DefaultValue::GateMode(value) => f64::from(value),
+                    DefaultValue::Bool(_) | DefaultValue::Model(_) => {
+                        panic!("{section}.{name} is ranged but its default is not a number")
+                    }
+                };
+                assert!((min..=max).contains(&value), "{section}.{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn default_names_are_unique_within_a_section() {
+        let mut sections: Vec<_> = PROCESSING_DEFAULTS
+            .iter()
+            .map(|(section, _)| *section)
+            .collect();
+        sections.sort_unstable();
+        sections.dedup();
+        assert_eq!(sections.len(), PROCESSING_DEFAULTS.len());
+        for (section, defaults) in PROCESSING_DEFAULTS {
+            let mut names: Vec<_> = defaults.iter().map(|(name, _)| *name).collect();
+            names.sort_unstable();
+            names.dedup();
+            assert_eq!(names.len(), defaults.len(), "{section}");
+        }
+    }
+
+    #[test]
+    fn the_default_noise_model_is_a_listed_id() {
+        assert!(NOISE_MODEL_IDS.contains(&NOISE_MODEL_DEFAULT.id()));
+    }
+
     #[test]
     fn the_single_precision_clamps_equal_their_literals() {
         // Values published in single precision must be the rounding of the
@@ -226,6 +489,10 @@ mod tests {
         assert_eq!(VAD_PRE_GAIN_MIN as f32, 1.0_f32);
         assert_eq!(GATE_MARGIN_MIN_DB as f32, 0.0_f32);
         assert_eq!(RNNOISE_STRENGTH_MIN as f32, 0.0_f32);
+        assert_eq!(VAD_THRESHOLD_DEFAULT as f32, 0.48_f32);
+        assert_eq!(VAD_HOLD_DEFAULT_MS as f32, 200.0_f32);
+        assert_eq!(VAD_PRE_GAIN_DEFAULT as f32, 1.0_f32);
+        assert_eq!(GATE_MARGIN_DEFAULT_DB as f32, 10.0_f32);
     }
 
     #[cfg(feature = "vad")]
@@ -238,5 +505,16 @@ mod tests {
             let in_range = (min..=max).contains(&f64::from(wire));
             assert_eq!(GateMode::from_u8(wire).is_some(), in_range, "mode {wire}");
         }
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn the_default_gate_mode_is_threshold_only() {
+        use crate::dsp::vad::GateMode;
+
+        assert_eq!(
+            GateMode::from_u8(GATE_MODE_DEFAULT),
+            Some(GateMode::ThresholdOnly)
+        );
     }
 }

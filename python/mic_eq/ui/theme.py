@@ -38,6 +38,8 @@ class SemanticPalette:
     # The edge of a control, a switch track and a slider track: 3:1 against every surface
     # a control sits on (WCAG 1.4.11). The two borders above only divide surfaces.
     control_edge: str = "#7d818b"
+    # A switch that is on: a neutral near-white track, so on and off differ by more than hue.
+    switch_on: str = "#d9dbe1"
     focus_ring: str = "#cfe0ff"
     text_primary: str = "#ececf0"
     text_muted: str = "#9b9fa9"
@@ -64,6 +66,12 @@ class SemanticPalette:
     text_on_mute: str = "#1a1230"
     mute_fill: str = "#29b9a3f5"
     mute_edge: str = "#73b9a3f5"
+    # Rose-magenta says the call is not getting the voice; it is never the only sign,
+    # since its words carry the meaning for colour-blind readers.
+    callers_affected: str = "#e25a9a"
+    callers_affected_text: str = "#f07ab4"
+    callers_affected_fill: str = "#29e25a9a"
+    callers_affected_edge: str = "#73e25a9a"
 
     action_primary: str = "#d98a4e"
     # Stop while live is neutral: only the action that begins something is amber.
@@ -203,7 +211,7 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         text_on_accent=on_accent, hover_text=on_accent,
         accent=accent, accent_hover=accent, accent_pressed=accent,
         action_primary=accent, action_destructive=text, action_destructive_border=text,
-        action_secondary=window, control_edge=text,
+        action_secondary=window, control_edge=text, switch_on=text,
         action_disabled=window, action_disabled_text=disabled,
         action_disabled_surface=window, action_disabled_border=disabled,
         status_ok_surface=window, status_ok_text=text, status_ok_border=text,
@@ -220,6 +228,8 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         accent_text=accent, accent_soft=on_accent, accent_bright=on_accent,
         accent_fill=accent, accent_edge=accent,
         mute=accent, text_on_mute=on_accent, mute_text=text, mute_fill=window, mute_edge=accent,
+        callers_affected=text, callers_affected_text=text, callers_affected_fill=window,
+        callers_affected_edge=text,
         status_ok_dot=text, signal_in=text, signal_in_fill=text, signal_out=text, analyser=text,
         glass=window, glass_solid=window, glass_modal=window,
         glass_edge=text, glass_edge_modal=text, glass_highlight=window, glass_shadow="#00000000",
@@ -433,6 +443,14 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
     ("pressed mute", PALETTE.mute_text, flatten(PALETTE.mute_fill, PALETTE.toolbar_top)),
     ("text on solid mute", PALETTE.text_on_mute, PALETTE.mute),
     ("mute text", PALETTE.mute_text, PALETTE.app_surface),
+    ("callers affected text", PALETTE.callers_affected_text, PALETTE.pane_surface),
+    ("callers affected text on card", PALETTE.callers_affected_text, PALETTE.card_surface),
+    ("callers affected text on sidebar", PALETTE.callers_affected_text, PALETTE.sidebar_top),
+    (
+        "callers affected text on its fill",
+        PALETTE.callers_affected_text,
+        flatten(PALETTE.callers_affected_fill, PALETTE.pane_surface),
+    ),
     ("primary text on glass", PALETTE.text_primary, flatten(PALETTE.glass, PALETTE.app_surface)),
     ("muted text on glass", PALETTE.text_muted, flatten(PALETTE.glass, PALETTE.app_surface)),
     ("muted text on compact glass", PALETTE.text_muted, flatten(PALETTE.glass_solid, PALETTE.app_surface)),
@@ -454,12 +472,19 @@ def control_boundary_pairs(palette: SemanticPalette) -> tuple[tuple[str, str, st
         ("control edge on app surface", palette.control_edge, palette.app_surface),
         ("control edge on card", palette.control_edge, palette.card_surface),
         ("control edge on field", palette.control_edge, palette.control_surface),
-        ("switch on and slider fill on card", palette.accent, palette.card_surface),
+        ("slider fill on card", palette.accent, palette.card_surface),
+        ("switch on against its knob", palette.switch_on, palette.app_surface),
+        ("switch on on the sidebar", palette.switch_on, palette.sidebar_top),
+        ("switch on on card", palette.switch_on, palette.card_surface),
         ("focus ring on card", palette.focus_ring, palette.card_surface),
         ("focus ring on app surface", palette.focus_ring, palette.app_surface),
         ("focus ring on glass", palette.focus_ring, flatten(palette.glass, palette.app_surface)),
         ("danger button edge on card", palette.action_destructive_border, palette.card_surface),
         ("empty picker edge on card", palette.status_warn_border, palette.card_surface),
+        ("callers affected mark on pane", palette.callers_affected, palette.pane_surface),
+        ("callers affected mark on its fill", palette.callers_affected,
+         flatten(palette.callers_affected_fill, palette.pane_surface)),
+        ("callers affected edge on pane", palette.callers_affected_edge, palette.pane_surface),
     )
 
 
@@ -515,6 +540,32 @@ def prefers_reduced_motion() -> bool:
         )
         return bool(succeeded) and not bool(enabled.value)
     except (AttributeError, OSError):
+        return False
+
+
+def prefers_reduced_transparency() -> bool:
+    """Return whether the user turned Windows transparency effects off.
+
+    ``AUDIOFORGE_REDUCED_TRANSPARENCY`` overrides it, as ``AUDIOFORGE_REDUCED_MOTION``
+    does for motion. Windows keeps the switch (Personalization or Accessibility, Visual
+    effects) as ``EnableTransparency`` in the user's Personalize key; a missing value
+    means transparency is on.
+    """
+
+    override = os.getenv("AUDIOFORGE_REDUCED_TRANSPARENCY")
+    if override is not None:
+        return override.strip().lower() in {"1", "true", "yes", "on"}
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+        ) as key:
+            value, _kind = winreg.QueryValueEx(key, "EnableTransparency")
+        return value == 0
+    except OSError:
         return False
 
 

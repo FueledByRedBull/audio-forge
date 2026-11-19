@@ -23,6 +23,9 @@ PROCESSING_MODE_OPTIONS = (
 )
 DEVICES_LOCKED_TIP = "Stop processing to change devices."
 DROPPED_DIAGNOSTICS_TOOLTIP = "Audio that was dropped, with the engine's other warning counters."
+LATENCY_TIP = (
+    "The delay between your voice and the output, and how long processing takes for each small chunk of audio."
+)
 LATENCY_LOWER_BOUND_NOTE = (
     "\n\nThis is a lower bound: it counts AudioForge and the output device's buffer, not the "
     "audio route after it. In Settings, Measure Route Latency gives the full delay."
@@ -110,11 +113,9 @@ TEXT_SPECS = {
         "Output dropout health",
         "Times the output ran out of audio and the sound gapped. Warns on recent or repeated dropouts.",
     ),
-    "latency_label": _TextSpec(
-        "Latency: --",
-        "Processing latency",
-        "The delay between your voice and the output, and how long processing takes for each small chunk of audio.",
-    ),
+    "latency_label": _TextSpec("Latency: --", "Processing latency", LATENCY_TIP),
+    # The toolbar's short form of the figure above.
+    "latency_readout_label": _TextSpec("--", "Latency", LATENCY_TIP),
     "buffer_label": _TextSpec(
         "Buffer: --",
         "Audio buffer health",
@@ -123,6 +124,9 @@ TEXT_SPECS = {
     ),
     "dropped_label": _TextSpec(
         "Drops: --", "Dropped audio samples", DROPPED_DIAGNOSTICS_TOOLTIP
+    ),
+    "deesser_auto_hint": _TextSpec(
+        "Threshold and ratio follow Auto while it is on.", "De-esser Auto note", shown=False
     ),
     "recovery_diag_label": _TextSpec(
         "Recovery: --",
@@ -196,7 +200,7 @@ ACTION_SPECS = {
         "Your live output is muted while it records.",
     ),
     "auto_voice_setup_button": _ActionSpec(
-        "Auto Voice Setup",
+        "Run Auto Voice Setup",
         "Record room noise and speech, then calibrate EQ, gate/VAD,\n"
         "de-esser, and compressor in one pass. Your live output is muted while it records.",
     ),

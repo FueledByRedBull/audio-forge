@@ -16,12 +16,15 @@ ComboBox {
     property bool prompting: false
     property string prompt: ""
     property string expandGlyph: ""
+    // Shown before the choice: an icon-font glyph and a muted key word, each when set.
+    property string glyph: ""
+    property string key: ""
     readonly property alias shown: shownText
     readonly property real windowHeight: Window.height
     opacity: enabled ? 1 : 0.45
     implicitHeight: 32
     implicitWidth: 170
-    leftPadding: 10
+    leftPadding: 10 + (lead.width > 0 ? lead.width + 6 : 0)
     rightPadding: 26
     Accessible.name: label + (shownText.text !== "" ? ": " + shownText.text : "")
     contentItem: Text {
@@ -53,6 +56,29 @@ ComboBox {
         border.color: picker.prompting ? Look.t.status_warn_border
                     : picker.alert ? Look.t.status_warn_text : Look.t.control_edge
         FocusRing { control: picker }
+        Row {
+            id: lead
+            x: 10
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 6
+            Text {
+                visible: picker.glyph !== ""
+                anchors.verticalCenter: parent.verticalCenter
+                text: picker.glyph
+                textFormat: Text.PlainText
+                font.family: Look.t.iconFont
+                font.pixelSize: Look.fsBody
+                color: Look.t.text_muted
+            }
+            Text {
+                visible: picker.key !== ""
+                anchors.verticalCenter: parent.verticalCenter
+                text: picker.key
+                textFormat: Text.PlainText
+                font.pixelSize: Look.fsBody
+                color: Look.t.text_muted
+            }
+        }
     }
     delegate: ItemDelegate {
         id: option

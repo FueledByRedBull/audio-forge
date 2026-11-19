@@ -186,8 +186,10 @@ def test_the_real_scene_delivers_hover_and_double_click_to_the_graph(
 ):
     window = isolated_main_window
     window.resize(1400, 1100)
+    window.shell_page.setIndex(window.EQUALIZER_PAGE_INDEX)
     window.show()
     qapp.processEvents()
+    QTest.qWait(50)
     view = window.centralWidget()
     item = _find_graph_item(view.rootObject())
     assert item is not None
@@ -254,8 +256,10 @@ def test_a_double_click_in_the_real_scene_is_one_undo_step_after_a_jittered_pres
 ):
     window = isolated_main_window
     window.resize(1400, 1100)
+    window.shell_page.setIndex(window.EQUALIZER_PAGE_INDEX)
     window.show()
     qapp.processEvents()
+    QTest.qWait(50)
     view = window.centralWidget()
     item = _find_graph_item(view.rootObject())
     assert item is not None
@@ -311,8 +315,10 @@ def test_the_real_scene_describes_the_graph_after_a_drag_and_not_during_it(
 ):
     window = isolated_main_window
     window.resize(1400, 1100)
+    window.shell_page.setIndex(window.EQUALIZER_PAGE_INDEX)
     window.show()
     qapp.processEvents()
+    QTest.qWait(50)
     view = window.centralWidget()
     item = _find_graph_item(view.rootObject())
     assert item is not None

@@ -16,11 +16,13 @@ from .theme import (
     PALETTE,
     RADIUS_CARD,
     RADIUS_CONTROL,
+    SYSTEM_CONTRAST_COLORS,
     TYPE_FLOOR_PX,
     TYPE_SCALE_PX,
     TYPE_TICK_PX,
     motion_durations,
     prefers_reduced_motion,
+    prefers_reduced_transparency,
     qcolor,
 )
 
@@ -53,6 +55,9 @@ def quick_theme() -> dict:
         "glassSaturation": GLASS.saturation,
         "glassModalBlur": GLASS.modal_blur,
         "glassModalSaturation": GLASS.modal_saturation,
+        # Glass is drawn solid, without its blur, when either is on.
+        "reducedTransparency": prefers_reduced_transparency(),
+        "highContrast": SYSTEM_CONTRAST_COLORS is not None,
         "typeFloor": TYPE_FLOOR_PX,
         "typeTick": TYPE_TICK_PX,
         "typeScale": dict(TYPE_SCALE_PX),

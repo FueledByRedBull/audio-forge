@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from PySide6.QtCore import QObject, QRectF
+from PySide6.QtCore import QObject, QRectF, qInstallMessageHandler
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtQuickWidgets import QQuickWidget
@@ -17,6 +17,7 @@ from PySide6.QtTest import QTest
 from mic_eq.config import AppConfig
 from mic_eq.ui.main_window import MINIMUM_WINDOW_HEIGHT, MINIMUM_WINDOW_WIDTH, MainWindow
 from mic_eq.ui.processing_configuration import PresetOrigin
+from mic_eq.ui.quick_shell import InspectorState
 
 INPUT = SimpleNamespace(name="CABLE Output (VB-Audio Virtual Cable)", is_default=True)
 OUTPUT = SimpleNamespace(name="Realtek Digital Output (Realtek USB Audio)", is_default=True)
@@ -110,19 +111,21 @@ def shown_items(item: QQuickItem):
 
 @pytest.mark.parametrize("minimum_window", ["short", "short-unsaved"], indirect=True)
 def test_the_scene_is_built_at_its_minimum_width(minimum_window) -> None:
-    assert named(minimum_window, "meterPanel").width() > 0
+    assert named(minimum_window, "sidebar").width() > 0
     assert minimum_window.centralWidget().width() == MINIMUM_WINDOW_WIDTH
 
 
-def test_nothing_in_the_content_column_runs_under_the_meters(minimum_window) -> None:
-    meters_left = scene_rect(named(minimum_window, "meterPanel")).left()
-    column = named(minimum_window, "contentColumn")
+def test_nothing_in_the_main_pane_runs_into_the_sidebar_or_off_the_window(minimum_window) -> None:
+    sidebar_right = scene_rect(named(minimum_window, "sidebar")).right()
+    window_right = float(minimum_window.centralWidget().width())
+    pane = named(minimum_window, "mainPane")
     overflowing = [
-        f"{item.metaObject().className()} {item.objectName()!r} right={scene_rect(item).right():.1f}"
-        for item in shown_items(column)
-        if scene_rect(item).right() > meters_left + 0.5
+        f"{item.metaObject().className()} {item.objectName()!r} "
+        f"left={scene_rect(item).left():.1f} right={scene_rect(item).right():.1f}"
+        for item in shown_items(pane)
+        if scene_rect(item).left() < sidebar_right - 0.5 or scene_rect(item).right() > window_right + 0.5
     ]
-    assert not overflowing, f"meter panel starts at {meters_left:.1f}: {overflowing}"
+    assert not overflowing, f"the sidebar ends at {sidebar_right:.1f}, the window at {window_right:.1f}: {overflowing}"
 
 
 def test_a_long_preset_name_is_elided_and_whole_in_the_tooltip(minimum_window) -> None:
@@ -139,34 +142,32 @@ def caption_tip(item: QQuickItem) -> str:
 
 
 def status_caption(window: MainWindow, text: str) -> QQuickItem:
-    strip = named(window, "statusStrip")
-    return next(child for child in strip.childItems() if child.property("text") == text)
+    footer = named(window, "sidebarFooter")
+    return next(item for item in shown_items(footer) if item.property("text") == text)
 
 
-# The unsaved flag only reaches the preset bar; the status strip reads the message, transmission,
-# calibration and health, so one saved and one long-named window cover it.
+# The unsaved flag only reaches the preset block; the footer reads the calibration and health,
+# so one saved and one long-named window cover it.
 @pytest.mark.parametrize("minimum_window", ["short", "long"], indirect=True)
 def test_an_elided_status_caption_has_its_full_text_as_its_tip(minimum_window) -> None:
     message = named(minimum_window, "statusMessage")
     calibration = status_caption(minimum_window, STALE_CALIBRATION)
-    if minimum_window.configuration.identity.name == LONG_PRESET:
-        assert message.property("truncated") is True
     for caption in (message, calibration):
         assert caption_tip(caption) == (caption.property("text") if caption.property("truncated") else "")
 
 
-def test_the_calibration_text_keeps_its_natural_width_when_there_is_room(
-    qapp, monkeypatch, segoe_font
-) -> None:
-    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Loaded preset: DaBest", width=1600)
+@pytest.mark.parametrize("width", [MINIMUM_WINDOW_WIDTH, 1600])
+def test_the_calibration_text_wraps_whole_under_the_health_chip(qapp, monkeypatch, segoe_font, width) -> None:
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Loaded preset: DaBest", width=width)
     try:
-        assert window.centralWidget().width() == 1600
+        assert window.centralWidget().width() == width
         calibration = status_caption(window, STALE_CALIBRATION)
-        health = max(named(window, "statusStrip").childItems(), key=lambda child: scene_rect(child).left())
         assert calibration.property("truncated") is False
-        # The message takes the spare width, so the text ends beside the Health chip.
-        text_end = scene_rect(calibration).left() + calibration.property("contentWidth")
-        assert scene_rect(health).left() - text_end == pytest.approx(14, abs=1)
+        assert calibration.property("lineCount") > 1
+        # The note sits 14 px under the Health chip and keeps inside the sidebar.
+        gap = scene_rect(calibration).top() - scene_rect(health_chip(window)).bottom()
+        assert gap == pytest.approx(14, abs=1)
+        assert scene_rect(calibration).right() <= scene_rect(named(window, "sidebar")).right()
     finally:
         window.close()
         window.deleteLater()
@@ -174,17 +175,22 @@ def test_the_calibration_text_keeps_its_natural_width_when_there_is_room(
 
 
 @pytest.mark.parametrize("minimum_window", ["short", "long"], indirect=True)
-def test_the_status_strip_texts_do_not_overlap(minimum_window) -> None:
-    strip = named(minimum_window, "statusStrip")
+def test_the_sidebar_footer_parts_do_not_overlap(minimum_window) -> None:
+    footer = named(minimum_window, "sidebarFooter")
     boxes = sorted(
-        (scene_rect(child) for child in strip.childItems() if child.isVisible()),
-        key=QRectF.left,
+        (scene_rect(child) for child in footer.childItems() if child.isVisible()),
+        key=QRectF.top,
     )
-    assert len(boxes) == 5
-    assert min(box.width() for box in boxes) > 0, "a text was squeezed out"
-    for left, right in zip(boxes, boxes[1:]):
-        assert left.right() <= right.left(), f"{left} runs into {right}"
-    assert boxes[-1].right() <= scene_rect(named(minimum_window, "meterPanel")).left()
+    assert len(boxes) == 4
+    assert min(box.width() for box in boxes) > 0, "a part was squeezed out"
+    for upper, lower in zip(boxes, boxes[1:]):
+        assert upper.bottom() <= lower.top(), f"{upper} runs into {lower}"
+    sidebar = scene_rect(named(minimum_window, "sidebar"))
+    assert all(sidebar.left() <= box.left() and box.right() <= sidebar.right() for box in boxes)
+    assert boxes[-1].bottom() <= sidebar.bottom()
+    # The line under the pages holds only the status message.
+    message = named(minimum_window, "statusMessage")
+    assert message.parentItem() is named(minimum_window, "mainPane")
 
 
 LONG_HEALTH_TEXTS = [
@@ -201,8 +207,8 @@ def settle(qapp) -> None:
 
 
 def health_chip(window: MainWindow) -> QQuickItem:
-    strip = named(window, "statusStrip")
-    return next(child for child in strip.childItems() if "Chip" in child.metaObject().className())
+    footer = named(window, "sidebarFooter")
+    return next(child for child in footer.childItems() if "Chip" in child.metaObject().className())
 
 
 @pytest.mark.parametrize("minimum_window", ["short", "long"], indirect=True)
@@ -217,8 +223,8 @@ def test_a_long_health_text_is_cut_short_and_whole_in_the_tooltip_and_the_name(
     window.shell_texts["health_summary_label"].update(tip="What to do about it.")
     settle(qapp)
 
-    # The other texts keep their room and nothing runs past the strip or into the meters.
-    test_the_status_strip_texts_do_not_overlap(window)
+    # The other parts keep their room and nothing runs past the sidebar.
+    test_the_sidebar_footer_parts_do_not_overlap(window)
     chip = health_chip(window)
     shown = next(child for child in chip.childItems() if child.metaObject().className() == "QQuickText")
     assert shown.property("truncated") is True
@@ -247,9 +253,7 @@ def test_a_short_health_text_keeps_its_natural_width_and_its_own_tooltip(minimum
 
 
 @pytest.mark.parametrize("minimum_window", ["short", "long"], indirect=True)
-def test_the_status_message_keeps_a_quarter_of_the_strip_at_the_worst_combination(
-    minimum_window, qapp
-) -> None:
+def test_the_status_message_keeps_its_room_at_the_worst_combination(minimum_window, qapp) -> None:
     window = minimum_window
     transmission = "Transmission: Running / Raw monitor / Mute pending"
     window.shell_texts["transmission_status_label"].update(text=transmission, status="warn")
@@ -257,23 +261,45 @@ def test_the_status_message_keeps_a_quarter_of_the_strip_at_the_worst_combinatio
     window.status_message.showMessage("Loaded preset: DaBest")
     settle(qapp)
 
-    # The note gives way first, then the transmission text and the chip; the message does not.
-    test_the_status_strip_texts_do_not_overlap(window)
-    strip = named(window, "statusStrip")
+    # The sidebar texts give way in the sidebar; the message keeps the main pane's width.
+    test_the_sidebar_footer_parts_do_not_overlap(window)
     message = named(window, "statusMessage")
-    assert message.width() >= strip.width() / 4 - 1
-    for text in (transmission, STALE_CALIBRATION):
-        caption = status_caption(window, text)
-        assert caption.property("truncated") is True
-        assert caption_tip(caption) == text
+    assert message.width() >= named(window, "mainPane").width() * 3 / 4
+    # The Overview says the transmission now; the sidebar no longer shows it.
+    assert all(item.property("text") != transmission for item in shown_items(named(window, "sidebarFooter")))
+    calibration = status_caption(window, STALE_CALIBRATION)
+    assert calibration.property("truncated") is False
+    assert caption_tip(calibration) == ""
 
 
-# The tightest cells: the largest font at the `wide` threshold, then the widest window, with the
-# Muted badge showing. Sizes and widths between them leave more room than a neighbour that is kept.
+def assert_toolbar_fits(window: MainWindow, width: int) -> None:
+    """Nothing in the toolbar leaves it, and each part of its row keeps its own room."""
+    bar = named(window, "toolbar")
+    edge = scene_rect(bar)
+    assert edge.right() == pytest.approx(width)
+    beyond = [
+        f"{item.metaObject().className()} {item.objectName()!r} {scene_rect(item)}"
+        for item in shown_items(bar)
+        if scene_rect(item).right() > edge.right() + 0.5
+        or scene_rect(item).top() < edge.top() - 0.5
+        or scene_rect(item).bottom() > edge.bottom() + 0.5
+    ]
+    assert not beyond, f"the toolbar is {edge}: {beyond}"
+    row = named(window, "toolRow")
+    parts = sorted(
+        (scene_rect(child) for child in row.childItems() if child.isVisible() and child.width() > 0),
+        key=QRectF.left,
+    )
+    for left, right in zip(parts, parts[1:]):
+        assert left.right() <= right.left() + 0.5, f"{left} runs into {right}"
+
+
+# The tightest cells: the minimum width, the `wide` threshold and the widest window kept, at the
+# smallest and largest font, with Mute pressed and the mode changed. Other cells leave more room.
 @pytest.mark.parametrize("point_size", [9, 14])
-@pytest.mark.parametrize("width", [1200, 1300])
+@pytest.mark.parametrize("width", [MINIMUM_WINDOW_WIDTH, 1200, 1300])
 @pytest.mark.parametrize("state", ["unmuted", "muted-bypass"])
-def test_the_top_bar_fits_its_card_at_every_font_size_and_wide_width(
+def test_the_toolbar_fits_one_row_at_every_font_size_and_width(
     qapp, monkeypatch, segoe_font, point_size, width, state
 ) -> None:
     qapp.setFont(QFont(qapp.font().family(), point_size))
@@ -282,21 +308,90 @@ def test_the_top_bar_fits_its_card_at_every_font_size_and_wide_width(
         if state == "muted-bypass":
             window.user_mute_checkbox_action.setChecked(True)
             window.processing_mode_choice.setIndex(1)
-        for _ in range(3):
-            qapp.processEvents()
-            QTest.qWait(30)
-        bar = named(window, "topBar")
-        inner = scene_rect(bar.parentItem()).right()
-        meters_left = scene_rect(named(window, "meterPanel")).left()
-        assert inner <= meters_left
-        assert scene_rect(bar).right() <= inner + 0.5, f"the bar ends at {scene_rect(bar).right():.1f}, card at {inner:.1f}"
-        beyond = [
-            f"{item.metaObject().className()} {item.objectName()!r} right={scene_rect(item).right():.1f}"
-            for item in shown_items(bar)
-            if scene_rect(item).right() > inner + 0.5
+        settle(qapp)
+        assert_toolbar_fits(window, width)
+        bar = named(window, "toolbar")
+        mute = next(item for item in shown_items(bar) if item.metaObject().className().startswith("MuteBtn"))
+        assert mute.property("on") is (state == "muted-bypass")
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize("point_size", [9, 14])
+def test_the_toolbar_fits_the_no_microphone_reason_at_the_minimum_width(
+    qapp, monkeypatch, segoe_font, point_size
+) -> None:
+    messages: list[str] = []
+    previous = qInstallMessageHandler(lambda _mode, _context, message: messages.append(message))
+    qapp.setFont(QFont(qapp.font().family(), point_size))
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Ready")
+    try:
+        monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
+        window._refresh_devices()
+        settle(qapp)
+        reason = named(window, "startBlockedReason")
+        assert reason.isVisible() and reason.property("text") == "No microphone to start from"
+        assert_toolbar_fits(window, MINIMUM_WINDOW_WIDTH)
+        # Cut short, the reason is whole in its tooltip.
+        assert reason.property("tip") == (reason.property("text") if reason.property("truncated") else "")
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+        qInstallMessageHandler(previous)
+    assert [message for message in messages if "inding loop" in message or ".qml" in message] == []
+
+
+@pytest.mark.parametrize(
+    ("width", "sidebar_width"), [(MINIMUM_WINDOW_WIDTH, 220), (1199, 220), (1200, 260), (1600, 260)]
+)
+def test_the_sidebar_width_follows_the_wide_breakpoint(qapp, monkeypatch, segoe_font, width, sidebar_width) -> None:
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Ready", width=width)
+    try:
+        assert named(window, "sidebar").width() == sidebar_width
+        assert scene_rect(named(window, "mainPane")).left() > sidebar_width
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize("width", [MINIMUM_WINDOW_WIDTH, 1199, 1200, 1600])
+def test_the_inspector_docks_from_the_wide_breakpoint_and_lies_over_the_pane_below_it(
+    qapp, monkeypatch, segoe_font, width
+) -> None:
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Ready", width=width)
+    try:
+        before = scene_rect(named(window, "mainPane"))
+        inspector = window.findChild(InspectorState)
+        assert inspector is not None
+        inspector.show("compressor")
+        QTest.qWait(400)
+        panel = named(window, "inspector")
+        glass = scene_rect(panel)
+        assert glass.width() == 400
+        assert glass.top() > scene_rect(named(window, "toolbar")).bottom()
+        assert glass.bottom() < MINIMUM_WINDOW_HEIGHT and glass.right() < width
+        pane = scene_rect(named(window, "mainPane"))
+        rail = named(window, "inspectorRail")
+        if width >= 1200:
+            # Docked: the pane makes room, and the glass has nothing behind it to blur.
+            assert pane.right() == width - 424 < glass.left()
+            assert rail.isVisible() and scene_rect(rail).left() == pane.right()
+            assert panel.property("backdrop") is None
+        else:
+            # Over the pane, which keeps its width and shows through the glass.
+            assert pane == before and glass.left() < pane.right()
+            assert not rail.isVisible()
+            assert panel.property("backdrop").objectName() == "mainPane"
+        overflowing = [
+            f"{item.metaObject().className()} left={scene_rect(item).left():.1f} right={scene_rect(item).right():.1f}"
+            for item in shown_items(panel)
+            if scene_rect(item).left() < glass.left() - 0.5 or scene_rect(item).right() > glass.right() + 0.5
         ]
-        assert not beyond, f"the card's inner edge is {inner:.1f}: {beyond}"
-        assert named(window, "mutedBadge").isVisible() is (state == "muted-bypass")
+        assert not overflowing, f"the inspector spans {glass.left():.1f} to {glass.right():.1f}: {overflowing}"
     finally:
         window.close()
         window.deleteLater()

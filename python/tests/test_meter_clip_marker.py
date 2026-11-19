@@ -345,3 +345,22 @@ def test_meters_speak_their_reading_and_announce_it_only_when_the_whole_number_c
     confidence = ConfidenceMeter("VAD")
     confidence.set_confidence(0.456)
     assert confidence.property("valueText") == "46 percent"
+
+
+def test_the_clip_tag_shows_while_the_marker_is_lit_and_the_output_is_heard(qapp):
+    clock = _Clock()
+    meter = _meter(clock)
+    assert meter.property("clipTagShown") is False
+    _clip(meter)
+    assert meter.property("clipTagShown") is True
+    # A muted meter shows the level before the mute; nobody hears that clip.
+    meter.set_muted(True)
+    assert meter.property("clipTagShown") is False
+    meter.set_muted(False)
+    assert meter.property("clipTagShown") is True
+    clock.now += CLIP_HOLD_SECONDS + 0.1
+    meter._decay_peak_hold()
+    assert meter.property("clipTagShown") is False
+    reduction = GainReductionMeter("GR")
+    reduction.set_gain_reduction(20.0)
+    assert reduction.property("clipTagShown") is False

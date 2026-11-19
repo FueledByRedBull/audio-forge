@@ -335,6 +335,13 @@ def test_an_engine_dict_with_nothing_to_report_gives_healthy_chips():
     assert health_summary(list(chips.values())) == Chip("Health: OK", "ok", "Everything looks fine.")
 
 
+
+def test_the_toolbar_latency_is_the_short_form_of_the_latency_chip():
+    lower = _health({}).chips
+    assert lower["latency_readout_label"] == Chip("≥ 24 ms", "info", lower["latency_label"].tip)
+    measured = _health({"latency_compensation_ms": 48.0}).chips
+    assert measured["latency_readout_label"] == Chip("~24 ms", "info", measured["latency_label"].tip)
+
 def test_counts_that_rose_since_the_last_tick_warn_once_and_the_memory_carries_them():
     diagnostics = {
         "output_underrun_total": 2, "output_true_peak_event_count": 1, "output_true_peak_db": 0.4,

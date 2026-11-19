@@ -561,15 +561,16 @@ def runtime_health(
     # figure covers AudioForge, plus the output buffer when it was read.
     latency_tip = TEXT_SPECS["latency_label"].tip
     if float(s.latency_compensation_ms) > 0.0:
-        bound = "about"
+        bound, mark = "about", "~"
     else:
-        bound = "at least"
+        bound, mark = "at least", "\u2265 "
         latency_tip += (
             LATENCY_LOWER_BOUND_NOTE if s.output_device_buffer_known else LATENCY_LOWER_BOUND_NOTE_NO_BUFFER
         )
     chips["latency_label"] = Chip(
         f"Latency: {bound} {r.latency_ms:.0f} ms (processing {r.dsp_time_ms:.1f} ms)", "info", latency_tip
     )
+    chips["latency_readout_label"] = Chip(f"{mark}{r.latency_ms:.0f} ms", "info", latency_tip)
     chips["buffer_label"] = _buffer_chip(r.input_buf + r.rnnoise_buf)
 
     underruns = int(s.output_underrun_total)

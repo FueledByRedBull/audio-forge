@@ -95,3 +95,36 @@ def test_meter_accessible_text_changes_only_when_its_words_do(qapp):
     meter.set_muted(True)
     assert heard == ["-20 dB. Muted: the level shown is the level before the mute."]
     assert ConfidenceMeter("VAD").property("accessibleText") == "no reading"
+
+
+def test_a_horizontal_meter_paints_the_bar_instead_of_the_upright_meter(qapp):
+    meter = LevelMeter("IN", show_scale=False)
+    meter.set_levels(-12.0, -6.0)
+    size = (72, 6)
+    item = QuickMeterItem()
+    item.setProperty("source", meter)
+    item.setSize(QSizeF(*size))
+    changes = QSignalSpy(item.horizontalChanged)
+    item.setProperty("horizontal", True)
+    item.setProperty("horizontal", True)
+    assert changes.count() == 1
+
+    expected = _image(size)
+    painter = QPainter(expected)
+    meter.paint_bar(painter, *size)
+    painter.end()
+    upright = _image(size)
+    painter = QPainter(upright)
+    meter.paint_meter(painter, *size)
+    painter.end()
+    actual = _image(size)
+    painter = QPainter(actual)
+    item.paint(painter)
+    painter.end()
+
+    assert actual == expected
+    assert actual != upright
+    # The bar fills from the left: the quiet end is lit, the loud end is not.
+    assert actual.pixelColor(2, 3) != actual.pixelColor(size[0] - 2, 3)
+    item.deleteLater()
+    qapp.processEvents()

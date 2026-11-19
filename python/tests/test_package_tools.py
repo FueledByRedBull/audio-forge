@@ -137,6 +137,42 @@ def test_bundle_path_baseline_includes_required_runtime_files():
     assert set(package_smoke.REQUIRED_BUNDLE_FILES) <= set(baseline["paths"])
 
 
+def test_bundle_lists_include_every_qml_file():
+    from tools.capture_repository_screenshots import _source_hashes
+
+    root = TOOLS_DIR.parents[1]
+    qml_dir = root / "python" / "mic_eq" / "ui" / "qml"
+    files = sorted((path.name for path in qml_dir.glob("*.qml")), key=str.casefold)
+    sources = "\n".join(
+        path.read_text(encoding="utf-8") for path in (root / "python" / "mic_eq").rglob("*.py")
+    )
+    entries = [line.split() for line in (qml_dir / "qmldir").read_text(encoding="utf-8").splitlines()]
+    in_qmldir = {entry[-1] for entry in entries if entry}
+    # A file that no qmldir line lists is a scene: a Python module loads it by name.
+    components = [name for name in files if name in in_qmldir]
+    assert [name for name in files if name not in in_qmldir and f'"{name}"' not in sources] == []
+    named = [entry[-1].removesuffix(".qml") for entry in entries if entry]
+    assert [name for name in named if name != "Look"] == sorted(
+        (name for name in named if name != "Look"), key=str.casefold
+    )
+    assert named[0] == "Look" and {f"{name}.qml" for name in named} == set(components)
+
+    baselines = [
+        json.loads((root / "evaluation" / name).read_text(encoding="utf-8"))["paths"]
+        for name in ("release-bundle-path-baseline.json", "release-bundle-path-baseline-linux.json")
+    ]
+    lists = {
+        "REQUIRED_BUNDLE_FILES": (package_smoke.REQUIRED_BUNDLE_FILES, "_internal/mic_eq/ui/qml/"),
+        "_source_hashes": (list(_source_hashes()), "python/mic_eq/ui/qml/"),
+        "windows baseline": (baselines[0], "_internal/mic_eq/ui/qml/"),
+        "linux baseline": (baselines[1], "_internal/mic_eq/ui/qml/"),
+    }
+    expected = sorted((*files, "qmldir"), key=str.casefold)
+    for label, (paths, prefix) in lists.items():
+        listed = [path.removeprefix(prefix) for path in paths if path.startswith(prefix)]
+        assert listed == expected, label
+
+
 def test_bundle_path_baseline_omits_payload_removed_from_the_bundle():
     baseline_path = TOOLS_DIR.parents[1] / "evaluation" / "release-bundle-path-baseline.json"
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))

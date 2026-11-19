@@ -2,8 +2,8 @@
 
 import math
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QColor, QImage, QPainter
 
 from test_eq_graph_curves import TextRecorder
 from mic_eq.ui.level_meter import (
@@ -14,6 +14,7 @@ from mic_eq.ui.level_meter import (
     GainReductionMeter,
     LevelMeter,
 )
+from mic_eq.ui.theme import PALETTE, contrast_ratio
 
 
 class _Clock:
@@ -225,6 +226,67 @@ def test_lit_marker_draws_a_clip_tag(qapp):
     # The tag is a word on a filled shape, not just a colour change.
     label_strip = (0, 160 - 18, 60, 18)
     assert lit.copy(*label_strip) != quiet.copy(*label_strip)
+
+
+class _ShapeRecorder(QPainter):
+    """A painter that keeps each text with its pen colour and each rounded rectangle with its brush."""
+
+    def __init__(self, image: QImage) -> None:
+        super().__init__(image)
+        self.texts: list[tuple[str, QColor]] = []
+        self.shapes: list[tuple[QRectF, QColor]] = []
+
+    def drawText(self, *args) -> None:  # noqa: N802 - Qt's name
+        self.texts.append((str(args[-1]), self.pen().color()))
+        super().drawText(*args)
+
+    def drawRoundedRect(self, *args) -> None:  # noqa: N802 - Qt's name
+        self.shapes.append((QRectF(args[0]), self.brush().color()))
+        super().drawRoundedRect(*args)
+
+
+def _painted(meter: LevelMeter) -> _ShapeRecorder:
+    image = QImage(60, 160, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.black)
+    painter = _ShapeRecorder(image)
+    meter.paint_meter(painter, 60, 160)
+    painter.end()
+    return painter
+
+
+def test_clip_is_told_by_shape_and_word_not_only_red(qapp):
+    clock = _Clock()
+    meter = _meter(clock)
+    quiet = _painted(meter)
+    assert [text for text, _ in quiet.texts if text.isalpha()] == ["IN"] and quiet.shapes == []
+
+    _clip(meter)
+    lit = _painted(meter)
+    words = [(text, pen) for text, pen in lit.texts if text.isalpha()]
+    assert words == [("CLIP", QColor(PALETTE.text_on_data_color))]
+    # The word sits on a filled tag the width of the meter's label row, a shape the quiet meter lacks.
+    assert len(lit.shapes) == 1
+    tag, fill = lit.shapes[0]
+    assert fill == QColor(PALETTE.meter_clip)
+    assert (tag.left(), tag.width(), tag.height()) == (2.0, 56.0, 16.0)
+    assert 160 - 18 <= tag.top() and tag.bottom() <= 160
+    # The word is readable on the tag without relying on which hue the tag is.
+    assert contrast_ratio(PALETTE.text_on_data_color, PALETTE.meter_clip) >= 4.5
+    assert meter.property("clipTagShown") is True
+
+
+def test_the_clip_tag_is_dropped_while_muted_and_when_the_marker_clears(qapp):
+    clock = _Clock()
+    meter = _meter(clock)
+    _clip(meter)
+    meter.set_muted(True)
+    muted = _painted(meter)
+    assert [text for text, _ in muted.texts if text.isalpha()] == ["MUTE"] and muted.shapes == []
+    assert meter.property("clipTagShown") is False
+    meter.set_muted(False)
+    clock.now += CLIP_HOLD_SECONDS + 0.1
+    meter._decay_peak_hold()
+    assert meter.property("clipTagShown") is False and _painted(meter).shapes == []
 
 
 def test_isolated_touches_of_full_scale_are_counted_as_times_not_as_a_flat_top(qapp):

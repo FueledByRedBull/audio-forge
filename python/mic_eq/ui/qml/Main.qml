@@ -880,7 +880,7 @@ Rectangle {
             textFormat: Text.PlainText
             leftPadding: 4
             rightPadding: 4
-            color: link.hovered ? root.t.hover_text : root.t.text_primary
+            color: link.hovered ? root.t.hover_text : root.t.accent_text
             font.pixelSize: root.fsCaption
             font.underline: true
             verticalAlignment: Text.AlignVCenter

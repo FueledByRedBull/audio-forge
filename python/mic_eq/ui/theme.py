@@ -110,11 +110,10 @@ class SemanticPalette:
     data_marker: str = "#e8c5a6"
     data_warning: str = "#f2cf5b"
     data_handle_selected: str = "#ececf0"
-    # The microphone (IN), what callers hear (OUT) and the EQ analyser, each one job only.
+    # The microphone (IN) and what callers hear (OUT), each one job only.
     signal_in: str = "#a9bbd4"
     signal_in_fill: str = "#7ea4dc"
     signal_out: str = "#e6e8ee"
-    analyser: str = "#5e9eff"
 
     # Panels that dock beside live content; translucent over the ground behind them.
     glass: str = "#8c282c36"
@@ -150,6 +149,16 @@ class SemanticPalette:
     meter_scale: str = "#9b9fa9"
     meter_reduction: str = "#a9bbd4"
 
+
+# Tokens with no reader yet, kept for work that is planned: the modal glass panel and the
+# banner that says the call is not getting the voice. test_every_palette_token_has_a_reader
+# fails for any other token without a reader, and for an entry here once it gains one.
+RESERVED_FOR_LATER: tuple[str, ...] = (
+    "glass_modal",
+    "glass_edge_modal",
+    "callers_affected_fill",
+    "callers_affected_edge",
+)
 
 
 def windows_contrast_colors() -> dict[str, str] | None:
@@ -231,7 +240,7 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         mute=accent, text_on_mute=on_accent, mute_text=text, mute_fill=window, mute_edge=accent,
         callers_affected=text, callers_affected_text=text, callers_affected_fill=window,
         callers_affected_edge=text,
-        status_ok_dot=text, signal_in=text, signal_in_fill=text, signal_out=text, analyser=text,
+        status_ok_dot=text, signal_in=text, signal_in_fill=text, signal_out=text,
         glass=window, glass_solid=window, glass_modal=window,
         glass_edge=text, glass_edge_modal=text, glass_highlight=window, glass_shadow="#00000000",
     )
@@ -477,9 +486,24 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
         PALETTE.callers_affected_text,
         flatten(PALETTE.callers_affected_fill, PALETTE.pane_surface),
     ),
-    ("primary text on glass", PALETTE.text_primary, flatten(PALETTE.glass, PALETTE.app_surface)),
-    ("muted text on glass", PALETTE.text_muted, flatten(PALETTE.glass, PALETTE.app_surface)),
-    ("muted text on compact glass", PALETTE.text_muted, flatten(PALETTE.glass_solid, PALETTE.app_surface)),
+    *(
+        (f"{label} on {glass_name} over {surface_name}", foreground, flatten(glass, surface))
+        for glass_name, glass in (("glass", PALETTE.glass), ("compact glass", PALETTE.glass_solid))
+        for surface_name, surface in (
+            ("app", PALETTE.app_surface),
+            ("rail", PALETTE.rail_surface),
+            ("pane", PALETTE.pane_surface),
+            ("sidebar top", PALETTE.sidebar_top),
+            ("sidebar bottom", PALETTE.sidebar_bottom),
+            ("card", PALETTE.card_surface),
+            ("control", PALETTE.control_surface),
+        )
+        for label, foreground in (
+            ("primary text", PALETTE.text_primary),
+            ("muted text", PALETTE.text_muted),
+            ("dim text", PALETTE.text_dim),
+        )
+    ),
     ("muted text on modal glass", PALETTE.text_muted, flatten(PALETTE.glass_modal, PALETTE.app_surface)),
     ("signal in label", PALETTE.signal_in, PALETTE.data_surface),
     ("signal out label", PALETTE.signal_out, PALETTE.data_surface),

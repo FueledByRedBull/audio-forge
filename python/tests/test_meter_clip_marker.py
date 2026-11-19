@@ -5,6 +5,7 @@ import math
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPainter
 
+from test_eq_graph_curves import TextRecorder
 from mic_eq.ui.level_meter import (
     CLIP_FLAT_TOP_SAMPLES,
     CLIP_HOLD_SECONDS,
@@ -364,3 +365,30 @@ def test_the_clip_tag_shows_while_the_marker_is_lit_and_the_output_is_heard(qapp
     reduction = GainReductionMeter("GR")
     reduction.set_gain_reduction(20.0)
     assert reduction.property("clipTagShown") is False
+
+
+def _painted_meter_texts(meter, width: int, height: int) -> list[tuple[str, int]]:
+    image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.black)
+    painter = TextRecorder(image)
+    meter.paint_meter(painter, width, height)
+    painter.end()
+    return painter.texts
+
+
+def test_meter_painter_text_meets_the_type_floor(qapp):
+    meter = _meter(_Clock(), "OUT")
+    texts = _painted_meter_texts(meter, 60, 160)
+    _clip(meter)
+    texts += _painted_meter_texts(meter, 60, 160)
+    meter.set_muted(True)
+    texts += _painted_meter_texts(meter, 60, 160)
+    reduction = GainReductionMeter("GR")
+    reduction.set_gain_reduction(3.2)
+    texts += _painted_meter_texts(reduction, 160, 24)
+
+    ticks = [size for text, size in texts if text.lstrip("-").isdigit()]
+    others = [(text, size) for text, size in texts if not text.lstrip("-").isdigit()]
+    assert ticks and min(ticks) >= 11
+    assert {"OUT", "CLIP", "MUTE", "GR: 3.2 dB"} <= {text for text, _size in others}
+    assert all(size >= 12 for _text, size in others), others

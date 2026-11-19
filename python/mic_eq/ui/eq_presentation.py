@@ -1,10 +1,11 @@
 """Shared EQ graph data and menus, rendered by the Qt Quick view."""
 
 from PySide6.QtCore import QObject, QTimer, Slot
-from PySide6.QtWidgets import QMenu, QWidget
+from PySide6.QtWidgets import QWidget
 
 from .eq_graph import EQGraphModel
 from .eq_state import EQState
+from .theme import themed_menu
 from ..config_parts.app_config import INPUT_CLEANUP_MODES
 
 
@@ -16,7 +17,7 @@ class EQPresentation(QObject):
         self.eq_state = state
         self.graph_model = EQGraphModel(self)
         widget_parent = parent if isinstance(parent, QWidget) else None
-        tone_menu = QMenu(widget_parent)
+        tone_menu = themed_menu(widget_parent)
         for name, tooltip, handler in (
             (
                 "Voice",
@@ -51,7 +52,7 @@ class EQPresentation(QObject):
         tone_menu.setToolTipsVisible(True)
         self.tone_menu = tone_menu
 
-        options_menu = QMenu(widget_parent)
+        options_menu = themed_menu(widget_parent)
         clear_action = options_menu.addAction("Clear Auto-EQ")
         clear_action.setToolTip("Remove the calibrated EQ layer while keeping the tone")
         clear_action.triggered.connect(state.clear_correction)

@@ -443,7 +443,11 @@ jobs:
           cache: pip
           cache-dependency-path: requirements/dev.txt
       - name: Install system build dependencies
+        timeout-minutes: 10
         run: |
+          # A stalled mirror otherwise holds the job until its timeout.
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30"; Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/80-network-timeouts >/dev/null
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             libasound2-dev libclang-dev libdbus-1-dev libegl1 libpipewire-0.3-dev \
@@ -530,7 +534,11 @@ jobs:
           cache: pip
           cache-dependency-path: requirements/dev.txt
       - name: Install system build dependencies
+        timeout-minutes: 10
         run: |
+          # A stalled mirror otherwise holds the job until its timeout.
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30"; Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/80-network-timeouts >/dev/null
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             libasound2-dev libclang-dev libdbus-1-dev libegl1 libpipewire-0.3-dev \

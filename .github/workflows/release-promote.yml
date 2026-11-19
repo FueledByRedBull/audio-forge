@@ -557,7 +557,11 @@ jobs:
 
       - name: Install the libraries the Linux app starts with
         shell: bash
+        timeout-minutes: 10
         run: |
+          # A stalled mirror otherwise holds the job until its timeout.
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30"; Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/80-network-timeouts >/dev/null
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             libasound2t64 libdbus-1-3 libegl1 libfontconfig1 libfreetype6 libgl1 \

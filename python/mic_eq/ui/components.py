@@ -12,6 +12,7 @@ class Glyph:
     """Code points shared by both Windows system icon fonts."""
 
     MICROPHONE = ""
+    SPEAKER = ""
     HEALTH = ""
     SETTINGS = ""
     MORE = ""

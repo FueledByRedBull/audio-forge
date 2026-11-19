@@ -4,6 +4,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
+import QtQuick.Templates as T
 import AudioForge
 
 Rectangle {
@@ -70,7 +71,7 @@ Rectangle {
     // Hovering the parent or moving keyboard focus onto it shows the help; a click does not.
     component Hint: HoverHandler {
         property string text: ""
-        property bool focused: parent.visualFocus === true
+        property bool focused: (parent as T.Control)?.visualFocus === true
         onHoveredChanged: sync()
         onFocusedChanged: sync()
         function sync() {
@@ -644,6 +645,11 @@ Rectangle {
     component Page: Flickable {
         id: page
         default property alias content: column.data
+        property alias spacing: column.spacing
+        // The room left of the content, and right of it where the scroll bar runs.
+        property int leftInset: 8
+        property int rightInset: 16
+        property string scrollName: "Page scroll bar"
         contentHeight: column.implicitHeight + 24
         boundsBehavior: Flickable.StopAtBounds
         // A mouse drag belongs to the controls; wheel, scroll bar and touch still scroll.
@@ -662,9 +668,14 @@ Rectangle {
             else if (top + item.height > contentY + height - 12)
                 contentY = Math.min(contentHeight - height, top + item.height - height + 12)
         }
+        // Bring `item` to the top of the page.
+        function reveal(item) {
+            const top = item.mapToItem(contentItem, 0, 0).y
+            contentY = Math.max(0, Math.min(contentHeight - height, top - 12))
+        }
         ScrollBar.vertical: ScrollBar {
             id: bar
-            Accessible.name: "Page scroll bar"
+            Accessible.name: page.scrollName
             policy: page.contentHeight > page.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
             contentItem: Rectangle {
                 implicitWidth: 6
@@ -674,218 +685,562 @@ Rectangle {
         }
         ColumnLayout {
             id: column
-            x: 8
+            x: page.leftInset
             y: 4
-            width: parent.width - 24
+            width: parent.width - page.leftInset - page.rightInset
             spacing: 16
         }
     }
 
-    // Navigation rail
+    // Mute stays pressed while the output is muted, in the mute violet; its words do not change.
+    component MuteBtn: ModelButton {
+        id: mute
+        property var proxy
+        on: proxy ? proxy.checked : false
+        enabled: proxy ? proxy.enabled : false
+        onRequested: proxy.click()
+        opacity: enabled ? 1 : 0.45
+        implicitWidth: muteMetrics.width + 28
+        implicitHeight: 32
+        Accessible.role: Accessible.Button
+        Accessible.name: proxy ? proxy.name : ""
+        Accessible.description: proxy ? proxy.toolTip : ""
+        // A button that stays pressed toggles, so assistive technology can switch it as a toggle too.
+        Accessible.onToggleAction: click()
+        Hint { text: mute.proxy ? mute.proxy.toolTip : "" }
+        // Measured bold, so pressing it does not change its width.
+        TextMetrics { id: muteMetrics; text: muteLabel.text; font.pixelSize: root.fsBody; font.weight: Font.DemiBold }
+        background: Rectangle {
+            radius: root.t.radiusControl
+            color: mute.on ? root.t.mute_fill : mute.hovered ? root.t.control_hover : root.t.control_surface
+            border.color: mute.on ? root.t.mute_edge : root.t.control_edge
+            Behavior on color { ColorAnimation { duration: root.t.motionRow } }
+            FocusRing { control: mute }
+        }
+        contentItem: Text {
+            id: muteLabel
+            text: "Mute"
+            textFormat: Text.PlainText
+            color: mute.on ? root.t.mute_text : mute.hovered ? root.t.hover_text : root.t.text_primary
+            font.pixelSize: root.fsBody
+            font.weight: mute.on ? Font.DemiBold : Font.Normal
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+    }
+
+    // A command shown as underlined text beside the note it belongs to.
+    component LinkBtn: KeyButton {
+        id: link
+        property var proxy
+        text: proxy ? proxy.text : ""
+        enabled: proxy ? proxy.enabled : false
+        opacity: enabled ? 1 : 0.45
+        implicitWidth: linkText.implicitWidth
+        implicitHeight: 24
+        onClicked: if (proxy) root.press(this, proxy)
+        Accessible.role: Accessible.Button
+        Accessible.name: text
+        Accessible.description: proxy ? proxy.toolTip : ""
+        Hint { text: link.proxy ? link.proxy.toolTip : "" }
+        background: Item { FocusRing { control: link; outset: 0 } }
+        contentItem: Text {
+            id: linkText
+            text: link.text
+            textFormat: Text.PlainText
+            leftPadding: 4
+            rightPadding: 4
+            color: link.hovered ? root.t.hover_text : root.t.text_primary
+            font.pixelSize: root.fsCaption
+            font.underline: true
+            verticalAlignment: Text.AlignVCenter
+        }
+    }
+
+    // A stage's switch on its sidebar row; the same model as the switch on the stage card.
+    component ChainSwitch: Toggle {}
+
+    // A small uppercase heading over a group in the sidebar.
+    component SectionLabel: Text {
+        textFormat: Text.PlainText
+        color: root.t.text_dim
+        font.pixelSize: root.fsCaption
+        font.weight: Font.DemiBold
+        font.letterSpacing: 1.2
+    }
+
+    // One sidebar row: a button with the name and a state line, and the stage's switch if it has one.
+    component NavRow: Item {
+        id: nav
+        property string name
+        property string detail: ""
+        property bool current: false
+        property bool dim: false
+        property var toggle: null
+        signal opened()
+        implicitHeight: 46
+        KeyButton {
+            id: navButton
+            readonly property bool current: nav.current
+            anchors.fill: parent
+            onClicked: nav.opened()
+            Accessible.role: Accessible.Button
+            Accessible.name: nav.name
+            Accessible.description: nav.detail
+            Accessible.selectable: true
+            Accessible.selected: nav.current
+            background: Rectangle {
+                radius: 10
+                color: navButton.current ? root.t.accent_fill : navButton.hovered ? root.t.control_hover : "transparent"
+                border.color: navButton.current ? root.t.accent_edge : "transparent"
+                Behavior on color { ColorAnimation { duration: root.t.motionRow } }
+                FocusRing { control: navButton; outset: -2 }
+            }
+            contentItem: Column {
+                topPadding: nav.detail !== "" ? 6 : 0
+                spacing: 1
+                Text {
+                    width: parent.width
+                    height: nav.detail !== "" ? implicitHeight : nav.height
+                    text: nav.name
+                    textFormat: Text.PlainText
+                    leftPadding: 12
+                    rightPadding: !!nav.toggle ? 52 : 12
+                    color: nav.dim ? root.t.text_dim : root.t.text_primary
+                    font.pixelSize: root.fsBody
+                    font.weight: Font.Medium
+                    elide: Text.ElideRight
+                    verticalAlignment: Text.AlignVCenter
+                    Behavior on color { ColorAnimation { duration: root.t.motionRow } }
+                }
+                Text {
+                    width: parent.width
+                    visible: nav.detail !== ""
+                    text: nav.detail
+                    textFormat: Text.PlainText
+                    leftPadding: 12
+                    rightPadding: !!nav.toggle ? 52 : 12
+                    color: nav.current ? root.t.accent_soft : root.t.text_muted
+                    font.pixelSize: root.fsCaption
+                    elide: Text.ElideRight
+                }
+            }
+        }
+        ChainSwitch {
+            visible: !!nav.toggle
+            proxy: nav.toggle
+            anchors.right: parent.right
+            anchors.rightMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+        }
+    }
+
+    // A level meter in the toolbar: its name, a thin bar, and the reading when there is room.
+    component LevelReadout: RowLayout {
+        id: readout
+        property var meter
+        property string label
+        property bool valueShown: true
+        spacing: 6
+        // A clip is said by a word on a filled tag, as on the upright meter, not by colour alone.
+        Rectangle {
+            implicitWidth: root.readoutLabelWidth
+            implicitHeight: readoutLabel.implicitHeight + 2
+            radius: 3
+            color: readout.meter.clipTagShown ? root.t.meter_clip : "transparent"
+            Caption {
+                id: readoutLabel
+                anchors.centerIn: parent
+                text: readout.meter.clipTagShown ? "CLIP" : readout.label
+                color: readout.meter.clipTagShown ? root.t.text_on_data_color : root.t.text_muted
+                font.pixelSize: root.fsCaption
+                font.weight: Font.DemiBold
+                Accessible.ignored: true
+            }
+        }
+        QuickMeterItem {
+            source: readout.meter
+            horizontal: true
+            implicitHeight: 6
+            Layout.preferredWidth: root.readoutBarWidth
+            Accessible.role: Accessible.ProgressBar
+            Accessible.name: readout.meter.name
+            // The reading first; it changes only when the whole-dB value or the words do.
+            Accessible.description: readout.meter.accessibleText
+        }
+        Caption {
+            visible: readout.valueShown
+            text: readout.meter.valueText
+            font.pixelSize: root.fsCaption
+            font.features: { "tnum": 1 }
+            Layout.preferredWidth: root.readoutValueWidth
+            Accessible.ignored: true
+        }
+    }
+
+    // A chain row opens its own page, or else scrolls the Overview to the stage's card.
+    function openChainRow(row) {
+        if (row.page >= 0) {
+            m.page.setIndex(row.page)
+            return
+        }
+        m.page.setIndex(0)
+        overviewPage.reveal(stageCards.itemAt(row.stage))
+    }
+
+    // The toolbar meters keep their size whatever they read, so the row does not shift.
+    TextMetrics { id: clipMetrics; text: "CLIP"; font.pixelSize: root.fsCaption; font.weight: Font.DemiBold }
+    TextMetrics { id: outMetrics; text: "OUT"; font.pixelSize: root.fsCaption; font.weight: Font.DemiBold }
+    TextMetrics { id: valueMetrics; text: "no signal"; font.pixelSize: root.fsCaption }
+    readonly property real readoutLabelWidth: Math.ceil(Math.max(clipMetrics.width, outMetrics.width)) + 8
+    readonly property real readoutValueWidth: Math.ceil(valueMetrics.width) + 2
+    readonly property int readoutBarWidth: 72
+    readonly property real readoutWidth: readoutLabelWidth + readoutBarWidth + readoutValueWidth + 12
+
+    // Toolbar: the route, the mode, Mute, the levels, the latency and the transport in one row.
     Rectangle {
-        id: rail
-        width: 76
-        height: parent.height
-        color: root.t.rail_surface
-        Column {
-            y: 14
-            Accessible.role: Accessible.PageTabList
-            Repeater {
-                model: [[root.m.glyphs.mic, "Mic"], [root.m.glyphs.health, "Health"],
-                        [root.m.glyphs.settings, "Settings"]]
-                delegate: KeyButton {
-                    id: nav
-                    required property var modelData
-                    required property int index
-                    readonly property bool current: root.m.page.index === index
-                    width: 76
-                    height: 66
-                    onClicked: root.m.page.setIndex(index)
-                    Accessible.role: Accessible.PageTab
-                    Accessible.name: modelData[1] + " page"
-                    Accessible.selectable: true
-                    Accessible.selected: current
-                    background: Rectangle {
-                        color: nav.current || nav.hovered ? root.t.card_surface : "transparent"
-                        Behavior on color { ColorAnimation { duration: root.t.motion } }
-                        Rectangle {
-                            width: 3
-                            height: nav.current ? parent.height : 0
-                            anchors.verticalCenter: parent.verticalCenter
-                            radius: 1.5
-                            color: root.t.accent
-                            Behavior on height {
-                                NumberAnimation { duration: root.t.motion; easing.type: Easing.OutCubic }
-                            }
-                        }
-                        FocusRing { control: nav; outset: -4 }
-                    }
-                    contentItem: Column {
-                        topPadding: 12
-                        spacing: 6
-                        Text {
-                            textFormat: Text.PlainText
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            text: nav.modelData[0]
-                            visible: root.hasIcons
-                            color: nav.current ? root.t.accent
-                                 : nav.hovered ? root.t.text_primary : root.t.text_muted
-                            font.family: root.t.iconFont
-                            font.pixelSize: root.fsTitle
-                        }
-                        Text {
-                            textFormat: Text.PlainText
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            text: nav.modelData[1]
-                            color: nav.current || nav.hovered ? root.t.text_primary : root.t.text_muted
-                            font.pixelSize: root.fsCaption
-                            font.weight: nav.current ? Font.DemiBold : Font.Normal
-                        }
+        id: toolbar
+        objectName: "toolbar"
+        readonly property int gap: 10
+        // The row with every part shown. In less room the brand, the mode's key word, the dB
+        // readings and the latency caption give way, and the two meters stack.
+        readonly property real fullWidth: toolRow.anchors.leftMargin + toolRow.anchors.rightMargin + 10 * gap
+            + brand.implicitWidth + 2 * 140 + refresh.implicitWidth
+            + modeKey.width + 6 + modeMetrics.width + 36
+            + muteButton.implicitWidth + 2 * root.readoutWidth + meterGrid.columnSpacing
+            + Math.max(latencyFigure.implicitWidth, latencyCaption.implicitWidth)
+            + 1 + transport.implicitWidth
+        readonly property bool full: fullWidth <= width
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        // Taller only when large text stacks the meters past the usual height.
+        height: Math.max(56, toolRow.implicitHeight + 8)
+        gradient: Gradient {
+            GradientStop { position: 0; color: root.t.toolbar_top }
+            GradientStop { position: 1; color: root.t.toolbar_bottom }
+        }
+        Rectangle {
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: 1
+            color: root.t.border
+        }
+        TextMetrics { id: modeKey; text: "Mode"; font.pixelSize: root.fsBody }
+        // The widest choice, bold as a choice that changes the sound is shown.
+        TextMetrics {
+            id: modeMetrics
+            text: root.m.top.mode.items.reduce((wide, item) => item.length > wide.length ? item : wide, "")
+            font.pixelSize: root.fsBody
+            font.weight: Font.DemiBold
+        }
+        RowLayout {
+            id: toolRow
+            objectName: "toolRow"
+            anchors.fill: parent
+            anchors.leftMargin: 16
+            anchors.rightMargin: 12
+            spacing: toolbar.gap
+            Text {
+                id: brand
+                visible: toolbar.full
+                text: "AudioForge"
+                textFormat: Text.PlainText
+                color: root.t.text_primary
+                font.pixelSize: root.fsLead
+                font.weight: Font.DemiBold
+            }
+            Picker {
+                proxy: root.m.top.input
+                glyph: root.hasIcons ? root.m.glyphs.mic : ""
+                Layout.fillWidth: true
+                Layout.preferredWidth: 240
+                Layout.maximumWidth: 260
+                // The pickers give up width first; a cut name is whole in the tooltip.
+                Layout.minimumWidth: toolbar.full ? 140 : 120
+            }
+            Picker {
+                proxy: root.m.top.output
+                glyph: root.hasIcons ? root.m.glyphs.speaker : ""
+                Layout.fillWidth: true
+                Layout.preferredWidth: 240
+                Layout.maximumWidth: 260
+                Layout.minimumWidth: toolbar.full ? 140 : 120
+            }
+            IconBtn { id: refresh; proxy: root.m.top.refresh; glyph: root.m.glyphs.refresh; label: "Refresh" }
+            Picker {
+                proxy: root.m.top.mode
+                key: toolbar.full ? "Mode" : ""
+                alert: root.m.top.mode.index > 0
+                implicitWidth: (key !== "" ? modeKey.width + 6 : 0) + modeMetrics.width + 36
+            }
+            // The levels and the latency sit between Mute and Start, so one slip cannot hit both.
+            MuteBtn { id: muteButton; proxy: root.m.top.mute }
+            GridLayout {
+                id: meterGrid
+                columns: toolbar.full ? 2 : 1
+                columnSpacing: 14
+                rowSpacing: 4
+                Repeater {
+                    model: root.m.meters
+                    delegate: LevelReadout {
+                        required property var modelData
+                        required property int index
+                        meter: modelData
+                        label: index === 0 ? "IN" : "OUT"
+                        valueShown: toolbar.full
                     }
                 }
+            }
+            Item {
+                implicitWidth: latencyColumn.implicitWidth
+                implicitHeight: latencyColumn.implicitHeight
+                Hint { text: root.m.top.latency.toolTip }
+                Column {
+                    id: latencyColumn
+                    Text {
+                        id: latencyFigure
+                        text: root.m.top.latency.text
+                        textFormat: Text.PlainText
+                        color: root.t.text_primary
+                        font.pixelSize: root.fsBody
+                        font.weight: Font.DemiBold
+                        font.features: { "tnum": 1 }
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: latencyCaption.text + ": " + text
+                    }
+                    Text {
+                        id: latencyCaption
+                        visible: toolbar.full
+                        text: root.m.top.latency.data.measured ? "Latency" : "Latency, not measured"
+                        textFormat: Text.PlainText
+                        color: root.t.text_muted
+                        font.pixelSize: root.fsCaption
+                        Accessible.ignored: true
+                    }
+                }
+            }
+            Item { Layout.fillWidth: true }
+            Rectangle {
+                implicitWidth: 1
+                implicitHeight: 28
+                color: root.t.border_strong
+            }
+            Btn {
+                id: transport
+                proxy: root.running ? root.m.top.stop : root.m.top.start
+                text: root.running ? "Stop" : "Start"
+                look: root.running ? "danger" : "primary"
+                implicitWidth: Math.max(92, contentItem.implicitWidth + 28)
+                implicitHeight: 34
+                Accessible.name: proxy.text
             }
         }
     }
 
-    // Level meters, in a panel of their own so they read as one instrument.
+    // Sidebar: the preset, the pages and the signal chain, and the health of the stream.
     Rectangle {
-        id: meters
-        objectName: "meterPanel"
-        anchors.right: parent.right
-        anchors.top: parent.top
+        id: sidebar
+        objectName: "sidebar"
+        anchors.left: parent.left
+        anchors.top: toolbar.bottom
         anchors.bottom: parent.bottom
-        anchors.margins: 18
-        anchors.leftMargin: 0
-        anchors.bottomMargin: 46
-        width: meterRow.width + 20
-        radius: root.t.radiusCard + 2
-        color: root.t.card_surface
-        border.color: root.t.border
-        Row {
-            id: meterRow
-            x: 10
-            y: 12
-            height: parent.height - 24
-            spacing: 6
-            Repeater {
-                model: root.m.meters
-                delegate: QuickMeterItem {
-                    required property var modelData
-                    source: modelData
-                    width: 50
-                    height: meterRow.height
-                    Accessible.role: Accessible.ProgressBar
-                    Accessible.name: modelData.name
-                    // The reading first; it changes only when the whole-dB value or the words do.
-                    Accessible.description: modelData.accessibleText
+        width: root.wide ? 260 : 220
+        gradient: Gradient {
+            GradientStop { position: 0; color: root.t.sidebar_top }
+            GradientStop { position: 1; color: root.t.sidebar_bottom }
+        }
+        Rectangle {
+            anchors.right: parent.right
+            width: 1
+            height: parent.height
+            color: root.t.border
+        }
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 12
+            anchors.rightMargin: 13
+            spacing: 12
+
+            ColumnLayout {
+                id: presetBlock
+                objectName: "presetBlock"
+                readonly property var preset: root.m.presets.status.data
+                spacing: 8
+                Layout.fillWidth: true
+                Accessible.name: root.m.presets.status.name + ": " + root.m.presets.status.text
+                SectionLabel { text: "PRESET" }
+                RowLayout {
+                    spacing: 8
+                    Layout.fillWidth: true
+                    Text {
+                        objectName: "presetName"
+                        textFormat: Text.PlainText
+                        text: presetBlock.preset.name
+                        color: root.t.text_primary
+                        font.pixelSize: root.fsLead
+                        font.weight: Font.DemiBold
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                        Layout.maximumWidth: implicitWidth
+                        // A name cut short is shown whole in the tooltip.
+                        Hint { text: parent.truncated ? parent.text : "" }
+                    }
+                    Rectangle {
+                        implicitWidth: stateText.implicitWidth + 16
+                        implicitHeight: 20
+                        radius: 10
+                        color: presetBlock.preset.modified ? root.t.status_warn_surface : root.t.status_idle_surface
+                        border.color: presetBlock.preset.modified ? root.t.status_warn_border
+                                                                  : root.t.status_idle_border
+                        Text {
+                            id: stateText
+                            textFormat: Text.PlainText
+                            anchors.centerIn: parent
+                            text: presetBlock.preset.modified ? "Unsaved changes" : "Saved"
+                            color: presetBlock.preset.modified ? root.t.status_warn_text : root.t.status_idle_text
+                            font.pixelSize: root.fsCaption
+                        }
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+                Flow {
+                    spacing: 8
+                    Layout.fillWidth: true
+                    Btn { proxy: root.m.presets.menu }
+                    IconBtn { proxy: root.m.presets.undo; glyph: root.m.glyphs.undo; visible: root.hasIcons }
+                    IconBtn { proxy: root.m.presets.redo; glyph: root.m.glyphs.redo; visible: root.hasIcons }
+                    // Without a system icon font the two are spelled out.
+                    Btn { proxy: root.m.presets.undo; visible: !root.hasIcons }
+                    Btn { proxy: root.m.presets.redo; visible: !root.hasIcons }
+                }
+            }
+
+            Page {
+                id: navigation
+                leftInset: 0
+                rightInset: 8
+                spacing: 2
+                scrollName: "Navigation scroll bar"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Accessible.role: Accessible.Grouping
+                Accessible.name: "Navigation"
+                NavRow {
+                    name: "Overview"
+                    current: root.m.page.index === 0
+                    onOpened: root.m.page.setIndex(0)
+                    Layout.fillWidth: true
+                }
+                SectionLabel { text: "SIGNAL CHAIN"; Layout.topMargin: 14; Layout.bottomMargin: 4 }
+                Repeater {
+                    model: root.m.sidebar.chain
+                    delegate: NavRow {
+                        required property var modelData
+                        name: modelData.name
+                        toggle: modelData.toggle
+                        detail: modelData.state ? modelData.state.text : modelData.toggle.checked ? "On" : "Off"
+                        dim: !!modelData.toggle && !modelData.toggle.checked
+                        current: modelData.page === root.m.equalizerPage && root.m.page.index === modelData.page
+                        onOpened: root.openChainRow(modelData)
+                        Layout.fillWidth: true
+                    }
+                }
+            }
+
+            ColumnLayout {
+                id: footer
+                objectName: "sidebarFooter"
+                spacing: 8
+                Layout.fillWidth: true
+                Rectangle {
+                    implicitHeight: 1
+                    color: root.t.border
+                    Layout.fillWidth: true
+                    Layout.bottomMargin: 4
+                }
+                RowLayout {
+                    spacing: 8
+                    Layout.fillWidth: true
+                    // Heard (green), muted or waiting for a mute (amber), or stopped; the words say which.
+                    Rectangle {
+                        objectName: "transmissionDot"
+                        implicitWidth: 8
+                        implicitHeight: 8
+                        radius: 4
+                        color: ({ ok: root.t.status_ok_text, warn: root.t.status_warn_text })[
+                            root.m.status.transmission.state] ?? root.t.control_edge
+                        Behavior on color { ColorAnimation { duration: root.t.motionStatus } }
+                    }
+                    StatusText {
+                        objectName: "statusTransmission"
+                        text: root.m.status.transmission.text
+                        color: root.t.text_primary
+                        font.pixelSize: root.fsCaption
+                        Layout.fillWidth: true
+                        tip: truncated ? text : ""
+                    }
+                }
+                Chip {
+                    proxy: root.m.status.health
+                    announced: false
+                    single: true
+                    implicitHeight: 28
+                    // A long reading is cut short; the tooltip and the name carry all of it.
+                    Layout.maximumWidth: footer.width
+                    ModelButton {
+                        id: healthToggle
+                        objectName: "healthToggle"
+                        anchors.fill: parent
+                        on: root.m.page.index === root.m.healthPage
+                        onRequested: root.m.page.setIndex(checked ? root.m.healthPage : 0)
+                        Accessible.role: Accessible.Button
+                        // Named by what it shows; the action goes in the description.
+                        Accessible.name: root.m.status.health.text
+                        Accessible.description: checked ? "Hide audio health details" : "Show audio health details"
+                        background: Item { FocusRing { control: healthToggle } }
+                    }
+                }
+                StatusText {
+                    objectName: "statusCalibration"
+                    text: root.m.status.calibration.text
+                    font.pixelSize: root.fsCaption
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
+                    Layout.topMargin: 6
+                    tip: truncated ? text : ""
+                }
+                RowLayout {
+                    spacing: 8
+                    Layout.fillWidth: true
+                    LinkBtn { proxy: root.m.sidebar.measureLatency; Layout.leftMargin: -4 }
+                    Item { Layout.fillWidth: true }
+                    IconBtn {
+                        glyph: root.m.glyphs.settings
+                        label: "Settings"
+                        hint: "Settings"
+                        onClicked: root.m.page.setIndex(root.m.settingsPage)
+                        Accessible.selectable: true
+                        Accessible.selected: root.m.page.index === root.m.settingsPage
+                    }
                 }
             }
         }
     }
 
     ColumnLayout {
-        id: content
-        objectName: "contentColumn"
-        anchors.left: rail.right
-        anchors.right: meters.left
-        anchors.top: parent.top
+        id: mainPane
+        objectName: "mainPane"
+        anchors.left: sidebar.right
+        anchors.right: parent.right
+        anchors.top: toolbar.bottom
         anchors.bottom: parent.bottom
-        anchors.margins: 18
-        anchors.leftMargin: 10
-        anchors.rightMargin: 0
-        anchors.bottomMargin: 10
+        anchors.leftMargin: root.wide ? 24 : 12
+        anchors.topMargin: 16
+        anchors.bottomMargin: 8
         spacing: 12
 
-        // Top bar: route and transport
-        Surface {
-            Layout.fillWidth: true
-            Layout.leftMargin: 8
-            Layout.rightMargin: 16
-            pad: 14
-            // The route and the transport share a row when there is room, else the route is on top.
-            GridLayout {
-                objectName: "topBar"
-                columns: root.wide ? 2 : 1
-                columnSpacing: 12
-                rowSpacing: 10
-                RowLayout {
-                    spacing: 12
-                    Layout.fillWidth: true
-                    Caption { text: root.wide ? "Input" : "In" }
-                    Picker {
-                        proxy: root.m.top.input
-                        Layout.fillWidth: true
-                        Layout.preferredWidth: 200
-                        // Beside the transport the pickers give up width first, so the Muted badge
-                        // and a large app font still fit; a cut name is whole in the tooltip.
-                        Layout.minimumWidth: root.wide ? 100 : 140
-                    }
-                    Text {
-                        textFormat: Text.PlainText
-                        text: root.m.glyphs.next
-                        visible: root.hasIcons
-                        font.family: root.t.iconFont
-                        font.pixelSize: root.fsCaption
-                        color: root.t.text_muted
-                    }
-                    Caption { text: root.wide ? "Output" : "Out" }
-                    Picker {
-                        proxy: root.m.top.output
-                        Layout.fillWidth: true
-                        Layout.preferredWidth: 200
-                        Layout.minimumWidth: root.wide ? 100 : 140
-                    }
-                    IconBtn { proxy: root.m.top.refresh; glyph: root.m.glyphs.refresh; label: "Refresh" }
-                }
-                RowLayout {
-                    spacing: 12
-                    Layout.alignment: Qt.AlignRight
-                    Rectangle {
-                        implicitWidth: 1
-                        visible: root.wide
-                        color: root.t.border
-                        Layout.fillHeight: true
-                        Layout.topMargin: 4
-                        Layout.bottomMargin: 4
-                    }
-                    // Said in words as well as by the switch: a mute nobody notices leaves the other
-                    // end hearing nothing.
-                    Rectangle {
-                        objectName: "mutedBadge"
-                        visible: root.m.top.mute.checked
-                        implicitWidth: mutedText.implicitWidth + 20
-                        implicitHeight: 26
-                        radius: 13
-                        color: root.t.status_warn_surface
-                        border.color: root.t.status_warn_border
-                        Text {
-                            id: mutedText
-                            anchors.centerIn: parent
-                            text: "Muted"
-                            textFormat: Text.PlainText
-                            color: root.t.status_warn_text
-                            font.pixelSize: root.fsBody
-                            font.weight: Font.DemiBold
-                            // The switch already says it, and the status line announces the change.
-                            Accessible.ignored: true
-                        }
-                    }
-                    // The mode picker sits between Mute and Stop, so one slip cannot hit both.
-                    Toggle { proxy: root.m.top.mute; text: "Mute" }
-                    Picker { proxy: root.m.top.mode; implicitWidth: 118; alert: root.m.top.mode.index > 0 }
-                    Btn {
-                        proxy: root.running ? root.m.top.stop : root.m.top.start
-                        text: root.running ? "Stop" : "Start"
-                        look: root.running ? "danger" : "primary"
-                        implicitWidth: 112
-                        implicitHeight: 34
-                        Accessible.name: proxy.text
-                    }
-                }
-            }
-        }
-
-        // Under the top bar, so Start and Mute stay where they are when one appears.
+        // Under the toolbar, so Start and Mute stay where they are when one appears.
         Repeater {
             model: root.m.banners
             delegate: Rectangle {
@@ -919,193 +1274,16 @@ Rectangle {
             Layout.fillHeight: true
             currentIndex: root.m.page.index
 
-            // Mic page
             Page {
-                objectName: "micPage"
-                // The buttons drop under the name when the two do not fit side by side.
-                GridLayout {
-                    id: presetBar
-                    objectName: "presetBar"
-                    readonly property var preset: root.m.presets.status.data
-                    columns: presetTitle.implicitWidth + presetActions.implicitWidth + columnSpacing <= width ? 2 : 1
-                    columnSpacing: 12
-                    rowSpacing: 8
+                id: overviewPage
+                objectName: "overviewPage"
+                Flow {
+                    spacing: 12
                     Layout.fillWidth: true
                     Layout.topMargin: 2
-                    Accessible.name: root.m.presets.status.name + ": " + root.m.presets.status.text
-                    ColumnLayout {
-                        id: presetTitle
-                        spacing: 2
-                        Layout.fillWidth: true
-                        Text {
-                            textFormat: Text.PlainText
-                            text: "PRESET"
-                            color: root.t.text_muted
-                            font.pixelSize: root.fsCaption
-                            font.letterSpacing: 1.2
-                            font.weight: Font.DemiBold
-                        }
-                        RowLayout {
-                            spacing: 10
-                            Text {
-                                objectName: "presetName"
-                                textFormat: Text.PlainText
-                                text: presetBar.preset.name
-                                color: root.t.text_primary
-                                font.pixelSize: root.fsHeading
-                                font.weight: Font.DemiBold
-                                elide: Text.ElideRight
-                                Layout.fillWidth: true
-                                Layout.maximumWidth: Math.min(implicitWidth, 420)
-                                // A name cut short is shown whole in the tooltip.
-                                Hint { text: parent.truncated ? parent.text : "" }
-                            }
-                            Rectangle {
-                                implicitWidth: stateText.implicitWidth + 16
-                                implicitHeight: 20
-                                radius: 10
-                                color: presetBar.preset.modified ? root.t.status_warn_surface
-                                                                 : root.t.status_idle_surface
-                                border.color: presetBar.preset.modified ? root.t.status_warn_border
-                                                                        : root.t.status_idle_border
-                                Text {
-                                    id: stateText
-                                    textFormat: Text.PlainText
-                                    anchors.centerIn: parent
-                                    text: presetBar.preset.modified ? "Unsaved changes" : "Saved"
-                                    color: presetBar.preset.modified ? root.t.status_warn_text
-                                                                     : root.t.status_idle_text
-                                    font.pixelSize: root.fsCaption
-                                }
-                            }
-                            Item { Layout.fillWidth: true }
-                        }
-                    }
-                    RowLayout {
-                        id: presetActions
-                        spacing: 12
-                        Layout.fillWidth: false
-                        Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
-                        Btn { proxy: root.m.presets.menu }
-                        IconBtn { proxy: root.m.presets.undo; glyph: root.m.glyphs.undo; visible: root.hasIcons }
-                        IconBtn { proxy: root.m.presets.redo; glyph: root.m.glyphs.redo; visible: root.hasIcons }
-                        // Without a system icon font the two are spelled out.
-                        Btn { proxy: root.m.presets.undo; visible: !root.hasIcons }
-                        Btn { proxy: root.m.presets.redo; visible: !root.hasIcons }
-                        Btn { proxy: root.m.presets.testSound }
-                        Btn { proxy: root.m.presets.autoEq }
-                        Btn { objectName: "voiceSetupButton"; proxy: root.m.presets.voiceSetup }
-                    }
-                }
-
-                Surface {
-                    id: eqCard
-                    readonly property var eq: root.m.eq
-                    readonly property var band: eq.bands[eq.band.index]
-                    readonly property bool calibrated: eq.diagnostics.data.calibrated
-                    Layout.fillWidth: true
-                    CardHeader {
-                        card: eqCard.eq
-                        Layout.fillWidth: true
-                        Caption { text: eqCard.eq.layers.text; visible: root.wide }
-                        Btn { proxy: eqCard.eq.tone }
-                        IconBtn { proxy: eqCard.eq.menu; glyph: root.m.glyphs.more; label: "More" }
-                    }
-                    EQGraphItem {
-                        graph: eqCard.eq.curve
-                        Layout.fillWidth: true
-                        implicitHeight: 300
-                        activeFocusOnTab: true
-                        Accessible.role: Accessible.Graphic
-                        Accessible.name: "Equalizer graph"
-                        Accessible.description: graph ? graph.accessibleDescription : ""
-                        FocusRing { visible: parent.activeFocus }
-                    }
-                    Caption {
-                        text: eqCard.eq.layers.text
-                        visible: !root.wide
-                        Layout.fillWidth: true
-                    }
-                    Chip {
-                        proxy: eqCard.eq.diagnostics
-                        visible: proxy.shown && eqCard.calibrated
-                        Layout.fillWidth: true
-                    }
-                    // One row when there is room, two when the window is narrow.
-                    GridLayout {
-                        columns: root.roomy ? 2 : 1
-                        columnSpacing: 12
-                        rowSpacing: 10
-                        Layout.fillWidth: true
-                        RowLayout {
-                            objectName: "bandEditorRow"
-                            spacing: 12
-                            Layout.fillWidth: true
-                            IconBtn {
-                                glyph: root.m.glyphs.previous
-                                label: "Prev"
-                                hint: "Previous EQ band"
-                                onClicked: root.ui.stepBand(-1)
-                            }
-                            IconBtn {
-                                glyph: root.m.glyphs.next
-                                label: "Next"
-                                hint: "Next EQ band"
-                                onClicked: root.ui.stepBand(1)
-                            }
-                            // The band the editor shows; the graph prints this number on its handle once selected.
-                            Rectangle {
-                                implicitWidth: 20
-                                implicitHeight: 20
-                                radius: 10
-                                color: root.t.bandColors[eqCard.eq.band.index]
-                                Text {
-                                    textFormat: Text.PlainText
-                                    anchors.centerIn: parent
-                                    text: eqCard.eq.band.index + 1
-                                    color: root.t.text_on_data_color
-                                    font.pixelSize: root.fsCaption
-                                    font.weight: Font.DemiBold
-                                }
-                            }
-                            Text {
-                                textFormat: Text.PlainText
-                                text: eqCard.band.frequencyLabel.text
-                                color: root.t.text_primary
-                                font.pixelSize: root.fsLead
-                                font.weight: Font.DemiBold
-                                Layout.preferredWidth: 58
-                            }
-                            Toggle { proxy: eqCard.band.enabled }
-                            Picker { proxy: eqCard.band.type; implicitWidth: 130 }
-                            Caption { text: "Gain" }
-                            Fader { proxy: eqCard.band.gain; unit: 0.1; Layout.fillWidth: true }
-                            ValueBox {
-                                objectName: "gainBox"
-                                proxy: eqCard.band.gain
-                                display: eqCard.band.gainLabel
-                                implicitWidth: 64
-                            }
-                        }
-                        RowLayout {
-                            spacing: 12
-                            Caption { text: "Freq" }
-                            ValueBox { proxy: eqCard.band.frequency; implicitWidth: 84 }
-                            Caption { text: "Q"; visible: eqCard.band.q.shown }
-                            ValueBox {
-                                proxy: eqCard.band.q
-                                visible: proxy.shown
-                                opacity: proxy.enabled ? 1 : 0.45
-                                implicitWidth: 56
-                            }
-                            Caption { text: "Slope"; visible: eqCard.band.slope.shown }
-                            Picker {
-                                proxy: eqCard.band.slope
-                                visible: proxy.shown
-                                implicitWidth: 120
-                            }
-                        }
-                    }
+                    Btn { proxy: root.m.presets.testSound }
+                    Btn { proxy: root.m.presets.autoEq }
+                    Btn { objectName: "voiceSetupButton"; proxy: root.m.presets.voiceSetup }
                 }
 
                 // Signal order reads left to right, then down. The cards are siblings in that order, so Tab
@@ -1250,68 +1428,131 @@ Rectangle {
                     }
                 }
             }
+
+            Page {
+                id: equalizerPage
+                objectName: "equalizerPage"
+                Surface {
+                    id: eqCard
+                    readonly property var eq: root.m.eq
+                    readonly property var band: eq.bands[eq.band.index]
+                    readonly property bool calibrated: eq.diagnostics.data.calibrated
+                    Layout.fillWidth: true
+                    CardHeader {
+                        card: eqCard.eq
+                        Layout.fillWidth: true
+                        Caption { text: eqCard.eq.layers.text; visible: root.wide }
+                        Btn { proxy: eqCard.eq.tone }
+                        IconBtn { proxy: eqCard.eq.menu; glyph: root.m.glyphs.more; label: "More" }
+                    }
+                    EQGraphItem {
+                        id: eqGraph
+                        graph: eqCard.eq.curve
+                        Layout.fillWidth: true
+                        implicitHeight: 300
+                        activeFocusOnTab: true
+                        Accessible.role: Accessible.Graphic
+                        Accessible.name: "Equalizer graph"
+                        Accessible.description: eqGraph.graph ? eqGraph.graph.accessibleDescription : ""
+                        FocusRing { visible: parent.activeFocus }
+                    }
+                    Caption {
+                        text: eqCard.eq.layers.text
+                        visible: !root.wide
+                        Layout.fillWidth: true
+                    }
+                    Chip {
+                        proxy: eqCard.eq.diagnostics
+                        visible: proxy.shown && eqCard.calibrated
+                        Layout.fillWidth: true
+                    }
+                    // One row when there is room, two when the window is narrow.
+                    GridLayout {
+                        columns: root.roomy ? 2 : 1
+                        columnSpacing: 12
+                        rowSpacing: 10
+                        Layout.fillWidth: true
+                        RowLayout {
+                            objectName: "bandEditorRow"
+                            spacing: 12
+                            Layout.fillWidth: true
+                            IconBtn {
+                                glyph: root.m.glyphs.previous
+                                label: "Prev"
+                                hint: "Previous EQ band"
+                                onClicked: root.ui.stepBand(-1)
+                            }
+                            IconBtn {
+                                glyph: root.m.glyphs.next
+                                label: "Next"
+                                hint: "Next EQ band"
+                                onClicked: root.ui.stepBand(1)
+                            }
+                            // The band the editor shows; the graph prints this number on its handle once selected.
+                            Rectangle {
+                                implicitWidth: 20
+                                implicitHeight: 20
+                                radius: 10
+                                color: root.t.bandColors[eqCard.eq.band.index]
+                                Text {
+                                    textFormat: Text.PlainText
+                                    anchors.centerIn: parent
+                                    text: eqCard.eq.band.index + 1
+                                    color: root.t.text_on_data_color
+                                    font.pixelSize: root.fsCaption
+                                    font.weight: Font.DemiBold
+                                }
+                            }
+                            Text {
+                                textFormat: Text.PlainText
+                                text: eqCard.band.frequencyLabel.text
+                                color: root.t.text_primary
+                                font.pixelSize: root.fsLead
+                                font.weight: Font.DemiBold
+                                Layout.preferredWidth: 58
+                            }
+                            Toggle { proxy: eqCard.band.enabled }
+                            Picker { proxy: eqCard.band.type; implicitWidth: 130 }
+                            Caption { text: "Gain" }
+                            Fader { proxy: eqCard.band.gain; unit: 0.1; Layout.fillWidth: true }
+                            ValueBox {
+                                objectName: "gainBox"
+                                proxy: eqCard.band.gain
+                                display: eqCard.band.gainLabel
+                                implicitWidth: 64
+                            }
+                        }
+                        RowLayout {
+                            spacing: 12
+                            Caption { text: "Freq" }
+                            ValueBox { proxy: eqCard.band.frequency; implicitWidth: 84 }
+                            Caption { text: "Q"; visible: eqCard.band.q.shown }
+                            ValueBox {
+                                proxy: eqCard.band.q
+                                visible: proxy.shown
+                                opacity: proxy.enabled ? 1 : 0.45
+                                implicitWidth: 56
+                            }
+                            Caption { text: "Slope"; visible: eqCard.band.slope.shown }
+                            Picker {
+                                proxy: eqCard.band.slope
+                                visible: proxy.shown
+                                implicitWidth: 120
+                            }
+                        }
+                    }
+                }
+            }
         }
 
-        // Status strip
-        RowLayout {
-            objectName: "statusStrip"
-            // The room the texts share, read from the column: sizes taken from the strip's
-            // own width would feed back into its minimum width.
-            readonly property real room: content.width - 24
+        // The latest message, in one line at the foot of the main pane.
+        StatusText {
+            objectName: "statusMessage"
+            text: root.m.status.message.text
             Layout.fillWidth: true
             Layout.leftMargin: 8
             Layout.rightMargin: 16
-            spacing: 14
-            StatusText {
-                objectName: "statusMessage"
-                text: root.m.status.message.text
-                Layout.fillWidth: true
-                // The other texts give way before the message does.
-                Layout.minimumWidth: parent.room / 4
-                tip: truncated ? text : ""
-            }
-            // Heard (green), muted or waiting for a mute (amber), or stopped.
-            Rectangle {
-                implicitWidth: 8
-                implicitHeight: 8
-                radius: 4
-                color: ({ ok: root.t.status_ok_text, warn: root.t.status_warn_text })[
-                    root.m.status.transmission.state] ?? root.t.control_edge
-            }
-            StatusText {
-                objectName: "statusTransmission"
-                text: root.m.status.transmission.text
-                color: root.t.text_primary
-                Layout.maximumWidth: parent.room * 0.3
-                tip: truncated ? text : ""
-            }
-            StatusText {
-                objectName: "statusCalibration"
-                text: root.m.status.calibration.text
-                Layout.fillWidth: true
-                Layout.maximumWidth: implicitWidth
-                tip: truncated ? text : ""
-            }
-            Chip {
-                proxy: root.m.status.health
-                announced: false
-                single: true
-                implicitHeight: 28
-                // A long reading must not push the other texts out of the strip.
-                Layout.maximumWidth: parent.room * 0.3
-                ModelButton {
-                    id: healthToggle
-                    objectName: "healthToggle"
-                    anchors.fill: parent
-                    on: root.m.page.index === root.m.healthPage
-                    onRequested: root.m.page.setIndex(checked ? root.m.healthPage : 0)
-                    Accessible.role: Accessible.Button
-                    // Named by what it shows; the action goes in the description.
-                    Accessible.name: root.m.status.health.text
-                    Accessible.description: checked ? "Hide audio health details" : "Show audio health details"
-                    background: Item { FocusRing { control: healthToggle } }
-                }
-            }
+            tip: truncated ? text : ""
         }
     }
 

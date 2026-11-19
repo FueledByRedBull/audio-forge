@@ -32,8 +32,8 @@ INTERACTIVE = {
     Role.Button, Role.CheckBox, Role.ComboBox, Role.Slider, Role.EditableText, Role.PageTab,
     Role.RadioButton, Role.SpinBox, Role.ScrollBar,
 }
-MIC, HEALTH, SETTINGS = 0, 1, 2
-# The navigation tabs and the Health chip are bare buttons, whatever base the scene gives them.
+OVERVIEW, HEALTH, SETTINGS, EQUALIZER = 0, 1, 2, 3
+# The sidebar rows and the Health chip are bare buttons, whatever base the scene gives them.
 PLAIN_BUTTONS = ("KeyButton", "AbstractButton")
 
 
@@ -108,7 +108,7 @@ def _accessible_tree(window):
         )
 
 
-def _show(window, qapp, page: int = MIC, width: int = 1400) -> None:
+def _show(window, qapp, page: int = OVERVIEW, width: int = 1400) -> None:
     window.resize(width, 900)
     window.activateWindow()
     window.centralWidget().setFocus()
@@ -161,14 +161,17 @@ def _activate(window, item, key, qapp) -> None:
 def test_a_toggle_reports_checkbox_role_name_and_whether_it_is_on(quick_window, qapp) -> None:
     window = quick_window
     model = window.quick_bridge.model
-    _show(window, qapp)
+    _show(window, qapp, EQUALIZER)
     eq_switch = _with_proxy(window, "Toggle", model["eq"]["toggle"])
-    mute = _with_proxy(window, "Toggle", model["top"]["mute"])
+    mute = _with_proxy(window, "MuteBtn", model["top"]["mute"])
     assert model["eq"]["toggle"].checked and not model["top"]["mute"].checked
     with _AccessibleScene():
-        for toggle, name, on in ((eq_switch, "Enable EQ", True), (mute, "Mute output", False)):
+        # Mute is a button that stays pressed, so it is a checkable button rather than a box.
+        for toggle, role, name, on in (
+            (eq_switch, Role.CheckBox, "Enable EQ", True), (mute, Role.Button, "Mute output", False),
+        ):
             interface = _iface(toggle)
-            assert interface.role() == Role.CheckBox
+            assert interface.role() == role
             assert interface.text(Text.Name) == name
             assert interface.state().checkable
             assert bool(interface.state().checked) is on, f"{name} starts {'on' if on else 'off'}"
@@ -192,7 +195,7 @@ def test_a_switch_that_cannot_be_used_is_reported_disabled(quick_window, qapp) -
 def test_a_fader_reports_slider_role_name_value_and_range(quick_window, qapp) -> None:
     window = quick_window
     model = window.quick_bridge.model
-    _show(window, qapp)
+    _show(window, qapp, EQUALIZER)
     gain = model["eq"]["bands"][0]["gain"]
     fader = _with_proxy(window, "Fader", gain)
     with _AccessibleScene():
@@ -298,14 +301,14 @@ def test_a_button_reports_button_role_its_visible_label_and_whether_it_is_enable
 
 def test_icon_buttons_are_named_by_what_they_do_not_by_their_tooltip_text(icon_window, qapp) -> None:
     window = icon_window
-    _show(window, qapp)
+    _show(window, qapp, EQUALIZER)
     with _AccessibleScene():
         names = {
             _iface(button).text(Text.Name): button
             for button in _of_kind(window, "IconBtn")
             if button.isVisible()
         }
-        assert {"Refresh audio devices", "Undo", "Redo", "Previous EQ band", "Next EQ band"} <= set(names)
+        assert {"Refresh audio devices", "Undo", "Redo", "Settings", "Previous EQ band", "Next EQ band"} <= set(names)
         for name, button in names.items():
             assert _iface(button).role() == Role.Button
             assert len(name) <= 60, f"{name[:40]}... reads as a paragraph, not a name"
@@ -361,27 +364,33 @@ def test_a_disclosure_says_whether_its_section_is_shown(quick_window, qapp) -> N
         assert not [i for i in _of_kind(window, "ValueBox") if i.property("proxy") is attack]
 
 
-def test_the_navigation_tabs_expose_which_page_is_current(quick_window, qapp) -> None:
+def test_the_sidebar_says_which_page_is_open(quick_window, qapp) -> None:
     window = quick_window
     _show(window, qapp)
     with _AccessibleScene():
-        tabs = {
-            _iface(tab).text(Text.Name): tab
-            for tab in _of_kind(window, *PLAIN_BUTTONS)
-            if _iface(tab).role() == Role.PageTab
+        pages = {
+            "Overview": _named(window, "Overview", *PLAIN_BUTTONS),
+            "Equalizer": _named(window, "Equalizer", *PLAIN_BUTTONS),
+            "Settings": _named(window, "Settings", "IconBtn"),
         }
-        assert list(tabs) == ["Mic page", "Health page", "Settings page"]
+        for button in pages.values():
+            assert _iface(button).role() == Role.Button
+            assert _iface(button).state().selectable
 
         def selected() -> list[str]:
-            return [name for name, tab in tabs.items() if _iface(tab).state().selected]
+            return [name for name, button in pages.items() if _iface(button).state().selected]
 
-        assert selected() == ["Mic page"]
+        assert selected() == ["Overview"]
+        # The Health page is open from the Health button, which says so itself.
         window.shell_page.setIndex(HEALTH)
         qapp.processEvents()
-        assert selected() == ["Health page"]
+        assert selected() == []
         window.shell_page.setIndex(SETTINGS)
         qapp.processEvents()
-        assert selected() == ["Settings page"]
+        assert selected() == ["Settings"]
+        window.shell_page.setIndex(EQUALIZER)
+        qapp.processEvents()
+        assert selected() == ["Equalizer"]
 
 
 def test_the_health_chip_exposes_whether_the_health_page_is_open(quick_window, qapp) -> None:
@@ -458,7 +467,7 @@ def test_settings_rows_are_switches_or_buttons_and_switches_say_if_they_are_on(
 
 def _anonymous(window, qapp) -> list[str]:
     found = []
-    for page in (MIC, HEALTH, SETTINGS):
+    for page in (OVERVIEW, HEALTH, SETTINGS, EQUALIZER):
         _show(window, qapp, page)
         _open_every_disclosure(window, qapp)
         for interface in _accessible_tree(window):
@@ -479,7 +488,7 @@ def test_names_are_short_labels_and_none_starts_with_a_colon(icon_window, qapp) 
     window = icon_window
     with _AccessibleScene():
         too_long, colon = [], []
-        for page in (MIC, HEALTH, SETTINGS):
+        for page in (OVERVIEW, HEALTH, SETTINGS, EQUALIZER):
             _show(window, qapp, page)
             _open_every_disclosure(window, qapp)
             for interface in _accessible_tree(window):
@@ -497,7 +506,7 @@ def test_names_are_short_labels_and_none_starts_with_a_colon(icon_window, qapp) 
 
 def test_the_eq_graph_is_named_described_and_follows_the_selected_band(quick_window, qapp) -> None:
     window = quick_window
-    _show(window, qapp)
+    _show(window, qapp, EQUALIZER)
     graph = _graph_item(window.centralWidget().rootObject())
     with _AccessibleScene() as scene:
         interface = _iface(graph)
@@ -521,7 +530,7 @@ def test_the_eq_graph_is_named_described_and_follows_the_selected_band(quick_win
 # --- 3. Keyboard -------------------------------------------------------------------
 
 
-def _tab_cycle(window, qapp, page: int = MIC, width: int = 1400) -> list:
+def _tab_cycle(window, qapp, page: int = OVERVIEW, width: int = 1400) -> list:
     """The items real Tab presses focus in turn, until the cycle comes round again."""
     _show(window, qapp, page, width)
     view = window.centralWidget()
@@ -545,12 +554,14 @@ def _tabbable(window, kinds: tuple[str, ...]) -> list:
 
 
 KEYBOARD_KINDS = (
-    "Toggle", "Fader", "Btn", "IconBtn", "Picker", "Disclosure", "SettingRow", *PLAIN_BUTTONS,
-    "QQuickTextInput", "EQGraphItem",
+    "Toggle", "ChainSwitch", "Fader", "Btn", "IconBtn", "MuteBtn", "LinkBtn", "Picker", "Disclosure",
+    "SettingRow", *PLAIN_BUTTONS, "QQuickTextInput", "EQGraphItem",
 )
 
 
-@pytest.mark.parametrize("page", [MIC, HEALTH, SETTINGS], ids=["mic", "health", "settings"])
+@pytest.mark.parametrize(
+    "page", [OVERVIEW, HEALTH, SETTINGS, EQUALIZER], ids=["overview", "health", "settings", "equalizer"]
+)
 def test_tab_reaches_every_enabled_control_on_the_page(either_window, qapp, page) -> None:
     window = either_window
     _show(window, qapp, page)
@@ -567,33 +578,54 @@ def test_tab_reaches_every_enabled_control_on_the_page(either_window, qapp, page
     assert missed == []
 
 
-# 1200 is wide but not roomy (one band-editor column); 1400 and up has two.
-@pytest.mark.parametrize("width", [1200, 1400, 1800])
-def test_tab_visits_the_page_in_reading_order(either_window, qapp, width) -> None:
-    window = either_window
-    stops = _tab_cycle(window, qapp, width=width)
+# The toolbar, then the sidebar from the preset to the Settings gear, then the page.
+FRAME_LANDMARKS = [
+    "Input audio device", "Output audio device", "Processing mode", "Mute output", "Start Processing",
+    "Presets", "Overview", "Input cleanup", "Noise gate", "Equalizer", "Limiter", "Health", "Measure latency",
+    "Settings",
+]
+
+
+def _page_names(window, qapp, page: int, width: int, frame: list[str]) -> list[str]:
+    """The names Tab visits after the sidebar, checking the frame before them is in order."""
+    stops = _tab_cycle(window, qapp, page, width)
     with _AccessibleScene() as scene:
         names = [scene.name(item) for item in stops]
     assert len(set(map(id, stops))) == len(stops)
-    landmarks = [
-        "Mic page", "Health page", "Settings page",
-        "Input audio device", "Output audio device", "Mute output", "Processing mode",
-        "Start Processing",
-        "Presets",
-        "Enable EQ", "Tone preset", "Equalizer graph",
-        "Enable EQ band 1", "EQ band 1 filter type", "EQ band 1 gain", "EQ band 1 center frequency",
-        "Enable noise suppression", "Noise suppression backend", "Noise suppression strength",
-    ]
-    # A picker's name carries its choice after the label.
-    positions = [
+    positions = _positions(names, frame)
+    assert positions == sorted(positions), dict(zip(frame, positions))
+    return names[positions[-1] + 1:]
+
+
+def _positions(names: list[str], landmarks: list[str]) -> list[int]:
+    # A picker's name carries its choice after the label, the Health button its reading.
+    return [
         next(i for i, name in enumerate(names) if name == landmark or name.startswith(landmark + ": "))
         for landmark in landmarks
     ]
+
+
+# 1200 is wide but not roomy (one band-editor column); 1400 and up has two.
+@pytest.mark.parametrize("width", [1200, 1400, 1800])
+def test_tab_visits_the_page_in_reading_order(either_window, qapp, width) -> None:
+    names = _page_names(either_window, qapp, OVERVIEW, width, FRAME_LANDMARKS)
+    landmarks = ["Enable noise suppression", "Noise suppression backend", "Noise suppression strength"]
+    positions = _positions(names, landmarks)
     assert positions == sorted(positions), dict(zip(landmarks, positions))
-    # Each card's own switch comes before its controls, and the Health chip closes the page.
+    # Each card's own switch comes before its controls.
     assert names.index("Enable noise gate") < names.index("Gate manual threshold")
     assert names.index("Gate manual threshold") < names.index("Show NOISE GATE advanced")
-    assert names[-1].startswith("Health")
+
+
+@pytest.mark.parametrize("width", [1200, 1400, 1800])
+def test_tab_visits_the_equalizer_page_in_reading_order(either_window, qapp, width) -> None:
+    names = _page_names(either_window, qapp, EQUALIZER, width, FRAME_LANDMARKS)
+    landmarks = [
+        "Enable EQ", "Tone preset", "Equalizer graph",
+        "Enable EQ band 1", "EQ band 1 filter type", "EQ band 1 gain", "EQ band 1 center frequency",
+    ]
+    positions = _positions(names, landmarks)
+    assert positions == sorted(positions), dict(zip(landmarks, positions))
 
 
 ACTIVATION_KEYS = [
@@ -606,7 +638,7 @@ ACTIVATION_KEYS = [
 @pytest.mark.parametrize("key", ACTIVATION_KEYS)
 def test_the_keyboard_activates_a_toggle(quick_window, qapp, key) -> None:
     window = quick_window
-    _show(window, qapp)
+    _show(window, qapp, EQUALIZER)
     band = window.quick_bridge.model["eq"]["bands"][0]["enabled"]
     before = window.eq_state.get_band(0).enabled
     _activate(window, _with_proxy(window, "Toggle", band), key, qapp)
@@ -636,13 +668,69 @@ def test_the_keyboard_opens_a_disclosure(quick_window, qapp, key) -> None:
 
 
 @pytest.mark.parametrize("key", ACTIVATION_KEYS)
-def test_the_keyboard_picks_a_navigation_tab(quick_window, qapp, key) -> None:
+def test_the_keyboard_opens_a_page_from_the_sidebar(quick_window, qapp, key) -> None:
     window = quick_window
     _show(window, qapp)
+    for name, kinds, page in (
+        ("Settings", ("IconBtn",), SETTINGS), ("Equalizer", PLAIN_BUTTONS, EQUALIZER),
+        ("Overview", PLAIN_BUTTONS, OVERVIEW),
+    ):
+        with _AccessibleScene():
+            button = _named(window, name, *kinds)
+            _activate(window, button, key, qapp)
+        assert window.shell_page.currentIndex() == page, name
+
+
+def _in_view(item, page) -> bool:
+    top = item.mapToScene(QPointF(0, 0)).y()
+    page_top = page.mapToScene(QPointF(0, 0)).y()
+    return page_top <= top and top + item.height() <= page_top + page.height()
+
+
+def test_each_signal_chain_row_carries_its_stage_switch_under_the_same_name(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    rows = window.quick_bridge.model["sidebar"]["chain"]
+    # Input cleanup is a setting with several modes, not a stage that switches on and off.
+    assert [row["name"] for row in rows if row["toggle"] is None] == ["Input cleanup"]
     with _AccessibleScene():
-        tab = _named(window, "Settings page", *PLAIN_BUTTONS)
-        _activate(window, tab, key, qapp)
+        for row in rows:
+            if row["toggle"] is None:
+                continue
+            switch = _with_proxy(window, "ChainSwitch", row["toggle"])
+            assert switch.isVisible(), row["name"]
+            assert _iface(switch).role() == Role.CheckBox
+            # A screen reader hears the same name here as on the stage's own card.
+            card_switch = _with_proxy(window, "Toggle", row["toggle"])
+            assert _iface(switch).text(Text.Name) == _iface(card_switch).text(Text.Name) != ""
+            assert bool(_iface(switch).state().checked) is row["toggle"].checked
+
+
+def test_a_signal_chain_row_opens_its_page_or_brings_its_stage_card_into_view(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp, EQUALIZER, width=900)
+    window.resize(900, 640)
+    QTest.qWait(50)
+    rows = {row["name"]: row for row in window.quick_bridge.model["sidebar"]["chain"]}
+    page = next(item for item in _items(window.centralWidget().rootObject()) if item.objectName() == "overviewPage")
+
+    def open_row(name: str) -> None:
+        with _AccessibleScene():
+            _activate(window, _named(window, name, *PLAIN_BUTTONS), Qt.Key.Key_Space, qapp)
+        QTest.qWait(50)
+
+    open_row("Input cleanup")
     assert window.shell_page.currentIndex() == SETTINGS
+    open_row("Equalizer")
+    assert window.shell_page.currentIndex() == EQUALIZER
+    limiter = _with_proxy(window, "Toggle", rows["Limiter"]["toggle"])
+    open_row("Limiter")
+    assert window.shell_page.currentIndex() == OVERVIEW
+    assert page.property("contentY") > 0
+    assert _in_view(limiter, page)
+    gate = _with_proxy(window, "Toggle", rows["Noise gate"]["toggle"])
+    open_row("Noise gate")
+    assert _in_view(gate, page)
 
 
 @pytest.mark.parametrize("key", ACTIVATION_KEYS)
@@ -664,7 +752,7 @@ def test_a_held_key_activates_a_button_once(quick_window, qapp) -> None:
     from PySide6.QtGui import QKeyEvent
 
     window = quick_window
-    _show(window, qapp)
+    _show(window, qapp, EQUALIZER)
     band = window.quick_bridge.model["eq"]["bands"][0]["enabled"]
     toggle = _with_proxy(window, "Toggle", band)
     _focus(window, toggle, qapp)
@@ -684,7 +772,7 @@ def test_a_held_key_activates_a_button_once(quick_window, qapp) -> None:
 
 def test_a_picker_chooses_by_keyboard_with_the_arrows_or_the_open_list(quick_window, qapp) -> None:
     window = quick_window
-    _show(window, qapp)
+    _show(window, qapp, EQUALIZER)
     proxy = window.quick_bridge.model["eq"]["bands"][0]["type"]
     picker = _with_proxy(window, "Picker", proxy)
     _focus(window, picker, qapp)
@@ -713,7 +801,7 @@ def test_a_picker_chooses_by_keyboard_with_the_arrows_or_the_open_list(quick_win
 
 def test_a_fader_moves_one_step_per_arrow_key(quick_window, qapp) -> None:
     window = quick_window
-    _show(window, qapp)
+    _show(window, qapp, EQUALIZER)
     gain = window.quick_bridge.model["eq"]["bands"][0]["gain"]
     fader = _with_proxy(window, "Fader", gain)
     _focus(window, fader, qapp)
@@ -729,7 +817,7 @@ def test_a_fader_moves_one_step_per_arrow_key(quick_window, qapp) -> None:
 
 def test_a_fader_without_a_step_moves_a_hundredth_of_its_range_per_key(quick_window, qapp) -> None:
     window = quick_window
-    _show(window, qapp)
+    _show(window, qapp, EQUALIZER)
     gain = window.quick_bridge.model["eq"]["bands"][0]["gain"]
     gain._view["step"] = 0.0  # a proxy that names no step; the gain proxy counts tenths of a dB
     gain.changed.emit()
@@ -744,7 +832,7 @@ def test_a_fader_without_a_step_moves_a_hundredth_of_its_range_per_key(quick_win
 
 def test_a_value_box_steps_with_up_and_down(quick_window, qapp) -> None:
     window = quick_window
-    _show(window, qapp)
+    _show(window, qapp, EQUALIZER)
     band = window.quick_bridge.model["eq"]["bands"][0]
     for name, step, read in (
         ("frequency", 10, lambda: window.eq_state.get_band(0).frequency_hz),
@@ -767,7 +855,7 @@ def test_a_value_box_steps_with_up_and_down(quick_window, qapp) -> None:
 @pytest.fixture
 def graph(quick_window, qapp):
     window = quick_window
-    _show(window, qapp)
+    _show(window, qapp, EQUALIZER)
     item = _graph_item(window.centralWidget().rootObject())
     window.eq_presentation.graph_model.select_band(4)
     _focus(window, item, qapp)
@@ -866,7 +954,7 @@ def _shows_focus(window, item) -> bool:
     return True
 
 
-@pytest.mark.parametrize("page", [MIC, SETTINGS], ids=["mic", "settings"])
+@pytest.mark.parametrize("page", [OVERVIEW, SETTINGS, EQUALIZER], ids=["overview", "settings", "equalizer"])
 def test_the_focused_control_always_shows_where_focus_is(either_window, qapp, page) -> None:
     window = either_window
     _show(window, qapp, page)
@@ -885,19 +973,23 @@ def test_the_focused_control_always_shows_where_focus_is(either_window, qapp, pa
         # One ring at a time, wherever focus is.
         assert len([ring for ring in _of_kind(window, "FocusRing") if ring.isVisible()]) == 1
     assert unmarked == []
-    expected = {"Toggle", "Fader", "Picker", "Btn", "QQuickTextInput", "EQGraphItem", "Disclosure"}
-    assert (expected if page == MIC else {"SettingRow", "Picker"}) <= seen
+    expected = {
+        OVERVIEW: {"Toggle", "ChainSwitch", "Fader", "Picker", "Btn", "MuteBtn", "LinkBtn", "Disclosure"},
+        SETTINGS: {"SettingRow", "Picker"},
+        EQUALIZER: {"Toggle", "Fader", "Picker", "QQuickTextInput", "EQGraphItem"},
+    }
+    assert expected[page] <= seen
 
 
 def test_focus_rings_follow_keyboard_focus_not_the_mouse(quick_window, qapp) -> None:
     window = quick_window
     _show(window, qapp)
-    toggle = _with_proxy(window, "Toggle", window.quick_bridge.model["top"]["mute"])
-    view = window.centralWidget()
+    top = window.quick_bridge.model["top"]
+    toggle = _with_proxy(window, "MuteBtn", top["mute"])
     _click(window, toggle, qapp)
     assert window.engine_session.view.user_muted
     assert _rings(window, toggle) == [], "a click must not draw the keyboard focus ring"
-    _focus(window, _graph_item(view.rootObject()), qapp)  # focus leaves the toggle...
+    _focus(window, _with_proxy(window, "Btn", top["start"]), qapp)  # focus leaves the toggle...
     _focus(window, toggle, qapp)  # ...and Tab brings it back
     assert len(_rings(window, toggle)) == 1
 
@@ -942,25 +1034,23 @@ def test_text_sizes_follow_the_app_font_and_none_is_below_twelve(quick_window, q
     assert sizes[1] == round(13 * qapp.font().pointSizeF() / 9)
 
 
-def test_the_route_stays_readable_and_sits_above_the_transport_in_a_narrow_window(
+def test_the_route_stays_readable_and_shares_one_row_with_the_transport_in_a_narrow_window(
     quick_window, qapp
 ) -> None:
     window = quick_window
     top = window.quick_bridge.model["top"]
-    window.resize(1400, 900)
-    qapp.processEvents()
     pickers = [_with_proxy(window, "Picker", top[name]) for name in ("input", "output")]
     start = _with_proxy(window, "Btn", top["start"])
-    assert abs(_scene_y(start) - _scene_y(pickers[0])) < 10, "one row when there is room"
-
-    window.resize(900, 800)
-    qapp.processEvents()
-    assert _scene_y(start) > _scene_y(pickers[0]) + pickers[0].height()
-    assert all(picker.width() >= 140 for picker in pickers)
-    captions = {
-        item.property("text") for item in _of_kind(window, "Caption") if item.isVisible()
-    }
-    assert {"In", "Out"} <= captions
+    for width in (1400, 900):
+        window.resize(width, 800)
+        qapp.processEvents()
+        centre = _scene_y(start) + start.height() / 2
+        assert abs(centre - (_scene_y(pickers[0]) + pickers[0].height() / 2)) < 2, width
+        assert all(picker.width() >= 140 for picker in pickers), width
+        captions = {
+            item.property("text") for item in _of_kind(window, "Caption") if item.isVisible()
+        }
+        assert {"IN", "OUT"} <= captions, width
 
 
 def test_an_opened_advanced_section_stays_open_when_the_window_crosses_the_wide_breakpoint(
@@ -1006,7 +1096,7 @@ def no_icon_font_window(request, monkeypatch):
 
 def test_icon_buttons_are_still_there_without_the_icon_font(no_icon_font_window, qapp) -> None:
     window = no_icon_font_window
-    _show(window, qapp)
+    _show(window, qapp, EQUALIZER)
     assert window.quick_bridge.model["theme"]["iconFont"] == ""
     faces = {
         button.property("label"): button.isVisible()
@@ -1014,7 +1104,7 @@ def test_icon_buttons_are_still_there_without_the_icon_font(no_icon_font_window,
         if button.property("label")
     }
     assert faces and all(faces.values())
-    assert {"Refresh", "More", "Prev", "Next", "?"} <= set(faces)
+    assert {"Refresh", "Settings", "More", "Prev", "Next", "?"} <= set(faces)
 
 
 def test_a_warning_banner_sits_under_the_top_bar_and_is_an_alert(quick_window, qapp) -> None:
@@ -1033,12 +1123,13 @@ def test_a_warning_banner_sits_under_the_top_bar_and_is_an_alert(quick_window, q
         assert _iface(banner).role() == Role.AlertMessage
 
 
-def test_the_navigation_rail_is_a_tab_list_and_the_meters_have_roles(quick_window, qapp) -> None:
+def test_the_navigation_is_a_named_group_and_the_meters_have_roles(quick_window, qapp) -> None:
     window = quick_window
     _show(window, qapp)
     with _AccessibleScene():
-        roles = [interface.role() for interface in _accessible_tree(window)]
-        assert Role.PageTabList in roles
+        interfaces = list(_accessible_tree(window))
+        roles = [interface.role() for interface in interfaces]
+        assert (Role.Grouping, "Navigation") in [(i.role(), i.text(Text.Name)) for i in interfaces]
         assert Role.ProgressBar in roles
 
 
@@ -1073,6 +1164,21 @@ def test_reduced_motion_keeps_the_level_trace_running(reduced_motion_window) -> 
     assert bridge._trace_timer.isActive()
 
 
+def test_a_switch_knob_snaps_under_reduced_motion(reduced_motion_window, qapp) -> None:
+    window = reduced_motion_window
+    _show(window, qapp)
+    toggle = next(row["toggle"] for row in window.quick_bridge.model["sidebar"]["chain"] if row["toggle"])
+    switch = _with_proxy(window, "ChainSwitch", toggle)
+    track = switch.property("contentItem").childItems()[0]
+    knob = next(child for child in track.childItems() if child.objectName() == "switchKnob")
+    was_on = switch.property("on")
+    toggle.click()
+    qapp.processEvents()
+    assert switch.property("on") is not was_on
+    # No frame has run since the change, so only a knob that does not move is already there.
+    assert knob.x() == (3 if was_on else track.width() - knob.width() - 3)
+
+
 # The tight cells are the left edge of each layout regime: the minimum, `wide` at 1200 and `roomy` at 1400.
 # The widths are calibrated on Windows; Linux's offscreen platform lays text out in
 # the system fonts, which run wider.
@@ -1081,6 +1187,7 @@ def test_reduced_motion_keeps_the_level_trace_running(reduced_motion_window) -> 
 @pytest.mark.parametrize("kind", ["low_shelf", "high_pass", "notch"])
 def test_the_gain_fader_keeps_room_beside_the_band_fields(quick_window, qapp, width, kind) -> None:
     window = quick_window
+    window.shell_page.setIndex(EQUALIZER)
     window.eq_state.set_band_value(0, "filter_type", kind)
     window.eq_state.flush()
     window.resize(width, 900)
@@ -1091,22 +1198,22 @@ def test_the_gain_fader_keeps_room_beside_the_band_fields(quick_window, qapp, wi
 
 
 @pytest.mark.parametrize("width", [900, 1199, 1200, 1400])
-def test_the_mode_picker_keeps_stop_away_from_mute(quick_window, qapp, width) -> None:
+def test_the_levels_and_the_latency_keep_stop_away_from_mute(quick_window, qapp, width) -> None:
     window = quick_window
     window.resize(width, 900)
     QTest.qWait(50)
     top = window.quick_bridge.model["top"]
-    mute = _with_proxy(window, "Toggle", top["mute"])
+    mute = _with_proxy(window, "MuteBtn", top["mute"])
     mode = _with_proxy(window, "Picker", top["mode"])
     start = _with_proxy(window, "Btn", top["start"])
 
-    assert _scene_x(mute) + mute.width() < _scene_x(mode) < _scene_x(start)
+    assert _scene_x(mode) + mode.width() < _scene_x(mute) < _scene_x(start)
     assert _scene_x(start) - (_scene_x(mute) + mute.width()) >= mode.width()
 
 
 def test_q_and_slope_show_only_for_the_filters_that_use_them(quick_window, qapp) -> None:
     window = quick_window
-    _show(window, qapp)
+    _show(window, qapp, EQUALIZER)
     bands = window.quick_bridge.model["eq"]["bands"]
     for kind, q_shown, slope_shown in (("bell", True, False), ("notch", True, False), ("high_pass", False, True)):
         window.eq_state.set_band_value(0, "filter_type", kind)
@@ -1180,7 +1287,7 @@ def test_a_switch_acts_once_and_shows_the_model_whichever_way_it_is_used(
 ) -> None:
     window = quick_window
     _show(window, qapp)
-    mute = _with_proxy(window, "Toggle", window.quick_bridge.model["top"]["mute"])
+    mute = _with_proxy(window, "MuteBtn", window.quick_bridge.model["top"]["mute"])
     with _AccessibleScene():
         for expected in (True, False):
             if how == "click":
@@ -1214,7 +1321,7 @@ def test_a_switch_row_in_settings_acts_once_whichever_way_it_is_used(quick_windo
 
 def test_a_refused_switch_goes_back_to_the_models_state(quick_window, qapp) -> None:
     window = quick_window
-    _show(window, qapp)
+    _show(window, qapp, EQUALIZER)
     toggle = _with_proxy(window, "Toggle", window.quick_bridge.model["eq"]["toggle"])
     on = toggle.property("on")
     # The model does not change: the switch must not keep the flipped state.
@@ -1228,7 +1335,7 @@ def test_a_refused_switch_goes_back_to_the_models_state(quick_window, qapp) -> N
 def test_a_disabled_switch_refuses_assistive_technology_and_snaps_back(quick_window, qapp) -> None:
     window = quick_window
     _show(window, qapp)
-    mute = _with_proxy(window, "Toggle", window.quick_bridge.model["top"]["mute"])
+    mute = _with_proxy(window, "MuteBtn", window.quick_bridge.model["top"]["mute"])
     clicks: list[bool] = []
     mute.property("proxy").click = lambda: clicks.append(True)
     window.user_mute_checkbox_action.setEnabled(False)
@@ -1253,7 +1360,7 @@ def test_the_health_chip_follows_the_page_when_toggled_by_assistive_technology(
         assert bool(_iface(chip).state().checked)
         _perform(chip, "pressAction")
         qapp.processEvents()
-        assert window.shell_page.currentIndex() == MIC
+        assert window.shell_page.currentIndex() == OVERVIEW
         assert not _iface(chip).state().checked
 
 
@@ -1285,22 +1392,30 @@ def _text_format(item) -> int:
 
 
 def test_mute_is_said_in_words_and_the_window_has_its_own_shortcut(quick_window, qapp) -> None:
+    from PySide6.QtGui import QFont
+
     window = quick_window
     _show(window, qapp)
-    badge = window.centralWidget().rootObject().findChild(QObject, "mutedBadge")
+    mute = _with_proxy(window, "MuteBtn", window.quick_bridge.model["top"]["mute"])
+    label = mute.property("contentItem")
     assert "(Ctrl+M)" in window.quick_bridge.model["top"]["mute"].toolTip
     # Holding the keys must not flap the live mute.
     assert window.user_mute_checkbox_action.autoRepeat() is False
-    assert badge.property("visible") is False
+    assert mute.property("on") is False
 
     _press(window, Qt.Key.Key_M, qapp, Qt.KeyboardModifier.ControlModifier)
     assert window.engine_session.view.user_muted
-    assert badge.property("visible") is True
-    assert [child.property("text") for child in badge.childItems()] == ["Muted"]
+    # Pressed shows in the weight of the word as well as the fill, and the word stays the same.
+    assert mute.property("on") is True
+    assert label.property("text") == "Mute"
+    assert label.property("font").weight() == QFont.Weight.DemiBold
+    with _AccessibleScene():
+        assert _iface(mute).state().checked
 
     _press(window, Qt.Key.Key_M, qapp, Qt.KeyboardModifier.ControlModifier)
     assert not window.engine_session.view.user_muted
-    assert badge.property("visible") is False
+    assert mute.property("on") is False
+    assert label.property("font").weight() == QFont.Weight.Normal
 
 
 def test_a_mode_that_changes_the_sound_stands_out_in_its_picker(quick_window, qapp) -> None:
@@ -1367,7 +1482,7 @@ def test_keyboard_focus_shows_the_help_of_a_control_and_escape_closes_it(quick_w
     _press(window, Qt.Key.Key_Escape, qapp)
     assert tip.property("visible") is False
     # Focus given by a click is not a request for help.
-    _click(window, _with_proxy(window, "Toggle", window.quick_bridge.model["top"]["mute"]), qapp)
+    _click(window, _with_proxy(window, "MuteBtn", window.quick_bridge.model["top"]["mute"]), qapp)
     QTest.qWait(700)
     assert tip.property("visible") is False
 
@@ -1378,8 +1493,16 @@ def test_control_edges_and_tracks_draw_from_the_control_edge_token(quick_window,
     _open_every_disclosure(window, qapp)
     model = window.quick_bridge.model
     edge = model["theme"]["control_edge"].lower()
-    track = _with_proxy(window, "Toggle", model["top"]["mute"]).property("contentItem").childItems()[0]
-    assert _colour(track, "color") == edge
+    # A switch that is off is an outline with its knob in the edge colour.
+    off = next(
+        toggle for toggle in _of_kind(window, "Toggle")
+        if toggle.isVisible() and toggle.property("live") and not toggle.property("on")
+    )
+    track = off.property("contentItem").childItems()[0]
+    assert _colour(track, "border.color") == edge
+    assert _colour(next(c for c in track.childItems() if c.objectName() == "switchKnob"), "color") == edge
+    mute = _with_proxy(window, "MuteBtn", model["top"]["mute"])
+    assert _colour(mute.property("background"), "border.color") == edge
     band = model["eq"]["bands"][0]
     assert _colour(_with_proxy(window, "Fader", band["gain"]).property("background"), "color") == edge
     assert _colour(_with_proxy(window, "ValueBox", band["frequency"]), "border.color") == edge
@@ -1395,15 +1518,22 @@ def test_control_edges_and_tracks_draw_from_the_control_edge_token(quick_window,
 def test_the_stage_cards_are_visited_and_laid_out_in_signal_order(quick_window, qapp, width) -> None:
     window = quick_window
     stops = _tab_cycle(window, qapp, width=width)
+    grid = window.centralWidget().rootObject().findChild(QObject, "stageGrid")
+
+    def in_grid(item) -> bool:
+        while item is not None and item is not grid:
+            item = item.parentItem()
+        return item is grid
+
+    # The sidebar names the same switches in signal order; this is about the cards.
     with _AccessibleScene() as scene:
-        names = [scene.name(item) for item in stops]
+        names = [scene.name(item) for item in stops if in_grid(item)]
     switches = [
         "Enable noise suppression", "Enable noise gate", "Enable de-esser", "Enable compressor", "Enable limiter",
     ]
     positions = [names.index(name) for name in switches]
     assert positions == sorted(positions), dict(zip(switches, positions))
 
-    grid = window.centralWidget().rootObject().findChild(QObject, "stageGrid")
     cards = [item for item in grid.childItems() if _kind(item) == "StageCard"]
     assert len(cards) == 5
     rows = [(card.x(), card.y(), card.x() + card.width(), card.y() + card.height()) for card in cards]
@@ -1471,7 +1601,7 @@ def test_names_and_messages_with_markup_are_shown_as_typed(quick_window, qapp) -
 
 def test_a_value_set_through_assistive_technology_is_committed_once(quick_window, qapp) -> None:
     window = quick_window
-    _show(window, qapp)
+    _show(window, qapp, EQUALIZER)
     gain = window.quick_bridge.model["eq"]["bands"][0]["gain"]
     fader = _with_proxy(window, "Fader", gain)
     set_value, commits = gain.setValue, []
@@ -1492,7 +1622,8 @@ def test_a_value_set_through_assistive_technology_is_committed_once(quick_window
 
 def test_dragging_a_fader_commits_each_move_once(quick_window, qapp) -> None:
     window = quick_window
-    _show(window, qapp)
+    _show(window, qapp, EQUALIZER)
+    QTest.qWait(50)  # the newly shown page lays out on the next frame
     view = window.centralWidget()
     gain = window.quick_bridge.model["eq"]["bands"][0]["gain"]
     fader = _with_proxy(window, "Fader", gain)

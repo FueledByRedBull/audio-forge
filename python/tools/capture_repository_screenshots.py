@@ -18,7 +18,7 @@ os.environ["QT_SCALE_FACTOR"] = "1"
 os.environ["QT_FONT_DPI"] = "96"
 os.environ.setdefault("AUDIOFORGE_REDUCED_MOTION", "1")
 
-from PySide6.QtCore import QByteArray, QObject
+from PySide6.QtCore import QByteArray, QEventLoop, QObject, QTimer
 from PySide6.QtGui import QFont, QFontDatabase, QImageWriter
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -301,6 +301,12 @@ def _prepare_voice_setup(parent: MainWindow) -> VoiceSetupDialog:
     return dialog
 
 
+def _wait_for_next_frame() -> None:
+    loop = QEventLoop()
+    QTimer.singleShot(100, loop.quit)
+    loop.exec()
+
+
 def _write_optimized_png(widget: QWidget, path: Path) -> tuple[int, int]:
     path.parent.mkdir(parents=True, exist_ok=True)
     image = widget.grab().toImage()
@@ -328,9 +334,13 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
     processing_scroll_maximum = 0
     try:
         for specification in SCREENSHOTS[:2]:
+            if specification["view"] == "routing_eq":
+                window.shell_page.setIndex(MainWindow.EQUALIZER_PAGE_INDEX)
             if specification["view"] == "processing":
+                window.shell_page.setIndex(0)
+                app.processEvents()
                 scene = cast(Any, window.centralWidget()).rootObject()
-                page = scene.findChild(QObject, "micPage")
+                page = scene.findChild(QObject, "overviewPage")
                 processing_scroll_maximum = max(
                     0, round(page.property("contentHeight") - page.property("height"))
                 )
@@ -338,6 +348,8 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
                 processing_scroll_position = round(page.property("contentY"))
             _show_running_state(window)
             app.processEvents()
+            # The scene draws a change on its next frame; without waiting the grab shows the one before.
+            _wait_for_next_frame()
             path = output_dir / specification["filename"]
             width, height = _write_optimized_png(window, path)
             outputs.append(
@@ -429,10 +441,8 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
             "all_pngs_compressed": all(
                 item["bytes"] < item["width"] * item["height"] for item in outputs
             ),
-            "processing_scrolled_to_limiter": (
-                processing_scroll_maximum > 0
-                and processing_scroll_position == processing_scroll_maximum
-            ),
+            # The Overview may hold every card without scrolling; either way the limiter is in view.
+            "processing_scrolled_to_limiter": processing_scroll_position == processing_scroll_maximum,
             "sanitized_sources_only": True,
         },
         "view_state": {

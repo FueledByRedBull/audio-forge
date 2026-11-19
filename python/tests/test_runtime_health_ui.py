@@ -158,6 +158,7 @@ def _diagnostic_window(diagnostics: dict[str, Any]):
     )
     names = (
         "latency_label",
+        "latency_readout_label",
         "buffer_label",
         "input_health_label",
         "output_health_label",
@@ -465,6 +466,17 @@ def test_resetting_the_health_labels_drops_the_lower_bound_note(isolated_main_wi
     assert chip.toolTip == TEXT_SPECS["latency_label"].tip
     assert chip.text == TEXT_SPECS["latency_label"].text
 
+
+
+def test_resetting_the_health_labels_puts_the_toolbar_latency_back(isolated_main_window):
+    window = isolated_main_window
+    readout = window.shell_texts["latency_readout_label"]
+    readout.update(text="~24 ms", status="info", tip="A measured route.")
+
+    window._reset_health_labels()
+
+    assert (readout.text, readout.state) == (TEXT_SPECS["latency_readout_label"].text, "idle")
+    assert readout.toolTip == TEXT_SPECS["latency_readout_label"].tip
 
 def test_recovery_chip_says_the_restarts_are_paused_during_setup(qapp):
     window, _processor, args = _diagnostic_window({"recovery_suppressed": True})

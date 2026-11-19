@@ -176,7 +176,7 @@ DEFAULT_WINDOW_HEIGHT = 960
 MINIMUM_WINDOW_WIDTH = 900
 MINIMUM_WINDOW_HEIGHT = 640
 # The pages in navigation order; the shared page state and the page stack follow it.
-PAGE_NAMES = ("Mic", "Health", "Settings")
+PAGE_NAMES = ("Overview", "Health", "Settings", "Equalizer")
 NO_DESTINATION_WARNING = "Warning: No output device is selected. Choose one in the Output list, then press Start."
 # Windows allows a program a few seconds to end a session, and the save comes after this wait.
 ENGINE_CALL_WAIT_MS = 3_000
@@ -353,6 +353,7 @@ class MainWindow(QMainWindow):
     auto_voice_setup_button_action: QAction
     HEALTH_PAGE_INDEX = 1
     SETTINGS_PAGE_INDEX = 2
+    EQUALIZER_PAGE_INDEX = 3
 
     def __init__(self, *, login_startup: bool = False):
         super().__init__()
@@ -666,7 +667,10 @@ class MainWindow(QMainWindow):
             self._set_health_chip(key, TEXT_SPECS[key].text, "idle")
         # What the last reading explained must not outlive it.
         self.shell_texts["health_advice_label"].update(text=TEXT_SPECS["health_advice_label"].text)
-        for key in ("health_summary_label", "recovery_diag_label", "dropped_label", "latency_label"):
+        self._set_health_chip("latency_readout_label", TEXT_SPECS["latency_readout_label"].text, "idle")
+        for key in (
+            "health_summary_label", "recovery_diag_label", "dropped_label", "latency_label", "latency_readout_label",
+        ):
             self.shell_texts[key].update(tip=TEXT_SPECS[key].tip)
 
     def _select_input_channel_mode(self, mode: str) -> None:
@@ -1212,11 +1216,12 @@ class MainWindow(QMainWindow):
         )
         options_menu.addAction(self.use_measured_latency_action)
 
-        latency_calibration_action = QAction("Measure Route Latency (Advanced)...", self)
-        latency_calibration_action.triggered.connect(
+        # The sidebar's Measure latency link runs this same command.
+        self.latency_calibration_action = QAction("Measure Route Latency (Advanced)...", self)
+        self.latency_calibration_action.triggered.connect(
             self._on_latency_calibration_clicked
         )
-        options_menu.addAction(latency_calibration_action)
+        options_menu.addAction(self.latency_calibration_action)
 
         options_menu.addSeparator()
 
@@ -2117,6 +2122,7 @@ class MainWindow(QMainWindow):
                 route_latency_ms = float(profile.applied_compensation_ms)
             compensation_ms = max(0.0, route_latency_ms)
 
+        self.shell_texts["latency_readout_label"].update(data={"measured": compensation_ms > 0.0})
         try:
             self.processor.set_latency_compensation_ms(compensation_ms)
         except Exception:

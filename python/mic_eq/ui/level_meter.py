@@ -100,6 +100,8 @@ class MeterModel(QObject):
     enabled = Property(bool, lambda self: self._enabled, set_enabled, notify=changed)
     shown = Property(bool, lambda self: True, constant=True)
     description = Property(str, lambda self: self._describe(), notify=changed)
+    # The clip tag a horizontal bar has no room for; the view shows it beside the bar.
+    clipTagShown = Property(bool, lambda self: self._clip_tag_shown(), notify=changed)
     valueText = Property(str, lambda self: self._read_value(), notify=valueTextChanged)
     accessibleText = Property(str, lambda self: self._accessible_text(self._read_value()), notify=accessibleTextChanged)
 
@@ -107,8 +109,16 @@ class MeterModel(QObject):
         """What assistive technology adds to the name right now."""
         return ""
 
+    def _clip_tag_shown(self) -> bool:
+        """Whether the meter shows that the signal clipped."""
+        return False
+
     def paint_meter(self, painter: QPainter, width: float, height: float) -> None:
         """Paint this meter into any Qt painter without changing its size."""
+        raise NotImplementedError
+
+    def paint_bar(self, painter: QPainter, width: float, height: float) -> None:
+        """Paint this meter as a thin horizontal bar, quiet at the left."""
         raise NotImplementedError
 
 
@@ -349,6 +359,9 @@ class LevelMeter(MeterModel):
             )
         return " ".join(notes)
 
+    def _clip_tag_shown(self) -> bool:
+        return self.clip_marker and not self.muted
+
     def _db_to_y(self, db: float, height: float) -> float:
         """Convert dB value to Y coordinate (0 = top, height = bottom)."""
         # Normalize to 0-1 range
@@ -463,6 +476,34 @@ class LevelMeter(MeterModel):
                 Qt.AlignmentFlag.AlignCenter,
                 text,
             )
+
+    def paint_bar(self, painter: QPainter, width: float, height: float) -> None:
+        """Paint the level as a horizontal bar with its peak hold line and the clip strip at the loud end."""
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        radius = height / 2
+        painter.setBrush(self.COLOR_BACKGROUND)
+        painter.drawRoundedRect(QRectF(0, 0, width, height), radius, radius)
+
+        def x_of(db: float) -> float:
+            return width * (1.0 - self._db_to_y(db, 1.0))
+
+        if self.rms_db > self.DB_MIN:
+            gradient = QLinearGradient(0, 0, width, 0)
+            gradient.setColorAt(0.0, self.COLOR_GREEN)
+            gradient.setColorAt(0.67, self.COLOR_YELLOW)
+            gradient.setColorAt(0.9, self.COLOR_RED)
+            gradient.setColorAt(1.0, self.COLOR_RED)
+            painter.setBrush(gradient)
+            painter.drawRoundedRect(QRectF(0, 0, x_of(self.rms_db), height), radius, radius)
+
+        if self.peak_hold_db > self.DB_MIN:
+            peak_color = self.COLOR_CLIP if self.peak_hold_db >= -0.5 else self.COLOR_PEAK_HOLD
+            x = min(width - 1.0, x_of(self.peak_hold_db))
+            painter.fillRect(QRectF(x - 1.0, 0, 2.0, height), peak_color)
+
+        if self.is_clipping:
+            painter.fillRect(QRectF(width - 4.0, 0, 4.0, height), self.COLOR_CLIP)
 
 
 class GainReductionMeter(MeterModel):

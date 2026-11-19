@@ -213,7 +213,7 @@ class QuickBridge(QObject):
         stages = [
             {
                 "trace": True, "alert": text("backend_diag_label"),
-                "title": "NOISE SUPPRESSION", "menu": None,
+                "title": "NOISE SUPPRESSION", "name": "Noise suppression", "menu": None,
                 "help": (
                     "Removes steady background noise such as fans and hum. The "
                     "backend choice affects cleanup quality, CPU use and latency. "
@@ -231,7 +231,7 @@ class QuickBridge(QObject):
                 "advanced": [],
             },
             {
-                "trace": False, "alert": None, "title": "NOISE GATE", "menu": None,
+                "trace": False, "alert": None, "title": "NOISE GATE", "name": "Noise gate", "menu": None,
                 "help": (
                     "Reduces gain when the signal falls below the threshold, so "
                     "background noise drops out during silence. The gate uses 3 dB "
@@ -257,7 +257,7 @@ class QuickBridge(QObject):
                 ],
             },
             {
-                "trace": False, "alert": None, "title": "DE-ESSER", "menu": None,
+                "trace": False, "alert": None, "title": "DE-ESSER", "name": "De-esser", "menu": None,
                 "help": (
                     "Reduces harsh sibilance (s, sh, t). Auto mode tracks the "
                     "balance between sibilance and voice and adjusts the reduction "
@@ -280,7 +280,7 @@ class QuickBridge(QObject):
                 ],
             },
             {
-                "trace": False, "alert": None, "title": "COMPRESSOR", "menu": None,
+                "trace": False, "alert": None, "title": "COMPRESSOR", "name": "Compressor", "menu": None,
                 "help": (
                     "Evens out your level by turning down the loudest moments. "
                     "Threshold sets where it starts working; ratio sets how hard."
@@ -309,6 +309,7 @@ class QuickBridge(QObject):
                 "trace": False,
                 "alert": None,
                 "title": "LIMITER",
+                "name": "Limiter",
                 "help": (
                     "A safety net that stops the output from going above the "
                     "ceiling. It looks ahead 0.5 ms and ramps its gain down before "
@@ -332,11 +333,34 @@ class QuickBridge(QObject):
         ]
 
         settings_cards = w.shell_settings_cards
+        eq_toggle = EQControl(w.eq_state, "enabled", None, self)
+
+        def chain_row(name: str, toggle=None, *, stage: int = -1, page: int = -1, state=None) -> dict:
+            # A row opens its page, or else scrolls the Overview to its stage card.
+            return {"name": name, "toggle": toggle, "stage": stage, "page": page, "state": state}
+
+        by_title = {stage["title"]: index for index, stage in enumerate(stages)}
+
+        def stage_row(title: str) -> dict:
+            index = by_title[title]
+            return chain_row(stages[index]["name"], stages[index]["toggle"], stage=index)
+
+        # In signal order, which is not the order of the stage cards.
+        chain = [
+            chain_row("Input cleanup", page=w.SETTINGS_PAGE_INDEX, state=w.input_cleanup_mode_choice),
+            stage_row("NOISE GATE"),
+            stage_row("NOISE SUPPRESSION"),
+            stage_row("DE-ESSER"),
+            chain_row("Equalizer", eq_toggle, page=w.EQUALIZER_PAGE_INDEX),
+            stage_row("COMPRESSOR"),
+            stage_row("LIMITER"),
+        ]
 
         return {
             "theme": quick_theme(),
             "glyphs": {
                 "mic": Glyph.MICROPHONE,
+                "speaker": Glyph.SPEAKER,
                 "health": Glyph.HEALTH,
                 "settings": Glyph.SETTINGS,
                 "more": Glyph.MORE,
@@ -350,6 +374,8 @@ class QuickBridge(QObject):
             },
             "page": w.shell_page,
             "healthPage": w.HEALTH_PAGE_INDEX,
+            "settingsPage": w.SETTINGS_PAGE_INDEX,
+            "equalizerPage": w.EQUALIZER_PAGE_INDEX,
             "banners": [
                 text("device_warning_banner"),
                 text("config_warning_banner"),
@@ -362,6 +388,13 @@ class QuickBridge(QObject):
                 "mute": action("user_mute_checkbox"),
                 "start": action("start_btn"),
                 "stop": action("stop_btn"),
+                "latency": text("latency_readout_label"),
+            },
+            "sidebar": {
+                "chain": chain,
+                "measureLatency": ActionControl(
+                    w.latency_calibration_action, self, text="Measure latency",
+                ),
             },
             "presets": {
                 "status": text("preset_status_label"),
@@ -381,7 +414,7 @@ class QuickBridge(QObject):
                     "move horizontally only. Use [ and ] plus arrow keys for keyboard editing; "
                     "Delete resets the selected band."
                 ),
-                "toggle": EQControl(w.eq_state, "enabled", None, self),
+                "toggle": eq_toggle,
                 "menu": menu(eq.options_menu, "Equalizer options"), "rows": [], "advanced": [],
                 "tone": menu(eq.tone_menu, "Tone preset"),
                 "curve": eq.graph_model,

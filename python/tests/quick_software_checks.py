@@ -56,7 +56,7 @@ def test_a_click_on_the_health_chip_switches_the_page_and_back(quick_window, qap
     qapp.processEvents()
     view = quick_window.centralWidget()
     toggle = view.rootObject().findChild(QObject, "healthToggle")
-    mic = view.rootObject().findChild(QObject, "micPage")
+    mic = view.rootObject().findChild(QObject, "overviewPage")
     assert toggle is not None and mic is not None
     centre = toggle.mapToScene(QPointF(toggle.width() / 2, toggle.height() / 2)).toPoint()
 

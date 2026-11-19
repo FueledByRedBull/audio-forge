@@ -38,6 +38,8 @@ class SemanticPalette:
     # The edge of a control, a switch track and a slider track: 3:1 against every surface
     # a control sits on (WCAG 1.4.11). The two borders above only divide surfaces.
     control_edge: str = "#7d818b"
+    # A switch that is on: a neutral near-white track, so on and off differ by more than hue.
+    switch_on: str = "#d9dbe1"
     focus_ring: str = "#cfe0ff"
     text_primary: str = "#ececf0"
     text_muted: str = "#9b9fa9"
@@ -203,7 +205,7 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         text_on_accent=on_accent, hover_text=on_accent,
         accent=accent, accent_hover=accent, accent_pressed=accent,
         action_primary=accent, action_destructive=text, action_destructive_border=text,
-        action_secondary=window, control_edge=text,
+        action_secondary=window, control_edge=text, switch_on=text,
         action_disabled=window, action_disabled_text=disabled,
         action_disabled_surface=window, action_disabled_border=disabled,
         status_ok_surface=window, status_ok_text=text, status_ok_border=text,
@@ -454,7 +456,10 @@ def control_boundary_pairs(palette: SemanticPalette) -> tuple[tuple[str, str, st
         ("control edge on app surface", palette.control_edge, palette.app_surface),
         ("control edge on card", palette.control_edge, palette.card_surface),
         ("control edge on field", palette.control_edge, palette.control_surface),
-        ("switch on and slider fill on card", palette.accent, palette.card_surface),
+        ("slider fill on card", palette.accent, palette.card_surface),
+        ("switch on against its knob", palette.switch_on, palette.app_surface),
+        ("switch on on the sidebar", palette.switch_on, palette.sidebar_top),
+        ("switch on on card", palette.switch_on, palette.card_surface),
         ("focus ring on card", palette.focus_ring, palette.card_surface),
         ("focus ring on app surface", palette.focus_ring, palette.app_surface),
         ("focus ring on glass", palette.focus_ring, flatten(palette.glass, palette.app_surface)),

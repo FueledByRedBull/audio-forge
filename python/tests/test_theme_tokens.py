@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import re
 
 import pytest
 from PySide6.QtCore import QByteArray, QUrl
@@ -136,3 +137,20 @@ def test_level_colors_are_not_told_apart_by_red_against_green_alone() -> None:
     assert 190 <= safe.hslHue() <= 250
     assert safe.blue() > safe.green() and safe.blue() > safe.red()
     assert danger.hslHue() < 20 or danger.hslHue() > 340
+
+
+def test_a_switch_that_is_on_differs_from_one_that_is_off_by_more_than_hue() -> None:
+    # On is a filled light track and off an outline in the edge colour: a colour-blind user
+    # tells them apart by lightness and fill, and the on track holds 3:1 where switches sit.
+    on, off = QColor(PALETTE.switch_on), QColor(PALETTE.control_edge)
+    assert on.lightness() - off.lightness() >= 60
+    for ground in (PALETTE.app_surface, PALETTE.sidebar_top, PALETTE.card_surface):
+        assert contrast_ratio(PALETTE.switch_on, ground) >= 3
+    assert build_palette(SYSTEM_COLORS).switch_on == SYSTEM_COLORS["window_text"]
+
+
+@pytest.mark.parametrize("name", ["Main.qml", "SwitchButton.qml"])
+def test_scene_animations_take_their_length_from_the_motion_tokens(name) -> None:
+    durations = re.findall(r"duration:\s*([^;}\n]+)", (QML_DIR / name).read_text(encoding="utf-8"))
+    assert durations
+    assert all(re.search(r"\bt\.motion\w*\b", value) for value in durations), durations

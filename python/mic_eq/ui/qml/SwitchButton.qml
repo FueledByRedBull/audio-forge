@@ -5,29 +5,39 @@ ModelButton {
     id: toggle
     // Colors follow this rather than `enabled`, so a row can own the click.
     property bool live: enabled
-    implicitHeight: 22
+    // The track is smaller than the hit target, which stays 24 px high.
+    implicitHeight: 24
     implicitWidth: track.width + (label.text === "" ? 0 : label.implicitWidth + 10)
     Accessible.role: Accessible.CheckBox
     background: null
     contentItem: Item {
         Rectangle {
             id: track
-            width: 40
-            height: 22
-            radius: 11
-            color: !toggle.live ? Look.t.action_disabled
-                   : toggle.on ? Look.t.accent : Look.t.control_edge
-            Behavior on color { ColorAnimation { duration: Look.t.motion } }
+            width: 30
+            height: 18
+            radius: 9
+            y: (parent.height - height) / 2
+            // On is a filled light track, off an outline: the two differ by more than color.
+            color: !toggle.live ? Look.t.action_disabled : toggle.on ? Look.t.switch_on : "transparent"
+            border.width: toggle.live && !toggle.on ? 1 : 0
+            border.color: Look.t.control_edge
+            Behavior on color { ColorAnimation { duration: Look.t.motionSwitch } }
             Rectangle {
-                width: 16
-                height: 16
-                radius: 8
+                objectName: "switchKnob"
+                width: 12
+                height: 12
+                radius: 6
                 y: 3
-                x: toggle.on ? 21 : 3
-                color: toggle.live ? Look.t.text_primary : Look.t.action_disabled_text
+                x: toggle.on ? track.width - width - 3 : 3
+                color: !toggle.live ? Look.t.action_disabled_text
+                       : toggle.on ? Look.t.app_surface : Look.t.control_edge
                 Behavior on x {
-                    NumberAnimation { duration: Look.t.motion; easing.type: Easing.OutCubic }
+                    NumberAnimation {
+                        duration: Look.movement(Look.t.motionSwitch)
+                        easing.type: Easing.OutCubic
+                    }
                 }
+                Behavior on color { ColorAnimation { duration: Look.t.motionSwitch } }
             }
             FocusRing { control: toggle }
         }

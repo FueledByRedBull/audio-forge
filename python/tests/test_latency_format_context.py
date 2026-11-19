@@ -55,6 +55,13 @@ def _owner(
     return owner
 
 
+def _latency_readout(owner: Any) -> Mock:
+    """The toolbar's latency figure, which hears whether a measured route is applied."""
+    readout = Mock()
+    owner.shell_texts = {"latency_readout_label": readout}
+    return readout
+
+
 def _close_owner(owner: Any, qapp) -> None:
     owner.input_choice.deleteLater()
     owner.output_choice.deleteLater()
@@ -189,6 +196,7 @@ def test_same_route_with_changed_sample_rate_or_channels_drops_old_compensation(
     input_identity, output_identity = _wasapi_route()
     profile = _profile((48_000, 1, 48_000, 2))
     owner = _owner(input_identity, output_identity, profile)
+    readout = _latency_readout(owner)
     try:
         changed_input = DeviceIdentity(
             name="Mic",
@@ -206,6 +214,7 @@ def test_same_route_with_changed_sample_rate_or_channels_drops_old_compensation(
         MainWindow._apply_latency_compensation_for_current_devices(owner)
 
         owner.processor.set_latency_compensation_ms.assert_called_once_with(0.0)
+        readout.update.assert_called_once_with(data={"measured": False})
     finally:
         _close_owner(owner, qapp)
 
@@ -218,12 +227,14 @@ def test_matching_format_reuses_profile_without_relabeling_context(qapp):
         latency_calibration_profiles={},
     )
     owner = _owner(input_identity, output_identity, profile, config=config)
+    readout = _latency_readout(owner)
     try:
         MainWindow._sync_latency_profile_for_current_devices(owner, profile)
         MainWindow._apply_latency_compensation_for_current_devices(owner)
 
         assert profile.capture_format_context == (48_000, 1, 48_000, 2)
         owner.processor.set_latency_compensation_ms.assert_called_once_with(42.0)
+        readout.update.assert_called_once_with(data={"measured": True})
     finally:
         _close_owner(owner, qapp)
 
@@ -270,6 +281,7 @@ def test_an_engine_latency_not_published_yet_leaves_the_profile_alone(qapp):
     profile.total_latency_ms = 54.5
     profile.engine_config_signature = "measured"
     owner = _owner(input_identity, output_identity, profile)
+    _latency_readout(owner)
     processor = owner.processor
     processor.is_running.return_value = True
     processor.get_runtime_diagnostics.return_value = {

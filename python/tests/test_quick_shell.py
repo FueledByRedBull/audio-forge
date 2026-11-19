@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -67,6 +68,7 @@ def _rows(card: dict) -> dict:
 def test_live_data_changes_repaint_existing_qml_items(quick_window, name) -> None:
     window = quick_window
     window.resize(1500, 1000)
+    window.shell_page.setIndex(window.EQUALIZER_PAGE_INDEX if name == "eq" else 0)
     # Supply telemetry without opening audio devices or running stopped-stream refreshes.
     for timer in window.findChildren(QTimer):
         timer.stop()
@@ -552,7 +554,7 @@ def test_scene_controls_drive_the_shared_state(quick_window, qapp) -> None:
     view = quick_window.centralWidget()
     model = quick_window.quick_bridge.model
 
-    mute = _find(view.rootObject(), "Toggle", model["top"]["mute"])
+    mute = _find(view.rootObject(), "MuteBtn", model["top"]["mute"])
     assert mute is not None
     assert not quick_window.user_mute_checkbox_action.isChecked()
     QTest.mouseClick(
@@ -566,6 +568,9 @@ def test_scene_controls_drive_the_shared_state(quick_window, qapp) -> None:
     def band_gain() -> float:
         return quick_window.eq_state.get_eq_settings().bands[0].gain_db
 
+    quick_window.shell_page.setIndex(quick_window.EQUALIZER_PAGE_INDEX)
+    # The page lays out once it shows; read the fader's place after that.
+    QTest.qWait(50)
     fader = _find(view.rootObject(), "Fader", model["eq"]["bands"][0]["gain"])
     assert fader is not None
     start = fader.mapToScene(QPointF(fader.width() / 2, fader.height() / 2)).toPoint()
@@ -589,7 +594,8 @@ def _graph_item(item):
 
 @pytest.fixture
 def mic_page(quick_window, qapp):
-    """The EQ graph and the page holding it, in a window the page overflows."""
+    """The EQ graph and the Equalizer page holding it, in a window the page overflows."""
+    quick_window.shell_page.setIndex(quick_window.EQUALIZER_PAGE_INDEX)
     quick_window.resize(900, 600)
     qapp.processEvents()
     graph = _graph_item(quick_window.centralWidget().rootObject())
@@ -918,9 +924,10 @@ def test_a_drag_moves_the_band_by_the_pointers_travel(quick_window, mic_page) ->
 
 @pytest.fixture
 def wide_page(quick_window, mic_page, qapp):
-    """The mic page in a window wide enough for the whole EQ card to show."""
+    """The Equalizer page in a window wide enough for the whole EQ card to show."""
     page = mic_page[1]
-    quick_window.resize(1300, 700)
+    # The Equalizer page holds the EQ card alone, so only the shortest window overflows it.
+    quick_window.resize(1300, 640)
     qapp.processEvents()
     assert page.property("contentHeight") > page.height()
     return page
@@ -997,10 +1004,12 @@ def test_a_clicked_readout_lets_the_wheel_scroll_the_page(quick_window, wide_pag
     QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=centre)
     field = view.quickWindow().activeFocusItem()
     assert field.property("readOnly") and field.hasActiveFocus()
+    # The readout sits low on the page, so the page has room to scroll back up.
     before = page.property("contentY")
-    QTest.wheelEvent(view.quickWindow(), QPointF(centre), QPoint(0, -120))
+    assert before > 0
+    QTest.wheelEvent(view.quickWindow(), QPointF(centre), QPoint(0, 120))
 
-    assert _wait_until(lambda: page.property("contentY") > before)
+    assert _wait_until(lambda: page.property("contentY") < before)
 
 
 def test_a_focused_editable_box_still_steps_with_the_wheel(quick_window, wide_page) -> None:
@@ -1606,8 +1615,7 @@ def engine_window(quick_window, monkeypatch):
 
 
 def _status_dot(window):
-    strip = window.centralWidget().rootObject().findChild(QObject, "statusStrip")
-    return next(child for child in strip.childItems() if child.width() == 8 and child.height() == 8)
+    return window.centralWidget().rootObject().findChild(QObject, "transmissionDot")
 
 
 def _diagnostic_labels(window, **changes) -> None:
@@ -1623,7 +1631,8 @@ def test_the_status_dot_shows_sound_running_and_heard(engine_window, qapp) -> No
     dot = _status_dot(window)
 
     def colour() -> str:
-        qapp.processEvents()
+        # The dot fades to its new colour over the theme's status time.
+        QTest.qWait(window.quick_bridge.model["theme"]["motionStatus"] + 30)
         return dot.property("color").name()
 
     def palette(name: str) -> str:
@@ -1782,3 +1791,62 @@ def test_a_second_window_registers_no_further_qml_types(quick_window) -> None:
 
     assert isinstance(view, QQuickWidget) and view.status() == QQuickWidget.Status.Ready
     assert registered() == first
+
+
+def test_the_measure_latency_link_runs_the_route_measurement_command(quick_window, qapp, monkeypatch) -> None:
+    window = quick_window
+    window.resize(1400, 900)
+    qapp.processEvents()
+    view = window.centralWidget()
+    link = _find(view.rootObject(), "LinkBtn", window.quick_bridge.model["sidebar"]["measureLatency"])
+    assert link is not None and link.isVisible()
+    assert link.property("text") == "Measure latency"
+    # Without a stable route the command refuses before any dialog opens, and says why.
+    monkeypatch.setattr(window, "_latency_profile_key", lambda: None)
+    triggered = QSignalSpy(window.latency_calibration_action.triggered)
+    QTest.mouseClick(
+        view, Qt.MouseButton.LeftButton, pos=link.mapToScene(QPointF(link.width() / 2, link.height() / 2)).toPoint()
+    )
+    assert triggered.count() == 1
+    assert window.status_message.text.startswith("Cannot persist calibration")
+
+
+def test_the_toolbar_latency_says_whether_the_route_was_measured(quick_window, qapp, monkeypatch) -> None:
+    window = quick_window
+    window.resize(1400, 900)
+    qapp.processEvents()
+    toolbar = window.centralWidget().rootObject().findChild(QObject, "toolbar")
+
+    def texts(item) -> list:
+        found = []
+        for child in item.childItems():
+            if child.metaObject().className() == "QQuickText":
+                found.append(child)
+            found += texts(child)
+        return found
+
+    def heard(diagnostics: dict | None = None) -> str:
+        """What a screen reader hears from the toolbar's latency figure, after one diagnostics tick."""
+        if diagnostics is not None:
+            _judge(
+                window, diagnostics=diagnostics, latency_ms=10.0, dsp_time_ms=0.2, input_buf=0, rnnoise_buf=0,
+                input_rms_db=-20.0, output_rms_db=-20.0, input_callback_age_ms=0, output_callback_age_ms=0,
+            )
+        qapp.processEvents()
+        figure = window.shell_texts["latency_readout_label"].text
+        shown = [item for item in texts(toolbar) if item.isVisible() and item.property("text") == figure]
+        assert len(shown) == 1, figure
+        with _AccessibleScene() as scene:
+            return scene.name(shown[0])
+
+    window._apply_latency_compensation_for_current_devices()
+    assert heard() == "Latency, not measured: --"
+    assert heard({}) == "Latency, not measured: ≥ 10 ms"
+
+    # A measured route sets the compensation, and the figure then holds the whole delay.
+    profile = SimpleNamespace(route_latency_ms=48.0, applied_compensation_ms=48.0)
+    window.config.use_measured_latency = True
+    monkeypatch.setattr(window, "_current_latency_profile", lambda: profile)
+    monkeypatch.setattr(window, "_refresh_latency_profile_engine", lambda _profile: False)
+    window._apply_latency_compensation_for_current_devices()
+    assert heard({"latency_compensation_ms": 48.0}) == "Latency: ~10 ms"

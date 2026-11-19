@@ -607,7 +607,9 @@ class FirstRunSetupDialog(QDialog):
         launcher = self._scene_focus()
         self.hide()
         try:
-            saved = self._run_latency is not None and bool(self._run_latency())
+            if self._run_latency is None:
+                raise RuntimeError("this setup has no latency calibration to run")
+            saved = bool(self._run_latency())
         except Exception:
             logger.exception("Latency calibration failed inside the first-run setup")
             saved = False

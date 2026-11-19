@@ -14,8 +14,19 @@ Item {
     Rectangle {
         anchors.fill: parent
         radius: Look.t.radiusCard + 2
-        color: Look.t.card_surface
-        border.color: Look.t.border
+        border.color: Look.t.card_edge
+        gradient: Gradient {
+            GradientStop { position: 0; color: Look.t.card_top }
+            GradientStop { position: 1; color: Look.t.card_surface }
+        }
+        // Light catches the top edge.
+        Rectangle {
+            x: parent.radius
+            y: 1
+            width: parent.width - 2 * parent.radius
+            height: 1
+            color: Look.t.card_highlight
+        }
         layer.enabled: surface.shadows
         layer.effect: MultiEffect {
             shadowEnabled: true

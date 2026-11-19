@@ -11,8 +11,9 @@ from __future__ import annotations
 import math
 import re
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Protocol
 
 from ..runtime_snapshot import RuntimeSnapshot
@@ -806,14 +807,14 @@ class HealthView:
     summary and ``advice`` are what the view sets, or the reset text.
     """
 
-    chips: dict[str, Chip]
+    chips: Mapping[str, Chip]
     messages: tuple[tuple[str, int], ...] = ()
     advice: str | None = None
     reset: bool = False
 
 
 READINGS_UNAVAILABLE = HealthView(
-    chips={"health_summary_label": Chip("Health: readings unavailable", "warn")},
+    chips=MappingProxyType({"health_summary_label": Chip("Health: readings unavailable", "warn")}),
     advice=(
         "AudioForge could not read the audio engine's status, so Health cannot be checked. "
         "Stop and start processing; if this keeps happening, restart AudioForge."
@@ -821,7 +822,7 @@ READINGS_UNAVAILABLE = HealthView(
     reset=True,
 )
 _COUNTERS_UNREADABLE = HealthView(
-    chips={"recovery_diag_label": Chip("Recovery: counters could not be read", "warn")},
+    chips=MappingProxyType({"recovery_diag_label": Chip("Recovery: counters could not be read", "warn")}),
     reset=True,
 )
 

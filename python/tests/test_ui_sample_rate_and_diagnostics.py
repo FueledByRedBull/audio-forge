@@ -9,7 +9,6 @@ import threading
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
 from unittest.mock import Mock
 
 import numpy as np
@@ -37,6 +36,7 @@ from mic_eq.ui.device_selection import (
 )
 from mic_eq.ui import main_window
 from mic_eq.ui.main_window import MainWindow
+from mic_eq.ui.input_preferences import InputPreferences
 from mic_eq.ui.processing_configuration import LoadOutcome, LoadStatus
 from mic_eq.ui.startup_presets import (
     normalize_startup_preset_id as _normalize_startup_preset_id,
@@ -2091,11 +2091,7 @@ def test_legacy_global_modes_without_stable_identity_use_safe_defaults() -> None
     )
 
     assert config.input_device_preferences == {}
-    owner = cast(Any, MainWindow.__new__(MainWindow))
-    owner.config = config
-    owner._current_device_route_key = lambda: None
-    owner._current_input_preference_key = lambda: None
-    assert MainWindow._input_preference_for_current_route(owner) == InputDevicePreference()
+    assert InputPreferences(config).lookup(None, None) == InputDevicePreference()
 
 
 @pytest.mark.parametrize(
@@ -2127,12 +2123,7 @@ def test_legacy_global_modes_without_stable_identity_use_safe_defaults() -> None
     ids=["missing-route-override", "new-input-endpoint"],
 )
 def test_missing_route_or_input_override_does_not_fall_back_to_global_modes(config, route_key, input_key) -> None:
-    owner = cast(Any, MainWindow.__new__(MainWindow))
-    owner.config = config
-    owner._current_device_route_key = lambda: route_key
-    owner._current_input_preference_key = lambda: input_key
-
-    assert MainWindow._input_preference_for_current_route(owner) == InputDevicePreference()
+    assert InputPreferences(config).lookup(route_key, input_key) == InputDevicePreference()
 
 
 def test_route_input_preference_action_saves_visible_controls_for_current_route(

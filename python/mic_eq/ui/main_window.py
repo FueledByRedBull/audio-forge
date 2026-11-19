@@ -49,6 +49,12 @@ from .deesser_state import DeEsserState
 from .compressor_state import CompressorState
 from .gate_state import GateState
 from .level_meter import LevelMeter
+from .input_preferences import (
+    InputPreferences,
+    RouteSave,
+    is_valid_channel_mode,
+    is_valid_cleanup_mode,
+)
 from .health import (
     READINGS_UNAVAILABLE,
     Chip,
@@ -110,8 +116,6 @@ from .shell_specs import (
     CHOICE_SPECS,
     HEALTH_DECISION_KEYS,
     HEALTH_LAYOUT_KEYS,
-    INPUT_CHANNEL_MODE_OPTIONS,
-    INPUT_CLEANUP_MODE_OPTIONS,
     PROCESSING_MODE_OPTIONS,
     TEXT_SPECS,
 )
@@ -151,7 +155,6 @@ from ..config import (
     load_config,
     build_device_route_key,
     DevicePresetBinding,
-    InputDevicePreference,
     build_input_device_preference_key,
     coerce_device_identity,
     legacy_latency_profile_key,
@@ -371,6 +374,7 @@ class MainWindow(QMainWindow):
         self.output_meter = LevelMeter("OUT", show_scale=True, name="Output level meter", parent=self)
         # Load configuration
         self.config = load_config()
+        self.input_preferences = InputPreferences(self.config)
         self._login_startup = login_startup
         self._login_startup_deadline: float | None = None
         self._login_startup_next_retry = 0.0
@@ -658,38 +662,26 @@ class MainWindow(QMainWindow):
         for key in ("health_summary_label", "recovery_diag_label", "dropped_label", "latency_label"):
             self.shell_texts[key].update(tip=TEXT_SPECS[key].tip)
 
-    @staticmethod
-    def _is_valid_input_channel_mode(mode: object) -> bool:
-        return isinstance(mode, str) and any(
-            mode == option_mode for _label, option_mode in INPUT_CHANNEL_MODE_OPTIONS
-        )
-
     def _select_input_channel_mode(self, mode: str) -> None:
-        target = mode if self._is_valid_input_channel_mode(mode) else "phase_safe_mono"
+        target = mode if is_valid_channel_mode(mode) else "phase_safe_mono"
         index = self.input_channel_mode_choice.findData(target)
         self.input_channel_mode_choice.setCurrentIndex(index if index >= 0 else 0)
 
     def _apply_input_channel_mode(self, mode: str) -> None:
-        target = mode if self._is_valid_input_channel_mode(mode) else "phase_safe_mono"
+        target = mode if is_valid_channel_mode(mode) else "phase_safe_mono"
         try:
             if hasattr(self.processor, "set_input_channel_mode"):
                 self.processor.set_input_channel_mode(target)
         except Exception:
             logger.warning("Failed to apply input channel mode", exc_info=True)
 
-    @staticmethod
-    def _is_valid_input_cleanup_mode(mode: object) -> bool:
-        return isinstance(mode, str) and any(
-            mode == option_mode for _label, option_mode in INPUT_CLEANUP_MODE_OPTIONS
-        )
-
     def _select_input_cleanup_mode(self, mode: str) -> None:
-        target = mode if self._is_valid_input_cleanup_mode(mode) else "off"
+        target = mode if is_valid_cleanup_mode(mode) else "off"
         index = self.input_cleanup_mode_choice.findData(target)
         self.input_cleanup_mode_choice.setCurrentIndex(index if index >= 0 else 0)
 
     def _apply_input_cleanup_mode(self, mode: str) -> None:
-        target = mode if self._is_valid_input_cleanup_mode(mode) else "off"
+        target = mode if is_valid_cleanup_mode(mode) else "off"
         try:
             if hasattr(self.processor, "set_input_cleanup_mode"):
                 self.processor.set_input_cleanup_mode(target)
@@ -987,23 +979,10 @@ class MainWindow(QMainWindow):
             return None
         return build_input_device_preference_key(identity)
 
-    def _input_preference_for_current_route(self) -> InputDevicePreference:
-        route_key = self._current_device_route_key()
-        route_preferences = getattr(self.config, "route_input_preferences", {})
-        if route_key is not None and route_key in route_preferences:
-            return route_preferences[route_key]
-
-        device_key = self._current_input_preference_key()
-        device_preferences = getattr(self.config, "input_device_preferences", {})
-        if device_key is not None and device_key in device_preferences:
-            return device_preferences[device_key]
-
-        # An unmatched route or device is unbound; global settings never
-        # transfer to a different endpoint.
-        return InputDevicePreference()
-
     def _apply_input_preferences_for_current_route(self) -> None:
-        preference = self._input_preference_for_current_route()
+        preference = self.input_preferences.lookup(
+            self._current_device_route_key(), self._current_input_preference_key()
+        )
         self._select_input_channel_mode(preference.channel_mode)
         self._select_input_cleanup_mode(preference.cleanup_mode)
         self._apply_input_channel_mode(preference.channel_mode)
@@ -1012,51 +991,19 @@ class MainWindow(QMainWindow):
             self.config.input_channel_mode = preference.channel_mode
             self.config.input_cleanup_mode = preference.cleanup_mode
 
-    def _store_input_preference(self, *, channel_mode: str, cleanup_mode: str) -> None:
-        preference = InputDevicePreference(
-            channel_mode=channel_mode,
-            cleanup_mode=cleanup_mode,
-            provenance="explicit_user",
-        )
-        route_preferences = getattr(self.config, "route_input_preferences", None)
-        device_preferences = getattr(self.config, "input_device_preferences", None)
-        if route_preferences is not None and device_preferences is not None:
-            route_key = self._current_device_route_key()
-            if route_key in route_preferences:
-                route_preferences[route_key] = preference
-            else:
-                device_key = self._current_input_preference_key()
-                if device_key is not None:
-                    device_preferences[device_key] = preference
-        self.config.input_channel_mode = channel_mode
-        self.config.input_cleanup_mode = cleanup_mode
-
     def _set_route_input_preference(
         self, *, channel_mode: str, cleanup_mode: str
     ) -> bool:
         """Persist an exact-route override; return false when stable IDs are absent."""
-        route_key = self._current_device_route_key()
-        route_preferences = getattr(self.config, "route_input_preferences", None)
-        if route_key is None or route_preferences is None:
-            return False
-        if not (
-            self._is_valid_input_channel_mode(channel_mode)
-            and self._is_valid_input_cleanup_mode(cleanup_mode)
-        ):
-            return False
-        previous = route_preferences.get(route_key)
-        route_preferences[route_key] = InputDevicePreference(
+        result = self.input_preferences.set_for_route(
+            self._current_device_route_key(),
             channel_mode=channel_mode,
             cleanup_mode=cleanup_mode,
-            provenance="explicit_user",
+            save=self._save_config_safely,
         )
-        saved = self._save_config_safely()
-        if not saved:
-            if previous is None:
-                del route_preferences[route_key]
-            else:
-                route_preferences[route_key] = previous
+        if result is RouteSave.NOT_SAVED:
             self.status_message.showMessage("Route input settings could not be saved", 6000)
+        if result is not RouteSave.SAVED:
             return False
         self._apply_input_preferences_for_current_route()
         return True
@@ -2704,10 +2651,15 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "config"):
             return
         mode = self.input_channel_mode_choice.currentData()
-        if not self._is_valid_input_channel_mode(mode):
+        if not is_valid_channel_mode(mode):
             mode = "phase_safe_mono"
         cleanup_mode = getattr(self.config, "input_cleanup_mode", "off")
-        self._store_input_preference(channel_mode=mode, cleanup_mode=cleanup_mode)
+        self.input_preferences.store(
+            self._current_device_route_key(),
+            self._current_input_preference_key(),
+            channel_mode=mode,
+            cleanup_mode=cleanup_mode,
+        )
         self._apply_input_channel_mode(mode)
         self._save_input_preferences()
         self._sync_calibration_evidence(force_reset=True)
@@ -2717,10 +2669,15 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "config"):
             return
         mode = self.input_cleanup_mode_choice.currentData()
-        if not self._is_valid_input_cleanup_mode(mode):
+        if not is_valid_cleanup_mode(mode):
             mode = "off"
         channel_mode = getattr(self.config, "input_channel_mode", "phase_safe_mono")
-        self._store_input_preference(channel_mode=channel_mode, cleanup_mode=mode)
+        self.input_preferences.store(
+            self._current_device_route_key(),
+            self._current_input_preference_key(),
+            channel_mode=channel_mode,
+            cleanup_mode=mode,
+        )
         self._apply_input_cleanup_mode(mode)
         self._save_input_preferences()
         self._sync_calibration_evidence(force_reset=True)

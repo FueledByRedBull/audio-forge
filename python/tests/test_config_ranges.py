@@ -17,6 +17,7 @@ from mic_eq import mic_eq_core
 from mic_eq.config import (
     CompressorSettings,
     DeEsserSettings,
+    EQSettings,
     GateSettings,
     LimiterSettings,
     Preset,
@@ -122,6 +123,30 @@ def test_the_shared_table_cannot_be_mutated():
     with pytest.raises(TypeError):
         del ranges["limiter"]  # type: ignore[attr-defined]
     assert validation_ranges()["gate"]["threshold_db"] == (-80.0, -10.0)
+
+
+def test_every_python_stage_default_is_the_native_default():
+    # Python keeps its own literals so that mic_eq.config imports without the
+    # native core; this holds them to the defaults the live controls start from.
+    native = mic_eq_core.processing_defaults()
+    python = {
+        section: asdict(settings_class())
+        for section, settings_class in SETTINGS_CLASSES.items()
+    }
+    # The native core defaults only the EQ's enabled flag; the bands carry their own.
+    python["eq"] = {"enabled": EQSettings().enabled}
+
+    assert {section: sorted(values) for section, values in native.items()} == {
+        section: sorted(values) for section, values in python.items()
+    }
+    for section, values in python.items():
+        for name, value in values.items():
+            native_value = native[section][name]
+            assert type(native_value) is type(value), (section, name)
+            if isinstance(value, float) and isinstance(native_value, float):
+                assert _bits(native_value) == _bits(value), (section, name)
+            else:
+                assert native_value == value, (section, name)
 
 
 @pytest.mark.parametrize("section", SETTINGS_CLASSES)

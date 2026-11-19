@@ -23,6 +23,9 @@ NO_MIC_DETAIL = (
     "AudioForge looks for new devices only when you ask."
 )
 CLIPPING_NOTE = "Clipping happens before AudioForge, so the limiter can't fix it."
+SOUND_SETTINGS_URI = "ms-settings:sound"
+SOUND_SETTINGS_LINE = "“Show me how” opens Windows Sound settings."
+SOUND_SETTINGS_FAILED = "Windows Sound settings did not open. Open Settings > System > Sound."
 MUTED_DETAIL = (
     "Your microphone is still on, but nothing reaches the call. Press Ctrl+M to unmute."
 )
@@ -99,6 +102,8 @@ class OverviewView:
     # devices are still gone nothing would reconnect them later; it is offered only for
     # running audio whose callbacks stalled, and after a switch that could not start.
     offer_restart: bool = False
+    # The clipping actions under the sentence: the way to the fix, or to wait.
+    show_clipping_notice: bool = False
     # Another microphone is the way out when the device is gone, so it is offered while the
     # engine retries too: the stop cancels a retry for the device being replaced.
     offer_choose_microphone: bool = False
@@ -218,6 +223,7 @@ def describe_overview(inputs: OverviewInputs) -> OverviewView:
         checks_title=checks_title,
         checks=checks,
         offer_restart=state == "device_lost" and not inputs.restart_pending,
+        show_clipping_notice=state == "clipping",
         offer_choose_microphone=state == "device_lost",
         callers_line=CALLERS_LINE if tone == "callers" else "",
     )

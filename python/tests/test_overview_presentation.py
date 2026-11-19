@@ -59,6 +59,15 @@ def test_restart_is_offered_only_for_running_audio_whose_device_failed() -> None
         assert not describe_overview(replace(LIVE, **changes)).offer_restart, changes
 
 
+def test_the_clipping_notice_is_shown_only_in_the_clipping_state() -> None:
+    assert describe_overview(replace(LIVE, input_bad=True)).show_clipping_notice
+    # Muted, a lost device and a stopped engine outrank clipping, and none of them offers the notice.
+    for changes in (
+        {}, {"issues": ("a",)}, {"muted": True, "input_bad": True},
+        {"device_bad": True, "input_bad": True}, {"running": False, "input_bad": True},
+        {"no_mic": True, "running": False, "input_bad": True},
+    ):
+        assert not describe_overview(replace(LIVE, **changes)).show_clipping_notice, changes
 def test_another_microphone_is_offered_whenever_the_device_is_lost_even_while_the_engine_retries() -> None:
     for changes in ({"device_bad": True}, {"running": False, "restart_pending": True}):
         view = describe_overview(replace(LIVE, **changes))

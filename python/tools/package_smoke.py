@@ -31,6 +31,7 @@ REQUIRED_BUNDLE_FILES = (
     "_internal/mic_eq/ui/qml/BodyText.qml",
     "_internal/mic_eq/ui/qml/Chip.qml",
     "_internal/mic_eq/ui/qml/ChoiceBox.qml",
+    "_internal/mic_eq/ui/qml/CommandPalette.qml",
     "_internal/mic_eq/ui/qml/DialogHeader.qml",
     "_internal/mic_eq/ui/qml/EscChip.qml",
     "_internal/mic_eq/ui/qml/FirstRunSetup.qml",

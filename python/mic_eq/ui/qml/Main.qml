@@ -2411,6 +2411,15 @@ Rectangle {
         }
     }
 
+    // Ctrl+K opens it (its window action is in command_palette.py); it lies over every pane.
+    CommandPalette {
+        objectName: "commandPalette"
+        anchors.fill: parent
+        commands: root.m.palette
+        backdrop: mainPane
+        fallbackFocus: overviewRow.button
+    }
+
     // On top, so a press is seen before the control under it takes focus:
     // a clicked control is already under the pointer and must not be scrolled away.
     Item {

@@ -16,6 +16,8 @@ Item {
     readonly property bool effectsOn: blurAllowed && !Look.t.reducedTransparency && !Look.t.highContrast
     // A panel in a scrolling page's flow passes the wheel on, so the page still scrolls under it.
     property bool holdsWheel: true
+    // A panel over the whole scene, which takes the keyboard until it closes: denser glass, more blur.
+    property bool modal: false
 
     // A press, hover or wheel on bare glass stays with the panel instead of reaching what is under it.
     MouseArea {
@@ -60,10 +62,10 @@ Item {
                 anchors.fill: parent
                 source: behind
                 blurEnabled: true
-                blurMax: Look.t.glassBlur
+                blurMax: glass.modal ? Look.t.glassModalBlur : Look.t.glassBlur
                 blur: 1
                 // The effect's saturation is a change from the source, where the token is a factor.
-                saturation: Look.t.glassSaturation - 1
+                saturation: (glass.modal ? Look.t.glassModalSaturation : Look.t.glassSaturation) - 1
                 maskEnabled: true
                 maskSource: shape
             }
@@ -73,8 +75,8 @@ Item {
         objectName: "glassFill"
         anchors.fill: parent
         radius: Look.t.radiusGlass
-        color: glass.effectsOn ? Look.t.glass : Look.t.glass_solid
-        border.color: Look.t.glass_edge
+        color: !glass.effectsOn ? Look.t.glass_solid : glass.modal ? Look.t.glass_modal : Look.t.glass
+        border.color: glass.modal ? Look.t.glass_edge_modal : Look.t.glass_edge
     }
     // The light catching the top edge.
     Rectangle {

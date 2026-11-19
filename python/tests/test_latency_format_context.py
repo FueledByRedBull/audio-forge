@@ -149,6 +149,9 @@ def test_cancelled_latency_dialog_does_not_report_an_old_profile_as_saved(monkey
         _calibration_dialog_open=False,
         processor=Mock(is_recovery_suppressed=Mock(return_value=False)),
     )
+    owner._exec_setup_dialog = lambda dialog, **kwargs: MainWindow._exec_setup_dialog(
+        cast(Any, owner), dialog, **kwargs
+    )
     dialog = Mock()
     dialog.exec.return_value = 0
     monkeypatch.setattr("mic_eq.ui.main_window.LatencyCalibrationDialog", lambda *args, **kwargs: dialog)

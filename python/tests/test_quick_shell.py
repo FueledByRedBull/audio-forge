@@ -22,7 +22,7 @@ from PySide6.QtCore import (
     QTimer,
     qInstallMessageHandler,
 )
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QKeyEvent, QMouseEvent, QPainter
+from PySide6.QtGui import QAccessible, QColor, QFont, QGuiApplication, QImage, QKeyEvent, QMouseEvent, QPainter
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtQml import QQmlProperty, qmlTypeId
 from PySide6.QtQuick import QSGRendererInterface
@@ -32,6 +32,7 @@ from PySide6.QtWidgets import QMenu, QMessageBox
 from mic_eq.config import AppConfig, DeviceIdentity
 from mic_eq.config_parts.settings import q_from_bandwidth_octaves
 from mic_eq.ui import health, platform_text
+from mic_eq.ui.engine_session import AudioBorrowed, Restarted, RestartFailed
 from mic_eq.ui.health import HealthReadings
 from mic_eq.ui.main_window import NO_MIC_START_TIP, PAGE_NAMES, MainWindow
 from mic_eq.ui.processing_configuration import PresetOrigin
@@ -1950,9 +1951,12 @@ def test_a_restart_from_the_overview_stops_and_starts_the_audio(engine_window, q
     assert _sentence(window)[0] == "Live · your voice is clean"
 
 
+CLIPPED_CHIP = "Input: CLIPPED (peak 0.0 dB, full scale 3 times)"
+
+
 def _clipping_notice(window) -> dict:
     names = {
-        "block": "overviewClippingNotice", "note": "overviewClippingNote", "line": "overviewSoundSettingsLine",
+        "block": "overviewClippingNotice", "line": "overviewSoundSettingsLine",
         "failure": "overviewSoundSettingsFailure", "show": "overviewShowMeHow", "later": "overviewRemindLater",
     }
     return {key: _scene_item(window, name) for key, name in names.items()}
@@ -1960,37 +1964,57 @@ def _clipping_notice(window) -> dict:
 
 def _clip(window, qapp, clipping: bool = True) -> None:
     window.shell_texts["input_health_label"].update(
-        text="Input: CLIPPING" if clipping else "Input: OK", status="bad" if clipping else "ok",
+        text=CLIPPED_CHIP if clipping else "Input: OK (-30 dB average, peaks -12.0 dB)",
+        status="bad" if clipping else "ok",
     )
     qapp.processEvents()
 
 
-def test_the_clipping_notice_names_the_limit_and_the_way_to_sound_settings(engine_window, qapp) -> None:
+def _on_windows(window, qapp, monkeypatch, windows: bool = True) -> None:
+    monkeypatch.setattr(platform_text, "IS_WINDOWS", windows)
+    window.quick_bridge.model["overview"].changed.emit()
+    qapp.processEvents()
+
+
+def _explained(window) -> None:
+    """The sentence names the fix and says why the limiter cannot do it, whatever the notice does."""
+    advice = health.advice_for(CLIPPED_CHIP)
+    assert advice
+    assert _sentence(window) == ("Live \u00b7 your mic is clipping", f"{advice} {CLIPPING_NOTE}")
+
+
+def test_the_clipping_notice_offers_the_way_to_sound_settings_and_the_sentence_keeps_the_reason(
+    engine_window, qapp, monkeypatch,
+) -> None:
     window, _engine = engine_window
+    _on_windows(window, qapp, monkeypatch)
     notice = _clipping_notice(window)
     window.start_btn_action.trigger()
     qapp.processEvents()
     assert not notice["block"].property("visible")
 
     _clip(window, qapp)
-    assert _sentence(window)[0] == "Live \u00b7 your mic is clipping"
+    _explained(window)
     assert notice["block"].property("visible")
-    assert notice["note"].property("text") == CLIPPING_NOTE
+    assert notice["line"].property("visible")
     assert notice["line"].property("text") == SOUND_SETTINGS_LINE
     assert SOUND_SETTINGS_LINE == "\u201cShow me how\u201d opens Windows Sound settings."
     assert not notice["failure"].property("visible")
+    assert notice["show"].property("visible")
     assert notice["show"].property("text") == "Show me how" and notice["show"].property("look") == "primary"
     assert notice["later"].property("text") == "Remind me later" and notice["later"].property("look") == "plain"
-    # The fix text appears once on the Overview: in the notice, not in the sentence's detail.
-    assert CLIPPING_NOTE not in _sentence(window)[1]
-    assert notice["note"].property("color").name() == QColor(PALETTE.status_bad_text).name()
+    # The reason is said once on the Overview, in the sentence the notice sits under.
+    assert _scene_item(window, "overviewPage").findChildren(QObject, "overviewClippingNote") == []
 
     _clip(window, qapp, clipping=False)
     assert not notice["block"].property("visible")
 
 
-def test_show_me_how_opens_windows_sound_settings_through_the_injected_opener(engine_window, qapp) -> None:
+def test_show_me_how_opens_windows_sound_settings_through_the_injected_opener(
+    engine_window, qapp, monkeypatch,
+) -> None:
     window, _engine = engine_window
+    _on_windows(window, qapp, monkeypatch)
     overview = window.quick_bridge.model["overview"]
     opened: list[str] = []
     overview.open_url = lambda url: opened.append(url) or True
@@ -2005,8 +2029,9 @@ def test_show_me_how_opens_windows_sound_settings_through_the_injected_opener(en
     assert notice["block"].property("visible")
 
 
-def test_a_sound_settings_that_does_not_open_says_so_in_words(engine_window, qapp) -> None:
+def test_a_sound_settings_that_does_not_open_says_so_in_words(engine_window, qapp, monkeypatch) -> None:
     window, _engine = engine_window
+    _on_windows(window, qapp, monkeypatch)
     overview = window.quick_bridge.model["overview"]
     results = iter([False, True])
     overview.open_url = lambda _url: next(results)
@@ -2019,14 +2044,23 @@ def test_a_sound_settings_that_does_not_open_says_so_in_words(engine_window, qap
     assert notice["failure"].property("visible")
     assert notice["failure"].property("text") == SOUND_SETTINGS_FAILED
     assert "Settings > System > Sound" in SOUND_SETTINGS_FAILED
+    with _AccessibleScene() as scene:
+        interface = QAccessible.queryAccessibleInterface(notice["failure"])
+        assert interface.role() == QAccessible.Role.AlertMessage
+        assert scene.name(notice["failure"]) == SOUND_SETTINGS_FAILED
+        assert QAccessible.queryAccessibleInterface(notice["block"]).role() == QAccessible.Role.Grouping
+        assert scene.name(notice["block"]) == "Clipping actions"
 
     notice["show"].click()
     qapp.processEvents()
     assert not notice["failure"].property("visible")
 
 
-def test_remind_me_later_hides_the_notice_until_processing_stops_or_starts(engine_window, qapp) -> None:
+def test_remind_me_later_hides_the_notice_until_processing_stops_or_starts(
+    engine_window, qapp, monkeypatch,
+) -> None:
     window, _engine = engine_window
+    _on_windows(window, qapp, monkeypatch)
     window.start_btn_action.trigger()
     _clip(window, qapp)
     notice = _clipping_notice(window)
@@ -2034,11 +2068,12 @@ def test_remind_me_later_hides_the_notice_until_processing_stops_or_starts(engin
     notice["later"].click()
     qapp.processEvents()
     assert not notice["block"].property("visible")
-    # The sentence and its advice stay; only the notice goes.
-    assert _sentence(window)[0] == "Live \u00b7 your mic is clipping"
+    # The sentence keeps its advice and the reason; only the actions go.
+    _explained(window)
     _clip(window, qapp, clipping=False)
     _clip(window, qapp)
     assert not notice["block"].property("visible")
+    _explained(window)
 
     # A button Start right after a button Stop is dropped; the menu's is not.
     window.stop_btn_action.trigger()
@@ -2059,26 +2094,72 @@ def test_remind_me_later_hides_the_notice_until_processing_stops_or_starts(engin
     assert notice["block"].property("visible")
 
 
+def test_a_recovery_restart_brings_the_reminded_notice_back_but_a_borrowed_lease_does_not(
+    engine_window, qapp, monkeypatch,
+) -> None:
+    window, engine = engine_window
+    _on_windows(window, qapp, monkeypatch)
+    session = window.engine_session
+    events: list[object] = []
+    session.changed.connect(lambda view: events.append(view.event))
+    engine.get_last_restart_reason = lambda: "audio stalled"
+    engine.get_last_stream_error = lambda: "device gone"
+    opener_calls: list[str] = []
+    window.quick_bridge.model["overview"].open_url = lambda url: opener_calls.append(url) or False
+    window.start_btn_action.trigger()
+    _clip(window, qapp)
+    notice = _clipping_notice(window)
+
+    notice["later"].click()
+    qapp.processEvents()
+    assert not notice["block"].property("visible")
+    # A Voice Setup lease is part of the same run.
+    session._emit(AudioBorrowed("voice_setup", False))
+    qapp.processEvents()
+    assert not notice["block"].property("visible")
+
+    session._recovery_serviced(True)
+    qapp.processEvents()
+    assert events[-1] == Restarted("audio stalled")
+    assert notice["block"].property("visible")
+    _explained(window)
+
+    notice["show"].click()
+    qapp.processEvents()
+    assert notice["failure"].property("visible") and opener_calls == ["ms-settings:sound"]
+    session._recovery_serviced(False)
+    qapp.processEvents()
+    assert events[-1] == RestartFailed("device gone")
+    assert notice["block"].property("visible") and not notice["failure"].property("visible")
+
+    notice["later"].click()
+    qapp.processEvents()
+    assert not notice["block"].property("visible")
+    session._recovery_serviced(False)
+    qapp.processEvents()
+    assert notice["block"].property("visible")
+
+
 def test_the_clipping_notice_offers_no_sound_settings_off_windows(engine_window, qapp, monkeypatch) -> None:
     window, _engine = engine_window
+    _on_windows(window, qapp, monkeypatch)
     window.start_btn_action.trigger()
     _clip(window, qapp)
     notice = _clipping_notice(window)
     assert notice["show"].property("visible") and notice["line"].property("visible")
 
-    monkeypatch.setattr(platform_text, "IS_WINDOWS", False)
-    window.quick_bridge.model["overview"].changed.emit()
-    qapp.processEvents()
+    _on_windows(window, qapp, monkeypatch, windows=False)
     assert not notice["show"].property("visible") and not notice["line"].property("visible")
-    # The note and the way to wait it out stay.
+    # The way to wait it out stays, and the sentence still says why.
     assert notice["block"].property("visible") and notice["later"].property("visible")
-    assert notice["note"].property("text") == CLIPPING_NOTE
+    _explained(window)
 
 
 def test_tab_reaches_both_clipping_notice_buttons_and_assistive_technology_names_them(
-    engine_window, qapp,
+    engine_window, qapp, monkeypatch,
 ) -> None:
     window, _engine = engine_window
+    _on_windows(window, qapp, monkeypatch)
     window.start_btn_action.trigger()
     _clip(window, qapp)
     notice = _clipping_notice(window)
@@ -2090,6 +2171,41 @@ def test_tab_reaches_both_clipping_notice_buttons_and_assistive_technology_names
         assert names.index("overviewShowMeHow") < names.index("overviewRemindLater")
         assert scene.name(notice["show"]) == "Show me how"
         assert scene.name(notice["later"]) == "Remind me later"
+
+
+def test_the_clipping_notice_fits_its_contents_at_the_minimum_width_with_the_failure_shown(
+    engine_window, qapp, monkeypatch,
+) -> None:
+    window, _engine = engine_window
+    _on_windows(window, qapp, monkeypatch)
+    window.resize(900, 900)
+    # Long enough to wrap onto several lines, where a height taken from one line would run short.
+    monkeypatch.setattr(quick_shell, "SOUND_SETTINGS_FAILED", " ".join([SOUND_SETTINGS_FAILED] * 6))
+    window.quick_bridge.model["overview"].open_url = lambda _url: False
+    window.start_btn_action.trigger()
+    _clip(window, qapp)
+    notice = _clipping_notice(window)
+    notice["show"].click()
+    qapp.processEvents()
+    assert notice["failure"].property("visible")
+
+    def span(item) -> tuple[float, float]:
+        top = item.mapToScene(QPointF(0, 0)).y()
+        return top, top + item.height()
+
+    # The scene lays out a changed notice on its next frame.
+    QTest.qWait(300)
+    _, block_bottom = span(notice["block"])
+    parts = [span(notice[key]) for key in ("line", "failure", "show")]
+    # Each line is drawn whole, below the one before it, and inside the box.
+    for key in ("line", "failure"):
+        assert notice[key].height() >= notice[key].property("implicitHeight") - 1, key
+    assert notice["failure"].height() > 2 * notice["line"].height()
+    for (_, above), (below, _) in zip(parts, parts[1:]):
+        assert above <= below + 1
+    assert parts[-1][1] <= block_bottom
+    # The next item on the page starts below the box.
+    assert block_bottom <= span(_scene_item(window, "ribbonCaption"))[0]
 
 
 def test_ready_recommends_auto_voice_setup_until_one_is_saved(engine_window, qapp, monkeypatch) -> None:
@@ -2137,7 +2253,7 @@ def test_each_live_state_is_said_in_words_and_marked_by_the_dot(engine_window, q
 
     texts["input_health_label"].update(text="Input: CLIPPING", status="bad")
     headline, detail = _sentence(window)
-    assert headline == "Live · your mic is clipping" and CLIPPING_NOTE not in detail
+    assert headline == "Live · your mic is clipping" and detail.endswith(CLIPPING_NOTE)
     assert dot() == palette("status_bad_text")
     texts["input_health_label"].update(text="Input: OK", status="ok")
 

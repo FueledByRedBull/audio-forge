@@ -1543,7 +1543,7 @@ Rectangle {
                         Layout.fillWidth: true
                         Layout.leftMargin: 32
                     }
-                    // What the limiter cannot do about clipping, and the way to where it can be fixed.
+                    // The way to where clipping can be fixed, or to leave it for this run.
                     Rectangle {
                         objectName: "overviewClippingNotice"
                         visible: overviewPage.ov.showClippingNotice
@@ -1551,21 +1551,16 @@ Rectangle {
                         radius: root.t.radiusControl
                         color: root.t.status_bad_surface
                         border.color: root.t.status_bad_border
+                        Accessible.role: Accessible.Grouping
+                        Accessible.name: "Clipping actions"
                         Layout.fillWidth: true
                         Layout.leftMargin: 32
+                        Layout.rightMargin: 16
                         Layout.topMargin: 10
                         ColumnLayout {
                             id: noticeBody
                             spacing: 8
                             anchors { left: parent.left; right: parent.right; top: parent.top; margins: 12 }
-                            StatusText {
-                                objectName: "overviewClippingNote"
-                                text: overviewPage.ov.clippingNote
-                                color: root.t.status_bad_text
-                                font.pixelSize: root.fsBody
-                                wrapMode: Text.Wrap
-                                Layout.fillWidth: true
-                            }
                             StatusText {
                                 objectName: "overviewSoundSettingsLine"
                                 visible: overviewPage.ov.offerSoundSettings
@@ -1583,6 +1578,7 @@ Rectangle {
                                 font.pixelSize: root.fsBody
                                 font.weight: Font.DemiBold
                                 wrapMode: Text.Wrap
+                                Accessible.role: Accessible.AlertMessage
                                 Layout.fillWidth: true
                             }
                             RowLayout {

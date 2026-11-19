@@ -23,6 +23,7 @@ NO_MIC_DETAIL = (
     "AudioForge looks for new devices only when you ask."
 )
 CLIPPING_NOTE = "Clipping happens before AudioForge, so the limiter can't fix it."
+SOUND_SETTINGS_URI = "ms-settings:sound"
 SOUND_SETTINGS_LINE = "“Show me how” opens Windows Sound settings."
 SOUND_SETTINGS_FAILED = "Windows Sound settings did not open. Open Settings > System > Sound."
 MUTED_DETAIL = (
@@ -97,7 +98,7 @@ class OverviewView:
     # devices are still gone nothing would reconnect them later; it is offered only for
     # running audio whose callbacks stalled.
     offer_restart: bool = False
-    # The clipping notice under the sentence: what the limiter cannot do, and the way to the fix.
+    # The clipping actions under the sentence: the way to the fix, or to wait.
     show_clipping_notice: bool = False
 
     @property
@@ -138,7 +139,8 @@ def _sentence(inputs: OverviewInputs) -> tuple[str, str, str, str, str]:
     if inputs.muted:
         return "muted", f"Muted {DOT} others hear silence", MUTED_DETAIL, "mute", f"Live {DOT} muted"
     if inputs.input_bad:
-        return "clipping", f"Live {DOT} your mic is clipping", inputs.input_advice, "bad", f"Live {DOT} clipping"
+        detail = " ".join(part for part in (inputs.input_advice, CLIPPING_NOTE) if part)
+        return "clipping", f"Live {DOT} your mic is clipping", detail, "bad", f"Live {DOT} clipping"
     pending = MUTE_PENDING_ISSUE if inputs.mute_requested else UNMUTE_PENDING_ISSUE
     issues = ((pending,) if inputs.mute_error else ()) + inputs.issues
     if issues:

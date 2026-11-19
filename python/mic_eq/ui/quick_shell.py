@@ -39,7 +39,7 @@ from PySide6.QtQuickWidgets import QQuickWidget
 from .chain_presentation import PREFILTER_HIGHPASS_HZ, ChainInputs, ChainLine, describe_chain
 from . import platform_text
 from .components import Glyph
-from .engine_session import Started, Stopped
+from .engine_session import Restarted, RestartFailed, Started, Stopped
 from .desktop_integration import RENDERER_RELAUNCH_ENV, relaunch_with_software_rendering
 from .control_specs import control_label
 from .eq_controls import EQControl
@@ -48,10 +48,10 @@ from .device_selection import VIRTUAL_OUTPUT_MARKERS
 from .eq_quick_graph import EQGraphItem, EQGraphPreview
 from .health import HEALTH_PEAK_WINDOW_SECONDS, advice_for
 from .overview_presentation import (
-    CLIPPING_NOTE,
     NO_MIC_REASON,
     SOUND_SETTINGS_FAILED,
     SOUND_SETTINGS_LINE,
+    SOUND_SETTINGS_URI,
     OverviewInputs,
     OverviewView,
     describe_overview,
@@ -266,7 +266,6 @@ class OverviewState(QObject):
     showClippingNotice = Property(
         bool, lambda self: self._view.show_clipping_notice and not self._notice_dismissed, notify=changed
     )
-    clippingNote = Property(str, lambda self: CLIPPING_NOTE, constant=True)
     # Only Windows has a Sound settings page to open.
     offerSoundSettings = Property(bool, lambda self: platform_text.IS_WINDOWS, notify=changed)
     soundSettingsLine = Property(str, lambda self: SOUND_SETTINGS_LINE, constant=True)
@@ -284,7 +283,7 @@ class OverviewState(QObject):
 
     @Slot()
     def openSoundSettings(self) -> None:
-        self._settings_failed = not self.open_url("ms-settings:sound")
+        self._settings_failed = not self.open_url(SOUND_SETTINGS_URI)
         self.changed.emit()
 
     @Slot()
@@ -294,7 +293,11 @@ class OverviewState(QObject):
 
     @Slot(object)
     def _on_session(self, session_view) -> None:
-        if isinstance(session_view.event, Started | Stopped) and (self._notice_dismissed or self._settings_failed):
+        # A recovery restart ends a stall or a lost device without a Start or Stop; a Voice Setup
+        # lease belongs to the same run, so it does not.
+        if isinstance(session_view.event, Started | Stopped | Restarted | RestartFailed) and (
+            self._notice_dismissed or self._settings_failed
+        ):
             self._notice_dismissed = False
             self._settings_failed = False
             self.changed.emit()

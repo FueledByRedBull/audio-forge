@@ -9,7 +9,6 @@ import pytest
 
 from mic_eq.ui.chain_presentation import ChainInputs, describe_chain
 from mic_eq.ui.overview_presentation import (
-    CLIPPING_NOTE,
     MUTE_PENDING_ISSUE,
     RECOMMEND_SETUP_HINT,
     UNMUTE_PENDING_ISSUE,
@@ -113,9 +112,8 @@ def test_each_state_says_what_is_happening_in_words() -> None:
 
     clipping = view(input_bad=True, input_advice="Turn the microphone down.")
     assert clipping.headline == "Live · your mic is clipping" and clipping.tone == "bad"
-    # The fix text lives once, in the notice under the sentence.
-    assert clipping.detail == "Turn the microphone down."
-    assert CLIPPING_NOTE not in clipping.detail
+    assert clipping.detail.startswith("Turn the microphone down. ")
+    assert "before AudioForge" in clipping.detail
 
     lost = view(device_bad=True, device_advice="Check that the device is connected.")
     assert lost.headline == "Your callers can't hear you"

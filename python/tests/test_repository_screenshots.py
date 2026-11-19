@@ -9,16 +9,35 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QComboBox, QWidget
 
-from mic_eq.config_parts import app_config
+from mic_eq.config_parts import app_config, presets
 from mic_eq.ui import main_window
 from tools.capture_repository_screenshots import (
     SANITIZED_INPUT_DEVICES,
     SANITIZED_OUTPUT_DEVICES,
     SCREENSHOTS,
+    _install_sanitized_sources,
     _select_data,
     _write_optimized_png,
     capture_screenshots,
 )
+
+
+def test_capture_never_reports_the_users_presets_refused_for_age() -> None:
+    old = presets.get_presets_dir() / "old.json"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_text(json.dumps({"name": "Old Warm", "version": "1.22.0"}), encoding="utf-8")
+    assert main_window.find_presets_refused_for_age()
+
+    with _install_sanitized_sources():
+        assert main_window.find_presets_refused_for_age() == []
+
+
+def test_the_test_window_never_reports_presets_refused_for_age(isolated_main_window) -> None:
+    old = presets.get_presets_dir() / "old.json"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_text(json.dumps({"name": "Old Warm", "version": "1.22.0"}), encoding="utf-8")
+
+    assert main_window.find_presets_refused_for_age() == []
 
 
 def test_screenshot_selection_rejects_stale_identifiers(qapp):
@@ -67,6 +86,7 @@ def test_capture_generates_nonempty_portable_pngs_and_report(
             "load_config",
             "save_config",
             "list_presets",
+            "find_presets_refused_for_age",
             "list_input_devices",
             "list_output_devices",
         )
@@ -78,6 +98,10 @@ def test_capture_generates_nonempty_portable_pngs_and_report(
     assert main_window.load_config is original_sources["load_config"]
     assert main_window.save_config is original_sources["save_config"]
     assert main_window.list_presets is original_sources["list_presets"]
+    assert (
+        main_window.find_presets_refused_for_age
+        is original_sources["find_presets_refused_for_age"]
+    )
     assert main_window.list_input_devices is original_sources["list_input_devices"]
     assert main_window.list_output_devices is original_sources["list_output_devices"]
     assert main_window.load_config is app_config.load_config

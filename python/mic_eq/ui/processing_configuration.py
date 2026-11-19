@@ -641,7 +641,8 @@ class ProcessingConfiguration:
         """Undo steps between the configuration now and the one last saved or loaded.
 
         The saved point is the nearest history entry of this preset with the saved sound; when
-        the bounded history no longer holds it, every undo step left counts.
+        the bounded history no longer holds it, every undo step left counts, and at least one,
+        since no entry left has the saved sound.
         """
         if self._saved_payload is None:
             return 0
@@ -659,7 +660,7 @@ class ProcessingConfiguration:
             )
 
         steps = history.steps_to(is_saved)
-        count = max(history.cursor, 0) if steps is None else steps
+        count = max(history.cursor, 1) if steps is None else steps
         self._since_saved = (key, count)
         return count
 

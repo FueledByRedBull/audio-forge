@@ -1913,7 +1913,6 @@ Rectangle {
                             IconBtn {
                                 objectName: "equalizerUndo"
                                 proxy: root.m.presets.undo
-                                hint: "Undo"
                                 glyph: root.m.glyphs.undo
                                 label: "Undo"
                             }

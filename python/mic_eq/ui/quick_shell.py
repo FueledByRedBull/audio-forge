@@ -49,6 +49,7 @@ from .theme import PALETTE, RADIUS_CONTROL, qcolor
 
 # Level history behind the noise suppression trace: 6 seconds at 20 Hz.
 TRACE_INTERVAL_MS = 50
+AGE_INTERVAL_MS = 1000
 TRACE_POINTS = 120
 # The Overview ribbon shows 10 seconds; the history keeps one sample more, the one it scrolls in.
 RIBBON_POINTS = 200
@@ -368,8 +369,10 @@ class QuickBridge(QObject):
         self._trace_timer = QTimer(self)
         self._trace_timer.setInterval(TRACE_INTERVAL_MS)
         self._trace_timer.timeout.connect(self._sample_levels)
-        # The age beside Undo moves on with this timer, which runs only while the window shows.
-        self._trace_timer.timeout.connect(window.history_chip.refresh)
+        # The age beside Undo counts whole seconds; like the meters, it runs only while the window shows.
+        self._age_timer = QTimer(self)
+        self._age_timer.setInterval(AGE_INTERVAL_MS)
+        self._age_timer.timeout.connect(window.history_chip.refresh)
         # A readout, not an animation: reduced motion keeps it. Like the meters, it
         # runs only while the window shows.
         window.installEventFilter(self)
@@ -390,14 +393,18 @@ class QuickBridge(QObject):
         if window.isVisible() and not window.isMinimized():
             if not self._trace_timer.isActive():
                 self._trace_timer.start()
+            if not self._age_timer.isActive():
+                self._age_timer.start()
         else:
             self._trace_timer.stop()
+            self._age_timer.stop()
 
     def eventFilter(self, watched, event) -> bool:
         kind = event.type()
         if kind == QEvent.Type.Hide:
             # Also sent while the window is destroyed, when it can no longer be asked.
             self._trace_timer.stop()
+            self._age_timer.stop()
         elif kind in (QEvent.Type.Show, QEvent.Type.WindowStateChange):
             self._sync_trace_timer()
         return False

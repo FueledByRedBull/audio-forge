@@ -1119,6 +1119,21 @@ def test_the_level_trace_timer_runs_only_while_the_window_shows(quick_window, qa
     assert timer.isActive()
 
 
+def test_the_undo_age_refreshes_once_a_second_and_only_while_the_window_shows(quick_window, qapp) -> None:
+    timer = quick_window.quick_bridge._age_timer
+    assert timer.interval() == 1000 and timer.isActive()
+    quick_window.hide()
+    assert not timer.isActive()
+    quick_window.show()
+    assert timer.isActive()
+    quick_window.setWindowState(Qt.WindowState.WindowMinimized)
+    qapp.processEvents()
+    assert not timer.isActive()
+    quick_window.setWindowState(Qt.WindowState.WindowNoState)
+    qapp.processEvents()
+    assert timer.isActive()
+
+
 def test_settings_rows_tell_switches_menus_and_actions_apart(quick_window) -> None:
     cards = quick_window.quick_bridge.model["settings"]["cards"]
     kinds = {row["proxy"].text: row["kind"] for card in cards for row in card["rows"]}

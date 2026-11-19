@@ -204,6 +204,9 @@ def test_once_the_saved_point_has_left_the_history_every_undo_step_counts(harnes
     assert configuration.changes_since_saved == 2
     configuration.undo()
     assert configuration.changes_since_saved == 1
+    # The oldest entry left is still not the saved sound, so the chip stays up.
+    configuration.undo()
+    assert configuration.history.cursor == 0 and configuration.changes_since_saved == 1
 
 
 # The caption and its age
@@ -365,10 +368,11 @@ def test_the_undo_button_is_named_disabled_with_nothing_to_undo_and_undoes_on_a_
     with _AccessibleScene():
         assert _iface(button).text(Text.Name) == "Undo"
         assert _iface(button).state().disabled
-    assert button.property("hint") == "Undo"
+    assert button.property("hint") == "No processing-configuration edit to undo"
     _scene_edit(window, qapp, 0, -3.0)
     _scene_edit(window, qapp, 0, -5.0)
     assert _chip_text(window) == "2 changes since saved"
+    assert button.property("hint").startswith("Undo ") and button.property("hint").endswith("(Ctrl+Z)")
     with _AccessibleScene():
         assert not _iface(button).state().disabled
 

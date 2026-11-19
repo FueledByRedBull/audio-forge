@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from copy import deepcopy
@@ -203,7 +204,10 @@ class Debouncer(Protocol):
 
 def preset_payload(preset: Preset) -> str:
     """The sound of a preset, without its name, description, version or provenance."""
-    payload = preset.to_dict()
+    return _sound_json(preset.to_dict())
+
+
+def _sound_json(payload: dict[str, Any]) -> str:
     for key in ("name", "description", "version", "value_provenance"):
         payload.pop(key, None)
     return json.dumps(
@@ -240,6 +244,7 @@ class ProcessingConfiguration:
         debouncer: Debouncer,
         save_config: Callable[[], bool],
         history_limit: int = 50,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.states = states
         self._config = config
@@ -248,6 +253,7 @@ class ProcessingConfiguration:
         self._confirm_unsaved = confirm_unsaved
         self._debouncer = debouncer
         self._save_config = save_config
+        self.clock = clock
         self.history = BoundedConfigurationHistory(limit=history_limit)
         self._history_started = False
         self._replaying = False
@@ -262,6 +268,7 @@ class ProcessingConfiguration:
         self._remembered = True
         # The preset the window showed with a sound; history snapshots of one load share it.
         self._record: dict[str, Any] = {}
+        self._since_saved: tuple[tuple[int, str | None, str], int] | None = None
 
     # Reading the configuration
 
@@ -556,6 +563,7 @@ class ProcessingConfiguration:
             calibration_context_key=self._host.calibration_context_key(),
             processing_mode=self._host.processing_mode(),
             preset_record=self._mirror_record(),
+            taken_at=self.clock(),
         )
         self.history.initialize(snapshot)
         self._provenance = dict(snapshot.to_preset().value_provenance)
@@ -613,6 +621,7 @@ class ProcessingConfiguration:
                 calibration_context_key=self._host.calibration_context_key(),
                 processing_mode=self._host.processing_mode(),
                 preset_record=self._record,
+                taken_at=self.clock(),
             )
             recorded = self.history.record(snapshot)
         except (PresetValidationError, TypeError, ValueError) as error:
@@ -626,6 +635,34 @@ class ProcessingConfiguration:
                 self.states.eq.set_auto_eq_diagnostics(None)
         self._refresh_modified()
         return recorded
+
+    @property
+    def changes_since_saved(self) -> int:
+        """Undo steps between the configuration now and the one last saved or loaded.
+
+        The saved point is the nearest history entry of this preset with the saved sound; when
+        the bounded history no longer holds it, every undo step left counts, and at least one,
+        since no entry left has the saved sound.
+        """
+        if self._saved_payload is None:
+            return 0
+        history = self.history
+        key = (history.revision, self._saved_payload, self._saved_mode)
+        if self._since_saved is not None and self._since_saved[0] == key:
+            return self._since_saved[1]
+        record, payload, mode = self._record, self._saved_payload, self._saved_mode
+
+        def is_saved(snapshot: ConfigurationSnapshot) -> bool:
+            return (
+                snapshot.preset_record is record
+                and snapshot.processing_mode == mode
+                and _sound_json(snapshot.payload()) == payload
+            )
+
+        steps = history.steps_to(is_saved)
+        count = max(history.cursor, 1) if steps is None else steps
+        self._since_saved = (key, count)
+        return count
 
     def undo(self) -> str | None:
         """Undo one entry; returns its label, None when there is nothing to undo, raises when restoring fails."""

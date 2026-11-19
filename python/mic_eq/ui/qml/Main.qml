@@ -1880,7 +1880,10 @@ Rectangle {
                     ColumnLayout {
                         spacing: 2
                         Layout.fillWidth: true
+                        // The layer line elides before the actions beside it give way.
+                        Layout.preferredWidth: equalizerTitleRow.implicitWidth
                         RowLayout {
+                            id: equalizerTitleRow
                             spacing: 8
                             Text {
                                 objectName: "equalizerTitle"
@@ -1917,6 +1920,48 @@ Rectangle {
                         glyph: root.m.glyphs.more
                         label: "More"
                         Layout.alignment: Qt.AlignTop
+                    }
+                    // Undo, then how many edits are unsaved and the latest one in words, with its age.
+                    ColumnLayout {
+                        id: undoHistory
+                        objectName: "undoHistory"
+                        readonly property var history: root.m.presets.history
+                        spacing: 2
+                        Layout.alignment: Qt.AlignTop
+                        // It gives way before the header overflows: the chip and the caption elide.
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 30 + 6 + 48
+                        Layout.preferredWidth: undoRow.implicitWidth
+                        Layout.maximumWidth: 240
+                        RowLayout {
+                            id: undoRow
+                            spacing: 6
+                            Layout.alignment: Qt.AlignRight
+                            Layout.maximumWidth: undoHistory.width
+                            IconBtn {
+                                objectName: "equalizerUndo"
+                                proxy: root.m.presets.undo
+                                glyph: root.m.glyphs.undo
+                                label: "Undo"
+                            }
+                            Chip {
+                                objectName: "undoChip"
+                                proxy: undoHistory.history
+                                visible: undoHistory.history.count > 0
+                                single: true
+                                Layout.fillWidth: true
+                                Layout.maximumWidth: implicitWidth
+                            }
+                        }
+                        Caption {
+                            objectName: "undoCaption"
+                            text: undoHistory.history.caption
+                            visible: text !== ""
+                            font.pixelSize: root.fsCaption
+                            horizontalAlignment: Text.AlignRight
+                            tip: truncated ? text : ""
+                            Layout.fillWidth: true
+                        }
                     }
                 }
 

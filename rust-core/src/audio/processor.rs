@@ -154,6 +154,7 @@ mod dsp_loop;
 mod dynamics_controls;
 mod eq_controls;
 mod gate_controls;
+mod input_spectrum;
 mod lifecycle;
 #[cfg(test)]
 mod loop_tests;

@@ -436,3 +436,8 @@ def test_the_summary_names_the_worst_row_and_gives_its_advice():
     assert health_summary([Chip("Gate: OK", "ok")], mute_error=True) == Chip(
         "Health: WARN", "warn", "Check the items marked below."
     )
+
+
+def test_the_input_analyser_drop_count_is_among_the_technical_counters():
+    tip = _health({"input_spectrum_dropped_blocks": 4}).chips["dropped_label"].tip
+    assert tip is not None and "ISD:4" in tip

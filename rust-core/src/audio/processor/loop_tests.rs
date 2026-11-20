@@ -216,6 +216,43 @@ fn bypass_and_raw_monitor_skip_the_chain_and_switch_back() {
     assert_eq!(processor.get_rt_error_code(), RtErrorCode::None as u32);
 }
 
+#[test]
+fn the_input_analyser_tap_never_changes_the_output_in_any_path() {
+    // Same input through every path, once with the analyser keeping up and
+    // once with its queue full, so the tap drops every block.
+    let run = |stall_input_spectrum: bool| {
+        let processor = AudioProcessor::new();
+        let mut offline = OfflineLoop::new(
+            &processor,
+            OfflineLoopConfig {
+                stall_input_spectrum,
+                ..OfflineLoopConfig::default()
+            },
+        );
+        let mut tone = Tone::new(440.0, 0.3);
+        let mut out = feed(&mut offline, &mut tone, 60, BLOCK);
+        processor.set_bypass(true);
+        out.extend(feed(&mut offline, &mut tone, 30, BLOCK));
+        processor.set_bypass(false);
+        processor.set_raw_monitor_enabled(true);
+        out.extend(feed(&mut offline, &mut tone, 30, BLOCK));
+        processor.set_raw_monitor_enabled(false);
+        out.extend(feed(&mut offline, &mut tone, 30, BLOCK));
+        (out, processor.get_input_spectrum_dropped_blocks())
+    };
+    let (kept_up, kept_up_drops) = run(false);
+    let (stalled, stalled_drops) = run(true);
+
+    assert_eq!(kept_up_drops, 0);
+    assert!(stalled_drops > 100, "only {stalled_drops} blocks dropped");
+    assert!(peak(&kept_up) > 0.1);
+    assert_eq!(kept_up.len(), stalled.len());
+    assert!(kept_up
+        .iter()
+        .zip(&stalled)
+        .all(|(a, b)| a.to_bits() == b.to_bits()));
+}
+
 fn offline_with_silent_suppressor(processor: &AudioProcessor) -> OfflineLoop {
     OfflineLoop::new(
         processor,

@@ -105,6 +105,38 @@ class AudioProcessor:
     def get_input_rms_db(self) -> float: ...
     def get_output_peak_db(self) -> float: ...
     def get_output_rms_db(self) -> float: ...
+    @staticmethod
+    def input_spectrum_bin_count() -> int:
+        """Bands of the input analyser's spectrum (96)."""
+        ...
+
+    @staticmethod
+    def input_spectrum_bin_frequencies(out: npt.NDArray[np.float32]) -> None:
+        """Fill ``out`` with each band's centre frequency in Hz, rising from about 20 to about 20000.
+
+        The bands are log-spaced between 20 Hz and 20 kHz. ``out`` must be a
+        writable, contiguous 1-D float32 array of ``input_spectrum_bin_count()``
+        values: another type, dtype or dimension count raises ``TypeError``,
+        another length, a strided or a read-only array ``ValueError``.
+        """
+        ...
+
+    def read_input_spectrum(self, out: npt.NDArray[np.float32]) -> int:
+        """Copy the latest spectrum of the microphone input into ``out``; return its frame number.
+
+        One value per band in dBFS, clamped to [-120, 0]; a full-scale sine
+        reads about 0 dB in its band whatever the band's width. Measured on the
+        mono signal that enters the DSP loop, before any processing, in every
+        processing path: a 2048-point Hann FFT every 1024 samples, rising at
+        once and falling 20 dB per 300 ms. Display only.
+
+        The frame number rises with every frame, also across restarts. It is 0
+        (and every band reads -120) before the first frame of a run and while
+        the stream is stopped. Bands of one call may come from two adjacent
+        frames. ``out`` follows the rules of ``input_spectrum_bin_frequencies``.
+        Allocates nothing; call it at the display's frame rate.
+        """
+        ...
     def take_input_peak_since_read(self) -> float:
         """Largest absolute input sample since the previous call, then reset it.
 

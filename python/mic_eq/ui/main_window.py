@@ -49,6 +49,7 @@ from .deesser_state import DeEsserState
 from .compressor_state import CompressorState
 from .gate_state import GateState
 from .level_meter import LevelMeter
+from .input_analyser import InputAnalyser
 from .input_preferences import (
     InputPreferences,
     RouteSave,
@@ -567,6 +568,8 @@ class MainWindow(QMainWindow):
             self.config.window_geometry = geometry
 
     def _on_page_changed(self, index: int) -> None:
+        if index != self.EQUALIZER_PAGE_INDEX:
+            self._clear_input_analyser()
         # The shortcut can be removed or disabled outside the app.
         if index == self.SETTINGS_PAGE_INDEX and hasattr(self, "_login_startup_action"):
             self._refresh_login_startup_action()
@@ -610,6 +613,7 @@ class MainWindow(QMainWindow):
         )
         self._reset_health_labels()
         self.eq_presentation = EQPresentation(self.eq_state, self)
+        self.input_analyser = InputAnalyser(self.eq_presentation.graph_model)
 
         for key, choice_spec in CHOICE_SPECS.items():
             state = ChoiceState(self, name=choice_spec.name, tip=choice_spec.tip, locked_tip=choice_spec.locked_tip)
@@ -3349,10 +3353,12 @@ class MainWindow(QMainWindow):
                 timer.start()
         else:
             timer.stop()
+            self._clear_input_analyser()
             if not running:
                 self._invalidate_live_meters()
 
     def _invalidate_live_meters(self) -> None:
+        self._clear_input_analyser()
         if self.__dict__.get("_live_meters_invalidated"):
             return
         self.input_meter.set_unavailable()
@@ -3398,6 +3404,29 @@ class MainWindow(QMainWindow):
             reading("get_compressor_current_makeup_gain") if auto_makeup_enabled else None,
         )
         self.gate_state.update_vad_confidence(reading("get_vad_probability"))
+        # Every other tick: the analyser needs about 30 readings a second, not 60.
+        self._analyser_tick = not self.__dict__.get("_analyser_tick", False)
+        if self._analyser_tick:
+            self._update_input_analyser()
+
+    def _update_input_analyser(self) -> None:
+        """Read the input spectrum while the Equalizer page is on screen; clear it anywhere else."""
+        analyser = self.__dict__.get("input_analyser")
+        if analyser is None:
+            return
+        if (
+            self.shell_page.currentIndex() == self.EQUALIZER_PAGE_INDEX
+            and self.isVisible()
+            and not self.isMinimized()
+        ):
+            analyser.poll(self.processor)
+        else:
+            analyser.clear()
+
+    def _clear_input_analyser(self) -> None:
+        analyser = self.__dict__.get("input_analyser")
+        if analyser is not None:
+            analyser.clear()
 
     def _note_meter_peaks(self, reading, *, resumed: bool = False) -> None:
         """Take the held peaks and full-scale counts into the meter models.

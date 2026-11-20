@@ -3,13 +3,12 @@
 
 use super::control::{CompressorControlState, DeesserControlState, GateControlState};
 use super::dsp_loop::{DspLoop, DspLoopSetup, Pass};
+use super::input_spectrum::INPUT_SPECTRUM_QUEUE_SAMPLES;
 use super::shared::Shared;
 #[cfg(feature = "vad")]
 use super::VAD_WORKER_MAX_BUFFER_SAMPLES;
 use super::{AudioProcessor, RT_PROCESS_BUFFER_CAPACITY};
-#[cfg(feature = "vad")]
-use crate::audio::buffer::AudioRingBuffer;
-use crate::audio::buffer::{AudioConsumer, AudioProducer};
+use crate::audio::buffer::{AudioConsumer, AudioProducer, AudioRingBuffer};
 use crate::audio::input::TARGET_SAMPLE_RATE;
 use crate::dsp::eq::{EqBandConfig, NUM_BANDS};
 use crate::dsp::noise_suppressor::{
@@ -27,6 +26,8 @@ pub(super) struct OfflineLoopConfig {
     pub(super) output_rate: u32,
     /// Replaces the first suppressor engine (a fake, say).
     pub(super) suppressor: Option<NoiseSuppressionEngine>,
+    /// Never read the input analyser's queue, like a worker that has stalled.
+    pub(super) stall_input_spectrum: bool,
 }
 
 impl Default for OfflineLoopConfig {
@@ -35,6 +36,7 @@ impl Default for OfflineLoopConfig {
             input_rate: TARGET_SAMPLE_RATE,
             output_rate: TARGET_SAMPLE_RATE,
             suppressor: None,
+            stall_input_spectrum: false,
         }
     }
 }
@@ -50,6 +52,9 @@ pub(super) struct OfflineLoop {
     /// The VAD queue; `pass` empties it like a worker that keeps up.
     #[cfg(feature = "vad")]
     vad: AudioConsumer,
+    /// The input analyser's queue; `pass` empties it unless it is stalled.
+    input_spectrum: AudioConsumer,
+    stall_input_spectrum: bool,
 }
 
 impl OfflineLoop {
@@ -80,6 +85,8 @@ impl OfflineLoop {
 
         #[cfg(feature = "vad")]
         let (vad_queue, vad_consumer) = AudioRingBuffer::new(VAD_WORKER_MAX_BUFFER_SAMPLES).split();
+        let (input_spectrum_queue, input_spectrum_consumer) =
+            AudioRingBuffer::new(INPUT_SPECTRUM_QUEUE_SAMPLES).split();
 
         let (suppressor_commands, suppressor_retire) = shared.suppressor.open_queues();
         let (suppressor_control, initial_engine) = processor.initial_suppressor();
@@ -96,6 +103,7 @@ impl OfflineLoop {
             input_dropped,
             output: output_producer,
             recording: recording_producer,
+            input_spectrum: input_spectrum_queue,
             #[cfg(feature = "vad")]
             vad_queue,
             input_resampler,
@@ -112,6 +120,8 @@ impl OfflineLoop {
             output: output_consumer,
             #[cfg(feature = "vad")]
             vad: vad_consumer,
+            input_spectrum: input_spectrum_consumer,
+            stall_input_spectrum: config.stall_input_spectrum,
         }
     }
 
@@ -128,10 +138,11 @@ impl OfflineLoop {
 
     pub(super) fn pass(&mut self) -> Pass {
         let pass = self.dsp.pass();
+        let mut discard = [0.0_f32; 4096];
         #[cfg(feature = "vad")]
-        {
-            let mut discard = [0.0_f32; 4096];
-            while self.vad.read(&mut discard) > 0 {}
+        while self.vad.read(&mut discard) > 0 {}
+        if !self.stall_input_spectrum {
+            while self.input_spectrum.read(&mut discard) > 0 {}
         }
         pass
     }

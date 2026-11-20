@@ -51,7 +51,7 @@ def test_screenshot_selection_rejects_stale_identifiers(qapp):
 
 def test_screenshot_manifest_covers_required_views_and_alt_text() -> None:
     views = {item["view"] for item in SCREENSHOTS}
-    assert views == {"routing_eq", "processing", "voice_setup"}
+    assert views == {"routing_eq", "overview", "voice_setup"}
     assert len({item["filename"] for item in SCREENSHOTS}) == len(SCREENSHOTS)
     assert all(item["filename"].endswith(".png") for item in SCREENSHOTS)
     assert all(len(item["alt"].split()) >= 8 for item in SCREENSHOTS)

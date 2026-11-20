@@ -25,6 +25,7 @@ from test_quick_shell import (
     _AccessibleScene,
     _graph_item,
     _tab_stops,
+    spoken_announcements,
 )
 from test_quick_shell import quick_window as shell_window  # noqa: F401  (a fixture)
 
@@ -608,7 +609,7 @@ def _tabbable(window, kinds: tuple[str, ...]) -> list:
 
 KEYBOARD_KINDS = (
     "Toggle", "ChainSwitch", "Fader", "Btn", "IconBtn", "MuteBtn", "LinkBtn", "Picker", "Disclosure",
-    "SettingRow", *PLAIN_BUTTONS, "QQuickTextInput", "EQGraphItem",
+    "SettingRow", "HealthRow", *PLAIN_BUTTONS, "QQuickTextInput", "EQGraphItem",
 )
 
 
@@ -1045,7 +1046,9 @@ def _shows_focus(window, item) -> bool:
     return True
 
 
-@pytest.mark.parametrize("page", [OVERVIEW, SETTINGS, EQUALIZER], ids=["overview", "settings", "equalizer"])
+@pytest.mark.parametrize(
+    "page", [OVERVIEW, HEALTH, SETTINGS, EQUALIZER], ids=["overview", "health", "settings", "equalizer"]
+)
 def test_the_focused_control_always_shows_where_focus_is(either_window, qapp, page) -> None:
     window = either_window
     _show(window, qapp, page)
@@ -1070,10 +1073,135 @@ def test_the_focused_control_always_shows_where_focus_is(either_window, qapp, pa
         OVERVIEW: {
             "Toggle", "ChainSwitch", "Fader", "Picker", "Btn", "MuteBtn", "LinkBtn", "Disclosure", "CloseBtn",
         },
+        HEALTH: {"HealthRow", "Disclosure"},
         SETTINGS: {"SettingRow", "Picker"},
         EQUALIZER: {"Toggle", "Fader", "Picker", "QQuickTextInput", "EQGraphItem", "KeyButton", "Btn"},
     }
     assert expected[page] <= seen
+
+
+def test_a_card_title_is_a_heading(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp, HEALTH)
+    titles = [t for t in _of_kind(window, "Title") if t.isVisible()]
+    assert {t.property("text") for t in titles} >= {"Signal", "Stream"}
+    with _AccessibleScene():
+        assert all(_iface(t).role() == Role.Heading for t in titles)
+
+
+def _in_page(item) -> bool:
+    while item is not None and _kind(item) != "Page":
+        item = item.parentItem()
+    return item is not None
+
+
+def _scrolling_page(item):
+    """The scrolling ``Page`` that holds ``item``."""
+    while _kind(item) != "Page":
+        item = item.parentItem()
+    return item
+
+
+def test_a_health_row_is_one_tab_stop_that_reads_whole_and_shows_its_help_on_focus(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp, HEALTH)
+    tip = window.centralWidget().rootObject().findChild(QObject, "tooltip")
+    rows = [row for row in _of_kind(window, "HealthRow") if row.isVisible()]
+    assert len(rows) >= 6
+    stops = _tab_cycle(window, qapp, HEALTH)
+    with _AccessibleScene() as scene:
+        for row in rows:
+            proxy = row.property("proxy")
+            assert row in stops
+            assert _iface(row).role() == Role.StaticText
+            assert scene.name(row) == f"{proxy.name}: {row.property('shownValue')}"
+            assert scene.description(row) == proxy.toolTip != ""
+            # Its parts do not read again on their own.
+            assert [t for t in _items(row) if _kind(t) == "QQuickText" and _iface(t) is not None
+                    and scene.name(t)] == []
+            _focus(window, row, qapp)
+            QTest.qWait(700)  # the tip's delay
+            assert tip.property("visible") is True and tip.property("text") == proxy.toolTip
+            assert len(_rings(window, row)) == 1
+
+
+def test_a_caption_with_help_is_a_tab_stop_that_shows_it_on_focus(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp, HEALTH)
+    tip = window.centralWidget().rootObject().findChild(QObject, "tooltip")
+    # The label of a settings row is no stop: its control shows the same help.
+    labels = [c for c in _of_kind(window, "Caption") if c.property("tip") and c.isVisible()]
+    assert labels == [] or all(c.property("focusable") is False for c in labels)
+    caption = next(c for c in _items(_of_kind(window, "HealthRow")[0]) if _kind(c) == "Caption")
+    assert not caption.property("tip")
+    assert caption.property("activeFocusOnTab") is False
+    caption.setProperty("tip", "Where this comes from")
+    assert caption.property("focusable") is True and caption.property("activeFocusOnTab") is True
+    _focus(window, caption, qapp)
+    QTest.qWait(700)
+    assert tip.property("visible") is True and tip.property("text") == "Where this comes from"
+    assert caption.property("ringed") is True
+    _focus(window, _of_kind(window, "HealthRow")[0], qapp)
+    assert caption.property("ringed") is False
+
+
+def test_page_up_page_down_and_the_arrows_scroll_a_page_and_focus_scrolls_to_itself(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp, HEALTH)
+    window.resize(1400, 420)
+    qapp.processEvents()
+    rows = [row for row in _of_kind(window, "HealthRow") if row.isVisible()]
+    page = _scrolling_page(rows[0])
+    assert page.property("contentHeight") > page.height()
+    _focus(window, rows[0], qapp)
+    assert page.property("contentY") == 0
+    _press(window, Qt.Key.Key_Down, qapp)
+    line = page.property("lineStep")
+    assert page.property("contentY") == line
+    _press(window, Qt.Key.Key_Up, qapp)
+    assert page.property("contentY") == 0
+    _press(window, Qt.Key.Key_PageDown, qapp)
+    assert page.property("contentY") == min(page.height(), page.property("contentHeight") - page.height())
+    _press(window, Qt.Key.Key_PageUp, qapp)
+    assert page.property("contentY") == 0
+    _press(window, Qt.Key.Key_PageUp, qapp)
+    assert page.property("contentY") == 0, "never past the top"
+    # Home and End go to the ends, as in a dialog's page.
+    _press(window, Qt.Key.Key_End, qapp)
+    assert page.property("contentY") == page.property("contentHeight") - page.height()
+    _press(window, Qt.Key.Key_End, qapp)
+    assert page.property("contentY") == page.property("contentHeight") - page.height(), "never past the end"
+    _press(window, Qt.Key.Key_Home, qapp)
+    assert page.property("contentY") == 0
+    # A modified key is a shortcut for something else.
+    _press(window, Qt.Key.Key_Down, qapp, Qt.KeyboardModifier.ControlModifier)
+    _press(window, Qt.Key.Key_End, qapp, Qt.KeyboardModifier.AltModifier)
+    assert page.property("contentY") == 0
+    # Focus on a control that is out of view brings it in.
+    _open_every_disclosure(window, qapp)
+    last = next(b for b in _of_kind(window, "Btn") if b.property("text") == "Reset drop counter")
+    top = last.mapToItem(page.property("contentItem"), 0, 0).y()
+    assert top + last.height() > page.height(), "the button starts out of view"
+    _focus(window, last, qapp)
+    assert page.property("contentY") > 0
+    assert page.property("contentY") <= top and top + last.height() <= page.property("contentY") + page.height()
+
+
+def test_the_arrows_keep_moving_the_cursor_in_a_text_field_and_page_keys_still_scroll(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp, EQUALIZER)
+    window.resize(1400, 420)
+    qapp.processEvents()
+    field = next(
+        i for i in _of_kind(window, "QQuickTextInput")
+        if i.isVisible() and not i.property("readOnly") and _in_page(i)
+    )
+    page = _scrolling_page(field)
+    assert page.property("contentHeight") > page.height()
+    _focus(window, field, qapp)
+    before = page.property("contentY")
+    _press(window, Qt.Key.Key_Down, qapp)
+    assert page.property("contentY") == before
 
 
 def test_focus_rings_follow_keyboard_focus_not_the_mouse(quick_window, qapp) -> None:
@@ -1117,7 +1245,8 @@ def test_no_text_in_the_scene_is_a_literal_pixel_size_or_smaller_than_twelve() -
     from pathlib import Path
 
     for path in (Path(__file__).parents[1] / "mic_eq" / "ui" / "qml").glob("*.qml"):
-        assert re.findall(r"pixelSize:\s*\d", path.read_text(encoding="utf-8")) == [], path.name
+        # A literal, or a named size minus something (which can fall under the floor).
+        assert re.findall(r"pixelSize:\s*(?:\d|[\w.]*fs\w+\s*-)", path.read_text(encoding="utf-8")) == [], path.name
 
 
 def test_text_sizes_follow_the_app_font_and_none_is_below_twelve(quick_window, qapp) -> None:
@@ -1225,6 +1354,25 @@ def test_a_warning_banner_sits_under_the_top_bar_and_is_an_alert(quick_window, q
     assert _scene_y(banner) > before, "the transport row does not move down"
     with _AccessibleScene():
         assert _iface(banner).role() == Role.AlertMessage
+
+
+def test_a_warning_banner_is_announced_when_it_appears_and_not_repeated(quick_window, qapp, monkeypatch) -> None:
+    window = quick_window
+    _show(window, qapp)
+    spoken = spoken_announcements(monkeypatch)
+    banner = window.shell_texts["config_warning_banner"]
+    banner.update(text="Settings were reset", shown=True)
+    banner.update(text="Settings were reset", shown=True)
+    assert spoken == ["Configuration warning: Settings were reset"]
+    banner.update(shown=False)
+    assert len(spoken) == 1
+    banner.update(shown=True)
+    assert len(spoken) == 2
+    window.shell_texts["device_warning_banner"].update(shown=True)
+    assert spoken[2].startswith("Audio device warning: Warning: No audio devices")
+    # An ordinary label never speaks on its own.
+    window.shell_texts["preset_status_label"].update(text="Preset: Other (modified)")
+    assert len(spoken) == 3
 
 
 def test_the_navigation_is_a_named_group_and_the_meters_have_roles(quick_window, qapp) -> None:
@@ -1835,10 +1983,8 @@ def test_help_is_in_the_accessible_description_not_only_in_the_hover_tip(quick_w
         chip = window.quick_bridge.model["health"]["signal"][0]["proxy"]
         window.shell_page.setIndex(HEALTH)
         qapp.processEvents()
-        row = next(
-            text for text in _of_kind(window, "QQuickText")
-            if _iface(text) is not None and scene.name(text).startswith(chip.name)
-        )
+        row = _with_proxy(window, "HealthRow", chip)
+        assert scene.name(row).startswith(chip.name)
         assert chip.toolTip and scene.description(row) == chip.toolTip
         window.shell_page.setIndex(SETTINGS)
         qapp.processEvents()
@@ -2289,3 +2435,86 @@ def test_the_alert_look_of_a_mode_picker_does_not_rely_on_colour(themed_window, 
     if window.contrast:
         # The theme has one text colour: the colours of the two looks are the same.
         assert (bypass[1], bypass[3]) == (normal[1], normal[3])
+
+
+def use_system_theme(monkeypatch, system: dict | None):
+    """Have the scenes loaded from now on drawn as under Windows contrast theme ``system`` (None: dark).
+
+    Returns the palette they read.
+    """
+    from mic_eq.ui.theme import PALETTE, build_palette
+
+    if system is None:
+        return PALETTE
+    palette = build_palette(system)
+    monkeypatch.setattr("mic_eq.ui.quick_scene.PALETTE", palette)
+    monkeypatch.setattr("mic_eq.ui.quick_scene.SYSTEM_CONTRAST_COLORS", system)
+    return palette
+
+
+def _system_themes() -> dict[str, dict | None]:
+    from test_theme_tokens import HC_BLACK, HC_WHITE
+
+    return {"dark": None, "HC Black": HC_BLACK, "HC White": HC_WHITE}
+
+
+@pytest.fixture(params=list(_system_themes()))
+def system_window(request, monkeypatch):
+    """The window in the dark look, then in the Windows black and white contrast themes."""
+    palette = use_system_theme(monkeypatch, _system_themes()[request.param])
+    window = request.getfixturevalue("quick_window")
+    vars(window)["system_palette"] = palette
+    vars(window)["system_colors"] = _system_themes()[request.param]
+    return window
+
+
+def test_the_selected_sidebar_row_reads_and_rings_on_its_fill_in_every_theme(system_window, qapp) -> None:
+    from mic_eq.ui.theme import contrast_ratio, flatten
+
+    window, palette, system = system_window, system_window.system_palette, system_window.system_colors
+    _show(window, qapp, OVERVIEW)
+    row = _named(window, "Overview", *PLAIN_BUTTONS)
+    assert row.property("current") is True
+    fill = flatten(palette.accent_row_start, palette.sidebar_top)
+    name = next(
+        item for item in _items(row.property("contentItem"))
+        if _kind(item) == "QQuickText" and item.property("text") == "Overview"
+    )
+    assert _colour(name, "color") == palette.hover_text.lower()
+    assert contrast_ratio(_colour(name, "color"), fill) >= 4.5
+
+    _focus(window, row, qapp)
+    (ring,) = _rings(window, row)
+    ring_colour = _colour(ring, "border.color")
+    # Highlight on a Highlight fill would vanish: the ring takes the text colour on the fill instead.
+    assert ring_colour == (palette.hover_text if system else palette.focus_ring).lower()
+    assert contrast_ratio(ring_colour, fill) >= 3
+    if system:
+        assert system["highlight"] != ring_colour
+
+    # A row that is not selected keeps the usual ring and text.
+    other = _named(window, "Equalizer", *PLAIN_BUTTONS)
+    _focus(window, other, qapp)
+    (other_ring,) = _rings(window, other)
+    assert _colour(other_ring, "border.color") == palette.focus_ring.lower()
+
+
+def test_a_selected_stage_that_is_off_keeps_its_dim_name_in_the_dark_look(system_window, qapp) -> None:
+    from mic_eq.ui.theme import contrast_ratio, flatten
+
+    window, palette, system = system_window, system_window.system_palette, system_window.system_colors
+    equalizer = next(row for row in window.quick_bridge.model["sidebar"]["chain"] if row["name"] == "Equalizer")
+    if equalizer["toggle"].checked:
+        equalizer["toggle"].click()
+    _show(window, qapp, EQUALIZER)
+    QTest.qWait(400)  # the name's colour fades
+    row = _named(window, "Equalizer", *PLAIN_BUTTONS)
+    assert row.property("current") is True and not equalizer["toggle"].checked
+    name = next(
+        item for item in _items(row.property("contentItem"))
+        if _kind(item) == "QQuickText" and item.property("text") == "Equalizer"
+    )
+    # Dark: the off stage's dim colour, as before. A contrast theme reads the highlighted text.
+    assert _colour(name, "color") == (palette.hover_text if system else palette.text_dim).lower()
+    if system:
+        assert contrast_ratio(_colour(name, "color"), flatten(palette.accent_row_start, palette.sidebar_top)) >= 4.5

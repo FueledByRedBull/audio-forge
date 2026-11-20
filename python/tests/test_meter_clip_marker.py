@@ -263,7 +263,7 @@ def test_clip_is_told_by_shape_and_word_not_only_red(qapp):
     _clip(meter)
     lit = _painted(meter)
     words = [(text, pen) for text, pen in lit.texts if text.isalpha()]
-    assert words == [("CLIP", QColor(PALETTE.text_on_data_color))]
+    assert words == [("CLIP", QColor(PALETTE.text_on_mark))]
     # The word sits on a filled tag the width of the meter's label row, a shape the quiet meter lacks.
     assert len(lit.shapes) == 1
     tag, fill = lit.shapes[0]
@@ -271,7 +271,7 @@ def test_clip_is_told_by_shape_and_word_not_only_red(qapp):
     assert (tag.left(), tag.width(), tag.height()) == (2.0, 56.0, 16.0)
     assert 160 - 18 <= tag.top() and tag.bottom() <= 160
     # The word is readable on the tag without relying on which hue the tag is.
-    assert contrast_ratio(PALETTE.text_on_data_color, PALETTE.meter_clip) >= 4.5
+    assert contrast_ratio(PALETTE.text_on_mark, PALETTE.meter_clip) >= 4.5
     assert meter.property("clipTagShown") is True
 
 

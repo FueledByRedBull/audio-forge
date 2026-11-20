@@ -49,6 +49,8 @@ class VoiceSetupDialog(QDialog):
             minimum_width=minimum_width,
             minimum_height=380,
         )
+        # Only what changes from here on is announced; the first page is read as the window opens.
+        self.flow.view_model.announcer.attach(self.quick_view)
 
     @property
     def load_error(self) -> str | None:

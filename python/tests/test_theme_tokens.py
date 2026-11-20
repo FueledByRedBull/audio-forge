@@ -8,11 +8,13 @@ from pathlib import Path
 import re
 import sys
 import types
+from typing import cast
 
 import pytest
 from PySide6.QtCore import QByteArray, QUrl
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtQml import QQmlComponent, QQmlEngine
+from PySide6.QtQuick import QQuickItem
 from PySide6.QtWidgets import QMessageBox
 
 from mic_eq.ui import theme
@@ -31,6 +33,7 @@ from mic_eq.ui.theme import (
     themed_menu,
     build_palette,
     contrast_ratio,
+    control_boundary_pairs,
     flatten,
     motion_durations,
     prefers_reduced_transparency,
@@ -250,16 +253,99 @@ def test_level_colors_are_not_told_apart_by_red_against_green_alone() -> None:
     assert danger.hslHue() < 20 or danger.hslHue() > 340
 
 
-def test_the_meter_caution_step_reads_its_own_token_and_keeps_its_hue_under_a_contrast_theme() -> None:
+def test_the_meter_caution_step_reads_its_own_token_and_follows_a_contrast_theme() -> None:
     from mic_eq.ui import level_meter
 
     source = Path(level_meter.__file__).read_text(encoding="utf-8")
     assert "status_warn" not in source and "data_warning" not in source
     assert level_meter.LevelMeter.COLOR_YELLOW == QColor(PALETTE.meter_caution)
-    contrast = build_palette(SYSTEM_COLORS)
-    assert contrast.meter_caution == PALETTE.meter_caution
-    caution, danger = QColor(contrast.meter_caution), QColor(contrast.meter_danger)
+    caution, danger = QColor(PALETTE.meter_caution), QColor(PALETTE.meter_danger)
     assert min(abs(caution.hslHue() - danger.hslHue()), 360 - abs(caution.hslHue() - danger.hslHue())) >= 30
+    # The dark look's pastels fail 3:1 on a light window, so a contrast theme gives the steps
+    # its own colors: Highlight for the low end and the reduction bar, WindowText above.
+    contrast = build_palette(SYSTEM_COLORS)
+    assert contrast.meter_safe == contrast.meter_reduction == SYSTEM_COLORS["highlight"]
+    assert contrast.meter_caution == contrast.meter_danger == contrast.meter_clip == SYSTEM_COLORS["window_text"]
+
+
+# The colors Windows gives its black and white contrast themes.
+HC_BLACK = {
+    "window": "#000000", "window_text": "#ffffff", "gray_text": "#3ff23f",
+    "highlight": "#1aebff", "highlight_text": "#000000",
+}
+HC_WHITE = {
+    "window": "#ffffff", "window_text": "#000000", "gray_text": "#600000",
+    "highlight": "#37006e", "highlight_text": "#ffffff",
+}
+CONTRAST_THEMES = {"HC Black": HC_BLACK, "HC White": HC_WHITE, "test colours": SYSTEM_COLORS}
+
+
+@pytest.mark.parametrize("system", CONTRAST_THEMES.values(), ids=CONTRAST_THEMES.keys())
+def test_each_level_meter_step_holds_three_to_one_on_its_track_under_a_contrast_theme(system) -> None:
+    palette = build_palette(system)
+    track = flatten(palette.meter_track, palette.pane_surface)
+    for token in ("meter_safe", "meter_caution", "meter_danger", "meter_clip", "meter_reduction", "meter_peak"):
+        assert contrast_ratio(getattr(palette, token), track) >= 3, token
+    # The same pairs are in the boundary table, for the dark look and for every contrast theme.
+    names = {name for name, _fg, _bg in control_boundary_pairs(palette)}
+    assert {"meter safe step on its track", "meter clip strip on its track"} <= names
+
+
+@pytest.mark.parametrize("system", CONTRAST_THEMES.values(), ids=CONTRAST_THEMES.keys())
+def test_marks_hold_their_glyph_against_the_disc_in_every_theme(system) -> None:
+    # The step's check glyph and the CLIP word sit on a mark that is WindowText in a contrast theme.
+    palette = build_palette(system)
+    assert palette.status_ok_dot == system["window_text"] and palette.meter_clip == system["window_text"]
+    assert contrast_ratio(palette.text_on_mark, palette.status_ok_dot) >= 4.5
+    assert contrast_ratio(palette.text_on_mark, palette.meter_clip) >= 4.5
+    assert contrast_ratio(PALETTE.text_on_mark, PALETTE.status_ok_dot) >= 4.5
+    assert PALETTE.text_on_mark == PALETTE.text_on_data_color
+
+
+@pytest.mark.parametrize("system", [None, *CONTRAST_THEMES.values()], ids=["dark", *CONTRAST_THEMES.keys()])
+def test_a_step_check_draws_its_glyph_in_the_colour_opposite_its_disc(qapp, monkeypatch, system) -> None:
+    from mic_eq.ui import quick_scene
+
+    palette = PALETTE if system is None else build_palette(system)
+    monkeypatch.setattr(quick_scene, "PALETTE", palette)
+    engine = QQmlEngine()
+    engine.rootContext().setContextProperty("theme", quick_theme())
+    component = QQmlComponent(engine)
+    source = 'import QtQuick\nStepMark { shape: "check"; color: Look.t.status_ok_dot }\n'
+    component.setData(QByteArray(source.encode()), QUrl.fromLocalFile(str(QML_DIR / "StepMarkProbe.qml")))
+    mark = cast(QQuickItem, component.create())
+    assert mark is not None, [error.toString() for error in component.errors()]
+    pending, glyph = [mark], None
+    while pending:
+        item = pending.pop()
+        pending.extend(item.childItems())
+        if item.property("text") == "✓":
+            glyph = item
+    assert glyph is not None
+    disc, ink = QColor(mark.property("color")).name(), QColor(glyph.property("color")).name()
+    assert disc == palette.status_ok_dot and ink == palette.text_on_mark
+    assert contrast_ratio(ink, disc) >= 4.5
+    mark.deleteLater()
+    engine.deleteLater()
+
+
+@pytest.mark.parametrize("system", CONTRAST_THEMES.values(), ids=CONTRAST_THEMES.keys())
+def test_the_selected_sidebar_row_and_its_ring_read_on_the_highlight_under_a_contrast_theme(system) -> None:
+    palette = build_palette(system)
+    fill = flatten(palette.accent_row_start, palette.sidebar_top)
+    # The name, its detail line and the ring are the highlighted text colour; the ring is a mark (3:1).
+    assert palette.hover_text == palette.accent_soft == system["highlight_text"]
+    assert contrast_ratio(palette.hover_text, fill) >= 4.5
+    assert contrast_ratio(palette.accent_soft, fill) >= 4.5
+    # The focus colour is the fill itself there, so the ring keeps to the text colour on the fill.
+    assert palette.focus_ring == fill == system["highlight"]
+
+
+def test_the_selected_sidebar_row_keeps_its_dark_look() -> None:
+    fill = flatten(PALETTE.accent_row_start, PALETTE.sidebar_top)
+    assert PALETTE.hover_text == PALETTE.text_primary
+    assert contrast_ratio(PALETTE.hover_text, fill) >= 4.5
+    assert contrast_ratio(PALETTE.focus_ring, fill) >= 3
 
 
 def test_callers_affected_has_its_own_hue_and_stays_readable() -> None:

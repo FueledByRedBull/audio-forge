@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from .announcements import Announcer
 from .components import Glyph
 from .level_meter import LevelMeter
 
@@ -49,6 +50,8 @@ class LatencyCalibrationView(QObject):
         self._run_enabled = True
         self._accept_enabled = False
         self.level_meter = LevelMeter("Level", show_scale=True, parent=self)
+        # Told when the status changes; the dialog attaches the widget it speaks from.
+        self.announcer = Announcer(self)
 
     readings = Property(dict, lambda self: self._readings, notify=readingsChanged)
     detailsShown = Property(bool, lambda self: self._details_shown, notify=detailsShownChanged)
@@ -72,6 +75,7 @@ class LatencyCalibrationView(QObject):
 
     def set_status(self, status: str) -> None:
         if status != self.status_text:
+            self.announcer.say(status)
             self.status_text = status
             self.statusChanged.emit()
 

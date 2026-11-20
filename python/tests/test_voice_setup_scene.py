@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -13,6 +14,7 @@ from PySide6.QtGui import QAccessible, QColor, QFont
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QDialog
+from shiboken6 import delete
 
 from capture_helpers import finish_take
 from mic_eq.config import TARGET_CURVES, EQSettings, build_eq_candidate_settings
@@ -26,7 +28,7 @@ from mic_eq.ui.voice_setup_flow import VoiceSetupFlow
 from mic_eq.ui.voice_setup_view import DYNAMICS, DYNAMICS_KEYS, VoiceSetupView
 from test_auto_eq_candidate_lifecycle import _Owner
 from test_first_run_setup import at_scene_minimum, choose, cut_short_texts, press, scene_item, scene_items, scene_text
-from test_quick_shell import _AccessibleScene
+from test_quick_shell import _AccessibleScene, spoken_announcements
 from test_setup_level_check_flow import HOT, _Session
 
 REJECTED = int(QDialog.DialogCode.Rejected)
@@ -413,7 +415,9 @@ def test_a_number_is_stepped_from_the_keyboard_typed_and_held_in_its_range(open_
     assert view.number("peak") == 6.25
     assert scene_item(dialog, "peakNumber").property("value") == 625
     with _AccessibleScene() as scene:
-        assert scene.name(scene_item(dialog, "peakNumber")).endswith("6.25 dB")
+        assert scene.name(scene_item(dialog, "peakNumber")) == (
+            "Strongest compressor squeeze allowed in decibels: 6.25 dB"
+        )
     # The target loudness is held between -24 and -12 LUFS.
     view.setNumber("lufs", -40.0)
     assert view.number("lufs") == -24.0
@@ -929,3 +933,44 @@ def test_the_dialog_asks_the_advisory_question_with_no_as_the_default(monkeypatc
     assert (title, text) == ("Apply Suggested Settings?", "Apply them?")
     assert buttons == QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
     assert default == QMessageBox.StandardButton.No
+
+
+def test_a_new_phase_and_status_are_announced_once_and_a_tick_is_not(open_dialog, qapp, monkeypatch) -> None:
+    dialog = open_dialog()
+    view = dialog.flow.view_model
+    spoken = spoken_announcements(monkeypatch)
+    view.set_page(phaseText="Capturing speech", timeText="Time remaining: 9s", progress=10)
+    view.set_warning("Move a little closer to the microphone.", state="warn", strong=True)
+    qapp.processEvents()
+    # One announcement for the turn, the phase first.
+    assert spoken == ["Capturing speech. Move a little closer to the microphone."]
+    for seconds in range(8, 3, -1):
+        view.set_page(timeText=f"Time remaining: {seconds}s", progress=100 - seconds * 10)
+        view.set_page(phaseText="Capturing speech")
+        view.set_warning("Move a little closer to the microphone.", state="warn", strong=True)
+        qapp.processEvents()
+    assert len(spoken) == 1
+    # A refused take is said when it arrives.
+    view.set_warning("That take was too quiet. Record it again.", state="bad", strong=True)
+    qapp.processEvents()
+    assert spoken[1:] == ["That take was too quiet. Record it again."]
+
+
+def test_a_dialog_opens_without_announcing_what_it_starts_with(open_dialog, qapp, monkeypatch) -> None:
+    spoken = spoken_announcements(monkeypatch)
+    dialog = open_dialog()
+    qapp.processEvents()
+    assert spoken == [] and dialog.flow.view_model.shown["phaseText"]
+
+
+def test_a_view_destroyed_with_an_announcement_pending_says_nothing_and_raises_nothing(
+    open_dialog, qapp, monkeypatch
+) -> None:
+    dialog = open_dialog()
+    spoken = spoken_announcements(monkeypatch)
+    errors: list[object] = []
+    monkeypatch.setattr(sys, "excepthook", lambda *args: errors.append(args))
+    dialog.flow.view_model.set_page(phaseText="Capturing speech")
+    delete(dialog.quick_view)
+    qapp.processEvents()
+    assert spoken == [] and errors == []

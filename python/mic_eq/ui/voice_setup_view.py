@@ -8,6 +8,7 @@ from typing import Any
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from ..analysis.voice_setup import MAX_VERIFICATION_BAD_CAPTURES
+from .announcements import Announcer
 from .calibration_support import TOO_LOUD_DB, TOO_QUIET_DB
 from .capture_session import LIVE_OUTPUT_MUTED_NOTICE
 from .components import Glyph
@@ -189,6 +190,8 @@ class VoiceSetupView(QObject):
         self._rules: list[dict[str, str]] = []
         self.level_meter = LevelMeter("Level", show_scale=True, parent=self)
         self.eq_compare = EQComparison(self)
+        # Told when the phase or the status changes; the dialog attaches the widget it speaks from.
+        self.announcer = Announcer(self)
 
     page = Property(dict, lambda self: self._page, notify=pageChanged)
     status = Property(
@@ -253,6 +256,8 @@ class VoiceSetupView(QObject):
             raise KeyError(f"the page has no field {', '.join(sorted(unknown))}")
         page = {**self._page, **fields}
         if page != self._page:
+            if page["phaseText"] != self._page["phaseText"]:
+                self.announcer.say(str(page["phaseText"]))
             self._page = page
             self.pageChanged.emit()
 
@@ -268,6 +273,8 @@ class VoiceSetupView(QObject):
         state = self.warning_state if state is None else _known_state(state)
         strong = self.warning_strong if strong is None else strong
         if (text, state, strong) != (self.warning_text, self.warning_state, self.warning_strong):
+            if text != self.warning_text:
+                self.announcer.say(text)
             self.warning_text, self.warning_state, self.warning_strong = text, state, strong
             self.statusChanged.emit()
 

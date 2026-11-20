@@ -481,7 +481,7 @@ class LevelMeter(MeterModel):
                 painter.drawRoundedRect(
                     QRectF(2, height - label_height + 1, width - 4, label_height - 2), 3, 3
                 )
-                painter.setPen(QPen(qcolor(PALETTE.text_on_data_color)))
+                painter.setPen(QPen(qcolor(PALETTE.text_on_mark)))
             else:
                 painter.setPen(QPen(qcolor(PALETTE.meter_scale)))
             painter.setFont(painter_font(12, weight=QFont.Weight.Bold))

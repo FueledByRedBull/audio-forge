@@ -6,9 +6,10 @@ from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import QObject, Property, QPoint, QTimer, Signal, Slot
-from PySide6.QtGui import QAccessible, QAccessibleAnnouncementEvent, QAction, QCursor
+from PySide6.QtGui import QAction, QCursor
 from PySide6.QtWidgets import QMenu, QWidget
 
+from .announcements import announce
 from .components import plain_label
 
 
@@ -17,10 +18,21 @@ class TextState(QObject):
 
     changed = Signal()
 
-    def __init__(self, parent: QObject, *, text: str = "", name: str = "", tip: str = "", shown: bool = True):
+    def __init__(
+        self,
+        parent: QObject,
+        *,
+        text: str = "",
+        name: str = "",
+        tip: str = "",
+        shown: bool = True,
+        alert: bool = False,
+    ):
+        """``alert`` has a screen reader told the text when it appears or changes while shown."""
         super().__init__(parent)
         self._text, self._name, self._tip = text, name, tip
         self._shown, self._status = shown, ""
+        self._alert = alert
         self._data: dict[str, Any] = {}
 
     text = Property(str, lambda self: self._text, notify=changed)
@@ -35,6 +47,7 @@ class TextState(QObject):
                shown: bool | None = None, status: str | None = None,
                data: dict | None = None) -> None:
         changed = False
+        before = (self._shown, self._text)
         for key, value in (("_text", text), ("_tip", tip), ("_shown", shown),
                            ("_status", status), ("_data", data)):
             if value is not None and getattr(self, key) != value:
@@ -42,6 +55,9 @@ class TextState(QObject):
                 changed = True
         if changed:
             self.changed.emit()
+        if self._alert and self._shown and self._text and (self._shown, self._text) != before:
+            window = self.parent()
+            announce(window if isinstance(window, QWidget) else None, f"{self._name}: {self._text}")
 
 
 class StatusState(TextState):
@@ -57,8 +73,8 @@ class StatusState(TextState):
         self._expiry.stop()
         # A status line changes without focus, so assistive technology is told about it.
         window = self.parent()
-        if message and message != self._text and isinstance(window, QWidget) and QAccessible.isActive():
-            QAccessible.updateAccessibility(QAccessibleAnnouncementEvent(window, message))
+        if message != self._text and isinstance(window, QWidget):
+            announce(window, message)
         self.update(text=message)
         if timeout > 0:
             self._expiry.start(timeout)

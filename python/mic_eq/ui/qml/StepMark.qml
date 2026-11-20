@@ -34,7 +34,7 @@ Item {
         anchors.centerIn: parent
         text: "\u2713"
         textFormat: Text.PlainText
-        color: Look.t.text_on_data_color
+        color: Look.t.text_on_mark
         font.pixelSize: Look.fsCaption
         font.weight: Font.Bold
     }

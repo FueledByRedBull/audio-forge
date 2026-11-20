@@ -252,6 +252,8 @@ class FirstRunSetupDialog(QDialog):
             minimum_width=minimum_width,
             minimum_height=340 + int(scene.property("headerHeight")),
         )
+        # Only what changes from here on is announced; the first step is read as the window opens.
+        self.view_model.announcer.attach(self.quick_view)
 
     def _setup_ui(self) -> None:
         input_choice, output_choice = self.owner.input_choice, self.owner.output_choice

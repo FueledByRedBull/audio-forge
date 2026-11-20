@@ -25,8 +25,6 @@ from PySide6.QtCore import (
     Slot,
 )
 from PySide6.QtGui import (
-    QAccessible,
-    QAccessibleAnnouncementEvent,
     QDesktopServices,
     QKeySequence,
     QPainter,
@@ -37,6 +35,7 @@ from PySide6.QtQml import qmlRegisterType, qmlRegisterUncreatableType
 from PySide6.QtQuick import QQuickPaintedItem, QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 
+from .announcements import announce
 from .chain_presentation import ChainInputs, ChainLine, describe_chain
 from . import platform_text
 from .command_palette import SHORTCUT as PALETTE_SHORTCUT, CommandPalette, window_commands
@@ -107,7 +106,11 @@ class LevelTrace(QQuickPaintedItem):
         points = self._points[-TRACE_POINTS:]
         first = TRACE_POINTS - len(points)
         for line, color in enumerate((PALETTE.text_muted, PALETTE.accent)):
-            painter.setPen(QPen(qcolor(color), 1.5))
+            pen = QPen(qcolor(color), 1.5)
+            if line == 1:
+                # Output is dashed, so the two lines differ by more than colour; the legend's swatches match.
+                pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
             painter.drawPolyline(
                 [
                     QPointF(
@@ -333,10 +336,7 @@ class OverviewState(QObject):
         if view.state == self._announced:
             return
         self._announced = view.state
-        if QAccessible.isActive():
-            QAccessible.updateAccessibility(
-                QAccessibleAnnouncementEvent(self._window, f"{view.headline}. {view.detail}")
-            )
+        announce(self._window, f"{view.headline}. {view.detail}")
 
 
 def chain_inputs(window) -> ChainInputs:
@@ -746,7 +746,7 @@ class QuickBridge(QObject):
             )),
         ])
         # Connected after the window's and the Overview's handlers, so it reads the state they left.
-        compare = EQHoldCompare(self, w.eq_state, overview)
+        compare = EQHoldCompare(self, w.eq_state, overview, w)
         w.engine_session.changed.connect(compare.session_changed)
         w.installEventFilter(compare)
         inspector = InspectorState(self, [row["key"] for row in chain if row["card"]])

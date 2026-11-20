@@ -193,9 +193,9 @@ def test_chain_rows_name_each_stage_setting() -> None:
         "cleanup": "HP 80 Hz",
         "gate": "-40 dB",
         "suppression": "RNNoise · 72%",
-        "deesser": "Reduction 24.0 dB",
+        "deesser": "Cut 24 dB",
         "eq": "10 bands",
-        "compressor": "Reduction 2.1 dB",
+        "compressor": "Cut 2.1 dB",
         "limiter": "Idle",
     }
     assert lines["deesser"].activity == 1.0
@@ -208,6 +208,10 @@ def test_chain_rows_name_each_stage_setting() -> None:
     assert {key: line.line for key, line in off.items() if key != "cleanup"} == dict.fromkeys(
         ("gate", "suppression", "deesser", "eq", "compressor", "limiter"), "Off"
     )
+    # Short enough to sit beside the activity bar: one decimal below 10 dB, none from 10.
+    for reduction_db, line in ((0.04, "Cut 0.0 dB"), (9.94, "Cut 9.9 dB"), (9.96, "Cut 10 dB"), (24.4, "Cut 24 dB")):
+        reading = describe_chain(ChainInputs(running=True, limiter_reduction_db=reduction_db))
+        assert reading["limiter"].line == line
     assert describe_chain(ChainInputs(eq_bands=1, gate_threshold_db=-42.5))["eq"].line == "1 band"
     assert describe_chain(ChainInputs(gate_threshold_db=-42.5))["gate"].line == "-42.5 dB"
 

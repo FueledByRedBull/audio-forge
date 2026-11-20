@@ -17,6 +17,7 @@ use super::{
     control::{
         effective_limiter_ceiling_db, CompressorControlState, DeesserControlState, GateControlState,
     },
+    input_spectrum::{input_spectrum_bin_frequencies, INPUT_SPECTRUM_BIN_COUNT},
     routing::{
         apply_input_pre_filter, new_input_pre_filter, static_input_pre_filter_response_db,
         InputCleanupMode, InputPreFilterState,
@@ -2626,6 +2627,31 @@ impl PyAudioProcessor {
         self.processor.get_output_rms_db()
     }
 
+    /// Bands of the input analyser's spectrum.
+    #[staticmethod]
+    fn input_spectrum_bin_count() -> usize {
+        INPUT_SPECTRUM_BIN_COUNT
+    }
+
+    /// Fill `out` with the centre frequency of every band, in Hz.
+    #[staticmethod]
+    fn input_spectrum_bin_frequencies(out: &Bound<'_, PyAny>) -> PyResult<()> {
+        crate::catch_panic(|| {
+            let mut out = writable_band_array(out)?;
+            band_slice(&mut out)?.copy_from_slice(&input_spectrum_bin_frequencies());
+            Ok(())
+        })
+    }
+
+    /// Copy the input analyser's latest spectrum (dBFS per band) into `out`;
+    /// returns the frame's sequence number, or 0 when there is no frame.
+    fn read_input_spectrum(&self, out: &Bound<'_, PyAny>) -> PyResult<u64> {
+        crate::catch_panic(|| {
+            let mut out = writable_band_array(out)?;
+            Ok(self.processor.read_input_spectrum(band_slice(&mut out)?))
+        })
+    }
+
     fn take_input_peak_since_read(&self) -> f32 {
         self.processor.take_input_peak_since_read()
     }
@@ -2806,6 +2832,14 @@ impl PyAudioProcessor {
                     .input
                     .backlog_dropped_samples
                     .load(Ordering::Relaxed),
+            )?;
+            diagnostics.set_item(
+                "input_spectrum_dropped_blocks",
+                self.processor.get_input_spectrum_dropped_blocks(),
+            )?;
+            diagnostics.set_item(
+                "input_spectrum_worker_failed",
+                self.processor.get_input_spectrum_worker_failed(),
             )?;
             diagnostics.set_item(
                 "lock_contention_count",
@@ -3328,6 +3362,37 @@ impl PyAudioProcessor {
     fn cancel_output_probe(&self) {
         self.processor.cancel_output_probe();
     }
+}
+
+fn band_array_error() -> String {
+    format!(
+        "out must be a writable, contiguous 1-D numpy float32 array of length \
+         {INPUT_SPECTRUM_BIN_COUNT}"
+    )
+}
+
+/// `out` borrowed for writing; any other type, dtype or dimension count is a
+/// `TypeError`, a read-only or already borrowed array a `ValueError`.
+fn writable_band_array<'py>(
+    out: &Bound<'py, PyAny>,
+) -> PyResult<numpy::PyReadwriteArray1<'py, f32>> {
+    use numpy::PyArrayMethods;
+    out.cast::<numpy::PyArray1<f32>>()
+        .map_err(|_| pyo3::exceptions::PyTypeError::new_err(band_array_error()))?
+        .try_readwrite()
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err(band_array_error()))
+}
+
+/// The array's values, one per band; a strided array or another length is
+/// a `ValueError`.
+fn band_slice<'a>(
+    array: &'a mut numpy::PyReadwriteArray1<'_, f32>,
+) -> PyResult<&'a mut [f32; INPUT_SPECTRUM_BIN_COUNT]> {
+    array
+        .as_slice_mut()
+        .ok()
+        .and_then(|values| values.try_into().ok())
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(band_array_error()))
 }
 
 /// Whether a DeepFilter worker runs without the realtime priority it asked for.

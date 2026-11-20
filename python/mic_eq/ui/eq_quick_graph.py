@@ -32,7 +32,7 @@ class EQGraphPreview(QQuickPaintedItem):
         if value is not None and not isinstance(value, EQGraphModel):
             raise TypeError("EQGraphItem.graph must be an EQGraphModel")
         if self._graph is not None:
-            for signal in (self._graph.changed, self._graph.hoverChanged):
+            for signal in (self._graph.changed, self._graph.hoverChanged, self._graph.spectrumChanged):
                 try:
                     signal.disconnect(self._update_graph)
                 except (RuntimeError, TypeError):
@@ -41,6 +41,8 @@ class EQGraphPreview(QQuickPaintedItem):
         if self._graph is not None:
             self._graph.changed.connect(self._update_graph)
             self._graph.hoverChanged.connect(self._update_graph)
+            # The analyser moves no handle: a repaint, with no handle recompute.
+            self._graph.spectrumChanged.connect(self._update_graph)
         self.graphChanged.emit()
         self.update()
 

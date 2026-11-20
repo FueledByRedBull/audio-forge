@@ -7,6 +7,7 @@ use super::dsp_loop::{
     ensure_resampler_scratch_capacity, record_dsp_thread_panic, startup_control, DspLoop,
     DspLoopSetup,
 };
+use super::input_spectrum::INPUT_SPECTRUM_QUEUE_SAMPLES;
 use super::resampling::{build_sinc_resampler, duration_samples};
 #[cfg(feature = "vad")]
 use super::VAD_WORKER_MAX_BUFFER_SAMPLES;
@@ -44,6 +45,8 @@ pub(super) struct Streams {
     /// Non-realtime VAD worker.
     #[cfg(feature = "vad")]
     pub(super) vad_worker_thread: Option<std::thread::JoinHandle<()>>,
+    /// Input analyser worker.
+    pub(super) input_spectrum_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 /// What an open stream reports about its endpoint.
@@ -299,6 +302,9 @@ impl AudioProcessor {
             AudioRingBuffer::new(VAD_WORKER_MAX_BUFFER_SAMPLES).split();
         #[cfg(feature = "vad")]
         self.ensure_vad_worker(streams, vad_worker_consumer);
+        let (input_spectrum_queue, input_spectrum_consumer) =
+            AudioRingBuffer::new(INPUT_SPECTRUM_QUEUE_SAMPLES).split();
+        self.start_input_spectrum_worker(streams, input_spectrum_consumer);
 
         let (suppressor_rx, retired_suppressor_tx) = self.shared.suppressor.open_queues();
         let (suppressor_initial_control, suppressor_initial_engine) = self.initial_suppressor();
@@ -315,6 +321,7 @@ impl AudioProcessor {
             input_dropped: input.dropped,
             output: output.producer,
             recording: recording_producer,
+            input_spectrum: input_spectrum_queue,
             #[cfg(feature = "vad")]
             vad_queue,
             input_resampler,
@@ -704,6 +711,7 @@ impl AudioProcessor {
         }
         #[cfg(feature = "vad")]
         self.stop_vad_worker(streams);
+        self.stop_input_spectrum_worker(streams);
 
         if let Some(input) = &streams.input {
             let _ = input.pause();

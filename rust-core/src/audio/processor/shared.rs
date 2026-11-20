@@ -13,6 +13,7 @@ use super::control::{
     LimiterControlState, SuppressorControlState, CAREFUL_OUTPUT_CEILING_DB,
 };
 use super::diagnostics::StreamRecoveryState;
+use super::input_spectrum::{INPUT_SPECTRUM_BIN_COUNT, INPUT_SPECTRUM_FLOOR_DB};
 use super::routing::InputCleanupMode;
 use super::{
     COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, INPUT_PREFILTER_HZ, PROCESS_IDLE_SLEEP_US,
@@ -374,6 +375,28 @@ impl RecordingShared {
     }
 }
 
+/// The input analyser's published spectrum and its queue health.
+pub(super) struct InputSpectrumShared {
+    /// Level of every band in dBFS, as `f32` bits; written only by the worker.
+    pub(super) bands_db: [AtomicU32; INPUT_SPECTRUM_BIN_COUNT],
+    /// Bumped after every published frame; never reset, so it rises across runs.
+    pub(super) sequence: AtomicU64,
+    /// A frame has been published since the stream started.
+    pub(super) has_frame: AtomicBool,
+    /// Input blocks dropped because the worker's queue was full.
+    pub(super) dropped_blocks: AtomicU64,
+    /// The worker could not start, or panicked, this run: no spectrum until
+    /// the next start.
+    pub(super) worker_failed: AtomicBool,
+    /// Cleared to stop the worker.
+    pub(super) worker_running: AtomicBool,
+    /// Test hooks: make the worker panic, or its spawn fail.
+    #[cfg(test)]
+    pub(super) inject_worker_panic: AtomicBool,
+    #[cfg(test)]
+    pub(super) inject_spawn_failure: AtomicBool,
+}
+
 /// Voice-activity worker results and health.
 pub(super) struct VadShared {
     /// Latest raw VAD speech probability (0.0-1.0), written only by the worker.
@@ -503,6 +526,7 @@ pub(super) struct Shared {
     pub(super) input: InputShared,
     pub(super) output: OutputShared,
     pub(super) recording: RecordingShared,
+    pub(super) input_spectrum: InputSpectrumShared,
     #[cfg_attr(not(feature = "vad"), allow(dead_code))]
     pub(super) vad: VadShared,
     pub(super) dsp: DspShared,
@@ -682,6 +706,20 @@ impl Shared {
                 active: Arc::new(AtomicBool::new(false)),
                 before_cleanup: AtomicBool::new(false),
             },
+            input_spectrum: InputSpectrumShared {
+                bands_db: std::array::from_fn(|_| {
+                    AtomicU32::new(INPUT_SPECTRUM_FLOOR_DB.to_bits())
+                }),
+                sequence: AtomicU64::new(0),
+                has_frame: AtomicBool::new(false),
+                dropped_blocks: AtomicU64::new(0),
+                worker_failed: AtomicBool::new(false),
+                worker_running: AtomicBool::new(false),
+                #[cfg(test)]
+                inject_worker_panic: AtomicBool::new(false),
+                #[cfg(test)]
+                inject_spawn_failure: AtomicBool::new(false),
+            },
             vad: VadShared {
                 raw_probability: AtomicU32::new(0.0_f32.to_bits()),
                 meter_probability: AtomicU32::new(0.0_f32.to_bits()),
@@ -809,6 +847,7 @@ impl Shared {
         self.vad
             .meter_probability
             .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        self.input_spectrum.clear();
     }
 
     /// Zero the per-run counters and meters before a (re)start. Explicit
@@ -913,6 +952,12 @@ impl Shared {
         self.dsp
             .rt_buffer_overflow_count
             .store(0, Ordering::Relaxed);
+        self.input_spectrum
+            .dropped_blocks
+            .store(0, Ordering::Relaxed);
+        self.input_spectrum
+            .worker_failed
+            .store(false, Ordering::Relaxed);
         self.input
             .stereo_correlation
             .store(1.0_f32.to_bits(), Ordering::Relaxed);

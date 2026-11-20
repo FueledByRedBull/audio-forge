@@ -162,6 +162,10 @@ class SemanticPalette:
     signal_in: str = "#a9bbd4"
     signal_in_fill: str = "#7ea4dc"
     signal_out: str = "#e6e8ee"
+    # The input analyser behind the EQ curves: a blue area that fades toward the floor, and its soft top edge.
+    # Blue, so it stays apart from the curves for a red-green colour-blind eye.
+    analyser_fill: str = "#5e9eff"
+    analyser_line: str = "#b35e9eff"
 
     # Panels that dock beside live content; translucent over the ground behind them.
     glass: str = "#8c282c36"
@@ -291,6 +295,7 @@ def build_palette(system: dict[str, str] | None) -> SemanticPalette:
         data_surface=window, data_surface_raised=window, data_grid=disabled,
         data_text=text, data_text_muted=text, data_curve=text,
         data_marker=accent, data_warning=accent, data_handle_selected=accent,
+        analyser_fill=disabled, analyser_line=disabled,
         meter_scale=text, meter_peak=text, meter_segment_off=disabled, meter_track=window, meter_track_ring=text,
         toolbar_edge=text, toolbar_rim="#00000000",
         toolbar_control_top=window, toolbar_control_bottom=window,

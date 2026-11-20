@@ -619,3 +619,25 @@ def test_the_equalizer_legend_leaves_the_calibration_line_its_words(qapp, monkey
         window.close()
         window.deleteLater()
         qapp.processEvents()
+
+
+@pytest.mark.parametrize("point_size", [9, 14])
+def test_the_equalizer_legend_with_the_input_analyser_still_fits_its_line(qapp, monkeypatch, segoe_font, point_size) -> None:
+    qapp.setFont(QFont(qapp.font().family(), point_size))
+    window = build_minimum_window(qapp, monkeypatch, "DaBest", "Ready")
+    try:
+        window.eq_state.set_auto_eq_diagnostics({"analysis_confidence": 0.8, "eq_confidence": 0.8})
+        window.stop_btn_action.setEnabled(True)  # what a running stream does
+        window.shell_page.setIndex(3)
+        settle(qapp)
+        footer, words, legend = (named(window, name) for name in ("eqFooter", "eqStatusWords", "legendRow"))
+        line, shown = scene_rect(footer), scene_rect(words)
+        entries = [scene_rect(item) for item in shown_items(legend) if item.objectName() == "legendEntry"]
+        assert len(entries) == 5
+        for entry in entries:
+            assert not entry.intersects(shown), f"{entry} runs into the words at {shown}"
+            assert line.left() - 0.5 <= entry.left() and entry.right() <= line.right() + 0.5, entry
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()

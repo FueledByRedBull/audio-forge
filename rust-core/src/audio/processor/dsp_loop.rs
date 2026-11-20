@@ -346,6 +346,8 @@ pub(super) struct DspLoopSetup {
     pub(super) output: AudioProducer,
     /// Raw recording tap (calibration).
     pub(super) recording: AudioProducer,
+    /// Queue feeding the input analyser's worker.
+    pub(super) input_spectrum: AudioProducer,
     /// Queue feeding the VAD worker.
     #[cfg(feature = "vad")]
     pub(super) vad_queue: AudioProducer,
@@ -504,6 +506,7 @@ struct Pipeline {
     pre_filter: Biquad,
     adaptive_cleanup: AdaptiveInputCleanupState,
     recording: AudioProducer,
+    input_spectrum: AudioProducer,
     gate: NoiseGate,
     gate_controls: FixedAudioBuffer<GateControl, RT_PROCESS_BUFFER_CAPACITY>,
     suppressor: SuppressorStage,
@@ -531,6 +534,7 @@ impl DspLoop {
             input_dropped,
             output,
             recording,
+            input_spectrum,
             #[cfg(feature = "vad")]
             vad_queue,
             input_resampler,
@@ -729,6 +733,7 @@ impl DspLoop {
             pre_filter: new_input_pre_filter(sample_rate_hz),
             adaptive_cleanup: AdaptiveInputCleanupState::new(sample_rate as f32),
             recording,
+            input_spectrum,
             gate,
             gate_controls: FixedAudioBuffer::new(),
             suppressor: SuppressorStage {
@@ -1201,6 +1206,12 @@ impl Pipeline {
             buffer,
             &shared.input.peak_hold,
             Some(&shared.input.full_scale_count),
+        );
+        // The input analyser shows the same signal, also in every path.
+        enqueue_input_spectrum_block(
+            &mut self.input_spectrum,
+            buffer,
+            &shared.input_spectrum.dropped_blocks,
         );
 
         // Start DSP timing
@@ -2367,6 +2378,24 @@ fn smooth_buffer(alpha: f32, raw: u32, prev_smoothed: u32) -> u32 {
     let prev_f = prev_smoothed as f32;
     (alpha * raw_f + (1.0 - alpha) * prev_f) as u32
 }
+
+// RT_REGION_START: dsp_input_spectrum_tap
+/// Queue a block for the input analyser. It takes the samples read-only, so
+/// the audio path cannot change; a block that does not fit is dropped whole
+/// and counted, never waited for.
+#[inline]
+pub(super) fn enqueue_input_spectrum_block(
+    producer: &mut AudioProducer,
+    samples: &[f32],
+    dropped_blocks: &AtomicU64,
+) {
+    if producer.free_len() < samples.len() {
+        dropped_blocks.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    producer.write(samples);
+}
+// RT_REGION_END: dsp_input_spectrum_tap
 
 /// Queue a block for the VAD worker. A block that does not fit is dropped
 /// whole and the gap published, so the model never sees a bridged hole.

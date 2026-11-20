@@ -3324,7 +3324,9 @@ Rectangle {
                         Layout.alignment: Qt.AlignVCenter
                         Repeater {
                             id: legendEntries
-                            model: equalizerPage.view.legend
+                            // The analyser is drawn behind every view, but only while the stream runs.
+                            model: root.running ? [equalizerPage.eq.analyserLegend].concat(equalizerPage.view.legend)
+                                                : equalizerPage.view.legend
                             onItemAdded: legendRow.entriesChanged++
                             onItemRemoved: legendRow.entriesChanged++
                             delegate: Row {
@@ -3338,10 +3340,11 @@ Rectangle {
                                     dashed: root.t.data_text,
                                     dotted: root.t.data_text_muted,
                                     dot: equalizerPage.bandColor,
-                                    ring: root.t.data_marker
+                                    ring: root.t.data_marker,
+                                    fill: root.t.analyser_fill
                                 })[lineStyle]
                                 spacing: 7
-                                // The line drawn as the graph draws it: whole, in dashes, in dots, or a handle's dot.
+                                // The line drawn as the graph draws it: whole, in dashes, in dots, a handle's dot, or the analyser's area.
                                 Item {
                                     width: 16
                                     height: entryText.height
@@ -3349,16 +3352,30 @@ Rectangle {
                                         anchors.verticalCenter: parent.verticalCenter
                                         spacing: 2
                                         Repeater {
-                                            model: ({ solid: 1, dashed: 3, dotted: 4, dot: 1, ring: 1 })[entry.lineStyle]
+                                            model: ({ solid: 1, dashed: 3, dotted: 4, dot: 1, ring: 1, fill: 1 })[entry.lineStyle]
                                             delegate: Rectangle {
                                                 readonly property bool round: entry.lineStyle === "dot" || entry.lineStyle === "ring"
-                                                width: ({ solid: 16, dashed: 4, dotted: 2, dot: 8, ring: 8 })[entry.lineStyle]
-                                                height: round ? 8 : 2
+                                                readonly property bool area: entry.lineStyle === "fill"
+                                                width: ({ solid: 16, dashed: 4, dotted: 2, dot: 8, ring: 8, fill: 16 })[entry.lineStyle]
+                                                height: round || area ? 8 : 2
                                                 radius: round ? 4 : entry.lineStyle === "dotted" ? 1 : 0
                                                 // A ring is open, as the graph draws an Auto-EQ band's mark.
-                                                color: entry.lineStyle === "ring" ? "transparent" : entry.sample
+                                                color: entry.lineStyle === "ring" || area ? "transparent" : entry.sample
                                                 border.width: entry.lineStyle === "ring" ? 1.5 : 0
                                                 border.color: entry.sample
+                                                // The analyser's area fades toward the floor, under its soft top edge.
+                                                gradient: area ? areaFade : null
+                                                Gradient {
+                                                    id: areaFade
+                                                    GradientStop { position: 0; color: Qt.alpha(entry.sample, 0.6) }
+                                                    GradientStop { position: 1; color: Qt.alpha(entry.sample, 0.12) }
+                                                }
+                                                Rectangle {
+                                                    visible: parent.area
+                                                    width: parent.width
+                                                    height: 1.5
+                                                    color: root.t.analyser_line
+                                                }
                                             }
                                         }
                                     }

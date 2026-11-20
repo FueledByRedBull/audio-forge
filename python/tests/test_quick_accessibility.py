@@ -12,7 +12,7 @@ from __future__ import annotations
 import sys
 
 import pytest
-from PySide6.QtCore import QElapsedTimer, QObject, QPointF, QRectF, Qt, qInstallMessageHandler
+from PySide6.QtCore import QElapsedTimer, QObject, QPointF, QRectF, Qt, QTimer, qInstallMessageHandler
 from PySide6.QtGui import QAccessible
 from PySide6.QtQml import QQmlEngine, QQmlExpression, QQmlProperty
 from PySide6.QtTest import QTest
@@ -557,6 +557,27 @@ def test_the_eq_graph_is_named_described_and_follows_the_selected_band(quick_win
         qapp.processEvents()
         assert "Band 7 selected" in scene.description(graph)
         assert "Band 3 selected" not in scene.description(graph)
+
+
+def test_the_eq_graph_says_the_input_analyser_shows_only_while_it_does(quick_window, qapp) -> None:
+    import numpy as np
+
+    from mic_eq.ui.eq_graph import ANALYSER_DESCRIPTION
+
+    window = quick_window
+    _show(window, qapp, EQUALIZER)
+    graph = _graph_item(window.centralWidget().rootObject())
+    model = window.eq_presentation.graph_model
+    with _AccessibleScene() as scene:
+        assert ANALYSER_DESCRIPTION not in scene.description(graph)
+        model.set_input_spectrum(
+            np.full(2, -40.0, dtype=np.float32), np.array([100.0, 1000.0], dtype=np.float32)
+        )
+        qapp.processEvents()
+        assert ANALYSER_DESCRIPTION in scene.description(graph)
+        model.clear_input_spectrum()
+        qapp.processEvents()
+        assert ANALYSER_DESCRIPTION not in scene.description(graph)
 
 
 # --- 3. Keyboard -------------------------------------------------------------------
@@ -1515,6 +1536,31 @@ def test_the_legend_lists_only_what_the_view_draws(quick_window, qapp, key) -> N
     assert [entry.property("text") for entry in entries] == LEGENDS[key]
     # The Auto-EQ view draws no band handles, so nothing runs from one to the band strip.
     assert _eq_item(window, "bandConnector").isVisible() is (key != "auto_eq")
+
+
+@pytest.mark.parametrize("key", ["total", "tone", "auto_eq"])
+def test_the_legend_names_the_input_analyser_first_while_the_stream_runs(quick_window, qapp, key) -> None:
+    window = quick_window
+    for timer in window.findChildren(QTimer):
+        timer.stop()
+    _show(window, qapp, EQUALIZER)
+    _click(window, _eq_item(window, "eqShow_" + key), qapp)
+
+    def legend() -> list:
+        QTest.qWait(50)
+        return sorted(
+            (item for item in _items(window.centralWidget().rootObject())
+             if item.objectName() == "legendEntry" and item.isVisible()),
+            key=_scene_x,
+        )
+
+    assert [entry.property("text") for entry in legend()] == LEGENDS[key]
+    window.stop_btn_action.setEnabled(True)  # what a running stream does
+    running = legend()
+    assert [entry.property("text") for entry in running] == ["Input analyser", *LEGENDS[key]]
+    assert running[0].property("lineStyle") == "fill"
+    window.stop_btn_action.setEnabled(False)
+    assert [entry.property("text") for entry in legend()] == LEGENDS[key]
 
 
 def test_the_chosen_view_looks_apart_from_the_others(themed_window, qapp) -> None:

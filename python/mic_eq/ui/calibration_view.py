@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from .announcements import Announcer
 from .capture_session import LIVE_OUTPUT_MUTED_NOTICE
 from .components import Glyph
 from .eq_compare import EQComparison
@@ -108,6 +109,8 @@ class CalibrationView(QObject):
         }
         self.level_meter = LevelMeter("Level", show_scale=True, parent=self)
         self.eq_compare = EQComparison(self)
+        # Told when the step's title or the status changes; the dialog attaches the widget it speaks from.
+        self.announcer = Announcer(self)
 
     page = Property(dict, lambda self: self._page, notify=pageChanged)
     status = Property(
@@ -177,6 +180,8 @@ class CalibrationView(QObject):
             raise KeyError(f"the page has no field {', '.join(sorted(unknown))}")
         page = {**self._page, **fields}
         if page != self._page:
+            if page["recordingTitle"] != self._page["recordingTitle"]:
+                self.announcer.say(str(page["recordingTitle"]))
             self._page = page
             self.pageChanged.emit()
 
@@ -196,6 +201,8 @@ class CalibrationView(QObject):
         if (text, state, strong, tip) != (
             self.warning_text, self.warning_state, self.warning_strong, self.warning_tip
         ):
+            if text != self.warning_text:
+                self.announcer.say(text)
             self.warning_text, self.warning_state = text, state
             self.warning_strong, self.warning_tip = strong, tip
             self.statusChanged.emit()

@@ -1,8 +1,8 @@
 // A number field with step buttons, typed or stepped from the keyboard (Up and Down, Page Up and
-// Page Down). `label` names it for assistive technology; the shown value is added to the name,
-// because a spin box has no value channel in QML that reads in real units. The value is a real
-// number between `low` and `high`, shown with `decimals` places and followed by `suffix`;
-// `modified` carries the number the person chose.
+// Page Down). `label` names it for assistive technology. A spin box's own value counts in
+// units of 10^decimals, so the box is exposed as an editable text whose text is the shown value
+// and `suffix`, which reads in real units. The value is a real number between `low` and `high`,
+// shown with `decimals` places; `modified` carries the number the person chose.
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
@@ -41,7 +41,9 @@ SpinBox {
         notation: DoubleValidator.StandardNotation
         locale: "C"
     }
-    Accessible.name: label + ": " + field.text + suffix
+    property string text: field.text + suffix
+    Accessible.role: Accessible.EditableText
+    Accessible.name: label
     contentItem: TextInput {
         id: field
         objectName: box.objectName + "Input"

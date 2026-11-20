@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from .announcements import Announcer
 from .components import Glyph
 from .level_meter import LevelMeter
 
@@ -76,6 +77,8 @@ class FirstRunSetupView(QObject):
         self._muted = False
         self.input_meter = LevelMeter("IN", show_scale=True, parent=self)
         self.output_meter = LevelMeter("OUT", show_scale=True, parent=self)
+        # Told when the step or the status changes; the dialog attaches the widget it speaks from.
+        self.announcer = Announcer(self)
 
     page = Property(dict, lambda self: self._page, notify=pageChanged)
     status = Property(dict, lambda self: {"text": self.status_text, "state": self.status_state}, notify=statusChanged)
@@ -104,12 +107,16 @@ class FirstRunSetupView(QObject):
         """Change the parts of the page that follow the step; unchanged fields are left alone."""
         page = {**self._page, **fields}
         if page != self._page:
+            if page["title"] != self._page["title"]:
+                self.announcer.say(str(page["title"]))
             self._page = page
             self.pageChanged.emit()
 
     def set_status(self, text: str, state: str) -> None:
         state = state if state in STATES else "idle"
         if (text, state) != (self.status_text, self.status_state):
+            if text != self.status_text:
+                self.announcer.say(text)
             self.status_text, self.status_state = text, state
             self.statusChanged.emit()
 

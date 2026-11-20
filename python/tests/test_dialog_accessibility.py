@@ -15,7 +15,7 @@ from mic_eq.ui.first_run_setup_dialog import FirstRunSetupDialog
 from mic_eq.ui.theme import PALETTE
 from test_first_run_setup import _Owner, _Processor, press, scene_item, scene_text, wired_setup_dialog
 from test_setup_level_check_flow import voice  # noqa: F401  (a fixture)
-from test_quick_shell import _AccessibleScene
+from test_quick_shell import _AccessibleScene, spoken_announcements
 from test_voice_setup_integration import real_main_window  # noqa: F401  (a fixture)
 
 
@@ -65,6 +65,26 @@ def test_the_setup_action_button_is_named_by_the_text_it_shows_at_each_step(monk
         press(dialog, "actionButton")
         assert dialog.current_step == "voice"
         assert scene.name(action) == "Open Voice Setup"
+    dialog.hide()
+    dialog.deleteLater()
+
+
+def test_the_setup_step_and_status_are_announced_once_each(monkeypatch, qapp) -> None:
+    dialog, owner = _first_run(monkeypatch, "route")
+    _open(dialog, qapp)
+    spoken = spoken_announcements(monkeypatch)
+    view = dialog.view_model
+    view.set_page(title="Check your levels")
+    view.set_status("Speak normally for a few seconds.", "idle")
+    qapp.processEvents()
+    assert spoken == ["Check your levels. Speak normally for a few seconds."]
+    view.set_status("Speak normally for a few seconds.", "idle")
+    view.set_page(title="Check your levels")
+    qapp.processEvents()
+    assert len(spoken) == 1
+    view.set_status("No signal was heard.", "bad")
+    qapp.processEvents()
+    assert spoken[1:] == ["No signal was heard."]
     dialog.hide()
     dialog.deleteLater()
 

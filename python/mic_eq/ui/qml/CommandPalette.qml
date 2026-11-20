@@ -173,6 +173,11 @@ Item {
                     Accessible.description: modelData.description
                     Accessible.selectable: true
                     Accessible.selected: selected
+                    // Activating a row from assistive technology runs it, as Enter does.
+                    Accessible.onPressAction: {
+                        overlay.commands.select(row.index)
+                        overlay.commands.run()
+                    }
                     MouseArea {
                         id: pointer
                         anchors.fill: parent

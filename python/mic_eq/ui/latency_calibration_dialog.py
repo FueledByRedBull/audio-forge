@@ -209,6 +209,8 @@ class LatencyCalibrationDialog(QDialog):
             # The intro in the header takes room from the page, which still has to hold the meter and status.
             minimum_height=380,
         )
+        # Only what changes from here on is announced; the first page is read as the window opens.
+        self.view_model.announcer.attach(self.quick_view)
 
         app = QApplication.instance()
         if app is not None:

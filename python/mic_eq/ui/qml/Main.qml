@@ -102,9 +102,24 @@ Rectangle {
         easing.type: Easing.OutCubic
     }
 
+    // A caption with a `tip` is a tab stop that shows it on focus, as hovering does. A caption
+    // beside a control that shows the same help on its own focus sets `focusable: false`.
     component Caption: MutedText {
+        id: caption
         property string tip: ""
-        Hint { text: parent.tip }
+        property bool focusable: caption.tip !== ""
+        readonly property bool ringed: focusable && activeFocus
+        activeFocusOnTab: focusable
+        Hint { text: caption.tip; focused: caption.ringed }
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: -3
+            radius: 4
+            color: "transparent"
+            border.width: 2
+            border.color: root.t.focus_ring
+            visible: caption.ringed
+        }
     }
 
     // A caption that screen readers read, for text that carries a state (not a label of a control).
@@ -313,8 +328,13 @@ Rectangle {
         // A hold ended elsewhere (an edit, Stop, the window going away) is no longer this button's.
         readonly property bool held: proxy ? proxy.held : false
         onHeldChanged: if (!held) holding = false
+        // Latched by assistive technology instead of held: no press to lose, so only a new
+        // press, the button hiding or being disabled, Stop and the like end it.
+        readonly property bool latched: proxy ? proxy.latched : false
         function begin() {
-            if (!holding && proxy && proxy.enabled) {
+            if (latched) {
+                proxy.release()
+            } else if (!holding && proxy && proxy.enabled) {
                 proxy.press()
                 holding = proxy.held
             }
@@ -324,6 +344,11 @@ Rectangle {
                 holding = false
                 proxy.release()
             }
+        }
+        function endAll() {
+            end()
+            if (latched)
+                proxy.release()
         }
         function holdKey(event) {
             return event.key === Qt.Key_Space
@@ -352,8 +377,8 @@ Rectangle {
         onPressedChanged: pressed ? begin() : end()
         onCanceled: end()
         onActiveFocusChanged: if (!activeFocus) end()
-        onVisibleChanged: if (!visible) end()
-        onEnabledChanged: if (!enabled) end()
+        onVisibleChanged: if (!visible) endAll()
+        onEnabledChanged: if (!enabled) endAll()
         Keys.onPressed: event => {
             if (holdKey(event)) {
                 event.accepted = true
@@ -369,7 +394,28 @@ Rectangle {
             }
         }
         Accessible.name: proxy ? proxy.name : ""
-        Accessible.description: proxy ? proxy.toolTip : ""
+        Accessible.description: proxy ? proxy.accessibleDescription : ""
+        // Assistive technology cannot hold a button, so activating it latches the comparison
+        // on and activating it again returns.
+        function latch() {
+            if (!proxy)
+                return
+            const before = latched
+            holding = false
+            if (before)
+                proxy.release()
+            else
+                proxy.latch()
+            if (proxy.latched !== before)
+                proxy.announceLatch(proxy.latched)
+        }
+        // The check state is the model's, as in ModelButton: it only tells assistive technology
+        // which voice is playing, and a click's toggle is put back.
+        checkable: true
+        checked: held
+        onCheckedChanged: if (checked !== held) checked = Qt.binding(() => hold.held)
+        Accessible.onPressAction: latch()
+        Accessible.onToggleAction: latch()
         Hint { text: hold.proxy ? hold.proxy.toolTip : "" }
         EscChip {
             id: keycap
@@ -513,6 +559,7 @@ Rectangle {
         Caption {
             text: line.row.label
             tip: line.p.toolTip
+            focusable: false
             visible: text !== "" && line.row.kind !== "toggle"
             opacity: line.p.enabled ? 1 : 0.45
             Layout.preferredWidth: 108
@@ -703,40 +750,49 @@ Rectangle {
         }
     }
 
-    // One line of the Health page. The chip text is "Title: value".
-    component HealthRow: RowLayout {
+    // One line of the Health page. The chip text is "Title: value". The line is one tab stop that
+    // reads as a whole and shows the chip's help on focus, as it does on hover.
+    component HealthRow: Control {
         id: health
         property var row
         readonly property var proxy: row.proxy
         readonly property string value: proxy.text.startsWith(row.title + ":")
                                         ? proxy.text.slice(row.title.length + 1).trim() : proxy.text
+        readonly property string shownValue: value.charAt(0).toUpperCase() + value.slice(1)
         readonly property string state_: proxy.state !== "" ? proxy.state : "idle"
-        spacing: 10
-        Rectangle {
-            implicitWidth: 8
-            implicitHeight: 8
-            radius: 4
-            color: root.t["status_" + health.state_ + "_text"] ?? root.t.status_idle_text
-        }
-        Caption {
-            text: health.row.title
-            tip: health.proxy.toolTip
-            color: root.t.text_primary
-            Layout.preferredWidth: 110
-        }
-        Text {
-            textFormat: Text.PlainText
-            text: health.value.charAt(0).toUpperCase() + health.value.slice(1)
-            color: root.t.text_primary
-            font.pixelSize: root.fsBody
-            wrapMode: Text.Wrap
-            Layout.fillWidth: true
-            Accessible.name: health.proxy.name + ": " + text
-            Accessible.description: health.proxy.toolTip
+        activeFocusOnTab: true
+        Accessible.role: Accessible.StaticText
+        Accessible.name: proxy.name + ": " + shownValue
+        Accessible.description: proxy.toolTip
+        Hint { text: health.proxy.toolTip }
+        FocusRing { control: health; outset: 3 }
+        contentItem: RowLayout {
+            spacing: 10
+            Rectangle {
+                implicitWidth: 8
+                implicitHeight: 8
+                radius: 4
+                color: root.t["status_" + health.state_ + "_text"] ?? root.t.status_idle_text
+            }
+            Caption {
+                text: health.row.title
+                color: root.t.text_primary
+                Layout.preferredWidth: 110
+                Accessible.ignored: true
+            }
+            Text {
+                textFormat: Text.PlainText
+                text: health.shownValue
+                color: root.t.text_primary
+                font.pixelSize: root.fsBody
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+                Accessible.ignored: true
+            }
         }
     }
 
-    component Page: Flickable {
+    component Page: ScrollArea {
         id: page
         default property alias content: column.data
         property alias spacing: column.spacing
@@ -749,23 +805,10 @@ Rectangle {
         // The height the page keeps from its content: the room above the column and below it.
         readonly property int verticalOverhead: 24
         contentHeight: column.implicitHeight + verticalOverhead
-        boundsBehavior: Flickable.StopAtBounds
         // A mouse drag belongs to the controls; wheel, scroll bar and touch still scroll.
         acceptedButtons: Qt.NoButton
-        clip: true
-        // Keep the control that has keyboard focus on screen.
-        readonly property Item focusItem: Window.activeFocusItem
-        onFocusItemChanged: {
-            var item = focusItem
-            for (var p = item; p && p !== column; p = p.parent) {}
-            if (!visible || !p || root.pressing)
-                return
-            var top = item.mapToItem(contentItem, 0, 0).y
-            if (top < contentY + 12)
-                contentY = Math.max(0, top - 12)
-            else if (top + item.height > contentY + height - 12)
-                contentY = Math.min(contentHeight - height, top + item.height - height + 12)
-        }
+        followed: column
+        following: !root.pressing
         ScrollBar.vertical: ScrollBar {
             id: bar
             Accessible.name: page.scrollName
@@ -909,15 +952,23 @@ Rectangle {
                 Row {
                     spacing: 14
                     Repeater {
-                        model: [["Input", root.t.text_muted], ["Output", root.t.accent]]
+                        model: [["Input", root.t.text_muted, false], ["Output", root.t.accent, true]]
                         delegate: Row {
+                            id: key
                             required property var modelData
                             spacing: 6
-                            Rectangle {
-                                width: 10
-                                height: 2
-                                color: parent.modelData[1]
+                            // The swatch is the line as drawn: output is dashed (two 6 px dashes, 3 px apart).
+                            Row {
+                                spacing: 3
                                 anchors.verticalCenter: parent.verticalCenter
+                                Repeater {
+                                    model: key.modelData[2] ? 2 : 1
+                                    delegate: Rectangle {
+                                        width: key.modelData[2] ? 6 : 15
+                                        height: 2
+                                        color: key.modelData[1]
+                                    }
+                                }
                             }
                             Text {
                                 textFormat: Text.PlainText
@@ -1220,7 +1271,12 @@ Rectangle {
                     }
                     Behavior on opacity { NumberAnimation { duration: root.t.motionRow } }
                 }
-                FocusRing { control: navButton; outset: -2 }
+                // The selected fill is the focus colour under a contrast theme: ring it in the text on it.
+                FocusRing {
+                    control: navButton
+                    outset: -2
+                    border.color: navButton.current && root.t.highContrast ? root.t.hover_text : root.t.focus_ring
+                }
             }
             contentItem: Item {
                 Rectangle {
@@ -1258,7 +1314,8 @@ Rectangle {
                         width: parent.width
                         text: nav.name
                         textFormat: Text.PlainText
-                        color: nav.dim ? root.t.text_dim : root.t.text_primary
+                        color: nav.current && root.t.highContrast ? root.t.hover_text
+                             : nav.dim ? root.t.text_dim : root.t.text_primary
                         font.pixelSize: root.fsBody
                         font.weight: Font.DemiBold
                         elide: Text.ElideRight
@@ -1328,7 +1385,7 @@ Rectangle {
                 id: readoutLabel
                 anchors.centerIn: parent
                 text: readout.meter.clipTagShown ? "CLIP" : readout.label
-                color: readout.meter.clipTagShown ? root.t.text_on_data_color : root.t.text_muted
+                color: readout.meter.clipTagShown ? root.t.text_on_mark : root.t.text_muted
                 font.pixelSize: root.fsCaption
                 font.weight: Font.DemiBold
                 Accessible.ignored: true
@@ -2732,7 +2789,7 @@ Rectangle {
                     }
                     Caption {
                         visible: details.open
-                        text: "Hover Drops or Recovery for the engine's raw counters, which a support report can include."
+                        text: "Point at or Tab to Drops or Recovery for the engine's raw counters, which a support report can include."
                         wrapMode: Text.Wrap
                         Layout.fillWidth: true
                     }
@@ -2951,7 +3008,7 @@ Rectangle {
                                     Chevron {
                                         anchors.verticalCenter: parent.verticalCenter
                                         color: moreButton.hovered ? root.t.hover_text : root.t.text_muted
-                                        font.pixelSize: root.fsCaption - 2
+                                        font.pixelSize: Look.fsTick
                                     }
                                 }
                             }

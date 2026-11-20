@@ -14,57 +14,17 @@ Item {
         scroll.forceActiveFocus(Qt.TabFocusReason)
     }
 
-    Flickable {
+    ScrollArea {
         id: scroll
         objectName: "contentScroll"
         anchors.fill: parent
         contentWidth: width
         contentHeight: column.implicitHeight + 32
-        boundsBehavior: Flickable.StopAtBounds
-        clip: true
+        followed: column
         // A tab stop that scrolls as a scroll area does: arrows, Page Up, Page Down, Home, End.
         activeFocusOnTab: true
         Accessible.role: Accessible.Pane
         Accessible.name: page.label
-        readonly property real lineStep: Look.fsBody * 3
-        readonly property real maxY: Math.max(0, contentHeight - height)
-        function scrollTo(y) {
-            contentY = Math.max(0, Math.min(maxY, y))
-        }
-        function targetFor(key) {
-            switch (key) {
-            case Qt.Key_Up: return contentY - lineStep
-            case Qt.Key_Down: return contentY + lineStep
-            case Qt.Key_PageUp: return contentY - height
-            case Qt.Key_PageDown: return contentY + height
-            case Qt.Key_Home: return 0
-            case Qt.Key_End: return maxY
-            }
-            return undefined
-        }
-        Keys.onPressed: event => {
-            const target = targetFor(event.key)
-            const shortcut = event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
-            if (target === undefined || shortcut)
-                return
-            scrollTo(target)
-            event.accepted = true
-        }
-        // Keep the control that has keyboard focus on screen.
-        readonly property Item focusItem: Window.activeFocusItem
-        onFocusItemChanged: {
-            const item = focusItem
-            let inside = false
-            for (let p = item; p && !inside; p = p.parent)
-                inside = p === column
-            if (!inside)
-                return
-            const top = item.mapToItem(contentItem, 0, 0).y
-            if (top < contentY + 12)
-                scrollTo(top - 12)
-            else if (top + item.height > contentY + height - 12)
-                scrollTo(top + item.height - height + 12)
-        }
         ScrollBar.vertical: ScrollBar {
             id: bar
             Accessible.name: "Content scroll bar"

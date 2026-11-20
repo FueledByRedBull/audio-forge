@@ -126,6 +126,7 @@ def _source_hashes() -> dict[str, str]:
         "python/mic_eq/ui/qml/PushButton.qml",
         "python/mic_eq/ui/qml/qmldir",
         "python/mic_eq/ui/qml/RecordingProgress.qml",
+        "python/mic_eq/ui/qml/ScrollArea.qml",
         "python/mic_eq/ui/qml/ScrollPage.qml",
         "python/mic_eq/ui/qml/StepMark.qml",
         "python/mic_eq/ui/qml/Surface.qml",

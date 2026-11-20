@@ -366,18 +366,19 @@ priming.
    $dir = "$env:USERPROFILE\soak"          # outside the repository
    $env:APPDATA = "$dir\appdata"
    New-Item -ItemType Directory -Force "$env:APPDATA\AudioForge" | Out-Null
-   '{"first_run_setup_state": "completed"}' |
+   '{"schema_version": 2, "first_run_setup_state": "completed"}' |
      Set-Content "$env:APPDATA\AudioForge\config.json"
    Start-Process .\AudioForge.exe
    ```
 
 2. Choose the real microphone as input and an output endpoint nobody listens
    to (**CABLE Input** when the release changes the output path, since only
-   VB-Audio endpoints use the shorter period). Leave the top-bar **Mute**
-   toggle off: a muted output empties the queue without counting underruns or
+   VB-Audio endpoints use the shorter period). Leave the toolbar **Mute**
+   button off: a muted output empties the queue without counting underruns or
    callback sizes, so a muted run never tests the output queue. Make sure
    nothing records or plays that endpoint. Change nothing else, and don't
-   press **Reset drop counter**. Press **Start** (minute 0), then
+   press **Reset drop counter**. Stay off the Equalizer page, whose input
+   analyser runs only while it shows. Press **Start** (minute 0), then
    run this in a second PowerShell window:
 
    ```powershell
@@ -393,7 +394,8 @@ priming.
    ```
 
    Row 5 is the 5-minute baseline and row 60 the end.
-3. At minute 5 and minute 60, note the Health indicator and export diagnostics
+3. At minute 5 and minute 60, note the Health chip in the sidebar footer (the
+   Health indicator below) and export diagnostics
    (**Health > Technical details > Export diagnostics**) into the same folder.
 
 It passes only if all of these hold:
@@ -408,8 +410,8 @@ It passes only if all of these hold:
   `suppressor_non_finite_count` are 0, `noise_backend_failed` is false, and at
   both readings the Health indicator names no fault other than gate chatter
   (`gate_chatter_event_count` may be above 0) or an input-level warning that
-  comes from the room and the microphone gain (**Input: PEAKS TOO HIGH** or
-  **Input: LOW**). Those two are allowed only while every counter above is 0.
+  comes from the room and the microphone gain (**Input: PEAKS TOO HIGH (N dB)**
+  or **Input: LOW (N dB)**). Those two are allowed only while every counter above is 0.
 - Median CPU is under 15 seconds a minute (a quarter of one core), from the
   differences between consecutive `cpu_seconds` values.
 
@@ -445,32 +447,39 @@ every part of its criterion holds; record "not run" for any skipped.
 1. **First launch.** Start with no saved settings. Pass: the window draws with
    no error screen and **Guided Setup** opens over it. Finish or close it; the
    window then responds and no stream is running.
-2. **Pages.** Open **Mic**, **Health** and **Settings** from the rail. Pass:
-   each shows all its controls, no dialog opens, processing is stopped, and the
-   About version (**Settings > Help**) is the candidate's.
-3. **Start and Stop.** Press **Start**, speak, press **Stop**,
-   then Start again. Pass: the input meter follows your voice,
-   the status dot shows running, and the Health page's Drops row stays clear for
-   30 seconds after Start. After Stop the window stays open, the meters fall to
-   idle and the dot shows stopped.
-4. **Mute.** While running, turn the top-bar **Mute** toggle on, then off. Pass:
-   the OUT meter reads MUTE, the Output row says muted, the status dot shows
-   muted, and the tray tooltip says "Running / Muted"; unmuting returns all
-   three. The tray's **Mute Output** item follows the same state. Repeat with
-   **Ctrl+M** in the window: the top bar shows a **Muted** pill while muted.
-5. **Edit, Undo and Redo.** Drag one EQ band, then change the gate threshold.
-   Press **Undo** twice and **Redo** twice, then repeat with **Ctrl+Z** and
+2. **Pages.** Open **Overview**, **Equalizer**, **Health** and **Settings**
+   from the sidebar (Health and Settings are in its footer). Pass: each shows
+   all its controls, no dialog opens, processing is stopped, and the About
+   version (**Settings > Help**) is the candidate's.
+3. **Start and Stop.** Press **Start**, speak, press **Stop** and answer
+   **Stop audio**, then Start again. Pass: the input meter follows your voice,
+   the Overview reads "Live" with a disc mark, and the Health page's Drops row
+   stays clear for 30 seconds after Start. Stop first asks "Stop Audio?"
+   ("Callers will hear nothing until audio is started again."), and **Keep
+   running** (or Esc) leaves the audio running. After Stop the window stays
+   open, the meters fall to idle and the Overview reads "Ready when you are"
+   with an open ring.
+4. **Mute.** While running, turn the toolbar **Mute** button on, then off.
+   Pass: the button stays pressed, the Overview reads "Muted · others hear
+   silence" with a square mark, the sidebar's Overview row reads "Live ·
+   muted", and the tray tooltip says "Running / Muted"; unmuting returns all
+   of them. The tray's **Mute Output** item follows the same state. Repeat with
+   **Ctrl+M** in the window.
+5. **Edit, Undo and Redo.** Drag one EQ band on the Equalizer page, then change
+   the gate threshold in the **Noise gate** inspector. Press the sidebar's
+   **Undo** twice and **Redo** twice, then repeat with **Ctrl+Z** and
    **Ctrl+Shift+Z**. Pass: each press moves exactly one edit and both values
    return exactly. After item 9, the first **Ctrl+Z** undoes your last edit, not
    one you never made.
-6. **Preset load.** While running, load a built-in preset from the **Presets**
-   menu, then press **Undo**. Pass: the settings change without stopping audio
-   or flagging a dropout, the preset's name shows, and Undo restores the
-   previous settings.
-7. **Health indicator and status bar.** While running, mute the microphone in
-   Windows sound settings for ten seconds. Pass: the indicator names the quiet
-   input and Health gives advice for it; unmuting clears both. After **Stop**,
-   the advice and tooltips are gone and the dot shows stopped.
+6. **Preset load.** While running, load a built-in preset from the sidebar's
+   **Presets** menu, then press **Undo**. Pass: the settings change without
+   stopping audio or flagging a dropout, the preset's name shows, and Undo
+   restores the previous settings.
+7. **Health indicator and status message.** While running, mute the microphone
+   in Windows sound settings for ten seconds. Pass: the Health chip in the
+   sidebar footer names the quiet input and Health gives advice for it;
+   unmuting clears both. After **Stop**, the advice and tooltips are gone and
+   the Overview reads "Ready when you are".
 8. **Tray and quit.** In **Settings > Tray and background**, turn on
    close-to-tray, start processing and close the window. Pass: audio keeps
    running, the tray tooltip reads "AudioForge: Running", **Show AudioForge**
@@ -482,11 +491,15 @@ every part of its criterion holds; record "not run" for any skipped.
    in Tray** (only while the tray icon shows) and **Cancel**. **Cancel** keeps
    audio running; **Quit** leaves no `AudioForge.exe` within five seconds. With
    unsaved changes, this question comes first, then Save, Discard or Cancel.
-9. **Device change while running.** Pick another input in the top bar, disable
-   that input in Windows sound settings, then enable it and use **Refresh**.
-   Pass: the meter follows the new input; when a device disappears the app
-   stays responsive, says so, and picks no other device; after Refresh the
-   device is listed and Start works.
+9. **Device change.** The device pickers and **Refresh** work only while
+   stopped. Stop, pick another input in the toolbar and Start. Then, while
+   running, disable that input in Windows sound settings, then enable it
+   again. Pass: the meter follows the new input; when the device disappears
+   the app stays responsive, the Overview reads "Your callers can't hear you"
+   and offers **Choose another microphone**, and AudioForge picks no other
+   device on its own; once the device is back the meter follows it again, by
+   itself or after **Restart audio**. Stop and press **Refresh**: the device is
+   listed and Start works.
 10. **Guided Setup.** Open **Run Guided Setup** (**Settings > Options**), go to
     the first step that lists devices, and close it; open it again and close it
     during a level check. Pass: it closes cleanly both times, no stream is left
@@ -498,7 +511,9 @@ every part of its criterion holds; record "not run" for any skipped.
 12. **Minimum size.** Drag the window to its smallest size (900 by 640), open
     each page, load a preset with a long name, and toggle **Mute**. Pass: no
     control overlaps another, no text is cut off without a tooltip, and the
-    Health indicator and status message are both readable in the status bar.
+    Health chip and the status message at the foot of the page are both
+    readable. At this width the toolbar drops the AudioForge name, the Mode
+    caption, the meter readings and the latency caption by design.
 13. **Login startup.** On the portable copy and on the MSI install (with the
     previous release installed first, for the upgrade step). Pass for each:
     - **Configure login shortcut for this copy** creates one **AudioForge
@@ -518,13 +533,15 @@ every part of its criterion holds; record "not run" for any skipped.
     the alert look, Normal returns to the ordinary look, and audio keeps
     flowing through all three.
 15. **DeepFilterNet latency labels.** While running with audio flowing, select
-    **DeepFilterNet LL**, then **DeepFilterNet**. Pass: the latency label (an
-    "at least N ms" figure while no route is measured) rises by about 15 ms for
+    **DeepFilterNet LL (Fast)**, then **DeepFilterNet (Best Quality)** in the
+    **Noise suppression** inspector's Backend list. Pass: the toolbar latency
+    (`≥ N ms` while no route is measured) rises by about 15 ms for
     DeepFilterNet LL and by about 35 ms for DeepFilterNet compared with the
     suppressor off, audio keeps flowing, and Health shows no DeepFilter error.
-16. **Recovery during setup.** Open **Auto Voice Setup** (or latency
-    calibration) while running. Pass: Health shows automatic recovery as paused
-    while the dialog is open and normal again after it closes.
+16. **Recovery during setup.** Open **Run Auto Voice Setup** on the Overview
+    (or **Measure latency** in the sidebar) while running. Pass: Health's
+    Recovery row reads "paused during setup" while the dialog is open and
+    returns to normal after it closes.
 
 The checklist can fail: item 3's Drops criterion fails 1.16.0, which counted
 three or four dropouts on every Start, and item 5's last sentence fails a

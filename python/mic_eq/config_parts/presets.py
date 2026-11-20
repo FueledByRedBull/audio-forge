@@ -258,6 +258,9 @@ class Preset:
             def validate_range(value: object, *args: object) -> float:
                 return _validate_range(value, *args, strict=strict_current_schema)
 
+            if version_tuple < current_version:
+                data["version"] = CURRENT_VERSION
+
             gate_data = data.get("gate", {})
             gate_defaults = GateSettings()
             gate_ranges = validation_ranges()["gate"]
@@ -557,7 +560,7 @@ class Preset:
             return cls(
                 name=data.get("name", "Unnamed"),
                 description=data.get("description", ""),
-                version=CURRENT_VERSION,
+                version=data.get("version", CURRENT_VERSION),
                 gate=validated_gate,
                 eq=validated_eq,
                 rnnoise=validated_rnnoise,
